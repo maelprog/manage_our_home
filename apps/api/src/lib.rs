@@ -6,6 +6,7 @@ pub mod email;
 pub mod error;
 pub mod groups;
 pub mod jobs;
+pub mod recipes;
 pub mod stocks;
 pub mod storage;
 
@@ -52,7 +53,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/account/delete", post(auth::delete_account))
         .route("/account/delete/cancel", post(auth::cancel_delete_account))
         .route("/groups", post(groups::create_group))
-        .route("/groups/:id", get(groups::get_group).delete(groups::delete_group))
+        .route(
+            "/groups/:id",
+            get(groups::get_group).delete(groups::delete_group),
+        )
         .route("/groups/:id/invitations", post(groups::create_invitation))
         .route(
             "/groups/invitations/:token/accept",
@@ -67,7 +71,10 @@ pub fn build_router(state: AppState) -> Router {
             delete(groups::remove_member),
         )
         .route("/groups/:id/leave", post(groups::leave_group))
-        .route("/groups/:id/events", post(agenda::events::create_event).get(agenda::events::list_events))
+        .route(
+            "/groups/:id/events",
+            post(agenda::events::create_event).get(agenda::events::list_events),
+        )
         .route(
             "/groups/:id/events/:event_id",
             get(agenda::events::get_event)
@@ -103,6 +110,28 @@ pub fn build_router(state: AppState) -> Router {
             get(stocks::items::get_stock_item)
                 .patch(stocks::items::update_stock_item)
                 .delete(stocks::items::delete_stock_item),
+        )
+        .route(
+            "/groups/:id/recipes",
+            post(recipes::crud::create_recipe).get(recipes::crud::list_recipes),
+        )
+        .route(
+            "/groups/:id/recipes/suggestions",
+            get(recipes::suggestions::suggest_recipes),
+        )
+        .route(
+            "/groups/:id/recipes/meal-history",
+            get(recipes::meal_history::list_meal_history),
+        )
+        .route(
+            "/groups/:id/recipes/:recipe_id",
+            get(recipes::crud::get_recipe)
+                .patch(recipes::crud::update_recipe)
+                .delete(recipes::crud::delete_recipe),
+        )
+        .route(
+            "/groups/:id/recipes/:recipe_id/meal-history",
+            post(recipes::meal_history::log_meal),
         )
         .layer(CookieManagerLayer::new())
         .with_state(state)

@@ -204,10 +204,17 @@ pub async fn create_invitation(
         let group_name = sqlx::query_scalar!("SELECT name FROM groups WHERE id = $1", group_id)
             .fetch_one(&state.db)
             .await?;
-        let link = format!("{}/groups/invitations/{}/accept", state.frontend_base_url, invitation.token);
+        let link = format!(
+            "{}/groups/invitations/{}/accept",
+            state.frontend_base_url, invitation.token
+        );
         if let Err(e) = state
             .email
-            .send(email, "Invitation à rejoindre un groupe", crate::email::EmailSender::invitation_body(&link, &group_name))
+            .send(
+                email,
+                "Invitation à rejoindre un groupe",
+                crate::email::EmailSender::invitation_body(&link, &group_name),
+            )
             .await
         {
             tracing::error!(error = ?e, "failed to send invitation email");
@@ -228,13 +235,10 @@ pub async fn accept_invitation(
     Path(token): Path<Uuid>,
 ) -> AppResult<impl IntoResponse> {
     let mut lookup_tx = token_scoped_tx(&state.db, token).await?;
-    let group_id = sqlx::query_scalar!(
-        "SELECT group_id FROM invitations WHERE token = $1",
-        token
-    )
-    .fetch_optional(&mut *lookup_tx)
-    .await?
-    .ok_or(AppError::NotFound)?;
+    let group_id = sqlx::query_scalar!("SELECT group_id FROM invitations WHERE token = $1", token)
+        .fetch_optional(&mut *lookup_tx)
+        .await?
+        .ok_or(AppError::NotFound)?;
     lookup_tx.commit().await?;
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
@@ -390,9 +394,9 @@ pub async fn leave_group(
     }
 
     if role == "owner" {
-        let new_owner_id = body.new_owner_id.ok_or_else(|| {
-            AppError::Unprocessable("new_owner_id_required".into())
-        })?;
+        let new_owner_id = body
+            .new_owner_id
+            .ok_or_else(|| AppError::Unprocessable("new_owner_id_required".into()))?;
         if new_owner_id == auth.user_id {
             return Err(AppError::Unprocessable("new_owner_id_required".into()));
         }

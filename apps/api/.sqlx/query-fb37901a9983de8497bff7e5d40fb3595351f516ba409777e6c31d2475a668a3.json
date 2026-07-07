@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT recipe_id, MAX(eaten_on) as \"last_eaten_on!\"\n        FROM meal_history\n        WHERE group_id = $1 AND eaten_on >= CURRENT_DATE - $2::bigint * INTERVAL '1 day'\n        GROUP BY recipe_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "recipe_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "last_eaten_on!",
+        "type_info": "Date"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "fb37901a9983de8497bff7e5d40fb3595351f516ba409777e6c31d2475a668a3"
+}

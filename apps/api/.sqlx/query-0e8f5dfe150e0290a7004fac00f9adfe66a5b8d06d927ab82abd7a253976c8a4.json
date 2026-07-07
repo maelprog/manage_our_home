@@ -1,0 +1,49 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO meal_history (group_id, recipe_id, eaten_on, created_by)\n        VALUES ($1, $2, COALESCE($3, CURRENT_DATE), $4)\n        RETURNING id, recipe_id, eaten_on, created_by, created_at\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "recipe_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "eaten_on",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_by",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Date",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0e8f5dfe150e0290a7004fac00f9adfe66a5b8d06d927ab82abd7a253976c8a4"
+}

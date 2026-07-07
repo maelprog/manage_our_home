@@ -9,6 +9,10 @@ use sqlx::PgPool;
 /// unreachable local relay on purpose — handlers log and swallow send
 /// failures rather than failing the request, so tests exercise the DB
 /// behavior without needing a real mail server.
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (clippy sees each test binary's copy separately, and flags
+// helpers unused by that particular binary as dead code).
+#[allow(dead_code)]
 pub fn test_state(db: PgPool) -> AppState {
     let google_oauth = BasicClient::new(
         ClientId::new("test-client-id".into()),
@@ -16,7 +20,9 @@ pub fn test_state(db: PgPool) -> AppState {
         AuthUrl::new("https://accounts.google.com/o/oauth2/v2/auth".into()).unwrap(),
         Some(TokenUrl::new("https://oauth2.googleapis.com/token".into()).unwrap()),
     )
-    .set_redirect_uri(RedirectUrl::new("http://localhost:8080/auth/google/callback".into()).unwrap());
+    .set_redirect_uri(
+        RedirectUrl::new("http://localhost:8080/auth/google/callback".into()).unwrap(),
+    );
 
     let smtp = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous("127.0.0.1")
         .port(1)
@@ -38,6 +44,9 @@ pub fn test_state(db: PgPool) -> AppState {
 /// Points at an unreachable local MinIO endpoint on purpose — only tests
 /// that actually exercise attachment upload/download need a real MinIO
 /// instance running, and none of the current test suite does.
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (see note on test_state above).
+#[allow(dead_code)]
 fn test_storage() -> manage_our_home::storage::Storage {
     use aws_credential_types::Credentials;
     use aws_sdk_s3::config::{BehaviorVersion, Region};
@@ -50,9 +59,15 @@ fn test_storage() -> manage_our_home::storage::Storage {
         .credentials_provider(credentials)
         .force_path_style(true)
         .build();
-    manage_our_home::storage::Storage::new(aws_sdk_s3::Client::from_conf(config), "test-bucket".into())
+    manage_our_home::storage::Storage::new(
+        aws_sdk_s3::Client::from_conf(config),
+        "test-bucket".into(),
+    )
 }
 
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (see note on test_state above).
+#[allow(dead_code)]
 pub fn test_router(db: PgPool) -> axum::Router {
     build_router(test_state(db))
 }
@@ -62,6 +77,9 @@ use axum::http::{header, Method, Request, Response, StatusCode};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (see note on test_state above).
+#[allow(dead_code)]
 pub async fn call(
     router: &axum::Router,
     method: Method,
@@ -84,6 +102,9 @@ pub async fn call(
     router.clone().oneshot(request).await.unwrap()
 }
 
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (see note on test_state above).
+#[allow(dead_code)]
 pub fn set_cookie(response: &Response<Body>) -> Option<String> {
     response
         .headers()
@@ -91,11 +112,17 @@ pub fn set_cookie(response: &Response<Body>) -> Option<String> {
         .map(|v| v.to_str().unwrap().split(';').next().unwrap().to_string())
 }
 
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (see note on test_state above).
+#[allow(dead_code)]
 pub async fn json_body(response: Response<Body>) -> serde_json::Value {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
 }
 
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (see note on test_state above).
+#[allow(dead_code)]
 pub fn assert_status(response: &Response<Body>, expected: StatusCode) {
     assert_eq!(response.status(), expected, "unexpected status code");
 }

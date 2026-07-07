@@ -36,7 +36,9 @@ pub async fn create_reminder(
     Json(body): Json<CreateReminderRequest>,
 ) -> AppResult<impl IntoResponse> {
     if body.offset_minutes < 0 {
-        return Err(AppError::BadRequest("offset_minutes_must_be_non_negative".into()));
+        return Err(AppError::BadRequest(
+            "offset_minutes_must_be_non_negative".into(),
+        ));
     }
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
@@ -63,9 +65,16 @@ pub async fn create_reminder(
     .fetch_one(&mut *tx)
     .await?;
 
-    refill_notifications(&mut tx, reminder.id, event_id, event.starts_at, event.rrule.as_deref(), body.offset_minutes)
-        .await
-        .map_err(|_| AppError::Internal(anyhow::anyhow!("failed to schedule notifications")))?;
+    refill_notifications(
+        &mut tx,
+        reminder.id,
+        event_id,
+        event.starts_at,
+        event.rrule.as_deref(),
+        body.offset_minutes,
+    )
+    .await
+    .map_err(|_| AppError::Internal(anyhow::anyhow!("failed to schedule notifications")))?;
 
     tx.commit().await?;
 

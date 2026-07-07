@@ -60,12 +60,17 @@ pub struct EventResponse {
     pub rrule: Option<String>,
 }
 
-fn validate_request(starts_at: DateTime<Utc>, ends_at: DateTime<Utc>, rrule: Option<&str>) -> AppResult<()> {
+fn validate_request(
+    starts_at: DateTime<Utc>,
+    ends_at: DateTime<Utc>,
+    rrule: Option<&str>,
+) -> AppResult<()> {
     if ends_at < starts_at {
         return Err(AppError::BadRequest("ends_at_before_starts_at".into()));
     }
     if let Some(r) = rrule {
-        recurrence::validate(r, starts_at).map_err(|_| AppError::BadRequest("invalid_rrule".into()))?;
+        recurrence::validate(r, starts_at)
+            .map_err(|_| AppError::BadRequest("invalid_rrule".into()))?;
     }
     Ok(())
 }
@@ -219,37 +224,41 @@ pub async fn list_events(
         .filter(|r| r.is_task && r.rrule.is_some())
         .map(|r| r.id)
         .collect();
-    let occurrence_completions: HashMap<(Uuid, DateTime<Utc>), DateTime<Utc>> = if recurring_task_ids.is_empty() {
-        HashMap::new()
-    } else {
-        sqlx::query!(
-            r#"
+    let occurrence_completions: HashMap<(Uuid, DateTime<Utc>), DateTime<Utc>> =
+        if recurring_task_ids.is_empty() {
+            HashMap::new()
+        } else {
+            sqlx::query!(
+                r#"
             SELECT event_id, occurrence_at, completed_at
             FROM event_occurrence_completions
             WHERE event_id = ANY($1) AND occurrence_at BETWEEN $2 AND $3
             "#,
-            &recurring_task_ids,
-            range.from,
-            range.to,
-        )
-        .fetch_all(&mut *tx)
-        .await?
-        .into_iter()
-        .map(|r| ((r.event_id, r.occurrence_at), r.completed_at))
-        .collect()
-    };
+                &recurring_task_ids,
+                range.from,
+                range.to,
+            )
+            .fetch_all(&mut *tx)
+            .await?
+            .into_iter()
+            .map(|r| ((r.event_id, r.occurrence_at), r.completed_at))
+            .collect()
+        };
     tx.commit().await?;
 
     let mut occurrences = Vec::new();
     for row in rows {
         let duration = row.ends_at - row.starts_at;
         if let Some(rrule) = row.rrule.clone() {
-            let starts = recurrence::expand_occurrences(&rrule, row.starts_at, range.from, range.to)
-                .map_err(|_| AppError::Internal(anyhow::anyhow!("failed to expand rrule")))?;
+            let starts =
+                recurrence::expand_occurrences(&rrule, row.starts_at, range.from, range.to)
+                    .map_err(|_| AppError::Internal(anyhow::anyhow!("failed to expand rrule")))?;
             let base = EventResponse::from(row);
             for occurrence_starts_at in starts {
                 let completed_at = if base.is_task {
-                    occurrence_completions.get(&(base.id, occurrence_starts_at)).copied()
+                    occurrence_completions
+                        .get(&(base.id, occurrence_starts_at))
+                        .copied()
                 } else {
                     None
                 };
@@ -318,7 +327,9 @@ pub async fn update_event(
     validate_request(starts_at, ends_at, rrule.as_deref())?;
 
     if body.completed.is_some() && !existing.is_task {
-        return Err(AppError::BadRequest("completed_only_valid_for_tasks".into()));
+        return Err(AppError::BadRequest(
+            "completed_only_valid_for_tasks".into(),
+        ));
     }
 
     // Recurring tasks: completion is per-occurrence (event_occurrence_completions),
@@ -327,9 +338,9 @@ pub async fn update_event(
     // keep using events.completed_at directly, as before.
     let completed_at = if existing.rrule.is_some() {
         if let Some(completed) = body.completed {
-            let occurrence_at = body
-                .occurrence_at
-                .ok_or(AppError::BadRequest("occurrence_at_required_for_recurring_task".into()))?;
+            let occurrence_at = body.occurrence_at.ok_or(AppError::BadRequest(
+                "occurrence_at_required_for_recurring_task".into(),
+            ))?;
             if completed {
                 sqlx::query!(
                     r#"
@@ -418,9 +429,13 @@ pub async fn delete_event(
         return Err(AppError::Forbidden);
     }
 
-    sqlx::query!("DELETE FROM events WHERE id = $1 AND group_id = $2", event_id, group_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query!(
+        "DELETE FROM events WHERE id = $1 AND group_id = $2",
+        event_id,
+        group_id
+    )
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
 
     Ok(StatusCode::NO_CONTENT)
