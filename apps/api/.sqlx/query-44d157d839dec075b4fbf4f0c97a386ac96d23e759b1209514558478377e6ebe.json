@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT recipe_id, name, quantity, unit, is_optional, seasonal_months\n        FROM recipe_ingredients\n        WHERE group_id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "recipe_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "quantity",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 3,
+        "name": "unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "is_optional",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "seasonal_months",
+        "type_info": "Int4Array"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "44d157d839dec075b4fbf4f0c97a386ac96d23e759b1209514558478377e6ebe"
+}

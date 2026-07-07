@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM recipes WHERE id = $1 AND group_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d687d7a265c7e1dddbb426d6597a524c89e425a25a59e33bcc1c597a5ccad7df"
+}

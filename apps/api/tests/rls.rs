@@ -371,3 +371,84 @@ async fn stock_items_isolated_without_scoping(db: PgPool) {
         .await
         .unwrap();
 }
+
+/// AC #15 analog for the Recipes epic: `recipes` isolation must hold even
+/// against a bug that forgets `WHERE group_id = ...` in application code.
+#[sqlx::test]
+async fn recipes_isolated_without_scoping(db: PgPool) {
+    let owner_a: Uuid = sqlx::query_scalar!(
+        "INSERT INTO users (email, password_hash, display_name, email_verified) VALUES ('i@example.test', 'x', 'I', true) RETURNING id"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let owner_b: Uuid = sqlx::query_scalar!(
+        "INSERT INTO users (email, password_hash, display_name, email_verified) VALUES ('j@example.test', 'x', 'J', true) RETURNING id"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let group_a: Uuid = sqlx::query_scalar!(
+        "INSERT INTO groups (name, created_by) VALUES ('A', $1) RETURNING id",
+        owner_a
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let group_b: Uuid = sqlx::query_scalar!(
+        "INSERT INTO groups (name, created_by) VALUES ('B', $1) RETURNING id",
+        owner_b
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO recipes (group_id, created_by, name) VALUES ($1, $2, 'secret B recipe')",
+        group_b,
+        owner_b,
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let role = format!("app_test_role_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"))
+        .execute(&db)
+        .await
+        .unwrap();
+    sqlx::query(&format!("GRANT SELECT ON recipes TO {role}"))
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let mut tx = db.begin().await.unwrap();
+    sqlx::query(&format!("SET LOCAL ROLE {role}"))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+        .bind(group_a.to_string())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let visible: Vec<Uuid> = sqlx::query_scalar("SELECT group_id FROM recipes")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    assert!(
+        visible.is_empty(),
+        "group A's scope must not see group B's recipes"
+    );
+
+    tx.commit().await.unwrap();
+    sqlx::query(&format!("REVOKE ALL ON recipes FROM {role}"))
+        .execute(&db)
+        .await
+        .unwrap();
+    sqlx::query(&format!("DROP ROLE {role}"))
+        .execute(&db)
+        .await
+        .unwrap();
+}
