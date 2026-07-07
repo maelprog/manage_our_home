@@ -108,15 +108,22 @@ pub async fn send_due_notifications(pool: &PgPool, email: &EmailSender) -> anyho
 }
 
 async fn mark_sent(pool: &PgPool, id: Uuid) -> anyhow::Result<()> {
-    sqlx::query!("UPDATE scheduled_notifications SET status = 'sent' WHERE id = $1", id)
-        .execute(pool)
-        .await?;
+    sqlx::query!(
+        "UPDATE scheduled_notifications SET status = 'sent' WHERE id = $1",
+        id
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
 async fn mark_failed(pool: &PgPool, id: Uuid, attempts: i32, error: &str) -> anyhow::Result<()> {
     let attempts = attempts + 1;
-    let status = if attempts >= MAX_SEND_ATTEMPTS { "failed" } else { "pending" };
+    let status = if attempts >= MAX_SEND_ATTEMPTS {
+        "failed"
+    } else {
+        "pending"
+    };
     sqlx::query!(
         "UPDATE scheduled_notifications SET attempts = $2, last_error = $3, status = $4 WHERE id = $1",
         id,

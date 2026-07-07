@@ -10,3 +10,12 @@ Monorepo for the "Manage Our Home" family app and every service around it
   done, in progress, and missing.
 - [`apps/api/README.md`](apps/api/README.md) — backend setup, tests,
   RLS deployment notes.
+
+## Pre-commit checks
+
+This repo ships a git hook that runs `cargo fmt --check`, `cargo clippy`,
+and `cargo build` before each commit. Enable it once per clone with:
+
+```sh
+git config core.hooksPath .githooks
+```

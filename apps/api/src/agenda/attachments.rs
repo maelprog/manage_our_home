@@ -32,10 +32,14 @@ pub async fn upload_attachment(
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
 
-    sqlx::query_scalar!("SELECT id FROM events WHERE id = $1 AND group_id = $2", event_id, group_id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or(AppError::NotFound)?;
+    sqlx::query_scalar!(
+        "SELECT id FROM events WHERE id = $1 AND group_id = $2",
+        event_id,
+        group_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
 
     let mut filename = None;
     let mut bytes = None;
@@ -59,14 +63,15 @@ pub async fn upload_attachment(
     if bytes.len() > MAX_ATTACHMENT_SIZE_BYTES {
         return Err(AppError::Unprocessable("file_too_large".into()));
     }
-    let mime_type = sniff_and_validate_mime(&bytes).ok_or(AppError::Unprocessable("unsupported_file_type".into()))?;
+    let mime_type = sniff_and_validate_mime(&bytes)
+        .ok_or(AppError::Unprocessable("unsupported_file_type".into()))?;
 
     let storage_key = format!("{group_id}/{event_id}/{}", Uuid::new_v4());
     state
         .storage
         .put_object(&storage_key, bytes.to_vec(), mime_type)
         .await
-        .map_err(|e| AppError::Internal(e))?;
+        .map_err(AppError::Internal)?;
 
     let insert_result = sqlx::query!(
         r#"
@@ -176,7 +181,11 @@ pub async fn delete_attachment(
     // fails, the transaction is dropped (rolled back) instead of committed,
     // so the attachment row survives and the caller can retry rather than
     // seeing a "deleted" row while the object is still leaked in storage.
-    state.storage.delete_object(&storage_key).await.map_err(AppError::Internal)?;
+    state
+        .storage
+        .delete_object(&storage_key)
+        .await
+        .map_err(AppError::Internal)?;
 
     sqlx::query!("DELETE FROM event_attachments WHERE id = $1", attachment_id)
         .execute(&mut *tx)

@@ -5,7 +5,12 @@ use common::{assert_status, call, json_body, set_cookie, test_router};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-async fn register_verify_login(router: &axum::Router, db: &PgPool, email: &str, password: &str) -> String {
+async fn register_verify_login(
+    router: &axum::Router,
+    db: &PgPool,
+    email: &str,
+    password: &str,
+) -> String {
     call(
         router,
         Method::POST,
@@ -21,8 +26,22 @@ async fn register_verify_login(router: &axum::Router, db: &PgPool, email: &str, 
     .fetch_one(db)
     .await
     .unwrap();
-    call(router, Method::GET, &format!("/auth/verify-email?token={token}"), None, None).await;
-    let login = call(router, Method::POST, "/auth/login", None, Some(serde_json::json!({"email": email, "password": password}))).await;
+    call(
+        router,
+        Method::GET,
+        &format!("/auth/verify-email?token={token}"),
+        None,
+        None,
+    )
+    .await;
+    let login = call(
+        router,
+        Method::POST,
+        "/auth/login",
+        None,
+        Some(serde_json::json!({"email": email, "password": password})),
+    )
+    .await;
     set_cookie(&login).unwrap()
 }
 
@@ -30,10 +49,19 @@ async fn register_verify_login(router: &axum::Router, db: &PgPool, email: &str, 
 #[sqlx::test]
 async fn full_group_lifecycle(db: PgPool) {
     let router = test_router(db.clone());
-    let owner_cookie = register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
-    let member_cookie = register_verify_login(&router, &db, "member@example.test", "member-password1").await;
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let member_cookie =
+        register_verify_login(&router, &db, "member@example.test", "member-password1").await;
 
-    let create = call(&router, Method::POST, "/groups", Some(&owner_cookie), Some(serde_json::json!({"name": "Foyer"}))).await;
+    let create = call(
+        &router,
+        Method::POST,
+        "/groups",
+        Some(&owner_cookie),
+        Some(serde_json::json!({"name": "Foyer"})),
+    )
+    .await;
     assert_status(&create, StatusCode::CREATED);
     let group = json_body(create).await;
     let group_id = group["id"].as_str().unwrap().to_string();
@@ -71,10 +99,11 @@ async fn full_group_lifecycle(db: PgPool) {
     .await;
     assert_status(&reuse, StatusCode::GONE);
 
-    let member_id: Uuid = sqlx::query_scalar!("SELECT id FROM users WHERE email = 'member@example.test'")
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let member_id: Uuid =
+        sqlx::query_scalar!("SELECT id FROM users WHERE email = 'member@example.test'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
 
     let promote = call(
         &router,
@@ -87,10 +116,11 @@ async fn full_group_lifecycle(db: PgPool) {
     assert_status(&promote, StatusCode::OK);
 
     // AC #13: the newly promoted admin cannot touch the owner.
-    let owner_id: Uuid = sqlx::query_scalar!("SELECT id FROM users WHERE email = 'owner@example.test'")
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let owner_id: Uuid =
+        sqlx::query_scalar!("SELECT id FROM users WHERE email = 'owner@example.test'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
     let admin_attacks_owner = call(
         &router,
         Method::POST,
@@ -138,13 +168,28 @@ async fn full_group_lifecycle(db: PgPool) {
 #[sqlx::test]
 async fn group_creation_capped_at_ten(db: PgPool) {
     let router = test_router(db.clone());
-    let cookie = register_verify_login(&router, &db, "prolific@example.test", "prolific-password1").await;
+    let cookie =
+        register_verify_login(&router, &db, "prolific@example.test", "prolific-password1").await;
 
     for i in 0..10 {
-        let res = call(&router, Method::POST, "/groups", Some(&cookie), Some(serde_json::json!({"name": format!("Group {i}")}))).await;
+        let res = call(
+            &router,
+            Method::POST,
+            "/groups",
+            Some(&cookie),
+            Some(serde_json::json!({"name": format!("Group {i}")})),
+        )
+        .await;
         assert_status(&res, StatusCode::CREATED);
     }
-    let eleventh = call(&router, Method::POST, "/groups", Some(&cookie), Some(serde_json::json!({"name": "Group 11"}))).await;
+    let eleventh = call(
+        &router,
+        Method::POST,
+        "/groups",
+        Some(&cookie),
+        Some(serde_json::json!({"name": "Group 11"})),
+    )
+    .await;
     assert_status(&eleventh, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
@@ -170,10 +215,14 @@ async fn only_one_owner_per_group_at_db_level(db: PgPool) {
     .fetch_one(&db)
     .await
     .unwrap();
-    sqlx::query!("INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'owner')", group_id, user_id)
-        .execute(&db)
-        .await
-        .unwrap();
+    sqlx::query!(
+        "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'owner')",
+        group_id,
+        user_id
+    )
+    .execute(&db)
+    .await
+    .unwrap();
 
     let result = sqlx::query!(
         "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'owner')",
@@ -182,5 +231,8 @@ async fn only_one_owner_per_group_at_db_level(db: PgPool) {
     )
     .execute(&db)
     .await;
-    assert!(result.is_err(), "expected unique violation for a second owner");
+    assert!(
+        result.is_err(),
+        "expected unique violation for a second owner"
+    );
 }
