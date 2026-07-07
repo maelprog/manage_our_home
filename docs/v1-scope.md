@@ -8,7 +8,7 @@ file as epics land — it's the single place to check "what's left."
 | # | Epic / service | Status | Notes |
 |---|---|---|---|
 | 1 | Auth + Groups | **done** | Merged to `main` (PR #3, branch `spec/epic1-auth-groups-73929`). Moved into `apps/api/` (`git mv`, no code changes) now that it's landed. |
-| 2 | Agenda (events, tasks-as-events, recurrence, reminders, files) | **done (pending review)** | Implemented in `apps/api/` (`src/agenda/`, migration `0002_agenda.sql`). RRULE-based recurrence (`rrule` crate), `scheduled_notifications` job-queue table + worker, MinIO wired for attachments (epic #10 pulled in as a dependency rather than stubbed). Not yet merged to `main`. |
+| 2 | Agenda (events, tasks-as-events, recurrence, reminders, files) | **done (PR open)** | Implemented in `apps/api/` (`src/agenda/`, migrations `0002_agenda.sql`, `0003_event_occurrence_completions.sql`). RRULE-based recurrence (`rrule` crate), `scheduled_notifications` job-queue table + worker, MinIO wired for attachments (epic #10 pulled in as a dependency rather than stubbed). Recurring-task completion is tracked per occurrence, not on the shared event row. PR #4 (branch `epic2-agenda-review-fixes`) open against `main`, not yet merged. |
 | 3 | Stocks | missing | Manual entry v1. Depends on Groups (family-scoped). |
 | 4 | Recipes (suggestion algorithm) | missing | Depends on Stocks (for "what's missing") + needs its own v1 rule-based spec (not ML yet). |
 | 5 | Grocery list | missing | Hard-depends on Stocks + Recipes (structured ingredient list). One shared list per family. |
@@ -25,4 +25,4 @@ file as epics land — it's the single place to check "what's left."
 | — | Bidirectional Google Calendar sync | out of v1 | Explicitly scoped out. |
 | — | Local price lookup for Budget | out of v1 | Manual entry only for v1. |
 
-**Immediate next step:** start epic #2 (Agenda) inside `apps/api/`.
+**Immediate next step:** merge PR #4 (epic #2 Agenda), then start epic #3 (Stocks) inside `apps/api/`.
