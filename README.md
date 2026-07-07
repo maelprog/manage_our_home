@@ -1,34 +1,12 @@
-# manage_our_home
+# manage_our_home (MoM)
 
-Epic 1 — Auth + Groups. See `docs/architecture.md` and `docs/idea.md` for
-product/architecture context.
+Monorepo for the "Manage Our Home" family app and every service around it
+(API, web, mobile, infra). See:
 
-## Setup
-
-```
-cp .env.example .env   # fill in real secrets
-createdb manage_our_home
-cargo sqlx prepare      # regenerate .sqlx query cache after schema changes
-cargo run
-```
-
-## Running tests
-
-Tests need a reachable Postgres (used via `sqlx::test`, which provisions a
-fresh throwaway database per test using `DATABASE_URL`'s server). The
-connecting role must have `CREATEROLE` (RLS tests create/drop a scoped
-throwaway role to prove isolation against a non-superuser connection —
-see `tests/rls.rs`).
-
-```
-export DATABASE_URL=postgres://mom:mom@localhost:5432/postgres
-cargo test
-```
-
-## Deployment note on Row-Level Security
-
-RLS policies use `FORCE ROW LEVEL SECURITY`, but Postgres superusers (and,
-without FORCE, table owners) always bypass RLS. The application's runtime
-connection role must be a plain, non-superuser role that only owns the
-privileges it needs — otherwise the RLS layer described in
-`docs/architecture.md` is silently inert.
+- [`docs/architecture.md`](docs/architecture.md) — stack, repo layout,
+  security/RGPD posture.
+- [`docs/idea.md`](docs/idea.md) — feature spec / epic clarifications.
+- [`docs/v1-scope.md`](docs/v1-scope.md) — per-epic status for v1: what's
+  done, in progress, and missing.
+- [`apps/api/README.md`](apps/api/README.md) — backend setup, tests,
+  RLS deployment notes.

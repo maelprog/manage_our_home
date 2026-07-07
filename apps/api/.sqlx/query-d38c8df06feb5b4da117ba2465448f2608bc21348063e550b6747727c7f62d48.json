@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT event_id, occurrence_at, completed_at\n            FROM event_occurrence_completions\n            WHERE event_id = ANY($1) AND occurrence_at BETWEEN $2 AND $3\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "event_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "occurrence_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 2,
+        "name": "completed_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "d38c8df06feb5b4da117ba2465448f2608bc21348063e550b6747727c7f62d48"
+}

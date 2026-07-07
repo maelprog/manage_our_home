@@ -1,0 +1,44 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT r.id as reminder_id, r.offset_minutes, e.id as event_id, e.starts_at, e.rrule\n        FROM event_reminders r\n        JOIN events e ON e.id = r.event_id\n        WHERE e.rrule IS NOT NULL\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "reminder_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "offset_minutes",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "event_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "starts_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "rrule",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "5b6808185e1a00e709f7b76f14e051243c70ced1b38e382556047028b4f14bd0"
+}

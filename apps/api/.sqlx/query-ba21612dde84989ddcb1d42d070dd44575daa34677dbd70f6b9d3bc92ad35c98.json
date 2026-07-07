@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM event_occurrence_completions WHERE event_id = $1 AND occurrence_at = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ba21612dde84989ddcb1d42d070dd44575daa34677dbd70f6b9d3bc92ad35c98"
+}

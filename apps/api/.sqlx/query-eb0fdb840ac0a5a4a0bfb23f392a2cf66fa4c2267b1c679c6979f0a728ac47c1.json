@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO event_attachments (event_id, uploaded_by, storage_key, filename, mime_type, size_bytes)\n        VALUES ($1, $2, $3, $4, $5, $6)\n        RETURNING id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "eb0fdb840ac0a5a4a0bfb23f392a2cf66fa4c2267b1c679c6979f0a728ac47c1"
+}

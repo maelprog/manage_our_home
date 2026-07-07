@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT created_by, starts_at, ends_at, rrule, is_task, completed_at FROM events WHERE id = $1 AND group_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "created_by",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "starts_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 2,
+        "name": "ends_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 3,
+        "name": "rrule",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "is_task",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "completed_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "6912934631df333a46f8b29365aaa80e74a55f72f039e81764877ea8a80e2339"
+}
