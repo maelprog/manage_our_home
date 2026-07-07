@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    INSERT INTO event_occurrence_completions (event_id, occurrence_at, completed_by)\n                    VALUES ($1, $2, $3)\n                    ON CONFLICT (event_id, occurrence_at)\n                    DO UPDATE SET completed_at = now(), completed_by = $3\n                    ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4d0d82545d8a7a433f0ab11a62b747e85b05386b559c0cb2bf930641030b1f95"
+}

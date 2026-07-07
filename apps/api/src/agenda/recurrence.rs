@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use rrule::{RRuleSet, Tz};
 
 /// Cap on occurrences expanded per request — a window query is always
@@ -19,9 +19,13 @@ pub fn expand_occurrences(
 ) -> Result<Vec<DateTime<Utc>>, rrule::RRuleError> {
     let ical = format!("DTSTART:{}\nRRULE:{}", starts_at.format("%Y%m%dT%H%M%SZ"), rrule);
     let set: RRuleSet = ical.parse()?;
+    // `RRuleSet::after`/`before` are exclusive of the boundary instant, but
+    // callers (list_events) treat `[from, to]` as inclusive on both ends —
+    // nudge by a second so an occurrence landing exactly on `from` or `to`
+    // isn't silently dropped.
     let set = set
-        .after(from.with_timezone(&Tz::UTC))
-        .before(to.with_timezone(&Tz::UTC));
+        .after((from - Duration::seconds(1)).with_timezone(&Tz::UTC))
+        .before((to + Duration::seconds(1)).with_timezone(&Tz::UTC));
 
     let result = set.all(MAX_OCCURRENCES);
     Ok(result.dates.into_iter().map(|d| d.with_timezone(&Utc)).collect())
@@ -55,5 +59,12 @@ mod tests {
     fn rejects_malformed_rrule() {
         let start = Utc.with_ymd_and_hms(2026, 1, 5, 9, 0, 0).unwrap();
         assert!(validate("NOT_A_VALID_RRULE", start).is_err());
+    }
+
+    #[test]
+    fn includes_occurrence_landing_exactly_on_the_window_bounds() {
+        let start = Utc.with_ymd_and_hms(2026, 1, 5, 9, 0, 0).unwrap(); // Monday
+        let occurrences = expand_occurrences("FREQ=WEEKLY;COUNT=2", start, start, start).unwrap();
+        assert_eq!(occurrences, vec![start]);
     }
 }

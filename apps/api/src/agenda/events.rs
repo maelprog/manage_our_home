@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
@@ -36,6 +38,10 @@ pub struct UpdateEventRequest {
     pub all_day: Option<bool>,
     pub rrule: Option<String>,
     pub completed: Option<bool>,
+    /// Required alongside `completed` when the task is recurring — completion
+    /// is tracked per occurrence, not on the series as a whole, so we need to
+    /// know *which* occurrence is being marked done/undone.
+    pub occurrence_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Serialize)]
@@ -203,6 +209,35 @@ pub async fn list_events(
     )
     .fetch_all(&mut *tx)
     .await?;
+
+    // Recurring tasks track completion per occurrence (see
+    // event_occurrence_completions) rather than on the events row itself —
+    // fetch the completions for this window so each expanded occurrence can
+    // report its own completed_at instead of inheriting the series'.
+    let recurring_task_ids: Vec<Uuid> = rows
+        .iter()
+        .filter(|r| r.is_task && r.rrule.is_some())
+        .map(|r| r.id)
+        .collect();
+    let occurrence_completions: HashMap<(Uuid, DateTime<Utc>), DateTime<Utc>> = if recurring_task_ids.is_empty() {
+        HashMap::new()
+    } else {
+        sqlx::query!(
+            r#"
+            SELECT event_id, occurrence_at, completed_at
+            FROM event_occurrence_completions
+            WHERE event_id = ANY($1) AND occurrence_at BETWEEN $2 AND $3
+            "#,
+            &recurring_task_ids,
+            range.from,
+            range.to,
+        )
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .map(|r| ((r.event_id, r.occurrence_at), r.completed_at))
+        .collect()
+    };
     tx.commit().await?;
 
     let mut occurrences = Vec::new();
@@ -213,6 +248,11 @@ pub async fn list_events(
                 .map_err(|_| AppError::Internal(anyhow::anyhow!("failed to expand rrule")))?;
             let base = EventResponse::from(row);
             for occurrence_starts_at in starts {
+                let completed_at = if base.is_task {
+                    occurrence_completions.get(&(base.id, occurrence_starts_at)).copied()
+                } else {
+                    None
+                };
                 occurrences.push(OccurrenceResponse {
                     event: EventResponse {
                         id: base.id,
@@ -225,7 +265,7 @@ pub async fn list_events(
                         ends_at: base.ends_at,
                         all_day: base.all_day,
                         is_task: base.is_task,
-                        completed_at: base.completed_at,
+                        completed_at,
                         rrule: base.rrule.clone(),
                     },
                     occurrence_starts_at,
@@ -280,10 +320,47 @@ pub async fn update_event(
     if body.completed.is_some() && !existing.is_task {
         return Err(AppError::BadRequest("completed_only_valid_for_tasks".into()));
     }
-    let completed_at = match body.completed {
-        Some(true) => Some(Utc::now()),
-        Some(false) => None,
-        None => existing.completed_at,
+
+    // Recurring tasks: completion is per-occurrence (event_occurrence_completions),
+    // never on the events row — otherwise completing one occurrence would mark
+    // the whole series (every past/future occurrence) as done. One-off tasks
+    // keep using events.completed_at directly, as before.
+    let completed_at = if existing.rrule.is_some() {
+        if let Some(completed) = body.completed {
+            let occurrence_at = body
+                .occurrence_at
+                .ok_or(AppError::BadRequest("occurrence_at_required_for_recurring_task".into()))?;
+            if completed {
+                sqlx::query!(
+                    r#"
+                    INSERT INTO event_occurrence_completions (event_id, occurrence_at, completed_by)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (event_id, occurrence_at)
+                    DO UPDATE SET completed_at = now(), completed_by = $3
+                    "#,
+                    event_id,
+                    occurrence_at,
+                    auth.user_id,
+                )
+                .execute(&mut *tx)
+                .await?;
+            } else {
+                sqlx::query!(
+                    "DELETE FROM event_occurrence_completions WHERE event_id = $1 AND occurrence_at = $2",
+                    event_id,
+                    occurrence_at,
+                )
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+        existing.completed_at
+    } else {
+        match body.completed {
+            Some(true) => Some(Utc::now()),
+            Some(false) => None,
+            None => existing.completed_at,
+        }
     };
 
     let event = sqlx::query_as!(

@@ -307,3 +307,76 @@ async fn task_completion_toggles_completed_at(db: PgPool) {
     .await;
     assert_status(&bad_complete, StatusCode::BAD_REQUEST);
 }
+
+/// Regression test: completing one occurrence of a recurring task must not
+/// mark every other occurrence of the series as completed too (previously
+/// `completed_at` lived on the single `events` row shared by the whole
+/// series).
+#[sqlx::test]
+async fn recurring_task_completion_is_per_occurrence(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie = register_verify_login(&router, &db, "recur-task@example.test", "password1234").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    let starts_at = Utc::now() + Duration::days(1);
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "Sortir les poubelles",
+            "starts_at": starts_at,
+            "ends_at": starts_at + Duration::minutes(10),
+            "is_task": true,
+            "rrule": "FREQ=WEEKLY;COUNT=4",
+        })),
+    )
+    .await;
+    let event_id = json_body(create).await["id"].as_str().unwrap().to_string();
+
+    // occurrence_at is required when completing a recurring task.
+    let missing_occurrence = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"completed": true})),
+    )
+    .await;
+    assert_status(&missing_occurrence, StatusCode::BAD_REQUEST);
+
+    let second_occurrence = starts_at + Duration::weeks(1);
+    let complete_second = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"completed": true, "occurrence_at": second_occurrence})),
+    )
+    .await;
+    assert_status(&complete_second, StatusCode::OK);
+
+    let from = starts_at - Duration::hours(1);
+    let to = starts_at + Duration::weeks(10);
+    let list = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/events?from={}&to={}", urlenc(&from.to_rfc3339()), urlenc(&to.to_rfc3339())),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    let occurrences = json_body(list).await["occurrences"].as_array().unwrap().clone();
+    assert_eq!(occurrences.len(), 4);
+    for occurrence in &occurrences {
+        let occurrence_starts_at: chrono::DateTime<Utc> =
+            occurrence["occurrence_starts_at"].as_str().unwrap().parse().unwrap();
+        let is_second = occurrence_starts_at == second_occurrence;
+        assert_eq!(
+            occurrence["completed_at"].is_string(),
+            is_second,
+            "only the completed occurrence should report a completed_at"
+        );
+    }
+}

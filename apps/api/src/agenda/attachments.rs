@@ -68,7 +68,7 @@ pub async fn upload_attachment(
         .await
         .map_err(|e| AppError::Internal(e))?;
 
-    let attachment = sqlx::query!(
+    let insert_result = sqlx::query!(
         r#"
         INSERT INTO event_attachments (event_id, uploaded_by, storage_key, filename, mime_type, size_bytes)
         VALUES ($1, $2, $3, $4, $5, $6)
@@ -82,7 +82,18 @@ pub async fn upload_attachment(
         bytes.len() as i64,
     )
     .fetch_one(&mut *tx)
-    .await?;
+    .await;
+
+    // The object was already written to MinIO above; if the metadata row
+    // never lands, delete it again rather than leaving it orphaned with
+    // nothing in event_attachments to reference (and thus never clean up).
+    let attachment = match insert_result {
+        Ok(row) => row,
+        Err(e) => {
+            let _ = state.storage.delete_object(&storage_key).await;
+            return Err(e.into());
+        }
+    };
     tx.commit().await?;
 
     Ok((
@@ -161,12 +172,16 @@ pub async fn delete_attachment(
     .await?
     .ok_or(AppError::NotFound)?;
 
+    // Delete the object from MinIO before committing the DB delete: if this
+    // fails, the transaction is dropped (rolled back) instead of committed,
+    // so the attachment row survives and the caller can retry rather than
+    // seeing a "deleted" row while the object is still leaked in storage.
+    state.storage.delete_object(&storage_key).await.map_err(AppError::Internal)?;
+
     sqlx::query!("DELETE FROM event_attachments WHERE id = $1", attachment_id)
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-
-    state.storage.delete_object(&storage_key).await.map_err(AppError::Internal)?;
 
     Ok(StatusCode::NO_CONTENT)
 }

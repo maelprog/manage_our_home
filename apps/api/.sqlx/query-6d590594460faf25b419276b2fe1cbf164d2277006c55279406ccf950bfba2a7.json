@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT email_verified FROM users WHERE email = 'alice@example.test'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "email_verified",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6d590594460faf25b419276b2fe1cbf164d2277006c55279406ccf950bfba2a7"
+}
