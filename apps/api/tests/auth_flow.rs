@@ -131,14 +131,7 @@ async fn forgot_password_is_anti_enumeration_and_reset_revokes_sessions(db: PgPo
     .fetch_one(&db)
     .await
     .unwrap();
-    call(
-        &router,
-        Method::GET,
-        &format!("/auth/verify-email?token={token}"),
-        None,
-        None,
-    )
-    .await;
+    call(&router, Method::GET, &format!("/auth/verify-email?token={token}"), None, None).await;
 
     let login = call(
         &router,
@@ -208,32 +201,11 @@ async fn change_password_keeps_current_session_revokes_others(db: PgPool) {
     .fetch_one(&db)
     .await
     .unwrap();
-    call(
-        &router,
-        Method::GET,
-        &format!("/auth/verify-email?token={token}"),
-        None,
-        None,
-    )
-    .await;
+    call(&router, Method::GET, &format!("/auth/verify-email?token={token}"), None, None).await;
 
-    let login1 = call(
-        &router,
-        Method::POST,
-        "/auth/login",
-        None,
-        Some(serde_json::json!({"email": "dave@example.test", "password": "old-password-1"})),
-    )
-    .await;
+    let login1 = call(&router, Method::POST, "/auth/login", None, Some(serde_json::json!({"email": "dave@example.test", "password": "old-password-1"}))).await;
     let cookie1 = set_cookie(&login1).unwrap();
-    let login2 = call(
-        &router,
-        Method::POST,
-        "/auth/login",
-        None,
-        Some(serde_json::json!({"email": "dave@example.test", "password": "old-password-1"})),
-    )
-    .await;
+    let login2 = call(&router, Method::POST, "/auth/login", None, Some(serde_json::json!({"email": "dave@example.test", "password": "old-password-1"}))).await;
     let cookie2 = set_cookie(&login2).unwrap();
 
     let bad_change = call(
@@ -259,8 +231,7 @@ async fn change_password_keeps_current_session_revokes_others(db: PgPool) {
     let still_works = call(&router, Method::POST, "/auth/logout", Some(&cookie1), None).await;
     assert_status(&still_works, StatusCode::NO_CONTENT);
 
-    let other_session_dead =
-        call(&router, Method::POST, "/auth/logout", Some(&cookie2), None).await;
+    let other_session_dead = call(&router, Method::POST, "/auth/logout", Some(&cookie2), None).await;
     assert_status(&other_session_dead, StatusCode::UNAUTHORIZED);
 }
 
@@ -283,22 +254,8 @@ async fn delete_account_blocked_while_owner_then_cancellable(db: PgPool) {
     .fetch_one(&db)
     .await
     .unwrap();
-    call(
-        &router,
-        Method::GET,
-        &format!("/auth/verify-email?token={token}"),
-        None,
-        None,
-    )
-    .await;
-    let login = call(
-        &router,
-        Method::POST,
-        "/auth/login",
-        None,
-        Some(serde_json::json!({"email": "erin@example.test", "password": "erins-password1"})),
-    )
-    .await;
+    call(&router, Method::GET, &format!("/auth/verify-email?token={token}"), None, None).await;
+    let login = call(&router, Method::POST, "/auth/login", None, Some(serde_json::json!({"email": "erin@example.test", "password": "erins-password1"}))).await;
     let cookie = set_cookie(&login).unwrap();
 
     let create_group = call(
@@ -327,14 +284,7 @@ async fn delete_account_blocked_while_owner_then_cancellable(db: PgPool) {
     .fetch_one(&db)
     .await
     .unwrap();
-    let delete_group = call(
-        &router,
-        Method::DELETE,
-        &format!("/groups/{group}"),
-        Some(&cookie),
-        None,
-    )
-    .await;
+    let delete_group = call(&router, Method::DELETE, &format!("/groups/{group}"), Some(&cookie), None).await;
     assert_status(&delete_group, StatusCode::NO_CONTENT);
 
     let allowed = call(
@@ -347,20 +297,12 @@ async fn delete_account_blocked_while_owner_then_cancellable(db: PgPool) {
     .await;
     assert_status(&allowed, StatusCode::OK);
 
-    let cancel = call(
-        &router,
-        Method::POST,
-        "/account/delete/cancel",
-        Some(&cookie),
-        None,
-    )
-    .await;
+    let cancel = call(&router, Method::POST, "/account/delete/cancel", Some(&cookie), None).await;
     assert_status(&cancel, StatusCode::OK);
 
-    let user_row =
-        sqlx::query!("SELECT deletion_requested_at FROM users WHERE email = 'erin@example.test'")
-            .fetch_one(&db)
-            .await
-            .unwrap();
+    let user_row = sqlx::query!("SELECT deletion_requested_at FROM users WHERE email = 'erin@example.test'")
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert!(user_row.deletion_requested_at.is_none());
 }

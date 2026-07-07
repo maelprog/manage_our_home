@@ -47,12 +47,7 @@ impl Storage {
 
     /// Uploads bytes at `key`, validated by the caller beforehand (MIME
     /// sniffed from content, not extension; size checked before this call).
-    pub async fn put_object(
-        &self,
-        key: &str,
-        body: Vec<u8>,
-        content_type: &str,
-    ) -> anyhow::Result<()> {
+    pub async fn put_object(&self, key: &str, body: Vec<u8>, content_type: &str) -> anyhow::Result<()> {
         self.client
             .put_object()
             .bucket(&self.bucket)
@@ -90,7 +85,12 @@ impl Storage {
 /// Restricted set of file types accepted for event attachments
 /// (architecture.md's "Uploads (MinIO)" section). Sniffed from the actual
 /// bytes via `infer`, never trusted from the client-supplied filename/MIME.
-const ALLOWED_MIME_TYPES: &[&str] = &["image/png", "image/jpeg", "image/webp", "application/pdf"];
+const ALLOWED_MIME_TYPES: &[&str] = &[
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "application/pdf",
+];
 
 pub const MAX_ATTACHMENT_SIZE_BYTES: usize = 20 * 1024 * 1024;
 

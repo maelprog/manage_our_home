@@ -78,11 +78,7 @@ pub async fn register(
     let link = format!("{}/auth/verify-email?token={token}", state.public_base_url);
     if let Err(e) = state
         .email
-        .send(
-            &body.email,
-            "Vérifiez votre email",
-            crate::email::EmailSender::verification_email_body(&link),
-        )
+        .send(&body.email, "Vérifiez votre email", crate::email::EmailSender::verification_email_body(&link))
         .await
     {
         tracing::error!(error = ?e, "failed to send verification email");
@@ -223,17 +219,10 @@ pub async fn forgot_password(
         .fetch_one(&state.db)
         .await?;
 
-        let link = format!(
-            "{}/auth/password/reset?token={token}",
-            state.public_base_url
-        );
+        let link = format!("{}/auth/password/reset?token={token}", state.public_base_url);
         if let Err(e) = state
             .email
-            .send(
-                &body.email,
-                "Réinitialisation de mot de passe",
-                crate::email::EmailSender::password_reset_body(&link),
-            )
+            .send(&body.email, "Réinitialisation de mot de passe", crate::email::EmailSender::password_reset_body(&link))
             .await
         {
             tracing::error!(error = ?e, "failed to send password reset email");
@@ -386,11 +375,7 @@ pub async fn set_password(
     let link = format!("{}/auth/verify-email?token={token}", state.public_base_url);
     if let Err(e) = state
         .email
-        .send(
-            &auth.email,
-            "Vérifiez votre email",
-            crate::email::EmailSender::verification_email_body(&link),
-        )
+        .send(&auth.email, "Vérifiez votre email", crate::email::EmailSender::verification_email_body(&link))
         .await
     {
         tracing::error!(error = ?e, "failed to send verification email");

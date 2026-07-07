@@ -34,9 +34,7 @@ where
         let cookies = Cookies::from_request_parts(parts, state)
             .await
             .map_err(|_| AppError::Unauthorized)?;
-        let cookie = cookies
-            .get(SESSION_COOKIE_NAME)
-            .ok_or(AppError::Unauthorized)?;
+        let cookie = cookies.get(SESSION_COOKIE_NAME).ok_or(AppError::Unauthorized)?;
         let session_id: Uuid = cookie.value().parse().map_err(|_| AppError::Unauthorized)?;
 
         let row = sqlx::query!(

@@ -17,11 +17,7 @@ pub fn expand_occurrences(
     from: DateTime<Utc>,
     to: DateTime<Utc>,
 ) -> Result<Vec<DateTime<Utc>>, rrule::RRuleError> {
-    let ical = format!(
-        "DTSTART:{}\nRRULE:{}",
-        starts_at.format("%Y%m%dT%H%M%SZ"),
-        rrule
-    );
+    let ical = format!("DTSTART:{}\nRRULE:{}", starts_at.format("%Y%m%dT%H%M%SZ"), rrule);
     let set: RRuleSet = ical.parse()?;
     // `RRuleSet::after`/`before` are exclusive of the boundary instant, but
     // callers (list_events) treat `[from, to]` as inclusive on both ends —
@@ -32,22 +28,14 @@ pub fn expand_occurrences(
         .before((to + Duration::seconds(1)).with_timezone(&Tz::UTC));
 
     let result = set.all(MAX_OCCURRENCES);
-    Ok(result
-        .dates
-        .into_iter()
-        .map(|d| d.with_timezone(&Utc))
-        .collect())
+    Ok(result.dates.into_iter().map(|d| d.with_timezone(&Utc)).collect())
 }
 
 /// Validates that `rrule` parses as a well-formed RRULE, used when
 /// creating/updating an event so a bad value is rejected at write time
 /// (400) instead of surfacing as a silent empty expansion later.
 pub fn validate(rrule: &str, starts_at: DateTime<Utc>) -> Result<(), rrule::RRuleError> {
-    let ical = format!(
-        "DTSTART:{}\nRRULE:{}",
-        starts_at.format("%Y%m%dT%H%M%SZ"),
-        rrule
-    );
+    let ical = format!("DTSTART:{}\nRRULE:{}", starts_at.format("%Y%m%dT%H%M%SZ"), rrule);
     ical.parse::<RRuleSet>().map(|_| ())
 }
 

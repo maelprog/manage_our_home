@@ -15,10 +15,7 @@ const OAUTH_STATE_COOKIE: &str = "google_oauth_state";
 
 /// AC #3: redirects to Google's consent screen with a fresh CSRF `state`,
 /// stashed in a short-lived HttpOnly cookie so `callback` can verify it.
-pub async fn start(
-    State(state): State<AppState>,
-    cookies: Cookies,
-) -> AppResult<impl IntoResponse> {
+pub async fn start(State(state): State<AppState>, cookies: Cookies) -> AppResult<impl IntoResponse> {
     let (auth_url, csrf_token) = state
         .google_oauth
         .authorize_url(CsrfToken::new_random)
@@ -114,17 +111,17 @@ pub async fn callback(
     let user_id = if let Some(identity) = existing_identity {
         identity.user_id
     } else {
-        let existing_user = sqlx::query!("SELECT id FROM users WHERE email = $1", userinfo.email)
-            .fetch_optional(&mut *tx)
-            .await?;
+        let existing_user = sqlx::query!(
+            "SELECT id FROM users WHERE email = $1",
+            userinfo.email
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
 
         let user_id = match existing_user {
             Some(u) => u.id,
             None => {
-                let display_name = userinfo
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| userinfo.email.clone());
+                let display_name = userinfo.name.clone().unwrap_or_else(|| userinfo.email.clone());
                 sqlx::query_scalar!(
                     r#"
                     INSERT INTO users (email, email_verified, display_name)

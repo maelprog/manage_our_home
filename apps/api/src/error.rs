@@ -43,17 +43,11 @@ impl IntoResponse for AppError {
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, m.clone()),
             AppError::Internal(e) => {
                 tracing::error!(error = ?e, "internal error");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal_error".to_string(),
-                )
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal_error".to_string())
             }
             AppError::Sqlx(e) => {
                 tracing::error!(error = ?e, "database error");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal_error".to_string(),
-                )
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal_error".to_string())
             }
         };
         (status, Json(json!({ "error": message }))).into_response()
