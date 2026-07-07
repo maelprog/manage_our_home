@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO group_members (group_id, user_id, role)\n        VALUES ($1, $2, 'owner')\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "929c271b2c7555bf877a7fea34c036c1c97e2d9fe021c670a95c7119d01212ad"
+}

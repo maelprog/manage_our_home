@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE invitations SET consumed_at = now(), consumed_by = $1 WHERE token = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "556699d464a047b5d35d5454181f75602db39305a3219b3907a7d952844e4aa6"
+}

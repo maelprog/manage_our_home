@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT role as \"role: String\" FROM group_members WHERE group_id = $1 AND user_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "role: String",
+        "type_info": {
+          "Custom": {
+            "name": "group_role",
+            "kind": {
+              "Enum": [
+                "owner",
+                "admin",
+                "standard"
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5c0d681fd57565f2cc13cf6fe128e55849b419b593bfc4d51cb6c322587961f6"
+}
