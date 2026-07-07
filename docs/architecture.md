@@ -229,5 +229,55 @@ remplacement) de l'isolation applicative ci-dessous.
      rotation des secrets (sops), et de la réponse à incident (notification
      CNIL sous 72h en cas de breach).
 
-Nothing here has been built. Next step is spec'ing the epics one at a time
-via `/spec`, in the order given above, starting with Auth + Groups.
+Epic #1 (Auth + Groups) has landed on `main` (`apps/api/`). Next step is
+spec'ing the remaining epics one at a time via `/spec`, in the order given
+above, starting with Agenda.
+
+## Repo layout (monorepo)
+
+This repo is a monorepo: it holds every service around, and including,
+the MoM application itself — not just the API crate. One repo, one CI,
+one docker-compose stack, coherent versioning across services.
+
+```
+manage_our_home/
+├── apps/
+│   ├── api/          # Rust + Axum core backend (Auth, Groups, Agenda,
+│   │                 # Stocks, Recipes, Grocery list, Budget, Messagerie).
+│   │                 # Also hosts the scheduled_notifications worker as a
+│   │                 # second [[bin]] target in the same crate — it shares
+│   │                 # the SQLx models and DB pool, no need to split it out
+│   │                 # as a separate service at this scale.
+│   ├── web/          # SvelteKit frontend (calendar, chat, recipes UI, ...)
+│   └── mobile/       # Capacitor shell wrapping apps/web
+├── infra/
+│   ├── docker-compose.yml   # api, postgres, minio, ollama, caddy
+│   ├── Caddyfile
+│   └── postgres/            # init scripts, extensions (pgcrypto)
+├── docs/
+│   ├── architecture.md      # this file
+│   ├── idea.md
+│   ├── v1-scope.md          # per-service status tracker for v1
+│   └── notes-issue-1-qa.md
+└── README.md
+```
+
+**Workspace root:** a root `Cargo.toml` (virtual workspace, `members =
+["apps/api"]`) and, once `apps/web`/`apps/mobile` exist, a root
+`package.json` (pnpm/npm workspace) tie the services together for CI
+(`cargo audit` / `npm audit` run once, across the whole workspace) without
+merging their dependency graphs.
+
+**`apps/api` history:** the Auth+Groups epic (issue #1) was started before
+this layout was settled, as a flat crate at repo root. It has since been
+moved into `apps/api/` (plain `git mv`, no code changes) now that it's
+merged to `main`.
+
+**Why not split every future service into its own top-level crate now:**
+at this stage (one maintainer, household scale) most "services" listed in
+`docs/v1-scope.md` are features inside `apps/api`, not deployable units —
+splitting them out is unjustified operational overhead (more compose
+services, more inter-service auth, more network hops) until one of them
+needs independent scaling or a different language runtime (e.g. the
+future Ollama-backed fridge-scan/OCR epic, which is the one candidate for
+a real separate service since it's GPU/model-bound).

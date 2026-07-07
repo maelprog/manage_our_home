@@ -1,0 +1,7 @@
+# Scaffold only — no public domain/TLS decision yet (local/VPN only for v1,
+# see docs/notes-issue-1-qa.md #7). Fill in once apps/web + apps/api exist.
+:80 {
+	# reverse_proxy /api/* api:8080
+	# reverse_proxy web:3000
+	respond "manage_our_home: infra not wired up yet" 200
+}
