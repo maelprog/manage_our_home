@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO scheduled_notifications (event_reminder_id, event_id, occurrence_at, fire_at)\n            VALUES ($1, $2, $3, $4)\n            ON CONFLICT (event_reminder_id, occurrence_at) DO NOTHING\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ce8354700030b1ff9f18478aabe619d9aa9922ab7b9b985a0a61627c85bfd96f"
+}

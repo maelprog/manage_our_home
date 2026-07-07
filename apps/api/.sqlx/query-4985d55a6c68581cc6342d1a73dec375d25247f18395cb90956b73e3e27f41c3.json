@@ -1,0 +1,44 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT sn.id, sn.occurrence_at, sn.attempts, e.title, u.email\n        FROM scheduled_notifications sn\n        JOIN events e ON e.id = sn.event_id\n        JOIN users u ON u.id = e.created_by\n        WHERE sn.status = 'pending' AND sn.fire_at <= now()\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "occurrence_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 2,
+        "name": "attempts",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "title",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "email",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "4985d55a6c68581cc6342d1a73dec375d25247f18395cb90956b73e3e27f41c3"
+}

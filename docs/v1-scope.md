@@ -8,7 +8,7 @@ file as epics land — it's the single place to check "what's left."
 | # | Epic / service | Status | Notes |
 |---|---|---|---|
 | 1 | Auth + Groups | **done** | Merged to `main` (PR #3, branch `spec/epic1-auth-groups-73929`). Moved into `apps/api/` (`git mv`, no code changes) now that it's landed. |
-| 2 | Agenda (events, tasks-as-events, recurrence, reminders, files) | missing | Depends on Auth + Groups. Needs the `scheduled_notifications` job-queue table + worker (see architecture.md). |
+| 2 | Agenda (events, tasks-as-events, recurrence, reminders, files) | **done (pending review)** | Implemented in `apps/api/` (`src/agenda/`, migration `0002_agenda.sql`). RRULE-based recurrence (`rrule` crate), `scheduled_notifications` job-queue table + worker, MinIO wired for attachments (epic #10 pulled in as a dependency rather than stubbed). Not yet merged to `main`. |
 | 3 | Stocks | missing | Manual entry v1. Depends on Groups (family-scoped). |
 | 4 | Recipes (suggestion algorithm) | missing | Depends on Stocks (for "what's missing") + needs its own v1 rule-based spec (not ML yet). |
 | 5 | Grocery list | missing | Hard-depends on Stocks + Recipes (structured ingredient list). One shared list per family. |
@@ -16,7 +16,7 @@ file as epics land — it's the single place to check "what's left."
 | 7 | Messagerie (one thread per family, text only) | missing | Independent of 2-6; can be spec'd any time after Groups. Needs Axum WebSockets. |
 | 8 | User admin (global technical superadmin) | missing | Independent epic; distinct from group owner/admin/standard roles. |
 | 9 | Google Calendar import (one-way) | missing (v1) | Depends on Agenda. Bidirectional sync explicitly deferred past v1. |
-| 10 | Object storage (MinIO) wiring | missing | Needed by Agenda (event files) once that epic starts; fridge-scan photos are post-v1. |
+| 10 | Object storage (MinIO) wiring | **done** | Wired as part of epic #2 (Agenda): `src/storage.rs` (aws-sdk-s3 client pointed at MinIO), `infra/docker-compose.yml` minio service. Fridge-scan photos are post-v1. |
 | 11 | Transactional email (Brevo/Mailjet via `lettre`) | partially designed | Stack decided (architecture.md); actual sending code is part of Auth epic (verification, password reset) — check epic #1 branch for implementation status. |
 | 12 | RGPD features (export, erasure, privacy policy, registre des traitements) | missing | Called out as v1-required in architecture.md; not yet implemented in any epic. Needs its own pass once Auth+Groups lands (account deletion depends on group-ownership transfer rules from `notes-issue-1-qa.md`). |
 | 13 | CI (cargo audit / npm audit, blocking on high/critical) | missing | No `.github/workflows` yet. Add once `apps/api` (and later `apps/web`) exist, so the audit has something to scan. |

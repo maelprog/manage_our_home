@@ -1,3 +1,4 @@
+pub mod agenda;
 pub mod audit;
 pub mod auth;
 pub mod crypto;
@@ -5,6 +6,7 @@ pub mod email;
 pub mod error;
 pub mod groups;
 pub mod jobs;
+pub mod storage;
 
 use axum::routing::{delete, get, post};
 use axum::Router;
@@ -13,6 +15,7 @@ use sqlx::PgPool;
 use tower_cookies::CookieManagerLayer;
 
 use crate::email::EmailSender;
+use crate::storage::Storage;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -28,6 +31,8 @@ pub struct AppState {
     /// logged.
     pub oauth_encryption_key: String,
     pub secure_cookies: bool,
+    /// MinIO/S3 client for event file attachments (architecture.md epic #10).
+    pub storage: Storage,
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -61,6 +66,33 @@ pub fn build_router(state: AppState) -> Router {
             delete(groups::remove_member),
         )
         .route("/groups/:id/leave", post(groups::leave_group))
+        .route("/groups/:id/events", post(agenda::events::create_event).get(agenda::events::list_events))
+        .route(
+            "/groups/:id/events/:event_id",
+            get(agenda::events::get_event)
+                .patch(agenda::events::update_event)
+                .delete(agenda::events::delete_event),
+        )
+        .route(
+            "/groups/:id/events/:event_id/reminders",
+            post(agenda::reminders::create_reminder),
+        )
+        .route(
+            "/groups/:id/events/:event_id/reminders/:reminder_id",
+            delete(agenda::reminders::delete_reminder),
+        )
+        .route(
+            "/groups/:id/events/:event_id/attachments",
+            post(agenda::attachments::upload_attachment).get(agenda::attachments::list_attachments),
+        )
+        .route(
+            "/groups/:id/events/:event_id/attachments/:attachment_id/download",
+            get(agenda::attachments::download_attachment),
+        )
+        .route(
+            "/groups/:id/events/:event_id/attachments/:attachment_id",
+            delete(agenda::attachments::delete_attachment),
+        )
         .layer(CookieManagerLayer::new())
         .with_state(state)
 }

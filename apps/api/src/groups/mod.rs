@@ -119,7 +119,7 @@ pub fn actor_can_act_on(actor_role: &str, target_role: &str) -> bool {
     }
 }
 
-async fn require_role(
+pub(crate) async fn require_role(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     group_id: Uuid,
     user_id: Uuid,

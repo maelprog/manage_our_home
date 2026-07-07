@@ -34,6 +34,10 @@ services:
   #   depends_on: [postgres, minio]
   #   environment:
   #     DATABASE_URL: postgres://mom:${POSTGRES_PASSWORD}@postgres/manage_our_home
+  #     MINIO_ENDPOINT: http://minio:9000
+  #     MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+  #     MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+  #     MINIO_BUCKET: manage-our-home
 
   caddy:
     image: caddy:2

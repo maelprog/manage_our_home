@@ -39,17 +39,21 @@ async fn main() -> anyhow::Result<()> {
     let from_mailbox: Mailbox = env::var("SMTP_FROM")?.parse()?;
     let email = EmailSender::new(smtp_transport, from_mailbox);
 
+    let storage = manage_our_home::storage::Storage::from_env().await?;
+
     let state = AppState {
         db: db.clone(),
         google_oauth,
-        email,
+        email: email.clone(),
         public_base_url,
         frontend_base_url,
         oauth_encryption_key: env::var("OAUTH_ENCRYPTION_KEY")?,
         secure_cookies: env::var("SECURE_COOKIES").map(|v| v == "true").unwrap_or(true),
+        storage,
     };
 
-    tokio::spawn(jobs::account_purge::run(db));
+    tokio::spawn(jobs::account_purge::run(db.clone()));
+    tokio::spawn(jobs::scheduled_notifications::run(db, email));
 
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;

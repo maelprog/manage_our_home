@@ -31,7 +31,26 @@ pub fn test_state(db: PgPool) -> AppState {
         frontend_base_url: "http://localhost:5173".into(),
         oauth_encryption_key: "test-encryption-key".into(),
         secure_cookies: false,
+        storage: test_storage(),
     }
+}
+
+/// Points at an unreachable local MinIO endpoint on purpose — only tests
+/// that actually exercise attachment upload/download need a real MinIO
+/// instance running, and none of the current test suite does.
+fn test_storage() -> manage_our_home::storage::Storage {
+    use aws_credential_types::Credentials;
+    use aws_sdk_s3::config::{BehaviorVersion, Region};
+
+    let credentials = Credentials::new("test", "test", None, None, "minio-static");
+    let config = aws_sdk_s3::config::Builder::new()
+        .behavior_version(BehaviorVersion::latest())
+        .region(Region::new("us-east-1"))
+        .endpoint_url("http://127.0.0.1:1")
+        .credentials_provider(credentials)
+        .force_path_style(true)
+        .build();
+    manage_our_home::storage::Storage::new(aws_sdk_s3::Client::from_conf(config), "test-bucket".into())
 }
 
 pub fn test_router(db: PgPool) -> axum::Router {
