@@ -6,6 +6,7 @@ pub mod email;
 pub mod error;
 pub mod groups;
 pub mod jobs;
+pub mod stocks;
 pub mod storage;
 
 use axum::routing::{delete, get, post};
@@ -92,6 +93,16 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/groups/:id/events/:event_id/attachments/:attachment_id",
             delete(agenda::attachments::delete_attachment),
+        )
+        .route(
+            "/groups/:id/stock-items",
+            post(stocks::items::create_stock_item).get(stocks::items::list_stock_items),
+        )
+        .route(
+            "/groups/:id/stock-items/:item_id",
+            get(stocks::items::get_stock_item)
+                .patch(stocks::items::update_stock_item)
+                .delete(stocks::items::delete_stock_item),
         )
         .layer(CookieManagerLayer::new())
         .with_state(state)
