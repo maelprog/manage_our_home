@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT id FROM users\n        WHERE deletion_requested_at IS NOT NULL\n          AND deletion_requested_at < now() - ($1 || ' days')::interval\n          AND deleted_at IS NULL\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "dd5b4790e111a05f07d734a816ca4eeb18f8d00d3f1ddb453a5b77e708b62702"
+}

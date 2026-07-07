@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT g.id as group_id, g.name\n        FROM group_members gm\n        JOIN groups g ON g.id = gm.group_id\n        WHERE gm.user_id = $1 AND gm.role = 'owner'\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "group_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "80ba918645e0cf9730a732207dd0b392cccd619f4282ee64e6ca76aba7e9ccd1"
+}

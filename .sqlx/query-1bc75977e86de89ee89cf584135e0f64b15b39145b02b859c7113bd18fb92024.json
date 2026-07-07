@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO group_members (group_id, user_id, role)\n        VALUES ($1, $2, 'standard')\n        ON CONFLICT (group_id, user_id) DO NOTHING\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1bc75977e86de89ee89cf584135e0f64b15b39145b02b859c7113bd18fb92024"
+}

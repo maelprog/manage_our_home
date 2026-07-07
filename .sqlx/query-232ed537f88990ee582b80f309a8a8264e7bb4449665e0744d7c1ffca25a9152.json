@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO oauth_identities (user_id, provider, provider_user_id, refresh_token_encrypted)\n            VALUES ($1, 'google', $2, pgp_sym_encrypt($3, $4))\n            ON CONFLICT (provider, provider_user_id) DO NOTHING\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "232ed537f88990ee582b80f309a8a8264e7bb4449665e0744d7c1ffca25a9152"
+}
