@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT created_by, name, category, quantity, unit, reorder_threshold FROM stock_items WHERE id = $1 AND group_id = $2",
+  "query": "SELECT created_by, name, category, quantity, unit, reorder_threshold FROM stock_items WHERE id = $1 AND group_id = $2 FOR UPDATE",
   "describe": {
     "columns": [
       {
@@ -49,5 +49,5 @@
       true
     ]
   },
-  "hash": "5e1ef3e866179ad5b46c0692b7471c3719a328f9989b3f06063f85dcb897f833"
+  "hash": "401a941a7e6e2c56c253c0c1c8e3ee06fb84445f3aa9f9457488d4324a1f35c8"
 }

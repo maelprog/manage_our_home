@@ -148,6 +148,104 @@ async fn negative_quantity_is_rejected(db: PgPool) {
     assert_status(&create, StatusCode::BAD_REQUEST);
 }
 
+/// AC: `name` is trimmed on write, `category` can be explicitly cleared via
+/// `{"category": null}` (distinct from omitting the field), and a blank
+/// `unit` is rejected the same way a blank `name` is.
+#[sqlx::test]
+async fn update_can_clear_category_and_rejects_blank_unit(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie = register_verify_login(&router, &db, "stock-clear@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/stock-items"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"name": "  Riz  ", "category": "Cereales", "quantity": 1.0})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let item = json_body(create).await;
+    assert_eq!(item["name"], "Riz", "leading/trailing whitespace must be trimmed on create");
+    let item_id = item["id"].as_str().unwrap().to_string();
+
+    let clear_category = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/stock-items/{item_id}"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"category": null})),
+    )
+    .await;
+    assert_status(&clear_category, StatusCode::OK);
+    assert_eq!(
+        json_body(clear_category).await["category"],
+        serde_json::Value::Null,
+        "explicit null must clear the category, not leave it unchanged"
+    );
+
+    let blank_unit = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/stock-items/{item_id}"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"unit": "  "})),
+    )
+    .await;
+    assert_status(&blank_unit, StatusCode::BAD_REQUEST);
+}
+
+/// AC: `reorder_threshold` can be explicitly cleared via
+/// `{"reorder_threshold": null}` (distinct from omitting the field, which
+/// must leave it untouched).
+#[sqlx::test]
+async fn update_can_clear_reorder_threshold(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie = register_verify_login(&router, &db, "stock-clear-threshold@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/stock-items"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"name": "Sucre", "quantity": 1.0, "reorder_threshold": 0.5})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let item_id = json_body(create).await["id"].as_str().unwrap().to_string();
+
+    let untouched = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/stock-items/{item_id}"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"quantity": 2.0})),
+    )
+    .await;
+    assert_status(&untouched, StatusCode::OK);
+    assert_eq!(
+        json_body(untouched).await["reorder_threshold"], 0.5,
+        "omitting the field must leave reorder_threshold untouched"
+    );
+
+    let cleared = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/stock-items/{item_id}"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"reorder_threshold": null})),
+    )
+    .await;
+    assert_status(&cleared, StatusCode::OK);
+    assert_eq!(
+        json_body(cleared).await["reorder_threshold"],
+        serde_json::Value::Null,
+        "explicit null must clear reorder_threshold, not leave it unchanged"
+    );
+}
+
 /// AC: a regular member may create/read/adjust stock, but only the item's
 /// creator or a group admin/owner may delete it.
 #[sqlx::test]

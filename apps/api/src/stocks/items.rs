@@ -26,16 +26,32 @@ fn default_unit() -> String {
     "unit".to_string()
 }
 
+/// Serde's blanket `Option<T>` impl treats an explicit JSON `null` the same
+/// as a missing key (both call `visit_none`), so a naive `Option<Option<T>>`
+/// field can never observe `Some(None)` — `{"field": null}` deserializes to
+/// `None` just like an absent field. Forcing the value through this
+/// `deserialize_with` skips that blanket impl: it only runs when the key is
+/// present, deserializes the inner `Option<T>` (which *does* turn `null`
+/// into `None`), and wraps the result in `Some`, so `Some(None)` becomes
+/// reachable again. See https://github.com/serde-rs/serde/issues/984.
+fn deserialize_some<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
 #[derive(Deserialize)]
 pub struct UpdateStockItemRequest {
     pub name: Option<String>,
-    pub category: Option<String>,
+    /// `Some(None)` clears the category; `None` leaves it untouched.
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub category: Option<Option<String>>,
     pub quantity: Option<f64>,
     pub unit: Option<String>,
-    /// `Some(None)` clears the threshold; `None` leaves it untouched. Since
-    /// serde can't distinguish "field absent" from "field null" with a
-    /// plain `Option<f64>`, we use `#[serde(default)]` with a wrapper.
-    #[serde(default)]
+    /// `Some(None)` clears the threshold; `None` leaves it untouched.
+    #[serde(default, deserialize_with = "deserialize_some")]
     pub reorder_threshold: Option<Option<f64>>,
 }
 
@@ -98,8 +114,12 @@ pub async fn create_stock_item(
     Path(group_id): Path<Uuid>,
     Json(body): Json<CreateStockItemRequest>,
 ) -> AppResult<impl IntoResponse> {
-    if body.name.trim().is_empty() {
+    let name = body.name.trim();
+    if name.is_empty() {
         return Err(AppError::BadRequest("name_required".into()));
+    }
+    if body.unit.trim().is_empty() {
+        return Err(AppError::BadRequest("unit_required".into()));
     }
     validate_request(body.quantity, body.reorder_threshold)?;
 
@@ -115,7 +135,7 @@ pub async fn create_stock_item(
         "#,
         group_id,
         auth.user_id,
-        body.name,
+        name,
         body.category,
         body.quantity,
         body.unit,
@@ -201,8 +221,12 @@ pub async fn update_stock_item(
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let actor_role = require_role(&mut tx, group_id, auth.user_id).await?;
 
+    // FOR UPDATE locks the row for the rest of this transaction, so a
+    // concurrent PATCH on the same item blocks on this SELECT until we
+    // commit instead of both transactions reading the same stale quantity
+    // and one overwriting the other's write (lost update).
     let existing = sqlx::query!(
-        "SELECT created_by, name, category, quantity, unit, reorder_threshold FROM stock_items WHERE id = $1 AND group_id = $2",
+        "SELECT created_by, name, category, quantity, unit, reorder_threshold FROM stock_items WHERE id = $1 AND group_id = $2 FOR UPDATE",
         item_id,
         group_id,
     )
@@ -214,11 +238,20 @@ pub async fn update_stock_item(
         return Err(AppError::Forbidden);
     }
 
-    if let Some(name) = &body.name {
-        if name.trim().is_empty() {
-            return Err(AppError::BadRequest("name_required".into()));
-        }
-    }
+    let name = match body.name.as_deref().map(str::trim) {
+        Some("") => return Err(AppError::BadRequest("name_required".into())),
+        Some(n) => Some(n.to_string()),
+        None => None,
+    };
+    let unit = match body.unit.as_deref().map(str::trim) {
+        Some("") => return Err(AppError::BadRequest("unit_required".into())),
+        Some(u) => Some(u.to_string()),
+        None => None,
+    };
+    let category = match body.category {
+        Some(c) => c,
+        None => existing.category,
+    };
 
     let quantity = body.quantity.unwrap_or(existing.quantity);
     let reorder_threshold = match body.reorder_threshold {
@@ -232,7 +265,7 @@ pub async fn update_stock_item(
         r#"
         UPDATE stock_items SET
             name = COALESCE($3, name),
-            category = COALESCE($4, category),
+            category = $4,
             quantity = $5,
             unit = COALESCE($6, unit),
             reorder_threshold = $7,
@@ -242,10 +275,10 @@ pub async fn update_stock_item(
         "#,
         item_id,
         group_id,
-        body.name,
-        body.category,
+        name,
+        category,
         quantity,
-        body.unit,
+        unit,
         reorder_threshold,
     )
     .fetch_one(&mut *tx)

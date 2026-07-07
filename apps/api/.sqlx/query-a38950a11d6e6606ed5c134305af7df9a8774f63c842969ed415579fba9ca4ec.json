@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        UPDATE stock_items SET\n            name = COALESCE($3, name),\n            category = COALESCE($4, category),\n            quantity = $5,\n            unit = COALESCE($6, unit),\n            reorder_threshold = $7,\n            updated_at = now()\n        WHERE id = $1 AND group_id = $2\n        RETURNING id, group_id, created_by, name, category, quantity, unit, reorder_threshold\n        ",
+  "query": "\n        UPDATE stock_items SET\n            name = COALESCE($3, name),\n            category = $4,\n            quantity = $5,\n            unit = COALESCE($6, unit),\n            reorder_threshold = $7,\n            updated_at = now()\n        WHERE id = $1 AND group_id = $2\n        RETURNING id, group_id, created_by, name, category, quantity, unit, reorder_threshold\n        ",
   "describe": {
     "columns": [
       {
@@ -66,5 +66,5 @@
       true
     ]
   },
-  "hash": "407060d3ba31a29bcbc7bfee433919681ca0984b203c5cfdb49b84a3787a9cc6"
+  "hash": "a38950a11d6e6606ed5c134305af7df9a8774f63c842969ed415579fba9ca4ec"
 }
