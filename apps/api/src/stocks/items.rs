@@ -81,7 +81,10 @@ struct StockItemRow {
 
 impl From<StockItemRow> for StockItemResponse {
     fn from(r: StockItemRow) -> Self {
-        let low_stock = r.reorder_threshold.map(|t| r.quantity <= t).unwrap_or(false);
+        let low_stock = r
+            .reorder_threshold
+            .map(|t| r.quantity <= t)
+            .unwrap_or(false);
         StockItemResponse {
             id: r.id,
             group_id: r.group_id,
@@ -102,7 +105,9 @@ fn validate_request(quantity: f64, reorder_threshold: Option<f64>) -> AppResult<
     }
     if let Some(t) = reorder_threshold {
         if t < 0.0 {
-            return Err(AppError::BadRequest("reorder_threshold_must_be_non_negative".into()));
+            return Err(AppError::BadRequest(
+                "reorder_threshold_must_be_non_negative".into(),
+            ));
         }
     }
     Ok(())
@@ -309,9 +314,13 @@ pub async fn delete_stock_item(
         return Err(AppError::Forbidden);
     }
 
-    sqlx::query!("DELETE FROM stock_items WHERE id = $1 AND group_id = $2", item_id, group_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query!(
+        "DELETE FROM stock_items WHERE id = $1 AND group_id = $2",
+        item_id,
+        group_id
+    )
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
 
     Ok(StatusCode::NO_CONTENT)

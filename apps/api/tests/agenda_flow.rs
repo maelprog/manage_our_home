@@ -10,7 +10,12 @@ fn urlenc(s: &str) -> String {
     s.replace('+', "%2B").replace(':', "%3A")
 }
 
-async fn register_verify_login(router: &axum::Router, db: &PgPool, email: &str, password: &str) -> String {
+async fn register_verify_login(
+    router: &axum::Router,
+    db: &PgPool,
+    email: &str,
+    password: &str,
+) -> String {
     call(
         router,
         Method::POST,
@@ -26,13 +31,34 @@ async fn register_verify_login(router: &axum::Router, db: &PgPool, email: &str, 
     .fetch_one(db)
     .await
     .unwrap();
-    call(router, Method::GET, &format!("/auth/verify-email?token={token}"), None, None).await;
-    let login = call(router, Method::POST, "/auth/login", None, Some(serde_json::json!({"email": email, "password": password}))).await;
+    call(
+        router,
+        Method::GET,
+        &format!("/auth/verify-email?token={token}"),
+        None,
+        None,
+    )
+    .await;
+    let login = call(
+        router,
+        Method::POST,
+        "/auth/login",
+        None,
+        Some(serde_json::json!({"email": email, "password": password})),
+    )
+    .await;
     set_cookie(&login).unwrap()
 }
 
 async fn create_group(router: &axum::Router, cookie: &str, name: &str) -> String {
-    let res = call(router, Method::POST, "/groups", Some(cookie), Some(serde_json::json!({"name": name}))).await;
+    let res = call(
+        router,
+        Method::POST,
+        "/groups",
+        Some(cookie),
+        Some(serde_json::json!({"name": name})),
+    )
+    .await;
     assert_status(&res, StatusCode::CREATED);
     json_body(res).await["id"].as_str().unwrap().to_string()
 }
@@ -41,7 +67,8 @@ async fn create_group(router: &axum::Router, cookie: &str, name: &str) -> String
 #[sqlx::test]
 async fn full_event_lifecycle(db: PgPool) {
     let router = test_router(db.clone());
-    let owner_cookie = register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
     let group_id = create_group(&router, &owner_cookie, "Foyer").await;
 
     let starts_at = Utc::now() + Duration::days(1);
@@ -63,7 +90,14 @@ async fn full_event_lifecycle(db: PgPool) {
     let event_id = event["id"].as_str().unwrap().to_string();
     assert_eq!(event["title"], "Rendez-vous médecin");
 
-    let get = call(&router, Method::GET, &format!("/groups/{group_id}/events/{event_id}"), Some(&owner_cookie), None).await;
+    let get = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
     assert_status(&get, StatusCode::OK);
 
     let update = call(
@@ -83,7 +117,11 @@ async fn full_event_lifecycle(db: PgPool) {
     let list = call(
         &router,
         Method::GET,
-        &format!("/groups/{group_id}/events?from={}&to={}", urlenc(&from.to_rfc3339()), urlenc(&to.to_rfc3339())),
+        &format!(
+            "/groups/{group_id}/events?from={}&to={}",
+            urlenc(&from.to_rfc3339()),
+            urlenc(&to.to_rfc3339())
+        ),
         Some(&owner_cookie),
         None,
     )
@@ -92,10 +130,24 @@ async fn full_event_lifecycle(db: PgPool) {
     let list_body = json_body(list).await;
     assert_eq!(list_body["occurrences"].as_array().unwrap().len(), 1);
 
-    let delete = call(&router, Method::DELETE, &format!("/groups/{group_id}/events/{event_id}"), Some(&owner_cookie), None).await;
+    let delete = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
     assert_status(&delete, StatusCode::NO_CONTENT);
 
-    let get_after_delete = call(&router, Method::GET, &format!("/groups/{group_id}/events/{event_id}"), Some(&owner_cookie), None).await;
+    let get_after_delete = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
     assert_status(&get_after_delete, StatusCode::NOT_FOUND);
 }
 
@@ -104,8 +156,10 @@ async fn full_event_lifecycle(db: PgPool) {
 #[sqlx::test]
 async fn non_member_cannot_access_group_events(db: PgPool) {
     let router = test_router(db.clone());
-    let owner_cookie = register_verify_login(&router, &db, "owner2@example.test", "owner-password1").await;
-    let outsider_cookie = register_verify_login(&router, &db, "outsider@example.test", "outsider-password1").await;
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner2@example.test", "owner-password1").await;
+    let outsider_cookie =
+        register_verify_login(&router, &db, "outsider@example.test", "outsider-password1").await;
     let group_id = create_group(&router, &owner_cookie, "Foyer").await;
 
     let starts_at = Utc::now() + Duration::days(1);
@@ -145,7 +199,8 @@ async fn non_member_cannot_access_group_events(db: PgPool) {
 #[sqlx::test]
 async fn recurring_event_expands_within_range(db: PgPool) {
     let router = test_router(db.clone());
-    let owner_cookie = register_verify_login(&router, &db, "recur@example.test", "recur-password1").await;
+    let owner_cookie =
+        register_verify_login(&router, &db, "recur@example.test", "recur-password1").await;
     let group_id = create_group(&router, &owner_cookie, "Foyer").await;
 
     let starts_at = Utc::now() + Duration::days(1);
@@ -169,17 +224,28 @@ async fn recurring_event_expands_within_range(db: PgPool) {
     let list = call(
         &router,
         Method::GET,
-        &format!("/groups/{group_id}/events?from={}&to={}", urlenc(&from.to_rfc3339()), urlenc(&to.to_rfc3339())),
+        &format!(
+            "/groups/{group_id}/events?from={}&to={}",
+            urlenc(&from.to_rfc3339()),
+            urlenc(&to.to_rfc3339())
+        ),
         Some(&owner_cookie),
         None,
     )
     .await;
     assert_status(&list, StatusCode::OK);
-    let occurrences = json_body(list).await["occurrences"].as_array().unwrap().len();
+    let occurrences = json_body(list).await["occurrences"]
+        .as_array()
+        .unwrap()
+        .len();
     assert_eq!(occurrences, 6, "COUNT=6 must yield exactly 6 occurrences");
 
     // Only the base row exists in the DB — occurrences are expanded on read.
-    let row_count: i64 = sqlx::query_scalar!("SELECT count(*) FROM events").fetch_one(&db).await.unwrap().unwrap();
+    let row_count: i64 = sqlx::query_scalar!("SELECT count(*) FROM events")
+        .fetch_one(&db)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(row_count, 1);
 }
 
@@ -188,7 +254,8 @@ async fn recurring_event_expands_within_range(db: PgPool) {
 #[sqlx::test]
 async fn invalid_rrule_is_rejected(db: PgPool) {
     let router = test_router(db.clone());
-    let owner_cookie = register_verify_login(&router, &db, "badrrule@example.test", "password1234").await;
+    let owner_cookie =
+        register_verify_login(&router, &db, "badrrule@example.test", "password1234").await;
     let group_id = create_group(&router, &owner_cookie, "Foyer").await;
 
     let starts_at = Utc::now() + Duration::days(1);
@@ -213,7 +280,8 @@ async fn invalid_rrule_is_rejected(db: PgPool) {
 #[sqlx::test]
 async fn reminder_creates_scheduled_notification(db: PgPool) {
     let router = test_router(db.clone());
-    let owner_cookie = register_verify_login(&router, &db, "reminder@example.test", "password1234").await;
+    let owner_cookie =
+        register_verify_login(&router, &db, "reminder@example.test", "password1234").await;
     let group_id = create_group(&router, &owner_cookie, "Foyer").await;
 
     let starts_at = Utc::now() + Duration::days(1);
@@ -225,7 +293,11 @@ async fn reminder_creates_scheduled_notification(db: PgPool) {
         Some(serde_json::json!({"title": "Anniversaire", "starts_at": starts_at, "ends_at": starts_at + Duration::hours(1)})),
     )
     .await;
-    let event_id: Uuid = json_body(create).await["id"].as_str().unwrap().parse().unwrap();
+    let event_id: Uuid = json_body(create).await["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
 
     let reminder = call(
         &router,
@@ -245,10 +317,20 @@ async fn reminder_creates_scheduled_notification(db: PgPool) {
     .await
     .unwrap();
     assert_eq!(notifications.len(), 1);
-    assert!((notifications[0].occurrence_at - starts_at).num_seconds().abs() < 2);
+    assert!(
+        (notifications[0].occurrence_at - starts_at)
+            .num_seconds()
+            .abs()
+            < 2
+    );
     assert_eq!(notifications[0].status, "pending");
     let expected_fire_at = starts_at - Duration::minutes(60);
-    assert!((notifications[0].fire_at - expected_fire_at).num_seconds().abs() < 2);
+    assert!(
+        (notifications[0].fire_at - expected_fire_at)
+            .num_seconds()
+            .abs()
+            < 2
+    );
 }
 
 /// AC: tasks-as-events — `completed` can only be toggled on an
@@ -256,7 +338,8 @@ async fn reminder_creates_scheduled_notification(db: PgPool) {
 #[sqlx::test]
 async fn task_completion_toggles_completed_at(db: PgPool) {
     let router = test_router(db.clone());
-    let owner_cookie = register_verify_login(&router, &db, "task@example.test", "password1234").await;
+    let owner_cookie =
+        register_verify_login(&router, &db, "task@example.test", "password1234").await;
     let group_id = create_group(&router, &owner_cookie, "Foyer").await;
 
     let starts_at = Utc::now() + Duration::days(1);
@@ -296,7 +379,10 @@ async fn task_completion_toggles_completed_at(db: PgPool) {
         Some(serde_json::json!({"title": "Cinéma", "starts_at": starts_at, "ends_at": starts_at + Duration::hours(2)})),
     )
     .await;
-    let regular_id = json_body(regular_create).await["id"].as_str().unwrap().to_string();
+    let regular_id = json_body(regular_create).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let bad_complete = call(
         &router,
         Method::PATCH,
@@ -315,7 +401,8 @@ async fn task_completion_toggles_completed_at(db: PgPool) {
 #[sqlx::test]
 async fn recurring_task_completion_is_per_occurrence(db: PgPool) {
     let router = test_router(db.clone());
-    let owner_cookie = register_verify_login(&router, &db, "recur-task@example.test", "password1234").await;
+    let owner_cookie =
+        register_verify_login(&router, &db, "recur-task@example.test", "password1234").await;
     let group_id = create_group(&router, &owner_cookie, "Foyer").await;
 
     let starts_at = Utc::now() + Duration::days(1);
@@ -362,16 +449,26 @@ async fn recurring_task_completion_is_per_occurrence(db: PgPool) {
     let list = call(
         &router,
         Method::GET,
-        &format!("/groups/{group_id}/events?from={}&to={}", urlenc(&from.to_rfc3339()), urlenc(&to.to_rfc3339())),
+        &format!(
+            "/groups/{group_id}/events?from={}&to={}",
+            urlenc(&from.to_rfc3339()),
+            urlenc(&to.to_rfc3339())
+        ),
         Some(&owner_cookie),
         None,
     )
     .await;
-    let occurrences = json_body(list).await["occurrences"].as_array().unwrap().clone();
+    let occurrences = json_body(list).await["occurrences"]
+        .as_array()
+        .unwrap()
+        .clone();
     assert_eq!(occurrences.len(), 4);
     for occurrence in &occurrences {
-        let occurrence_starts_at: chrono::DateTime<Utc> =
-            occurrence["occurrence_starts_at"].as_str().unwrap().parse().unwrap();
+        let occurrence_starts_at: chrono::DateTime<Utc> = occurrence["occurrence_starts_at"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
         let is_second = occurrence_starts_at == second_occurrence;
         assert_eq!(
             occurrence["completed_at"].is_string(),
