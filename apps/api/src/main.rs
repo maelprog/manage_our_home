@@ -54,6 +54,8 @@ async fn main() -> anyhow::Result<()> {
         public_base_url,
         frontend_base_url,
         oauth_encryption_key: env::var("OAUTH_ENCRYPTION_KEY")?,
+        message_encryption_key: env::var("MESSAGE_ENCRYPTION_KEY")?,
+        message_hubs: manage_our_home::messagerie::MessageHub::new(),
         secure_cookies: env::var("SECURE_COOKIES")
             .map(|v| v == "true")
             .unwrap_or(true),
