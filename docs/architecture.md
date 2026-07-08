@@ -233,6 +233,76 @@ Epic #1 (Auth + Groups) has landed on `main` (`apps/api/`). Next step is
 spec'ing the remaining epics one at a time via `/spec`, in the order given
 above, starting with Agenda.
 
+## v2 — Déploiement multi-famille (2026-07-08)
+
+Décidé le 2026-07-08 : v1 restait volontairement local/VPN (voir
+`v1-scope.md` #14). L'objectif change — déploiement à **10-15 familles
+externes**, cible **la semaine prochaine** une fois v1 validé. Ça fait
+passer plusieurs points de "nice to have" à **bloquant avant le premier
+déploiement**.
+
+**Hébergement**
+- Un VPS (Hetzner/Scaleway, ~5-10€/mois, 2 vCPU/4 Go suffisent pour cette
+  échelle) plutôt qu'un cloud managé gratuit — même stack Docker Compose
+  qu'en local (`infra/docker-compose.yml`), pas de divergence dev/prod, et
+  c'est le pont naturel vers le self-host définitif chez soi plus tard.
+- Exposition publique réelle : TLS via Caddy devient obligatoire (déjà
+  scaffoldé dans `infra/Caddyfile`), plus optionnel comme en v1 local.
+
+**Superadmin (item #8 du tracker v1)**
+- Un rôle superadmin technique global, distinct des rôles
+  owner/admin/standard par groupe — support/maintenance uniquement, un seul
+  compte (vous) pour l'instant. Pas de gestion d'équipe support à prévoir
+  tant que c'est le cas.
+
+**RGPD (item #12 du tracker v1) — bloquant dès le premier déploiement**
+- Export de données (Art. 20), suppression de compte effective (Art. 17),
+  politique de confidentialité réelle, base légale documentée par
+  catégorie de donnée. Ne peut plus être différé une fois que des données
+  appartenant à d'autres familles sont hébergées.
+
+**Backups**
+- Postgres + MinIO chiffrés et **testés par restauration** avant le
+  premier déploiement — pas de première restauration en situation de
+  crise réelle.
+
+**CI/CD**
+- Compléter la CI actuelle (`ci.yml` : fmt/clippy/test) avec `cargo audit`
+  (item #13 du tracker, encore manquant), puis un pipeline de déploiement
+  (build image → push → déployer sur le VPS).
+
+**Monitoring minimal**
+- Pas encore dans l'architecture : au moins un check d'uptime et des logs
+  centralisés/consultables, pour savoir qu'une instance servant d'autres
+  familles est down avant qu'un utilisateur ne le signale.
+
+Détail par item : voir `docs/v2-deployment.md`.
+
+## Version Y — trajectoire microservices/Kubernetes (2026-07-08)
+
+Décidé le 2026-07-08 : au-delà de v1/v2, une trajectoire de formation vers
+une architecture microservices orchestrée par Kubernetes est actée —
+**stratégie monolith-first, migration progressive**, pas un big-bang.
+Objectif explicitement pédagogique (se former à une architecture
+d'entreprise), pas une réponse à un besoin de charge : à l'échelle
+10-15 familles rien ne justifierait ce virage sur des critères de charge
+seuls.
+
+Principe : le monolithe modulaire (`apps/api`) reste la plateforme de
+référence pour v1/v2. Chaque extraction de service se fait une par une, sur
+justification concrète (contrainte matérielle différente, pas juste
+"séparation par domaine"). Le seul candidat identifié pour l'instant est
+**Ollama** (futur epic fridge-scan/vision), déjà noté ci-dessus comme "le
+candidat pour un vrai service séparé". Kubernetes n'est introduit qu'à ce
+moment-là, pas avant — Docker Compose reste l'outil de déploiement de
+v1/v2.
+
+Stack cible, séquencement, discipline à respecter dès maintenant dans le
+monolithe (frontières de module, pas de SQL cross-module, stateless par
+requête) et questions non tranchées (choix du cluster, GPU pour Ollama,
+cas d'usage Kafka, stateful sur K8s ou non, mesh, registry) : voir
+`docs/version-y-microservices.md`.
+
 ## Repo layout (monorepo)
 
 This repo is a monorepo: it holds every service around, and including,

@@ -26,3 +26,9 @@ file as epics land — it's the single place to check "what's left."
 | — | Local price lookup for Budget | out of v1 | Manual entry only for v1. |
 
 **Immediate next step:** epic #6 (Budget) has landed; next up is epic #7 (Messagerie) or #8 (User admin), both independent of the Groups→Budget dependency chain.
+
+**Note (2026-07-08):** the fridge-scan epic (out of v1, row above) is now
+also the designated trigger for the Version Y microservices/Kubernetes
+trajectory — see `architecture.md` § "Version Y" and
+`docs/version-y-microservices.md`. Its spec, when it happens, should
+account for that (Ollama extraction as a separate service).
