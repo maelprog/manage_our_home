@@ -8,6 +8,7 @@ pub mod error;
 pub mod grocery_list;
 pub mod groups;
 pub mod jobs;
+pub mod messagerie;
 pub mod recipes;
 pub mod stocks;
 pub mod storage;
@@ -34,6 +35,13 @@ pub struct AppState {
     /// OAuth refresh tokens (pgcrypto, AC #3). Loaded from env, never
     /// logged.
     pub oauth_encryption_key: String,
+    /// Symmetric key passed to `pgp_sym_encrypt`/`pgp_sym_decrypt` for
+    /// Messagerie content (pgcrypto). Dedicated and isolated from
+    /// `oauth_encryption_key` per Epic #7 decision #1.
+    pub message_encryption_key: String,
+    /// In-memory per-family broadcast registry for Messagerie's WS push
+    /// (Epic #7 decision #3).
+    pub message_hubs: messagerie::MessageHub,
     pub secure_cookies: bool,
     /// MinIO/S3 client for event file attachments (architecture.md epic #10).
     pub storage: Storage,
@@ -171,6 +179,16 @@ pub fn build_router(state: AppState) -> Router {
             get(budget::entries::get_budget_entry)
                 .patch(budget::entries::update_budget_entry)
                 .delete(budget::entries::delete_budget_entry),
+        )
+        .route(
+            "/groups/:id/messages",
+            post(messagerie::messages::create_message).get(messagerie::messages::list_messages),
+        )
+        .route("/groups/:id/messages/ws", get(messagerie::ws::message_ws))
+        .route(
+            "/groups/:id/messages/:message_id",
+            axum::routing::patch(messagerie::messages::update_message)
+                .delete(messagerie::messages::delete_message),
         )
         .layer(CookieManagerLayer::new())
         .with_state(state)
