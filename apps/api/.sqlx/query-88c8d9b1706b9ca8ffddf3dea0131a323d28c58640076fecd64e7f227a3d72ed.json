@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE calendar_import_events SET external_updated_at = $2 WHERE calendar_import_id = $1 AND external_uid = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "88c8d9b1706b9ca8ffddf3dea0131a323d28c58640076fecd64e7f227a3d72ed"
+}

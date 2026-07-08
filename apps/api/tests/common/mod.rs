@@ -36,6 +36,7 @@ pub fn test_state(db: PgPool) -> AppState {
         frontend_base_url: "http://localhost:5173".into(),
         oauth_encryption_key: "test-encryption-key".into(),
         message_encryption_key: "test-message-encryption-key".into(),
+        calendar_feed_encryption_key: "test-calendar-feed-encryption-key".into(),
         message_hubs: manage_our_home::messagerie::MessageHub::new(),
         secure_cookies: false,
         storage: test_storage(),

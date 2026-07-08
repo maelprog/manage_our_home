@@ -5,6 +5,7 @@ pub mod budget;
 pub mod crypto;
 pub mod email;
 pub mod error;
+pub mod google_calendar;
 pub mod grocery_list;
 pub mod groups;
 pub mod jobs;
@@ -44,6 +45,11 @@ pub struct AppState {
     /// Messagerie content (pgcrypto). Dedicated and isolated from
     /// `oauth_encryption_key` per Epic #7 decision #1.
     pub message_encryption_key: String,
+    /// Symmetric key passed to `pgp_sym_encrypt`/`pgp_sym_decrypt` for
+    /// Google Calendar ICS feed URLs (Epic #9). Dedicated and isolated
+    /// from `oauth_encryption_key`/`message_encryption_key`, same
+    /// per-secret-key-per-epic pattern as Messagerie.
+    pub calendar_feed_encryption_key: String,
     /// In-memory per-family broadcast registry for Messagerie's WS push
     /// (Epic #7 decision #3).
     pub message_hubs: messagerie::MessageHub,
@@ -199,6 +205,19 @@ pub fn build_router(state: AppState) -> Router {
             "/groups/:id/messages/:message_id",
             axum::routing::patch(messagerie::messages::update_message)
                 .delete(messagerie::messages::delete_message),
+        )
+        .route(
+            "/groups/:id/calendar-imports",
+            post(google_calendar::imports::create_calendar_import)
+                .get(google_calendar::imports::list_calendar_imports),
+        )
+        .route(
+            "/groups/:id/calendar-imports/:import_id",
+            delete(google_calendar::imports::delete_calendar_import),
+        )
+        .route(
+            "/groups/:id/calendar-imports/:import_id/import",
+            post(google_calendar::imports::trigger_calendar_import),
         )
         .route("/admin/groups", get(user_admin::admin::list_groups))
         .route("/admin/users", get(user_admin::admin::list_users))

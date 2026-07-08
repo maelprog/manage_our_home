@@ -65,6 +65,7 @@ async fn main() -> anyhow::Result<()> {
         frontend_base_url,
         oauth_encryption_key: env::var("OAUTH_ENCRYPTION_KEY")?,
         message_encryption_key: env::var("MESSAGE_ENCRYPTION_KEY")?,
+        calendar_feed_encryption_key: env::var("CALENDAR_FEED_ENCRYPTION_KEY")?,
         message_hubs: manage_our_home::messagerie::MessageHub::new(),
         secure_cookies: env::var("SECURE_COOKIES")
             .map(|v| v == "true")

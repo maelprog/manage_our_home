@@ -17,6 +17,12 @@
               ]
             }
           }
+        },
+        "origin": {
+          "Table": {
+            "table": "group_members",
+            "name": "role"
+          }
         }
       }
     ],

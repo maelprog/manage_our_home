@@ -6,7 +6,13 @@
       {
         "ordinal": 0,
         "name": "email_verified",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "email_verified"
+          }
+        }
       }
     ],
     "parameters": {
