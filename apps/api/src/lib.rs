@@ -15,17 +15,21 @@ pub mod storage;
 
 use axum::routing::{delete, get, post};
 use axum::Router;
-use oauth2::basic::BasicClient;
+use oauth2::{basic::BasicClient, EndpointNotSet, EndpointSet};
 use sqlx::PgPool;
 use tower_cookies::CookieManagerLayer;
 
 use crate::email::EmailSender;
 use crate::storage::Storage;
 
+/// Google's client: auth + token URLs configured, no device-auth/introspection/revocation.
+pub type GoogleOauthClient =
+    BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>;
+
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
-    pub google_oauth: BasicClient,
+    pub google_oauth: GoogleOauthClient,
     pub email: EmailSender,
     /// Base URL of this API, used to build links sent in emails.
     pub public_base_url: String,

@@ -14,15 +14,13 @@ use sqlx::PgPool;
 // helpers unused by that particular binary as dead code).
 #[allow(dead_code)]
 pub fn test_state(db: PgPool) -> AppState {
-    let google_oauth = BasicClient::new(
-        ClientId::new("test-client-id".into()),
-        Some(ClientSecret::new("test-client-secret".into())),
-        AuthUrl::new("https://accounts.google.com/o/oauth2/v2/auth".into()).unwrap(),
-        Some(TokenUrl::new("https://oauth2.googleapis.com/token".into()).unwrap()),
-    )
-    .set_redirect_uri(
-        RedirectUrl::new("http://localhost:8080/auth/google/callback".into()).unwrap(),
-    );
+    let google_oauth = BasicClient::new(ClientId::new("test-client-id".into()))
+        .set_client_secret(ClientSecret::new("test-client-secret".into()))
+        .set_auth_uri(AuthUrl::new("https://accounts.google.com/o/oauth2/v2/auth".into()).unwrap())
+        .set_token_uri(TokenUrl::new("https://oauth2.googleapis.com/token".into()).unwrap())
+        .set_redirect_uri(
+            RedirectUrl::new("http://localhost:8080/auth/google/callback".into()).unwrap(),
+        );
 
     let smtp = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous("127.0.0.1")
         .port(1)

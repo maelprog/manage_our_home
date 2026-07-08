@@ -1,7 +1,6 @@
 use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Redirect};
 use axum::{http::StatusCode, Json};
-use oauth2::reqwest::async_http_client;
 use oauth2::{AuthorizationCode, CsrfToken, Scope, TokenResponse};
 use serde::Deserialize;
 use tower_cookies::{Cookie, Cookies};
@@ -87,7 +86,7 @@ pub async fn callback(
     let token = state
         .google_oauth
         .exchange_code(AuthorizationCode::new(query.code))
-        .request_async(async_http_client)
+        .request_async(&reqwest::Client::new())
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("token exchange failed: {e}")))?;
 
@@ -186,7 +185,7 @@ pub async fn link(
     let token = state
         .google_oauth
         .exchange_code(AuthorizationCode::new(body.code))
-        .request_async(async_http_client)
+        .request_async(&reqwest::Client::new())
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("token exchange failed: {e}")))?;
 

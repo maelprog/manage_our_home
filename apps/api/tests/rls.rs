@@ -13,19 +13,21 @@ use uuid::Uuid;
 /// is genuinely enforced regardless of what role ran the migrations.
 async fn restricted_role_tx(db: &PgPool) -> (String, sqlx::Transaction<'_, sqlx::Postgres>) {
     let role = format!("app_test_role_{}", Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"))
-        .execute(db)
-        .await
-        .unwrap();
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"
+    )))
+    .execute(db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         "GRANT SELECT, INSERT, UPDATE, DELETE ON group_members, invitations, groups TO {role}"
-    ))
+    )))
     .execute(db)
     .await
     .unwrap();
 
     let mut tx = db.begin().await.unwrap();
-    sqlx::query(&format!("SET LOCAL ROLE {role}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
         .execute(&mut *tx)
         .await
         .unwrap();
@@ -33,13 +35,13 @@ async fn restricted_role_tx(db: &PgPool) -> (String, sqlx::Transaction<'_, sqlx:
 }
 
 async fn drop_restricted_role(db: &PgPool, role: &str) {
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         "REVOKE ALL ON group_members, invitations, groups FROM {role}"
-    ))
+    )))
     .execute(db)
     .await
     .unwrap();
-    sqlx::query(&format!("DROP ROLE {role}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP ROLE {role}")))
         .execute(db)
         .await
         .unwrap();
@@ -251,17 +253,21 @@ async fn events_isolated_without_scoping(db: PgPool) {
     .unwrap();
 
     let role = format!("app_test_role_{}", Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"))
-        .execute(&db)
-        .await
-        .unwrap();
-    sqlx::query(&format!("GRANT SELECT ON events TO {role}"))
-        .execute(&db)
-        .await
-        .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "GRANT SELECT ON events TO {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
 
     let mut tx = db.begin().await.unwrap();
-    sqlx::query(&format!("SET LOCAL ROLE {role}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
         .execute(&mut *tx)
         .await
         .unwrap();
@@ -281,11 +287,13 @@ async fn events_isolated_without_scoping(db: PgPool) {
     );
 
     tx.commit().await.unwrap();
-    sqlx::query(&format!("REVOKE ALL ON events FROM {role}"))
-        .execute(&db)
-        .await
-        .unwrap();
-    sqlx::query(&format!("DROP ROLE {role}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "REVOKE ALL ON events FROM {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP ROLE {role}")))
         .execute(&db)
         .await
         .unwrap();
@@ -332,17 +340,21 @@ async fn stock_items_isolated_without_scoping(db: PgPool) {
     .unwrap();
 
     let role = format!("app_test_role_{}", Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"))
-        .execute(&db)
-        .await
-        .unwrap();
-    sqlx::query(&format!("GRANT SELECT ON stock_items TO {role}"))
-        .execute(&db)
-        .await
-        .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "GRANT SELECT ON stock_items TO {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
 
     let mut tx = db.begin().await.unwrap();
-    sqlx::query(&format!("SET LOCAL ROLE {role}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
         .execute(&mut *tx)
         .await
         .unwrap();
@@ -362,11 +374,13 @@ async fn stock_items_isolated_without_scoping(db: PgPool) {
     );
 
     tx.commit().await.unwrap();
-    sqlx::query(&format!("REVOKE ALL ON stock_items FROM {role}"))
-        .execute(&db)
-        .await
-        .unwrap();
-    sqlx::query(&format!("DROP ROLE {role}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "REVOKE ALL ON stock_items FROM {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP ROLE {role}")))
         .execute(&db)
         .await
         .unwrap();
@@ -413,17 +427,21 @@ async fn recipes_isolated_without_scoping(db: PgPool) {
     .unwrap();
 
     let role = format!("app_test_role_{}", Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"))
-        .execute(&db)
-        .await
-        .unwrap();
-    sqlx::query(&format!("GRANT SELECT ON recipes TO {role}"))
-        .execute(&db)
-        .await
-        .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "GRANT SELECT ON recipes TO {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
 
     let mut tx = db.begin().await.unwrap();
-    sqlx::query(&format!("SET LOCAL ROLE {role}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
         .execute(&mut *tx)
         .await
         .unwrap();
@@ -443,11 +461,13 @@ async fn recipes_isolated_without_scoping(db: PgPool) {
     );
 
     tx.commit().await.unwrap();
-    sqlx::query(&format!("REVOKE ALL ON recipes FROM {role}"))
-        .execute(&db)
-        .await
-        .unwrap();
-    sqlx::query(&format!("DROP ROLE {role}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "REVOKE ALL ON recipes FROM {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP ROLE {role}")))
         .execute(&db)
         .await
         .unwrap();
@@ -495,17 +515,21 @@ async fn grocery_items_isolated_without_scoping(db: PgPool) {
     .unwrap();
 
     let role = format!("app_test_role_{}", Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"))
-        .execute(&db)
-        .await
-        .unwrap();
-    sqlx::query(&format!("GRANT SELECT ON grocery_items TO {role}"))
-        .execute(&db)
-        .await
-        .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "GRANT SELECT ON grocery_items TO {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
 
     let mut tx = db.begin().await.unwrap();
-    sqlx::query(&format!("SET LOCAL ROLE {role}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
         .execute(&mut *tx)
         .await
         .unwrap();
@@ -525,11 +549,13 @@ async fn grocery_items_isolated_without_scoping(db: PgPool) {
     );
 
     tx.commit().await.unwrap();
-    sqlx::query(&format!("REVOKE ALL ON grocery_items FROM {role}"))
-        .execute(&db)
-        .await
-        .unwrap();
-    sqlx::query(&format!("DROP ROLE {role}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "REVOKE ALL ON grocery_items FROM {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP ROLE {role}")))
         .execute(&db)
         .await
         .unwrap();
@@ -577,17 +603,21 @@ async fn messages_isolated_without_scoping(db: PgPool) {
     .unwrap();
 
     let role = format!("app_test_role_{}", Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"))
-        .execute(&db)
-        .await
-        .unwrap();
-    sqlx::query(&format!("GRANT SELECT ON messages TO {role}"))
-        .execute(&db)
-        .await
-        .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "GRANT SELECT ON messages TO {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
 
     let mut tx = db.begin().await.unwrap();
-    sqlx::query(&format!("SET LOCAL ROLE {role}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
         .execute(&mut *tx)
         .await
         .unwrap();
@@ -607,11 +637,13 @@ async fn messages_isolated_without_scoping(db: PgPool) {
     );
 
     tx.commit().await.unwrap();
-    sqlx::query(&format!("REVOKE ALL ON messages FROM {role}"))
-        .execute(&db)
-        .await
-        .unwrap();
-    sqlx::query(&format!("DROP ROLE {role}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "REVOKE ALL ON messages FROM {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP ROLE {role}")))
         .execute(&db)
         .await
         .unwrap();
@@ -658,17 +690,21 @@ async fn budget_entries_isolated_without_scoping(db: PgPool) {
     .unwrap();
 
     let role = format!("app_test_role_{}", Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"))
-        .execute(&db)
-        .await
-        .unwrap();
-    sqlx::query(&format!("GRANT SELECT ON budget_entries TO {role}"))
-        .execute(&db)
-        .await
-        .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "GRANT SELECT ON budget_entries TO {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
 
     let mut tx = db.begin().await.unwrap();
-    sqlx::query(&format!("SET LOCAL ROLE {role}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
         .execute(&mut *tx)
         .await
         .unwrap();
@@ -688,11 +724,13 @@ async fn budget_entries_isolated_without_scoping(db: PgPool) {
     );
 
     tx.commit().await.unwrap();
-    sqlx::query(&format!("REVOKE ALL ON budget_entries FROM {role}"))
-        .execute(&db)
-        .await
-        .unwrap();
-    sqlx::query(&format!("DROP ROLE {role}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "REVOKE ALL ON budget_entries FROM {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP ROLE {role}")))
         .execute(&db)
         .await
         .unwrap();

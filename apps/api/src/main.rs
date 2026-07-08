@@ -24,17 +24,17 @@ async fn main() -> anyhow::Result<()> {
     let frontend_base_url =
         env::var("FRONTEND_BASE_URL").unwrap_or_else(|_| "http://localhost:5173".into());
 
-    let google_oauth = BasicClient::new(
-        ClientId::new(env::var("GOOGLE_CLIENT_ID")?),
-        Some(ClientSecret::new(env::var("GOOGLE_CLIENT_SECRET")?)),
-        AuthUrl::new("https://accounts.google.com/o/oauth2/v2/auth".to_string())?,
-        Some(TokenUrl::new(
+    let google_oauth = BasicClient::new(ClientId::new(env::var("GOOGLE_CLIENT_ID")?))
+        .set_client_secret(ClientSecret::new(env::var("GOOGLE_CLIENT_SECRET")?))
+        .set_auth_uri(AuthUrl::new(
+            "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
+        )?)
+        .set_token_uri(TokenUrl::new(
             "https://oauth2.googleapis.com/token".to_string(),
-        )?),
-    )
-    .set_redirect_uri(RedirectUrl::new(format!(
-        "{public_base_url}/auth/google/callback"
-    ))?);
+        )?)
+        .set_redirect_uri(RedirectUrl::new(format!(
+            "{public_base_url}/auth/google/callback"
+        ))?);
 
     let smtp_transport = AsyncSmtpTransport::<Tokio1Executor>::relay(&env::var("SMTP_HOST")?)?
         .credentials(lettre::transport::smtp::authentication::Credentials::new(
