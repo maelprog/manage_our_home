@@ -11,6 +11,7 @@ pub mod groups;
 pub mod jobs;
 pub mod messagerie;
 pub mod recipes;
+pub mod rgpd;
 pub mod stocks;
 pub mod storage;
 pub mod user_admin;
@@ -78,6 +79,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/settings/google/link", post(auth::oauth_google::link))
         .route("/account/delete", post(auth::delete_account))
         .route("/account/delete/cancel", post(auth::cancel_delete_account))
+        .route("/account/export", get(rgpd::export_account))
+        .route("/privacy-policy", get(rgpd::privacy_policy))
         .route("/groups", post(groups::create_group))
         .route(
             "/groups/:id",
