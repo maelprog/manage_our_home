@@ -19,6 +19,16 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     sqlx::migrate!("./migrations").run(&db).await?;
 
+    // Second pool, connected as `admin_role` (`BYPASSRLS`), exclusively for
+    // the three superadmin endpoints gated behind `SuperAdminUser` (Epic
+    // #8). See apps/api/README.md for the role-setup snippet.
+    let admin_database_url =
+        env::var("ADMIN_DATABASE_URL").unwrap_or_else(|_| database_url.clone());
+    let admin_db = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&admin_database_url)
+        .await?;
+
     let public_base_url =
         env::var("PUBLIC_BASE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
     let frontend_base_url =
@@ -60,6 +70,7 @@ async fn main() -> anyhow::Result<()> {
             .map(|v| v == "true")
             .unwrap_or(true),
         storage,
+        admin_db,
     };
 
     tokio::spawn(jobs::account_purge::run(db.clone()));

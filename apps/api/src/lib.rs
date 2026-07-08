@@ -12,6 +12,7 @@ pub mod messagerie;
 pub mod recipes;
 pub mod stocks;
 pub mod storage;
+pub mod user_admin;
 
 use axum::routing::{delete, get, post};
 use axum::Router;
@@ -49,6 +50,11 @@ pub struct AppState {
     pub secure_cookies: bool,
     /// MinIO/S3 client for event file attachments (architecture.md epic #10).
     pub storage: Storage,
+    /// Second pool, connected as `admin_role` (`BYPASSRLS`). Only ever
+    /// touched by handlers gated behind `SuperAdminUser` (Epic #8) — see
+    /// `src/user_admin/mod.rs` for why this is a narrow, deliberate
+    /// exception to the RLS boundary rather than a general bypass.
+    pub admin_db: PgPool,
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -193,6 +199,12 @@ pub fn build_router(state: AppState) -> Router {
             "/groups/:id/messages/:message_id",
             axum::routing::patch(messagerie::messages::update_message)
                 .delete(messagerie::messages::delete_message),
+        )
+        .route("/admin/groups", get(user_admin::admin::list_groups))
+        .route("/admin/users", get(user_admin::admin::list_users))
+        .route(
+            "/admin/users/:id/deactivate",
+            post(user_admin::admin::deactivate_user),
         )
         .layer(CookieManagerLayer::new())
         .with_state(state)

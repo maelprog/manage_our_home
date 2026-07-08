@@ -28,6 +28,7 @@ pub fn test_state(db: PgPool) -> AppState {
     let email = EmailSender::new(smtp, "noreply@example.test".parse().unwrap());
 
     AppState {
+        admin_db: db.clone(),
         db,
         google_oauth,
         email,
