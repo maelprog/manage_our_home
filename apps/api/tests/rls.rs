@@ -534,3 +534,84 @@ async fn grocery_items_isolated_without_scoping(db: PgPool) {
         .await
         .unwrap();
 }
+
+/// AC #15 analog for the Budget epic: `budget_entries` isolation must hold
+/// even against a bug that forgets `WHERE group_id = ...` in application code.
+#[sqlx::test]
+async fn budget_entries_isolated_without_scoping(db: PgPool) {
+    let owner_a: Uuid = sqlx::query_scalar!(
+        "INSERT INTO users (email, password_hash, display_name, email_verified) VALUES ('m@example.test', 'x', 'M', true) RETURNING id"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let owner_b: Uuid = sqlx::query_scalar!(
+        "INSERT INTO users (email, password_hash, display_name, email_verified) VALUES ('n@example.test', 'x', 'N', true) RETURNING id"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let group_a: Uuid = sqlx::query_scalar!(
+        "INSERT INTO groups (name, created_by) VALUES ('A', $1) RETURNING id",
+        owner_a
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let group_b: Uuid = sqlx::query_scalar!(
+        "INSERT INTO groups (name, created_by) VALUES ('B', $1) RETURNING id",
+        owner_b
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO budget_entries (group_id, created_by, name, amount) VALUES ($1, $2, 'secret B entry', 1)",
+        group_b,
+        owner_b,
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let role = format!("app_test_role_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"))
+        .execute(&db)
+        .await
+        .unwrap();
+    sqlx::query(&format!("GRANT SELECT ON budget_entries TO {role}"))
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let mut tx = db.begin().await.unwrap();
+    sqlx::query(&format!("SET LOCAL ROLE {role}"))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+        .bind(group_a.to_string())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let visible: Vec<Uuid> = sqlx::query_scalar("SELECT group_id FROM budget_entries")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    assert!(
+        visible.is_empty(),
+        "group A's scope must not see group B's budget entries"
+    );
+
+    tx.commit().await.unwrap();
+    sqlx::query(&format!("REVOKE ALL ON budget_entries FROM {role}"))
+        .execute(&db)
+        .await
+        .unwrap();
+    sqlx::query(&format!("DROP ROLE {role}"))
+        .execute(&db)
+        .await
+        .unwrap();
+}

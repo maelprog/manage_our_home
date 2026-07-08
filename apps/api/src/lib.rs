@@ -1,6 +1,7 @@
 pub mod agenda;
 pub mod audit;
 pub mod auth;
+pub mod budget;
 pub mod crypto;
 pub mod email;
 pub mod error;
@@ -152,6 +153,24 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/groups/:id/grocery-items/:item_id/check",
             post(grocery_list::items::check_grocery_item),
+        )
+        .route(
+            "/groups/:id/grocery-items/:item_id/price",
+            post(budget::entries::set_grocery_item_price),
+        )
+        .route(
+            "/groups/:id/budget-entries",
+            post(budget::entries::create_budget_entry).get(budget::entries::list_budget_entries),
+        )
+        .route(
+            "/groups/:id/budget-entries/summary",
+            get(budget::entries::budget_summary),
+        )
+        .route(
+            "/groups/:id/budget-entries/:entry_id",
+            get(budget::entries::get_budget_entry)
+                .patch(budget::entries::update_budget_entry)
+                .delete(budget::entries::delete_budget_entry),
         )
         .layer(CookieManagerLayer::new())
         .with_state(state)

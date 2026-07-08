@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO groups (name, created_by) VALUES ('A', $1) RETURNING id",
+  "query": "SELECT id FROM grocery_items WHERE id = $1 AND group_id = $2",
   "describe": {
     "columns": [
       {
@@ -11,6 +11,7 @@
     ],
     "parameters": {
       "Left": [
+        "Uuid",
         "Uuid"
       ]
     },
@@ -18,5 +19,5 @@
       false
     ]
   },
-  "hash": "2bc7f1092cb8bf4ba48f49290b318e6da4176ee7770d4ceeeaeb4e01ba296406"
+  "hash": "fc021d73337ffc3e084b70fbd9ca8e2c24189338174d1f32d9e7c62208456d86"
 }
