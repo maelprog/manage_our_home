@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO budget_entries (group_id, created_by, grocery_item_id, name, amount, spent_at)\n        VALUES ($1, $2, $3, $4, $5, COALESCE($6, current_date))\n        RETURNING id, group_id, created_by, grocery_item_id, name, amount, spent_at, created_at, updated_at\n        ",
+  "query": "SELECT id, group_id, created_by, grocery_item_id, name, amount_cents, spent_at, created_at, updated_at\n           FROM budget_entries WHERE id = $1 AND group_id = $2",
   "describe": {
     "columns": [
       {
@@ -30,8 +30,8 @@
       },
       {
         "ordinal": 5,
-        "name": "amount",
-        "type_info": "Float8"
+        "name": "amount_cents",
+        "type_info": "Int8"
       },
       {
         "ordinal": 6,
@@ -52,11 +52,7 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid",
-        "Uuid",
-        "Text",
-        "Float8",
-        "Date"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -71,5 +67,5 @@
       false
     ]
   },
-  "hash": "dce3bacda6d959d5c5b6b8972d7511497a79cf088c5f354952efc6492c82ecbb"
+  "hash": "c46fc8d987d69bb0670bf42bb81184fd850f285bd435a6d606931a3ca73d8a96"
 }

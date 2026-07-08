@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, group_id, created_by, grocery_item_id, name, amount, spent_at, created_at, updated_at\n           FROM budget_entries WHERE id = $1 AND group_id = $2",
+  "query": "\n        INSERT INTO budget_entries (group_id, created_by, grocery_item_id, name, amount_cents, spent_at)\n        VALUES ($1, $2, $3, $4, $5, COALESCE($6, current_date))\n        ON CONFLICT (grocery_item_id) WHERE grocery_item_id IS NOT NULL\n        DO UPDATE SET\n            name = EXCLUDED.name,\n            amount_cents = EXCLUDED.amount_cents,\n            spent_at = EXCLUDED.spent_at,\n            updated_at = now()\n        RETURNING id, group_id, created_by, grocery_item_id, name, amount_cents, spent_at, created_at, updated_at\n        ",
   "describe": {
     "columns": [
       {
@@ -30,8 +30,8 @@
       },
       {
         "ordinal": 5,
-        "name": "amount",
-        "type_info": "Float8"
+        "name": "amount_cents",
+        "type_info": "Int8"
       },
       {
         "ordinal": 6,
@@ -52,7 +52,11 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid"
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Int8",
+        "Date"
       ]
     },
     "nullable": [
@@ -67,5 +71,5 @@
       false
     ]
   },
-  "hash": "88e7f5934c99dcedba091045df87f1fdfcf325e9a5324cc9af529b5f6babb20e"
+  "hash": "ba5e9b88f059ea20f6444916123508e45da58752e3ae874f63653c504dd8f2e2"
 }

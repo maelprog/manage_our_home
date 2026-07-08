@@ -343,6 +343,132 @@ async fn price_can_be_set_on_grocery_item(db: PgPool) {
     assert_eq!(entry["name"], "Farine");
     assert_eq!(entry["amount"], 2.35);
     assert_eq!(entry["grocery_item_id"], item_id);
+
+    let list = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/budget-entries"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_eq!(
+        json_body(list).await["entries"].as_array().unwrap().len(),
+        1
+    );
+}
+
+/// AC: retrying/double-tapping "set price" on the same grocery item upserts
+/// the price instead of creating a second, double-counted budget entry.
+#[sqlx::test]
+async fn setting_price_twice_on_same_item_is_idempotent(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie = register_verify_login(
+        &router,
+        &db,
+        "budget-price-retry@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    let create_item = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/grocery-items"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"name": "Lait"})),
+    )
+    .await;
+    let item_id = json_body(create_item).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let first = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/grocery-items/{item_id}/price"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"amount": 2.35})),
+    )
+    .await;
+    assert_status(&first, StatusCode::CREATED);
+    let first_id = json_body(first).await["id"].as_str().unwrap().to_string();
+
+    let retry = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/grocery-items/{item_id}/price"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"amount": 2.50})),
+    )
+    .await;
+    assert_status(&retry, StatusCode::CREATED);
+    let retry_body = json_body(retry).await;
+    assert_eq!(retry_body["id"], first_id, "retry must update the same row");
+    assert_eq!(retry_body["amount"], 2.50);
+
+    let list = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/budget-entries"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_eq!(
+        json_body(list).await["entries"].as_array().unwrap().len(),
+        1,
+        "double-tap must not double-count spend"
+    );
+}
+
+/// AC: manually linking a second budget entry to an already-priced grocery
+/// item is rejected instead of silently double-counting spend.
+#[sqlx::test]
+async fn manual_entry_on_already_priced_item_is_rejected(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie = register_verify_login(
+        &router,
+        &db,
+        "budget-conflict@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    let create_item = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/grocery-items"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"name": "Beurre"})),
+    )
+    .await;
+    let item_id = json_body(create_item).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/grocery-items/{item_id}/price"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"amount": 2.35})),
+    )
+    .await;
+
+    let duplicate = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/budget-entries"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"name": "Beurre", "amount": 2.35, "grocery_item_id": item_id})),
+    )
+    .await;
+    assert_status(&duplicate, StatusCode::CONFLICT);
 }
 
 /// AC: spend is cumulated per period (month) at the family level.

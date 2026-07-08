@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, group_id, created_by, grocery_item_id, name, amount, spent_at, created_at, updated_at\n        FROM budget_entries\n        WHERE group_id = $1\n        ORDER BY spent_at DESC, created_at DESC\n        ",
+  "query": "\n        SELECT id, group_id, created_by, grocery_item_id, name, amount_cents, spent_at, created_at, updated_at\n        FROM budget_entries\n        WHERE group_id = $1\n        ORDER BY spent_at DESC, created_at DESC\n        ",
   "describe": {
     "columns": [
       {
@@ -30,8 +30,8 @@
       },
       {
         "ordinal": 5,
-        "name": "amount",
-        "type_info": "Float8"
+        "name": "amount_cents",
+        "type_info": "Int8"
       },
       {
         "ordinal": 6,
@@ -66,5 +66,5 @@
       false
     ]
   },
-  "hash": "02e070866f1b0362209f888ec46247634f0687cf90a232d4342cd8e148770ec3"
+  "hash": "38630326d72a73d8785546b864b0fbbe34cf64efbbbd7be0690161d5d3d7cf48"
 }

@@ -567,7 +567,7 @@ async fn budget_entries_isolated_without_scoping(db: PgPool) {
     .unwrap();
 
     sqlx::query!(
-        "INSERT INTO budget_entries (group_id, created_by, name, amount) VALUES ($1, $2, 'secret B entry', 1)",
+        "INSERT INTO budget_entries (group_id, created_by, name, amount_cents) VALUES ($1, $2, 'secret B entry', 100)",
         group_b,
         owner_b,
     )

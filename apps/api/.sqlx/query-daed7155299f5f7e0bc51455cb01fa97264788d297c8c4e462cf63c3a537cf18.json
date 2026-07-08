@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        UPDATE budget_entries SET\n            name = $3,\n            amount = $4,\n            spent_at = $5,\n            updated_at = now()\n        WHERE id = $1 AND group_id = $2\n        RETURNING id, group_id, created_by, grocery_item_id, name, amount, spent_at, created_at, updated_at\n        ",
+  "query": "\n        INSERT INTO budget_entries (group_id, created_by, grocery_item_id, name, amount_cents, spent_at)\n        VALUES ($1, $2, $3, $4, $5, COALESCE($6, current_date))\n        RETURNING id, group_id, created_by, grocery_item_id, name, amount_cents, spent_at, created_at, updated_at\n        ",
   "describe": {
     "columns": [
       {
@@ -30,8 +30,8 @@
       },
       {
         "ordinal": 5,
-        "name": "amount",
-        "type_info": "Float8"
+        "name": "amount_cents",
+        "type_info": "Int8"
       },
       {
         "ordinal": 6,
@@ -53,8 +53,9 @@
       "Left": [
         "Uuid",
         "Uuid",
+        "Uuid",
         "Text",
-        "Float8",
+        "Int8",
         "Date"
       ]
     },
@@ -70,5 +71,5 @@
       false
     ]
   },
-  "hash": "8c27414cb1ba953307df9bf9a7ae182b0cad5187782cd7321b1ae150aae3c5b7"
+  "hash": "daed7155299f5f7e0bc51455cb01fa97264788d297c8c4e462cf63c3a537cf18"
 }
