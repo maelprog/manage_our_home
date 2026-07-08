@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO users (email, password_hash, display_name, email_verified) VALUES ('msg-rls-b@example.test', 'x', 'B', true) RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "191896dc4690eb88d0a3f925c1956a956786d3a7f5562493a96e4e43c540795d"
+}
