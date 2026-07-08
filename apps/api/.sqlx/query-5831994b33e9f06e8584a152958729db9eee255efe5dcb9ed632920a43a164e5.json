@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE calendar_imports SET last_imported_at = now(), updated_at = now() WHERE id = $1 AND group_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5831994b33e9f06e8584a152958729db9eee255efe5dcb9ed632920a43a164e5"
+}

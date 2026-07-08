@@ -6,17 +6,35 @@
       {
         "ordinal": 0,
         "name": "fire_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "scheduled_notifications",
+            "name": "fire_at"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "occurrence_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "scheduled_notifications",
+            "name": "occurrence_at"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "status",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "scheduled_notifications",
+            "name": "status"
+          }
+        }
       }
     ],
     "parameters": {

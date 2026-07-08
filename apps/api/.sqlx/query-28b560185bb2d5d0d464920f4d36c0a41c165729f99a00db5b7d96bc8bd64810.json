@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    UPDATE events SET\n                        title = $3, description = $4, location = $5,\n                        starts_at = $6, ends_at = $7, all_day = $8, updated_at = now()\n                    WHERE id = $1 AND group_id = $2\n                    ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Timestamptz",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "28b560185bb2d5d0d464920f4d36c0a41c165729f99a00db5b7d96bc8bd64810"
+}
