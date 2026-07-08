@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO grocery_items (group_id, created_by, name) VALUES ($1, $2, 'secret B item')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5b12ee842a029e54f4593513e870a27dd13d27ff81147efe205696e916a65364"
+}

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT name FROM stock_items\n        WHERE group_id = $1 AND reorder_threshold IS NOT NULL AND quantity <= reorder_threshold\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "8196dac0411e074eb4dce824179d76a3d34c138aa765153105eb852d47a2de6e"
+}
