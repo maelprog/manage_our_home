@@ -4,6 +4,7 @@ pub mod auth;
 pub mod crypto;
 pub mod email;
 pub mod error;
+pub mod grocery_list;
 pub mod groups;
 pub mod jobs;
 pub mod recipes;
@@ -132,6 +133,25 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/groups/:id/recipes/:recipe_id/meal-history",
             post(recipes::meal_history::log_meal),
+        )
+        .route(
+            "/groups/:id/grocery-items",
+            post(grocery_list::items::create_grocery_item)
+                .get(grocery_list::items::list_grocery_items),
+        )
+        .route(
+            "/groups/:id/grocery-items/generate",
+            post(grocery_list::items::generate_grocery_items),
+        )
+        .route(
+            "/groups/:id/grocery-items/:item_id",
+            get(grocery_list::items::get_grocery_item)
+                .patch(grocery_list::items::update_grocery_item)
+                .delete(grocery_list::items::delete_grocery_item),
+        )
+        .route(
+            "/groups/:id/grocery-items/:item_id/check",
+            post(grocery_list::items::check_grocery_item),
         )
         .layer(CookieManagerLayer::new())
         .with_state(state)
