@@ -72,6 +72,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/google/start", get(auth::oauth_google::start))
         .route("/auth/google/callback", get(auth::oauth_google::callback))
         .route("/auth/logout", post(auth::logout))
+        .route("/auth/me", get(auth::me))
         .route("/auth/password/forgot", post(auth::forgot_password))
         .route("/auth/password/reset", post(auth::reset_password))
         .route("/settings/password/change", post(auth::change_password))
@@ -81,10 +82,19 @@ pub fn build_router(state: AppState) -> Router {
         .route("/account/delete/cancel", post(auth::cancel_delete_account))
         .route("/account/export", get(rgpd::export_account))
         .route("/privacy-policy", get(rgpd::privacy_policy))
-        .route("/groups", post(groups::create_group))
+        .route(
+            "/groups",
+            post(groups::create_group).get(groups::list_groups),
+        )
         .route(
             "/groups/:id",
-            get(groups::get_group).delete(groups::delete_group),
+            get(groups::get_group)
+                .patch(groups::rename_group)
+                .delete(groups::delete_group),
+        )
+        .route(
+            "/groups/:id/transfer-ownership",
+            post(groups::transfer_ownership),
         )
         .route("/groups/:id/invitations", post(groups::create_invitation))
         .route(

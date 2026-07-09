@@ -7,7 +7,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::audit;
-use crate::auth::session::{scoped_tx, token_scoped_tx, AuthUser};
+use crate::auth::session::{scoped_tx, token_scoped_tx, user_scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::AppState;
 
@@ -79,6 +79,48 @@ pub async fn create_group(
     ))
 }
 
+/// Lists every group the caller belongs to, with the caller's role in each.
+/// `groups` is visible under the membership-based RLS fallback (only
+/// `app.user_id` set, see `user_scoped_tx`), so cross-user isolation is
+/// enforced at the DB layer — another user's groups can never appear. The
+/// per-group role is read under `scoped_tx` because `group_members` requires
+/// `app.family_id` (same reason the RGPD export path loops per group).
+/// Bounded by MAX_GROUPS_PER_USER (10), so the per-group query is cheap.
+pub async fn list_groups(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> AppResult<impl IntoResponse> {
+    let mut group_tx = user_scoped_tx(&state.db, auth.user_id).await?;
+    let groups = sqlx::query!("SELECT id, name, created_at FROM groups ORDER BY created_at")
+        .fetch_all(&mut *group_tx)
+        .await?;
+    group_tx.commit().await?;
+
+    let mut out = Vec::with_capacity(groups.len());
+    for group in &groups {
+        let mut tx = scoped_tx(&state.db, group.id, auth.user_id).await?;
+        let membership = sqlx::query!(
+            r#"SELECT role as "role: String" FROM group_members WHERE group_id = $1 AND user_id = $2"#,
+            group.id,
+            auth.user_id
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+
+        if let Some(m) = membership {
+            out.push(json!({
+                "group_id": group.id,
+                "name": group.name,
+                "role": m.role,
+                "created_at": group.created_at,
+            }));
+        }
+    }
+
+    Ok(Json(out))
+}
+
 pub async fn get_group(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -90,8 +132,16 @@ pub async fn get_group(
         .await?
         .ok_or(AppError::NotFound)?;
 
+    // Enrich members with identity (display_name + email) via a JOIN on
+    // `users` (no RLS on `users`). Same-family email exposure is acceptable
+    // per the epic spec — members already share a household.
     let members = sqlx::query!(
-        r#"SELECT user_id, role as "role: String" FROM group_members WHERE group_id = $1"#,
+        r#"
+        SELECT gm.user_id, gm.role as "role: String", u.display_name, u.email
+        FROM group_members gm
+        JOIN users u ON u.id = gm.user_id
+        WHERE gm.group_id = $1
+        "#,
         group_id
     )
     .fetch_all(&mut *tx)
@@ -101,8 +151,132 @@ pub async fn get_group(
     Ok(Json(json!({
         "id": group.id,
         "name": group.name,
-        "members": members.iter().map(|m| json!({"user_id": m.user_id, "role": m.role})).collect::<Vec<_>>(),
+        "members": members.iter().map(|m| json!({
+            "user_id": m.user_id,
+            "role": m.role,
+            "display_name": m.display_name,
+            "email": m.email,
+        })).collect::<Vec<_>>(),
     })))
+}
+
+#[derive(Deserialize)]
+pub struct RenameGroupRequest {
+    pub name: String,
+}
+
+/// Renames a group. Admin/owner only (mirrors invitation creation). The name
+/// must be non-empty after trimming, same rule as create — enforced here via
+/// the trimmed value being persisted.
+pub async fn rename_group(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(group_id): Path<Uuid>,
+    Json(body): Json<RenameGroupRequest>,
+) -> AppResult<impl IntoResponse> {
+    let name = body.name.trim();
+    if name.is_empty() {
+        return Err(AppError::Unprocessable("name_required".into()));
+    }
+
+    let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
+    let role = require_role(&mut tx, group_id, auth.user_id).await?;
+    if role != "owner" && role != "admin" {
+        return Err(AppError::Forbidden);
+    }
+
+    let group = sqlx::query!(
+        "UPDATE groups SET name = $1 WHERE id = $2 RETURNING id, name",
+        name,
+        group_id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    Ok(Json(GroupResponse {
+        id: group.id,
+        name: group.name,
+    }))
+}
+
+/// Shared ownership-swap used by both `leave_group` (owner leaving) and
+/// `transfer_ownership`: demotes the current owner to `admin`, promotes the
+/// target to `owner`, and writes one `ownership_transferred` audit row. The
+/// order matters — the `one_owner_per_group` partial unique index forbids two
+/// owners at once, so the old owner is demoted before the new one is
+/// promoted. Callers are responsible for verifying roles/membership first.
+async fn perform_ownership_transfer(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    group_id: Uuid,
+    old_owner_id: Uuid,
+    new_owner_id: Uuid,
+) -> AppResult<()> {
+    sqlx::query!(
+        r#"UPDATE group_members SET role = 'admin' WHERE group_id = $1 AND user_id = $2"#,
+        group_id,
+        old_owner_id
+    )
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query!(
+        r#"UPDATE group_members SET role = 'owner' WHERE group_id = $1 AND user_id = $2"#,
+        group_id,
+        new_owner_id
+    )
+    .execute(&mut **tx)
+    .await?;
+    audit::record(
+        tx,
+        Some(old_owner_id),
+        "ownership_transferred",
+        "group",
+        &group_id.to_string(),
+        json!({ "new_owner_id": new_owner_id }),
+    )
+    .await?;
+    Ok(())
+}
+
+#[derive(Deserialize)]
+pub struct TransferOwnershipRequest {
+    pub new_owner_id: Uuid,
+}
+
+/// Transfers ownership to another existing member. Owner-only (403
+/// otherwise). The target must be an existing member (404 if not) and not the
+/// caller itself (422). The old owner becomes `admin`, the target becomes
+/// `owner`, with one `ownership_transferred` audit row — the same swap as an
+/// owner leaving, factored into `perform_ownership_transfer`.
+pub async fn transfer_ownership(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(group_id): Path<Uuid>,
+    Json(body): Json<TransferOwnershipRequest>,
+) -> AppResult<impl IntoResponse> {
+    let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
+    let role = require_role(&mut tx, group_id, auth.user_id).await?;
+    if role != "owner" {
+        return Err(AppError::Forbidden);
+    }
+    if body.new_owner_id == auth.user_id {
+        return Err(AppError::Unprocessable("cannot_transfer_to_self".into()));
+    }
+
+    let target = sqlx::query_scalar!(
+        "SELECT user_id FROM group_members WHERE group_id = $1 AND user_id = $2",
+        group_id,
+        body.new_owner_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    if target.is_none() {
+        return Err(AppError::NotFound);
+    }
+
+    perform_ownership_transfer(&mut tx, group_id, auth.user_id, body.new_owner_id).await?;
+    tx.commit().await?;
+    Ok(StatusCode::OK)
 }
 
 /// AC #13: pure role-permission check, shared by `change_role` and
@@ -402,30 +576,7 @@ pub async fn leave_group(
         }
         require_role(&mut tx, group_id, new_owner_id).await?;
 
-        sqlx::query!(
-            r#"UPDATE group_members SET role = 'admin' WHERE group_id = $1 AND user_id = $2"#,
-            group_id,
-            auth.user_id
-        )
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query!(
-            r#"UPDATE group_members SET role = 'owner' WHERE group_id = $1 AND user_id = $2"#,
-            group_id,
-            new_owner_id
-        )
-        .execute(&mut *tx)
-        .await?;
-
-        audit::record(
-            &mut tx,
-            Some(auth.user_id),
-            "ownership_transferred",
-            "group",
-            &group_id.to_string(),
-            json!({ "new_owner_id": new_owner_id }),
-        )
-        .await?;
+        perform_ownership_transfer(&mut tx, group_id, auth.user_id, new_owner_id).await?;
     }
 
     sqlx::query!(
