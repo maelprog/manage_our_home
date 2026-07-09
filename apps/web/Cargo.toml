@@ -1,0 +1,11 @@
+[package]
+name = "manage_our_home_web"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "manage_our_home_web"
+path = "src/main.rs"
+
+[dependencies]
+manage_our_home_shared = { path = "../shared" }

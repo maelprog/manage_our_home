@@ -1,0 +1,14 @@
+[package]
+name = "manage_our_home_shared"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "manage_our_home_shared"
+path = "src/lib.rs"
+
+# No sqlx/axum deps: this crate must compile natively (apps/api, apps/web's
+# SSR side) and to wasm32-unknown-unknown (apps/web's client-side hydration).
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+uuid = { version = "1", features = ["serde"] }
