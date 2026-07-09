@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO events (group_id, created_by, title, starts_at, ends_at) VALUES ($1, $2, 'secret B event', $3, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "446f0736dec6783dad5648a0404bda2391651b05cdf39346016f4447b59bdea9"
+}

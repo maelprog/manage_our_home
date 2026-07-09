@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO messages (group_id, created_by, content) VALUES ($1, $2, pgp_sym_encrypt('secret B message', 'test-key'))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dbc238904e2e2ef720ea4be3176d2b9c0f02e10154fa2c86264b46471d0f92e8"
+}
