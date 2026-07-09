@@ -1,5 +1,7 @@
-# Scaffold only — apps/api and apps/web don't exist yet (see docs/v1-scope.md).
-# Flesh out build contexts and env vars as those apps land.
+# apps/api and apps/web (Front epic #1, GH issue #15) are now wired up.
+# Both build contexts point at the repo root (`..`) because apps/api and
+# apps/web each depend on apps/shared as a Cargo path dependency, not just
+# their own directory.
 services:
   postgres:
     image: postgres:16
@@ -28,20 +30,56 @@ services:
     volumes:
       - ollama_data:/root/.ollama
 
-  # api:
-  #   build: ../apps/api
-  #   restart: unless-stopped
-  #   depends_on: [postgres, minio]
-  #   environment:
-  #     DATABASE_URL: postgres://mom:${POSTGRES_PASSWORD}@postgres/manage_our_home
-  #     MINIO_ENDPOINT: http://minio:9000
-  #     MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
-  #     MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
-  #     MINIO_BUCKET: manage-our-home
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    depends_on: [postgres, minio]
+    environment:
+      DATABASE_URL: postgres://mom:${POSTGRES_PASSWORD}@postgres/manage_our_home
+      ADMIN_DATABASE_URL: postgres://admin_role:${ADMIN_ROLE_PASSWORD}@postgres/manage_our_home
+      # Behind Caddy the API is publicly reachable under /api (see
+      # infra/Caddyfile), so its own public base URL — used for the Google
+      # OAuth redirect_uri — must carry that prefix. Emailed links
+      # (verify/reset) use FRONTEND_BASE_URL and land on apps/web pages.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}/api
+      FRONTEND_BASE_URL: ${PUBLIC_BASE_URL}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      OAUTH_ENCRYPTION_KEY: ${OAUTH_ENCRYPTION_KEY}
+      MESSAGE_ENCRYPTION_KEY: ${MESSAGE_ENCRYPTION_KEY}
+      CALENDAR_FEED_ENCRYPTION_KEY: ${CALENDAR_FEED_ENCRYPTION_KEY}
+      SECURE_COOKIES: "true"
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_USERNAME: ${SMTP_USERNAME}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      SMTP_FROM: ${SMTP_FROM}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: manage-our-home
+
+  # apps/web's SSR layer calls apps/api over this internal Docker network
+  # (service name `api`, not through Caddy) — see docs/architecture.md's
+  # Deployment section and issue #15. The browser only ever talks to
+  # apps/web directly, except for the Google OAuth redirect, which is
+  # apps/api-hosted and reached through Caddy at /api/auth/google/*.
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    depends_on: [api]
+    environment:
+      API_INTERNAL_BASE_URL: http://api:8080
+      API_PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}/api
+      WEB_BIND_ADDR: 0.0.0.0:3000
 
   caddy:
     image: caddy:2
     restart: unless-stopped
+    depends_on: [api, web]
     ports:
       - "80:80"
       - "443:443"

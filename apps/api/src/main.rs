@@ -32,7 +32,7 @@ async fn main() -> anyhow::Result<()> {
     let public_base_url =
         env::var("PUBLIC_BASE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
     let frontend_base_url =
-        env::var("FRONTEND_BASE_URL").unwrap_or_else(|_| "http://localhost:5173".into());
+        env::var("FRONTEND_BASE_URL").unwrap_or_else(|_| "http://localhost:3000".into());
 
     let google_oauth = BasicClient::new(ClientId::new(env::var("GOOGLE_CLIENT_ID")?))
         .set_client_secret(ClientSecret::new(env::var("GOOGLE_CLIENT_SECRET")?))
