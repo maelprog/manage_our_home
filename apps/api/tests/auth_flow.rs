@@ -500,4 +500,3 @@ async fn delete_account_blocked_while_owner_then_cancellable(db: PgPool) {
             .unwrap();
     assert!(user_row.deletion_requested_at.is_none());
 }
-

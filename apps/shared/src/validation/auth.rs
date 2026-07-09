@@ -1,142 +1,151 @@
-//! Pure validation for Auth forms, shared between `apps/web` (client-side
-//! inline feedback) and, potentially, `apps/api`.
+//! Pure, dependency-free input validation for the Auth endpoints and forms,
+//! shared between `apps/api` (server-side enforcement, 422 error codes) and
+//! `apps/web` (client-side inline feedback before hitting the API).
 //!
-//! Mirrors the *actual* constraints enforced by `apps/api`'s `register`/
-//! `login`/`reset_password` handlers today (see `apps/api/src/auth/mod.rs`
-//! and `apps/api/src/crypto.rs`): there is no minimum password length
-//! enforced anywhere in the backend (no DB `CHECK` constraint on
-//! `password_hash`, no length check in `hash_password`/`verify_password`),
-//! so this module does not invent one. It only rejects what would
-//! unconditionally fail server-side too: empty fields and structurally
-//! invalid email addresses.
+//! These functions deliberately import nothing from sqlx/axum: they operate
+//! on borrowed strings and return a small `&'static str` error code on
+//! failure. `apps/api`'s handler layer maps them to a 422 with that code;
+//! `apps/web` maps the same codes to French form messages — one
+//! implementation, so client and server can never disagree on what is
+//! valid. Written test-first per CLAUDE.md's TDD process (originally in
+//! `apps/api/src/auth/validation.rs`, moved here verbatim once `apps/web`
+//! needed it too).
 
-/// True if `email` looks like a syntactically valid address: exactly one
-/// `@`, a non-empty local part, and a domain part containing at least one
-/// `.` with non-empty labels on both sides. Deliberately not a full RFC
-/// 5322 parser — just enough to catch obvious typos before hitting the API.
-pub fn is_valid_email(email: &str) -> bool {
-    let email = email.trim();
-    if email.is_empty() {
-        return false;
+/// Minimum accepted password length (characters). Kept intentionally low —
+/// this is a floor, not a strength policy.
+pub const MIN_PASSWORD_LEN: usize = 8;
+
+/// `password_too_short` when the password has fewer than `MIN_PASSWORD_LEN`
+/// characters. Counts Unicode scalar values, not bytes, so an 8-emoji
+/// password isn't rejected as "too short".
+pub fn validate_password(password: &str) -> Result<(), &'static str> {
+    if password.chars().count() < MIN_PASSWORD_LEN {
+        return Err("password_too_short");
     }
-    let Some((local, domain)) = email.split_once('@') else {
-        return false;
-    };
-    if local.is_empty() || domain.is_empty() {
-        return false;
-    }
-    if domain.contains('@') {
-        return false;
-    }
-    let Some((domain_head, domain_tail)) = domain.rsplit_once('.') else {
-        return false;
-    };
-    !domain_head.is_empty() && !domain_tail.is_empty()
+    Ok(())
 }
 
-/// True if `password` is non-empty. `apps/api` enforces no minimum length
-/// today (verified: no length check in `crypto::hash_password`, no
-/// `CHECK` constraint on `users.password_hash` in
-/// `migrations/0001_users_auth_groups.sql`) — this stays honest about
-/// that rather than inventing a client-side-only rule the backend would
-/// happily accept a violation of.
-pub fn is_valid_password(password: &str) -> bool {
-    !password.is_empty()
+/// `invalid_email` unless the value has the basic `x@y.z` shape: a non-empty
+/// local part, a single `@`, and a domain containing a dot with non-empty
+/// labels on both sides of it. No surrounding whitespace allowed. This is a
+/// shape check, not RFC 5322 compliance.
+pub fn validate_email(email: &str) -> Result<(), &'static str> {
+    if email != email.trim() {
+        return Err("invalid_email");
+    }
+    let mut parts = email.split('@');
+    let (Some(local), Some(domain), None) = (parts.next(), parts.next(), parts.next()) else {
+        return Err("invalid_email");
+    };
+    if local.is_empty() {
+        return Err("invalid_email");
+    }
+    let Some((host, tld)) = domain.rsplit_once('.') else {
+        return Err("invalid_email");
+    };
+    if host.is_empty() || tld.is_empty() {
+        return Err("invalid_email");
+    }
+    Ok(())
 }
 
-/// True if `display_name` is non-empty once surrounding whitespace is
-/// trimmed. `apps/api`'s `register` handler stores whatever is sent
-/// (`display_name TEXT NOT NULL` per the migration, no length check), so
-/// the only unconditionally-failing case client-side worth catching is
-/// blank input.
-pub fn is_valid_display_name(display_name: &str) -> bool {
-    !display_name.trim().is_empty()
+/// `display_name_required` when the name is empty after trimming surrounding
+/// whitespace.
+pub fn validate_display_name(display_name: &str) -> Result<(), &'static str> {
+    if display_name.trim().is_empty() {
+        return Err("display_name_required");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // -- is_valid_email -----------------------------------------------
+    // -- validate_password ---------------------------------------------
 
     #[test]
-    fn empty_email_is_invalid() {
-        assert!(!is_valid_email(""));
+    fn password_shorter_than_minimum_is_rejected() {
+        assert_eq!(validate_password("short"), Err("password_too_short"));
+        assert_eq!(validate_password("1234567"), Err("password_too_short"));
     }
 
     #[test]
-    fn whitespace_only_email_is_invalid() {
-        assert!(!is_valid_email("   "));
+    fn empty_password_is_rejected() {
+        assert_eq!(validate_password(""), Err("password_too_short"));
     }
 
     #[test]
-    fn email_missing_at_sign_is_invalid() {
-        assert!(!is_valid_email("alice.example.test"));
+    fn password_at_or_above_minimum_is_accepted() {
+        assert_eq!(validate_password("12345678"), Ok(()));
+        assert_eq!(validate_password("a-long-passphrase"), Ok(()));
+        assert_eq!(validate_password("correct horse battery staple"), Ok(()));
     }
 
     #[test]
-    fn email_missing_domain_dot_is_invalid() {
-        assert!(!is_valid_email("alice@example"));
+    fn password_length_counts_chars_not_bytes() {
+        // 8 multi-byte characters => 8 scalar values, accepted.
+        assert_eq!(validate_password("éééééééé"), Ok(()));
+    }
+
+    // -- validate_email --------------------------------------------------
+
+    #[test]
+    fn valid_emails_are_accepted() {
+        assert_eq!(validate_email("a@b.co"), Ok(()));
+        assert_eq!(validate_email("user.name@example.test"), Ok(()));
+        assert_eq!(validate_email("x@sub.domain.org"), Ok(()));
     }
 
     #[test]
-    fn email_with_empty_local_part_is_invalid() {
-        assert!(!is_valid_email("@example.test"));
+    fn email_with_plus_tag_is_accepted() {
+        assert_eq!(validate_email("alice+family@example.test"), Ok(()));
     }
 
     #[test]
-    fn email_with_double_at_is_invalid() {
-        assert!(!is_valid_email("alice@@example.test"));
+    fn empty_or_whitespace_only_email_is_rejected() {
+        assert_eq!(validate_email(""), Err("invalid_email"));
+        assert_eq!(validate_email("   "), Err("invalid_email"));
     }
 
     #[test]
-    fn well_formed_email_is_valid() {
-        assert!(is_valid_email("alice@example.test"));
+    fn emails_without_at_or_dot_are_rejected() {
+        assert_eq!(validate_email("plainaddress"), Err("invalid_email"));
+        assert_eq!(validate_email("no-at-sign.com"), Err("invalid_email"));
+        assert_eq!(validate_email("no-tld@example"), Err("invalid_email"));
     }
 
     #[test]
-    fn well_formed_email_with_surrounding_whitespace_is_valid() {
-        assert!(is_valid_email("  alice@example.test  "));
+    fn emails_with_empty_parts_are_rejected() {
+        assert_eq!(validate_email("@example.test"), Err("invalid_email"));
+        assert_eq!(validate_email("user@.com"), Err("invalid_email"));
+        assert_eq!(validate_email("user@example."), Err("invalid_email"));
+        assert_eq!(validate_email("a@@b.co"), Err("invalid_email"));
     }
 
     #[test]
-    fn well_formed_email_with_plus_tag_is_valid() {
-        assert!(is_valid_email("alice+family@example.test"));
+    fn emails_with_surrounding_whitespace_are_rejected() {
+        // Server-side semantics: the API stores and matches the exact
+        // string, so the form must reject padded input rather than
+        // silently trimming it.
+        assert_eq!(validate_email(" a@b.co"), Err("invalid_email"));
+        assert_eq!(validate_email("a@b.co "), Err("invalid_email"));
     }
 
-    // -- is_valid_password ---------------------------------------------
+    // -- validate_display_name --------------------------------------------
 
     #[test]
-    fn empty_password_is_invalid() {
-        assert!(!is_valid_password(""));
-    }
-
-    #[test]
-    fn single_character_password_is_valid() {
-        // apps/api enforces no minimum length today (see module docs) —
-        // this deliberately does not invent one.
-        assert!(is_valid_password("a"));
-    }
-
-    #[test]
-    fn ordinary_password_is_valid() {
-        assert!(is_valid_password("correct horse battery staple"));
-    }
-
-    // -- is_valid_display_name ------------------------------------------
-
-    #[test]
-    fn empty_display_name_is_invalid() {
-        assert!(!is_valid_display_name(""));
+    fn empty_or_whitespace_display_name_is_rejected() {
+        assert_eq!(validate_display_name(""), Err("display_name_required"));
+        assert_eq!(
+            validate_display_name("   \t\n"),
+            Err("display_name_required")
+        );
     }
 
     #[test]
-    fn whitespace_only_display_name_is_invalid() {
-        assert!(!is_valid_display_name("   "));
-    }
-
-    #[test]
-    fn ordinary_display_name_is_valid() {
-        assert!(is_valid_display_name("Alice"));
+    fn non_empty_display_name_is_accepted() {
+        assert_eq!(validate_display_name("Alice"), Ok(()));
+        assert_eq!(validate_display_name("  Bob  "), Ok(()));
     }
 }

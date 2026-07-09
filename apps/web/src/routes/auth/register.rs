@@ -4,7 +4,7 @@ use axum::Form;
 use leptos::prelude::*;
 use manage_our_home_shared::dto::auth::RegisterRequest;
 use manage_our_home_shared::validation::auth::{
-    is_valid_display_name, is_valid_email, is_valid_password,
+    validate_display_name, validate_email, validate_password, MIN_PASSWORD_LEN,
 };
 
 use crate::app::shell;
@@ -56,7 +56,7 @@ pub async fn post(
     State(state): State<AppState>,
     Form(form): Form<RegisterForm>,
 ) -> impl IntoResponse {
-    if !is_valid_email(&form.email) {
+    if validate_email(&form.email).is_err() {
         return Html(page(
             &form.email,
             &form.display_name,
@@ -65,7 +65,7 @@ pub async fn post(
         ))
         .into_response();
     }
-    if !is_valid_display_name(&form.display_name) {
+    if validate_display_name(&form.display_name).is_err() {
         return Html(page(
             &form.email,
             &form.display_name,
@@ -74,12 +74,14 @@ pub async fn post(
         ))
         .into_response();
     }
-    if !is_valid_password(&form.password) {
+    if validate_password(&form.password).is_err() {
         return Html(page(
             &form.email,
             &form.display_name,
             None,
-            Some("Le mot de passe ne peut pas être vide."),
+            Some(&format!(
+                "Le mot de passe doit contenir au moins {MIN_PASSWORD_LEN} caractères."
+            )),
         ))
         .into_response();
     }

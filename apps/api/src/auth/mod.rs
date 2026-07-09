@@ -1,6 +1,5 @@
 pub mod oauth_google;
 pub mod session;
-pub mod validation;
 
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
@@ -16,7 +15,10 @@ use manage_our_home_shared::dto::auth::{
     ResetPasswordRequest, SetPasswordRequest,
 };
 
-use crate::auth::validation::{validate_display_name, validate_email, validate_password};
+use manage_our_home_shared::validation::auth::{
+    validate_display_name, validate_email, validate_password,
+};
+
 use crate::crypto::{hash_password, verify_password};
 use crate::error::{AppError, AppResult};
 use crate::AppState;

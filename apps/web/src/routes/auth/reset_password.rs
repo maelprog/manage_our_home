@@ -3,7 +3,7 @@ use axum::response::{Html, IntoResponse};
 use axum::Form;
 use leptos::prelude::*;
 use manage_our_home_shared::dto::auth::ResetPasswordRequest;
-use manage_our_home_shared::validation::auth::is_valid_password;
+use manage_our_home_shared::validation::auth::{validate_password, MIN_PASSWORD_LEN};
 use uuid::Uuid;
 
 use crate::app::shell;
@@ -69,10 +69,12 @@ pub async fn post(
             "Ce lien de réinitialisation n'existe pas.",
         ));
     };
-    if !is_valid_password(&form.new_password) {
+    if validate_password(&form.new_password).is_err() {
         return Html(form_page(
             &form.token,
-            Some("Le mot de passe ne peut pas être vide."),
+            Some(&format!(
+                "Le mot de passe doit contenir au moins {MIN_PASSWORD_LEN} caractères."
+            )),
         ));
     }
 
