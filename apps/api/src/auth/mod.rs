@@ -11,6 +11,11 @@ use serde_json::json;
 use tower_cookies::Cookies;
 use uuid::Uuid;
 
+use manage_our_home_shared::dto::auth::{
+    ChangePasswordRequest, ForgotPasswordRequest, LoginRequest, MeResponse, RegisterRequest,
+    ResetPasswordRequest, SetPasswordRequest,
+};
+
 use crate::auth::validation::{validate_display_name, validate_email, validate_password};
 use crate::crypto::{hash_password, verify_password};
 use crate::error::{AppError, AppResult};
@@ -31,24 +36,18 @@ fn unprocessable(code: &'static str) -> AppError {
     AppError::Unprocessable(code.into())
 }
 
-/// Returns the currently authenticated user's identity. The `AuthUser`
-/// extractor already validates the session (and rejects with 401
-/// `{"error":"unauthorized"}` when absent/expired/revoked), so this handler
-/// only shapes the response. Blocking prereq of the frontend auth epic (F1).
-pub async fn me(auth: AuthUser) -> AppResult<impl IntoResponse> {
-    Ok(Json(json!({
-        "user_id": auth.user_id,
-        "email": auth.email,
-        "display_name": auth.display_name,
-        "email_verified": auth.email_verified,
-    })))
-}
-
-#[derive(Deserialize)]
-pub struct RegisterRequest {
-    pub email: String,
-    pub password: String,
-    pub display_name: String,
+/// AC #15 (issue #15): "who am I" for the frontend's server-side session
+/// check on every page load. Reuses the existing `AuthUser` extractor —
+/// 200 with the shape below if extraction succeeds, 401
+/// `{"error":"unauthorized"}` otherwise (identical to every other
+/// `AuthUser`-gated handler, see `session.rs`'s `FromRequestParts` impl).
+pub async fn me(auth: AuthUser) -> Json<MeResponse> {
+    Json(MeResponse {
+        user_id: auth.user_id,
+        email: auth.email,
+        display_name: auth.display_name,
+        email_verified: auth.email_verified,
+    })
 }
 
 /// AC #1, #2: registers an email/password account, always unverified,
@@ -163,12 +162,6 @@ pub async fn verify_email(
     Ok(StatusCode::OK)
 }
 
-#[derive(Deserialize)]
-pub struct LoginRequest {
-    pub email: String,
-    pub password: String,
-}
-
 pub async fn login(
     State(state): State<AppState>,
     cookies: Cookies,
@@ -217,11 +210,6 @@ pub async fn logout(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Deserialize)]
-pub struct ForgotPasswordRequest {
-    pub email: String,
-}
-
 /// AC #4: identical response whether or not the account exists, to avoid
 /// leaking which emails are registered (anti-enumeration).
 pub async fn forgot_password(
@@ -266,12 +254,6 @@ pub async fn forgot_password(
     }
 
     Ok(StatusCode::OK)
-}
-
-#[derive(Deserialize)]
-pub struct ResetPasswordRequest {
-    pub token: Uuid,
-    pub new_password: String,
 }
 
 /// AC #4: consuming a valid reset token revokes every active session.
@@ -320,12 +302,6 @@ pub async fn reset_password(
     Ok(StatusCode::OK)
 }
 
-#[derive(Deserialize)]
-pub struct ChangePasswordRequest {
-    pub current_password: String,
-    pub new_password: String,
-}
-
 /// AC #5: requires the current password; keeps the calling session alive
 /// and revokes every other active session.
 pub async fn change_password(
@@ -360,11 +336,6 @@ pub async fn change_password(
     revoke_all_sessions(&state.db, auth.user_id, Some(auth.session_id)).await?;
 
     Ok(StatusCode::OK)
-}
-
-#[derive(Deserialize)]
-pub struct SetPasswordRequest {
-    pub new_password: String,
 }
 
 /// AC #7: adding a password to a Google-only account resets
@@ -535,3 +506,33 @@ pub async fn cancel_delete_account(
 
 pub const _SESSION_COOKIE_NAME_REEXPORT: &str = SESSION_COOKIE_NAME;
 pub const _ACCOUNT_DELETION_GRACE_DAYS: i64 = ACCOUNT_DELETION_GRACE_DAYS;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `me`'s only logic is reshaping an already-extracted `AuthUser` into
+    /// `MeResponse` — the 401 path is entirely the `AuthUser` extractor's
+    /// responsibility (identical to every other `AuthUser`-gated handler)
+    /// and is exercised end-to-end in `apps/api/tests/auth_flow.rs`
+    /// (`GET /auth/me` without a session cookie). This covers the 200
+    /// shape directly, without spinning up a full router + DB.
+    #[tokio::test]
+    async fn me_returns_authenticated_user_shape() {
+        let auth = AuthUser {
+            user_id: Uuid::new_v4(),
+            session_id: Uuid::new_v4(),
+            email: "alice@example.test".into(),
+            display_name: "Alice".into(),
+            email_verified: true,
+        };
+        let user_id = auth.user_id;
+
+        let Json(body) = me(auth).await;
+
+        assert_eq!(body.user_id, user_id);
+        assert_eq!(body.email, "alice@example.test");
+        assert_eq!(body.display_name, "Alice");
+        assert!(body.email_verified);
+    }
+}

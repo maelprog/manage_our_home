@@ -1,6 +1,7 @@
 use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Redirect};
 use axum::{http::StatusCode, Json};
+use manage_our_home_shared::dto::auth::LinkGoogleRequest;
 use oauth2::{AuthorizationCode, CsrfToken, Scope, TokenResponse};
 use serde::Deserialize;
 use tower_cookies::{Cookie, Cookies};
@@ -231,9 +232,4 @@ pub async fn link(
     }
 
     Ok(StatusCode::OK)
-}
-
-#[derive(Deserialize)]
-pub struct LinkGoogleRequest {
-    pub code: String,
 }

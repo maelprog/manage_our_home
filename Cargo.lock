@@ -1909,6 +1909,7 @@ dependencies = [
  "icalendar",
  "infer",
  "lettre",
+ "manage_our_home_shared",
  "oauth2",
  "rand 0.8.6",
  "reqwest",
@@ -1925,6 +1926,21 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "manage_our_home_shared"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "uuid",
+]
+
+[[package]]
+name = "manage_our_home_web"
+version = "0.1.0"
+dependencies = [
+ "manage_our_home_shared",
 ]
 
 [[package]]
