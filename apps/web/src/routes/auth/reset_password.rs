@@ -51,14 +51,23 @@ fn form_page(token: &str, error: Option<&str>) -> String {
 
 pub async fn get(Query(query): Query<ResetPasswordQuery>) -> impl IntoResponse {
     if Uuid::parse_str(&query.token).is_err() {
-        return Html(invalid_link_page("Lien invalide", "Ce lien de réinitialisation n'existe pas."));
+        return Html(invalid_link_page(
+            "Lien invalide",
+            "Ce lien de réinitialisation n'existe pas.",
+        ));
     }
     Html(form_page(&query.token, None))
 }
 
-pub async fn post(State(state): State<AppState>, Form(form): Form<ResetPasswordForm>) -> impl IntoResponse {
+pub async fn post(
+    State(state): State<AppState>,
+    Form(form): Form<ResetPasswordForm>,
+) -> impl IntoResponse {
     let Ok(token) = Uuid::parse_str(&form.token) else {
-        return Html(invalid_link_page("Lien invalide", "Ce lien de réinitialisation n'existe pas."));
+        return Html(invalid_link_page(
+            "Lien invalide",
+            "Ce lien de réinitialisation n'existe pas.",
+        ));
     };
     if !is_valid_password(&form.new_password) {
         return Html(form_page(
@@ -86,12 +95,14 @@ pub async fn post(State(state): State<AppState>, Form(form): Form<ResetPasswordF
             };
             Html(shell("Mot de passe mis à jour", &body.to_html()))
         }
-        Ok(resp) if resp.status == reqwest::StatusCode::GONE => {
-            Html(invalid_link_page("Lien expiré", "Ce lien de réinitialisation a déjà été utilisé ou a expiré."))
-        }
-        Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
-            Html(invalid_link_page("Lien invalide", "Ce lien de réinitialisation n'existe pas."))
-        }
+        Ok(resp) if resp.status == reqwest::StatusCode::GONE => Html(invalid_link_page(
+            "Lien expiré",
+            "Ce lien de réinitialisation a déjà été utilisé ou a expiré.",
+        )),
+        Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => Html(invalid_link_page(
+            "Lien invalide",
+            "Ce lien de réinitialisation n'existe pas.",
+        )),
         _ => Html(form_page(
             &form.token,
             Some("Service momentanément indisponible, merci de réessayer."),

@@ -62,7 +62,9 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let app_state = AppState::from_ref(state);
         let cookie = cookie_header(parts);
-        Ok(CurrentUserOpt(fetch_me(&app_state, cookie.as_deref()).await))
+        Ok(CurrentUserOpt(
+            fetch_me(&app_state, cookie.as_deref()).await,
+        ))
     }
 }
 

@@ -49,7 +49,10 @@ pub async fn get() -> impl IntoResponse {
     Html(form_page(false))
 }
 
-pub async fn post(State(state): State<AppState>, Form(form): Form<ForgotPasswordForm>) -> impl IntoResponse {
+pub async fn post(
+    State(state): State<AppState>,
+    Form(form): Form<ForgotPasswordForm>,
+) -> impl IntoResponse {
     // Always show the generic success state, even if the call to apps/api
     // itself fails transport-wise — the anti-enumeration guarantee must
     // hold regardless (issue #15's error table: "always show ... regardless

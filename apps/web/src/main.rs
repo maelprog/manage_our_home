@@ -15,8 +15,8 @@ async fn main() {
 
     let api_internal_base_url = std::env::var("API_INTERNAL_BASE_URL")
         .unwrap_or_else(|_| "http://localhost:8080".to_string());
-    let api_public_base_url = std::env::var("API_PUBLIC_BASE_URL")
-        .unwrap_or_else(|_| "/api".to_string());
+    let api_public_base_url =
+        std::env::var("API_PUBLIC_BASE_URL").unwrap_or_else(|_| "/api".to_string());
     let bind_addr = std::env::var("WEB_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".to_string());
 
     let state = AppState {
@@ -33,7 +33,10 @@ async fn main() {
             "/register",
             get(routes::auth::register::get).post(routes::auth::register::post),
         )
-        .route("/register/check-email", get(routes::auth::register::check_email))
+        .route(
+            "/register/check-email",
+            get(routes::auth::register::check_email),
+        )
         .route("/verify-email", get(routes::auth::verify_email::get))
         .route(
             "/login",

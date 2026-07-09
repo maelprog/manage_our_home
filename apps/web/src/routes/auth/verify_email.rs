@@ -10,12 +10,11 @@ pub struct VerifyEmailQuery {
     token: String,
 }
 
-pub async fn get(State(state): State<AppState>, Query(query): Query<VerifyEmailQuery>) -> impl IntoResponse {
-    let result = api_get(
-        &state,
-        &format!("/auth/verify-email?token={}", query.token),
-    )
-    .await;
+pub async fn get(
+    State(state): State<AppState>,
+    Query(query): Query<VerifyEmailQuery>,
+) -> impl IntoResponse {
+    let result = api_get(&state, &format!("/auth/verify-email?token={}", query.token)).await;
 
     let (title, body_html): (&str, String) = match result {
         Ok(resp) if resp.status == reqwest::StatusCode::OK => {

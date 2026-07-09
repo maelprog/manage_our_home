@@ -42,7 +42,10 @@ fn page(email: &str, error: Option<&str>, api_public_base_url: &str) -> String {
     shell("Connexion", &body.to_html())
 }
 
-pub async fn get(_redirect: RedirectIfAuthenticated, State(state): State<AppState>) -> impl IntoResponse {
+pub async fn get(
+    _redirect: RedirectIfAuthenticated,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
     Html(page("", None, &state.api_public_base_url))
 }
 
