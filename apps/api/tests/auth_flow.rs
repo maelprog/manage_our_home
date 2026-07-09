@@ -364,3 +364,235 @@ async fn delete_account_blocked_while_owner_then_cancellable(db: PgPool) {
             .unwrap();
     assert!(user_row.deletion_requested_at.is_none());
 }
+
+/// AC (#27) case 1: for an unverified account, resend invalidates the
+/// outstanding verification token and issues a fresh one that verifies the
+/// email end-to-end. The cooldown is stepped past by ageing the token that
+/// registration just created.
+#[sqlx::test]
+async fn resend_verification_invalidates_old_token_and_new_one_works(db: PgPool) {
+    let router = test_router(db.clone());
+
+    call(
+        &router,
+        Method::POST,
+        "/auth/register",
+        None,
+        Some(serde_json::json!({
+            "email": "fred@example.test",
+            "password": "initial-password",
+            "display_name": "Fred",
+        })),
+    )
+    .await;
+
+    let old_token = sqlx::query_scalar!(
+        "SELECT token FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = 'fred@example.test'"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+
+    // Age the registration token past the cooldown window.
+    sqlx::query!(
+        "UPDATE email_verification_tokens SET created_at = now() - interval '10 minutes' WHERE token = $1",
+        old_token
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let resend = call(
+        &router,
+        Method::POST,
+        "/auth/verify-email/resend",
+        None,
+        Some(serde_json::json!({"email": "fred@example.test"})),
+    )
+    .await;
+    assert_status(&resend, StatusCode::OK);
+
+    // Old token is now consumed and can no longer verify the email.
+    let old_verify = call(
+        &router,
+        Method::GET,
+        &format!("/auth/verify-email?token={old_token}"),
+        None,
+        None,
+    )
+    .await;
+    assert_status(&old_verify, StatusCode::GONE);
+
+    // A fresh, unconsumed token was issued; it verifies the email.
+    let new_token = sqlx::query_scalar!(
+        "SELECT token FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = 'fred@example.test' AND t.consumed_at IS NULL"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_ne!(old_token, new_token);
+
+    let new_verify = call(
+        &router,
+        Method::GET,
+        &format!("/auth/verify-email?token={new_token}"),
+        None,
+        None,
+    )
+    .await;
+    assert_status(&new_verify, StatusCode::OK);
+
+    let login = call(
+        &router,
+        Method::POST,
+        "/auth/login",
+        None,
+        Some(serde_json::json!({"email": "fred@example.test", "password": "initial-password"})),
+    )
+    .await;
+    assert_status(&login, StatusCode::OK);
+}
+
+/// AC (#27) case 2: unknown email and already-verified account both return
+/// 200 with no token created and no email sent (anti-enumeration).
+#[sqlx::test]
+async fn resend_verification_noops_for_unknown_and_verified(db: PgPool) {
+    let router = test_router(db.clone());
+
+    // Unknown email: 200, and no token row exists for it.
+    let unknown = call(
+        &router,
+        Method::POST,
+        "/auth/verify-email/resend",
+        None,
+        Some(serde_json::json!({"email": "ghost@example.test"})),
+    )
+    .await;
+    assert_status(&unknown, StatusCode::OK);
+
+    // Register and fully verify an account.
+    call(
+        &router,
+        Method::POST,
+        "/auth/register",
+        None,
+        Some(serde_json::json!({
+            "email": "grace@example.test",
+            "password": "initial-password",
+            "display_name": "Grace",
+        })),
+    )
+    .await;
+    let token = sqlx::query_scalar!(
+        "SELECT token FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = 'grace@example.test'"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    call(
+        &router,
+        Method::GET,
+        &format!("/auth/verify-email?token={token}"),
+        None,
+        None,
+    )
+    .await;
+
+    let tokens_before = sqlx::query_scalar!(
+        "SELECT count(*) FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = 'grace@example.test'"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+
+    // Already verified: 200, no new token issued.
+    let verified = call(
+        &router,
+        Method::POST,
+        "/auth/verify-email/resend",
+        None,
+        Some(serde_json::json!({"email": "grace@example.test"})),
+    )
+    .await;
+    assert_status(&verified, StatusCode::OK);
+
+    let tokens_after = sqlx::query_scalar!(
+        "SELECT count(*) FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = 'grace@example.test'"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(tokens_before, tokens_after);
+}
+
+/// AC (#27) case 3: a second resend inside the 5-minute window is a silent
+/// no-op — no new token is created.
+#[sqlx::test]
+async fn resend_verification_cooldown_is_silent_noop(db: PgPool) {
+    let router = test_router(db.clone());
+
+    call(
+        &router,
+        Method::POST,
+        "/auth/register",
+        None,
+        Some(serde_json::json!({
+            "email": "heidi@example.test",
+            "password": "initial-password",
+            "display_name": "Heidi",
+        })),
+    )
+    .await;
+
+    let old_token = sqlx::query_scalar!(
+        "SELECT token FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = 'heidi@example.test'"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+
+    // Age the registration token so the first resend actually issues one.
+    sqlx::query!(
+        "UPDATE email_verification_tokens SET created_at = now() - interval '10 minutes' WHERE token = $1",
+        old_token
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let first = call(
+        &router,
+        Method::POST,
+        "/auth/verify-email/resend",
+        None,
+        Some(serde_json::json!({"email": "heidi@example.test"})),
+    )
+    .await;
+    assert_status(&first, StatusCode::OK);
+
+    let count_after_first = sqlx::query_scalar!(
+        "SELECT count(*) FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = 'heidi@example.test'"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+
+    // Second resend within the cooldown window: no-op.
+    let second = call(
+        &router,
+        Method::POST,
+        "/auth/verify-email/resend",
+        None,
+        Some(serde_json::json!({"email": "heidi@example.test"})),
+    )
+    .await;
+    assert_status(&second, StatusCode::OK);
+
+    let count_after_second = sqlx::query_scalar!(
+        "SELECT count(*) FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = 'heidi@example.test'"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(count_after_first, count_after_second);
+}

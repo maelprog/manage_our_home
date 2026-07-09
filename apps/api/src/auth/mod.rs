@@ -244,6 +244,86 @@ pub async fn forgot_password(
 }
 
 #[derive(Deserialize)]
+pub struct ResendVerificationRequest {
+    pub email: String,
+}
+
+const RESEND_COOLDOWN_MINUTES: i32 = 5;
+
+/// Anti-enumeration: always returns 200 with an empty body, whether the
+/// email is unknown, already verified, or unverified. Mirrors
+/// `forgot_password`. When the account exists and is still unverified, any
+/// outstanding verification tokens are invalidated and a fresh one is
+/// issued and emailed (best-effort). A per-email cooldown is enforced
+/// entirely in SQL: if a token was issued for this user within the last
+/// `RESEND_COOLDOWN_MINUTES`, the whole operation is a silent no-op (no new
+/// token, no email).
+pub async fn resend_verification(
+    State(state): State<AppState>,
+    Json(body): Json<ResendVerificationRequest>,
+) -> AppResult<impl IntoResponse> {
+    let Some(user) = sqlx::query!(
+        "SELECT id FROM users WHERE email = $1 AND email_verified = false AND deleted_at IS NULL",
+        body.email
+    )
+    .fetch_optional(&state.db)
+    .await?
+    else {
+        return Ok(StatusCode::OK);
+    };
+
+    let expires_at = Utc::now() + Duration::hours(EMAIL_VERIFICATION_TTL_HOURS);
+    // Cooldown, invalidation and issuance happen atomically in one
+    // statement: the new token is inserted (and old ones consumed) only
+    // when no token was created within the cooldown window, so concurrent
+    // resends can't slip past the rate limit.
+    let token = sqlx::query_scalar!(
+        r#"
+        WITH recent AS (
+            SELECT 1
+            FROM email_verification_tokens
+            WHERE user_id = $1
+              AND created_at > now() - make_interval(mins => $3::int)
+            LIMIT 1
+        ),
+        invalidated AS (
+            UPDATE email_verification_tokens
+            SET consumed_at = now()
+            WHERE user_id = $1
+              AND consumed_at IS NULL
+              AND NOT EXISTS (SELECT 1 FROM recent)
+        )
+        INSERT INTO email_verification_tokens (user_id, expires_at)
+        SELECT $1, $2
+        WHERE NOT EXISTS (SELECT 1 FROM recent)
+        RETURNING token
+        "#,
+        user.id,
+        expires_at,
+        RESEND_COOLDOWN_MINUTES,
+    )
+    .fetch_optional(&state.db)
+    .await?;
+
+    if let Some(token) = token {
+        let link = format!("{}/auth/verify-email?token={token}", state.public_base_url);
+        if let Err(e) = state
+            .email
+            .send(
+                &body.email,
+                "Vérifiez votre email",
+                crate::email::EmailSender::verification_email_body(&link),
+            )
+            .await
+        {
+            tracing::error!(error = ?e, "failed to send verification email");
+        }
+    }
+
+    Ok(StatusCode::OK)
+}
+
+#[derive(Deserialize)]
 pub struct ResetPasswordRequest {
     pub token: Uuid,
     pub new_password: String,
