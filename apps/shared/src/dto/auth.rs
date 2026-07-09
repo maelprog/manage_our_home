@@ -47,10 +47,10 @@ pub struct LinkGoogleRequest {
     pub code: String,
 }
 
-/// Response shape for `GET /auth/me`. Field names match `AuthUser`
-/// (`apps/api/src/auth/session.rs`) plus a `display_name` looked up
-/// alongside it (the extractor itself doesn't carry `display_name` today —
-/// the `me` handler fetches it, see `apps/api/src/auth/mod.rs::me`).
+/// Response shape for `GET /auth/me`: `AuthUser`
+/// (`apps/api/src/auth/session.rs`) minus the internal `session_id` — the
+/// `me` handler (`apps/api/src/auth/mod.rs::me`) is a straight reshape of
+/// that extractor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeResponse {
     pub user_id: Uuid,
