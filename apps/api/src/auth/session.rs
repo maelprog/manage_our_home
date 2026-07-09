@@ -18,6 +18,7 @@ pub struct AuthUser {
     pub user_id: Uuid,
     pub session_id: Uuid,
     pub email: String,
+    pub display_name: String,
     pub email_verified: bool,
 }
 
@@ -42,7 +43,7 @@ where
         let row = sqlx::query!(
             r#"
             SELECT s.id as session_id, s.expires_at, s.revoked_at,
-                   u.id as user_id, u.email, u.email_verified, u.deleted_at
+                   u.id as user_id, u.email, u.display_name, u.email_verified, u.deleted_at
             FROM sessions s
             JOIN users u ON u.id = s.user_id
             WHERE s.id = $1
@@ -70,6 +71,7 @@ where
             user_id: row.user_id,
             session_id: row.session_id,
             email: row.email,
+            display_name: row.display_name,
             email_verified: row.email_verified,
         })
     }

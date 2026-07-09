@@ -1,5 +1,6 @@
 pub mod oauth_google;
 pub mod session;
+pub mod validation;
 
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
@@ -10,6 +11,7 @@ use serde_json::json;
 use tower_cookies::Cookies;
 use uuid::Uuid;
 
+use crate::auth::validation::{validate_display_name, validate_email, validate_password};
 use crate::crypto::{hash_password, verify_password};
 use crate::error::{AppError, AppResult};
 use crate::AppState;
@@ -22,6 +24,25 @@ use self::session::{
 const EMAIL_VERIFICATION_TTL_HOURS: i64 = 24;
 const PASSWORD_RESET_TTL_HOURS: i64 = 24;
 const ACCOUNT_DELETION_GRACE_DAYS: i64 = 30;
+
+/// Maps a validation error code (`&'static str`) to a 422 carrying that
+/// exact code in the response's `error` field.
+fn unprocessable(code: &'static str) -> AppError {
+    AppError::Unprocessable(code.into())
+}
+
+/// Returns the currently authenticated user's identity. The `AuthUser`
+/// extractor already validates the session (and rejects with 401
+/// `{"error":"unauthorized"}` when absent/expired/revoked), so this handler
+/// only shapes the response. Blocking prereq of the frontend auth epic (F1).
+pub async fn me(auth: AuthUser) -> AppResult<impl IntoResponse> {
+    Ok(Json(json!({
+        "user_id": auth.user_id,
+        "email": auth.email,
+        "display_name": auth.display_name,
+        "email_verified": auth.email_verified,
+    })))
+}
 
 #[derive(Deserialize)]
 pub struct RegisterRequest {
@@ -38,6 +59,10 @@ pub async fn register(
     State(state): State<AppState>,
     Json(body): Json<RegisterRequest>,
 ) -> AppResult<impl IntoResponse> {
+    validate_email(&body.email).map_err(unprocessable)?;
+    validate_password(&body.password).map_err(unprocessable)?;
+    validate_display_name(&body.display_name).map_err(unprocessable)?;
+
     let existing = sqlx::query_scalar!("SELECT id FROM users WHERE email = $1", body.email)
         .fetch_optional(&state.db)
         .await?;
@@ -272,6 +297,7 @@ pub async fn reset_password(
         return Err(AppError::Gone);
     }
 
+    validate_password(&body.new_password).map_err(unprocessable)?;
     let password_hash = hash_password(&body.new_password).map_err(AppError::Internal)?;
 
     sqlx::query!(
@@ -321,6 +347,7 @@ pub async fn change_password(
         return Err(AppError::Unauthorized);
     }
 
+    validate_password(&body.new_password).map_err(unprocessable)?;
     let new_hash = hash_password(&body.new_password).map_err(AppError::Internal)?;
     sqlx::query!(
         "UPDATE users SET password_hash = $1 WHERE id = $2",
@@ -359,6 +386,7 @@ pub async fn set_password(
         return Err(AppError::Conflict("password_already_set".into()));
     }
 
+    validate_password(&body.new_password).map_err(unprocessable)?;
     let password_hash = hash_password(&body.new_password).map_err(AppError::Internal)?;
 
     let mut tx = state.db.begin().await?;
