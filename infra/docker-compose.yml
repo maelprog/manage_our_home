@@ -39,7 +39,11 @@ services:
     environment:
       DATABASE_URL: postgres://mom:${POSTGRES_PASSWORD}@postgres/manage_our_home
       ADMIN_DATABASE_URL: postgres://admin_role:${ADMIN_ROLE_PASSWORD}@postgres/manage_our_home
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+      # Behind Caddy the API is publicly reachable under /api (see
+      # infra/Caddyfile), so its own public base URL — used for the Google
+      # OAuth redirect_uri — must carry that prefix. Emailed links
+      # (verify/reset) use FRONTEND_BASE_URL and land on apps/web pages.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}/api
       FRONTEND_BASE_URL: ${PUBLIC_BASE_URL}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}

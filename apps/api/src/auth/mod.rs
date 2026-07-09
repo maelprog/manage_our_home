@@ -101,7 +101,9 @@ pub async fn register(
     .await?;
     tx.commit().await?;
 
-    let link = format!("{}/auth/verify-email?token={token}", state.public_base_url);
+    // Lands on apps/web's /verify-email page (which consumes the token via
+    // this API's GET /auth/verify-email), not on the API endpoint itself.
+    let link = format!("{}/verify-email?token={token}", state.frontend_base_url);
     if let Err(e) = state
         .email
         .send(
@@ -238,10 +240,10 @@ pub async fn forgot_password(
         .fetch_one(&state.db)
         .await?;
 
-        let link = format!(
-            "{}/auth/password/reset?token={token}",
-            state.public_base_url
-        );
+        // Lands on apps/web's /reset-password form (which POSTs the new
+        // password to this API's /auth/password/reset), not on the API
+        // endpoint itself (POST-only — a GET there would 405).
+        let link = format!("{}/reset-password?token={token}", state.frontend_base_url);
         if let Err(e) = state
             .email
             .send(
@@ -384,7 +386,9 @@ pub async fn set_password(
     .await?;
     tx.commit().await?;
 
-    let link = format!("{}/auth/verify-email?token={token}", state.public_base_url);
+    // Lands on apps/web's /verify-email page (which consumes the token via
+    // this API's GET /auth/verify-email), not on the API endpoint itself.
+    let link = format!("{}/verify-email?token={token}", state.frontend_base_url);
     if let Err(e) = state
         .email
         .send(
