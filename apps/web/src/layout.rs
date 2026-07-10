@@ -51,7 +51,6 @@ where
 pub struct CurrentUserOpt(pub Option<MeResponse>);
 
 #[axum::async_trait]
-#[axum::async_trait]
 impl<S> FromRequestParts<S> for CurrentUserOpt
 where
     AppState: FromRef<S>,
