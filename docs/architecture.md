@@ -69,7 +69,7 @@ questionnaire.
     documented data retention/deletion policy per data category (e.g.
     messages, fridge photos) rather than "keep forever by default."
 11. **Security practices for an enterprise bar.** Dependency vulnerability
-    scanning (e.g. `cargo audit` / `npm audit` in CI), TLS enforced
+    scanning (e.g. `cargo audit` across the whole Rust workspace in CI), TLS enforced
     everywhere (including internal service-to-service where feasible),
     audit logging of sensitive actions (auth events, data export/deletion,
     cross-family admin actions), and a documented breach-notification
@@ -89,13 +89,13 @@ questionnaire.
 | Object storage | **MinIO (self-hosted, S3 API)** | Needed for event file attachments and (later) fridge-scan photos; S3 API means any Rust S3 client (`aws-sdk-s3`) works, and it's swappable for real S3 later without an app rewrite. |
 | Scheduled reminders | **Postgres-backed job queue table + polling worker** | Survives restarts/deploys by design — the queue lives in the DB, not process memory. A cron-style in-memory scheduler is optional only for non-critical periodic ticks (e.g. cache refresh), never for user-facing reminders. |
 | Local AI (recipes, later OCR) | **Ollama**, self-hosted | Keeps all data (what you ate, fridge photos) local — matches the RGPD/self-hosted stance already established; no third-party API cost or data exposure. |
-| Web frontend | **SvelteKit** | Mature component ecosystem for calendar/drag-drop/chat UI, meaningfully faster to build a polished UI than hand-rolling in Leptos today. Backend stays 100% Rust; this is the one deliberate non-Rust layer, chosen because the ecosystem gap is real (calendar widgets, rich text, etc.) and justified by the "quality first" priority you set. |
-| Mobile client | **Capacitor wrapping the SvelteKit web app** | Reuses the SvelteKit codebase instead of maintaining a second UI; native shell only for what genuinely needs it (push notifications, camera for fridge-scan). |
+| Web frontend | **Leptos (SSR via `leptos_axum`)** | Superseded 2026-07-08 (see Front epic #1, GH issue #15): keeps the whole stack in Rust — shared DTOs/validation between `apps/api` and `apps/web` via a new `apps/shared` crate compiled natively and to `wasm32-unknown-unknown`, no duplicated request/response types or a second language's tooling/CI/audit surface to maintain. Ecosystem gaps (calendar widgets, rich components) are accepted and closed by hand-rolling rather than pulling in a JS framework, in line with the "one Rust monolith" posture already used for the backend. |
+| Mobile client | **Capacitor wrapping the Leptos web app** | Targeted for v1.1 (not the Auth front epic). Reuses the `apps/web` build instead of maintaining a second UI; native shell only for what genuinely needs it (push notifications, camera for fridge-scan). Cross-origin cookie handling for the Capacitor WebView is an open question, to be resolved in that future epic. |
 | Reverse proxy / TLS | **Caddy** | Automatic TLS renewal, minimal config, fits a home-hosted single-server deployment. |
 | Deployment | **Docker Compose** on your home server | Matches "home hosted"; one compose file for Axum, Postgres, MinIO, Ollama, Caddy; straightforward volume backup for Postgres + MinIO data. |
 | Secrets / encryption keys | **sops** (age-backed) for encrypting secrets at rest in the repo, keys injected as env vars at container start, never committed | Standard practice for home-hosted secret management without a full vault service. |
 | PII encryption at rest | **`pgcrypto`** for sensitive columns (e.g. message content, fridge photo metadata) in addition to disk-level encryption on the Postgres/MinIO volumes | RGPD Art. 32 ("mesures techniques appropriées"); protects data even if a DB backup or disk is exfiltrated. |
-| Dependency / vuln scanning | **`cargo audit`** (Rust) + **`npm audit`** (SvelteKit) in CI, blocking on high/critical | Baseline expected by any enterprise security questionnaire; catches known CVEs before deploy. |
+| Dependency / vuln scanning | **`cargo audit`** in CI, blocking on high/critical, across the whole workspace (`apps/api`, `apps/web`, `apps/shared`) | Baseline expected by any enterprise security questionnaire; catches known CVEs before deploy. No `npm audit` needed — the frontend is Rust/Leptos, not a JS framework, so there's no separate `package.json` dependency graph to scan. |
 | Transactional email (v1) | **SMTP relay via a EU transactional provider (Brevo or Mailjet)**, sent from Rust via the `lettre` crate | Email verification, password reset, and email-channel notifications (from `scheduled_notifications`) need reliable deliverability (SPF/DKIM/DMARC, IP reputation) that's impractical to run well as a single maintainer. Both providers are EU-based (FR), so they slot into the same documented-subprocessor model already used for Google OAuth (DPA, registre des traitements entry). Free tier covers household-scale volume (~200-300 emails/day) at €0; only becomes a paid line item if usage scales beyond that. |
 | Transactional email (long-term) | **Self-hosted SMTP server** (e.g. Postfix or Mailu, in the Docker Compose stack) | Planned migration once the operational burden (IP reputation, SPF/DKIM/DMARC, anti-spam/blocklist monitoring) is justified — brings mail fully in-house, consistent with the self-hosted/no-third-party-data-leaves-the-server posture used for Ollama and MinIO. Deferred because getting deliverability right without one is a real risk of landing in spam; kept as an explicit target so the app-level email code (via `lettre`, SMTP-based) needs no rewrite — only a config/endpoint swap when migrating. |
 
@@ -318,8 +318,10 @@ manage_our_home/
 │   │                 # second [[bin]] target in the same crate — it shares
 │   │                 # the SQLx models and DB pool, no need to split it out
 │   │                 # as a separate service at this scale.
-│   ├── web/          # SvelteKit frontend (calendar, chat, recipes UI, ...)
-│   └── mobile/       # Capacitor shell wrapping apps/web
+│   ├── web/          # Leptos SSR frontend (calendar, chat, recipes UI, ...)
+│   ├── shared/       # DTOs + pure validation shared between apps/api and
+│   │                 # apps/web (native + wasm32-unknown-unknown)
+│   └── mobile/       # Capacitor shell wrapping apps/web (v1.1)
 ├── infra/
 │   ├── docker-compose.yml   # api, postgres, minio, ollama, caddy
 │   ├── Caddyfile
@@ -332,11 +334,14 @@ manage_our_home/
 └── README.md
 ```
 
-**Workspace root:** a root `Cargo.toml` (virtual workspace, `members =
-["apps/api"]`) and, once `apps/web`/`apps/mobile` exist, a root
-`package.json` (pnpm/npm workspace) tie the services together for CI
-(`cargo audit` / `npm audit` run once, across the whole workspace) without
-merging their dependency graphs.
+**Workspace root:** a single root `Cargo.toml` (virtual workspace, `members
+= ["apps/api", "apps/web", "apps/shared"]`) ties every service together —
+`apps/web` and `apps/shared` are Rust crates like `apps/api`, not a
+separate npm workspace, so `cargo audit` runs once across the whole repo
+with no second dependency graph to scan. `apps/mobile` (Capacitor, v1.1)
+will need its own minimal `package.json` when it lands, since Capacitor
+itself is a JS tool, but it wraps the built `apps/web` output rather than
+housing app logic.
 
 **`apps/api` history:** the Auth+Groups epic (issue #1) was started before
 this layout was settled, as a flat crate at repo root. It has since been

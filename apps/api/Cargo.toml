@@ -12,6 +12,7 @@ name = "manage_our_home"
 path = "src/lib.rs"
 
 [dependencies]
+manage_our_home_shared = { path = "../shared" }
 axum = { version = "0.7", features = ["macros", "multipart", "ws"] }
 tokio = { version = "1", features = ["full"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "macros", "migrate"] }

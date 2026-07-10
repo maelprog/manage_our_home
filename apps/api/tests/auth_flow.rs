@@ -1,9 +1,145 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
-use common::{assert_status, call, set_cookie, test_router};
+use common::{assert_status, call, json_body, set_cookie, test_router};
 use sqlx::PgPool;
 use uuid::Uuid;
+
+async fn register_verify_login(
+    router: &axum::Router,
+    db: &PgPool,
+    email: &str,
+    password: &str,
+) -> String {
+    call(
+        router,
+        Method::POST,
+        "/auth/register",
+        None,
+        Some(
+            serde_json::json!({"email": email, "password": password, "display_name": "Test User"}),
+        ),
+    )
+    .await;
+    let token = sqlx::query_scalar!(
+        "SELECT token FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = $1",
+        email
+    )
+    .fetch_one(db)
+    .await
+    .unwrap();
+    call(
+        router,
+        Method::GET,
+        &format!("/auth/verify-email?token={token}"),
+        None,
+        None,
+    )
+    .await;
+    let login = call(
+        router,
+        Method::POST,
+        "/auth/login",
+        None,
+        Some(serde_json::json!({"email": email, "password": password})),
+    )
+    .await;
+    set_cookie(&login).unwrap()
+}
+
+/// `GET /auth/me` returns the caller's identity when authenticated, and 401
+/// with `{"error":"unauthorized"}` when there is no valid session.
+#[sqlx::test]
+async fn me_returns_identity_when_authed_and_401_otherwise(db: PgPool) {
+    let router = test_router(db.clone());
+
+    let no_session = call(&router, Method::GET, "/auth/me", None, None).await;
+    assert_status(&no_session, StatusCode::UNAUTHORIZED);
+    let body = json_body(no_session).await;
+    assert_eq!(body["error"], "unauthorized");
+
+    let cookie = register_verify_login(&router, &db, "me@example.test", "me-password1").await;
+    let authed = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
+    assert_status(&authed, StatusCode::OK);
+    let me = json_body(authed).await;
+    assert_eq!(me["email"], "me@example.test");
+    assert_eq!(me["display_name"], "Test User");
+    assert_eq!(me["email_verified"], true);
+    assert!(me["user_id"].is_string());
+}
+
+/// AC #6: register rejects invalid input with the exact 422 codes, and a
+/// valid registration is unaffected.
+#[sqlx::test]
+async fn register_validates_input(db: PgPool) {
+    let router = test_router(db.clone());
+
+    let short_pw = call(
+        &router,
+        Method::POST,
+        "/auth/register",
+        None,
+        Some(serde_json::json!({"email": "v@example.test", "password": "short", "display_name": "V"})),
+    )
+    .await;
+    assert_status(&short_pw, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json_body(short_pw).await["error"], "password_too_short");
+
+    let bad_email = call(
+        &router,
+        Method::POST,
+        "/auth/register",
+        None,
+        Some(serde_json::json!({"email": "not-an-email", "password": "long-enough-1", "display_name": "V"})),
+    )
+    .await;
+    assert_status(&bad_email, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json_body(bad_email).await["error"], "invalid_email");
+
+    let empty_name = call(
+        &router,
+        Method::POST,
+        "/auth/register",
+        None,
+        Some(serde_json::json!({"email": "v@example.test", "password": "long-enough-1", "display_name": "   "})),
+    )
+    .await;
+    assert_status(&empty_name, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        json_body(empty_name).await["error"],
+        "display_name_required"
+    );
+
+    let ok = call(
+        &router,
+        Method::POST,
+        "/auth/register",
+        None,
+        Some(serde_json::json!({"email": "v@example.test", "password": "long-enough-1", "display_name": "Valid"})),
+    )
+    .await;
+    assert_status(&ok, StatusCode::CREATED);
+}
+
+/// AC #6: the authenticated change-password endpoint rejects a too-short new
+/// password with `password_too_short` (422), even with the correct current
+/// password.
+#[sqlx::test]
+async fn change_password_rejects_short_new_password(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "cp@example.test", "old-password-1").await;
+
+    let res = call(
+        &router,
+        Method::POST,
+        "/settings/password/change",
+        Some(&cookie),
+        Some(serde_json::json!({"current_password": "old-password-1", "new_password": "short"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json_body(res).await["error"], "password_too_short");
+}
 
 /// AC #1, #2: register, then a duplicate email is rejected generically.
 #[sqlx::test]

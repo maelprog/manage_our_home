@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT s.id as session_id, s.expires_at, s.revoked_at,\n                   u.id as user_id, u.email, u.email_verified, u.deleted_at\n            FROM sessions s\n            JOIN users u ON u.id = s.user_id\n            WHERE s.id = $1\n            ",
+  "query": "\n            SELECT s.id as session_id, s.expires_at, s.revoked_at,\n                   u.id as user_id, u.email, u.display_name, u.email_verified, u.deleted_at\n            FROM sessions s\n            JOIN users u ON u.id = s.user_id\n            WHERE s.id = $1\n            ",
   "describe": {
     "columns": [
       {
@@ -60,6 +60,17 @@
       },
       {
         "ordinal": 5,
+        "name": "display_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
         "name": "email_verified",
         "type_info": "Bool",
         "origin": {
@@ -70,7 +81,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "deleted_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -93,8 +104,9 @@
       false,
       false,
       false,
+      false,
       true
     ]
   },
-  "hash": "b96ccb78fee2ec6bb544a09e4ae4b4553ca5ba9703ebd800e0b64c2fee67a10e"
+  "hash": "9331358051deba7299c5678a11a6eca9b5c450b7f0992767bf971fb3c226b110"
 }
