@@ -26,6 +26,11 @@ pub struct ForgotPasswordRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResendVerificationRequest {
+    pub email: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResetPasswordRequest {
     pub token: Uuid,
     pub new_password: String,

@@ -68,6 +68,7 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/auth/register", post(auth::register))
         .route("/auth/verify-email", get(auth::verify_email))
+        .route("/auth/verify-email/resend", post(auth::resend_verification))
         .route("/auth/login", post(auth::login))
         .route("/auth/me", get(auth::me))
         .route("/auth/google/start", get(auth::oauth_google::start))
