@@ -38,6 +38,9 @@ pub fn test_state(db: PgPool) -> AppState {
         message_encryption_key: "test-message-encryption-key".into(),
         calendar_feed_encryption_key: "test-calendar-feed-encryption-key".into(),
         message_hubs: manage_our_home::messagerie::MessageHub::new(),
+        // Production default; tests that exercise the WS membership recheck
+        // (AC #7) override this on their own state to keep the bound short.
+        message_ws_recheck_interval: std::time::Duration::from_secs(30),
         secure_cookies: false,
         storage: test_storage(),
     }
