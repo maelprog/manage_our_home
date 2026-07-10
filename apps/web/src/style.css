@@ -30,7 +30,7 @@ body {
 h1 { font-size: 1.4rem; margin-bottom: 1.25rem; }
 form { display: flex; flex-direction: column; gap: 0.85rem; }
 label { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.9rem; }
-input {
+input, select {
   font-size: 1rem;
   padding: 0.55rem 0.65rem;
   border: 1px solid var(--border);
