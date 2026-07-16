@@ -61,6 +61,9 @@ CALENDAR_FEED_ENCRYPTION_KEY=$(gen_key)
 ########################################
 # SMTP_FROM must parse as a mailbox (e.g. no-reply@example.com) or the API
 # exits at startup.
+# The dev-only knobs from .env.example (COMPOSE_PROFILES, SMTP_PORT,
+# SMTP_ALLOW_INSECURE, DEV_SEED_USERS) are deliberately absent: real
+# deployments must use the TLS relay path and never seed dev accounts.
 
 SMTP_HOST=
 SMTP_USERNAME=

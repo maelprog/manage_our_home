@@ -43,6 +43,17 @@ services:
       mc mb --ignore-existing local/manage-our-home
       "
 
+  # Dev-only mail catcher (COMPOSE_PROFILES=dev in .env, see .env.example):
+  # with SMTP_HOST=mailpit + SMTP_ALLOW_INSECURE=true the API's
+  # verification/reset/invitation emails land in the web UI at
+  # http://localhost:8025 instead of going through a real relay.
+  mailpit:
+    image: axllent/mailpit:latest
+    profiles: ["dev"]
+    restart: unless-stopped
+    ports:
+      - "8025:8025"
+
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
@@ -76,6 +87,11 @@ services:
       SMTP_USERNAME: ${SMTP_USERNAME}
       SMTP_PASSWORD: ${SMTP_PASSWORD}
       SMTP_FROM: ${SMTP_FROM}
+      # Dev-only knobs (see .env.example). Defaults keep real deployments on
+      # the TLS relay path with no seeded accounts.
+      SMTP_ALLOW_INSECURE: ${SMTP_ALLOW_INSECURE:-false}
+      SMTP_PORT: ${SMTP_PORT:-}
+      DEV_SEED_USERS: ${DEV_SEED_USERS:-false}
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
