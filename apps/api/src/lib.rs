@@ -3,6 +3,7 @@ pub mod audit;
 pub mod auth;
 pub mod budget;
 pub mod crypto;
+pub mod dev_seed;
 pub mod email;
 pub mod error;
 pub mod google_calendar;

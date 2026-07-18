@@ -19,6 +19,15 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     sqlx::migrate!("./migrations").run(&db).await?;
 
+    // Local-dev convenience only (infra/.env.example): pre-verified logins
+    // so a fresh stack is usable without completing email verification.
+    if env::var("DEV_SEED_USERS")
+        .map(|v| v == "true")
+        .unwrap_or(false)
+    {
+        manage_our_home::dev_seed::seed_dev_users(&db).await?;
+    }
+
     // Second pool, connected as `admin_role` (`BYPASSRLS`), exclusively for
     // the three superadmin endpoints gated behind `SuperAdminUser` (Epic
     // #8). See apps/api/README.md for the role-setup snippet.
@@ -46,12 +55,28 @@ async fn main() -> anyhow::Result<()> {
             "{public_base_url}/auth/google/callback"
         ))?);
 
-    let smtp_transport = AsyncSmtpTransport::<Tokio1Executor>::relay(&env::var("SMTP_HOST")?)?
-        .credentials(lettre::transport::smtp::authentication::Credentials::new(
-            env::var("SMTP_USERNAME")?,
-            env::var("SMTP_PASSWORD")?,
-        ))
-        .build();
+    let smtp_host = env::var("SMTP_HOST")?;
+    let smtp_transport = match manage_our_home::email::smtp_mode(
+        env::var("SMTP_ALLOW_INSECURE").ok().as_deref(),
+        env::var("SMTP_PORT").ok().as_deref(),
+    )? {
+        manage_our_home::email::SmtpMode::Relay => {
+            AsyncSmtpTransport::<Tokio1Executor>::relay(&smtp_host)?
+                .credentials(lettre::transport::smtp::authentication::Credentials::new(
+                    env::var("SMTP_USERNAME")?,
+                    env::var("SMTP_PASSWORD")?,
+                ))
+                .build()
+        }
+        manage_our_home::email::SmtpMode::Insecure { port } => {
+            tracing::warn!(
+                "SMTP_ALLOW_INSECURE=true — plaintext unauthenticated SMTP to {smtp_host}:{port}, local dev only"
+            );
+            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&smtp_host)
+                .port(port)
+                .build()
+        }
+    };
     let from_mailbox: Mailbox = env::var("SMTP_FROM")?.parse()?;
     let email = EmailSender::new(smtp_transport, from_mailbox);
 
