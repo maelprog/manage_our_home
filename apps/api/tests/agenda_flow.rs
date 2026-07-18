@@ -255,7 +255,7 @@ async fn recurring_event_expands_within_range(db: PgPool) {
 async fn invalid_rrule_is_rejected(db: PgPool) {
     let router = test_router(db.clone());
     let owner_cookie =
-        register_verify_login(&router, &db, "badrrule@example.test", "password1234").await;
+        register_verify_login(&router, &db, "badrrule@example.test", "test-password-1234").await;
     let group_id = create_group(&router, &owner_cookie, "Foyer").await;
 
     let starts_at = Utc::now() + Duration::days(1);
@@ -281,7 +281,7 @@ async fn invalid_rrule_is_rejected(db: PgPool) {
 async fn reminder_creates_scheduled_notification(db: PgPool) {
     let router = test_router(db.clone());
     let owner_cookie =
-        register_verify_login(&router, &db, "reminder@example.test", "password1234").await;
+        register_verify_login(&router, &db, "reminder@example.test", "test-password-1234").await;
     let group_id = create_group(&router, &owner_cookie, "Foyer").await;
 
     let starts_at = Utc::now() + Duration::days(1);
@@ -339,7 +339,7 @@ async fn reminder_creates_scheduled_notification(db: PgPool) {
 async fn task_completion_toggles_completed_at(db: PgPool) {
     let router = test_router(db.clone());
     let owner_cookie =
-        register_verify_login(&router, &db, "task@example.test", "password1234").await;
+        register_verify_login(&router, &db, "task@example.test", "test-password-1234").await;
     let group_id = create_group(&router, &owner_cookie, "Foyer").await;
 
     let starts_at = Utc::now() + Duration::days(1);
@@ -401,8 +401,13 @@ async fn task_completion_toggles_completed_at(db: PgPool) {
 #[sqlx::test]
 async fn recurring_task_completion_is_per_occurrence(db: PgPool) {
     let router = test_router(db.clone());
-    let owner_cookie =
-        register_verify_login(&router, &db, "recur-task@example.test", "password1234").await;
+    let owner_cookie = register_verify_login(
+        &router,
+        &db,
+        "recur-task@example.test",
+        "test-password-1234",
+    )
+    .await;
     let group_id = create_group(&router, &owner_cookie, "Foyer").await;
 
     let starts_at = Utc::now() + Duration::days(1);

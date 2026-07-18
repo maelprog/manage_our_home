@@ -13,7 +13,7 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.goto("/register");
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("E2E User");
-    await page.getByLabel("Mot de passe").fill(password);
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
     await page.getByRole("button", { name: "Créer mon compte" }).click();
 
     await expect(page).toHaveURL(/\/register\/check-email$/);
@@ -25,7 +25,7 @@ test.describe("Auth — register → verify → login → logout", () => {
 
     await page.goto("/login");
     await page.getByLabel("Email").fill(email);
-    await page.getByLabel("Mot de passe").fill(password);
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
     await page.getByRole("button", { name: "Se connecter" }).click();
 
     await expect(page).toHaveURL("/");
@@ -43,14 +43,14 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.goto("/register");
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("Bad Login User");
-    await page.getByLabel("Mot de passe").fill(password);
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
     await page.getByRole("button", { name: "Créer mon compte" }).click();
     const token = await fetchVerificationToken(email);
     await page.goto(`/verify-email?token=${token}`);
 
     await page.goto("/login");
     await page.getByLabel("Email").fill(email);
-    await page.getByLabel("Mot de passe").fill("totally-wrong");
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill("totally-wrong");
     await page.getByRole("button", { name: "Se connecter" }).click();
 
     await expect(page.getByText("Email ou mot de passe incorrect.")).toBeVisible();
@@ -61,14 +61,14 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.goto("/register");
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("Dup User");
-    await page.getByLabel("Mot de passe").fill("password-one");
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill("password-one");
     await page.getByRole("button", { name: "Créer mon compte" }).click();
     await expect(page).toHaveURL(/\/register\/check-email$/);
 
     await page.goto("/register");
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("Dup User 2");
-    await page.getByLabel("Mot de passe").fill("password-two");
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill("password-two");
     await page.getByRole("button", { name: "Créer mon compte" }).click();
 
     await expect(page.getByText("Un compte existe déjà avec cet email.")).toBeVisible();
@@ -84,7 +84,7 @@ test.describe("Auth — forgot → reset → login with new password", () => {
     await page.goto("/register");
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("Reset User");
-    await page.getByLabel("Mot de passe").fill(oldPassword);
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill(oldPassword);
     await page.getByRole("button", { name: "Créer mon compte" }).click();
     const verifyToken = await fetchVerificationToken(email);
     await page.goto(`/verify-email?token=${verifyToken}`);
@@ -104,7 +104,7 @@ test.describe("Auth — forgot → reset → login with new password", () => {
 
     await page.goto("/login");
     await page.getByLabel("Email").fill(email);
-    await page.getByLabel("Mot de passe").fill(newPassword);
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill(newPassword);
     await page.getByRole("button", { name: "Se connecter" }).click();
     await expect(page).toHaveURL("/");
   });
@@ -127,14 +127,14 @@ test.describe("Auth-gate redirects", () => {
     await page.goto("/register");
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("Redirect User");
-    await page.getByLabel("Mot de passe").fill(password);
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
     await page.getByRole("button", { name: "Créer mon compte" }).click();
     const token = await fetchVerificationToken(email);
     await page.goto(`/verify-email?token=${token}`);
 
     await page.goto("/login");
     await page.getByLabel("Email").fill(email);
-    await page.getByLabel("Mot de passe").fill(password);
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
     await page.getByRole("button", { name: "Se connecter" }).click();
     await expect(page).toHaveURL("/");
 
