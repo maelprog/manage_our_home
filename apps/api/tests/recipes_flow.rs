@@ -288,7 +288,7 @@ async fn only_creator_or_admin_can_delete_recipe(db: PgPool) {
 async fn negative_ingredient_quantity_is_rejected(db: PgPool) {
     let router = test_router(db.clone());
     let owner_cookie =
-        register_verify_login(&router, &db, "recipe-neg@example.test", "password1234").await;
+        register_verify_login(&router, &db, "recipe-neg@example.test", "test-password-1234").await;
     let group_id = create_group(&router, &owner_cookie, "Foyer").await;
 
     let create = call(

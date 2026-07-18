@@ -11,16 +11,41 @@
 //! `apps/api/src/auth/validation.rs`, moved here verbatim once `apps/web`
 //! needed it too).
 
-/// Minimum accepted password length (characters). Kept intentionally low —
-/// this is a floor, not a strength policy.
-pub const MIN_PASSWORD_LEN: usize = 8;
+/// Minimum accepted password length (characters). 12 rather than NIST's
+/// 8-char floor because ANSSI/CNIL (the French guidance this product's
+/// audience falls under) recommend ≥12 for standard accounts. Length and
+/// the common-password blocklist are the whole policy: per NIST SP 800-63B
+/// and OWASP, no character-composition rules (mandatory digits, upper/lower
+/// case, symbols) are imposed — they push users toward predictable
+/// patterns without adding real entropy.
+pub const MIN_PASSWORD_LEN: usize = 12;
 
-/// `password_too_short` when the password has fewer than `MIN_PASSWORD_LEN`
-/// characters. Counts Unicode scalar values, not bytes, so an 8-emoji
-/// password isn't rejected as "too short".
+/// Maximum accepted password length (characters). Not a strength concern —
+/// a DoS guard so the Argon2 hashing cost stays bounded. NIST requires
+/// supporting at least 64; 128 leaves ample room for passphrases.
+pub const MAX_PASSWORD_LEN: usize = 128;
+
+/// Common passwords (≥12 chars, lowercased, deduped) from the SecLists
+/// `Pwdb_top-100000.txt` breach corpus. NIST SP 800-63B requires checking
+/// candidate passwords against a blocklist of commonly-used/compromised
+/// values; ~1400 entries, so a linear scan is fine.
+const COMMON_PASSWORDS: &str = include_str!("common_passwords.txt");
+
+/// `password_too_short` under `MIN_PASSWORD_LEN` characters,
+/// `password_too_long` over `MAX_PASSWORD_LEN`, `password_too_common` when
+/// the lowercased password appears in the blocklist. Counts Unicode scalar
+/// values, not bytes, so a 12-emoji password isn't rejected as "too short".
 pub fn validate_password(password: &str) -> Result<(), &'static str> {
-    if password.chars().count() < MIN_PASSWORD_LEN {
+    let len = password.chars().count();
+    if len < MIN_PASSWORD_LEN {
         return Err("password_too_short");
+    }
+    if len > MAX_PASSWORD_LEN {
+        return Err("password_too_long");
+    }
+    let lowered = password.to_lowercase();
+    if COMMON_PASSWORDS.lines().any(|common| common == lowered) {
+        return Err("password_too_common");
     }
     Ok(())
 }
@@ -67,7 +92,8 @@ mod tests {
     #[test]
     fn password_shorter_than_minimum_is_rejected() {
         assert_eq!(validate_password("short"), Err("password_too_short"));
-        assert_eq!(validate_password("1234567"), Err("password_too_short"));
+        assert_eq!(validate_password("12345678"), Err("password_too_short"));
+        assert_eq!(validate_password("elevenchars"), Err("password_too_short"));
     }
 
     #[test]
@@ -77,15 +103,46 @@ mod tests {
 
     #[test]
     fn password_at_or_above_minimum_is_accepted() {
-        assert_eq!(validate_password("12345678"), Ok(()));
+        assert_eq!(validate_password("twelve-chars"), Ok(()));
         assert_eq!(validate_password("a-long-passphrase"), Ok(()));
         assert_eq!(validate_password("correct horse battery staple"), Ok(()));
     }
 
     #[test]
     fn password_length_counts_chars_not_bytes() {
-        // 8 multi-byte characters => 8 scalar values, accepted.
-        assert_eq!(validate_password("éééééééé"), Ok(()));
+        // 12 multi-byte characters => 12 scalar values, accepted.
+        assert_eq!(validate_password("éééééééééééé"), Ok(()));
+    }
+
+    #[test]
+    fn password_over_maximum_is_rejected() {
+        assert_eq!(validate_password(&"a".repeat(MAX_PASSWORD_LEN)), Ok(()));
+        assert_eq!(
+            validate_password(&"a".repeat(MAX_PASSWORD_LEN + 1)),
+            Err("password_too_long")
+        );
+        // Chars, not bytes: 128 multi-byte chars is still at the limit.
+        assert_eq!(validate_password(&"é".repeat(MAX_PASSWORD_LEN)), Ok(()));
+    }
+
+    #[test]
+    fn common_passwords_are_rejected() {
+        assert_eq!(validate_password("password1234"), Err("password_too_common"));
+        assert_eq!(validate_password("administrator"), Err("password_too_common"));
+    }
+
+    #[test]
+    fn common_password_check_is_case_insensitive() {
+        assert_eq!(validate_password("Password1234"), Err("password_too_common"));
+        assert_eq!(validate_password("PASSWORD1234"), Err("password_too_common"));
+    }
+
+    #[test]
+    fn uncommon_long_password_is_accepted_without_composition_rules() {
+        // No character-class requirements: all-lowercase, no digit, no
+        // symbol is fine as long as it's long enough and not common.
+        assert_eq!(validate_password("blue houses drift slowly"), Ok(()));
+        assert_eq!(validate_password("test-password-1234"), Ok(()));
     }
 
     // -- validate_email --------------------------------------------------

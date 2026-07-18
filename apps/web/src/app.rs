@@ -8,6 +8,7 @@
 //! plain-string templated since it never needs reactivity.
 
 use manage_our_home_shared::dto::auth::MeResponse;
+use manage_our_home_shared::validation::auth::{MAX_PASSWORD_LEN, MIN_PASSWORD_LEN};
 
 pub fn shell(title: &str, body_html: &str) -> String {
     format!(
@@ -47,9 +48,129 @@ pub fn authenticated_header(me: &MeResponse) -> String {
     )
 }
 
+/// Password `<label>` block shared by login/register/reset-password
+/// (embed via `<div inner_html=...></div>` like `authenticated_header`).
+/// The show/hide toggle is progressive enhancement: with JS disabled the
+/// button does nothing and the form still submits normally. `with_rules`
+/// states the password rules upfront and adds the matching `minlength`,
+/// so browsers reject a too-short password *before* the form round-trips
+/// (a server-rendered error page can't refill the password field without
+/// echoing the password back into the HTML, so avoiding the round trip is
+/// what keeps the field from being wiped).
+pub fn password_field(label: &str, name: &str, autocomplete: &str, with_rules: bool) -> String {
+    let (rules_attr, hint) = if with_rules {
+        (
+            format!(r#" minlength="{MIN_PASSWORD_LEN}" maxlength="{MAX_PASSWORD_LEN}""#),
+            format!(
+                r#"<span class="muted">Au moins {MIN_PASSWORD_LEN} caractères — une phrase de passe (plusieurs mots) est idéale. Pas de règle de majuscules ou de chiffres.</span>"#
+            ),
+        )
+    } else {
+        (String::new(), String::new())
+    };
+    format!(
+        r#"<label>
+{label}
+<div class="pw-wrap">
+<input type="password" name="{name}" autocomplete="{autocomplete}" required{rules_attr} />
+<button type="button" class="pw-toggle" aria-label="Afficher le mot de passe" onclick="var i=this.parentNode.querySelector('input');var s=i.type==='password';i.type=s?'text':'password';this.setAttribute('aria-label',s?'Masquer le mot de passe':'Afficher le mot de passe');this.classList.toggle('shown',s)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></button>
+</div>
+{hint}
+</label>"#,
+        label = html_escape(label),
+        name = html_escape(name),
+        autocomplete = html_escape(autocomplete),
+    )
+}
+
+/// French form message for a `validate_password` error code, shared by
+/// register and reset-password so the two pages can't drift apart.
+pub fn password_error_message(code: &str) -> String {
+    match code {
+        "password_too_short" => {
+            format!("Le mot de passe doit contenir au moins {MIN_PASSWORD_LEN} caractères.")
+        }
+        "password_too_long" => {
+            format!("Le mot de passe ne peut pas dépasser {MAX_PASSWORD_LEN} caractères.")
+        }
+        "password_too_common" => {
+            "Ce mot de passe est trop courant, choisissez-en un autre.".to_string()
+        }
+        _ => "Mot de passe invalide.".to_string(),
+    }
+}
+
 pub fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- password_field ------------------------------------------------
+
+    #[test]
+    fn with_rules_shows_hint_and_minlength_upfront() {
+        let html = password_field("Mot de passe", "password", "new-password", true);
+        assert!(html.contains(r#"name="password""#));
+        assert!(html.contains(r#"type="password""#));
+        assert!(html.contains(r#"minlength="12""#));
+        assert!(html.contains(r#"maxlength="128""#));
+        assert!(html.contains("Au moins 12 caractères"));
+        assert!(html.contains("phrase de passe"));
+        assert!(html.contains(r#"autocomplete="new-password""#));
+    }
+
+    #[test]
+    fn without_rules_has_no_hint_or_minlength() {
+        let html = password_field("Mot de passe", "password", "current-password", false);
+        assert!(!html.contains("minlength"));
+        assert!(!html.contains("maxlength"));
+        assert!(!html.contains("Au moins"));
+        assert!(html.contains(r#"autocomplete="current-password""#));
+    }
+
+    #[test]
+    fn always_renders_a_visibility_toggle() {
+        for with_rules in [true, false] {
+            let html = password_field("Mot de passe", "password", "new-password", with_rules);
+            assert!(html.contains("pw-toggle"));
+            assert!(html.contains("Afficher le mot de passe"));
+        }
+    }
+
+    // -- password_error_message ----------------------------------------
+
+    #[test]
+    fn maps_each_password_error_code_to_a_french_message() {
+        assert_eq!(
+            password_error_message("password_too_short"),
+            "Le mot de passe doit contenir au moins 12 caractères."
+        );
+        assert_eq!(
+            password_error_message("password_too_long"),
+            "Le mot de passe ne peut pas dépasser 128 caractères."
+        );
+        assert_eq!(
+            password_error_message("password_too_common"),
+            "Ce mot de passe est trop courant, choisissez-en un autre."
+        );
+    }
+
+    #[test]
+    fn unknown_password_error_code_gets_a_generic_message() {
+        assert_eq!(password_error_message("something_else"), "Mot de passe invalide.");
+    }
+
+    #[test]
+    fn escapes_label_and_name() {
+        let html = password_field("a<b>", "x\"y", "new-password", false);
+        assert!(html.contains("a&lt;b&gt;"));
+        assert!(html.contains("x&quot;y"));
+        assert!(!html.contains("a<b>"));
+    }
 }

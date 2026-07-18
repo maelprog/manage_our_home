@@ -3,10 +3,10 @@ use axum::response::{Html, IntoResponse};
 use axum::Form;
 use leptos::prelude::*;
 use manage_our_home_shared::dto::auth::ResetPasswordRequest;
-use manage_our_home_shared::validation::auth::{validate_password, MIN_PASSWORD_LEN};
+use manage_our_home_shared::validation::auth::validate_password;
 use uuid::Uuid;
 
-use crate::app::shell;
+use crate::app::{password_error_message, password_field, shell};
 use crate::state::{api_post_json, AppState};
 
 #[derive(serde::Deserialize)]
@@ -34,15 +34,13 @@ fn invalid_link_page(title: &str, message: &str) -> String {
 fn form_page(token: &str, error: Option<&str>) -> String {
     let token_owned = token.to_string();
     let error_owned = error.map(str::to_string);
+    let pw = password_field("Nouveau mot de passe", "new_password", "new-password", true);
     let body = view! {
         <h1>"Réinitialiser le mot de passe"</h1>
         {error_owned.map(|e| view! { <p class="notice error">{e}</p> })}
         <form method="post" action="/reset-password">
             <input type="hidden" name="token" value=token_owned />
-            <label>
-                "Nouveau mot de passe"
-                <input type="password" name="new_password" required=true />
-            </label>
+            <div inner_html=pw></div>
             <button type="submit">"Réinitialiser"</button>
         </form>
     };
@@ -69,13 +67,8 @@ pub async fn post(
             "Ce lien de réinitialisation n'existe pas.",
         ));
     };
-    if validate_password(&form.new_password).is_err() {
-        return Html(form_page(
-            &form.token,
-            Some(&format!(
-                "Le mot de passe doit contenir au moins {MIN_PASSWORD_LEN} caractères."
-            )),
-        ));
+    if let Err(code) = validate_password(&form.new_password) {
+        return Html(form_page(&form.token, Some(&password_error_message(code))));
     }
 
     let result = api_post_json(

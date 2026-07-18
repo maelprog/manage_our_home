@@ -4,10 +4,10 @@ use axum::Form;
 use leptos::prelude::*;
 use manage_our_home_shared::dto::auth::RegisterRequest;
 use manage_our_home_shared::validation::auth::{
-    validate_display_name, validate_email, validate_password, MIN_PASSWORD_LEN,
+    validate_display_name, validate_email, validate_password,
 };
 
-use crate::app::shell;
+use crate::app::{password_error_message, password_field, shell};
 use crate::layout::RedirectIfAuthenticated;
 use crate::state::{api_post_json, AppState};
 
@@ -18,7 +18,15 @@ pub struct RegisterForm {
     display_name: String,
 }
 
-fn page(email: &str, display_name: &str, field_error: Option<&str>, error: Option<&str>) -> String {
+fn page(
+    email: &str,
+    display_name: &str,
+    field_error: Option<&str>,
+    error: Option<&str>,
+    api_public_base_url: &str,
+) -> String {
+    let google_start = format!("{api_public_base_url}/auth/google/start");
+    let pw = password_field("Mot de passe", "password", "new-password", true);
     let body = view! {
         <h1>"Créer un compte"</h1>
         {error.map(|e| view! {
@@ -34,12 +42,12 @@ fn page(email: &str, display_name: &str, field_error: Option<&str>, error: Optio
                 "Nom affiché"
                 <input type="text" name="display_name" required=true value=display_name.to_string() />
             </label>
-            <label>
-                "Mot de passe"
-                <input type="password" name="password" required=true />
-            </label>
+            <div inner_html=pw></div>
             <button type="submit">"Créer mon compte"</button>
         </form>
+        <a class="button secondary" href=google_start style="display:block;margin-top:0.75rem;">
+            "Continuer avec Google"
+        </a>
         <div class="links">
             <a href="/login">"J'ai déjà un compte"</a>
         </div>
@@ -47,8 +55,11 @@ fn page(email: &str, display_name: &str, field_error: Option<&str>, error: Optio
     shell("Créer un compte", &body.to_html())
 }
 
-pub async fn get(_redirect: RedirectIfAuthenticated) -> impl IntoResponse {
-    Html(page("", "", None, None))
+pub async fn get(
+    _redirect: RedirectIfAuthenticated,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    Html(page("", "", None, None, &state.api_public_base_url))
 }
 
 pub async fn post(
@@ -62,6 +73,7 @@ pub async fn post(
             &form.display_name,
             Some("Adresse email invalide."),
             None,
+            &state.api_public_base_url,
         ))
         .into_response();
     }
@@ -71,17 +83,17 @@ pub async fn post(
             &form.display_name,
             None,
             Some("Le nom affiché ne peut pas être vide."),
+            &state.api_public_base_url,
         ))
         .into_response();
     }
-    if validate_password(&form.password).is_err() {
+    if let Err(code) = validate_password(&form.password) {
         return Html(page(
             &form.email,
             &form.display_name,
             None,
-            Some(&format!(
-                "Le mot de passe doit contenir au moins {MIN_PASSWORD_LEN} caractères."
-            )),
+            Some(&password_error_message(code)),
+            &state.api_public_base_url,
         ))
         .into_response();
     }
@@ -106,6 +118,7 @@ pub async fn post(
             &form.display_name,
             Some("Un compte existe déjà avec cet email."),
             None,
+            &state.api_public_base_url,
         ))
         .into_response(),
         Ok(_) => Html(page(
@@ -113,6 +126,7 @@ pub async fn post(
             &form.display_name,
             None,
             Some("Une erreur est survenue, merci de réessayer."),
+            &state.api_public_base_url,
         ))
         .into_response(),
         Err(_) => Html(page(
@@ -120,6 +134,7 @@ pub async fn post(
             &form.display_name,
             None,
             Some("Service momentanément indisponible, merci de réessayer."),
+            &state.api_public_base_url,
         ))
         .into_response(),
     }
