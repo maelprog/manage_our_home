@@ -127,14 +127,26 @@ mod tests {
 
     #[test]
     fn common_passwords_are_rejected() {
-        assert_eq!(validate_password("password1234"), Err("password_too_common"));
-        assert_eq!(validate_password("administrator"), Err("password_too_common"));
+        assert_eq!(
+            validate_password("password1234"),
+            Err("password_too_common")
+        );
+        assert_eq!(
+            validate_password("administrator"),
+            Err("password_too_common")
+        );
     }
 
     #[test]
     fn common_password_check_is_case_insensitive() {
-        assert_eq!(validate_password("Password1234"), Err("password_too_common"));
-        assert_eq!(validate_password("PASSWORD1234"), Err("password_too_common"));
+        assert_eq!(
+            validate_password("Password1234"),
+            Err("password_too_common")
+        );
+        assert_eq!(
+            validate_password("PASSWORD1234"),
+            Err("password_too_common")
+        );
     }
 
     #[test]

@@ -163,7 +163,10 @@ mod tests {
 
     #[test]
     fn unknown_password_error_code_gets_a_generic_message() {
-        assert_eq!(password_error_message("something_else"), "Mot de passe invalide.");
+        assert_eq!(
+            password_error_message("something_else"),
+            "Mot de passe invalide."
+        );
     }
 
     #[test]

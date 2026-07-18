@@ -401,8 +401,13 @@ async fn task_completion_toggles_completed_at(db: PgPool) {
 #[sqlx::test]
 async fn recurring_task_completion_is_per_occurrence(db: PgPool) {
     let router = test_router(db.clone());
-    let owner_cookie =
-        register_verify_login(&router, &db, "recur-task@example.test", "test-password-1234").await;
+    let owner_cookie = register_verify_login(
+        &router,
+        &db,
+        "recur-task@example.test",
+        "test-password-1234",
+    )
+    .await;
     let group_id = create_group(&router, &owner_cookie, "Foyer").await;
 
     let starts_at = Utc::now() + Duration::days(1);
