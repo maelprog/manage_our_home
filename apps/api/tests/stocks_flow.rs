@@ -206,7 +206,7 @@ async fn non_member_cannot_access_group_stock_items(db: PgPool) {
 async fn negative_quantity_is_rejected(db: PgPool) {
     let router = test_router(db.clone());
     let owner_cookie =
-        register_verify_login(&router, &db, "stock-neg@example.test", "password1234").await;
+        register_verify_login(&router, &db, "stock-neg@example.test", "test-password-1234").await;
     let group_id = create_group(&router, &owner_cookie, "Foyer").await;
 
     let create = call(

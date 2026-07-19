@@ -5,7 +5,7 @@ use axum::Form;
 use leptos::prelude::*;
 use manage_our_home_shared::dto::auth::LoginRequest;
 
-use crate::app::shell;
+use crate::app::{password_field, shell};
 use crate::layout::RedirectIfAuthenticated;
 use crate::state::{api_post_json, AppState};
 
@@ -17,6 +17,7 @@ pub struct LoginForm {
 
 fn page(email: &str, error: Option<&str>, api_public_base_url: &str) -> String {
     let google_start = format!("{api_public_base_url}/auth/google/start");
+    let pw = password_field("Mot de passe", "password", "current-password", false);
     let body = view! {
         <h1>"Se connecter"</h1>
         {error.map(|e| view! { <p class="notice error">{e.to_string()}</p> })}
@@ -25,10 +26,7 @@ fn page(email: &str, error: Option<&str>, api_public_base_url: &str) -> String {
                 "Email"
                 <input type="email" name="email" required=true value=email.to_string() />
             </label>
-            <label>
-                "Mot de passe"
-                <input type="password" name="password" required=true />
-            </label>
+            <div inner_html=pw></div>
             <button type="submit">"Se connecter"</button>
         </form>
         <a class="button secondary" href=google_start style="display:block;margin-top:0.75rem;">

@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
@@ -11,15 +9,17 @@ use crate::error::AppResult;
 use crate::groups::require_role;
 use crate::AppState;
 
-/// How often the connection re-validates the caller is still a group
-/// member, bounding how long a removed member (`DELETE /groups/:id/
-/// members/:user_id`) stays connected (AC #7). Per-message revalidation on
-/// every broadcast send was considered and dropped in review: it would
-/// mean a synchronous DB round-trip per event per connection on every
-/// fan-out, turning a low-latency push into a DB-bound RPC. Writes
-/// (POST/PATCH/DELETE) already re-run `require_role` on every request, so
-/// this tick only needs to cover the read-only, otherwise-silent WS leg.
-const MEMBERSHIP_RECHECK_INTERVAL: Duration = Duration::from_secs(30);
+// How often the connection re-validates the caller is still a group
+// member, bounding how long a removed member (`DELETE /groups/:id/
+// members/:user_id`) stays connected (AC #7). Per-message revalidation on
+// every broadcast send was considered and dropped in review: it would
+// mean a synchronous DB round-trip per event per connection on every
+// fan-out, turning a low-latency push into a DB-bound RPC. Writes
+// (POST/PATCH/DELETE) already re-run `require_role` on every request, so
+// this tick only needs to cover the read-only, otherwise-silent WS leg.
+// The interval lives on `AppState` (`message_ws_recheck_interval`, 30s in
+// production) so the AC #7 flow test can shorten the bound instead of
+// sleeping 30s for real.
 
 pub async fn message_ws(
     State(state): State<AppState>,
@@ -50,7 +50,7 @@ async fn is_still_member(state: &AppState, group_id: Uuid, user_id: Uuid) -> boo
 
 async fn handle_socket(mut socket: WebSocket, state: AppState, group_id: Uuid, user_id: Uuid) {
     let mut events = state.message_hubs.subscribe(group_id).await;
-    let mut recheck = tokio::time::interval(MEMBERSHIP_RECHECK_INTERVAL);
+    let mut recheck = tokio::time::interval(state.message_ws_recheck_interval);
     recheck.tick().await; // first tick fires immediately; skip it
 
     loop {

@@ -48,6 +48,65 @@ async fn register_verify_login(
     set_cookie(&login).unwrap()
 }
 
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Opens a WS connection to a group's message stream, asserting the
+/// upgrade handshake succeeds (101).
+async fn connect_ws(addr: std::net::SocketAddr, group_id: &str, cookie: &str) -> WsStream {
+    let ws_url = format!("ws://{addr}/groups/{group_id}/messages/ws");
+    let mut request = ws_url.into_client_request().unwrap();
+    request
+        .headers_mut()
+        .insert(axum::http::header::COOKIE, cookie.parse().unwrap());
+    let (ws_stream, response) = tokio_tungstenite::connect_async(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    ws_stream
+}
+
+/// Waits (bounded) for the next text frame and parses it as a JSON event.
+async fn next_ws_event(ws_stream: &mut WsStream) -> serde_json::Value {
+    let received = tokio::time::timeout(Duration::from_secs(5), ws_stream.next())
+        .await
+        .expect("timed out waiting for WS event")
+        .expect("stream ended")
+        .unwrap();
+    let WsMessage::Text(text) = received else {
+        panic!("expected a text frame, got {received:?}");
+    };
+    serde_json::from_str(&text).unwrap()
+}
+
+async fn invite_and_join(
+    router: &axum::Router,
+    group_id: &str,
+    owner_cookie: &str,
+    member_cookie: &str,
+) {
+    let invite = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/invitations"),
+        Some(owner_cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_status(&invite, StatusCode::CREATED);
+    let token = json_body(invite).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let accept = call(
+        router,
+        Method::POST,
+        &format!("/groups/invitations/{token}/accept"),
+        Some(member_cookie),
+        None,
+    )
+    .await;
+    assert_status(&accept, StatusCode::OK);
+}
+
 async fn create_group(router: &axum::Router, cookie: &str, name: &str) -> String {
     let res = call(
         router,
@@ -542,9 +601,11 @@ async fn ws_client_receives_message_created_event(db: PgPool) {
     ws_stream.close(None).await.ok();
 }
 
-/// AC #7: a member removed from the group has their WS connection closed
-/// within the bounded 30s recheck — exercised here with a short interval
-/// via a second connection attempt after removal is rejected outright.
+/// Handshake gate: a user who was never a member of the group is rejected
+/// with a plain HTTP 403 at upgrade time, before any socket opens — the
+/// same `require_role` bar as the REST handlers. (AC #7 — closing an
+/// already-open connection after the member is removed — is covered by
+/// `removed_member_ws_closes_within_recheck_bound` below.)
 #[sqlx::test]
 async fn non_member_cannot_open_ws(db: PgPool) {
     let state = test_state(db.clone());
@@ -586,4 +647,242 @@ async fn non_member_cannot_open_ws(db: PgPool) {
         }
         other => panic!("expected an HTTP 403 rejection, got {other:?}"),
     }
+}
+
+/// AC #6 / decision #8: edits and deletions are pushed over WS like new
+/// messages — a connected client receives `message.updated` (full message,
+/// `edited_at` set) and `message.deleted` (id only) in order.
+#[sqlx::test]
+async fn ws_client_receives_updated_and_deleted_events(db: PgPool) {
+    let state = test_state(db.clone());
+    let ws_router = manage_our_home::build_router(state.clone());
+    let http_router = manage_our_home::build_router(state);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, ws_router).await.unwrap();
+    });
+
+    let owner_cookie = register_verify_login(
+        &http_router,
+        &db,
+        "msg-ws-upd-owner@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&http_router, &owner_cookie, "Foyer").await;
+
+    let mut ws_stream = connect_ws(addr, &group_id, &owner_cookie).await;
+    // Same registration delay as ws_client_receives_message_created_event:
+    // subscribe() happens asynchronously after the upgrade.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let create = call(
+        &http_router,
+        Method::POST,
+        &format!("/groups/{group_id}/messages"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"content": "original"})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let message_id = json_body(create).await["id"].as_str().unwrap().to_string();
+
+    let created = next_ws_event(&mut ws_stream).await;
+    assert_eq!(created["type"], "message.created");
+
+    let update = call(
+        &http_router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/messages/{message_id}"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"content": "edited live"})),
+    )
+    .await;
+    assert_status(&update, StatusCode::OK);
+
+    let updated = next_ws_event(&mut ws_stream).await;
+    assert_eq!(updated["type"], "message.updated");
+    assert_eq!(updated["message"]["id"].as_str().unwrap(), message_id);
+    assert_eq!(updated["message"]["content"], "edited live");
+    assert!(!updated["message"]["edited_at"].is_null());
+
+    let delete = call(
+        &http_router,
+        Method::DELETE,
+        &format!("/groups/{group_id}/messages/{message_id}"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&delete, StatusCode::NO_CONTENT);
+
+    let deleted = next_ws_event(&mut ws_stream).await;
+    assert_eq!(deleted["type"], "message.deleted");
+    assert_eq!(deleted["id"].as_str().unwrap(), message_id);
+
+    ws_stream.close(None).await.ok();
+}
+
+/// AC #6 (isolation half): a client connected to family B's thread never
+/// receives family A's events — each family gets its own broadcast channel
+/// keyed by `group_id`, so A's publish can't reach B's subscription at
+/// all. Posting a sentinel into B afterwards and asserting it's the FIRST
+/// frame B sees proves both non-receipt and that the socket was live the
+/// whole time (a dead socket would pass a pure non-receipt check too).
+#[sqlx::test]
+async fn ws_client_does_not_receive_other_familys_events(db: PgPool) {
+    let state = test_state(db.clone());
+    let ws_router = manage_our_home::build_router(state.clone());
+    let http_router = manage_our_home::build_router(state);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, ws_router).await.unwrap();
+    });
+
+    let owner_a = register_verify_login(
+        &http_router,
+        &db,
+        "msg-ws-iso-a@example.test",
+        "owner-password1",
+    )
+    .await;
+    let owner_b = register_verify_login(
+        &http_router,
+        &db,
+        "msg-ws-iso-b@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_a = create_group(&http_router, &owner_a, "Famille A").await;
+    let group_b = create_group(&http_router, &owner_b, "Famille B").await;
+
+    let mut ws_b = connect_ws(addr, &group_b, &owner_b).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Family A posts first; if isolation were broken, this event would
+    // reach B's socket ahead of the sentinel below.
+    let create_a = call(
+        &http_router,
+        Method::POST,
+        &format!("/groups/{group_a}/messages"),
+        Some(&owner_a),
+        Some(serde_json::json!({"content": "family A secret"})),
+    )
+    .await;
+    assert_status(&create_a, StatusCode::CREATED);
+
+    let create_b = call(
+        &http_router,
+        Method::POST,
+        &format!("/groups/{group_b}/messages"),
+        Some(&owner_b),
+        Some(serde_json::json!({"content": "family B sentinel"})),
+    )
+    .await;
+    assert_status(&create_b, StatusCode::CREATED);
+
+    let first = next_ws_event(&mut ws_b).await;
+    assert_eq!(first["type"], "message.created");
+    assert_eq!(
+        first["message"]["content"], "family B sentinel",
+        "family B's socket received family A's event"
+    );
+    assert_eq!(first["message"]["group_id"].as_str().unwrap(), group_b);
+
+    ws_b.close(None).await.ok();
+}
+
+/// AC #7: a member removed from the group (`DELETE /groups/:id/members/
+/// :user_id`) has their open WS connection closed within the membership
+/// recheck bound — 30s in production, shortened here through
+/// `AppState::message_ws_recheck_interval` so the test doesn't sleep out
+/// the real interval — while the remaining member's connection stays open.
+#[sqlx::test]
+async fn removed_member_ws_closes_within_recheck_bound(db: PgPool) {
+    let mut state = test_state(db.clone());
+    state.message_ws_recheck_interval = Duration::from_millis(200);
+    let ws_router = manage_our_home::build_router(state.clone());
+    let http_router = manage_our_home::build_router(state);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, ws_router).await.unwrap();
+    });
+
+    let owner_cookie = register_verify_login(
+        &http_router,
+        &db,
+        "msg-ws-removal-owner@example.test",
+        "owner-password1",
+    )
+    .await;
+    let member_cookie = register_verify_login(
+        &http_router,
+        &db,
+        "msg-ws-removal-member@example.test",
+        "member-password1",
+    )
+    .await;
+    let group_id = create_group(&http_router, &owner_cookie, "Foyer").await;
+    invite_and_join(&http_router, &group_id, &owner_cookie, &member_cookie).await;
+
+    let member_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind("msg-ws-removal-member@example.test")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+
+    let mut owner_ws = connect_ws(addr, &group_id, &owner_cookie).await;
+    let mut member_ws = connect_ws(addr, &group_id, &member_cookie).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let remove = call(
+        &http_router,
+        Method::DELETE,
+        &format!("/groups/{group_id}/members/{member_id}"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&remove, StatusCode::NO_CONTENT);
+
+    // The removed member's socket must be closed by the next recheck tick.
+    // 5s of budget >> the 200ms interval, without being sleep-sensitive.
+    let closed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match member_ws.next().await {
+                Some(Ok(WsMessage::Close(_))) | None => break,
+                Some(Ok(_)) => continue, // drain any in-flight frame
+                Some(Err(_)) => break,
+            }
+        }
+    })
+    .await;
+    assert!(
+        closed.is_ok(),
+        "removed member's WS was not closed within the recheck bound"
+    );
+
+    // The remaining member's connection survived the other's removal and
+    // still receives pushes.
+    let create = call(
+        &http_router,
+        Method::POST,
+        &format!("/groups/{group_id}/messages"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"content": "still here"})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+
+    let event = next_ws_event(&mut owner_ws).await;
+    assert_eq!(event["type"], "message.created");
+    assert_eq!(event["message"]["content"], "still here");
+
+    owner_ws.close(None).await.ok();
 }

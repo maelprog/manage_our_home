@@ -3,6 +3,7 @@ pub mod audit;
 pub mod auth;
 pub mod budget;
 pub mod crypto;
+pub mod dev_seed;
 pub mod email;
 pub mod error;
 pub mod google_calendar;
@@ -54,6 +55,13 @@ pub struct AppState {
     /// In-memory per-family broadcast registry for Messagerie's WS push
     /// (Epic #7 decision #3).
     pub message_hubs: messagerie::MessageHub,
+    /// How often an open Messagerie WS connection re-validates that the
+    /// caller is still a group member, bounding how long a removed member
+    /// stays connected (Epic #7 AC #7). 30s in production (`main.rs`);
+    /// integration tests shorten it so the removal-disconnect test doesn't
+    /// have to sleep out the real bound. See `messagerie/ws.rs` for why
+    /// this is a periodic tick rather than a per-event check.
+    pub message_ws_recheck_interval: std::time::Duration,
     pub secure_cookies: bool,
     /// MinIO/S3 client for event file attachments (architecture.md epic #10).
     pub storage: Storage,
