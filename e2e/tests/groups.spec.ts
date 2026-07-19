@@ -19,14 +19,14 @@ async function registerAndLogin(page: Page, prefix: string, displayName: string)
   await page.goto("/register");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Nom affiché").fill(displayName);
-  await page.getByLabel("Mot de passe").fill(PASSWORD);
+  await page.getByRole("textbox", { name: "Mot de passe" }).fill(PASSWORD);
   await page.getByRole("button", { name: "Créer mon compte" }).click();
   await expect(page).toHaveURL(/\/register\/check-email$/);
   const token = await fetchVerificationToken(email);
   await page.goto(`/verify-email?token=${token}`);
   await page.goto("/login");
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Mot de passe").fill(PASSWORD);
+  await page.getByRole("textbox", { name: "Mot de passe" }).fill(PASSWORD);
   await page.getByRole("button", { name: "Se connecter" }).click();
   await expect(page).toHaveURL("/");
   return email;
