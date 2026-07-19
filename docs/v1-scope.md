@@ -42,7 +42,7 @@ epic #1 (GH issue #15) for the full rationale.
 | # | Front epic | GH issue | Status | Notes |
 |---|---|---|---|---|
 | F1 | Auth (register/verify/login/forgot-reset password/Google OAuth/logout) | #15 | **spec'd, open** | Stands up `apps/web` + `apps/shared` workspace crates for the first time. Blocks every other front epic (no client shell exists before this lands). Requires a new backend `GET /auth/me` endpoint (blocking prerequisite, included in the issue). Account-deletion UI and Capacitor/mobile explicitly out of scope, tracked separately. |
-| F2 | Groups (create/join/invite, roles, switch active family) | #17 | **spec'd, open** | Depends on F1 (needs an authenticated shell + `GET /auth/me` session context). |
+| F2 | Groups (create/join/invite, roles, switch active family) | #17 | **done** | `apps/web/src/routes/groups/` (`/groups`, `/groups/new`, `/groups/:id/members`, `/groups/:id/settings`, `/groups/invitations/:token/accept`) + the root-layout active-family switcher (persisted in the `active_group_id` cookie, resolved against `GET /groups` on every page — see `apps/web/src/family.rs`). DTOs in `apps/shared/src/dto/groups.rs`; pure validation/permission mirrors (group name, invitation-token parsing, owner/admin bar, `actor_can_act_on`) TDD'd in `apps/shared/src/validation/groups.rs`. Error UI maps apps/api's exact codes: 422 `too_many_groups`/`name_required`/`new_owner_id_required`/`cannot_transfer_to_self`, 409 `last_member_must_delete_group`, 410 consumed/expired invitation, 404 unknown invitation/group, 403 permission bar. |
 | F3 | Agenda (calendar view, events, tasks-as-events, recurrence, reminders, file attachments) | #18 | **spec'd, open** | Depends on F2 (family switcher). Largest UI surface (calendar widget hand-rolled per architecture.md's Leptos ecosystem-gap note). |
 | F4 | Stocks (list, manual entry, reorder threshold, low-stock indicator) | #19 | **spec'd, open** | Depends on F2. |
 | F5 | Recipes (list, suggestion view, missing-ingredients display, log a meal) | #20 | **spec'd, open** | Depends on F4 (stock match is central to the suggestion display). |
@@ -72,7 +72,17 @@ introduces, and CI must run that suite as a merge gate — not a
 follow-up task. F1 (#15) already has this in its acceptance criteria
 (#11) and testing plan; F2-F10 (#17-#25) placeholders were updated
 2026-07-09 to carry the same requirement so it isn't dropped when each
-gets its full spec pass.
+gets its full spec pass. Suites shipped so far, all run by `ci.yml`'s
+`e2e` job as a merge gate:
+
+- F1 (#15) — `e2e/tests/auth.spec.ts` (register/verify/login/logout,
+  forgot/reset password, auth-gate redirects; Google OAuth skipped, no
+  test provider).
+- F2 (#17) — `e2e/tests/groups.spec.ts` (create group, join via
+  invitation link incl. single-use/unknown/garbage-token errors,
+  owner/admin permission bar, role change + member removal, rename,
+  leave incl. owner-successor and last-member-409 paths, ownership
+  transfer, delete group, active-family switcher persistence).
 
 **Note (2026-07-08):** the fridge-scan epic (out of v1, row above) is now
 also the designated trigger for the Version Y microservices/Kubernetes

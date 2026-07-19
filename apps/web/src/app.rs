@@ -8,6 +8,7 @@
 //! plain-string templated since it never needs reactivity.
 
 use manage_our_home_shared::dto::auth::MeResponse;
+use manage_our_home_shared::dto::groups::GroupSummary;
 use manage_our_home_shared::validation::auth::{MAX_PASSWORD_LEN, MIN_PASSWORD_LEN};
 
 pub fn shell(title: &str, body_html: &str) -> String {
@@ -32,24 +33,71 @@ pub fn shell(title: &str, body_html: &str) -> String {
     )
 }
 
-/// Very small header shown on authenticated pages (home, and anywhere
-/// else once other front epics land): display name + a logout form.
-/// `POST /logout` is a route on apps/web itself (not apps/api directly)
-/// so it can also clear/redirect server-side in one step.
-pub fn authenticated_header(me: &MeResponse) -> String {
+/// Full authenticated header for pages that carry the family context:
+/// a name+logout row plus a nav (Accueil / Groupes)
+/// and issue #17's active-family switcher — a plain `<form>` posting to
+/// `POST /groups/switch` (persists the choice in the `active_group_id`
+/// cookie, see `crate::family`) then bouncing back to `redirect_to`.
+/// With no groups yet, the switcher gives way to a "create a family" link.
+pub fn app_header(
+    me: &MeResponse,
+    groups: &[GroupSummary],
+    active: Option<&GroupSummary>,
+    redirect_to: &str,
+) -> String {
+    let switcher = if groups.is_empty() {
+        r#"<a href="/groups/new">Créer une famille</a>"#.to_string()
+    } else {
+        let options: String = groups
+            .iter()
+            .map(|g| {
+                let selected = if active.is_some_and(|a| a.group_id == g.group_id) {
+                    " selected"
+                } else {
+                    ""
+                };
+                format!(
+                    r#"<option value="{id}"{selected}>{name}</option>"#,
+                    id = g.group_id,
+                    name = html_escape(&g.name),
+                )
+            })
+            .collect();
+        format!(
+            r#"<form method="post" action="/groups/switch" class="switcher" style="flex-direction:row;gap:0.4rem;align-items:center;margin:0;">
+<label style="flex-direction:row;gap:0.4rem;align-items:center;margin:0;">Famille active
+<select name="group_id">{options}</select>
+</label>
+<input type="hidden" name="redirect_to" value="{redirect_to}"/>
+<button type="submit" class="secondary">Changer</button>
+</form>"#,
+            options = options,
+            redirect_to = html_escape(redirect_to),
+        )
+    };
     format!(
-        r#"<div class="muted" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;">
+        r#"<header style="margin-bottom:1.5rem;">
+<div class="muted" style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;">
+<nav style="display:flex;gap:0.75rem;">
+<a href="/">Accueil</a>
+<a href="/groups">Groupes</a>
+</nav>
+<span style="display:flex;gap:0.75rem;align-items:center;">
 <span>{name}</span>
 <form method="post" action="/logout" style="margin:0;">
 <button type="submit" class="secondary">Se déconnecter</button>
 </form>
-</div>"#,
+</span>
+</div>
+<div class="muted" style="margin-top:0.6rem;">{switcher}</div>
+</header>"#,
         name = html_escape(&me.display_name),
+        switcher = switcher,
     )
 }
 
 /// Password `<label>` block shared by login/register/reset-password
-/// (embed via `<div inner_html=...></div>` like `authenticated_header`).
+/// (embed via `<div inner_html=...></div>` like `app_header`).
 /// The show/hide toggle is progressive enhancement: with JS disabled the
 /// button does nothing and the form still submits normally. `with_rules`
 /// states the password rules upfront and adds the matching `minlength`,

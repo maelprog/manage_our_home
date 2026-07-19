@@ -3,19 +3,36 @@ use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use leptos::prelude::*;
 
-use crate::app::{authenticated_header, shell};
+use crate::app::shell;
 use crate::layout::CurrentUser;
+use crate::routes::groups::header_with_groups;
 use crate::state::AppState;
 
-/// AC #2: "an authenticated placeholder home page" — every other front
-/// epic (Groups, Agenda, ...) replaces this once it lands; for this epic
-/// it only needs to prove the session round-trip works end to end.
-pub async fn get(CurrentUser(me): CurrentUser) -> impl IntoResponse {
-    let header = authenticated_header(&me);
+/// Authenticated home page. Since the Groups epic (#17) it carries the
+/// shared header with the active-family switcher; the family-scoped
+/// epics (Agenda, Stocks, ...) will replace the placeholder body.
+pub async fn get(
+    CurrentUser(me): CurrentUser,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let (groups, header) = header_with_groups(&state, &headers, &me, "/").await;
+    let no_group_hint = groups.is_empty().then(|| {
+        view! {
+            <p>
+                "Commencez par "
+                <a href="/groups/new">"créer votre famille"</a>
+                " ou rejoignez-en une via une invitation depuis "
+                <a href="/groups">"Mes groupes"</a>
+                "."
+            </p>
+        }
+    });
     let body = view! {
         <div inner_html=header></div>
         <h1>"Bienvenue"</h1>
         <p>"Vous êtes connecté."</p>
+        {no_group_hint}
     };
     Html(shell("Accueil", &body.to_html()))
 }

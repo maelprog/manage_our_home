@@ -1,4 +1,5 @@
 use manage_our_home_shared::dto::auth::MeResponse;
+use manage_our_home_shared::dto::groups::GroupSummary;
 use serde::Serialize;
 
 /// Outcome of a JSON call to apps/api: the status code, an optional
@@ -82,6 +83,61 @@ pub async fn api_post_json(
         set_cookie,
         body,
     })
+}
+
+/// Sends an authenticated JSON request to apps/api over the internal
+/// network, forwarding the incoming request's `Cookie` header so apps/api
+/// recognizes the session — the Groups endpoints are all session-scoped,
+/// unlike the Auth endpoints `api_post_json` was written for. `body:
+/// None` sends no JSON body (e.g. DELETE). Transport failures surface as
+/// `Err(String)`, same contract as `api_post_json`.
+pub async fn api_request_auth(
+    state: &AppState,
+    method: reqwest::Method,
+    path: &str,
+    cookie_header: Option<&str>,
+    body: Option<serde_json::Value>,
+) -> Result<ApiResponse, String> {
+    let mut req = state
+        .http
+        .request(method, format!("{}{}", state.api_internal_base_url, path));
+    if let Some(cookie) = cookie_header {
+        req = req.header("cookie", cookie);
+    }
+    if let Some(body) = body {
+        req = req.json(&body);
+    }
+    let resp = req.send().await.map_err(|e| e.to_string())?;
+
+    let status = resp.status();
+    let body = resp.json::<serde_json::Value>().await.unwrap_or_default();
+
+    Ok(ApiResponse {
+        status,
+        set_cookie: None,
+        body,
+    })
+}
+
+/// Calls `GET /groups` on apps/api with the caller's session cookie:
+/// every group the user belongs to, with their role in each. `None`
+/// covers both an unauthenticated session and transport errors — callers
+/// (the family switcher, /groups) render an empty list in that case.
+pub async fn fetch_groups(
+    state: &AppState,
+    cookie_header: Option<&str>,
+) -> Option<Vec<GroupSummary>> {
+    let mut req = state
+        .http
+        .get(format!("{}/groups", state.api_internal_base_url));
+    if let Some(cookie) = cookie_header {
+        req = req.header("cookie", cookie);
+    }
+    let resp = req.send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    resp.json::<Vec<GroupSummary>>().await.ok()
 }
 
 /// GETs a URL-encoded query against apps/api (used for the token-based

@@ -1,4 +1,5 @@
 mod app;
+mod family;
 mod layout;
 mod routes;
 mod state;
@@ -49,6 +50,47 @@ async fn main() {
         .route(
             "/reset-password",
             get(routes::auth::reset_password::get).post(routes::auth::reset_password::post),
+        )
+        .route("/groups", get(routes::groups::list::get))
+        .route("/groups/join", post(routes::groups::list::join))
+        .route("/groups/switch", post(routes::groups::switch))
+        .route(
+            "/groups/new",
+            get(routes::groups::new::get).post(routes::groups::new::post),
+        )
+        .route(
+            "/groups/invitations/:token/accept",
+            get(routes::groups::invitations::get).post(routes::groups::invitations::post),
+        )
+        .route("/groups/:id/members", get(routes::groups::members::get))
+        .route(
+            "/groups/:id/members/invite",
+            post(routes::groups::members::invite),
+        )
+        .route(
+            "/groups/:id/members/:user_id/role",
+            post(routes::groups::members::change_role),
+        )
+        .route(
+            "/groups/:id/members/:user_id/remove",
+            post(routes::groups::members::remove),
+        )
+        .route("/groups/:id/settings", get(routes::groups::settings::get))
+        .route(
+            "/groups/:id/settings/rename",
+            post(routes::groups::settings::rename),
+        )
+        .route(
+            "/groups/:id/settings/transfer",
+            post(routes::groups::settings::transfer),
+        )
+        .route(
+            "/groups/:id/settings/leave",
+            post(routes::groups::settings::leave),
+        )
+        .route(
+            "/groups/:id/settings/delete",
+            post(routes::groups::settings::delete),
         )
         .with_state(state);
 
