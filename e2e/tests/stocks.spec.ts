@@ -1,12 +1,13 @@
 import { expect, Page, test } from "@playwright/test";
 import { fetchVerificationToken } from "../lib/db";
 
-// Front epic #4 — Stocks (issue #19): every user journey the epic
-// introduces, happy paths plus the documented error states from
-// apps/api/src/stocks/'s error tables. Note the v1 permission bar (spec on
-// #19): the shipped backend gates the whole PATCH (incl. quantity) behind
-// can_modify, so a standard member adjusts the quantity of items *they*
-// created, and gets no controls on another member's item.
+// Front epic #4 — Stocks (issue #19) + follow-up #39: every user journey the
+// epic introduces, happy paths plus the documented error states from
+// apps/api/src/stocks/'s error tables. Note the two-tier permission bar: a
+// quantity-only adjustment is open to any family member (shared inventory), so
+// every member sees the adjust form; the full-record edit and delete stay
+// behind can_modify (creator/admin/owner), so a standard member gets no
+// edit/delete controls on another member's item.
 
 function uniqueEmail(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.test`;
@@ -188,7 +189,7 @@ test.describe("Stocks — permission bar", () => {
     await context.close();
   });
 
-  test("a standard member gets no controls on another member's item", async ({
+  test("a standard member can adjust another member's item but cannot edit or delete it", async ({
     page,
     browser,
   }) => {
@@ -205,12 +206,19 @@ test.describe("Stocks — permission bar", () => {
     await member.goto(href);
     await member.getByRole("button", { name: "Rejoindre le groupe" }).click();
 
-    // The member sees the item but gets no adjust/edit/delete controls.
+    // The member sees the adjust form (shared inventory) but no edit/delete.
     await openItemDetail(member, "Beurre du proprio");
-    await expect(member.getByText("Seul le créateur ou un administrateur")).toBeVisible();
+    await expect(
+      member.getByText("Seul le créateur ou un administrateur peut modifier ou supprimer"),
+    ).toBeVisible();
     await expect(member.getByRole("link", { name: "Modifier l'article" })).toHaveCount(0);
     await expect(member.getByRole("button", { name: "Supprimer" })).toHaveCount(0);
-    await expect(member.getByLabel("Ajuster la quantité")).toHaveCount(0);
+
+    // ...and can actually adjust the quantity of the owner's item → 200.
+    await member.getByLabel("Ajuster la quantité").fill("5");
+    await member.getByRole("button", { name: "Mettre à jour la quantité" }).click();
+    await expect(member.getByText("Quantité mise à jour.")).toBeVisible();
+    await expect(member.getByText("5 plaquette")).toBeVisible();
     await context.close();
   });
 });

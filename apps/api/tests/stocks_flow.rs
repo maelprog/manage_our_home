@@ -329,6 +329,106 @@ async fn update_can_clear_reorder_threshold(db: PgPool) {
     );
 }
 
+/// AC (#39): a regular member may adjust the **quantity** of an item another
+/// member created (shared inventory), but a full-record edit (touching any
+/// other field) and delete stay behind the creator/admin/owner bar.
+#[sqlx::test]
+async fn member_can_adjust_quantity_but_not_edit_or_delete(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie = register_verify_login(
+        &router,
+        &db,
+        "stock-adj-owner@example.test",
+        "owner-password1",
+    )
+    .await;
+    let member_cookie = register_verify_login(
+        &router,
+        &db,
+        "stock-adj-member@example.test",
+        "member-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    let invite = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/invitations"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    let token = json_body(invite).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    call(
+        &router,
+        Method::POST,
+        &format!("/groups/invitations/{token}/accept"),
+        Some(&member_cookie),
+        None,
+    )
+    .await;
+
+    // The owner creates the item.
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/stock-items"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"name": "Sel", "quantity": 5.0, "unit": "kg"})),
+    )
+    .await;
+    let item_id = json_body(create).await["id"].as_str().unwrap().to_string();
+
+    // Quantity-only adjust by the non-creator member → allowed.
+    let member_adjust = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/stock-items/{item_id}"),
+        Some(&member_cookie),
+        Some(serde_json::json!({"quantity": 1.5})),
+    )
+    .await;
+    assert_status(&member_adjust, StatusCode::OK);
+    assert_eq!(json_body(member_adjust).await["quantity"], 1.5);
+
+    // A full-record edit (touching name) by the same member → forbidden.
+    let member_edit = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/stock-items/{item_id}"),
+        Some(&member_cookie),
+        Some(serde_json::json!({"name": "Sel fin"})),
+    )
+    .await;
+    assert_status(&member_edit, StatusCode::FORBIDDEN);
+
+    // Even a quantity change bundled with a full-record field is forbidden.
+    let member_edit_bundled = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/stock-items/{item_id}"),
+        Some(&member_cookie),
+        Some(serde_json::json!({"quantity": 2.0, "unit": "g"})),
+    )
+    .await;
+    assert_status(&member_edit_bundled, StatusCode::FORBIDDEN);
+
+    // Delete by the same member → forbidden.
+    let member_delete = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}/stock-items/{item_id}"),
+        Some(&member_cookie),
+        None,
+    )
+    .await;
+    assert_status(&member_delete, StatusCode::FORBIDDEN);
+}
+
 /// AC: a regular member may create/read/adjust stock, but only the item's
 /// creator or a group admin/owner may delete it.
 #[sqlx::test]

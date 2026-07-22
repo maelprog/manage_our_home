@@ -1,11 +1,13 @@
 //! `/stocks/:id` — item detail with the low-stock state, plus the
 //! quantity-adjust action and the delete action; full edit lives in `edit.rs`.
 //!
-//! Permission bar (`can_modify`): the adjust form, the edit link and the
-//! delete button render only for the item's creator or a group admin/owner.
-//! A standard member viewing another member's item sees a muted read-only
-//! note. The backend stays the authority — a forged PATCH/DELETE is 403'd and
-//! mapped to `?error=forbidden` here defensively.
+//! Permission bar: the quantity-adjust form renders for **any** family member
+//! (shared inventory — issue #39); the edit link and delete button render only
+//! for the item's creator or a group admin/owner (`can_modify`). A standard
+//! member viewing another member's item still gets the adjust form, plus a
+//! muted note that editing/deleting is reserved. The backend stays the
+//! authority — a forged full-edit/DELETE is 403'd and mapped to
+//! `?error=forbidden` here defensively.
 //!
 //! Error table: 404 (`get_stock_item`) unknown/foreign item → introuvable
 //! page; 403 (`update`/`delete` permission bar) → `?error=forbidden`.
@@ -126,24 +128,29 @@ fn page(
         None => r#"<p class="muted">Aucun seuil de réappro défini.</p>"#.to_string(),
     };
 
-    let controls_html = if can_edit {
-        format!(
-            r#"<form method="post" action="/stocks/{id}/adjust" style="border:1px solid var(--border);padding:0.75rem;margin-top:1rem;display:flex;gap:0.5rem;align-items:flex-end;flex-wrap:wrap;">
+    // Quantity adjustment is open to any family member (shared inventory);
+    // the full-record edit and delete stay behind the `can_edit` bar.
+    let adjust_form = format!(
+        r#"<form method="post" action="/stocks/{id}/adjust" style="border:1px solid var(--border);padding:0.75rem;margin-top:1rem;display:flex;gap:0.5rem;align-items:flex-end;flex-wrap:wrap;">
 <label style="margin:0;">Ajuster la quantité
 <input type="number" name="quantity" step="any" min="0" value="{qty}"/></label>
 <button type="submit">Mettre à jour la quantité</button>
-</form>
-<div style="display:flex;gap:0.5rem;margin-top:1rem;">
+</form>"#,
+        qty = html_escape(&fmt_num(item.quantity)),
+    );
+    let edit_delete_html = if can_edit {
+        format!(
+            r#"<div style="display:flex;gap:0.5rem;margin-top:1rem;">
 <a class="button secondary" href="/stocks/{id}/edit">Modifier l'article</a>
 <form method="post" action="/stocks/{id}/delete" style="margin:0;">
 <button type="submit" class="secondary" style="color:var(--error);">Supprimer</button>
 </form>
-</div>"#,
-            qty = html_escape(&fmt_num(item.quantity)),
+</div>"#
         )
     } else {
-        r#"<p class="muted" style="margin-top:1rem;">Seul le créateur ou un administrateur peut modifier, ajuster ou supprimer cet article.</p>"#.to_string()
+        r#"<p class="muted" style="margin-top:1rem;">Seul le créateur ou un administrateur peut modifier ou supprimer cet article.</p>"#.to_string()
     };
+    let controls_html = format!("{adjust_form}{edit_delete_html}");
 
     let body = format!(
         r#"{header}

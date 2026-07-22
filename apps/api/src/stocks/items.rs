@@ -55,6 +55,21 @@ pub struct UpdateStockItemRequest {
     pub reorder_threshold: Option<Option<f64>>,
 }
 
+impl UpdateStockItemRequest {
+    /// Which permission bar this PATCH must clear. A **quantity-only**
+    /// adjustment (or a no-op that touches no field) is open to any group
+    /// member — the shared-inventory "any member may adjust the quantity"
+    /// tier from issue #19. Touching any full-record field (name, category,
+    /// unit, reorder_threshold) makes it a full edit, which stays behind
+    /// `can_modify` (creator/admin/owner), the same bar as delete.
+    fn touches_full_record(&self) -> bool {
+        self.name.is_some()
+            || self.category.is_some()
+            || self.unit.is_some()
+            || self.reorder_threshold.is_some()
+    }
+}
+
 #[derive(Serialize)]
 pub struct StockItemResponse {
     pub id: Uuid,
@@ -239,7 +254,9 @@ pub async fn update_stock_item(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    if !can_modify(&actor_role, existing.created_by == auth.user_id) {
+    // A quantity-only adjustment is allowed to any member (shared inventory);
+    // touching any full-record field requires the creator/admin/owner bar.
+    if body.touches_full_record() && !can_modify(&actor_role, existing.created_by == auth.user_id) {
         return Err(AppError::Forbidden);
     }
 
@@ -324,4 +341,89 @@ pub async fn delete_stock_item(
     tx.commit().await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_update() -> UpdateStockItemRequest {
+        UpdateStockItemRequest {
+            name: None,
+            category: None,
+            quantity: None,
+            unit: None,
+            reorder_threshold: None,
+        }
+    }
+
+    #[test]
+    fn quantity_only_is_not_a_full_record_edit() {
+        let req = UpdateStockItemRequest {
+            quantity: Some(3.0),
+            ..empty_update()
+        };
+        assert!(!req.touches_full_record());
+    }
+
+    #[test]
+    fn a_no_op_patch_is_not_a_full_record_edit() {
+        assert!(!empty_update().touches_full_record());
+    }
+
+    #[test]
+    fn changing_the_name_is_a_full_record_edit() {
+        let req = UpdateStockItemRequest {
+            name: Some("Farine".into()),
+            ..empty_update()
+        };
+        assert!(req.touches_full_record());
+    }
+
+    #[test]
+    fn changing_the_unit_is_a_full_record_edit() {
+        let req = UpdateStockItemRequest {
+            unit: Some("kg".into()),
+            ..empty_update()
+        };
+        assert!(req.touches_full_record());
+    }
+
+    #[test]
+    fn setting_or_clearing_the_category_is_a_full_record_edit() {
+        let set = UpdateStockItemRequest {
+            category: Some(Some("Cereales".into())),
+            ..empty_update()
+        };
+        assert!(set.touches_full_record());
+        let cleared = UpdateStockItemRequest {
+            category: Some(None),
+            ..empty_update()
+        };
+        assert!(cleared.touches_full_record());
+    }
+
+    #[test]
+    fn setting_or_clearing_the_reorder_threshold_is_a_full_record_edit() {
+        let set = UpdateStockItemRequest {
+            reorder_threshold: Some(Some(0.5)),
+            ..empty_update()
+        };
+        assert!(set.touches_full_record());
+        let cleared = UpdateStockItemRequest {
+            reorder_threshold: Some(None),
+            ..empty_update()
+        };
+        assert!(cleared.touches_full_record());
+    }
+
+    #[test]
+    fn quantity_plus_any_full_field_is_still_a_full_record_edit() {
+        let req = UpdateStockItemRequest {
+            quantity: Some(1.0),
+            name: Some("Riz".into()),
+            ..empty_update()
+        };
+        assert!(req.touches_full_record());
+    }
 }
