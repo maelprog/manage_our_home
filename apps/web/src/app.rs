@@ -80,6 +80,7 @@ pub fn app_header(
 <div class="muted" style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;">
 <nav style="display:flex;gap:0.75rem;">
 <a href="/">Accueil</a>
+<a href="/agenda">Agenda</a>
 <a href="/groups">Groupes</a>
 </nav>
 <span style="display:flex;gap:0.75rem;align-items:center;">

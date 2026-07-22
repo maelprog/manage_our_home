@@ -83,6 +83,18 @@ gets its full spec pass. Suites shipped so far, all run by `ci.yml`'s
   owner/admin permission bar, role change + member removal, rename,
   leave incl. owner-successor and last-member-409 paths, ownership
   transfer, delete group, active-family switcher persistence).
+- F3 (#18) — `e2e/tests/agenda.spec.ts` (create event visible in
+  month + week views, unknown-event 404; recurring task with
+  per-occurrence completion — completing one occurrence leaves the
+  others to do; one-off task complete/un-complete; edit + delete;
+  permission bar — a standard member gets no edit/delete on another
+  member's event; attachment upload/list/presigned-download + delete,
+  plus the client-side wrong-type rejection). This is the first suite
+  that needs MinIO, so `ci.yml`'s `e2e` job now starts a real MinIO and
+  creates the attachments bucket (see the job's comment). The RRULE v1
+  subset and the file size/extension caps are unit-tested in
+  `apps/shared` (`validation::agenda`); the E2E suite drives the picker
+  and the extension rejection end-to-end.
 
 **Note (2026-07-08):** the fridge-scan epic (out of v1, row above) is now
 also the designated trigger for the Version Y microservices/Kubernetes

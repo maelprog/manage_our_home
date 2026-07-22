@@ -51,6 +51,41 @@ async fn main() {
             "/reset-password",
             get(routes::auth::reset_password::get).post(routes::auth::reset_password::post),
         )
+        .route("/agenda", get(routes::agenda::calendar::get))
+        .route(
+            "/agenda/new",
+            get(routes::agenda::new::get).post(routes::agenda::new::post),
+        )
+        .route("/agenda/:id", get(routes::agenda::detail::get))
+        .route(
+            "/agenda/:id/edit",
+            get(routes::agenda::edit::get).post(routes::agenda::edit::post),
+        )
+        .route("/agenda/:id/delete", post(routes::agenda::detail::delete))
+        .route(
+            "/agenda/:id/complete",
+            post(routes::agenda::detail::complete),
+        )
+        .route(
+            "/agenda/:id/reminders",
+            post(routes::agenda::reminders::add),
+        )
+        .route(
+            "/agenda/:id/reminders/:rid/delete",
+            post(routes::agenda::reminders::delete),
+        )
+        .route(
+            "/agenda/:id/attachments",
+            post(routes::agenda::attachments::upload),
+        )
+        .route(
+            "/agenda/:id/attachments/:aid/download",
+            get(routes::agenda::attachments::download),
+        )
+        .route(
+            "/agenda/:id/attachments/:aid/delete",
+            post(routes::agenda::attachments::delete),
+        )
         .route("/groups", get(routes::groups::list::get))
         .route("/groups/join", post(routes::groups::list::join))
         .route("/groups/switch", post(routes::groups::switch))
