@@ -55,13 +55,15 @@ jobs:
       - run: cargo build --workspace --all-targets
       - run: cargo test --workspace
 
-  # Playwright E2E against a live apps/web + apps/api + Postgres stack —
-  # merge gate per docs/v1-scope.md's "Playwright policy" (every front
-  # epic ships its journeys here, F1/issue #15 established it). SMTP/MinIO
-  # point at nothing reachable on purpose: handlers log and swallow email
-  # send failures, and no Auth journey touches object storage; the E2E
-  # suite reads verification/reset tokens straight from Postgres
-  # (e2e/lib/db.ts), same mechanism as apps/api/tests/*_flow.rs.
+  # Playwright E2E against a live apps/web + apps/api + Postgres + MinIO
+  # stack — merge gate per docs/v1-scope.md's "Playwright policy" (every
+  # front epic ships its journeys here, F1/issue #15 established it). SMTP
+  # points at nothing reachable on purpose (handlers log and swallow email
+  # send failures); the suite reads verification/reset tokens straight from
+  # Postgres (e2e/lib/db.ts), same mechanism as apps/api/tests/*_flow.rs.
+  # MinIO is real (started below) because the Agenda epic (F3/#18) uploads
+  # and downloads event attachments — the first front epic to touch object
+  # storage.
   e2e:
     runs-on: ubuntu-latest
     services:
@@ -90,6 +92,19 @@ jobs:
           cache: npm
           cache-dependency-path: e2e/package-lock.json
       - run: cargo build -p manage_our_home -p manage_our_home_web
+      - name: Start MinIO and create the attachments bucket
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=ci-dummy \
+            -e MINIO_ROOT_PASSWORD=ci-dummy-secret \
+            minio/minio server /data
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:9000/minio/health/ready && break
+            sleep 1
+          done
+          docker run --rm --network host --entrypoint /bin/sh minio/mc -c \
+            "mc alias set local http://localhost:9000 ci-dummy ci-dummy-secret && \
+             mc mb -p local/manage-our-home"
       - name: Start apps/api (applies migrations on boot)
         run: ./target/debug/manage_our_home &
         env:
@@ -107,7 +122,7 @@ jobs:
           SMTP_FROM: Manage Our Home <no-reply@example.test>
           MINIO_ENDPOINT: http://localhost:9000
           MINIO_ACCESS_KEY: ci-dummy
-          MINIO_SECRET_KEY: ci-dummy
+          MINIO_SECRET_KEY: ci-dummy-secret
           MINIO_BUCKET: manage-our-home
       - name: Start apps/web
         run: ./target/debug/manage_our_home_web &

@@ -17,14 +17,20 @@ path = "src/main.rs"
 [dependencies]
 manage_our_home_shared = { path = "../shared" }
 leptos = { version = "0.7", features = ["ssr"] }
-axum = { version = "0.7", features = ["macros"] }
+# `multipart` on axum: the attachment-upload page reads the browser's
+# multipart body before relaying it to apps/api.
+axum = { version = "0.7", features = ["macros", "multipart"] }
 tokio = { version = "1", features = ["full"] }
 tower-cookies = "0.10"
 cookie = "0.18"
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+# `multipart` on reqwest: forwarding the uploaded file to apps/api.
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "multipart"], default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["serde"] }
+# Calendar date maths (grid) + Europe/Paris display/parse (v1 fixed tz).
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 dotenvy = "0.15"
