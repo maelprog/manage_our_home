@@ -12,3 +12,8 @@ path = "src/lib.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 uuid = { version = "1", features = ["serde"] }
+# Agenda DTOs carry `DateTime<Utc>`/`NaiveDate`; the calendar-grid maths in
+# `validation/agenda.rs` use chrono's civil-date types. `default-features`
+# off (drops the `clock`/`now()` path) keeps this wasm-clean — nothing here
+# reads the wall clock.
+chrono = { version = "0.4", default-features = false, features = ["serde", "std"] }
