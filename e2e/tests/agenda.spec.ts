@@ -1,4 +1,4 @@
-import { Browser, expect, Page, test } from "@playwright/test";
+import { expect, Page, test } from "@playwright/test";
 import { fetchVerificationToken } from "../lib/db";
 
 // Front epic #3 — Agenda (issue #18): every user journey the epic
@@ -283,8 +283,12 @@ test.describe("Agenda — attachments", () => {
     const location = resp.headers()["location"] ?? "";
     expect(location).toContain("X-Amz-"); // presigned query params
 
-    // Delete it.
-    await page.getByRole("button", { name: "Supprimer" }).click();
+    // Delete it (scope to the attachment row — the event's own "Supprimer"
+    // button is also on this page).
+    await page
+      .locator("li", { hasText: "photo.png" })
+      .getByRole("button", { name: "Supprimer" })
+      .click();
     await expect(page.getByText("Pièce jointe supprimée.")).toBeVisible();
     await expect(page.getByRole("link", { name: "photo.png" })).toHaveCount(0);
   });
