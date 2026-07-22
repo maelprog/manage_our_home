@@ -81,6 +81,7 @@ pub fn app_header(
 <nav style="display:flex;gap:0.75rem;">
 <a href="/">Accueil</a>
 <a href="/agenda">Agenda</a>
+<a href="/stocks">Stocks</a>
 <a href="/groups">Groupes</a>
 </nav>
 <span style="display:flex;gap:0.75rem;align-items:center;">

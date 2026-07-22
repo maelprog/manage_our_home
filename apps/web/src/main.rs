@@ -86,6 +86,18 @@ async fn main() {
             "/agenda/:id/attachments/:aid/delete",
             post(routes::agenda::attachments::delete),
         )
+        .route("/stocks", get(routes::stocks::list::get))
+        .route(
+            "/stocks/new",
+            get(routes::stocks::new::get).post(routes::stocks::new::post),
+        )
+        .route("/stocks/:id", get(routes::stocks::detail::get))
+        .route(
+            "/stocks/:id/edit",
+            get(routes::stocks::edit::get).post(routes::stocks::edit::post),
+        )
+        .route("/stocks/:id/adjust", post(routes::stocks::detail::adjust))
+        .route("/stocks/:id/delete", post(routes::stocks::detail::delete))
         .route("/groups", get(routes::groups::list::get))
         .route("/groups/join", post(routes::groups::list::join))
         .route("/groups/switch", post(routes::groups::switch))

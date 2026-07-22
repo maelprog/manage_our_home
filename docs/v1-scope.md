@@ -44,7 +44,7 @@ epic #1 (GH issue #15) for the full rationale.
 | F1 | Auth (register/verify/login/forgot-reset password/Google OAuth/logout) | #15 | **spec'd, open** | Stands up `apps/web` + `apps/shared` workspace crates for the first time. Blocks every other front epic (no client shell exists before this lands). Requires a new backend `GET /auth/me` endpoint (blocking prerequisite, included in the issue). Account-deletion UI and Capacitor/mobile explicitly out of scope, tracked separately. |
 | F2 | Groups (create/join/invite, roles, switch active family) | #17 | **done** | `apps/web/src/routes/groups/` (`/groups`, `/groups/new`, `/groups/:id/members`, `/groups/:id/settings`, `/groups/invitations/:token/accept`) + the root-layout active-family switcher (persisted in the `active_group_id` cookie, resolved against `GET /groups` on every page — see `apps/web/src/family.rs`). DTOs in `apps/shared/src/dto/groups.rs`; pure validation/permission mirrors (group name, invitation-token parsing, owner/admin bar, `actor_can_act_on`) TDD'd in `apps/shared/src/validation/groups.rs`. Error UI maps apps/api's exact codes: 422 `too_many_groups`/`name_required`/`new_owner_id_required`/`cannot_transfer_to_self`, 409 `last_member_must_delete_group`, 410 consumed/expired invitation, 404 unknown invitation/group, 403 permission bar. |
 | F3 | Agenda (calendar view, events, tasks-as-events, recurrence, reminders, file attachments) | #18 | **spec'd, open** | Depends on F2 (family switcher). Largest UI surface (calendar widget hand-rolled per architecture.md's Leptos ecosystem-gap note). |
-| F4 | Stocks (list, manual entry, reorder threshold, low-stock indicator) | #19 | **spec'd, open** | Depends on F2. |
+| F4 | Stocks (list, manual entry, reorder threshold, low-stock indicator) | #19 | **done** | `apps/web/src/routes/stocks/` (`/stocks` list with low-stock badge + `?low_stock=1` filter delegated to the backend, `/stocks/new`, `/stocks/:id` detail with quantity-adjust, `/stocks/:id/edit`, `/stocks/:id/{adjust,delete}` POST actions). DTOs in `apps/shared/src/dto/stocks.rs` (double-`Option` PATCH mirror); pure `validate_item_form` + `is_low_stock` TDD'd in `apps/shared/src/validation/stocks.rs`. Error UI maps apps/api's exact codes: 400 `name_required`/`unit_required`/`quantity_must_be_non_negative`/`reorder_threshold_must_be_non_negative`, 404 unknown item, 403 permission bar. **v1 permission decision (spec on #19):** the shipped backend gates the whole `PATCH` — incl. a quantity-only change — behind `can_modify` (creator/admin/owner), so the issue's "any member may adjust quantity of any item" is not reachable through the v1 API; the front honors the backend (adjust/edit/delete shown only to `can_modify` users; a standard member adjusts quantity of items they created). Relaxing it needs a backend change — flagged as a follow-up. |
 | F5 | Recipes (list, suggestion view, missing-ingredients display, log a meal) | #20 | **spec'd, open** | Depends on F4 (stock match is central to the suggestion display). |
 | F6 | Grocery list (shared list, manual entry, generate-from-recipes/stocks, check off) | #21 | **spec'd, open** | Depends on F4 and F5 (both feed the generate endpoint). |
 | F7 | Budget (manual entry, price-on-checkout, monthly summary) | #22 | **spec'd, open** | Depends on F6 (tied to the grocery list, not a standalone expense tracker). |
@@ -95,6 +95,16 @@ gets its full spec pass. Suites shipped so far, all run by `ci.yml`'s
   subset and the file size/extension caps are unit-tested in
   `apps/shared` (`validation::agenda`); the E2E suite drives the picker
   and the extension rejection end-to-end.
+- F4 (#19) — `e2e/tests/stocks.spec.ts` (create item + list with the
+  low-stock badge shown exactly at/below the reorder threshold;
+  `?low_stock=1` filter; full edit; quantity adjust by a **standard
+  member** on an item they created — the realizable slice of "a member
+  adjusts quantity" given the backend's `can_modify` bar; permission bar
+  — a standard member gets no adjust/edit/delete controls on another
+  member's item; delete; unknown-item 404; server-side empty-name
+  rejection). The `validate_item_form` / `is_low_stock` logic is
+  unit-tested in `apps/shared` (`validation::stocks`); the E2E suite
+  drives the screens end-to-end.
 
 **Note (2026-07-08):** the fridge-scan epic (out of v1, row above) is now
 also the designated trigger for the Version Y microservices/Kubernetes
