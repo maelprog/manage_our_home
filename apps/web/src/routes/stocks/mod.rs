@@ -5,13 +5,12 @@
 //! tables mapping `apps/api/src/stocks/`'s exact status/error codes to French
 //! copy, PRG (`?notice=`/`?error=` codes) after every mutation.
 //!
-//! Permission bar (v1, spec on #19): the shipped backend gates the *whole*
-//! `PATCH` — including a quantity-only change — behind `can_modify` (creator or
-//! group admin/owner), identically to `DELETE`. There is no member-adjustable
-//! quantity path in the v1 API, so these pages show the adjust/edit/delete
-//! controls only to `can_modify` users; a standard member adjusts the quantity
-//! of items *they* created. The backend stays the authority (a forged request
-//! is still 403'd, mapped defensively here).
+//! Permission bar (#19 + follow-up #39): the backend runs a two-tier bar. A
+//! **quantity-only** PATCH is open to any family member (shared inventory), so
+//! the adjust form renders for everyone; the full-record edit and delete stay
+//! behind `can_modify` (creator or group admin/owner), so the edit link and
+//! delete button render only for those users. The backend stays the authority
+//! (a forged full-edit/delete is still 403'd, mapped defensively here).
 
 pub mod detail;
 pub mod edit;
@@ -57,8 +56,10 @@ pub(crate) async fn family_context(
 }
 
 /// Mirror of `apps/api/src/stocks/mod.rs::can_modify`: the item's creator, or a
-/// group owner/admin, may edit/adjust/delete it. Used to decide whether to
-/// render those controls (the backend still 403s a forged request).
+/// group owner/admin, may edit the full record or delete it. Used to decide
+/// whether to render the edit/delete controls (the backend still 403s a forged
+/// request). Quantity adjustment is *not* gated by this — it's open to any
+/// member (issue #39).
 pub(crate) fn can_modify(role: &str, is_creator: bool) -> bool {
     is_creator || role == "owner" || role == "admin"
 }
