@@ -129,6 +129,18 @@ async fn main() {
             "/grocery-list/:id/delete",
             post(routes::grocery_list::edit::delete),
         )
+        .route(
+            "/grocery-list/:id/price",
+            post(routes::grocery_list::list::price),
+        )
+        .route("/budget", get(routes::budget::list::get))
+        .route(
+            "/budget/new",
+            get(routes::budget::new::get).post(routes::budget::new::post),
+        )
+        .route("/budget/:id", get(routes::budget::edit::get))
+        .route("/budget/:id/edit", post(routes::budget::edit::post))
+        .route("/budget/:id/delete", post(routes::budget::edit::delete))
         .route("/groups", get(routes::groups::list::get))
         .route("/groups/join", post(routes::groups::list::join))
         .route("/groups/switch", post(routes::groups::switch))

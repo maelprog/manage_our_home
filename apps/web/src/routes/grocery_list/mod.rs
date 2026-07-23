@@ -9,6 +9,12 @@
 //! check-off / Budget-hook decisions) in
 //! `docs/front-epic-6-grocery-list.md`.
 //!
+//! The Budget price-on-checkout hook F6 deferred is now wired here (F7, #22):
+//! `list::price` renders an inline "Renseigner le prix" form on each checked
+//! item, posting to `POST /grocery-list/:id/price` (see
+//! `docs/front-epic-7-budget.md`). It is purely additive — the check-off
+//! behaviour itself is unchanged.
+//!
 //! Permission bar (mirrors `apps/api/src/grocery_list/mod.rs::can_modify`):
 //! any family member may add, read, or **check off** an item, so those
 //! controls render for everyone; the per-row edit link and the edit screen's
