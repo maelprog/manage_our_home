@@ -110,6 +110,25 @@ async fn main() {
         )
         .route("/recipes/:id/log", post(routes::recipes::detail::log))
         .route("/recipes/:id/delete", post(routes::recipes::detail::delete))
+        .route("/grocery-list", get(routes::grocery_list::list::get))
+        .route("/grocery-list/add", post(routes::grocery_list::list::add))
+        .route(
+            "/grocery-list/generate",
+            post(routes::grocery_list::list::generate),
+        )
+        .route("/grocery-list/:id", get(routes::grocery_list::edit::get))
+        .route(
+            "/grocery-list/:id/check",
+            post(routes::grocery_list::list::check),
+        )
+        .route(
+            "/grocery-list/:id/edit",
+            post(routes::grocery_list::edit::post),
+        )
+        .route(
+            "/grocery-list/:id/delete",
+            post(routes::grocery_list::edit::delete),
+        )
         .route("/groups", get(routes::groups::list::get))
         .route("/groups/join", post(routes::groups::list::join))
         .route("/groups/switch", post(routes::groups::switch))
