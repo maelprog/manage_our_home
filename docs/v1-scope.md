@@ -41,9 +41,9 @@ epic #1 (GH issue #15) for the full rationale.
 
 | # | Front epic | GH issue | Status | Notes |
 |---|---|---|---|---|
-| F1 | Auth (register/verify/login/forgot-reset password/Google OAuth/logout) | #15 | **spec'd, open** | Stands up `apps/web` + `apps/shared` workspace crates for the first time. Blocks every other front epic (no client shell exists before this lands). Requires a new backend `GET /auth/me` endpoint (blocking prerequisite, included in the issue). Account-deletion UI and Capacitor/mobile explicitly out of scope, tracked separately. |
+| F1 | Auth (register/verify/login/forgot-reset password/Google OAuth/logout) | #15 | **done** | Stood up the `apps/web` + `apps/shared` workspace crates for the first time (Leptos SSR shell every other front epic builds on). `apps/web/src/routes/auth/` (`register`, `verify_email`, `login`, `forgot_password`, `reset_password`, logout) + the `GET /auth/me` session/cookie pattern F2–F10 reuse. Added the backend `GET /auth/me` prerequisite. E2E `e2e/tests/auth.spec.ts` (Google OAuth skipped — no test provider). Account-deletion UI and Capacitor/mobile carved out (→ F10 / v1.1). Merged as PR #28 (`2759e6b`). |
 | F2 | Groups (create/join/invite, roles, switch active family) | #17 | **done** | `apps/web/src/routes/groups/` (`/groups`, `/groups/new`, `/groups/:id/members`, `/groups/:id/settings`, `/groups/invitations/:token/accept`) + the root-layout active-family switcher (persisted in the `active_group_id` cookie, resolved against `GET /groups` on every page — see `apps/web/src/family.rs`). DTOs in `apps/shared/src/dto/groups.rs`; pure validation/permission mirrors (group name, invitation-token parsing, owner/admin bar, `actor_can_act_on`) TDD'd in `apps/shared/src/validation/groups.rs`. Error UI maps apps/api's exact codes: 422 `too_many_groups`/`name_required`/`new_owner_id_required`/`cannot_transfer_to_self`, 409 `last_member_must_delete_group`, 410 consumed/expired invitation, 404 unknown invitation/group, 403 permission bar. |
-| F3 | Agenda (calendar view, events, tasks-as-events, recurrence, reminders, file attachments) | #18 | **spec'd, open** | Depends on F2 (family switcher). Largest UI surface (calendar widget hand-rolled per architecture.md's Leptos ecosystem-gap note). |
+| F3 | Agenda (calendar view, events, tasks-as-events, recurrence, reminders, file attachments) | #18 | **done** | `apps/web/src/routes/agenda/` (`/agenda` month/week calendar — widget hand-rolled per architecture.md's Leptos ecosystem-gap note, `/agenda/new`, `/agenda/:id` detail, `/agenda/:id/edit`, `/agenda/:id/{delete,complete}`, `/agenda/:id/reminders[/:rid/delete]`, `/agenda/:id/attachments[/:aid/{download,delete}]` — first front epic to wire MinIO for presigned attachment up/download). DTOs in `apps/shared/src/dto/agenda.rs`; pure logic (RRULE v1 subset, file size/extension caps, per-occurrence completion) TDD'd in `apps/shared/src/validation/agenda.rs`. Error UI maps apps/api's exact codes; 404 unknown event, 403 permission bar (a standard member gets no edit/delete on another member's event). Recurring tasks track completion per occurrence, not on the shared event row. Merged as PR #37 (`536143a`). |
 | F4 | Stocks (list, manual entry, reorder threshold, low-stock indicator) | #19 | **done** | `apps/web/src/routes/stocks/` (`/stocks` list with low-stock badge + `?low_stock=1` filter delegated to the backend, `/stocks/new`, `/stocks/:id` detail with quantity-adjust, `/stocks/:id/edit`, `/stocks/:id/{adjust,delete}` POST actions). DTOs in `apps/shared/src/dto/stocks.rs` (double-`Option` PATCH mirror); pure `validate_item_form` + `is_low_stock` TDD'd in `apps/shared/src/validation/stocks.rs`. Error UI maps apps/api's exact codes: 400 `name_required`/`unit_required`/`quantity_must_be_non_negative`/`reorder_threshold_must_be_non_negative`, 404 unknown item, 403 permission bar. **Permission bar (#19 + follow-up #39, now landed):** the backend runs a two-tier bar — a quantity-only `PATCH` is open to any family member (shared inventory), while touching any full-record field, or delete, stays behind `can_modify` (creator/admin/owner). The front mirrors it: the adjust form renders for every member; the edit link and delete button only for `can_modify` users. The backend stays the authority (a forged full-edit/delete is still 403'd). |
 | F5 | Recipes (list, suggestion view, missing-ingredients display, log a meal) | #20 | **done** | `apps/web/src/routes/recipes/` (`/recipes` list + ranked suggestions, `/recipes/new`, `/recipes/:id` detail with log-a-meal, `/recipes/:id/edit`, `/recipes/:id/{log,delete}` POST actions). Full spec at `docs/front-epic-5-recipes.md` (route table, per-page error tables, acceptance criteria). DTOs in `apps/shared/src/dto/recipes.rs` (double-`Option` PATCH mirror); pure ingredient textarea `parse_ingredients`/`format_ingredients` + `stock_summary` + `validate_recipe_name` TDD'd in `apps/shared/src/validation/recipes.rs`. **Decision:** the suggestion view renders the *ranked order* + derived human signals (stock summary, "déjà cuisiné récemment", missing-ingredients list), never the raw internal `score`. Missing ingredients carry an informational grocery-list marker (the cross-epic generate action is F6, out of scope). Error UI maps apps/api's exact codes: 400 `name_required`/`ingredient_name_required`/`ingredient_quantity_must_be_non_negative`/`invalid_seasonal_month`, 404 unknown recipe, 403 permission bar. Permission bar mirrors Stocks/Recipes backend `can_modify`: any member may create/read/log-a-meal; only the recipe's creator or a group admin/owner sees edit/delete (backend stays the authority). |
 | F6 | Grocery list (shared list, manual entry, generate-from-recipes/stocks, check off) | #21 | **spec'd, open** | Depends on F4 and F5 (both feed the generate endpoint). |
@@ -54,16 +54,18 @@ epic #1 (GH issue #15) for the full rationale.
 | — | Google Calendar import UI (connect feed, trigger import, list connections) | not yet filed | not spec'd | Depends on F3 (Agenda). File once F3 is underway. |
 | — | Capacitor/mobile shell | not yet filed | out of this pass, v1.1 | Explicitly deferred in F1's Out of Scope; cross-origin cookie handling for the WebView is an open question to resolve when it's spec'd. |
 
-**Current status (2026-07-09):** F1 is the only front epic with real
-design work behind it (filed 2026-07-08, full spec). F2-F10 above were
-filed today as scoped placeholders establishing dependency order and
-screen boundaries, each referencing F1's established patterns (session
-via `GET /auth/me` + cookie, `apps/shared` DTOs mirroring `apps/api`
-request/response shapes, TDD unit tests for any pure validation/formatting
-logic, Playwright E2E per user journey) — each still needs the same
-route-table/error-table/acceptance-criteria depth F1 got before
-implementation starts. Do them in order; F1 must merge first since it's
-the only one that creates the `apps/web`/`apps/shared` crates at all.
+**Current status (2026-07-23):** F1–F5 are **done** and merged, in
+dependency order (F1 stood up the `apps/web`/`apps/shared` crates; F2
+Groups, F3 Agenda, F4 Stocks, F5 Recipes followed). Each shipped a full
+spec at F1's depth (route table, per-page error tables, acceptance
+criteria), `apps/shared` DTOs mirroring `apps/api` request/response
+shapes, TDD unit tests for pure validation/formatting logic, and a
+Playwright E2E merge-gate suite. **Next: F6 (Grocery list, #21)** — its
+two prerequisites (F4 Stocks + F5 Recipes, both feeding the generate
+endpoint) are now landed. F7 depends on F6; F8/F9/F10 depend only on
+F1/F2 and can follow in any order. Each still open epic needs the same
+route-table/error-table/acceptance-criteria spec pass before
+implementation starts.
 
 **Playwright policy (2026-07-09):** every front epic's PR must ship a
 Playwright E2E suite (TypeScript, driving the built `apps/web` app
