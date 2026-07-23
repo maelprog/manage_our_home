@@ -47,25 +47,25 @@ epic #1 (GH issue #15) for the full rationale.
 | F4 | Stocks (list, manual entry, reorder threshold, low-stock indicator) | #19 | **done** | `apps/web/src/routes/stocks/` (`/stocks` list with low-stock badge + `?low_stock=1` filter delegated to the backend, `/stocks/new`, `/stocks/:id` detail with quantity-adjust, `/stocks/:id/edit`, `/stocks/:id/{adjust,delete}` POST actions). DTOs in `apps/shared/src/dto/stocks.rs` (double-`Option` PATCH mirror); pure `validate_item_form` + `is_low_stock` TDD'd in `apps/shared/src/validation/stocks.rs`. Error UI maps apps/api's exact codes: 400 `name_required`/`unit_required`/`quantity_must_be_non_negative`/`reorder_threshold_must_be_non_negative`, 404 unknown item, 403 permission bar. **Permission bar (#19 + follow-up #39, now landed):** the backend runs a two-tier bar — a quantity-only `PATCH` is open to any family member (shared inventory), while touching any full-record field, or delete, stays behind `can_modify` (creator/admin/owner). The front mirrors it: the adjust form renders for every member; the edit link and delete button only for `can_modify` users. The backend stays the authority (a forged full-edit/delete is still 403'd). |
 | F5 | Recipes (list, suggestion view, missing-ingredients display, log a meal) | #20 | **done** | `apps/web/src/routes/recipes/` (`/recipes` list + ranked suggestions, `/recipes/new`, `/recipes/:id` detail with log-a-meal, `/recipes/:id/edit`, `/recipes/:id/{log,delete}` POST actions). Full spec at `docs/front-epic-5-recipes.md` (route table, per-page error tables, acceptance criteria). DTOs in `apps/shared/src/dto/recipes.rs` (double-`Option` PATCH mirror); pure ingredient textarea `parse_ingredients`/`format_ingredients` + `stock_summary` + `validate_recipe_name` TDD'd in `apps/shared/src/validation/recipes.rs`. **Decision:** the suggestion view renders the *ranked order* + derived human signals (stock summary, "déjà cuisiné récemment", missing-ingredients list), never the raw internal `score`. Missing ingredients carry an informational grocery-list marker (the cross-epic generate action is F6, out of scope). Error UI maps apps/api's exact codes: 400 `name_required`/`ingredient_name_required`/`ingredient_quantity_must_be_non_negative`/`invalid_seasonal_month`, 404 unknown recipe, 403 permission bar. Permission bar mirrors Stocks/Recipes backend `can_modify`: any member may create/read/log-a-meal; only the recipe's creator or a group admin/owner sees edit/delete (backend stays the authority). |
 | F6 | Grocery list (shared list, manual entry, generate-from-recipes/stocks, check off) | #21 | **done** | `apps/web/src/routes/grocery_list/` (`/grocery-list` shared list with inline manual-add + generate button + per-row no-JS check-off, `/grocery-list/:id` edit screen, `/grocery-list/:id/{add,generate,check,edit,delete}` POST actions). Full spec at `docs/front-epic-6-grocery-list.md` (route table, per-page error tables, acceptance criteria). DTOs in `apps/shared/src/dto/grocery_list.rs` (double-`Option` PATCH mirror); pure `validate_item_form` + `can_modify` mirror + `quantity_label`/`fmt_num`/`source_label` formatting TDD'd in `apps/shared/src/validation/grocery_list.rs`. **Decisions:** one shared list per family (not per-user); manual add is inline on the list (no separate `/new` page); generate is idempotent so it's a plain no-confirmation button with a re-run-safe banner reporting the count added; check-off is a no-JS-safe per-row `<form>` (checkbox PE + always-present `Cocher`/`Décocher` button); the Budget price-on-checkout action is the F7 hook and is **out of scope** here (F6 renders the check-off trigger only, no price field, no dead `/budget` link — same way F5 left the generate action to F6). Error UI maps apps/api's exact codes: 400 `name_required`/`quantity_must_be_non_negative`, 404 unknown item, 403 permission bar. Permission bar mirrors the backend `can_modify`: any member may add/read/check off; only the item's creator or a group admin/owner sees the per-row Modifier link and the edit/delete screen (backend stays the authority). |
-| F7 | Budget (manual entry, price-on-checkout, monthly summary) | #22 | **spec'd, open** | Depends on F6 (tied to the grocery list, not a standalone expense tracker). |
+| F7 | Budget (manual entry, price-on-checkout, monthly summary) | #22 | **done** | `apps/web/src/routes/budget/` (`/budget` monthly summary + entry list, `/budget/new` manual price entry, `/budget/:id` edit screen, `/budget/:id/{edit,delete}` POST actions) plus the price-on-checkout hook F6 deferred: an inline `Renseigner le prix` form on each **checked** grocery item, posting to a new `POST /grocery-list/:id/price` handler (`routes/grocery_list/list.rs`, relaying to `POST /groups/:id/grocery-items/:item_id/price`) — no dedicated route, the "Budget hook out of scope" note F6 left in `routes/grocery_list/mod.rs` removed. Nav link added in `app.rs`. Full spec at `docs/front-epic-7-budget.md` (route table, per-page error tables, acceptance criteria). DTOs in `apps/shared/src/dto/budget.rs` — field-for-field, **no double-`Option`** (`spent_at` is `NOT NULL`, a plain `Option` = "leave as-is" only); the summary wire field is `total` (euros), not `total_cents`. Pure `validate_entry_form` + `can_modify` mirror + euros formatting (`format_euros` two-decimal French comma, `amount_input_value` for number-input pre-fill) + `format_period` monthly label TDD'd in `apps/shared/src/validation/budget.rs`. **Decisions:** Budget is strictly grocery-derived (manual price entry + price-on-checkout only, no category/payee/recurring; local price lookup stays out of v1); amount is euros at the API boundary (backend stores cents) so all rounding lives in one tested place; the monthly summary is read-only, computed server-side; set-price upserts on the grocery item so a re-tap re-tarifies rather than double-counting (the `/budget/new` manual path can 409 `grocery_item_already_priced`, but the form never sends a `grocery_item_id`, so it's defensive-only). Error UI maps apps/api's exact codes: 400 `name_required`/`amount_must_be_non_negative`, 409 `grocery_item_already_priced`, 404 unknown entry, 403 permission bar. Permission bar mirrors the backend `can_modify`: any member may create/read an entry or set a price; only the entry's creator or a group admin/owner sees the per-row Modifier link and the edit/delete screen (backend stays the authority). |
 | F8 | Messagerie (one family chat thread, WebSocket) | #23 | **spec'd, open** | Independent of F3-F7; depends only on F2 (family context). |
 | F9 | User admin (superadmin support screens: groups/users list, deactivate) | #24 | **spec'd, open** | Independent; depends only on F1 (own the `is_superadmin` session flag) — no family/group context needed. |
 | F10 | RGPD self-service (data export download, account deletion with owner-of-groups block, privacy-policy page) | #25 | **spec'd, open** | Depends on F1/F2. Account-deletion UI was explicitly carved out of F1's scope and flagged there as required before v1 ships — this epic is where it lands. |
 | — | Google Calendar import UI (connect feed, trigger import, list connections) | not yet filed | not spec'd | Depends on F3 (Agenda). File once F3 is underway. |
 | — | Capacitor/mobile shell | not yet filed | out of this pass, v1.1 | Explicitly deferred in F1's Out of Scope; cross-origin cookie handling for the WebView is an open question to resolve when it's spec'd. |
 
-**Current status (2026-07-23):** F1–F6 are **done** and merged, in
+**Current status (2026-07-23):** F1–F7 are **done** and merged, in
 dependency order (F1 stood up the `apps/web`/`apps/shared` crates; F2
-Groups, F3 Agenda, F4 Stocks, F5 Recipes, F6 Grocery list followed). Each
-shipped a full spec at F1's depth (route table, per-page error tables,
-acceptance criteria), `apps/shared` DTOs mirroring `apps/api` request/response
-shapes, TDD unit tests for pure validation/formatting logic, and a
-Playwright E2E merge-gate suite. **Next: F7 (Budget, #22)** — its sole
-prerequisite (F6 Grocery list, which owns the check-off that triggers the
-price-on-checkout flow) is now landed. F8/F9/F10 depend only on F1/F2 and
-can follow in any order. Each still open epic needs the same
-route-table/error-table/acceptance-criteria spec pass before
-implementation starts.
+Groups, F3 Agenda, F4 Stocks, F5 Recipes, F6 Grocery list, F7 Budget
+followed). Each shipped a full spec at F1's depth (route table, per-page
+error tables, acceptance criteria), `apps/shared` DTOs mirroring `apps/api`
+request/response shapes, TDD unit tests for pure validation/formatting logic,
+and a Playwright E2E merge-gate suite. F7 also finally wired the
+price-on-checkout hook F6 deferred (inline price form on a checked grocery
+item → `POST /grocery-list/:id/price`). **Next: F8/F9/F10** — they depend only
+on F1/F2 and can follow in any order. Each still open epic needs the same
+route-table/error-table/acceptance-criteria spec pass before implementation
+starts.
 
 **Playwright policy (2026-07-09):** every front epic's PR must ship a
 Playwright E2E suite (TypeScript, driving the built `apps/web` app
@@ -132,6 +132,20 @@ gets its full spec pass. Suites shipped so far, all run by `ci.yml`'s
   mirror / `quantity_label` / `source_label` logic is unit-tested in
   `apps/shared` (`validation::grocery_list`); the E2E suite drives the
   screens end-to-end.
+- F7 (#22) — `e2e/tests/budget.spec.ts` (add a manual price entry and see it
+  in both the entry list and the monthly **Résumé mensuel** total; price a
+  **checked** grocery item inline and see the resulting entry — with its
+  `Courses` badge — plus the monthly total on `/budget`, and re-setting the
+  price on the same item re-tarifies the single entry rather than
+  double-counting the total — idempotent upsert asserted; edit round-trips
+  through the entry form; delete returns to the list; permission bar — a
+  standard member gets no **Modifier** link and the forbidden page on another
+  member's entry **but can still add their own entry and set a price** on a
+  checked grocery item; unknown-entry 404; server-side empty-name and
+  negative-amount rejection). The `validate_entry_form` / `can_modify` mirror /
+  `format_euros` / `amount_input_value` / `format_period` logic is unit-tested
+  in `apps/shared` (`validation::budget`); the E2E suite drives the screens
+  end-to-end.
 
 **Note (2026-07-08):** the fridge-scan epic (out of v1, row above) is now
 also the designated trigger for the Version Y microservices/Kubernetes
