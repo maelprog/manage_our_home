@@ -45,7 +45,7 @@ epic #1 (GH issue #15) for the full rationale.
 | F2 | Groups (create/join/invite, roles, switch active family) | #17 | **done** | `apps/web/src/routes/groups/` (`/groups`, `/groups/new`, `/groups/:id/members`, `/groups/:id/settings`, `/groups/invitations/:token/accept`) + the root-layout active-family switcher (persisted in the `active_group_id` cookie, resolved against `GET /groups` on every page — see `apps/web/src/family.rs`). DTOs in `apps/shared/src/dto/groups.rs`; pure validation/permission mirrors (group name, invitation-token parsing, owner/admin bar, `actor_can_act_on`) TDD'd in `apps/shared/src/validation/groups.rs`. Error UI maps apps/api's exact codes: 422 `too_many_groups`/`name_required`/`new_owner_id_required`/`cannot_transfer_to_self`, 409 `last_member_must_delete_group`, 410 consumed/expired invitation, 404 unknown invitation/group, 403 permission bar. |
 | F3 | Agenda (calendar view, events, tasks-as-events, recurrence, reminders, file attachments) | #18 | **spec'd, open** | Depends on F2 (family switcher). Largest UI surface (calendar widget hand-rolled per architecture.md's Leptos ecosystem-gap note). |
 | F4 | Stocks (list, manual entry, reorder threshold, low-stock indicator) | #19 | **done** | `apps/web/src/routes/stocks/` (`/stocks` list with low-stock badge + `?low_stock=1` filter delegated to the backend, `/stocks/new`, `/stocks/:id` detail with quantity-adjust, `/stocks/:id/edit`, `/stocks/:id/{adjust,delete}` POST actions). DTOs in `apps/shared/src/dto/stocks.rs` (double-`Option` PATCH mirror); pure `validate_item_form` + `is_low_stock` TDD'd in `apps/shared/src/validation/stocks.rs`. Error UI maps apps/api's exact codes: 400 `name_required`/`unit_required`/`quantity_must_be_non_negative`/`reorder_threshold_must_be_non_negative`, 404 unknown item, 403 permission bar. **Permission bar (#19 + follow-up #39, now landed):** the backend runs a two-tier bar — a quantity-only `PATCH` is open to any family member (shared inventory), while touching any full-record field, or delete, stays behind `can_modify` (creator/admin/owner). The front mirrors it: the adjust form renders for every member; the edit link and delete button only for `can_modify` users. The backend stays the authority (a forged full-edit/delete is still 403'd). |
-| F5 | Recipes (list, suggestion view, missing-ingredients display, log a meal) | #20 | **spec'd, open** | Depends on F4 (stock match is central to the suggestion display). |
+| F5 | Recipes (list, suggestion view, missing-ingredients display, log a meal) | #20 | **done** | `apps/web/src/routes/recipes/` (`/recipes` list + ranked suggestions, `/recipes/new`, `/recipes/:id` detail with log-a-meal, `/recipes/:id/edit`, `/recipes/:id/{log,delete}` POST actions). Full spec at `docs/front-epic-5-recipes.md` (route table, per-page error tables, acceptance criteria). DTOs in `apps/shared/src/dto/recipes.rs` (double-`Option` PATCH mirror); pure ingredient textarea `parse_ingredients`/`format_ingredients` + `stock_summary` + `validate_recipe_name` TDD'd in `apps/shared/src/validation/recipes.rs`. **Decision:** the suggestion view renders the *ranked order* + derived human signals (stock summary, "déjà cuisiné récemment", missing-ingredients list), never the raw internal `score`. Missing ingredients carry an informational grocery-list marker (the cross-epic generate action is F6, out of scope). Error UI maps apps/api's exact codes: 400 `name_required`/`ingredient_name_required`/`ingredient_quantity_must_be_non_negative`/`invalid_seasonal_month`, 404 unknown recipe, 403 permission bar. Permission bar mirrors Stocks/Recipes backend `can_modify`: any member may create/read/log-a-meal; only the recipe's creator or a group admin/owner sees edit/delete (backend stays the authority). |
 | F6 | Grocery list (shared list, manual entry, generate-from-recipes/stocks, check off) | #21 | **spec'd, open** | Depends on F4 and F5 (both feed the generate endpoint). |
 | F7 | Budget (manual entry, price-on-checkout, monthly summary) | #22 | **spec'd, open** | Depends on F6 (tied to the grocery list, not a standalone expense tracker). |
 | F8 | Messagerie (one family chat thread, WebSocket) | #23 | **spec'd, open** | Independent of F3-F7; depends only on F2 (family context). |
@@ -104,6 +104,20 @@ gets its full spec pass. Suites shipped so far, all run by `ci.yml`'s
   server-side empty-name rejection). The `validate_item_form` /
   `is_low_stock` logic is unit-tested in `apps/shared`
   (`validation::stocks`); the E2E suite drives the screens end-to-end.
+- F5 (#20) — `e2e/tests/recipes.spec.ts` (create a recipe with a
+  seasonal + an optional ingredient via the one-per-line textarea;
+  `/recipes` shows the ranked **Suggestions** section with a stock
+  summary derived against `stock_items` and the missing-required-ingredient
+  list under the grocery-list marker, plus the **Toutes les recettes**
+  list; detail shows ingredient/optional/seasonal markers; log-a-meal
+  records a meal and the detail reflects the last-cooked state; full edit
+  round-trips through the ingredient textarea; delete returns to the list;
+  permission bar — a standard member gets no edit/delete on another
+  member's recipe **but can log a meal** against it; unknown-recipe 404;
+  server-side empty-name rejection). The `parse_ingredients` /
+  `format_ingredients` / `stock_summary` / permission-mirror logic is
+  unit-tested in `apps/shared` (`validation::recipes`); the E2E suite
+  drives the screens end-to-end.
 
 **Note (2026-07-08):** the fridge-scan epic (out of v1, row above) is now
 also the designated trigger for the Version Y microservices/Kubernetes

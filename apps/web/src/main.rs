@@ -98,6 +98,18 @@ async fn main() {
         )
         .route("/stocks/:id/adjust", post(routes::stocks::detail::adjust))
         .route("/stocks/:id/delete", post(routes::stocks::detail::delete))
+        .route("/recipes", get(routes::recipes::list::get))
+        .route(
+            "/recipes/new",
+            get(routes::recipes::new::get).post(routes::recipes::new::post),
+        )
+        .route("/recipes/:id", get(routes::recipes::detail::get))
+        .route(
+            "/recipes/:id/edit",
+            get(routes::recipes::edit::get).post(routes::recipes::edit::post),
+        )
+        .route("/recipes/:id/log", post(routes::recipes::detail::log))
+        .route("/recipes/:id/delete", post(routes::recipes::detail::delete))
         .route("/groups", get(routes::groups::list::get))
         .route("/groups/join", post(routes::groups::list::join))
         .route("/groups/switch", post(routes::groups::switch))
