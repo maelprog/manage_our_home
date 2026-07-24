@@ -85,6 +85,7 @@ pub fn app_header(
 <a href="/recipes">Recettes</a>
 <a href="/grocery-list">Liste de courses</a>
 <a href="/budget">Budget</a>
+<a href="/messagerie">Messagerie</a>
 <a href="/groups">Groupes</a>
 </nav>
 <span style="display:flex;gap:0.75rem;align-items:center;">

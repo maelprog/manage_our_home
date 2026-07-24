@@ -17,3 +17,8 @@ uuid = { version = "1", features = ["serde"] }
 # off (drops the `clock`/`now()` path) keeps this wasm-clean — nothing here
 # reads the wall clock.
 chrono = { version = "0.4", default-features = false, features = ["serde", "std"] }
+# Messagerie timestamps are rendered in Europe/Paris (the fixed v1 display
+# timezone F3 established): `validation::messagerie::format_message_time`
+# converts the UTC instant itself, so the DST logic is unit-tested here rather
+# than duplicated per page. Tz data only — no clock access, wasm-clean.
+chrono-tz = "0.10"
