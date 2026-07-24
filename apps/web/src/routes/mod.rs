@@ -1,3 +1,4 @@
+pub mod admin;
 pub mod agenda;
 pub mod auth;
 pub mod budget;

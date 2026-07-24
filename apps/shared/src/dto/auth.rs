@@ -62,6 +62,12 @@ pub struct MeResponse {
     pub email: String,
     pub display_name: String,
     pub email_verified: bool,
+    /// Whether the session's user is the global technical superadmin
+    /// (`users.is_superadmin`). `apps/web` uses it to gate the `/admin` nav and
+    /// route tree client-side (front epic F9, #24). Defaults to `false` when an
+    /// older API omits the field, so a non-superadmin is the safe fallback.
+    #[serde(default)]
+    pub is_superadmin: bool,
 }
 
 /// Generic `{"error": "..."}` body used by every `apps/api` error response

@@ -20,6 +20,12 @@ pub struct AuthUser {
     pub email: String,
     pub display_name: String,
     pub email_verified: bool,
+    /// The global technical superadmin flag (`users.is_superadmin`, migration
+    /// 0009). Carried here so `GET /auth/me` can tell `apps/web` whether to
+    /// render the `/admin` nav/route tree (front epic F9, #24) — the backend's
+    /// `SuperAdminUser` extractor stays the authority for the `/admin/*`
+    /// endpoints themselves.
+    pub is_superadmin: bool,
 }
 
 #[async_trait]
@@ -43,7 +49,8 @@ where
         let row = sqlx::query!(
             r#"
             SELECT s.id as session_id, s.expires_at, s.revoked_at,
-                   u.id as user_id, u.email, u.display_name, u.email_verified, u.deleted_at
+                   u.id as user_id, u.email, u.display_name, u.email_verified,
+                   u.is_superadmin, u.deleted_at
             FROM sessions s
             JOIN users u ON u.id = s.user_id
             WHERE s.id = $1
@@ -73,6 +80,7 @@ where
             email: row.email,
             display_name: row.display_name,
             email_verified: row.email_verified,
+            is_superadmin: row.is_superadmin,
         })
     }
 }

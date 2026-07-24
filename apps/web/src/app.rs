@@ -75,6 +75,13 @@ pub fn app_header(
             redirect_to = html_escape(redirect_to),
         )
     };
+    // The superadmin support screens (front epic F9) are only linked for the
+    // single technical superadmin — everyone else never sees the door.
+    let admin_link = if me.is_superadmin {
+        r#"<a href="/admin/users">Admin</a>"#
+    } else {
+        ""
+    };
     format!(
         r#"<header style="margin-bottom:1.5rem;">
 <div class="muted" style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;">
@@ -87,6 +94,7 @@ pub fn app_header(
 <a href="/budget">Budget</a>
 <a href="/messagerie">Messagerie</a>
 <a href="/groups">Groupes</a>
+{admin_link}
 </nav>
 <span style="display:flex;gap:0.75rem;align-items:center;">
 <span>{name}</span>
@@ -99,6 +107,7 @@ pub fn app_header(
 </header>"#,
         name = html_escape(&me.display_name),
         switcher = switcher,
+        admin_link = admin_link,
     )
 }
 
