@@ -67,6 +67,34 @@ where
     }
 }
 
+/// Gate for the whole `/admin` route tree (front epic F9, #24): resolves the
+/// session like `CurrentUser`, then additionally requires
+/// `MeResponse::is_superadmin`. A visitor with no session is sent to `/login`;
+/// an authenticated non-superadmin is sent to `/` (the admin area is never
+/// revealed to them, not even as a 403 page — defense in depth on top of the
+/// backend's `SuperAdminUser` extractor, which stays the authority for the
+/// `/admin/*` API calls these pages make).
+pub struct CurrentSuperAdmin(pub MeResponse);
+
+#[axum::async_trait]
+impl<S> FromRequestParts<S> for CurrentSuperAdmin
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let app_state = AppState::from_ref(state);
+        let cookie = cookie_header(parts);
+        match fetch_me(&app_state, cookie.as_deref()).await {
+            Some(me) if me.is_superadmin => Ok(CurrentSuperAdmin(me)),
+            Some(_) => Err(Redirect::to("/").into_response()),
+            None => Err(Redirect::to("/login").into_response()),
+        }
+    }
+}
+
 /// Extracted at the top of `/login` and `/register` handlers: redirects
 /// an already-authenticated visitor to `/` (AC #3, second half), otherwise
 /// lets the handler render the form as normal.

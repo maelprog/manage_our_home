@@ -54,6 +54,31 @@ export async function fetchPasswordResetToken(email: string): Promise<string> {
   }
 }
 
+/**
+ * Flips a user's `is_superadmin` flag directly in Postgres — mirrors how the
+ * backend grants the global technical superadmin (there is no signup flow for
+ * the role; it is set manually via SQL, see apps/api/src/user_admin/ and the
+ * `make_superadmin` helper in apps/api/tests/user_admin_flow.rs). Used by the
+ * F9 admin E2E suite to promote a freshly-registered account. The session's
+ * `is_superadmin` is read live on every request, so no re-login is needed after
+ * this — the next page load already sees the flag.
+ */
+export async function makeSuperadmin(email: string): Promise<void> {
+  const client = new Client({ connectionString: requireDatabaseUrl() });
+  await client.connect();
+  try {
+    const { rowCount } = await client.query(
+      `UPDATE users SET is_superadmin = true WHERE email = $1`,
+      [email],
+    );
+    if (rowCount === 0) {
+      throw new Error(`no user to promote for ${email}`);
+    }
+  } finally {
+    await client.end();
+  }
+}
+
 function requireDatabaseUrl(): string {
   const url = process.env.DATABASE_URL;
   if (!url) {

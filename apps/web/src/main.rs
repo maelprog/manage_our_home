@@ -153,6 +153,13 @@ async fn main() {
             "/messagerie/:id/delete",
             post(routes::messagerie::thread::delete),
         )
+        .route("/admin/groups", get(routes::admin::groups::get))
+        .route("/admin/users", get(routes::admin::users::get))
+        .route("/admin/users/:id", get(routes::admin::users::detail))
+        .route(
+            "/admin/users/:id/deactivate",
+            post(routes::admin::users::deactivate),
+        )
         .route("/groups", get(routes::groups::list::get))
         .route("/groups/join", post(routes::groups::list::join))
         .route("/groups/switch", post(routes::groups::switch))

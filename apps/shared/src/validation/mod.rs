@@ -6,3 +6,4 @@ pub mod groups;
 pub mod messagerie;
 pub mod recipes;
 pub mod stocks;
+pub mod user_admin;

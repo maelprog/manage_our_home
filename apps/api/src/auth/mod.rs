@@ -49,6 +49,7 @@ pub async fn me(auth: AuthUser) -> Json<MeResponse> {
         email: auth.email,
         display_name: auth.display_name,
         email_verified: auth.email_verified,
+        is_superadmin: auth.is_superadmin,
     })
 }
 
@@ -606,6 +607,7 @@ mod tests {
             email: "alice@example.test".into(),
             display_name: "Alice".into(),
             email_verified: true,
+            is_superadmin: true,
         };
         let user_id = auth.user_id;
 
@@ -615,5 +617,6 @@ mod tests {
         assert_eq!(body.email, "alice@example.test");
         assert_eq!(body.display_name, "Alice");
         assert!(body.email_verified);
+        assert!(body.is_superadmin);
     }
 }

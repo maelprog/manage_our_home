@@ -67,6 +67,37 @@ async fn make_superadmin(db: &PgPool, email: &str) {
     .unwrap();
 }
 
+/// Front epic F9 (#24) gate contract: `GET /auth/me` reports `is_superadmin`
+/// so `apps/web` can render (or hide) the `/admin` nav + route tree. `false`
+/// for a plain account, `true` once the flag is set.
+#[sqlx::test]
+async fn auth_me_reports_superadmin_flag(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "me-superadmin@example.test",
+        "super-password1",
+    )
+    .await;
+
+    let before = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
+    assert_status(&before, StatusCode::OK);
+    assert_eq!(
+        json_body(before).await["is_superadmin"],
+        serde_json::json!(false)
+    );
+
+    make_superadmin(&db, "me-superadmin@example.test").await;
+
+    let after = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
+    assert_status(&after, StatusCode::OK);
+    assert_eq!(
+        json_body(after).await["is_superadmin"],
+        serde_json::json!(true)
+    );
+}
+
 /// AC #1: a non-superadmin user gets 403 on all three `/admin/*` routes.
 #[sqlx::test]
 async fn non_superadmin_gets_403_on_every_admin_route(db: PgPool) {

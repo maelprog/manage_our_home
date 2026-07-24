@@ -53,6 +53,22 @@ button.secondary, .button.secondary {
   background: transparent;
   color: var(--fg);
 }
+button.danger, .button.danger {
+  background: var(--error);
+  border-color: var(--error);
+  color: #fff;
+}
+/* Support/admin screens (front epic F9) show multi-column tables that are
+   wider than the narrow form column; the wrapper lets them scroll instead of
+   overflowing the page. */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th { color: var(--muted); font-weight: 600; }
+code { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; font-size: 0.8em; }
+dl { font-size: 0.9rem; }
+dt { color: var(--muted); font-size: 0.8rem; margin-top: 0.6rem; }
+dd { margin: 0.1rem 0 0 0; }
 .pw-wrap { position: relative; display: flex; }
 .pw-wrap input { flex: 1; padding-right: 2.6rem; }
 .pw-toggle {
