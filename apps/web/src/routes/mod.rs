@@ -4,5 +4,6 @@ pub mod budget;
 pub mod grocery_list;
 pub mod groups;
 pub mod home;
+pub mod messagerie;
 pub mod recipes;
 pub mod stocks;
