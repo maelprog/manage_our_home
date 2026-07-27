@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT s.id as session_id, s.expires_at, s.revoked_at,\n                   u.id as user_id, u.email, u.display_name, u.email_verified,\n                   u.is_superadmin, u.deleted_at\n            FROM sessions s\n            JOIN users u ON u.id = s.user_id\n            WHERE s.id = $1\n            ",
+  "query": "\n            SELECT s.id as session_id, s.expires_at, s.revoked_at,\n                   u.id as user_id, u.email, u.display_name, u.email_verified,\n                   u.is_superadmin, u.deleted_at, u.deletion_requested_at,\n                   (u.password_hash IS NOT NULL) as \"has_password!\"\n            FROM sessions s\n            JOIN users u ON u.id = s.user_id\n            WHERE s.id = $1\n            ",
   "describe": {
     "columns": [
       {
@@ -101,6 +101,23 @@
             "name": "deleted_at"
           }
         }
+      },
+      {
+        "ordinal": 9,
+        "name": "deletion_requested_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "deletion_requested_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "has_password!",
+        "type_info": "Bool",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -117,8 +134,10 @@
       false,
       false,
       false,
-      true
+      true,
+      true,
+      null
     ]
   },
-  "hash": "a75e3aa5fa5141c7c01ff3d5e4b8da75b51b83d5dfe57c7caf27efb7e8a672aa"
+  "hash": "da20d73b37bac76d61038d2721f80cb4e4dd2633c89abbcfc13107c05dc535bc"
 }

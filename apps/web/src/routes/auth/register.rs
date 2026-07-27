@@ -50,6 +50,10 @@ fn page(
         </a>
         <div class="links">
             <a href="/login">"J'ai déjà un compte"</a>
+            // RGPD (front epic F10): the policy must be readable *before*
+            // creating an account, so it is linked from the unauthenticated
+            // pages and served without a session.
+            <a href="/privacy-policy">"Politique de confidentialité"</a>
         </div>
     };
     shell("Créer un compte", &body.to_html())

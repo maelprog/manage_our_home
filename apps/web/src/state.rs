@@ -140,6 +140,37 @@ pub async fn fetch_groups(
     resp.json::<Vec<GroupSummary>>().await.ok()
 }
 
+/// Body of a non-JSON response from apps/api, kept as raw bytes.
+pub struct ApiRawResponse {
+    pub status: reqwest::StatusCode,
+    pub body: Vec<u8>,
+}
+
+/// GETs a path on apps/api without parsing the body — the two RGPD reads
+/// (front epic F10) are not JSON-object responses `apps/web` inspects:
+/// `GET /account/export` is a document relayed byte-for-byte to the browser as a
+/// download (parsing then re-serializing it would risk reshaping the user's own
+/// data on the way out), and `GET /privacy-policy` is `text/markdown`. Forwards
+/// the incoming `Cookie` header when given one (export is session-scoped; the
+/// privacy policy is public).
+pub async fn api_get_raw(
+    state: &AppState,
+    path: &str,
+    cookie_header: Option<&str>,
+) -> Result<ApiRawResponse, String> {
+    let mut req = state
+        .http
+        .get(format!("{}{}", state.api_internal_base_url, path));
+    if let Some(cookie) = cookie_header {
+        req = req.header("cookie", cookie);
+    }
+    let resp = req.send().await.map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let body = resp.bytes().await.map_err(|e| e.to_string())?.to_vec();
+
+    Ok(ApiRawResponse { status, body })
+}
+
 /// GETs a URL-encoded query against apps/api (used for the token-based
 /// verify-email/reset-password landing pages).
 pub async fn api_get(state: &AppState, path_and_query: &str) -> Result<ApiResponse, String> {

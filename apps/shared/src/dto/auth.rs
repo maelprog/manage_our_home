@@ -4,6 +4,7 @@
 //! identical to what `apps/api` used to define locally so there is exactly
 //! one source of truth for the wire shape.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -52,6 +53,15 @@ pub struct LinkGoogleRequest {
     pub code: String,
 }
 
+/// Body of `POST /account/delete` (RGPD Art. 17 self-service erasure, front
+/// epic F10). `current_password` is required — and verified — only for an
+/// account that has a password; a Google-only account sends `None` (see
+/// `validation::rgpd::validate_deletion_confirmation`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteAccountRequest {
+    pub current_password: Option<String>,
+}
+
 /// Response shape for `GET /auth/me`: `AuthUser`
 /// (`apps/api/src/auth/session.rs`) minus the internal `session_id` — the
 /// `me` handler (`apps/api/src/auth/mod.rs::me`) is a straight reshape of
@@ -68,6 +78,19 @@ pub struct MeResponse {
     /// older API omits the field, so a non-superadmin is the safe fallback.
     #[serde(default)]
     pub is_superadmin: bool,
+    /// Whether the account has a password (`users.password_hash IS NOT NULL`) —
+    /// i.e. whether the RGPD deletion flow (front epic F10, #25) must ask for
+    /// it, since `delete_account` only verifies `current_password` for such
+    /// accounts and a Google-only account confirms by re-consent instead.
+    /// Defaults to `false`: the password field is then simply not asked for, and
+    /// the backend stays the authority (it 401s a missing password).
+    #[serde(default)]
+    pub has_password: bool,
+    /// Set while a self-service deletion request is in its grace period
+    /// (`users.deletion_requested_at`, front epic F10). `apps/web` renders the
+    /// pending banner + cancel action from it instead of the request form.
+    #[serde(default)]
+    pub deletion_requested_at: Option<DateTime<Utc>>,
 }
 
 /// Generic `{"error": "..."}` body used by every `apps/api` error response
