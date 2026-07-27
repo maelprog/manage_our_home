@@ -35,6 +35,7 @@ fn page(email: &str, error: Option<&str>, api_public_base_url: &str) -> String {
         <div class="links">
             <a href="/register">"Créer un compte"</a>
             <a href="/forgot-password">"Mot de passe oublié ?"</a>
+            <a href="/privacy-policy">"Politique de confidentialité"</a>
         </div>
     };
     shell("Connexion", &body.to_html())

@@ -174,6 +174,50 @@ async fn export_never_leaks_another_members_content(db: PgPool) {
     assert_eq!(doc["group_memberships"][0]["role"], "standard");
 }
 
+/// Front epic F10 prerequisite: `GET /auth/me` reports `has_password` and the
+/// pending `deletion_requested_at`, so `apps/web` can decide whether the
+/// deletion form must ask for the current password and whether to render the
+/// grace-period banner + cancel action instead of the request form. Read live on
+/// every request, so requesting/cancelling shows up on the next call with no
+/// re-login.
+#[sqlx::test]
+async fn auth_me_reports_password_and_pending_deletion(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie =
+        register_verify_login(&router, &db, "me-rgpd@example.test", "owner-password1").await;
+
+    let before = json_body(call(&router, Method::GET, "/auth/me", Some(&cookie), None).await).await;
+    assert_eq!(before["has_password"], true);
+    assert_eq!(before["deletion_requested_at"], serde_json::Value::Null);
+
+    let delete = call(
+        &router,
+        Method::POST,
+        "/account/delete",
+        Some(&cookie),
+        Some(serde_json::json!({"current_password": "owner-password1"})),
+    )
+    .await;
+    assert_status(&delete, StatusCode::OK);
+
+    let after = json_body(call(&router, Method::GET, "/auth/me", Some(&cookie), None).await).await;
+    assert!(after["deletion_requested_at"].is_string());
+
+    let cancel = call(
+        &router,
+        Method::POST,
+        "/account/delete/cancel",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_status(&cancel, StatusCode::OK);
+
+    let cancelled =
+        json_body(call(&router, Method::GET, "/auth/me", Some(&cookie), None).await).await;
+    assert_eq!(cancelled["deletion_requested_at"], serde_json::Value::Null);
+}
+
 /// AC: `/account/export` and `/privacy-policy` reject/serve as documented —
 /// export requires a session, the privacy policy is public.
 #[sqlx::test]

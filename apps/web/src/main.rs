@@ -51,6 +51,25 @@ async fn main() {
             "/reset-password",
             get(routes::auth::reset_password::get).post(routes::auth::reset_password::post),
         )
+        // RGPD self-service (front epic F10): the account hub, the export
+        // download, and the grace-period deletion flow. `/privacy-policy` is the
+        // one page here that needs no session — it must be readable before
+        // registering (linked from the login/register footers).
+        .route("/privacy-policy", get(routes::privacy::get))
+        .route("/account", get(routes::account::get))
+        .route("/account/export", get(routes::account::export::get))
+        .route(
+            "/account/export/download",
+            get(routes::account::export::download),
+        )
+        .route(
+            "/account/delete",
+            get(routes::account::delete::get).post(routes::account::delete::post),
+        )
+        .route(
+            "/account/delete/cancel",
+            post(routes::account::delete::cancel),
+        )
         .route("/agenda", get(routes::agenda::calendar::get))
         .route(
             "/agenda/new",

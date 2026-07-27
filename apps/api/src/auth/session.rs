@@ -26,6 +26,18 @@ pub struct AuthUser {
     /// `SuperAdminUser` extractor stays the authority for the `/admin/*`
     /// endpoints themselves.
     pub is_superadmin: bool,
+    /// Whether the account authenticates with a password
+    /// (`users.password_hash IS NOT NULL`). Carried here so `GET /auth/me` can
+    /// tell `apps/web` whether the RGPD deletion flow must ask for the current
+    /// password (front epic F10, #25) — `delete_account` verifies it only for
+    /// such accounts, and stays the authority.
+    pub has_password: bool,
+    /// Pending self-service deletion request (`users.deletion_requested_at`),
+    /// exposed through `GET /auth/me` so `apps/web` can render the grace-period
+    /// banner + cancel action (front epic F10, #25). Read live on every request,
+    /// like `is_superadmin`, so requesting or cancelling takes effect on the next
+    /// page load.
+    pub deletion_requested_at: Option<chrono::DateTime<Utc>>,
 }
 
 #[async_trait]
@@ -50,7 +62,8 @@ where
             r#"
             SELECT s.id as session_id, s.expires_at, s.revoked_at,
                    u.id as user_id, u.email, u.display_name, u.email_verified,
-                   u.is_superadmin, u.deleted_at
+                   u.is_superadmin, u.deleted_at, u.deletion_requested_at,
+                   (u.password_hash IS NOT NULL) as "has_password!"
             FROM sessions s
             JOIN users u ON u.id = s.user_id
             WHERE s.id = $1
@@ -81,6 +94,8 @@ where
             display_name: row.display_name,
             email_verified: row.email_verified,
             is_superadmin: row.is_superadmin,
+            has_password: row.has_password,
+            deletion_requested_at: row.deletion_requested_at,
         })
     }
 }

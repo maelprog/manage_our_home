@@ -11,8 +11,8 @@ use tower_cookies::Cookies;
 use uuid::Uuid;
 
 use manage_our_home_shared::dto::auth::{
-    ChangePasswordRequest, ForgotPasswordRequest, LoginRequest, MeResponse, RegisterRequest,
-    ResendVerificationRequest, ResetPasswordRequest, SetPasswordRequest,
+    ChangePasswordRequest, DeleteAccountRequest, ForgotPasswordRequest, LoginRequest, MeResponse,
+    RegisterRequest, ResendVerificationRequest, ResetPasswordRequest, SetPasswordRequest,
 };
 
 use manage_our_home_shared::validation::auth::{
@@ -50,6 +50,8 @@ pub async fn me(auth: AuthUser) -> Json<MeResponse> {
         display_name: auth.display_name,
         email_verified: auth.email_verified,
         is_superadmin: auth.is_superadmin,
+        has_password: auth.has_password,
+        deletion_requested_at: auth.deletion_requested_at,
     })
 }
 
@@ -480,11 +482,6 @@ pub async fn set_password(
     Ok(StatusCode::OK)
 }
 
-#[derive(Deserialize)]
-pub struct DeleteAccountRequest {
-    pub current_password: Option<String>,
-}
-
 #[derive(Serialize)]
 struct BlockingGroup {
     group_id: Uuid,
@@ -608,6 +605,8 @@ mod tests {
             display_name: "Alice".into(),
             email_verified: true,
             is_superadmin: true,
+            has_password: true,
+            deletion_requested_at: None,
         };
         let user_id = auth.user_id;
 
@@ -618,5 +617,7 @@ mod tests {
         assert_eq!(body.display_name, "Alice");
         assert!(body.email_verified);
         assert!(body.is_superadmin);
+        assert!(body.has_password);
+        assert_eq!(body.deletion_requested_at, None);
     }
 }

@@ -34,7 +34,8 @@ pub fn shell(title: &str, body_html: &str) -> String {
 }
 
 /// Full authenticated header for pages that carry the family context:
-/// a name+logout row plus a nav (Accueil / Groupes)
+/// a name + "Mon compte" (the RGPD self-service hub, front epic F10) + logout
+/// row plus a nav (Accueil / Groupes)
 /// and issue #17's active-family switcher — a plain `<form>` posting to
 /// `POST /groups/switch` (persists the choice in the `active_group_id`
 /// cookie, see `crate::family`) then bouncing back to `redirect_to`.
@@ -98,6 +99,7 @@ pub fn app_header(
 </nav>
 <span style="display:flex;gap:0.75rem;align-items:center;">
 <span>{name}</span>
+<a href="/account">Mon compte</a>
 <form method="post" action="/logout" style="margin:0;">
 <button type="submit" class="secondary">Se déconnecter</button>
 </form>

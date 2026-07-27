@@ -91,3 +91,13 @@ dd { margin: 0.1rem 0 0 0; }
 .links { margin-top: 1rem; display: flex; flex-direction: column; gap: 0.4rem; font-size: 0.9rem; }
 .links a { color: var(--accent); }
 .muted { color: var(--muted); font-size: 0.85rem; }
+/* Long-form document rendered from markdown (front epic F10's privacy policy,
+   `validation::rgpd::render_markdown`): prose needs readable line height and
+   wrapping table cells, unlike the app's compact data tables above. */
+.prose { font-size: 0.95rem; line-height: 1.55; }
+.prose h2 { font-size: 1.1rem; margin: 1.6rem 0 0.5rem; }
+.prose h3 { font-size: 1rem; margin: 1.2rem 0 0.4rem; }
+.prose ul { padding-left: 1.2rem; }
+.prose li { margin-bottom: 0.4rem; }
+.prose th, .prose td { white-space: normal; vertical-align: top; }
+.prose a { color: var(--accent); }

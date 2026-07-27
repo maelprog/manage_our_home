@@ -1,3 +1,4 @@
+pub mod account;
 pub mod admin;
 pub mod agenda;
 pub mod auth;
@@ -6,5 +7,6 @@ pub mod grocery_list;
 pub mod groups;
 pub mod home;
 pub mod messagerie;
+pub mod privacy;
 pub mod recipes;
 pub mod stocks;
