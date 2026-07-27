@@ -173,6 +173,57 @@ test.describe("Messagerie — live updates (WebSocket)", () => {
 
     await context.close();
   });
+
+  test("closing an untouched inline edit costs no extra refresh", async ({ page, browser }) => {
+    // Issue #50: the refresh held back during an edit was replayed on close no
+    // matter what — even when the frame that triggered it (another member
+    // posting) left the edited row byte-identical. The replay is a full
+    // fetch(location.href) + page parse, so it must only happen when the row's
+    // own render really changed.
+    await registerAndLogin(page, "e2e-msgeditnoresync", "Edit NoResync Owner");
+    await createGroup(page, "Famille Correction Silencieuse");
+    const href = await createInvitationLink(page, "Famille Correction Silencieuse");
+
+    const context = await browser.newContext();
+    const member = await context.newPage();
+    await registerAndLogin(member, "e2e-msgeditnoresyncmember", "Edit NoResync Member");
+    await member.goto(href);
+    await member.getByRole("button", { name: "Rejoindre le groupe" }).click();
+
+    await sendMessage(page, "Texte à corriger sans resync");
+    await page.goto("/messagerie");
+    const row = page.locator("li[data-message-id]", { hasText: "Texte à corriger sans resync" });
+    await row.locator("summary", { hasText: "Modifier" }).click();
+    await row.getByLabel("Modifier le message").fill("Correction silencieuse");
+
+    // A frame that changes another row entirely: the reconcile lands it, and
+    // owes the edited row nothing.
+    await sendMessage(member, "Message sans rapport");
+    await expect(
+      page.locator("#thread li[data-message-id]", { hasText: "Message sans rapport" }),
+    ).toHaveCount(1, { timeout: 15000 });
+
+    // Only the live script sends this header (see refresh() in thread.rs).
+    let replays = 0;
+    page.on("request", (r) => {
+      if (r.headers()["x-requested-with"] === "fetch") replays++;
+    });
+    await row.locator("summary", { hasText: "Modifier" }).click(); // close the editor
+    await expect(row.getByLabel("Modifier le message")).toBeHidden();
+    await page.waitForTimeout(1000); // scheduleRerender coalesces for 120ms
+    expect(replays).toBe(0);
+
+    // The unsaved text survived the close/reopen and still saves.
+    await row.locator("summary", { hasText: "Modifier" }).click();
+    await expect(row.getByLabel("Modifier le message")).toHaveValue("Correction silencieuse");
+    await row.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(page).toHaveURL(/\/messagerie\?notice=message_updated$/);
+    await expect(
+      page.locator("li[data-message-id]", { hasText: "Correction silencieuse" }),
+    ).toHaveCount(1);
+
+    await context.close();
+  });
 });
 
 test.describe("Messagerie — edit & delete", () => {
