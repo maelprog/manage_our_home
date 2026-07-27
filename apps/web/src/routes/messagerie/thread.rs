@@ -181,11 +181,25 @@ fn live_script(ws_url: &str) -> String {
     return open ? open.closest("li[data-message-id]") : null;
   }}
 
+  // "Has this row's render moved?", asked of the row being edited. Its live
+  // <details> is open and its textarea holds unsaved text, so the raw
+  // outerHTML never matches the fresh render's closed, server-valued row —
+  // compare with the disclosure dropped instead. Everything the server can
+  // change (author, time, the (modifié) marker, the content, the delete
+  // control) sits outside it.
+  function rowSignature(row) {{
+    var copy = row.cloneNode(true);
+    var forms = copy.querySelectorAll("details");
+    for (var j = 0; j < forms.length; j++) forms[j].parentNode.removeChild(forms[j]);
+    return copy.outerHTML;
+  }}
+
   // Applies a freshly fetched #thread. With no edit open that is the plain
   // whole-subtree swap. While one is open the fresh rows are reconciled into
   // the live list by data-message-id instead — new, changed and deleted
   // messages still land, the row being edited is left untouched, and its own
-  // update is replayed once the disclosure closes (pendingSync).
+  // update — if the fresh render even has one — is replayed once the
+  // disclosure closes (pendingSync).
   function applyFresh(fresh) {{
     var editing = editingRow();
     if (!editing) {{ thread.innerHTML = fresh.innerHTML; pendingSync = false; return; }}
@@ -207,7 +221,11 @@ fn live_script(ws_url: &str) -> String {
       id = freshRows[i].getAttribute("data-message-id");
       node = byId[id];
       if (id === editId) {{
-        pendingSync = true; // this row's real render is owed once editing ends
+        // This row's real render is owed once editing ends — but only if it
+        // actually differs (issue #50). The frame that matters most, another
+        // member posting, leaves the edited row untouched, and a replay there
+        // is a whole fetch + parse that applies nothing.
+        if (node && rowSignature(node) !== rowSignature(freshRows[i])) pendingSync = true;
       }} else if (!node) {{
         node = document.importNode(freshRows[i], true);
       }} else if (node.outerHTML !== freshRows[i].outerHTML) {{
@@ -858,5 +876,66 @@ mod tests {
         // <details>'s toggle event doesn't bubble — the listener has to capture.
         assert!(js.contains(r#"addEventListener("toggle""#));
         assert!(js.contains("li[data-message-id]"));
+    }
+
+    /// Issue #50: the held-back replay is only owed when the edited row's own
+    /// render actually moved. The flag used to be set on *every* refresh that
+    /// landed during an edit — including the common one, another member posting
+    /// — so closing the disclosure always cost one more fetch + full-page parse
+    /// with nothing to apply.
+    #[test]
+    fn live_script_owes_the_replay_only_when_the_edited_row_changed() {
+        let js = live_script("/api/groups/x/messages/ws");
+        let at = js
+            .find("if (id === editId) {")
+            .expect("the reconcile still has to special-case the row being edited");
+        let len = js[at..]
+            .find("} else if")
+            .expect("the edited-row branch still heads the reconcile's else-if chain");
+        let branch = &js[at..at + len];
+        assert!(
+            branch.contains("pendingSync = true"),
+            "the edited row's own update is still owed once editing ends"
+        );
+        assert!(
+            branch.contains("rowSignature(node) !== rowSignature(freshRows[i])"),
+            "but only when the fresh render differs: {branch}"
+        );
+        // The hold-back with no row list on either side is unconditional still:
+        // nothing was reconciled at all, so a replay is definitely owed.
+        assert!(js.contains("if (!list || !freshList) { pendingSync = true; return; }"));
+    }
+
+    /// The edited row's live `<details>` is open and holds text no server render
+    /// can reproduce, so a raw `outerHTML` compare differs on every frame and
+    /// would make the guard above a no-op. Everything the server can change
+    /// (author, time, `(modifié)`, content) sits outside the disclosure.
+    #[test]
+    fn the_edited_row_comparison_ignores_the_disclosure_subtree() {
+        let js = live_script("/api/groups/x/messages/ws");
+        let at = js
+            .find("function rowSignature(row) {")
+            .expect("the edited-row comparison needs a details-free signature");
+        let len = js[at..]
+            .find("\n  }")
+            .expect("rowSignature is a plain function");
+        let body = &js[at..at + len];
+        assert!(
+            body.contains(r#"querySelectorAll("details")"#) && body.contains("removeChild"),
+            "the signature has to drop the <details> subtree: {body}"
+        );
+        // Only the disclosure is dropped: the row's rendered blocks — and the
+        // delete control, which vanishes when the row stops being yours — are
+        // exactly what the comparison is for.
+        let row = message_row(&sample("Bonjour"), &[], true);
+        let closed = row
+            .find("</details>")
+            .expect("the edit form is a disclosure");
+        assert!(
+            row.find("/delete")
+                .expect("rows you may edit carry a delete form")
+                > closed,
+            "the delete control has to sit outside the <details> the signature drops"
+        );
     }
 }
