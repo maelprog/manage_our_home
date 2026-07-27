@@ -143,6 +143,11 @@ fn message_row(
 /// silent hang. Bails out immediately if `WebSocket` is unavailable. Rendered
 /// only on the live view (`data-live="true"`); a history window renders none.
 ///
+/// The re-render never destroys an inline edit in progress (issue #48): while a
+/// row's `<details>` is open the fresh rows are reconciled into the live list by
+/// `data-message-id` rather than swapped in wholesale, so another member's
+/// message no longer collapses the disclosure and discards the typed text.
+///
 /// `ws_url` is either absolute (`ws://…`/`wss://…`) or a relative path
 /// (`/api/…`, the production default) that the script prefixes with
 /// `location.host` and the page's scheme.
@@ -163,9 +168,73 @@ fn live_script(ws_url: &str) -> String {
     url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + raw;
   }}
 
-  var attempts = 0, socket = null, coalesce = null, stopped = false;
+  var attempts = 0, socket = null, coalesce = null, stopped = false, pendingSync = false;
 
   function setStatus(text) {{ if (status) status.textContent = text; }}
+
+  // The row whose inline edit form is open, if any: the form lives in a native
+  // <details> inside the row (see message_row). Its textarea holds text the
+  // user typed, which no server render can reproduce — so that row must
+  // survive a refresh it didn't ask for (another member posting, a reconnect).
+  function editingRow() {{
+    var open = thread.querySelector("details[open]");
+    return open ? open.closest("li[data-message-id]") : null;
+  }}
+
+  // Applies a freshly fetched #thread. With no edit open that is the plain
+  // whole-subtree swap. While one is open the fresh rows are reconciled into
+  // the live list by data-message-id instead — new, changed and deleted
+  // messages still land, the row being edited is left untouched, and its own
+  // update is replayed once the disclosure closes (pendingSync).
+  function applyFresh(fresh) {{
+    var editing = editingRow();
+    if (!editing) {{ thread.innerHTML = fresh.innerHTML; pendingSync = false; return; }}
+
+    var list = thread.querySelector("ul");
+    var freshList = fresh.querySelector("ul");
+    // No row list on either side (empty thread): nothing to reconcile against,
+    // so hold the swap back entirely rather than dropping the edit.
+    if (!list || !freshList) {{ pendingSync = true; return; }}
+
+    var editId = editing.getAttribute("data-message-id");
+    var freshRows = freshList.querySelectorAll("li[data-message-id]");
+    var live = thread.querySelectorAll("li[data-message-id]");
+    var byId = {{}}, i, id, node;
+    for (i = 0; i < live.length; i++) byId[live[i].getAttribute("data-message-id")] = live[i];
+
+    var seen = {{}}, prev = null;
+    for (i = 0; i < freshRows.length; i++) {{
+      id = freshRows[i].getAttribute("data-message-id");
+      node = byId[id];
+      if (id === editId) {{
+        pendingSync = true; // this row's real render is owed once editing ends
+      }} else if (!node) {{
+        node = document.importNode(freshRows[i], true);
+      }} else if (node.outerHTML !== freshRows[i].outerHTML) {{
+        var replacement = document.importNode(freshRows[i], true);
+        list.replaceChild(replacement, node);
+        node = replacement;
+      }}
+      if (!node) continue;
+      seen[id] = true;
+      var ref = prev ? prev.nextSibling : list.firstChild;
+      if (ref !== node) list.insertBefore(node, ref); // no-op when already in place
+      prev = node;
+    }}
+    for (i = 0; i < live.length; i++) {{
+      id = live[i].getAttribute("data-message-id");
+      if (!seen[id] && live[i].parentNode) live[i].parentNode.removeChild(live[i]);
+    }}
+    // The edited message was deleted by someone else: nothing left to preserve,
+    // so take the full render (older-link and empty state included) after all.
+    if (!editingRow()) {{ thread.innerHTML = fresh.innerHTML; pendingSync = false; }}
+  }}
+
+  // <details>'s toggle event doesn't bubble, so catch it on the way down.
+  // Closing the last open editor replays whatever refresh we held back.
+  thread.addEventListener("toggle", function() {{
+    if (pendingSync && !editingRow()) {{ pendingSync = false; scheduleRerender(); }}
+  }}, true);
 
   // The authoritative probe on any close/error: re-fetch the current page.
   // If the session is gone the fetch lands on /login; if membership is gone
@@ -182,7 +251,7 @@ fn live_script(ws_url: &str) -> String {
           if (!fresh || fresh.getAttribute("data-group-id") !== thread.getAttribute("data-group-id")) {{
             accessLost(); return;
           }}
-          thread.innerHTML = fresh.innerHTML;
+          applyFresh(fresh);
           if (then) then();
         }});
       }})
@@ -729,5 +798,65 @@ pub async fn delete(
             message_not_found_page().into_response()
         }
         Ok(_) | Err(_) => service_unavailable_page().into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(content: &str) -> MessageResponse {
+        let now = chrono::Utc::now();
+        MessageResponse {
+            id: Uuid::nil(),
+            group_id: Uuid::nil(),
+            created_by: Uuid::nil(),
+            content: content.to_string(),
+            edited_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// The live reconcile matches rows across renders by `data-message-id`;
+    /// every row shape has to carry it, or the row being edited can't be found.
+    #[test]
+    fn every_row_shape_carries_the_reconcile_key() {
+        let msg = sample("Bonjour");
+        assert!(message_row(&msg, &[], true).contains("data-message-id="));
+        assert!(message_row(&msg, &[], false).contains("data-message-id="));
+        assert!(edit_error_row(&msg, &[], "Bonjour", "Erreur").contains("data-message-id="));
+    }
+
+    /// Issue #48: `refresh()` assigned `thread.innerHTML` directly, so a refresh
+    /// triggered by *another* member's message collapsed the open `<details>`
+    /// and threw away the text typed into its textarea. Every whole-subtree swap
+    /// must now sit inside `applyFresh`, behind its "is someone editing?" guard.
+    #[test]
+    fn live_script_routes_every_swap_through_the_edit_aware_apply() {
+        let js = live_script("/api/groups/x/messages/ws");
+        let apply_at = js
+            .find("function applyFresh")
+            .expect("refresh() must delegate the swap to applyFresh");
+        assert!(js.contains("applyFresh(fresh)"));
+        assert!(js.contains("thread.innerHTML = fresh.innerHTML"));
+        for (at, _) in js.match_indices("thread.innerHTML = fresh.innerHTML") {
+            assert!(
+                at > apply_at,
+                "a bare thread.innerHTML swap escaped applyFresh"
+            );
+        }
+    }
+
+    /// The guard keys off the native disclosure the inline edit form lives in,
+    /// and a refresh held back during an edit is replayed when it closes.
+    #[test]
+    fn live_script_detects_the_open_inline_editor_and_replays_after_it_closes() {
+        let js = live_script("/api/groups/x/messages/ws");
+        assert!(js.contains("details[open]"));
+        assert!(message_row(&sample("Bonjour"), &[], true).contains("<details"));
+        // <details>'s toggle event doesn't bubble — the listener has to capture.
+        assert!(js.contains(r#"addEventListener("toggle""#));
+        assert!(js.contains("li[data-message-id]"));
     }
 }
