@@ -128,6 +128,51 @@ test.describe("Messagerie — live updates (WebSocket)", () => {
 
     await context.close();
   });
+
+  test("a live refresh does not destroy an inline edit in progress", async ({ page, browser }) => {
+    // Issue #48: the refresh used to swap the whole #thread subtree, so another
+    // member posting while you were correcting a message collapsed your edit
+    // form and threw away the text you had typed into it.
+    await registerAndLogin(page, "e2e-msgeditliveowner", "Edit Live Owner");
+    await createGroup(page, "Famille Correction Directe");
+    const href = await createInvitationLink(page, "Famille Correction Directe");
+
+    const context = await browser.newContext();
+    const member = await context.newPage();
+    await registerAndLogin(member, "e2e-msgeditlivemember", "Edit Live Member");
+    await member.goto(href);
+    await member.getByRole("button", { name: "Rejoindre le groupe" }).click();
+
+    // The owner starts correcting their own message: disclosure open, new text
+    // typed, nothing submitted yet.
+    await sendMessage(page, "Texte à corriger");
+    await page.goto("/messagerie");
+    const row = page.locator("li[data-message-id]", { hasText: "Texte à corriger" });
+    await row.locator("summary", { hasText: "Modifier" }).click();
+    await row.getByLabel("Modifier le message").fill("Correction en cours");
+
+    // Meanwhile the member posts, which pushes a WS frame to the owner's page.
+    await sendMessage(member, "Message pendant l'édition");
+
+    // The new message lands — the refresh really did happen... (scope to the
+    // row: the owner may edit any message, so the content also sits in that
+    // row's pre-filled edit textarea and a bare getByText matches twice.)
+    await expect(
+      page.locator("#thread li[data-message-id]", { hasText: "Message pendant l'édition" }),
+    ).toHaveCount(1, { timeout: 15000 });
+    // ...and the open editor kept both its disclosure and its unsaved text.
+    await expect(row.getByLabel("Modifier le message")).toBeVisible();
+    await expect(row.getByLabel("Modifier le message")).toHaveValue("Correction en cours");
+
+    // The edit still goes through from that untouched form.
+    await row.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(page).toHaveURL(/\/messagerie\?notice=message_updated$/);
+    const updated = page.locator("li[data-message-id]", { hasText: "Correction en cours" });
+    await expect(updated).toHaveCount(1);
+    await expect(updated.getByText("(modifié)")).toBeVisible();
+
+    await context.close();
+  });
 });
 
 test.describe("Messagerie — edit & delete", () => {

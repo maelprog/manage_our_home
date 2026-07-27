@@ -42,6 +42,17 @@ scale (a handful of connected members, one thread).
 `location.reload()` would have been even simpler but throws away whatever the
 composer has typed and the scroll position; the fragment swap keeps both.
 
+The swap is **not** unconditional, though (issue #48). The inline edit form is a
+`<details>` disclosure *inside* `#thread`, so replacing the whole subtree while a
+member is correcting a message collapsed their form and discarded the text they
+had typed — a refresh they never asked for (another member posting, or the
+reconnect probe) losing their work. So `applyFresh` first looks for an open
+`details[open]` in the thread: with none, it does the plain whole-subtree swap;
+with one, it reconciles the fresh rows into the live list by `data-message-id`
+instead — new, changed and deleted messages still land, and the single row being
+edited is left untouched, its own re-render replayed when the disclosure closes.
+The renderer stays in Rust either way; only *which* nodes get replaced changes.
+
 ### No JS is the baseline, not the fallback
 
 Everything on `/messagerie` is a plain `<form method=post>`: sending, editing
@@ -247,6 +258,7 @@ and both surface the same copy.
 | Event | UI |
 |---|---|
 | `message.created` / `message.updated` / `message.deleted` | coalesced re-render of `#thread` from the server (payload never parsed client-side) |
+| any re-render while a row's edit disclosure is open | the fresh rows are reconciled by `data-message-id`; the row being edited keeps its open form and its unsaved text, and syncs once the disclosure closes |
 | close, session still valid | reconnect with backoff (1→30 s), status line cleared on reopen |
 | close, refresh lands on `/login` or a different/absent `#thread[data-group-id]` | stop reconnecting, banner "Vous n'avez plus accès à cette conversation." + reload link (covers the ≤30 s membership-revalidation window) |
 | 5 consecutive reconnect failures | stop, banner "Connexion temps réel interrompue…" telling the user to reload |
