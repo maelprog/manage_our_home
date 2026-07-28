@@ -1,7 +1,10 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
-use common::{assert_status, call, json_body, set_cookie, test_router};
+use common::{
+    assert_status, call, call_upload, json_body, real_minio_from_env, set_cookie, test_router,
+    test_router_with_storage,
+};
 use sqlx::PgPool;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -73,6 +76,10 @@ LAST-MODIFIED:20260101T090000Z
 END:VEVENT
 END:VCALENDAR
 ";
+
+/// PNG magic bytes — `sniff_and_validate_mime` reads the signature rather
+/// than decoding the image, so this is all an upload needs.
+const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR";
 
 /// Serves a fixed ICS body over plain HTTP on 127.0.0.1, once per accepted
 /// connection, until `max_requests` connections have been served — good
@@ -349,5 +356,302 @@ async fn only_admin_or_owner_can_delete_calendar_import(db: PgPool) {
         None,
     )
     .await;
-    assert_status(&owner_delete, StatusCode::NO_CONTENT);
+    assert_status(&owner_delete, StatusCode::OK);
+    // Nothing was imported, and the events were not asked for anyway.
+    assert_eq!(json_body(owner_delete).await["deleted_events"], 0);
+}
+
+/// Imports `ICS_BODY` through a fresh connection and returns
+/// `(import_id, event_id)`. Every test below starts from the same place:
+/// one connection that has actually run, so there is something to keep or
+/// delete.
+async fn import_one_event(
+    router: &axum::Router,
+    db: &PgPool,
+    owner_cookie: &str,
+    group_id: &str,
+) -> (String, String) {
+    let feed_url = spawn_ics_server(ICS_BODY, 1).await;
+    let create = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/calendar-imports"),
+        Some(owner_cookie),
+        Some(serde_json::json!({"label": "Foyer calendar", "feed_url": feed_url})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let import_id = json_body(create).await["id"].as_str().unwrap().to_string();
+
+    let run = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/calendar-imports/{import_id}/import"),
+        Some(owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&run, StatusCode::OK);
+    assert_eq!(json_body(run).await["imported"], 1);
+
+    let event_id: uuid::Uuid = sqlx::query_scalar(
+        "SELECT event_id FROM calendar_import_events WHERE calendar_import_id = $1::uuid",
+    )
+    .bind(&import_id)
+    .fetch_one(db)
+    .await
+    .unwrap();
+    (import_id, event_id.to_string())
+}
+
+async fn event_count(router: &axum::Router, cookie: &str, group_id: &str) -> usize {
+    let events = call(
+        router,
+        Method::GET,
+        &format!("/groups/{group_id}/events?from=2026-01-01T00:00:00Z&to=2027-01-01T00:00:00Z"),
+        Some(cookie),
+        None,
+    )
+    .await;
+    assert_status(&events, StatusCode::OK);
+    json_body(events).await["occurrences"]
+        .as_array()
+        .unwrap()
+        .len()
+}
+
+/// AC (#55): asked for it, the delete takes the events the import created
+/// with it — the bulk cleanup that otherwise has to be done one event at a
+/// time through `/agenda/:id`.
+#[sqlx::test]
+async fn deleting_a_connection_removes_its_imported_events_when_asked(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "cal-owner5@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let (import_id, _) = import_one_event(&router, &db, &owner_cookie, &group_id).await;
+    assert_eq!(event_count(&router, &owner_cookie, &group_id).await, 1);
+
+    let delete = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}/calendar-imports/{import_id}?delete_events=true"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&delete, StatusCode::OK);
+    assert_eq!(
+        json_body(delete).await["deleted_events"],
+        1,
+        "the response has to report what it removed, the front says so"
+    );
+
+    assert_eq!(
+        event_count(&router, &owner_cookie, &group_id).await,
+        0,
+        "the imported event should be gone from the agenda, not just its mapping"
+    );
+    let imports = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/calendar-imports"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_eq!(
+        json_body(imports).await["imports"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0,
+        "the connection itself must still be gone"
+    );
+}
+
+/// AC (#55): the flag is opt-in. Without it the v1 behaviour stands — the
+/// events survive as ordinary family events, because they may carry local
+/// work (a reminder, an attachment, a completion) with no Google
+/// counterpart. Pinned so this branch never silently becomes the other.
+#[sqlx::test]
+async fn deleting_a_connection_keeps_its_imported_events_by_default(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "cal-owner6@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let (import_id, _) = import_one_event(&router, &db, &owner_cookie, &group_id).await;
+
+    let delete = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}/calendar-imports/{import_id}"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&delete, StatusCode::OK);
+    assert_eq!(json_body(delete).await["deleted_events"], 0);
+
+    assert_eq!(
+        event_count(&router, &owner_cookie, &group_id).await,
+        1,
+        "the default must still leave the imported events in the agenda"
+    );
+}
+
+/// `delete_events=false` is the same branch as no flag at all — a front
+/// that submits an unticked checkbox as `false` must not delete anything.
+#[sqlx::test]
+async fn an_explicit_false_keeps_the_events_too(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "cal-owner7@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let (import_id, _) = import_one_event(&router, &db, &owner_cookie, &group_id).await;
+
+    let delete = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}/calendar-imports/{import_id}?delete_events=false"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&delete, StatusCode::OK);
+    assert_eq!(json_body(delete).await["deleted_events"], 0);
+    assert_eq!(event_count(&router, &owner_cookie, &group_id).await, 1);
+}
+
+/// AC (#55): the bulk delete must not re-open #54 at feed scale. An
+/// imported event that picked up an attachment locally leaves no object
+/// behind when this path removes it.
+///
+/// Needs a real MinIO; skipped otherwise (see `real_minio_from_env`).
+#[sqlx::test]
+async fn deleting_the_imported_events_removes_their_attachment_objects(db: PgPool) {
+    let Some((s3, bucket)) = real_minio_from_env() else {
+        eprintln!(
+            "skipping deleting_the_imported_events_removes_their_attachment_objects: \
+             no MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY/BUCKET in the environment"
+        );
+        return;
+    };
+    let router = test_router_with_storage(
+        db.clone(),
+        manage_our_home::storage::Storage::new(s3.clone(), bucket.clone()),
+    );
+    let owner_cookie =
+        register_verify_login(&router, &db, "cal-owner8@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let (import_id, event_id) = import_one_event(&router, &db, &owner_cookie, &group_id).await;
+
+    // Local work on an imported event, with no Google counterpart: exactly
+    // what the opt-in is warning about — and its bytes live in MinIO.
+    let upload = call_upload(
+        &router,
+        &format!("/groups/{group_id}/events/{event_id}/attachments"),
+        &owner_cookie,
+        "ordonnance.png",
+        PNG_BYTES,
+    )
+    .await;
+    assert_status(&upload, StatusCode::CREATED);
+    let storage_key: String =
+        sqlx::query_scalar("SELECT storage_key FROM event_attachments WHERE event_id = $1::uuid")
+            .bind(&event_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert!(
+        s3.head_object()
+            .bucket(&bucket)
+            .key(&storage_key)
+            .send()
+            .await
+            .is_ok(),
+        "the uploaded object should exist before the delete"
+    );
+
+    let delete = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}/calendar-imports/{import_id}?delete_events=true"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&delete, StatusCode::OK);
+    assert_eq!(json_body(delete).await["deleted_events"], 1);
+
+    assert!(
+        s3.head_object()
+            .bucket(&bucket)
+            .key(&storage_key)
+            .send()
+            .await
+            .is_err(),
+        "deleting the imported events should have taken their attachment objects too"
+    );
+}
+
+/// Pins the ordering, as the per-event and per-group deletes do: objects
+/// go first, so a storage failure aborts the whole delete rather than
+/// leaving a removed connection whose bytes stay in the bucket.
+/// `test_router`'s storage points at an unreachable endpoint.
+#[sqlx::test]
+async fn a_failed_object_delete_aborts_the_whole_connection_delete(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "cal-owner9@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let (import_id, event_id) = import_one_event(&router, &db, &owner_cookie, &group_id).await;
+
+    let user_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind("cal-owner9@example.test")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO event_attachments (event_id, uploaded_by, storage_key, filename, mime_type, size_bytes)
+         VALUES ($1::uuid, $2, $3, 'ordonnance.png', 'image/png', 42)",
+    )
+    .bind(&event_id)
+    .bind(user_id)
+    .bind(format!("{group_id}/{event_id}/{}", uuid::Uuid::new_v4()))
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let delete = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}/calendar-imports/{import_id}?delete_events=true"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&delete, StatusCode::INTERNAL_SERVER_ERROR);
+
+    assert_eq!(
+        event_count(&router, &owner_cookie, &group_id).await,
+        1,
+        "a failed object delete must leave the event for the retry"
+    );
+    let imports = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/calendar-imports"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_eq!(
+        json_body(imports).await["imports"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1,
+        "…and the connection too, or the retry has nothing to retry through"
+    );
 }

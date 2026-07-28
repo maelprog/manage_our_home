@@ -48,6 +48,16 @@ pub struct CalendarImportsResponse {
     pub imports: Vec<CalendarImportResponse>,
 }
 
+/// `DELETE /groups/:gid/calendar-imports/:import_id` result (#55). The
+/// delete takes an optional `?delete_events=true`; without it the events the
+/// import created stay in the agenda — the v1 default — and `deleted_events`
+/// is `0`. With it, the count is what left the agenda, which the front has to
+/// be told because it cannot count rows that no longer exist.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct DeleteCalendarImportResponse {
+    pub deleted_events: usize,
+}
+
 /// `POST /groups/:gid/calendar-imports/:import_id/import` result: what one
 /// on-demand run did. `skipped` counts VEVENTs whose upstream version was
 /// unchanged since the last run — a re-import of an untouched feed reports
