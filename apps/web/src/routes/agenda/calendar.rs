@@ -197,6 +197,7 @@ fn render_nav(is_week: bool, focus: NaiveDate) -> String {
 <a class="button secondary" href="/agenda?view={view_q}&date={next}">"▶"</a>
 <a class="button secondary" href="/agenda?view=month&date={focus}">Mois</a>
 <a class="button secondary" href="/agenda?view=week&date={focus}">Semaine</a>
+<a class="button secondary" href="/agenda/imports">Agendas Google</a>
 <a class="button" href="/agenda/new">Nouvel événement</a>
 </span>
 </div>"#,

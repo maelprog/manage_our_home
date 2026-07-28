@@ -109,6 +109,16 @@ fn page(
         }
     });
 
+    // Cross-link only, no controls: the Google Calendar screens (front epic F11)
+    // live under `/agenda/imports` because what they produce is agenda data, but
+    // "connecter un agenda" is the kind of thing people come looking for in the
+    // family settings, so the door is signposted from here too.
+    let calendar_imports_section = view! {
+        <h2 style="font-size:1.1rem;margin-top:1.5rem;">"Agendas Google"</h2>
+        <p class="muted">"Les agendas Google connectés à cette famille se gèrent depuis l'agenda : leurs événements y sont recopiés à la demande."</p>
+        <p><a href="/agenda/imports">"Gérer les agendas Google"</a></p>
+    };
+
     let leave_action = format!("/groups/{}/settings/leave", group.id);
     let leave_section = if is_owner && !others.is_empty() {
         view! {
@@ -152,6 +162,7 @@ fn page(
         {error.map(|e| view! { <p class="notice error">{e.to_string()}</p> })}
         {rename_section}
         {transfer_section}
+        {calendar_imports_section}
         {leave_section}
         {delete_section}
         <div class="links">

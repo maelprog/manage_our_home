@@ -39,6 +39,27 @@ WEB_BASE_URL=http://localhost:3000 \
   npm test
 ```
 
+## The ICS fixture server (`ICS_FIXTURE_HOST`)
+
+`tests/google-calendar.spec.ts` (front epic F11) starts a throwaway HTTP
+server inside the Playwright process and serves `.ics` fixtures from it,
+so the Google Calendar import runs against no real Google account and no
+network egress. The client of that server is **apps/api**, not the
+browser: it is apps/api that fetches the feed URL when an import is
+triggered.
+
+The advertised host therefore has to be whatever apps/api can reach the
+Playwright process at. It defaults to `127.0.0.1`, which is correct
+whenever both run on the same machine (the `e2e` job in `ci.yml`, and
+both recipes above). When the stack runs on a docker network and
+Playwright runs in its own container, give the container a resolvable
+name and pass it through:
+
+```
+docker run --name mom-e2e-runner --network mom-e2e ... \
+  -e ICS_FIXTURE_HOST=mom-e2e-runner ...
+```
+
 ## Coverage
 
 - Register → verify-email → login → home → logout.
