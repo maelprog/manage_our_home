@@ -102,9 +102,10 @@ Consequence 2 is also *why* there is no `PATCH`: changing a label or a URL means
 delete + recreate, which means a full re-import. The confirmation steers anyone
 who only wanted to fix the name toward that fact before they click.
 
-Both are v1 behaviour to **surface**, not to fix here. If we would rather offer
-"supprimer aussi les événements importés", that is a separate issue with a
-backend change behind it.
+Both are v1 behaviour to **surface**, not to fix here. Offering "supprimer aussi
+les événements importés" is filed as **#55**, which in turn waits on **#54**:
+`delete_event` already leaks its attachment objects in MinIO on the single-event
+path, and a bulk delete here would multiply that by the size of a feed.
 
 ### There is no in-place edit, and no `/agenda/imports/:id` detail page
 
@@ -119,7 +120,7 @@ F9's user detail page takes for the same reason.
 - Editing a connection in place (no backend `PATCH`; delete + recreate is the
   documented path).
 - Deleting the events an import produced when the connection is removed (see
-  consequence 1 — file separately if wanted).
+  consequence 1 — filed as #55, blocked on #54).
 - Expanding bare `RRULE`s from the feed (documented v1 backend limitation:
   Google already expands `RECURRENCE-ID` overrides into separate VEVENTs, so a
   plain RRULE VEVENT imports as its first occurrence only).
