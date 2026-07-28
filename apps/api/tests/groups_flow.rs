@@ -1,7 +1,11 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
-use common::{assert_status, call, json_body, set_cookie, test_router};
+use chrono::{Duration, Utc};
+use common::{
+    assert_status, call, call_upload, json_body, real_minio_from_env, set_cookie, test_router,
+    test_router_with_storage,
+};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -522,4 +526,310 @@ async fn only_one_owner_per_group_at_db_level(db: PgPool) {
         result.is_err(),
         "expected unique violation for a second owner"
     );
+}
+
+/// PNG magic bytes. `sniff_and_validate_mime` reads the signature rather
+/// than decoding the image, so this is all an upload needs to clear the
+/// MIME allow-list.
+const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR";
+
+/// `event_attachments` is RLS-scoped through its event's group, and the
+/// policy applies to the pool's own role (FORCE ROW LEVEL SECURITY), so
+/// test-side reads and writes have to set `app.family_id` the way
+/// `scoped_tx` does. Runtime `sqlx::query` on purpose: test-only SQL that
+/// would otherwise need a `.sqlx` offline cache entry.
+async fn with_family_scope<'a>(
+    db: &PgPool,
+    group_id: &str,
+) -> sqlx::Transaction<'a, sqlx::Postgres> {
+    let mut tx = db.begin().await.unwrap();
+    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+        .bind(group_id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx
+}
+
+async fn create_group(router: &axum::Router, cookie: &str, name: &str) -> String {
+    let res = call(
+        router,
+        Method::POST,
+        "/groups",
+        Some(cookie),
+        Some(serde_json::json!({ "name": name })),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    json_body(res).await["id"].as_str().unwrap().to_string()
+}
+
+async fn create_event(router: &axum::Router, cookie: &str, group_id: &str, title: &str) -> String {
+    let starts_at = Utc::now() + Duration::days(1);
+    let res = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(cookie),
+        Some(serde_json::json!({
+            "title": title,
+            "starts_at": starts_at,
+            "ends_at": starts_at + Duration::hours(1),
+        })),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    json_body(res).await["id"].as_str().unwrap().to_string()
+}
+
+/// Every attachment key in the group, across all of its events. Has to be
+/// read *before* the group goes away: the rows cascade with it.
+async fn group_storage_keys(db: &PgPool, group_id: &str) -> Vec<String> {
+    let mut tx = with_family_scope(db, group_id).await;
+    let keys = sqlx::query_scalar(
+        "SELECT storage_key FROM event_attachments
+         WHERE event_id IN (SELECT id FROM events WHERE group_id = $1)",
+    )
+    .bind(Uuid::parse_str(group_id).unwrap())
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    keys
+}
+
+async fn object_exists(s3: &aws_sdk_s3::Client, bucket: &str, key: &str) -> bool {
+    s3.head_object()
+        .bucket(bucket)
+        .key(key)
+        .send()
+        .await
+        .is_ok()
+}
+
+/// AC (#57): deleting a group deletes the objects behind its events'
+/// attachments, not just the rows. `events` cascades from `groups` and
+/// `event_attachments` from `events`, so one owner-only call drops every
+/// attachment row in the group at once — and `storage_key` is the sole
+/// record of which object belonged to it.
+///
+/// Needs a real MinIO; skipped otherwise (see `real_minio_from_env`).
+#[sqlx::test]
+async fn deleting_a_group_removes_its_events_attachment_objects(db: PgPool) {
+    let Some((s3, bucket)) = real_minio_from_env() else {
+        eprintln!(
+            "skipping deleting_a_group_removes_its_events_attachment_objects: \
+             no MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY/BUCKET in the environment"
+        );
+        return;
+    };
+    let router = test_router_with_storage(
+        db.clone(),
+        manage_our_home::storage::Storage::new(s3.clone(), bucket.clone()),
+    );
+    let owner_cookie =
+        register_verify_login(&router, &db, "group-attach@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let event_id = create_event(&router, &owner_cookie, &group_id, "Réunion").await;
+
+    let upload = call_upload(
+        &router,
+        &format!("/groups/{group_id}/events/{event_id}/attachments"),
+        &owner_cookie,
+        "ordonnance.png",
+        PNG_BYTES,
+    )
+    .await;
+    assert_status(&upload, StatusCode::CREATED);
+
+    let keys = group_storage_keys(&db, &group_id).await;
+    assert_eq!(keys.len(), 1);
+    assert!(
+        object_exists(&s3, &bucket, &keys[0]).await,
+        "the uploaded object should exist before the delete"
+    );
+
+    let delete = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&delete, StatusCode::NO_CONTENT);
+
+    assert!(
+        !object_exists(&s3, &bucket, &keys[0]).await,
+        "deleting the group should have removed its attachment object from storage, \
+         not just the row pointing at it"
+    );
+}
+
+/// AC (#57): the radius is the whole group, not one event — every event's
+/// attachments go, in a single batched `DeleteObjects` rather than one
+/// round trip per key inside the open transaction.
+#[sqlx::test]
+async fn deleting_a_group_removes_the_objects_of_all_of_its_events(db: PgPool) {
+    let Some((s3, bucket)) = real_minio_from_env() else {
+        eprintln!(
+            "skipping deleting_a_group_removes_the_objects_of_all_of_its_events: \
+             no MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY/BUCKET in the environment"
+        );
+        return;
+    };
+    let router = test_router_with_storage(
+        db.clone(),
+        manage_our_home::storage::Storage::new(s3.clone(), bucket.clone()),
+    );
+    let owner_cookie = register_verify_login(
+        &router,
+        &db,
+        "group-attach2@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    for title in ["Réunion", "Rendez-vous"] {
+        let event_id = create_event(&router, &owner_cookie, &group_id, title).await;
+        let upload = call_upload(
+            &router,
+            &format!("/groups/{group_id}/events/{event_id}/attachments"),
+            &owner_cookie,
+            "ordonnance.png",
+            PNG_BYTES,
+        )
+        .await;
+        assert_status(&upload, StatusCode::CREATED);
+    }
+
+    let keys = group_storage_keys(&db, &group_id).await;
+    assert_eq!(keys.len(), 2, "one attachment per event");
+    for key in &keys {
+        assert!(object_exists(&s3, &bucket, key).await);
+    }
+
+    let delete = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&delete, StatusCode::NO_CONTENT);
+
+    for key in &keys {
+        assert!(
+            !object_exists(&s3, &bucket, key).await,
+            "every event's attachment object should be gone, not just the first: {key}"
+        );
+    }
+}
+
+/// AC (#57): pins the ordering choice, as `event_delete_aborts_...` does
+/// for the per-event path. Objects go first, the group row after, so a
+/// storage failure aborts the whole delete: the caller sees an error and
+/// can retry against a group that is still there, rather than a "deleted"
+/// group whose bytes stay in the bucket with nothing pointing at them.
+///
+/// `test_router`'s storage points at an unreachable endpoint, which is
+/// exactly the failure being pinned here.
+#[sqlx::test]
+async fn group_delete_aborts_when_an_attachment_object_cannot_be_removed(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "group-leak@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let event_id = create_event(&router, &owner_cookie, &group_id, "Réunion").await;
+
+    // Insert the attachment row directly: the upload path would need a
+    // reachable MinIO, and this test wants an unreachable one.
+    let user_id: Uuid = sqlx::query_scalar!(
+        "SELECT id FROM users WHERE email = $1",
+        "group-leak@example.test"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let mut tx = with_family_scope(&db, &group_id).await;
+    sqlx::query(
+        "INSERT INTO event_attachments (event_id, uploaded_by, storage_key, filename, mime_type, size_bytes)
+         VALUES ($1, $2, $3, 'ordonnance.png', 'image/png', 42)",
+    )
+    .bind(Uuid::parse_str(&event_id).unwrap())
+    .bind(user_id)
+    .bind(format!("{group_id}/{event_id}/{}", Uuid::new_v4()))
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let delete = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&delete, StatusCode::INTERNAL_SERVER_ERROR);
+
+    let get = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&get, StatusCode::OK);
+
+    let get_event = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&get_event, StatusCode::OK);
+    assert_eq!(
+        group_storage_keys(&db, &group_id).await.len(),
+        1,
+        "a failed object delete must leave the attachment row for the retry"
+    );
+}
+
+/// A group with no attachments at all is the common case: it must not turn
+/// into an empty `DeleteObjects` call, which S3 rejects — and here would
+/// mean an owner can never delete an attachment-free group.
+#[sqlx::test]
+async fn deleting_a_group_with_no_attachments_still_succeeds(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "group-empty@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    create_event(&router, &owner_cookie, &group_id, "Réunion").await;
+
+    let delete = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&delete, StatusCode::NO_CONTENT);
+
+    let get = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&get, StatusCode::NOT_FOUND);
 }

@@ -205,6 +205,25 @@ pub(crate) async fn storage_keys_for_events(
     .await?)
 }
 
+/// Storage keys of every attachment hanging off every event in a group.
+///
+/// Group deletion never has the event ids in hand, and `events` cascades
+/// from `groups` just as `event_attachments` cascades from `events` — so
+/// this reads through both in one round trip rather than listing the
+/// events first only to throw the ids away.
+pub(crate) async fn storage_keys_for_group(
+    tx: &mut sqlx::PgConnection,
+    group_id: Uuid,
+) -> AppResult<Vec<String>> {
+    Ok(sqlx::query_scalar!(
+        "SELECT storage_key FROM event_attachments
+         WHERE event_id IN (SELECT id FROM events WHERE group_id = $1)",
+        group_id,
+    )
+    .fetch_all(tx)
+    .await?)
+}
+
 /// Removes objects from MinIO before the rows referencing them are
 /// committed away. Ordering is deliberate: on failure the caller's
 /// transaction is dropped (rolled back) rather than committed, so the
@@ -212,12 +231,13 @@ pub(crate) async fn storage_keys_for_events(
 /// is a "deleted" event whose bytes stay in the bucket with nothing left
 /// pointing at them. Failures surface as 500 for the same reason: swallowed
 /// here, the leak would be silent and unfindable.
+///
+/// Batched (`Storage::delete_objects`) rather than one call per key: this
+/// runs with the caller's transaction open, and a group delete has no
+/// bound on how many attachments it carries.
 pub(crate) async fn delete_objects(storage: &Storage, keys: &[String]) -> AppResult<()> {
-    for key in keys {
-        storage
-            .delete_object(key)
-            .await
-            .map_err(AppError::Internal)?;
-    }
-    Ok(())
+    storage
+        .delete_objects(keys)
+        .await
+        .map_err(AppError::Internal)
 }
