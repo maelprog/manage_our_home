@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::agenda::attachments;
 use crate::audit;
 use crate::auth::session::{scoped_tx, token_scoped_tx, user_scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
@@ -321,6 +322,14 @@ pub async fn delete_group(
     if role != "owner" {
         return Err(AppError::Forbidden);
     }
+
+    // `events` cascades from `groups` and `event_attachments` from
+    // `events`, so this one call drops every attachment row in the group —
+    // and `storage_key` is the only record of which object each row owned.
+    // Collect the keys and drop the objects first, the same order (and for
+    // the same reason) as the per-event delete; see `delete_objects`.
+    let storage_keys = attachments::storage_keys_for_group(&mut tx, group_id).await?;
+    attachments::delete_objects(&state.storage, &storage_keys).await?;
 
     sqlx::query!("DELETE FROM groups WHERE id = $1", group_id)
         .execute(&mut *tx)
