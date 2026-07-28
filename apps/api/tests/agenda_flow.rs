@@ -2,7 +2,10 @@ mod common;
 
 use axum::http::{Method, StatusCode};
 use chrono::{Duration, Utc};
-use common::{assert_status, call, json_body, set_cookie, test_router};
+use common::{
+    assert_status, call, call_upload, json_body, real_minio_from_env, set_cookie, test_router,
+    test_router_with_storage,
+};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -481,4 +484,198 @@ async fn recurring_task_completion_is_per_occurrence(db: PgPool) {
             "only the completed occurrence should report a completed_at"
         );
     }
+}
+
+/// PNG magic bytes. `sniff_and_validate_mime` reads the signature rather
+/// than decoding the image, so this is all an upload needs to clear the
+/// MIME allow-list.
+const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR";
+
+/// `event_attachments` is RLS-scoped through its event's group, and the
+/// policy applies to the pool's own role (FORCE ROW LEVEL SECURITY), so
+/// test-side reads and writes have to set `app.family_id` the way
+/// `scoped_tx` does. Runtime `sqlx::query` on purpose: test-only SQL that
+/// would otherwise need a `.sqlx` offline cache entry.
+async fn with_family_scope<'a>(
+    db: &PgPool,
+    group_id: &str,
+) -> sqlx::Transaction<'a, sqlx::Postgres> {
+    let mut tx = db.begin().await.unwrap();
+    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+        .bind(group_id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx
+}
+
+async fn attachment_storage_key(db: &PgPool, group_id: &str, event_id: &str) -> String {
+    let mut tx = with_family_scope(db, group_id).await;
+    let key = sqlx::query_scalar("SELECT storage_key FROM event_attachments WHERE event_id = $1")
+        .bind(Uuid::parse_str(event_id).unwrap())
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    key
+}
+
+async fn attachment_count(db: &PgPool, group_id: &str, event_id: &str) -> i64 {
+    let mut tx = with_family_scope(db, group_id).await;
+    let count = sqlx::query_scalar("SELECT count(*) FROM event_attachments WHERE event_id = $1")
+        .bind(Uuid::parse_str(event_id).unwrap())
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    count
+}
+
+async fn create_event(router: &axum::Router, cookie: &str, group_id: &str) -> String {
+    let starts_at = Utc::now() + Duration::days(1);
+    let res = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(cookie),
+        Some(serde_json::json!({
+            "title": "Réunion de classe",
+            "starts_at": starts_at,
+            "ends_at": starts_at + Duration::hours(1),
+        })),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    json_body(res).await["id"].as_str().unwrap().to_string()
+}
+
+/// AC (#54): deleting an event deletes the objects behind its attachments,
+/// not just the rows. `event_attachments` cascades from `events`, so the
+/// rows go on their own — nothing ever reads `storage_key` again, which is
+/// what made the leak unfindable.
+///
+/// Needs a real MinIO; skipped otherwise (see `real_minio_from_env`).
+#[sqlx::test]
+async fn deleting_an_event_removes_its_attachment_objects(db: PgPool) {
+    let Some((s3, bucket)) = real_minio_from_env() else {
+        eprintln!(
+            "skipping deleting_an_event_removes_its_attachment_objects: \
+             no MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY/BUCKET in the environment"
+        );
+        return;
+    };
+    let router = test_router_with_storage(
+        db.clone(),
+        manage_our_home::storage::Storage::new(s3.clone(), bucket.clone()),
+    );
+    let owner_cookie =
+        register_verify_login(&router, &db, "attach-owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let event_id = create_event(&router, &owner_cookie, &group_id).await;
+
+    let upload = call_upload(
+        &router,
+        &format!("/groups/{group_id}/events/{event_id}/attachments"),
+        &owner_cookie,
+        "ordonnance.png",
+        PNG_BYTES,
+    )
+    .await;
+    assert_status(&upload, StatusCode::CREATED);
+
+    let storage_key = attachment_storage_key(&db, &group_id, &event_id).await;
+    assert!(
+        s3.head_object()
+            .bucket(&bucket)
+            .key(&storage_key)
+            .send()
+            .await
+            .is_ok(),
+        "the uploaded object should exist before the delete"
+    );
+
+    let delete = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&delete, StatusCode::NO_CONTENT);
+
+    assert_eq!(attachment_count(&db, &group_id, &event_id).await, 0);
+    assert!(
+        s3.head_object()
+            .bucket(&bucket)
+            .key(&storage_key)
+            .send()
+            .await
+            .is_err(),
+        "deleting the event should have removed its attachment object from storage, \
+         not just the row pointing at it"
+    );
+}
+
+/// AC (#54): pins the ordering choice. Objects go first, the event row
+/// after, so a storage failure aborts the whole delete: the caller sees an
+/// error and can retry against an event that is still there, rather than a
+/// "deleted" event whose bytes are unreachable forever.
+///
+/// `test_router`'s storage points at an unreachable endpoint, which is
+/// exactly the failure being pinned here.
+#[sqlx::test]
+async fn event_delete_aborts_when_the_attachment_object_cannot_be_removed(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "leak-owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let event_id = create_event(&router, &owner_cookie, &group_id).await;
+
+    // Insert the attachment row directly: the upload path would need a
+    // reachable MinIO, and this test wants an unreachable one.
+    let user_id: Uuid = sqlx::query_scalar!(
+        "SELECT id FROM users WHERE email = $1",
+        "leak-owner@example.test"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let mut tx = with_family_scope(&db, &group_id).await;
+    sqlx::query(
+        "INSERT INTO event_attachments (event_id, uploaded_by, storage_key, filename, mime_type, size_bytes)
+         VALUES ($1, $2, $3, 'ordonnance.png', 'image/png', 42)",
+    )
+    .bind(Uuid::parse_str(&event_id).unwrap())
+    .bind(user_id)
+    .bind(format!("{group_id}/{event_id}/{}", Uuid::new_v4()))
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let delete = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&delete, StatusCode::INTERNAL_SERVER_ERROR);
+
+    let get = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&get, StatusCode::OK);
+    assert_eq!(
+        attachment_count(&db, &group_id, &event_id).await,
+        1,
+        "a failed object delete must leave the attachment row for the retry"
+    );
 }

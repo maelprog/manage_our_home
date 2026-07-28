@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::agenda::{can_modify, recurrence};
+use crate::agenda::{attachments, can_modify, recurrence};
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::groups::require_role;
@@ -428,6 +428,13 @@ pub async fn delete_event(
     if !can_modify(&actor_role, existing.created_by == auth.user_id) {
         return Err(AppError::Forbidden);
     }
+
+    // The attachment rows cascade from `events`, their objects do not:
+    // once the rows are gone nothing references the stored bytes again, so
+    // collect the keys and drop the objects first (see `delete_objects` for
+    // why this order and not the reverse).
+    let storage_keys = attachments::storage_keys_for_events(&mut tx, &[event_id]).await?;
+    attachments::delete_objects(&state.storage, &storage_keys).await?;
 
     sqlx::query!(
         "DELETE FROM events WHERE id = $1 AND group_id = $2",

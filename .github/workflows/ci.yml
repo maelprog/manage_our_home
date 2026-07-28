@@ -52,8 +52,31 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # The agenda suite asserts on the actual stored objects, not just the
+      # `event_attachments` rows (issue #54: deleting an event used to leave
+      # its objects behind, and only a real bucket can catch that). Tests
+      # needing MinIO skip themselves when these vars are unset, so a bare
+      # `cargo test` against Postgres alone still passes locally.
+      - name: Start MinIO and create the attachments bucket
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=ci-dummy \
+            -e MINIO_ROOT_PASSWORD=ci-dummy-secret \
+            minio/minio server /data
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:9000/minio/health/ready && break
+            sleep 1
+          done
+          docker run --rm --network host --entrypoint /bin/sh minio/mc -c \
+            "mc alias set local http://localhost:9000 ci-dummy ci-dummy-secret && \
+             mc mb -p local/manage-our-home"
       - run: cargo build --workspace --all-targets
       - run: cargo test --workspace
+        env:
+          MINIO_ENDPOINT: http://localhost:9000
+          MINIO_ACCESS_KEY: ci-dummy
+          MINIO_SECRET_KEY: ci-dummy-secret
+          MINIO_BUCKET: manage-our-home
 
   # Playwright E2E against a live apps/web + apps/api + Postgres + MinIO
   # stack — merge gate per docs/v1-scope.md's "Playwright policy" (every
