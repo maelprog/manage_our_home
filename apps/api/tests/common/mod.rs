@@ -46,28 +46,62 @@ pub fn test_state(db: PgPool) -> AppState {
     }
 }
 
-/// Points at an unreachable local MinIO endpoint on purpose — only tests
-/// that actually exercise attachment upload/download need a real MinIO
-/// instance running, and none of the current test suite does.
+/// Points at an unreachable local MinIO endpoint on purpose — most tests
+/// never touch object storage, and the ones that assert on a *failing*
+/// storage (the delete-ordering guards) want exactly this.
 // TODO: remove #[allow(dead_code)] once every integration test binary uses
 // this helper (see note on test_state above).
 #[allow(dead_code)]
 fn test_storage() -> manage_our_home::storage::Storage {
+    manage_our_home::storage::Storage::new(
+        minio_client("http://127.0.0.1:1", "test", "test"),
+        "test-bucket".into(),
+    )
+}
+
+fn minio_client(endpoint: &str, access_key: &str, secret_key: &str) -> aws_sdk_s3::Client {
     use aws_credential_types::Credentials;
     use aws_sdk_s3::config::{BehaviorVersion, Region};
 
-    let credentials = Credentials::new("test", "test", None, None, "minio-static");
+    let credentials = Credentials::new(access_key, secret_key, None, None, "minio-static");
     let config = aws_sdk_s3::config::Builder::new()
         .behavior_version(BehaviorVersion::latest())
         .region(Region::new("us-east-1"))
-        .endpoint_url("http://127.0.0.1:1")
+        .endpoint_url(endpoint)
         .credentials_provider(credentials)
         .force_path_style(true)
         .build();
-    manage_our_home::storage::Storage::new(
-        aws_sdk_s3::Client::from_conf(config),
-        "test-bucket".into(),
-    )
+    aws_sdk_s3::Client::from_conf(config)
+}
+
+/// A real MinIO client, when the suite runs against one (CI's `test` job
+/// starts one; see `.github/workflows/ci.yml`). Tests that need to assert
+/// on the actual stored bytes — not just on the metadata rows — skip
+/// themselves when this returns `None`, so `cargo test` still passes on a
+/// checkout with nothing but Postgres.
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (see note on test_state above).
+#[allow(dead_code)]
+pub fn real_minio_from_env() -> Option<(aws_sdk_s3::Client, String)> {
+    let endpoint = std::env::var("MINIO_ENDPOINT").ok()?;
+    let access_key = std::env::var("MINIO_ACCESS_KEY").ok()?;
+    let secret_key = std::env::var("MINIO_SECRET_KEY").ok()?;
+    let bucket = std::env::var("MINIO_BUCKET").ok()?;
+    Some((minio_client(&endpoint, &access_key, &secret_key), bucket))
+}
+
+/// Router whose `AppState` talks to the given object storage, for the few
+/// tests that upload real bytes (see `real_minio_from_env`).
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (see note on test_state above).
+#[allow(dead_code)]
+pub fn test_router_with_storage(
+    db: PgPool,
+    storage: manage_our_home::storage::Storage,
+) -> axum::Router {
+    let mut state = test_state(db);
+    state.storage = storage;
+    build_router(state)
 }
 
 // TODO: remove #[allow(dead_code)] once every integration test binary uses
@@ -104,6 +138,44 @@ pub async fn call(
         None => Body::empty(),
     };
     let request = builder.body(body).unwrap();
+    router.clone().oneshot(request).await.unwrap()
+}
+
+/// Posts a single `file` field as `multipart/form-data`, the shape
+/// `upload_attachment` reads. Hand-rolled because the suite has no
+/// multipart client and one field needs no more than this.
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (see note on test_state above).
+#[allow(dead_code)]
+pub async fn call_upload(
+    router: &axum::Router,
+    uri: &str,
+    cookie: &str,
+    filename: &str,
+    bytes: &[u8],
+) -> Response<Body> {
+    const BOUNDARY: &str = "----manageourhometestboundary";
+
+    let mut body = Vec::new();
+    body.extend_from_slice(
+        format!(
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(bytes);
+    body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(header::COOKIE, cookie)
+        .header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={BOUNDARY}"),
+        )
+        .body(Body::from(body))
+        .unwrap();
     router.clone().oneshot(request).await.unwrap()
 }
 

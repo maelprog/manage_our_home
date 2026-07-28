@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::groups::require_role;
-use crate::storage::{sniff_and_validate_mime, MAX_ATTACHMENT_SIZE_BYTES};
+use crate::storage::{sniff_and_validate_mime, Storage, MAX_ATTACHMENT_SIZE_BYTES};
 use crate::AppState;
 
 #[derive(Serialize)]
@@ -177,15 +177,7 @@ pub async fn delete_attachment(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    // Delete the object from MinIO before committing the DB delete: if this
-    // fails, the transaction is dropped (rolled back) instead of committed,
-    // so the attachment row survives and the caller can retry rather than
-    // seeing a "deleted" row while the object is still leaked in storage.
-    state
-        .storage
-        .delete_object(&storage_key)
-        .await
-        .map_err(AppError::Internal)?;
+    delete_objects(&state.storage, std::slice::from_ref(&storage_key)).await?;
 
     sqlx::query!("DELETE FROM event_attachments WHERE id = $1", attachment_id)
         .execute(&mut *tx)
@@ -193,4 +185,39 @@ pub async fn delete_attachment(
     tx.commit().await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Storage keys of every attachment hanging off the given events.
+///
+/// `event_attachments` cascades from `events`, so any delete that reaches
+/// an event takes its attachment rows with it — and with them the only
+/// record of which objects the event owned. Callers collect the keys
+/// through here *before* the rows go away.
+pub(crate) async fn storage_keys_for_events(
+    tx: &mut sqlx::PgConnection,
+    event_ids: &[Uuid],
+) -> AppResult<Vec<String>> {
+    Ok(sqlx::query_scalar!(
+        "SELECT storage_key FROM event_attachments WHERE event_id = ANY($1)",
+        event_ids,
+    )
+    .fetch_all(tx)
+    .await?)
+}
+
+/// Removes objects from MinIO before the rows referencing them are
+/// committed away. Ordering is deliberate: on failure the caller's
+/// transaction is dropped (rolled back) rather than committed, so the
+/// rows survive and a retry can still find the objects — the alternative
+/// is a "deleted" event whose bytes stay in the bucket with nothing left
+/// pointing at them. Failures surface as 500 for the same reason: swallowed
+/// here, the leak would be silent and unfindable.
+pub(crate) async fn delete_objects(storage: &Storage, keys: &[String]) -> AppResult<()> {
+    for key in keys {
+        storage
+            .delete_object(key)
+            .await
+            .map_err(AppError::Internal)?;
+    }
+    Ok(())
 }
