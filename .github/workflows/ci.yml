@@ -64,6 +64,12 @@ jobs:
   # MinIO is real (started below) because the Agenda epic (F3/#18) uploads
   # and downloads event attachments — the first front epic to touch object
   # storage.
+  # The Google Calendar epic (F11/#52) needs no extra service: its suite starts
+  # its own throwaway ICS fixture server inside the Playwright process and points
+  # the connection at it (apps/api's validate_feed_url accepts http:// for
+  # exactly this). apps/api is the client of that server, and both run on this
+  # runner, so the default 127.0.0.1 host works — no ICS_FIXTURE_HOST needed
+  # here. CALENDAR_FEED_ENCRYPTION_KEY is already set below.
   # The Messagerie epic (F8/#23) adds the first browser→apps/api WebSocket:
   # the live-updates test opens `GET /groups/:id/messages/ws` straight against
   # apps/api using API_PUBLIC_BASE_URL (http://localhost:8080 here), so that URL

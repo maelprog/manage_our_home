@@ -1,6 +1,9 @@
 //! Agenda screens (front epic #3, issue #18): a hand-rolled month/week
 //! calendar, event/task creation, detail with per-occurrence completion,
-//! edit/delete, reminders, and file attachments. Same SSR pattern as
+//! edit/delete, reminders, and file attachments — plus the Google Calendar
+//! import screens (`imports`, front epic F11/#52), which live here rather than
+//! under `/groups/:id/settings` because what they produce is agenda data. Same
+//! SSR pattern as
 //! `routes/groups/*` — plain `<form method=post>` submissions, per-page
 //! error tables mapping `apps/api/src/agenda/`'s exact status/error codes
 //! to French copy, PRG (`?notice=`/`?error=` codes) after every mutation.
@@ -16,6 +19,7 @@ pub mod attachments;
 pub mod calendar;
 pub mod detail;
 pub mod edit;
+pub mod imports;
 pub mod new;
 pub mod reminders;
 

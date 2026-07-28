@@ -75,6 +75,23 @@ async fn main() {
             "/agenda/new",
             get(routes::agenda::new::get).post(routes::agenda::new::post),
         )
+        // Google Calendar import (front epic F11): registered before the
+        // `/agenda/:id` family below purely for readability — the router
+        // matches the static `imports` segment ahead of the `:id` param
+        // regardless of declaration order.
+        .route(
+            "/agenda/imports",
+            get(routes::agenda::imports::get).post(routes::agenda::imports::create),
+        )
+        .route("/agenda/imports/new", get(routes::agenda::imports::new_get))
+        .route(
+            "/agenda/imports/:id/import",
+            post(routes::agenda::imports::run),
+        )
+        .route(
+            "/agenda/imports/:id/delete",
+            get(routes::agenda::imports::delete_get).post(routes::agenda::imports::delete_post),
+        )
         .route("/agenda/:id", get(routes::agenda::detail::get))
         .route(
             "/agenda/:id/edit",
