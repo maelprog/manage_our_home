@@ -1,30 +1,104 @@
+/* Design tokens — DESIGN.md is the source of truth for every value here.
+   The stylesheet is inlined into every response, so this block is paid for
+   on every page: nothing lands here that DESIGN.md does not name. The
+   colours are wired up below; the scales are what the component pass draws
+   from, in place of the per-route values it replaces. */
 :root {
   color-scheme: light dark;
-  --fg: #1a1a1a;
-  --bg: #ffffff;
-  --muted: #666;
-  --error: #b3261e;
-  --accent: #2952cc;
-  --border: #d0d0d0;
+  /* Warm neutrals and one saturated colour, so anything tinted means
+     something. The accent is teal rather than the previous #2952cc: that
+     blue read as generic SaaS chrome, and teal collides with neither the
+     error red nor the success green now that both exist. */
+  --bg: #fbfaf7;
+  --surface: #ffffff;
+  --fg: #1c1a17;
+  --muted: #6b655c;
+  --border: #e3dfd7;
+  --hover: #f2efe9;
+  --accent: #14706e;
+  --accent-fg: #ffffff;
+  --accent-soft: #e1f0ef;
+  /* Semantics. Success and warning did not exist: .notice.success borrowed
+     the accent, so a confirmation looked exactly like a neutral notice, and
+     there was nothing to warn with. Each -soft value is the tinted surface
+     its plain half is read on. Measured here: error 5.41:1, success 4.43:1,
+     warning 4.06:1 — the last two land just under the 4.5:1 DESIGN.md asks
+     for, which is #74's contrast pass to settle (both are already far above
+     the 2.51:1 .notice.success ships with today in dark). The values are
+     DESIGN.md's as written; retuning them is that issue's call, not this
+     one's. */
+  --success: #3f7a34;
+  --success-soft: #e6f0e2;
+  --warning: #9a6b10;
+  --warning-soft: #f7eeda;
+  --error: #a8342a;
+  --error-soft: #f7e5e2;
+  /* Member ramp, assigned by a stable hash of the user id — GroupMember has
+     no colour column and needs none. Colour is never the only carrier of the
+     information (WCAG 1.4.1): it always accompanies an initial or a name. */
+  --m1: #7a5ea8; --m2: #2f7a9e; --m3: #4b8b4a; --m4: #b07a2e;
+  --m5: #a8555c; --m6: #55707e; --m7: #8a6d3b; --m8: #6a6aa8;
   /* Tinted surface behind --fg: the current day in the agenda's month and
-     week grids, and the focused occurrence on an event's detail page. */
+     week grids, and the focused occurrence on an event's detail page.
+     Superseded by --accent-soft when the agenda moves onto the components
+     (#68); left on its own blue until then rather than retinting a route
+     this change does not otherwise touch. */
   --accent-bg: #eaeffc;
   /* Neutral surface behind --fg: the agenda's event chips. */
   --chip-bg: #f0f0f5;
+  /* Spacing, 4px base. The names are DESIGN.md's: --s2 is the 2px half-step,
+     which is why the 8px step is --s2x and not --s2. */
+  --s2: 2px; --s1: 4px; --s2x: 8px; --s3: 12px; --s4: 16px;
+  --s6: 24px; --s8: 32px; --s12: 48px; --s16: 64px;
+  /* Type scale, 16px base. --t-base is the floor for anything read, not a
+     default to shrink from. */
+  --t-xs: 0.8125rem; --t-sm: 0.875rem; --t-base: 1rem;
+  --t-lg: 1.125rem; --t-xl: 1.375rem; --t-2xl: 1.75rem;
+  /* Radii: badges, then controls, then cards. Not one radius everywhere. */
+  --r-sm: 4px; --r-md: 8px; --r-lg: 12px;
+  /* Content widths, picked per page instead of imposing one narrow column on
+     the agenda and the admin tables. */
+  --w-form: 28rem; --w-read: 65rem; --w-sidebar: 15rem;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --fg: #eaeaea;
-    --bg: #16171a;
-    --muted: #a0a0a0;
-    --border: #3a3a3f;
-    /* Both were referenced by the agenda but defined nowhere, so their
-       light fallbacks applied in dark mode too and put near-white behind
-       near-white text (#65). Every token painting behind --fg needs an
-       entry here — that is what the app.rs test enforces.
-       Separation from --bg is 1.39:1 and 1.23:1, a little above the 1.15:1
-       the light theme already uses, because a tint reads weaker on a dark
-       surface. --fg clears 10:1 on both, --muted 4.95:1 on --accent-bg. */
+    /* Every literal colour above is restated here, and the app.rs test
+       derives that list from the stylesheet rather than naming the tokens.
+       Both bugs this guards came from a token that existed in one theme
+       only: #65 behind the text (--accent-bg and --chip-bg were referenced
+       and defined nowhere, so their light fallback applied in dark too and
+       put near-white behind near-white), #74 in front of it (--accent was
+       declared once, in light, and is the colour of every link — 2.71:1 in
+       dark). A hand-written list caught the first and missed the second. */
+    --bg: #1a1917;
+    --surface: #242320;
+    --fg: #edeae4;
+    --muted: #a19a8f;
+    --border: #38352f;
+    --hover: #2e2c28;
+    /* Lightened until it works as text, which is the constraining use:
+       7.03:1 on --bg, 6.29:1 on --surface, 4.88:1 on --accent-soft. Solid
+       accent surfaces flip their text with --accent-fg — white on this teal
+       would be 2.50:1 — hence #10201f, which reads 6.73:1 here. */
+    --accent: #4fb3af;
+    --accent-fg: #10201f;
+    --accent-soft: #1e3a39;
+    /* Same treatment for the semantics: the plain half lightens, the -soft
+       half darkens, and each pair keeps 5:1 or better (5.92 / 6.42 / 5.49).
+       --accent-fg is also the text on a solid --error, at 6.23:1. */
+    --success: #7cb86c;
+    --success-soft: #22301e;
+    --warning: #d9a441;
+    --warning-soft: #332813;
+    --error: #e88075;
+    --error-soft: #3a211e;
+    /* The member ramp lightens too: muted tints legible on a dark ground
+       read 5.4:1 or better on both --bg and --surface. */
+    --m1: #a48bd0; --m2: #64a8c8; --m3: #7db77b; --m4: #d2a059;
+    --m5: #d08a90; --m6: #8aa3b0; --m7: #b99b68; --m8: #9494ce;
+    /* Separation from --bg is 1.39:1 and 1.23:1, a little above the 1.15:1
+       the light theme uses, because a tint reads weaker on a dark surface.
+       --fg clears 10:1 on both, --muted 4.95:1 on --accent-bg. */
     --accent-bg: #28304e;
     --chip-bg: #272930;
   }
@@ -63,7 +137,10 @@ button, .button {
   border: 1px solid var(--border);
   cursor: pointer;
   background: var(--accent);
-  color: #fff;
+  /* Not #fff: white survives the theme switch, the surface under it does
+     not. On the dark --accent it measures 2.50:1, and on the dark --error
+     below 2.70:1. --accent-fg is the token that flips with the theme. */
+  color: var(--accent-fg);
   text-align: center;
   text-decoration: none;
 }
@@ -74,7 +151,7 @@ button.secondary, .button.secondary {
 button.danger, .button.danger {
   background: var(--error);
   border-color: var(--error);
-  color: #fff;
+  color: var(--accent-fg);
 }
 /* Support/admin screens (front epic F9) show multi-column tables that are
    wider than the narrow form column; the wrapper lets them scroll instead of
@@ -104,8 +181,12 @@ dd { margin: 0.1rem 0 0 0; }
 .pw-toggle.shown { color: var(--accent); }
 .field-error { color: var(--error); font-size: 0.85rem; }
 .notice { padding: 0.75rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.9rem; }
-.notice.error { background: rgba(179, 38, 30, 0.12); color: var(--error); }
-.notice.success { background: rgba(41, 82, 204, 0.12); color: var(--accent); }
+/* One semantic pair per variant. The success tint used to be the accent's,
+   so a confirmation and a plain information were the same colour; the error
+   tint was a hardcoded rgba() of a hex that no longer exists. */
+.notice.error { background: var(--error-soft); color: var(--error); }
+.notice.success { background: var(--success-soft); color: var(--success); }
+.notice.warning { background: var(--warning-soft); color: var(--warning); }
 .links { margin-top: 1rem; display: flex; flex-direction: column; gap: 0.4rem; font-size: 0.9rem; }
 .links a { color: var(--accent); }
 .muted { color: var(--muted); font-size: 0.85rem; }

@@ -299,6 +299,32 @@ mod tests {
             .collect()
     }
 
+    /// The tokens a block declares to a *literal* colour — `#hex`, `rgb(…)`,
+    /// `hsl(…)`. Those are the ones each theme has to restate. A token
+    /// holding a length, a font size, or a reference to another token
+    /// resolves the same way whatever the theme, so it needs no dark entry.
+    fn literal_colour_tokens(block: &str) -> BTreeSet<String> {
+        block
+            .split(';')
+            .filter_map(|decl| decl.split_once(':'))
+            .map(|(name, value)| (name.trim(), value.trim()))
+            .filter(|(name, value)| {
+                name.starts_with("--")
+                    && (value.starts_with('#')
+                        || value.starts_with("rgb")
+                        || value.starts_with("hsl"))
+            })
+            .map(|(name, _)| name.to_string())
+            .collect()
+    }
+
+    /// `var(--name)`, assembled instead of written out: the reference scan
+    /// below reads this file too, and a literal `var(--…)` inside a test
+    /// expectation would register as a reference to satisfy.
+    fn var_of(token: &str) -> String {
+        format!("var({token})")
+    }
+
     /// Every custom-property reference in `src`, paired with whether it
     /// carries a fallback value.
     ///
@@ -400,11 +426,17 @@ mod tests {
     }
 
     #[test]
-    fn every_token_painting_behind_text_is_overridden_in_the_dark_theme() {
-        // A token left out of the dark block keeps its light value there,
-        // which is exactly the #65 failure mode: `--fg` flips to near-white
-        // while the surface behind it stays near-white.
-        let (_, after_root) = block_after(&css(), ":root", 0);
+    fn every_colour_token_is_restated_in_the_dark_theme() {
+        // A colour token left out of the dark block keeps its light value
+        // there. #65 was that fault *behind* the text: `--fg` flipped to
+        // near-white while `--accent-bg` stayed near-white. #74 is the same
+        // fault in *front* of it: `--accent` was declared once, in light, and
+        // serves as link colour, so every link sat at 2.71:1 in dark.
+        // Naming the tokens by hand is what let the second one through — the
+        // first list covered only what paints behind `--fg` — so the list is
+        // now derived from the stylesheet: every literal colour, whichever
+        // side of the text it lands on.
+        let (root, after_root) = block_after(&css(), ":root", 0);
         // `block_after` stops at the first `}`, which inside the media query
         // is the end of its nested `:root` — so the media body it hands back
         // *is* that `:root`, minus its closing brace.
@@ -412,17 +444,52 @@ mod tests {
         let (dark, _) = block_after(&media, ":root", 0);
         let dark = declared_tokens(&dark);
 
-        for token in [
-            "--fg",
-            "--bg",
-            "--muted",
-            "--border",
-            "--accent-bg",
-            "--chip-bg",
-        ] {
+        let light = literal_colour_tokens(&root);
+        assert!(
+            light.contains("--accent"),
+            "the light theme should declare `--accent` as a literal colour"
+        );
+        let missing: Vec<&String> = light.difference(&dark).collect();
+        assert!(
+            missing.is_empty(),
+            "colour tokens never restated under `prefers-color-scheme: dark`, \
+             so they keep their light value in the dark theme: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn each_notice_variant_carries_its_own_semantic_colour() {
+        // `.notice.success` borrowed the accent, so a confirmation was
+        // indistinguishable from a neutral information, and there was no
+        // warning variant at all (#66).
+        for variant in ["success", "warning", "error"] {
+            let (rule, _) = block_after(&css(), &format!(".notice.{variant}"), 0);
             assert!(
-                dark.contains(token),
-                "`{token}` is not redefined under `prefers-color-scheme: dark`"
+                rule.contains(&format!("color: {}", var_of(&format!("--{variant}")))),
+                "`.notice.{variant}` should take its text colour from `--{variant}`"
+            );
+            assert!(
+                rule.contains(&format!(
+                    "background: {}",
+                    var_of(&format!("--{variant}-soft"))
+                )),
+                "`.notice.{variant}` should sit on `--{variant}-soft`, not a hardcoded tint"
+            );
+        }
+    }
+
+    #[test]
+    fn solid_accent_and_danger_surfaces_take_their_text_from_a_token() {
+        // `color: #fff` survives the theme switch, the surface under it does
+        // not: on the dark `--accent` white text measures 2.50:1 and on the
+        // dark `--error` 2.70:1. `--accent-fg` is the token that flips with
+        // the theme (#74).
+        for selector in ["button, .button", "button.danger, .button.danger"] {
+            let (rule, _) = block_after(&css(), selector, 0);
+            assert!(
+                rule.contains(&format!("color: {}", var_of("--accent-fg"))),
+                "`{selector}` paints a solid tinted surface: its text colour \
+                 has to be a token, not `#fff`"
             );
         }
     }
