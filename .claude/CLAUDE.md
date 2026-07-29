@@ -1,5 +1,21 @@
 # manage_our_home
 
+## Design system
+
+`DESIGN.md` (racine) est la source de vérité pour toute décision visuelle dans
+`apps/web` : couleurs, typographie, espacement, layout, composants, motion.
+Le lire avant de toucher au CSS ou au markup d'une route. Ne pas s'en écarter
+sans accord explicite.
+
+Contraintes structurantes qu'il rappelle : le CSS est inliné dans chaque
+réponse (donc chaque règle se paie sur chaque page), aucune dépendance CSS
+externe, les polices sont auto-hébergées (un CDN exposerait l'IP des visiteurs
+à un tiers, à déclarer au registre RGPD), et les replis `var(--x, #hex)` sont
+interdits — c'est ce motif qui a cassé le thème sombre de l'agenda sans que
+personne le voie.
+
+L'état des lieux qui a motivé ce système est dans `docs/design-audit.md`.
+
 ## Development process
 
 - Write unit tests before implementing new logic (TDD): for any new pure-logic
