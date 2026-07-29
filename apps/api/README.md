@@ -98,6 +98,15 @@ Two things it will not let you get wrong:
   `put_object` runs well before the row commits, so a freshly written
   object with no row may be a live upload mid-flight rather than garbage.
 
+  Corollary: **`--min-age-hours 0` disables that protection entirely.** It
+  makes every unreferenced object eligible the instant it is listed,
+  including the ones belonging to uploads in flight right now — their row
+  has not committed yet, so they are indistinguishable from garbage and
+  the pass will delete the bytes out from under a request the user is
+  watching succeed. It exists for tests, which pin the clock instead of
+  sleeping out a real window. Don't use it against a live stack; if you
+  need a narrower window there, give it a real one (`--min-age-hours 1`).
+
 `--prefix` narrows the listing; keys are `{group_id}/{event_id}/{uuid}`, so
 `--prefix <group-id>/` walks one family. Every deleted key is written to
 stdout and logged at INFO before the delete — the delete is unrecoverable
