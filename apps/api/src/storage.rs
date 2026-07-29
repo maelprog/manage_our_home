@@ -130,16 +130,6 @@ impl Storage {
         Ok(objects)
     }
 
-    pub async fn delete_object(&self, key: &str) -> anyhow::Result<()> {
-        self.client
-            .delete_object()
-            .bucket(&self.bucket)
-            .key(key)
-            .send()
-            .await?;
-        Ok(())
-    }
-
     /// Deletes many keys in as few round trips as S3 allows. Callers run
     /// this inside an open transaction (see `agenda::attachments::
     /// delete_objects`), so a key-at-a-time loop would hold that

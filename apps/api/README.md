@@ -76,8 +76,11 @@ cargo run --bin reconcile-attachments -- --apply
 Orphans come from three places. Two are historic and now closed: events
 deleted before #56, and groups deleted before #59. The third is ongoing —
 `upload_attachment` writes the object before the metadata row commits
-(`src/agenda/attachments.rs`), and neither the failed-insert compensation
-nor the `tx.commit()` after it can be made airtight, so orphans keep
+(`src/agenda/attachments.rs`). #63 reordered that handler so a failed
+`put_object` rolls the row back, which removed the old compensating
+delete, but two gaps survive it: a failed `tx.commit()` leaves the object
+with no row, and a client disconnect or process death drops the future so
+the transaction rolls back while the object stays. Orphans therefore keep
 accruing at a low rate. Run this dry first to measure the backlog and the
 drip; if the numbers justify a schedule, `src/jobs/` already has the
 polling-worker shape (`account_purge.rs`).

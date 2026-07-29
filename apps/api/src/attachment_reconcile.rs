@@ -6,11 +6,16 @@
 //! the difference — driven by the `reconcile-attachments` binary
 //! (`src/bin/reconcile_attachments.rs`), dry-run by default.
 //!
-//! It is a safety net, not a fix: the two compensation gaps in
-//! `agenda::attachments::upload_attachment` (the best-effort delete when
-//! the metadata insert fails, and the uncompensated `tx.commit()`) keep
-//! producing orphans at a low rate no matter how clean the delete paths
-//! get. Tightening those is its own change (#58, "Out of scope").
+//! It is a safety net, not a fix. #62/#63 reordered
+//! `agenda::attachments::upload_attachment` to write the row before the
+//! object, which removed the best-effort compensating delete entirely, but
+//! two gaps survive that reordering and keep producing orphans at a low
+//! rate no matter how clean the delete paths get: the `tx.commit()` after
+//! `put_object` has no compensation (commit fails, object written, row
+//! never lands), and a client disconnect or process death anywhere in the
+//! handler drops the future — the transaction rolls back and the object
+//! stays. Closing those needs a transactional outbox (#62), not a
+//! tighter compensation.
 
 use std::collections::HashSet;
 
