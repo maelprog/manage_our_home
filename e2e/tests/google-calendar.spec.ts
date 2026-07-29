@@ -389,11 +389,15 @@ test.describe("Google Calendar import — disconnect", () => {
     await page.goto("/agenda/imports");
     await page.locator("tr", { hasText: "Agenda à retirer" }).getByRole("link", { name: "Supprimer" }).click();
 
-    // The confirmation spells out both non-obvious consequences.
+    // The confirmation offers the choice, unticked, and still spells out the
+    // duplicate-on-reconnect consequence.
     await expect(page.getByRole("heading", { name: /Retirer « Agenda à retirer »/ })).toBeVisible();
-    await expect(page.getByText(/déjà importés restent dans l'agenda/)).toBeVisible();
+    const deleteEvents = page.locator('input[name="delete_events"]');
+    await expect(deleteEvents).not.toBeChecked();
+    await expect(page.getByText(/restent dans l'agenda/)).toBeVisible();
     await expect(page.getByText(/ré-importés en double/)).toBeVisible();
 
+    // Left untouched: this is the branch that keeps them.
     await page.getByRole("button", { name: "Retirer cet agenda Google" }).click();
     await expect(page).toHaveURL(/\/agenda\/imports\?notice=import_deleted$/);
     await expect(page.getByText(/Les événements déjà importés restent dans l'agenda/)).toBeVisible();
@@ -401,5 +405,49 @@ test.describe("Google Calendar import — disconnect", () => {
 
     // …and the promise the copy just made holds.
     expect(await chipCount(page, "Match de handball")).toBe(1);
+  });
+
+  // #55: the other branch of the same confirmation — the bulk cleanup that
+  // otherwise means deleting a whole feed's worth of events one at a time.
+  test("ticking the box removes the imported events along with the connection", async ({
+    browser,
+  }) => {
+    const page = await owner(browser, "e2e-gcal-delete-events");
+    const path = "/to-delete-with-events.ics";
+    feed.serve(
+      path,
+      icsFeed([
+        {
+          uid: "gcal-delete-events-1@example.test",
+          summary: "Cours de piano",
+          day: icsDayThisMonth(14),
+          lastModified: "20260101T090000Z",
+        },
+        {
+          uid: "gcal-delete-events-2@example.test",
+          summary: "Conseil de classe",
+          day: icsDayThisMonth(15),
+          lastModified: "20260101T090000Z",
+        },
+      ]),
+    );
+    await connectCalendar(page, "Agenda à vider", feed.url(path));
+    await runImport(page, "Agenda à vider");
+    expect(await chipCount(page, "Cours de piano")).toBe(1);
+    expect(await chipCount(page, "Conseil de classe")).toBe(1);
+
+    await page.goto("/agenda/imports");
+    await page.locator("tr", { hasText: "Agenda à vider" }).getByRole("link", { name: "Supprimer" }).click();
+    await page.locator('input[name="delete_events"]').check();
+    await page.getByRole("button", { name: "Retirer cet agenda Google" }).click();
+
+    // The banner names the count — the events are gone, so nothing on screen
+    // could tell the user how many left.
+    await expect(page).toHaveURL(/\/agenda\/imports\?notice=import_deleted&deleted=2$/);
+    await expect(page.getByText(/ainsi que 2 événements importés/)).toBeVisible();
+    await expect(page.getByText("Aucun agenda Google connecté.")).toBeVisible();
+
+    expect(await chipCount(page, "Cours de piano")).toBe(0);
+    expect(await chipCount(page, "Conseil de classe")).toBe(0);
   });
 });

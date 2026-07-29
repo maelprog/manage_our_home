@@ -31,11 +31,13 @@ use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use manage_our_home_shared::dto::google_calendar::{
-    CalendarImportResponse, CalendarImportsResponse, CreateCalendarImportRequest, ImportRunResponse,
+    CalendarImportResponse, CalendarImportsResponse, CreateCalendarImportRequest,
+    DeleteCalendarImportResponse, ImportRunResponse,
 };
 use manage_our_home_shared::dto::groups::GroupMember;
 use manage_our_home_shared::validation::google_calendar::{
-    can_configure, format_last_imported, import_run_summary, validate_import_form, ImportFormError,
+    can_configure, format_last_imported, import_deleted_notice, import_run_summary,
+    validate_import_form, ImportFormError,
 };
 // Same member-id → display-name resolution F8 introduced (with its "Membre"
 // fallback for someone who has since left the family) — the "créé par" column
@@ -65,6 +67,10 @@ pub struct ImportsQuery {
     imported: Option<usize>,
     updated: Option<usize>,
     skipped: Option<usize>,
+    /// How many imported events the delete took with the connection (#55).
+    /// Present only when that branch ran — absent is "the events were
+    /// kept", which is a different sentence, not a count of zero.
+    deleted: Option<usize>,
 }
 
 fn notice_text(query: &ImportsQuery) -> Option<String> {
@@ -72,9 +78,7 @@ fn notice_text(query: &ImportsQuery) -> Option<String> {
         "import_created" => Some(
             "Agenda Google connecté. Lancez un import pour récupérer ses événements.".to_string(),
         ),
-        "import_deleted" => Some(
-            "Agenda Google retiré. Les événements déjà importés restent dans l'agenda.".to_string(),
-        ),
+        "import_deleted" => Some(import_deleted_notice(query.deleted)),
         "imported" => Some(format!(
             "Import terminé : {}.",
             import_run_summary(
@@ -483,30 +487,41 @@ pub async fn run(
 
 // -- GET/POST /agenda/imports/:id/delete ------------------------------------
 
-/// The confirmation page. Both consequences below are v1 behaviour to *surface*,
-/// not to fix here — they follow from `0010_google_calendar_import.sql`, where
-/// `calendar_import_events` cascades from `calendar_imports` but `events` does
-/// not:
+/// The confirmation page. What happens to the already-imported events is a
+/// *choice* (#55), not a consequence to endure: `calendar_import_events`
+/// cascades from `calendar_imports` but `events` does not
+/// (`0010_google_calendar_import.sql`), so the connection can go with or
+/// without them.
 ///
-/// 1. the already-imported `events` rows survive the delete (the intuitive
-///    reading is the opposite, hence the explicit sentence);
-/// 2. with the UID→event mapping gone, re-adding the same calendar has nothing
-///    to match on and re-inserts everything as duplicates — which is also why
-///    the backend exposes no `PATCH` for the label or the URL.
+/// The checkbox ships **unticked** — keeping them stays the default, because an
+/// imported event may since have picked up local work that has no Google
+/// counterpart (a reminder and its queued notifications, an attachment, a
+/// completion), all of which would cascade away with it. So the page states
+/// both outcomes and lets the reader pick, rather than asserting one.
+///
+/// The duplicate warning below is unconditional: with the UID→event mapping
+/// gone, re-adding the same calendar has nothing to match on and re-inserts
+/// everything: alongside the survivors in the kept branch, on a clean agenda in
+/// the other. It is also why the backend exposes no `PATCH` for the label or
+/// the URL.
 fn delete_page(fam: &FamilyContext, import: &CalendarImportResponse) -> String {
     format!(
         r#"{header}
 <h1>Retirer « {label} » ?</h1>
 <p>Cette connexion ne sera plus utilisable et son adresse iCal sera effacée.</p>
-<section class="notice error">
-<p><strong>Deux conséquences à connaître :</strong></p>
-<ul>
-<li>Les événements <strong>déjà importés restent dans l'agenda</strong> de la famille. Retirer la connexion ne les supprime pas ; ils deviennent des événements ordinaires, que vous pouvez modifier ou supprimer un par un.</li>
-<li>Si vous reconnectez le même agenda plus tard, ses événements seront <strong>ré-importés en double</strong> à côté de ceux qui restent : le lien qui permettait de les reconnaître aura disparu.</li>
-</ul>
-<p>Vous vouliez seulement corriger le nom ou l'adresse ? Il n'existe pas de modification en place : supprimer puis recréer implique ce ré-import complet. Dans ce cas, supprimez d'abord les événements importés que vous ne voulez pas voir en double.</p>
-</section>
 <form method="post" action="/agenda/imports/{id}/delete">
+<section class="notice">
+<p><strong>Que faire des événements déjà importés ?</strong></p>
+<ul>
+<li>Par défaut, ils <strong>restent dans l'agenda</strong> de la famille : ils deviennent des événements ordinaires, que vous pouvez modifier ou supprimer un par un.</li>
+<li>Si vous cochez la case ci-dessous, ils sont <strong>supprimés en même temps</strong> que la connexion — avec, pour chacun, ses rappels, ses pièces jointes et ce qui a été coché comme fait. Cela ne se limite pas à ce qui vient de Google : c'est aussi ce que votre famille a ajouté sur ces événements depuis l'import.</li>
+</ul>
+<p><label><input type="checkbox" name="delete_events" value="true"> Supprimer aussi les événements que cet agenda a importés</label></p>
+</section>
+<section class="notice error">
+<p>Dans les deux cas : si vous reconnectez le même agenda plus tard, ses événements seront <strong>ré-importés en double</strong> à côté de ceux qui restent — le lien qui permettait de les reconnaître aura disparu.</p>
+<p>Vous vouliez seulement corriger le nom ou l'adresse ? Il n'existe pas de modification en place : supprimer puis recréer implique ce ré-import complet.</p>
+</section>
 <button type="submit" class="danger">Retirer cet agenda Google</button>
 </form>
 <div class="links"><a href="/agenda/imports">Annuler</a></div>"#,
@@ -514,6 +529,20 @@ fn delete_page(fam: &FamilyContext, import: &CalendarImportResponse) -> String {
         label = html_escape(&import.label),
         id = import.id,
     )
+}
+
+/// The confirmation's checkbox, as submitted. Unticked checkboxes are not
+/// submitted at all, so absence is the default (keep the events); a ticked one
+/// arrives as the form's `value`, with `on` accepted too since that is what a
+/// browser sends for a valueless checkbox. Anything else reads as "not asked
+/// for": the destructive branch takes a positive signal only.
+#[derive(serde::Deserialize, Default)]
+pub struct DeleteImportForm {
+    delete_events: Option<String>,
+}
+
+fn wants_event_deletion(field: Option<&str>) -> bool {
+    matches!(field, Some("true") | Some("on"))
 }
 
 /// Resolves the connection the confirmation page is about. There is no
@@ -553,11 +582,14 @@ pub async fn delete_get(
     }
 }
 
+/// `Form` comes last: it consumes the request body, so no extractor may follow
+/// it (axum's rule for `FromRequest`).
 pub async fn delete_post(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(import_id): Path<Uuid>,
+    Form(form): Form<DeleteImportForm>,
 ) -> Response {
     let Some(fam) = family_context(&state, &headers, &me, "/agenda/imports").await else {
         return Redirect::to("/groups/new").into_response();
@@ -565,18 +597,34 @@ pub async fn delete_post(
     if !can_configure(&fam.role) {
         return Redirect::to("/agenda/imports?error=forbidden").into_response();
     }
+    let delete_events = wants_event_deletion(form.delete_events.as_deref());
     let cookie = agenda_cookie(&headers);
     match api_request_auth(
         &state,
         reqwest::Method::DELETE,
-        &format!("/groups/{}/calendar-imports/{}", fam.gid, import_id),
+        &format!(
+            "/groups/{}/calendar-imports/{}?delete_events={delete_events}",
+            fam.gid, import_id
+        ),
         cookie.as_deref(),
         None,
     )
     .await
     {
-        Ok(resp) if resp.status == reqwest::StatusCode::NO_CONTENT => {
-            Redirect::to("/agenda/imports?notice=import_deleted").into_response()
+        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
+            // The count travels only on the branch that ran, so the banner
+            // never says "0 événement supprimé" about events it kept.
+            if delete_events {
+                let deleted = serde_json::from_value::<DeleteCalendarImportResponse>(resp.body)
+                    .map(|r| r.deleted_events)
+                    .unwrap_or(0);
+                Redirect::to(&format!(
+                    "/agenda/imports?notice=import_deleted&deleted={deleted}"
+                ))
+                .into_response()
+            } else {
+                Redirect::to("/agenda/imports?notice=import_deleted").into_response()
+            }
         }
         Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
             Redirect::to("/agenda/imports?error=not_found").into_response()
@@ -645,6 +693,7 @@ mod tests {
             imported: counts.map(|c| c.0),
             updated: counts.map(|c| c.1),
             skipped: counts.map(|c| c.2),
+            deleted: None,
         }
     }
 
@@ -668,6 +717,78 @@ mod tests {
     fn the_delete_notice_states_that_imported_events_remain() {
         let text = notice_text(&query(Some("import_deleted"), None)).unwrap();
         assert!(text.contains("restent dans l'agenda"));
+    }
+
+    // -- the delete-events branch (#55) --------------------------------------
+
+    fn delete_query(deleted: Option<usize>) -> ImportsQuery {
+        ImportsQuery {
+            notice: Some("import_deleted".to_string()),
+            error: None,
+            imported: None,
+            updated: None,
+            skipped: None,
+            deleted,
+        }
+    }
+
+    /// The count only reaches the banner when the branch actually ran, so
+    /// the two outcomes never wear each other's sentence.
+    #[test]
+    fn the_delete_notice_names_the_count_when_the_events_went_too() {
+        let text = notice_text(&delete_query(Some(3))).unwrap();
+        assert!(text.contains('3'), "{text}");
+        assert!(!text.contains("restent dans l'agenda"), "{text}");
+    }
+
+    #[test]
+    fn the_delete_notice_without_a_count_still_says_the_events_remain() {
+        let text = notice_text(&delete_query(None)).unwrap();
+        assert!(text.contains("restent dans l'agenda"), "{text}");
+    }
+
+    /// An unticked checkbox is not submitted at all; a ticked one arrives
+    /// as this form's `value`. Anything else is treated as "not asked for"
+    /// — the destructive branch requires a positive signal, never a
+    /// default or a typo.
+    #[test]
+    fn only_a_ticked_checkbox_asks_for_the_events_to_go() {
+        assert!(wants_event_deletion(Some("true")));
+        // Browsers submit a valueless checkbox as `on`.
+        assert!(wants_event_deletion(Some("on")));
+        assert!(!wants_event_deletion(None));
+        assert!(!wants_event_deletion(Some("false")));
+        assert!(!wants_event_deletion(Some("")));
+    }
+
+    /// The confirmation must present both outcomes as a choice, with the
+    /// checkbox unticked: keeping the events is still the default.
+    #[test]
+    fn the_confirmation_offers_the_deletion_unticked() {
+        let import = CalendarImportResponse {
+            id: Uuid::nil(),
+            group_id: Uuid::nil(),
+            created_by: Uuid::nil(),
+            label: "Agenda de Marie".to_string(),
+            last_imported_at: None,
+            created_at: chrono::Utc::now(),
+        };
+        let fam = FamilyContext {
+            gid: Uuid::nil(),
+            role: "owner".to_string(),
+            header: String::new(),
+        };
+        let page = delete_page(&fam, &import);
+
+        assert!(page.contains(r#"name="delete_events""#), "{page}");
+        assert!(page.contains(r#"type="checkbox""#), "{page}");
+        assert!(
+            !page.contains("checked"),
+            "the destructive branch must not be pre-ticked"
+        );
+        // Both outcomes stated, so neither is a surprise after the click.
+        assert!(page.contains("restent dans l'agenda"), "{page}");
+        assert!(page.contains("ré-importés en double"), "{page}");
     }
 
     #[test]

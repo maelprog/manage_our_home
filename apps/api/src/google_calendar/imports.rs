@@ -1,4 +1,4 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
 use chrono::{DateTime, Utc};
@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::agenda::attachments;
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::google_calendar::can_configure;
@@ -147,16 +148,76 @@ pub async fn list_calendar_imports(
     Ok(Json(json!({ "imports": imports })))
 }
 
-/// Admin/owner only, same reasoning as `create_calendar_import`.
+/// Query of `DELETE /groups/:gid/calendar-imports/:import_id`.
+///
+/// Absent — the default — keeps the events the import created, which is
+/// what removing a connection has always done: once imported they are
+/// ordinary family events and may carry local work with no Google
+/// counterpart (a reminder and its queued notifications, an attachment, a
+/// per-occurrence completion), all of which cascades from `events`.
+/// Destroying that silently would be worse than leaving them behind, so
+/// this is a choice offered, never a new default.
+#[derive(Deserialize, Default)]
+pub struct DeleteCalendarImportQuery {
+    #[serde(default)]
+    pub delete_events: bool,
+}
+
+/// What the delete removed. Reported rather than left to the caller to
+/// work out: the front tells the user how many events left the agenda,
+/// and it cannot count them itself once they are gone.
+#[derive(Serialize)]
+pub struct DeleteCalendarImportResponse {
+    pub deleted_events: usize,
+}
+
+/// Admin/owner only, same reasoning as `create_calendar_import` — and the
+/// same bar for the `delete_events` branch, which only widens the radius
+/// of a delete this role could already perform.
 pub async fn delete_calendar_import(
     State(state): State<AppState>,
     auth: AuthUser,
     Path((group_id, import_id)): Path<(Uuid, Uuid)>,
+    Query(query): Query<DeleteCalendarImportQuery>,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let actor_role = require_role(&mut tx, group_id, auth.user_id).await?;
     if !can_configure(&actor_role) {
         return Err(AppError::Forbidden);
+    }
+
+    let mut deleted_events = 0usize;
+    if query.delete_events {
+        // `calendar_import_events` cascades from *both* sides, so dropping
+        // the connection takes the UID→event mapping with it and there is
+        // no second chance to find these ids. Read them while the mapping
+        // is still there.
+        let event_ids: Vec<Uuid> = sqlx::query_scalar!(
+            "SELECT event_id FROM calendar_import_events WHERE calendar_import_id = $1",
+            import_id,
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+
+        // Objects before rows, the order the per-event and per-group
+        // deletes use and for the same reason (see
+        // `attachments::delete_objects`): a storage failure aborts the
+        // whole delete instead of leaving bytes nothing points at. At feed
+        // scale this is exactly the multiplication of #54 the issue warns
+        // about, so it reuses that fix rather than re-deriving it.
+        let storage_keys = attachments::storage_keys_for_events(&mut tx, &event_ids).await?;
+        attachments::delete_objects(&state.storage, &storage_keys).await?;
+
+        // `group_id` is redundant under the group-scoped transaction and
+        // kept as a belt-and-braces bound on a delete this wide.
+        let result = sqlx::query!(
+            "DELETE FROM events WHERE id = ANY($1) AND group_id = $2",
+            &event_ids,
+            group_id,
+        )
+        .execute(&mut *tx)
+        .await?;
+        deleted_events = result.rows_affected() as usize;
     }
 
     let result = sqlx::query!(
@@ -171,7 +232,7 @@ pub async fn delete_calendar_import(
     }
     tx.commit().await?;
 
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(DeleteCalendarImportResponse { deleted_events }))
 }
 
 #[derive(Serialize)]

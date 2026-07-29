@@ -19,6 +19,9 @@
 //!   for a connection whose feed has never been pulled.
 //! - `import_run_summary` turns `ImportRunResponse`'s three counters into the
 //!   French sentence the post-import banner shows.
+//! - `import_deleted_notice` does the same for the post-delete banner, whose
+//!   two branches (#55) depend on whether the caller asked for the imported
+//!   events to go with the connection.
 
 use chrono::{DateTime, Utc};
 use chrono_tz::Europe::Paris;
@@ -92,6 +95,31 @@ pub fn import_run_summary(imported: usize, updated: usize, skipped: usize) -> St
         is = s(imported),
         ss = s(skipped),
     )
+}
+
+/// The post-delete banner, for the two branches of "retirer la connexion"
+/// (#55). `deleted_events` is `None` when the events were kept — the v1
+/// default, and still the default the confirmation ships with — and
+/// `Some(n)` when the caller asked for them to go too.
+///
+/// The two branches read differently on purpose: the kept branch has to
+/// state the non-obvious survival of the events (the intuitive reading is
+/// the opposite, see `imports.rs`'s confirmation copy), while the deleted
+/// branch has to name a number, because "N événements ont disparu de
+/// l'agenda" is not something a user should have to count for themselves.
+pub fn import_deleted_notice(deleted_events: Option<usize>) -> String {
+    match deleted_events {
+        None => {
+            "Agenda Google retiré. Les événements déjà importés restent dans l'agenda.".to_string()
+        }
+        // Not "ainsi que 0 événement" — asking to delete the events of a
+        // connection that never imported anything is a no-op, not a failure.
+        Some(0) => "Agenda Google retiré. Aucun événement importé n'était à supprimer.".to_string(),
+        Some(n) => format!(
+            "Agenda Google retiré, ainsi que {n} événement{s} importé{s}.",
+            s = if n > 1 { "s" } else { "" },
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -260,5 +288,42 @@ mod tests {
             import_run_summary(0, 0, 4),
             "0 événement importé, 0 mis à jour, 4 inchangés"
         );
+    }
+
+    // -- import_deleted_notice -----------------------------------------------
+
+    #[test]
+    fn without_the_option_the_notice_still_says_the_events_remain() {
+        // The default branch, and the one the copy has taught users to expect
+        // since F11: the sentence it prints must not change shape.
+        let notice = import_deleted_notice(None);
+        assert!(notice.contains("restent dans l'agenda"), "{notice}");
+    }
+
+    #[test]
+    fn the_deleted_count_is_stated_rather_than_implied() {
+        assert_eq!(
+            import_deleted_notice(Some(12)),
+            "Agenda Google retiré, ainsi que 12 événements importés."
+        );
+    }
+
+    #[test]
+    fn one_deleted_event_takes_the_singular() {
+        assert_eq!(
+            import_deleted_notice(Some(1)),
+            "Agenda Google retiré, ainsi que 1 événement importé."
+        );
+    }
+
+    /// Asking to delete the events of a connection that never ran an import
+    /// is not an error, but "ainsi que 0 événement importé" reads as a
+    /// failure. The zero case gets its own sentence.
+    #[test]
+    fn zero_deleted_events_does_not_read_as_a_failure() {
+        let notice = import_deleted_notice(Some(0));
+        assert!(notice.contains("Aucun événement"), "{notice}");
+        assert!(!notice.contains('0'), "{notice}");
+        assert!(!notice.contains("restent dans l'agenda"), "{notice}");
     }
 }

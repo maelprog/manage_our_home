@@ -84,28 +84,33 @@ to `/agenda/imports?error=forbidden` rather than showing a form they cannot
 submit. The backend stays the authority — a forged POST is still 403'd, and the
 403 is mapped defensively.
 
-### The delete confirmation states two consequences the schema makes non-obvious
+### The delete confirmation offers a choice, and states one consequence
 
 Verified against `0010_google_calendar_import.sql`: `calendar_import_events`
 cascades from `calendar_imports`, but `events` does not. So:
 
-1. **Already-imported events stay in the agenda.** Deleting a connection drops
-   only the UID→event mapping rows; the `events` rows survive and behave like any
-   manual event. The intuitive reading is the opposite ("removing the connection
-   removes its events"), so the confirmation says it outright — and the
-   post-delete banner repeats it, because that is the moment the user finds out.
+1. **What happens to the already-imported events is asked, not assumed** (#55,
+   shipped after F11). Deleting a connection drops only the UID→event mapping
+   rows; the `events` rows survive unless the caller asks for them too, via
+   `DELETE …/calendar-imports/:id?delete_events=true`. The confirmation carries
+   an **unticked** checkbox: keeping them stays the default, because an imported
+   event may since have picked up local work with no Google counterpart (a
+   reminder and its queued notifications, an attachment, a completion), all of
+   which cascades from `events`. The post-delete banner states which branch ran
+   — "les événements déjà importés restent dans l'agenda" or the count that was
+   removed, which the user could not otherwise know.
 2. **Re-adding the same calendar re-imports everything as duplicates.** With the
-   mapping gone, the next import has no UID to match on and inserts fresh rows
-   next to the old ones.
+   mapping gone, the next import has no UID to match on and inserts fresh rows —
+   next to the survivors in the kept branch, into a clean agenda in the other.
 
 Consequence 2 is also *why* there is no `PATCH`: changing a label or a URL means
 delete + recreate, which means a full re-import. The confirmation steers anyone
 who only wanted to fix the name toward that fact before they click.
 
-Both are v1 behaviour to **surface**, not to fix here. Offering "supprimer aussi
-les événements importés" is filed as **#55**, which in turn waits on **#54**:
-`delete_event` already leaks its attachment objects in MinIO on the single-event
-path, and a bulk delete here would multiply that by the size of a feed.
+The bulk delete reuses `attachments::delete_objects` rather than re-deriving it:
+it runs the same objects-before-rows order as the per-event (#54/#56) and
+per-group (#57) deletes, so a storage failure aborts the whole delete instead of
+leaving a feed's worth of orphaned objects in MinIO.
 
 ### There is no in-place edit, and no `/agenda/imports/:id` detail page
 
@@ -119,8 +124,8 @@ F9's user detail page takes for the same reason.
   `architecture.md`).
 - Editing a connection in place (no backend `PATCH`; delete + recreate is the
   documented path).
-- Deleting the events an import produced when the connection is removed (see
-  consequence 1 — filed as #55, blocked on #54).
+- Making a re-added calendar re-link to surviving events: the mapping would have
+  to outlive the connection, a different design (see #55's own out-of-scope).
 - Expanding bare `RRULE`s from the feed (documented v1 backend limitation:
   Google already expands `RECURRENCE-ID` overrides into separate VEVENTs, so a
   plain RRULE VEVENT imports as its first occurrence only).
@@ -133,8 +138,8 @@ F9's user detail page takes for the same reason.
 | GET | `/agenda/imports/new` | `agenda::imports::new_get` | **admin/owner** | Connect form + where-to-find-the-address help + the credential warning | — |
 | POST | `/agenda/imports` | `agenda::imports::create` | **admin/owner** | Creates the connection | `POST /groups/:gid/calendar-imports` |
 | POST | `/agenda/imports/:id/import` | `agenda::imports::run` | any member | Pulls the feed now | `POST /groups/:gid/calendar-imports/:id/import` |
-| GET | `/agenda/imports/:id/delete` | `agenda::imports::delete_get` | **admin/owner** | Confirmation page (the two consequences) | `GET /groups/:gid/calendar-imports` |
-| POST | `/agenda/imports/:id/delete` | `agenda::imports::delete_post` | **admin/owner** | Removes the connection | `DELETE /groups/:gid/calendar-imports/:id` |
+| GET | `/agenda/imports/:id/delete` | `agenda::imports::delete_get` | **admin/owner** | Confirmation page (the choice + the duplicate consequence) | `GET /groups/:gid/calendar-imports` |
+| POST | `/agenda/imports/:id/delete` | `agenda::imports::delete_post` | **admin/owner** | Removes the connection, and its imported events if the box was ticked | `DELETE /groups/:gid/calendar-imports/:id?delete_events=<bool>` |
 
 Every route is gated by `CurrentUser` (no session → `/login`) and by
 `family_context` (no active family → `/groups/new`), the F1/F3 patterns. The
@@ -179,7 +184,9 @@ the **feed URL blank**.
 |---|---|---|
 | — | not admin/owner (local) | PRG → `?error=forbidden`, nothing sent to the API |
 | — | id absent from the list (GET) | PRG → `?error=not_found` |
-| 204 | — | PRG → `?notice=import_deleted` — "Agenda Google retiré. Les événements déjà importés restent dans l'agenda." |
+| 200 | — (box unticked) | PRG → `?notice=import_deleted` — "Agenda Google retiré. Les événements déjà importés restent dans l'agenda." |
+| 200 | — (box ticked) | PRG → `?notice=import_deleted&deleted=<n>` — "Agenda Google retiré, ainsi que N événements importés.", or "Aucun événement importé n'était à supprimer." when the connection never ran |
+| 500 | `internal` | `?error=unavailable` — an object-storage failure aborts the delete, connection and events intact, the retry is safe |
 | 404 | `not_found` | `?error=not_found` (e.g. a double submit) |
 | 403 | `forbidden` | `?error=forbidden` |
 | — | other status / transport error | `?error=unavailable` |
