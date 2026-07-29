@@ -299,6 +299,32 @@ mod tests {
             .collect()
     }
 
+    /// The tokens a block declares to a *literal* colour — `#hex`, `rgb(…)`,
+    /// `hsl(…)`. Those are the ones each theme has to restate. A token
+    /// holding a length, a font size, or a reference to another token
+    /// resolves the same way whatever the theme, so it needs no dark entry.
+    fn literal_colour_tokens(block: &str) -> BTreeSet<String> {
+        block
+            .split(';')
+            .filter_map(|decl| decl.split_once(':'))
+            .map(|(name, value)| (name.trim(), value.trim()))
+            .filter(|(name, value)| {
+                name.starts_with("--")
+                    && (value.starts_with('#')
+                        || value.starts_with("rgb")
+                        || value.starts_with("hsl"))
+            })
+            .map(|(name, _)| name.to_string())
+            .collect()
+    }
+
+    /// `var(--name)`, assembled instead of written out: the reference scan
+    /// below reads this file too, and a literal `var(--…)` inside a test
+    /// expectation would register as a reference to satisfy.
+    fn var_of(token: &str) -> String {
+        format!("var({token})")
+    }
+
     /// Every custom-property reference in `src`, paired with whether it
     /// carries a fallback value.
     ///
@@ -345,6 +371,40 @@ mod tests {
             &mut out,
         );
         assert!(!out.is_empty(), "found no Rust sources to scan");
+        out
+    }
+
+    /// `(path, contents)` for the stylesheet *and* every Rust source, which
+    /// is what a rule about colour has to cover: 173 of the declarations that
+    /// paint something live in inline `style="…"` attributes in the routes,
+    /// not in the sheet.
+    fn styled_sources() -> Vec<(String, String)> {
+        let mut out = rust_sources();
+        out.push(("style.css".to_string(), css()));
+        out
+    }
+
+    /// Every run of declarations that paints a solid `--accent` or `--error`
+    /// surface, cut at the end of the group it belongs to: the closing quote
+    /// of a route's inline `style="…"` attribute, or the closing brace of a
+    /// CSS rule. Whitespace after each `:` is dropped so one needle matches
+    /// both syntaxes. `--accent-bg` and `--error-soft` do not match: the
+    /// closing paren is part of the needle, and a tint is not a solid.
+    fn solid_tinted_surfaces(src: &str) -> Vec<String> {
+        let flat = src.replace(": ", ":");
+        let mut out = Vec::new();
+        for token in ["--accent", "--error"] {
+            let needle = format!("background:var({token})");
+            let mut from = 0;
+            while let Some(at) = flat[from..].find(&needle) {
+                let start = from + at;
+                let end = flat[start..]
+                    .find(['}', '"'])
+                    .map_or(flat.len(), |i| start + i);
+                out.push(flat[start..end].to_string());
+                from = start + needle.len();
+            }
+        }
         out
     }
 
@@ -400,11 +460,17 @@ mod tests {
     }
 
     #[test]
-    fn every_token_painting_behind_text_is_overridden_in_the_dark_theme() {
-        // A token left out of the dark block keeps its light value there,
-        // which is exactly the #65 failure mode: `--fg` flips to near-white
-        // while the surface behind it stays near-white.
-        let (_, after_root) = block_after(&css(), ":root", 0);
+    fn every_colour_token_is_restated_in_the_dark_theme() {
+        // A colour token left out of the dark block keeps its light value
+        // there. #65 was that fault *behind* the text: `--fg` flipped to
+        // near-white while `--accent-bg` stayed near-white. #74 is the same
+        // fault in *front* of it: `--accent` was declared once, in light, and
+        // serves as link colour, so every link sat at 2.71:1 in dark.
+        // Naming the tokens by hand is what let the second one through — the
+        // first list covered only what paints behind `--fg` — so the list is
+        // now derived from the stylesheet: every literal colour, whichever
+        // side of the text it lands on.
+        let (root, after_root) = block_after(&css(), ":root", 0);
         // `block_after` stops at the first `}`, which inside the media query
         // is the end of its nested `:root` — so the media body it hands back
         // *is* that `:root`, minus its closing brace.
@@ -412,19 +478,68 @@ mod tests {
         let (dark, _) = block_after(&media, ":root", 0);
         let dark = declared_tokens(&dark);
 
-        for token in [
-            "--fg",
-            "--bg",
-            "--muted",
-            "--border",
-            "--accent-bg",
-            "--chip-bg",
-        ] {
+        let light = literal_colour_tokens(&root);
+        assert!(
+            light.contains("--accent"),
+            "the light theme should declare `--accent` as a literal colour"
+        );
+        let missing: Vec<&String> = light.difference(&dark).collect();
+        assert!(
+            missing.is_empty(),
+            "colour tokens never restated under `prefers-color-scheme: dark`, \
+             so they keep their light value in the dark theme: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn each_notice_variant_carries_its_own_semantic_colour() {
+        // `.notice.success` borrowed the accent, so a confirmation was
+        // indistinguishable from a neutral information, and there was no
+        // warning variant at all (#66).
+        for variant in ["success", "warning", "error"] {
+            let (rule, _) = block_after(&css(), &format!(".notice.{variant}"), 0);
             assert!(
-                dark.contains(token),
-                "`{token}` is not redefined under `prefers-color-scheme: dark`"
+                rule.contains(&format!("color: {}", var_of(&format!("--{variant}")))),
+                "`.notice.{variant}` should take its text colour from `--{variant}`"
+            );
+            assert!(
+                rule.contains(&format!(
+                    "background: {}",
+                    var_of(&format!("--{variant}-soft"))
+                )),
+                "`.notice.{variant}` should sit on `--{variant}-soft`, not a hardcoded tint"
             );
         }
+    }
+
+    #[test]
+    fn solid_accent_and_danger_surfaces_take_their_text_from_a_token() {
+        // `color: #fff` survives the theme switch, the surface under it does
+        // not: on the dark `--accent` white text measures 2.50:1 and on the
+        // dark `--error` 2.70:1. `--accent-fg` is the token that flips with
+        // the theme (#74).
+        //
+        // The scan covers the routes and not just the sheet, because the two
+        // "Stock bas" badges are inline `style="…"` attributes and that is
+        // exactly where this slipped through: while `--error` had no dark
+        // value at all, white on it was safe in both themes, so giving the
+        // token its dark value turned two passing badges into 2.70:1 ones.
+        // A guard that only knew about the sheet's two rules described the
+        // class of bug and checked two instances of it.
+        let needle = format!("color:{}", var_of("--accent-fg"));
+        let mut offenders = Vec::new();
+        for (path, body) in styled_sources() {
+            for surface in solid_tinted_surfaces(&body) {
+                if !surface.contains(&needle) {
+                    offenders.push(format!("{path}: {surface}"));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "a solid --accent or --error surface has to name its text colour \
+             with `--accent-fg`, which flips with the theme: {offenders:?}"
+        );
     }
 
     #[test]
