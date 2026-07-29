@@ -21,6 +21,14 @@ leptos = { version = "0.7", features = ["ssr"] }
 # multipart body before relaying it to apps/api.
 axum = { version = "0.7", features = ["macros", "multipart"] }
 tokio = { version = "1", features = ["full"] }
+# The `/assets` route (#67): apps/web served no static file at all before
+# the self-hosted fonts landed. `fs` is ServeDir and nothing else — the
+# cache header is a `map_response` in src/assets.rs, which sets it on what
+# was actually served rather than on 404s too. 0.7, not the 0.6 reqwest
+# already pulls in transitively: the dependency policy asks for the newest
+# audit-clean version, and the second copy costs build time only (there is
+# no way to unify, reqwest 0.12 pins ^0.6).
+tower-http = { version = "0.7", features = ["fs"] }
 tower-cookies = "0.10"
 cookie = "0.18"
 # `multipart` on reqwest: forwarding the uploaded file to apps/api.

@@ -105,13 +105,35 @@
     --chip-bg: #272930;
   }
 }
+/* Self-hosted variable fonts, latin + latin-ext, served off /assets by
+   src/assets.rs — never a CDN (it would hand every visitor's IP to a third
+   party). Provenance, subsetting and the versioned file names: see there. */
+@font-face {
+  font-family: "Source Sans 3";
+  src: url("/assets/fonts/source-sans-3-v3.052.woff2") format("woff2");
+  font-weight: 200 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Fraunces";
+  src: url("/assets/fonts/fraunces-v1.000.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
 * { box-sizing: border-box; }
 body {
   margin: 0;
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* The stack renders during the swap, and for good where downloads are
+     blocked. Source Sans 3's figures are tabular by design — no second
+     family for the amounts. */
+  font-family: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
   color: var(--fg);
   background: var(--bg);
 }
+/* Titles only, per DESIGN.md — Fraunces never carries body text. */
+h1, h2, h3 { font-family: "Fraunces", Georgia, serif; }
 .container {
   max-width: 28rem;
   margin: 3rem auto;

@@ -1,4 +1,5 @@
 mod app;
+mod assets;
 mod family;
 mod layout;
 mod routes;
@@ -27,6 +28,9 @@ async fn main() {
     };
 
     let app = Router::new()
+        // The self-hosted fonts (#67). Merged first because it is the one
+        // group of routes that needs no session and no state.
+        .merge(assets::router())
         .route("/", get(routes::home::get))
         .route("/logout", post(routes::home::logout))
         .route("/auth/google/callback", get(routes::home::google_callback))
