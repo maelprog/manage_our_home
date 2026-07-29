@@ -175,6 +175,7 @@ pub fn html_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     // -- password_field ------------------------------------------------
 
@@ -240,5 +241,194 @@ mod tests {
         assert!(html.contains("a&lt;b&gt;"));
         assert!(html.contains("x&quot;y"));
         assert!(!html.contains("a<b>"));
+    }
+
+    // -- style.css tokens (#65) ----------------------------------------
+    //
+    // The dark theme broke because two tokens were referenced with a light
+    // `var(--x, #hex)` fallback and never defined anywhere: the fallback
+    // always won, so light mode looked correct and dark mode silently
+    // painted near-white behind near-white text. Nothing in the build or
+    // the browser reports that. These tests are the guard for both halves
+    // of it — the undefined token, and the fallback that hid it.
+
+    const CSS: &str = include_str!("style.css");
+
+    /// The stylesheet with its `/* … */` comments removed, so prose about a
+    /// token is never mistaken for a declaration of one.
+    fn css() -> String {
+        let mut out = String::with_capacity(CSS.len());
+        let mut rest = CSS;
+        while let Some(at) = rest.find("/*") {
+            out.push_str(&rest[..at]);
+            rest = match rest[at + 2..].find("*/") {
+                Some(end) => &rest[at + 2 + end + 2..],
+                None => "",
+            };
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// The body of the first `<selector> {` … `}` block starting at or
+    /// after `from`, plus the offset just past it.
+    fn block_after(css: &str, selector: &str, from: usize) -> (String, usize) {
+        let head = from
+            + css[from..]
+                .find(selector)
+                .unwrap_or_else(|| panic!("`{selector}` not found in style.css"));
+        let open = head
+            + css[head..]
+                .find('{')
+                .unwrap_or_else(|| panic!("`{selector}` has no opening brace"));
+        // No closing brace means the caller handed us a slice that was
+        // already cut at one — the nested `:root` of the dark media query.
+        let close = css[open..].find('}').map_or(css.len(), |i| open + i);
+        (css[open + 1..close].to_string(), close + 1)
+    }
+
+    /// The custom properties *declared* in a block — `--name:` on the left
+    /// of a colon, ignoring `var(--name)` references on the right.
+    fn declared_tokens(block: &str) -> BTreeSet<String> {
+        block
+            .split(';')
+            .filter_map(|decl| decl.split_once(':'))
+            .map(|(name, _)| name.trim())
+            .filter(|name| name.starts_with("--"))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Every custom-property reference in `src`, paired with whether it
+    /// carries a fallback value.
+    ///
+    /// Whole-line comments are skipped: this module documents the very
+    /// pattern it forbids, and prose about a rule is not a breach of it.
+    fn var_references(src: &str) -> Vec<(String, bool)> {
+        let mut refs = Vec::new();
+        for line in src.lines().filter(|l| !l.trim_start().starts_with("//")) {
+            let mut rest = line;
+            while let Some(at) = rest.find("var(") {
+                rest = &rest[at + "var(".len()..];
+                let inner = &rest[..rest.find(')').unwrap_or(rest.len())];
+                if !inner.starts_with("--") {
+                    continue;
+                }
+                let (name, has_fallback) = match inner.split_once(',') {
+                    Some((name, _)) => (name.trim(), true),
+                    None => (inner.trim(), false),
+                };
+                refs.push((name.to_string(), has_fallback));
+            }
+        }
+        refs
+    }
+
+    /// `(path, contents)` for every `.rs` file under `src/`, so the scan
+    /// covers the inline `style="…"` attributes in the routes and not just
+    /// the stylesheet.
+    fn rust_sources() -> Vec<(String, String)> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+            for entry in std::fs::read_dir(dir).expect("readable source dir") {
+                let path = entry.expect("readable dir entry").path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let body = std::fs::read_to_string(&path).expect("readable source file");
+                    out.push((path.display().to_string(), body));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut out,
+        );
+        assert!(!out.is_empty(), "found no Rust sources to scan");
+        out
+    }
+
+    #[test]
+    fn every_token_referenced_anywhere_is_defined_in_root() {
+        let (root, _) = block_after(&css(), ":root", 0);
+        let defined = declared_tokens(&root);
+
+        let mut missing = Vec::new();
+        for (path, body) in rust_sources() {
+            for (name, _) in var_references(&body) {
+                if !defined.contains(&name) {
+                    missing.push(format!("{name} ({path})"));
+                }
+            }
+        }
+        for (name, _) in var_references(&css()) {
+            if !defined.contains(&name) {
+                missing.push(format!("{name} (style.css)"));
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "CSS custom properties used but never defined in `:root`: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn no_var_reference_carries_a_hardcoded_fallback() {
+        // DESIGN.md → Couleur → Règles bans the hardcoded fallback. It is
+        // not a safety net, it is a way of shipping a missing token that
+        // only misbehaves in the theme nobody screenshotted.
+        let mut offenders = Vec::new();
+        for (path, body) in rust_sources() {
+            for (name, has_fallback) in var_references(&body) {
+                if has_fallback {
+                    offenders.push(format!("{name} ({path})"));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "a hardcoded var() fallback is forbidden by DESIGN.md \
+             (Couleur → Règles); offenders: {offenders:?}"
+        );
+    }
+
+    #[test]
+    fn every_token_painting_behind_text_is_overridden_in_the_dark_theme() {
+        // A token left out of the dark block keeps its light value there,
+        // which is exactly the #65 failure mode: `--fg` flips to near-white
+        // while the surface behind it stays near-white.
+        let (_, after_root) = block_after(&css(), ":root", 0);
+        // `block_after` stops at the first `}`, which inside the media query
+        // is the end of its nested `:root` — so the media body it hands back
+        // *is* that `:root`, minus its closing brace.
+        let (media, _) = block_after(&css(), "@media (prefers-color-scheme: dark)", after_root);
+        let (dark, _) = block_after(&media, ":root", 0);
+        let dark = declared_tokens(&dark);
+
+        for token in [
+            "--fg",
+            "--bg",
+            "--muted",
+            "--border",
+            "--accent-bg",
+            "--chip-bg",
+        ] {
+            assert!(
+                dark.contains(token),
+                "`{token}` is not redefined under `prefers-color-scheme: dark`"
+            );
+        }
+    }
+
+    #[test]
+    fn textarea_is_styled_alongside_the_other_form_fields() {
+        // Left out of the field selector, the 14 `textarea`s fall back to
+        // the browser's defaults — a white box with black text sitting next
+        // to dark `input`s in the same form.
+        let (fields, _) = block_after(&css(), "input, select, textarea", 0);
+        assert!(fields.contains("background: var(--bg)"));
+        assert!(fields.contains("color: var(--fg)"));
+        // Browsers do not inherit the page font into a `textarea`.
+        assert!(fields.contains("font-family: inherit"));
     }
 }

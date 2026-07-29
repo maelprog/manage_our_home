@@ -6,6 +6,11 @@
   --error: #b3261e;
   --accent: #2952cc;
   --border: #d0d0d0;
+  /* Tinted surface behind --fg: the current day in the agenda's month and
+     week grids, and the focused occurrence on an event's detail page. */
+  --accent-bg: #eaeffc;
+  /* Neutral surface behind --fg: the agenda's event chips. */
+  --chip-bg: #f0f0f5;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -13,6 +18,15 @@
     --bg: #16171a;
     --muted: #a0a0a0;
     --border: #3a3a3f;
+    /* Both were referenced by the agenda but defined nowhere, so their
+       light fallbacks applied in dark mode too and put near-white behind
+       near-white text (#65). Every token painting behind --fg needs an
+       entry here — that is what the app.rs test enforces.
+       Separation from --bg is 1.39:1 and 1.23:1, a little above the 1.15:1
+       the light theme already uses, because a tint reads weaker on a dark
+       surface. --fg clears 10:1 on both, --muted 4.95:1 on --accent-bg. */
+    --accent-bg: #28304e;
+    --chip-bg: #272930;
   }
 }
 * { box-sizing: border-box; }
@@ -30,8 +44,12 @@ body {
 h1 { font-size: 1.4rem; margin-bottom: 1.25rem; }
 form { display: flex; flex-direction: column; gap: 0.85rem; }
 label { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.9rem; }
-input, select {
+input, select, textarea {
   font-size: 1rem;
+  /* No form control inherits the page font by default: measured in Chromium,
+     a textarea rendered monospace, an input Arial, a datetime-local
+     monospace — three faces in one form, none of them the body's. */
+  font-family: inherit;
   padding: 0.55rem 0.65rem;
   border: 1px solid var(--border);
   border-radius: 6px;

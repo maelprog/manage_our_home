@@ -230,15 +230,11 @@ fn render_month(
             let in_month = day.month() == focus_month;
             let is_today = *day == today;
             let bg = if is_today {
-                "background:var(--accent-bg,#eef);"
+                "background:var(--accent-bg);"
             } else {
                 ""
             };
-            let num_color = if in_month {
-                ""
-            } else {
-                "color:var(--muted,#999);"
-            };
+            let num_color = if in_month { "" } else { "color:var(--muted);" };
             let chips = render_chips(by_day.get(day).map(|v| v.as_slice()).unwrap_or(&[]));
             rows.push_str(&format!(
                 r#"<td style="vertical-align:top;border:1px solid var(--border);padding:0.3rem;height:6.5rem;width:14.28%;{bg}">
@@ -266,7 +262,7 @@ fn render_week(
     for (i, day) in days.iter().enumerate() {
         let is_today = *day == today;
         let bg = if is_today {
-            "background:var(--accent-bg,#eef);"
+            "background:var(--accent-bg);"
         } else {
             ""
         };
@@ -304,7 +300,7 @@ fn render_chips(occs: &[&OccurrenceResponse]) -> String {
                 ("", "")
             };
             format!(
-                r#"<a href="/agenda/{id}?occ={occ}" style="display:block;font-size:0.8rem;padding:0.15rem 0.3rem;margin-top:0.2rem;border-radius:3px;background:var(--chip-bg,#f0f0f5);{done}text-decoration:none;">{marker}<strong>{time}</strong> {title}</a>"#,
+                r#"<a href="/agenda/{id}?occ={occ}" style="display:block;font-size:0.8rem;padding:0.15rem 0.3rem;margin-top:0.2rem;border-radius:3px;background:var(--chip-bg);{done}text-decoration:none;">{marker}<strong>{time}</strong> {title}</a>"#,
                 id = e.id,
                 occ = occ_param,
                 done = done,

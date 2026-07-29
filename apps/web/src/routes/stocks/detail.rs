@@ -109,7 +109,7 @@ fn page(
 
     let low = is_low_stock(item.quantity, item.reorder_threshold);
     let low_html = if low {
-        r#"<p><span style="font-size:0.85rem;padding:0.1rem 0.5rem;border-radius:3px;background:var(--error,#c0392b);color:#fff;">Stock bas</span></p>"#.to_string()
+        r#"<p><span style="font-size:0.85rem;padding:0.1rem 0.5rem;border-radius:3px;background:var(--error);color:#fff;">Stock bas</span></p>"#.to_string()
     } else {
         String::new()
     };

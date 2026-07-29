@@ -80,7 +80,7 @@ fn item_row(item: &GroceryItemResponse, can_edit: bool) -> String {
     let toggle_label = if item.checked { "Décocher" } else { "Cocher" };
     let checked_attr = if item.checked { " checked" } else { "" };
     let name_style = if item.checked {
-        r#" style="text-decoration:line-through;color:var(--muted,#888);""#
+        r#" style="text-decoration:line-through;color:var(--muted);""#
     } else {
         ""
     };

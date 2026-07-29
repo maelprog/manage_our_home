@@ -350,7 +350,7 @@ fn render_occurrence_completions(
                 ("Marquer faite", "true", "⬜")
             };
             let highlight = if focus_occ == Some(occ_param.as_str()) {
-                "background:var(--accent-bg,#eef);"
+                "background:var(--accent-bg);"
             } else {
                 ""
             };

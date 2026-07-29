@@ -146,6 +146,10 @@ elle accompagne toujours une initiale ou un nom.
   jeton. Les replis `var(--x, #hex)` sont interdits : ils masquent les jetons
   manquants et c'est exactement ce qui a cassé le thème sombre de l'agenda
   (`--accent-bg` et `--chip-bg`, utilisés mais jamais définis).
+  Les deux moitiés de cette règle sont tenues par des tests dans
+  `apps/web/src/app.rs` : tout jeton référencé doit exister dans `:root`,
+  tout jeton peint derrière `--fg` doit être redéfini dans le bloc sombre,
+  et aucun `var()` ne peut porter de repli.
 - **Contraste AA minimum** (4.5:1 texte normal, 3:1 texte large et bordures
   porteuses de sens), vérifié dans **les deux thèmes**.
 
