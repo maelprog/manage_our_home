@@ -172,6 +172,56 @@ pub fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// The stylesheet with its `/* … */` comments removed, so prose about a
+/// token is never mistaken for a declaration of one.
+///
+/// Test-only, but at module level rather than inside `mod tests`: the
+/// `/assets` route tests in `crate::assets` read the font file names off
+/// the stylesheet through `stylesheet_font_files` below, so that what the
+/// route is asked to serve and what the browser is told to fetch come from
+/// one place.
+#[cfg(test)]
+pub(crate) fn css_without_comments() -> String {
+    const CSS: &str = include_str!("style.css");
+    let mut out = String::with_capacity(CSS.len());
+    let mut rest = CSS;
+    while let Some(at) = rest.find("/*") {
+        out.push_str(&rest[..at]);
+        rest = match rest[at + 2..].find("*/") {
+            Some(end) => &rest[at + 2 + end + 2..],
+            None => "",
+        };
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Every `url(…)` the stylesheet loads, unquoted.
+#[cfg(test)]
+pub(crate) fn stylesheet_urls() -> Vec<String> {
+    let css = css_without_comments();
+    let mut out = Vec::new();
+    let mut rest = css.as_str();
+    while let Some(at) = rest.find("url(") {
+        rest = &rest[at + "url(".len()..];
+        let inner = &rest[..rest.find(')').unwrap_or(rest.len())];
+        out.push(inner.trim().trim_matches(['"', '\'']).to_string());
+    }
+    out
+}
+
+/// The file names under `/assets/fonts/` the stylesheet asks the browser
+/// to fetch — the other half of the contract `crate::assets` serves.
+#[cfg(test)]
+pub(crate) fn stylesheet_font_files() -> Vec<String> {
+    const PREFIX: &str = "/assets/fonts/";
+    stylesheet_urls()
+        .iter()
+        .filter_map(|url| url.strip_prefix(PREFIX))
+        .map(str::to_string)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,23 +302,7 @@ mod tests {
     // the browser reports that. These tests are the guard for both halves
     // of it — the undefined token, and the fallback that hid it.
 
-    const CSS: &str = include_str!("style.css");
-
-    /// The stylesheet with its `/* … */` comments removed, so prose about a
-    /// token is never mistaken for a declaration of one.
-    fn css() -> String {
-        let mut out = String::with_capacity(CSS.len());
-        let mut rest = CSS;
-        while let Some(at) = rest.find("/*") {
-            out.push_str(&rest[..at]);
-            rest = match rest[at + 2..].find("*/") {
-                Some(end) => &rest[at + 2 + end + 2..],
-                None => "",
-            };
-        }
-        out.push_str(rest);
-        out
-    }
+    use super::css_without_comments as css;
 
     /// The body of the first `<selector> {` … `}` block starting at or
     /// after `from`, plus the offset just past it.
@@ -539,6 +573,144 @@ mod tests {
             offenders.is_empty(),
             "a solid --accent or --error surface has to name its text colour \
              with `--accent-fg`, which flips with the theme: {offenders:?}"
+        );
+    }
+
+    // -- self-hosted fonts (#67) ---------------------------------------
+    //
+    // The failure these guard is silent by construction: `font-display:
+    // swap` plus a fallback stack means a font that 404s, or one loaded
+    // from a domain that is blocked or slow, renders the page in Georgia
+    // and system-ui and reports nothing. The CDN variant is worse than
+    // silent — it works, and quietly hands every visitor's IP to a third
+    // party, which is a processing activity `docs/registre-traitements.md`
+    // would have to declare.
+
+    /// One string per `@font-face` block in the stylesheet.
+    fn font_face_blocks() -> Vec<String> {
+        let css = css();
+        let mut out = Vec::new();
+        let mut from = 0;
+        while let Some(at) = css[from..].find("@font-face") {
+            let start = from + at;
+            let (block, next) = block_after(&css, "@font-face", start);
+            out.push(block);
+            from = next;
+        }
+        out
+    }
+
+    #[test]
+    fn the_stylesheet_declares_both_families_of_the_design_system() {
+        let families: Vec<String> = font_face_blocks()
+            .iter()
+            .filter_map(|b| {
+                b.split(';')
+                    .filter_map(|d| d.split_once(':'))
+                    .find(|(name, _)| name.trim() == "font-family")
+                    .map(|(_, value)| value.trim().trim_matches('"').to_string())
+            })
+            .collect();
+        assert_eq!(
+            families,
+            vec!["Source Sans 3".to_string(), "Fraunces".to_string()],
+            "DESIGN.md → Typographie names exactly these two, body face first"
+        );
+    }
+
+    #[test]
+    fn the_stylesheet_fetches_nothing_from_a_third_party() {
+        // No CDN, no `@import`, no absolute URL of any kind: every byte the
+        // browser loads for a page has to come from apps/web itself.
+        let css = css();
+        assert!(
+            !css.contains("@import"),
+            "`@import` pulls in a stylesheet at render time — inline it instead"
+        );
+        for url in stylesheet_urls() {
+            assert!(
+                url.starts_with("/assets/"),
+                "the stylesheet loads `{url}`, which is not served by apps/web; \
+                 self-hosting the fonts is what keeps visitors' IPs off a third \
+                 party's logs (DESIGN.md → Typographie → Chargement)"
+            );
+        }
+        for scheme in ["http://", "https://", "//fonts."] {
+            assert!(
+                !css.contains(scheme),
+                "the stylesheet names an external origin (`{scheme}`)"
+            );
+        }
+    }
+
+    #[test]
+    fn every_font_face_swaps_instead_of_blocking_the_text() {
+        for block in font_face_blocks() {
+            assert!(
+                block.contains("font-display: swap"),
+                "without `swap` the browser hides the text for up to 3s while \
+                 the font loads: {block}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_font_face_declares_the_weight_range_it_covers() {
+        // Both files are *variable*. Left undeclared, the browser assumes a
+        // single 400 and synthesises bold by smearing the outlines instead
+        // of moving the `wght` axis.
+        for block in font_face_blocks() {
+            let range = block
+                .split(';')
+                .filter_map(|d| d.split_once(':'))
+                .find(|(name, _)| name.trim() == "font-weight")
+                .map(|(_, value)| value.trim().to_string())
+                .unwrap_or_else(|| panic!("no `font-weight` range in: {block}"));
+            assert!(
+                range.split_whitespace().count() == 2,
+                "`font-weight: {range}` is a single weight, not a variable \
+                 font's range"
+            );
+        }
+    }
+
+    #[test]
+    fn every_font_file_the_stylesheet_names_is_committed() {
+        // A renamed or forgotten file is a 404 nobody sees. `crate::assets`
+        // asserts the other half — that the route actually serves these.
+        let files = stylesheet_font_files();
+        assert_eq!(files.len(), 2, "one file per family: {files:?}");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+        for file in &files {
+            assert!(
+                dir.join(file).is_file(),
+                "{} is referenced by style.css but not committed",
+                dir.join(file).display()
+            );
+        }
+        // The OFL requires the licence to travel with the files it covers.
+        for licence in ["OFL-Fraunces.txt", "OFL-SourceSans3.txt"] {
+            assert!(
+                dir.join(licence).is_file(),
+                "redistributing an OFL font without its licence file is a \
+                 licence breach: {licence} missing"
+            );
+        }
+    }
+
+    #[test]
+    fn the_body_and_heading_stacks_name_their_fallbacks() {
+        // The stack is what renders during the swap, and for good on a
+        // client that blocks font downloads. DESIGN.md fixes both.
+        let (body, _) = block_after(&css(), "body", 0);
+        assert!(
+            body.contains(r#"font-family: "Source Sans 3", ui-sans-serif, system-ui, sans-serif"#),
+            "body stack: {body}"
+        );
+        let (headings, _) = block_after(&css(), "h1, h2, h3", 0);
+        assert!(
+            headings.contains(r#"font-family: "Fraunces", Georgia, serif"#),
+            "heading stack: {headings}"
         );
     }
 
