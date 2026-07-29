@@ -385,6 +385,13 @@ mod tests {
                 }
             }
         }
+        // The stylesheet is where the CSS is written first, so it is the most
+        // likely home for the pattern — and it is exactly where #65 hid.
+        for (name, has_fallback) in var_references(&css()) {
+            if has_fallback {
+                offenders.push(format!("{name} (style.css)"));
+            }
+        }
         assert!(
             offenders.is_empty(),
             "a hardcoded var() fallback is forbidden by DESIGN.md \
