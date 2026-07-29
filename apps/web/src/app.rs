@@ -374,6 +374,40 @@ mod tests {
         out
     }
 
+    /// `(path, contents)` for the stylesheet *and* every Rust source, which
+    /// is what a rule about colour has to cover: 173 of the declarations that
+    /// paint something live in inline `style="…"` attributes in the routes,
+    /// not in the sheet.
+    fn styled_sources() -> Vec<(String, String)> {
+        let mut out = rust_sources();
+        out.push(("style.css".to_string(), css()));
+        out
+    }
+
+    /// Every run of declarations that paints a solid `--accent` or `--error`
+    /// surface, cut at the end of the group it belongs to: the closing quote
+    /// of a route's inline `style="…"` attribute, or the closing brace of a
+    /// CSS rule. Whitespace after each `:` is dropped so one needle matches
+    /// both syntaxes. `--accent-bg` and `--error-soft` do not match: the
+    /// closing paren is part of the needle, and a tint is not a solid.
+    fn solid_tinted_surfaces(src: &str) -> Vec<String> {
+        let flat = src.replace(": ", ":");
+        let mut out = Vec::new();
+        for token in ["--accent", "--error"] {
+            let needle = format!("background:var({token})");
+            let mut from = 0;
+            while let Some(at) = flat[from..].find(&needle) {
+                let start = from + at;
+                let end = flat[start..]
+                    .find(['}', '"'])
+                    .map_or(flat.len(), |i| start + i);
+                out.push(flat[start..end].to_string());
+                from = start + needle.len();
+            }
+        }
+        out
+    }
+
     #[test]
     fn every_token_referenced_anywhere_is_defined_in_root() {
         let (root, _) = block_after(&css(), ":root", 0);
@@ -484,14 +518,28 @@ mod tests {
         // not: on the dark `--accent` white text measures 2.50:1 and on the
         // dark `--error` 2.70:1. `--accent-fg` is the token that flips with
         // the theme (#74).
-        for selector in ["button, .button", "button.danger, .button.danger"] {
-            let (rule, _) = block_after(&css(), selector, 0);
-            assert!(
-                rule.contains(&format!("color: {}", var_of("--accent-fg"))),
-                "`{selector}` paints a solid tinted surface: its text colour \
-                 has to be a token, not `#fff`"
-            );
+        //
+        // The scan covers the routes and not just the sheet, because the two
+        // "Stock bas" badges are inline `style="…"` attributes and that is
+        // exactly where this slipped through: while `--error` had no dark
+        // value at all, white on it was safe in both themes, so giving the
+        // token its dark value turned two passing badges into 2.70:1 ones.
+        // A guard that only knew about the sheet's two rules described the
+        // class of bug and checked two instances of it.
+        let needle = format!("color:{}", var_of("--accent-fg"));
+        let mut offenders = Vec::new();
+        for (path, body) in styled_sources() {
+            for surface in solid_tinted_surfaces(&body) {
+                if !surface.contains(&needle) {
+                    offenders.push(format!("{path}: {surface}"));
+                }
+            }
         }
+        assert!(
+            offenders.is_empty(),
+            "a solid --accent or --error surface has to name its text colour \
+             with `--accent-fg`, which flips with the theme: {offenders:?}"
+        );
     }
 
     #[test]

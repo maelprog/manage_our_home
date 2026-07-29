@@ -92,13 +92,15 @@
     --warning-soft: #332813;
     --error: #e88075;
     --error-soft: #3a211e;
-    /* The member ramp lightens too: muted tints legible on a dark ground
-       read 5.4:1 or better on both --bg and --surface. */
+    /* The member ramp lightens too: muted tints legible on a dark ground,
+       5.37:1 at the floor (--m1 on --surface) across both grounds. */
     --m1: #a48bd0; --m2: #64a8c8; --m3: #7db77b; --m4: #d2a059;
     --m5: #d08a90; --m6: #8aa3b0; --m7: #b99b68; --m8: #9494ce;
-    /* Separation from --bg is 1.39:1 and 1.23:1, a little above the 1.15:1
-       the light theme uses, because a tint reads weaker on a dark surface.
-       --fg clears 10:1 on both, --muted 4.95:1 on --accent-bg. */
+    /* Remeasured against the warm neutrals, which moved every figure these
+       two were tuned against: separation from --bg is 1.36:1 and 1.21:1,
+       above the 1.10:1 of the light theme, because a tint reads weaker on a
+       dark ground. --fg clears 10:1 on both (10.78 and 12.09), --muted
+       4.64:1 on --accent-bg. */
     --accent-bg: #28304e;
     --chip-bg: #272930;
   }
@@ -138,8 +140,10 @@ button, .button {
   cursor: pointer;
   background: var(--accent);
   /* Not #fff: white survives the theme switch, the surface under it does
-     not. On the dark --accent it measures 2.50:1, and on the dark --error
-     below 2.70:1. --accent-fg is the token that flips with the theme. */
+     not. White measures 2.50:1 on the dark --accent and 2.70:1 on the dark
+     --error, so the danger button below and the two "Stock bas" badges in
+     the stocks routes take the same token. --accent-fg is the one that
+     flips with the theme. */
   color: var(--accent-fg);
   text-align: center;
   text-decoration: none;

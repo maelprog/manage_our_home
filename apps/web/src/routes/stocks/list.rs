@@ -86,7 +86,7 @@ pub async fn get(
                         {category.map(|c| view! { " " <span class="muted">"· "{c}</span> })}
                         {low.then(|| view! {
                             " "
-                            <span style="font-size:0.8rem;padding:0.1rem 0.4rem;border-radius:3px;background:var(--error);color:#fff;">"Stock bas"</span>
+                            <span style="font-size:0.8rem;padding:0.1rem 0.4rem;border-radius:3px;background:var(--error);color:var(--accent-fg);">"Stock bas"</span>
                         })}
                     </span>
                     <span class="muted">{qty}</span>
