@@ -190,6 +190,13 @@ vers les 8 domaines, alors que c'est la première page vue après connexion.
 
 ### 4.1 Deux variables CSS utilisées mais jamais définies → thème sombre cassé
 
+> **Corrigé par [#65](../../issues/65).** Les deux jetons sont définis dans les
+> deux thèmes, les replis ont été retirés des routes, et deux tests de
+> `apps/web/src/app.rs` refusent désormais un jeton non défini ou un repli
+> codé en dur. Le constat ci-dessous est conservé tel quel — les contrastes
+> estimés à « ≈ 1.1:1 » ont été mesurés sur la stack : **1.05:1** pour la
+> cellule du jour, **2.10:1** pour les pastilles.
+
 `--accent-bg` et `--chip-bg` sont référencées avec une valeur de repli claire,
 mais ne sont **définies nulle part** dans `style.css`. Le repli s'applique donc
 *toujours*, y compris en thème sombre :
@@ -206,6 +213,23 @@ l'agenda devient invisible**. Contraste estimé ≈ 1.1:1 là où WCAG AA exige
 4.5:1.
 
 ### 4.2 `textarea` absent du sélecteur de champs
+
+> **Corrigé par [#65](../../issues/65).** Le sélecteur est devenu
+> `input, select, textarea` et porte `font-family: inherit`.
+>
+> **Correction du constat ci-dessous**, mesurée dans Chromium avec
+> `prefers-color-scheme: dark` : le `textarea` ne rendait **pas** un fond
+> blanc et un texte noir. `:root` déclare `color-scheme: light dark`, donc
+> le navigateur le peignait dans sa propre variante sombre —
+> `rgb(59,59,59)` sur texte blanc, soit 11.2:1. Le défaut est réel mais
+> c'est un défaut de cohérence, pas de lisibilité : une surface qui ne
+> correspond à aucun jeton (les `input` voisins sont à `#16171a`), une
+> bordure en relief, et une police monospace.
+>
+> Second constat que la mesure a ajouté : les `input` et `select`
+> n'héritaient pas non plus de la police de la page — ils rendaient en
+> Arial, et les champs `datetime-local` en monospace. `font-family: inherit`
+> sur le sélecteur partagé corrige les trois familles d'un coup.
 
 `style.css:33` stylise `input, select` — **pas `textarea`**. Les 14 `textarea`
 de l'app (`messagerie/thread.rs` ×8, `recipes/new.rs` ×4, `agenda/new.rs`,
