@@ -1,4 +1,5 @@
 pub mod agenda;
+pub mod attachment_reconcile;
 pub mod audit;
 pub mod auth;
 pub mod budget;

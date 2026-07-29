@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "?column?",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "5fe6db981047a2430c9b93569fc2cfa93f3727cb24795e7d86795e55e9005251"
+}

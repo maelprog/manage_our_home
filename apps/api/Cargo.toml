@@ -7,6 +7,13 @@ edition = "2021"
 name = "manage_our_home"
 path = "src/main.rs"
 
+# Ops script, not part of the server (#58): finds attachment objects in
+# MinIO that no `event_attachments` row points at and, with --apply,
+# deletes them.
+[[bin]]
+name = "reconcile-attachments"
+path = "src/bin/reconcile_attachments.rs"
+
 [lib]
 name = "manage_our_home"
 path = "src/lib.rs"
