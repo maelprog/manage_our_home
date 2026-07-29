@@ -6,6 +6,7 @@ use aws_sdk_s3::presigning::PresigningConfig;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::{Delete, ObjectIdentifier};
 use aws_sdk_s3::Client;
+use chrono::{DateTime, Utc};
 
 /// Thin wrapper around the S3 client pointed at MinIO (architecture.md:
 /// object storage for event file attachments). MinIO speaks the S3 API, so
@@ -77,6 +78,58 @@ impl Storage {
         Ok(presigned.uri().to_string())
     }
 
+    /// Every object in the bucket, or under `prefix` when given, walked
+    /// through `ListObjectsV2`'s continuation tokens.
+    ///
+    /// Only the reconciliation pass (`attachment_reconcile`, #58) needs
+    /// this: the API itself always reaches an object through a
+    /// `storage_key` it already read from a row. Finding the objects *no*
+    /// row names is exactly what nothing could do before.
+    ///
+    /// Paginated because the request is capped at 1000 keys server-side
+    /// and silently truncated past that — a single page would quietly
+    /// report a large bucket as a small one, and every key it failed to
+    /// list would look like it simply wasn't there.
+    pub async fn list_objects(&self, prefix: Option<&str>) -> anyhow::Result<Vec<StoredObject>> {
+        let mut objects = Vec::new();
+        let mut continuation_token: Option<String> = None;
+
+        loop {
+            let response = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .set_prefix(prefix.map(str::to_string))
+                .set_continuation_token(continuation_token)
+                .send()
+                .await?;
+
+            for object in response.contents() {
+                let Some(key) = object.key() else { continue };
+                objects.push(StoredObject {
+                    key: key.to_string(),
+                    size_bytes: object.size().unwrap_or(0),
+                    last_modified: object
+                        .last_modified()
+                        .and_then(|t| DateTime::from_timestamp(t.secs(), t.subsec_nanos())),
+                });
+            }
+
+            // `is_truncated` and the token are both optional on the wire;
+            // treating a missing token as "no more pages" is the only
+            // terminating reading, and looping forever on the same page
+            // is the alternative.
+            match response.next_continuation_token() {
+                Some(token) if response.is_truncated().unwrap_or(false) => {
+                    continuation_token = Some(token.to_string());
+                }
+                _ => break,
+            }
+        }
+
+        Ok(objects)
+    }
+
     pub async fn delete_object(&self, key: &str) -> anyhow::Result<()> {
         self.client
             .delete_object()
@@ -120,6 +173,19 @@ impl Storage {
         }
         Ok(())
     }
+}
+
+/// One entry of a bucket listing (see [`Storage::list_objects`]).
+///
+/// `last_modified` is optional because the field is optional on the wire.
+/// It is carried rather than defaulted: the reconciliation pass uses it to
+/// tell an orphan from an upload still in flight, and a missing timestamp
+/// has to mean "can't tell", not "arbitrarily old".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredObject {
+    pub key: String,
+    pub size_bytes: i64,
+    pub last_modified: Option<DateTime<Utc>>,
 }
 
 /// S3 caps a single `DeleteObjects` request at 1000 keys.

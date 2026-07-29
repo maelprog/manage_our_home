@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM event_attachments WHERE storage_key = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "881a2d912eaa79f7de2c5f857eff83a244532bc677497a0f6e2023ccf2c8a323"
+}

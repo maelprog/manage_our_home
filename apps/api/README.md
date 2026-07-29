@@ -60,3 +60,42 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO admin_rol
 If `ADMIN_DATABASE_URL` isn't set, `main.rs` falls back to `DATABASE_URL`
 (convenient for local dev where a single role is fine); production
 deployments should always set both to the distinct roles above.
+
+## Ops: `reconcile-attachments` (#58)
+
+Second binary in this crate. Finds objects in the MinIO attachments bucket
+that no `event_attachments` row points at, and — only with `--apply` —
+deletes them.
+
+```
+cargo run --bin reconcile-attachments -- --help
+cargo run --bin reconcile-attachments               # dry run, 24h window
+cargo run --bin reconcile-attachments -- --apply
+```
+
+Orphans come from three places. Two are historic and now closed: events
+deleted before #56, and groups deleted before #59. The third is ongoing —
+`upload_attachment` writes the object before the metadata row commits
+(`src/agenda/attachments.rs`), and neither the failed-insert compensation
+nor the `tx.commit()` after it can be made airtight, so orphans keep
+accruing at a low rate. Run this dry first to measure the backlog and the
+drip; if the numbers justify a schedule, `src/jobs/` already has the
+polling-worker shape (`account_purge.rs`).
+
+Two things it will not let you get wrong:
+
+- **`ADMIN_DATABASE_URL` is required, with no `DATABASE_URL` fallback.**
+  `event_attachments` is `FORCE ROW LEVEL SECURITY`, so an unscoped
+  `SELECT storage_key` on a normal app connection returns **zero rows, not
+  all rows** — and zero known keys means every object in the bucket
+  classifies as an orphan. The pass checks `rolsuper OR rolbypassrls` for
+  its own connection and aborts if neither holds, so a misconfigured run
+  fails loudly instead of emptying the bucket. Point it at `admin_role`.
+- **Objects newer than `--min-age-hours` (default 24) are never deleted.**
+  `put_object` runs well before the row commits, so a freshly written
+  object with no row may be a live upload mid-flight rather than garbage.
+
+`--prefix` narrows the listing; keys are `{group_id}/{event_id}/{uuid}`, so
+`--prefix <group-id>/` walks one family. Every deleted key is written to
+stdout and logged at INFO before the delete — the delete is unrecoverable
+and that record is the only trace left.
