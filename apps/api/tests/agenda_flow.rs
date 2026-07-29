@@ -679,3 +679,106 @@ async fn event_delete_aborts_when_the_attachment_object_cannot_be_removed(db: Pg
         "a failed object delete must leave the attachment row for the retry"
     );
 }
+
+/// AC (#62): pins the upload ordering. The row is written inside the
+/// transaction *before* the object exists, so a storage failure has to
+/// take the row down with it — the transaction is dropped, never
+/// committed, and the caller sees a 500 against an event with no
+/// attachment rather than a row pointing at bytes that were never stored.
+///
+/// This is a regression guard, not a red-first test: the previous ordering
+/// (object first) also left no row here, because it failed at
+/// `put_object` before reaching the INSERT. What the guard catches is a
+/// future edit that commits the row before the object is confirmed
+/// written — verified by mutation, see the PR.
+///
+/// `test_router`'s storage points at an unreachable endpoint, which is
+/// exactly the failure being pinned.
+#[sqlx::test]
+async fn an_upload_that_cannot_reach_storage_leaves_no_attachment_row(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie = register_verify_login(
+        &router,
+        &db,
+        "upload-nostorage@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let event_id = create_event(&router, &owner_cookie, &group_id).await;
+
+    let upload = call_upload(
+        &router,
+        &format!("/groups/{group_id}/events/{event_id}/attachments"),
+        &owner_cookie,
+        "ordonnance.png",
+        PNG_BYTES,
+    )
+    .await;
+    assert_status(&upload, StatusCode::INTERNAL_SERVER_ERROR);
+
+    assert_eq!(
+        attachment_count(&db, &group_id, &event_id).await,
+        0,
+        "a row must never outlive the object it points at: the upload failed, \
+         so the transaction carrying the row has to roll back with it"
+    );
+
+    // The event itself is untouched — only the attachment failed.
+    let get = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&get, StatusCode::OK);
+}
+
+/// The other half of the ordering guard: with a reachable bucket the
+/// reordered path still stores the bytes and still commits the row. A
+/// rollback that fired on the happy path would be invisible to the test
+/// above, which only ever sees failures.
+///
+/// Needs a real MinIO; skipped otherwise (see `real_minio_from_env`).
+#[sqlx::test]
+async fn a_successful_upload_stores_the_object_and_commits_the_row(db: PgPool) {
+    let Some((s3, bucket)) = real_minio_from_env() else {
+        eprintln!(
+            "skipping a_successful_upload_stores_the_object_and_commits_the_row: \
+             no MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY/BUCKET in the environment"
+        );
+        return;
+    };
+    let router = test_router_with_storage(
+        db.clone(),
+        manage_our_home::storage::Storage::new(s3.clone(), bucket.clone()),
+    );
+    let owner_cookie =
+        register_verify_login(&router, &db, "upload-ok@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let event_id = create_event(&router, &owner_cookie, &group_id).await;
+
+    let upload = call_upload(
+        &router,
+        &format!("/groups/{group_id}/events/{event_id}/attachments"),
+        &owner_cookie,
+        "ordonnance.png",
+        PNG_BYTES,
+    )
+    .await;
+    assert_status(&upload, StatusCode::CREATED);
+
+    assert_eq!(attachment_count(&db, &group_id, &event_id).await, 1);
+    let storage_key = attachment_storage_key(&db, &group_id, &event_id).await;
+    assert!(
+        s3.head_object()
+            .bucket(&bucket)
+            .key(&storage_key)
+            .send()
+            .await
+            .is_ok(),
+        "the committed row must point at an object that is actually there"
+    );
+}
