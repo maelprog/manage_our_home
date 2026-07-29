@@ -67,13 +67,27 @@ pub async fn upload_attachment(
         .ok_or(AppError::Unprocessable("unsupported_file_type".into()))?;
 
     let storage_key = format!("{group_id}/{event_id}/{}", Uuid::new_v4());
-    state
-        .storage
-        .put_object(&storage_key, bytes.to_vec(), mime_type)
-        .await
-        .map_err(AppError::Internal)?;
 
-    let insert_result = sqlx::query!(
+    // Row first, object second, commit last — the mirror of the delete
+    // ordering settled in #54/#56 and #57/#59 (objects first there, so a
+    // storage failure drops the transaction and the rows survive for a
+    // retry). Here the same principle points the other way: the row is
+    // written inside the transaction *before* the object exists, so a
+    // `put_object` failure below drops the transaction and neither the row
+    // nor the object survives.
+    //
+    // The point is what this removes. The previous order wrote the object
+    // first and so needed a compensating delete when the INSERT failed —
+    // best-effort, and swallowing its own failure with `let _`, which made
+    // a leaked object invisible even in the logs (#62). Rollback needs no
+    // compensation and cannot half-fail, so that path is gone rather than
+    // improved.
+    //
+    // Cost, accepted deliberately: `put_object` now runs with the
+    // transaction open, holding a connection for the duration of the
+    // upload. Bounded by MAX_ATTACHMENT_SIZE_BYTES (checked above), same
+    // tradeoff as the batched delete in #59.
+    let attachment = sqlx::query!(
         r#"
         INSERT INTO event_attachments (event_id, uploaded_by, storage_key, filename, mime_type, size_bytes)
         VALUES ($1, $2, $3, $4, $5, $6)
@@ -87,18 +101,20 @@ pub async fn upload_attachment(
         bytes.len() as i64,
     )
     .fetch_one(&mut *tx)
-    .await;
+    .await?;
 
-    // The object was already written to MinIO above; if the metadata row
-    // never lands, delete it again rather than leaving it orphaned with
-    // nothing in event_attachments to reference (and thus never clean up).
-    let attachment = match insert_result {
-        Ok(row) => row,
-        Err(e) => {
-            let _ = state.storage.delete_object(&storage_key).await;
-            return Err(e.into());
-        }
-    };
+    state
+        .storage
+        .put_object(&storage_key, bytes.to_vec(), mime_type)
+        .await
+        .map_err(AppError::Internal)?;
+
+    // Still uncompensated, and not fixable at this layer: if this commit
+    // fails, the object is written and the row never lands. Same for a
+    // client disconnect or a process death anywhere above — the future is
+    // dropped, the transaction rolls back, and the object stays. Closing
+    // that window needs a transactional outbox (#62); until then the
+    // reconciliation pass (#58) is what catches it.
     tx.commit().await?;
 
     Ok((
