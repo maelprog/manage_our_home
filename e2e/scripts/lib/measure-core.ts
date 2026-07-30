@@ -162,35 +162,94 @@ export type CollectionCheck = {
   route: string;
   /** French label for the error message, e.g. "événements". */
   collection: string;
-  /** Rows the API says the group holds. */
+  /** Rows the API says the group holds, **within the window the page shows**. */
   stored: number;
   /** Rows the page actually rendered. */
   rendered: number;
+  /** Rows this route ought to render — see `expectedRendered`. */
+  expected: number;
+  /**
+   * Rows the displayed window must hold for a measurement to mean anything —
+   * i.e. what `npm run seed` puts there. Absent = no volume expectation.
+   */
+  minStored?: number;
 };
 
-export type CollectionFailure = CollectionCheck & { kind: "unseeded" | "not-rendered" };
+export type CollectionFailure = CollectionCheck & {
+  kind: "unseeded" | "understocked" | "not-rendered" | "incomplete";
+};
+
+/**
+ * Combien de lignes une route doit rendre pour que sa mesure compte.
+ *
+ * `pageSize` est la tolérance, **déclarée route par route** et non globale :
+ * seule `/messagerie` pagine (50 par page côté API), partout ailleurs un rendu
+ * partiel est une mesure creuse, pas une pagination.
+ */
+export function expectedRendered(stored: number, pageSize: number | undefined): number {
+  return pageSize === undefined ? stored : Math.min(stored, pageSize);
+}
+
+/**
+ * Valide un entier venu de la ligne de commande ou de l'environnement.
+ *
+ * `Number("oops")` vaut `NaN`, et toute comparaison avec `NaN` est fausse :
+ * un `--budget=oops` faisait donc passer le budget en silence — sur le seul
+ * drapeau qui pilote le code de sortie. On refuse au lieu de rendre vert.
+ */
+export function requirePositiveInt(name: string, raw: string): number {
+  const value = Number(raw.trim());
+  if (raw.trim() === "" || !Number.isInteger(value) || value <= 0) {
+    throw new Error(
+      `${name} attend un entier positif en octets, reçu « ${raw} ». ` +
+        "Refus de mesurer : une valeur non numérique rendrait la comparaison au " +
+        "budget toujours fausse, donc le contrôle vert quoi qu'il pèse.",
+    );
+  }
+  return value;
+}
 
 /**
  * The guard a byte floor cannot give you.
  *
  * A page whose collection comes back empty is *not* a small page: the month
  * grid still draws its cells and the inlined stylesheet still dominates. When
- * 40 events were seeded into the wrong month, `/agenda` measured 1 881 bytes
- * of document instead of 2 807 — a third light, and utterly unremarkable in a
- * table of numbers. Comparing rendered rows against stored rows catches both
- * that and a plainly unseeded stack, and tells them apart:
+ * 40 events were seeded into the wrong month, an earlier manual campaign
+ * (issue #83, a different dataset) recorded 1 881 bytes of document instead of
+ * 2 807 — a third light, and utterly unremarkable in a table of numbers. This
+ * repository's own run of the same mistake cost 36 %. Comparing rendered rows
+ * against stored rows catches both that and a plainly unseeded stack, and
+ * tells them apart:
  *
  * - `unseeded`: the API holds nothing → the seed script was never run.
- * - `not-rendered`: the API holds rows the page does not show → the data is
- *   outside the window the route displays (for `/agenda`, the current month:
- *   `apps/web/src/routes/agenda/calendar.rs` falls back to `today_paris`).
+ * - `understocked`: the displayed window holds fewer rows than `npm run seed`
+ *   puts there. Counting "stored" *inside* the window the page shows is what
+ *   makes the seed's idempotence honest, but it also makes rendered-vs-stored
+ *   self-consistent when the window itself is half empty: 18 events seeded
+ *   into next month render 18 of 18 while `/agenda` weighs 36 % less. Only an
+ *   expected **volume** separates that from a legitimately smaller page.
+ * - `not-rendered`: the API holds rows the page shows none of.
+ * - `incomplete`: the page renders **some** of them, but fewer than it owes.
  *
- * Rendering *fewer* rows than stored is fine — `/messagerie` pages at 50.
+ * Ce dernier cas est celui qu'un contrôle « à zéro » laisse passer, et il n'a
+ * rien de théorique : la grille du mois fait 42 jours à partir du lundi
+ * précédant le 1er, donc semer en août et mesurer en juillet rend 18
+ * événements sur 40 — `/agenda` dégonflé de 36 %, exit 0, une seule cellule
+ * `18/40` à remarquer dans le tableau. Et semer en juillet pour mesurer en
+ * août n'en rend que 2, sans aucune variable d'environnement.
+ *
+ * La tolérance vit dans `expected` (voir `expectedRendered`), déclarée route
+ * par route : seule `/messagerie` a le droit de rendre moins que ce qu'elle
+ * stocke, parce qu'elle pagine.
  */
 export function collectionFailures(checks: CollectionCheck[]): CollectionFailure[] {
   return checks.flatMap((c) => {
     if (c.stored === 0) return [{ ...c, kind: "unseeded" as const }];
+    if (c.minStored !== undefined && c.stored < c.minStored) {
+      return [{ ...c, kind: "understocked" as const }];
+    }
     if (c.rendered === 0) return [{ ...c, kind: "not-rendered" as const }];
+    if (c.rendered < c.expected) return [{ ...c, kind: "incomplete" as const }];
     return [];
   });
 }

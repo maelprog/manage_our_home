@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createRng, cycle, missingCount, pick, spreadOverMonth } from "./seed-core.ts";
+import {
+  createRng,
+  cycle,
+  missingCount,
+  monthGridWindow,
+  pick,
+  spreadOverMonth,
+} from "./seed-core.ts";
 
 // ---------------------------------------------------------------------------
 // createRng — determinism is a hard requirement: byte measurements taken on
@@ -16,7 +23,7 @@ test("createRng yields the same sequence for the same seed", () => {
 });
 
 test("createRng yields a different sequence for a different seed", () => {
-  assert.notEqual(createRng(1).toString + createRng(1)(), createRng(2)());
+  assert.notEqual(createRng(1)(), createRng(2)());
 });
 
 test("createRng stays in [0, 1)", () => {
@@ -92,6 +99,58 @@ test("spreadOverMonth covers the whole 1..28 window rather than piling up on one
   // on whether the month has 28, 30 or 31 days.
   const days = spreadOverMonth(new Date("2026-07-30T00:00:00Z"), 28);
   assert.equal(new Set(days.map((d) => d.getUTCDate())).size, 28);
+});
+
+// ---------------------------------------------------------------------------
+// monthGridWindow — LA fenêtre. Une seule, partagée par le seed et la mesure.
+//
+// La première version de ces scripts en avait deux : le seed comptait les
+// événements existants sur ±1 an, la page n'en rend que 42 jours. Un seed
+// « complet » pouvait donc laisser /agenda vide, et pire, `npm run seed` —
+// l'instruction de réparation que le mesureur imprime — ne créait alors plus
+// rien du tout : la stack devenait irréparable. Les deux scripts appellent
+// désormais cette fonction, et une seule fenêtre existe.
+//
+// Miroir de `month_grid` (apps/shared/src/validation/agenda.rs) : 42 jours à
+// partir du lundi qui précède ou tombe sur le 1er.
+// ---------------------------------------------------------------------------
+
+test("monthGridWindow starts on the Monday on or before the 1st", () => {
+  // 1er juillet 2026 = mercredi → la grille démarre le lundi 29 juin.
+  const win = monthGridWindow(new Date("2026-07-15T12:00:00Z"));
+  assert.equal(win.from.toISOString().slice(0, 10), "2026-06-29");
+});
+
+test("monthGridWindow spans 42 days", () => {
+  const win = monthGridWindow(new Date("2026-07-15T12:00:00Z"));
+  const days = (win.to.getTime() - win.from.getTime()) / 86_400_000;
+  assert.ok(days > 41 && days < 42.5, `${days} jours`);
+  // Juillet 2026 : du 29 juin au 9 août inclus.
+  assert.equal(win.to.toISOString().slice(0, 10), "2026-08-09");
+});
+
+test("monthGridWindow keeps a 1st that already falls on a Monday", () => {
+  // 1er juin 2026 = lundi : pas de jours de débordement en tête.
+  const win = monthGridWindow(new Date("2026-06-10T12:00:00Z"));
+  assert.equal(win.from.toISOString().slice(0, 10), "2026-06-01");
+});
+
+test("monthGridWindow covers the whole month it is asked about", () => {
+  for (const day of ["2026-02-01", "2026-02-28", "2026-12-31"]) {
+    const win = monthGridWindow(new Date(`${day}T12:00:00Z`));
+    const d = new Date(`${day}T12:00:00Z`);
+    assert.ok(win.from <= d && d <= win.to, `${day} hors de sa propre grille`);
+  }
+});
+
+test("monthGridWindow is the window spreadOverMonth seeds into", () => {
+  // Le contrat qui lie les deux scripts : tout ce que le seed pose est dans
+  // la fenêtre que la mesure interroge, sinon A et B reviennent.
+  const reference = new Date("2026-07-31T12:00:00Z");
+  const win = monthGridWindow(reference);
+  for (const d of spreadOverMonth(reference, 40)) {
+    assert.ok(win.from <= d && d <= win.to, `${d.toISOString()} hors grille`);
+  }
 });
 
 test("spreadOverMonth wraps past 28 instead of leaking into the next month", () => {

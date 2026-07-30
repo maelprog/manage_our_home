@@ -25,9 +25,11 @@
 //!    de la même graine produisent les mêmes octets. Le corpus est du vrai
 //!    texte de foyer et non `article 1`, `article 2` : gzip écrase des
 //!    libellés répétitifs, et une mesure sur du texte artificiel produit un
-//!    budget faussement rassurant (constaté : 13 741 o contre 14 990 o sur
-//!    `/messagerie`, de part et d'autre du budget, pour le même nombre de
-//!    messages).
+//!    budget faussement rassurant. La campagne manuelle antérieure (issue #83)
+//!    avait relevé 13 741 o contre 14 990 o sur `/messagerie` de part et
+//!    d'autre du budget pour le même nombre de messages — chiffres pris sur un
+//!    autre jeu de données que celui-ci, cités pour l'ordre de grandeur et non
+//!    reproduits ici.
 //!
 //! Idempotence : le script **complète** chaque collection jusqu'à sa cible au
 //! lieu de la dupliquer (`missingCount`). Le relancer est sans effet une fois
@@ -45,7 +47,7 @@ import {
   STOCK_ITEMS,
 } from "./lib/corpus-fr.ts";
 import { HttpSession, waitForService } from "./lib/http.ts";
-import { createRng, cycle, missingCount, spreadOverMonth } from "./lib/seed-core.ts";
+import { createRng, cycle, missingCount, monthGridWindow, spreadOverMonth } from "./lib/seed-core.ts";
 
 // --- configuration ---------------------------------------------------------
 
@@ -192,16 +194,20 @@ async function ensureGroup(owner: HttpSession, partner: HttpSession): Promise<st
 // --- inventaire courant ----------------------------------------------------
 
 /**
- * Fenêtre large autour de la date de référence, pour *compter* les événements
- * existants. Le comptage doit voir au-delà du mois affiché, sinon un
- * ré-amorçage recréerait 40 événements par-dessus 40 autres.
+ * La fenêtre de comptage des événements = **celle que `/agenda` rend**
+ * (`monthGridWindow`), et rien d'autre.
+ *
+ * La version précédente comptait sur ±1 an. C'était un bug de conception :
+ * après un changement de mois, les 40 événements du mois passé comptaient
+ * toujours pour la cible, `missingCount` renvoyait 0, et comme le seed ne
+ * supprime jamais rien, `npm run seed` — l'instruction de réparation que le
+ * mesureur imprime — ne créait plus rien. La stack n'avait plus de sortie
+ * supportée. Compter dans la fenêtre rendue rend le message vrai : relancer
+ * le seed repeuple bien le mois courant.
  */
 function countingWindow(reference: Date): { from: string; to: string } {
-  const from = new Date(reference);
-  from.setUTCFullYear(from.getUTCFullYear() - 1);
-  const to = new Date(reference);
-  to.setUTCFullYear(to.getUTCFullYear() + 1);
-  return { from: from.toISOString(), to: to.toISOString() };
+  const win = monthGridWindow(reference);
+  return { from: win.from.toISOString(), to: win.to.toISOString() };
 }
 
 type Counts = {
@@ -294,20 +300,28 @@ async function seedGroceryItems(
   existing: number,
 ): Promise<number> {
   const todo = missingCount(TARGETS.groceryItems, existing);
+  // Un quart de la liste est déjà coché : c'est l'état ordinaire d'une liste
+  // de courses en cours, et la ligne cochée n'a pas le même markup.
+  //
+  // Les tirages sont faits pour la cible ENTIÈRE puis indexés, jamais
+  // consommés au fil de la queue manquante : sinon une reprise (30 articles
+  // créés en deux passes) cocherait d'autres lignes qu'une passe unique, et
+  // les octets mesurés cesseraient d'être comparables. Même raison que pour
+  // les créneaux de `spreadOverMonth`.
   const rng = createRng(RNG_SEED + 7);
-  const created: string[] = [];
+  const checkedFlags = Array.from({ length: TARGETS.groceryItems }, () => rng() < 0.25);
+
+  const created: { id: string; index: number }[] = [];
   for (let i = existing; i < existing + todo; i += 1) {
     const seed = cycle(GROCERY_ITEMS, i);
     const item = await session.json<{ id: string }>("POST", `/groups/${gid}/grocery-items`, {
       body: { name: seed.name, quantity: seed.quantity, unit: seed.unit },
       expect: [200, 201],
     });
-    created.push(item.id);
+    created.push({ id: item.id, index: i });
   }
-  // Un quart de la liste est déjà coché : c'est l'état ordinaire d'une liste
-  // de courses en cours, et la ligne cochée n'a pas le même markup.
-  for (const id of created) {
-    if (rng() < 0.25) {
+  for (const { id, index } of created) {
+    if (checkedFlags[index % checkedFlags.length]) {
       await session.raw("POST", `/groups/${gid}/grocery-items/${id}/check`, {
         body: { checked: true },
         expect: [200, 201, 204],

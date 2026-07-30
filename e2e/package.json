@@ -6,8 +6,11 @@
   "scripts": {
     "test": "playwright test",
     "test:scripts": "node --test \"scripts/lib/*.test.ts\"",
-    "seed": "node scripts/seed-perf-data.ts",
-    "measure": "node scripts/measure-page-weight.ts"
+    "seed": "node scripts/run.mjs seed-perf-data.ts",
+    "measure": "node scripts/run.mjs measure-page-weight.ts"
+  },
+  "engines": {
+    "node": ">=22.18.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0",

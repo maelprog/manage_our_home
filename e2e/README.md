@@ -84,10 +84,22 @@ npm run test:scripts   # the pure logic behind both, no stack needed
 
 Both are TypeScript run straight by `node` (no build step, no new
 dependency): the only runtime import outside `node:` is `pg`, already a
-dependency here, and `node:zlib` ships both gzip **and** zstd. That
-needs **Node ≥ 22.15** (`zstdCompressSync`) and **≥ 22.18** (running
-`.ts` without a flag); the `mcr.microsoft.com/playwright:*-noble` image
-used by the docker recipe above carries Node 24. A shell script was the
+dependency here, and `node:zlib` ships both gzip **and** zstd.
+
+That needs **Node ≥ 22.18** — `≥ 22.15` for `zstdCompressSync`, `≥ 22.18`
+to run `.ts` without a flag. It is declared in `engines` and enforced at
+startup by `scripts/run.mjs`, which both npm scripts go through: a `.ts`
+entrypoint on an older Node dies with `ERR_UNKNOWN_FILE_EXTENSION`, which
+names neither the required version nor the fix. The
+`mcr.microsoft.com/playwright:*-noble` image used by the docker recipe
+above carries Node 24.
+
+⚠ **The `e2e` job in `.github/workflows/ci.yml` pins `node-version: 20`.**
+Wiring `npm run measure` in as a merge gate would therefore need that
+version raised first. Nothing here changes CI — flagging the gap is all
+this PR does about it.
+
+A shell script was the
 alternative for the measurement half, but it could not reuse `lib/db.ts`,
 would need `zstd`/`curl` binaries present, and none of its guardrails
 could be unit-tested — so both halves are Node, and the guardrail logic
@@ -105,21 +117,32 @@ unexpected one aborts the run with the method, URL, status and body.
 
 - **Idempotent**: it *tops each collection back up* to its target rather
   than doubling it, so re-running is a no-op and an interrupted run is
-  finished by running it again. It never deletes anything.
+  finished by running it again. It never deletes anything. Events are
+  counted **inside the window `/agenda` renders**, not over a wider span:
+  when those two windows differed, a stack whose events had aged out of the
+  current month counted as complete, so `npm run seed` — the repair the
+  measurement tells you to run — created nothing and the stack had no
+  supported way back.
 - **Deterministic**: one seeded PRNG, no `Math.random()`, so the same
-  seed produces the same bytes and two measurements are comparable.
-- **Dated rows are anchored on today.** `/agenda` renders the grid of the
-  *current month* (`apps/web/src/routes/agenda/calendar.rs`, falling back
-  to `today_paris`), so events seeded into another month render **not at
-  all** — the page keeps its normal size and simply shows nothing, which
-  measured 1 881 bytes of document instead of 2 807 without looking
-  wrong. `SEED_REFERENCE_DATE` exists to reproduce that, not to use.
+  seed produces the same bytes and two measurements are comparable. Both
+  the event slots and the "already ticked" grocery draws are computed for
+  the whole target and then indexed, so a run resumed halfway produces the
+  same rows as a single pass.
+- **Dated rows are anchored on today.** `/agenda` renders the 42-day grid
+  of the *current month* (`month_grid`: the Monday on or before the 1st,
+  plus 41 days), so events seeded into another month render partly or not
+  at all — and the page keeps its normal size while doing it. Seeding into
+  the next month and measuring today rendered 18 of 40 events here and cost
+  **36 % of the document**, with nothing else out of place.
+  `SEED_REFERENCE_DATE` exists to reproduce that, not to use.
 - **The corpus is real French household text, and that is load-bearing.**
-  gzip crushes repetitive labels: 50 near-identical messages weighed
-  13 741 bytes (under budget) where 50 ordinary ones weigh 14 990 (over).
-  The verdict flips on the quality of the seeded text alone, so a
-  lorem-ipsum seed would hand you a falsely reassuring budget. The
-  measurement prints which dataset it ran against for this reason.
+  gzip crushes repetitive labels, so a lorem-ipsum seed hands you a falsely
+  reassuring budget: an earlier manual campaign (issue #83, a different
+  dataset from this one) put 50 near-identical messages at 13 741 bytes,
+  under budget, against 14 990 for 50 ordinary ones, over — the verdict
+  flipping on the quality of the seeded text alone. Those two numbers are
+  cited for the mechanism, not as expectations for this seed. The
+  measurement prints which dataset it ran against for the same reason.
 
 Useful env: `SEED_GROUP_NAME`, `SEED_OWNER_EMAIL`, `SEED_PARTNER_EMAIL`,
 `SEED_RNG_SEED`, and `SEED_EVENTS` & co. for the targets — enough for two
@@ -145,10 +168,16 @@ It refuses to print a number it cannot vouch for:
    also aborts, so none can slip in unweighed.
 2. Non-200, empty body, absurdly small body, or the login screen served
    as a 200 in place of the page → abort.
-3. Per route, **rendered rows are compared to rows stored in the API**.
-   Nothing stored → "run the seeding script first". Rows stored but none
-   rendered → the data is outside the window the page displays. A byte
-   floor cannot catch that second case, which is exactly why it exists.
+3. Per route, **rendered rows are compared to the rows the API holds inside
+   the window that page displays** — for `/agenda`, the same 42-day
+   `month_grid` window the seed counts into. Nothing in the window → "run
+   the seeding script first" (and it says so when rows exist elsewhere).
+   Some rendered but **fewer than owed** → refused too: a half-filled page
+   weighs a perfectly plausible intermediate amount, so a zero-check is not
+   enough. The only route allowed to render less than it stores is
+   `/messagerie`, which pages at 50; that tolerance is declared per route,
+   never globally. The byte floors are a leftover belt over these braces —
+   they only fire on a wholly blank shell.
 4. `--budget=<bytes>` (default 14 336, the 14 KiB response budget
    `apps/web/src/app.rs` already uses) sets a **non-zero exit code** when
    a route's gzipped response exceeds it.

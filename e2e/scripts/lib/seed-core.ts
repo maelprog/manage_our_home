@@ -50,6 +50,29 @@ export function missingCount(target: number, existing: number): number {
 }
 
 /**
+ * **La** fenêtre : les 42 jours que `/agenda` rend pour le mois de
+ * `reference`, du lundi qui précède (ou est) le 1er au 42ᵉ jour inclus.
+ *
+ * Miroir de `month_grid` (apps/shared/src/validation/agenda.rs). Le seed s'en
+ * sert pour compter ce qui existe déjà, la mesure pour compter ce qui est
+ * stocké : **une seule fenêtre pour les deux**. La version précédente en avait
+ * deux — le seed comptait sur ±1 an, la page n'en rend que 42 jours — et cette
+ * divergence était la panne : le seed se croyait complet avec un `/agenda`
+ * vide, et `npm run seed`, l'instruction de réparation que le mesureur
+ * imprime, ne créait alors plus rien. La stack devenait irréparable.
+ */
+export function monthGridWindow(reference: Date): { from: Date; to: Date } {
+  const first = new Date(
+    Date.UTC(reference.getUTCFullYear(), reference.getUTCMonth(), 1, 0, 0, 0, 0),
+  );
+  // getUTCDay() : 0 = dimanche. On veut le décalage depuis lundi.
+  const offsetFromMonday = (first.getUTCDay() + 6) % 7;
+  const from = new Date(first.getTime() - offsetFromMonday * 86_400_000);
+  const to = new Date(from.getTime() + 42 * 86_400_000 - 1);
+  return { from, to };
+}
+
+/**
  * `count` dates spread evenly over the reference date's month.
  *
  * `GET /agenda` renders the grid of the *current* month, so events seeded

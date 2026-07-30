@@ -7,7 +7,9 @@ import {
   countRendered,
   diffNavRoutes,
   emptyStackFailures,
+  expectedRendered,
   parseNavRoutes,
+  requirePositiveInt,
   splitInlineStylesheet,
 } from "./measure-core.ts";
 
@@ -263,11 +265,132 @@ test("collectionFailures flags rows that exist but are not rendered", () => {
   assert.equal(failure.rendered, 0);
 });
 
-test("collectionFailures accepts a page that renders only its first page of rows", () => {
-  // /messagerie stores 55 but pages at 50 — partial rendering is normal, zero
-  // rendering is not.
+test("collectionFailures accepts a page that renders its full first page of rows", () => {
+  // /messagerie stores 55 but pages at 50. La tolérance est déclarée route par
+  // route (`expected`), jamais globale : ailleurs, un rendu partiel est un bug.
   assert.deepEqual(
-    collectionFailures([{ route: "/messagerie", collection: "messages", stored: 55, rendered: 50 }]),
+    collectionFailures([
+      { route: "/messagerie", collection: "messages", stored: 55, rendered: 50, expected: 50 },
+    ]),
     [],
   );
+});
+
+// --- le contrôle de complétude (et non plus « à zéro ») --------------------
+//
+// La première version ne se déclenchait qu'à `rendered === 0`. Or la grille
+// du mois fait 42 jours à partir du lundi précédant le 1er : semer en août et
+// mesurer en juillet rend 18 événements sur 40 — garde-fou passé, /agenda
+// dégonflé de 36 %, exit 0. Pire, semer en juillet et mesurer en août ne rend
+// que les 2 événements des 27-28 juillet, toujours sans variable
+// d'environnement. C'est le mode de panne d'origine, reproduit dans l'outil
+// censé l'éliminer. Le contrôle porte donc sur `rendered < expected`.
+
+// Le trou que la seule comparaison rendu/stocké laisse ouvert : si « stocké »
+// est compté DANS la fenêtre affichée, une fenêtre à moitié vide donne
+// 18 rendus sur 18 stockés — cohérent, complet, et pourtant /agenda pèse 36 %
+// de moins. Il faut donc aussi un volume ATTENDU par collection : une mesure
+// n'a de sens que sur une stack peuplée à la hauteur de ce que `npm run seed`
+// pose. C'est ce contrôle qui remplace les planchers d'octets, lesquels ne se
+// déclenchaient que sur une page totalement blanche.
+
+test("collectionFailures refuses a window holding fewer rows than the seed puts there", () => {
+  const [failure] = collectionFailures([
+    { route: "/agenda", collection: "événements", stored: 18, rendered: 18, expected: 18, minStored: 40 },
+  ]);
+  assert.equal(failure.kind, "understocked");
+  assert.equal(failure.stored, 18);
+  assert.equal(failure.minStored, 40);
+});
+
+test("collectionFailures accepts a window holding more than the minimum", () => {
+  // Deux mois de seeding cumulés : la fenêtre courante est pleine, la mesure
+  // est valide même si d'autres lignes dorment hors fenêtre.
+  assert.deepEqual(
+    collectionFailures([
+      { route: "/agenda", collection: "événements", stored: 40, rendered: 40, expected: 40, minStored: 40 },
+    ]),
+    [],
+  );
+});
+
+test("collectionFailures skips the volume check when no minimum is declared", () => {
+  assert.deepEqual(
+    collectionFailures([
+      { route: "/groups", collection: "familles", stored: 1, rendered: 1, expected: 1 },
+    ]),
+    [],
+  );
+});
+
+test("collectionFailures catches a partially rendered collection", () => {
+  const [failure] = collectionFailures([
+    { route: "/agenda", collection: "événements", stored: 40, rendered: 18, expected: 40 },
+  ]);
+  assert.equal(failure.kind, "incomplete");
+  assert.equal(failure.rendered, 18);
+  assert.equal(failure.expected, 40);
+});
+
+test("collectionFailures catches the two-of-forty case a zero-check misses", () => {
+  const [failure] = collectionFailures([
+    { route: "/agenda", collection: "événements", stored: 40, rendered: 2, expected: 40 },
+  ]);
+  assert.equal(failure.kind, "incomplete");
+});
+
+test("collectionFailures still separates unseeded from rendered-nothing", () => {
+  const none = collectionFailures([
+    { route: "/agenda", collection: "événements", stored: 0, rendered: 0, expected: 0 },
+  ]);
+  assert.equal(none[0].kind, "unseeded");
+  const invisible = collectionFailures([
+    { route: "/agenda", collection: "événements", stored: 40, rendered: 0, expected: 40 },
+  ]);
+  assert.equal(invisible[0].kind, "not-rendered");
+});
+
+test("collectionFailures does not complain when a page renders MORE than expected", () => {
+  // Ne devrait pas arriver, mais un sur-rendu n'est pas une mesure creuse.
+  assert.deepEqual(
+    collectionFailures([
+      { route: "/groups", collection: "familles", stored: 1, rendered: 2, expected: 1 },
+    ]),
+    [],
+  );
+});
+
+// --- expectedRendered — la tolérance, déclarée par route -------------------
+
+test("expectedRendered demands every row on an unpaginated route", () => {
+  assert.equal(expectedRendered(40, undefined), 40);
+});
+
+test("expectedRendered caps at the page size on a paginated route", () => {
+  assert.equal(expectedRendered(55, 50), 50);
+  assert.equal(expectedRendered(30, 50), 30);
+});
+
+// --- requirePositiveInt — le drapeau qui pilote le code de sortie ----------
+//
+// `Number("oops")` vaut NaN, et `gzip > NaN` est toujours faux : un
+// `--budget=oops` rendait le gate vert alors qu'une route dépassait.
+
+test("requirePositiveInt accepts a plain integer", () => {
+  assert.equal(requirePositiveInt("--budget", "14336"), 14336);
+});
+
+test("requirePositiveInt rejects a non-numeric value instead of yielding NaN", () => {
+  assert.throws(() => requirePositiveInt("--budget", "oops"), /--budget/);
+});
+
+test("requirePositiveInt rejects zero, negatives and fractions", () => {
+  assert.throws(() => requirePositiveInt("--budget", "0"), /--budget/);
+  assert.throws(() => requirePositiveInt("--budget", "-5"), /--budget/);
+  assert.throws(() => requirePositiveInt("--budget", "1.5"), /--budget/);
+});
+
+test("requirePositiveInt rejects the empty string and whitespace", () => {
+  assert.throws(() => requirePositiveInt("--budget", ""), /--budget/);
+  assert.throws(() => requirePositiveInt("--budget", "  "), /--budget/);
 });
