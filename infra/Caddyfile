@@ -6,6 +6,34 @@
 # v1 (local/VPN only, docs/notes-issue-1-qa.md #7) — swap `:80` for the
 # real domain once that changes, which also turns on automatic TLS.
 :80 {
+	# apps/web inlines its stylesheet into every response (DESIGN.md →
+	# Livraison du CSS), so the same ~19 kB of CSS travels with every page:
+	# uncompressed that alone overflows the ~14 kB first congestion window
+	# the inlining is meant to fit inside. `encode` is what makes the
+	# strategy hold — and it covers apps/api's JSON too, not just the sheet.
+	#
+	# `zstd gzip`, in that order of preference, is the whole menu Caddy v2
+	# can produce on the fly: it does not compress to brotli at runtime
+	# (only serves pre-compressed .br files), so there is no third entry to
+	# add. Responses under `minimum_length` (512 bytes by default) are left
+	# alone, which is the right call for the small API payloads.
+	#
+	# zstd first even though it measured 2.6 % *larger* than this same
+	# Caddy's gzip on every main route (its encoder is tuned for speed):
+	# 200 bytes on a 8 kB page, against a decoder that is several times
+	# faster on the phone doing the decoding. Both fit the budget.
+	#
+	# BREACH: the only secret this application ever puts in a compressible
+	# body is the password-reset token, reflected into a hidden input by
+	# apps/web/src/routes/auth/reset_password.rs. The attack needs a second,
+	# attacker-chosen string in that same response to compress against; that
+	# page has none (its one variable is the token, and it must parse as a
+	# UUID), and the token is single-use and expires after 24 h
+	# (apps/api/src/auth/mod.rs: `consumed_at` is checked and set in one
+	# `FOR UPDATE` transaction, `PASSWORD_RESET_TTL_HOURS`). So no route is
+	# excluded from `encode` — see the PR for #83 for the full reasoning.
+	encode zstd gzip
+
 	handle /api/* {
 		uri strip_prefix /api
 		reverse_proxy api:8080

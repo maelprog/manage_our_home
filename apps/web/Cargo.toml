@@ -46,3 +46,9 @@ dotenvy = "0.15"
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
 http-body-util = "0.1"
+# The stylesheet budget guard (#83) weighs the sheet as the wire carries
+# it, not as it sits on disk — DESIGN.md's budget is written in compressed
+# bytes because that is what a visitor downloads. A dev-dependency: nothing
+# in the shipped binary compresses anything (Caddy's `encode` does that,
+# see infra/Caddyfile), so this must not reach the release graph.
+flate2 = "1"
