@@ -354,13 +354,17 @@ c'est cette taille qui manquait ici.
 
 ### Le budget
 
-Mesures du 2026-07-30 (commit `e5785ac`) sur une stack docker complète :
+Mesures du 2026-07-30 (commit `e5785ac`) sur une stack docker complète, les
+huit routes que nomme la nav (`apps/web/src/app.rs`), **avec un mois ordinaire
+de données de foyer** — 40 événements, 40 articles de stock, 30 courses, 30
+dépenses, 25 recettes, 50 messages :
 
 | | Brut | gzip | zstd |
 |---|---|---|---|
 | Feuille seule † | 18 855 o | 7 199 o | — |
 | Déclarations seules, commentaires strippés † | 7 856 o | 2 298 o | — |
-| Réponse complète, 8 routes principales ‡ | 20 082 – 23 305 o | 7 948 – 8 354 o | 8 158 – 8 567 o |
+| Réponse complète, 7 des 8 routes ‡ | 20 082 – 30 016 o | 7 949 – 9 953 o | 8 159 – 10 142 o |
+| Réponse complète, `/messagerie` ‡ | 80 933 o | 15 615 o | 15 739 o |
 
 † compressé par le test lui-même (flate2, niveau 6) — ‡ compressé par Caddy,
 octets réellement reçus par le client (`curl -w '%{size_download}'`). Les deux
@@ -368,31 +372,77 @@ niveaux ne sont pas les mêmes : Caddy gzippe au niveau 5, ce qui donne 7 211 o
 pour la même feuille, et son zstd — réglé pour la vitesse — sort ~2,6 % plus
 gros que son propre gzip.
 
+**`/messagerie` est déjà hors budget**, et c'est le constat le plus important
+de cette section. Elle sort à 15 739 o compressés là où le budget est de
+14 336. Deux causes cumulées : `thread.rs` émet un `<script>` inline de 7 274
+octets **inconditionnellement**, et la page rend jusqu'à 50 messages (100 avec
+`?limit=`) de 4 000 caractères chacun. Le document seul y pèse 8 416 o
+compressés, contre 750 à 2 754 sur les sept autres. Mesurée à vide elle est à
+11 188 o : ce n'est donc pas un cas extrême construit pour l'occasion, c'est
+une conversation de famille ordinaire qui l'y amène.
+
+Ce que ça veut dire, écrit sans le contourner : **le seuil de 14 KiB n'est pas
+tenable route par route en bornant la feuille**, parce que la moitié document
+est fonction des données et non du CSS. Sur `/messagerie` le déclencheur de la
+porte de sortie a donc **déjà été franchi** — sortir la feuille de l'inlining
+y ramènerait la page autour de 8,4 Ko. Ce n'est pas corrigé ici (#72 tient
+cette page, et l'issue #83 exclut explicitement la bascule) : c'est constaté,
+daté, et c'est le premier argument que reprendra la PR qui fera la bascule.
+
+Deux routes hors nav, mesurées au passage : `/account` sort à 8 501 o et
+`/privacy-policy` à 10 432 o. Toutes deux dans le budget, mais la seconde est
+publique et de taille fixe — c'est du texte réglementaire, il ne fera que
+s'allonger. À surveiller au même titre que les huit.
+
 Trois seuils, du plus englobant au plus fin :
 
 | Seuil | Valeur | Aujourd'hui | Ce qu'on fait au dépassement |
 |---|---|---|---|
-| Réponse complète compressée, routes principales | **≤ 14 KiB** (14 336 o) | 8 567 o au pire | passer la feuille sur `/assets` |
+| Réponse complète compressée, routes principales | **≤ 14 KiB** (14 336 o) | 10 142 o sur 7 routes, **15 739 o sur `/messagerie`** | passer la feuille sur `/assets` |
 | Feuille compressée | **≤ 10 KiB** (10 240 o) | 7 199 o | idem — **jamais** dégraisser les commentaires |
 | Déclarations compressées | **≤ 3 KiB** (3 072 o) | 2 298 o | supprimer une règle redondante |
 
 **14 KiB** est le seul chiffre qui ne soit pas de notre fait : c'est ce que la
 fenêtre de congestion initiale (IW10 — dix segments d'un MSS de 1 460 octets,
 soit ≈ 14 600 octets, moins les en-têtes de réponse et le cadrage TLS) fait
-tenir dans le premier aller-retour. Tout le reste s'en déduit. **10 KiB** est
-la part de la feuille : les ~4 KiB restants sont réservés au document
-lui-même, trois fois et demie ce qu'il a ajouté sur la plus lourde des huit
-routes mesurées. **3 KiB** est la part du CSS seul, calibrée pour être
-atteinte *avant* les 10 KiB si la feuille continue de croître au rythme
-actuel de commentaires — de sorte que la pression tombe toujours sur les
-règles avant de pouvoir tomber sur la prose.
+tenir dans le premier aller-retour.
+
+**10 KiB** est la part de la feuille, et voici la dérivation en entier, y
+compris ce qu'elle concède. Sur les sept routes où le budget est atteignable,
+le document pèse au plus 2 754 o compressés (`/agenda`, données réelles) :
+14 336 − 2 754 = 11 582 o disponibles pour la feuille. On arrondit **à la
+baisse** à 10 240, ce qui laisse 1 342 o de marge réelle sur la route la plus
+lourde des sept — et cette marge est là parce que la moitié document grossit
+avec les données, ce que `/messagerie` démontre en passant de 3 666 à 8 416 o
+entre une messagerie vide et une page de conversation ordinaire.
+
+**La marge est donc de 1 342 octets, pas d'un facteur.** Une version
+antérieure de ce document annonçait « trois fois et demie » : c'était mesuré
+sur des pages vides, et c'était faux.
+
+Pourquoi ne pas resserrer davantage, puisque la moitié document s'est révélée
+deux à trois fois plus lourde que prévu ? Parce que la structure à deux
+plafonds impose un plancher : les déclarations font 31,9 % de la feuille
+compressée, donc le plafond des déclarations n'est atteint le premier que si
+celui de la feuille reste **au-dessus de ~9 624 o**. Descendre sous ce
+plancher inverserait l'ordre des deux garde-fous et ferait retomber la
+pression sur les commentaires — exactement ce que le dispositif existe pour
+empêcher. 10 KiB est la première valeur ronde au-dessus de ce plancher ; c'est
+une contrainte, pas un confort.
+
+**3 KiB** est la part du CSS seul, calibrée pour être atteinte *avant* les
+10 KiB si la feuille continue de croître au rythme actuel de commentaires — de
+sorte que la pression tombe toujours sur les règles avant de pouvoir tomber
+sur la prose. C'est ce plafond-là qui porte le mordant du dispositif : 25 % de
+marge, contre 42 % pour celui de la feuille.
 
 Les deux derniers seuils sont tenus par des tests dans `apps/web/src/app.rs`
 (`the_compressed_stylesheet_fits_its_share_of_the_first_round_trip` et
 `the_compressed_declarations_stay_inside_the_design_system_budget`). Le
-premier ne l'est pas : il dépend du volume de données d'un foyer, donc il se
-vérifie en mesurant une stack qui tourne, dans la PR qui a lieu de le
-soupçonner.
+premier ne l'est pas, et ne peut pas l'être : il dépend du volume de données
+d'un foyer. Il se vérifie en mesurant une stack qui tourne **avec des données
+dedans** — une stack vide sous-estime la moitié document d'un facteur deux à
+trois, et c'est comme ça que `/messagerie` a failli n'être jamais mesurée.
 
 Le plafond des déclarations peut être relevé, avec un motif écrit dans la PR
 — c'est la même convention que le plafond de styles inline. **Le plafond de la
@@ -404,8 +454,9 @@ et la réponse est la porte de sortie ci-dessous, pas un nombre plus grand.
 `infra/Caddyfile` fait `encode zstd gzip` sur le bloc `:80`, ce qui couvre le
 HTML — donc le CSS inliné — et le JSON de `apps/api`. C'est ce qui rend la
 prémisse de l'inlining à nouveau vraie : sans compression, aucune des huit
-routes principales ne tenait dans le premier aller-retour ; avec, toutes
-tiennent, avec 40 % de marge.
+routes principales ne tenait dans le premier aller-retour ; avec, sept y
+tiennent, la plus lourde des sept (`/agenda`, 10 142 o) gardant 29 % de marge.
+La huitième, `/messagerie`, n'y tient pas — voir plus haut.
 
 `apps/web` ne compresse **pas** de son côté. Caddy laisse intacte une réponse
 qui porte déjà un `Content-Encoding` (vérifié), donc un `CompressionLayer`
@@ -455,6 +506,7 @@ là via `include_str!`), pas d'une étape de build : la contrainte n°3 reste.
 | 2026-07-30 | `.badge.warn` reste un `--error` plein (#68) | La paire `--warning` de ce document mesure 4,06:1 en clair, sous AA ; `--error` + `--accent-fg` tient 6,2:1 dans les deux thèmes. Le réglage des paires sémantiques appartient à #74 |
 | 2026-07-30 | CSS inliné — décision datée, plus une propriété héritée (#83) | L'inlining n'avait jamais été argumenté : la contrainte n°2 décrivait ce que `shell()` fait. Il est conservé pour l'impossibilité structurelle du décalage CSS/markup (`include_str!`), pas pour la performance, et requalifié en arbitrage valable **sous condition de budget** |
 | 2026-07-30 | Budget de livraison : 14 KiB compressés par réponse, 10 KiB pour la feuille, 3 KiB pour les déclarations (#83) | 14 KiB est la fenêtre de congestion initiale, seul chiffre non arbitraire ; les deux autres s'en déduisent. Deux plafonds plutôt qu'un parce que « taille de la feuille » a deux réponses et deux remèdes : le brut compressé se corrige en sortant de l'inlining, les déclarations en supprimant une règle. Le second est calibré pour être atteint le premier, donc la pression ne tombe jamais sur les commentaires |
-| 2026-07-30 | `encode zstd gzip` dans `infra/Caddyfile` (#83) | Le seul écart réellement hors-norme n'était pas l'inlining mais l'absence totale de compression : 20 à 23 Ko de texte brut par navigation, aucune route ne tenant dans le premier aller-retour. Après, 7,9 à 8,4 Ko et toutes y tiennent |
+| 2026-07-30 | `encode zstd gzip` dans `infra/Caddyfile` (#83) | Le seul écart réellement hors-norme n'était pas l'inlining mais l'absence totale de compression : 20 à 81 Ko de texte brut par navigation, aucune route ne tenant dans le premier aller-retour. Après, 7,9 à 10,1 Ko sur sept des huit routes de la nav, qui y tiennent |
+| 2026-07-30 | `/messagerie` constatée hors du budget de 14 KiB (#83) | 15 739 o compressés avec 50 messages ordinaires, 11 188 o à vide : un `<script>` inline de 7 274 o émis inconditionnellement plus 50 messages rendus. Le déclencheur de la porte de sortie est donc déjà franchi sur cette route. Non corrigé par #83 (bascule hors périmètre, page tenue par #72) — constaté et daté |
 | 2026-07-30 | Pas de `CompressionLayer` dans `apps/web` (#83) | Caddy laisse intacte une réponse déjà encodée (mesuré) : compresser dans `apps/web` imposerait son gzip au chemin déployé à la place du choix de Caddy, au bénéfice des seuls accès directs à `web:3000` (dev, e2e) où aucun octet n'est compté — et ajouterait une dépendance à un graphe qui porte déjà deux tower-http |
 | 2026-07-30 | BREACH : aucune route exclue de `encode` (#83) | Le seul secret rendu dans un corps compressible est le jeton de réinitialisation (`reset_password.rs:42`). L'attaque demande une seconde chaîne choisie par l'attaquant dans la même réponse ; cette page n'en a aucune (sa seule variable est le jeton, qui doit parser en UUID). Usage unique et péremption 24 h vérifiés dans `apps/api/src/auth/mod.rs` |

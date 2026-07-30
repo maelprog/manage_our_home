@@ -1115,19 +1115,24 @@ mod tests {
     /// What it does **not** see. Stated plainly, because a guard that is
     /// believed to cover more than it does is worse than none:
     ///
-    /// * It weighs the sheet, not the response. Measured against the
-    ///   docker stack on 2026-07-30, Caddy shipped the eight main routes
-    ///   at 7 948–8 354 gzipped bytes while the sheet alone weighed 7 199
-    ///   here: the document adds ~750–1 150 bytes on top, and that number
-    ///   tracks how much *data* a family has, which no unit test can know.
-    ///   The whole-response half of DESIGN.md's budget is checked by
-    ///   measuring a running stack, in the PR that suspects it moved.
+    /// * It weighs the sheet, not the response, and the difference is
+    ///   larger than it looks. Measured against the docker stack on
+    ///   2026-07-30 with a month of real household data, the document adds
+    ///   750–2 754 gzipped bytes on seven of the eight nav routes — and
+    ///   **8 416 on `/messagerie`**, which puts that one route outside
+    ///   DESIGN.md's whole-response budget on its own. That number tracks
+    ///   how much data a family has, so no unit test can know it: passing
+    ///   here says nothing about whether a given page fits.
+    /// * It was measured against *empty* pages once, and that reading
+    ///   under-stated the document by a factor of two to three. Anyone
+    ///   re-measuring the whole-response budget has to seed the stack
+    ///   first.
     /// * This is not an upper bound over both encodings. flate2's default
     ///   level (6) sits one notch above Caddy's gzip default (5) — 7 199
     ///   against 7 211 bytes on today's sheet — and Caddy's zstd, tuned
     ///   for speed,
-    ///   measured *larger* than its own gzip on every main route (8 158 vs
-    ///   7 948 bytes on `/`, +2.6 %). The three figures agree to within
+    ///   measured *larger* than its own gzip on every main route (8 159 vs
+    ///   7 949 bytes on `/`, +2.6 %). The three figures agree to within
     ///   ~3 %, which is far inside the ceilings' margin, but the number
     ///   below is an estimate of the wire, not a ceiling on it.
     /// * A sheet is compressed here in isolation; inside a document it
@@ -1144,10 +1149,23 @@ mod tests {
 
     /// 10 KiB — the sheet's share of the ~14 KiB that fits in the first
     /// congestion window (IW10: 10 segments of a 1 460-byte MSS ≈ 14 600
-    /// bytes, less response headers and TLS record framing). The other
-    /// ~4 KiB is reserved for the document itself — three and a half times
-    /// what it added on the heaviest of the eight main routes measured on
-    /// 2026-07-30.
+    /// bytes, less response headers and TLS record framing).
+    ///
+    /// Derivation, with what it concedes. On the seven nav routes where
+    /// the whole-response budget is reachable, the document costs at most
+    /// 2 754 gzipped bytes (`/agenda`, real data), leaving 11 582 for the
+    /// sheet; rounded down to 10 240 that is **1 342 bytes of margin on
+    /// the heaviest of the seven** — a margin in bytes, not a factor. An
+    /// earlier version of this comment claimed "three and a half times",
+    /// measured on empty pages; it was wrong.
+    ///
+    /// Not tightened further, despite the document turning out two to
+    /// three times heavier than that first reading, because the two
+    /// ceilings impose a floor: declarations are 31.9 % of the compressed
+    /// sheet, so `DECLARATIONS_CEILING` is only reached first while this
+    /// one stays above ~9 624. Below that the two guards swap order and
+    /// the pressure falls back onto the comments, which is the thing the
+    /// pair exists to prevent.
     ///
     /// **This one is not raised.** Passing it means the inlining bet has
     /// lost and the sheet moves to `/assets` (DESIGN.md → Livraison du CSS
