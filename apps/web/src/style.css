@@ -279,8 +279,22 @@ td > .actions { margin: 0; }
 .badge.warn { background: var(--error); color: var(--accent-fg); }
 /* A member's initial in their ramp colour. The hue is the only thing the
    route passes in (`app::member_colour`); it lands on `color`, not on a
-   background, because the ramp is tuned to be read *as* text in both themes
-   (5.06:1 light, 5.37:1 dark) and no token flips a foreground over it. */
+   background, because DESIGN.md → Composants defines the avatar as a
+   member's coloured initial and the ramp has no companion token to flip a
+   foreground over a solid one.
+
+   Contrast, measured (WCAG 2.x, sRGB) on the ground the members list
+   actually sits on, `--bg`: **--m4 is 3.55:1 and --m3 3.95:1, both under
+   the 4.5:1 this 13px 600-weight text needs**. The other six run 4.57:1 to
+   5.04:1, and on `--surface` every figure shifts about +0.2 the same way.
+   The dark theme is comfortable throughout — floor 6.01:1 on `--bg`,
+   5.37:1 on `--surface`.
+
+   Those two are the values DESIGN.md → Couleur → Couleurs par membre writes
+   down, so retuning them is #74's contrast pass and not this issue's call —
+   the same decision already recorded for `.notice.success` (4.43:1) and
+   `.notice.warning` (4.06:1). The letter is never the only carrier of the
+   information: the member's name sits next to it (WCAG 1.4.1). */
 .avatar {
   display: inline-flex;
   align-items: center;

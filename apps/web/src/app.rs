@@ -746,6 +746,92 @@ mod tests {
         );
     }
 
+    /// Every class name a source *asks for*: the `class="…"` attributes of
+    /// the routes (escaped or not — `class=\"done\"` inside a Rust string is
+    /// the same attribute) and the `className = "…"` the messagerie's JS
+    /// fallback path assigns.
+    ///
+    /// Two things it deliberately does not see, so that the test below is
+    /// not read as more than it is: a name reaching the attribute through a
+    /// `format!` placeholder (`class="chip{done}"` is counted as `chip`, and
+    /// whatever `{done}` expands to is invisible here), and
+    /// `classList.toggle("…")`.
+    fn referenced_classes(src: &str) -> Vec<String> {
+        // Assembled, like `var_of` and `inline_styles` above: this file is
+        // one of the sources the scan reads.
+        let attr = format!("class{}\"", '=');
+        let js = format!("className {} \"", '=');
+        // Comment lines are dropped, as in `inline_styles`: this module
+        // quotes the very attribute it scans for, and prose about a class is
+        // not a reference to one.
+        let unescaped: String = src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .replace("\\\"", "\"");
+        let mut out = Vec::new();
+        for needle in [attr, js] {
+            let mut rest = unescaped.as_str();
+            while let Some(at) = rest.find(&needle) {
+                rest = &rest[at + needle.len()..];
+                let value = &rest[..rest.find('"').unwrap_or(rest.len())];
+                for name in value.split_whitespace() {
+                    // A `format!` placeholder starts the dynamic part of the
+                    // attribute; what precedes it is a name all the same.
+                    let name = name.split('{').next().unwrap_or(name);
+                    if !name.is_empty() {
+                        out.push(name.to_string());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether the stylesheet carries a selector for `.name`, the name ending
+    /// where the identifier does — so `.field-error` cannot stand in for
+    /// `.field`.
+    fn stylesheet_defines_class(css: &str, name: &str) -> bool {
+        let needle = format!(".{name}");
+        let mut from = 0;
+        while let Some(at) = css[from..].find(&needle) {
+            from = from + at + needle.len();
+            match css[from..].chars().next() {
+                None => return true,
+                Some(c) if !c.is_alphanumeric() && c != '-' && c != '_' => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn every_class_a_source_references_exists_in_the_stylesheet() {
+        // Renaming `.button` to `.btn` left one reference behind: the JS
+        // recovery path of the messagerie built `className = "button
+        // secondary"`, and because it is an `<a>`, the `button` element
+        // selector did not catch it either — the "Recharger" link of a lost
+        // connection rendered as bare text. Nothing failed, nothing warned:
+        // a class that does not exist is not an error in CSS.
+        let css = css();
+        let mut missing = Vec::new();
+        for (path, body) in rust_sources() {
+            for name in referenced_classes(&body) {
+                if !stylesheet_defines_class(&css, &name) {
+                    missing.push(format!("{name} ({path})"));
+                }
+            }
+        }
+        missing.sort();
+        missing.dedup();
+        assert!(
+            missing.is_empty(),
+            "classes asked for by a source and defined nowhere in style.css: \
+             {missing:#?}"
+        );
+    }
+
     #[test]
     fn no_inline_style_hand_rolls_a_component() {
         // These are the declarations the audit found copied across routes.

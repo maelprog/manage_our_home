@@ -281,7 +281,7 @@ fn live_script(ws_url: &str) -> String {
     if (socket) {{ try {{ socket.close(); }} catch (e) {{}} }}
     setStatus("Vous n'avez plus accès à cette conversation.");
     var a = document.createElement("a");
-    a.href = location.href; a.textContent = " Recharger"; a.className = "button secondary";
+    a.href = location.href; a.textContent = " Recharger"; a.className = "btn secondary";
     if (status) status.appendChild(a);
   }}
 
