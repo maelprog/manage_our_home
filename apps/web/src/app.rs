@@ -1084,4 +1084,113 @@ mod tests {
         // Browsers do not inherit the page font into a `textarea`.
         assert!(fields.contains("font-family: inherit"));
     }
+
+    // -- delivery budget (#83) -----------------------------------------
+    //
+    // Inlining is a bet: a sheet that travels inside the document costs a
+    // copy per page view and buys a first paint with no blocking round
+    // trip. The bet only pays while the document *and* the sheet fit in
+    // the first congestion window, so it has a size at which it stops
+    // being true — and until #83 that size was written nowhere.
+    // DESIGN.md → Livraison du CSS now names it; these two guards are the
+    // half of it a machine can check.
+    //
+    // Two ceilings rather than one, because "how big is the sheet" has two
+    // answers with two different remedies:
+    //
+    // * `SHEET_CEILING` weighs the bytes a visitor downloads, comments
+    //   included. Its remedy is architectural — move the sheet to
+    //   `/assets`, never delete documentation. Charging prose to the user
+    //   is a property of inlining, so prose outgrowing the budget is
+    //   inlining's failure, not the writer's.
+    // * `DECLARATIONS_CEILING` weighs the CSS alone. Its remedy is
+    //   editorial: a rule that repeats another one goes. It is calibrated
+    //   to trip *first* (see its comment), so the pressure lands on the
+    //   code before it can ever land on the comments.
+
+    /// A string's size on the wire, as gzip — one of the two encodings
+    /// Caddy is configured to produce (`encode zstd gzip`,
+    /// infra/Caddyfile) and the one every client accepts.
+    ///
+    /// What it does **not** see. Stated plainly, because a guard that is
+    /// believed to cover more than it does is worse than none:
+    ///
+    /// * It weighs the sheet, not the response. Measured against the
+    ///   docker stack on 2026-07-30, Caddy shipped the eight main routes
+    ///   at 7 948–8 354 gzipped bytes while the sheet alone weighed 7 199
+    ///   here: the document adds ~750–1 150 bytes on top, and that number
+    ///   tracks how much *data* a family has, which no unit test can know.
+    ///   The whole-response half of DESIGN.md's budget is checked by
+    ///   measuring a running stack, in the PR that suspects it moved.
+    /// * This is not an upper bound over both encodings. flate2's default
+    ///   level (6) sits one notch above Caddy's gzip default (5) — 7 199
+    ///   against 7 211 bytes on today's sheet — and Caddy's zstd, tuned
+    ///   for speed,
+    ///   measured *larger* than its own gzip on every main route (8 158 vs
+    ///   7 948 bytes on `/`, +2.6 %). The three figures agree to within
+    ///   ~3 %, which is far inside the ceilings' margin, but the number
+    ///   below is an estimate of the wire, not a ceiling on it.
+    /// * A sheet is compressed here in isolation; inside a document it
+    ///   shares one window with the markup, so the pair costs less than
+    ///   the sum of the parts. That is slack in the safe direction.
+    fn gzipped(bytes: &[u8]) -> usize {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(bytes).expect("in-memory write");
+        encoder.finish().expect("in-memory flush").len()
+    }
+
+    /// 10 KiB — the sheet's share of the ~14 KiB that fits in the first
+    /// congestion window (IW10: 10 segments of a 1 460-byte MSS ≈ 14 600
+    /// bytes, less response headers and TLS record framing). The other
+    /// ~4 KiB is reserved for the document itself — three and a half times
+    /// what it added on the heaviest of the eight main routes measured on
+    /// 2026-07-30.
+    ///
+    /// **This one is not raised.** Passing it means the inlining bet has
+    /// lost and the sheet moves to `/assets` (DESIGN.md → Livraison du CSS
+    /// → Porte de sortie). A PR that answers it by deleting comments has
+    /// answered the wrong question.
+    const SHEET_CEILING: usize = 10 * 1024;
+
+    /// 3 KiB of declarations, comments stripped.
+    ///
+    /// Calibrated to trip before `SHEET_CEILING` does: today the
+    /// declarations are 32 % of the compressed sheet, so growth that keeps
+    /// the project's comment-to-code ratio reaches 3 KiB of CSS while the
+    /// whole sheet is still around 9.6 KiB. The design system therefore
+    /// runs out of room before the delivery strategy does.
+    ///
+    /// A ceiling, not a target, and unlike `SHEET_CEILING` it *can* be
+    /// raised — with a reason in the PR, like the inline-style ceiling
+    /// above. What it forbids is drifting past it unnoticed while #69–#74
+    /// each add "just a few rules".
+    const DECLARATIONS_CEILING: usize = 3 * 1024;
+
+    #[test]
+    fn the_compressed_stylesheet_fits_its_share_of_the_first_round_trip() {
+        let sheet = gzipped(include_str!("style.css").as_bytes());
+        assert!(
+            sheet <= SHEET_CEILING,
+            "the stylesheet compresses to {sheet} bytes; the budget is \
+             {SHEET_CEILING} (DESIGN.md → Livraison du CSS). Past it, inlining \
+             no longer buys the round trip it costs: serve the sheet from \
+             /assets instead. Do not answer this by deleting comments — that \
+             is the perverse incentive the budget exists to make visible."
+        );
+    }
+
+    #[test]
+    fn the_compressed_declarations_stay_inside_the_design_system_budget() {
+        let declarations = gzipped(css().as_bytes());
+        assert!(
+            declarations <= DECLARATIONS_CEILING,
+            "the declarations compress to {declarations} bytes, ceiling is \
+             {DECLARATIONS_CEILING}. Comments are not counted here, so this is \
+             about the CSS: a rule that restates another one is what to remove. \
+             Raising the ceiling needs a reason in the PR."
+        );
+    }
 }

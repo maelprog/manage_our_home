@@ -23,9 +23,17 @@ L'état des lieux qui a motivé ce système est dans
 
 1. **Rendu serveur pur, aucun JS de framework.** Pas d'hydratation, pas de WASM.
    Toute solution est CSS-first.
-2. **Le CSS est inliné dans chaque réponse** (`shell()` dans `apps/web/src/app.rs`).
-   Chaque règle se paie sur chaque page : pas de framework utilitaire, pas de
-   redondance.
+2. **Le CSS est inliné dans chaque réponse** (`shell()` dans `apps/web/src/app.rs`)
+   — **et c'est le seul point de cette liste qui soit un arbitrage plutôt
+   qu'une règle : il tient tant que le budget tient.** Ce qu'on y gagne :
+   aucun aller-retour bloquant au premier rendu, et surtout l'impossibilité
+   structurelle qu'un HTML neuf soit servi avec un CSS périmé — `include_str!`
+   scelle la feuille dans le binaire. Ce qu'on y perd : la feuille est
+   incachable par construction, donc refacturée à chaque page vue,
+   commentaires compris. Conséquence pratique inchangée — chaque règle se paie
+   sur chaque page : pas de framework utilitaire, pas de redondance. Le seuil
+   chiffré, son garde-fou et la porte de sortie sont dans
+   [Livraison du CSS](#livraison-du-css--budget-et-porte-de-sortie).
 3. **Aucune dépendance CSS externe.** Un fichier, écrit à la main.
 4. **Les polices sont auto-hébergées, jamais servies par un CDN tiers.**
    Le projet est RGPD-compliant et documente ses traitements
@@ -298,6 +306,137 @@ numérique, la largeur minimale du champ d'édition d'un message.
 
 ---
 
+## Livraison du CSS — budget et porte de sortie
+
+La feuille voyage à l'intérieur de chaque document. C'est un pari, pas une
+propriété du monde : on paie une copie par page vue pour épargner un
+aller-retour bloquant au premier rendu. Le pari n'est gagnant que tant que le
+document **et** la feuille tiennent ensemble dans la première fenêtre de
+congestion. Il a donc une taille au-delà de laquelle il devient faux — et
+c'est cette taille qui manquait ici.
+
+### Ce que l'inlining apporte
+
+1. **Zéro aller-retour bloquant au premier rendu.** Une feuille externe est
+   render-blocking : le navigateur parse le HTML, découvre le `<link>`, ouvre
+   une requête, attend.
+2. **Impossibilité structurelle du décalage CSS/markup.** `include_str!` scelle
+   la feuille dans le binaire : il n'existe aucun état où du HTML neuf est
+   servi avec du CSS périmé — pas de nom haché, pas d'invalidation, pas de
+   fenêtre de déploiement où les deux divergent. C'est une propriété de
+   **correction**, pas de performance, et c'est le meilleur argument du lot.
+3. **Aucun pipeline d'assets**, ce qui est la contrainte n°3 vue de l'autre
+   côté : rien à installer, rien à builder.
+4. **Une pression permanente vers la sobriété.** Le gaspillage est visible, ce
+   qui interdit de fait un framework utilitaire. C'est ce bénéfice qui a rendu
+   #66 et #68 nécessaires.
+
+### Ce qu'il coûte
+
+1. **Incachable par construction.** Le HTML d'une application de données dépend
+   de la session et des données, donc n'est pas cacheable ; ce qu'on inline
+   dedans hérite de cette non-cacheabilité. Or c'est une application de foyer,
+   consultée plusieurs fois par jour, avec beaucoup de navigations par
+   session : le profil de trafic où le cache rapporterait le plus est
+   précisément celui où on y renonce.
+2. **Le coût suit le nombre de pages vues, pas la taille de la feuille.**
+   Chaque règle ajoutée est multipliée par le volume de navigation.
+3. **Une taxe sur la documentation.** Les commentaires sont 58 % de la feuille
+   brute — et **encore 68 % de la feuille compressée** : gzip ne les rend pas
+   gratuits. L'inlining les facture à l'utilisateur à chaque page vue, ce qui
+   crée une incitation perverse à moins commenter. Le projet a choisi
+   l'inverse, et il a bien choisi ; c'est la manière de livrer qui doit céder,
+   pas la prose. Voir le garde-fou ci-dessous, qui est construit pour rendre
+   cet arbitrage impossible à trancher en douce.
+4. **Conflit avec une CSP stricte.** Il n'y en a pas aujourd'hui. Le jour où on
+   en veut une, un `<style>` inline impose `unsafe-inline`, ou un nonce/hash à
+   générer par réponse. Une feuille externe est le cas trivial.
+
+### Le budget
+
+Mesures du 2026-07-30 (commit `e5785ac`) sur une stack docker complète :
+
+| | Brut | gzip | zstd |
+|---|---|---|---|
+| Feuille seule † | 18 855 o | 7 199 o | — |
+| Déclarations seules, commentaires strippés † | 7 856 o | 2 298 o | — |
+| Réponse complète, 8 routes principales ‡ | 20 082 – 23 305 o | 7 948 – 8 354 o | 8 158 – 8 567 o |
+
+† compressé par le test lui-même (flate2, niveau 6) — ‡ compressé par Caddy,
+octets réellement reçus par le client (`curl -w '%{size_download}'`). Les deux
+niveaux ne sont pas les mêmes : Caddy gzippe au niveau 5, ce qui donne 7 211 o
+pour la même feuille, et son zstd — réglé pour la vitesse — sort ~2,6 % plus
+gros que son propre gzip.
+
+Trois seuils, du plus englobant au plus fin :
+
+| Seuil | Valeur | Aujourd'hui | Ce qu'on fait au dépassement |
+|---|---|---|---|
+| Réponse complète compressée, routes principales | **≤ 14 KiB** (14 336 o) | 8 567 o au pire | passer la feuille sur `/assets` |
+| Feuille compressée | **≤ 10 KiB** (10 240 o) | 7 199 o | idem — **jamais** dégraisser les commentaires |
+| Déclarations compressées | **≤ 3 KiB** (3 072 o) | 2 298 o | supprimer une règle redondante |
+
+**14 KiB** est le seul chiffre qui ne soit pas de notre fait : c'est ce que la
+fenêtre de congestion initiale (IW10 — dix segments d'un MSS de 1 460 octets,
+soit ≈ 14 600 octets, moins les en-têtes de réponse et le cadrage TLS) fait
+tenir dans le premier aller-retour. Tout le reste s'en déduit. **10 KiB** est
+la part de la feuille : les ~4 KiB restants sont réservés au document
+lui-même, trois fois et demie ce qu'il a ajouté sur la plus lourde des huit
+routes mesurées. **3 KiB** est la part du CSS seul, calibrée pour être
+atteinte *avant* les 10 KiB si la feuille continue de croître au rythme
+actuel de commentaires — de sorte que la pression tombe toujours sur les
+règles avant de pouvoir tomber sur la prose.
+
+Les deux derniers seuils sont tenus par des tests dans `apps/web/src/app.rs`
+(`the_compressed_stylesheet_fits_its_share_of_the_first_round_trip` et
+`the_compressed_declarations_stay_inside_the_design_system_budget`). Le
+premier ne l'est pas : il dépend du volume de données d'un foyer, donc il se
+vérifie en mesurant une stack qui tourne, dans la PR qui a lieu de le
+soupçonner.
+
+Le plafond des déclarations peut être relevé, avec un motif écrit dans la PR
+— c'est la même convention que le plafond de styles inline. **Le plafond de la
+feuille, lui, ne se relève pas :** le dépasser signifie que le pari est perdu,
+et la réponse est la porte de sortie ci-dessous, pas un nombre plus grand.
+
+### Compression
+
+`infra/Caddyfile` fait `encode zstd gzip` sur le bloc `:80`, ce qui couvre le
+HTML — donc le CSS inliné — et le JSON de `apps/api`. C'est ce qui rend la
+prémisse de l'inlining à nouveau vraie : sans compression, aucune des huit
+routes principales ne tenait dans le premier aller-retour ; avec, toutes
+tiennent, avec 40 % de marge.
+
+`apps/web` ne compresse **pas** de son côté. Caddy laisse intacte une réponse
+qui porte déjà un `Content-Encoding` (vérifié), donc un `CompressionLayer`
+dans `apps/web` remplacerait le choix de Caddy par le sien sur le chemin
+déployé, pour le seul bénéfice des accès directs à `web:3000` (dev, tests e2e)
+où personne ne compte les octets. Le budget est tenu par un test unitaire, pas
+par le transport.
+
+### Porte de sortie : servir la feuille depuis `/assets`
+
+Le pipeline existe déjà — #67 sert les polices depuis `apps/web` avec
+`Cache-Control: immutable` — donc la bascule est courte : un fichier de plus
+dans `assets/`, un `<link>` dans `shell()` à la place du `<style>`.
+
+**Ce qu'elle ferait perdre**, et que le futur implémenteur oubliera si
+personne ne l'écrit : l'avantage n°2 ci-dessus. Une feuille externe rouvre la
+fenêtre où du HTML neuf est servi avec du CSS périmé — cache navigateur,
+déploiement progressif. Il faut donc la servir sous un **nom haché par son
+contenu**, et le hachage doit venir du binaire lui-même (le contenu est déjà
+là via `include_str!`), pas d'une étape de build : la contrainte n°3 reste.
+
+**Déclencheurs**, l'un ou l'autre suffit :
+
+- dépassement d'un des deux plafonds compressés ci-dessus ;
+- exposition publique de l'application — le commentaire en tête de
+  `infra/Caddyfile` la repousse après la v1. Une feuille cachable a beaucoup
+  plus de valeur dès que les visiteurs ne sont plus quelques personnes sur un
+  LAN, et une CSP stricte devient à ce moment-là un sujet.
+
+---
+
 ## Journal des décisions
 
 | Date | Décision | Motif |
@@ -314,3 +453,8 @@ numérique, la largeur minimale du champ d'édition d'un message.
 | 2026-07-30 | Classes de soutien ajoutées au tableau des composants (#68) | Le tableau nommait les motifs, pas les primitives dont ils sont faits ; l'extraction des 181 styles inline en a réclamé neuf de plus, chacune remplaçant un motif recopié dans plusieurs routes |
 | 2026-07-30 | `--accent-bg` et `--chip-bg` retirés (#68) | Le premier était l'aplat provisoire du jour courant, remplacé par `--accent-soft` comme #66 l'annonçait ; le second n'existait que pour la pastille du calendrier, qui prend `--hover`. Plus aucun jeton hors de ce document |
 | 2026-07-30 | `.badge.warn` reste un `--error` plein (#68) | La paire `--warning` de ce document mesure 4,06:1 en clair, sous AA ; `--error` + `--accent-fg` tient 6,2:1 dans les deux thèmes. Le réglage des paires sémantiques appartient à #74 |
+| 2026-07-30 | CSS inliné — décision datée, plus une propriété héritée (#83) | L'inlining n'avait jamais été argumenté : la contrainte n°2 décrivait ce que `shell()` fait. Il est conservé pour l'impossibilité structurelle du décalage CSS/markup (`include_str!`), pas pour la performance, et requalifié en arbitrage valable **sous condition de budget** |
+| 2026-07-30 | Budget de livraison : 14 KiB compressés par réponse, 10 KiB pour la feuille, 3 KiB pour les déclarations (#83) | 14 KiB est la fenêtre de congestion initiale, seul chiffre non arbitraire ; les deux autres s'en déduisent. Deux plafonds plutôt qu'un parce que « taille de la feuille » a deux réponses et deux remèdes : le brut compressé se corrige en sortant de l'inlining, les déclarations en supprimant une règle. Le second est calibré pour être atteint le premier, donc la pression ne tombe jamais sur les commentaires |
+| 2026-07-30 | `encode zstd gzip` dans `infra/Caddyfile` (#83) | Le seul écart réellement hors-norme n'était pas l'inlining mais l'absence totale de compression : 20 à 23 Ko de texte brut par navigation, aucune route ne tenant dans le premier aller-retour. Après, 7,9 à 8,4 Ko et toutes y tiennent |
+| 2026-07-30 | Pas de `CompressionLayer` dans `apps/web` (#83) | Caddy laisse intacte une réponse déjà encodée (mesuré) : compresser dans `apps/web` imposerait son gzip au chemin déployé à la place du choix de Caddy, au bénéfice des seuls accès directs à `web:3000` (dev, e2e) où aucun octet n'est compté — et ajouterait une dépendance à un graphe qui porte déjà deux tower-http |
+| 2026-07-30 | BREACH : aucune route exclue de `encode` (#83) | Le seul secret rendu dans un corps compressible est le jeton de réinitialisation (`reset_password.rs:42`). L'attaque demande une seconde chaîne choisie par l'attaquant dans la même réponse ; cette page n'en a aucune (sa seule variable est le jeton, qui doit parser en UUID). Usage unique et péremption 24 h vérifiés dans `apps/api/src/auth/mod.rs` |
