@@ -120,7 +120,7 @@ pub async fn get(
         r#"{header}
 <h1>Administration — Utilisateurs</h1>
 <p class="muted">Tous les comptes, tous foyers confondus. Vue de support en lecture seule (hors désactivation).</p>
-<nav style="display:flex;gap:0.75rem;margin-bottom:1rem;"><a href="/admin/groups">Familles</a><a href="/admin/users">Utilisateurs</a></nav>
+<nav class="actions"><a href="/admin/groups">Familles</a><a href="/admin/users">Utilisateurs</a></nav>
 {notice}{error}
 {table}"#,
     );
@@ -153,17 +153,17 @@ pub async fn detail(
     // deactivated, the backend 404s a second attempt, so we show a note instead.
     let action = if can_deactivate(user.deleted_at) {
         format!(
-            r#"<section style="margin-top:1.5rem;padding:1rem;border:1px solid var(--border);border-radius:6px;">
-<h2 style="margin-top:0;">Désactiver ce compte</h2>
+            r#"<section class="card">
+<h2>Désactiver ce compte</h2>
 <p class="muted">Action immédiate de support : révoque toutes les sessions actives et marque le compte comme supprimé. À distinguer de la suppression de compte en libre-service (avec délai de grâce) demandée par l'utilisateur.</p>
-<form method="post" action="/admin/users/{id}/deactivate" onsubmit="return confirm('Désactiver définitivement ce compte ? Toutes les sessions seront révoquées.');" style="margin:0;">
+<form method="post" action="/admin/users/{id}/deactivate" onsubmit="return confirm('Désactiver définitivement ce compte ? Toutes les sessions seront révoquées.');">
 <button type="submit" class="danger">Désactiver le compte</button>
 </form>
 </section>"#,
             id = user.id,
         )
     } else {
-        r#"<p class="muted" style="margin-top:1.5rem;">Ce compte est déjà désactivé — aucune action possible.</p>"#.to_string()
+        r#"<p class="muted">Ce compte est déjà désactivé — aucune action possible.</p>"#.to_string()
     };
 
     let body = format!(

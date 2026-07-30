@@ -252,6 +252,30 @@ Classes à définir dans `style.css`, en remplacement des 173 attributs
 `border: 1px solid var(--border)`, ce qui cercle chaque bouton bleu d'un gris
 sans signification.
 
+### Classes de soutien
+
+L'extraction (#68) a eu besoin de quelques classes que le tableau ci-dessus ne
+nommait pas — chacune remplace un motif recopié dans plusieurs routes, et
+aucune n'introduit de valeur hors des échelles :
+
+| Classe | Rôle |
+|---|---|
+| `.split` | la primitive de `.page-header` et `.list-row` : une ligne dont les extrémités s'écartent, portée aussi par un `.notice` qui contient une action |
+| `.actions` | un groupe de contrôles côte à côte (boutons, formulaire de filtre, cellule d'actions) |
+| `.list` | un `<ul>` de `.list-row` : les séparateurs viennent des lignes, donc ni puces ni retrait |
+| `.list-row.stacked` | une ligne dont le contenu s'empile (un message, une recette et son résumé) |
+| `.card.inline` | la même carte disposée en une seule ligne de champs (formulaires « ajouter un article ») |
+| `.field.inline` | l'étiquette d'une case à cocher, à côté de son texte |
+| `.done` | ce qui est déjà traité : tâche complétée, article coché |
+| `.multiline` | un texte dont les retours à la ligne sont ceux de l'auteur (message, méthode d'une recette) |
+| `.current` | la cellule d'aujourd'hui, l'occurrence sur laquelle une fiche est ouverte |
+| `.cal`, `.cal-cell`, `.cal-week`, `.cal-col`, `.cal-day` | la grille du mois et la bande de semaine de l'agenda — posées en CSS pour que #71 les reprenne là et non dans le Rust |
+| `.composer`, `.live-status` | la zone de saisie de la messagerie et sa ligne d'état ; #72 les reprend |
+
+Le résiduel de `style="…"` assumé après #68 : une couleur de membre calculée
+(`.avatar`), la largeur d'un champ de prix, l'alignement d'une colonne
+numérique, la largeur minimale du champ d'édition d'un message.
+
 ---
 
 ## Interaction et motion
@@ -287,3 +311,6 @@ sans signification.
 | 2026-07-29 | Replis `var(--x, #hex)` interdits | Ce motif a cassé le thème sombre de l'agenda sans que personne le voie |
 | 2026-07-29 | Vue jour + bandeau de semaine sur téléphone, `view=day` | Une grille de 7 colonnes est illisible sous 861 px quelle que soit la mise en forme ; le bandeau garde l'orientation sans sacrifier la taille du texte |
 | 2026-07-29 | Plancher typographique remonté sous 861 px | 13 px est trop petit sur un téléphone consulté à bout de bras |
+| 2026-07-30 | Classes de soutien ajoutées au tableau des composants (#68) | Le tableau nommait les motifs, pas les primitives dont ils sont faits ; l'extraction des 181 styles inline en a réclamé neuf de plus, chacune remplaçant un motif recopié dans plusieurs routes |
+| 2026-07-30 | `--accent-bg` et `--chip-bg` retirés (#68) | Le premier était l'aplat provisoire du jour courant, remplacé par `--accent-soft` comme #66 l'annonçait ; le second n'existait que pour la pastille du calendrier, qui prend `--hover`. Plus aucun jeton hors de ce document |
+| 2026-07-30 | `.badge.warn` reste un `--error` plein (#68) | La paire `--warning` de ce document mesure 4,06:1 en clair, sous AA ; `--error` + `--accent-fg` tient 6,2:1 dans les deux thèmes. Le réglage des paires sémantiques appartient à #74 |

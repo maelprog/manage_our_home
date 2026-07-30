@@ -72,7 +72,7 @@ fn page(
     let rename_section = can_manage_group(&my_role).then(|| {
         let action = format!("/groups/{}/settings/rename", group.id);
         view! {
-            <h2 style="font-size:1.1rem;margin-top:1.5rem;">"Renommer le groupe"</h2>
+            <h2>"Renommer le groupe"</h2>
             <form method="post" action=action>
                 <label>
                     "Nom du groupe"
@@ -97,7 +97,7 @@ fn page(
     let transfer_section = (is_owner && !others.is_empty()).then(|| {
         let action = format!("/groups/{}/settings/transfer", group.id);
         view! {
-            <h2 style="font-size:1.1rem;margin-top:1.5rem;">"Transférer la propriété"</h2>
+            <h2>"Transférer la propriété"</h2>
             <p class="muted">"Le nouveau propriétaire prend la main sur le groupe ; vous devenez admin."</p>
             <form method="post" action=action>
                 <label>
@@ -114,7 +114,7 @@ fn page(
     // "connecter un agenda" is the kind of thing people come looking for in the
     // family settings, so the door is signposted from here too.
     let calendar_imports_section = view! {
-        <h2 style="font-size:1.1rem;margin-top:1.5rem;">"Agendas Google"</h2>
+        <h2>"Agendas Google"</h2>
         <p class="muted">"Les agendas Google connectés à cette famille se gèrent depuis l'agenda : leurs événements y sont recopiés à la demande."</p>
         <p><a href="/agenda/imports">"Gérer les agendas Google"</a></p>
     };
@@ -122,7 +122,7 @@ fn page(
     let leave_action = format!("/groups/{}/settings/leave", group.id);
     let leave_section = if is_owner && !others.is_empty() {
         view! {
-            <h2 style="font-size:1.1rem;margin-top:1.5rem;">"Quitter le groupe"</h2>
+            <h2>"Quitter le groupe"</h2>
             <p class="muted">"En tant que propriétaire, vous devez d'abord désigner un successeur."</p>
             <form method="post" action=leave_action>
                 <label>
@@ -135,7 +135,7 @@ fn page(
         .into_any()
     } else {
         view! {
-            <h2 style="font-size:1.1rem;margin-top:1.5rem;">"Quitter le groupe"</h2>
+            <h2>"Quitter le groupe"</h2>
             <form method="post" action=leave_action>
                 <button type="submit" class="secondary">"Quitter le groupe"</button>
             </form>
@@ -146,10 +146,10 @@ fn page(
     let delete_section = is_owner.then(|| {
         let action = format!("/groups/{}/settings/delete", group.id);
         view! {
-            <h2 style="font-size:1.1rem;margin-top:1.5rem;">"Supprimer le groupe"</h2>
+            <h2>"Supprimer le groupe"</h2>
             <p class="muted">"Supprime définitivement le groupe, ses membres et ses invitations."</p>
             <form method="post" action=action>
-                <button type="submit" class="secondary" style="color:var(--error);">"Supprimer le groupe"</button>
+                <button type="submit" class="secondary danger">"Supprimer le groupe"</button>
             </form>
         }
     });

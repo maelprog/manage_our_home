@@ -70,11 +70,11 @@ pub(crate) fn pending_deletion_panel(me: &MeResponse) -> String {
         return String::new();
     };
     format!(
-        r#"<section class="notice error" style="border:1px solid var(--error);">
-<h2 style="margin-top:0;font-size:1.05rem;">Suppression de compte programmée</h2>
+        r#"<section class="notice error">
+<h2>Suppression de compte programmée</h2>
 <p>Demandée le {requested}. Sauf annulation, vos identifiants seront supprimés et votre compte anonymisé le <strong>{deadline}</strong> (délai de grâce de {days} jours).</p>
 <p>Votre compte reste utilisable normalement jusque-là, et cette demande est annulable à tout moment.</p>
-<form method="post" action="/account/delete/cancel" style="margin:0;">
+<form method="post" action="/account/delete/cancel">
 <button type="submit" class="secondary">Annuler la demande de suppression</button>
 </form>
 </section>"#,
@@ -124,10 +124,10 @@ pub async fn get(
     let header = account_header(&state, &headers, &me, "/account").await;
 
     let deletion_section = if can_request_deletion(me.deletion_requested_at) {
-        r#"<section style="margin-top:1.5rem;padding:1rem;border:1px solid var(--border);border-radius:6px;">
-<h2 style="margin-top:0;font-size:1.05rem;">Supprimer mon compte</h2>
+        r#"<section class="card">
+<h2>Supprimer mon compte</h2>
 <p class="muted">Droit à l'effacement (Art. 17). La suppression est précédée d'un délai de grâce annulable ; elle n'est pas possible tant que vous êtes propriétaire d'une famille.</p>
-<a class="button danger" href="/account/delete">Supprimer mon compte</a>
+<a class="btn danger" href="/account/delete">Supprimer mon compte</a>
 </section>"#
             .to_string()
     } else {
@@ -142,10 +142,10 @@ pub async fn get(
 <dt>Email</dt><dd>{email}</dd>
 </dl>
 {notice}{error}
-<section style="margin-top:1.5rem;padding:1rem;border:1px solid var(--border);border-radius:6px;">
-<h2 style="margin-top:0;font-size:1.05rem;">Exporter mes données</h2>
+<section class="card">
+<h2>Exporter mes données</h2>
 <p class="muted">Droit d'accès et de portabilité (Art. 15/20) : téléchargez au format JSON tout ce que vous avez créé.</p>
-<a class="button secondary" href="/account/export">Exporter mes données</a>
+<a class="btn secondary" href="/account/export">Exporter mes données</a>
 </section>
 {deletion_section}
 <p class="links"><a href="/privacy-policy">Politique de confidentialité</a></p>"#,
@@ -162,6 +162,6 @@ pub async fn get(
 pub(crate) fn service_unavailable_page() -> Html<String> {
     let body = r#"<h1>Service momentanément indisponible</h1>
 <p>Merci de réessayer dans quelques instants.</p>
-<a class="button secondary" href="/account">Retour à mon compte</a>"#;
+<a class="btn secondary" href="/account">Retour à mon compte</a>"#;
     Html(shell("Service indisponible", body))
 }

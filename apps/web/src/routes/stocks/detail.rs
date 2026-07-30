@@ -109,7 +109,7 @@ fn page(
 
     let low = is_low_stock(item.quantity, item.reorder_threshold);
     let low_html = if low {
-        r#"<p><span style="font-size:0.85rem;padding:0.1rem 0.5rem;border-radius:3px;background:var(--error);color:var(--accent-fg);">Stock bas</span></p>"#.to_string()
+        r#"<p><span class="badge warn">Stock bas</span></p>"#.to_string()
     } else {
         String::new()
     };
@@ -131,8 +131,8 @@ fn page(
     // Quantity adjustment is open to any family member (shared inventory);
     // the full-record edit and delete stay behind the `can_edit` bar.
     let adjust_form = format!(
-        r#"<form method="post" action="/stocks/{id}/adjust" style="border:1px solid var(--border);padding:0.75rem;margin-top:1rem;display:flex;gap:0.5rem;align-items:flex-end;flex-wrap:wrap;">
-<label style="margin:0;">Ajuster la quantité
+        r#"<form method="post" action="/stocks/{id}/adjust" class="card inline">
+<label>Ajuster la quantité
 <input type="number" name="quantity" step="any" min="0" value="{qty}"/></label>
 <button type="submit">Mettre à jour la quantité</button>
 </form>"#,
@@ -140,15 +140,15 @@ fn page(
     );
     let edit_delete_html = if can_edit {
         format!(
-            r#"<div style="display:flex;gap:0.5rem;margin-top:1rem;">
-<a class="button secondary" href="/stocks/{id}/edit">Modifier l'article</a>
-<form method="post" action="/stocks/{id}/delete" style="margin:0;">
-<button type="submit" class="secondary" style="color:var(--error);">Supprimer</button>
+            r#"<div class="actions">
+<a class="btn secondary" href="/stocks/{id}/edit">Modifier l'article</a>
+<form method="post" action="/stocks/{id}/delete">
+<button type="submit" class="secondary danger">Supprimer</button>
 </form>
 </div>"#
         )
     } else {
-        r#"<p class="muted" style="margin-top:1rem;">Seul le créateur ou un administrateur peut modifier ou supprimer cet article.</p>"#.to_string()
+        r#"<p class="muted">Seul le créateur ou un administrateur peut modifier ou supprimer cet article.</p>"#.to_string()
     };
     let controls_html = format!("{adjust_form}{edit_delete_html}");
 

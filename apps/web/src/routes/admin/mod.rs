@@ -57,7 +57,7 @@ pub(crate) fn service_unavailable_page() -> axum::response::Html<String> {
     let body = view! {
         <h1>"Service momentanément indisponible"</h1>
         <p>"Merci de réessayer dans quelques instants."</p>
-        <a class="button secondary" href="/admin/users">"Retour à l'administration"</a>
+        <a class="btn secondary" href="/admin/users">"Retour à l'administration"</a>
     };
     axum::response::Html(shell("Service indisponible", &body.to_html()))
 }
@@ -66,7 +66,7 @@ pub(crate) fn user_not_found_page() -> axum::response::Html<String> {
     let body = view! {
         <h1>"Utilisateur introuvable"</h1>
         <p>"Ce compte n'existe pas ou a déjà été désactivé."</p>
-        <a class="button secondary" href="/admin/users">"Retour à la liste des utilisateurs"</a>
+        <a class="btn secondary" href="/admin/users">"Retour à la liste des utilisateurs"</a>
     };
     axum::response::Html(shell("Utilisateur introuvable", &body.to_html()))
 }
@@ -75,7 +75,7 @@ pub(crate) fn forbidden_page() -> axum::response::Html<String> {
     let body = view! {
         <h1>"Action non autorisée"</h1>
         <p>"Vous n'avez pas les droits nécessaires pour cette action."</p>
-        <a class="button secondary" href="/admin/users">"Retour à l'administration"</a>
+        <a class="btn secondary" href="/admin/users">"Retour à l'administration"</a>
     };
     axum::response::Html(shell("Action non autorisée", &body.to_html()))
 }

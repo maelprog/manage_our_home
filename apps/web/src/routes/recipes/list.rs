@@ -57,8 +57,8 @@ fn missing_html(missing: &[MissingIngredient]) -> String {
         })
         .collect::<String>();
     format!(
-        r#"<div class="muted" style="margin-top:0.4rem;">Ingrédients manquants — à ajouter à la liste de courses :</div>
-<ul style="margin:0.2rem 0 0 0;">{items}</ul>"#,
+        r#"<div class="muted">Ingrédients manquants — à ajouter à la liste de courses :</div>
+<ul>{items}</ul>"#,
     )
 }
 
@@ -72,15 +72,13 @@ fn suggestion_html(s: &RecipeSuggestion) -> String {
             .last_eaten_on
             .map(|d| format!(" (le {})", d.format("%d/%m/%Y")))
             .unwrap_or_default();
-        format!(
-            r#" <span style="font-size:0.8rem;padding:0.1rem 0.4rem;border-radius:3px;background:var(--border);">Déjà cuisiné récemment{when}</span>"#,
-        )
+        format!(r#" <span class="badge">Déjà cuisiné récemment{when}</span>"#,)
     } else {
         String::new()
     };
     let missing = missing_html(&s.missing_ingredients);
     format!(
-        r#"<li style="padding:0.6rem 0;border-bottom:1px solid var(--border);">
+        r#"<li class="list-row stacked">
 <a href="/recipes/{id}"><strong>{name}</strong></a>{recent}
 <div class="muted">{summary}</div>
 {missing}
@@ -98,7 +96,7 @@ fn recipe_row_html(r: &RecipeResponse) -> String {
         n => format!("{n} ingrédients"),
     };
     format!(
-        r#"<li style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;padding:0.6rem 0;border-bottom:1px solid var(--border);">
+        r#"<li class="list-row">
 <a href="/recipes/{id}"><strong>{name}</strong></a>
 <span class="muted">{count_label}</span>
 </li>"#,
@@ -171,7 +169,7 @@ pub async fn get(
         format!(
             r#"<h2>Suggestions</h2>
 <p class="muted">Classées selon ce que vous avez en stock, la variété (repas récents) et la saison.</p>
-<ul style="list-style:none;padding:0;margin:0 0 1.5rem 0;">{rows}</ul>"#,
+<ul class="list">{rows}</ul>"#,
         )
     };
 
@@ -179,14 +177,14 @@ pub async fn get(
         r#"<p class="muted">Aucune recette pour le moment.</p>"#.to_string()
     } else {
         let rows = recipes.iter().map(recipe_row_html).collect::<String>();
-        format!(r#"<ul style="list-style:none;padding:0;margin:0;">{rows}</ul>"#)
+        format!(r#"<ul class="list">{rows}</ul>"#)
     };
 
     let body = format!(
         r#"{header}
-<div style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;flex-wrap:wrap;">
-<h1 style="margin:0;">Recettes</h1>
-<a class="button" href="/recipes/new">Nouvelle recette</a>
+<div class="page-header">
+<h1>Recettes</h1>
+<a class="btn" href="/recipes/new">Nouvelle recette</a>
 </div>
 {notice}
 {suggestions_section}

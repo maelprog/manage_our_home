@@ -80,13 +80,13 @@ pub async fn get(
             let qty = format!("{} {}", fmt_num(item.quantity), item.unit);
             let category = item.category.clone().filter(|c| !c.is_empty());
             view! {
-                <li style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;padding:0.6rem 0;border-bottom:1px solid var(--border);">
+                <li class="list-row">
                     <span>
                         <a href=href><strong>{item.name.clone()}</strong></a>
                         {category.map(|c| view! { " " <span class="muted">"· "{c}</span> })}
                         {low.then(|| view! {
                             " "
-                            <span style="font-size:0.8rem;padding:0.1rem 0.4rem;border-radius:3px;background:var(--error);color:var(--accent-fg);">"Stock bas"</span>
+                            <span class="badge warn">"Stock bas"</span>
                         })}
                     </span>
                     <span class="muted">{qty}</span>
@@ -109,11 +109,11 @@ pub async fn get(
 
     let body = view! {
         <div inner_html=fam.header></div>
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;flex-wrap:wrap;">
-            <h1 style="margin:0;">"Stocks"</h1>
-            <span style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
-                <a class="button secondary" href=filter_link>{filter_label}</a>
-                <a class="button" href="/stocks/new">"Nouvel article"</a>
+        <div class="page-header">
+            <h1>"Stocks"</h1>
+            <span class="actions">
+                <a class="btn secondary" href=filter_link>{filter_label}</a>
+                <a class="btn" href="/stocks/new">"Nouvel article"</a>
             </span>
         </div>
         {notice.map(|n| view! { <p class="notice success">{n}</p> })}
@@ -122,7 +122,7 @@ pub async fn get(
         } else {
             None
         }}
-        <ul style="list-style:none;padding:0;margin:1rem 0 0 0;">{rows}</ul>
+        <ul class="list">{rows}</ul>
     };
     Html(shell("Stocks", &body.to_html())).into_response()
 }

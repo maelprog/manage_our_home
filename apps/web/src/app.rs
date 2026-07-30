@@ -10,6 +10,7 @@
 use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
 use manage_our_home_shared::validation::auth::{MAX_PASSWORD_LEN, MIN_PASSWORD_LEN};
+use uuid::Uuid;
 
 pub fn shell(title: &str, body_html: &str) -> String {
     format!(
@@ -65,8 +66,8 @@ pub fn app_header(
             })
             .collect();
         format!(
-            r#"<form method="post" action="/groups/switch" class="switcher" style="flex-direction:row;gap:0.4rem;align-items:center;margin:0;">
-<label style="flex-direction:row;gap:0.4rem;align-items:center;margin:0;">Famille active
+            r#"<form method="post" action="/groups/switch" class="actions">
+<label class="field inline">Famille active
 <select name="group_id">{options}</select>
 </label>
 <input type="hidden" name="redirect_to" value="{redirect_to}"/>
@@ -84,9 +85,9 @@ pub fn app_header(
         ""
     };
     format!(
-        r#"<header style="margin-bottom:1.5rem;">
-<div class="muted" style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;">
-<nav style="display:flex;gap:0.75rem;">
+        r#"<header>
+<div class="muted page-header">
+<nav class="actions">
 <a href="/">Accueil</a>
 <a href="/agenda">Agenda</a>
 <a href="/stocks">Stocks</a>
@@ -97,15 +98,15 @@ pub fn app_header(
 <a href="/groups">Groupes</a>
 {admin_link}
 </nav>
-<span style="display:flex;gap:0.75rem;align-items:center;">
+<span class="actions">
 <span>{name}</span>
 <a href="/account">Mon compte</a>
-<form method="post" action="/logout" style="margin:0;">
+<form method="post" action="/logout">
 <button type="submit" class="secondary">Se déconnecter</button>
 </form>
 </span>
 </div>
-<div class="muted" style="margin-top:0.6rem;">{switcher}</div>
+<div class="muted">{switcher}</div>
 </header>"#,
         name = html_escape(&me.display_name),
         switcher = switcher,
@@ -170,6 +171,40 @@ pub fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+/// The member colour ramp of DESIGN.md → Couleur → Couleurs par membre, as
+/// the token names the stylesheet defines. Eight muted hues, one per member,
+/// so a family's members are told apart at a glance in both themes.
+const MEMBER_RAMP: [&str; 8] = [
+    "--m1", "--m2", "--m3", "--m4", "--m5", "--m6", "--m7", "--m8",
+];
+
+/// The ramp token for a member, picked by a stable hash of the user id.
+///
+/// Deriving it from the id is what keeps `GroupMember` out of a migration:
+/// there is no colour column and none is needed. The hash has to be stable
+/// across processes and releases — a member whose colour changed between two
+/// page loads would be worse than no colour at all — so it is a plain sum of
+/// the id's bytes rather than anything from `std::hash`, whose `SipHash`
+/// keys are randomised per process.
+pub fn member_colour(user_id: Uuid) -> &'static str {
+    let sum: u32 = user_id.as_bytes().iter().map(|b| u32::from(*b)).sum();
+    MEMBER_RAMP[sum as usize % MEMBER_RAMP.len()]
+}
+
+/// The initial shown in a member's `.avatar`, uppercased.
+///
+/// Colour is never the only carrier of the information (WCAG 1.4.1): the
+/// avatar always pairs the hue with this letter, and the member's full name
+/// is next to it. An unusable name (empty, or punctuation only) falls back
+/// to `?` rather than rendering an empty box.
+pub fn member_initial(display_name: &str) -> String {
+    display_name
+        .chars()
+        .find(|c| c.is_alphanumeric())
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_else(|| "?".to_string())
 }
 
 /// The stylesheet with its `/* … */` comments removed, so prose about a
@@ -283,6 +318,77 @@ mod tests {
             password_error_message("something_else"),
             "Mot de passe invalide."
         );
+    }
+
+    // -- member colours and initials (#68) -----------------------------
+
+    /// Ids differing by one byte, which is all a v4 id is to a byte hash.
+    fn sample_ids() -> Vec<Uuid> {
+        (0u8..64)
+            .map(|i| Uuid::from_bytes([i, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 1, 2, 3, 4, 5]))
+            .collect()
+    }
+
+    #[test]
+    fn member_colour_only_ever_names_a_ramp_token() {
+        for id in sample_ids() {
+            assert!(
+                MEMBER_RAMP.contains(&member_colour(id)),
+                "{id} got {}, which is not in the ramp",
+                member_colour(id)
+            );
+        }
+    }
+
+    #[test]
+    fn member_colour_is_stable_for_the_same_id() {
+        // A colour that changed between two page loads would be worse than
+        // no colour: the member's identity is what it encodes.
+        let id = Uuid::parse_str("11111111-2222-3333-4444-555555555555").expect("valid uuid");
+        assert_eq!(member_colour(id), member_colour(id));
+        assert_eq!(member_colour(id), "--m5");
+    }
+
+    #[test]
+    fn member_colour_uses_the_whole_ramp() {
+        // A hash that collapses onto two hues makes a four-person family
+        // look like a two-person one.
+        let used: BTreeSet<&str> = sample_ids().into_iter().map(member_colour).collect();
+        assert_eq!(
+            used.len(),
+            MEMBER_RAMP.len(),
+            "hues actually used: {used:?}"
+        );
+    }
+
+    #[test]
+    fn every_ramp_token_is_defined_by_the_stylesheet() {
+        let (root, _) = block_after(&css(), ":root", 0);
+        let defined = declared_tokens(&root);
+        for token in MEMBER_RAMP {
+            assert!(
+                defined.contains(token),
+                "the ramp names `{token}`, which `:root` does not define"
+            );
+        }
+    }
+
+    #[test]
+    fn member_initial_is_the_first_letter_uppercased() {
+        assert_eq!(member_initial("alice"), "A");
+        assert_eq!(member_initial("Bob Martin"), "B");
+        // French display names are the common case, not an edge one.
+        assert_eq!(member_initial("Édouard"), "É");
+        assert_eq!(member_initial("  camille"), "C");
+        assert_eq!(member_initial("3615 Papa"), "3");
+    }
+
+    #[test]
+    fn member_initial_falls_back_when_there_is_no_letter() {
+        // Better a `?` than an empty avatar, which reads as a rendering bug.
+        assert_eq!(member_initial(""), "?");
+        assert_eq!(member_initial("   "), "?");
+        assert_eq!(member_initial("!?"), "?");
     }
 
     #[test]
@@ -574,6 +680,259 @@ mod tests {
             "a solid --accent or --error surface has to name its text colour \
              with `--accent-fg`, which flips with the theme: {offenders:?}"
         );
+    }
+
+    // -- component classes (#68) ---------------------------------------
+    //
+    // The audit counted 173 inline `style="…"` attributes, the same handful
+    // of patterns retyped in 20 route files: changing what a list row looks
+    // like meant editing seven of them, and reading the stylesheet told you
+    // nothing about the cards, badges or calendar the app is made of. The
+    // guards below keep the patterns in the sheet: one bounds what may stay
+    // inline, the other names the declarations that are a component's job.
+
+    /// Every inline `style` attribute in a route, one string per attribute.
+    ///
+    /// Both spellings are counted: the `style="…"` of the `format!` routes
+    /// and the `style=expr` of the `view!` ones — a computed attribute is
+    /// still an inline style, and counting only the quoted form would let
+    /// the debt back in through the macro.
+    ///
+    /// Comment lines are skipped: this module documents the pattern it
+    /// bounds, and prose about a rule is not a breach of it.
+    fn inline_styles(src: &str) -> Vec<String> {
+        // Assembled rather than written out, like `var_of` above: this file
+        // is one of the sources the scan reads, and a literal needle in the
+        // scanner would register as an inline style of its own.
+        let needle = format!("style{}", '=');
+        let mut out = Vec::new();
+        for line in src.lines().filter(|l| !l.trim_start().starts_with("//")) {
+            let mut rest = line;
+            while let Some(at) = rest.find(&needle) {
+                rest = &rest[at + needle.len()..];
+                let end = rest.find(['"', '>', ' ']).unwrap_or(rest.len());
+                let value = if rest.starts_with('"') {
+                    &rest[1..rest[1..].find('"').map_or(rest.len(), |i| i + 1)]
+                } else {
+                    &rest[..end]
+                };
+                out.push(value.to_string());
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn inline_styles_are_bounded_to_a_justified_residue() {
+        // A ceiling, not a target: it exists so the 173 do not creep back
+        // one route at a time. What is left is what no class can carry —
+        // a member's computed hue, a control's one-off width, a table
+        // column's alignment — plus the messagerie bits #72 reworks.
+        const CEILING: usize = 6;
+        let counted: Vec<(String, String)> = rust_sources()
+            .iter()
+            .flat_map(|(path, body)| {
+                inline_styles(body)
+                    .into_iter()
+                    .map(move |s| (path.clone(), s))
+            })
+            .collect();
+        assert!(
+            counted.len() <= CEILING,
+            "{} inline style attributes, ceiling is {CEILING}. Each recurring \
+             pattern belongs in style.css as a class (DESIGN.md → Composants); \
+             raising this number needs a reason in the PR: {counted:#?}",
+            counted.len(),
+        );
+    }
+
+    /// Every class name a source *asks for*: the `class="…"` attributes of
+    /// the routes (escaped or not — `class=\"done\"` inside a Rust string is
+    /// the same attribute) and the `className = "…"` the messagerie's JS
+    /// fallback path assigns.
+    ///
+    /// Two things it deliberately does not see, so that the test below is
+    /// not read as more than it is: a name reaching the attribute through a
+    /// `format!` placeholder (`class="chip{done}"` is counted as `chip`, and
+    /// whatever `{done}` expands to is invisible here), and
+    /// `classList.toggle("…")`.
+    fn referenced_classes(src: &str) -> Vec<String> {
+        // Assembled, like `var_of` and `inline_styles` above: this file is
+        // one of the sources the scan reads.
+        let attr = format!("class{}\"", '=');
+        let js = format!("className {} \"", '=');
+        // Comment lines are dropped, as in `inline_styles`: this module
+        // quotes the very attribute it scans for, and prose about a class is
+        // not a reference to one.
+        let unescaped: String = src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .replace("\\\"", "\"");
+        let mut out = Vec::new();
+        for needle in [attr, js] {
+            let mut rest = unescaped.as_str();
+            while let Some(at) = rest.find(&needle) {
+                rest = &rest[at + needle.len()..];
+                let value = &rest[..rest.find('"').unwrap_or(rest.len())];
+                for name in value.split_whitespace() {
+                    // A `format!` placeholder starts the dynamic part of the
+                    // attribute; what precedes it is a name all the same.
+                    let name = name.split('{').next().unwrap_or(name);
+                    if !name.is_empty() {
+                        out.push(name.to_string());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether the stylesheet carries a selector for `.name`, the name ending
+    /// where the identifier does — so `.field-error` cannot stand in for
+    /// `.field`.
+    fn stylesheet_defines_class(css: &str, name: &str) -> bool {
+        let needle = format!(".{name}");
+        let mut from = 0;
+        while let Some(at) = css[from..].find(&needle) {
+            from = from + at + needle.len();
+            match css[from..].chars().next() {
+                None => return true,
+                Some(c) if !c.is_alphanumeric() && c != '-' && c != '_' => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn every_class_a_source_references_exists_in_the_stylesheet() {
+        // Renaming `.button` to `.btn` left one reference behind: the JS
+        // recovery path of the messagerie built `className = "button
+        // secondary"`, and because it is an `<a>`, the `button` element
+        // selector did not catch it either — the "Recharger" link of a lost
+        // connection rendered as bare text. Nothing failed, nothing warned:
+        // a class that does not exist is not an error in CSS.
+        let css = css();
+        let mut missing = Vec::new();
+        for (path, body) in rust_sources() {
+            for name in referenced_classes(&body) {
+                if !stylesheet_defines_class(&css, &name) {
+                    missing.push(format!("{name} ({path})"));
+                }
+            }
+        }
+        missing.sort();
+        missing.dedup();
+        assert!(
+            missing.is_empty(),
+            "classes asked for by a source and defined nowhere in style.css: \
+             {missing:#?}"
+        );
+    }
+
+    #[test]
+    fn no_inline_style_hand_rolls_a_component() {
+        // These are the declarations the audit found copied across routes.
+        // A route that sets one of them is redefining a component instead
+        // of wearing it, and the two copies drift: `1.05rem` in the account
+        // subtitles against `1.1rem` in the agenda's, `3px` badges next to
+        // `6px` buttons.
+        const COMPONENT_PROPERTIES: [&str; 8] = [
+            "font-size",
+            "border",
+            "border-radius",
+            "background",
+            "padding",
+            "display",
+            "justify-content",
+            "list-style",
+        ];
+        let mut offenders = Vec::new();
+        for (path, body) in rust_sources() {
+            for style in inline_styles(&body) {
+                for property in COMPONENT_PROPERTIES {
+                    if style.contains(&format!("{property}:")) {
+                        offenders.push(format!("{path}: {property} in `{style}`"));
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these belong to a class in style.css, not to a route: {offenders:#?}"
+        );
+    }
+
+    #[test]
+    fn the_stylesheet_defines_every_class_the_design_system_names() {
+        // DESIGN.md → Composants is the list; the point of the list is that
+        // reading the stylesheet should tell you what the app is made of.
+        for class in [
+            ".page-header",
+            ".list-row",
+            ".card",
+            ".badge",
+            ".badge.warn",
+            ".avatar",
+            ".chip",
+            ".field",
+            ".btn",
+            ".btn.secondary",
+            ".btn.danger",
+            ".btn.sm",
+            ".notice",
+            ".notice.success",
+            ".notice.warning",
+            ".notice.error",
+        ] {
+            assert!(
+                css().contains(class),
+                "`{class}` is named by DESIGN.md → Composants but the \
+                 stylesheet does not define it"
+            );
+        }
+    }
+
+    #[test]
+    fn the_primary_button_wears_no_grey_border() {
+        // Audit §4.4: the primary button painted itself with the accent
+        // *and* took a 1px border from the neutral `--border`, so every
+        // primary action was ringed in a warm grey that meant nothing.
+        // `.danger` recoloured its border and the primary did not — the
+        // oversight was there to be seen.
+        let (button, _) = block_after(&css(), "button, .btn", 0);
+        assert!(
+            !button.contains(&var_of("--border")),
+            "the primary button still takes its border from --border: {button}"
+        );
+    }
+
+    #[test]
+    fn buttons_inherit_the_page_font() {
+        // Same trap as the fields below, and it stayed open when the
+        // self-hosted fonts landed (#67): no form control inherits the
+        // document font, so ~55 buttons rendered in the browser's UI face
+        // next to text set in Source Sans 3.
+        let (button, _) = block_after(&css(), "button, .btn", 0);
+        assert!(
+            button.contains("font-family: inherit"),
+            "button rule: {button}"
+        );
+    }
+
+    #[test]
+    fn one_subtitle_size_comes_from_the_type_scale() {
+        // 14 `h2`s carried an inline `font-size`, in two different values
+        // for the same level. The scale (#66) is where the answer lives.
+        for (heading, token) in [("h1", "--t-2xl"), ("h2", "--t-xl"), ("h3", "--t-lg")] {
+            let (rule, _) = block_after(&css(), &format!("\n{heading} {{"), 0);
+            assert!(
+                rule.contains(&format!("font-size: {}", var_of(token))),
+                "`{heading}` should size itself from `{token}`: {rule}"
+            );
+        }
     }
 
     // -- self-hosted fonts (#67) ---------------------------------------

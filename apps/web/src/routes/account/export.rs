@@ -52,7 +52,7 @@ pub async fn get(
 <p>Le fichier JSON téléchargé contient votre profil et, pour chaque famille dont vous êtes membre, tout le contenu <strong>que vous avez créé</strong> : événements d'agenda, articles de stock, recettes, repas enregistrés, articles de liste de courses, dépenses, messages, et les connexions d'import calendrier.</p>
 <p class="muted">Ce que l'export ne contient pas, par conception : le contenu créé par les autres membres de vos familles (l'export est strictement personnel), et l'URL secrète de vos flux calendrier — c'est un identifiant d'accès à votre compte Google, jamais réaffiché en clair, y compris ici (seules les métadonnées de la connexion sont exportées).</p>
 <p class="muted">Chaque export est enregistré dans le journal d'audit du service.</p>
-<a class="button" href="/account/export/download">Télécharger mes données (JSON)</a>"#,
+<a class="btn" href="/account/export/download">Télécharger mes données (JSON)</a>"#,
         error = error_html(query.error.as_deref()),
     );
     Html(shell("Exporter mes données", &body)).into_response()

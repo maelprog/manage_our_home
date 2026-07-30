@@ -26,7 +26,7 @@ fn invalid_link_page(title: &str, message: &str) -> String {
     let body = view! {
         <h1>{title_owned}</h1>
         <p>{message_owned}</p>
-        <a class="button secondary" href="/forgot-password">"Redemander un email"</a>
+        <a class="btn secondary" href="/forgot-password">"Redemander un email"</a>
     };
     shell(title, &body.to_html())
 }
@@ -86,7 +86,7 @@ pub async fn post(
             let body = view! {
                 <h1>"Mot de passe mis à jour"</h1>
                 <p>"Votre mot de passe a été réinitialisé. Toutes vos autres sessions ont été déconnectées."</p>
-                <a class="button" href="/login">"Se connecter"</a>
+                <a class="btn" href="/login">"Se connecter"</a>
             };
             Html(shell("Mot de passe mis à jour", &body.to_html()))
         }

@@ -23,7 +23,7 @@ use manage_our_home_shared::dto::groups::{
 use manage_our_home_shared::validation::groups::{actor_can_act_on, can_manage_group};
 use uuid::Uuid;
 
-use crate::app::shell;
+use crate::app::{member_colour, member_initial, shell};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -33,7 +33,7 @@ pub(crate) fn group_not_found_page() -> Html<String> {
     let body = view! {
         <h1>"Groupe introuvable"</h1>
         <p>"Ce groupe n'existe pas ou vous n'en êtes pas membre."</p>
-        <a class="button secondary" href="/groups">"Retour à mes groupes"</a>
+        <a class="btn secondary" href="/groups">"Retour à mes groupes"</a>
     };
     Html(shell("Groupe introuvable", &body.to_html()))
 }
@@ -42,7 +42,7 @@ pub(crate) fn service_unavailable_page() -> Html<String> {
     let body = view! {
         <h1>"Service momentanément indisponible"</h1>
         <p>"Merci de réessayer dans quelques instants."</p>
-        <a class="button secondary" href="/groups">"Retour à mes groupes"</a>
+        <a class="btn secondary" href="/groups">"Retour à mes groupes"</a>
     };
     Html(shell("Service indisponible", &body.to_html()))
 }
@@ -109,15 +109,15 @@ fn page(
                 let role_action = format!("/groups/{}/members/{}/role", group.id, m.user_id);
                 let remove_action = format!("/groups/{}/members/{}/remove", group.id, m.user_id);
                 Some(view! {
-                    <span style="display:flex;gap:0.5rem;align-items:center;">
-                        <form method="post" action=role_action style="flex-direction:row;gap:0.4rem;align-items:center;margin:0;">
+                    <span class="actions">
+                        <form method="post" action=role_action class="actions">
                             <select name="role">
                                 <option value="admin" selected=m.role == "admin">"Admin"</option>
                                 <option value="standard" selected=m.role == "standard">"Membre"</option>
                             </select>
                             <button type="submit" class="secondary">"Changer le rôle"</button>
                         </form>
-                        <form method="post" action=remove_action style="margin:0;">
+                        <form method="post" action=remove_action>
                             <button type="submit" class="secondary">"Retirer"</button>
                         </form>
                     </span>
@@ -126,8 +126,20 @@ fn page(
                 None
             };
             view! {
-                <li style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;padding:0.6rem 0;border-bottom:1px solid var(--border);flex-wrap:wrap;">
+                <li class="list-row">
                     <span>
+                        // The hue is `--m1`…`--m8`, picked by a stable hash of
+                        // the user id, and it is the one thing here a class
+                        // cannot carry. `aria-hidden` because the initial is a
+                        // duplicate of the name right next to it.
+                        <span
+                            class="avatar"
+                            style=format!("color:var({})", member_colour(m.user_id))
+                            aria-hidden="true"
+                        >
+                            {member_initial(&m.display_name)}
+                        </span>
+                        " "
                         <strong>{m.display_name.clone()}</strong>
                         <span class="muted">{format!(" ({})", m.email)}</span>
                         " — "
@@ -142,7 +154,7 @@ fn page(
     let invite_section = can_manage_group(&my_role).then(|| {
         let invite_action = format!("/groups/{}/members/invite", group.id);
         view! {
-            <h2 style="font-size:1.1rem;margin-top:1.5rem;">"Inviter un membre"</h2>
+            <h2>"Inviter un membre"</h2>
             <p class="muted">"L'invitation est valable 7 jours et à usage unique. Avec un email, le lien est envoyé directement ; sinon il s'affiche ici pour être partagé."</p>
             <form method="post" action=invite_action>
                 <label>
@@ -169,7 +181,7 @@ fn page(
         {notice.map(|n| view! { <p class="notice success">{n.to_string()}</p> })}
         {error.map(|e| view! { <p class="notice error">{e.to_string()}</p> })}
         {invite_link_block}
-        <ul style="list-style:none;padding:0;margin:0;">{rows}</ul>
+        <ul class="list">{rows}</ul>
         {invite_section}
         <div class="links">
             <a href="/groups">"Retour à mes groupes"</a>

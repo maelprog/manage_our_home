@@ -38,14 +38,6 @@
      information (WCAG 1.4.1): it always accompanies an initial or a name. */
   --m1: #7a5ea8; --m2: #2f7a9e; --m3: #4b8b4a; --m4: #b07a2e;
   --m5: #a8555c; --m6: #55707e; --m7: #8a6d3b; --m8: #6a6aa8;
-  /* Tinted surface behind --fg: the current day in the agenda's month and
-     week grids, and the focused occurrence on an event's detail page.
-     Superseded by --accent-soft when the agenda moves onto the components
-     (#68); left on its own blue until then rather than retinting a route
-     this change does not otherwise touch. */
-  --accent-bg: #eaeffc;
-  /* Neutral surface behind --fg: the agenda's event chips. */
-  --chip-bg: #f0f0f5;
   /* Spacing, 4px base. The names are DESIGN.md's: --s2 is the 2px half-step,
      which is why the 8px step is --s2x and not --s2. */
   --s2: 2px; --s1: 4px; --s2x: 8px; --s3: 12px; --s4: 16px;
@@ -96,13 +88,6 @@
        5.37:1 at the floor (--m1 on --surface) across both grounds. */
     --m1: #a48bd0; --m2: #64a8c8; --m3: #7db77b; --m4: #d2a059;
     --m5: #d08a90; --m6: #8aa3b0; --m7: #b99b68; --m8: #9494ce;
-    /* Remeasured against the warm neutrals, which moved every figure these
-       two were tuned against: separation from --bg is 1.36:1 and 1.21:1,
-       above the 1.10:1 of the light theme, because a tint reads weaker on a
-       dark ground. --fg clears 10:1 on both (10.78 and 12.09), --muted
-       4.64:1 on --accent-bg. */
-    --accent-bg: #28304e;
-    --chip-bg: #272930;
   }
 }
 /* Self-hosted variable fonts, latin + latin-ext, served off /assets by
@@ -133,32 +118,54 @@ body {
   background: var(--bg);
 }
 /* Titles only, per DESIGN.md — Fraunces never carries body text. */
-h1, h2, h3 { font-family: "Fraunces", Georgia, serif; }
+h1, h2, h3 { font-family: "Fraunces", Georgia, serif; line-height: 1.25; }
+/* One size per level, taken from the scale. Fourteen section subtitles used
+   to carry an inline font-size — in two different values for the same level
+   (1.05rem in the account sections, 1.1rem in the agenda's) — plus an inline
+   margin each. The scale answers both, in one place. */
+h1 { font-size: var(--t-2xl); margin-bottom: var(--s4); }
+h2 { font-size: var(--t-xl); margin: var(--s6) 0 var(--s2x); }
+h3 { font-size: var(--t-lg); margin: var(--s4) 0 var(--s1); }
 .container {
   max-width: 28rem;
   margin: 3rem auto;
   padding: 0 1.25rem;
 }
-h1 { font-size: 1.4rem; margin-bottom: 1.25rem; }
-form { display: flex; flex-direction: column; gap: 0.85rem; }
-label { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.9rem; }
+/* No browser gives a form a margin; the routes said `margin:0` on 20-odd of
+   them anyway. Saying it once here is what makes those attributes go away. */
+form { display: flex; flex-direction: column; gap: var(--s3); margin: 0; }
+/* The `<label>` + control block. The element selector covers the common
+   case with no class at all; `.field` is the name DESIGN.md gives it, worn
+   by a block that is not itself a label. `.inline` is the checkbox row. */
+label, .field { display: flex; flex-direction: column; gap: var(--s1); font-size: var(--t-sm); }
+.field.inline { flex-direction: row; align-items: center; gap: var(--s2x); font-weight: 400; }
 input, select, textarea {
-  font-size: 1rem;
+  font-size: var(--t-base);
   /* No form control inherits the page font by default: measured in Chromium,
      a textarea rendered monospace, an input Arial, a datetime-local
      monospace — three faces in one form, none of them the body's. */
   font-family: inherit;
-  padding: 0.55rem 0.65rem;
+  padding: var(--s2x) var(--s3);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--r-md);
   background: var(--bg);
   color: var(--fg);
 }
-button, .button {
-  font-size: 1rem;
-  padding: 0.6rem 0.9rem;
-  border-radius: 6px;
-  border: 1px solid var(--border);
+button, .btn {
+  font-size: var(--t-base);
+  /* A `<button>` inherits the page font no more than an `<input>` does —
+     the rule above documents the same trap. Left out, the ~55 buttons of
+     the app rendered in the browser's UI face from the moment the
+     self-hosted families landed (#67), next to text set in Source Sans 3. */
+  font-family: inherit;
+  display: inline-block;
+  padding: var(--s2x) var(--s3);
+  border-radius: var(--r-md);
+  /* The border is the accent the button sits on, not the neutral --border it
+     used to carry (audit §4.4): a teal button ringed in warm grey read as an
+     outline that meant nothing, and `.danger` recoloured its own while the
+     primary did not. The 1px stays so every variant keeps the same box. */
+  border: 1px solid var(--accent);
   cursor: pointer;
   background: var(--accent);
   /* Not #fff: white survives the theme switch, the surface under it does
@@ -170,26 +177,171 @@ button, .button {
   text-align: center;
   text-decoration: none;
 }
-button.secondary, .button.secondary {
+button.secondary, .btn.secondary {
   background: transparent;
+  border-color: var(--border);
   color: var(--fg);
 }
-button.danger, .button.danger {
+button.danger, .btn.danger {
   background: var(--error);
   border-color: var(--error);
   color: var(--accent-fg);
 }
+/* A destructive action that is not the page's primary one — the "Supprimer"
+   of a detail page, which seven routes wrote as an inline `color`. */
+button.secondary.danger, .btn.secondary.danger {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--error);
+}
+/* An action inside dense content: a row's controls, a disclosure summary.
+   --t-sm is the scale's size for actions. */
+button.sm, .btn.sm { font-size: var(--t-sm); padding: var(--s1) var(--s2x); }
+
+/* -- Components ----------------------------------------------------------
+   The patterns the routes used to retype: 173 inline `style="…"` attributes
+   for five recurring motifs, so that changing what a list row looks like
+   meant editing seven Rust files and reading this sheet told you nothing
+   about the cards, badges and calendar the app is made of (audit §3.2).
+   Order matters below: the child-margin reset comes after `.actions` so a
+   nested action row loses its margin, and `.multiline` comes after the reset
+   so that it keeps its own. */
+
+/* The app's one `<header>`: the nav + account row, with the family switcher
+   under it. #69 and #70 rework the navigation itself. */
+header { margin-bottom: var(--s6); }
+/* A row that pushes its ends apart. `.split` is the bare primitive (a
+   notice with an action in it, the header's nav + account block),
+   `.page-header` is a page's title + its actions, `.list-row` is one line
+   of a list. */
+.split, .page-header, .list-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+}
+.page-header { margin-bottom: var(--s4); }
+.list-row { padding: var(--s2x) 0; border-bottom: 1px solid var(--border); }
+/* A row whose content stacks instead of sitting side by side: a message,
+   a recipe with its summary under the name. */
+.list-row.stacked { flex-direction: column; align-items: stretch; }
+/* A group of controls: buttons side by side, a filter form, a table's
+   actions cell. */
+.actions {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2x);
+  /* Both sides: the routes that hand-rolled this row asked for a margin above
+     it (a detail page's controls) as often as below (an admin nav). */
+  margin: var(--s4) 0;
+}
+/* The containers own their spacing, so their children carry none — this is
+   what the 30-odd inline `margin:0` attributes were for. A group of actions
+   in a table cell owns none either: the cell is the spacing. */
+.split > *, .page-header > *, .list-row > *, .actions > *, .card.inline > * { margin: 0; }
+td > .actions { margin: 0; }
+/* A list of `.list-row`s: the separators come from the rows, so the bullets
+   and the browser's indent have to go. */
+.list { list-style: none; padding: 0; margin: var(--s4) 0; }
+/* A bordered block of related content — one surface, one radius, no shadow
+   (DESIGN.md → Layout → Élévation). `.inline` is the same box laid out as a
+   single row of fields, which is how the "add an item" forms use it. */
+.card {
+  margin-top: var(--s6);
+  padding: var(--s4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+.card.inline { display: flex; flex-direction: row; flex-wrap: wrap; align-items: flex-end; gap: var(--s2x); }
+.card.danger { border-color: var(--error); }
+/* A card or notice opens with its heading, whose own top margin would push
+   it off the padding. */
+.card > :first-child, .notice > :first-child { margin-top: 0; }
+/* A pastille on a line of data: a category, "Courses", "Déjà cuisiné". The
+   text colour is stated rather than inherited: inside a struck-through
+   `.done` row, --muted on this tint measures 4.31:1, just under AA. */
+.badge {
+  display: inline-block;
+  font-size: var(--t-xs);
+  padding: var(--s2) var(--s1);
+  border-radius: var(--r-sm);
+  background: var(--border);
+  color: var(--fg);
+}
+/* The one that has to be read as a problem — "Stock bas". A solid --error
+   with --accent-fg on it, which is 6.2:1 in light and 6.2:1 in dark; the
+   --warning pair DESIGN.md gives would be 4.06:1 in light, under AA, and
+   that is #74's contrast pass to settle. */
+.badge.warn { background: var(--error); color: var(--accent-fg); }
+/* A member's initial in their ramp colour. The hue is the only thing the
+   route passes in (`app::member_colour`); it lands on `color`, not on a
+   background, because DESIGN.md → Composants defines the avatar as a
+   member's coloured initial and the ramp has no companion token to flip a
+   foreground over a solid one.
+
+   Contrast, measured (WCAG 2.x, sRGB) on the ground the members list
+   actually sits on, `--bg`: **--m4 is 3.55:1 and --m3 3.95:1, both under
+   the 4.5:1 this 13px 600-weight text needs**. The other six run 4.57:1 to
+   5.04:1, and on `--surface` every figure shifts about +0.2 the same way.
+   The dark theme is comfortable throughout — floor 6.01:1 on `--bg`,
+   5.37:1 on `--surface`.
+
+   Those two are the values DESIGN.md → Couleur → Couleurs par membre writes
+   down, so retuning them is #74's contrast pass and not this issue's call —
+   the same decision already recorded for `.notice.success` (4.43:1) and
+   `.notice.warning` (4.06:1). The letter is never the only carrier of the
+   information: the member's name sits next to it (WCAG 1.4.1). */
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--s6);
+  height: var(--s6);
+  border: 1px solid currentColor;
+  border-radius: var(--r-sm);
+  font-size: var(--t-xs);
+  font-weight: 600;
+}
+/* An occurrence inside a calendar day. */
+.chip {
+  display: block;
+  margin-top: var(--s2);
+  padding: var(--s2) var(--s1);
+  border-radius: var(--r-sm);
+  background: var(--hover);
+  font-size: var(--t-xs);
+  text-decoration: none;
+}
+/* Something already dealt with: a completed task, a ticked grocery item. */
+.done { text-decoration: line-through; color: var(--muted); }
+/* The agenda's month grid and week strip. #71 reworks the layout; the values
+   here are the ones the route carried inline, so that when it does, it does
+   so in CSS. */
+.cal { table-layout: fixed; }
+.cal-cell { vertical-align: top; border: 1px solid var(--border); padding: var(--s1); height: 6.5rem; }
+.cal-week { display: flex; flex-wrap: wrap; gap: var(--s1); }
+.cal-col { flex: 1; min-width: 8rem; border: 1px solid var(--border); padding: var(--s1); min-height: 12rem; }
+.cal-day { font-size: var(--t-xs); }
+.cal-col .cal-day { font-size: var(--t-sm); font-weight: 600; }
+/* A day outside the month being looked at. */
+.cal-day.outside { color: var(--muted); }
+/* Today's cell, and the occurrence an event page was opened on. */
+.current { background: var(--accent-soft); }
 /* Support/admin screens (front epic F9) show multi-column tables that are
    wider than the narrow form column; the wrapper lets them scroll instead of
    overflowing the page. */
 .table-wrap { overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border); white-space: nowrap; }
+table { width: 100%; border-collapse: collapse; font-size: var(--t-sm); }
+th, td { text-align: left; padding: var(--s1) var(--s2x); border-bottom: 1px solid var(--border); white-space: nowrap; }
 th { color: var(--muted); font-weight: 600; }
 code { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; font-size: 0.8em; }
-dl { font-size: 0.9rem; }
-dt { color: var(--muted); font-size: 0.8rem; margin-top: 0.6rem; }
-dd { margin: 0.1rem 0 0 0; }
+dl { font-size: var(--t-sm); }
+dt { color: var(--muted); font-size: var(--t-xs); margin-top: var(--s2x); }
+dd { margin: var(--s2) 0 0 0; }
 .pw-wrap { position: relative; display: flex; }
 .pw-wrap input { flex: 1; padding-right: 2.6rem; }
 .pw-toggle {
@@ -205,17 +357,36 @@ dd { margin: 0.1rem 0 0 0; }
   cursor: pointer;
 }
 .pw-toggle.shown { color: var(--accent); }
-.field-error { color: var(--error); font-size: 0.85rem; }
-.notice { padding: 0.75rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.9rem; }
+.field-error { color: var(--error); font-size: var(--t-sm); }
+/* The border is `currentColor`, so each variant is outlined in its own
+   semantic colour instead of a grey that means nothing — the same mistake
+   the primary button was making. It also gives the bare `.notice` the
+   agenda-imports empty state uses a visible box, which it did not have. */
+.notice {
+  padding: var(--s3);
+  border: 1px solid currentColor;
+  border-radius: var(--r-md);
+  margin-bottom: var(--s4);
+  font-size: var(--t-sm);
+}
 /* One semantic pair per variant. The success tint used to be the accent's,
    so a confirmation and a plain information were the same colour; the error
    tint was a hardcoded rgba() of a hex that no longer exists. */
 .notice.error { background: var(--error-soft); color: var(--error); }
 .notice.success { background: var(--success-soft); color: var(--success); }
 .notice.warning { background: var(--warning-soft); color: var(--warning); }
-.links { margin-top: 1rem; display: flex; flex-direction: column; gap: 0.4rem; font-size: 0.9rem; }
+.links { margin-top: var(--s4); display: flex; flex-direction: column; gap: var(--s1); font-size: var(--t-sm); }
 .links a { color: var(--accent); }
-.muted { color: var(--muted); font-size: 0.85rem; }
+.muted { color: var(--muted); font-size: var(--t-sm); }
+/* Text whose line breaks are the author's: a message in the thread, a
+   recipe's method. Declared after the child-margin reset above, so that one
+   sitting inside a `.list-row` keeps its own spacing. */
+.multiline { white-space: pre-wrap; margin: var(--s1) 0; }
+/* The messagerie's composer, and its live-connection line — which reserves
+   its height so that a status appearing does not shove the thread down.
+   #72 reworks the thread; these are the values it carried inline. */
+.composer { margin-top: var(--s4); }
+.live-status { min-height: 1.2em; margin: var(--s1) 0; }
 /* Long-form document rendered from markdown (front epic F10's privacy policy,
    `validation::rgpd::render_markdown`): prose needs readable line height and
    wrapping table cells, unlike the app's compact data tables above. */

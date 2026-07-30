@@ -45,9 +45,9 @@ fn page(
             <div inner_html=pw></div>
             <button type="submit">"Créer mon compte"</button>
         </form>
-        <a class="button secondary" href=google_start style="display:block;margin-top:0.75rem;">
-            "Continuer avec Google"
-        </a>
+        <div class="actions">
+            <a class="btn secondary" href=google_start>"Continuer avec Google"</a>
+        </div>
         <div class="links">
             <a href="/login">"J'ai déjà un compte"</a>
             // RGPD (front epic F10): the policy must be readable *before*

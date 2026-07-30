@@ -197,7 +197,7 @@ fn page(
 
     let instructions_html = match recipe.instructions.as_deref().map(str::trim) {
         Some(i) if !i.is_empty() => format!(
-            "<h2>Instructions</h2><p style=\"white-space:pre-wrap;\">{}</p>",
+            "<h2>Instructions</h2><p class=\"multiline\">{}</p>",
             html_escape(i)
         ),
         _ => String::new(),
@@ -218,8 +218,8 @@ fn page(
         .format("%Y-%m-%d")
         .to_string();
     let log_form = format!(
-        r#"<form method="post" action="/recipes/{id}/log" style="border:1px solid var(--border);padding:0.75rem;margin-top:1rem;display:flex;gap:0.5rem;align-items:flex-end;flex-wrap:wrap;">
-<label style="margin:0;">Date du repas
+        r#"<form method="post" action="/recipes/{id}/log" class="card inline">
+<label>Date du repas
 <input type="date" name="eaten_on" value="{today}"/></label>
 <button type="submit">Logger ce repas</button>
 </form>"#,
@@ -227,15 +227,15 @@ fn page(
 
     let edit_delete_html = if can_edit {
         format!(
-            r#"<div style="display:flex;gap:0.5rem;margin-top:1rem;">
-<a class="button secondary" href="/recipes/{id}/edit">Modifier la recette</a>
-<form method="post" action="/recipes/{id}/delete" style="margin:0;">
-<button type="submit" class="secondary" style="color:var(--error);">Supprimer</button>
+            r#"<div class="actions">
+<a class="btn secondary" href="/recipes/{id}/edit">Modifier la recette</a>
+<form method="post" action="/recipes/{id}/delete">
+<button type="submit" class="secondary danger">Supprimer</button>
 </form>
 </div>"#
         )
     } else {
-        r#"<p class="muted" style="margin-top:1rem;">Seul le créateur ou un administrateur peut modifier ou supprimer cette recette.</p>"#.to_string()
+        r#"<p class="muted">Seul le créateur ou un administrateur peut modifier ou supprimer cette recette.</p>"#.to_string()
     };
 
     let body = format!(
