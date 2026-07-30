@@ -4,7 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "test": "playwright test"
+    "test": "playwright test",
+    "test:scripts": "node --test \"scripts/lib/*.test.ts\"",
+    "seed": "node scripts/seed-perf-data.ts",
+    "measure": "node scripts/measure-page-weight.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0",
