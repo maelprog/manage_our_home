@@ -15,7 +15,7 @@ fn invalid_link() -> (&'static str, String) {
     let v = view! {
         <h1>"Lien invalide"</h1>
         <p>"Ce lien de vérification n'existe pas."</p>
-        <a class="button secondary" href="/login">"Retour à la connexion"</a>
+        <a class="btn secondary" href="/login">"Retour à la connexion"</a>
     };
     ("Lien invalide", v.to_html())
 }
@@ -38,7 +38,7 @@ pub async fn get(
             let v = view! {
                 <h1>"Email vérifié"</h1>
                 <p>"Votre adresse email est confirmée. Vous pouvez maintenant vous connecter."</p>
-                <a class="button" href="/login">"Se connecter"</a>
+                <a class="btn" href="/login">"Se connecter"</a>
             };
             ("Email vérifié", v.to_html())
         }
@@ -46,7 +46,7 @@ pub async fn get(
             let v = view! {
                 <h1>"Lien expiré"</h1>
                 <p>"Ce lien de vérification a déjà été utilisé ou a expiré. Merci de recréer un compte ou de contacter le support pour en obtenir un nouveau."</p>
-                <a class="button secondary" href="/login">"Retour à la connexion"</a>
+                <a class="btn secondary" href="/login">"Retour à la connexion"</a>
             };
             ("Lien expiré", v.to_html())
         }

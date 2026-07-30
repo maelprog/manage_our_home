@@ -252,6 +252,30 @@ Classes à définir dans `style.css`, en remplacement des 173 attributs
 `border: 1px solid var(--border)`, ce qui cercle chaque bouton bleu d'un gris
 sans signification.
 
+### Classes de soutien
+
+L'extraction (#68) a eu besoin de quelques classes que le tableau ci-dessus ne
+nommait pas — chacune remplace un motif recopié dans plusieurs routes, et
+aucune n'introduit de valeur hors des échelles :
+
+| Classe | Rôle |
+|---|---|
+| `.split` | la primitive de `.page-header` et `.list-row` : une ligne dont les extrémités s'écartent, portée aussi par un `.notice` qui contient une action |
+| `.actions` | un groupe de contrôles côte à côte (boutons, formulaire de filtre, cellule d'actions) |
+| `.list` | un `<ul>` de `.list-row` : les séparateurs viennent des lignes, donc ni puces ni retrait |
+| `.list-row.stacked` | une ligne dont le contenu s'empile (un message, une recette et son résumé) |
+| `.card.inline` | la même carte disposée en une seule ligne de champs (formulaires « ajouter un article ») |
+| `.field.inline` | l'étiquette d'une case à cocher, à côté de son texte |
+| `.done` | ce qui est déjà traité : tâche complétée, article coché |
+| `.multiline` | un texte dont les retours à la ligne sont ceux de l'auteur (message, méthode d'une recette) |
+| `.current` | la cellule d'aujourd'hui, l'occurrence sur laquelle une fiche est ouverte |
+| `.cal`, `.cal-cell`, `.cal-week`, `.cal-col`, `.cal-day` | la grille du mois et la bande de semaine de l'agenda — posées en CSS pour que #71 les reprenne là et non dans le Rust |
+| `.composer`, `.live-status` | la zone de saisie de la messagerie et sa ligne d'état ; #72 les reprend |
+
+Le résiduel de `style="…"` assumé après #68 : une couleur de membre calculée
+(`.avatar`), la largeur d'un champ de prix, l'alignement d'une colonne
+numérique, la largeur minimale du champ d'édition d'un message.
+
 ---
 
 ## Interaction et motion

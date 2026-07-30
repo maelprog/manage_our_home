@@ -76,7 +76,7 @@ pub(crate) fn item_not_found_page() -> Html<String> {
     let body = view! {
         <h1>"Article introuvable"</h1>
         <p>"Cet article n'existe pas ou vous n'y avez pas accès."</p>
-        <a class="button secondary" href="/stocks">"Retour aux stocks"</a>
+        <a class="btn secondary" href="/stocks">"Retour aux stocks"</a>
     };
     Html(shell("Article introuvable", &body.to_html()))
 }
@@ -85,7 +85,7 @@ pub(crate) fn service_unavailable_page() -> Html<String> {
     let body = view! {
         <h1>"Service momentanément indisponible"</h1>
         <p>"Merci de réessayer dans quelques instants."</p>
-        <a class="button secondary" href="/stocks">"Retour aux stocks"</a>
+        <a class="btn secondary" href="/stocks">"Retour aux stocks"</a>
     };
     Html(shell("Service indisponible", &body.to_html()))
 }
@@ -94,7 +94,7 @@ pub(crate) fn forbidden_page() -> Html<String> {
     let body = view! {
         <h1>"Action non autorisée"</h1>
         <p>"Vous n'avez pas les droits nécessaires sur cet article."</p>
-        <a class="button secondary" href="/stocks">"Retour aux stocks"</a>
+        <a class="btn secondary" href="/stocks">"Retour aux stocks"</a>
     };
     Html(shell("Action non autorisée", &body.to_html()))
 }

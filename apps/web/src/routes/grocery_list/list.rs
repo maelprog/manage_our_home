@@ -79,11 +79,7 @@ fn item_row(item: &GroceryItemResponse, can_edit: bool) -> String {
     let next = !item.checked;
     let toggle_label = if item.checked { "Décocher" } else { "Cocher" };
     let checked_attr = if item.checked { " checked" } else { "" };
-    let name_style = if item.checked {
-        r#" style="text-decoration:line-through;color:var(--muted);""#
-    } else {
-        ""
-    };
+    let name_class = if item.checked { " class=\"done\"" } else { "" };
 
     let qty = quantity_label(item.quantity, item.unit.as_deref());
     let qty_html = if qty.is_empty() {
@@ -92,17 +88,12 @@ fn item_row(item: &GroceryItemResponse, can_edit: bool) -> String {
         format!(r#" <span class="muted">— {}</span>"#, html_escape(&qty))
     };
     let badge_html = source_label(&item.source)
-        .map(|l| {
-            format!(
-                r#" <span style="font-size:0.75rem;padding:0.1rem 0.4rem;border-radius:3px;background:var(--border);">{}</span>"#,
-                html_escape(l)
-            )
-        })
+        .map(|l| format!(r#" <span class="badge">{}</span>"#, html_escape(l)))
         .unwrap_or_default();
 
     let edit_link = if can_edit {
         format!(
-            r#"<a class="button secondary" href="/grocery-list/{id}">Modifier</a>"#,
+            r#"<a class="btn secondary" href="/grocery-list/{id}">Modifier</a>"#,
             id = item.id
         )
     } else {
@@ -112,7 +103,7 @@ fn item_row(item: &GroceryItemResponse, can_edit: bool) -> String {
     // Price-on-checkout (F7): only on a checked item, and open to any member.
     let price_form = if item.checked {
         format!(
-            r#"<form method="post" action="/grocery-list/{id}/price" style="display:flex;align-items:center;gap:0.4rem;margin:0;">
+            r#"<form method="post" action="/grocery-list/{id}/price" class="actions">
 <input type="number" name="amount" step="0.01" min="0" required placeholder="Prix (€)" aria-label="Prix pour {name_attr}" style="width:7rem;"/>
 <button type="submit" class="secondary">Renseigner le prix</button>
 </form>"#,
@@ -124,14 +115,14 @@ fn item_row(item: &GroceryItemResponse, can_edit: bool) -> String {
     };
 
     format!(
-        r#"<li style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;padding:0.6rem 0;border-bottom:1px solid var(--border);flex-wrap:wrap;">
-<form method="post" action="/grocery-list/{id}/check" style="display:flex;align-items:center;gap:0.5rem;margin:0;">
+        r#"<li class="list-row">
+<form method="post" action="/grocery-list/{id}/check" class="actions">
 <input type="hidden" name="checked" value="{next}"/>
 <input type="checkbox"{checked_attr} onchange="this.form.submit()" aria-label="{name_attr}"/>
-<span{name_style}><strong>{name}</strong>{qty_html}{badge_html}</span>
+<span{name_class}><strong>{name}</strong>{qty_html}{badge_html}</span>
 <button type="submit" class="secondary">{toggle_label}</button>
 </form>
-<span style="display:flex;align-items:center;gap:0.5rem;margin-left:auto;">{price_form}{edit_link}</span>
+<span class="actions">{price_form}{edit_link}</span>
 </li>"#,
         id = item.id,
         name = html_escape(&item.name),
@@ -180,23 +171,23 @@ pub async fn get(
             .iter()
             .map(|item| item_row(item, can_modify(&fam.role, item.created_by == me.user_id)))
             .collect::<String>();
-        format!(r#"<ul style="list-style:none;padding:0;margin:1rem 0 0 0;">{rows}</ul>"#)
+        format!(r#"<ul class="list">{rows}</ul>"#)
     };
 
     let body = format!(
         r#"{header}
-<div style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;flex-wrap:wrap;">
-<h1 style="margin:0;">Liste de courses</h1>
-<form method="post" action="/grocery-list/generate" style="margin:0;">
+<div class="page-header">
+<h1>Liste de courses</h1>
+<form method="post" action="/grocery-list/generate">
 <button type="submit">Générer depuis les recettes et les stocks</button>
 </form>
 </div>
 <p class="muted">Une seule liste partagée par famille. La génération est sans risque à relancer : les articles déjà présents ne sont pas dupliqués.</p>
 {notice}{error}
-<form method="post" action="/grocery-list/add" style="border:1px solid var(--border);padding:0.75rem;margin-top:1rem;display:flex;gap:0.5rem;align-items:flex-end;flex-wrap:wrap;">
-<label style="margin:0;">Article <input type="text" name="name" required placeholder="ex. Lait"/></label>
-<label style="margin:0;">Quantité <input type="number" name="quantity" step="any" min="0" placeholder="Optionnel"/></label>
-<label style="margin:0;">Unité <input type="text" name="unit" placeholder="Optionnel (ex. L, kg)"/></label>
+<form method="post" action="/grocery-list/add" class="card inline">
+<label>Article <input type="text" name="name" required placeholder="ex. Lait"/></label>
+<label>Quantité <input type="number" name="quantity" step="any" min="0" placeholder="Optionnel"/></label>
+<label>Unité <input type="text" name="unit" placeholder="Optionnel (ex. L, kg)"/></label>
 <button type="submit">Ajouter</button>
 </form>
 {list_html}"#,

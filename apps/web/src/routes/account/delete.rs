@@ -88,8 +88,8 @@ fn request_form(me: &MeResponse, error: Option<&str>) -> String {
         r#"{error_html}
 <form method="post" action="/account/delete" onsubmit="return confirm('Demander la suppression de votre compte ?');">
 {password}
-<label style="flex-direction:row;gap:0.5rem;align-items:flex-start;">
-<input type="checkbox" name="consent" value="1" style="width:auto;margin-top:0.15rem;"/>
+<label class="field inline">
+<input type="checkbox" name="consent" value="1"/>
 <span>Je demande la suppression de mon compte et je comprends que mes identifiants seront supprimés au bout de {days} jours.</span>
 </label>
 <button type="submit" class="danger">Demander la suppression de mon compte</button>

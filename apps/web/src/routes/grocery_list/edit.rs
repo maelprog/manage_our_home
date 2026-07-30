@@ -59,8 +59,8 @@ fn page(header: &str, id: Uuid, name: &str, form: &EditForm, error: Option<&str>
 <label>Unité <input type="text" name="unit" value="{unit}" placeholder="Optionnel (ex. L, kg)"/></label>
 <button type="submit">Enregistrer</button>
 </form>
-<form method="post" action="/grocery-list/{id}/delete" style="margin-top:1rem;">
-<button type="submit" class="secondary" style="color:var(--error);">Supprimer</button>
+<form method="post" action="/grocery-list/{id}/delete" class="actions">
+<button type="submit" class="secondary danger">Supprimer</button>
 </form>
 <div class="links"><a href="/grocery-list">Retour à la liste de courses</a></div>"#,
         name_esc = html_escape(name),

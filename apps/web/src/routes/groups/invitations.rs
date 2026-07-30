@@ -26,7 +26,7 @@ fn invalid_page() -> Html<String> {
     let body = view! {
         <h1>"Invitation invalide"</h1>
         <p>"Ce lien d'invitation n'existe pas."</p>
-        <a class="button secondary" href="/groups">"Retour à mes groupes"</a>
+        <a class="btn secondary" href="/groups">"Retour à mes groupes"</a>
     };
     Html(shell("Invitation invalide", &body.to_html()))
 }
@@ -35,7 +35,7 @@ fn gone_page() -> Html<String> {
     let body = view! {
         <h1>"Invitation expirée"</h1>
         <p>"Cette invitation a déjà été utilisée ou a expiré (elles sont valables 7 jours et à usage unique). Demandez-en une nouvelle à un membre du groupe."</p>
-        <a class="button secondary" href="/groups">"Retour à mes groupes"</a>
+        <a class="btn secondary" href="/groups">"Retour à mes groupes"</a>
     };
     Html(shell("Invitation expirée", &body.to_html()))
 }
@@ -97,7 +97,7 @@ pub async fn post(
             let body = view! {
                 <h1>"Service momentanément indisponible"</h1>
                 <p>"Merci de réessayer dans quelques instants."</p>
-                <a class="button secondary" href="/groups">"Retour à mes groupes"</a>
+                <a class="btn secondary" href="/groups">"Retour à mes groupes"</a>
             };
             Html(shell("Service indisponible", &body.to_html())).into_response()
         }

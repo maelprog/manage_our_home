@@ -53,7 +53,7 @@ fn page(
 {error_html}
 <form method="post" action="/agenda/{id}/edit">
 <label>Titre <input type="text" name="title" required value="{title_attr}"/></label>
-<label style="flex-direction:row;gap:0.4rem;align-items:center;font-weight:normal;">
+<label class="field inline">
 <input type="checkbox" name="all_day"{all_day_checked}/> Journée entière</label>
 <label>Début <input type="datetime-local" name="starts_at" value="{starts_local}" required/></label>
 <label>Fin <input type="datetime-local" name="ends_at" value="{ends_local}" required/></label>

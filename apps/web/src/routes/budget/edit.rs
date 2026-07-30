@@ -37,8 +37,8 @@ fn page(header: &str, id: Uuid, name: &str, form: &EntryForm, error: Option<&str
 {fields}
 <button type="submit">Enregistrer</button>
 </form>
-<form method="post" action="/budget/{id}/delete" style="margin-top:1rem;">
-<button type="submit" class="secondary" style="color:var(--error);">Supprimer</button>
+<form method="post" action="/budget/{id}/delete" class="actions">
+<button type="submit" class="secondary danger">Supprimer</button>
 </form>
 <div class="links"><a href="/budget">Retour au budget</a></div>"#,
         name_esc = html_escape(name),

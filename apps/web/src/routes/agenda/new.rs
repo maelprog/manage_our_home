@@ -182,12 +182,12 @@ pub(crate) fn recurrence_picker(current: Option<&Recurrence>) -> String {
     };
     let day_checkbox = |name: &str, label: &str, wd: Weekday| {
         format!(
-            r#"<label style="flex-direction:row;gap:0.3rem;align-items:center;margin:0;font-weight:normal;"><input type="checkbox" name="{name}"{c}/>{label}</label>"#,
+            r#"<label class="field inline"><input type="checkbox" name="{name}"{c}/>{label}</label>"#,
             c = byday_checked(wd),
         )
     };
     let days = format!(
-        r#"<div style="display:flex;gap:0.6rem;flex-wrap:wrap;margin:0.4rem 0;">{mo}{tu}{we}{th}{fr}{sa}{su}</div>"#,
+        r#"<div class="actions">{mo}{tu}{we}{th}{fr}{sa}{su}</div>"#,
         mo = day_checkbox("byday_mo", "Lun", Weekday::Mon),
         tu = day_checkbox("byday_tu", "Mar", Weekday::Tue),
         we = day_checkbox("byday_we", "Mer", Weekday::Wed),
@@ -210,7 +210,7 @@ pub(crate) fn recurrence_picker(current: Option<&Recurrence>) -> String {
     };
 
     format!(
-        r#"<fieldset style="border:1px solid var(--border);padding:0.75rem;margin-top:1rem;">
+        r#"<fieldset class="card">
 <legend>Récurrence</legend>
 <label>Fréquence {freq_select}</label>
 <label>Intervalle
@@ -256,16 +256,16 @@ fn page(header: &str, error: Option<&str>, default_start: &str, default_end: &st
 {error_html}
 <form method="post" action="/agenda/new">
 <label>Titre <input type="text" name="title" required/></label>
-<label style="flex-direction:row;gap:0.4rem;align-items:center;font-weight:normal;">
+<label class="field inline">
 <input type="checkbox" name="is_task"/> Il s'agit d'une tâche (à cocher une fois faite)</label>
-<label style="flex-direction:row;gap:0.4rem;align-items:center;font-weight:normal;">
+<label class="field inline">
 <input type="checkbox" name="all_day"/> Journée entière</label>
 <label>Début <input type="datetime-local" name="starts_at" value="{default_start}" required/></label>
 <label>Fin <input type="datetime-local" name="ends_at" value="{default_end}" required/></label>
 <label>Lieu <input type="text" name="location"/></label>
 <label>Description <textarea name="description" rows="3"></textarea></label>
 {picker}
-<label style="margin-top:1rem;">Rappel {reminder}</label>
+<label>Rappel {reminder}</label>
 <button type="submit">Créer l'événement</button>
 </form>
 <div class="links"><a href="/agenda">Retour à l'agenda</a></div>"#,

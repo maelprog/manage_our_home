@@ -56,13 +56,13 @@ pub async fn get(
             let members_href = format!("/groups/{}/members", g.group_id);
             let settings_href = format!("/groups/{}/settings", g.group_id);
             view! {
-                <li style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;padding:0.6rem 0;border-bottom:1px solid var(--border);">
+                <li class="list-row">
                     <span>
                         <strong>{g.name.clone()}</strong>
                         " — "
                         <span class="muted">{role_label(&g.role)}</span>
                     </span>
-                    <span style="display:flex;gap:0.75rem;">
+                    <span class="actions">
                         <a href=members_href>"Membres"</a>
                         <a href=settings_href>"Paramètres"</a>
                     </span>
@@ -81,11 +81,11 @@ pub async fn get(
         } else {
             None
         }}
-        <ul style="list-style:none;padding:0;margin:0 0 1.5rem 0;">{rows}</ul>
-        <a class="button" href="/groups/new" style="display:block;margin-bottom:1.5rem;">
-            "Créer un groupe"
-        </a>
-        <h2 style="font-size:1.1rem;">"Rejoindre via une invitation"</h2>
+        <ul class="list">{rows}</ul>
+        <div class="actions">
+            <a class="btn" href="/groups/new">"Créer un groupe"</a>
+        </div>
+        <h2>"Rejoindre via une invitation"</h2>
         <form method="post" action="/groups/join">
             <label>
                 "Lien ou code d'invitation"

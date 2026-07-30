@@ -189,16 +189,16 @@ fn render_nav(is_week: bool, focus: NaiveDate) -> String {
     let view_q = if is_week { "week" } else { "month" };
     let today = today_paris();
     format!(
-        r#"<div style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem;">
-<h1 style="margin:0;">{title}</h1>
-<span style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
-<a class="button secondary" href="/agenda?view={view_q}&date={prev}">"◀"</a>
-<a class="button secondary" href="/agenda?view={view_q}&date={today}">Aujourd'hui</a>
-<a class="button secondary" href="/agenda?view={view_q}&date={next}">"▶"</a>
-<a class="button secondary" href="/agenda?view=month&date={focus}">Mois</a>
-<a class="button secondary" href="/agenda?view=week&date={focus}">Semaine</a>
-<a class="button secondary" href="/agenda/imports">Agendas Google</a>
-<a class="button" href="/agenda/new">Nouvel événement</a>
+        r#"<div class="page-header">
+<h1>{title}</h1>
+<span class="actions">
+<a class="btn secondary" href="/agenda?view={view_q}&date={prev}">"◀"</a>
+<a class="btn secondary" href="/agenda?view={view_q}&date={today}">Aujourd'hui</a>
+<a class="btn secondary" href="/agenda?view={view_q}&date={next}">"▶"</a>
+<a class="btn secondary" href="/agenda?view=month&date={focus}">Mois</a>
+<a class="btn secondary" href="/agenda?view=week&date={focus}">Semaine</a>
+<a class="btn secondary" href="/agenda/imports">Agendas Google</a>
+<a class="btn" href="/agenda/new">Nouvel événement</a>
 </span>
 </div>"#,
         title = html_escape(&title),
@@ -218,9 +218,7 @@ fn render_month(
 ) -> String {
     let headers: String = FR_WEEKDAYS
         .iter()
-        .map(|d| {
-            format!(r#"<th style="padding:0.4rem;text-align:left;font-size:0.85rem;">{d}</th>"#)
-        })
+        .map(|d| format!(r#"<th>{d}</th>"#))
         .collect();
 
     let mut rows = String::new();
@@ -228,28 +226,21 @@ fn render_month(
         rows.push_str("<tr>");
         for day in week {
             let in_month = day.month() == focus_month;
-            let is_today = *day == today;
-            let bg = if is_today {
-                "background:var(--accent-bg);"
-            } else {
-                ""
-            };
-            let num_color = if in_month { "" } else { "color:var(--muted);" };
+            let today_class = if *day == today { " current" } else { "" };
+            let outside_class = if in_month { "" } else { " outside" };
             let chips = render_chips(by_day.get(day).map(|v| v.as_slice()).unwrap_or(&[]));
             rows.push_str(&format!(
-                r#"<td style="vertical-align:top;border:1px solid var(--border);padding:0.3rem;height:6.5rem;width:14.28%;{bg}">
-<div style="font-size:0.8rem;{num_color}">{num}</div>{chips}</td>"#,
-                bg = bg,
-                num_color = num_color,
+                r#"<td class="cal-cell{today_class}">
+<div class="cal-day{outside_class}">{num}</div>{chips}</td>"#,
+                today_class = today_class,
+                outside_class = outside_class,
                 num = day.day(),
                 chips = chips,
             ));
         }
         rows.push_str("</tr>");
     }
-    format!(
-        r#"<table style="width:100%;border-collapse:collapse;table-layout:fixed;"><thead><tr>{headers}</tr></thead><tbody>{rows}</tbody></table>"#,
-    )
+    format!(r#"<table class="cal"><thead><tr>{headers}</tr></thead><tbody>{rows}</tbody></table>"#,)
 }
 
 fn render_week(
@@ -260,22 +251,18 @@ fn render_week(
 ) -> String {
     let mut cols = String::new();
     for (i, day) in days.iter().enumerate() {
-        let is_today = *day == today;
-        let bg = if is_today {
-            "background:var(--accent-bg);"
-        } else {
-            ""
-        };
+        let today_class = if *day == today { " current" } else { "" };
         let chips = render_chips(by_day.get(day).map(|v| v.as_slice()).unwrap_or(&[]));
         cols.push_str(&format!(
-            r#"<div style="flex:1;min-width:8rem;border:1px solid var(--border);padding:0.4rem;min-height:12rem;{bg}">
-<div style="font-weight:600;font-size:0.85rem;">{wd} {num}</div>{chips}</div>"#,
+            r#"<div class="cal-col{today_class}">
+<div class="cal-day">{wd} {num}</div>{chips}</div>"#,
+            today_class = today_class,
             wd = FR_WEEKDAYS[i],
             num = day.day(),
             chips = chips,
         ));
     }
-    format!(r#"<div style="display:flex;gap:0.25rem;flex-wrap:wrap;">{cols}</div>"#)
+    format!(r#"<div class="cal-week">{cols}</div>"#)
 }
 
 /// One day-cell's occurrence chips. Tasks get a ☑/☐ marker and a
@@ -292,7 +279,7 @@ fn render_chips(occs: &[&OccurrenceResponse]) -> String {
             let occ_param = occ.occurrence_starts_at.format("%Y-%m-%dT%H:%M:%SZ");
             let (marker, done) = if e.is_task {
                 if e.completed_at.is_some() {
-                    ("☑ ", "text-decoration:line-through;opacity:0.6;")
+                    ("☑ ", " done")
                 } else {
                     ("☐ ", "")
                 }
@@ -300,7 +287,7 @@ fn render_chips(occs: &[&OccurrenceResponse]) -> String {
                 ("", "")
             };
             format!(
-                r#"<a href="/agenda/{id}?occ={occ}" style="display:block;font-size:0.8rem;padding:0.15rem 0.3rem;margin-top:0.2rem;border-radius:3px;background:var(--chip-bg);{done}text-decoration:none;">{marker}<strong>{time}</strong> {title}</a>"#,
+                r#"<a href="/agenda/{id}?occ={occ}" class="chip{done}">{marker}<strong>{time}</strong> {title}</a>"#,
                 id = e.id,
                 occ = occ_param,
                 done = done,

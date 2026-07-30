@@ -259,15 +259,15 @@ fn page(
     // Edit/delete controls (creator or owner/admin only).
     let controls_html = if can_edit {
         format!(
-            r#"<div style="display:flex;gap:0.5rem;margin-top:1rem;">
-<a class="button secondary" href="/agenda/{id}/edit">Modifier</a>
-<form method="post" action="/agenda/{id}/delete" style="margin:0;">
-<button type="submit" class="secondary" style="color:var(--error);">Supprimer</button>
+            r#"<div class="actions">
+<a class="btn secondary" href="/agenda/{id}/edit">Modifier</a>
+<form method="post" action="/agenda/{id}/delete">
+<button type="submit" class="secondary danger">Supprimer</button>
 </form>
 </div>"#
         )
     } else {
-        r#"<p class="muted" style="margin-top:1rem;">Seul le créateur ou un administrateur peut modifier ou supprimer cet événement.</p>"#.to_string()
+        r#"<p class="muted">Seul le créateur ou un administrateur peut modifier ou supprimer cet événement.</p>"#.to_string()
     };
 
     // Reminders: add form + one-shot display of a just-created reminder
@@ -275,9 +275,9 @@ fn page(
     let just_created = reminder
         .map(|(rid, offset)| {
             format!(
-                r#"<p class="notice success" style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;">
+                r#"<p class="notice success split">
 <span>Rappel actif : {offset} min avant.</span>
-<form method="post" action="/agenda/{id}/reminders/{rid}/delete" style="margin:0;">
+<form method="post" action="/agenda/{id}/reminders/{rid}/delete">
 <button type="submit" class="secondary">Supprimer ce rappel</button>
 </form></p>"#
             )
@@ -285,7 +285,7 @@ fn page(
         .unwrap_or_default();
     let reminder_select_html = reminder_select("reminder", None);
     let reminders_html = format!(
-        r#"<h2 style="font-size:1.1rem;margin-top:1.5rem;">Rappels</h2>
+        r#"<h2>Rappels</h2>
 <p class="muted">Ajoute un rappel par email avant l'événement. La liste des rappels existants n'est pas affichable (limitation v1).</p>
 {just_created}
 <form method="post" action="/agenda/{id}/reminders">
@@ -322,9 +322,9 @@ fn render_oneoff_completion(id: Uuid, event: &EventResponse) -> String {
         ("Marquer faite", "true", "⬜ À faire")
     };
     format!(
-        r#"<div style="margin-top:1rem;display:flex;gap:0.75rem;align-items:center;">
+        r#"<div class="actions">
 <span><strong>{status}</strong></span>
-<form method="post" action="/agenda/{id}/complete" style="margin:0;">
+<form method="post" action="/agenda/{id}/complete">
 <input type="hidden" name="completed" value="{next}"/>
 <button type="submit" class="secondary">{label}</button>
 </form></div>"#
@@ -337,12 +337,16 @@ fn render_occurrence_completions(
     focus_occ: Option<&str>,
 ) -> String {
     if occurrences.is_empty() {
-        return r#"<p class="muted" style="margin-top:1rem;">Aucune occurrence à venir dans les 60 prochains jours.</p>"#.to_string();
+        return r#"<p class="muted">Aucune occurrence à venir dans les 60 prochains jours.</p>"#
+            .to_string();
     }
     let rows: String = occurrences
         .iter()
         .map(|occ| {
-            let occ_param = occ.occurrence_starts_at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+            let occ_param = occ
+                .occurrence_starts_at
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string();
             let done = occ.event.completed_at.is_some();
             let (label, next, status) = if done {
                 ("Marquer à faire", "false", "✅")
@@ -350,14 +354,14 @@ fn render_occurrence_completions(
                 ("Marquer faite", "true", "⬜")
             };
             let highlight = if focus_occ == Some(occ_param.as_str()) {
-                "background:var(--accent-bg);"
+                " current"
             } else {
                 ""
             };
             format!(
-                r#"<li style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;padding:0.5rem;border-bottom:1px solid var(--border);{highlight}">
+                r#"<li class="list-row{highlight}">
 <span>{status} {when}</span>
-<form method="post" action="/agenda/{id}/complete" style="margin:0;">
+<form method="post" action="/agenda/{id}/complete">
 <input type="hidden" name="completed" value="{next}"/>
 <input type="hidden" name="occurrence_at" value="{occ_param}"/>
 <button type="submit" class="secondary">{label}</button>
@@ -367,9 +371,9 @@ fn render_occurrence_completions(
         })
         .collect();
     format!(
-        r#"<h2 style="font-size:1.1rem;margin-top:1.5rem;">Occurrences à venir</h2>
+        r#"<h2>Occurrences à venir</h2>
 <p class="muted">La complétion est indépendante par occurrence : cocher l'une n'affecte pas les autres.</p>
-<ul style="list-style:none;padding:0;margin:0;">{rows}</ul>"#
+<ul class="list">{rows}</ul>"#
     )
 }
 
@@ -380,7 +384,7 @@ fn render_attachments(id: Uuid, attachments: &[AttachmentResponse], can_edit: bo
             let size_kb = (a.size_bytes as f64 / 1024.0).round() as i64;
             let delete = if can_edit {
                 format!(
-                    r#"<form method="post" action="/agenda/{id}/attachments/{aid}/delete" style="margin:0;">
+                    r#"<form method="post" action="/agenda/{id}/attachments/{aid}/delete">
 <button type="submit" class="secondary">Supprimer</button></form>"#,
                     aid = a.id,
                 )
@@ -388,7 +392,7 @@ fn render_attachments(id: Uuid, attachments: &[AttachmentResponse], can_edit: bo
                 String::new()
             };
             format!(
-                r#"<li style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;padding:0.5rem;border-bottom:1px solid var(--border);">
+                r#"<li class="list-row">
 <a href="/agenda/{id}/attachments/{aid}/download">{name}</a>
 <span class="muted">{size_kb} Ko</span>
 {delete}</li>"#,
@@ -400,7 +404,7 @@ fn render_attachments(id: Uuid, attachments: &[AttachmentResponse], can_edit: bo
     let list = if attachments.is_empty() {
         r#"<p class="muted">Aucune pièce jointe.</p>"#.to_string()
     } else {
-        format!(r#"<ul style="list-style:none;padding:0;margin:0;">{rows}</ul>"#)
+        format!(r#"<ul class="list">{rows}</ul>"#)
     };
     let upload = format!(
         r#"<form method="post" action="/agenda/{id}/attachments" enctype="multipart/form-data">
@@ -410,7 +414,7 @@ fn render_attachments(id: Uuid, attachments: &[AttachmentResponse], can_edit: bo
 </form>"#
     );
     format!(
-        r#"<h2 style="font-size:1.1rem;margin-top:1.5rem;">Pièces jointes</h2>
+        r#"<h2>Pièces jointes</h2>
 {list}
 {upload}"#
     )

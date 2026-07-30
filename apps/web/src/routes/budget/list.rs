@@ -54,13 +54,13 @@ fn summary_html(summary: &BudgetSummary) -> String {
         .iter()
         .map(|p| {
             format!(
-                r#"<li style="display:flex;justify-content:space-between;gap:0.75rem;padding:0.4rem 0;border-bottom:1px solid var(--border);"><span>{period}</span><strong>{total}</strong></li>"#,
+                r#"<li class="list-row"><span>{period}</span><strong>{total}</strong></li>"#,
                 period = html_escape(&format_period(p.period)),
                 total = html_escape(&format_euros(p.total)),
             )
         })
         .collect::<String>();
-    format!(r#"<ul style="list-style:none;padding:0;margin:0.5rem 0 0 0;">{rows}</ul>"#)
+    format!(r#"<ul class="list">{rows}</ul>"#)
 }
 
 /// Renders one budget entry: date, name, amount, an optional `Courses` badge
@@ -69,20 +69,20 @@ fn summary_html(summary: &BudgetSummary) -> String {
 fn entry_row(entry: &BudgetEntryResponse, can_edit: bool) -> String {
     let date = entry.spent_at.format("%d/%m/%Y").to_string();
     let badge_html = if entry.grocery_item_id.is_some() {
-        r#" <span style="font-size:0.75rem;padding:0.1rem 0.4rem;border-radius:3px;background:var(--border);">Courses</span>"#
+        r#" <span class="badge">Courses</span>"#
     } else {
         ""
     };
     let edit_link = if can_edit {
         format!(
-            r#"<a class="button secondary" href="/budget/{id}">Modifier</a>"#,
+            r#"<a class="btn secondary" href="/budget/{id}">Modifier</a>"#,
             id = entry.id
         )
     } else {
         String::new()
     };
     format!(
-        r#"<li style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;padding:0.6rem 0;border-bottom:1px solid var(--border);">
+        r#"<li class="list-row">
 <span><span class="muted">{date}</span> <strong>{name}</strong>{badge_html} <span class="muted">— {amount}</span></span>
 {edit_link}
 </li>"#,
@@ -154,20 +154,20 @@ pub async fn get(
             .iter()
             .map(|e| entry_row(e, can_modify(&fam.role, e.created_by == me.user_id)))
             .collect::<String>();
-        format!(r#"<ul style="list-style:none;padding:0;margin:1rem 0 0 0;">{rows}</ul>"#)
+        format!(r#"<ul class="list">{rows}</ul>"#)
     };
 
     let body = format!(
         r#"{header}
-<div style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;flex-wrap:wrap;">
-<h1 style="margin:0;">Budget</h1>
-<a class="button" href="/budget/new">Ajouter une dépense</a>
+<div class="page-header">
+<h1>Budget</h1>
+<a class="btn" href="/budget/new">Ajouter une dépense</a>
 </div>
 <p class="muted">Les dépenses liées aux courses de la famille : saisie manuelle ou prix renseigné sur un article coché de la liste de courses.</p>
 {notice}{error}
-<h2 style="margin-top:1.5rem;">Résumé mensuel</h2>
+<h2>Résumé mensuel</h2>
 <div id="monthly-summary">{summary_section}</div>
-<h2 style="margin-top:1.5rem;">Dépenses</h2>
+<h2>Dépenses</h2>
 {entries_section}"#,
         header = fam.header,
     );

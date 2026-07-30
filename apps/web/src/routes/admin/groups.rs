@@ -74,7 +74,7 @@ pub async fn get(
         r#"{header}
 <h1>Administration — Familles</h1>
 <p class="muted">Toutes les familles, tous foyers confondus. Vue de support en lecture seule.</p>
-<nav style="display:flex;gap:0.75rem;margin-bottom:1rem;"><a href="/admin/groups">Familles</a><a href="/admin/users">Utilisateurs</a></nav>
+<nav class="actions"><a href="/admin/groups">Familles</a><a href="/admin/users">Utilisateurs</a></nav>
 {table}"#,
     );
     Html(shell("Administration — Familles", &body)).into_response()

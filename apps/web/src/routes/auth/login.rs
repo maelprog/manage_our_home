@@ -29,9 +29,9 @@ fn page(email: &str, error: Option<&str>, api_public_base_url: &str) -> String {
             <div inner_html=pw></div>
             <button type="submit">"Se connecter"</button>
         </form>
-        <a class="button secondary" href=google_start style="display:block;margin-top:0.75rem;">
-            "Continuer avec Google"
-        </a>
+        <div class="actions">
+            <a class="btn secondary" href=google_start>"Continuer avec Google"</a>
+        </div>
         <div class="links">
             <a href="/register">"Créer un compte"</a>
             <a href="/forgot-password">"Mot de passe oublié ?"</a>

@@ -98,23 +98,23 @@ fn message_row(
     let author = author_name(members, msg.created_by);
     let time = format_message_time(msg.created_at);
     let edited = if msg.edited_at.is_some() {
-        r#" <span class="muted" style="font-size:0.75rem;">(modifié)</span>"#
+        r#" <span class="muted">(modifié)</span>"#
     } else {
         ""
     };
 
     let controls = if can_edit {
         format!(
-            r#"<div style="display:flex;gap:0.5rem;align-items:flex-start;margin-top:0.3rem;">
-<details style="margin:0;">
-<summary class="button secondary" style="display:inline-block;cursor:pointer;">Modifier</summary>
-<form method="post" action="/messagerie/{id}/edit" style="margin-top:0.4rem;display:flex;flex-direction:column;gap:0.4rem;">
+            r#"<div class="actions">
+<details>
+<summary class="btn secondary sm">Modifier</summary>
+<form method="post" action="/messagerie/{id}/edit" class="composer">
 <textarea name="content" required rows="2" maxlength="4000" aria-label="Modifier le message" style="min-width:16rem;">{content}</textarea>
 <button type="submit">Enregistrer</button>
 </form>
 </details>
-<form method="post" action="/messagerie/{id}/delete" style="margin:0;">
-<button type="submit" class="secondary" style="color:var(--error);">Supprimer</button>
+<form method="post" action="/messagerie/{id}/delete">
+<button type="submit" class="secondary danger">Supprimer</button>
 </form>
 </div>"#,
             id = msg.id,
@@ -125,9 +125,9 @@ fn message_row(
     };
 
     format!(
-        r#"<li data-message-id="{id}" style="padding:0.6rem 0;border-bottom:1px solid var(--border);">
-<div class="muted" style="font-size:0.85rem;"><strong>{author}</strong> — {time}{edited}</div>
-<div style="white-space:pre-wrap;margin-top:0.2rem;">{content}</div>
+        r#"<li data-message-id="{id}" class="list-row stacked">
+<div class="muted"><strong>{author}</strong> — {time}{edited}</div>
+<div class="multiline">{content}</div>
 {controls}
 </li>"#,
         id = msg.id,
@@ -353,7 +353,7 @@ fn page(
             .first()
             .map(|oldest| {
                 format!(
-                    r#"<div style="text-align:center;margin-bottom:0.5rem;"><a class="button secondary" href="/messagerie?{q}">Charger les messages plus anciens</a></div>"#,
+                    r#"<div class="actions"><a class="btn secondary" href="/messagerie?{q}">Charger les messages plus anciens</a></div>"#,
                     q = older_page_query(oldest.created_at, oldest.id, query.limit),
                 )
             })
@@ -366,7 +366,7 @@ fn page(
         r#"<p class="muted">Aucun message pour le moment. Écrivez le premier&nbsp;!</p>"#
             .to_string()
     } else {
-        format!(r#"{older_link}<ul style="list-style:none;padding:0;margin:0;">{rows}</ul>"#)
+        format!(r#"{older_link}<ul class="list">{rows}</ul>"#)
     };
 
     // A history window (not the live view) shows a way back to the recent view
@@ -374,7 +374,7 @@ fn page(
     let back_link = if live {
         String::new()
     } else {
-        r#"<div style="margin-bottom:0.75rem;"><a class="button secondary" href="/messagerie">Revenir aux messages récents</a></div>"#.to_string()
+        r#"<div class="actions"><a class="btn secondary" href="/messagerie">Revenir aux messages récents</a></div>"#.to_string()
     };
 
     let composer_error_html = composer_error
@@ -383,7 +383,7 @@ fn page(
 
     let composer = if live {
         format!(
-            r#"<form method="post" action="/messagerie" style="margin-top:1rem;display:flex;flex-direction:column;gap:0.5rem;">
+            r#"<form method="post" action="/messagerie" class="composer">
 {composer_error_html}<textarea name="content" required rows="3" maxlength="4000" aria-label="Votre message" placeholder="Votre message…">{content}</textarea>
 <button type="submit">Envoyer</button>
 </form>"#,
@@ -394,7 +394,7 @@ fn page(
     };
 
     let live_status = if live {
-        r#"<p id="live-status" class="muted" style="font-size:0.85rem;min-height:1.2em;margin:0.25rem 0;" aria-live="polite"></p>"#
+        r#"<p id="live-status" class="muted live-status" aria-live="polite"></p>"#
     } else {
         ""
     };
@@ -407,8 +407,8 @@ fn page(
 
     let body = format!(
         r#"{header}
-<h1 style="margin-bottom:0.25rem;">Messagerie</h1>
-<p class="muted" style="margin-top:0;">La conversation de la famille. Un seul fil, partagé par tous les membres.</p>
+<h1>Messagerie</h1>
+<p class="muted">La conversation de la famille. Un seul fil, partagé par tous les membres.</p>
 {notice}
 {live_status}
 {back_link}
@@ -734,13 +734,13 @@ async fn rerender_with_edit_error(
 
     let body = format!(
         r#"{header}
-<h1 style="margin-bottom:0.25rem;">Messagerie</h1>
-<p class="muted" style="margin-top:0;">La conversation de la famille. Un seul fil, partagé par tous les membres.</p>
-<p id="live-status" class="muted" style="font-size:0.85rem;min-height:1.2em;margin:0.25rem 0;" aria-live="polite"></p>
+<h1>Messagerie</h1>
+<p class="muted">La conversation de la famille. Un seul fil, partagé par tous les membres.</p>
+<p id="live-status" class="muted live-status" aria-live="polite"></p>
 <div id="thread" data-group-id="{gid}" data-live="true">
-<ul style="list-style:none;padding:0;margin:0;">{rows}</ul>
+<ul class="list">{rows}</ul>
 </div>
-<form method="post" action="/messagerie" style="margin-top:1rem;display:flex;flex-direction:column;gap:0.5rem;">
+<form method="post" action="/messagerie" class="composer">
 <textarea name="content" required rows="3" maxlength="4000" aria-label="Votre message" placeholder="Votre message…"></textarea>
 <button type="submit">Envoyer</button>
 </form>
@@ -763,13 +763,13 @@ fn edit_error_row(
     let author = author_name(members, msg.created_by);
     let time = format_message_time(msg.created_at);
     format!(
-        r#"<li data-message-id="{id}" style="padding:0.6rem 0;border-bottom:1px solid var(--border);">
-<div class="muted" style="font-size:0.85rem;"><strong>{author}</strong> — {time}</div>
-<div style="white-space:pre-wrap;margin-top:0.2rem;">{content}</div>
-<div style="margin-top:0.3rem;">
-<details open style="margin:0;">
-<summary class="button secondary" style="display:inline-block;cursor:pointer;">Modifier</summary>
-<form method="post" action="/messagerie/{id}/edit" style="margin-top:0.4rem;display:flex;flex-direction:column;gap:0.4rem;">
+        r#"<li data-message-id="{id}" class="list-row stacked">
+<div class="muted"><strong>{author}</strong> — {time}</div>
+<div class="multiline">{content}</div>
+<div class="actions">
+<details open>
+<summary class="btn secondary sm">Modifier</summary>
+<form method="post" action="/messagerie/{id}/edit" class="composer">
 <p class="notice error">{error}</p>
 <textarea name="content" required rows="2" maxlength="4000" aria-label="Modifier le message" style="min-width:16rem;">{submitted}</textarea>
 <button type="submit">Enregistrer</button>

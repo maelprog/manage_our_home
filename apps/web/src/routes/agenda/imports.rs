@@ -206,10 +206,10 @@ pub async fn get(
     let may_configure = can_configure(&fam.role);
     let body = format!(
         r#"{header}
-<div style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem;">
-<h1 style="margin:0;">Agendas Google</h1>
-<span style="display:flex;gap:0.5rem;flex-wrap:wrap;">
-<a class="button secondary" href="/agenda">Retour à l'agenda</a>
+<div class="page-header">
+<h1>Agendas Google</h1>
+<span class="actions">
+<a class="btn secondary" href="/agenda">Retour à l'agenda</a>
 {add_button}
 </span>
 </div>
@@ -218,7 +218,7 @@ pub async fn get(
 {content}"#,
         header = fam.header,
         add_button = if may_configure {
-            r#"<a class="button" href="/agenda/imports/new">Ajouter un agenda Google</a>"#
+            r#"<a class="btn" href="/agenda/imports/new">Ajouter un agenda Google</a>"#
         } else {
             ""
         },
@@ -261,11 +261,11 @@ fn table(
         .iter()
         .map(|i| {
             let actions = format!(
-                r#"<form method="post" action="/agenda/imports/{id}/import" style="display:inline;margin:0;"><button type="submit">Importer maintenant</button></form>{delete}"#,
+                r#"<div class="actions"><form method="post" action="/agenda/imports/{id}/import"><button type="submit">Importer maintenant</button></form>{delete}</div>"#,
                 id = i.id,
                 delete = if may_configure {
                     format!(
-                        r#" <a class="button secondary" href="/agenda/imports/{id}/delete">Supprimer</a>"#,
+                        r#"<a class="btn secondary" href="/agenda/imports/{id}/delete">Supprimer</a>"#,
                         id = i.id,
                     )
                 } else {
@@ -274,10 +274,10 @@ fn table(
             );
             format!(
                 r#"<tr>
-<td style="padding:0.4rem;border-bottom:1px solid var(--border);">{label}</td>
-<td style="padding:0.4rem;border-bottom:1px solid var(--border);">{last}</td>
-<td style="padding:0.4rem;border-bottom:1px solid var(--border);">{by} — {created}</td>
-<td style="padding:0.4rem;border-bottom:1px solid var(--border);">{actions}</td>
+<td>{label}</td>
+<td>{last}</td>
+<td>{by} — {created}</td>
+<td>{actions}</td>
 </tr>"#,
                 label = html_escape(&i.label),
                 last = html_escape(&format_last_imported(i.last_imported_at)),
@@ -288,12 +288,12 @@ fn table(
         })
         .collect();
     format!(
-        r#"<table style="width:100%;border-collapse:collapse;">
+        r#"<table>
 <thead><tr>
-<th style="text-align:left;padding:0.4rem;">Agenda</th>
-<th style="text-align:left;padding:0.4rem;">Dernier import</th>
-<th style="text-align:left;padding:0.4rem;">Ajouté par</th>
-<th style="text-align:left;padding:0.4rem;">Actions</th>
+<th>Agenda</th>
+<th>Dernier import</th>
+<th>Ajouté par</th>
+<th>Actions</th>
 </tr></thead>
 <tbody>{rows}</tbody></table>"#
     )
