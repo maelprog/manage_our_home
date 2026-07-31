@@ -22,24 +22,29 @@ import {
 // swapped /messagerie for /account and nobody noticed).
 // ---------------------------------------------------------------------------
 
+// Since #69 the nav is a `const NAV` table: every link carries an
+// `aria-current` decided per page, which eight literal `<a>`s in the
+// `format!` could not.
 const APP_RS_NAV = `
+const NAV: [(&str, &str); 3] = [
+    ("/", "Accueil"),
+    ("/agenda", "Agenda"),
+    ("/messagerie", "Messagerie"),
+];
+
 pub fn app_header(me: &MeResponse) -> String {
-    let admin_link = if me.is_superadmin {
-        r#"<a href="/admin/users">Admin</a>"#
-    } else {
-        ""
-    };
+    let links: String = NAV
+        .iter()
+        .copied()
+        .chain(me.is_superadmin.then_some(("/admin/users", "Admin")))
+        .map(|(href, label)| navlink(href, label, redirect_to))
+        .collect();
     format!(
         r#"<header>
-<div class="muted page-header">
-<nav class="actions">
-<a href="/">Accueil</a>
-<a href="/agenda">Agenda</a>
-<a href="/messagerie">Messagerie</a>
-{admin_link}
-</nav>
+<div class="page-header">
+<nav class="actions">{links}</nav>
 <span class="actions">
-<a href="/account">Mon compte</a>
+<a class="navlink" href="/account"{account_current}>Mon compte</a>
 </span>
 </div>
 </header>"#,
@@ -52,39 +57,43 @@ test("parseNavRoutes collects the nav's hrefs in order", () => {
   assert.deepEqual(parsed.hrefs, ["/", "/agenda", "/messagerie"]);
 });
 
-test("parseNavRoutes ignores links outside the nav element", () => {
+test("parseNavRoutes ignores links outside the nav table", () => {
   // /account is a header link, not a nav entry — substituting it for a real
   // nav entry is exactly the bug this parser exists to make impossible.
   const parsed = parseNavRoutes(APP_RS_NAV);
   assert.equal(parsed.hrefs.includes("/account"), false);
 });
 
-test("parseNavRoutes reports the conditional slots interpolated into the nav", () => {
+test("parseNavRoutes reports the entries chained onto the table under a condition", () => {
   const parsed = parseNavRoutes(APP_RS_NAV);
-  assert.deepEqual(parsed.placeholders, ["admin_link"]);
+  assert.deepEqual(parsed.conditional, ["/admin/users"]);
 });
 
-test("parseNavRoutes throws when the nav element cannot be found", () => {
-  assert.throws(() => parseNavRoutes("fn app_header() {}"), /nav class="actions"/);
+test("parseNavRoutes throws when the nav table cannot be found", () => {
+  assert.throws(() => parseNavRoutes("fn app_header() {}"), /const NAV/);
 });
 
-test("parseNavRoutes throws when several nav elements match", () => {
+test("parseNavRoutes throws when several nav tables match", () => {
   assert.throws(() => parseNavRoutes(APP_RS_NAV + APP_RS_NAV), /2 /);
 });
 
 // ---------------------------------------------------------------------------
-// diffNavRoutes — the declared list must equal the nav, slot for slot.
+// diffNavRoutes — the declared list must equal the nav, entry for entry.
 // ---------------------------------------------------------------------------
 
-const SLOTS = { admin_link: "/admin/users" };
+const CONDITIONAL = ["/admin/users"];
 
 test("diffNavRoutes is silent when the declared list matches the nav", () => {
-  const diff = diffNavRoutes(["/", "/agenda", "/messagerie"], parseNavRoutes(APP_RS_NAV), SLOTS);
-  assert.deepEqual(diff, { missing: [], unexpected: [], unknownPlaceholders: [] });
+  const diff = diffNavRoutes(
+    ["/", "/agenda", "/messagerie"],
+    parseNavRoutes(APP_RS_NAV),
+    CONDITIONAL,
+  );
+  assert.deepEqual(diff, { missing: [], unexpected: [], unknownConditional: [] });
 });
 
 test("diffNavRoutes reports a nav entry the declared list forgot", () => {
-  const diff = diffNavRoutes(["/", "/agenda"], parseNavRoutes(APP_RS_NAV), SLOTS);
+  const diff = diffNavRoutes(["/", "/agenda"], parseNavRoutes(APP_RS_NAV), CONDITIONAL);
   assert.deepEqual(diff.missing, ["/messagerie"]);
   assert.deepEqual(diff.unexpected, []);
 });
@@ -93,21 +102,25 @@ test("diffNavRoutes reports a declared route that is not in the nav", () => {
   const diff = diffNavRoutes(
     ["/", "/agenda", "/messagerie", "/account"],
     parseNavRoutes(APP_RS_NAV),
-    SLOTS,
+    CONDITIONAL,
   );
   assert.deepEqual(diff.unexpected, ["/account"]);
 });
 
-test("diffNavRoutes reports a conditional slot nobody accounted for", () => {
-  const diff = diffNavRoutes(["/", "/agenda", "/messagerie"], parseNavRoutes(APP_RS_NAV), {});
-  assert.deepEqual(diff.unknownPlaceholders, ["admin_link"]);
+test("diffNavRoutes reports a conditional entry nobody accounted for", () => {
+  const diff = diffNavRoutes(["/", "/agenda", "/messagerie"], parseNavRoutes(APP_RS_NAV), []);
+  assert.deepEqual(diff.unknownConditional, ["/admin/users"]);
 });
 
-test("diffNavRoutes does not require the slot's route to be measured", () => {
+test("diffNavRoutes does not require the conditional route to be measured", () => {
   // /admin/users 404s for everyone but the single technical superadmin, so it
-  // is deliberately declared-but-not-measured. Knowing the slot is enough.
-  const diff = diffNavRoutes(["/", "/agenda", "/messagerie"], parseNavRoutes(APP_RS_NAV), SLOTS);
-  assert.deepEqual(diff.unknownPlaceholders, []);
+  // is deliberately declared-but-not-measured. Knowing about it is enough.
+  const diff = diffNavRoutes(
+    ["/", "/agenda", "/messagerie"],
+    parseNavRoutes(APP_RS_NAV),
+    CONDITIONAL,
+  );
+  assert.deepEqual(diff.unknownConditional, []);
 });
 
 // ---------------------------------------------------------------------------
