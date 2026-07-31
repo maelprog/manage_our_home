@@ -15,7 +15,7 @@ use manage_our_home_shared::dto::recipes::{
 };
 use manage_our_home_shared::validation::recipes::stock_summary;
 
-use crate::app::{html_escape, shell};
+use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -181,8 +181,7 @@ pub async fn get(
     };
 
     let body = format!(
-        r#"{header}
-<div class="page-header">
+        r#"<div class="page-header">
 <h1>Recettes</h1>
 <a class="btn" href="/recipes/new">Nouvelle recette</a>
 </div>
@@ -190,7 +189,12 @@ pub async fn get(
 {suggestions_section}
 <h2>Toutes les recettes</h2>
 {list_section}"#,
-        header = fam.header,
     );
-    Html(shell("Recettes", &body)).into_response()
+    Html(shell_with_header(
+        Width::Full,
+        "Recettes",
+        &fam.header,
+        &body,
+    ))
+    .into_response()
 }

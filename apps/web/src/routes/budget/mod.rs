@@ -31,7 +31,7 @@ use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
 use uuid::Uuid;
 
-use crate::app::shell;
+use crate::app::{shell, Width};
 use crate::family::{active_group_id_from_headers, resolve_active_group};
 use crate::routes::groups::{cookie_of, header_with_groups};
 use crate::state::AppState;
@@ -81,7 +81,7 @@ pub(crate) fn entry_not_found_page() -> axum::response::Html<String> {
         <p>"Cette dépense n'existe pas ou vous n'y avez pas accès."</p>
         <a class="btn secondary" href="/budget">"Retour au budget"</a>
     };
-    axum::response::Html(shell("Dépense introuvable", &body.to_html()))
+    axum::response::Html(shell(Width::Form, "Dépense introuvable", &body.to_html()))
 }
 
 pub(crate) fn service_unavailable_page() -> axum::response::Html<String> {
@@ -90,7 +90,7 @@ pub(crate) fn service_unavailable_page() -> axum::response::Html<String> {
         <p>"Merci de réessayer dans quelques instants."</p>
         <a class="btn secondary" href="/budget">"Retour au budget"</a>
     };
-    axum::response::Html(shell("Service indisponible", &body.to_html()))
+    axum::response::Html(shell(Width::Form, "Service indisponible", &body.to_html()))
 }
 
 pub(crate) fn forbidden_page() -> axum::response::Html<String> {
@@ -99,5 +99,5 @@ pub(crate) fn forbidden_page() -> axum::response::Html<String> {
         <p>"Vous n'avez pas les droits nécessaires sur cette dépense."</p>
         <a class="btn secondary" href="/budget">"Retour au budget"</a>
     };
-    axum::response::Html(shell("Action non autorisée", &body.to_html()))
+    axum::response::Html(shell(Width::Form, "Action non autorisée", &body.to_html()))
 }

@@ -14,7 +14,7 @@ use manage_our_home_shared::validation::recipes::{
     parse_ingredients, validate_recipe_name, RecipeFormError,
 };
 
-use crate::app::{html_escape, shell};
+use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -78,8 +78,7 @@ fn page(header: &str, form: &RecipeForm, error: Option<&str>) -> String {
         .unwrap_or_default();
     let fields = form_fields(&form.name, &form.instructions, &form.ingredients);
     let body = format!(
-        r#"{header}
-<h1>Nouvelle recette</h1>
+        r#"<h1>Nouvelle recette</h1>
 {error_html}
 <form method="post" action="/recipes/new">
 {fields}
@@ -87,7 +86,7 @@ fn page(header: &str, form: &RecipeForm, error: Option<&str>) -> String {
 </form>
 <div class="links"><a href="/recipes">Retour aux recettes</a></div>"#,
     );
-    shell("Nouvelle recette", &body)
+    shell_with_header(Width::Form, "Nouvelle recette", header, &body)
 }
 
 pub async fn get(

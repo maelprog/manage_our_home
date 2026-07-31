@@ -20,7 +20,7 @@ use manage_our_home_shared::dto::agenda::{
 use manage_our_home_shared::validation::agenda::{parse_rrule, Freq, RecurrenceEnd};
 use uuid::Uuid;
 
-use crate::app::{html_escape, shell};
+use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -298,8 +298,7 @@ fn page(
     let attachments_html = render_attachments(id, attachments, can_edit);
 
     let body = format!(
-        r#"{header}
-<h1>{title}</h1>
+        r#"<h1>{title}</h1>
 {notice_html}{error_html}
 <p class="muted">{kind}</p>
 <p><strong>Quand :</strong> {when}</p>
@@ -311,7 +310,7 @@ fn page(
 <div class="links"><a href="/agenda">Retour à l'agenda</a></div>"#,
         title = html_escape(&event.title),
     );
-    shell(&event.title, &body)
+    shell_with_header(Width::Read, &event.title, header, &body)
 }
 
 fn render_oneoff_completion(id: Uuid, event: &EventResponse) -> String {

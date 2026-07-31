@@ -15,7 +15,7 @@ use chrono::NaiveDate;
 use manage_our_home_shared::dto::budget::CreateBudgetEntryRequest;
 use manage_our_home_shared::validation::budget::validate_entry_form;
 
-use crate::app::{html_escape, shell};
+use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -84,8 +84,7 @@ fn page(header: &str, form: &EntryForm, error: Option<&str>) -> String {
         .unwrap_or_default();
     let fields = form_fields(&form.name, &form.amount, &form.spent_at);
     let body = format!(
-        r#"{header}
-<h1>Nouvelle dépense</h1>
+        r#"<h1>Nouvelle dépense</h1>
 {error_html}
 <form method="post" action="/budget/new">
 {fields}
@@ -93,7 +92,7 @@ fn page(header: &str, form: &EntryForm, error: Option<&str>) -> String {
 </form>
 <div class="links"><a href="/budget">Retour au budget</a></div>"#,
     );
-    shell("Nouvelle dépense", &body)
+    shell_with_header(Width::Form, "Nouvelle dépense", header, &body)
 }
 
 pub async fn get(

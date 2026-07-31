@@ -91,6 +91,10 @@ ajouter `tower-http` et la route est un prérequis, pas un détail.
 | `--t-sm` | 0.875rem | libellés de champ, actions, tableaux |
 | `--t-xs` | 0.8125rem | métadonnées, badges, en-têtes de colonne |
 
+Les deux dernières valeurs sont celles d'un écran large : sous 861 px,
+`--t-sm` monte à 0.9375rem et `--t-xs` à 0.875rem
+(voir [Layout](#layout) → plancher typographique).
+
 Interlignage : 1.5 pour le corps, 1.25 pour les titres.
 `letter-spacing: -0.01em` sur les titres, `0.04em` sur les micro-libellés
 capitalisés.
@@ -202,6 +206,31 @@ elle accompagne toujours une initiale ou un nom.
 - **Élévation :** une seule surface (`--surface`) délimitée par `--border`.
   **Aucune `box-shadow` décorative** — l'ombre est réservée à l'anneau de focus.
 
+Livré par #70, et voici ce que la mise en œuvre a fixé que ce tableau ne
+disait pas.
+
+- **Un seul markup pour les deux dispositions.** Les mêmes liens sont la
+  colonne latérale au-dessus de 861 px et la barre basse en dessous ; c'est
+  le CSS qui les déplace. Deux navigations rendues côte à côte donneraient
+  deux `aria-current="page"` sur la même page, ce qui est pire qu'aucun.
+- **La feuille est écrite mobile first**, la barre d'onglets dans le corps du
+  document et la sidebar dans un `@media (min-width: 861px)`. Une paire
+  `min-width` / `max-width` laisserait un trou entre 860 et 861 px CSS, où
+  atterrit un viewport zoomé.
+- **`shell()` porte la navigation**, qui devient ainsi le frère de `<main>` et
+  non son premier enfant : une colonne de grille ne peut pas se placer à côté
+  d'un contenu qui la contient. C'est aussi ce qui sort `<header>` de
+  `<main>`, où il n'avait jamais eu sa place.
+- **La barre d'onglets défile latéralement** plutôt que de comprimer ses
+  libellés : neuf onglets ne tiennent pas sur 390 px. Les remplacer par des
+  icônes n'est pas gratuit non plus — une icône dans le lien change son nom
+  accessible, et c'est par ce nom que la suite Playwright sait sur quelle
+  page elle est. Les onglets font 48 px de haut (`--s12`), au-dessus des
+  44 px que demande [Espacement](#espacement).
+- **Une page sans session ne rend aucune navigation** (authentification,
+  politique de confidentialité vue déconnecté) : pas de grille, pas de
+  colonne latérale de 15 rem tenant un seul lien.
+
 ### L'agenda sur téléphone : vue jour
 
 La barre d'onglets ne suffit pas. Une grille de 7 colonnes sur un écran de
@@ -285,6 +314,7 @@ aucune n'introduit de valeur hors des échelles :
 | `.current` | la cellule d'aujourd'hui, l'occurrence sur laquelle une fiche est ouverte |
 | `.cal`, `.cal-cell`, `.cal-week`, `.cal-col`, `.cal-day` | la grille du mois et la bande de semaine de l'agenda — posées en CSS pour que #71 les reprenne là et non dans le Rust |
 | `.composer`, `.live-status` | la zone de saisie de la messagerie et sa ligne d'état ; #72 les reprend |
+| `.app`, `.content`, `.w-form`, `.w-read`, `.tabs` | la coque responsive de #70 : la grille sidebar + contenu, la colonne de contenu et ses deux largeurs bornées, la barre d'onglets qui devient la sidebar |
 
 Le résiduel de `style="…"` assumé après #68 : une couleur de membre calculée
 (`.avatar`), la largeur d'un champ de prix, l'alignement d'une colonne
@@ -437,18 +467,25 @@ Trois seuils, du plus englobant au plus fin :
 
 | Seuil | Valeur | Aujourd'hui | Ce qu'on fait au dépassement |
 |---|---|---|---|
-| Réponse complète compressée, routes principales | **≤ 14 KiB** (14 336 o) | 11 936 o au pire sur 7 routes, **16 761 o sur `/messagerie`** | passer la feuille sur `/assets` |
-| Feuille compressée | **≤ 10 KiB** (10 240 o) | 8 633 o | idem — **jamais** dégraisser les commentaires |
-| Déclarations compressées | **≤ 3 KiB** (3 072 o) | 2 670 o | supprimer une règle redondante |
+| Réponse complète compressée, routes principales | **≤ 14 KiB** (14 336 o) | 12 876 o au pire sur 7 routes, **17 674 o sur `/messagerie`** | passer la feuille sur `/assets` |
+| Feuille compressée | **≤ 10 KiB** (10 240 o) | 9 570 o | idem — **jamais** dégraisser les commentaires |
+| Déclarations compressées | **≤ 3 KiB** (3 072 o) | 2 921 o | supprimer une règle redondante |
 
-La colonne « aujourd'hui » est **remesurée le 2026-07-31, après #69**, avec le
+La colonne « aujourd'hui » est **remesurée le 2026-07-31, après #70**, avec le
 corpus reproductible de `npm run seed` (#85) et non le jeu de données ad hoc
-de la campagne #83 — les deux ne sont pas comparables entre eux. Ce que #69 a
-coûté, mesuré des deux côtés sur ce même corpus : la feuille passe de 7 192 à
-8 633 o compressés, les déclarations de 2 299 à 2 670 o, et chaque route gagne
-environ 1 440 o (`/agenda`, la plus lourde des sept, de 10 495 à 11 936 o).
-Aucun des trois plafonds n'est franchi par ce changement ; `/messagerie` était
-déjà au-dessus du premier avant lui.
+de la campagne #83 — les deux ne sont pas comparables entre eux. Ce que #69
+avait coûté, sur ce même corpus : la feuille de 7 192 à 8 633 o compressés,
+les déclarations de 2 299 à 2 670 o, `/agenda` de 10 495 à 11 936 o.
+
+Ce que **#70** coûte, mesuré des deux côtés sur ce corpus et sur la même base
+semée : la feuille passe de 8 633 à **9 570 o** compressés, les déclarations
+de 2 670 à **2 921 o**, et chaque route gagne **925 à 944 o** (`/agenda`, la
+plus lourde des sept, de 11 932 à 12 876 o). La **moitié document ne bouge
+pas** (±6 o sur les huit routes) : sortir la navigation du corps de chaque
+page et la remettre dans `shell()` n'ajoute pas un octet au document, tout le
+coût est la douzaine de règles de la coque responsive. Aucun des trois
+plafonds n'est franchi ; `/messagerie` était au-dessus du premier avant #69 et
+son dépassement passe de +2 411 à +3 338 o (c'est #72 qui tient cette page).
 
 **14 KiB** est le seul chiffre qui ne soit pas de notre fait : c'est ce que la
 fenêtre de congestion initiale (IW10 — dix segments d'un MSS de 1 460 octets,
@@ -477,9 +514,9 @@ ce seuil-là n'est tenu par aucun test.
 
 Pourquoi ne pas resserrer davantage, puisque la moitié document s'est révélée
 deux à trois fois plus lourde que prévu ? Parce que la structure à deux
-plafonds impose un plancher : les déclarations font 30,9 % de la feuille
-compressée (2 670 sur 8 633 après #69), donc le plafond des déclarations n'est
-atteint le premier que si celui de la feuille reste **au-dessus de ~9 942 o**.
+plafonds impose un plancher : les déclarations font 30,5 % de la feuille
+compressée (2 921 sur 9 570 après #70), donc le plafond des déclarations n'est
+atteint le premier que si celui de la feuille reste **au-dessus de ~10 065 o**.
 Descendre sous ce
 plancher inverserait l'ordre des deux garde-fous et ferait retomber la
 pression sur les commentaires — exactement ce que le dispositif existe pour
@@ -496,9 +533,15 @@ sur la prose. C'est ce plafond-là qui porte le mordant du dispositif.
 Les deux chiffres comparés ici l'étaient auparavant avec deux formules
 différentes (25 % rapporté au plafond contre 42 % rapporté à la valeur
 courante), ce qui les rendait incomparables alors que la phrase les opposait ;
-c'est le constat mineur laissé par #83, corrigé ici. Après #69 :
-**13 % de marge sur les déclarations, 16 % sur la feuille** — le plafond des
-déclarations reste bien le plus mordant des deux.
+c'est le constat mineur laissé par #83, corrigé ici. Après #69 : 13 % de marge
+sur les déclarations, 16 % sur la feuille. **Après #70 : 4,9 % sur les
+déclarations, 6,5 % sur la feuille** — le plafond des déclarations reste le
+plus mordant des deux, mais de 175 octets seulement (le plancher ci-dessus est
+à ~10 065 o pour un plafond de feuille à 10 240). #70 a consommé les deux
+tiers de la place qui restait ; ce qu'il reste à se partager pour #71–#74 est
+**151 octets de déclarations** et 670 de feuille. #70 n'a relevé aucun
+plafond ; le lot qui en aura besoin doit le demander dans son corps de PR, pas
+l'écrire au passage.
 
 Les deux derniers seuils sont tenus par des tests dans `apps/web/src/app.rs`
 (`the_compressed_stylesheet_fits_its_share_of_the_first_round_trip` et
@@ -519,7 +562,7 @@ et la réponse est la porte de sortie ci-dessous, pas un nombre plus grand.
 HTML — donc le CSS inliné — et le JSON de `apps/api`. C'est ce qui rend la
 prémisse de l'inlining à nouveau vraie : sans compression, aucune des huit
 routes principales ne tenait dans le premier aller-retour ; avec, sept y
-tiennent, la plus lourde des sept (`/agenda`, 11 936 o après #69) gardant 17 %
+tiennent, la plus lourde des sept (`/agenda`, 12 876 o après #70) gardant 10 %
 de marge. La huitième, `/messagerie`, n'y tient pas — voir plus haut.
 
 `apps/web` ne compresse **pas** de son côté. Caddy laisse intacte une réponse
@@ -579,3 +622,7 @@ là via `include_str!`), pas d'une étape de build : la contrainte n°3 reste.
 | 2026-07-31 | Les champs neutralisent l'anneau du navigateur avec `outline: 2px solid transparent`, jamais `none` (#69) | En mode contrastes forcés, `box-shadow` est ignoré et les contours sont repeints par le système : `outline: none` y laisserait un champ focalisé sans aucun indicateur |
 | 2026-07-31 | `prefers-reduced-motion` neutralise en remettant `--dur` à 0s (#69) | Une déclaration au lieu d'un `* { transition: none !important }` : toutes les transitions étant minutées par le jeton, il n'y a aucune liste à tenir à jour et aucune règle à sur-spécifier |
 | 2026-07-31 | Marges du budget : une seule formule, `(plafond − actuel) / plafond` (#69) | Deux marges étaient comparées dans la même phrase avec deux formules différentes (25 % rapporté au plafond contre 42 % rapporté à la valeur courante) — constat mineur laissé par #83, corrigé au passage |
+| 2026-07-31 | `shell()` prend la largeur **et** la navigation (#70) | La sidebar est une colonne de grille : elle ne peut pas être le premier enfant du `<main>` qu'elle borde. Les 73 routes passaient `app_header` en tête de leur propre corps, ce qui plaçait aussi `<header>` dans `<main>`. La largeur est un paramètre plutôt qu'une table chemin → largeur : une route sait ce qu'elle rend, une table centrale serait une chose de plus à tenir en phase avec le routeur |
+| 2026-07-31 | Un seul markup de navigation pour les deux dispositions (#70) | Rendre une sidebar *et* une barre d'onglets mettrait deux `aria-current="page"` sur la même page. Le CSS déplace les mêmes liens ; la barre basse est le cas de base, la sidebar l'override à partir de 861 px — une paire `min-width`/`max-width` laisserait un trou entre 860 et 861 px CSS |
+| 2026-07-31 | Barre d'onglets à défilement latéral, sans icônes (#70) | Neuf onglets ne tiennent pas sur 390 px. L'icône que demandait l'issue n'est pas gratuite : dans le lien elle change le nom accessible et le `textContent` sur lesquels s'appuie `e2e/tests/interaction.spec.ts` (`toHaveText("Accueil")`, `getByRole("link", { name: "Admin" })`), y compris en `::before` CSS que Chromium intègre au nom accessible. Reporté plutôt que payé par un ajustement de la suite |
+| 2026-07-31 | Plancher typographique écrit à l'envers (#70) | `:root` porte les valeurs *téléphone* de `--t-xs`/`--t-sm` et le `@media (min-width: 861px)` y rétablit celles de l'échelle. Mobile first, une media query de moins, et le trou entre 860 et 861 px disparaît |

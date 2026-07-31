@@ -7,7 +7,7 @@ use manage_our_home_shared::validation::auth::{
     validate_display_name, validate_email, validate_password,
 };
 
-use crate::app::{password_error_message, password_field, shell};
+use crate::app::{password_error_message, password_field, shell, Width};
 use crate::layout::RedirectIfAuthenticated;
 use crate::state::{api_post_json, AppState};
 
@@ -56,7 +56,7 @@ fn page(
             <a href="/privacy-policy">"Politique de confidentialité"</a>
         </div>
     };
-    shell("Créer un compte", &body.to_html())
+    shell(Width::Form, "Créer un compte", &body.to_html())
 }
 
 pub async fn get(
@@ -152,5 +152,5 @@ pub async fn check_email() -> impl IntoResponse {
             <a href="/login">"Retour à la connexion"</a>
         </div>
     };
-    Html(shell("Vérifiez votre email", &body.to_html()))
+    Html(shell(Width::Form, "Vérifiez votre email", &body.to_html()))
 }

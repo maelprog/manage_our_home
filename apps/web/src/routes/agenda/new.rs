@@ -19,7 +19,7 @@ use manage_our_home_shared::validation::agenda::{
     build_rrule, validate_event_form, EventFormError, Freq, Recurrence, RecurrenceEnd,
 };
 
-use crate::app::{html_escape, shell};
+use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -251,8 +251,7 @@ fn page(header: &str, error: Option<&str>, default_start: &str, default_end: &st
     // `header` is trusted HTML built by `app_header`; embed it directly at
     // the top, the same position the `view!`-based pages give it.
     let body = format!(
-        r#"{header}
-<h1>Nouvel événement</h1>
+        r#"<h1>Nouvel événement</h1>
 {error_html}
 <form method="post" action="/agenda/new">
 <label>Titre <input type="text" name="title" required/></label>
@@ -270,7 +269,7 @@ fn page(header: &str, error: Option<&str>, default_start: &str, default_end: &st
 </form>
 <div class="links"><a href="/agenda">Retour à l'agenda</a></div>"#,
     );
-    shell("Nouvel événement", &body)
+    shell_with_header(Width::Form, "Nouvel événement", header, &body)
 }
 
 pub async fn get(

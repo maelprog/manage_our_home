@@ -20,7 +20,7 @@ use manage_our_home_shared::validation::messagerie::{
 };
 use uuid::Uuid;
 
-use crate::app::{html_escape, shell};
+use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -406,8 +406,7 @@ fn page(
     };
 
     let body = format!(
-        r#"{header}
-<h1>Messagerie</h1>
+        r#"<h1>Messagerie</h1>
 <p class="muted">La conversation de la famille. Un seul fil, partagé par tous les membres.</p>
 {notice}
 {live_status}
@@ -417,12 +416,11 @@ fn page(
 </div>
 {composer}
 {script}"#,
-        header = fam.header,
         notice = notice_html(query.notice.as_deref()),
         gid = fam.gid,
         live = live,
     );
-    shell("Messagerie", &body)
+    shell_with_header(Width::Full, "Messagerie", &fam.header, &body)
 }
 
 pub async fn get(
@@ -733,8 +731,7 @@ async fn rerender_with_edit_error(
         .collect::<String>();
 
     let body = format!(
-        r#"{header}
-<h1>Messagerie</h1>
+        r#"<h1>Messagerie</h1>
 <p class="muted">La conversation de la famille. Un seul fil, partagé par tous les membres.</p>
 <p id="live-status" class="muted live-status" aria-live="polite"></p>
 <div id="thread" data-group-id="{gid}" data-live="true">
@@ -745,11 +742,16 @@ async fn rerender_with_edit_error(
 <button type="submit">Envoyer</button>
 </form>
 {script}"#,
-        header = fam.header,
         gid = fam.gid,
         script = live_script(&message_ws_url(&fam.api_public_base_url, fam.gid)),
     );
-    Html(shell("Messagerie", &body)).into_response()
+    Html(shell_with_header(
+        Width::Full,
+        "Messagerie",
+        &fam.header,
+        &body,
+    ))
+    .into_response()
 }
 
 /// A message row whose edit disclosure is forced open, pre-filled with the

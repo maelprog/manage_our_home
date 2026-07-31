@@ -24,7 +24,7 @@ use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
 use uuid::Uuid;
 
-use crate::app::shell;
+use crate::app::{shell, Width};
 use crate::family::{active_group_id_from_headers, resolve_active_group};
 use crate::routes::groups::{cookie_of, header_with_groups};
 use crate::state::AppState;
@@ -78,7 +78,7 @@ pub(crate) fn item_not_found_page() -> Html<String> {
         <p>"Cet article n'existe pas ou vous n'y avez pas accès."</p>
         <a class="btn secondary" href="/stocks">"Retour aux stocks"</a>
     };
-    Html(shell("Article introuvable", &body.to_html()))
+    Html(shell(Width::Form, "Article introuvable", &body.to_html()))
 }
 
 pub(crate) fn service_unavailable_page() -> Html<String> {
@@ -87,7 +87,7 @@ pub(crate) fn service_unavailable_page() -> Html<String> {
         <p>"Merci de réessayer dans quelques instants."</p>
         <a class="btn secondary" href="/stocks">"Retour aux stocks"</a>
     };
-    Html(shell("Service indisponible", &body.to_html()))
+    Html(shell(Width::Form, "Service indisponible", &body.to_html()))
 }
 
 pub(crate) fn forbidden_page() -> Html<String> {
@@ -96,7 +96,7 @@ pub(crate) fn forbidden_page() -> Html<String> {
         <p>"Vous n'avez pas les droits nécessaires sur cet article."</p>
         <a class="btn secondary" href="/stocks">"Retour aux stocks"</a>
     };
-    Html(shell("Action non autorisée", &body.to_html()))
+    Html(shell(Width::Form, "Action non autorisée", &body.to_html()))
 }
 
 /// Formats an `f64` quantity/threshold for display and form pre-fill without a

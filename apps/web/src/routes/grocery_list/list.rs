@@ -19,7 +19,7 @@ use manage_our_home_shared::validation::grocery_list::{
 };
 use uuid::Uuid;
 
-use crate::app::{html_escape, shell};
+use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -175,8 +175,7 @@ pub async fn get(
     };
 
     let body = format!(
-        r#"{header}
-<div class="page-header">
+        r#"<div class="page-header">
 <h1>Liste de courses</h1>
 <form method="post" action="/grocery-list/generate">
 <button type="submit">Générer depuis les recettes et les stocks</button>
@@ -191,9 +190,14 @@ pub async fn get(
 <button type="submit">Ajouter</button>
 </form>
 {list_html}"#,
-        header = fam.header,
     );
-    Html(shell("Liste de courses", &body)).into_response()
+    Html(shell_with_header(
+        Width::Full,
+        "Liste de courses",
+        &fam.header,
+        &body,
+    ))
+    .into_response()
 }
 
 // -- mutations --------------------------------------------------------------

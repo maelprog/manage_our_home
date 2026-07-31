@@ -24,7 +24,7 @@ use manage_our_home_shared::dto::recipes::{
 };
 use uuid::Uuid;
 
-use crate::app::{html_escape, shell};
+use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -239,8 +239,7 @@ fn page(
     };
 
     let body = format!(
-        r#"{header}
-<h1>{name}</h1>
+        r#"<h1>{name}</h1>
 {notice_html}{error_html}
 <h2>Ingrédients</h2>
 {ingredients_html}
@@ -251,7 +250,7 @@ fn page(
 <div class="links"><a href="/recipes">Retour aux recettes</a></div>"#,
         name = html_escape(&recipe.name),
     );
-    shell(&recipe.name, &body)
+    shell_with_header(Width::Read, &recipe.name, header, &body)
 }
 
 // -- mutations --------------------------------------------------------------

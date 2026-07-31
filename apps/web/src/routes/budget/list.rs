@@ -11,7 +11,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use manage_our_home_shared::dto::budget::{BudgetEntryList, BudgetEntryResponse, BudgetSummary};
 use manage_our_home_shared::validation::budget::{can_modify, format_euros, format_period};
 
-use crate::app::{html_escape, shell};
+use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -158,8 +158,7 @@ pub async fn get(
     };
 
     let body = format!(
-        r#"{header}
-<div class="page-header">
+        r#"<div class="page-header">
 <h1>Budget</h1>
 <a class="btn" href="/budget/new">Ajouter une dépense</a>
 </div>
@@ -169,7 +168,6 @@ pub async fn get(
 <div id="monthly-summary">{summary_section}</div>
 <h2>Dépenses</h2>
 {entries_section}"#,
-        header = fam.header,
     );
-    Html(shell("Budget", &body)).into_response()
+    Html(shell_with_header(Width::Full, "Budget", &fam.header, &body)).into_response()
 }

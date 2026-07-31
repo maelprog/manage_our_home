@@ -4,7 +4,7 @@ use axum::Form;
 use leptos::prelude::*;
 use manage_our_home_shared::dto::auth::ForgotPasswordRequest;
 
-use crate::app::shell;
+use crate::app::{shell, Width};
 use crate::state::{api_post_json, AppState};
 
 #[derive(serde::Deserialize)]
@@ -42,7 +42,7 @@ fn form_page(submitted: bool) -> String {
         };
         view.to_html()
     };
-    shell("Mot de passe oublié", &body)
+    shell(Width::Form, "Mot de passe oublié", &body)
 }
 
 pub async fn get() -> impl IntoResponse {

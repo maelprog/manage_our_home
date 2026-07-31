@@ -32,7 +32,7 @@ use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
 use uuid::Uuid;
 
-use crate::app::shell;
+use crate::app::{shell, Width};
 use crate::family::{active_group_id_from_headers, resolve_active_group};
 use crate::routes::groups::{cookie_of, header_with_groups};
 use crate::state::AppState;
@@ -90,7 +90,7 @@ pub(crate) fn message_not_found_page() -> axum::response::Html<String> {
         <p>"Ce message n'existe pas ou plus (il a peut-être été supprimé depuis un autre appareil)."</p>
         <a class="btn secondary" href="/messagerie">"Retour à la messagerie"</a>
     };
-    axum::response::Html(shell("Message introuvable", &body.to_html()))
+    axum::response::Html(shell(Width::Form, "Message introuvable", &body.to_html()))
 }
 
 pub(crate) fn service_unavailable_page() -> axum::response::Html<String> {
@@ -99,7 +99,7 @@ pub(crate) fn service_unavailable_page() -> axum::response::Html<String> {
         <p>"Merci de réessayer dans quelques instants."</p>
         <a class="btn secondary" href="/messagerie">"Retour à la messagerie"</a>
     };
-    axum::response::Html(shell("Service indisponible", &body.to_html()))
+    axum::response::Html(shell(Width::Form, "Service indisponible", &body.to_html()))
 }
 
 pub(crate) fn forbidden_page() -> axum::response::Html<String> {
@@ -108,5 +108,5 @@ pub(crate) fn forbidden_page() -> axum::response::Html<String> {
         <p>"Vous n'avez pas les droits nécessaires sur ce message."</p>
         <a class="btn secondary" href="/messagerie">"Retour à la messagerie"</a>
     };
-    axum::response::Html(shell("Action non autorisée", &body.to_html()))
+    axum::response::Html(shell(Width::Form, "Action non autorisée", &body.to_html()))
 }

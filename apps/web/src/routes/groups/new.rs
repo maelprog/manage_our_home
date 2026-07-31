@@ -13,7 +13,7 @@ use leptos::prelude::*;
 use manage_our_home_shared::dto::groups::{CreateGroupRequest, GroupResponse};
 use manage_our_home_shared::validation::groups::validate_group_name;
 
-use crate::app::shell;
+use crate::app::{shell_with_header, Width};
 use crate::family::set_active_group_cookie;
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
@@ -22,7 +22,6 @@ use super::{cookie_of, header_with_groups};
 
 fn page(header: &str, name: &str, error: Option<&str>) -> String {
     let body = view! {
-        <div inner_html=header.to_string()></div>
         <h1>"Créer un groupe"</h1>
         {error.map(|e| view! { <p class="notice error">{e.to_string()}</p> })}
         <form method="post" action="/groups/new">
@@ -36,7 +35,7 @@ fn page(header: &str, name: &str, error: Option<&str>) -> String {
             <a href="/groups">"Retour à mes groupes"</a>
         </div>
     };
-    shell("Créer un groupe", &body.to_html())
+    shell_with_header(Width::Form, "Créer un groupe", header, &body.to_html())
 }
 
 pub async fn get(

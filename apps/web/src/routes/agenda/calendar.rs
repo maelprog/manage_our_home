@@ -15,7 +15,7 @@ use leptos::prelude::*;
 use manage_our_home_shared::dto::agenda::{OccurrenceList, OccurrenceResponse};
 use manage_our_home_shared::validation::agenda::{month_grid, week_days};
 
-use crate::app::{html_escape, shell};
+use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -144,12 +144,17 @@ pub async fn get(
         .unwrap_or_default();
 
     let body = view! {
-        <div inner_html=fam.header></div>
         <div inner_html=nav_html></div>
         <div inner_html=notice_html></div>
         <div inner_html=grid_html></div>
     };
-    Html(shell("Agenda", &body.to_html())).into_response()
+    Html(shell_with_header(
+        Width::Full,
+        "Agenda",
+        &fam.header,
+        &body.to_html(),
+    ))
+    .into_response()
 }
 
 /// Prev/next/today navigation, the month/week toggle, and the "new event"

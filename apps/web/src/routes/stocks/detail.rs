@@ -20,7 +20,7 @@ use manage_our_home_shared::dto::stocks::{StockItemResponse, UpdateStockItemRequ
 use manage_our_home_shared::validation::stocks::is_low_stock;
 use uuid::Uuid;
 
-use crate::app::{html_escape, shell};
+use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -153,8 +153,7 @@ fn page(
     let controls_html = format!("{adjust_form}{edit_delete_html}");
 
     let body = format!(
-        r#"{header}
-<h1>{name}</h1>
+        r#"<h1>{name}</h1>
 {notice_html}{error_html}
 <p><strong>Quantité :</strong> {qty} {unit}</p>
 {low_html}
@@ -166,7 +165,7 @@ fn page(
         qty = html_escape(&fmt_num(item.quantity)),
         unit = html_escape(&item.unit),
     );
-    shell(&item.name, &body)
+    shell_with_header(Width::Read, &item.name, header, &body)
 }
 
 // -- mutations --------------------------------------------------------------

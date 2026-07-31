@@ -49,8 +49,11 @@
   --s2: 2px; --s1: 4px; --s2x: 8px; --s3: 12px; --s4: 16px;
   --s6: 24px; --s8: 32px; --s12: 48px; --s16: 64px;
   /* Type scale, 16px base. --t-base is the floor for anything read, not a
-     default to shrink from. */
-  --t-xs: 0.8125rem; --t-sm: 0.875rem; --t-base: 1rem;
+     default to shrink from. The two smallest steps hold their *phone* values
+     here and drop to the scale's 0.8125/0.875 in the 861px query at the end
+     of the sheet: the sheet is written mobile first, and DESIGN.md → Layout
+     raises the floor on a screen held at arm's length. */
+  --t-xs: 0.875rem; --t-sm: 0.9375rem; --t-base: 1rem;
   --t-lg: 1.125rem; --t-xl: 1.375rem; --t-2xl: 1.75rem;
   /* Radii: badges, then controls, then cards. Not one radius everywhere. */
   --r-sm: 4px; --r-md: 8px; --r-lg: 12px;
@@ -139,10 +142,62 @@ h1, h2, h3 { font-family: "Fraunces", Georgia, serif; line-height: 1.25; }
 h1 { font-size: var(--t-2xl); margin-bottom: var(--s4); }
 h2 { font-size: var(--t-xl); margin: var(--s6) 0 var(--s2x); }
 h3 { font-size: var(--t-lg); margin: var(--s4) 0 var(--s1); }
-.container {
-  max-width: 28rem;
-  margin: 3rem auto;
-  padding: 0 1.25rem;
+/* -- Layout --------------------------------------------------------------
+   This was one `.container { max-width: 28rem }` on every page, and the only
+   media query in the sheet was the dark theme: the app fitted a phone by
+   being 448px wide, not by adapting (audit §3.1). Mobile first here, and one
+   markup for both layouts — two navigations would mean two
+   `aria-current="page"` elements, which is worse than none. */
+/* The content column, as wide as the page asked for (`app::Width`): bounded
+   by one of the two classes below, or the whole column when it names
+   neither. `margin: 0 auto` centres it either way. */
+.content { margin: 0 auto; padding: var(--s6) var(--s4); }
+.w-form { max-width: var(--w-form); }
+.w-read { max-width: var(--w-read); }
+/* The tab bar scrolls sideways rather than shrinking: nine labels do not fit
+   across a 390px phone, and replacing them with icons is not free either —
+   an icon inside the link changes its accessible name, which is what the
+   e2e suite reads to know which page it is on. */
+.tabs {
+  position: fixed;
+  inset: auto 0 0 0;
+  z-index: 1;
+  display: flex;
+  gap: var(--s1);
+  overflow-x: auto;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+/* --s12 is 48px, over the 44px DESIGN.md → Espacement asks for; the sidebar
+   links keep it, a pointer target being no smaller. */
+.tabs .navlink { display: flex; flex: 1 0 auto; align-items: center; justify-content: center; min-height: var(--s12); }
+/* The fixed bar would otherwise cover the end of every page. */
+body { padding-bottom: var(--s16); }
+/* The sidebar is the override and not the other way round: a `min-width` /
+   `max-width` pair leaves a hole between 860 and 861 CSS pixels, which a
+   zoomed viewport lands in. */
+@media (min-width: 861px) {
+  /* The type floor of DESIGN.md → Layout, from the other side: 13px is too
+     small on a phone held at arm's length, so `:root` above carries the
+     phone values and the scale's own figures come back here. */
+  :root { --t-xs: 0.8125rem; --t-sm: 0.875rem; }
+  body { padding-bottom: 0; }
+  /* minmax(0, 1fr) rather than 1fr: an auto track refuses to go under its
+     content's min-content width, so one wide table would push the content
+     column past the viewport and take the sidebar with it. */
+  .app { display: grid; grid-template-columns: var(--w-sidebar) minmax(0, 1fr); }
+  header {
+    position: sticky;
+    top: 0;
+    align-self: start;
+    max-height: 100vh;
+    overflow-y: auto;
+    padding: var(--s4);
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+  }
+  .tabs { position: static; flex-direction: column; border-top: 0; }
+  .tabs .navlink { justify-content: flex-start; }
 }
 /* No browser gives a form a margin; the routes said `margin:0` on 20-odd of
    them anyway. Saying it once here is what makes those attributes go away. */
@@ -220,13 +275,9 @@ button.sm, .btn.sm { font-size: var(--t-sm); padding: var(--s1) var(--s2x); }
    nested action row loses its margin, and `.multiline` comes after the reset
    so that it keeps its own. */
 
-/* The app's one `<header>`: the nav + account row, with the family switcher
-   under it. #69 and #70 rework the navigation itself. */
-header { margin-bottom: var(--s6); }
 /* A row that pushes its ends apart. `.split` is the bare primitive (a
-   notice with an action in it, the header's nav + account block),
-   `.page-header` is a page's title + its actions, `.list-row` is one line
-   of a list. */
+   notice with an action in it), `.page-header` is a page's title + its
+   actions, `.list-row` is one line of a list. */
 .split, .page-header, .list-row {
   display: flex;
   flex-wrap: wrap;
