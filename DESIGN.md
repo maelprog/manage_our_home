@@ -115,6 +115,7 @@ complet, plus une rampe catégorielle réservée à l'identification des membres
 | `--accent` | `#14706E` | `#4FB3AF` | actions primaires, liens, état actif |
 | `--accent-fg` | `#FFFFFF` | `#10201F` | texte sur `--accent` |
 | `--accent-soft` | `#E1F0EF` | `#1E3A39` | fonds teintés (jour courant, nav active) |
+| `--accent-hover` | `#105855` | `#6EC7C3` | aplat plein survolé (#69) |
 
 Le pétrole remplace le `#2952cc` actuel : il évite le bleu SaaS générique et,
 surtout, il ne rentre pas en collision avec le rouge d'erreur ni avec le vert
@@ -127,6 +128,11 @@ de succès.
 | `--success` / `--success-soft` | `#3F7A34` / `#E6F0E2` | `#7CB86C` / `#22301E` |
 | `--warning` / `--warning-soft` | `#9A6B10` / `#F7EEDA` | `#D9A441` / `#332813` |
 | `--error` / `--error-soft` | `#A8342A` / `#F7E5E2` | `#E88075` / `#3A211E` |
+| `--error-hover` | `#8C2A22` | `#F09A90` |
+
+Les deux moitiés `-hover` sont la couleur creusée (clair) ou éclaircie
+(sombre) de l'aplat qu'elles survolent, réglées pour que `--accent-fg` y reste
+au-dessus de AA : 8,2:1 et 8,5:1 en clair, 8,5:1 et 7,8:1 en sombre.
 
 Succès et avertissement **n'existent pas dans la feuille actuelle** :
 `.notice.success` emprunte aujourd'hui le bleu d'accent, ce qui rend une
@@ -288,21 +294,54 @@ numérique, la largeur minimale du champ d'édition d'un message.
 
 ## Interaction et motion
 
+Livré par #69. Ce qui suit décrit la feuille telle qu'elle est, pas telle
+qu'on l'espérait : avant #69 elle ne contenait **aucun** `:hover`, `:focus-visible`
+ni `transition`, et `aria-current` n'apparaissait nulle part.
+
 - **Approche :** minimal-fonctionnel. Aucune animation d'entrée : l'application
   fait un rechargement complet à chaque navigation, une animation au chargement
   deviendrait pénible dès la troisième page.
-- **Durée :** 150 ms (`--dur`), courbe `cubic-bezier(0.2, 0, 0.2, 1)`.
+- **Durée :** `--dur: 150ms`, courbe `--ease: cubic-bezier(0.2, 0, 0.2, 1)`.
+  Les deux moitiés sont des jetons parce que la neutralisation sous
+  `prefers-reduced-motion` passe par eux (voir plus bas) : une durée écrite en
+  dur continuerait de tourner pour qui a demandé l'inverse.
 - **Transitions autorisées :** `background`, `border-color`, `box-shadow`
-  au survol et au focus. Rien d'autre.
-- **`:hover`** sur tout élément interactif — boutons, liens, lignes de liste,
-  pastilles. C'est le premier facteur du ressenti « rudimentaire » sur PC, et
-  il est totalement absent aujourd'hui.
+  au survol et au focus. Rien d'autre — donc rien ne bouge ni ne change de
+  taille. La liste est tenue par un test
+  (`only_the_three_allowed_properties_are_transitioned`).
+- **`:hover` sur tout ce qui est interactif** — `button`/`.btn`, `.list-row`,
+  `.chip`, `.navlink`, et le soulignement d'un lien de texte, qui s'épaissit
+  plutôt que de se peindre un fond au milieu d'un paragraphe.
+  Les aplats pleins prennent la moitié creusée de leur propre couleur
+  (`--accent-hover`, `--error-hover`) : une simple teinte ferait passer
+  `--accent-fg` sous AA sur le bouton survolé.
 - **`:focus-visible`** : `outline: 2px solid var(--accent); outline-offset: 2px`
   sur les éléments cliquables, `box-shadow: 0 0 0 3px var(--accent-soft)` sur
-  les champs. Jamais `outline: none` sans remplacement.
-- **`aria-current="page"`** sur le lien de navigation de la page courante,
-  avec un traitement visuel distinct.
-- **`prefers-reduced-motion: reduce`** neutralise toutes les transitions.
+  les champs. **Jamais `outline: none`.** Les champs neutralisent bien
+  l'anneau du navigateur, mais avec un `outline: 2px solid transparent` et non
+  `none` : en mode contrastes forcés, `box-shadow` est ignoré et les contours
+  sont repeints par le système — c'est la seule écriture qui y survit.
+- **`aria-current="page"`** sur le lien de navigation de la page courante.
+  L'appartenance se décide sur le **premier segment de chemin**
+  (`app::nav_link_is_current`), pas sur un préfixe : `/` préfixe toute
+  l'application et allumerait « Accueil » partout, et le segment garde le lien
+  Admin — qui pointe vers l'un des deux écrans — allumé sur l'autre.
+  Le traitement visuel est le fond `--accent-soft` (4,99:1 en clair, 4,88:1 en
+  sombre) **plus** la graisse 600, pour que la couleur ne soit pas le seul
+  porteur d'information (WCAG 1.4.1).
+- **La navigation n'est pas du contenu secondaire.** Elle est sortie de
+  `.muted` : taille de base et `--fg`, pas 0,875 rem en gris.
+- **`prefers-reduced-motion: reduce`** neutralise toutes les transitions, en
+  une déclaration : `:root { --dur: 0s; }`. Toutes les transitions étant
+  minutées par ce jeton, il n'y a ni balayage `* { transition: none !important }`
+  ni liste à tenir à jour.
+
+**Vérification.** L'issue demandait un parcours clavier complet, focus visible
+à chaque étape, dans les deux thèmes. C'est
+`e2e/tests/interaction.spec.ts` : Tab sur quatre pages × deux thèmes en
+vérifiant l'indicateur sur chaque arrêt, l'unicité de l'onglet actif sur les
+huit routes de la nav, la réaction au pointeur, et `transition-duration: 0s`
+sous `prefers-reduced-motion`.
 
 ---
 
@@ -398,9 +437,18 @@ Trois seuils, du plus englobant au plus fin :
 
 | Seuil | Valeur | Aujourd'hui | Ce qu'on fait au dépassement |
 |---|---|---|---|
-| Réponse complète compressée, routes principales | **≤ 14 KiB** (14 336 o) | 10 142 o sur 7 routes, **15 739 o sur `/messagerie`** | passer la feuille sur `/assets` |
-| Feuille compressée | **≤ 10 KiB** (10 240 o) | 7 199 o | idem — **jamais** dégraisser les commentaires |
-| Déclarations compressées | **≤ 3 KiB** (3 072 o) | 2 298 o | supprimer une règle redondante |
+| Réponse complète compressée, routes principales | **≤ 14 KiB** (14 336 o) | 11 936 o au pire sur 7 routes, **16 761 o sur `/messagerie`** | passer la feuille sur `/assets` |
+| Feuille compressée | **≤ 10 KiB** (10 240 o) | 8 633 o | idem — **jamais** dégraisser les commentaires |
+| Déclarations compressées | **≤ 3 KiB** (3 072 o) | 2 670 o | supprimer une règle redondante |
+
+La colonne « aujourd'hui » est **remesurée le 2026-07-31, après #69**, avec le
+corpus reproductible de `npm run seed` (#85) et non le jeu de données ad hoc
+de la campagne #83 — les deux ne sont pas comparables entre eux. Ce que #69 a
+coûté, mesuré des deux côtés sur ce même corpus : la feuille passe de 7 192 à
+8 633 o compressés, les déclarations de 2 299 à 2 670 o, et chaque route gagne
+environ 1 440 o (`/agenda`, la plus lourde des sept, de 10 495 à 11 936 o).
+Aucun des trois plafonds n'est franchi par ce changement ; `/messagerie` était
+déjà au-dessus du premier avant lui.
 
 **14 KiB** est le seul chiffre qui ne soit pas de notre fait : c'est ce que la
 fenêtre de congestion initiale (IW10 — dix segments d'un MSS de 1 460 octets,
@@ -420,11 +468,19 @@ entre une messagerie vide et une page de conversation ordinaire.
 antérieure de ce document annonçait « trois fois et demie » : c'était mesuré
 sur des pages vides, et c'était faux.
 
+Remesurée le 2026-07-31 avec le corpus de `npm run seed`, la moitié document
+d'`/agenda` sort à 3 248 o compressés au lieu des 2 754 ci-dessus : la
+dérivation devient 14 336 − 3 248 = 11 088, et la marge réelle sous le
+plafond de 10 240 tombe à **848 octets**. Le raisonnement ne bouge pas, le
+chiffre si — et il dépend du jeu de données, ce qui est précisément pourquoi
+ce seuil-là n'est tenu par aucun test.
+
 Pourquoi ne pas resserrer davantage, puisque la moitié document s'est révélée
 deux à trois fois plus lourde que prévu ? Parce que la structure à deux
-plafonds impose un plancher : les déclarations font 31,9 % de la feuille
-compressée, donc le plafond des déclarations n'est atteint le premier que si
-celui de la feuille reste **au-dessus de ~9 624 o**. Descendre sous ce
+plafonds impose un plancher : les déclarations font 30,9 % de la feuille
+compressée (2 670 sur 8 633 après #69), donc le plafond des déclarations n'est
+atteint le premier que si celui de la feuille reste **au-dessus de ~9 942 o**.
+Descendre sous ce
 plancher inverserait l'ordre des deux garde-fous et ferait retomber la
 pression sur les commentaires — exactement ce que le dispositif existe pour
 empêcher. 10 KiB est la première valeur ronde au-dessus de ce plancher ; c'est
@@ -433,8 +489,16 @@ une contrainte, pas un confort.
 **3 KiB** est la part du CSS seul, calibrée pour être atteinte *avant* les
 10 KiB si la feuille continue de croître au rythme actuel de commentaires — de
 sorte que la pression tombe toujours sur les règles avant de pouvoir tomber
-sur la prose. C'est ce plafond-là qui porte le mordant du dispositif : 25 % de
-marge, contre 42 % pour celui de la feuille.
+sur la prose. C'est ce plafond-là qui porte le mordant du dispositif.
+
+**Une seule formule pour toutes les marges de ce document :
+`(plafond − actuel) / plafond`** — la place qui reste, en part du plafond.
+Les deux chiffres comparés ici l'étaient auparavant avec deux formules
+différentes (25 % rapporté au plafond contre 42 % rapporté à la valeur
+courante), ce qui les rendait incomparables alors que la phrase les opposait ;
+c'est le constat mineur laissé par #83, corrigé ici. Après #69 :
+**13 % de marge sur les déclarations, 16 % sur la feuille** — le plafond des
+déclarations reste bien le plus mordant des deux.
 
 Les deux derniers seuils sont tenus par des tests dans `apps/web/src/app.rs`
 (`the_compressed_stylesheet_fits_its_share_of_the_first_round_trip` et
@@ -455,8 +519,8 @@ et la réponse est la porte de sortie ci-dessous, pas un nombre plus grand.
 HTML — donc le CSS inliné — et le JSON de `apps/api`. C'est ce qui rend la
 prémisse de l'inlining à nouveau vraie : sans compression, aucune des huit
 routes principales ne tenait dans le premier aller-retour ; avec, sept y
-tiennent, la plus lourde des sept (`/agenda`, 10 142 o) gardant 29 % de marge.
-La huitième, `/messagerie`, n'y tient pas — voir plus haut.
+tiennent, la plus lourde des sept (`/agenda`, 11 936 o après #69) gardant 17 %
+de marge. La huitième, `/messagerie`, n'y tient pas — voir plus haut.
 
 `apps/web` ne compresse **pas** de son côté. Caddy laisse intacte une réponse
 qui porte déjà un `Content-Encoding` (vérifié), donc un `CompressionLayer`
@@ -510,3 +574,8 @@ là via `include_str!`), pas d'une étape de build : la contrainte n°3 reste.
 | 2026-07-30 | `/messagerie` constatée hors du budget de 14 KiB (#83) | 15 739 o compressés avec 50 messages ordinaires, 11 188 o à vide : un `<script>` inline de 7 274 o émis inconditionnellement plus 50 messages rendus. Le déclencheur de la porte de sortie est donc déjà franchi sur cette route. Non corrigé par #83 (bascule hors périmètre, page tenue par #72) — constaté et daté |
 | 2026-07-30 | Pas de `CompressionLayer` dans `apps/web` (#83) | Caddy laisse intacte une réponse déjà encodée (mesuré) : compresser dans `apps/web` imposerait son gzip au chemin déployé à la place du choix de Caddy, au bénéfice des seuls accès directs à `web:3000` (dev, e2e) où aucun octet n'est compté — et ajouterait une dépendance à un graphe qui porte déjà deux tower-http |
 | 2026-07-30 | BREACH : aucune route exclue de `encode` (#83) | Le seul secret rendu dans un corps compressible est le jeton de réinitialisation (`reset_password.rs:42`). L'attaque demande une seconde chaîne choisie par l'attaquant dans la même réponse ; cette page n'en a aucune (sa seule variable est le jeton, qui doit parser en UUID). Usage unique et péremption 24 h vérifiés dans `apps/api/src/auth/mod.rs` |
+| 2026-07-31 | Jetons `--accent-hover` / `--error-hover` (#69) | Un aplat plein survolé ne peut pas se contenter d'une teinte : `--accent-fg` y passerait sous AA. La moitié creusée (clair) ou éclaircie (sombre) de chaque aplat tient 7,8:1 au pire dans les deux thèmes |
+| 2026-07-31 | Le lien de nav courant se décide sur le premier segment de chemin (#69) | Un test par préfixe allume deux onglets à la fois : `/` préfixe toute l'application. Le segment garde aussi une section allumée sur ses sous-pages (`/agenda/new`) et le lien Admin — qui pointe vers l'un des deux écrans — allumé sur l'autre |
+| 2026-07-31 | Les champs neutralisent l'anneau du navigateur avec `outline: 2px solid transparent`, jamais `none` (#69) | En mode contrastes forcés, `box-shadow` est ignoré et les contours sont repeints par le système : `outline: none` y laisserait un champ focalisé sans aucun indicateur |
+| 2026-07-31 | `prefers-reduced-motion` neutralise en remettant `--dur` à 0s (#69) | Une déclaration au lieu d'un `* { transition: none !important }` : toutes les transitions étant minutées par le jeton, il n'y a aucune liste à tenir à jour et aucune règle à sur-spécifier |
+| 2026-07-31 | Marges du budget : une seule formule, `(plafond − actuel) / plafond` (#69) | Deux marges étaient comparées dans la même phrase avec deux formules différentes (25 % rapporté au plafond contre 42 % rapporté à la valeur courante) — constat mineur laissé par #83, corrigé au passage |

@@ -18,6 +18,11 @@
   --accent: #14706e;
   --accent-fg: #ffffff;
   --accent-soft: #e1f0ef;
+  /* The deepened half of each solid surface, for its hover (#69). A hover
+     that only tinted the surface would drop --accent-fg under AA on it;
+     these keep it at 8.2:1 (accent) and 8.5:1 (error) in light, 8.5:1 and
+     7.8:1 in dark. */
+  --accent-hover: #105855;
   /* Semantics. Success and warning did not exist: .notice.success borrowed
      the accent, so a confirmation looked exactly like a neutral notice, and
      there was nothing to warn with. Each -soft value is the tinted surface
@@ -33,6 +38,7 @@
   --warning-soft: #f7eeda;
   --error: #a8342a;
   --error-soft: #f7e5e2;
+  --error-hover: #8c2a22;
   /* Member ramp, assigned by a stable hash of the user id — GroupMember has
      no colour column and needs none. Colour is never the only carrier of the
      information (WCAG 1.4.1): it always accompanies an initial or a name. */
@@ -51,6 +57,9 @@
   /* Content widths, picked per page instead of imposing one narrow column on
      the agenda and the admin tables. */
   --w-form: 28rem; --w-read: 65rem; --w-sidebar: 15rem;
+  /* Motion, in one place so that reduced motion is one override and not a
+     sweep of `!important` (see the media query at the end of the sheet). */
+  --dur: 150ms; --ease: cubic-bezier(0.2, 0, 0.2, 1);
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -75,6 +84,9 @@
     --accent: #4fb3af;
     --accent-fg: #10201f;
     --accent-soft: #1e3a39;
+    /* The hover halves lighten here rather than darken: on a dark ground it
+       is the lighter surface that reads as "under the pointer". */
+    --accent-hover: #6ec7c3;
     /* Same treatment for the semantics: the plain half lightens, the -soft
        half darkens, and each pair keeps 5:1 or better (5.92 / 6.42 / 5.49).
        --accent-fg is also the text on a solid --error, at 6.23:1. */
@@ -84,6 +96,7 @@
     --warning-soft: #332813;
     --error: #e88075;
     --error-soft: #3a211e;
+    --error-hover: #f09a90;
     /* The member ramp lightens too: muted tints legible on a dark ground,
        5.37:1 at the floor (--m1 on --surface) across both grounds. */
     --m1: #a48bd0; --m2: #64a8c8; --m3: #7db77b; --m4: #d2a059;
@@ -397,3 +410,63 @@ dd { margin: var(--s2) 0 0 0; }
 .prose li { margin-bottom: 0.4rem; }
 .prose th, .prose td { white-space: normal; vertical-align: top; }
 .prose a { color: var(--accent); }
+
+/* -- Interaction ---------------------------------------------------------
+   The sheet had no `:hover`, no `:focus-visible`, no `transition` and no
+   `aria-current` at all (audit §3.3): on a PC, where the pointer is the
+   main way in, nothing signalled that anything was clickable, and the eight
+   nav links rendered identically whatever page was open. That is the first
+   thing that made the app read as rudimentary.
+
+   What is *not* here: any entry animation. Every navigation is a full page
+   load, so an animation on load replays on every page and is tiresome by the
+   third. And nothing transitioned here moves or resizes: the list is
+   `background`, `border-color`, `box-shadow` — what a hover or a focus
+   changes, and nothing else. */
+button, .btn, .navlink, .list-row, .chip, input, select, textarea {
+  transition:
+    background var(--dur) var(--ease),
+    border-color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+/* Hover. Neutral surfaces take `--hover`; a solid button takes the deepened
+   half of its own colour, because a tint under `--accent-fg` would lose the
+   contrast the pair guarantees. */
+button:hover, .btn:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+button.secondary:hover, .btn.secondary:hover { background: var(--hover); }
+button.danger:hover, .btn.danger:hover { background: var(--error-hover); border-color: var(--error-hover); }
+button.secondary.danger:hover, .btn.secondary.danger:hover { background: var(--error-soft); }
+.list-row:hover, .navlink:hover { background: var(--hover); }
+.chip:hover { background: var(--border); }
+/* A link that carries no box of its own answers with its underline, since it
+   has one to thicken and a background would box a run of body text. */
+a:hover { text-decoration-thickness: 2px; }
+/* The password toggle is a `<button>` with no box at all — the primary hover
+   above would paint it one. */
+.pw-toggle:hover { background: transparent; color: var(--accent); }
+/* Focus is stated, never removed: `outline: none` with nothing in its place
+   is how a keyboard user loses the caret. Clickables take the outline… */
+a:focus-visible, button:focus-visible, .btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* …and fields the ring, so the indicator follows the control's own radius.
+   The outline here is transparent rather than `none`: forced-colors mode
+   drops `box-shadow` and repaints outlines in a system colour, so this is
+   the one spelling that survives it. */
+input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid transparent;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+/* The main navigation, out of `.muted` — it is not secondary content, it is
+   what the content hangs off. The current page is named for assistive tech
+   with `aria-current="page"`, and that attribute is the styling hook: the
+   tinted ground DESIGN.md reserves for the active tab, 4.99:1 in light and
+   4.88:1 in dark, plus the weight so colour is not the only carrier. */
+.navlink { padding: var(--s1) var(--s2x); border-radius: var(--r-sm); color: var(--fg); text-decoration: none; }
+.navlink[aria-current="page"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+/* Reduced motion, in one declaration: every transition above is timed by
+   `--dur`, so zeroing the token neutralises all of them — no sweep of
+   `* { transition: none !important }`, and nothing to keep in sync. */
+@media (prefers-reduced-motion: reduce) { :root { --dur: 0s; } }

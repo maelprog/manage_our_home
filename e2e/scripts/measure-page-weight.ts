@@ -304,15 +304,14 @@ const ROUTES: RouteSpec[] = [
 
 /**
  * Les entrées de nav conditionnelles, et pourquoi elles ne sont pas mesurées.
- * Un nouveau slot dans la nav qui n'apparaîtrait pas ici fait échouer le
- * script : impossible d'ajouter une entrée sans décider si on la pèse.
+ * Une nouvelle entrée conditionnelle qui n'apparaîtrait pas ici fait échouer
+ * le script : impossible d'en ajouter une sans décider si on la pèse.
+ *
+ * `/admin/users` répond 404 à quiconque n'est pas LE superadmin technique
+ * (apps/web/src/routes/admin/). Le peser demanderait de promouvoir le compte
+ * de mesure, ce qui changerait toutes les autres pages (la nav gagne un lien).
  */
-const CONDITIONAL_NAV_SLOTS: Record<string, string> = {
-  // `/admin/users` répond 404 à quiconque n'est pas LE superadmin technique
-  // (apps/web/src/routes/admin/). Le peser demanderait de promouvoir le compte
-  // de mesure, ce qui changerait toutes les autres pages (la nav gagne un lien).
-  admin_link: "/admin/users",
-};
+const CONDITIONAL_NAV_ROUTES: string[] = ["/admin/users"];
 
 function rangeQuery(from: Date, to: Date): string {
   return `?from=${encodeURIComponent(from.toISOString())}&to=${encodeURIComponent(to.toISOString())}`;
@@ -352,7 +351,7 @@ function assertRouteListMatchesNav(): void {
   const diff = diffNavRoutes(
     ROUTES.map((r) => r.path),
     parsed,
-    CONDITIONAL_NAV_SLOTS,
+    CONDITIONAL_NAV_ROUTES,
   );
 
   const problems: string[] = [];
@@ -366,10 +365,10 @@ function assertRouteListMatchesNav(): void {
       `routes mesurées qui ne sont pas dans la nav : ${diff.unexpected.join(", ")}`,
     );
   }
-  if (diff.unknownPlaceholders.length > 0) {
+  if (diff.unknownConditional.length > 0) {
     problems.push(
-      `entrées de nav conditionnelles inconnues : ${diff.unknownPlaceholders.join(", ")} ` +
-        "(ajoute-les à CONDITIONAL_NAV_SLOTS en disant si elles sont mesurées)",
+      `entrées de nav conditionnelles inconnues : ${diff.unknownConditional.join(", ")} ` +
+        "(ajoute-les à CONDITIONAL_NAV_ROUTES en disant si elles sont mesurées)",
     );
   }
   if (problems.length > 0) {

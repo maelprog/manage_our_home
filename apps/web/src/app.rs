@@ -34,6 +34,58 @@ pub fn shell(title: &str, body_html: &str) -> String {
     )
 }
 
+/// The first path segment of a URL path, query and fragment dropped —
+/// `"agenda"` for `/agenda`, `/agenda/new` and `/agenda?month=2026-07`
+/// alike, and `""` for `/`.
+fn first_segment(path: &str) -> &str {
+    path.split(['?', '#'])
+        .next()
+        .unwrap_or(path)
+        .trim_start_matches('/')
+        .split('/')
+        .next()
+        .unwrap_or("")
+}
+
+/// Whether a nav link leads to the section `current_path` is in — the one
+/// thing `aria-current="page"` needs to know (#69).
+///
+/// Matching is on the **first path segment**, not a prefix. A prefix test
+/// would light two tabs at once in both directions: `/` prefixes every path
+/// in the app, and `/groups` prefixes nothing but `/grocery-list` is the kind
+/// of near-miss it invites. The segment also keeps the Admin link — which
+/// points at `/admin/users`, one of two admin screens — lit on the other one,
+/// and keeps a section lit on the pages below it (`/agenda/new` is still the
+/// agenda).
+pub fn nav_link_is_current(href: &str, current_path: &str) -> bool {
+    first_segment(href) == first_segment(current_path)
+}
+
+/// One `<a class="navlink">`, carrying `aria-current="page"` when it leads to
+/// the page being rendered. `href` and `label` are literals from the nav
+/// table below, so only the path needs escaping.
+fn navlink(href: &str, label: &str, current_path: &str) -> String {
+    let current = if nav_link_is_current(href, current_path) {
+        r#" aria-current="page""#
+    } else {
+        ""
+    };
+    format!(r#"<a class="navlink" href="{href}"{current}>{label}</a>"#)
+}
+
+/// The main navigation, in order. `/admin/users` is appended for the single
+/// technical superadmin only — everyone else never sees the door.
+const NAV: [(&str, &str); 8] = [
+    ("/", "Accueil"),
+    ("/agenda", "Agenda"),
+    ("/stocks", "Stocks"),
+    ("/recipes", "Recettes"),
+    ("/grocery-list", "Liste de courses"),
+    ("/budget", "Budget"),
+    ("/messagerie", "Messagerie"),
+    ("/groups", "Groupes"),
+];
+
 /// Full authenticated header for pages that carry the family context:
 /// a name + "Mon compte" (the RGPD self-service hub, front epic F10) + logout
 /// row plus a nav (Accueil / Groupes)
@@ -41,6 +93,13 @@ pub fn shell(title: &str, body_html: &str) -> String {
 /// `POST /groups/switch` (persists the choice in the `active_group_id`
 /// cookie, see `crate::family`) then bouncing back to `redirect_to`.
 /// With no groups yet, the switcher gives way to a "create a family" link.
+///
+/// `redirect_to` doubles as the current path, which is what decides the nav
+/// link that carries `aria-current="page"` (#69): every caller already passes
+/// the path of the page it is rendering, because that is where the family
+/// switcher has to come back to. A caller that ever passes something else
+/// would mislead the nav, not the switcher — the failure is cosmetic and
+/// visible on the page itself.
 pub fn app_header(
     me: &MeResponse,
     groups: &[GroupSummary],
@@ -79,28 +138,19 @@ pub fn app_header(
     };
     // The superadmin support screens (front epic F9) are only linked for the
     // single technical superadmin — everyone else never sees the door.
-    let admin_link = if me.is_superadmin {
-        r#"<a href="/admin/users">Admin</a>"#
-    } else {
-        ""
-    };
+    let links: String = NAV
+        .iter()
+        .copied()
+        .chain(me.is_superadmin.then_some(("/admin/users", "Admin")))
+        .map(|(href, label)| navlink(href, label, redirect_to))
+        .collect();
     format!(
         r#"<header>
-<div class="muted page-header">
-<nav class="actions">
-<a href="/">Accueil</a>
-<a href="/agenda">Agenda</a>
-<a href="/stocks">Stocks</a>
-<a href="/recipes">Recettes</a>
-<a href="/grocery-list">Liste de courses</a>
-<a href="/budget">Budget</a>
-<a href="/messagerie">Messagerie</a>
-<a href="/groups">Groupes</a>
-{admin_link}
-</nav>
+<div class="page-header">
+<nav class="actions">{links}</nav>
 <span class="actions">
-<span>{name}</span>
-<a href="/account">Mon compte</a>
+<span class="muted">{name}</span>
+<a class="navlink" href="/account"{account_current}>Mon compte</a>
 <form method="post" action="/logout">
 <button type="submit" class="secondary">Se déconnecter</button>
 </form>
@@ -110,7 +160,12 @@ pub fn app_header(
 </header>"#,
         name = html_escape(&me.display_name),
         switcher = switcher,
-        admin_link = admin_link,
+        links = links,
+        account_current = if nav_link_is_current("/account", redirect_to) {
+            r#" aria-current="page""#
+        } else {
+            ""
+        },
     )
 }
 
@@ -397,6 +452,154 @@ mod tests {
         assert!(html.contains("a&lt;b&gt;"));
         assert!(html.contains("x&quot;y"));
         assert!(!html.contains("a<b>"));
+    }
+
+    // -- navigation, current page (#69) --------------------------------
+    //
+    // The eight nav links rendered identically whatever page was open, so
+    // nothing said where you were. `aria-current="page"` is the answer for
+    // assistive tech and the hook the stylesheet tints; the only piece of
+    // logic it needs is "does this link lead to the page I am on", and that
+    // is the function below.
+
+    #[test]
+    fn a_nav_link_is_current_on_its_own_page() {
+        assert!(nav_link_is_current("/", "/"));
+        assert!(nav_link_is_current("/agenda", "/agenda"));
+        assert!(nav_link_is_current("/grocery-list", "/grocery-list"));
+    }
+
+    #[test]
+    fn a_nav_link_is_current_on_the_pages_below_it() {
+        // A section link stays lit while you are inside the section: the
+        // agenda tab is still where `/agenda/new` lives.
+        for path in ["/agenda/new", "/agenda/imports", "/agenda/imports/new"] {
+            assert!(nav_link_is_current("/agenda", path), "{path}");
+        }
+        assert!(nav_link_is_current("/groups", "/groups/new"));
+        // The Admin link points at one of the two admin screens, and has to
+        // stay lit on the other.
+        assert!(nav_link_is_current("/admin/users", "/admin/groups"));
+    }
+
+    #[test]
+    fn only_one_nav_link_is_current_on_any_page() {
+        // Two lit tabs are worse than none. `/` matching by prefix would
+        // light Accueil on every page of the app, and a plain `starts_with`
+        // would light Groupes on `/grocery-list`.
+        // Not named `NAV`: `e2e/scripts/lib/measure-core.ts` reads the real
+        // table out of this file and refuses a second one, on purpose.
+        const HREFS: [&str; 9] = [
+            "/",
+            "/agenda",
+            "/stocks",
+            "/recipes",
+            "/grocery-list",
+            "/budget",
+            "/messagerie",
+            "/groups",
+            "/admin/users",
+        ];
+        for path in [
+            "/",
+            "/agenda",
+            "/agenda/new",
+            "/stocks/new",
+            "/recipes",
+            "/grocery-list",
+            "/budget/new",
+            "/messagerie",
+            "/groups/new",
+            "/admin/groups",
+        ] {
+            let lit: Vec<&str> = HREFS
+                .into_iter()
+                .filter(|href| nav_link_is_current(href, path))
+                .collect();
+            assert_eq!(lit.len(), 1, "on `{path}`, lit links: {lit:?}");
+        }
+    }
+
+    #[test]
+    fn a_page_outside_the_nav_lights_nothing() {
+        // `/privacy-policy` and the account screens are reachable from the
+        // header but are not nav tabs.
+        for path in ["/privacy-policy", "/account", "/account/export"] {
+            for href in ["/", "/agenda", "/groups", "/admin/users"] {
+                assert!(!nav_link_is_current(href, path), "{href} on {path}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_query_string_is_not_part_of_the_page() {
+        // Every mutating action bounces back with `?notice=…`/`?error=…`
+        // (PRG), so the current path routinely arrives with one attached.
+        assert!(nav_link_is_current("/", "/?notice=x"));
+        assert!(nav_link_is_current(
+            "/groups",
+            "/groups?notice=group_created"
+        ));
+        assert!(nav_link_is_current(
+            "/agenda",
+            "/agenda?month=2026-07#day-3"
+        ));
+        assert!(!nav_link_is_current("/agenda", "/?month=2026-07"));
+    }
+
+    #[test]
+    fn a_trailing_slash_does_not_change_the_page() {
+        assert!(nav_link_is_current("/agenda", "/agenda/"));
+        assert!(nav_link_is_current("/", "/"));
+    }
+
+    /// A session, for the two header tests below.
+    fn me(is_superadmin: bool) -> MeResponse {
+        MeResponse {
+            user_id: Uuid::nil(),
+            email: "alice@example.test".to_string(),
+            display_name: "Alice".to_string(),
+            email_verified: true,
+            is_superadmin,
+            has_password: true,
+            deletion_requested_at: None,
+        }
+    }
+
+    #[test]
+    fn the_header_marks_exactly_one_link_as_the_current_page() {
+        let header = app_header(&me(true), &[], None, "/agenda/new");
+        assert_eq!(
+            header.matches(r#"aria-current="page""#).count(),
+            1,
+            "header: {header}"
+        );
+        assert!(header.contains(r#"<a class="navlink" href="/agenda" aria-current="page">"#));
+        // Every nav link wears the component class, current or not — that is
+        // what takes the navigation out of `.muted`: eight tabs, the Admin
+        // one a superadmin gets, and "Mon compte" in the account block.
+        assert_eq!(header.matches(r#"class="navlink""#).count(), 10);
+    }
+
+    #[test]
+    fn the_account_link_is_current_on_the_account_screens() {
+        // "Mon compte" is a destination like any other; on /account/export
+        // the header has to say so too.
+        let header = app_header(&me(false), &[], None, "/account/export");
+        assert!(header.contains(r#"href="/account" aria-current="page""#));
+        assert_eq!(header.matches(r#"aria-current="page""#).count(), 1);
+    }
+
+    #[test]
+    fn the_header_navigation_is_not_secondary_content() {
+        // The nav sat in a `.muted` block: grey, 0.875rem, ranked below the
+        // content it leads to (#69).
+        let header = app_header(&me(false), &[], None, "/");
+        let nav = &header[..header.find("</nav>").expect("a nav in the header")];
+        assert!(
+            !nav.contains("muted"),
+            "the main navigation is still styled as secondary content: {nav}"
+        );
     }
 
     // -- style.css tokens (#65) ----------------------------------------
@@ -886,6 +1089,7 @@ mod tests {
             ".notice.success",
             ".notice.warning",
             ".notice.error",
+            ".navlink",
         ] {
             assert!(
                 css().contains(class),
@@ -1085,6 +1289,141 @@ mod tests {
         assert!(fields.contains("font-family: inherit"));
     }
 
+    // -- interaction states (#69) --------------------------------------
+    //
+    // Nothing in a build or a browser reports a missing hover, and a focus
+    // ring is invisible precisely to the people who never press Tab. The
+    // e2e suite (`e2e/tests/interaction.spec.ts`) walks the app with the
+    // keyboard in both themes; these guard the rules the sheet has to carry
+    // for that walk to be possible at all.
+
+    /// Every `transition:` value the stylesheet declares, whitespace
+    /// collapsed so a multi-line value reads as one string.
+    fn transition_values() -> Vec<String> {
+        let css = css();
+        // Read forward to the end of the declaration rather than splitting
+        // the sheet on `;`: a selector list carries colons of its own
+        // (`a:hover`, `input:focus-visible`), so `split_once(':')` on a chunk
+        // would answer with the selector, not the property.
+        let needle = format!("transition{}", ':');
+        let mut out = Vec::new();
+        let mut from = 0;
+        while let Some(at) = css[from..].find(&needle) {
+            let start = from + at + needle.len();
+            let end = css[start..]
+                .find([';', '}'])
+                .map_or(css.len(), |i| start + i);
+            out.push(
+                css[start..end]
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+            from = end;
+        }
+        out
+    }
+
+    #[test]
+    fn every_interactive_surface_answers_the_pointer() {
+        // Audit §3.3: not one `:hover` in the sheet, so on a PC nothing said
+        // it could be clicked.
+        let css = css();
+        for selector in [
+            "button:hover",
+            ".btn:hover",
+            ".list-row:hover",
+            ".chip:hover",
+            ".navlink:hover",
+            "a:hover",
+        ] {
+            assert!(css.contains(selector), "no `{selector}` rule in style.css");
+        }
+    }
+
+    #[test]
+    fn focus_is_stated_on_clickables_and_on_fields() {
+        let (clickable, _) = block_after(&css(), "a:focus-visible", 0);
+        assert!(clickable.contains(&format!("outline: 2px solid {}", var_of("--accent"))));
+        assert!(clickable.contains("outline-offset: 2px"));
+        let (fields, _) = block_after(&css(), "input:focus-visible", 0);
+        assert!(fields.contains(&format!(
+            "box-shadow: 0 0 0 3px {}",
+            var_of("--accent-soft")
+        )));
+    }
+
+    #[test]
+    fn no_focus_outline_is_removed_without_a_replacement() {
+        // `outline: none` is how a keyboard user loses the caret. The fields
+        // do neutralise the browser's own ring, but with a *transparent*
+        // outline — forced-colors mode drops `box-shadow` and repaints
+        // outlines in a system colour, so `none` there would leave nothing.
+        let css = css();
+        for spelling in ["outline: none", "outline:none", "outline: 0"] {
+            assert!(
+                !css.contains(spelling),
+                "`{spelling}` in style.css removes a focus indicator"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_three_allowed_properties_are_transitioned() {
+        // DESIGN.md → Interaction et motion. Anything else — a width, a
+        // transform, `all` — animates layout, which is what makes an
+        // interface feel slower rather than more responsive.
+        const ALLOWED: [&str; 3] = ["background", "border-color", "box-shadow"];
+        let values = transition_values();
+        assert!(
+            !values.is_empty(),
+            "the sheet declares no transition at all"
+        );
+        for value in &values {
+            for part in value.split(',') {
+                let property = part.split_whitespace().next().unwrap_or("");
+                assert!(
+                    ALLOWED.contains(&property),
+                    "`transition: {value}` animates `{property}`"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_transition_is_timed_by_the_motion_tokens() {
+        // Both halves have to come from the tokens, because the reduced-motion
+        // override works by zeroing `--dur` — a hardcoded `150ms` would keep
+        // running for a visitor who asked for no motion.
+        for value in transition_values() {
+            for part in value.split(',') {
+                assert!(
+                    part.contains(&var_of("--dur")) && part.contains(&var_of("--ease")),
+                    "`{part}` does not take its timing from --dur/--ease"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reduced_motion_neutralises_every_transition() {
+        let (block, _) = block_after(&css(), "@media (prefers-reduced-motion: reduce)", 0);
+        let (root, _) = block_after(&block, ":root", 0);
+        assert!(
+            root.contains("--dur: 0s"),
+            "reduced motion has to zero the duration token: {root}"
+        );
+    }
+
+    #[test]
+    fn the_current_nav_link_is_told_apart_by_more_than_its_colour() {
+        // WCAG 1.4.1: the active tab is the ground *and* the weight, so it
+        // survives a colour-blind reading and a monochrome screenshot.
+        let (current, _) = block_after(&css(), r#".navlink[aria-current="page"]"#, 0);
+        assert!(current.contains(&format!("background: {}", var_of("--accent-soft"))));
+        assert!(current.contains("font-weight: 600"));
+    }
+
     // -- delivery budget (#83) -----------------------------------------
     //
     // Inlining is a bet: a sheet that travels inside the document costs a
@@ -1159,13 +1498,20 @@ mod tests {
     /// earlier version of this comment claimed "three and a half times",
     /// measured on empty pages; it was wrong.
     ///
+    /// Re-measured on 2026-07-31 with `npm run seed`'s corpus (#85), which
+    /// is not the ad-hoc dataset the figures above came from: the document
+    /// half of `/agenda` weighs 3 248 gzipped bytes, so the derivation is
+    /// 14 336 − 3 248 = 11 088 and the real margin under 10 240 is **848
+    /// bytes**. The reasoning is unchanged; the number moves with the data,
+    /// which is exactly why no test holds that first ceiling.
+    ///
     /// Not tightened further, despite the document turning out two to
     /// three times heavier than that first reading, because the two
-    /// ceilings impose a floor: declarations are 31.9 % of the compressed
-    /// sheet, so `DECLARATIONS_CEILING` is only reached first while this
-    /// one stays above ~9 624. Below that the two guards swap order and
-    /// the pressure falls back onto the comments, which is the thing the
-    /// pair exists to prevent.
+    /// ceilings impose a floor: declarations are 30.9 % of the compressed
+    /// sheet after #69 (2 670 of 8 633), so `DECLARATIONS_CEILING` is only
+    /// reached first while this one stays above ~9 942. Below that the two
+    /// guards swap order and the pressure falls back onto the comments,
+    /// which is the thing the pair exists to prevent.
     ///
     /// **This one is not raised.** Passing it means the inlining bet has
     /// lost and the sheet moves to `/assets` (DESIGN.md → Livraison du CSS
@@ -1176,10 +1522,14 @@ mod tests {
     /// 3 KiB of declarations, comments stripped.
     ///
     /// Calibrated to trip before `SHEET_CEILING` does: today the
-    /// declarations are 32 % of the compressed sheet, so growth that keeps
+    /// declarations are 31 % of the compressed sheet, so growth that keeps
     /// the project's comment-to-code ratio reaches 3 KiB of CSS while the
-    /// whole sheet is still around 9.6 KiB. The design system therefore
+    /// whole sheet is still around 9.9 KiB. The design system therefore
     /// runs out of room before the delivery strategy does.
+    ///
+    /// #69 spent a third of the room that was left: 2 298 → 2 670 bytes,
+    /// for the hover, focus and nav-current rules the sheet had none of.
+    /// The five design issues after it share 402 bytes.
     ///
     /// A ceiling, not a target, and unlike `SHEET_CEILING` it *can* be
     /// raised — with a reason in the PR, like the inline-style ceiling

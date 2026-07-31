@@ -6,15 +6,16 @@
 //! divergence check, the "response minus the inlined stylesheet" split, and
 //! the floor that catches a stack nobody seeded.
 
-/** What `parseNavRoutes` found inside apps/web's `<nav class="actions">`. */
+/** What `parseNavRoutes` found in apps/web's nav table. */
 export type NavParse = {
   /** The literal `href`s, in nav order. */
   hrefs: string[];
-  /** `format!` slots interpolated into the nav, e.g. `admin_link`. */
-  placeholders: string[];
+  /** Entries appended to the table under a condition, e.g. `/admin/users`. */
+  conditional: string[];
 };
 
-const NAV_RE = /<nav class="actions">([\s\S]*?)<\/nav>/g;
+const NAV_TABLE_RE = /const NAV:[^=]*=\s*\[([\s\S]*?)\];/g;
+const CONDITIONAL_ENTRY_RE = /\.chain\(\s*[\w.]*\.then_some\(\("([^"]*)"/g;
 
 /**
  * Extracts the app nav out of `apps/web/src/app.rs`'s `app_header`.
@@ -25,25 +26,31 @@ const NAV_RE = /<nav class="actions">([\s\S]*?)<\/nav>/g;
  * `/account` (a header link, not a nav entry) instead of `/messagerie`, and
  * one of the eight pages was simply never measured. Parsing the nav back out
  * of the source turns that drift into a failed run.
+ *
+ * Since #69 the nav is a `const NAV` table rather than eight `<a>`s written
+ * out in the `format!` — each link now needs an `aria-current` attribute
+ * decided per page, which a literal string cannot carry. The table is read
+ * here; the entries chained onto it under a condition (the Admin link, gated
+ * on `is_superadmin`) are reported separately, as the `{admin_link}` slot
+ * used to be.
  */
 export function parseNavRoutes(source: string): NavParse {
-  const blocks = [...source.matchAll(NAV_RE)];
-  if (blocks.length === 0) {
+  const tables = [...source.matchAll(NAV_TABLE_RE)];
+  if (tables.length === 0) {
     throw new Error(
-      'aucun `<nav class="actions">` trouvé dans apps/web/src/app.rs — ' +
-        "le marquage de la nav a changé, mets à jour parseNavRoutes()",
+      "aucune table `const NAV` trouvée dans apps/web/src/app.rs — " +
+        "la nav a changé de forme, mets à jour parseNavRoutes()",
     );
   }
-  if (blocks.length > 1) {
+  if (tables.length > 1) {
     throw new Error(
-      `${blocks.length} éléments \`<nav class="actions">\` trouvés dans la source fournie ; ` +
-        "parseNavRoutes() en attend exactement un (celui de app_header)",
+      `${tables.length} tables \`const NAV\` trouvées dans la source fournie ; ` +
+        "parseNavRoutes() en attend exactement une (celle d'app_header)",
     );
   }
-  const nav = blocks[0][1];
   return {
-    hrefs: [...nav.matchAll(/href="([^"]*)"/g)].map((m) => m[1]),
-    placeholders: [...nav.matchAll(/\{(\w+)\}/g)].map((m) => m[1]),
+    hrefs: [...tables[0][1].matchAll(/\("([^"]*)"\s*,/g)].map((m) => m[1]),
+    conditional: [...source.matchAll(CONDITIONAL_ENTRY_RE)].map((m) => m[1]),
   };
 }
 
@@ -52,29 +59,28 @@ export type NavDivergence = {
   missing: string[];
   /** Declared, absent from the nav. */
   unexpected: string[];
-  /** Conditional nav slots the script knows nothing about. */
-  unknownPlaceholders: string[];
+  /** Conditional nav entries the script knows nothing about. */
+  unknownConditional: string[];
 };
 
 /**
- * Compares the declared route list against the parsed nav. `knownSlots` maps
- * a `format!` placeholder to the route it can render (e.g. `admin_link` ->
- * `/admin/users`); those routes are *not* required to be measured — the admin
- * screens 404 for everyone but the single technical superadmin — but the slot
- * has to be acknowledged, so that a new conditional entry can't slip in
- * unmeasured and unnoticed.
+ * Compares the declared route list against the parsed nav. `knownConditional`
+ * lists the routes the nav only shows under a condition; those are *not*
+ * required to be measured — the admin screens 404 for everyone but the single
+ * technical superadmin — but each has to be acknowledged, so that a new
+ * conditional entry can't slip in unmeasured and unnoticed.
  */
 export function diffNavRoutes(
   declared: string[],
   parsed: NavParse,
-  knownSlots: Record<string, string>,
+  knownConditional: string[],
 ): NavDivergence {
   const declaredSet = new Set(declared);
   const navSet = new Set(parsed.hrefs);
   return {
     missing: parsed.hrefs.filter((h) => !declaredSet.has(h)),
     unexpected: declared.filter((r) => !navSet.has(r)),
-    unknownPlaceholders: parsed.placeholders.filter((p) => !(p in knownSlots)),
+    unknownConditional: parsed.conditional.filter((h) => !knownConditional.includes(h)),
   };
 }
 
