@@ -3,7 +3,7 @@ use axum::response::{Html, IntoResponse};
 use leptos::prelude::*;
 use uuid::Uuid;
 
-use crate::app::shell;
+use crate::app::{shell, Width};
 use crate::state::{api_get, AppState};
 
 #[derive(serde::Deserialize)]
@@ -29,7 +29,7 @@ pub async fn get(
     // transport error, and a UUID is URL-safe by construction.
     let Ok(token) = Uuid::parse_str(&query.token) else {
         let (title, body_html) = invalid_link();
-        return Html(shell(title, &body_html));
+        return Html(shell(Width::Form, title, &body_html));
     };
     let result = api_get(&state, &format!("/auth/verify-email?token={token}")).await;
 
@@ -60,5 +60,5 @@ pub async fn get(
         }
     };
 
-    Html(shell(title, &body_html))
+    Html(shell(Width::Form, title, &body_html))
 }

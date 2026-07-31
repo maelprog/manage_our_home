@@ -25,7 +25,7 @@ use axum::Form;
 use manage_our_home_shared::dto::auth::{DeleteAccountRequest, MeResponse};
 use manage_our_home_shared::dto::rgpd::{BlockingGroup, OwnerOfGroupsError};
 
-use crate::app::{html_escape, password_field, shell};
+use crate::app::{html_escape, password_field, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -100,7 +100,7 @@ fn request_form(me: &MeResponse, error: Option<&str>) -> String {
 
 /// The full page: explanation, then either the request form or the pending
 /// panel. `blocked` renders the 409 `owner_of_groups` guidance above the form.
-fn page(me: &MeResponse, header: &str, error: Option<&str>, blocked: &[BlockingGroup]) -> String {
+fn page(me: &MeResponse, error: Option<&str>, blocked: &[BlockingGroup]) -> String {
     let action = if can_request_deletion(me.deletion_requested_at) {
         format!(
             "{blocked}{form}",
@@ -112,8 +112,7 @@ fn page(me: &MeResponse, header: &str, error: Option<&str>, blocked: &[BlockingG
     };
 
     format!(
-        r#"{header}
-<p><a href="/account">← Retour à mon compte</a></p>
+        r#"<p><a href="/account">← Retour à mon compte</a></p>
 <h1>Supprimer mon compte</h1>
 <p>La suppression est <strong>programmée</strong>, pas immédiate : votre compte reste utilisable pendant un délai de grâce de {days} jours, pendant lequel vous pouvez annuler la demande. Passé ce délai, vos identifiants de connexion sont supprimés et votre compte est anonymisé.</p>
 <p class="muted">Le contenu que vous avez créé dans une famille (messages, événements, dépenses…) reste visible par les autres membres de cette famille, mais n'est plus rattaché à votre identité — c'est le fonctionnement documenté d'un espace partagé. Pour en récupérer une copie avant la suppression, <a href="/account/export">exportez vos données</a>.</p>
@@ -159,9 +158,11 @@ pub async fn get(
     headers: HeaderMap,
 ) -> Response {
     let header = account_header(&state, &headers, &me, "/account/delete").await;
-    Html(shell(
+    Html(shell_with_header(
+        Width::Form,
         "Supprimer mon compte",
-        &page(&me, &header, None, &[]),
+        &header,
+        &page(&me, None, &[]),
     ))
     .into_response()
 }
@@ -178,9 +179,11 @@ pub async fn post(
     Form(form): Form<DeleteForm>,
 ) -> Response {
     let render = |error: Option<&str>, blocked: &[BlockingGroup], header: String| {
-        Html(shell(
+        Html(shell_with_header(
+            Width::Form,
             "Supprimer mon compte",
-            &page(&me, &header, error, blocked),
+            &header,
+            &page(&me, error, blocked),
         ))
         .into_response()
     };

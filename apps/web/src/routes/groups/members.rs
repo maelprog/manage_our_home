@@ -23,7 +23,7 @@ use manage_our_home_shared::dto::groups::{
 use manage_our_home_shared::validation::groups::{actor_can_act_on, can_manage_group};
 use uuid::Uuid;
 
-use crate::app::{member_colour, member_initial, shell};
+use crate::app::{member_colour, member_initial, shell, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -35,7 +35,7 @@ pub(crate) fn group_not_found_page() -> Html<String> {
         <p>"Ce groupe n'existe pas ou vous n'en êtes pas membre."</p>
         <a class="btn secondary" href="/groups">"Retour à mes groupes"</a>
     };
-    Html(shell("Groupe introuvable", &body.to_html()))
+    Html(shell(Width::Form, "Groupe introuvable", &body.to_html()))
 }
 
 pub(crate) fn service_unavailable_page() -> Html<String> {
@@ -44,7 +44,7 @@ pub(crate) fn service_unavailable_page() -> Html<String> {
         <p>"Merci de réessayer dans quelques instants."</p>
         <a class="btn secondary" href="/groups">"Retour à mes groupes"</a>
     };
-    Html(shell("Service indisponible", &body.to_html()))
+    Html(shell(Width::Form, "Service indisponible", &body.to_html()))
 }
 
 /// `GET /groups/:id` against apps/api: `Ok(None)` is the 404 case
@@ -176,7 +176,6 @@ fn page(
     });
 
     let body = view! {
-        <div inner_html=header.to_string()></div>
         <h1>{format!("Membres — {}", group.name)}</h1>
         {notice.map(|n| view! { <p class="notice success">{n.to_string()}</p> })}
         {error.map(|e| view! { <p class="notice error">{e.to_string()}</p> })}
@@ -188,7 +187,12 @@ fn page(
             <a href=format!("/groups/{}/settings", group.id)>"Paramètres du groupe"</a>
         </div>
     };
-    shell(&format!("Membres — {}", group.name), &body.to_html())
+    shell_with_header(
+        Width::Full,
+        &format!("Membres — {}", group.name),
+        header,
+        &body.to_html(),
+    )
 }
 
 #[derive(serde::Deserialize)]

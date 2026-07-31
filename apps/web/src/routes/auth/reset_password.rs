@@ -6,7 +6,7 @@ use manage_our_home_shared::dto::auth::ResetPasswordRequest;
 use manage_our_home_shared::validation::auth::validate_password;
 use uuid::Uuid;
 
-use crate::app::{password_error_message, password_field, shell};
+use crate::app::{password_error_message, password_field, shell, Width};
 use crate::state::{api_post_json, AppState};
 
 #[derive(serde::Deserialize)]
@@ -28,7 +28,7 @@ fn invalid_link_page(title: &str, message: &str) -> String {
         <p>{message_owned}</p>
         <a class="btn secondary" href="/forgot-password">"Redemander un email"</a>
     };
-    shell(title, &body.to_html())
+    shell(Width::Form, title, &body.to_html())
 }
 
 fn form_page(token: &str, error: Option<&str>) -> String {
@@ -44,7 +44,11 @@ fn form_page(token: &str, error: Option<&str>) -> String {
             <button type="submit">"Réinitialiser"</button>
         </form>
     };
-    shell("Réinitialiser le mot de passe", &body.to_html())
+    shell(
+        Width::Form,
+        "Réinitialiser le mot de passe",
+        &body.to_html(),
+    )
 }
 
 pub async fn get(Query(query): Query<ResetPasswordQuery>) -> impl IntoResponse {
@@ -88,7 +92,11 @@ pub async fn post(
                 <p>"Votre mot de passe a été réinitialisé. Toutes vos autres sessions ont été déconnectées."</p>
                 <a class="btn" href="/login">"Se connecter"</a>
             };
-            Html(shell("Mot de passe mis à jour", &body.to_html()))
+            Html(shell(
+                Width::Form,
+                "Mot de passe mis à jour",
+                &body.to_html(),
+            ))
         }
         Ok(resp) if resp.status == reqwest::StatusCode::GONE => Html(invalid_link_page(
             "Lien expiré",

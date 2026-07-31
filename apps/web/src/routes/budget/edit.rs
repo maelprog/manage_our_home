@@ -14,7 +14,7 @@ use manage_our_home_shared::dto::budget::{BudgetEntryResponse, UpdateBudgetEntry
 use manage_our_home_shared::validation::budget::{amount_input_value, validate_entry_form};
 use uuid::Uuid;
 
-use crate::app::{html_escape, shell};
+use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -30,8 +30,7 @@ fn page(header: &str, id: Uuid, name: &str, form: &EntryForm, error: Option<&str
         .unwrap_or_default();
     let fields = form_fields(&form.name, &form.amount, &form.spent_at);
     let body = format!(
-        r#"{header}
-<h1>Modifier — {name_esc}</h1>
+        r#"<h1>Modifier — {name_esc}</h1>
 {error_html}
 <form method="post" action="/budget/{id}/edit">
 {fields}
@@ -43,7 +42,7 @@ fn page(header: &str, id: Uuid, name: &str, form: &EntryForm, error: Option<&str
 <div class="links"><a href="/budget">Retour au budget</a></div>"#,
         name_esc = html_escape(name),
     );
-    shell("Modifier la dépense", &body)
+    shell_with_header(Width::Form, "Modifier la dépense", header, &body)
 }
 
 /// Fetches an entry, returning it or an early `Response` (404/unavailable).

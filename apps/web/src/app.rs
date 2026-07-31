@@ -12,7 +12,89 @@ use manage_our_home_shared::dto::groups::GroupSummary;
 use manage_our_home_shared::validation::auth::{MAX_PASSWORD_LEN, MIN_PASSWORD_LEN};
 use uuid::Uuid;
 
-pub fn shell(title: &str, body_html: &str) -> String {
+/// The content width a page asks for — DESIGN.md → Layout names three, and
+/// `shell` takes one instead of imposing the single 28rem column that used
+/// to wrap the month grid, the admin tables and the messagerie alike
+/// (audit §3.1: on a workstation the app was a ribbon in an empty screen).
+///
+/// The choice is made at the call site rather than looked up from the path:
+/// a route knows what it renders, and a central table would be one more
+/// thing to keep in step with the router.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Width {
+    /// 28 rem — authentication, create/edit forms, confirmations and the
+    /// short error pages. The auth screens are the one part of the app the
+    /// old single column served correctly; they keep exactly this.
+    Form,
+    /// 65 rem — a detail page, a recipe, the account hub, the privacy
+    /// policy. Long text at 28 rem is *too narrow*, not too wide.
+    Read,
+    /// The whole column — the agenda grid, the admin tables, the messagerie
+    /// and the list screens, i.e. everything the narrow column broke.
+    Full,
+}
+
+impl Width {
+    /// The modifier `<main class="content…">` wears. `Full` adds nothing:
+    /// filling the column is what `.content` already does, so the widest
+    /// case costs no class and no rule.
+    fn class(self) -> &'static str {
+        match self {
+            Width::Form => " w-form",
+            Width::Read => " w-read",
+            Width::Full => "",
+        }
+    }
+}
+
+/// A page with no navigation: the authentication screens, the public
+/// privacy policy served to a signed-out visitor, and the short error
+/// pages a route renders when it has no family context to build a header
+/// from.
+///
+/// The width comes first so that adding it to the 73 existing call sites was
+/// a mechanical edit rather than 73 chances to move a comma.
+pub fn shell(width: Width, title: &str, body_html: &str) -> String {
+    document(
+        title,
+        &format!(
+            r#"<main class="content{width}">
+{body_html}
+</main>"#,
+            width = width.class(),
+            body_html = body_html,
+        ),
+    )
+}
+
+/// A page of the application proper: the navigation and the content are
+/// **siblings**, because the navigation is a grid column beside the content
+/// above 861 px and a bottom tab bar below it (#70).
+///
+/// Until this issue every route pasted `app_header`'s output at the top of
+/// its own body, so `<header>` rendered *inside* `<main>` — which no grid
+/// can lay out side by side, and which mislabelled the landmark besides.
+pub fn shell_with_header(width: Width, title: &str, header_html: &str, body_html: &str) -> String {
+    document(
+        title,
+        &format!(
+            r#"<div class="app">
+{header_html}
+<main class="content{width}">
+{body_html}
+</main>
+</div>"#,
+            header_html = header_html,
+            width = width.class(),
+            body_html = body_html,
+        ),
+    )
+}
+
+/// The `<html>`/`<head>`/`<body>` skeleton both shells share. The
+/// stylesheet is `include_str!`'d into every response — see DESIGN.md →
+/// Livraison du CSS for why, and for the budget that bounds it.
+fn document(title: &str, body: &str) -> String {
     format!(
         r#"<!DOCTYPE html>
 <html lang="fr">
@@ -23,14 +105,12 @@ pub fn shell(title: &str, body_html: &str) -> String {
 <style>{css}</style>
 </head>
 <body>
-<main class="container">
-{body_html}
-</main>
+{body}
 </body>
 </html>"#,
         title = html_escape(title),
         css = include_str!("style.css"),
-        body_html = body_html,
+        body = body,
     )
 }
 
@@ -86,13 +166,21 @@ const NAV: [(&str, &str); 8] = [
     ("/groups", "Groupes"),
 ];
 
-/// Full authenticated header for pages that carry the family context:
-/// a name + "Mon compte" (the RGPD self-service hub, front epic F10) + logout
-/// row plus a nav (Accueil / Groupes)
-/// and issue #17's active-family switcher — a plain `<form>` posting to
-/// `POST /groups/switch` (persists the choice in the `active_group_id`
-/// cookie, see `crate::family`) then bouncing back to `redirect_to`.
-/// With no groups yet, the switcher gives way to a "create a family" link.
+/// The application's navigation, rendered once and laid out twice (#70): a
+/// persistent sidebar from 861 px up, the same links as a bottom tab bar
+/// below. One markup for both, so `aria-current="page"` lands on exactly
+/// one element whatever the viewport — two navs would light two tabs.
+///
+/// It carries the nav proper, then issue #17's active-family switcher — a
+/// plain `<form>` posting to `POST /groups/switch` (persists the choice in
+/// the `active_group_id` cookie, see `crate::family`) then bouncing back to
+/// `redirect_to` — then the account block: the caller's name, "Mon compte"
+/// (the RGPD self-service hub, front epic F10) and logout. With no groups
+/// yet, the switcher gives way to a "create a family" link.
+///
+/// The switcher moved out of a full-width strip under the nav and into the
+/// sidebar, which is DESIGN.md → Layout's structure and what makes the
+/// active family visible on every page rather than a line above the title.
 ///
 /// `redirect_to` doubles as the current path, which is what decides the nav
 /// link that carries `aria-current="page"` (#69): every caller already passes
@@ -146,26 +234,23 @@ pub fn app_header(
         .collect();
     format!(
         r#"<header>
-<div class="page-header">
-<nav class="actions">{links}</nav>
-<span class="actions">
+<nav class="tabs">{links}</nav>
+<div class="muted">{switcher}</div>
+<div class="actions">
 <span class="muted">{name}</span>
-<a class="navlink" href="/account"{account_current}>Mon compte</a>
+{account}
 <form method="post" action="/logout">
 <button type="submit" class="secondary">Se déconnecter</button>
 </form>
-</span>
 </div>
-<div class="muted">{switcher}</div>
 </header>"#,
         name = html_escape(&me.display_name),
         switcher = switcher,
         links = links,
-        account_current = if nav_link_is_current("/account", redirect_to) {
-            r#" aria-current="page""#
-        } else {
-            ""
-        },
+        // "Mon compte" is a destination like any other, so it goes through
+        // the same helper rather than restating its conditional (#69's
+        // leftover nit, in this diff anyway because the link moves).
+        account = navlink("/account", "Mon compte", redirect_to),
     )
 }
 
@@ -1424,6 +1509,231 @@ mod tests {
         assert!(current.contains("font-weight: 600"));
     }
 
+    // -- responsive layout (#70) ---------------------------------------
+    //
+    // `shell` used to wrap every page in one 28rem column, and the sheet
+    // carried exactly one media query — the dark theme. The app fitted a
+    // phone by being 448px wide, not by adapting, and a workstation got the
+    // month grid and the admin tables in that same ribbon (audit §3.1).
+    // These guards hold the three halves of the fix a machine can see: the
+    // width a page asks for is a class the sheet defines, the breakpoint and
+    // the sidebar exist, and the tab bar is actually touchable.
+
+    #[test]
+    fn each_content_width_wears_a_class_the_stylesheet_defines() {
+        // A width that names a class nobody wrote is a page rendered at the
+        // wrong width, silently — CSS does not report an unknown class.
+        let css = css();
+        assert!(
+            stylesheet_defines_class(&css, "content"),
+            "`.content` is the column every page sits in"
+        );
+        for width in [Width::Form, Width::Read] {
+            let class = width.class().trim();
+            assert!(
+                !class.is_empty(),
+                "{width:?} is a bounded width and needs a class"
+            );
+            assert!(
+                stylesheet_defines_class(&css, class),
+                "{width:?} asks for `.{class}`, which style.css does not define"
+            );
+        }
+        // Full width is `.content`'s own behaviour, so it adds nothing.
+        assert_eq!(Width::Full.class(), "");
+    }
+
+    #[test]
+    fn the_three_widths_are_told_apart() {
+        // Two widths collapsing onto one class would put the auth forms and
+        // the agenda in the same column again, which is the bug being fixed.
+        let classes: BTreeSet<&str> = [Width::Form, Width::Read, Width::Full]
+            .into_iter()
+            .map(Width::class)
+            .collect();
+        assert_eq!(classes.len(), 3, "classes: {classes:?}");
+    }
+
+    #[test]
+    fn each_bounded_width_takes_its_value_from_the_layout_token() {
+        // DESIGN.md → Layout fixes 28rem and 65rem as tokens; a class that
+        // restated the number would drift from the document.
+        for (width, token) in [(Width::Form, "--w-form"), (Width::Read, "--w-read")] {
+            let (rule, _) = block_after(&css(), &format!(".{}", width.class().trim()), 0);
+            assert!(
+                rule.contains(&format!("max-width: {}", var_of(token))),
+                "{width:?} should bound itself with `{token}`: {rule}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_page_wears_the_width_it_asked_for() {
+        for (width, expected) in [
+            (Width::Form, r#"<main class="content w-form">"#),
+            (Width::Read, r#"<main class="content w-read">"#),
+            (Width::Full, r#"<main class="content">"#),
+        ] {
+            let html = shell(width, "Titre", "<h1>x</h1>");
+            assert!(html.contains(expected), "{width:?}: {html}");
+        }
+    }
+
+    #[test]
+    fn the_navigation_is_a_sibling_of_the_content_not_a_child() {
+        // The sidebar is a grid column next to the content, so the header
+        // cannot live inside `<main>` the way it did when every route
+        // pasted it at the top of its own body — and `<header>` inside
+        // `<main>` was a mislabelled landmark besides.
+        let html = shell_with_header(Width::Full, "Titre", "<header>nav</header>", "<h1>x</h1>");
+        let header_end = html.find("</header>").expect("a header");
+        let main_start = html.find("<main").expect("a main");
+        assert!(header_end < main_start, "{html}");
+        assert!(html.contains(r#"<div class="app">"#), "{html}");
+        // A page with no session renders no navigation at all, so it needs
+        // no grid either.
+        let bare = shell(Width::Form, "Connexion", "<h1>x</h1>");
+        assert!(!bare.contains("<header"), "{bare}");
+        assert!(!bare.contains(r#"class="app""#), "{bare}");
+    }
+
+    #[test]
+    fn the_sidebar_appears_at_the_breakpoint_the_design_system_names() {
+        // 861px is DESIGN.md → Layout's threshold, and `--w-sidebar` its
+        // width. Below it the same links are a bottom bar; there is one DOM
+        // for both, so `aria-current="page"` is on exactly one element
+        // whatever the viewport.
+        let css = css();
+        let at = css
+            .find("@media (min-width: 861px)")
+            .expect("no 861px breakpoint in style.css");
+        let (wide, _) = block_after(&css, ".app", at);
+        assert!(
+            wide.contains("display: grid")
+                && wide.contains("grid-template-columns")
+                && wide.contains(&var_of("--w-sidebar")),
+            "the wide layout should lay the sidebar out as a grid column \
+             sized by --w-sidebar: {wide}"
+        );
+        // Below the breakpoint there is nothing to lay out side by side, so
+        // the shell carries no rule at all — the header and the content are
+        // two blocks, and the tab bar is out of flow.
+        assert!(
+            css[..at].find(".app").is_none(),
+            "the narrow layout should need no `.app` rule"
+        );
+    }
+
+    #[test]
+    fn the_tab_bar_is_pinned_to_the_bottom_on_a_phone() {
+        let css = css();
+        let (tabs, _) = block_after(&css, "\n.tabs {", 0);
+        assert!(tabs.contains("position: fixed"), "{tabs}");
+        // Anchored to the bottom edge, not just taken out of flow.
+        assert!(tabs.contains("inset: auto 0 0 0"), "{tabs}");
+        // …and released again once there is room for a sidebar.
+        let at = css
+            .find("@media (min-width: 861px)")
+            .expect("no 861px breakpoint in style.css");
+        let (wide, _) = block_after(&css, ".tabs", at);
+        assert!(
+            wide.contains("position: static"),
+            "the tab bar stays fixed on a wide screen: {wide}"
+        );
+    }
+
+    #[test]
+    fn a_tab_is_at_least_the_forty_four_pixels_a_finger_needs() {
+        // DESIGN.md → Espacement: ≥ 44px on every interactive element. The
+        // height is read back through the spacing token rather than trusted
+        // as a literal, because the token is what the rule names.
+        let css = css();
+        let (tab, _) = block_after(&css, ".tabs .navlink", 0);
+        let token = tab
+            .split(';')
+            .filter_map(|d| d.split_once(':'))
+            .find(|(name, _)| name.trim() == "min-height")
+            .map(|(_, value)| value.trim().to_string())
+            .unwrap_or_else(|| panic!("`.tabs .navlink` states no min-height: {tab}"));
+        let token = token
+            .trim_start_matches("var(")
+            .trim_end_matches(')')
+            .to_string();
+        let (root, _) = block_after(&css, ":root", 0);
+        let value = root
+            .split(';')
+            .filter_map(|d| d.split_once(':'))
+            .find(|(name, _)| name.trim() == token)
+            .map(|(_, value)| value.trim().to_string())
+            .unwrap_or_else(|| panic!("`{token}` is not a spacing token"));
+        let px: f32 = value
+            .trim_end_matches("px")
+            .parse()
+            .unwrap_or_else(|_| panic!("`{token}: {value}` is not a pixel length"));
+        assert!(px >= 44.0, "a tab is {px}px tall, DESIGN.md asks for ≥ 44");
+    }
+
+    #[test]
+    fn the_authentication_pages_keep_the_form_width() {
+        // The one part of the app the old single column served correctly.
+        // Widening a login form to 65rem would be a regression dressed up as
+        // the fix, so the rule is checked against the sources rather than
+        // trusted to review.
+        let mut offenders = Vec::new();
+        for (path, body) in rust_sources() {
+            if !path.contains("routes/auth") {
+                continue;
+            }
+            for call in shell_widths(&body) {
+                if call != "Form" {
+                    offenders.push(format!("{path}: Width::{call}"));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "an authentication page asks for something other than the form \
+             width: {offenders:?}"
+        );
+    }
+
+    #[test]
+    fn every_screen_of_the_app_states_a_width() {
+        // The checklist item is "give each route its width", and the type
+        // makes it unskippable — but a route can still be added tomorrow, so
+        // the count is asserted rather than assumed: every `shell` call in
+        // the routes hands over one of the three.
+        let calls: usize = rust_sources()
+            .iter()
+            .filter(|(path, _)| path.contains("routes"))
+            .map(|(_, body)| shell_widths(body).len())
+            .sum();
+        assert!(
+            calls >= 70,
+            "only {calls} route screens name a width; the app has ~73 of them"
+        );
+    }
+
+    /// The `Width::…` variant handed to every `shell`/`shell_with_header`
+    /// call in a source, in order.
+    fn shell_widths(src: &str) -> Vec<String> {
+        // Assembled like the other scanners in this module: this file is one
+        // of the sources the scan reads.
+        let needle = format!("Width{}", "::");
+        let mut out = Vec::new();
+        for line in src.lines().filter(|l| !l.trim_start().starts_with("//")) {
+            let mut rest = line;
+            while let Some(at) = rest.find(&needle) {
+                rest = &rest[at + needle.len()..];
+                let end = rest
+                    .find(|c: char| !c.is_alphanumeric())
+                    .unwrap_or(rest.len());
+                out.push(rest[..end].to_string());
+            }
+        }
+        out
+    }
+
     // -- delivery budget (#83) -----------------------------------------
     //
     // Inlining is a bet: a sheet that travels inside the document costs a
@@ -1507,11 +1817,17 @@ mod tests {
     ///
     /// Not tightened further, despite the document turning out two to
     /// three times heavier than that first reading, because the two
-    /// ceilings impose a floor: declarations are 30.9 % of the compressed
-    /// sheet after #69 (2 670 of 8 633), so `DECLARATIONS_CEILING` is only
-    /// reached first while this one stays above ~9 942. Below that the two
+    /// ceilings impose a floor: declarations are 30.5 % of the compressed
+    /// sheet after #70 (2 921 of 9 570), so `DECLARATIONS_CEILING` is only
+    /// reached first while this one stays above ~10 065. Below that the two
     /// guards swap order and the pressure falls back onto the comments,
     /// which is the thing the pair exists to prevent.
+    ///
+    /// That floor is now 175 bytes under this ceiling, against ~298 after
+    /// #69: #70's responsive shell moved the sheet from 8 633 to 9 570
+    /// gzipped bytes, leaving 670. The ordering still holds, but it is the
+    /// number to watch — not because the sheet may be trimmed, but because
+    /// the pair stops working before either guard fires.
     ///
     /// **This one is not raised.** Passing it means the inlining bet has
     /// lost and the sheet moves to `/assets` (DESIGN.md → Livraison du CSS
@@ -1529,12 +1845,17 @@ mod tests {
     ///
     /// #69 spent a third of the room that was left: 2 298 → 2 670 bytes,
     /// for the hover, focus and nav-current rules the sheet had none of.
-    /// The five design issues after it share 402 bytes.
+    /// #70 spent nearly two thirds of what remained after it: 2 670 → 2 921,
+    /// for the grid, the two bounded widths, the tab bar and the one
+    /// breakpoint the sheet had none of. **151 bytes are left**, and #71–#74
+    /// have to share them.
     ///
     /// A ceiling, not a target, and unlike `SHEET_CEILING` it *can* be
     /// raised — with a reason in the PR, like the inline-style ceiling
     /// above. What it forbids is drifting past it unnoticed while #69–#74
-    /// each add "just a few rules".
+    /// each add "just a few rules". Neither #69 nor #70 raised it; the next
+    /// issue that needs to should say so in its PR body and let review
+    /// decide, rather than editing this line on the way past.
     const DECLARATIONS_CEILING: usize = 3 * 1024;
 
     #[test]

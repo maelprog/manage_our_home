@@ -21,7 +21,7 @@ use axum::http::HeaderMap;
 use leptos::prelude::*;
 use manage_our_home_shared::dto::auth::MeResponse;
 
-use crate::app::shell;
+use crate::app::{shell, Width};
 use crate::routes::groups::{cookie_of, header_with_groups};
 use crate::state::AppState;
 
@@ -59,7 +59,7 @@ pub(crate) fn service_unavailable_page() -> axum::response::Html<String> {
         <p>"Merci de réessayer dans quelques instants."</p>
         <a class="btn secondary" href="/admin/users">"Retour à l'administration"</a>
     };
-    axum::response::Html(shell("Service indisponible", &body.to_html()))
+    axum::response::Html(shell(Width::Form, "Service indisponible", &body.to_html()))
 }
 
 pub(crate) fn user_not_found_page() -> axum::response::Html<String> {
@@ -68,7 +68,11 @@ pub(crate) fn user_not_found_page() -> axum::response::Html<String> {
         <p>"Ce compte n'existe pas ou a déjà été désactivé."</p>
         <a class="btn secondary" href="/admin/users">"Retour à la liste des utilisateurs"</a>
     };
-    axum::response::Html(shell("Utilisateur introuvable", &body.to_html()))
+    axum::response::Html(shell(
+        Width::Form,
+        "Utilisateur introuvable",
+        &body.to_html(),
+    ))
 }
 
 pub(crate) fn forbidden_page() -> axum::response::Html<String> {
@@ -77,5 +81,5 @@ pub(crate) fn forbidden_page() -> axum::response::Html<String> {
         <p>"Vous n'avez pas les droits nécessaires pour cette action."</p>
         <a class="btn secondary" href="/admin/users">"Retour à l'administration"</a>
     };
-    axum::response::Html(shell("Action non autorisée", &body.to_html()))
+    axum::response::Html(shell(Width::Form, "Action non autorisée", &body.to_html()))
 }

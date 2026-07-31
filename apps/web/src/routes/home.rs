@@ -3,7 +3,7 @@ use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use leptos::prelude::*;
 
-use crate::app::shell;
+use crate::app::{shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::routes::groups::header_with_groups;
 use crate::state::AppState;
@@ -29,12 +29,16 @@ pub async fn get(
         }
     });
     let body = view! {
-        <div inner_html=header></div>
         <h1>"Bienvenue"</h1>
         <p>"Vous êtes connecté."</p>
         {no_group_hint}
     };
-    Html(shell("Accueil", &body.to_html()))
+    Html(shell_with_header(
+        Width::Read,
+        "Accueil",
+        &header,
+        &body.to_html(),
+    ))
 }
 
 /// `POST /logout` on apps/web itself: forwards to `POST /auth/logout` on

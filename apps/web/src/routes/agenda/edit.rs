@@ -16,7 +16,7 @@ use manage_our_home_shared::validation::agenda::{
 };
 use uuid::Uuid;
 
-use crate::app::{html_escape, shell};
+use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -47,8 +47,7 @@ fn page(
     let all_day_checked = if all_day { " checked" } else { "" };
     let kind = if is_task { "Tâche" } else { "Événement" };
     let body = format!(
-        r#"{header}
-<h1>Modifier — {title_esc}</h1>
+        r#"<h1>Modifier — {title_esc}</h1>
 <p class="muted">{kind} (le type ne peut pas être changé après création)</p>
 {error_html}
 <form method="post" action="/agenda/{id}/edit">
@@ -68,7 +67,7 @@ fn page(
         location_attr = html_escape(location),
         description_esc = html_escape(description),
     );
-    shell("Modifier l'événement", &body)
+    shell_with_header(Width::Form, "Modifier l'événement", header, &body)
 }
 
 pub async fn get(

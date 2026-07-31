@@ -17,7 +17,7 @@ use manage_our_home_shared::validation::recipes::{
 };
 use uuid::Uuid;
 
-use crate::app::{html_escape, shell};
+use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -33,8 +33,7 @@ fn page(header: &str, id: Uuid, name: &str, form: &RecipeForm, error: Option<&st
         .unwrap_or_default();
     let fields = form_fields(&form.name, &form.instructions, &form.ingredients);
     let body = format!(
-        r#"{header}
-<h1>Modifier — {name_esc}</h1>
+        r#"<h1>Modifier — {name_esc}</h1>
 {error_html}
 <form method="post" action="/recipes/{id}/edit">
 {fields}
@@ -43,7 +42,7 @@ fn page(header: &str, id: Uuid, name: &str, form: &RecipeForm, error: Option<&st
 <div class="links"><a href="/recipes/{id}">Retour au détail</a></div>"#,
         name_esc = html_escape(name),
     );
-    shell("Modifier la recette", &body)
+    shell_with_header(Width::Form, "Modifier la recette", header, &body)
 }
 
 /// Fetches a recipe, returning it or an early `Response` (404/unavailable).

@@ -45,12 +45,12 @@ use manage_our_home_shared::validation::google_calendar::{
 use manage_our_home_shared::validation::messagerie::author_name;
 use uuid::Uuid;
 
-use crate::app::{html_escape, shell};
+use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
-use super::{agenda_cookie, family_context, fmt_paris, service_unavailable_page, FamilyContext};
+use super::{agenda_cookie, family_context, fmt_paris, service_unavailable_page};
 
 /// Google's own help page for the private iCal address — linked rather than
 /// paraphrased, because Google moves the setting around and a stale click-path
@@ -205,8 +205,7 @@ pub async fn get(
 
     let may_configure = can_configure(&fam.role);
     let body = format!(
-        r#"{header}
-<div class="page-header">
+        r#"<div class="page-header">
 <h1>Agendas Google</h1>
 <span class="actions">
 <a class="btn secondary" href="/agenda">Retour à l'agenda</a>
@@ -216,7 +215,6 @@ pub async fn get(
 {banner}
 {explainer}
 {content}"#,
-        header = fam.header,
         add_button = if may_configure {
             r#"<a class="btn" href="/agenda/imports/new">Ajouter un agenda Google</a>"#
         } else {
@@ -230,7 +228,13 @@ pub async fn get(
             table(&imports, &members, may_configure)
         },
     );
-    Html(shell("Agendas Google", &body)).into_response()
+    Html(shell_with_header(
+        Width::Full,
+        "Agendas Google",
+        &fam.header,
+        &body,
+    ))
+    .into_response()
 }
 
 /// What the feature does, for a family that has connected nothing yet. A
@@ -314,14 +318,13 @@ pub struct NewImportForm {
 /// The connect form. `label` is pre-filled after a failed submit (it is not a
 /// secret); `feed_url` deliberately is not — the page asks for it again rather
 /// than putting a credential back into the HTML.
-fn new_page(fam: &FamilyContext, error: Option<&str>, label: &str) -> String {
+fn new_page(error: Option<&str>, label: &str) -> String {
     let error_html = error
         .and_then(error_text)
         .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
         .unwrap_or_default();
     format!(
-        r#"{header}
-<h1>Connecter un agenda Google</h1>
+        r#"<h1>Connecter un agenda Google</h1>
 {error_html}
 {explainer}
 <section class="notice">
@@ -345,7 +348,6 @@ fn new_page(fam: &FamilyContext, error: Option<&str>, label: &str) -> String {
 <button type="submit">Connecter cet agenda</button>
 </form>
 <div class="links"><a href="/agenda/imports">Retour aux agendas Google</a></div>"#,
-        header = fam.header,
         error_html = error_html,
         explainer = MODEL_EXPLAINER,
         help = GOOGLE_HELP_URL,
@@ -364,9 +366,11 @@ pub async fn new_get(
     if !can_configure(&fam.role) {
         return Redirect::to("/agenda/imports?error=forbidden").into_response();
     }
-    Html(shell(
+    Html(shell_with_header(
+        Width::Form,
         "Connecter un agenda Google",
-        &new_page(&fam, None, ""),
+        &fam.header,
+        &new_page(None, ""),
     ))
     .into_response()
 }
@@ -385,9 +389,11 @@ pub async fn create(
     }
 
     let render_error = |code: &str| {
-        Html(shell(
+        Html(shell_with_header(
+            Width::Form,
             "Connecter un agenda Google",
-            &new_page(&fam, Some(code), &form.label),
+            &fam.header,
+            &new_page(Some(code), &form.label),
         ))
         .into_response()
     };
@@ -504,10 +510,9 @@ pub async fn run(
 /// everything: alongside the survivors in the kept branch, on a clean agenda in
 /// the other. It is also why the backend exposes no `PATCH` for the label or
 /// the URL.
-fn delete_page(fam: &FamilyContext, import: &CalendarImportResponse) -> String {
+fn delete_page(import: &CalendarImportResponse) -> String {
     format!(
-        r#"{header}
-<h1>Retirer « {label} » ?</h1>
+        r#"<h1>Retirer « {label} » ?</h1>
 <p>Cette connexion ne sera plus utilisable et son adresse iCal sera effacée.</p>
 <form method="post" action="/agenda/imports/{id}/delete">
 <section class="notice">
@@ -525,7 +530,6 @@ fn delete_page(fam: &FamilyContext, import: &CalendarImportResponse) -> String {
 <button type="submit" class="danger">Retirer cet agenda Google</button>
 </form>
 <div class="links"><a href="/agenda/imports">Annuler</a></div>"#,
-        header = fam.header,
         label = html_escape(&import.label),
         id = import.id,
     )
@@ -572,9 +576,11 @@ pub async fn delete_get(
     }
     let cookie = agenda_cookie(&headers);
     match find_import(&state, cookie.as_deref(), fam.gid, import_id).await {
-        Ok(Some(import)) => Html(shell(
+        Ok(Some(import)) => Html(shell_with_header(
+            Width::Form,
             &format!("Retirer {}", import.label),
-            &delete_page(&fam, &import),
+            &fam.header,
+            &delete_page(&import),
         ))
         .into_response(),
         Ok(None) => Redirect::to("/agenda/imports?error=not_found").into_response(),
@@ -773,12 +779,7 @@ mod tests {
             last_imported_at: None,
             created_at: chrono::Utc::now(),
         };
-        let fam = FamilyContext {
-            gid: Uuid::nil(),
-            role: "owner".to_string(),
-            header: String::new(),
-        };
-        let page = delete_page(&fam, &import);
+        let page = delete_page(&import);
 
         assert!(page.contains(r#"name="delete_events""#), "{page}");
         assert!(page.contains(r#"type="checkbox""#), "{page}");

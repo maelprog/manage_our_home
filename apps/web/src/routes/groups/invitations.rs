@@ -15,7 +15,7 @@ use leptos::prelude::*;
 use manage_our_home_shared::dto::groups::AcceptInvitationResponse;
 use uuid::Uuid;
 
-use crate::app::shell;
+use crate::app::{shell, Width};
 use crate::family::set_active_group_cookie;
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
@@ -28,7 +28,7 @@ fn invalid_page() -> Html<String> {
         <p>"Ce lien d'invitation n'existe pas."</p>
         <a class="btn secondary" href="/groups">"Retour à mes groupes"</a>
     };
-    Html(shell("Invitation invalide", &body.to_html()))
+    Html(shell(Width::Form, "Invitation invalide", &body.to_html()))
 }
 
 fn gone_page() -> Html<String> {
@@ -37,7 +37,7 @@ fn gone_page() -> Html<String> {
         <p>"Cette invitation a déjà été utilisée ou a expiré (elles sont valables 7 jours et à usage unique). Demandez-en une nouvelle à un membre du groupe."</p>
         <a class="btn secondary" href="/groups">"Retour à mes groupes"</a>
     };
-    Html(shell("Invitation expirée", &body.to_html()))
+    Html(shell(Width::Form, "Invitation expirée", &body.to_html()))
 }
 
 pub async fn get(CurrentUser(_me): CurrentUser, Path(token): Path<String>) -> Response {
@@ -57,7 +57,7 @@ pub async fn get(CurrentUser(_me): CurrentUser, Path(token): Path<String>) -> Re
             <a href="/groups">"Annuler"</a>
         </div>
     };
-    Html(shell("Rejoindre un groupe", &body.to_html())).into_response()
+    Html(shell(Width::Form, "Rejoindre un groupe", &body.to_html())).into_response()
 }
 
 pub async fn post(
@@ -99,7 +99,7 @@ pub async fn post(
                 <p>"Merci de réessayer dans quelques instants."</p>
                 <a class="btn secondary" href="/groups">"Retour à mes groupes"</a>
             };
-            Html(shell("Service indisponible", &body.to_html())).into_response()
+            Html(shell(Width::Form, "Service indisponible", &body.to_html())).into_response()
         }
     }
 }

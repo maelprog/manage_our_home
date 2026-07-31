@@ -8,7 +8,7 @@ use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Response};
 use manage_our_home_shared::dto::user_admin::{AdminGroupResponse, AdminGroupsResponse};
 
-use crate::app::{html_escape, shell};
+use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentSuperAdmin;
 use crate::state::{api_request_auth, AppState};
 
@@ -71,11 +71,16 @@ pub async fn get(
     };
 
     let body = format!(
-        r#"{header}
-<h1>Administration — Familles</h1>
+        r#"<h1>Administration — Familles</h1>
 <p class="muted">Toutes les familles, tous foyers confondus. Vue de support en lecture seule.</p>
 <nav class="actions"><a href="/admin/groups">Familles</a><a href="/admin/users">Utilisateurs</a></nav>
 {table}"#,
     );
-    Html(shell("Administration — Familles", &body)).into_response()
+    Html(shell_with_header(
+        Width::Full,
+        "Administration — Familles",
+        &header,
+        &body,
+    ))
+    .into_response()
 }

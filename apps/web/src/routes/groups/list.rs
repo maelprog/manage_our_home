@@ -9,7 +9,7 @@ use axum::Form;
 use leptos::prelude::*;
 use manage_our_home_shared::validation::groups::parse_invitation_token;
 
-use crate::app::shell;
+use crate::app::{shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::AppState;
 
@@ -72,7 +72,6 @@ pub async fn get(
         .collect::<Vec<_>>();
 
     let body = view! {
-        <div inner_html=header></div>
         <h1>"Mes groupes"</h1>
         {notice.map(|n| view! { <p class="notice success">{n}</p> })}
         {error.map(|e| view! { <p class="notice error">{e}</p> })}
@@ -94,7 +93,12 @@ pub async fn get(
             <button type="submit">"Rejoindre"</button>
         </form>
     };
-    Html(shell("Mes groupes", &body.to_html()))
+    Html(shell_with_header(
+        Width::Read,
+        "Mes groupes",
+        &header,
+        &body.to_html(),
+    ))
 }
 
 #[derive(serde::Deserialize)]

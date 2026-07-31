@@ -5,7 +5,7 @@ use axum::Form;
 use leptos::prelude::*;
 use manage_our_home_shared::dto::auth::LoginRequest;
 
-use crate::app::{password_field, shell};
+use crate::app::{password_field, shell, Width};
 use crate::layout::RedirectIfAuthenticated;
 use crate::state::{api_post_json, AppState};
 
@@ -38,7 +38,7 @@ fn page(email: &str, error: Option<&str>, api_public_base_url: &str) -> String {
             <a href="/privacy-policy">"Politique de confidentialité"</a>
         </div>
     };
-    shell("Connexion", &body.to_html())
+    shell(Width::Form, "Connexion", &body.to_html())
 }
 
 pub async fn get(

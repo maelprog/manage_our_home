@@ -17,7 +17,7 @@ use manage_our_home_shared::dto::groups::{GroupDetailResponse, RenameGroupReques
 use manage_our_home_shared::validation::groups::{can_manage_group, validate_group_name};
 use uuid::Uuid;
 
-use crate::app::shell;
+use crate::app::{shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -155,7 +155,6 @@ fn page(
     });
 
     let body = view! {
-        <div inner_html=header.to_string()></div>
         <h1>{format!("Paramètres — {}", group.name)}</h1>
         <p class="muted">{format!("Votre rôle : {}", role_label(&my_role))}</p>
         {notice.map(|n| view! { <p class="notice success">{n.to_string()}</p> })}
@@ -170,7 +169,12 @@ fn page(
             <a href=format!("/groups/{}/members", group.id)>"Membres du groupe"</a>
         </div>
     };
-    shell(&format!("Paramètres — {}", group.name), &body.to_html())
+    shell_with_header(
+        Width::Form,
+        &format!("Paramètres — {}", group.name),
+        header,
+        &body.to_html(),
+    )
 }
 
 #[derive(serde::Deserialize)]

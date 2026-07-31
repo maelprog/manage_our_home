@@ -30,7 +30,7 @@ use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Response};
 use manage_our_home_shared::dto::auth::MeResponse;
 
-use crate::app::{html_escape, shell};
+use crate::app::{html_escape, shell, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::routes::groups::{cookie_of, header_with_groups};
 use crate::state::AppState;
@@ -135,8 +135,7 @@ pub async fn get(
     };
 
     let body = format!(
-        r#"{header}
-<h1>Mon compte</h1>
+        r#"<h1>Mon compte</h1>
 <dl>
 <dt>Nom affiché</dt><dd>{name}</dd>
 <dt>Email</dt><dd>{email}</dd>
@@ -154,7 +153,7 @@ pub async fn get(
         notice = notice_html(query.notice.as_deref()),
         error = error_html(query.error.as_deref()),
     );
-    Html(shell("Mon compte", &body)).into_response()
+    Html(shell_with_header(Width::Read, "Mon compte", &header, &body)).into_response()
 }
 
 // -- shared error page ------------------------------------------------------
@@ -163,5 +162,5 @@ pub(crate) fn service_unavailable_page() -> Html<String> {
     let body = r#"<h1>Service momentanément indisponible</h1>
 <p>Merci de réessayer dans quelques instants.</p>
 <a class="btn secondary" href="/account">Retour à mon compte</a>"#;
-    Html(shell("Service indisponible", body))
+    Html(shell(Width::Form, "Service indisponible", body))
 }

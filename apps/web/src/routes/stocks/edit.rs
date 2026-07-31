@@ -14,7 +14,7 @@ use manage_our_home_shared::dto::stocks::{StockItemResponse, UpdateStockItemRequ
 use manage_our_home_shared::validation::stocks::validate_item_form;
 use uuid::Uuid;
 
-use crate::app::{html_escape, shell};
+use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -38,8 +38,7 @@ fn page(header: &str, id: Uuid, name: &str, form: &ItemForm, error: Option<&str>
         &form.reorder_threshold,
     );
     let body = format!(
-        r#"{header}
-<h1>Modifier — {name_esc}</h1>
+        r#"<h1>Modifier — {name_esc}</h1>
 {error_html}
 <form method="post" action="/stocks/{id}/edit">
 {fields}
@@ -48,7 +47,7 @@ fn page(header: &str, id: Uuid, name: &str, form: &ItemForm, error: Option<&str>
 <div class="links"><a href="/stocks/{id}">Retour au détail</a></div>"#,
         name_esc = html_escape(name),
     );
-    shell("Modifier l'article", &body)
+    shell_with_header(Width::Form, "Modifier l'article", header, &body)
 }
 
 /// Fetches an item, returning it or an early `Response` (404/unavailable).

@@ -14,7 +14,7 @@ use manage_our_home_shared::dto::grocery_list::{GroceryItemResponse, UpdateGroce
 use manage_our_home_shared::validation::grocery_list::{fmt_num, validate_item_form};
 use uuid::Uuid;
 
-use crate::app::{html_escape, shell};
+use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -50,8 +50,7 @@ fn page(header: &str, id: Uuid, name: &str, form: &EditForm, error: Option<&str>
         .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
         .unwrap_or_default();
     let body = format!(
-        r#"{header}
-<h1>Modifier — {name_esc}</h1>
+        r#"<h1>Modifier — {name_esc}</h1>
 {error_html}
 <form method="post" action="/grocery-list/{id}/edit">
 <label>Nom <input type="text" name="name" required value="{name_val}"/></label>
@@ -68,7 +67,7 @@ fn page(header: &str, id: Uuid, name: &str, form: &EditForm, error: Option<&str>
         quantity = html_escape(&form.quantity),
         unit = html_escape(&form.unit),
     );
-    shell("Modifier l'article", &body)
+    shell_with_header(Width::Form, "Modifier l'article", header, &body)
 }
 
 /// Fetches an item, returning it or an early `Response` (404/unavailable).

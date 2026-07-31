@@ -15,7 +15,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use chrono::Utc;
 
-use crate::app::{html_escape, shell};
+use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_get_raw, AppState};
 
@@ -45,8 +45,7 @@ pub async fn get(
 ) -> Response {
     let header = account_header(&state, &headers, &me, "/account/export").await;
     let body = format!(
-        r#"{header}
-<p><a href="/account">← Retour à mon compte</a></p>
+        r#"<p><a href="/account">← Retour à mon compte</a></p>
 <h1>Exporter mes données</h1>
 {error}
 <p>Le fichier JSON téléchargé contient votre profil et, pour chaque famille dont vous êtes membre, tout le contenu <strong>que vous avez créé</strong> : événements d'agenda, articles de stock, recettes, repas enregistrés, articles de liste de courses, dépenses, messages, et les connexions d'import calendrier.</p>
@@ -55,7 +54,13 @@ pub async fn get(
 <a class="btn" href="/account/export/download">Télécharger mes données (JSON)</a>"#,
         error = error_html(query.error.as_deref()),
     );
-    Html(shell("Exporter mes données", &body)).into_response()
+    Html(shell_with_header(
+        Width::Read,
+        "Exporter mes données",
+        &header,
+        &body,
+    ))
+    .into_response()
 }
 
 /// `GET /account/export/download` — relays `GET /account/export` with the

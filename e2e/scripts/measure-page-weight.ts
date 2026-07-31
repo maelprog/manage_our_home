@@ -467,7 +467,14 @@ async function fetchPage(session: HttpSession, route: string): Promise<string> {
   }
   // Une session expirée ou absente ne donne pas une erreur : apps/web renvoie
   // 200 avec l'écran de connexion. Sans ce contrôle on pèserait /login huit fois.
-  if (!text.includes('<nav class="actions">')) {
+  //
+  // Le témoin est le formulaire de déconnexion et non la classe du `<nav>` :
+  // il n'existe que pour une session ouverte, et c'est une *route*, pas un
+  // crochet de style. La version précédente cherchait `<nav class="actions">`
+  // et a cessé de reconnaître une page authentifiée dès que #70 a renommé
+  // cette classe en `tabs` — un renommage de CSS ne doit pas pouvoir arrêter
+  // le mesureur, ni (pire) le laisser peser huit fois l'écran de connexion.
+  if (!text.includes('action="/logout"')) {
     throw new Error(
       `${route} : la réponse ne contient pas la nav authentifiée — c'est probablement ` +
         "l'écran de connexion servi en 200. Mesure refusée.",

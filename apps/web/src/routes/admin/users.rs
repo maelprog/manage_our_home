@@ -13,7 +13,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use manage_our_home_shared::dto::user_admin::{AdminUserResponse, AdminUsersResponse};
 use uuid::Uuid;
 
-use crate::app::{html_escape, shell};
+use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentSuperAdmin;
 use crate::state::{api_request_auth, AppState};
 
@@ -117,14 +117,19 @@ pub async fn get(
     };
 
     let body = format!(
-        r#"{header}
-<h1>Administration — Utilisateurs</h1>
+        r#"<h1>Administration — Utilisateurs</h1>
 <p class="muted">Tous les comptes, tous foyers confondus. Vue de support en lecture seule (hors désactivation).</p>
 <nav class="actions"><a href="/admin/groups">Familles</a><a href="/admin/users">Utilisateurs</a></nav>
 {notice}{error}
 {table}"#,
     );
-    Html(shell("Administration — Utilisateurs", &body)).into_response()
+    Html(shell_with_header(
+        Width::Full,
+        "Administration — Utilisateurs",
+        &header,
+        &body,
+    ))
+    .into_response()
 }
 
 /// `GET /admin/users/:id` — one account's detail plus, when it is still active,
@@ -167,8 +172,7 @@ pub async fn detail(
     };
 
     let body = format!(
-        r#"{header}
-<p><a href="/admin/users">← Retour à la liste des utilisateurs</a></p>
+        r#"<p><a href="/admin/users">← Retour à la liste des utilisateurs</a></p>
 <h1>{email}</h1>
 <dl>
 <dt>Identifiant</dt><dd><code>{id}</code></dd>
@@ -187,7 +191,13 @@ pub async fn detail(
         requested = html_escape(&format_admin_datetime_opt(user.deletion_requested_at)),
         deleted = html_escape(&format_admin_datetime_opt(user.deleted_at)),
     );
-    Html(shell(&format!("Utilisateur — {}", user.email), &body)).into_response()
+    Html(shell_with_header(
+        Width::Read,
+        &format!("Utilisateur — {}", user.email),
+        &header,
+        &body,
+    ))
+    .into_response()
 }
 
 /// `POST /admin/users/:id/deactivate` — relays to

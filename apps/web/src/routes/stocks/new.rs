@@ -12,7 +12,7 @@ use axum::Form;
 use manage_our_home_shared::dto::stocks::CreateStockItemRequest;
 use manage_our_home_shared::validation::stocks::{validate_item_form, ItemFormError};
 
-use crate::app::{html_escape, shell};
+use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -116,8 +116,7 @@ fn page(header: &str, form: &ItemForm, error: Option<&str>) -> String {
         &form.reorder_threshold,
     );
     let body = format!(
-        r#"{header}
-<h1>Nouvel article</h1>
+        r#"<h1>Nouvel article</h1>
 {error_html}
 <form method="post" action="/stocks/new">
 {fields}
@@ -125,7 +124,7 @@ fn page(header: &str, form: &ItemForm, error: Option<&str>) -> String {
 </form>
 <div class="links"><a href="/stocks">Retour aux stocks</a></div>"#,
     );
-    shell("Nouvel article", &body)
+    shell_with_header(Width::Form, "Nouvel article", header, &body)
 }
 
 pub async fn get(

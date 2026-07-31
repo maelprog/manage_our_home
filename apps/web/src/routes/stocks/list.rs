@@ -10,7 +10,7 @@ use leptos::prelude::*;
 use manage_our_home_shared::dto::stocks::{StockItemList, StockItemResponse};
 use manage_our_home_shared::validation::stocks::is_low_stock;
 
-use crate::app::shell;
+use crate::app::{shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -108,7 +108,6 @@ pub async fn get(
     };
 
     let body = view! {
-        <div inner_html=fam.header></div>
         <div class="page-header">
             <h1>"Stocks"</h1>
             <span class="actions">
@@ -124,5 +123,11 @@ pub async fn get(
         }}
         <ul class="list">{rows}</ul>
     };
-    Html(shell("Stocks", &body.to_html())).into_response()
+    Html(shell_with_header(
+        Width::Full,
+        "Stocks",
+        &fam.header,
+        &body.to_html(),
+    ))
+    .into_response()
 }
