@@ -50,11 +50,28 @@ export function missingCount(target: number, existing: number): number {
 }
 
 /**
+ * Longueur de la grille du mois, en jours. Recopiée de `month_grid`
+ * (apps/shared/src/validation/agenda.rs) et **vérifiée contre cette source**
+ * par `seed-core.test.ts`, qui relit le fichier Rust : une constante recopiée
+ * à la main qui prétend suivre un original dérive, c'est précisément ce que
+ * `parseNavRoutes` refuse de laisser faire pour la nav.
+ */
+export const GRID_DAYS = 42;
+
+/**
  * **La** fenêtre : les 42 jours que `/agenda` rend pour le mois de
  * `reference`, du lundi qui précède (ou est) le 1er au 42ᵉ jour inclus.
  *
- * Miroir de `month_grid` (apps/shared/src/validation/agenda.rs). Le seed s'en
- * sert pour compter ce qui existe déjà, la mesure pour compter ce qui est
+ * Calquée sur `month_grid` (apps/shared/src/validation/agenda.rs) — mais en
+ * **minuit UTC**, là où la vraie fenêtre est bornée en heure de Paris
+ * (`calendar.rs` : `paris_local_to_utc` du premier jour à T00:00 au dernier à
+ * T23:59:59). Écart : ~2 h à chaque bord. Assumé plutôt que corrigé, parce
+ * que le seed pose ses événements entre 07:00 et 19:00 UTC sur les jours 1 à
+ * 28, donc à plus d'une journée des deux bords : aucun événement de ce jeu ne
+ * peut tomber dans la marge. Ce n'est donc pas un miroir exact, et un jeu
+ * semé autrement (minuit, fins de mois) devrait le resserrer.
+ *
+ * Le seed s'en sert pour compter ce qui existe déjà, la mesure pour ce qui est
  * stocké : **une seule fenêtre pour les deux**. La version précédente en avait
  * deux — le seed comptait sur ±1 an, la page n'en rend que 42 jours — et cette
  * divergence était la panne : le seed se croyait complet avec un `/agenda`
@@ -68,7 +85,7 @@ export function monthGridWindow(reference: Date): { from: Date; to: Date } {
   // getUTCDay() : 0 = dimanche. On veut le décalage depuis lundi.
   const offsetFromMonday = (first.getUTCDay() + 6) % 7;
   const from = new Date(first.getTime() - offsetFromMonday * 86_400_000);
-  const to = new Date(from.getTime() + 42 * 86_400_000 - 1);
+  const to = new Date(from.getTime() + GRID_DAYS * 86_400_000 - 1);
   return { from, to };
 }
 

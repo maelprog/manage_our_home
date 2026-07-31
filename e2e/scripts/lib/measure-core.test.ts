@@ -8,6 +8,7 @@ import {
   diffNavRoutes,
   emptyStackFailures,
   expectedRendered,
+  optionalPositiveInt,
   parseNavRoutes,
   requirePositiveInt,
   splitInlineStylesheet,
@@ -209,8 +210,10 @@ test("emptyStackFailures ignores routes with no declared floor", () => {
 // month grid draws all its cells, the shell and the inlined stylesheet dwarf
 // the rows. Seeding events outside the displayed month therefore produced a
 // perfectly plausible-looking 1 881 bytes instead of 2 807 — a 33 % shortfall
-// no byte floor would have caught. So: compare what the page *rendered*
-// against what the API says is *stored*.
+// no byte floor would have caught. (Those two figures come from the earlier
+// manual campaign of issue #83, on a different dataset from this seed's; this
+// repository's own run of the same mistake cost 36 %.) So: compare what the
+// page *rendered* against what the API says is *stored*.
 // ---------------------------------------------------------------------------
 
 test("countRendered counts the item links a populated list renders", () => {
@@ -393,4 +396,40 @@ test("requirePositiveInt rejects zero, negatives and fractions", () => {
 test("requirePositiveInt rejects the empty string and whitespace", () => {
   assert.throws(() => requirePositiveInt("--budget", ""), /--budget/);
   assert.throws(() => requirePositiveInt("--budget", "  "), /--budget/);
+});
+
+// --- optionalPositiveInt — les six entrées qui pilotent le garde-fou -------
+//
+// Les volumes attendus (SEED_EVENTS & co.) passaient par un `Number()` nu.
+// `Number("oops")` vaut NaN et `stored < NaN` est faux, donc une variable
+// invalide ÉTEIGNAIT le contrôle `understocked` en silence — et la mesure
+// retombait sur la tautologie « 18 rendus sur 18 stockés » que ce contrôle
+// existe pour fermer. Même mode de panne que celui qui a motivé
+// `requirePositiveInt`, sur le bouton documenté juste à côté : le bouton
+// annoncé était aussi l'interrupteur.
+
+test("optionalPositiveInt falls back when the variable is unset", () => {
+  assert.equal(optionalPositiveInt("SEED_EVENTS", undefined, 40), 40);
+});
+
+test("optionalPositiveInt uses a valid override", () => {
+  assert.equal(optionalPositiveInt("SEED_EVENTS", "12", 40), 12);
+});
+
+test("optionalPositiveInt refuses a non-numeric override rather than disabling the guard", () => {
+  assert.throws(() => optionalPositiveInt("SEED_EVENTS", "oops", 40), /SEED_EVENTS/);
+});
+
+test("optionalPositiveInt refuses an empty override, which `??` does not catch", () => {
+  // `process.env.X ?? 40` laisse passer la chaîne vide : elle n'est pas
+  // nullish, donc `Number("")` valait 0 et éteignait le contrôle.
+  assert.throws(() => optionalPositiveInt("SEED_EVENTS", "", 40), /SEED_EVENTS/);
+});
+
+test("optionalPositiveInt refuses zero, which would disable the guard too", () => {
+  assert.throws(() => optionalPositiveInt("SEED_EVENTS", "0", 40), /SEED_EVENTS/);
+});
+
+test("optionalPositiveInt refuses a negative override", () => {
+  assert.throws(() => optionalPositiveInt("SEED_EVENTS", "-1", 40), /SEED_EVENTS/);
 });

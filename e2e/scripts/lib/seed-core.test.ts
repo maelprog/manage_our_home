@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   createRng,
   cycle,
+  GRID_DAYS,
   missingCount,
   monthGridWindow,
   pick,
@@ -151,6 +155,35 @@ test("monthGridWindow is the window spreadOverMonth seeds into", () => {
   for (const d of spreadOverMonth(reference, 40)) {
     assert.ok(win.from <= d && d <= win.to, `${d.toISOString()} hors grille`);
   }
+});
+
+// Garde-fou de dérive : `monthGridWindow` recopie une logique qui vit dans
+// Rust. Une liste recopiée à la main qui prétend suivre un original, c'est
+// exactement ce que `parseNavRoutes` refuse de laisser faire pour la nav — il
+// n'y a pas de raison de s'en dispenser ici. Ce test lit la source de vérité
+// et casse si `month_grid` change de longueur ou d'ancre.
+
+test("monthGridWindow still mirrors month_grid in apps/shared", () => {
+  const source = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "apps", "shared", "src", "validation", "agenda.rs"),
+    "utf8",
+  );
+  const body = source.match(/pub fn month_grid[\s\S]*?\n}/);
+  assert.ok(body, "month_grid introuvable dans apps/shared/src/validation/agenda.rs");
+
+  const span = body[0].match(/\(0\.\.(\d+)\)/);
+  assert.ok(span, "impossible de lire la longueur de la grille dans month_grid");
+  assert.equal(
+    Number(span[1]),
+    GRID_DAYS,
+    "month_grid ne fait plus 42 jours : monthGridWindow doit suivre",
+  );
+
+  assert.match(
+    body[0],
+    /num_days_from_monday/,
+    "month_grid n'ancre plus la grille sur le lundi : monthGridWindow doit suivre",
+  );
 });
 
 test("spreadOverMonth wraps past 28 instead of leaking into the next month", () => {

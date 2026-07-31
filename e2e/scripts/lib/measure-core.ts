@@ -191,19 +191,42 @@ export function expectedRendered(stored: number, pageSize: number | undefined): 
 }
 
 /**
+ * Comme `requirePositiveInt`, mais pour une entrée facultative : absente, on
+ * prend `fallback` ; présente, elle est **validée** et jamais silencieusement
+ * convertie.
+ *
+ * La distinction « absente » / « vide » compte : `process.env.X ?? 40` laisse
+ * passer la chaîne vide, qui n'est pas nullish, et `Number("")` vaut 0. Les
+ * six volumes attendus du mesureur sont passés par un `Number()` nu, si bien
+ * qu'un `SEED_EVENTS=oops`, `=0` ou `=` éteignait le contrôle `understocked`
+ * en silence — et la mesure retombait sur la tautologie que ce contrôle
+ * existe pour fermer. Le bouton documenté était aussi l'interrupteur.
+ */
+export function optionalPositiveInt(
+  name: string,
+  raw: string | undefined,
+  fallback: number,
+): number {
+  return raw === undefined ? fallback : requirePositiveInt(name, raw);
+}
+
+/**
  * Valide un entier venu de la ligne de commande ou de l'environnement.
  *
  * `Number("oops")` vaut `NaN`, et toute comparaison avec `NaN` est fausse :
  * un `--budget=oops` faisait donc passer le budget en silence — sur le seul
  * drapeau qui pilote le code de sortie. On refuse au lieu de rendre vert.
+ * Même mode de panne, plus tard, sur les six volumes attendus : voir
+ * `optionalPositiveInt`.
  */
 export function requirePositiveInt(name: string, raw: string): number {
   const value = Number(raw.trim());
   if (raw.trim() === "" || !Number.isInteger(value) || value <= 0) {
     throw new Error(
-      `${name} attend un entier positif en octets, reçu « ${raw} ». ` +
-        "Refus de mesurer : une valeur non numérique rendrait la comparaison au " +
-        "budget toujours fausse, donc le contrôle vert quoi qu'il pèse.",
+      `${name} attend un entier positif, reçu « ${raw} ». ` +
+        "Refus de mesurer : `Number()` en ferait NaN (ou 0 pour une valeur vide), " +
+        "toute comparaison avec NaN est fausse, et le contrôle que ce paramètre " +
+        "pilote s'éteindrait en silence au lieu de refuser.",
     );
   }
   return value;

@@ -62,6 +62,7 @@ import {
   diffNavRoutes,
   emptyStackFailures,
   expectedRendered,
+  optionalPositiveInt,
   parseNavRoutes,
   requirePositiveInt,
   splitInlineStylesheet,
@@ -137,15 +138,42 @@ const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
  * sont plus comparables à ceux de quelqu'un d'autre, ce que le tableau
  * rappelle en imprimant les volumes.
  */
-const MIN_STORED = {
-  events: Number(process.env.SEED_EVENTS ?? 40),
-  stockItems: Number(process.env.SEED_STOCK_ITEMS ?? 40),
-  groceryItems: Number(process.env.SEED_GROCERY_ITEMS ?? 30),
-  budgetEntries: Number(process.env.SEED_BUDGET_ENTRIES ?? 30),
-  recipes: Number(process.env.SEED_RECIPES ?? 25),
-  messages: Number(process.env.SEED_MESSAGES ?? 50),
-  groups: 1,
-};
+type MinStoredKey =
+  | "events"
+  | "stockItems"
+  | "groceryItems"
+  | "budgetEntries"
+  | "recipes"
+  | "messages"
+  | "groups";
+
+/**
+ * Résolu dans `main`, et **validé** : chacune de ces six variables pilote le
+ * contrôle `understocked`, et une valeur invalide ne doit pas l'éteindre.
+ *
+ * Elle le pouvait : ces entrées passaient par un `Number()` nu, donc
+ * `SEED_EVENTS=oops` donnait NaN, `=0` et `=` donnaient 0, et `stored <
+ * minStored` devenait faux dans les trois cas. Le garde-fou disparaissait
+ * sans un mot et la mesure retombait sur la tautologie « 18 rendus sur 18
+ * stockés » — /agenda à −36 % avec un tableau d'apparence normale. C'est le
+ * mode de panne pour lequel `requirePositiveInt` avait été écrit, recâblé
+ * dans le contrôle censé le remplacer.
+ *
+ * Verrouillé ici plutôt qu'au seed à dessein : un désaccord de cibles doit
+ * faire échouer bruyamment côté mesure (`stored < minStored` → exit 1), pas
+ * passer inaperçu.
+ */
+function resolveMinStored(): Record<MinStoredKey, number> {
+  return {
+    events: optionalPositiveInt("SEED_EVENTS", process.env.SEED_EVENTS, 40),
+    stockItems: optionalPositiveInt("SEED_STOCK_ITEMS", process.env.SEED_STOCK_ITEMS, 40),
+    groceryItems: optionalPositiveInt("SEED_GROCERY_ITEMS", process.env.SEED_GROCERY_ITEMS, 30),
+    budgetEntries: optionalPositiveInt("SEED_BUDGET_ENTRIES", process.env.SEED_BUDGET_ENTRIES, 30),
+    recipes: optionalPositiveInt("SEED_RECIPES", process.env.SEED_RECIPES, 25),
+    messages: optionalPositiveInt("SEED_MESSAGES", process.env.SEED_MESSAGES, 50),
+    groups: 1,
+  };
+}
 
 type RouteSpec = {
   path: string;
@@ -178,9 +206,10 @@ type RouteSpec = {
      * Volume que la fenêtre affichée doit contenir pour que la mesure ait un
      * sens : les cibles de `npm run seed`. Sans ce nombre, une fenêtre à
      * moitié vide est cohérente avec elle-même (18 rendus sur 18 stockés) et
-     * passe, alors que la page pèse un tiers de moins.
+     * passe, alors que la page pèse un tiers de moins. Une clé, pas un
+     * nombre : la valeur est résolue et validée dans `main`.
      */
-    minStored: number;
+    minStoredKey: MinStoredKey;
     /**
      * Endpoint facultatif comptant la même collection **hors** de la fenêtre
      * affichée, uniquement pour dire à l'utilisateur « il y en a, mais pas
@@ -198,7 +227,7 @@ const ROUTES: RouteSpec[] = [
     floor: 1_500,
     items: {
       label: "événements",
-      minStored: MIN_STORED.events,
+      minStoredKey: "events",
       pattern: new RegExp(`href="/agenda/${UUID}\\?occ=`),
       // La MÊME fenêtre que la page rend et que le seed remplit : les 42 jours
       // de `month_grid`. Compter plus large laisserait passer un rendu partiel
@@ -213,7 +242,7 @@ const ROUTES: RouteSpec[] = [
     floor: 1_500,
     items: {
       label: "articles de stock",
-      minStored: MIN_STORED.stockItems,
+      minStoredKey: "stockItems",
       pattern: new RegExp(`href="/stocks/${UUID}"`),
       count: (gid) => ({ path: `/groups/${gid}/stock-items`, key: "items" }),
     },
@@ -223,7 +252,7 @@ const ROUTES: RouteSpec[] = [
     floor: 1_200,
     items: {
       label: "recettes",
-      minStored: MIN_STORED.recipes,
+      minStoredKey: "recipes",
       pattern: new RegExp(`href="/recipes/${UUID}"`),
       count: (gid) => ({ path: `/groups/${gid}/recipes`, key: "recipes" }),
     },
@@ -233,7 +262,7 @@ const ROUTES: RouteSpec[] = [
     floor: 1_500,
     items: {
       label: "articles de courses",
-      minStored: MIN_STORED.groceryItems,
+      minStoredKey: "groceryItems",
       pattern: new RegExp(`href="/grocery-list/${UUID}"`),
       count: (gid) => ({ path: `/groups/${gid}/grocery-items`, key: "items" }),
     },
@@ -243,7 +272,7 @@ const ROUTES: RouteSpec[] = [
     floor: 1_400,
     items: {
       label: "dépenses",
-      minStored: MIN_STORED.budgetEntries,
+      minStoredKey: "budgetEntries",
       pattern: new RegExp(`href="/budget/${UUID}"`),
       count: (gid) => ({ path: `/groups/${gid}/budget-entries`, key: "entries" }),
     },
@@ -253,7 +282,7 @@ const ROUTES: RouteSpec[] = [
     floor: 3_000,
     items: {
       label: "messages",
-      minStored: MIN_STORED.messages,
+      minStoredKey: "messages",
       pattern: new RegExp(`action="/messagerie/${UUID}/delete"`),
       count: (gid) => ({ path: `/groups/${gid}/messages?limit=100`, key: "messages" }),
       // La seule route paginée : DEFAULT_PAGE_LIMIT côté API
@@ -266,7 +295,7 @@ const ROUTES: RouteSpec[] = [
     floor: 500,
     items: {
       label: "familles",
-      minStored: MIN_STORED.groups,
+      minStoredKey: "groups",
       pattern: new RegExp(`href="/groups/${UUID}/`),
       count: () => ({ path: "/groups", key: "" }),
     },
@@ -510,6 +539,7 @@ function table(rows: Row[]): string {
 
 async function main(): Promise<void> {
   const BUDGET = resolveBudget();
+  const mins = resolveMinStored();
   assertRouteListMatchesNav();
 
   await waitForService(BASE_URL, "/login");
@@ -541,7 +571,8 @@ async function main(): Promise<void> {
     if (spec.items) {
       rendered = countRendered(html, spec.items.pattern);
       stored = await storedCount(api, spec.items.count(gid));
-      if (stored < spec.items.minStored && spec.items.countAnywhere) {
+      const minStored = mins[spec.items.minStoredKey];
+      if (stored < minStored && spec.items.countAnywhere) {
         elsewhere.set(spec.path, await storedCount(api, spec.items.countAnywhere(gid)));
       }
       checks.push({
@@ -550,7 +581,7 @@ async function main(): Promise<void> {
         stored,
         rendered,
         expected: expectedRendered(stored, spec.items.pageSize),
-        minStored: spec.items.minStored,
+        minStored,
       });
     }
     rows.push({ ...weighed, rendered, stored });
