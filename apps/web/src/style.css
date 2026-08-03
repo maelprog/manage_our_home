@@ -198,6 +198,7 @@ body { padding-bottom: var(--s16); }
   }
   .tabs { position: static; flex-direction: column; border-top: 0; }
   .tabs .navlink { justify-content: flex-start; }
+  .cal tbody tr { height: 6.5rem; }
 }
 /* No browser gives a form a margin; the routes said `margin:0` on 20-odd of
    them anyway. Saying it once here is what makes those attributes go away. */
@@ -370,27 +371,27 @@ td > .actions { margin: 0; }
   font-size: var(--t-xs);
   font-weight: 600;
 }
-/* An occurrence inside a calendar day. */
+/* An occurrence inside a calendar day. `color` is stated: the sheet has no
+   `a { color }`, so a chip fell to the UA's #0000EE — 1.48:1 on --hover. */
 .chip {
   display: block;
   margin-top: var(--s2);
   padding: var(--s2) var(--s1);
   border-radius: var(--r-sm);
   background: var(--hover);
+  color: var(--fg);
   font-size: var(--t-xs);
   text-decoration: none;
 }
 /* Something already dealt with: a completed task, a ticked grocery item. */
 .done { text-decoration: line-through; color: var(--muted); }
-/* The agenda's month grid and week strip. #71 reworks the layout; the values
-   here are the ones the route carried inline, so that when it does, it does
-   so in CSS. */
+/* The agenda (#71). Month and week are one table of whole weeks — six rows
+   or one — so the sheet lays out one calendar, and the narrow block below
+   re-reads that one. The row height is in the 861px query: on a `<tr>` it is
+   a floor a crowded day grows past, on a block it would be a ceiling. */
 .cal { table-layout: fixed; }
-.cal-cell { vertical-align: top; border: 1px solid var(--border); padding: var(--s1); height: 6.5rem; }
-.cal-week { display: flex; flex-wrap: wrap; gap: var(--s1); }
-.cal-col { flex: 1; min-width: 8rem; border: 1px solid var(--border); padding: var(--s1); min-height: 12rem; }
-.cal-day { font-size: var(--t-xs); }
-.cal-col .cal-day { font-size: var(--t-sm); font-weight: 600; }
+.cal-cell { vertical-align: top; border: 1px solid var(--border); padding: var(--s1); }
+.cal-day { font-size: var(--t-sm); font-weight: 600; }
 /* A day outside the month being looked at. */
 .cal-day.outside { color: var(--muted); }
 /* Today's cell, and the occurrence an event page was opened on. */
@@ -517,6 +518,21 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
    4.88:1 in dark, plus the weight so colour is not the only carrier. */
 .navlink { padding: var(--s1) var(--s2x); border-radius: var(--r-sm); color: var(--fg); text-decoration: none; }
 .navlink[aria-current="page"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+/* -- The agenda below the breakpoint (#71) --------------------------------
+   Seven columns on 390px give ~50px a day, so the agenda stops being a grid:
+   one markup, re-read as the list of the days that carry something (why one
+   and not two, and what it concedes: `routes/agenda/calendar.rs`). `not all
+   and (…)` is the 861px query's exact complement, and not a `max-width`
+   twin, for the reason Layout gives above. */
+@media not all and (min-width: 861px) {
+  .cal, .cal tbody, .cal tr, .cal-cell { display: block; }
+  /* `:has()` drops an empty day unaided: no document bytes. */
+  .cal thead, .cal-cell:not(:has(.chip)) { display: none; }
+  .cal-cell { border-width: 0 0 1px; padding: var(--s2x) 0; }
+  .cal-day { font-size: var(--t-lg); }
+  /* --s12 is 48px, over Espacement's 44px; flex centres the text in it. */
+  .chip { display: flex; align-items: center; gap: var(--s1); min-height: var(--s12); font-size: var(--t-base); }
+}
 /* Reduced motion, in one declaration: every transition above is timed by
    `--dur`, so zeroing the token neutralises all of them — no sweep of
    `* { transition: none !important }`, and nothing to keep in sync. */
