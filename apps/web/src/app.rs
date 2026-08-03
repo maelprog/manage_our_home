@@ -91,9 +91,16 @@ pub fn shell_with_header(width: Width, title: &str, header_html: &str, body_html
     )
 }
 
-/// The `<html>`/`<head>`/`<body>` skeleton both shells share. The
-/// stylesheet is `include_str!`'d into every response — see DESIGN.md →
-/// Livraison du CSS for why, and for the budget that bounds it.
+/// The `<html>`/`<head>`/`<body>` skeleton both shells share.
+///
+/// The stylesheet used to be `include_str!`'d into this template, one copy
+/// per response. Since #89 it is a `<link>` to `crate::assets`, which
+/// serves the same `include_str!`'d constant under a URL made of its own
+/// digest — so a browser that has the sheet never asks again, and a
+/// browser that is handed new HTML can never resolve the link to old CSS.
+/// See DESIGN.md → Livraison du CSS for the trade this makes (one blocking
+/// round trip on a cold cache, against ~6.6 kB of gzip on every page view)
+/// and for the budget that still bounds the sheet.
 fn document(title: &str, body: &str) -> String {
     format!(
         r#"<!DOCTYPE html>
@@ -102,14 +109,14 @@ fn document(title: &str, body: &str) -> String {
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>{title} — Manage our home</title>
-<style>{css}</style>
+<link rel="stylesheet" href="{css}"/>
 </head>
 <body>
 {body}
 </body>
 </html>"#,
         title = html_escape(title),
-        css = include_str!("style.css"),
+        css = crate::assets::stylesheet_href(),
         body = body,
     )
 }
@@ -357,7 +364,7 @@ pub fn member_initial(display_name: &str) -> String {
 /// one place.
 #[cfg(test)]
 pub(crate) fn css_without_comments() -> String {
-    const CSS: &str = include_str!("style.css");
+    const CSS: &str = crate::assets::STYLESHEET;
     let mut out = String::with_capacity(CSS.len());
     let mut rest = CSS;
     while let Some(at) = rest.find("/*") {
@@ -1734,28 +1741,37 @@ mod tests {
         out
     }
 
-    // -- delivery budget (#83) -----------------------------------------
+    // -- delivery budget (#83, re-derived by #89) ------------------------
     //
-    // Inlining is a bet: a sheet that travels inside the document costs a
+    // Inlining was a bet: a sheet that travels inside the document costs a
     // copy per page view and buys a first paint with no blocking round
-    // trip. The bet only pays while the document *and* the sheet fit in
-    // the first congestion window, so it has a size at which it stops
-    // being true — and until #83 that size was written nowhere.
-    // DESIGN.md → Livraison du CSS now names it; these two guards are the
-    // half of it a machine can check.
+    // trip. The bet only paid while the document *and* the sheet fit in
+    // the first congestion window together, and #83 wrote down the size at
+    // which it stopped being true. #89 is the moment it did — the sheet is
+    // now a content-addressed response of its own (`crate::assets`), and
+    // the document no longer carries it.
     //
-    // Two ceilings rather than one, because "how big is the sheet" has two
-    // answers with two different remedies:
+    // **Both guards are still here, and neither has been weakened in
+    // silence.** What changed is what they are guards *for*; DESIGN.md's
+    // decision journal carries the same statement in prose:
     //
-    // * `SHEET_CEILING` weighs the bytes a visitor downloads, comments
-    //   included. Its remedy is architectural — move the sheet to
-    //   `/assets`, never delete documentation. Charging prose to the user
-    //   is a property of inlining, so prose outgrowing the budget is
-    //   inlining's failure, not the writer's.
-    // * `DECLARATIONS_CEILING` weighs the CSS alone. Its remedy is
-    //   editorial: a rule that repeats another one goes. It is calibrated
-    //   to trip *first* (see its comment), so the pressure lands on the
-    //   code before it can ever land on the comments.
+    // * `SHEET_CEILING` weighed the sheet's *share* of a window it shared
+    //   with the document. It no longer shares one, so that derivation is
+    //   void and the number moves — from 10 KiB to the whole 14 KiB, since
+    //   the sheet is now its own render-blocking response and the thing
+    //   worth guaranteeing is that it still arrives in one round trip.
+    //   That is a real relaxation, declared as one. Its old remedy ("move
+    //   the sheet to /assets") is spent: there is no third place to put it.
+    // * `DECLARATIONS_CEILING` is unchanged, value and motive both. It
+    //   weighs the CSS alone and its remedy is editorial: a rule that
+    //   repeats another one goes. It is calibrated to trip *first*, so
+    //   pressure lands on the code before it can ever land on the
+    //   comments — and that calibration, which had eroded to 0.34 bytes of
+    //   margin after #71, is what the move restores (see its comment).
+    //
+    // The one thing the pair no longer does is push back on prose. It
+    // never should have: charging comments to the visitor was a property
+    // of inlining, and inlining is what just went away.
 
     /// A string's size on the wire, as gzip — one of the two encodings
     /// Caddy is configured to produce (`encode zstd gzip`,
@@ -1764,18 +1780,16 @@ mod tests {
     /// What it does **not** see. Stated plainly, because a guard that is
     /// believed to cover more than it does is worse than none:
     ///
-    /// * It weighs the sheet, not the response, and the difference is
-    ///   larger than it looks. Measured against the docker stack on
-    ///   2026-07-30 with a month of real household data, the document adds
-    ///   750–2 754 gzipped bytes on seven of the eight nav routes — and
-    ///   **8 416 on `/messagerie`**, which puts that one route outside
-    ///   DESIGN.md's whole-response budget on its own. That number tracks
-    ///   how much data a family has, so no unit test can know it: passing
-    ///   here says nothing about whether a given page fits.
+    /// * It weighs the sheet, not the pages. Since #89 those are two
+    ///   separate responses, so this says nothing at all about whether a
+    ///   given page fits DESIGN.md's whole-response budget — measured on
+    ///   2026-08-03 with a month of real household data, the eight nav
+    ///   routes run 684–8 133 gzipped bytes, and that number tracks how
+    ///   much data a family has, which no unit test can know.
     /// * It was measured against *empty* pages once, and that reading
     ///   under-stated the document by a factor of two to three. Anyone
     ///   re-measuring the whole-response budget has to seed the stack
-    ///   first.
+    ///   first (`npm run seed`, then `npm run measure`).
     /// * This is not an upper bound over both encodings. flate2's default
     ///   level (6) sits one notch above Caddy's gzip default (5) — 7 199
     ///   against 7 211 bytes on today's sheet — and Caddy's zstd, tuned
@@ -1784,9 +1798,12 @@ mod tests {
     ///   7 949 bytes on `/`, +2.6 %). The three figures agree to within
     ///   ~3 %, which is far inside the ceilings' margin, but the number
     ///   below is an estimate of the wire, not a ceiling on it.
-    /// * A sheet is compressed here in isolation; inside a document it
-    ///   shares one window with the markup, so the pair costs less than
-    ///   the sum of the parts. That is slack in the safe direction.
+    /// * A sheet is compressed here in isolation. Until #89 that
+    ///   under-stated nothing and over-stated a little — inside a document
+    ///   the two shared one window and cost less than the sum of the
+    ///   parts. Since #89 the sheet *is* its own response, so this is now
+    ///   the right unit of measure for it, and the only thing missing is
+    ///   the response headers.
     fn gzipped(bytes: &[u8]) -> usize {
         use flate2::write::GzEncoder;
         use flate2::Compression;
@@ -1796,78 +1813,93 @@ mod tests {
         encoder.finish().expect("in-memory flush").len()
     }
 
-    /// 10 KiB — the sheet's share of the ~14 KiB that fits in the first
-    /// congestion window (IW10: 10 segments of a 1 460-byte MSS ≈ 14 600
-    /// bytes, less response headers and TLS record framing).
+    /// 14 KiB (14 336 bytes) — the whole of the first congestion window
+    /// (IW10: 10 segments of a 1 460-byte MSS ≈ 14 600 bytes, less
+    /// response headers and TLS record framing), because since #89 the
+    /// sheet is a response of its own and no longer shares a window with
+    /// anything.
     ///
-    /// Derivation, with what it concedes. On the seven nav routes where
-    /// the whole-response budget is reachable, the document costs at most
-    /// 2 754 gzipped bytes (`/agenda`, real data), leaving 11 582 for the
-    /// sheet; rounded down to 10 240 that is **1 342 bytes of margin on
-    /// the heaviest of the seven** — a margin in bytes, not a factor. An
-    /// earlier version of this comment claimed "three and a half times",
-    /// measured on empty pages; it was wrong.
+    /// **This was 10 KiB, and raising it is the one deliberate relaxation
+    /// in #89.** Said plainly so nobody has to reconstruct it from a diff:
     ///
-    /// Re-measured on 2026-07-31 with `npm run seed`'s corpus (#85), which
-    /// is not the ad-hoc dataset the figures above came from: the document
-    /// half of `/agenda` weighs 3 248 gzipped bytes, so the derivation is
-    /// 14 336 − 3 248 = 11 088 and the real margin under 10 240 is **848
-    /// bytes**. The reasoning is unchanged; the number moves with the data,
-    /// which is exactly why no test holds that first ceiling.
+    /// * The old value was not a judgement about stylesheets, it was
+    ///   arithmetic — 14 336 minus the heaviest document (3 248 gzipped
+    ///   bytes on `/agenda` with `npm run seed`'s corpus) = 11 088,
+    ///   rounded down. That subtraction has no meaning once the document
+    ///   travels without the sheet.
+    /// * The old comment said this ceiling **is not raised**, because
+    ///   passing it meant the inlining bet had lost and the answer was to
+    ///   move the sheet to `/assets`. That is exactly what #89 did. The
+    ///   sentence is spent, not overruled: there is no third place to put
+    ///   the sheet, so a ceiling whose only remedy was that move has to be
+    ///   re-derived or dropped, and dropping it would throw away the one
+    ///   pressure DESIGN.md credits with making #66 and #68 happen.
+    /// * What still has to hold: the sheet is render-blocking on a cold
+    ///   cache — the browser parses the `<link>` and waits — so it should
+    ///   arrive in a single round trip, which is the same IW10 figure and
+    ///   the only number in this budget that is not of our making. The
+    ///   sheet is 9 983 gzipped bytes today, so this leaves 4 353.
     ///
-    /// Not tightened further, despite the document turning out two to
-    /// three times heavier than that first reading, because the two
-    /// ceilings impose a floor: declarations are 30.5 % of the compressed
-    /// sheet after #70 (2 921 of 9 570), so `DECLARATIONS_CEILING` is only
-    /// reached first while this one stays above ~10 065. Below that the two
-    /// guards swap order and the pressure falls back onto the comments,
-    /// which is the thing the pair exists to prevent.
+    /// What it costs to relax it, also plainly: #72–#74 gain room they did
+    /// not have, and the sheet may grow by a third before anything fires.
+    /// The guard that keeps its bite is `DECLARATIONS_CEILING`, and this
+    /// move is what gives it back its margin — see there.
     ///
-    /// That floor is now 175 bytes under this ceiling, against ~298 after
-    /// #69: #70's responsive shell moved the sheet from 8 633 to 9 570
-    /// gzipped bytes, leaving 670. The ordering still holds, but it is the
-    /// number to watch — not because the sheet may be trimmed, but because
-    /// the pair stops working before either guard fires.
-    ///
-    /// **This one is not raised.** Passing it means the inlining bet has
-    /// lost and the sheet moves to `/assets` (DESIGN.md → Livraison du CSS
-    /// → Porte de sortie). A PR that answers it by deleting comments has
-    /// answered the wrong question.
-    const SHEET_CEILING: usize = 10 * 1024;
+    /// Unlike before, exceeding this one has no architectural escape left.
+    /// The remedy would be to split the sheet (critical CSS inline, the
+    /// rest deferred), which is a much bigger change than #89 and should
+    /// be an issue, not a line edited on the way past.
+    const SHEET_CEILING: usize = 14 * 1024;
 
-    /// 3 KiB of declarations, comments stripped.
+    /// 3 KiB of declarations, comments stripped. **Unchanged by #89** —
+    /// same number, same reason — and it is now the only one of the two
+    /// with any bite.
     ///
-    /// Calibrated to trip before `SHEET_CEILING` does: today the
-    /// declarations are 31 % of the compressed sheet, so growth that keeps
-    /// the project's comment-to-code ratio reaches 3 KiB of CSS while the
-    /// whole sheet is still around 9.9 KiB. The design system therefore
-    /// runs out of room before the delivery strategy does.
+    /// Calibrated to trip before `SHEET_CEILING` does, so the design
+    /// system runs out of room before the delivery strategy does and the
+    /// pressure never lands on the prose. That calibration is an ordering,
+    /// and the ordering has a floor: declarations are 30.0 % of the
+    /// compressed sheet (2 995 of 9 983 after #71), so this ceiling is
+    /// reached first only while `SHEET_CEILING` stays above
+    /// 3 072 / 0.300 ≈ 10 240 bytes.
     ///
-    /// #69 spent a third of the room that was left: 2 298 → 2 670 bytes,
-    /// for the hover, focus and nav-current rules the sheet had none of.
-    /// #70 spent nearly two thirds of what remained after it: 2 670 → 2 921,
-    /// for the grid, the two bounded widths, the tab bar and the one
-    /// breakpoint the sheet had none of. **151 bytes are left**, and #71–#74
-    /// have to share them.
+    /// After #71 that floor sat at **10 239.66 against a ceiling of
+    /// 10 240** — 0.34 bytes of margin, i.e. the sheet could not take one
+    /// more byte of comment without inverting the pair and putting the
+    /// pressure back on the prose. #89 does not fix that by trimming
+    /// anything: moving the sheet out of the document re-derives
+    /// `SHEET_CEILING` at 14 336, which puts the floor **4 096 bytes**
+    /// under it. The pair works again, and it works because the sheet got
+    /// a window of its own, not because anyone deleted a comment.
     ///
-    /// A ceiling, not a target, and unlike `SHEET_CEILING` it *can* be
-    /// raised — with a reason in the PR, like the inline-style ceiling
-    /// above. What it forbids is drifting past it unnoticed while #69–#74
-    /// each add "just a few rules". Neither #69 nor #70 raised it; the next
-    /// issue that needs to should say so in its PR body and let review
-    /// decide, rather than editing this line on the way past.
+    /// What it has cost so far: #69 spent a third of the room that was
+    /// left (2 298 → 2 670 bytes) for the hover, focus and nav-current
+    /// rules; #70 nearly two thirds of the rest (2 670 → 2 921) for the
+    /// responsive shell; #71 74 more (→ 2 995) for the agenda's single
+    /// table. **77 bytes are left**, and #72–#74 have to share them — #89
+    /// adds none, it moves the sheet without touching a rule.
+    ///
+    /// A ceiling, not a target, and it *can* be raised — with a reason in
+    /// the PR, like the inline-style ceiling above. What it forbids is
+    /// drifting past it unnoticed while #72–#74 each add "just a few
+    /// rules". No issue has raised it yet; the one that needs to should say
+    /// so in its PR body and let review decide, rather than editing this
+    /// line on the way past.
     const DECLARATIONS_CEILING: usize = 3 * 1024;
 
     #[test]
-    fn the_compressed_stylesheet_fits_its_share_of_the_first_round_trip() {
-        let sheet = gzipped(include_str!("style.css").as_bytes());
+    fn the_compressed_stylesheet_still_arrives_in_one_round_trip() {
+        let sheet = gzipped(crate::assets::STYLESHEET.as_bytes());
         assert!(
             sheet <= SHEET_CEILING,
             "the stylesheet compresses to {sheet} bytes; the budget is \
-             {SHEET_CEILING} (DESIGN.md → Livraison du CSS). Past it, inlining \
-             no longer buys the round trip it costs: serve the sheet from \
-             /assets instead. Do not answer this by deleting comments — that \
-             is the perverse incentive the budget exists to make visible."
+             {SHEET_CEILING} (DESIGN.md → Livraison du CSS). The sheet is \
+             render-blocking on a cold cache, so past this it needs a second \
+             round trip before anything paints. There is no /assets to move \
+             it to any more — that move already happened (#89) — so the \
+             remedy would be splitting the sheet, which is an issue of its \
+             own. Do not answer this by deleting comments: the sheet is \
+             cached now, the prose is paid once per deploy, not per page view."
         );
     }
 

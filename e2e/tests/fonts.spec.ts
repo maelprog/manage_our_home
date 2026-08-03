@@ -47,8 +47,15 @@ test.describe("Self-hosted fonts (#67)", () => {
 
   test("every font the stylesheet names is served, cached for a year", async ({ page }) => {
     await page.goto("/login");
-    const html = await page.content();
-    const files = [...html.matchAll(/\/assets\/fonts\/[\w.-]+\.woff2/g)].map((m) => m[0]);
+    // Since #89 the sheet is linked, not inlined, so the font URLs are no
+    // longer in the document — they are in the sheet the document points at.
+    // Following the link is also what checks the link works at all.
+    const href = await page.getAttribute('link[rel="stylesheet"]', "href");
+    expect(href, "the page must link a stylesheet").toBeTruthy();
+    const sheet = await page.request.get(href as string);
+    expect(sheet.status(), href as string).toBe(200);
+    const css = await sheet.text();
+    const files = [...css.matchAll(/\/assets\/fonts\/[\w.-]+\.woff2/g)].map((m) => m[0]);
     expect(new Set(files).size, `stylesheet font URLs: ${files}`).toBe(2);
 
     for (const path of new Set(files)) {
@@ -60,6 +67,23 @@ test.describe("Self-hosted fonts (#67)", () => {
         "public, max-age=31536000, immutable",
       );
     }
+  });
+
+  test("the stylesheet is content-addressed and cached for a year (#89)", async ({ page }) => {
+    // The half of #89 only a browser can show: the page really does fetch a
+    // sheet, under a name made of that sheet's own digest, and really is told
+    // never to ask for it again. Take away the cache header and the switch out
+    // of inlining has kept every cost and bought nothing.
+    await page.goto("/login");
+    const href = await page.getAttribute('link[rel="stylesheet"]', "href");
+    expect(href).toMatch(/^\/assets\/style-[0-9a-f]{16}\.css$/);
+    const sheet = await page.request.get(href as string);
+    expect(sheet.status()).toBe(200);
+    expect(sheet.headers()["content-type"]).toContain("text/css");
+    expect(sheet.headers()["cache-control"]).toBe("public, max-age=31536000, immutable");
+
+    // And the document itself no longer carries a copy of it.
+    expect(await page.content()).not.toContain("<style>");
   });
 
   test("the asset route does not serve the rest of the repository", async ({ page }) => {

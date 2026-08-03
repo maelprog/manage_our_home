@@ -12,6 +12,7 @@ import {
   parseNavRoutes,
   requirePositiveInt,
   splitInlineStylesheet,
+  stylesheetDelivery,
 } from "./measure-core.ts";
 
 // ---------------------------------------------------------------------------
@@ -154,6 +155,43 @@ test("splitInlineStylesheet flags a response with no inlined stylesheet", () => 
   assert.equal(split.hasInlineStylesheet, false);
   assert.equal(split.styleBytes, 0);
   assert.equal(split.documentBytes, split.totalBytes);
+});
+
+// ---------------------------------------------------------------------------
+// stylesheetDelivery — the guard that survived the switch out of inlining.
+//
+// A page with no stylesheet at all weighs beautifully and is broken; nothing
+// else in the measurement would notice. Before #89 that guard was "there is a
+// <style>"; it now has to accept the <link> too, without accepting a page
+// that has neither.
+// ---------------------------------------------------------------------------
+
+test("stylesheetDelivery reads the linked sheet's href", () => {
+  const html = '<head><link rel="stylesheet" href="/assets/style-abc123.css"/></head>';
+  assert.deepEqual(stylesheetDelivery(html), {
+    kind: "external",
+    href: "/assets/style-abc123.css",
+  });
+});
+
+test("stylesheetDelivery accepts the attributes in either order and either quote", () => {
+  assert.deepEqual(stylesheetDelivery("<link href='/a.css' rel='stylesheet'>"), {
+    kind: "external",
+    href: "/a.css",
+  });
+});
+
+test("stylesheetDelivery still recognises the pre-#89 inline sheet", () => {
+  assert.deepEqual(stylesheetDelivery("<head><style>body{}</style></head>"), { kind: "inline" });
+});
+
+test("stylesheetDelivery reports a page with no sheet at all", () => {
+  assert.deepEqual(stylesheetDelivery("<head><title>x</title></head><p>rien</p>"), {
+    kind: "none",
+  });
+  // A `rel` that is not `stylesheet` is not one: the fonts are preloaded and
+  // the favicon is a `<link>` too.
+  assert.deepEqual(stylesheetDelivery('<link rel="icon" href="/favicon.ico">'), { kind: "none" });
 });
 
 // ---------------------------------------------------------------------------

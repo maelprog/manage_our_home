@@ -152,8 +152,14 @@ people to seed the same database side by side.
 
 Weighs the eight nav routes raw, gzipped and zstd-compressed, for the
 whole response **and for the document alone** (response minus the inlined
-stylesheet). That last column is the one that was missing: the sheet
-weighs the same on all eight routes and hides what a page actually costs.
+stylesheet). That last column is the one that was missing: the sheet used
+to weigh the same on all eight routes and hid what a page actually costs.
+Since #89 the sheet is linked rather than inlined, so the two columns
+coincide on an application page — and the sheet is fetched and weighed
+once, on its own line, because it is now paid once per deploy instead of
+once per page view. A response that carries neither a `<style>` nor a
+`<link rel=stylesheet>` still aborts the run: a page with no CSS at all
+weighs beautifully and is broken.
 Compressed sizes are computed locally with `node:zlib`, so they are
 reproducible whether or not the server in front compresses; what the
 server really negotiated is reported separately, and its absence is a

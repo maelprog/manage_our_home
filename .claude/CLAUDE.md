@@ -7,12 +7,14 @@
 Le lire avant de toucher au CSS ou au markup d'une route. Ne pas s'en écarter
 sans accord explicite.
 
-Contraintes structurantes qu'il rappelle : le CSS est inliné dans chaque
-réponse (donc chaque règle se paie sur chaque page), aucune dépendance CSS
-externe, les polices sont auto-hébergées (un CDN exposerait l'IP des visiteurs
-à un tiers, à déclarer au registre RGPD), et les replis `var(--x, #hex)` sont
-interdits — c'est ce motif qui a cassé le thème sombre de l'agenda sans que
-personne le voie.
+Contraintes structurantes qu'il rappelle : le CSS est servi depuis le binaire
+sous une URL portant l'empreinte de son contenu (`/assets/style-<hash>.css`,
+`apps/web/src/assets.rs`) — il était inliné dans chaque réponse jusqu'à #89,
+il reste borné par un budget compressé mais n'est plus refacturé à chaque page
+vue ; aucune dépendance CSS externe ; les polices sont auto-hébergées (un CDN
+exposerait l'IP des visiteurs à un tiers, à déclarer au registre RGPD) ; et
+les replis `var(--x, #hex)` sont interdits — c'est ce motif qui a cassé le
+thème sombre de l'agenda sans que personne le voie.
 
 L'état des lieux qui a motivé ce système est dans `docs/design-audit.md`.
 

@@ -1,13 +1,20 @@
-//! The static-asset route (`/assets`) — today the two self-hosted `.woff2`
-//! files `style.css`'s `@font-face` rules point at (#67).
+//! The static-asset route (`/assets`) — the two self-hosted `.woff2` files
+//! `style.css`'s `@font-face` rules point at (#67), and since #89 the
+//! stylesheet itself.
 //!
-//! `apps/web` served no static file at all before this: every page is a
-//! string built by `app::shell`, stylesheet included. Fonts cannot be
-//! inlined into every response the way the stylesheet is (170 kB per page
+//! `apps/web` served no static file at all before #67: every page was a
+//! string built by `app::shell`, stylesheet included. Fonts could not be
+//! inlined into every response the way the stylesheet was (170 kB per page
 //! view), and they cannot come from a CDN either — Google Fonts or Bunny
 //! would hand each visitor's IP to a third party, which is a processing
 //! activity to declare in `docs/registre-traitements.md`. So they are
 //! served from here, from files committed next to the source.
+//!
+//! The stylesheet joined them for the opposite reason: at 9 983 gzipped
+//! bytes copied into every one of the eight nav routes, it had pushed
+//! `/messagerie` out of DESIGN.md's 14 KiB response budget. It is served
+//! **from the binary**, not from a file — see `STYLESHEET` below for why
+//! that distinction is the whole of #89.
 //!
 //! # Provenance of `assets/fonts/`
 //!
@@ -38,11 +45,14 @@
 //! file.
 
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
-use axum::http::header::CACHE_CONTROL;
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::{HeaderValue, StatusCode};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
 use axum::Router;
+use sha2::{Digest, Sha256};
 use tower_http::services::ServeDir;
 
 /// Where the asset files live, relative to the working directory the server
@@ -56,8 +66,11 @@ pub const DEFAULT_ASSETS_DIR: &str = "apps/web/assets";
 pub const ASSETS_DIR_ENV: &str = "WEB_ASSETS_DIR";
 
 /// A year, which is what `immutable` is worth saying alongside. Safe only
-/// because the file names carry the font version: a font upgrade is a new
-/// name and therefore a new URL, never a stale hit on an old one.
+/// because every name under this route is content-addressed: the fonts
+/// carry their version, the stylesheet carries its digest. An upgrade is a
+/// new name and therefore a new URL, never a stale hit on an old one — and
+/// promising `immutable` on a name that could ever mean something else is
+/// unfixable from the server side for a year.
 const CACHE_FOR_A_YEAR: &str = "public, max-age=31536000, immutable";
 
 /// Attach the cache header to what was actually served, and to nothing
@@ -73,6 +86,76 @@ async fn cache_what_was_served(mut response: Response) -> Response {
     response
 }
 
+/// The stylesheet, sealed into the binary — the one copy of it that
+/// exists at runtime (#89).
+///
+/// Everything about the sheet is derived from *this constant*: the digest
+/// that names it, the URL `app::document` puts in every `<link>`, and the
+/// bytes this module's route answers with. That is the property the switch
+/// out of inlining had to preserve. Inlining made a stale sheet
+/// structurally impossible (DESIGN.md → Livraison du CSS, benefit n°2);
+/// an external sheet reopens that window, and the only thing that closes
+/// it again is a name that no two different contents can share.
+///
+/// Note what is *not* the source: a file under `assets/`. `ServeDir` reads
+/// the working directory, the container image copies `apps/web/assets` in
+/// at build time, and the two can be a deploy apart — serving the sheet
+/// from disk would have reintroduced exactly the drift this is avoiding,
+/// only with a hash on top to make it look safe.
+pub const STYLESHEET: &str = include_str!("style.css");
+
+/// How many hex characters of the digest name the file.
+///
+/// 16 — 64 bits. The digest is not defending against an adversary (nobody
+/// can choose the bytes; they are compiled in), only against two versions
+/// of the sheet colliding, which at 64 bits does not happen. The URL is
+/// paid on every page view, in every document, so the rest of the digest
+/// would be 48 bytes of nothing.
+const FINGERPRINT_LEN: usize = 16;
+
+/// `/assets/style-<digest>.css` for a given sheet.
+///
+/// Takes the CSS rather than reading `STYLESHEET` so the naming rule can
+/// be tested on inputs of its own — the one interesting property being
+/// that two different sheets never get the same name.
+fn stylesheet_url(css: &str) -> String {
+    let digest = Sha256::digest(css.as_bytes());
+    let mut hex = String::with_capacity(FINGERPRINT_LEN);
+    for byte in digest.iter().take(FINGERPRINT_LEN.div_ceil(2)) {
+        use std::fmt::Write;
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex.truncate(FINGERPRINT_LEN);
+    format!("/assets/style-{hex}.css")
+}
+
+/// The URL *the* stylesheet is served under, computed once per process.
+///
+/// Once, because the answer cannot change while the process lives: the
+/// input is a `const`. A `LazyLock` rather than a `const fn` only because
+/// SHA-256 is not one; the guarantee is the same.
+pub fn stylesheet_href() -> &'static str {
+    static HREF: LazyLock<String> = LazyLock::new(|| stylesheet_url(STYLESHEET));
+    &HREF
+}
+
+/// `GET /assets/style-<digest>.css` — the sheet, straight out of the
+/// binary, no filesystem in the path.
+///
+/// It needs no `ETag` and answers no conditional request: the URL *is* the
+/// content, so a browser holding this name already holds these bytes and
+/// `immutable` tells it not to ask again.
+async fn serve_stylesheet() -> Response {
+    (
+        [(
+            CONTENT_TYPE,
+            HeaderValue::from_static("text/css; charset=utf-8"),
+        )],
+        STYLESHEET,
+    )
+        .into_response()
+}
+
 /// Resolve the directory `ServeDir` is rooted at. Split out from
 /// `router` so the fallback is testable without a filesystem.
 pub fn resolve_assets_dir(configured: Option<String>) -> PathBuf {
@@ -82,14 +165,21 @@ pub fn resolve_assets_dir(configured: Option<String>) -> PathBuf {
     }
 }
 
-/// `GET /assets/*` served off `dir`, every response carrying the immutable
-/// cache header. Generic over the state so it merges into the application
-/// router before `with_state`; it needs no state of its own.
+/// `GET /assets/*` — the stylesheet out of the binary, the fonts off
+/// `dir`, every served response carrying the immutable cache header.
+/// Generic over the state so it merges into the application router before
+/// `with_state`; it needs no state of its own.
+///
+/// The two live under one prefix because they are one thing from the
+/// browser's side: the content-addressed files a page loads and never
+/// re-validates. The sheet is a literal route rather than a file in `dir`,
+/// so it takes precedence over the `ServeDir` fallback for that one path.
 pub fn router_at<S>(dir: &Path) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {
     Router::new()
+        .route(stylesheet_href(), get(serve_stylesheet))
         .nest_service("/assets", ServeDir::new(dir))
         .layer(axum::middleware::map_response(cache_what_was_served))
 }
@@ -162,6 +252,86 @@ mod tests {
         assert!(dir.is_dir(), "{} is not a directory", dir.display());
     }
 
+    // -- the stylesheet fingerprint (#89) -------------------------------
+    //
+    // Pure logic, so it is written test-first (`.claude/CLAUDE.md` →
+    // Development process). What it has to guarantee is narrow: the name
+    // moves whenever the bytes move, and it is derived from the bytes
+    // alone — never from a file on disk, a build step or a version string,
+    // any of which could disagree with what the binary actually serves.
+
+    #[test]
+    fn the_same_sheet_always_gets_the_same_name() {
+        // A name that varied between two calls (a random suffix, a build
+        // timestamp) would put a different URL in the page than the one the
+        // route answers on, and no cache would ever hit.
+        assert_eq!(stylesheet_url(STYLESHEET), stylesheet_url(STYLESHEET));
+    }
+
+    #[test]
+    fn one_byte_of_difference_is_a_different_name() {
+        // The whole point: a deployed browser holding the old sheet under
+        // the old name can never be handed new HTML that points at it.
+        assert_ne!(
+            stylesheet_url("body { color: red }"),
+            stylesheet_url("body { color: red;}")
+        );
+        // Including a change that only adds a comment: prose is served to
+        // the visitor too, so it is part of what the name addresses.
+        assert_ne!(
+            stylesheet_url("body { color: red }"),
+            stylesheet_url("/* why */ body { color: red }")
+        );
+    }
+
+    #[test]
+    fn the_name_is_a_fixed_run_of_lowercase_hex_under_the_assets_route() {
+        // `immutable` is a promise made on a URL, so the URL has to be
+        // stable in shape as well as in content — and safe in a path.
+        for css in ["", "body{}", STYLESHEET] {
+            let url = stylesheet_url(css);
+            let hex = url
+                .strip_prefix("/assets/style-")
+                .and_then(|rest| rest.strip_suffix(".css"))
+                .unwrap_or_else(|| panic!("unexpected shape: {url}"));
+            assert_eq!(hex.len(), FINGERPRINT_LEN, "{url}");
+            assert!(
+                hex.chars()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_digest_is_sha_256_of_the_bytes_and_nothing_else() {
+        // A known answer, so that swapping the hash function is a visible,
+        // deliberate edit rather than a silent one. These are the first 16
+        // hex characters of SHA-256 over the empty string and over "a".
+        assert_eq!(stylesheet_url(""), "/assets/style-e3b0c44298fc1c14.css");
+        assert_eq!(stylesheet_url("a"), "/assets/style-ca978112ca1bbdca.css");
+    }
+
+    #[test]
+    fn the_page_links_the_url_this_module_serves() {
+        // The pairing the whole issue is about. `app::document` builds the
+        // `<link>` from `stylesheet_href`, and the route below answers on
+        // the same string — both out of the one constant, so there is no
+        // arrangement of deploys in which they disagree.
+        let html = crate::app::shell(crate::app::Width::Form, "Titre", "<h1>x</h1>");
+        assert!(
+            html.contains(&format!(
+                r#"<link rel="stylesheet" href="{}"/>"#,
+                stylesheet_href()
+            )),
+            "{html}"
+        );
+        assert!(
+            !html.contains("<style>"),
+            "the sheet must not travel inside the document any more: {html}"
+        );
+    }
+
     // -- the route ------------------------------------------------------
 
     async fn get(path: &str) -> axum::http::Response<Body> {
@@ -188,6 +358,65 @@ mod tests {
                 Some("public, max-age=31536000, immutable"),
                 "a font re-fetched on every page view defeats the point of \
                  serving it ourselves"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn serves_the_stylesheet_out_of_the_binary_byte_for_byte() {
+        let res = get(stylesheet_href()).await;
+        assert_eq!(res.status(), StatusCode::OK, "GET {}", stylesheet_href());
+        assert_eq!(
+            res.headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/css; charset=utf-8"),
+            "a stylesheet served as anything else is ignored by the browser"
+        );
+        assert_eq!(
+            res.headers()
+                .get(axum::http::header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some(CACHE_FOR_A_YEAR),
+            "the whole reason to take the sheet out of the document is that \
+             it can then be cached; without this header it is re-fetched on \
+             every navigation and we have kept the cost and lost the benefit"
+        );
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .expect("a body");
+        assert_eq!(
+            body.as_ref(),
+            STYLESHEET.as_bytes(),
+            "the bytes served must be the bytes the name was computed from"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_other_stylesheet_name_is_served() {
+        // A stale name is a miss, not a fallback to the current sheet: the
+        // browser must be told to come back for the new URL rather than be
+        // handed today's bytes under yesterday's `immutable` name.
+        for path in [
+            "/assets/style.css",
+            "/assets/style-0000000000000000.css",
+            &stylesheet_url("body{}"),
+        ] {
+            assert_eq!(get(path).await.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_stylesheet_route_wins_over_the_directory_below_it() {
+        // Both live under `/assets`: the sheet comes from the binary, the
+        // fonts from `ServeDir`. A change that let the directory shadow the
+        // route would 404 the sheet on a machine with no `assets/` checkout
+        // — and an unstyled page is not something a test suite notices.
+        assert_eq!(get(stylesheet_href()).await.status(), StatusCode::OK);
+        for file in crate::app::stylesheet_font_files() {
+            assert_eq!(
+                get(&format!("/assets/fonts/{file}")).await.status(),
+                StatusCode::OK
             );
         }
     }

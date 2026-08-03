@@ -6,11 +6,14 @@
 # v1 (local/VPN only, docs/notes-issue-1-qa.md #7) — swap `:80` for the
 # real domain once that changes, which also turns on automatic TLS.
 :80 {
-	# apps/web inlines its stylesheet into every response (DESIGN.md →
-	# Livraison du CSS), so the same ~19 kB of CSS travels with every page:
-	# uncompressed that alone overflows the ~14 kB first congestion window
-	# the inlining is meant to fit inside. `encode` is what makes the
-	# strategy hold — and it covers apps/api's JSON too, not just the sheet.
+	# apps/web inlined its stylesheet into every response until #89, and
+	# `encode` is what made that hold: the same ~27 kB of CSS travelled with
+	# every page and uncompressed it alone overflowed the ~14 kB first
+	# congestion window the inlining existed to fit inside. The sheet is now
+	# its own response (`/assets/style-<digest>.css`, DESIGN.md → Livraison
+	# du CSS), and `encode` still carries it — 26 893 bytes of text/css down
+	# to 10 255 gzipped, with the `Cache-Control: immutable` passed through
+	# untouched. It covers the HTML documents and apps/api's JSON too.
 	#
 	# `zstd gzip`, in that order of preference, is the whole menu Caddy v2
 	# can produce on the fly: it does not compress to brotli at runtime

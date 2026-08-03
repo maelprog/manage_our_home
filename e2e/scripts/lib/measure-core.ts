@@ -95,11 +95,14 @@ export type StylesheetSplit = {
 /**
  * Splits a response into "the inlined stylesheet" and "everything else".
  *
- * apps/web inlines the whole of `style.css` into every response (see
- * `app::shell`), so the stylesheet dominates the byte count and hides what a
- * route actually costs. That missing number is what made the first budget
- * wrong. The `<style>`/`</style>` tags themselves stay on the document side —
- * they belong to the shell, not to the stylesheet.
+ * apps/web inlined the whole of `style.css` into every response until #89,
+ * where it dominated the byte count and hid what a route actually costs —
+ * the missing number that made the first budget wrong. Since #89 the sheet
+ * is linked instead (see `stylesheetDelivery`), so on an application page
+ * this now finds nothing and `documentBytes === totalBytes`, which is the
+ * correct answer: the whole response *is* the document. The
+ * `<style>`/`</style>` tags themselves stay on the document side — they
+ * belong to the shell, not to the stylesheet.
  */
 export function splitInlineStylesheet(html: string): StylesheetSplit {
   const matches = [...html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)];
@@ -111,6 +114,37 @@ export function splitInlineStylesheet(html: string): StylesheetSplit {
     documentBytes: totalBytes - styleBytes,
     hasInlineStylesheet: matches.length > 0,
   };
+}
+
+/** How a response hands the stylesheet to the browser. */
+export type StylesheetDelivery =
+  /** `<link rel="stylesheet" href="…">` — the shape since #89. */
+  | { kind: "external"; href: string }
+  /** `<style>…</style>` — the shape before #89. */
+  | { kind: "inline" }
+  /** Neither: not an application page, or the shell lost its sheet. */
+  | { kind: "none" };
+
+/**
+ * Which of the two shapes a response uses, if either.
+ *
+ * This is a guardrail, not bookkeeping. A page that carries *no* stylesheet
+ * at all weighs beautifully and is completely broken, and neither the HTTP
+ * status nor the byte floors would say a word about it — so the measurement
+ * refuses to report a route it cannot see a sheet on, whichever way the
+ * sheet is delivered.
+ */
+export function stylesheetDelivery(html: string): StylesheetDelivery {
+  // `rel` and `href` in either order, single or double quoted, and any
+  // other attribute in between: this reads a server template, not a
+  // hand-written tag, but it has been rewritten once already (#89) and
+  // will be again.
+  const link = html.match(
+    /<link[^>]*\brel=["']stylesheet["'][^>]*\bhref=["']([^"']+)["'][^>]*>|<link[^>]*\bhref=["']([^"']+)["'][^>]*\brel=["']stylesheet["'][^>]*>/i,
+  );
+  if (link) return { kind: "external", href: link[1] ?? link[2] };
+  if (/<style[^>]*>[\s\S]*?<\/style>/.test(html)) return { kind: "inline" };
+  return { kind: "none" };
 }
 
 /** The subset of a measurement row the pure checks need. */
