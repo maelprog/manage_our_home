@@ -263,12 +263,64 @@ chacune un `<a href="/agenda?view=day&date=…">` :
 | Titre | **1.0625rem, semi-gras** — délibérément plus gros que le corps du reste de l'application |
 | Métadonnées | initiale colorée du membre (`.avatar` 20 px) + nom, pièces jointes, rappel |
 
+#### Ce que #71 a livré, et ce qu'il concède
+
+Cette spécification décrit **deux rendus** : une grille pour le PC, des lignes
+construites pour le téléphone. Le coût de les rendre tous les deux ne tombe
+pas sur la feuille, il tombe sur le **document** — donc payé à chaque page
+vue, proportionnel aux données du foyer, sur `/agenda`, déjà la plus lourde
+des sept routes qui tiennent dans le budget de réponse. L'arbitrage rendu
+avant l'implémentation est donc : **un seul rendu, relu par le CSS.**
+
+Le serveur émet la grille, une fois. Sous 861 px, un bloc
+`@media not all and (min-width: 861px)` relit ces mêmes cellules en liste des
+jours qui portent quelque chose (les vides tombent par `:has()`, sans que le
+serveur les marque). Ce que ça concède, écrit ici pour que personne ne le
+redécouvre :
+
+- **la liste est une projection de cellules de grille**, pas des lignes
+  dessinées pour un téléphone : un jour s'affiche par son numéro, pas
+  « lundi 15 » — le jour de la semaine vit dans l'en-tête de table, que la
+  liste masque, et le remettre dans chaque cellule coûterait du document ;
+- **il n'y a pas de `view=day`**, donc pas de bouton « Mois » : il n'aurait
+  rien à ramener. La bascule mois/semaine continue de faire ce travail sur
+  les deux tailles d'écran ;
+- **pas de barre ni de pastille colorée par membre** : WCAG 1.4.1 interdit
+  que la teinte porte seule l'information, il lui faut donc le *nom* du
+  membre à côté — un second appel API et un coût par pastille sur le
+  document, c'est-à-dire exactement ce que l'arbitrage évite. À reprendre
+  quand le budget de réponse le permettra ;
+- **le titre d'événement atterrit sur `--t-base` (1rem)** et non sur les
+  1.0625rem ci-dessus : aucun jeton ne porte cette valeur et en ajouter un
+  coûte plus qu'il ne rapporte.
+
+Ce qui est livré côté PC, en revanche, l'est en entier : la vue mois utilise
+la largeur (`Width::Full` depuis #70) et sa hauteur de cellule est un minimum
+porté par le `<tr>` — déclaré dans la requête 861 px, parce que sur une ligne
+de tableau `height` est un plancher et sur le bloc que la liste téléphone en
+fait, un plafond ; la vue semaine est **la même table sur une seule ligne**,
+donc sept vraies colonnes au lieu du `flex: 1; min-width: 8rem` qui réclamait
+56 rem dans un conteneur de 28 et retombait en liste verticale ; et une
+journée qui déborde s'arrête à trois lignes, la dernière comptant le reste
+(« +N autres ») et menant à la vue semaine, qui ne plafonne rien.
+
+Une conséquence de cette table unique, qui n'allait pas de soi : `outside` —
+le gris des jours affichés seulement parce que la grille du mois est faite de
+semaines entières — **n'existe pas en vue semaine**. Les sept jours y sont
+ceux qu'on a demandés, y compris quand la semaine chevauche deux mois ; les
+griser dirait d'eux quelque chose de faux.
+
 ### Plancher typographique sur téléphone
 
 `--t-xs` (0.8125rem / 13 px) est trop petit pour un écran consulté à bout de
 bras dans une cuisine. **Sous 861 px**, remonter le plancher :
 `--t-xs` → 0.875rem et `--t-sm` → 0.9375rem. Le corps reste à 1rem, les titres
 d'événement passent à 1.0625rem.
+
+Livré par **#70**, et par l'autre bout : `:root` porte les valeurs téléphone
+et c'est le `@media (min-width: 861px)` qui rend à l'échelle ses propres
+chiffres — la feuille est écrite mobile first. #71 n'y touche pas ; le titre
+d'événement, lui, s'arrête à `--t-base` (voir ci-dessus).
 
 ---
 
@@ -312,7 +364,7 @@ aucune n'introduit de valeur hors des échelles :
 | `.done` | ce qui est déjà traité : tâche complétée, article coché |
 | `.multiline` | un texte dont les retours à la ligne sont ceux de l'auteur (message, méthode d'une recette) |
 | `.current` | la cellule d'aujourd'hui, l'occurrence sur laquelle une fiche est ouverte |
-| `.cal`, `.cal-cell`, `.cal-week`, `.cal-col`, `.cal-day` | la grille du mois et la bande de semaine de l'agenda — posées en CSS pour que #71 les reprenne là et non dans le Rust |
+| `.cal`, `.cal-cell`, `.cal-day` | l'agenda : une seule grille, que la vue mois affiche sur six semaines et la vue semaine sur une. `.cal-week`/`.cal-col` ont disparu avec #71 — la bande de semaine était un `flex` séparé, elle est aujourd'hui la même table |
 | `.composer`, `.live-status` | la zone de saisie de la messagerie et sa ligne d'état ; #72 les reprend |
 | `.app`, `.content`, `.w-form`, `.w-read`, `.tabs` | la coque responsive de #70 : la grille sidebar + contenu, la colonne de contenu et ses deux largeurs bornées, la barre d'onglets qui devient la sidebar |
 
@@ -467,11 +519,11 @@ Trois seuils, du plus englobant au plus fin :
 
 | Seuil | Valeur | Aujourd'hui | Ce qu'on fait au dépassement |
 |---|---|---|---|
-| Réponse complète compressée, routes principales | **≤ 14 KiB** (14 336 o) | 12 876 o au pire sur 7 routes, **17 674 o sur `/messagerie`** | passer la feuille sur `/assets` |
-| Feuille compressée | **≤ 10 KiB** (10 240 o) | 9 570 o | idem — **jamais** dégraisser les commentaires |
-| Déclarations compressées | **≤ 3 KiB** (3 072 o) | 2 921 o | supprimer une règle redondante |
+| Réponse complète compressée, routes principales | **≤ 14 KiB** (14 336 o) | 13 292 o au pire sur 7 routes, **18 102 o sur `/messagerie`** | passer la feuille sur `/assets` |
+| Feuille compressée | **≤ 10 KiB** (10 240 o) | 9 983 o | idem — **jamais** dégraisser les commentaires |
+| Déclarations compressées | **≤ 3 KiB** (3 072 o) | 2 995 o | supprimer une règle redondante |
 
-La colonne « aujourd'hui » est **remesurée le 2026-07-31, après #70**, avec le
+La colonne « aujourd'hui » est **remesurée le 2026-08-03, après #71**, avec le
 corpus reproductible de `npm run seed` (#85) et non le jeu de données ad hoc
 de la campagne #83 — les deux ne sont pas comparables entre eux. Ce que #69
 avait coûté, sur ce même corpus : la feuille de 7 192 à 8 633 o compressés,
@@ -486,6 +538,31 @@ page et la remettre dans `shell()` n'ajoute pas un octet au document, tout le
 coût est la douzaine de règles de la coque responsive. Aucun des trois
 plafonds n'est franchi ; `/messagerie` était au-dessus du premier avant #69 et
 son dépassement passe de +2 411 à +3 338 o (c'est #72 qui tient cette page).
+
+Ce que **#71** coûte, mesuré des deux côtés le 2026-08-03 sur ce même corpus
+et sur la même base semée : la feuille passe de 9 570 à **9 983 o** compressés
+et les déclarations de 2 921 à **2 995 o**, pour la table unique de l'agenda,
+son plafond de trois lignes et la relecture en liste sous 861 px. Chaque route
+gagne **409 à 421 o** — `/agenda`, la plus lourde des sept, de 12 871 à
+**13 292 o**, soit 1 044 o encore libres sous le budget de réponse. Et **la
+moitié document ne bouge pas d'un octet** (3 241 o avant comme après sur
+`/agenda`, 10 555 o bruts de part et d'autre) : c'est la vérification de
+l'arbitrage rendu au début du lot — un seul rendu relu par le CSS, plutôt
+qu'une grille et une liste dont une moitié serait masquée. Le second aurait
+mis son coût là, dans la part qui est payée à chaque page vue et qui grossit
+avec les données du foyer. Aucun des trois plafonds n'est franchi et #71 n'en
+relève aucun.
+
+**Mais la marge d'inversion, elle, est épuisée.** Le plancher décrit plus bas
+(le plafond de feuille sous lequel les deux garde-fous échangent leur ordre)
+vaut `3 072 / (2 995 / 9 983)` = **10 239,66 o**, pour un plafond de feuille à
+10 240 : le plafond des déclarations reste le premier à mordre, mais d'un
+octet, contre 175 après #70. Écrit autrement : **la feuille ne peut plus
+recevoir un seul octet de commentaire sans que la pression bascule sur la
+prose**, et un octet de déclaration ne rachète que ~2,3 o de commentaire. #72,
+#73 et #74 se partagent 77 o de déclarations et 257 o de feuille — mais toute
+dépense de prose non compensée par des règles inverse le dispositif. C'est un
+constat, pas une demande de relèvement : c'est l'utilisateur qui arbitre.
 
 **14 KiB** est le seul chiffre qui ne soit pas de notre fait : c'est ce que la
 fenêtre de congestion initiale (IW10 — dix segments d'un MSS de 1 460 octets,
@@ -514,10 +591,11 @@ ce seuil-là n'est tenu par aucun test.
 
 Pourquoi ne pas resserrer davantage, puisque la moitié document s'est révélée
 deux à trois fois plus lourde que prévu ? Parce que la structure à deux
-plafonds impose un plancher : les déclarations font 30,5 % de la feuille
-compressée (2 921 sur 9 570 après #70), donc le plafond des déclarations n'est
-atteint le premier que si celui de la feuille reste **au-dessus de ~10 065 o**.
-Descendre sous ce
+plafonds impose un plancher : les déclarations font 30,0 % de la feuille
+compressée (2 995 sur 9 983 après #71 ; c'était 2 921 sur 9 570 après #70),
+donc le plafond des déclarations n'est atteint le premier que si celui de la
+feuille reste **au-dessus de 10 240 o** — ~10 065 après #70, ~10 239,66
+aujourd'hui, c'est-à-dire à un octet du plafond lui-même. Descendre sous ce
 plancher inverserait l'ordre des deux garde-fous et ferait retomber la
 pression sur les commentaires — exactement ce que le dispositif existe pour
 empêcher. 10 KiB est la première valeur ronde au-dessus de ce plancher ; c'est
@@ -534,14 +612,17 @@ Les deux chiffres comparés ici l'étaient auparavant avec deux formules
 différentes (25 % rapporté au plafond contre 42 % rapporté à la valeur
 courante), ce qui les rendait incomparables alors que la phrase les opposait ;
 c'est le constat mineur laissé par #83, corrigé ici. Après #69 : 13 % de marge
-sur les déclarations, 16 % sur la feuille. **Après #70 : 4,9 % sur les
-déclarations, 6,5 % sur la feuille** — le plafond des déclarations reste le
-plus mordant des deux, mais de 175 octets seulement (le plancher ci-dessus est
-à ~10 065 o pour un plafond de feuille à 10 240). #70 a consommé les deux
-tiers de la place qui restait ; ce qu'il reste à se partager pour #71–#74 est
-**151 octets de déclarations** et 670 de feuille. #70 n'a relevé aucun
-plafond ; le lot qui en aura besoin doit le demander dans son corps de PR, pas
-l'écrire au passage.
+sur les déclarations, 16 % sur la feuille. Après #70 : 4,9 % sur les
+déclarations, 6,5 % sur la feuille — le plafond des déclarations restait le
+plus mordant des deux, mais de 175 octets seulement. **Après #71 : 2,5 % sur
+les déclarations, 2,5 % sur la feuille** — les deux marges se rejoignent,
+et c'est exactement ce que dit le plancher passé de ~10 065 à ~10 239,66 o
+pour un plafond de feuille à 10 240. Ce qu'il reste à se partager pour
+#72–#74 est **77 octets de déclarations** et 257 de feuille, avec cette
+contrainte de plus : une dépense de prose non compensée par des règles
+inverse l'ordre des deux garde-fous. Ni #70 ni #71 n'a relevé de plafond ; le
+lot qui en aura besoin doit le demander dans son corps de PR, pas l'écrire au
+passage.
 
 Les deux derniers seuils sont tenus par des tests dans `apps/web/src/app.rs`
 (`the_compressed_stylesheet_fits_its_share_of_the_first_round_trip` et
