@@ -442,6 +442,15 @@ décrite plus bas a été prise ; ce qui suit garde le raisonnement complet,
 parce que c'est lui qui fixe les seuils qui restent et qui explique pourquoi
 la bascule devait se faire *ainsi* et pas autrement.
 
+**Conséquence à dire explicitement, parce qu'elle change la façon d'écrire
+dans `style.css` : un commentaire ne se paie plus à chaque page vue.** Il est
+téléchargé une fois par visiteur et par déploiement, comme le reste de la
+feuille. La « taxe sur la documentation » listée plus bas comme coût n°3 de
+l'inlining n'existe plus, et le dispositif à deux plafonds — construit pour
+que la pression ne tombe jamais sur la prose — n'a plus de prose à protéger.
+Ce qui reste borné, c'est le volume total de la feuille, une fois, dans un
+aller-retour.
+
 La feuille voyageait à l'intérieur de chaque document. C'était un pari, pas
 une propriété du monde : on payait une copie par page vue pour épargner un
 aller-retour bloquant au premier rendu. Le pari n'était gagnant que tant que
