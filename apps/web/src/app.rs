@@ -1757,21 +1757,21 @@ mod tests {
     //
     // * `SHEET_CEILING` weighed the sheet's *share* of a window it shared
     //   with the document. It no longer shares one, so that derivation is
-    //   void and the number moves — from 10 KiB to the whole 14 KiB, since
-    //   the sheet is now its own render-blocking response and the thing
-    //   worth guaranteeing is that it still arrives in one round trip.
-    //   That is a real relaxation, declared as one. Its old remedy ("move
-    //   the sheet to /assets") is spent: there is no third place to put it.
+    //   void and the number moves — from 10 KiB to 11 KiB, bracketed
+    //   between one round trip above and the ordering floor below (see its
+    //   comment for both). That is a real relaxation, declared as one. Its
+    //   old remedy ("move the sheet to /assets") is spent: there is no
+    //   third place to put it.
     // * `DECLARATIONS_CEILING` is unchanged, value and motive both. It
     //   weighs the CSS alone and its remedy is editorial: a rule that
-    //   repeats another one goes. It is calibrated to trip *first*, so
-    //   pressure lands on the code before it can ever land on the
-    //   comments — and that calibration, which had eroded to 0.34 bytes of
-    //   margin after #71, is what the move restores (see its comment).
+    //   repeats another one goes.
     //
     // The one thing the pair no longer does is push back on prose. It
     // never should have: charging comments to the visitor was a property
-    // of inlining, and inlining is what just went away.
+    // of inlining, and inlining is what just went away. The ordering of
+    // the two guards survives that, but doing less than it used to — it
+    // now only decides which question a red test asks first, which is
+    // argued where it is calibrated rather than claimed twice.
 
     /// A string's size on the wire, as gzip — one of the two encodings
     /// Caddy is configured to produce (`encode zstd gzip`,
@@ -1813,64 +1813,91 @@ mod tests {
         encoder.finish().expect("in-memory flush").len()
     }
 
-    /// 14 KiB (14 336 bytes) — the whole of the first congestion window
-    /// (IW10: 10 segments of a 1 460-byte MSS ≈ 14 600 bytes, less
-    /// response headers and TLS record framing), because since #89 the
-    /// sheet is a response of its own and no longer shares a window with
-    /// anything.
+    /// 11 KiB (11 264 bytes). **This was 10 KiB, and moving it is the one
+    /// deliberate relaxation in #89** — written out here so nobody has to
+    /// reconstruct it from a diff.
     ///
-    /// **This was 10 KiB, and raising it is the one deliberate relaxation
-    /// in #89.** Said plainly so nobody has to reconstruct it from a diff:
+    /// Why the old value cannot simply stay. It was not a judgement about
+    /// stylesheets, it was arithmetic: 14 336 minus the heaviest document
+    /// (3 248 gzipped bytes on `/agenda`, `npm run seed`'s corpus) = 11 088,
+    /// rounded down to 10 240. That subtraction has no meaning once the
+    /// document travels without the sheet. And the old comment's "this
+    /// ceiling is not raised — passing it means moving the sheet to
+    /// /assets" is *spent*, not overruled: that move is what #89 is. A
+    /// ceiling whose only remedy has been used has to be re-derived or
+    /// dropped, and dropping it throws away the one pressure DESIGN.md
+    /// credits with making #66 and #68 happen.
     ///
-    /// * The old value was not a judgement about stylesheets, it was
-    ///   arithmetic — 14 336 minus the heaviest document (3 248 gzipped
-    ///   bytes on `/agenda` with `npm run seed`'s corpus) = 11 088,
-    ///   rounded down. That subtraction has no meaning once the document
-    ///   travels without the sheet.
-    /// * The old comment said this ceiling **is not raised**, because
-    ///   passing it meant the inlining bet had lost and the answer was to
-    ///   move the sheet to `/assets`. That is exactly what #89 did. The
-    ///   sentence is spent, not overruled: there is no third place to put
-    ///   the sheet, so a ceiling whose only remedy was that move has to be
-    ///   re-derived or dropped, and dropping it would throw away the one
-    ///   pressure DESIGN.md credits with making #66 and #68 happen.
-    /// * What still has to hold: the sheet is render-blocking on a cold
-    ///   cache — the browser parses the `<link>` and waits — so it should
-    ///   arrive in a single round trip, which is the same IW10 figure and
-    ///   the only number in this budget that is not of our making. The
-    ///   sheet is 9 983 gzipped bytes today, so this leaves 4 353.
+    /// The new value is **bracketed by two constraints**, not one. Both
+    /// figures below are flate2 level 6 — the encoder `gzipped` uses, so
+    /// they are the numbers this guard actually sees.
     ///
-    /// What it costs to relax it, also plainly: #72–#74 gain room they did
-    /// not have, and the sheet may grow by a third before anything fires.
-    /// The guard that keeps its bite is `DECLARATIONS_CEILING`, and this
-    /// move is what gives it back its margin — see there.
+    /// * **Upper bound — one round trip.** The sheet is render-blocking on
+    ///   a cold cache, so it should arrive in a single one: IW10, 10
+    ///   segments of a 1 460-byte MSS ≈ 14 600 bytes, less headers and TLS
+    ///   framing ⇒ 14 336. That bound is *conservative twice over*: the
+    ///   sheet measures 10 131 bytes here (10 398 through Caddy), and it
+    ///   does not even get a fresh IW10 — it is fetched on the connection
+    ///   that just carried the document, one RTT in, with `cwnd` already
+    ///   grown by slow start.
+    /// * **Lower bound — the ordering of the two guards.**
+    ///   `DECLARATIONS_CEILING` only trips first while this one stays above
+    ///   `3 072 / (declarations / sheet)` = 3 072 / (2 995 / 10 131) =
+    ///   **10 391.5 bytes**. Below that the pair inverts. This is the bound
+    ///   that actually forces the move: 10 240 now sits *under* the floor.
     ///
-    /// Unlike before, exceeding this one has no architectural escape left.
-    /// The remedy would be to split the sheet (critical CSS inline, the
-    /// rest deferred), which is a much bigger change than #89 and should
-    /// be an issue, not a line edited on the way past.
-    const SHEET_CEILING: usize = 14 * 1024;
+    /// 11 264 sits inside that bracket with **1 133 bytes** of sheet growth
+    /// and **872 bytes** of inversion margin. 14 336 would also have been
+    /// defensible on the upper bound alone — it is the most permissive
+    /// number that is, which is why it is not the one chosen. A ceiling
+    /// 4 353 bytes above today's sheet would not fire for several issues.
+    ///
+    /// Exceeding this one has no architectural escape left. The remedy
+    /// would be splitting the sheet (critical CSS inline, the rest
+    /// deferred), which is a much bigger change than #89 and should be an
+    /// issue, not a line edited on the way past.
+    const SHEET_CEILING: usize = 11 * 1024;
 
     /// 3 KiB of declarations, comments stripped. **Unchanged by #89** —
     /// same number, same reason — and it is now the only one of the two
     /// with any bite.
     ///
-    /// Calibrated to trip before `SHEET_CEILING` does, so the design
-    /// system runs out of room before the delivery strategy does and the
-    /// pressure never lands on the prose. That calibration is an ordering,
-    /// and the ordering has a floor: declarations are 30.0 % of the
-    /// compressed sheet (2 995 of 9 983 after #71), so this ceiling is
-    /// reached first only while `SHEET_CEILING` stays above
-    /// 3 072 / 0.300 ≈ 10 240 bytes.
+    /// Calibrated to trip before `SHEET_CEILING` does. **What that
+    /// ordering is worth has changed, and pretending otherwise would be
+    /// the weakest part of #89** — so, plainly:
+    ///
+    /// * Its original purpose is **gone**. It existed so the pressure
+    ///   never landed on the comments, because inlining charged every
+    ///   comment to every page view. The sheet is cached now; a comment
+    ///   costs one download per deploy. There is no per-page-view prose
+    ///   tax left to protect anyone from.
+    /// * What it still does is **narrower, and real**: it decides which
+    ///   question the first failing test asks. `DECLARATIONS_CEILING` asks
+    ///   "is there a rule here that restates another one?" — local,
+    ///   answerable, cheap to fix. `SHEET_CEILING` asks "does the delivery
+    ///   strategy still work?", whose only remaining answer is splitting
+    ///   the sheet, a whole issue. Keeping the cheap question first is
+    ///   worth keeping. And deleting comments is *still* the tempting
+    ///   shortcut in front of a red size test, even though it now buys
+    ///   almost nothing; the ordering keeps that shortcut off the first
+    ///   path.
+    ///
+    /// The ordering has a floor: declarations are 29.6 % of the compressed
+    /// sheet (2 995 of 10 131, flate2 level 6), so this ceiling is reached
+    /// first only while `SHEET_CEILING` stays above 3 072 / 0.296 =
+    /// **10 391.5 bytes**.
     ///
     /// After #71 that floor sat at **10 239.66 against a ceiling of
-    /// 10 240** — 0.34 bytes of margin, i.e. the sheet could not take one
-    /// more byte of comment without inverting the pair and putting the
-    /// pressure back on the prose. #89 does not fix that by trimming
-    /// anything: moving the sheet out of the document re-derives
-    /// `SHEET_CEILING` at 14 336, which puts the floor **4 096 bytes**
-    /// under it. The pair works again, and it works because the sheet got
-    /// a window of its own, not because anyone deleted a comment.
+    /// 10 240** — 0.34 bytes of margin, *as flate2 measures it*. That sign
+    /// is not a property of the world: an independent reading with system
+    /// zlib put the same pair at 9 978 / 2 992, a floor of 10 244.8, i.e.
+    /// **already inverted by ~4.8 bytes**. Which way it tips depends on
+    /// the gzip implementation; what both readings agree on is that the
+    /// margin was inside 5 bytes of the ceiling, i.e. gone. #89 does not
+    /// fix that by trimming anything — `SHEET_CEILING` moves to 11 264,
+    /// which puts the floor **872 bytes** under it. The pair works again
+    /// because the sheet got a window of its own, not because anyone
+    /// deleted a comment.
     ///
     /// What it has cost so far: #69 spent a third of the room that was
     /// left (2 298 → 2 670 bytes) for the hover, focus and nav-current

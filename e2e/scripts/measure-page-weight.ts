@@ -124,13 +124,24 @@ function resolveBudget(): number {
 /** En deçà, une réponse ne peut pas être une page de cette application.
  *
  *  Il valait 2 048 o, et ce chiffre ne mesurait rien : la feuille inlinée
- *  faisait à elle seule ~27 000 o, donc n'importe quelle page passait et le
- *  seuil ne distinguait plus une page d'une erreur. Depuis #89 la réponse est
- *  le document — la plus légère des huit routes (`/`, jeu semé) pèse 1 430 o
- *  bruts — et le seuil redevient ce qu'il prétend être : la coque HTML seule
- *  (doctype, head, `<link>`, nav des huit liens, sélecteur de famille) ne
- *  descend pas sous ~1 300 o. 1 024 garde une marge sous la page la plus
- *  légère observée tout en attrapant une page d'erreur ou une coque vide. */
+ *  faisait à elle seule ~27 000 o, donc toute réponse passait, y compris une
+ *  page d'erreur. Depuis #89 la réponse est le document et le seuil redevient
+ *  actif — il fallait donc le rederiver plutôt que le laisser tomber. C'est le
+ *  second garde-fou relâché par ce lot, avec le plafond de feuille.
+ *
+ *  1 024 o = 1 KiB, et c'est un **plancher d'absurdité, pas un plancher de
+ *  coque** : il doit passer sur toute page réelle et n'attraper que ce qui
+ *  n'en est pas une (page d'erreur, redirection rendue, coque sans corps). Les
+ *  deux mesures qui le bornent, prises sur la stack semée : la plus légère des
+ *  huit routes, `/`, pèse **1 430 o** bruts, et une page sans session
+ *  (`/login`, donc sans nav ni sélecteur de famille) **1 522 o**. 1 024 laisse
+ *  donc 406 o — 28 % — sous la plus légère.
+ *
+ *  Pourquoi ne pas le caler sur la coque elle-même, ~1 400 o : il ne resterait
+ *  que quelques dizaines d'octets, et le premier lot qui allège la nav le
+ *  ferait sonner sur une page parfaitement valide. Le travail fin est fait par
+ *  les planchers par route (`ROUTES[].floor`) et surtout par la comparaison
+ *  rendu/stocké ; celui-ci n'est que la ceinture. */
 const ABSURDLY_SMALL = 1_024;
 
 // --- la liste des routes, et sa confrontation à la nav ----------------------

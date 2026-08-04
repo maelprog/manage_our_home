@@ -10,7 +10,7 @@
 //! activity to declare in `docs/registre-traitements.md`. So they are
 //! served from here, from files committed next to the source.
 //!
-//! The stylesheet joined them for the opposite reason: at 9 983 gzipped
+//! The stylesheet joined them for the opposite reason: at ~10 000 gzipped
 //! bytes copied into every one of the eight nav routes, it had pushed
 //! `/messagerie` out of DESIGN.md's 14 KiB response budget. It is served
 //! **from the binary**, not from a file — see `STYLESHEET` below for why
@@ -65,12 +65,19 @@ pub const DEFAULT_ASSETS_DIR: &str = "apps/web/assets";
 /// The environment variable that overrides `DEFAULT_ASSETS_DIR`.
 pub const ASSETS_DIR_ENV: &str = "WEB_ASSETS_DIR";
 
-/// A year, which is what `immutable` is worth saying alongside. Safe only
-/// because every name under this route is content-addressed: the fonts
-/// carry their version, the stylesheet carries its digest. An upgrade is a
-/// new name and therefore a new URL, never a stale hit on an old one — and
-/// promising `immutable` on a name that could ever mean something else is
-/// unfixable from the server side for a year.
+/// A year, which is what `immutable` is worth saying alongside — and a
+/// promise that cannot be taken back for that long, so it is only safe on
+/// a name that will never mean anything else.
+///
+/// Two different mechanisms earn that right here, and neither is enforced
+/// by the route: the font files carry their version in the file name
+/// (`fraunces-v1.000.woff2`), by convention, maintained by hand; the
+/// stylesheet carries a digest of its own bytes, by construction. What
+/// `ServeDir` itself guarantees is nothing — drop any file into the assets
+/// directory and it will be served `immutable` for a year under whatever
+/// name it happens to have. That is the pre-existing shape of #67, stated
+/// rather than dressed up: the discipline lives in how files are named,
+/// not in this constant.
 const CACHE_FOR_A_YEAR: &str = "public, max-age=31536000, immutable";
 
 /// Attach the cache header to what was actually served, and to nothing
@@ -419,6 +426,93 @@ mod tests {
                 StatusCode::OK
             );
         }
+    }
+
+    /// Serve `path` off a throwaway directory, and hand back the status and
+    /// the body. Used by the two tests below, which are about what the
+    /// route does when the *filesystem* disagrees with the binary.
+    async fn get_from(dir: &Path, path: &str) -> (StatusCode, Vec<u8>) {
+        let res = router_at::<()>(dir)
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("infallible router");
+        let status = res.status();
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .expect("a body");
+        (status, body.to_vec())
+    }
+
+    /// A directory of our own under the system temp dir, named after this
+    /// test so two runs never collide. No `tempfile` dev-dependency for two
+    /// tests.
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("mom-web-{}-{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    #[tokio::test]
+    async fn a_decoy_of_the_same_name_on_disk_does_not_shadow_the_binary() {
+        // This is the failure mode the whole issue exists to prevent,
+        // staged rather than argued: a file carrying the *exact* hashed
+        // name, sitting in the assets directory, with different bytes
+        // inside. That is what a container image whose `apps/web/assets`
+        // copy is one deploy behind the binary looks like — and it is
+        // precisely why the sheet is served from `include_str!` and not
+        // from a file. If `ServeDir` ever won this race, every visitor
+        // would get stale CSS under an `immutable` name for a year, with
+        // the page still rendering and nothing reporting it.
+        let dir = scratch_dir("decoy");
+        let name = stylesheet_href()
+            .strip_prefix("/assets/")
+            .expect("the sheet is served under /assets");
+        std::fs::write(dir.join(name), "body{background:#f00}").expect("write the decoy");
+
+        // First prove the decoy is genuinely reachable — that this
+        // directory really is the one `ServeDir` is rooted at — so that the
+        // assertion below cannot pass merely because nothing was wired up.
+        std::fs::write(dir.join("probe.txt"), "reachable").expect("write the probe");
+        let (probe_status, probe_body) = get_from(&dir, "/assets/probe.txt").await;
+        assert_eq!(probe_status, StatusCode::OK);
+        assert_eq!(probe_body, b"reachable");
+
+        let (status, body) = get_from(&dir, stylesheet_href()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body,
+            STYLESHEET.as_bytes(),
+            "a file of the same name on disk shadowed the binary: the URL \
+             would then no longer address the bytes its digest was computed \
+             from, which is the one guarantee #89 buys"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_stylesheet_is_served_even_with_no_assets_directory_at_all() {
+        // The other half of "from the binary": `WEB_ASSETS_DIR` pointing at
+        // nothing — a mis-set env var, an image built without the COPY —
+        // costs the fonts, which fall back to the declared stacks, but must
+        // not cost the stylesheet.
+        let missing = std::env::temp_dir().join("mom-web-there-is-no-such-directory");
+        let _ = std::fs::remove_dir_all(&missing);
+
+        let (status, body) = get_from(&missing, stylesheet_href()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.len(), STYLESHEET.len());
+
+        // …and the fonts really are gone in that configuration, so this
+        // test is not passing because it accidentally found a real dir.
+        let (font_status, _) = get_from(&missing, "/assets/fonts/anything.woff2").await;
+        assert_eq!(font_status, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

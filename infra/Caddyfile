@@ -11,8 +11,8 @@
 	# every page and uncompressed it alone overflowed the ~14 kB first
 	# congestion window the inlining existed to fit inside. The sheet is now
 	# its own response (`/assets/style-<digest>.css`, DESIGN.md → Livraison
-	# du CSS), and `encode` still carries it — 26 893 bytes of text/css down
-	# to 10 255 gzipped, with the `Cache-Control: immutable` passed through
+	# du CSS), and `encode` still carries it — 27 213 bytes of text/css down
+	# to 10 398 gzipped, with the `Cache-Control: immutable` passed through
 	# untouched. It covers the HTML documents and apps/api's JSON too.
 	#
 	# `zstd gzip`, in that order of preference, is the whole menu Caddy v2
