@@ -23,16 +23,22 @@ L'état des lieux qui a motivé ce système est dans
 
 1. **Rendu serveur pur, aucun JS de framework.** Pas d'hydratation, pas de WASM.
    Toute solution est CSS-first.
-2. **Le CSS est inliné dans chaque réponse** (`shell()` dans `apps/web/src/app.rs`)
-   — **et c'est le seul point de cette liste qui soit un arbitrage plutôt
-   qu'une règle : il tient tant que le budget tient.** Ce qu'on y gagne :
-   aucun aller-retour bloquant au premier rendu, et surtout l'impossibilité
-   structurelle qu'un HTML neuf soit servi avec un CSS périmé — `include_str!`
-   scelle la feuille dans le binaire. Ce qu'on y perd : la feuille est
-   incachable par construction, donc refacturée à chaque page vue,
-   commentaires compris. Conséquence pratique inchangée — chaque règle se paie
-   sur chaque page : pas de framework utilitaire, pas de redondance. Le seuil
-   chiffré, son garde-fou et la porte de sortie sont dans
+2. **Le CSS est servi sous une URL qui porte l'empreinte de son contenu**
+   (`/assets/style-<empreinte>.css`, `apps/web/src/assets.rs`) — il était
+   inliné dans chaque réponse jusqu'à #89, **et c'est le seul point de cette
+   liste qui soit un arbitrage plutôt qu'une règle : il a tenu tant que le
+   budget a tenu.** Ce qu'on garde de l'inlining : l'impossibilité
+   structurelle qu'un HTML neuf soit servi avec un CSS périmé. L'empreinte,
+   l'URL, les octets servis et le `<link>` de chaque page sortent tous de la
+   **même constante `include_str!` du binaire** — jamais d'un fichier sur
+   disque, jamais d'une étape de build — donc aucun déploiement ne peut les
+   désaccorder. Ce qu'on regagne : la feuille est cachable (`immutable`, un
+   an), payée une fois par visiteur et par déploiement au lieu d'une fois par
+   page vue. Ce qu'on paie : un aller-retour bloquant au premier rendu sur un
+   cache froid. Conséquence pratique, qui change : une règle n'est plus
+   refacturée à chaque page, mais la feuille reste bornée par un budget — pas
+   de framework utilitaire, pas de redondance. Le seuil chiffré et ses
+   garde-fous sont dans
    [Livraison du CSS](#livraison-du-css--budget-et-porte-de-sortie).
 3. **Aucune dépendance CSS externe.** Un fichier, écrit à la main.
 4. **Les polices sont auto-hébergées, jamais servies par un CDN tiers.**
@@ -429,49 +435,97 @@ sous `prefers-reduced-motion`.
 
 ## Livraison du CSS — budget et porte de sortie
 
-La feuille voyage à l'intérieur de chaque document. C'est un pari, pas une
-propriété du monde : on paie une copie par page vue pour épargner un
-aller-retour bloquant au premier rendu. Le pari n'est gagnant que tant que le
-document **et** la feuille tiennent ensemble dans la première fenêtre de
-congestion. Il a donc une taille au-delà de laquelle il devient faux — et
-c'est cette taille qui manquait ici.
+**État au 2026-08-03 (#89) : la feuille ne voyage plus dans le document.**
+Elle est servie par `apps/web` sous `/assets/style-<empreinte>.css`, avec
+`Cache-Control: public, max-age=31536000, immutable`. La porte de sortie
+décrite plus bas a été prise ; ce qui suit garde le raisonnement complet,
+parce que c'est lui qui fixe les seuils qui restent et qui explique pourquoi
+la bascule devait se faire *ainsi* et pas autrement.
 
-### Ce que l'inlining apporte
+**Conséquence à dire explicitement, parce qu'elle change la façon d'écrire
+dans `style.css` : un commentaire ne se paie plus à chaque page vue.** Il est
+téléchargé une fois par visiteur et par déploiement, comme le reste de la
+feuille. La « taxe sur la documentation » listée plus bas comme coût n°3 de
+l'inlining n'existe plus. L'en-tête de `style.css` le dit désormais au seul
+lecteur que ça concerne : celui qui s'apprête à écrire une règle.
+
+**Et donc le dispositif à deux plafonds n'a plus de prose à protéger** — ce
+qui rétrécit l'ordre des deux garde-fous sans l'annuler. Il est tentant, en
+lisant le reste de cette section, de croire que cet ordre garde toute sa
+valeur *et* que la prose est devenue gratuite : les deux ne peuvent pas être
+vrais ensemble. Ce qui reste à l'ordre est écrit une seule fois, là où il est
+calibré (« Seuil 3 » plus bas) : il ne décide plus *qui* paie la prose, il
+décide seulement **quelle question un test rouge pose en premier**. Ce qui
+reste borné, c'est le volume total de la feuille, une fois, dans un
+aller-retour.
+
+La feuille voyageait à l'intérieur de chaque document. C'était un pari, pas
+une propriété du monde : on payait une copie par page vue pour épargner un
+aller-retour bloquant au premier rendu. Le pari n'était gagnant que tant que
+le document **et** la feuille tenaient ensemble dans la première fenêtre de
+congestion. Il avait donc une taille au-delà de laquelle il devenait faux —
+c'est cette taille qui manquait, #83 l'a écrite, et #89 est le moment où elle
+a été atteinte.
+
+### Ce que l'inlining apportait
 
 1. **Zéro aller-retour bloquant au premier rendu.** Une feuille externe est
    render-blocking : le navigateur parse le HTML, découvre le `<link>`, ouvre
-   une requête, attend.
+   une requête, attend. **C'est le seul des quatre que #89 abandonne** —
+   chiffré plus bas.
 2. **Impossibilité structurelle du décalage CSS/markup.** `include_str!` scelle
    la feuille dans le binaire : il n'existe aucun état où du HTML neuf est
    servi avec du CSS périmé — pas de nom haché, pas d'invalidation, pas de
    fenêtre de déploiement où les deux divergent. C'est une propriété de
    **correction**, pas de performance, et c'est le meilleur argument du lot.
+   **Conservé par #89**, et c'est ce qui a dicté la forme de la bascule : le
+   nom du fichier est l'empreinte SHA-256 de cette même constante, calculée
+   dans le binaire au démarrage. Deux contenus différents ne peuvent pas
+   partager une URL, et une URL ne peut pas désigner autre chose que ce que
+   ce binaire-là sert. Servir la feuille depuis un fichier de `assets/` via le
+   `ServeDir` existant aurait rouvert la fenêtre exactement là où on la
+   fermait : l'image Docker copie `apps/web/assets` à la construction, le
+   binaire et le fichier peuvent être à un déploiement l'un de l'autre.
+   *Conservé, mais pas gratuitement* : la fenêtre se ferme par un 404, donc
+   par une page sans style plutôt que par une page mal stylée — voir le coût
+   n°2 plus bas, qui est le prix de cette conservation.
 3. **Aucun pipeline d'assets**, ce qui est la contrainte n°3 vue de l'autre
-   côté : rien à installer, rien à builder.
+   côté : rien à installer, rien à builder. **Conservé par #89** : l'empreinte
+   se calcule à l'exécution sur une constante compilée, il n'y a ni étape de
+   build, ni fichier généré, ni manifeste.
 4. **Une pression permanente vers la sobriété.** Le gaspillage est visible, ce
    qui interdit de fait un framework utilitaire. C'est ce bénéfice qui a rendu
-   #66 et #68 nécessaires.
+   #66 et #68 nécessaires. **Conservé, atténué** : la feuille reste bornée par
+   un plafond compressé, mais ce plafond ne se paie plus par page vue.
 
-### Ce qu'il coûte
+### Ce qu'il coûtait
+
+Les quatre sont réglés par #89. Ils sont gardés parce que ce sont eux qui ont
+motivé la bascule, et parce que le jour où quelqu'un voudra revenir à
+l'inlining, c'est cette liste qu'il faudra réfuter.
 
 1. **Incachable par construction.** Le HTML d'une application de données dépend
    de la session et des données, donc n'est pas cacheable ; ce qu'on inline
    dedans hérite de cette non-cacheabilité. Or c'est une application de foyer,
    consultée plusieurs fois par jour, avec beaucoup de navigations par
    session : le profil de trafic où le cache rapporterait le plus est
-   précisément celui où on y renonce.
-2. **Le coût suit le nombre de pages vues, pas la taille de la feuille.**
-   Chaque règle ajoutée est multipliée par le volume de navigation.
+   précisément celui où on y renonçait.
+2. **Le coût suivait le nombre de pages vues, pas la taille de la feuille.**
+   Chaque règle ajoutée était multipliée par le volume de navigation. Il suit
+   désormais le nombre de déploiements.
 3. **Une taxe sur la documentation.** Les commentaires sont 58 % de la feuille
    brute — et **encore 68 % de la feuille compressée** : gzip ne les rend pas
-   gratuits. L'inlining les facture à l'utilisateur à chaque page vue, ce qui
-   crée une incitation perverse à moins commenter. Le projet a choisi
-   l'inverse, et il a bien choisi ; c'est la manière de livrer qui doit céder,
-   pas la prose. Voir le garde-fou ci-dessous, qui est construit pour rendre
-   cet arbitrage impossible à trancher en douce.
+   gratuits. L'inlining les facturait à l'utilisateur à chaque page vue, ce qui
+   créait une incitation perverse à moins commenter. Le projet a choisi
+   l'inverse, et il a bien choisi ; c'est la manière de livrer qui devait
+   céder, pas la prose — et c'est elle qui a cédé. La prose est aujourd'hui
+   payée une fois par déploiement, et le garde-fou construit pour rendre cet
+   arbitrage impossible à trancher en douce n'a plus rien à empêcher.
 4. **Conflit avec une CSP stricte.** Il n'y en a pas aujourd'hui. Le jour où on
-   en veut une, un `<style>` inline impose `unsafe-inline`, ou un nonce/hash à
-   générer par réponse. Une feuille externe est le cas trivial.
+   en veut une, un `<style>` inline imposait `unsafe-inline`, ou un nonce/hash
+   à générer par réponse. Une feuille externe est le cas trivial — c'est
+   désormais le nôtre. (Le `<script>` inline de `messagerie/thread.rs` reste,
+   lui, un obstacle : il appartient à #72.)
 
 ### Le budget
 
@@ -509,19 +563,213 @@ porte de sortie a donc **déjà été franchi** — sortir la feuille de l'inlin
 y ramènerait la page autour de 8,4 Ko. Ce n'est pas corrigé ici (#72 tient
 cette page, et l'issue #83 exclut explicitement la bascule) : c'est constaté,
 daté, et c'est le premier argument que reprendra la PR qui fera la bascule.
+*C'est ce qui s'est passé : #89 a fait la bascule pour ce motif, et la page
+est ressortie à 8 126 o — l'estimation était juste (voir ci-dessous).*
 
 Deux routes hors nav, mesurées au passage : `/account` sort à 8 501 o et
 `/privacy-policy` à 10 432 o. Toutes deux dans le budget, mais la seconde est
 publique et de taille fixe — c'est du texte réglementaire, il ne fera que
 s'allonger. À surveiller au même titre que les huit.
 
-Trois seuils, du plus englobant au plus fin :
+#### Ce que la bascule a rendu (#89)
+
+Mesuré le 2026-08-03 avec `npm run seed` puis `npm run measure` (#85), sur la
+même stack et la même base semée avant et après, gzip calculé localement des
+deux côtés — donc comparables entre eux :
+
+| Route | Avant (gzip) | Après (gzip) | Gagné |
+|---|---|---|---|
+| `/` | 10 543 o | **684 o** | −9 859 |
+| `/agenda` | 13 288 o | **3 274 o** | −10 014 |
+| `/stocks` | 12 726 o | **2 696 o** | −10 030 |
+| `/recipes` | 12 628 o | **2 676 o** | −9 952 |
+| `/grocery-list` | 12 887 o | **2 902 o** | −9 985 |
+| `/budget` | 12 475 o | **2 489 o** | −9 986 |
+| `/messagerie` | **18 093 o** | **8 126 o** | −9 967 |
+| `/groups` | 10 750 o | **900 o** | −9 850 |
+
+Le bruit de mesure sur ces chiffres est de l'ordre de quelques octets : deux
+semis successifs du même corpus ne produisent pas exactement le même texte, et
+une relecture indépendante est tombée à 14 o (0,08 %) de cette campagne.
+
+**`/messagerie` rentre dans le budget** pour la première fois depuis qu'il
+existe : 8 126 o contre 14 336, soit 6 210 o de marge, sans qu'une ligne de
+cette page ait changé. Les 7 274 o de `<script>` inline y sont toujours et
+restent le sujet de #72 ; ils ne la mettent simplement plus dehors.
+
+La feuille, elle, est désormais une réponse à part : **27 213 o bruts**, et en
+compressé trois chiffres qu'il faut garder distincts parce qu'ils servent à
+des choses différentes — **10 131 o** avec flate2 niveau 6 (l'encodeur du
+garde-fou d'`app.rs`, donc le chiffre auquel le plafond se compare), 10 093 o
+avec le zlib de `npm run measure`, et **10 398 o gzip / 10 631 o zstd
+réellement reçus à travers Caddy**, qui compresse bien le `text/css` et laisse
+passer le `Cache-Control: immutable` (vérifié). Payés **une fois par visiteur
+et par déploiement**, l'URL portant l'empreinte du contenu.
+
+#### Ce qu'on abandonne : deux coûts, pas un
+
+**1. Un aller-retour bloquant au premier rendu.** C'est le bénéfice n°1
+ci-dessus, et il est réel : sur un cache froid, le navigateur parse le
+document, découvre le `<link>`, demande la feuille et attend avant de peindre.
+**Coût : un aller-retour, une seule fois.**
+
+En octets, la bascule est déjà rentable à la **première** page vue : sur
+`/agenda`, avant, 13 288 o ; après, 3 274 + 10 093 = 13 367 o — à 79 octets
+près, la même chose. À partir de la deuxième page de la session, le visiteur
+économise ~10 000 o à chaque navigation. Le coût n'est donc pas un volume,
+c'est une **sérialisation** : deux allers-retours avant le premier pixel au
+lieu d'un, et seulement au tout premier chargement.
+
+Ordre de grandeur : ~30 ms de plus sur une liaison grand public à 30 ms de RTT,
+sous la milliseconde sur le LAN ou le VPN où cette application tourne
+aujourd'hui (`infra/Caddyfile` repousse l'exposition publique après la v1).
+Face à ~10 000 o épargnés par page vue ensuite — ~16 ms à 5 Mb/s —
+l'aller-retour est remboursé par la deuxième navigation.
+
+**2. Une page peut sortir sans style pendant un déploiement.** C'est la
+contrepartie exacte de la manière dont l'avantage n°2 est préservé : la
+fenêtre CSS/markup est fermée **par un 404**. Un HTML émis par l'ancien
+binaire, encore en vol quand le nouveau prend la main, résout son `<link>`
+sur un nom qui n'existe plus — et le navigateur rend la page avec les polices
+de repli et aucune règle. L'inlining rendait ça impossible : la feuille était
+déjà dans la réponse.
+
+Ce que ça vaut en pratique, borné plutôt qu'agité : la fenêtre est celle des
+requêtes **en vol**, pas celle des caches. Le HTML de cette application ne
+porte ni `Cache-Control`, ni `ETag`, ni `Last-Modified` (vérifié) : aucun
+navigateur ne conserve un vieux document pour le rejouer plus tard. Il faut
+donc qu'un document parte de l'ancien binaire et que sa requête de feuille
+arrive après la bascule — quelques centaines de millisecondes, une fois par
+déploiement, sur une application de foyer. Et l'échec est *visible et
+transitoire* : un rechargement le corrige, là où une feuille périmée servie
+sous un nom stable serait invisible et durable. C'est le troc, il est assumé
+dans ce sens-là.
+
+**Les polices, et pourquoi rien n'a été posé.** `@font-face` vit dans la
+feuille, donc la chaîne passe de `document → police` à
+`document → feuille → police` : un aller-retour de plus avant que les deux
+`.woff2` ne partent. Un `<link rel="preload" as="font" crossorigin>` par
+famille le supprimerait. Il n'y en a pas, pour trois raisons :
+
+1. **`font-display: swap` fait que la police ne bloque jamais le texte** — la
+   pile de repli (`ui-sans-serif, system-ui` et `Georgia`) est déjà déclarée
+   et rendue. L'aller-retour supplémentaire rallonge un FOUT, il ne retarde
+   ni le premier rendu ni la lisibilité.
+2. **Un preload se paie sur chaque page vue** (~2 × 95 o bruts dans chaque
+   `<head>`), pour raccourcir un FOUT qui n'arrive **qu'une fois par visiteur
+   et par an** : les polices sont servies `immutable` depuis #67. C'est
+   exactement le troc que cette issue défait — payer à chaque page vue un
+   bénéfice de premier chargement.
+3. Un preload est une **obligation** de télécharger, pas une indication : les
+   deux familles partiraient sur chaque page, y compris là où l'une n'est pas
+   utilisée.
+
+Si l'exposition publique change la donne (RTT plus longs, visiteurs de
+passage qui ne reviennent pas), c'est la ligne à rouvrir en premier — et la
+mesure à refaire, parce que le coût du preload, lui, se mesure avec
+`npm run measure`.
+
+#### Les trois seuils, statués après #89
+
+Chacun est repris explicitement, parce que la bascule change le motif de
+chacun et qu'un seuil dont le motif a disparu est pire qu'un seuil absent.
 
 | Seuil | Valeur | Aujourd'hui | Ce qu'on fait au dépassement |
 |---|---|---|---|
-| Réponse complète compressée, routes principales | **≤ 14 KiB** (14 336 o) | 13 292 o au pire sur 7 routes, **18 102 o sur `/messagerie`** | passer la feuille sur `/assets` |
-| Feuille compressée | **≤ 10 KiB** (10 240 o) | 9 983 o | idem — **jamais** dégraisser les commentaires |
-| Déclarations compressées | **≤ 3 KiB** (3 072 o) | 2 995 o | supprimer une règle redondante |
+| Réponse complète compressée, routes principales | **≤ 14 KiB** (14 336 o) | 8 126 o au pire (`/messagerie`), 684 – 3 274 sur les sept autres | alléger le **document** — la feuille n'y est plus |
+| Feuille compressée | **≤ 11 KiB** (11 264 o), *était 10 KiB* | 10 131 o | découper la feuille ; il n'y a plus de `/assets` où la déplacer |
+| Déclarations compressées | **≤ 3 KiB** (3 072 o), *inchangé* | 2 995 o | supprimer une règle redondante |
+
+**Seuil 1 — la réponse : garde son sens, change de remède.** Le document reste
+render-blocking et reste ce que la première fenêtre de congestion doit porter ;
+14 KiB reste le seul chiffre de ce document qui ne soit pas de notre fait. Ce
+qui change, c'est la réponse au dépassement : « passer la feuille sur
+`/assets` » a été consommé, il ne reste que réduire le document lui-même
+(pagination, `<script>` inline de #72). Ce seuil n'est tenu par aucun test et
+ne peut pas l'être — il dépend du volume de données d'un foyer.
+
+**Seuil 2 — la feuille : sa dérivation tombe, le garde-fou reste, son chiffre
+passe de 10 à 11 KiB.** C'est la seule vraie concession de #89, et elle est
+écrite ici plutôt que subie.
+
+Ce qui tombe. 10 KiB n'était pas un jugement sur les feuilles de style,
+c'était une soustraction : 14 336 − le document le plus lourd (3 248 o sur
+`/agenda`) = 11 088, arrondi à la baisse. Cette soustraction n'a plus d'objet
+quand le document voyage sans la feuille. Et l'ancienne consigne — « ce
+plafond ne se relève pas, le dépassement veut dire qu'on prend la porte de
+sortie » — est *épuisée*, pas contredite : la porte a été prise, il n'y a pas
+de troisième endroit où mettre la feuille.
+
+Ce qui le remplace. Le plafond est désormais **encadré par deux contraintes**,
+pas une — c'est ce que la première rédaction de cette section ratait, en
+présentant le choix comme binaire (supprimer le garde-fou, ou le porter à
+14 336). Les deux chiffres ci-dessous sont mesurés avec **flate2 niveau 6**,
+l'encodeur du garde-fou lui-même :
+
+- **Borne haute — un aller-retour.** La feuille est bloquante au premier
+  rendu, elle doit donc arriver en un seul : IW10 ⇒ 14 336 o. La borne est
+  conservatrice deux fois. D'abord parce que la feuille pèse 10 131 o
+  (10 398 à travers Caddy). Ensuite parce qu'elle **ne reçoit même pas une
+  IW10 fraîche** : elle est demandée sur la connexion qui vient de porter le
+  document, un RTT plus tard, avec une `cwnd` déjà crue par le slow start —
+  la fenêtre réellement disponible est plus large que celle qu'on lui compte.
+- **Borne basse — l'ordre des deux garde-fous.** Les déclarations font 29,6 %
+  de la feuille compressée (2 995 sur 10 131), donc le plafond des
+  déclarations n'est atteint le premier que si celui de la feuille reste
+  au-dessus de `3 072 / 0,296` = **10 391,5 o**. C'est cette borne, et non la
+  précédente, qui rend 10 240 intenable : le plancher est passé *au-dessus*
+  du plafond.
+
+**11 264 tient dans cet intervalle** avec **1 133 o** de croissance de feuille
+disponible et **872 o** de marge d'inversion. 14 336 aurait aussi été
+défendable sur la seule borne haute — c'est même le nombre le plus permissif
+qui le soit, et c'est pour ça qu'il n'est pas retenu : un plafond à 4 200 o
+au-dessus de la feuille actuelle ne sonnerait avant plusieurs lots, ce qui
+n'est pas un garde-fou. Le test
+`the_compressed_stylesheet_fits_its_share_of_the_first_round_trip` est renommé
+`the_compressed_stylesheet_still_arrives_in_one_round_trip` — renommé, pas
+supprimé.
+
+**Seuil 3 — les déclarations : valeur et test inchangés, motif rétréci.** Même
+chiffre, même remède, même test. Mais sa *calibration* — se déclencher avant
+le plafond de feuille — ne sert plus ce qu'elle servait, et c'est le point où
+il serait facile de tricher :
+
+- Ce qu'elle protégeait a disparu. Elle existait pour que la pression ne tombe
+  jamais sur les commentaires, parce que l'inlining facturait chaque
+  commentaire à chaque page vue. La feuille est cachée ; un commentaire coûte
+  un téléchargement par déploiement. **Il n'y a plus de taxe sur la prose dont
+  protéger qui que ce soit.**
+- Ce qui reste est plus étroit, et réel : l'ordre décide **quelle question le
+  premier test rouge pose**. Le plafond des déclarations demande « une règle
+  en répète-t-elle une autre ? » — local, répondable, corrigeable dans le lot
+  courant. Le plafond de feuille demande « la stratégie de livraison
+  tient-elle encore ? », dont la seule réponse restante est de découper la
+  feuille, c'est-à-dire une issue. Garder la question bon marché en premier
+  vaut d'être gardé. Et supprimer des commentaires reste le raccourci tentant
+  devant un test de taille rouge, même s'il ne rapporte presque plus rien :
+  l'ordre le tient hors du premier chemin.
+
+C'est donc **la borne basse qui justifie le relèvement**, avec ce motif-là et
+pas l'ancien. La marge d'inversion passe de ~0 à 872 o, et #89 ne la répare en
+dégraissant rien : il la répare en donnant à la feuille une fenêtre à elle.
+
+Un mot sur le « 0,34 octet » cité plus haut, parce que ce n'est pas une
+propriété du monde. Après #71, avec flate2, le plancher valait 10 239,66 pour
+un plafond de 10 240 : 0,34 o de marge. Une relecture indépendante au zlib
+système mesure la même paire à 9 978 / 2 992, soit un plancher de 10 244,8 —
+la paire y est **déjà inversée de ~4,8 o**. Le signe dépend de
+l'implémentation de gzip ; ce sur quoi les deux lectures s'accordent, c'est
+que la marge tenait dans 5 octets, donc qu'elle n'existait plus.
+
+Il reste **77 octets de déclarations** à se partager pour #72–#74, exactement
+comme avant : #89 n'ajoute pas une règle.
+
+Aucun garde-fou n'est supprimé. Les deux tests de `apps/web/src/app.rs`
+existent toujours, l'un renommé et redérivé, l'autre intact.
+
+<details>
+<summary>La dérivation d'origine des 10 KiB, gardée pour mémoire</summary>
 
 La colonne « aujourd'hui » est **remesurée le 2026-08-03, après #71**, avec le
 corpus reproductible de `npm run seed` (#85) et non le jeu de données ad hoc
@@ -624,27 +872,30 @@ inverse l'ordre des deux garde-fous. Ni #70 ni #71 n'a relevé de plafond ; le
 lot qui en aura besoin doit le demander dans son corps de PR, pas l'écrire au
 passage.
 
-Les deux derniers seuils sont tenus par des tests dans `apps/web/src/app.rs`
-(`the_compressed_stylesheet_fits_its_share_of_the_first_round_trip` et
-`the_compressed_declarations_stay_inside_the_design_system_budget`). Le
-premier ne l'est pas, et ne peut pas l'être : il dépend du volume de données
-d'un foyer. Il se vérifie en mesurant une stack qui tourne **avec des données
-dedans** — une stack vide sous-estime la moitié document d'un facteur deux à
-trois, et c'est comme ça que `/messagerie` a failli n'être jamais mesurée.
-
 Le plafond des déclarations peut être relevé, avec un motif écrit dans la PR
 — c'est la même convention que le plafond de styles inline. **Le plafond de la
 feuille, lui, ne se relève pas :** le dépasser signifie que le pari est perdu,
 et la réponse est la porte de sortie ci-dessous, pas un nombre plus grand.
 
+</details>
+
+Les deux derniers seuils sont tenus par des tests dans `apps/web/src/app.rs`
+(`the_compressed_stylesheet_still_arrives_in_one_round_trip` et
+`the_compressed_declarations_stay_inside_the_design_system_budget`). Le
+premier ne l'est pas, et ne peut pas l'être : il dépend du volume de données
+d'un foyer. Il se vérifie en mesurant une stack qui tourne **avec des données
+dedans** — une stack vide sous-estime le document d'un facteur deux à trois,
+et c'est comme ça que `/messagerie` a failli n'être jamais mesurée.
+
 ### Compression
 
 `infra/Caddyfile` fait `encode zstd gzip` sur le bloc `:80`, ce qui couvre le
-HTML — donc le CSS inliné — et le JSON de `apps/api`. C'est ce qui rend la
-prémisse de l'inlining à nouveau vraie : sans compression, aucune des huit
-routes principales ne tenait dans le premier aller-retour ; avec, sept y
-tiennent, la plus lourde des sept (`/agenda`, 12 876 o après #70) gardant 10 %
-de marge. La huitième, `/messagerie`, n'y tient pas — voir plus haut.
+HTML, le `text/css` de la feuille (vérifié après #89 : `Content-Encoding:
+gzip`, et le `Cache-Control: immutable` passe intact) et le JSON de
+`apps/api`. Sans compression, aucune des huit routes principales ne tenait
+dans le premier aller-retour ; c'est `encode` qui rendait la prémisse de
+l'inlining vraie, et c'est encore lui qui fait tenir la feuille de 27 213 o
+bruts dans 10 398 o sur le fil.
 
 `apps/web` ne compresse **pas** de son côté. Caddy laisse intacte une réponse
 qui porte déjà un `Content-Encoding` (vérifié), donc un `CompressionLayer`
@@ -653,20 +904,39 @@ déployé, pour le seul bénéfice des accès directs à `web:3000` (dev, tests 
 où personne ne compte les octets. Le budget est tenu par un test unitaire, pas
 par le transport.
 
-### Porte de sortie : servir la feuille depuis `/assets`
+### Porte de sortie : servir la feuille depuis `/assets` (prise le 2026-08-03, #89)
 
-Le pipeline existe déjà — #67 sert les polices depuis `apps/web` avec
-`Cache-Control: immutable` — donc la bascule est courte : un fichier de plus
-dans `assets/`, un `<link>` dans `shell()` à la place du `<style>`.
+Le déclencheur était le premier des deux ci-dessous : `/messagerie` à
+18 093 o compressés contre un budget de 14 336. Voici ce que la bascule est,
+en une page, pour qui la relit dans six mois.
 
-**Ce qu'elle ferait perdre**, et que le futur implémenteur oubliera si
-personne ne l'écrit : l'avantage n°2 ci-dessus. Une feuille externe rouvre la
-fenêtre où du HTML neuf est servi avec du CSS périmé — cache navigateur,
-déploiement progressif. Il faut donc la servir sous un **nom haché par son
-contenu**, et le hachage doit venir du binaire lui-même (le contenu est déjà
-là via `include_str!`), pas d'une étape de build : la contrainte n°3 reste.
+- **`apps/web/src/assets.rs` porte la constante** `STYLESHEET =
+  include_str!("style.css")`. C'est la seule copie de la feuille à
+  l'exécution.
+- **Le nom est son empreinte** : les 16 premiers caractères hexadécimaux de
+  SHA-256 sur cette constante, calculés une fois au démarrage
+  (`/assets/style-<empreinte>.css`). 64 bits suffisent — personne ne choisit
+  les octets, ils sont compilés — et l'URL est écrite dans chaque page, donc
+  chaque caractère de plus se paie.
+- **La route sert la constante**, pas un fichier. Le `ServeDir` de #67 reste
+  pour les polices ; la feuille passe devant lui sur ce seul chemin. Servir la
+  feuille depuis `assets/` aurait rouvert la fenêtre qu'on ferme : l'image
+  Docker copie ce répertoire à la construction, le binaire et le fichier
+  peuvent diverger.
+- **`shell()` émet un `<link rel="stylesheet">`** dont l'URL vient de la même
+  fonction. Empreinte, URL, octets servis et `<link>` sortent donc tous de la
+  même constante : ils ne peuvent pas se désaccorder.
+- **`Cache-Control: public, max-age=31536000, immutable`**, réutilisé tel quel
+  du `map_response` de #67 — qui ne le pose que sur ce qui a été servi, jamais
+  sur un 404.
+- **Aucune étape de build, aucun fichier généré, aucun manifeste** : la
+  contrainte n°3 tient.
 
-**Déclencheurs**, l'un ou l'autre suffit :
+**Ce qu'elle fait perdre** est l'avantage n°1, chiffré plus haut ; ce qu'elle
+préserve est l'avantage n°2, et c'est ce qui a dicté sa forme.
+
+Les deux déclencheurs qui étaient écrits ici, pour mémoire — le premier a
+suffi :
 
 - dépassement d'un des deux plafonds compressés ci-dessus ;
 - exposition publique de l'application — le commentaire en tête de
@@ -707,3 +977,11 @@ là via `include_str!`), pas d'une étape de build : la contrainte n°3 reste.
 | 2026-07-31 | Un seul markup de navigation pour les deux dispositions (#70) | Rendre une sidebar *et* une barre d'onglets mettrait deux `aria-current="page"` sur la même page. Le CSS déplace les mêmes liens ; la barre basse est le cas de base, la sidebar l'override à partir de 861 px — une paire `min-width`/`max-width` laisserait un trou entre 860 et 861 px CSS |
 | 2026-07-31 | Barre d'onglets à défilement latéral, sans icônes (#70) | Neuf onglets ne tiennent pas sur 390 px. L'icône que demandait l'issue n'est pas gratuite : dans le lien elle change le nom accessible et le `textContent` sur lesquels s'appuie `e2e/tests/interaction.spec.ts` (`toHaveText("Accueil")`, `getByRole("link", { name: "Admin" })`), y compris en `::before` CSS que Chromium intègre au nom accessible. Reporté plutôt que payé par un ajustement de la suite |
 | 2026-07-31 | Plancher typographique écrit à l'envers (#70) | `:root` porte les valeurs *téléphone* de `--t-xs`/`--t-sm` et le `@media (min-width: 861px)` y rétablit celles de l'échelle. Mobile first, une media query de moins, et le trou entre 860 et 861 px disparaît |
+| 2026-08-03 | **Fin de l'inlining : la feuille passe sur `/assets` (#89)** | Le déclencheur écrit par #83 était atteint — `/messagerie` à 18 093 o compressés contre 14 336. Mesuré avant/après sur la même base semée : les huit routes de la nav perdent 9 850 à 10 030 o gzip chacune, `/messagerie` rentre dans le budget (8 126 o, 6 210 de marge) sans qu'une ligne de cette page change |
+| 2026-08-04 | Une page peut sortir sans style pendant un déploiement (#89) | Coût nommé plutôt que découvert : la fenêtre CSS/markup se ferme par un **404**, donc un HTML de l'ancien binaire encore en vol rend une page sans règles. Borné aux requêtes en vol — le HTML ne porte ni `Cache-Control`, ni `ETag`, ni `Last-Modified`, donc rien n'est rejoué depuis un cache — et l'échec est visible et corrigé par un rechargement, là où une feuille périmée sous nom stable serait invisible et durable |
+| 2026-08-03 | L'URL de la feuille est l'empreinte SHA-256 de la constante du binaire (#89) | C'est ce qui préserve l'avantage n°2 de l'inlining, sa seule propriété de *correction* : empreinte, URL, octets servis et `<link>` sortent de la même constante `include_str!`, donc aucun déploiement ne peut servir du HTML neuf avec du CSS périmé. Servir un fichier de `assets/` via le `ServeDir` de #67 aurait rouvert cette fenêtre (l'image Docker copie le répertoire, le binaire et le fichier peuvent diverger). Calculée à l'exécution : pas d'étape de build, la contrainte n°3 tient |
+| 2026-08-04 | Plafond de feuille : **10 KiB → 11 KiB** (11 264 o), dérivation refaite (#89) | La seule concession du lot, déclarée. Les 10 KiB étaient une soustraction (14 336 − le document le plus lourd) qui n'a plus d'objet quand la feuille ne voyage plus dans le document, et la consigne « ce plafond ne se relève pas, on prend la porte de sortie » est épuisée : la porte a été prise. Le plafond est **encadré par deux bornes** et non plus par une : un aller-retour au-dessus (IW10 = 14 336, borne conservatrice — la feuille pèse 10 131 o flate2 et ne reçoit même pas une IW10 fraîche, elle arrive un RTT après le document sur la même connexion), et le plancher d'inversion des deux garde-fous en dessous (`3 072 / (2 995 / 10 131)` = 10 391,5 o — c'est *lui* qui rend 10 240 intenable). 11 264 laisse 1 133 o de croissance et 872 o de marge d'inversion. Arbitrage utilisateur : 14 336 était défendable sur la seule borne haute mais c'est le nombre le plus permissif qui le soit, et un plafond qui ne sonne pas avant plusieurs lots n'est pas un garde-fou. Test renommé `the_compressed_stylesheet_still_arrives_in_one_round_trip` |
+| 2026-08-04 | Plafond des déclarations : **inchangé à 3 KiB**, mais son motif rétrécit (#89) | Même valeur, même remède, même test. Ce que sa calibration protégeait — que la pression ne tombe jamais sur les commentaires — **n'existe plus** : la feuille étant cachée, un commentaire coûte un téléchargement par déploiement et non un par page vue. Ce qui reste à l'ordre des deux gardes est plus étroit et réel : il décide quelle question le premier test rouge pose (« une règle en répète-t-elle une autre ? », locale et corrigeable, plutôt que « la livraison tient-elle ? », qui est une issue). C'est cet ordre-là, et non l'ancien motif, qui justifie le relèvement du plafond de feuille. #89 n'ajoute aucune déclaration : les 77 octets restants pour #72–#74 sont intacts |
+| 2026-08-04 | Le « 0,34 octet » de marge d'inversion est une mesure, pas une propriété (#89) | Chiffre obtenu avec flate2 niveau 6, l'encodeur du garde-fou. Une relecture indépendante au zlib système mesure la même paire à 9 978 / 2 992, soit un plancher de 10 244,8 : **déjà inversée de ~4,8 o**. Le signe dépend de l'implémentation de gzip ; les deux lectures s'accordent sur le seul point qui compte, la marge tenait dans 5 octets |
+| 2026-08-03 | Pas de `rel=preload` sur les polices (#89) | La chaîne passe bien de `document → police` à `document → feuille → police`, mais `font-display: swap` fait que la police ne bloque jamais le texte : l'aller-retour de plus rallonge un FOUT. Un preload se paierait sur **chaque** page vue (~2 × 95 o) pour raccourcir un FOUT qui n'arrive qu'une fois par visiteur et par an (polices `immutable` depuis #67) — exactement le troc que #89 défait. À rouvrir si l'application est exposée publiquement |
+| 2026-08-03 | Seuil d'absurdité du mesureur : 2 048 → 1 024 o (#89) | Il ne mesurait plus rien : la feuille inlinée pesait à elle seule ~27 000 o, donc toute réponse passait. La réponse étant désormais le document, la plus légère des huit routes tombe à 1 430 o bruts et le seuil redevient ce qu'il prétend être — attraper une page d'erreur ou une coque vide |

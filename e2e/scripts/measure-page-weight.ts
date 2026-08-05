@@ -40,8 +40,14 @@
 //!
 //! Brut, gzip et zstd, pour la réponse entière **et pour le document seul**
 //! (réponse moins la feuille de style inlinée). C'est ce dernier chiffre qui
-//! manquait : la feuille pèse le même poids sur les 8 routes et masque
+//! manquait : la feuille pesait le même poids sur les 8 routes et masquait
 //! complètement ce que chaque page coûte réellement.
+//!
+//! Depuis #89 la feuille n'est plus inlinée : elle est liée depuis
+//! `/assets/style-<empreinte>.css`, cachée pour un an. Les deux colonnes se
+//! confondent donc sur une page d'application — et c'est le résultat, pas une
+//! panne de mesure. La feuille est pesée à part, une fois : elle est payée une
+//! fois par déploiement et non plus à chaque page vue.
 //!
 //! Les tailles compressées sont calculées localement (`node:zlib`), pas lues
 //! sur le réseau : c'est reproductible, et ça marche que le serveur en face
@@ -66,6 +72,7 @@ import {
   parseNavRoutes,
   requirePositiveInt,
   splitInlineStylesheet,
+  stylesheetDelivery,
   type CollectionCheck,
 } from "./lib/measure-core.ts";
 import { monthGridWindow } from "./lib/seed-core.ts";
@@ -114,8 +121,28 @@ function resolveBudget(): number {
   return raw === undefined ? DEFAULT_BUDGET : requirePositiveInt("--budget", raw);
 }
 
-/** En deçà, une réponse ne peut pas être une page de cette application. */
-const ABSURDLY_SMALL = 2_048;
+/** En deçà, une réponse ne peut pas être une page de cette application.
+ *
+ *  Il valait 2 048 o, et ce chiffre ne mesurait rien : la feuille inlinée
+ *  faisait à elle seule ~27 000 o, donc toute réponse passait, y compris une
+ *  page d'erreur. Depuis #89 la réponse est le document et le seuil redevient
+ *  actif — il fallait donc le rederiver plutôt que le laisser tomber. C'est le
+ *  second garde-fou relâché par ce lot, avec le plafond de feuille.
+ *
+ *  1 024 o = 1 KiB, et c'est un **plancher d'absurdité, pas un plancher de
+ *  coque** : il doit passer sur toute page réelle et n'attraper que ce qui
+ *  n'en est pas une (page d'erreur, redirection rendue, coque sans corps). Les
+ *  deux mesures qui le bornent, prises sur la stack semée : la plus légère des
+ *  huit routes, `/`, pèse **1 430 o** bruts, et une page sans session
+ *  (`/login`, donc sans nav ni sélecteur de famille) **1 522 o**. 1 024 laisse
+ *  donc 406 o — 28 % — sous la plus légère.
+ *
+ *  Pourquoi ne pas le caler sur la coque elle-même, ~1 400 o : il ne resterait
+ *  que quelques dizaines d'octets, et le premier lot qui allège la nav le
+ *  ferait sonner sur une page parfaitement valide. Le travail fin est fait par
+ *  les planchers par route (`ROUTES[].floor`) et surtout par la comparaison
+ *  rendu/stocké ; celui-ci n'est que la ceinture. */
+const ABSURDLY_SMALL = 1_024;
 
 // --- la liste des routes, et sa confrontation à la nav ----------------------
 
@@ -391,21 +418,26 @@ type Row = {
   documentGzip: number;
   documentZstd: number;
   stylesheetRaw: number;
+  stylesheetHref: string | null;
   rendered: number | null;
   stored: number | null;
 };
 
 function weigh(route: string, html: string): Omit<Row, "rendered" | "stored"> {
-  const split = splitInlineStylesheet(html);
-  if (!split.hasInlineStylesheet) {
+  const delivery = stylesheetDelivery(html);
+  if (delivery.kind === "none") {
     throw new Error(
-      `${route} : aucune feuille de style inlinée trouvée dans la réponse. ` +
-        "apps/web en inline une sur chaque page (app::shell) — soit la réponse n'est pas " +
-        "une page de l'application, soit la stratégie d'inlining a changé.",
+      `${route} : aucune feuille de style dans la réponse, ni <link> ni <style>. ` +
+        "app::document en pose une sur chaque page — soit la réponse n'est pas " +
+        "une page de l'application, soit le shell a perdu sa feuille (une page " +
+        "sans CSS pèse peu et paraît parfaite dans un tableau de mesure).",
     );
   }
-  // Le document = la réponse moins le texte de la feuille. Les balises
-  // <style></style> restent du côté document : elles appartiennent au shell.
+  const split = splitInlineStylesheet(html);
+  // Le document = la réponse moins le texte de la feuille inlinée, s'il y en
+  // a une. Les balises <style></style> restent du côté document : elles
+  // appartiennent au shell. Depuis #89 il n'y en a plus, et le document est
+  // la réponse entière.
   const withoutSheet = html.replace(/(<style[^>]*>)[\s\S]*?(<\/style>)/g, "$1$2");
   const full = Buffer.from(html, "utf8");
   const doc = Buffer.from(withoutSheet, "utf8");
@@ -418,6 +450,7 @@ function weigh(route: string, html: string): Omit<Row, "rendered" | "stored"> {
     documentGzip: gzipSync(doc).length,
     documentZstd: zstdCompressSync(doc).length,
     stylesheetRaw: split.styleBytes,
+    stylesheetHref: delivery.kind === "external" ? delivery.href : null,
   };
 }
 
@@ -510,6 +543,62 @@ async function negotiatedEncoding(session: HttpSession): Promise<string | null> 
   });
   await res.arrayBuffer();
   return res.headers.get("content-encoding");
+}
+
+type SheetWeight = {
+  href: string;
+  raw: number;
+  gzip: number;
+  zstd: number;
+  cacheControl: string | null;
+};
+
+/**
+ * La feuille liée, pesée une fois (#89).
+ *
+ * Elle ne voyage plus dans les huit réponses : elle est une réponse à elle
+ * seule, payée une fois par visiteur et par déploiement puisque son URL porte
+ * l'empreinte de son contenu. La peser à part est la seule façon de ne pas
+ * faire disparaître son coût du tableau — et le `Cache-Control` est rapporté
+ * avec, parce que sans lui la bascule aurait gardé le coût et perdu le
+ * bénéfice.
+ *
+ * Toutes les routes doivent lier la même : un `<link>` qui varierait d'une
+ * page à l'autre voudrait dire que l'empreinte n'est pas celle du binaire.
+ */
+async function weighLinkedStylesheet(
+  session: HttpSession,
+  rows: Row[],
+): Promise<SheetWeight | null> {
+  const hrefs = new Set(rows.map((r) => r.stylesheetHref).filter((h): h is string => h !== null));
+  if (hrefs.size === 0) return null;
+  if (hrefs.size > 1) {
+    throw new Error(
+      `Les routes ne lient pas toutes la même feuille : ${[...hrefs].join(", ")}. ` +
+        "L'URL vient de l'empreinte de la constante `include_str!` du binaire " +
+        "(apps/web/src/assets.rs), donc elle est la même partout ou quelque chose " +
+        "ne sert pas ce qu'il croit servir.",
+    );
+  }
+  const href = [...hrefs][0];
+  const res = await fetch(`${BASE_URL}${href}`, {
+    headers: { Cookie: session.cookieHeader() ?? "" },
+    redirect: "manual",
+  });
+  if (res.status !== 200) {
+    throw new Error(
+      `La feuille liée par chaque page répond HTTP ${res.status} sur ${BASE_URL}${href}. ` +
+        "Les huit pages sont alors sans style, et leur poids ci-dessus ne veut rien dire.",
+    );
+  }
+  const body = Buffer.from(await res.arrayBuffer());
+  return {
+    href,
+    raw: body.length,
+    gzip: gzipSync(body).length,
+    zstd: zstdCompressSync(body).length,
+    cacheControl: res.headers.get("cache-control"),
+  };
 }
 
 // --- rendu -----------------------------------------------------------------
@@ -688,6 +777,7 @@ async function main(): Promise<void> {
   // --- sortie ---------------------------------------------------------------
 
   const encoding = await negotiatedEncoding(session);
+  const sheet = await weighLinkedStylesheet(session, rows);
   const violations = budgetViolations(rows, BUDGET);
 
   if (asJson) {
@@ -699,6 +789,7 @@ async function main(): Promise<void> {
           budgetBytes: BUDGET,
           negotiatedContentEncoding: encoding,
           dataset: { group: groups[0].name, account: EMAIL, collections: checks },
+          stylesheet: sheet,
           routes: rows,
           violations,
         },
@@ -726,10 +817,27 @@ async function main(): Promise<void> {
     process.stdout.write("\n");
     process.stdout.write(`${table(rows)}\n\n`);
     process.stdout.write(
-      `  « lignes » = lignes rendues par la page / lignes en base. Le document\n` +
-        `  est la réponse moins la feuille de style inlinée (~${rows[0].stylesheetRaw} octets,\n` +
-        `  identique sur toutes les routes) : c'est la part propre à la page.\n\n`,
+      "  « lignes » = lignes rendues par la page / lignes en base. Le document\n" +
+        (sheet
+          ? "  est la réponse entière : depuis #89 la feuille n'y voyage plus.\n"
+          : `  est la réponse moins la feuille de style inlinée (~${rows[0].stylesheetRaw} octets,\n` +
+            "  identique sur toutes les routes) : c'est la part propre à la page.\n"),
     );
+    if (sheet) {
+      process.stdout.write(
+        `\n  Feuille liée : ${sheet.href}\n` +
+          `    ${sheet.raw} octets bruts, ${sheet.gzip} gzip, ${sheet.zstd} zstd —\n` +
+          "    payés une fois par visiteur et par déploiement, pas par page vue,\n" +
+          `    l'URL portant l'empreinte du contenu. Cache-Control : ${sheet.cacheControl ?? "ABSENT"}\n`,
+      );
+      if (!sheet.cacheControl?.includes("immutable")) {
+        process.stdout.write(
+          "    AVERTISSEMENT : sans `immutable` la feuille est redemandée à chaque\n" +
+            "    navigation — le coût de l'inlining sans son bénéfice.\n",
+        );
+      }
+    }
+    process.stdout.write("\n");
   }
 
   if (violations.length > 0) {

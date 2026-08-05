@@ -29,6 +29,17 @@ tokio = { version = "1", features = ["full"] }
 # audit-clean version, and the second copy costs build time only (there is
 # no way to unify, reqwest 0.12 pins ^0.6).
 tower-http = { version = "0.7", features = ["fs"] }
+# The stylesheet's content fingerprint (#89): `/assets/style-<digest>.css`
+# is derived from the `include_str!`'d constant at startup, so the name, the
+# bytes served and the `<link>` in every page come from one source and
+# cannot drift apart. SHA-256 rather than a hand-rolled 64-bit hash because
+# the digest names a URL that is then promised `immutable` for a year —
+# a collision would pin a stale sheet in every cache with no way back — and
+# because it costs nothing here: one digest per process start. 0.11 is the
+# newest release, and `sqlx-postgres` and `aws-sdk-s3` already resolve to
+# exactly that version in apps/api, so the workspace lock gains one line and
+# no new crate: nothing new for `cargo audit` to look at.
+sha2 = "0.11"
 tower-cookies = "0.10"
 cookie = "0.18"
 # `multipart` on reqwest: forwarding the uploaded file to apps/api.

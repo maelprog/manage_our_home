@@ -1,8 +1,13 @@
-/* Design tokens — DESIGN.md is the source of truth for every value here.
-   The stylesheet is inlined into every response, so this block is paid for
-   on every page: nothing lands here that DESIGN.md does not name. The
-   colours are wired up below; the scales are what the component pass draws
-   from, in place of the per-route values it replaces. */
+/* Design tokens — DESIGN.md is the source of truth for every value here:
+   nothing lands in this file that DESIGN.md does not name.
+   Since #89 this sheet is no longer inlined into every response but served
+   from /assets under its own digest, cached for a year — so a comment is
+   paid once per deploy, not once per page view. Write the comment. Rules
+   still cost: the sheet is render-blocking on a cold cache and capped
+   (DESIGN.md → Livraison du CSS, two guards in app.rs), so a redundant rule
+   is still one to delete. The colours are wired up below; the scales are
+   what the component pass draws from, in place of the per-route values it
+   replaces. */
 :root {
   color-scheme: light dark;
   /* Warm neutrals and one saturated colour, so anything tinted means
