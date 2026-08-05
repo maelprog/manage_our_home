@@ -576,10 +576,10 @@ octets ~~inconditionnellement~~, et la page rend jusqu'à 50 messages (100 avec
 > live, y compris pour un visiteur dont le navigateur n'a pas `WebSocket` —
 > le script teste la disponibilité une fois arrivé.
 
-Le document seul y pèse 8 416 o
-compressés, contre 750 à 2 754 sur les sept autres. Mesurée à vide elle est à
-11 188 o : ce n'est donc pas un cas extrême construit pour l'occasion, c'est
-une conversation de famille ordinaire qui l'y amène.
+Le document seul y pèse 8 416 o compressés, contre 750 à 2 754 sur les sept
+autres. Mesurée à vide elle est à 11 188 o : ce n'est donc pas un cas extrême
+construit pour l'occasion, c'est une conversation de famille ordinaire qui
+l'y amène.
 
 Ce que ça veut dire, écrit sans le contourner : **le seuil de 14 KiB n'est pas
 tenable route par route en bornant la feuille**, parce que la moitié document
@@ -701,9 +701,13 @@ chacun et qu'un seuil dont le motif a disparu est pire qu'un seuil absent.
 
 | Seuil | Valeur | Aujourd'hui | Ce qu'on fait au dépassement |
 |---|---|---|---|
-| Réponse complète compressée, routes principales | **≤ 14 KiB** (14 336 o) | 8 126 o au pire (`/messagerie`), 684 – 3 274 sur les sept autres | alléger le **document** — la feuille n'y est plus |
-| Feuille compressée | **≤ 11 KiB** (11 264 o), *était 10 KiB* | 10 131 o | découper la feuille ; il n'y a plus de `/assets` où la déplacer |
-| Déclarations compressées | **≤ 3 KiB** (3 072 o), *inchangé* | 2 995 o | supprimer une règle redondante |
+| Réponse complète compressée, routes principales | **≤ 14 KiB** (14 336 o) | 8 204 o au pire (`/messagerie`), 686 – 3 272 sur les sept autres | alléger le **document** — la feuille n'y est plus |
+| Feuille compressée | **≤ 11 KiB** (11 264 o), *était 10 KiB* | 10 926 o | découper la feuille ; il n'y a plus de `/assets` où la déplacer |
+| Déclarations compressées | **≤ 3 KiB + 64 o** (3 136 o), *relevé par #72, était 3 072* | 3 071 o | supprimer une règle redondante |
+
+La colonne « Aujourd'hui » est celle de #72 (2026-08-05). Les valeurs de #89
+qu'elle remplace — 8 126 / 10 131 / 2 995 — restent lisibles dans le tableau
+avant/après de la section [Ce que la bascule a rendu](#ce-que-la-bascule-a-rendu-89).
 
 **Seuil 1 — la réponse : garde son sens, change de remède.** Le document reste
 render-blocking et reste ce que la première fenêtre de congestion doit porter ;
@@ -756,10 +760,13 @@ n'est pas un garde-fou. Le test
 `the_compressed_stylesheet_still_arrives_in_one_round_trip` — renommé, pas
 supprimé.
 
-**Seuil 3 — les déclarations : valeur et test inchangés, motif rétréci.** Même
-chiffre, même remède, même test. Mais sa *calibration* — se déclencher avant
-le plafond de feuille — ne sert plus ce qu'elle servait, et c'est le point où
-il serait facile de tricher :
+**Seuil 3 — les déclarations : motif rétréci par #89, valeur relevée par #72.**
+Ce que #89 en disait — même chiffre, même remède, même test — a tenu jusqu'à
+#72, qui a porté le plafond de 3 072 à **3 136** ; le remède et le test, eux,
+n'ont pas bougé. Ce qui suit est le raisonnement de #89 sur la *calibration*,
+qui reste valable et que #72 n'a fait qu'appliquer. Sa calibration — se
+déclencher avant le plafond de feuille — ne sert plus ce qu'elle servait, et
+c'est le point où il serait facile de tricher :
 
 - Ce qu'elle protégeait a disparu. Elle existait pour que la pression ne tombe
   jamais sur les commentaires, parce que l'inlining facturait chaque
@@ -788,8 +795,9 @@ la paire y est **déjà inversée de ~4,8 o**. Le signe dépend de
 l'implémentation de gzip ; ce sur quoi les deux lectures s'accordent, c'est
 que la marge tenait dans 5 octets, donc qu'elle n'existait plus.
 
-Il reste **77 octets de déclarations** à se partager pour #72–#74, exactement
-comme avant : #89 n'ajoute pas une règle.
+À la sortie de #89 il restait **77 octets de déclarations** à se partager pour
+#72–#74 : ce lot n'ajoute pas une règle. **#72 les a dépensés et a relevé le
+plafond ; l'état à jour est juste en dessous.**
 
 #### Où en est le budget après #72
 
@@ -814,11 +822,33 @@ s'inverse à `11 264 × 3 071 / 10 926` = **3 166,0** ; 3 136 est le palier de
 64 o en dessous, et laisse **107 o** de marge d'inversion contre 334 avant.
 
 **Ce qu'il faut retenir pour #73 et #74 : le mur n'est plus celui-ci, c'est la
-feuille.** 338 o restants, et un bloc de commentaire de trois lignes en
-consomme **119**. Il y a donc de la place pour deux ou trois paragraphes de
-prose, ou pour ~65 o de déclarations, mais pas pour les deux. `SHEET_CEILING`
-n'est pas relevable ici : son unique remède restant est de découper la
-feuille, ce qui est une issue.
+feuille**, avec 338 o restants — mais *pas* au tarif qu'on croit, et c'est le
+point que la première rédaction de cette section ratait.
+
+**Sur de la prose, gzip amortit, et les déclarations plafonnent.** Sondé en
+appendant des blocs de commentaire successifs à `style.css` :
+
+| blocs ajoutés | 0 | 1 | 2 | 4 | 8 | 11 | 14 |
+|---|---|---|---|---|---|---|---|
+| feuille | 10 926 | 11 061 | 11 069 | 11 077 | 11 096 | 11 108 | 11 121 |
+| déclarations | 3 071 | 3 072 | 3 072 | 3 072 | **3 074** | **3 074** | **3 074** |
+
+Le **premier** bloc coûte ~135 o ; les suivants coûtent de **5 à 20 o** selon
+le vocabulaire neuf qu'ils apportent (la sonde ci-dessus emploie un gabarit
+répétitif, donc elle est du côté bas ; une relecture indépendante avec de la
+prose plus variée mesure ~20 o par bloc et touche le plafond de feuille vers
+onze blocs). La place restante est donc **de l'ordre de la dizaine de
+paragraphes**, pas de deux ou trois.
+
+Et surtout, le corollaire qui valide l'arbitrage : **les déclarations
+plafonnent à 3 074 quel que soit le volume de prose** — 14 blocs n'en ajoutent
+pas un octet de plus que 8. À 3 136, `DECLARATIONS_CEILING` **ne sonnera donc
+jamais sur un commentaire**. C'était tout l'objet du relèvement, et c'est
+mesuré et non espéré.
+
+Restent ~65 o de déclarations pour des règles neuves. `SHEET_CEILING` n'est pas
+relevable ici : son unique remède restant est de découper la feuille, ce qui
+est une issue.
 
 Aucun garde-fou n'est supprimé. Les deux tests de `apps/web/src/app.rs`
 existent toujours, l'un renommé et redérivé, l'autre intact.
@@ -1003,6 +1033,17 @@ suffi :
 
 ## Journal des décisions
 
+**Convention d'écriture, posée par #72 parce qu'elle était suivie sans être
+dite.** Une entrée datée n'est jamais réécrite : ce qu'elle affirmait au jour
+où elle a été prise reste lisible tel quel, et une décision qui la renverse
+s'ajoute à la fin. Ce qui *peut* être ajouté à une entrée existante est un
+**renvoi** vers l'entrée qui la dépasse — il ne modifie aucune affirmation et
+évite au lecteur d'avoir à parcourir toute la table pour savoir si ce qu'il
+lit tient encore. C'est la différence entre l'entrée du 2026-07-30 sur
+`/messagerie` (fausse sur un point, laissée intacte, corrigée par l'entrée du
+2026-08-05) et celle du 2026-08-04 sur le plafond des déclarations (exacte à
+sa date, augmentée d'un renvoi vers le relèvement de #72).
+
 | Date | Décision | Motif |
 |---|---|---|
 | 2026-07-29 | Système de design initial | Créé par `/design-consultation` à partir de l'audit `docs/design-audit.md` |
@@ -1043,5 +1084,5 @@ suffi :
 | 2026-08-05 | `.list-row.mine` se décide sur l'écriture, jamais sur `can_modify` (#72) | Un owner peut modifier le message d'un autre membre : marquer cette ligne comme sienne serait un mensonge sur qui a parlé, sur la seule page où « qui a dit ça » est l'information principale. `message_row` prend donc `mine` **et** `can_edit`, deux booléens distincts, là où un seul aurait suffi à faire compiler |
 | 2026-08-05 | Le message propre prend `--surface` + une barre `--accent`, pas `--accent-soft` (#72) | `--accent-soft` aurait crié plus fort, mais met `--muted` — la ligne d'identité de chaque message — à **4,382:1** en thème sombre, sous AA. `--muted` n'est garanti que sur `--bg` et `--surface` (voir [Couleur](#couleur)), et retoucher la paire appartient à #74. La barre de 4 px est celle que [Layout](#layout) décrit déjà pour identifier un membre sur une ligne ; elle porte ici `--accent` parce qu'elle dit *vous* et non *qui* — *qui* est l'initiale colorée à côté du nom (WCAG 1.4.1) |
 | 2026-08-05 | La zone de saisie ne colle qu'au-dessus de 861 px (#72) | Sous le point de bascule, la barre d'onglets fixe occupe déjà le bas du viewport : deux éléments collés l'un sur l'autre y mangeraient la moitié d'un écran de téléphone. Et le sélecteur est `.content > .composer`, descendant **direct** : la même classe habille le formulaire d'édition à l'intérieur d'une ligne de message, qui ne doit surtout pas se coller au viewport |
-| 2026-08-05 | Plafond des déclarations : **3 072 → 3 136** (#72) | Premier relèvement, sur arbitrage utilisateur, et il corrige une pathologie et non une gêne. À 3 071 contre 3 072, appendre un bloc de commentaire ordinaire de trois lignes à `style.css` mesure **3 072** — pile le plafond — et le suivant casse le build : `css_without_comments` retire le texte entre `/*` et `*/` mais garde le saut de ligne et l'indentation. Un garde-fou dont le remède est « supprimer une règle redondante » qui se déclenche sur un paragraphe contredit frontalement le message du test, son propre doc-comment (« There is no per-page-view prose tax left to protect anyone from ») et l'en-tête de `style.css` depuis #89 (« Write the comment »). Valeur dérivée, pas choisie : la paire s'inverse à `SHEET_CEILING × déclarations / feuille` = 11 264 × 3 071 / 10 926 = **3 166,0**, et 3 136 est le palier de 64 o en dessous — les 30 o abandonnés paient la bande dont le ratio a besoin (la même paire mesure ~5 o d'écart entre flate2 et le zlib système, cf. l'entrée du 2026-08-04). Reste **107 o** de marge d'inversion contre 334 : relever ce plafond dépense de la marge d'inversion, et c'est le troc déclaré. `SHEET_CEILING` n'est **pas** touché et devient le mur qui compte — 338 o, dont un bloc de commentaire consomme 119 |
-| 2026-08-05 | Le `<script>` inline de la messagerie n'est **pas** émis inconditionnellement (#72) | Constat de l'audit repris depuis #83 et faux depuis l'origine : `page()` conditionne le script à `if live`, donc une fenêtre d'historique n'en reçoit aucun. Vérifié empiriquement. Corrigé ici plutôt que propagé une quatrième fois. Le script reste en place : `/messagerie` est à 8 204 o gzip contre 14 336 depuis #89, il n'est plus ce qui met la page dehors, et le sortir vers `/assets` sous son empreinte est la bascule de #89 rejouée sur un second actif — une issue, pas un passager d'une passe de design |
+| 2026-08-05 | Plafond des déclarations : **3 072 → 3 136** (#72) | Premier relèvement, sur arbitrage utilisateur, et il corrige une pathologie et non une gêne. À 3 071 contre 3 072, appendre un bloc de commentaire ordinaire de trois lignes à `style.css` mesure **3 072** — pile le plafond — et le suivant casse le build : `css_without_comments` retire le texte entre `/*` et `*/` mais garde le saut de ligne et l'indentation. Un garde-fou dont le remède est « supprimer une règle redondante » qui se déclenche sur un paragraphe contredit frontalement le message du test, son propre doc-comment (« There is no per-page-view prose tax left to protect anyone from ») et l'en-tête de `style.css` depuis #89 (« Write the comment »). Valeur dérivée, pas choisie : la paire s'inverse à `SHEET_CEILING × déclarations / feuille` = 11 264 × 3 071 / 10 926 = **3 166,0**, et 3 136 est le palier de 64 o en dessous — les 30 o abandonnés paient la bande dont le ratio a besoin (l'écart entre flate2 et le zlib système, remesuré sur la feuille d'aujourd'hui et non repris de #89, vaut 35 o sur la feuille et 13 o sur les déclarations ; les 30 o couvrent les 13 observés, et la borne recalculée au zlib — 3 189,6 — reste au-dessus de 3 136). Reste **107 o** de marge d'inversion contre 334 : relever ce plafond dépense de la marge d'inversion, et c'est le troc déclaré. `SHEET_CEILING` n'est **pas** touché et devient le mur qui compte — 338 o, dont un bloc de commentaire consomme ~135, les suivants 5 à 20 : sur de la prose les déclarations plafonnent à 3 074, donc ce plafond-ci ne sonnera jamais sur un commentaire |
+| 2026-08-05 | Le `<script>` inline de la messagerie n'est **pas** émis inconditionnellement (#72) | Constat écrit par #83 dans **ce document** — `docs/design-audit.md` ne mentionne le `<script>` nulle part — et faux depuis l'origine : `page()` conditionne le script à `if live`, donc une fenêtre d'historique n'en reçoit aucun. Vérifié empiriquement. Corrigé ici plutôt que propagé une quatrième fois. Le script reste en place : `/messagerie` est à 8 204 o gzip contre 14 336 depuis #89, il n'est plus ce qui met la page dehors, et le sortir vers `/assets` sous son empreinte est la bascule de #89 rejouée sur un second actif — une issue, pas un passager d'une passe de design |

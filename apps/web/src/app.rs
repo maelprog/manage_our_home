@@ -1167,12 +1167,21 @@ mod tests {
         for class in [
             ".page-header",
             ".list-row",
-            // #72: a message you wrote yourself, and the disclosure trigger
-            // that replaced a `<summary>` wearing `btn secondary sm`. The
-            // second is an element selector rather than a class — the list
-            // is "what DESIGN.md → Composants names", and it names both.
+            // #72, and all three of what it adds to DESIGN.md → Composants:
+            // a message you wrote yourself, the disclosure trigger that
+            // replaced a `<summary>` wearing `btn secondary sm`, and the
+            // open disclosure that gives the edit form the row's width.
+            // The last two are not classes — the list is "what
+            // DESIGN.md → Composants names", and it names selectors.
+            //
+            // `.actions > details[open]` is here because nothing else can
+            // catch it: it appears in no `class="…"`, so deleting the rule
+            // left the whole suite green while the edit textarea silently
+            // collapsed back to its ~20-column default. That is the hole
+            // the inline `min-width: 16rem` used to plug.
             ".list-row.mine",
             "summary {",
+            ".actions > details[open]",
             ".card",
             ".badge",
             ".badge.warn",
@@ -1865,7 +1874,8 @@ mod tests {
     /// old declarations ceiling; raising that ceiling spends inversion
     /// margin, which is the trade #72 declares). This value is unchanged
     /// and out of #72's scope — with 338 bytes left it is now the binding
-    /// wall of the two, and a comment block costs ~119 of them.
+    /// wall of the two — the first comment block costs ~135 of them, each
+    /// one after it 5–20 (see `DECLARATIONS_CEILING` for the measurements).
     ///
     /// Exceeding this one has no architectural escape left. The remedy
     /// would be splitting the sheet (critical CSS inline, the rest
@@ -1954,23 +1964,46 @@ mod tests {
     ///   becomes the one a red build asks. That is the whole thing this
     ///   ceiling exists to prevent, so 3 166 is a wall, not a target.
     /// * **Round down to the 64-byte step below it: 3 136** (3 KiB + 64 B).
-    ///   The 30 bytes given up buy the band the ratio needs: DESIGN.md
-    ///   already records the same pair measuring ~5 bytes apart under
-    ///   flate2 and system zlib, and the ratio itself moves as the sheet
-    ///   grows. Sitting *on* 3 166 would rebuild the 0.34-byte margin #89
-    ///   spent a whole issue undoing.
+    ///   The 30 bytes given up buy the band the ratio needs. Re-measured
+    ///   on *today's* sheet rather than carried over from #89 — whose "~5
+    ///   bytes apart" was about the sheet of the day — flate2 and system
+    ///   zlib disagree by **35 bytes on the sheet and 13 on the
+    ///   declarations**; 30 covers the 13 that matter here, and the bound
+    ///   recomputed under zlib (3 189.6) still sits above 3 136. The ratio
+    ///   also moves as the sheet grows. Sitting *on* 3 166 would rebuild
+    ///   the 0.34-byte margin #89 spent a whole issue undoing.
     /// * **Lower bound — sanity.** 3 136 − 3 071 = **65 bytes** of real
     ///   headroom, against the ~1 byte a comment block costs. The tripwire
     ///   is gone; the guard is a guard again.
     ///
     /// `SHEET_CEILING` is **not** touched, and that is deliberate: it is
     /// now the binding wall. 11 264 − 10 926 = **338 bytes of sheet** are
-    /// left, and the three-line comment block above costs 119 of them. So
-    /// #73 and #74 share 65 bytes of declarations and room for roughly two
-    /// more paragraphs — and it is the sheet, not this ceiling, that will
-    /// stop them. The ordering still holds for growth shaped like the
-    /// sheet: 338 sheet bytes carry ~95 declaration bytes at today's mix,
-    /// and 65 < 95, so this guard is still the first to fire.
+    /// left for #73 and #74, on top of 65 bytes of declarations.
+    ///
+    /// **What that buys, measured rather than assumed.** Appending comment
+    /// blocks to `style.css` one after another: the sheet goes 10 926 →
+    /// 11 061 (1 block) → 11 069 (2) → 11 077 (4) → 11 096 (8) → 11 121
+    /// (14), and the declarations go 3 071 → 3 072 → 3 072 → 3 072 → 3 074
+    /// → **3 074**. So the *first* block costs ~135 bytes and each one
+    /// after it costs 5–20 depending on how much new vocabulary it brings
+    /// — gzip amortises prose hard. The room left is on the order of **ten
+    /// paragraphs**, not two.
+    ///
+    /// And the corollary that is the whole point of the raise:
+    /// **declarations plateau at 3 074 however much prose is added** — 14
+    /// blocks cost not one byte more than 8. At 3 136 this ceiling can
+    /// never fire on a comment again. That is measured, not hoped for.
+    ///
+    /// **Which of the two fires first depends on the shape of the growth,
+    /// and the honest answer is: usually the sheet.** Comparing *levels*
+    /// (declarations are 28.1 % of the sheet, so 338 sheet bytes would
+    /// carry ~95 declaration bytes, and 65 < 95) says this guard still
+    /// leads — but no batch has ever grown at the cumulative ratio. The
+    /// *marginal* ratio, per merge: #68 22.8 %, #69 25.9 %, #70 26.9 %,
+    /// #71 17.9 %, #89 0 %, **#72 9.6 %** (+795 sheet for +76
+    /// declarations). At one paragraph per rule the ordering barely holds;
+    /// at two it inverts; at three — the shape of #72 itself — it is
+    /// `SHEET_CEILING` that rings. Write for the sheet.
     ///
     /// A ceiling, not a target. What it forbids is drifting past it
     /// unnoticed while #73–#74 each add "just a few rules"; raising it
