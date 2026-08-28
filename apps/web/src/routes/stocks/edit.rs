@@ -50,13 +50,13 @@ fn page(header: &str, id: Uuid, name: &str, form: &ItemForm, error: Option<&str>
     shell_with_header(Width::Form, "Modifier l'article", header, &body)
 }
 
-/// Fetches an item, returning it or an early `Response` (404/unavailable).
+/// Fetches an item, returning it or an early boxed `Response` (404/unavailable).
 async fn fetch_item(
     state: &AppState,
     gid: Uuid,
     item_id: Uuid,
     cookie: Option<&str>,
-) -> Result<StockItemResponse, Response> {
+) -> Result<StockItemResponse, Box<Response>> {
     match api_request_auth(
         state,
         reqwest::Method::GET,
@@ -68,12 +68,12 @@ async fn fetch_item(
     {
         Ok(resp) if resp.status == reqwest::StatusCode::OK => {
             serde_json::from_value::<StockItemResponse>(resp.body)
-                .map_err(|_| service_unavailable_page().into_response())
+                .map_err(|_| Box::new(service_unavailable_page().into_response()))
         }
         Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
-            Err(item_not_found_page().into_response())
+            Err(Box::new(item_not_found_page().into_response()))
         }
-        _ => Err(service_unavailable_page().into_response()),
+        _ => Err(Box::new(service_unavailable_page().into_response())),
     }
 }
 
@@ -90,7 +90,7 @@ pub async fn get(
     let cookie = stocks_cookie(&headers);
     let item = match fetch_item(&state, fam.gid, item_id, cookie.as_deref()).await {
         Ok(item) => item,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
 
     if !can_modify(&fam.role, item.created_by == me.user_id) {
