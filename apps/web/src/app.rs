@@ -1924,6 +1924,14 @@ mod tests {
     /// doc-note flags: it weighs a body and never the headers around it, so
     /// they come off the window here or nowhere.
     ///
+    /// **And 13 312 is not that bound.** It sits **942 bytes** under the
+    /// 14 254 derived just above. Those 942 are the price of landing on a
+    /// KiB boundary — not a reserve anyone sized, and not a second margin
+    /// on top of the conservatism already inside 14 254. Say so rather than
+    /// letting "derived from its physical bound" stand for both numbers:
+    /// what is not available is anything *above* 14 254; between 13 312 and
+    /// 14 254 there is only an argument to make about round numbers.
+    ///
     /// **What this abandons, stated rather than glossed.** DESIGN.md
     /// credits the budget with the "permanent pressure toward sobriety"
     /// that made #66 and #68 happen. That is an assertion of the document,
