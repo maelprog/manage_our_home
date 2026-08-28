@@ -1892,9 +1892,15 @@ mod tests {
     /// what it hit was the margin, not the round trip.
     ///
     /// **The derivation, redone from the physical side, and it no longer
-    /// lands on 14 336** — because since #89 the sheet is a response of its
-    /// own and carries its own response headers, which the old subtraction
-    /// never had to count:
+    /// lands on 14 336** — and not because a term was missing from #89's.
+    /// Read #89's own bound above: it goes from 14 600 "less headers and TLS
+    /// framing" to 14 336, so it subtracted both already, and it was written
+    /// *after* the move to /assets — it was not blind to the sheet being a
+    /// response of its own. What it did not do is price them. 14 600 −
+    /// 14 336 leaves **264 bytes** for the two together, an allowance the
+    /// round number carries implicitly. What #72 changes is the size of that
+    /// allowance, **264 → 346**, by measuring one of the two terms instead
+    /// of leaving it inside a rounding:
     ///
     /// * **IW10** — 10 segments of a 1 460-byte MSS = **14 600 bytes** of
     ///   TCP payload in the first round trip.
@@ -1912,9 +1918,11 @@ mod tests {
     /// **14 KiB (14 336) does not fit. 13 KiB (13 312) is the largest KiB
     /// boundary that does**, and rounding down to a KiB boundary is what
     /// this document has done at every step. So the answer to "raise it to
-    /// the physical bound" is 13 312, not 14 336 — the headers are what
-    /// separate them, and they were the one thing `gzipped`'s own doc-note
-    /// already flagged as missing from the measurement.
+    /// the physical bound" is 13 312, not 14 336 — and what separates
+    /// 14 336 from 14 254 is exactly the 82 bytes the allowance grew by
+    /// (346 − 264). The allowance itself is the thing `gzipped`'s own
+    /// doc-note flags: it weighs a body and never the headers around it, so
+    /// they come off the window here or nowhere.
     ///
     /// **What this abandons, stated rather than glossed.** DESIGN.md
     /// credits the budget with the "permanent pressure toward sobriety"
