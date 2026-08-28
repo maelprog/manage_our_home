@@ -45,13 +45,13 @@ fn page(header: &str, id: Uuid, name: &str, form: &EntryForm, error: Option<&str
     shell_with_header(Width::Form, "Modifier la dépense", header, &body)
 }
 
-/// Fetches an entry, returning it or an early `Response` (404/unavailable).
+/// Fetches an entry, returning it or an early boxed `Response` (404/unavailable).
 async fn fetch_entry(
     state: &AppState,
     gid: Uuid,
     entry_id: Uuid,
     cookie: Option<&str>,
-) -> Result<BudgetEntryResponse, Response> {
+) -> Result<BudgetEntryResponse, Box<Response>> {
     match api_request_auth(
         state,
         reqwest::Method::GET,
@@ -63,12 +63,12 @@ async fn fetch_entry(
     {
         Ok(resp) if resp.status == reqwest::StatusCode::OK => {
             serde_json::from_value::<BudgetEntryResponse>(resp.body)
-                .map_err(|_| service_unavailable_page().into_response())
+                .map_err(|_| Box::new(service_unavailable_page().into_response()))
         }
         Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
-            Err(entry_not_found_page().into_response())
+            Err(Box::new(entry_not_found_page().into_response()))
         }
-        _ => Err(service_unavailable_page().into_response()),
+        _ => Err(Box::new(service_unavailable_page().into_response())),
     }
 }
 
@@ -85,7 +85,7 @@ pub async fn get(
     let cookie = budget_cookie(&headers);
     let entry = match fetch_entry(&state, fam.gid, entry_id, cookie.as_deref()).await {
         Ok(e) => e,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
 
     if !can_modify(&fam.role, entry.created_by == me.user_id) {
