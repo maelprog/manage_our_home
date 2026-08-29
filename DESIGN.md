@@ -371,12 +371,24 @@ aucune n'introduit de valeur hors des échelles :
 | `.multiline` | un texte dont les retours à la ligne sont ceux de l'auteur (message, méthode d'une recette) |
 | `.current` | la cellule d'aujourd'hui, l'occurrence sur laquelle une fiche est ouverte |
 | `.cal`, `.cal-cell`, `.cal-day` | l'agenda : une seule grille, que la vue mois affiche sur six semaines et la vue semaine sur une. `.cal-week`/`.cal-col` ont disparu avec #71 — la bande de semaine était un `flex` séparé, elle est aujourd'hui la même table |
-| `.composer`, `.live-status` | la zone de saisie de la messagerie et sa ligne d'état ; #72 les reprend |
+| `.composer`, `.live-status` | la zone de saisie de la messagerie et sa ligne d'état. Repris par #72 : `.content > .composer` colle au bas du viewport au-dessus de 861 px, et le sélecteur descendant *direct* est le point — la même classe habille le formulaire d'édition d'une ligne, qui ne doit pas coller |
+| `.list-row.mine` | un message que vous avez écrit (#72) : `--surface` plus la barre de 4 px en `--accent` que [Layout](#layout) décrit. Fondé sur l'écriture, jamais sur la permission |
+| `summary` | le déclencheur d'une disclosure (#72) — élément, pas classe. Il portait `btn secondary sm` : une disclosure déguisée en bouton, dont la boîte masquait la pastille native qui est son affordance |
+| `.actions > details[open]` | une disclosure ouverte prend la largeur de sa ligne (#72), ce que le `min-width: 16rem` inline du champ d'édition demandait à sa place |
 | `.app`, `.content`, `.w-form`, `.w-read`, `.tabs` | la coque responsive de #70 : la grille sidebar + contenu, la colonne de contenu et ses deux largeurs bornées, la barre d'onglets qui devient la sidebar |
 
 Le résiduel de `style="…"` assumé après #68 : une couleur de membre calculée
 (`.avatar`), la largeur d'un champ de prix, l'alignement d'une colonne
 numérique, la largeur minimale du champ d'édition d'un message.
+
+**Après #72 il en reste cinq**, pour un plafond de six
+(`inline_styles_are_bounded_to_a_justified_residue`) : la largeur minimale du
+champ d'édition disparaît, les deux teintes de membre de la messagerie n'en
+font qu'une — les deux formes de ligne partagent désormais une seule fonction
+d'identité (`message_meta`) — et il s'en ajoute donc *une*, pas deux. Le
+compte exact : deux couleurs de membre calculées (`groups/members.rs`,
+`messagerie/thread.rs`), la largeur du champ de prix, et deux alignements de
+colonne numérique dans `admin/groups.rs`.
 
 ---
 
@@ -525,7 +537,11 @@ l'inlining, c'est cette liste qu'il faudra réfuter.
    en veut une, un `<style>` inline imposait `unsafe-inline`, ou un nonce/hash
    à générer par réponse. Une feuille externe est le cas trivial — c'est
    désormais le nôtre. (Le `<script>` inline de `messagerie/thread.rs` reste,
-   lui, un obstacle : il appartient à #72.)
+   lui, un obstacle. #72 l'a laissé en place et a corrigé le constat qui
+   l'accompagnait : il n'est **pas** émis inconditionnellement — voir
+   [Le budget](#le-budget) ci-dessous. Le sortir vers `/assets` sous son
+   empreinte est la bascule de #89 rejouée sur un second actif, donc une
+   issue à part.)
 
 ### Le budget
 
@@ -550,11 +566,20 @@ gros que son propre gzip.
 **`/messagerie` est déjà hors budget**, et c'est le constat le plus important
 de cette section. Elle sort à 15 739 o compressés là où le budget est de
 14 336. Deux causes cumulées : `thread.rs` émet un `<script>` inline de 7 274
-octets **inconditionnellement**, et la page rend jusqu'à 50 messages (100 avec
-`?limit=`) de 4 000 caractères chacun. Le document seul y pèse 8 416 o
-compressés, contre 750 à 2 754 sur les sept autres. Mesurée à vide elle est à
-11 188 o : ce n'est donc pas un cas extrême construit pour l'occasion, c'est
-une conversation de famille ordinaire qui l'y amène.
+octets ~~inconditionnellement~~, et la page rend jusqu'à 50 messages (100 avec
+`?limit=`) de 4 000 caractères chacun.
+
+> **Corrigé par #72 :** « inconditionnellement » est faux et l'est depuis
+> l'origine. `page()` ne rend le script que sur la vue live (`if live`), donc
+> jamais sur une fenêtre d'historique (`?before_created_at`+`?before_id`).
+> Vérifié empiriquement. Ce qui reste vrai, c'est qu'il part sur toute vue
+> live, y compris pour un visiteur dont le navigateur n'a pas `WebSocket` —
+> le script teste la disponibilité une fois arrivé.
+
+Le document seul y pèse 8 416 o compressés, contre 750 à 2 754 sur les sept
+autres. Mesurée à vide elle est à 11 188 o : ce n'est donc pas un cas extrême
+construit pour l'occasion, c'est une conversation de famille ordinaire qui
+l'y amène.
 
 Ce que ça veut dire, écrit sans le contourner : **le seuil de 14 KiB n'est pas
 tenable route par route en bornant la feuille**, parce que la moitié document
@@ -676,9 +701,16 @@ chacun et qu'un seuil dont le motif a disparu est pire qu'un seuil absent.
 
 | Seuil | Valeur | Aujourd'hui | Ce qu'on fait au dépassement |
 |---|---|---|---|
-| Réponse complète compressée, routes principales | **≤ 14 KiB** (14 336 o) | 8 126 o au pire (`/messagerie`), 684 – 3 274 sur les sept autres | alléger le **document** — la feuille n'y est plus |
-| Feuille compressée | **≤ 11 KiB** (11 264 o), *était 10 KiB* | 10 131 o | découper la feuille ; il n'y a plus de `/assets` où la déplacer |
-| Déclarations compressées | **≤ 3 KiB** (3 072 o), *inchangé* | 2 995 o | supprimer une règle redondante |
+| Réponse complète compressée, routes principales | **≤ 14 KiB** (14 336 o) | 8 204 o au pire (`/messagerie`), 686 – 3 272 sur les sept autres | alléger le **document** — la feuille n'y est plus |
+| Feuille compressée | **≤ 13 KiB** (13 312 o), *relevé par #72, était 11 KiB* | 10 926 o | découper la feuille ; il n'y a plus de `/assets` où la déplacer |
+| Déclarations compressées | **≤ 3 KiB + 64 o** (3 136 o), *relevé par #72, était 3 072* | 3 071 o | supprimer une règle redondante |
+
+La colonne « Aujourd'hui » est celle de #72 (2026-08-06), mesurée sur la
+campagne de ce lot. Elle n'est **pas** comparable octet à octet avec celle de
+#89 (8 126 / 10 131 / 2 995) : ce sont deux semis et deux stacks, et l'écart
+entre les deux campagnes est du même ordre que les deltas qu'on y lit — c'est
+pourquoi les deltas avant/après de #72 sont mesurés des deux côtés de la
+*même* base semée, et rapportés séparément.
 
 **Seuil 1 — la réponse : garde son sens, change de remède.** Le document reste
 render-blocking et reste ce que la première fenêtre de congestion doit porter ;
@@ -721,7 +753,10 @@ l'encodeur du garde-fou lui-même :
   du plafond.
 
 **11 264 tient dans cet intervalle** avec **1 133 o** de croissance de feuille
-disponible et **872 o** de marge d'inversion. 14 336 aurait aussi été
+disponible et **872 o** de marge d'inversion — raisonnement et chiffres de #89.
+**#72 a porté ce plafond à 13 312**, en refaisant la dérivation depuis la borne
+physique une fois les en-têtes de réponse comptés ; voir la mise à jour plus
+bas et l'entrée de journal du 2026-08-06. 14 336 aurait aussi été
 défendable sur la seule borne haute — c'est même le nombre le plus permissif
 qui le soit, et c'est pour ça qu'il n'est pas retenu : un plafond à 4 200 o
 au-dessus de la feuille actuelle ne sonnerait avant plusieurs lots, ce qui
@@ -730,10 +765,13 @@ n'est pas un garde-fou. Le test
 `the_compressed_stylesheet_still_arrives_in_one_round_trip` — renommé, pas
 supprimé.
 
-**Seuil 3 — les déclarations : valeur et test inchangés, motif rétréci.** Même
-chiffre, même remède, même test. Mais sa *calibration* — se déclencher avant
-le plafond de feuille — ne sert plus ce qu'elle servait, et c'est le point où
-il serait facile de tricher :
+**Seuil 3 — les déclarations : motif rétréci par #89, valeur relevée par #72.**
+Ce que #89 en disait — même chiffre, même remède, même test — a tenu jusqu'à
+#72, qui a porté le plafond de 3 072 à **3 136** ; le remède et le test, eux,
+n'ont pas bougé. Ce qui suit est le raisonnement de #89 sur la *calibration*,
+qui reste valable et que #72 n'a fait qu'appliquer. Sa calibration — se
+déclencher avant le plafond de feuille — ne sert plus ce qu'elle servait, et
+c'est le point où il serait facile de tricher :
 
 - Ce qu'elle protégeait a disparu. Elle existait pour que la pression ne tombe
   jamais sur les commentaires, parce que l'inlining facturait chaque
@@ -762,8 +800,121 @@ la paire y est **déjà inversée de ~4,8 o**. Le signe dépend de
 l'implémentation de gzip ; ce sur quoi les deux lectures s'accordent, c'est
 que la marge tenait dans 5 octets, donc qu'elle n'existait plus.
 
-Il reste **77 octets de déclarations** à se partager pour #72–#74, exactement
-comme avant : #89 n'ajoute pas une règle.
+À la sortie de #89 il restait **77 octets de déclarations** à se partager pour
+#72–#74 : ce lot n'ajoute pas une règle. **#72 les a dépensés et a relevé le
+plafond ; l'état à jour est juste en dessous.**
+
+#### Où en est le budget après #72
+
+Les chiffres ci-dessus sont ceux de #89 et ne décrivent plus l'état du dépôt.
+Mesuré sur la branche de #72 avec flate2 niveau 6, l'encodeur des garde-fous :
+
+| | après #89 | après #72 | plafond | reste |
+|---|---|---|---|---|
+| Déclarations | 2 995 | **3 071** | **3 136** *(relevé par #72)* | **65 o** |
+| Feuille | 10 131 | **10 926** | **13 312** *(relevé par #72)* | **2 386 o** |
+
+**Les deux plafonds ont été relevés par #72, sur deux arbitrages distincts et
+pour deux raisons sans rapport.** Les dérivations complètes sont dans les
+doc-comments de `SHEET_CEILING` et `DECLARATIONS_CEILING`, et au journal.
+
+**Les déclarations, 3 072 → 3 136 :** à 3 071 contre 3 072, appendre un bloc de
+commentaire ordinaire de trois lignes mesurait **3 072**, pile le plafond, et
+le suivant cassait le build — `css_without_comments` retire le texte du
+commentaire mais garde son saut de ligne et son indentation. Un garde-fou dont
+le remède est « supprimer une règle redondante » qui se déclenche sur un
+paragraphe dit au prochain auteur exactement ce que #89 existe pour empêcher.
+
+**La feuille, 11 264 → 13 312 :** l'écart entre 11 264 et la borne physique
+était de la pression disciplinaire, pas de la performance. La dérivation refaite
+depuis IW10 ne retombe pas sur 14 336, et **ce n'est pas qu'un terme manquait à
+celle de #89** : #89 partait déjà de 14 600 « less headers and TLS framing »
+pour arriver à 14 336, et l'écrivait après la bascule vers `/assets`, donc en
+sachant que la feuille est une réponse à elle seule. Ce qu'elle ne faisait pas,
+c'est **chiffrer** ces deux termes : 14 600 − 14 336 leur laissait **264 o** au
+total, une allocation implicite portée par l'arrondi. Ce que #72 change, c'est
+cette allocation, **264 → 346 o** — 14 600 − 280 o d'en-têtes (170 mesurés sur
+`apps/web` lors du relèvement, non remesurés depuis, plus
+`server`/`content-encoding`/`vary` à travers Caddy) − 66 o de cadrage TLS =
+**14 254 o** de corps disponible. Les 82 o qui séparent 14 336 de 14 254 sont
+exactement ce dont l'allocation a grossi. 14 KiB ne tient plus ; **13 KiB est le
+plus grand palier de KiB qui tienne**, à **942 o** sous la borne. Le relèvement
+**renforce** l'ordre des deux gardes au lieu de l'affaiblir — la contrainte
+d'ordre est une borne *basse* sur ce plafond — et la marge d'inversion passe de
+107 à **2 154,7 o**.
+
+### Ce que coûte vraiment un paragraphe
+
+Trois mesures antérieures de ce document étaient fausses : deux sur la
+méthode, la troisième sur l'échantillon. La méthode est toute l'histoire.
+**Appendre le *même* bloc en boucle** donne ~135 o pour le premier et 5 à
+20 o pour chaque répétition — mais c'est gzip qui retrouve un texte déjà vu,
+pas le coût d'écrire quelque chose. C'est le piège que le briefing du projet
+signale et que ce document dénonce déjà, plus bas, pour un chiffre
+antérieur : *mesurer sur des données peu variées fausse le verdict*.
+
+Le chiffre qui veut dire quelque chose se mesure **en supprimant de vrais
+blocs de commentaire de cette feuille, un par un, et en pesant ce qui
+revient**, pas en ajoutant du remplissage.
+
+**Ce document ne recopie plus le résultat.** Il l'a fait, sous la forme d'une
+plage lue sur un échantillon de dix blocs, et cette plage a été prise pour
+celle de la feuille : l'étalement réel des blocs est assez large pour que la
+borne haute d'un petit échantillon **sous-estime largement le pire cas** — ce
+qui est exactement l'erreur que commet un lecteur budgétant « au pire tant
+d'octets le paragraphe ». Un chiffre qu'on ne recopie pas ne peut pas
+périmer (#95).
+
+**Comment l'obtenir sur la feuille du jour.** Retirer un bloc de commentaire
+de `apps/web/src/style.css` avec ses lignes entières, repeser, prendre la
+différence, recommencer bloc par bloc. Repeser avec **l'encodeur du garde-fou
+et lui seul** : flate2 niveau 6, `Compression::default()`, celui de `gzipped`
+dans `apps/web/src/app.rs` — c'est lui qui décide si le test passe. Le zlib de
+Node (`npm run measure`) répond quelques octets à côté sans que personne se
+trompe ; c'est un autre encodeur, et **dire lequel on lit fait partie du
+chiffre**. Sur de la prose variée la feuille croît du même ordre : 10 926 →
+11 076 (1 bloc) → 11 212 (2) → 11 450 (4) → 11 911 (8) → 13 139 (20).
+
+**2 386 o, c'est donc une vingtaine de paragraphes de plus** — c'est le chiffre
+sur lequel #73 et #74 peuvent tabler.
+
+**Et les déclarations ne plafonnent pas.** Une rédaction antérieure l'affirmait,
+sur le même corpus dégénéré. Sur de la prose variée elles montent lentement :
+3 071 → 3 072 (1 à 4 blocs) → 3 074 (8) → 3 074 (20) → **3 075 (50)**. Les sauts
+de ligne et l'indentation que `css_without_comments` conserve s'accumulent ; il
+n'y a pas de palier, seulement une pente très faible. La conclusion pratique
+tient — à ~0,08 o par bloc, aller de 3 071 à 3 136 demanderait quelque **800
+paragraphes**, quand `SHEET_CEILING` sonne vers la vingtaine — mais elle tient
+**parce que le garde-fou de feuille sonne d'abord**, pas parce que celui-ci
+serait immunisé. Ne pas écrire « jamais ».
+
+Restent ~65 o de déclarations pour des règles neuves. `SHEET_CEILING`, lui,
+n'est **pas relevé une seconde fois** dans ce lot — mais 13 312 n'est pas une
+clôture, et l'écrire serait faux. **13 312 n'est pas la borne physique** :
+c'est le palier de KiB immédiatement sous elle, et il reste **942 o** entre les
+deux (14 254 − 13 312, la borne étant celle dérivée plus haut). Ces 942 o ne
+sont ni une marge calculée ni une réserve dimensionnée : c'est le prix de
+l'arrondi. Le dire coûte moins cher que de laisser un lecteur de #73/#74 se
+croire devant une issue de découpage alors qu'il reste de la place sous la
+borne que ce lot vient de dériver.
+
+**Rester sous la borne ne rend pas l'écart libre-service.** Ce qui n'est pas
+disponible, c'est tout ce qui passe **au-dessus de 14 254** ; entre 13 312 et
+14 254 il n'y a qu'un argument à faire sur les nombres ronds — mais *faire*
+cet argument n'est pas une ligne qu'on modifie en passant. **Aucun relèvement
+de `SHEET_CEILING` sans arbitrage** : les deux relèvements de ce lot et celui
+de #89 avant eux sont tous passés par un arbitrage de l'utilisateur avant que
+la valeur bouge. La règle est celle de `DECLARATIONS_CEILING` — refaire
+l'arithmétique contre la feuille du jour et le dire dans le corps de PR —
+avec une marche de plus : demander d'abord.
+
+Ce document a déjà écrit deux fois qu'un plafond de feuille ne se relevait pas,
+et les deux ont été démenties : à 10 KiB (« on prend la porte de sortie » — #89
+a pris la porte) puis à 11 KiB (« pas relevable ici » — relevé par le commit
+suivant de cette PR même). Une troisième ne vaudrait pas mieux. Ce qui tient
+sans réserve, et c'est aussi tout ce qu'affirme `app.rs`, c'est le **remède** :
+au-delà du plafond il n'y a plus d'échappatoire architecturale, il faut
+découper la feuille, ce qui est une issue.
 
 Aucun garde-fou n'est supprimé. Les deux tests de `apps/web/src/app.rs`
 existent toujours, l'un renommé et redérivé, l'autre intact.
@@ -948,6 +1099,28 @@ suffi :
 
 ## Journal des décisions
 
+**Convention d'écriture, posée par #72 parce qu'elle était suivie sans être
+dite.** Une entrée **déjà atterrie sur `main`** n'est pas réécrite par un lot
+ultérieur : ce qu'elle affirmait au jour où elle a été prise reste lisible tel
+quel, et une décision qui la renverse s'ajoute à la fin. Ce qui *peut* lui être
+ajouté est un **renvoi** vers l'entrée qui la corrige ou la complète — il ne
+modifie aucune affirmation et évite au lecteur d'avoir à parcourir toute la
+table pour savoir si ce qu'il lit tient encore. C'est la différence entre
+l'entrée du 2026-07-30 sur `/messagerie` (fausse sur un point, laissée intacte,
+corrigée par l'entrée du 2026-08-05) et celle du 2026-08-04 sur le plafond des
+déclarations (exacte à sa date, augmentée d'un renvoi vers le relèvement de
+#72).
+
+**Tant qu'un lot n'a pas atterri, ses propres entrées sont du texte en cours de
+rédaction : il les édite librement.** Ce dépôt fusionne en squash — après le
+merge, les commits de la branche n'existent plus et le lot arrive sur `main`
+d'un bloc. Éditer une entrée avant son atterrissage ne réécrit donc aucune
+histoire, c'est rédiger ; la règle ci-dessus s'adresse au lot *suivant*, pas à
+l'auteur de l'entrée. Ainsi bornée, la règle devient vérifiable par une
+machine : un contrôle pourrait la comparer au journal de `main`, là où il ne
+pouvait pas la comparer à un historique de branche que le squash fait
+disparaître. Il n'en existe aucun aujourd'hui (#95).
+
 | Date | Décision | Motif |
 |---|---|---|
 | 2026-07-29 | Système de design initial | Créé par `/design-consultation` à partir de l'audit `docs/design-audit.md` |
@@ -965,7 +1138,7 @@ suffi :
 | 2026-07-30 | CSS inliné — décision datée, plus une propriété héritée (#83) | L'inlining n'avait jamais été argumenté : la contrainte n°2 décrivait ce que `shell()` fait. Il est conservé pour l'impossibilité structurelle du décalage CSS/markup (`include_str!`), pas pour la performance, et requalifié en arbitrage valable **sous condition de budget** |
 | 2026-07-30 | Budget de livraison : 14 KiB compressés par réponse, 10 KiB pour la feuille, 3 KiB pour les déclarations (#83) | 14 KiB est la fenêtre de congestion initiale, seul chiffre non arbitraire ; les deux autres s'en déduisent. Deux plafonds plutôt qu'un parce que « taille de la feuille » a deux réponses et deux remèdes : le brut compressé se corrige en sortant de l'inlining, les déclarations en supprimant une règle. Le second est calibré pour être atteint le premier, donc la pression ne tombe jamais sur les commentaires |
 | 2026-07-30 | `encode zstd gzip` dans `infra/Caddyfile` (#83) | Le seul écart réellement hors-norme n'était pas l'inlining mais l'absence totale de compression : 20 à 81 Ko de texte brut par navigation, aucune route ne tenant dans le premier aller-retour. Après, 7,9 à 10,1 Ko sur sept des huit routes de la nav, qui y tiennent |
-| 2026-07-30 | `/messagerie` constatée hors du budget de 14 KiB (#83) | 15 739 o compressés avec 50 messages ordinaires, 11 188 o à vide : un `<script>` inline de 7 274 o émis inconditionnellement plus 50 messages rendus. Le déclencheur de la porte de sortie est donc déjà franchi sur cette route. Non corrigé par #83 (bascule hors périmètre, page tenue par #72) — constaté et daté |
+| 2026-07-30 | `/messagerie` constatée hors du budget de 14 KiB (#83) | 15 739 o compressés avec 50 messages ordinaires, 11 188 o à vide : un `<script>` inline de 7 274 o émis inconditionnellement plus 50 messages rendus. Le déclencheur de la porte de sortie est donc déjà franchi sur cette route. Non corrigé par #83 (bascule hors périmètre, page tenue par #72) — constaté et daté. **« Inconditionnellement » est faux : voir l'entrée du 2026-08-05.** (Renvoi ajouté par #72 — c'est l'entrée fausse qui en a le plus besoin.) |
 | 2026-07-30 | Pas de `CompressionLayer` dans `apps/web` (#83) | Caddy laisse intacte une réponse déjà encodée (mesuré) : compresser dans `apps/web` imposerait son gzip au chemin déployé à la place du choix de Caddy, au bénéfice des seuls accès directs à `web:3000` (dev, e2e) où aucun octet n'est compté — et ajouterait une dépendance à un graphe qui porte déjà deux tower-http |
 | 2026-07-30 | BREACH : aucune route exclue de `encode` (#83) | Le seul secret rendu dans un corps compressible est le jeton de réinitialisation (`reset_password.rs:42`). L'attaque demande une seconde chaîne choisie par l'attaquant dans la même réponse ; cette page n'en a aucune (sa seule variable est le jeton, qui doit parser en UUID). Usage unique et péremption 24 h vérifiés dans `apps/api/src/auth/mod.rs` |
 | 2026-07-31 | Jetons `--accent-hover` / `--error-hover` (#69) | Un aplat plein survolé ne peut pas se contenter d'une teinte : `--accent-fg` y passerait sous AA. La moitié creusée (clair) ou éclaircie (sombre) de chaque aplat tient 7,8:1 au pire dans les deux thèmes |
@@ -981,7 +1154,19 @@ suffi :
 | 2026-08-04 | Une page peut sortir sans style pendant un déploiement (#89) | Coût nommé plutôt que découvert : la fenêtre CSS/markup se ferme par un **404**, donc un HTML de l'ancien binaire encore en vol rend une page sans règles. Borné aux requêtes en vol — le HTML ne porte ni `Cache-Control`, ni `ETag`, ni `Last-Modified`, donc rien n'est rejoué depuis un cache — et l'échec est visible et corrigé par un rechargement, là où une feuille périmée sous nom stable serait invisible et durable |
 | 2026-08-03 | L'URL de la feuille est l'empreinte SHA-256 de la constante du binaire (#89) | C'est ce qui préserve l'avantage n°2 de l'inlining, sa seule propriété de *correction* : empreinte, URL, octets servis et `<link>` sortent de la même constante `include_str!`, donc aucun déploiement ne peut servir du HTML neuf avec du CSS périmé. Servir un fichier de `assets/` via le `ServeDir` de #67 aurait rouvert cette fenêtre (l'image Docker copie le répertoire, le binaire et le fichier peuvent diverger). Calculée à l'exécution : pas d'étape de build, la contrainte n°3 tient |
 | 2026-08-04 | Plafond de feuille : **10 KiB → 11 KiB** (11 264 o), dérivation refaite (#89) | La seule concession du lot, déclarée. Les 10 KiB étaient une soustraction (14 336 − le document le plus lourd) qui n'a plus d'objet quand la feuille ne voyage plus dans le document, et la consigne « ce plafond ne se relève pas, on prend la porte de sortie » est épuisée : la porte a été prise. Le plafond est **encadré par deux bornes** et non plus par une : un aller-retour au-dessus (IW10 = 14 336, borne conservatrice — la feuille pèse 10 131 o flate2 et ne reçoit même pas une IW10 fraîche, elle arrive un RTT après le document sur la même connexion), et le plancher d'inversion des deux garde-fous en dessous (`3 072 / (2 995 / 10 131)` = 10 391,5 o — c'est *lui* qui rend 10 240 intenable). 11 264 laisse 1 133 o de croissance et 872 o de marge d'inversion. Arbitrage utilisateur : 14 336 était défendable sur la seule borne haute mais c'est le nombre le plus permissif qui le soit, et un plafond qui ne sonne pas avant plusieurs lots n'est pas un garde-fou. Test renommé `the_compressed_stylesheet_still_arrives_in_one_round_trip` |
-| 2026-08-04 | Plafond des déclarations : **inchangé à 3 KiB**, mais son motif rétrécit (#89) | Même valeur, même remède, même test. Ce que sa calibration protégeait — que la pression ne tombe jamais sur les commentaires — **n'existe plus** : la feuille étant cachée, un commentaire coûte un téléchargement par déploiement et non un par page vue. Ce qui reste à l'ordre des deux gardes est plus étroit et réel : il décide quelle question le premier test rouge pose (« une règle en répète-t-elle une autre ? », locale et corrigeable, plutôt que « la livraison tient-elle ? », qui est une issue). C'est cet ordre-là, et non l'ancien motif, qui justifie le relèvement du plafond de feuille. #89 n'ajoute aucune déclaration : les 77 octets restants pour #72–#74 sont intacts |
+| 2026-08-04 | Plafond des déclarations : **inchangé à 3 KiB**, mais son motif rétrécit (#89) | Même valeur, même remède, même test. Ce que sa calibration protégeait — que la pression ne tombe jamais sur les commentaires — **n'existe plus** : la feuille étant cachée, un commentaire coûte un téléchargement par déploiement et non un par page vue. Ce qui reste à l'ordre des deux gardes est plus étroit et réel : il décide quelle question le premier test rouge pose (« une règle en répète-t-elle une autre ? », locale et corrigeable, plutôt que « la livraison tient-elle ? », qui est une issue). C'est cet ordre-là, et non l'ancien motif, qui justifie le relèvement du plafond de feuille. #89 n'ajoute aucune déclaration : les 77 octets restants pour #72–#74 sont intacts *(le plafond a été relevé depuis, par #72 — voir l'entrée du 2026-08-05)* |
 | 2026-08-04 | Le « 0,34 octet » de marge d'inversion est une mesure, pas une propriété (#89) | Chiffre obtenu avec flate2 niveau 6, l'encodeur du garde-fou. Une relecture indépendante au zlib système mesure la même paire à 9 978 / 2 992, soit un plancher de 10 244,8 : **déjà inversée de ~4,8 o**. Le signe dépend de l'implémentation de gzip ; les deux lectures s'accordent sur le seul point qui compte, la marge tenait dans 5 octets |
 | 2026-08-03 | Pas de `rel=preload` sur les polices (#89) | La chaîne passe bien de `document → police` à `document → feuille → police`, mais `font-display: swap` fait que la police ne bloque jamais le texte : l'aller-retour de plus rallonge un FOUT. Un preload se paierait sur **chaque** page vue (~2 × 95 o) pour raccourcir un FOUT qui n'arrive qu'une fois par visiteur et par an (polices `immutable` depuis #67) — exactement le troc que #89 défait. À rouvrir si l'application est exposée publiquement |
 | 2026-08-03 | Seuil d'absurdité du mesureur : 2 048 → 1 024 o (#89) | Il ne mesurait plus rien : la feuille inlinée pesait à elle seule ~27 000 o, donc toute réponse passait. La réponse étant désormais le document, la plus légère des huit routes tombe à 1 430 o bruts et le seuil redevient ce qu'il prétend être — attraper une page d'erreur ou une coque vide |
+| 2026-08-05 | `.list-row.mine` se décide sur l'écriture, jamais sur `can_modify` (#72) | Un owner peut modifier le message d'un autre membre : marquer cette ligne comme sienne serait un mensonge sur qui a parlé, sur la seule page où « qui a dit ça » est l'information principale. `message_row` prend donc `mine` **et** `can_edit`, deux booléens distincts, là où un seul aurait suffi à faire compiler |
+| 2026-08-05 | Le message propre prend `--surface` + une barre `--accent`, pas `--accent-soft` (#72) | `--accent-soft` aurait crié plus fort, mais met `--muted` — la ligne d'identité de chaque message — à **4,382:1** en thème sombre, sous AA. `--muted` n'est garanti que sur `--bg` et `--surface` (voir [Couleur](#couleur)), et retoucher la paire appartient à #74. La barre de 4 px est celle que [Layout](#layout) décrit déjà pour identifier un membre sur une ligne ; elle porte ici `--accent` parce qu'elle dit *vous* et non *qui* — *qui* est l'initiale colorée à côté du nom (WCAG 1.4.1) |
+| 2026-08-05 | La zone de saisie ne colle qu'au-dessus de 861 px (#72) | Sous le point de bascule, la barre d'onglets fixe occupe déjà le bas du viewport : deux éléments collés l'un sur l'autre y mangeraient la moitié d'un écran de téléphone. Et le sélecteur est `.content > .composer`, descendant **direct** : la même classe habille le formulaire d'édition à l'intérieur d'une ligne de message, qui ne doit surtout pas se coller au viewport |
+| 2026-08-05 | Plafond des déclarations : **3 072 → 3 136** (#72) | Premier relèvement, sur arbitrage utilisateur, et il corrige une pathologie et non une gêne. À 3 071 contre 3 072, appendre un bloc de commentaire ordinaire de trois lignes à `style.css` mesure **3 072** — pile le plafond — et le suivant casse le build : `css_without_comments` retire le texte entre `/*` et `*/` mais garde le saut de ligne et l'indentation. Un garde-fou dont le remède est « supprimer une règle redondante » qui se déclenche sur un paragraphe contredit frontalement le message du test, son propre doc-comment (« There is no per-page-view prose tax left to protect anyone from ») et l'en-tête de `style.css` depuis #89 (« Write the comment »). Valeur dérivée, pas choisie : la paire s'inverse à `SHEET_CEILING × déclarations / feuille` = 11 264 × 3 071 / 10 926 = **3 166,0**, et 3 136 est le palier de 64 o en dessous — les 30 o abandonnés paient la bande dont le ratio a besoin (l'écart entre flate2 et le zlib système, remesuré sur la feuille d'aujourd'hui et non repris de #89, vaut 35 o sur la feuille et 13 o sur les déclarations ; les 30 o couvrent les 13 observés, et la borne recalculée au zlib — 3 189,6 — reste au-dessus de 3 136). Reste **107 o** de marge d'inversion contre 334 : relever ce plafond dépense de la marge d'inversion, et c'est le troc déclaré. `SHEET_CEILING` n'était pas touché *à cette date* — il l'a été le lendemain, voir l'entrée du 2026-08-06, ce qui remonte la marge d'inversion à 2 154,7 o. **Deux chiffres de cette entrée ont été corrigés depuis** (entrée du 2026-08-06 sur le tarif de la prose) : un bloc de commentaire coûte 73 à 125 o et non « ~135 puis 5 à 20 », et les déclarations ne plafonnent pas — ce plafond-ci ne sonne pas sur un commentaire parce que celui de la feuille sonne d'abord, pas par immunité. *(Renvoi : « 73 à 125 » est la plage de l'échantillon de dix, pas celle de la feuille — voir l'entrée du 2026-08-29.)* |
+| 2026-08-05 | Le `<script>` inline de la messagerie n'est **pas** émis inconditionnellement (#72) | Constat écrit par #83 dans **ce document** — `docs/design-audit.md` ne mentionne le `<script>` nulle part — et faux depuis l'origine : `page()` conditionne le script à `if live`, donc une fenêtre d'historique n'en reçoit aucun. Vérifié empiriquement. Corrigé ici plutôt que propagé une quatrième fois. Le script reste en place : `/messagerie` est à 8 204 o gzip contre 14 336 depuis #89, il n'est plus ce qui met la page dehors, et le sortir vers `/assets` sous son empreinte est la bascule de #89 rejouée sur un second actif — une issue, pas un passager d'une passe de design. |
+| 2026-08-06 | Plafond de feuille : **11 KiB → 13 KiB** (13 312 o) (#72) | Arbitrage utilisateur, second relèvement du lot et sans rapport avec le premier. L'écart entre 11 264 et la borne physique était de la **pression disciplinaire, pas de la performance** — le doc-comment de #89 le concédait déjà sans en tirer la conséquence (« 14 336 would also have been defensible on the upper bound alone », et cette borne y est elle-même dite « conservative twice over »). La dérivation refaite depuis le côté physique **ne retombe pas sur 14 336**, et **pas parce qu'un terme manquait** à celle de #89 : #89 partait déjà de 14 600 o « less headers and TLS framing » pour arriver à 14 336, et l'écrivait après la bascule vers `/assets`, donc en sachant que la feuille était une réponse à elle seule. Ce qu'elle ne faisait pas, c'est chiffrer ces deux termes : 14 600 − 14 336 leur laissait **264 o** d'allocation implicite. La nouveauté de #72 est cette allocation portée de **264 à 346 o** — IW10 14 600 o − 280 o d'en-têtes (**170 mesurés** sur `apps/web`, plus `server`/`content-encoding`/`vary` à travers Caddy) − 66 o de cadrage TLS 1.3 = **14 254 o** de corps disponible — et les 82 o qui séparent 14 336 de 14 254 sont exactement ce dont elle a grossi. 14 KiB ne tient plus ; 13 KiB est le plus grand palier de KiB qui tienne, et arrondir à la baisse sur un palier de KiB est l'habitude de ce document — ce qui laisse **942 o** entre le plafond et la borne, prix de l'arrondi et non réserve dimensionnée : 13 312 est *sous* sa borne physique, il n'en est pas la valeur. **Ce que ça abandonne**, dit plutôt qu'escamoté : la « pression permanente vers la sobriété » que ce document crédite d'avoir fait advenir #66 et #68 — affirmation jamais confrontée à l'hypothèse concurrente, qu'un audit recensant 173 styles inline dupliqués aurait produit ces lots de toute façon. Ni rien, ni établi. Ce qui est certain, c'est qu'à l'arrivée de #72 cette pression se dépensait en paragraphes plutôt qu'en règles. **Ce que ça garde** : le garde-fou, son remède et son sens — la feuille reste bloquante au premier rendu et doit tenir dans un aller-retour. **Et ça renforce la paire** : la contrainte d'ordre est une borne *basse* sur ce plafond, donc le relever éloigne de l'inversion — marge 107 → **2 154,7 o**. `DECLARATIONS_CEILING` reste à 3 136. Reste 2 386 o de feuille pour #73–#74. *(Renvoi : l'allocation portée de 264 à 346 o est reprise par l'entrée du 2026-08-06 « #89 n'avait rien omis ».)* |
+| 2026-08-06 | Le tarif d'un paragraphe se mesure en supprimant de vrais commentaires, pas en ajoutant du remplissage (#72) | Deux rédactions successives de ce document ont chiffré le coût d'un bloc de commentaire en **appendant le même bloc en boucle**, et ont lu ~135 o pour le premier puis 5 à 20 o par répétition. C'est gzip qui retrouve un texte déjà vu, pas le coût d'écrire. C'est exactement le piège que ce document dénonce déjà pour un chiffre antérieur — mesurer sur des données peu variées fausse le verdict — reproduit deux fois, dont une après avoir reçu la mesure correcte. La méthode qui vaut : **retirer un par un de vrais blocs de `style.css` et peser ce qui revient**, n = 10 → **73 à 125 o, moyenne 100,5**. Corollaire corrigé du même coup : les déclarations **ne plafonnent pas** (3 071 → 3 074 à 8 blocs → 3 075 à 50 sur de la prose variée) ; `DECLARATIONS_CEILING` ne sonne pas sur un commentaire parce que `SHEET_CEILING` sonne vers vingt paragraphes, pas parce qu'il serait immunisé. *(Renvoi : la plage « 73 à 125 » vaut pour l'échantillon de dix blocs que cette entrée relève, et pas pour les blocs de la feuille — voir l'entrée du 2026-08-29.)* |
+| 2026-08-06 | #89 n'avait rien omis : ce que #72 relève, c'est une allocation (#72) | Correction du motif écrit à l'entrée du relèvement ci-dessus, qui attribuait à #89 une omission qui n'a pas eu lieu (« ce que l'ancienne soustraction n'avait jamais à compter »). Le texte de #89 — intact dans le même doc-comment de `SHEET_CEILING`, 36 lignes plus haut — part de 14 600 o « less headers and TLS framing » pour arriver à 14 336, et il a été écrit **après** la bascule vers `/assets` : il n'ignorait ni les en-têtes, ni le fait que la feuille soit une réponse à elle seule. Ce qu'il ne faisait pas, c'est chiffrer ces deux termes, à qui 14 600 − 14 336 laissait **264 o** d'allocation implicite. La nouveauté de #72 est cette allocation portée de **264 à 346 o** (280 + 66), soit les 82 o qui séparent 14 336 de 14 254. Le chiffre survivait, le récit non — et il se contredisait dans le même fichier. Aucune valeur ne change : 14 254, 13 312 et 3 136 sont ceux du relèvement |
+| 2026-08-06 | 13 312 est un arrondi **sous** sa borne physique, pas cette borne (#72) | Ce document avait écrit « `SHEET_CEILING` n'est plus relevable : 13 312 est dérivé de sa borne physique ». La borne dérivée quarante lignes plus haut vaut **14 254 o** ; 13 312 est le palier de KiB en dessous, et les **942 o** d'écart n'étaient nommés nulle part — ni marge calculée, ni réserve dimensionnée, seulement le prix de l'arrondi. `apps/web/src/app.rs` n'affirmait, lui, que le remède : c'est la source de vérité qui sur-affirmait par rapport au code, au risque d'envoyer un lecteur de #73/#74 vers une issue de découpage alors qu'il reste de la place sous la borne. Troisième fois que ce document écrivait qu'un plafond de feuille ne se relève pas, après deux démentis (10 KiB par #89, 11 KiB par le commit suivant de cette PR même). Ce qui tient sans réserve est le **remède**, pas l'irrelevabilité |
+| 2026-08-29 | Le tarif d'un paragraphe sort de la prose : « 73 à 125 o » était la plage d'un échantillon (#72) | Remesuré ici par la méthode que cette même entrée prescrit — retirer un vrai bloc de commentaire avec ses lignes entières, repeser — mais sur **les 44 blocs de 3 à 8 lignes que `style.css` contient réellement** et non sur dix : **68 à 238 o, moyenne 109,0**, flate2 niveau 6 (`Compression::default()`, l'encodeur de `gzipped`). **Huit blocs sur 44 dépassent 125 o** : 135, 143, 146, 151, 164, 203, 218 et 238. La moyenne annoncée restait plausible pour un échantillon de dix, la plage non — et elle se trompe dans le sens **optimiste** : un lecteur de #73/#74 qui budgète « au pire 125 o le paragraphe » sous-estime son pire cas d'un facteur 2. **La correction n'est pas une meilleure plage, c'est le retrait de la valeur** (arbitrage du 2026-08-28, #95) : la section budget dit maintenant la méthode et **l'encodeur**, pas le résultat. Aucune valeur du garde-fou ne bouge — `style.css` n'est pas touchée, la feuille pèse toujours 10 926 o et les déclarations 3 071 |
+| 2026-08-29 | La convention de ce journal ne vaut que pour les entrées **atterries** (#72) | Arbitrage utilisateur. Écrite d'abord comme absolue — « une entrée datée n'est jamais réécrite » —, la règle était démentie par le lot qui la posait, et le constat est revenu à plusieurs reprises, toujours de la même façon : le commit qui écrit ou corrige la règle crée lui-même une entrée qui la viole. Ce n'était pas de l'indiscipline, c'était un périmètre trop large. **Ce dépôt fusionne en squash** : après le merge les commits de la branche n'existent plus, le lot atterrit sur `main` comme un texte unique, et une édition faite avant cet atterrissage ne réécrit aucune histoire — elle rédige. La règle est donc bornée aux entrées déjà atterries, et l'appareil qui n'avait de sens qu'à l'intérieur d'une branche part avec la borne : l'exception et ses conditions, l'obligation pour une entrée réécrite de porter la **marque** de sa réécriture, la clause qui exemptait la pose d'une marque, et tout décompte d'usages. Les marques déjà posées sont retirées — elles racontaient des éditions qu'aucun lecteur de `main` ne peut voir ni vérifier, et elles avaient déjà dû abandonner leurs shas, injoignables après le squash. Les **renvois** restent, et là où une marque portait un pointeur vers une autre entrée ce pointeur devient un renvoi : un renvoi désigne une autre entrée du même document, il reste vrai et vérifiable après le merge. Effet de bord : la règle devient mécanisable, un contrôle la comparant au journal de `main` et non à un historique de branche que le squash efface (#95) |
+| 2026-08-29 | `SHEET_CEILING` ne se relève pas sans arbitrage, écrit là où il est dérivé (#72) | Le document et le doc-comment bornaient correctement la **valeur** — rien au-dessus de 14 254 — sans jamais restater la **procédure**. L'asymétrie était dans le fichier même : `DECLARATIONS_CEILING` ferme sur un garde-fou de process (refaire l'arithmétique contre la feuille du jour et le dire dans le corps de PR), quand `SHEET_CEILING` fermait sur « entre 13 312 et 14 254 il n'y a qu'un argument à faire sur les nombres ronds » — vrai, et lisible comme une invitation à le faire seul. Les deux relèvements qu'a connus ce plafond — 10 → 11 KiB par #89, 11 → 13 KiB par #72 — sont l'un et l'autre passés par un arbitrage de l'utilisateur avant que la valeur bouge, comme l'a fait le relèvement du plafond des déclarations dans ce même lot. La règle est maintenant à côté de la constante et dans la section budget, avec sa marche de plus : demander d'abord |

@@ -1164,9 +1164,33 @@ mod tests {
     fn the_stylesheet_defines_every_class_the_design_system_names() {
         // DESIGN.md → Composants is the list; the point of the list is that
         // reading the stylesheet should tell you what the app is made of.
+        //
+        // **This is a sample, not the whole list, and nothing keeps it in
+        // step.** DESIGN.md → Composants and its Classes de soutien name 39
+        // selectors; the 20 below are the ones successive issues thought to
+        // add. All 39 are defined today, so the gap is latent rather than
+        // broken — but a component named by the document and absent from
+        // both this array and any `class="…"` is caught by nothing. Closing
+        // it properly means deriving the list from the document instead of
+        // retyping it, which is an issue of its own.
         for class in [
             ".page-header",
             ".list-row",
+            // #72, and all three of what it adds to DESIGN.md → Composants:
+            // a message you wrote yourself, the disclosure trigger that
+            // replaced a `<summary>` wearing `btn secondary sm`, and the
+            // open disclosure that gives the edit form the row's width.
+            // The last two are not classes — the list is "what
+            // DESIGN.md → Composants names", and it names selectors.
+            //
+            // `.actions > details[open]` is here because nothing else can
+            // catch it: it appears in no `class="…"`, so deleting the rule
+            // left the whole suite green while the edit textarea silently
+            // collapsed back to its ~20-column default. That is the hole
+            // the inline `min-width: 16rem` used to plug.
+            ".list-row.mine",
+            "summary {",
+            ".actions > details[open]",
             ".card",
             ".badge",
             ".badge.warn",
@@ -1852,11 +1876,100 @@ mod tests {
     /// number that is, which is why it is not the one chosen. A ceiling
     /// 4 353 bytes above today's sheet would not fire for several issues.
     ///
-    /// Exceeding this one has no architectural escape left. The remedy
-    /// would be splitting the sheet (critical CSS inline, the rest
-    /// deferred), which is a much bigger change than #89 and should be an
-    /// issue, not a line edited on the way past.
-    const SHEET_CEILING: usize = 11 * 1024;
+    /// # Raised from 11 264 to 13 312 by #72, and why
+    ///
+    /// Everything above this heading is #89's reasoning, kept as the record
+    /// of how 11 264 was picked. It is superseded, on a user arbitration,
+    /// for a reason #89 could not see from where it stood.
+    ///
+    /// **The gap between 11 264 and the physical bound was discipline, not
+    /// performance.** #89's own note above concedes it in passing: 14 336
+    /// "would also have been defensible on the upper bound alone", and the
+    /// upper bound itself is called "conservative twice over". What was
+    /// actually holding the number down was the wish for a ceiling that
+    /// fires *soon* — which is a policy about how the team is made to feel
+    /// pressure, not a fact about what a browser can fetch. #72 hit it, and
+    /// what it hit was the margin, not the round trip.
+    ///
+    /// **The derivation, redone from the physical side, and it no longer
+    /// lands on 14 336** — and not because a term was missing from #89's.
+    /// Read #89's own bound above: it goes from 14 600 "less headers and TLS
+    /// framing" to 14 336, so it subtracted both already, and it was written
+    /// *after* the move to /assets — it was not blind to the sheet being a
+    /// response of its own. What it did not do is price them. 14 600 −
+    /// 14 336 leaves **264 bytes** for the two together, an allowance the
+    /// round number carries implicitly. What #72 changes is the size of that
+    /// allowance, **264 → 346**, by measuring one of the two terms instead
+    /// of leaving it inside a rounding:
+    ///
+    /// * **IW10** — 10 segments of a 1 460-byte MSS = **14 600 bytes** of
+    ///   TCP payload in the first round trip.
+    /// * **− response headers.** Measured, not guessed: `apps/web` answers
+    ///   this route with **170 bytes** of HTTP/1.1 headers (`content-type`,
+    ///   `cache-control`, `content-length`, `date`). Through Caddy the
+    ///   deployed response also carries `server`, `content-encoding` and
+    ///   `vary`, so budget **280**. (On HTTP/2, HPACK squeezes these to a
+    ///   fraction; 280 is the pessimistic reading, which is the one a
+    ///   ceiling wants.)
+    /// * **− TLS record framing** — TLS 1.3 AEAD costs ~22 bytes a record
+    ///   (5 header + 16 tag + 1 content type); allow 3 records ⇒ **66**.
+    /// * ⇒ **14 254 bytes** for the compressed body.
+    ///
+    /// **14 KiB (14 336) does not fit. 13 KiB (13 312) is the largest KiB
+    /// boundary that does**, and rounding down to a KiB boundary is what
+    /// this document has done at every step. So the answer to "raise it to
+    /// the physical bound" is 13 312, not 14 336 — and what separates
+    /// 14 336 from 14 254 is exactly the 82 bytes the allowance grew by
+    /// (346 − 264). The allowance itself is the thing `gzipped`'s own
+    /// doc-note flags: it weighs a body and never the headers around it, so
+    /// they come off the window here or nowhere.
+    ///
+    /// **And 13 312 is not that bound.** It sits **942 bytes** under the
+    /// 14 254 derived just above. Those 942 are the price of landing on a
+    /// KiB boundary — not a reserve anyone sized, and not a second margin
+    /// on top of the conservatism already inside 14 254. Say so rather than
+    /// letting "derived from its physical bound" stand for both numbers:
+    /// what is not available is anything *above* 14 254; between 13 312 and
+    /// 14 254 there is only an argument to make about round numbers.
+    ///
+    /// **What this abandons, stated rather than glossed.** DESIGN.md
+    /// credits the budget with the "permanent pressure toward sobriety"
+    /// that made #66 and #68 happen. That is an assertion of the document,
+    /// and it has never been tested against the obvious alternative — that
+    /// an audit naming 173 duplicated inline styles would have produced
+    /// those two issues with or without a byte ceiling. It is not nothing,
+    /// and it is not established. What is certain is that the pressure it
+    /// bought was, by #72, being spent on paragraphs rather than on rules
+    /// (see `DECLARATIONS_CEILING`), which is the opposite of the intent.
+    ///
+    /// **What it keeps.** The guard, its remedy, and its meaning: the sheet
+    /// is render-blocking on a cold cache and must still arrive in one
+    /// round trip. Exceeding *this* number is a real failure with no
+    /// architectural escape left — the remedy would be splitting the sheet
+    /// (critical CSS inline, the rest deferred), which is an issue of its
+    /// own and not a line edited on the way past.
+    ///
+    /// **And it strengthens the pair rather than weakening it**, which is
+    /// the asymmetry nobody had named: the ordering constraint is a *lower*
+    /// bound on this ceiling, so raising it moves the pair further from
+    /// inversion. With `DECLARATIONS_CEILING` at 3 136 the floor is
+    /// 3 136 × 10 926 / 3 071 = 11 157.3, so the inversion margin goes from
+    /// **107 bytes to 2 154.7** — the declarations guard keeps asking the
+    /// cheap question first, now by a wide margin instead of a hair.
+    ///
+    /// As of #72 the sheet is **10 926 bytes**, so this leaves **2 386
+    /// bytes** of growth for #73 and #74.
+    ///
+    /// **And it does not move again without an arbitration.** Room under
+    /// the bound is not a self-service. What is unavailable is anything
+    /// *above* 14 254; between 13 312 and 14 254 there is only an argument
+    /// to make about round numbers — but *making* that argument is not a
+    /// line edited on the way past. Both of #72's raises, and #89's before
+    /// them, were arbitrated by the user before the value changed. So the
+    /// rule here is `DECLARATIONS_CEILING`'s — redo the arithmetic against
+    /// the sheet of the day and say so in the PR body — plus one step:
+    /// **ask first**.
+    const SHEET_CEILING: usize = 13 * 1024;
 
     /// 3 KiB of declarations, comments stripped. **Unchanged by #89** —
     /// same number, same reason — and it is now the only one of the two
@@ -1882,10 +1995,13 @@ mod tests {
     ///   almost nothing; the ordering keeps that shortcut off the first
     ///   path.
     ///
-    /// The ordering has a floor: declarations are 29.6 % of the compressed
-    /// sheet (2 995 of 10 131, flate2 level 6), so this ceiling is reached
-    /// first only while `SHEET_CEILING` stays above 3 072 / 0.296 =
-    /// **10 391.5 bytes**.
+    /// The ordering has a floor: declarations are 28.1 % of the compressed
+    /// sheet (3 071 of 10 926, flate2 level 6, after #72), so this ceiling
+    /// is reached first only while `SHEET_CEILING` stays above
+    /// `DECLARATIONS_CEILING / 0.281`. Read the other way round — which is
+    /// the form #72 needed — this ceiling may rise to at most
+    /// `SHEET_CEILING × 0.281` = 11 264 × 3 071 / 10 926 = **3 166.0 bytes**
+    /// before the pair inverts.
     ///
     /// After #71 that floor sat at **10 239.66 against a ceiling of
     /// 10 240** — 0.34 bytes of margin, *as flate2 measures it*. That sign
@@ -1903,16 +2019,145 @@ mod tests {
     /// left (2 298 → 2 670 bytes) for the hover, focus and nav-current
     /// rules; #70 nearly two thirds of the rest (2 670 → 2 921) for the
     /// responsive shell; #71 74 more (→ 2 995) for the agenda's single
-    /// table. **77 bytes are left**, and #72–#74 have to share them — #89
-    /// adds none, it moves the sheet without touching a rule.
+    /// table; #72 76 more (→ 3 071) for the messagerie's four rules. #89
+    /// adds none — it moves the sheet without touching a rule.
     ///
-    /// A ceiling, not a target, and it *can* be raised — with a reason in
-    /// the PR, like the inline-style ceiling above. What it forbids is
-    /// drifting past it unnoticed while #72–#74 each add "just a few
-    /// rules". No issue has raised it yet; the one that needs to should say
-    /// so in its PR body and let review decide, rather than editing this
-    /// line on the way past.
-    const DECLARATIONS_CEILING: usize = 3 * 1024;
+    /// # Raised from 3 072 to 3 136 by #72, and why
+    ///
+    /// This is the first raise, and it is an arbitration, not a drift. The
+    /// old value did not become inconvenient; **it became pathological**,
+    /// and the probe is one line:
+    ///
+    /// At 3 071 against a ceiling of 3 072, appending an ordinary
+    /// three-line comment block to `style.css` — no rule, no selector, pure
+    /// prose — measures **3 072**. It lands exactly on the ceiling, and the
+    /// next comment breaks the build. `css_without_comments` removes the
+    /// text between `/*` and `*/` but keeps the newline and the indentation
+    /// around it, so prose is not free here even though everything that
+    /// governs this file says it is: the message this very test prints
+    /// ("Comments are not counted here, so this is about the CSS"), the
+    /// bullet above ("There is no per-page-view prose tax left to protect
+    /// anyone from"), and the note at the head of `style.css` since #89
+    /// ("Write the comment"). A guard whose remedy is "delete a redundant
+    /// rule" that in practice fires on a paragraph is telling the next
+    /// author to do the one thing #89 exists to stop.
+    ///
+    /// The derivation of 3 136, in the same form as the bound above and on
+    /// the same measurements (flate2 level 6, this branch):
+    ///
+    /// * **Upper bound — the ordering must survive.** The pair inverts at
+    ///   `SHEET_CEILING × declarations / sheet`, which was 11 264 × 3 071 /
+    ///   10 926 = **3 166.0** when this value was chosen. At or above that,
+    ///   `SHEET_CEILING` fires first and the expensive question ("does the
+    ///   delivery strategy still work?") becomes the one a red build asks.
+    ///   That is the whole thing this ceiling exists to prevent, so 3 166
+    ///   was a wall, not a target. (`SHEET_CEILING` moved to 13 312 later
+    ///   in the same issue, which lifts that wall to 3 741.6 — 3 136 is
+    ///   further inside the bracket than it was, never nearer the edge.
+    ///   The value is left where the arbitration put it: it was chosen for
+    ///   the pathology below, not for the bracket.)
+    /// * **Round down to the 64-byte step below it: 3 136** (3 KiB + 64 B).
+    ///   The 30 bytes given up buy the band the ratio needs. Re-measured
+    ///   on *today's* sheet rather than carried over from #89 — whose "~5
+    ///   bytes apart" was about the sheet of the day — flate2 and system
+    ///   zlib disagree by **35 bytes on the sheet and 13 on the
+    ///   declarations**; 30 covers the 13 that matter here, and the bound
+    ///   recomputed under zlib (3 189.6) still sits above 3 136. The ratio
+    ///   also moves as the sheet grows. Sitting *on* 3 166 would rebuild
+    ///   the 0.34-byte margin #89 spent a whole issue undoing.
+    /// * **Lower bound — sanity.** 3 136 − 3 071 = **65 bytes** of real
+    ///   headroom, against the ~1 byte a comment block costs. The tripwire
+    ///   is gone; the guard is a guard again.
+    ///
+    /// `SHEET_CEILING` moved to **13 312** later in this same issue, on its
+    /// own arbitration and for reasons that have nothing to do with this
+    /// one (see its comment). Together they leave #73 and #74 **65 bytes of
+    /// declarations and 2 386 bytes of sheet**.
+    ///
+    /// **What a paragraph really costs, measured in situ.** Three earlier
+    /// readings in this file were wrong and are worth naming — two on the
+    /// method, the third on the sample it was read from. Take the method
+    /// first: appending the *same* comment block over and over measures
+    /// ~135 bytes for the first and 5–20 for each repeat — but that is
+    /// gzip finding a copy of text it has already seen, not the cost of
+    /// writing something. The project briefing warns about exactly this,
+    /// and DESIGN.md already dismisses an earlier figure for the same
+    /// fault.
+    ///
+    /// The number that means anything is measured **by deleting real
+    /// comment blocks from this stylesheet, one at a time, and weighing
+    /// what comes back** — not by appending filler.
+    ///
+    /// **That number is no longer restated here.** It was, as a range read
+    /// off a ten-block sample, and the range was then taken for the
+    /// sheet's: the real spread across blocks is wide enough that a small
+    /// sample's upper bound **badly understates the worst case**, which is
+    /// exactly the mistake a reader budgeting "at worst so many bytes a
+    /// paragraph" would make. A number nobody copies cannot go stale
+    /// (#95).
+    ///
+    /// To get it for today's sheet: drop one comment block from
+    /// `style.css` with its whole lines, reweigh, take the difference,
+    /// repeat block by block — and reweigh with **the guard's own encoder
+    /// and no other**: flate2 level 6, `Compression::default()`, which is
+    /// `gzipped` above and the thing that decides whether this test
+    /// passes. Node's zlib (`npm run measure`) answers a few bytes away
+    /// with nobody being wrong; it is a different encoder, and **naming
+    /// which one you read is part of the number**. On varied prose the
+    /// sheet grows in step: 10 926 → 11 076 (1 block) → 11 212 (2) →
+    /// 11 450 (4) → 11 911 (8) → 13 139 (20).
+    ///
+    /// So **2 386 bytes is roughly twenty more paragraphs**, and that is
+    /// the honest figure for #73 and #74 to plan against.
+    ///
+    /// **Declarations do *not* plateau** — an earlier draft of this comment
+    /// claimed they did, off the same degenerate corpus. On varied prose
+    /// they creep: 3 071 → 3 072 (1–4 blocks) → 3 074 (8) → 3 074 (20) →
+    /// **3 075 (50)**. `css_without_comments` keeps each block's newline
+    /// and indentation, and those accumulate; there is no ceiling to the
+    /// creep, only a very shallow slope. The practical conclusion survives
+    /// — at ~0.08 bytes a block, reaching 3 136 from 3 071 would take some
+    /// **800 paragraphs**, and `SHEET_CEILING` rings around twenty — but it
+    /// survives *because the sheet guard fires first*, not because this one
+    /// is immune. Do not write "never" here.
+    ///
+    /// **Which of the two fires first depends on the shape of the growth,
+    /// and the honest answer is: usually the sheet.** Comparing *levels*
+    /// (declarations are 28.1 % of the sheet) says this guard leads — but
+    /// no batch has ever grown at the cumulative ratio. Marginal ratio per
+    /// batch — measured over `git show <merge>:apps/web/src/style.css` at
+    /// each design merge (`3d1ed71` #66, `330bbf2` #67, `e5785ac` #68,
+    /// `30fbd01` #69, `bc438e4` #70, `edc0527` #71, `9f08e97` #89), gzip
+    /// level 6 with the comment-stripping of `css_without_comments`
+    /// reimplemented over each revision:
+    ///
+    /// | batch | Δ sheet | Δ declarations | marginal |
+    /// |---|---|---|---|
+    /// | #67 | +358 | +123 | 34.4 % |
+    /// | #68 | +2 918 | +626 | **21.5 %** |
+    /// | #69 | +1 440 | +369 | 25.6 % |
+    /// | #70 | +935 | +252 | 27.0 % |
+    /// | #71 | +411 | +72 | 17.5 % |
+    /// | #89 | +146 | 0 | 0 % |
+    /// | **#72** | +791 | +76 | **9.6 %** |
+    ///
+    /// (Those are system-zlib figures, which run ~11 bytes under flate2 on
+    /// the sheet and ~3 on the declarations; the ratios are unaffected.)
+    /// An earlier draft of this comment put #68 at 22.8 %. That figure
+    /// takes #66 as the base and so charges #67's growth to #68:
+    /// (123 + 626) / (358 + 2 918) = 22.9 %. Against its actual base it is
+    /// **21.5 %**.
+    ///
+    /// Only #67 — 358 bytes of `@font-face` and almost no prose — ever beat
+    /// the cumulative 28.1 %. At one paragraph per rule the ordering barely
+    /// holds; at two it inverts; at three — the shape of #72 itself — it is
+    /// `SHEET_CEILING` that rings. Write for the sheet.
+    ///
+    /// A ceiling, not a target. What it forbids is drifting past it
+    /// unnoticed while #73–#74 each add "just a few rules"; raising it
+    /// again means redoing the arithmetic above against the sheet of the
+    /// day and saying so in the PR body, as #72 did.
+    const DECLARATIONS_CEILING: usize = 3 * 1024 + 64;
 
     #[test]
     fn the_compressed_stylesheet_still_arrives_in_one_round_trip() {

@@ -137,6 +137,12 @@ body {
   font-family: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
   color: var(--fg);
   background: var(--bg);
+  /* Room for the fixed tab bar below, which would otherwise cover the end
+     of every page. It was a second `body` rule down beside that bar: it
+     read better there and cost a whole extra selector, which #72 needed
+     back. The 861px query returns the space when the bar becomes a
+     sidebar. */
+  padding-bottom: var(--s16);
 }
 /* Titles only, per DESIGN.md — Fraunces never carries body text. */
 h1, h2, h3 { font-family: "Fraunces", Georgia, serif; line-height: 1.25; }
@@ -176,8 +182,6 @@ h3 { font-size: var(--t-lg); margin: var(--s4) 0 var(--s1); }
 /* --s12 is 48px, over the 44px DESIGN.md → Espacement asks for; the sidebar
    links keep it, a pointer target being no smaller. */
 .tabs .navlink { display: flex; flex: 1 0 auto; align-items: center; justify-content: center; min-height: var(--s12); }
-/* The fixed bar would otherwise cover the end of every page. */
-body { padding-bottom: var(--s16); }
 /* The sidebar is the override and not the other way round: a `min-width` /
    `max-width` pair leaves a hole between 860 and 861 CSS pixels, which a
    zoomed viewport lands in. */
@@ -204,6 +208,13 @@ body { padding-bottom: var(--s16); }
   .tabs { position: static; flex-direction: column; border-top: 0; }
   .tabs .navlink { justify-content: flex-start; }
   .cal tbody tr { height: 6.5rem; }
+  /* The messagerie's send box, kept in reach at the foot of a long thread
+     instead of sitting past the end of it (audit §5). `.content >` is the
+     point of the selector: the same class dresses the edit form inside a
+     row, which must not stick. It needs a ground — the thread scrolls
+     under it — and a floor, or the button meets the screen edge. Here and
+     not below the breakpoint: there the tab bar owns the viewport foot. */
+  .content > .composer { position: sticky; bottom: 0; background: var(--bg); padding-bottom: var(--s4); }
 }
 /* No browser gives a form a margin; the routes said `margin:0` on 20-odd of
    them anyway. Saying it once here is what makes those attributes go away. */
@@ -271,6 +282,12 @@ button.secondary.danger, .btn.secondary.danger {
 /* An action inside dense content: a row's controls, a disclosure summary.
    --t-sm is the scale's size for actions. */
 button.sm, .btn.sm { font-size: var(--t-sm); padding: var(--s1) var(--s2x); }
+/* A disclosure's own trigger — the messagerie's "Modifier", which wore
+   `btn secondary sm`: a <summary> rendered as a button, audit §5's component
+   hijack. It opens a panel, and the native marker says so where the button
+   box hid it. From the system it takes what makes it read as an action: the
+   accent, the action size, and the pointer no browser gives a <summary>. */
+summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); }
 
 /* -- Components ----------------------------------------------------------
    The patterns the routes used to retype: 173 inline `style="…"` attributes
@@ -296,6 +313,14 @@ button.sm, .btn.sm { font-size: var(--t-sm); padding: var(--s1) var(--s2x); }
 /* A row whose content stacks instead of sitting side by side: a message,
    a recipe with its summary under the name. */
 .list-row.stacked { flex-direction: column; align-items: stretch; }
+/* A message you wrote yourself — the most useful thing on a shared family
+   thread, and the messagerie said nothing at all (audit §5). The ground is
+   `--surface`, the one elevation the system has; the rule is the 4px member
+   bar DESIGN.md → Layout already describes, in `--accent` because it says
+   *you*. *Who* is the coloured initial beside the name, so the hue is never
+   the only carrier (WCAG 1.4.1). `--accent-soft` would have read louder but
+   puts `--muted` at 4.39:1 in dark, and retuning that pair is #74's. */
+.list-row.mine { background: var(--surface); border-left: var(--s1) solid var(--accent); padding-left: var(--s2x); }
 /* A group of controls: buttons side by side, a filter form, a table's
    actions cell. */
 .actions {
@@ -308,11 +333,16 @@ button.sm, .btn.sm { font-size: var(--t-sm); padding: var(--s1) var(--s2x); }
      it (a detail page's controls) as often as below (an admin nav). */
   margin: var(--s4) 0;
 }
+/* An open disclosure takes the whole row rather than the width of its own
+   label. The messagerie's edit textarea asked for that inline, as
+   `min-width: 16rem` — a figure written against the 28rem column the app
+   used to be, and one the row can state for itself. */
+.actions > details[open] { flex: 1 0 100%; }
 /* The containers own their spacing, so their children carry none — this is
    what the 30-odd inline `margin:0` attributes were for. A group of actions
-   in a table cell owns none either: the cell is the spacing. */
-.split > *, .page-header > *, .list-row > *, .actions > *, .card.inline > * { margin: 0; }
-td > .actions { margin: 0; }
+   in a table cell owns none either: the cell is the spacing, which is why
+   `td > .actions` rides this list rather than restating the declaration. */
+.split > *, .page-header > *, .list-row > *, .actions > *, .card.inline > *, td > .actions { margin: 0; }
 /* A list of `.list-row`s: the separators come from the rows, so the bullets
    and the browser's indent have to go. */
 .list { list-style: none; padding: 0; margin: var(--s4) 0; }
@@ -503,7 +533,7 @@ a:hover { text-decoration-thickness: 2px; }
 .pw-toggle:hover { background: transparent; color: var(--accent); }
 /* Focus is stated, never removed: `outline: none` with nothing in its place
    is how a keyboard user loses the caret. Clickables take the outline… */
-a:focus-visible, button:focus-visible, .btn:focus-visible {
+a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }

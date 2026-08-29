@@ -20,7 +20,7 @@ use manage_our_home_shared::validation::messagerie::{
 };
 use uuid::Uuid;
 
-use crate::app::{html_escape, shell_with_header, Width};
+use crate::app::{html_escape, member_colour, member_initial, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -86,35 +86,66 @@ async fn fetch_members(
     }
 }
 
+/// The line that says who wrote a message and when.
+///
+/// It opens with the member's coloured initial — the `.avatar` of
+/// DESIGN.md → Composants, whose hue is the one thing a class cannot carry
+/// (`app::member_colour` hashes the user id). Colour never carries the
+/// information on its own (WCAG 1.4.1): the name is right beside it, which
+/// is also why the letter is `aria-hidden` — a screen reader would otherwise
+/// read the initial and then the name it duplicates.
+///
+/// One function, used by both row shapes below. They are near-duplicates and
+/// have already drifted once: the "(modifié)" marker was on `message_row` and
+/// missing from `edit_error_row`, so a message rejected mid-edit lost the
+/// marker until the next full render.
+fn message_meta(
+    msg: &MessageResponse,
+    members: &[manage_our_home_shared::dto::groups::GroupMember],
+) -> String {
+    let author = author_name(members, msg.created_by);
+    format!(
+        r#"<div class="muted"><span class="avatar" style="color:var({colour})" aria-hidden="true">{initial}</span> <strong>{author}</strong> — {time}{edited}</div>"#,
+        colour = member_colour(msg.created_by),
+        initial = html_escape(&member_initial(author)),
+        author = html_escape(author),
+        time = html_escape(&format_message_time(msg.created_at)),
+        edited = if msg.edited_at.is_some() {
+            " (modifié)"
+        } else {
+            ""
+        },
+    )
+}
+
 /// Renders one message row. `content` is escaped and newlines are preserved
 /// (`white-space:pre-wrap`); the edit/delete controls render only for
 /// `can_edit`. Editing is inline in a `<details>` disclosure — the backend has
 /// no single-message GET, and the row already carries the full content.
+///
+/// `mine` is authorship, and it is deliberately not `can_edit`: an owner may
+/// edit anybody's message, and a thread that marked those as theirs would be
+/// lying about who said what. The distinction is a class the sheet dresses
+/// (`.list-row.mine`), because on a shared family thread "who wrote this" is
+/// the most useful thing on the row and the audit found it simply absent.
 fn message_row(
     msg: &MessageResponse,
     members: &[manage_our_home_shared::dto::groups::GroupMember],
     can_edit: bool,
+    mine: bool,
 ) -> String {
-    let author = author_name(members, msg.created_by);
-    let time = format_message_time(msg.created_at);
-    let edited = if msg.edited_at.is_some() {
-        r#" <span class="muted">(modifié)</span>"#
-    } else {
-        ""
-    };
-
     let controls = if can_edit {
         format!(
             r#"<div class="actions">
 <details>
-<summary class="btn secondary sm">Modifier</summary>
+<summary>Modifier</summary>
 <form method="post" action="/messagerie/{id}/edit" class="composer">
-<textarea name="content" required rows="2" maxlength="4000" aria-label="Modifier le message" style="min-width:16rem;">{content}</textarea>
+<textarea name="content" required rows="2" maxlength="4000" aria-label="Modifier le message">{content}</textarea>
 <button type="submit">Enregistrer</button>
 </form>
 </details>
 <form method="post" action="/messagerie/{id}/delete">
-<button type="submit" class="secondary danger">Supprimer</button>
+<button type="submit" class="secondary danger sm">Supprimer</button>
 </form>
 </div>"#,
             id = msg.id,
@@ -125,14 +156,14 @@ fn message_row(
     };
 
     format!(
-        r#"<li data-message-id="{id}" class="list-row stacked">
-<div class="muted"><strong>{author}</strong> — {time}{edited}</div>
+        r#"<li data-message-id="{id}" class="list-row stacked{mine}">
+{meta}
 <div class="multiline">{content}</div>
 {controls}
 </li>"#,
         id = msg.id,
-        author = html_escape(author),
-        time = html_escape(&time),
+        mine = if mine { " mine" } else { "" },
+        meta = message_meta(msg, members),
         content = html_escape(&msg.content),
     )
 }
@@ -338,11 +369,8 @@ fn page(
     let rows = ordered
         .iter()
         .map(|m| {
-            message_row(
-                m,
-                members,
-                can_modify(&fam.role, m.created_by == fam.user_id),
-            )
+            let mine = m.created_by == fam.user_id;
+            message_row(m, members, can_modify(&fam.role, mine), mine)
         })
         .collect::<String>();
 
@@ -718,14 +746,11 @@ async fn rerender_with_edit_error(
     let rows = ordered
         .iter()
         .map(|m| {
+            let mine = m.created_by == fam.user_id;
             if m.id == message_id {
-                edit_error_row(m, &members, submitted, error_message(code))
+                edit_error_row(m, &members, submitted, error_message(code), mine)
             } else {
-                message_row(
-                    m,
-                    &members,
-                    can_modify(&fam.role, m.created_by == fam.user_id),
-                )
+                message_row(m, &members, can_modify(&fam.role, mine), mine)
             }
         })
         .collect::<String>();
@@ -761,27 +786,26 @@ fn edit_error_row(
     members: &[manage_our_home_shared::dto::groups::GroupMember],
     submitted: &str,
     error: &str,
+    mine: bool,
 ) -> String {
-    let author = author_name(members, msg.created_by);
-    let time = format_message_time(msg.created_at);
     format!(
-        r#"<li data-message-id="{id}" class="list-row stacked">
-<div class="muted"><strong>{author}</strong> — {time}</div>
+        r#"<li data-message-id="{id}" class="list-row stacked{mine}">
+{meta}
 <div class="multiline">{content}</div>
 <div class="actions">
 <details open>
-<summary class="btn secondary sm">Modifier</summary>
+<summary>Modifier</summary>
 <form method="post" action="/messagerie/{id}/edit" class="composer">
 <p class="notice error">{error}</p>
-<textarea name="content" required rows="2" maxlength="4000" aria-label="Modifier le message" style="min-width:16rem;">{submitted}</textarea>
+<textarea name="content" required rows="2" maxlength="4000" aria-label="Modifier le message">{submitted}</textarea>
 <button type="submit">Enregistrer</button>
 </form>
 </details>
 </div>
 </li>"#,
         id = msg.id,
-        author = html_escape(author),
-        time = html_escape(&time),
+        mine = if mine { " mine" } else { "" },
+        meta = message_meta(msg, members),
         content = html_escape(&msg.content),
         error = html_escape(error),
         submitted = html_escape(submitted),
@@ -843,9 +867,123 @@ mod tests {
     #[test]
     fn every_row_shape_carries_the_reconcile_key() {
         let msg = sample("Bonjour");
-        assert!(message_row(&msg, &[], true).contains("data-message-id="));
-        assert!(message_row(&msg, &[], false).contains("data-message-id="));
-        assert!(edit_error_row(&msg, &[], "Bonjour", "Erreur").contains("data-message-id="));
+        assert!(message_row(&msg, &[], true, true).contains("data-message-id="));
+        assert!(message_row(&msg, &[], false, false).contains("data-message-id="));
+        assert!(edit_error_row(&msg, &[], "Bonjour", "Erreur", true).contains("data-message-id="));
+    }
+
+    // -- #72: the thread as a design-system surface ----------------------
+    //
+    // The audit's worst file: 31 inline styles, and a thread that told you
+    // nothing about who wrote what. #68 took the styles down to two; these
+    // guards hold what this issue adds on top — the sender's identity on
+    // every row shape, the `mine` distinction, and the two residual inline
+    // styles gone.
+
+    /// Which member wrote a message is the most useful thing on a shared
+    /// family thread, and it was simply absent. It arrives as the coloured
+    /// initial DESIGN.md → Composants defines (`.avatar`), never as colour
+    /// alone: the name sits next to it (WCAG 1.4.1).
+    #[test]
+    fn every_row_shape_names_its_author_with_a_coloured_initial() {
+        let members = vec![manage_our_home_shared::dto::groups::GroupMember {
+            user_id: Uuid::nil(),
+            display_name: "Alice".to_string(),
+            email: "alice@example.test".to_string(),
+            role: "owner".to_string(),
+        }];
+        let msg = sample("Bonjour");
+        for row in [
+            message_row(&msg, &members, true, true),
+            message_row(&msg, &members, false, false),
+            edit_error_row(&msg, &members, "Bonjour", "Erreur", true),
+        ] {
+            assert!(row.contains(r#"class="avatar""#), "no avatar in {row}");
+            assert!(
+                row.contains(&format!(
+                    "color:var({})",
+                    crate::app::member_colour(Uuid::nil())
+                )),
+                "the avatar does not wear the member's ramp hue: {row}"
+            );
+            assert!(row.contains(">A<"), "the initial is missing from {row}");
+            assert!(row.contains("Alice"), "the name is missing from {row}");
+        }
+    }
+
+    /// Your own messages are told apart from the rest of the family's. The
+    /// hook is a class, not a style: what `.mine` looks like belongs to
+    /// style.css (DESIGN.md → Composants).
+    ///
+    /// The last assertion is here rather than in `app.rs` because the guard
+    /// there cannot see this name. `every_class_a_source_references_exists_
+    /// in_the_stylesheet` reads `class="…"` up to the first `format!`
+    /// placeholder, and `mine` arrives *through* one — the same blind spot
+    /// that let `className = "button secondary"` survive the `.button` →
+    /// `.btn` rename in this very file. A class that does not exist is not
+    /// an error in CSS; nothing would have reported it.
+    #[test]
+    fn your_own_messages_are_told_apart_from_everyone_elses() {
+        let msg = sample("Bonjour");
+        assert!(message_row(&msg, &[], true, true).contains(r#"stacked mine""#));
+        // An admin may edit someone else's message; that is a permission,
+        // not authorship, and marking those as yours would misattribute them.
+        assert!(!message_row(&msg, &[], true, false).contains("mine"));
+        assert!(!edit_error_row(&msg, &[], "Bonjour", "Erreur", false).contains("mine"));
+        assert!(
+            crate::assets::STYLESHEET.contains(".list-row.mine"),
+            "`mine` reaches the class attribute through a format! placeholder, \
+             so app.rs's class guard cannot see it: check it here or nowhere"
+        );
+    }
+
+    /// The two row shapes are near-duplicates and have drifted before — the
+    /// "(modifié)" marker was on one and not the other. They now render the
+    /// same identity line, from one function.
+    #[test]
+    fn the_two_row_shapes_render_the_same_identity_line() {
+        let mut msg = sample("Bonjour");
+        msg.edited_at = Some(chrono::Utc::now());
+        let meta = message_meta(&msg, &[]);
+        assert!(meta.contains("(modifié)"));
+        assert!(message_row(&msg, &[], true, false).contains(&meta));
+        assert!(edit_error_row(&msg, &[], "Bonjour", "Erreur", true).contains(&meta));
+    }
+
+    /// The edit textarea forced `min-width:16rem` inline, which nearly filled
+    /// the 28rem column it used to sit in. The width comes from the row now.
+    #[test]
+    fn no_row_hand_rolls_a_width_on_the_edit_field() {
+        let msg = sample("Bonjour");
+        for row in [
+            message_row(&msg, &[], true, true),
+            edit_error_row(&msg, &[], "Bonjour", "Erreur", true),
+        ] {
+            assert!(
+                !row.contains("min-width"),
+                "an inline width survives: {row}"
+            );
+        }
+    }
+
+    /// The disclosure that opens the edit form wore `btn secondary sm`: a
+    /// `<summary>` dressed as a button, which is what the audit calls the
+    /// component hijack. It is a disclosure and is styled as one.
+    #[test]
+    fn the_edit_disclosure_is_not_a_button_in_disguise() {
+        let msg = sample("Bonjour");
+        for row in [
+            message_row(&msg, &[], true, true),
+            edit_error_row(&msg, &[], "Bonjour", "Erreur", true),
+        ] {
+            let at = row.find("<summary").expect("the edit form is a disclosure");
+            let end = row[at..].find('>').unwrap() + at;
+            assert!(
+                !row[at..end].contains("btn"),
+                "the summary still borrows the button component: {}",
+                &row[at..end]
+            );
+        }
     }
 
     /// Issue #48: `refresh()` assigned `thread.innerHTML` directly, so a refresh
@@ -874,7 +1012,7 @@ mod tests {
     fn live_script_detects_the_open_inline_editor_and_replays_after_it_closes() {
         let js = live_script("/api/groups/x/messages/ws");
         assert!(js.contains("details[open]"));
-        assert!(message_row(&sample("Bonjour"), &[], true).contains("<details"));
+        assert!(message_row(&sample("Bonjour"), &[], true, true).contains("<details"));
         // <details>'s toggle event doesn't bubble — the listener has to capture.
         assert!(js.contains(r#"addEventListener("toggle""#));
         assert!(js.contains("li[data-message-id]"));
@@ -929,7 +1067,7 @@ mod tests {
         // Only the disclosure is dropped: the row's rendered blocks — and the
         // delete control, which vanishes when the row stops being yours — are
         // exactly what the comparison is for.
-        let row = message_row(&sample("Bonjour"), &[], true);
+        let row = message_row(&sample("Bonjour"), &[], true, true);
         let closed = row
             .find("</details>")
             .expect("the edit form is a disclosure");
