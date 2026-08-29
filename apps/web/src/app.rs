@@ -2064,21 +2064,38 @@ mod tests {
     /// one (see its comment). Together they leave #73 and #74 **65 bytes of
     /// declarations and 2 386 bytes of sheet**.
     ///
-    /// **What a paragraph really costs, measured in situ.** Two earlier
-    /// readings in this file were wrong and are worth naming, because the
-    /// method is the whole story. Appending the *same* comment block over
-    /// and over measures ~135 bytes for the first and 5–20 for each
-    /// repeat — but that is gzip finding a copy of text it has already
-    /// seen, not the cost of writing something. The project briefing warns
-    /// about exactly this, and DESIGN.md already dismisses an earlier
-    /// figure for the same fault.
+    /// **What a paragraph really costs, measured in situ.** Three earlier
+    /// readings in this file were wrong and are worth naming — two on the
+    /// method, the third on the sample it was read from. Take the method
+    /// first: appending the *same* comment block over and over measures
+    /// ~135 bytes for the first and 5–20 for each repeat — but that is
+    /// gzip finding a copy of text it has already seen, not the cost of
+    /// writing something. The project briefing warns about exactly this,
+    /// and DESIGN.md already dismisses an earlier figure for the same
+    /// fault.
     ///
     /// The number that means anything is measured **by deleting real
     /// comment blocks from this stylesheet, one at a time, and weighing
-    /// what comes back** (n = 10, blocks of 3–8 lines): **73 to 125 bytes,
-    /// mean 100.5**. Reproduce it that way, not by appending filler. On
-    /// varied prose the sheet grows in step: 10 926 → 11 076 (1 block) →
-    /// 11 212 (2) → 11 450 (4) → 11 911 (8) → 13 139 (20).
+    /// what comes back** — not by appending filler.
+    ///
+    /// **That number is no longer restated here.** It was, as a range read
+    /// off a ten-block sample, and the range was then taken for the
+    /// sheet's: the real spread across blocks is wide enough that a small
+    /// sample's upper bound **badly understates the worst case**, which is
+    /// exactly the mistake a reader budgeting "at worst so many bytes a
+    /// paragraph" would make. A number nobody copies cannot go stale
+    /// (#95).
+    ///
+    /// To get it for today's sheet: drop one comment block from
+    /// `style.css` with its whole lines, reweigh, take the difference,
+    /// repeat block by block — and reweigh with **the guard's own encoder
+    /// and no other**: flate2 level 6, `Compression::default()`, which is
+    /// `gzipped` above and the thing that decides whether this test
+    /// passes. Node's zlib (`npm run measure`) answers a few bytes away
+    /// with nobody being wrong; it is a different encoder, and **naming
+    /// which one you read is part of the number**. On varied prose the
+    /// sheet grows in step: 10 926 → 11 076 (1 block) → 11 212 (2) →
+    /// 11 450 (4) → 11 911 (8) → 13 139 (20).
     ///
     /// So **2 386 bytes is roughly twenty more paragraphs**, and that is
     /// the honest figure for #73 and #74 to plan against.
