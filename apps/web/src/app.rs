@@ -1959,6 +1959,16 @@ mod tests {
     ///
     /// As of #72 the sheet is **10 926 bytes**, so this leaves **2 386
     /// bytes** of growth for #73 and #74.
+    ///
+    /// **And it does not move again without an arbitration.** Room under
+    /// the bound is not a self-service. What is unavailable is anything
+    /// *above* 14 254; between 13 312 and 14 254 there is only an argument
+    /// to make about round numbers — but *making* that argument is not a
+    /// line edited on the way past. Both of #72's raises, and #89's before
+    /// them, were arbitrated by the user before the value changed. So the
+    /// rule here is `DECLARATIONS_CEILING`'s — redo the arithmetic against
+    /// the sheet of the day and say so in the PR body — plus one step:
+    /// **ask first**.
     const SHEET_CEILING: usize = 13 * 1024;
 
     /// 3 KiB of declarations, comments stripped. **Unchanged by #89** —
