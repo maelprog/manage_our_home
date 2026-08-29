@@ -1,5 +1,9 @@
 mod app;
 mod assets;
+// The DESIGN.md journal guard (#95). Test-only: it embeds the document
+// and its lock file, neither of which belongs in the shipped binary.
+#[cfg(test)]
+mod design_journal;
 mod family;
 mod layout;
 mod routes;
