@@ -479,10 +479,23 @@ dans la prose chiffrée de ce document, jamais dans le code — `style.css` est
 resté byte-identique du premier au dernier commit. Un chiffre qu'on ne recopie
 pas ne peut pas périmer.
 
-**Les entrées datées du [journal](#journal-des-décisions) gardent les leurs**,
-ainsi que les campagnes de mesure datées de cette section : elles disent ce qui
-était vrai à leur date, pas ce qui l'est aujourd'hui, et les vider effacerait
-le seul relevé qu'on ait de ce que chaque lot a coûté.
+**Le critère exact, parce qu'il se lit mal sur les exemples.** Ce qui décide
+n'est pas « mesuré ou pas », c'est **daté ou pas** :
+
+- **daté** — une campagne (« Mesures du 2026-07-30 », « Mesuré le
+  2026-08-03 ») ou une entrée du [journal](#journal-des-décisions) : **gardé**,
+  chiffres compris. C'est un relevé de ce qui était vrai ce jour-là, il ne
+  périme pas, et le vider effacerait la seule trace qu'on ait de ce que chaque
+  lot a coûté.
+- **attribué sans date** — « les chiffres de #89 », « après #72 il reste
+  tant » : **retiré**. Un lecteur ne peut pas savoir de quel état du dépôt ces
+  nombres parlent, ils ont cessé d'être vrais sans que rien le signale, et le
+  journal daté les porte déjà.
+- **au présent, sans attribution du tout** : **retiré**, c'est le cas le pire.
+
+C'est ce critère qui explique pourquoi la campagne du 2026-08-03 garde ses
+octets à quelques paragraphes d'un « Seuil 2 » où les mêmes valeurs, citées
+comme « les chiffres de #89 », ont été retirées.
 
 **État au 2026-08-03 (#89) : la feuille ne voyage plus dans le document.**
 Elle est servie par `apps/web` sous `/assets/style-<empreinte>.css`, avec
@@ -562,9 +575,11 @@ l'inlining, c'est cette liste qu'il faudra réfuter.
 2. **Le coût suivait le nombre de pages vues, pas la taille de la feuille.**
    Chaque règle ajoutée était multipliée par le volume de navigation. Il suit
    désormais le nombre de déploiements.
-3. **Une taxe sur la documentation.** Les commentaires sont 58 % de la feuille
-   brute — et **encore 68 % de la feuille compressée** : gzip ne les rend pas
-   gratuits. L'inlining les facturait à l'utilisateur à chaque page vue, ce qui
+3. **Une taxe sur la documentation.** Les commentaires sont la plus grosse
+   part de la feuille, brute **comme compressée** : gzip ne les rend pas
+   gratuits. La part du jour est imprimée par
+   [la commande du budget](#où-lire-les-chiffres) ; ce point-ci a porté deux
+   pourcentages jusqu'à #95, et ils étaient périmés depuis six commits. L'inlining les facturait à l'utilisateur à chaque page vue, ce qui
    créait une incitation perverse à moins commenter. Le projet a choisi
    l'inverse, et il a bien choisi ; c'est la manière de livrer qui devait
    céder, pas la prose — et c'est elle qui a cédé. La prose est aujourd'hui
@@ -656,8 +671,8 @@ une relecture indépendante est tombée à 14 o (0,08 %) de cette campagne.
 
 **`/messagerie` rentre dans le budget** pour la première fois depuis qu'il
 existe : 8 126 o contre 14 336, soit 6 210 o de marge, sans qu'une ligne de
-cette page ait changé. Les 7 274 o de `<script>` inline y sont toujours et
-restent le sujet de #72 ; ils ne la mettent simplement plus dehors.
+cette page ait changé. Le `<script>` inline y est toujours et reste le sujet
+de #72 ; il ne la met simplement plus dehors.
 
 La feuille, elle, devient une réponse à part, et cette campagne en a relevé
 **trois poids compressés qu'il faut garder distincts parce qu'ils servent à
@@ -1020,7 +1035,7 @@ plafonds impose un plancher : les déclarations font 30,0 % de la feuille
 compressée (2 995 sur 9 983 après #71 ; c'était 2 921 sur 9 570 après #70),
 donc le plafond des déclarations n'est atteint le premier que si celui de la
 feuille reste **au-dessus de 10 240 o** — ~10 065 après #70, ~10 239,66
-aujourd'hui, c'est-à-dire à un octet du plafond lui-même. Descendre sous ce
+après #71, c'est-à-dire à un octet du plafond lui-même. Descendre sous ce
 plancher inverserait l'ordre des deux garde-fous et ferait retomber la
 pression sur les commentaires — exactement ce que le dispositif existe pour
 empêcher. 10 KiB est la première valeur ronde au-dessus de ce plancher ; c'est
@@ -1151,25 +1166,47 @@ le squash fait disparaître.
 **Et elle l'est** (#95). `apps/web/src/design_journal.rs` relit cette table,
 empreinte chaque entrée et compare à `DESIGN.journal.lock`, un fichier
 compagnon versionné qui enregistre l'état atterri. Toucher au texte d'une
-entrée fait **échouer** la suite, pas seulement remarquer quelque chose. Deux
-conséquences pour qui écrit ici :
+entrée fait **échouer** la suite, pas seulement remarquer quelque chose.
+
+**Ce fichier compagnon est une étape, et sa suite est déjà décidée** :
+le point de comparaison doit devenir `main` lui-même
+(`git show origin/main:DESIGN.md`), le seul montage qu'une PR ne puisse pas
+éditer. Il ne l'est pas encore parce que ça touche la CI — qui fait un
+checkout de profondeur 1, donc `main` n'y est même pas — et que ça doublait le
+lot ; c'est une issue de suivi. Ce qui suit décrit donc un dispositif en
+route, pas un choix arrêté sur un fichier.
+
+Deux conséquences pour qui écrit ici :
 
 - **Ajouter une entrée demande d'ajouter sa ligne au verrou.** La commande
   qui l'imprime est dans l'en-tête du fichier. Une ligne ajoutée à la fin est
   une entrée nouvelle ; une ligne modifiée au milieu est une entrée atterrie
   réécrite, et c'est visible dans le diff.
-- **Un renvoi a une forme.** Le garde-fou le retire avant de comparer — c'est
-  ce qui le laisse autorisé — et il ne sait le reconnaître qu'entre
-  parenthèses et à condition qu'il se nomme : `(Renvoi : …)` ou un pointeur
-  disant `voir l'entrée du AAAA-MM-JJ`. Une parenthèse ordinaire reste gelée
-  avec le reste de l'entrée, ce qui est voulu : sans ça, il suffirait de
-  parenthéser une affirmation pour la réécrire.
+- **Un renvoi a une forme, et elle est stricte.** Le garde-fou le retire
+  avant de comparer — c'est ce qui le laisse autorisé — et il ne reconnaît
+  qu'un segment **entre parenthèses** qui fait les deux choses à la fois :
+  se nommer (`Renvoi`, ou `voir l'entrée`) **et** désigner une autre entrée
+  datée de ce journal (`l'entrée du AAAA-MM-JJ`). Les deux conditions
+  comptent. Une parenthèse qui ne dit que le mot — `(le Renvoi de ce choix
+  est resté sans suite)` — n'en est pas un et reste gelée avec le reste : à
+  l'accepter, on ouvrirait au milieu d'une entrée figée une zone que plus
+  rien ne tient, et dont le contenu se réécrirait ensuite librement.
 
-Ce que le verrou ne fait pas, dit ici plutôt que découvert : il n'empêche pas
-une réécriture **déclarée**, puisque le fichier est aussi modifiable que le
-document. Aucun contrôle fondé sur un fichier ne le peut. Ce qu'il supprime,
-c'est la réécriture *silencieuse* — celle qui a coûté quatre tours de
-vérification à #72.
+Ce que le verrou ne fait pas, dit ici plutôt que découvert, **deux trous** :
+
+1. Il n'empêche pas une réécriture **déclarée**, *tant que le point de
+   comparaison est un fichier* — rien n'interdit d'éditer l'entrée et le
+   verrou dans le même commit, et aucun contrôle fondé sur un fichier ne le
+   peut, puisque la PR le transporte. C'est précisément le trou que le
+   passage à `main` ferme, et la raison pour laquelle ce passage est décidé
+   plutôt que laissé ouvert.
+2. **Le corps d'un renvoi bien formé, lui, n'est pas gelé.** C'est le prix
+   exact de le retirer avant de comparer, qui est ce qui rend son ajout
+   possible. La forme stricte ci-dessus réduit beaucoup la surface, elle ne
+   l'annule pas.
+
+Ce qu'il supprime, c'est la réécriture *silencieuse* — celle qui a coûté
+quatre tours de vérification à #72.
 
 | Date | Décision | Motif |
 |---|---|---|
@@ -1220,6 +1257,6 @@ vérification à #72.
 | 2026-08-29 | Le tarif d'un paragraphe sort de la prose : « 73 à 125 o » était la plage d'un échantillon (#72) | Remesuré ici par la méthode que cette même entrée prescrit — retirer un vrai bloc de commentaire avec ses lignes entières, repeser — mais sur **les 44 blocs de 3 à 8 lignes que `style.css` contient réellement** et non sur dix : **68 à 238 o, moyenne 109,0**, flate2 niveau 6 (`Compression::default()`, l'encodeur de `gzipped`). **Huit blocs sur 44 dépassent 125 o** : 135, 143, 146, 151, 164, 203, 218 et 238. La moyenne annoncée restait plausible pour un échantillon de dix, la plage non — et elle se trompe dans le sens **optimiste** : un lecteur de #73/#74 qui budgète « au pire 125 o le paragraphe » sous-estime son pire cas d'un facteur 2. **La correction n'est pas une meilleure plage, c'est le retrait de la valeur** (arbitrage du 2026-08-28, #95) : la section budget dit maintenant la méthode et **l'encodeur**, pas le résultat. Aucune valeur du garde-fou ne bouge — `style.css` n'est pas touchée, la feuille pèse toujours 10 926 o et les déclarations 3 071 |
 | 2026-08-29 | La convention de ce journal ne vaut que pour les entrées **atterries** (#72) | Arbitrage utilisateur. Écrite d'abord comme absolue — « une entrée datée n'est jamais réécrite » —, la règle était démentie par le lot qui la posait, et le constat est revenu à plusieurs reprises, toujours de la même façon : le commit qui écrit ou corrige la règle crée lui-même une entrée qui la viole. Ce n'était pas de l'indiscipline, c'était un périmètre trop large. **Ce dépôt fusionne en squash** : après le merge les commits de la branche n'existent plus, le lot atterrit sur `main` comme un texte unique, et une édition faite avant cet atterrissage ne réécrit aucune histoire — elle rédige. La règle est donc bornée aux entrées déjà atterries, et l'appareil qui n'avait de sens qu'à l'intérieur d'une branche part avec la borne : l'exception et ses conditions, l'obligation pour une entrée réécrite de porter la **marque** de sa réécriture, la clause qui exemptait la pose d'une marque, et tout décompte d'usages. Les marques déjà posées sont retirées — elles racontaient des éditions qu'aucun lecteur de `main` ne peut voir ni vérifier, et elles avaient déjà dû abandonner leurs shas, injoignables après le squash. Les **renvois** restent, et là où une marque portait un pointeur vers une autre entrée ce pointeur devient un renvoi : un renvoi désigne une autre entrée du même document, il reste vrai et vérifiable après le merge. Effet de bord : la règle devient mécanisable, un contrôle la comparant au journal de `main` et non à un historique de branche que le squash efface (#95) |
 | 2026-08-29 | `SHEET_CEILING` ne se relève pas sans arbitrage, écrit là où il est dérivé (#72) | Le document et le doc-comment bornaient correctement la **valeur** — rien au-dessus de 14 254 — sans jamais restater la **procédure**. L'asymétrie était dans le fichier même : `DECLARATIONS_CEILING` ferme sur un garde-fou de process (refaire l'arithmétique contre la feuille du jour et le dire dans le corps de PR), quand `SHEET_CEILING` fermait sur « entre 13 312 et 14 254 il n'y a qu'un argument à faire sur les nombres ronds » — vrai, et lisible comme une invitation à le faire seul. Les deux relèvements qu'a connus ce plafond — 10 → 11 KiB par #89, 11 → 13 KiB par #72 — sont l'un et l'autre passés par un arbitrage de l'utilisateur avant que la valeur bouge, comme l'a fait le relèvement du plafond des déclarations dans ce même lot. La règle est maintenant à côté de la constante et dans la section budget, avec sa marche de plus : demander d'abord |
-| 2026-08-30 | Les valeurs mesurées sortent de la prose de ce document (#95) | Arbitrage du 2026-08-28. `DESIGN.md` recopiait à la main le poids de la feuille et des déclarations, les deux plafonds, la marge d'inversion, le tarif d'un paragraphe, les ratios marginaux par lot et les poids par route ; chaque PR design devait les recalculer et les réécrire. La vérification de #72 a compté cinq tours, et à chaque tour le défaut était dans la prose chiffrée, **jamais dans le code** — `style.css` est resté byte-identique du premier au dernier commit. Les garde-fous d'`apps/web/src/app.rs` disposaient déjà de ces mesures : ils en deviennent la **seule source**, et `cargo test -p manage_our_home_web budget_report -- --nocapture` les imprime. **Un seul encodeur, nommé dans la sortie** — c'est ce qui ferme par construction l'ambiguïté qui a produit trois constats de vérification : flate2 niveau 6 (`Compression::default()`, l'encodeur de `gzipped`), le zlib système et celui de Node ne rendent pas le même nombre sur la même feuille. Un test plutôt qu'un `xtask` ou un second binaire, parce que le rapport doit être mesuré par *le même* encodeur que les garde-fous et non par un qui prétend l'être : `flate2` est délibérément une dev-dependency (rien de ce que le binaire livre ne compresse quoi que ce soit) et ce crate n'a pas de cible `lib`, donc toute autre forme redéclarerait l'encodeur et son niveau. Ce qui reste écrit dans la prose : les décisions, leurs motifs, les invariants, les contraintes de forme, et la fenêtre de congestion initiale — le seul chiffre qui ne soit pas de notre fait. Les entrées datées de ce journal et les campagnes datées de la section budget gardent les leurs : c'est un relevé historique, pas un état courant |
-| 2026-08-30 | La convention de ce journal est tenue par un garde-fou, pas par la discipline (#95) | Arbitrages du 2026-08-29, les deux. La convention posée par #72 n'était relue par aucun test, et le lot qui l'a écrite l'a lui-même enfreinte : quatre réécritures en place par trois commits, trouvées au septième tour de vérification, à la main, par comparaison de révisions. `apps/web/src/design_journal.rs` relit cette table, empreinte chaque entrée et compare à `DESIGN.journal.lock` ; une entrée atterrie dont le texte change fait **échouer** la suite au lieu de signaler quelque chose. Le point de comparaison est un fichier compagnon versionné et non `git log` : un test unitaire n'a pas d'historique, la CI fait un checkout de profondeur 1, et le contrôle déporté aurait touché la CI — ce que l'arbitrage interdisait de choisir seul. L'empreinte couvre la date, la décision et le motif **privé de ses renvois**, de sorte que la seule modification que la convention autorise est exactement la seule qui ne bouge pas la ligne. En contrepartie un renvoi prend une forme : entre parenthèses et se nommant, `Renvoi :` ou `voir l'entrée du AAAA-MM-JJ` ; une parenthèse ordinaire reste gelée avec le reste, sans quoi il suffirait de parenthéser une affirmation pour la réécrire. **Ce que ça ne fait pas**, dit plutôt que découvert : empêcher une réécriture *déclarée*, puisque le verrou est aussi modifiable que le document — aucun contrôle fondé sur un fichier ne le peut. Ce qu'il supprime est la réécriture *silencieuse*, celle qui a coûté quatre tours à elle seule |
+| 2026-08-30 | Les valeurs mesurées sortent de la prose de ce document (#95) | Arbitrage du 2026-08-28. `DESIGN.md` recopiait à la main le poids de la feuille et des déclarations, les deux plafonds, la marge d'inversion, le tarif d'un paragraphe, les ratios marginaux par lot et les poids par route ; chaque PR design devait les recalculer et les réécrire. La vérification de #72 a compté cinq tours, et à chaque tour le défaut était dans la prose chiffrée, **jamais dans le code** — `style.css` est resté byte-identique du premier au dernier commit. Les garde-fous d'`apps/web/src/app.rs` disposaient déjà de ces mesures : ils en deviennent la **seule source**, et `cargo test -p manage_our_home_web budget_report -- --nocapture` les imprime. **Un seul encodeur, nommé dans la sortie** — c'est ce qui ferme par construction l'ambiguïté qui a produit trois constats de vérification : flate2 niveau 6 (`Compression::default()`, l'encodeur de `gzipped`), le zlib système et celui de Node ne rendent pas le même nombre sur la même feuille. Un test plutôt qu'un `xtask` ou un second binaire, parce que le rapport doit être mesuré par *le même* encodeur que les garde-fous et non par un qui prétend l'être : `flate2` est délibérément une dev-dependency (rien de ce que le binaire livre ne compresse quoi que ce soit) et ce crate n'a pas de cible `lib`, donc toute autre forme redéclarerait l'encodeur et son niveau. Ce qui reste écrit dans la prose : les décisions, leurs motifs, les invariants, les contraintes de forme, et la fenêtre de congestion initiale — le seul chiffre qui ne soit pas de notre fait. Les entrées datées de ce journal et les campagnes datées de la section budget gardent les leurs : c'est un relevé historique, pas un état courant. Le critère retenu n'est pas « mesuré ou pas » mais **daté ou pas** — une campagne datée garde ses octets, une valeur attribuée à un lot sans date est retirée, une valeur au présent sans attribution l'est a fortiori. La vérification de ce lot a trouvé deux survivantes de la troisième espèce, retirées ici : « les commentaires sont 58 % de la feuille brute et 68 % de la compressée » (exact à `e5785ac`, faux aux six commits suivants ; la part est désormais imprimée par la commande) et « les 7 274 o de `<script>` inline y sont toujours » (le littéral en mesure 7 321 aujourd'hui) |
+| 2026-08-30 | La convention de ce journal est tenue par un garde-fou, pas par la discipline (#95) | Arbitrages du 2026-08-29, les deux. La convention posée par #72 n'était relue par aucun test, et le lot qui l'a écrite l'a lui-même enfreinte : quatre réécritures en place par trois commits, trouvées au septième tour de vérification, à la main, par comparaison de révisions. `apps/web/src/design_journal.rs` relit cette table, empreinte chaque entrée et compare à `DESIGN.journal.lock` ; une entrée atterrie dont le texte change fait **échouer** la suite au lieu de signaler quelque chose. Le point de comparaison est, **pour l'instant**, un fichier compagnon versionné : un test unitaire n'a pas d'historique et la CI fait un checkout de profondeur 1, donc `main` n'y est même pas. **Arbitrage utilisateur rendu pendant ce lot : il doit devenir `main` lui-même** (`git show origin/main:DESIGN.md`), le seul montage qu'une PR ne puisse pas éditer — hors périmètre ici parce que ça touche la CI et double le lot, donc reporté à une issue de suivi. Le verrou compagnon est une étape vers ça, pas le dispositif arrêté. L'empreinte couvre la date, la décision et le motif **privé de ses renvois**, de sorte que la seule modification que la convention autorise est exactement la seule qui ne bouge pas la ligne. En contrepartie un renvoi prend une forme stricte, et les **deux** conditions comptent : entre parenthèses, il doit se nommer (`Renvoi`, ou `voir l'entrée`) **et** désigner une autre entrée datée (`l'entrée du AAAA-MM-JJ`). La première version ne demandait que le mot, quelque part dans la parenthèse ; la vérification a montré qu'une entrée atterrie recevant `(le Renvoi de ce choix est resté sans suite)` restait verte, et que le contenu de cette parenthèse se réécrivait ensuite librement — une zone franche au milieu d'une entrée figée. Effet de bord assumé du resserrement : `(Renvoi ajouté par #72 — …)`, posé sur l'entrée du 2026-07-30, ne porte pas de date et cesse d'être un renvoi ; il est donc gelé avec le reste de son entrée, ce qui est le bon sens de la règle. **Ce que ça ne fait pas**, dit plutôt que découvert, deux trous : empêcher une réécriture *déclarée* **tant que le point de comparaison est un fichier** — la PR transporte le verrou, donc peut l'éditer avec l'entrée ; c'est exactement le trou que le passage à `main` fermera — et geler le **corps** d'un renvoi bien formé, qui est le prix exact de le retirer avant de comparer et que ce passage-là ne fermera pas. Un plafond de longueur a été envisagé puis écarté : le nombre aurait été arbitraire et aurait acheté de la confiance sans fermer le trou. Fermé en revanche, plutôt que déclaré : une ligne de table qui ne rend pas trois cellules — une barre verticale échappée dans un motif — était **sautée en silence**, donc atterrissait hors du verrou à vie ; elle échoue maintenant bruyamment |
 | 2026-08-30 | Le texte que citent deux entrées du 2026-08-06, restaté (#95) | Résidu constaté à la vérification de #92 et repris ici : ces entrées sont atterries, donc elles ne se corrigent plus, et le remède est une entrée nouvelle. Chacune cite une phrase que ce document a portée et que #72 a retirée en la corrigeant, si bien qu'un lecteur de `main` ne peut plus la localiser — `grep` n'en trouve qu'une occurrence, la citation elle-même. Les voici restatées, pour que la citation redevienne vérifiable : ce document a écrit que le relèvement de `SHEET_CEILING` comptait « ce que l'ancienne soustraction n'avait jamais à compter » (faux : #89 n'avait rien omis, elle n'avait pas chiffré), et il a écrit « `SHEET_CEILING` n'est plus relevable : 13 312 est dérivé de sa borne physique » (faux : 13 312 est le palier de KiB sous cette borne, pas la borne). Même famille, réglée au passage : la prose du corps renvoyait elle aussi à « le commit suivant de cette PR même », un pointeur que le squash efface ; elle renvoie désormais à l'entrée de journal du 2026-08-06 |

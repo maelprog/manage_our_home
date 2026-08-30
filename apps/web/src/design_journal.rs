@@ -11,21 +11,50 @@
 //! diffing revisions by hand. A convention no test reads is a convention
 //! that holds only while everyone remembers it.
 //!
-//! **What compares against what.** A unit test has no git history, and CI
-//! checks out at depth 1, so `origin/main` is not there to diff against —
-//! reaching for it would mean changing the workflow, which is an arbitration
-//! this issue was told not to make alone. So the landed state is recorded in
-//! a versioned companion file, `DESIGN.journal.lock`, one line per entry.
-//! The test recomputes those lines from DESIGN.md and demands an exact match.
+//! **What compares against what — and what it will compare against.** The
+//! landed state is recorded in a versioned companion file,
+//! `DESIGN.journal.lock`, one line per entry; the test recomputes those lines
+//! from DESIGN.md and demands an exact match.
 //!
-//! **What that makes impossible, and what it does not.** It makes a *silent*
-//! rewrite impossible: any edit to a landed entry turns the suite red, and
-//! the only way past a red test is to edit a file whose single purpose is to
-//! record what landed — an edit that shows up in the diff as a changed line
-//! in the middle of the lock rather than as lines appended at its end. It
-//! does not make a *declared* rewrite impossible; no file-based check can,
-//! since the file is as writable as the document. That limit is written here
-//! rather than left for a reader to discover.
+//! **That file is an interim, and its replacement is already decided.** The
+//! comparison point is to become `main` itself —
+//! `git show origin/main:DESIGN.md` — which is the only arrangement a pull
+//! request cannot edit. It is not here yet because reaching for it means
+//! changing the workflow (CI checks out at depth 1, so `origin/main` is not
+//! even fetched), which doubles this batch; it goes to a follow-up issue.
+//! Read what follows as the state of a thing on its way there, not as a
+//! design settled on a file.
+//!
+//! **What that makes impossible.** A *silent* rewrite: any edit to a landed
+//! entry turns the suite red, and the only way past a red test is to edit a
+//! file whose single purpose is to record what landed — an edit that shows
+//! up in the diff as a changed line in the middle of the lock rather than as
+//! lines appended at its end.
+//!
+//! **What it does not.** Two holes, both real, both written here rather than
+//! left for a reader to find:
+//!
+//! 1. **A *declared* rewrite**, *for as long as the comparison point is a
+//!    file*. Nothing stops an author editing the entry and the lock in the
+//!    same commit; no file-based check can, the file being as writable as the
+//!    document. This is the hole the move to `main` closes, and it is the
+//!    reason that move was decided rather than left open: a pull request can
+//!    rewrite anything it carries, and it carries the lock.
+//! 2. **The body of a well-formed renvoi is not frozen.** Stripping renvois
+//!    before comparing is what keeps *adding* one allowed, and the price is
+//!    that whatever sits inside one can later be reworded without moving the
+//!    fingerprint. `points_at_a_dated_entry` narrows this a great deal — a
+//!    parenthesis has to both name itself and name another dated entry, so
+//!    `(le Renvoi de ce choix est resté sans suite)` is no longer a free
+//!    writing zone — but a well-formed `(Renvoi : … — voir l'entrée du
+//!    AAAA-MM-JJ)` still is. A length cap was considered and dropped: any
+//!    number picked for it would be arbitrary, and it would buy confidence
+//!    without closing the hole, since a sentence is enough to mislead.
+//!
+//! A third, smaller one is closed rather than declared: a table row that does
+//! not split into three cells used to be skipped in silence, which would land
+//! an entry on `main` outside the lock for good. It now fails loudly — see
+//! `entries`.
 //!
 //! Compiled under `cfg(test)` only: DESIGN.md is 46 KB of French prose and
 //! has no business inside the shipped binary.
@@ -41,16 +70,40 @@ pub(crate) struct Entry {
     pub(crate) motif: String,
 }
 
-/// The two ways a renvoi names itself. A renvoi is a parenthesised run
-/// carrying one of these; anything else in parentheses is ordinary prose and
-/// stays frozen with the rest of the entry.
+/// How a renvoi names itself. Two spellings rather than one because the
+/// journal already holds both: most segments say `Renvoi`, and the one added
+/// to the 2026-08-04 entry on the declarations ceiling says only
+/// `voir l'entrée`. Normalising that one would mean rewriting a landed entry
+/// to install the guard that forbids rewriting landed entries.
+const RENVOI_MARKERS: [&str; 2] = ["Renvoi", "voir l'entrée"];
+
+/// …and where it must point. A renvoi designates **another entry of this
+/// journal**, which is what makes it survive the squash and stay checkable;
+/// a parenthesis that merely says the word is not one.
 ///
-/// Two markers rather than one because the journal already holds both forms:
-/// four segments say `Renvoi`, and the one added to the 2026-08-04 entry on
-/// the declarations ceiling says only `voir l'entrée du`. Normalising that
-/// one would mean rewriting a landed entry to install the guard that forbids
-/// rewriting landed entries.
-const RENVOI_MARKERS: [&str; 2] = ["Renvoi", "voir l'entrée du"];
+/// This second condition is the whole difference between a renvoi and a free
+/// writing zone inside a frozen entry. Without it, `(le Renvoi de ce choix
+/// est resté sans suite)` appended to a landed entry is stripped before
+/// comparison — and then *its* contents can be rewritten at will, forever,
+/// inside an entry the lock claims to freeze.
+fn points_at_a_dated_entry(inner: &str) -> bool {
+    let needle = "l'entrée du ";
+    let mut rest = inner;
+    while let Some(at) = rest.find(needle) {
+        rest = &rest[at + needle.len()..];
+        let date: Vec<char> = rest.chars().take(10).collect();
+        if date.len() == 10
+            && date[..4].iter().all(char::is_ascii_digit)
+            && date[4] == '-'
+            && date[5..7].iter().all(char::is_ascii_digit)
+            && date[7] == '-'
+            && date[8..].iter().all(char::is_ascii_digit)
+        {
+            return true;
+        }
+    }
+    false
+}
 
 /// The journal's rows, in table order.
 ///
@@ -76,9 +129,22 @@ pub(crate) fn entries(markdown: &str) -> Vec<Entry> {
         inside = true;
         let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
         // The header row and the `|---|` separator are not decisions.
-        if cells.len() != 3 || cells[0] == "Date" || cells[0].starts_with("---") {
+        if cells.len() == 3 && (cells[0] == "Date" || cells[0].starts_with("---")) {
             continue;
         }
+        // Anything else that is not three cells is a row this guard cannot
+        // freeze — a `\|` inside a motif is the realistic way to get here,
+        // and skipping it silently would let an entry land on `main` outside
+        // the lock, for good. Loud beats quiet.
+        assert_eq!(
+            cells.len(),
+            3,
+            "journal row splits into {} cells, not 3 — the guard cannot \
+             fingerprint it and would otherwise skip it in silence. A pipe \
+             inside a cell is the usual cause; write it some other way (a \
+             slash, or the word). Row: {line}",
+            cells.len()
+        );
         out.push(Entry {
             date: cells[0].to_string(),
             decision: cells[1].to_string(),
@@ -107,9 +173,9 @@ pub(crate) fn without_renvois(motif: &str) -> String {
             break;
         };
         let close = open + offset;
-        let is_renvoi = RENVOI_MARKERS
-            .iter()
-            .any(|marker| rest[open + 1..close].contains(marker));
+        let inner = &rest[open + 1..close];
+        let is_renvoi = RENVOI_MARKERS.iter().any(|marker| inner.contains(marker))
+            && points_at_a_dated_entry(inner);
         if !is_renvoi {
             out.push_str(&rest[..=close]);
             rest = &rest[close + 1..];
@@ -172,6 +238,10 @@ const LOCK_HEADER: &str = "\
 # L'empreinte couvre la date, la décision et le motif *privé de ses renvois* :
 # ajouter un renvoi à une entrée atterrie est la seule modification que la
 # convention autorise, et c'est la seule qui ne bouge pas cette ligne.
+#
+# Étape intérimaire : le point de comparaison doit devenir `main` lui-même
+# (`git show origin/main:DESIGN.md`), seul montage qu'une PR ne puisse pas
+# éditer. Décidé, reporté à une issue de suivi — ça touche la CI.
 #
 # Ce fichier ne s'édite pas à la main. Après avoir ajouté des entrées :
 #   cargo test -p manage_our_home_web design_journal_lock_print -- --nocapture
@@ -277,9 +347,9 @@ Du texte après la table.
     }
 
     #[test]
-    fn a_parenthesised_segment_that_says_renvoi_comes_out() {
+    fn a_parenthesised_segment_that_says_renvoi_and_points_at_an_entry_comes_out() {
         assert_eq!(
-            without_renvois("Le motif. *(Renvoi : voir plus bas.)*"),
+            without_renvois("Le motif. *(Renvoi : voir l'entrée du 2026-08-05.)*"),
             "Le motif."
         );
     }
@@ -291,6 +361,45 @@ Du texte après la table.
         assert_eq!(
             without_renvois("Les 77 octets sont intacts *(le plafond a été relevé depuis, par #72 — voir l'entrée du 2026-08-05)*"),
             "Les 77 octets sont intacts"
+        );
+    }
+
+    /// The probe that broke the first version of this guard: a parenthesis
+    /// that says the word but points nowhere. It was stripped, which turned
+    /// the inside of a landed entry into a zone nothing freezes.
+    #[test]
+    fn a_parenthesis_that_says_renvoi_but_points_nowhere_is_not_one() {
+        assert_eq!(
+            without_renvois("Fraunces en titres (le Renvoi de ce choix est resté sans suite)"),
+            "Fraunces en titres (le Renvoi de ce choix est resté sans suite)"
+        );
+    }
+
+    /// Same probe, second turn: once inside such a parenthesis, anything
+    /// could be rewritten. It must move the fingerprint.
+    #[test]
+    fn rewriting_inside_a_pointerless_parenthesis_moves_the_fingerprint() {
+        let before = without_renvois("Un motif (le Renvoi de ce choix est resté sans suite)");
+        let after = without_renvois(
+            "Un motif (Renvoi — en fait ce choix a été annulé et ce paragraphe dit le contraire)",
+        );
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn a_renvoi_must_name_a_dated_entry_not_just_a_date() {
+        // A date on its own is not a pointer to an entry.
+        assert_eq!(
+            without_renvois("Un motif (Renvoi : mesuré le 2026-08-05.)"),
+            "Un motif (Renvoi : mesuré le 2026-08-05.)"
+        );
+    }
+
+    #[test]
+    fn a_malformed_date_after_the_pointer_does_not_count() {
+        assert_eq!(
+            without_renvois("Un motif (Renvoi : voir l'entrée du 2026-8-5.)"),
+            "Un motif (Renvoi : voir l'entrée du 2026-8-5.)"
         );
     }
 
@@ -307,7 +416,10 @@ Du texte après la table.
     #[test]
     fn two_renvois_in_one_motif_both_come_out() {
         assert_eq!(
-            without_renvois("A (Renvoi : un) B *(Renvoi : deux)* C"),
+            without_renvois(
+                "A (Renvoi : un, voir l'entrée du 2026-08-05) B \
+                 *(Renvoi : deux, voir l'entrée du 2026-08-06)* C"
+            ),
             "A B C"
         );
     }
@@ -316,7 +428,10 @@ Du texte après la table.
     fn stripping_a_renvoi_leaves_no_double_space_behind() {
         // The comparison is on the stripped text, so its whitespace has to be
         // canonical or the same entry fingerprints two ways.
-        assert_eq!(without_renvois("A  *(Renvoi : x)*   B"), "A B");
+        assert_eq!(
+            without_renvois("A  *(Renvoi : voir l'entrée du 2026-08-05)*   B"),
+            "A B"
+        );
     }
 
     #[test]
@@ -413,6 +528,21 @@ Du texte après la table.
         assert!(!lock_line(&entry).contains('\n'));
     }
 
+    #[test]
+    #[should_panic(expected = "splits into 4 cells")]
+    fn a_row_carrying_a_pipe_is_a_failure_not_a_skip() {
+        // Silently skipping it would land an entry on `main` outside the
+        // lock, unfrozen for good.
+        let doc = "\
+## Journal des décisions
+
+| Date | Décision | Motif |
+|---|---|---|
+| 2026-09-01 | Une décision future | Un motif citant un sélecteur `a \\| b` |
+";
+        entries(doc);
+    }
+
     // ---- the guard itself -------------------------------------------
 
     /// The one that fails when a landed entry is rewritten.
@@ -463,10 +593,13 @@ Du texte après la table.
              already landed on `main`, which the convention in DESIGN.md → \
              Journal des décisions forbids. An entry says what was true the \
              day it was taken; a decision that overturns it is a new entry at \
-             the end, and what may be added to the old one is a *renvoi* — a \
-             parenthesised pointer saying `Renvoi` or `voir l'entrée du`, \
-             which this guard strips before comparing precisely so that it \
-             stays allowed.\n\
+             the end, and what may be added to the old one is a *renvoi*: a \
+             parenthesised segment that both names itself (`Renvoi`, or \
+             `voir l'entrée`) and points at a dated entry of this journal \
+             (`l'entrée du AAAA-MM-JJ`). That shape, and only that shape, is \
+             stripped before comparing — which is what keeps adding one \
+             allowed while a parenthesis that merely says the word stays \
+             frozen with the rest.\n\
              * A removed line: a landed entry is gone. It does not come back \
              out of the record.\n\
              \n\

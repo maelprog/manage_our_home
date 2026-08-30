@@ -1017,13 +1017,19 @@ mod tests {
         out
     }
 
+    /// A ceiling, not a target: it exists so the 173 do not creep back one
+    /// route at a time. What is left is what no class can carry — a member's
+    /// computed hue, a control's one-off width, a table column's alignment —
+    /// plus the messagerie bits #72 reworks.
+    ///
+    /// At module level rather than inside the test below because
+    /// `budget_report` prints it too, and a report that restated the number
+    /// beside the guard would drift from it (#95).
+    const INLINE_STYLE_CEILING: usize = 6;
+
     #[test]
     fn inline_styles_are_bounded_to_a_justified_residue() {
-        // A ceiling, not a target: it exists so the 173 do not creep back
-        // one route at a time. What is left is what no class can carry —
-        // a member's computed hue, a control's one-off width, a table
-        // column's alignment — plus the messagerie bits #72 reworks.
-        const CEILING: usize = 6;
+        const CEILING: usize = INLINE_STYLE_CEILING;
         let counted: Vec<(String, String)> = rust_sources()
             .iter()
             .flat_map(|(path, body)| {
@@ -2182,11 +2188,18 @@ mod tests {
         format!("{:.1}", 100.0 * part / whole).replace('.', ",")
     }
 
-    /// A one-decimal byte figure, French-style — `2 154,7`.
+    /// A one-decimal byte figure, French-style — `2 154,7`, `-2 154,7`.
+    ///
+    /// Rounds *once*, on the scaled value, then splits. Rounding the whole
+    /// part and the fraction separately loses the carry (`11 157,96` prints
+    /// `11 157,10`), and clamping the whole part loses the sign — which
+    /// matters here, because the one figure that can go negative is the
+    /// inversion margin, whose sign is the message.
     fn tenths(n: f64) -> String {
-        let whole = thousands(n.trunc().max(0.0) as usize);
-        let frac = ((n - n.trunc()).abs() * 10.0).round() as usize;
-        format!("{whole},{frac}")
+        let scaled = (n * 10.0).round();
+        let sign = if scaled < 0.0 { "-" } else { "" };
+        let abs = scaled.abs() as usize;
+        format!("{sign}{},{}", thousands(abs / 10), abs % 10)
     }
 
     #[test]
@@ -2203,6 +2216,85 @@ mod tests {
         assert_eq!(percent(2_386.0, 13_312.0), "17,9");
         assert_eq!(tenths(2_154.7), "2\u{202f}154,7");
         assert_eq!(tenths(11_157.3), "11\u{202f}157,3");
+    }
+
+    /// Rounding a tenth up has to carry into the units, and past them.
+    ///
+    /// Written because the first version of `tenths` truncated the whole part
+    /// and rounded the fraction *separately*, so anything from x.95 up
+    /// printed a tenth of "10": `11 157,10`. The two figures this function
+    /// exists for are read as budget headroom — a tenth that reads as ten is
+    /// the kind of thing nobody re-checks.
+    #[test]
+    fn tenths_carries_into_the_whole_part() {
+        assert_eq!(tenths(11_157.96), "11\u{202f}158,0");
+        assert_eq!(tenths(999.97), "1\u{202f}000,0");
+        assert_eq!(tenths(9.95), "10,0");
+        assert_eq!(tenths(0.04), "0,0");
+    }
+
+    /// A negative inversion margin is the whole point of printing one: it
+    /// says the two guards have swapped order. The first version clamped the
+    /// whole part at zero and dropped the sign, so `-2 154,7` printed `0,7`.
+    #[test]
+    fn tenths_keeps_the_sign_of_a_negative_margin() {
+        assert_eq!(tenths(-2_154.7), "-2\u{202f}154,7");
+        assert_eq!(tenths(-0.4), "-0,4");
+        assert_eq!(tenths(0.0), "0,0");
+    }
+
+    /// What is left under a ceiling — or, past it, by how much.
+    ///
+    /// One function for both sides because the first version had them apart:
+    /// the byte count was a `saturating_sub` and the percentage on the same
+    /// line was not, so the report panicked with a subtract overflow exactly
+    /// when a guard went red. A report that is the single source of the
+    /// budget cannot be the one thing that stops working the day the budget
+    /// is blown.
+    fn headroom(value: usize, ceiling: usize) -> String {
+        if value <= ceiling {
+            let left = ceiling - value;
+            format!(
+                "{} o  ({} % du plafond)",
+                thousands(left),
+                percent(left as f64, ceiling as f64)
+            )
+        } else {
+            format!("DÉPASSÉ de {} o", thousands(value - ceiling))
+        }
+    }
+
+    /// A ceiling written the way its constant is written — `13 × 1024`,
+    /// `3 × 1024 + 64` — derived rather than copied beside it. A literal
+    /// there would go on saying `13 × 1024` after the constant moved, which
+    /// is the exact defect this whole report exists to remove.
+    fn kib_expression(n: usize) -> String {
+        match (n / 1024, n % 1024) {
+            (kib, 0) => format!("{kib} × 1024"),
+            (kib, rest) => format!("{kib} × 1024 + {rest}"),
+        }
+    }
+
+    #[test]
+    fn headroom_reports_both_sides_of_a_ceiling() {
+        assert_eq!(
+            headroom(10_926, 13_312),
+            "2\u{202f}386 o  (17,9 % du plafond)"
+        );
+        assert_eq!(headroom(13_312, 13_312), "0 o  (0,0 % du plafond)");
+    }
+
+    /// The case that used to panic: over budget.
+    #[test]
+    fn headroom_does_not_panic_past_the_ceiling() {
+        assert_eq!(headroom(13_400, 13_312), "DÉPASSÉ de 88 o");
+        assert_eq!(headroom(30_000, 3_136), "DÉPASSÉ de 26\u{202f}864 o");
+    }
+
+    #[test]
+    fn a_ceiling_prints_the_arithmetic_of_its_own_constant() {
+        assert_eq!(kib_expression(13 * 1024), "13 × 1024");
+        assert_eq!(kib_expression(3 * 1024 + 64), "3 × 1024 + 64");
     }
 
     /// **The one command that prints the budget** (#95).
@@ -2279,13 +2371,13 @@ mod tests {
                 thousands(sheet)
             ),
             format!(
-                "  SHEET_CEILING ............................. {} o  (13 × 1024)",
-                thousands(SHEET_CEILING)
+                "  SHEET_CEILING ............................. {} o  ({})",
+                thousands(SHEET_CEILING),
+                kib_expression(SHEET_CEILING)
             ),
             format!(
-                "  reste ..................................... {} o  ({} % du plafond)",
-                thousands(SHEET_CEILING.saturating_sub(sheet)),
-                percent((SHEET_CEILING - sheet) as f64, SHEET_CEILING as f64)
+                "  reste ..................................... {}",
+                headroom(sheet, SHEET_CEILING)
             ),
             String::new(),
             "Déclarations — la même feuille, commentaires retirés".to_string(),
@@ -2298,16 +2390,23 @@ mod tests {
                 thousands(declarations)
             ),
             format!(
-                "  DECLARATIONS_CEILING ...................... {} o  (3 × 1024 + 64)",
-                thousands(DECLARATIONS_CEILING)
+                "  DECLARATIONS_CEILING ...................... {} o  ({})",
+                thousands(DECLARATIONS_CEILING),
+                kib_expression(DECLARATIONS_CEILING)
             ),
             format!(
-                "  reste ..................................... {} o  ({} % du plafond)",
-                thousands(DECLARATIONS_CEILING.saturating_sub(declarations)),
-                percent(
-                    (DECLARATIONS_CEILING - declarations) as f64,
-                    DECLARATIONS_CEILING as f64
-                )
+                "  reste ..................................... {}",
+                headroom(declarations, DECLARATIONS_CEILING)
+            ),
+            String::new(),
+            "Part des commentaires — ce que la prose pèse dans la feuille".to_string(),
+            format!(
+                "  du brut ................................... {} %",
+                percent((sheet_raw - declarations_raw) as f64, sheet_raw as f64)
+            ),
+            format!(
+                "  du compressé .............................. {} %",
+                percent((sheet - declarations) as f64, sheet as f64)
             ),
             String::new(),
             "Ordre des deux garde-fous — lequel mord en premier".to_string(),
@@ -2338,7 +2437,7 @@ mod tests {
             String::new(),
             "Styles inline résiduels dans les routes".to_string(),
             format!("  comptés ................................... {inline_styles}"),
-            "  plafond ................................... 6".to_string(),
+            format!("  plafond ................................... {INLINE_STYLE_CEILING}"),
             String::new(),
             "Ce que ce rapport ne sait pas".to_string(),
             "  Le budget de réponse (14 KiB, seuil 1 de DESIGN.md) dépend du".to_string(),

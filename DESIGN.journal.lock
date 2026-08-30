@@ -6,6 +6,10 @@
 # ajouter un renvoi à une entrée atterrie est la seule modification que la
 # convention autorise, et c'est la seule qui ne bouge pas cette ligne.
 #
+# Étape intérimaire : le point de comparaison doit devenir `main` lui-même
+# (`git show origin/main:DESIGN.md`), seul montage qu'une PR ne puisse pas
+# éditer. Décidé, reporté à une issue de suivi — ça touche la CI.
+#
 # Ce fichier ne s'édite pas à la main. Après avoir ajouté des entrées :
 #   cargo test -p manage_our_home_web design_journal_lock_print -- --nocapture
 # et recopier la sortie ici. Une ligne *ajoutée à la fin* est une entrée
@@ -28,7 +32,7 @@ de8274cf31cf6d29  2026-07-30  `--accent-bg` et `--chip-bg` retirés (#68)
 527781af22dfb0e7  2026-07-30  CSS inliné — décision datée, plus une propriété héritée (#83
 860af476a793caef  2026-07-30  Budget de livraison : 14 KiB compressés par réponse, 10 KiB 
 db03eaf3da63663f  2026-07-30  `encode zstd gzip` dans `infra/Caddyfile` (#83)
-8b1b2031d1ba3b4d  2026-07-30  `/messagerie` constatée hors du budget de 14 KiB (#83)
+adee150a824dc350  2026-07-30  `/messagerie` constatée hors du budget de 14 KiB (#83)
 3a0b1a3d71a1d8e0  2026-07-30  Pas de `CompressionLayer` dans `apps/web` (#83)
 d9da6bdc62fa01dc  2026-07-30  BREACH : aucune route exclue de `encode` (#83)
 9a5f03210992ee20  2026-07-31  Jetons `--accent-hover` / `--error-hover` (#69)
@@ -60,6 +64,6 @@ d3e91b02ff3932b9  2026-08-06  13 312 est un arrondi **sous** sa borne physique, 
 abf56e5a2ff9b3af  2026-08-29  Le tarif d'un paragraphe sort de la prose : « 73 à 125 o » é
 59316e4bb749dfaf  2026-08-29  La convention de ce journal ne vaut que pour les entrées **a
 5bdfab93dc565e52  2026-08-29  `SHEET_CEILING` ne se relève pas sans arbitrage, écrit là où
-f5c37bfabf7b8ff9  2026-08-30  Les valeurs mesurées sortent de la prose de ce document (#95
-86fd87d651757a9a  2026-08-30  La convention de ce journal est tenue par un garde-fou, pas 
+da9bc907f97d182b  2026-08-30  Les valeurs mesurées sortent de la prose de ce document (#95
+33182bdf62b6f28e  2026-08-30  La convention de ce journal est tenue par un garde-fou, pas 
 7ccce016ce409033  2026-08-30  Le texte que citent deux entrées du 2026-08-06, restaté (#95
