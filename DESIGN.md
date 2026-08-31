@@ -482,18 +482,37 @@ est resté byte-identique du premier au dernier commit. Un chiffre qu'on ne
 recopie pas ne peut pas périmer.
 
 **Ce que #95 n'a pas fait**, écrit ici plutôt que laissé à découvrir : la passe
-s'est arrêtée aux valeurs de budget, et **quatre passages chiffrés au présent,
-sans date ni attribution, lui survivent** — les quatre ratios de contraste des
-paires `-hover` dans [Couleur](#couleur) ; celui d'`--accent-soft` sous
-[Interaction et motion](#interaction-et-motion), qui est déjà une dette de #74,
-à qui appartient le réglage des paires ; le poids brut qu'auraient dans chaque
-`<head>` les deux `<link rel="preload">` qu'on n'a pas posés ; et la fraction à
+s'est arrêtée aux valeurs de budget, et **cinq passages chiffrés au présent,
+sans date ni attribution, restent dans ce document** — quatre lui préexistent,
+le cinquième est de son fait. Le crible a été refait sur le fichier entier, au
+critère énoncé juste dessous, et non sur le seul chapitre budget : les cinq se
+répartissent sur quatre chapitres.
+
+**Les quatre préexistants.** Les quatre ratios de contraste des paires
+`-hover` dans [Couleur](#couleur) ; celui d'`--accent-soft` sous
+[Interaction et motion](#interaction-et-motion) ; la hauteur rendue du
+`.pw-toggle` sous [Espacement](#espacement), écrite à côté de la règle des
+44 px qu'elle enfreint ; et le poids brut qu'auraient dans chaque `<head>` les
+deux `<link rel="preload">` qu'on n'a pas posés. **Les trois premiers
+appartiennent à #74**, dont les cibles tactiles de 44 px et le contraste AA
+dans les deux thèmes sont le sujet, et qui nomme déjà le `.pw-toggle` et sa
+mesure : corriger le contrôle demande donc aussi de réécrire la ligne qui le
+mesure, faute de quoi elle survit à son propre correctif. Le quatrième
+n'appartient à aucune issue.
+
+**Le cinquième n'est pas une survivante : #95 l'a écrit.** La fraction à
 laquelle [Compression](#compression) dit qu'`encode` ramène la feuille brute
-sur le fil. Aucun n'est un chiffre que la commande ci-dessus imprime, donc
-aucun ne se remplace par un renvoi vers elle : les sortir demande soit un
-garde-fou qui les calcule, soit l'issue à qui la valeur appartient. Ils
-périment exactement comme les autres — c'est une dette assumée, pas une
-exception au critère.
+sur le fil remplace deux poids de feuille que ce lot devait sortir — et a bien
+sortis — par une valeur de la troisième espèce, celle que le critère ci-dessous
+appelle le cas le pire. Dit plutôt que contourné : ce lot a produit un défaut
+de l'espèce qu'il existe pour retirer. C'est donc une dette de #95, pas de ce
+qui l'a précédé, et elle n'appartient à aucune autre issue.
+
+Aucun des cinq n'est un chiffre que la commande ci-dessus imprime, donc aucun
+ne se remplace par un renvoi vers elle : les sortir demande soit un garde-fou
+qui les calcule, soit l'issue à qui la valeur appartient. Ils périment
+exactement comme les autres — c'est une dette assumée, pas une exception au
+critère.
 
 **Le critère exact, parce qu'il se lit mal sur les exemples.** Ce qui décide
 n'est pas « mesuré ou pas », c'est **daté ou pas** :
