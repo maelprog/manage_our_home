@@ -51,10 +51,15 @@
 //!    number picked for it would be arbitrary, and it would buy confidence
 //!    without closing the hole, since a sentence is enough to mislead.
 //!
-//! A third, smaller one is closed rather than declared: a table row that does
+//! Two smaller ones are closed rather than declared. A table row that does
 //! not split into three cells used to be skipped in silence, which would land
-//! an entry on `main` outside the lock for good. It now fails loudly — see
-//! `entries`.
+//! an entry on `main` outside the lock for good; it now fails loudly — see
+//! `entries`. And a renvoi's date used to be checked for *shape* alone, so
+//! `2026-13-45` — and `2099-01-01`, which no entry carries — bought the
+//! stripping: the date must now be one the calendar has (`is_iso_date`) and
+//! one this journal has an entry for (`dangling_renvois`, asked over the
+//! whole table rather than inside the stripping, for the reason
+//! `points_at_a_dated_entry` gives).
 //!
 //! Compiled under `cfg(test)` only: DESIGN.md is 46 KB of French prose and
 //! has no business inside the shipped binary.
@@ -77,6 +82,54 @@ pub(crate) struct Entry {
 /// to install the guard that forbids rewriting landed entries.
 const RENVOI_MARKERS: [&str; 2] = ["Renvoi", "voir l'entrée"];
 
+/// A calendar date written `AAAA-MM-JJ`, the form both a journal row and a
+/// renvoi use.
+///
+/// The shape on its own is not the check: `2026-13-45` has it, and no entry
+/// of any journal will ever carry that date. So the month, the day, and the
+/// length February has *in that year* all count.
+fn is_iso_date(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return false;
+    }
+    if !bytes
+        .iter()
+        .enumerate()
+        .all(|(i, byte)| i == 4 || i == 7 || byte.is_ascii_digit())
+    {
+        return false;
+    }
+    // Every byte is ASCII, so these slices are on char boundaries.
+    let field = |from: usize, to: usize| text[from..to].parse::<u32>().unwrap_or(0);
+    let (year, month, day) = (field(0, 4), field(5, 7), field(8, 10));
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let last_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    (1..=last_day).contains(&day)
+}
+
+/// The dates a parenthesised segment points at, in order — usually none or
+/// one.
+fn dates_pointed_at(inner: &str) -> Vec<String> {
+    const NEEDLE: &str = "l'entrée du ";
+    let mut out = Vec::new();
+    let mut rest = inner;
+    while let Some(at) = rest.find(NEEDLE) {
+        rest = &rest[at + NEEDLE.len()..];
+        let date: String = rest.chars().take(10).collect();
+        if is_iso_date(&date) {
+            out.push(date);
+        }
+    }
+    out
+}
+
 /// …and where it must point. A renvoi designates **another entry of this
 /// journal**, which is what makes it survive the squash and stay checkable;
 /// a parenthesis that merely says the word is not one.
@@ -86,23 +139,19 @@ const RENVOI_MARKERS: [&str; 2] = ["Renvoi", "voir l'entrée"];
 /// est resté sans suite)` appended to a landed entry is stripped before
 /// comparison — and then *its* contents can be rewritten at will, forever,
 /// inside an entry the lock claims to freeze.
+///
+/// What this asks of the date is that it be a **real** one, not merely ten
+/// characters in the right shape. Whether the journal actually holds an
+/// entry that day is asked elsewhere, by
+/// `every_renvoi_of_the_real_journal_points_at_an_entry_that_exists`, and
+/// deliberately not here: stripping decides a fingerprint, so making it
+/// depend on the set of dates the document happens to contain would let
+/// *appending* an entry dated X move the fingerprint of a landed entry whose
+/// renvoi named X — a landed line changing without its entry being touched.
+/// The two questions are kept apart so that neither answer can move a
+/// frozen line.
 fn points_at_a_dated_entry(inner: &str) -> bool {
-    let needle = "l'entrée du ";
-    let mut rest = inner;
-    while let Some(at) = rest.find(needle) {
-        rest = &rest[at + needle.len()..];
-        let date: Vec<char> = rest.chars().take(10).collect();
-        if date.len() == 10
-            && date[..4].iter().all(char::is_ascii_digit)
-            && date[4] == '-'
-            && date[5..7].iter().all(char::is_ascii_digit)
-            && date[7] == '-'
-            && date[8..].iter().all(char::is_ascii_digit)
-        {
-            return true;
-        }
-    }
-    false
+    !dates_pointed_at(inner).is_empty()
 }
 
 /// The journal's rows, in table order.
@@ -164,6 +213,47 @@ fn normalized(text: &str) -> String {
 /// A motif with its renvois removed — the part of an entry that a later
 /// batch may not touch.
 pub(crate) fn without_renvois(motif: &str) -> String {
+    strip_renvois(motif, &mut |_| {})
+}
+
+/// The dates the renvois of `motif` point at, in table order.
+pub(crate) fn renvoi_targets(motif: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    strip_renvois(motif, &mut |inner| out.extend(dates_pointed_at(inner)));
+    out
+}
+
+/// Renvois that name a date this journal has no entry for, as
+/// `(date de l'entrée fautive, date visée)`.
+///
+/// The half of a renvoi's promise that `points_at_a_dated_entry` cannot
+/// keep: it sees one parenthesis and not the table, so `2099-01-01` is as
+/// good a date to it as any. Asked here instead, over the whole document,
+/// and deliberately *not* folded back into the stripping — see
+/// `points_at_a_dated_entry` for why that would let a new entry move a
+/// landed fingerprint.
+pub(crate) fn dangling_renvois(markdown: &str) -> Vec<(String, String)> {
+    let journal = entries(markdown);
+    let dates: std::collections::HashSet<String> = journal
+        .iter()
+        .map(|entry| normalized(&entry.date))
+        .collect();
+    let mut out = Vec::new();
+    for entry in &journal {
+        for target in renvoi_targets(&entry.motif) {
+            if !dates.contains(&target) {
+                out.push((normalized(&entry.date), target));
+            }
+        }
+    }
+    out
+}
+
+/// The one walk over a motif's parentheses: returns the text with every
+/// renvoi removed, and hands each renvoi's inside to `on_renvoi` on the way.
+/// One walk rather than two so the two readings of a motif can never
+/// disagree about what counts as a renvoi.
+fn strip_renvois(motif: &str, on_renvoi: &mut dyn FnMut(&str)) -> String {
     let mut out = String::with_capacity(motif.len());
     let mut rest = motif;
     while let Some(open) = rest.find('(') {
@@ -181,6 +271,7 @@ pub(crate) fn without_renvois(motif: &str) -> String {
             rest = &rest[close + 1..];
             continue;
         }
+        on_renvoi(inner);
         // A renvoi is usually written in italics, so the `*` hugging it goes
         // with the segment: left behind they would form runs that say
         // nothing and would still move the fingerprint.
@@ -328,12 +419,32 @@ Du texte après la table.
         );
         for entry in &got {
             assert!(
-                entry.date.len() == 10 && entry.date.starts_with("2026-"),
+                is_iso_date(&entry.date),
                 "a journal row must start with an ISO date, got {:?}",
                 entry.date
             );
             assert!(!entry.decision.is_empty() && !entry.motif.is_empty());
         }
+    }
+
+    // ---- dates ------------------------------------------------------
+
+    #[test]
+    fn is_iso_date_accepts_a_real_date_and_refuses_the_rest() {
+        assert!(is_iso_date("2026-08-31"));
+        assert!(is_iso_date("2024-02-29"));
+        assert!(!is_iso_date("2026-02-29"));
+        assert!(!is_iso_date("2100-02-29"));
+        assert!(is_iso_date("2000-02-29"));
+        assert!(!is_iso_date("2026-13-01"));
+        assert!(!is_iso_date("2026-00-01"));
+        assert!(!is_iso_date("2026-04-31"));
+        assert!(!is_iso_date("2026-8-05"));
+        assert!(!is_iso_date("2026-08-3"));
+        assert!(!is_iso_date("2026/08/31"));
+        assert!(!is_iso_date("2026-08-31 "));
+        assert!(!is_iso_date("20ab-08-31"));
+        assert!(!is_iso_date("2026-08-é1"));
     }
 
     // ---- renvois ----------------------------------------------------
@@ -404,6 +515,47 @@ Du texte après la table.
     }
 
     #[test]
+    fn a_pointer_to_a_date_the_calendar_has_not_got_is_not_a_renvoi() {
+        // Shape alone was the whole check: `2026-13-45` passed it.
+        assert_eq!(
+            without_renvois("Un motif (Renvoi : voir l'entrée du 2026-13-45.)"),
+            "Un motif (Renvoi : voir l'entrée du 2026-13-45.)"
+        );
+    }
+
+    #[test]
+    fn a_pointer_to_a_day_its_month_does_not_have_is_not_a_renvoi() {
+        assert_eq!(
+            without_renvois("Un motif (Renvoi : voir l'entrée du 2026-02-30.)"),
+            "Un motif (Renvoi : voir l'entrée du 2026-02-30.)"
+        );
+    }
+
+    #[test]
+    fn the_leap_day_counts_only_in_a_leap_year() {
+        assert_eq!(
+            without_renvois("A (Renvoi : voir l'entrée du 2024-02-29) B"),
+            "A B"
+        );
+        assert_eq!(
+            without_renvois("A (Renvoi : voir l'entrée du 2026-02-29) B"),
+            "A (Renvoi : voir l'entrée du 2026-02-29) B"
+        );
+    }
+
+    #[test]
+    fn a_zero_month_or_a_zero_day_is_not_a_date() {
+        assert_eq!(
+            without_renvois("A (Renvoi : voir l'entrée du 2026-00-05) B"),
+            "A (Renvoi : voir l'entrée du 2026-00-05) B"
+        );
+        assert_eq!(
+            without_renvois("A (Renvoi : voir l'entrée du 2026-08-00) B"),
+            "A (Renvoi : voir l'entrée du 2026-08-00) B"
+        );
+    }
+
+    #[test]
     fn an_ordinary_parenthesis_is_not_a_renvoi() {
         // The journal is full of these, and dropping one would let a batch
         // rewrite a landed claim by parenthesising it.
@@ -439,6 +591,73 @@ Du texte après la table.
         assert_eq!(
             without_renvois("Un motif (Renvoi : jamais fermé"),
             "Un motif (Renvoi : jamais fermé"
+        );
+    }
+
+    /// The other half of what a renvoi promises: not just a date, but a date
+    /// this journal has an entry for. Kept out of `without_renvois` on
+    /// purpose — see `points_at_a_dated_entry` — so a new entry can never
+    /// move a landed fingerprint.
+    #[test]
+    fn every_renvoi_of_the_real_journal_points_at_an_entry_that_exists() {
+        let dangling = dangling_renvois(DESIGN);
+        assert!(
+            dangling.is_empty(),
+            "un renvoi désigne une autre entrée de ce journal — c'est ce qui \
+             le garde vérifiable après le squash. Sans cible : {dangling:?}"
+        );
+    }
+
+    #[test]
+    fn a_renvoi_to_a_date_the_journal_does_not_hold_is_dangling() {
+        let doc = "\
+## Journal des décisions
+
+| Date | Décision | Motif |
+|---|---|---|
+| 2026-07-29 | Une décision | Un motif *(Renvoi : voir l'entrée du 2099-01-01)* |
+";
+        assert_eq!(
+            dangling_renvois(doc),
+            vec![("2026-07-29".to_string(), "2099-01-01".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_renvoi_to_an_entry_the_journal_holds_is_not_dangling() {
+        let doc = "\
+## Journal des décisions
+
+| Date | Décision | Motif |
+|---|---|---|
+| 2026-07-29 | Une décision | Un motif |
+| 2026-07-30 | Une autre | Corrige *(Renvoi : voir l'entrée du 2026-07-29)* |
+";
+        assert!(dangling_renvois(doc).is_empty());
+    }
+
+    #[test]
+    fn a_parenthesis_that_is_not_a_renvoi_is_not_reported_as_dangling() {
+        // It stays inside the fingerprint, so it is the freeze that guards
+        // it; reporting it here would demand a pointer of ordinary prose.
+        let doc = "\
+## Journal des décisions
+
+| Date | Décision | Motif |
+|---|---|---|
+| 2026-07-29 | Une décision | Un motif (mesuré le 2099-01-01) |
+";
+        assert!(dangling_renvois(doc).is_empty());
+    }
+
+    #[test]
+    fn the_renvois_of_a_motif_are_listed_in_order() {
+        assert_eq!(
+            renvoi_targets(
+                "A (Renvoi : voir l'entrée du 2026-08-05) B \
+                 *(Renvoi : voir l'entrée du 2026-08-06)* C (une parenthèse)"
+            ),
+            vec!["2026-08-05".to_string(), "2026-08-06".to_string()]
         );
     }
 
