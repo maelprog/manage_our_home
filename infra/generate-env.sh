@@ -33,7 +33,7 @@ PUBLIC_BASE_URL=http://localhost
 ########################################
 # PostgreSQL
 ########################################
-# DB name (manage_our_home) and app user (mom) are fixed in docker-compose.yml.
+# DB name (manage_our_home) and app user (mhome) are fixed in docker-compose.yml.
 
 POSTGRES_PASSWORD=$(gen_pwd)
 

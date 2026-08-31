@@ -452,7 +452,7 @@ mod tests {
     /// test so two runs never collide. No `tempfile` dev-dependency for two
     /// tests.
     fn scratch_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("mom-web-{}-{}", name, std::process::id()));
+        let dir = std::env::temp_dir().join(format!("mhome-web-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch dir");
         dir
@@ -502,7 +502,7 @@ mod tests {
         // nothing — a mis-set env var, an image built without the COPY —
         // costs the fonts, which fall back to the declared stacks, but must
         // not cost the stylesheet.
-        let missing = std::env::temp_dir().join("mom-web-there-is-no-such-directory");
+        let missing = std::env::temp_dir().join("mhome-web-there-is-no-such-directory");
         let _ = std::fs::remove_dir_all(&missing);
 
         let (status, body) = get_from(&missing, stylesheet_href()).await;

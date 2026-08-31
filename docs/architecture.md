@@ -26,7 +26,7 @@ questionnaire.
    Added **MinIO** (self-hosted, S3-compatible). Fridge-scan vision model is
    split out as its own future epic, not bundled into core storage.
 3. **Google Calendar sync scoped down.** v1 is **one-way import** (Google →
-   MoM), not bidirectional real-time sync. Bidirectional sync is a
+   MHome), not bidirectional real-time sync. Bidirectional sync is a
    substantially harder problem (conflict resolution, webhook subscriptions,
    token refresh at scale) and isn't justified until import is proven useful.
 4. **Reminders must survive restarts/deploys.** Dropped the in-process
@@ -306,7 +306,7 @@ cas d'usage Kafka, stateful sur K8s ou non, mesh, registry) : voir
 ## Repo layout (monorepo)
 
 This repo is a monorepo: it holds every service around, and including,
-the MoM application itself — not just the API crate. One repo, one CI,
+the MHome application itself — not just the API crate. One repo, one CI,
 one docker-compose stack, coherent versioning across services.
 
 ```

@@ -14,7 +14,7 @@ already rely on.
 ```
 docker compose -f ../infra/docker-compose.yml up -d
 npm install
-DATABASE_URL=postgres://mom:<password>@localhost:5432/manage_our_home \
+DATABASE_URL=postgres://mhome:<password>@localhost:5432/manage_our_home \
 WEB_BASE_URL=http://localhost \
   npx playwright test
 ```
@@ -56,8 +56,8 @@ Playwright runs in its own container, give the container a resolvable
 name and pass it through:
 
 ```
-docker run --name mom-e2e-runner --network mom-e2e ... \
-  -e ICS_FIXTURE_HOST=mom-e2e-runner ...
+docker run --name mhome-e2e-runner --network mhome-e2e ... \
+  -e ICS_FIXTURE_HOST=mhome-e2e-runner ...
 ```
 
 ## `scripts/` — seeding a stack and weighing its pages

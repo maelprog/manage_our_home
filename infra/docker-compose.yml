@@ -8,7 +8,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_DB: manage_our_home
-      POSTGRES_USER: mom
+      POSTGRES_USER: mhome
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       # Consumed by postgres/init/01-admin-role.sh at first boot to create
       # the BYPASSRLS role behind ADMIN_DATABASE_URL.
@@ -67,7 +67,7 @@ services:
     restart: unless-stopped
     depends_on: [postgres, minio]
     environment:
-      DATABASE_URL: postgres://mom:${POSTGRES_PASSWORD}@postgres/manage_our_home
+      DATABASE_URL: postgres://mhome:${POSTGRES_PASSWORD}@postgres/manage_our_home
       ADMIN_DATABASE_URL: postgres://admin_role:${ADMIN_ROLE_PASSWORD}@postgres/manage_our_home
       # Behind Caddy the API is publicly reachable under /api (see
       # infra/Caddyfile), so its own public base URL — used for the Google
