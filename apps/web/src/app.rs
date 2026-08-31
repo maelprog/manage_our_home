@@ -1006,8 +1006,8 @@ mod tests {
             while let Some(at) = rest.find(&needle) {
                 rest = &rest[at + needle.len()..];
                 let end = rest.find(['"', '>', ' ']).unwrap_or(rest.len());
-                let value = if rest.starts_with('"') {
-                    &rest[1..rest[1..].find('"').map_or(rest.len(), |i| i + 1)]
+                let value = if let Some(after) = rest.strip_prefix('"') {
+                    &after[..after.find('"').unwrap_or(after.len())]
                 } else {
                     &rest[..end]
                 };
@@ -2175,7 +2175,7 @@ mod tests {
         let digits = n.to_string();
         let mut out = String::with_capacity(digits.len() + digits.len() / 3);
         for (i, c) in digits.chars().enumerate() {
-            if i > 0 && (digits.len() - i) % 3 == 0 {
+            if i > 0 && (digits.len() - i).is_multiple_of(3) {
                 out.push('\u{202f}');
             }
             out.push(c);
