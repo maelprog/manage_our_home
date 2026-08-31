@@ -1,4 +1,4 @@
-# manage_our_home (MoM)
+# manage_our_home (MHome)
 
 **Manage Our Home** is a family-management app: a shared space where the
 members of a household (a "group") organize their life together — accounts &
@@ -77,6 +77,46 @@ server-to-server over the internal Docker network.
 Stop everything with `docker compose down` (add `-v` to also wipe the
 database and storage volumes).
 
+### Upgrading a stack created before the `mhome` rename
+
+The application's Postgres role was renamed `mom` → `mhome`. `POSTGRES_USER`
+is only read when the data volume is first initialized, so an existing
+`postgres_data` volume still holds a role named `mom`, which the new
+`DATABASE_URL` will not find.
+
+Simplest fix, if the data is disposable: `docker compose down -v`, then
+`docker compose up -d` re-initializes the volume with the new role.
+
+To keep the data, rename the role in place. `mom` is the bootstrap superuser
+created by `initdb`, so it is both the only superuser and the role you would
+connect as — and Postgres refuses to rename the session user. The rename
+therefore needs a temporary superuser to run from:
+
+```sh
+cd infra
+docker compose up -d postgres          # api/web will fail to connect until this is done
+
+docker compose exec postgres \
+  psql -U mom -d manage_our_home -c \
+  "CREATE ROLE tmp_rename SUPERUSER LOGIN PASSWORD 'tmp';"
+
+docker compose exec -e PGPASSWORD=tmp postgres \
+  psql -h 127.0.0.1 -U tmp_rename -d manage_our_home -c \
+  "ALTER ROLE mom RENAME TO mhome;"
+
+docker compose exec postgres \
+  psql -U mhome -d manage_our_home -c "DROP ROLE tmp_rename;"
+
+docker compose up -d
+```
+
+Verified on `postgres:16`: the password survives the rename (it is hashed with
+`scram-sha-256`, which — unlike the legacy `md5` scheme — does not use the
+role name as salt), database ownership follows the role, and the default
+privileges granted `FOR ROLE mom` to `admin_role` carry over, since Postgres
+stores them against the role's OID. `admin_role` itself is untouched, so
+`ADMIN_DATABASE_URL` needs no change.
+
 ---
 
 ## Running the pieces by hand (local dev)
@@ -138,7 +178,7 @@ databases per test. The connecting role must have `CREATEROLE` (the RLS
 tests create/drop a scoped role to prove isolation).
 
 ```sh
-export DATABASE_URL=postgres://mom:mom@localhost:5432/postgres
+export DATABASE_URL=postgres://mhome:mhome@localhost:5432/postgres
 cargo test
 ```
 

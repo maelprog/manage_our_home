@@ -21,7 +21,7 @@ throwaway role to prove isolation against a non-superuser connection —
 see `tests/rls.rs`).
 
 ```
-export DATABASE_URL=postgres://mom:mom@localhost:5432/postgres
+export DATABASE_URL=postgres://mhome:mhome@localhost:5432/postgres
 cargo test
 ```
 
