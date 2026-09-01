@@ -1006,8 +1006,8 @@ mod tests {
             while let Some(at) = rest.find(&needle) {
                 rest = &rest[at + needle.len()..];
                 let end = rest.find(['"', '>', ' ']).unwrap_or(rest.len());
-                let value = if rest.starts_with('"') {
-                    &rest[1..rest[1..].find('"').map_or(rest.len(), |i| i + 1)]
+                let value = if let Some(after) = rest.strip_prefix('"') {
+                    &after[..after.find('"').unwrap_or(after.len())]
                 } else {
                     &rest[..end]
                 };
@@ -1017,13 +1017,19 @@ mod tests {
         out
     }
 
+    /// A ceiling, not a target: it exists so the 173 do not creep back one
+    /// route at a time. What is left is what no class can carry — a member's
+    /// computed hue, a control's one-off width, a table column's alignment —
+    /// plus the messagerie bits #72 reworks.
+    ///
+    /// At module level rather than inside the test below because
+    /// `budget_report` prints it too, and a report that restated the number
+    /// beside the guard would drift from it (#95).
+    const INLINE_STYLE_CEILING: usize = 6;
+
     #[test]
     fn inline_styles_are_bounded_to_a_justified_residue() {
-        // A ceiling, not a target: it exists so the 173 do not creep back
-        // one route at a time. What is left is what no class can carry —
-        // a member's computed hue, a control's one-off width, a table
-        // column's alignment — plus the messagerie bits #72 reworks.
-        const CEILING: usize = 6;
+        const CEILING: usize = INLINE_STYLE_CEILING;
         let counted: Vec<(String, String)> = rust_sources()
             .iter()
             .flat_map(|(path, body)| {
@@ -2158,6 +2164,294 @@ mod tests {
     /// again means redoing the arithmetic above against the sheet of the
     /// day and saying so in the PR body, as #72 did.
     const DECLARATIONS_CEILING: usize = 3 * 1024 + 64;
+
+    /// A byte count with its thousands separated, as DESIGN.md writes
+    /// numbers — `10 926`, not `10926`.
+    ///
+    /// A narrow no-break space (U+202F) rather than a plain one: the report
+    /// is read in a terminal and a plain space lets a line break fall in the
+    /// middle of a figure, which is how "10 926" becomes two numbers.
+    fn thousands(n: usize) -> String {
+        let digits = n.to_string();
+        let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+        for (i, c) in digits.chars().enumerate() {
+            if i > 0 && (digits.len() - i).is_multiple_of(3) {
+                out.push('\u{202f}');
+            }
+            out.push(c);
+        }
+        out
+    }
+
+    /// A permille-precision percentage, French-style — `17,9`.
+    fn percent(part: f64, whole: f64) -> String {
+        format!("{:.1}", 100.0 * part / whole).replace('.', ",")
+    }
+
+    /// A one-decimal byte figure, French-style — `2 154,7`, `-2 154,7`.
+    ///
+    /// Rounds *once*, on the scaled value, then splits. Rounding the whole
+    /// part and the fraction separately loses the carry (`11 157,96` prints
+    /// `11 157,10`), and clamping the whole part loses the sign — which
+    /// matters here, because the one figure that can go negative is the
+    /// inversion margin, whose sign is the message.
+    fn tenths(n: f64) -> String {
+        let scaled = (n * 10.0).round();
+        let sign = if scaled < 0.0 { "-" } else { "" };
+        let abs = scaled.abs() as usize;
+        format!("{sign}{},{}", thousands(abs / 10), abs % 10)
+    }
+
+    #[test]
+    fn thousands_groups_from_the_right() {
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(65), "65");
+        assert_eq!(thousands(1_024), "1\u{202f}024");
+        assert_eq!(thousands(10_926), "10\u{202f}926");
+        assert_eq!(thousands(1_000_000), "1\u{202f}000\u{202f}000");
+    }
+
+    #[test]
+    fn percent_and_tenths_use_the_french_decimal_comma() {
+        assert_eq!(percent(2_386.0, 13_312.0), "17,9");
+        assert_eq!(tenths(2_154.7), "2\u{202f}154,7");
+        assert_eq!(tenths(11_157.3), "11\u{202f}157,3");
+    }
+
+    /// Rounding a tenth up has to carry into the units, and past them.
+    ///
+    /// Written because the first version of `tenths` truncated the whole part
+    /// and rounded the fraction *separately*, so anything from x.95 up
+    /// printed a tenth of "10": `11 157,10`. The two figures this function
+    /// exists for are read as budget headroom — a tenth that reads as ten is
+    /// the kind of thing nobody re-checks.
+    #[test]
+    fn tenths_carries_into_the_whole_part() {
+        assert_eq!(tenths(11_157.96), "11\u{202f}158,0");
+        assert_eq!(tenths(999.97), "1\u{202f}000,0");
+        assert_eq!(tenths(9.95), "10,0");
+        assert_eq!(tenths(0.04), "0,0");
+    }
+
+    /// A negative inversion margin is the whole point of printing one: it
+    /// says the two guards have swapped order. The first version clamped the
+    /// whole part at zero and dropped the sign, so `-2 154,7` printed `0,7`.
+    #[test]
+    fn tenths_keeps_the_sign_of_a_negative_margin() {
+        assert_eq!(tenths(-2_154.7), "-2\u{202f}154,7");
+        assert_eq!(tenths(-0.4), "-0,4");
+        assert_eq!(tenths(0.0), "0,0");
+    }
+
+    /// What is left under a ceiling — or, past it, by how much.
+    ///
+    /// One function for both sides because the first version had them apart:
+    /// the byte count was a `saturating_sub` and the percentage on the same
+    /// line was not, so the report panicked with a subtract overflow exactly
+    /// when a guard went red. A report that is the single source of the
+    /// budget cannot be the one thing that stops working the day the budget
+    /// is blown.
+    fn headroom(value: usize, ceiling: usize) -> String {
+        if value <= ceiling {
+            let left = ceiling - value;
+            format!(
+                "{} o  ({} % du plafond)",
+                thousands(left),
+                percent(left as f64, ceiling as f64)
+            )
+        } else {
+            format!("DÉPASSÉ de {} o", thousands(value - ceiling))
+        }
+    }
+
+    /// A ceiling written the way its constant is written — `13 × 1024`,
+    /// `3 × 1024 + 64` — derived rather than copied beside it. A literal
+    /// there would go on saying `13 × 1024` after the constant moved, which
+    /// is the exact defect this whole report exists to remove.
+    fn kib_expression(n: usize) -> String {
+        match (n / 1024, n % 1024) {
+            (kib, 0) => format!("{kib} × 1024"),
+            (kib, rest) => format!("{kib} × 1024 + {rest}"),
+        }
+    }
+
+    #[test]
+    fn headroom_reports_both_sides_of_a_ceiling() {
+        assert_eq!(
+            headroom(10_926, 13_312),
+            "2\u{202f}386 o  (17,9 % du plafond)"
+        );
+        assert_eq!(headroom(13_312, 13_312), "0 o  (0,0 % du plafond)");
+    }
+
+    /// The case that used to panic: over budget.
+    #[test]
+    fn headroom_does_not_panic_past_the_ceiling() {
+        assert_eq!(headroom(13_400, 13_312), "DÉPASSÉ de 88 o");
+        assert_eq!(headroom(30_000, 3_136), "DÉPASSÉ de 26\u{202f}864 o");
+    }
+
+    #[test]
+    fn a_ceiling_prints_the_arithmetic_of_its_own_constant() {
+        assert_eq!(kib_expression(13 * 1024), "13 × 1024");
+        assert_eq!(kib_expression(3 * 1024 + 64), "3 × 1024 + 64");
+    }
+
+    /// **The one command that prints the budget** (#95).
+    ///
+    /// ```text
+    /// cargo test -p manage_our_home_web budget_report -- --nocapture
+    /// ```
+    ///
+    /// DESIGN.md used to restate these figures in prose, and they went stale
+    /// at every PR: the verification of #72 spent five rounds on them and
+    /// found the defect in the prose every single time, never in the code.
+    /// So the document stopped carrying them and points here instead.
+    ///
+    /// **Why a test and not an `xtask` or a small binary.** The report has to
+    /// be measured by *the same encoder as the guards*, not by one that
+    /// merely claims to be the same — three verification findings came out of
+    /// confusing flate2 level 6 with the system zlib and with Node's. A test
+    /// in this module calls the very `gzipped` the two assertions call and
+    /// reads the very constants they compare against, so the two cannot drift.
+    /// The alternatives cannot: `flate2` is deliberately a dev-dependency
+    /// (see apps/web/Cargo.toml — nothing in the shipped binary compresses
+    /// anything), and this crate has no `lib` target, so an `xtask` or a
+    /// second `[[bin]]` would have to re-declare both the encoder and its
+    /// level, which is exactly the ambiguity this report exists to close.
+    ///
+    /// It asserts nothing on purpose — the assertions are the two tests
+    /// below. This one only reads what they read out loud.
+    #[test]
+    fn budget_report() {
+        let sheet_raw = crate::assets::STYLESHEET.len();
+        let sheet = gzipped(crate::assets::STYLESHEET.as_bytes());
+        let declarations_source = css();
+        let declarations_raw = declarations_source.len();
+        let declarations = gzipped(declarations_source.as_bytes());
+
+        // The share of the compressed sheet the declarations occupy, and the
+        // two readings of the ordering constraint it produces. The pair of
+        // guards inverts — the sheet ceiling firing before the declarations
+        // one — when `SHEET_CEILING` drops below this floor.
+        let share = declarations as f64 / sheet as f64;
+        let inversion_floor = DECLARATIONS_CEILING as f64 / share;
+        let inversion_margin = SHEET_CEILING as f64 - inversion_floor;
+        let declarations_at_inversion = SHEET_CEILING as f64 * share;
+
+        let inline_styles: usize = rust_sources()
+            .iter()
+            .map(|(_, body)| inline_styles(body).len())
+            .sum();
+
+        // One `String` per line rather than one long literal: a `\` line
+        // continuation in a Rust string eats the following line's indentation,
+        // which is exactly the indentation this report is made of.
+        let rule = "─".repeat(66);
+        let lines: Vec<String> = vec![
+            String::new(),
+            format!("┌{rule}"),
+            "│ DESIGN.md · état du budget de la feuille".to_string(),
+            format!("└{rule}"),
+            String::new(),
+            "Encodeur : flate2 niveau 6 (`Compression::default()`), celui de".to_string(),
+            "`gzipped` dans apps/web/src/app.rs — le seul qui décide si les deux".to_string(),
+            "garde-fous passent. Le zlib système et celui de Node".to_string(),
+            "(`npm run measure`) rendent quelques octets de moins sur la même".to_string(),
+            "feuille : un chiffre de budget sans le nom de son encodeur ne veut".to_string(),
+            "rien dire.".to_string(),
+            String::new(),
+            "Feuille — apps/web/src/style.css, telle que le binaire la sert".to_string(),
+            format!(
+                "  brut ...................................... {} o",
+                thousands(sheet_raw)
+            ),
+            format!(
+                "  compressée ................................ {} o",
+                thousands(sheet)
+            ),
+            format!(
+                "  SHEET_CEILING ............................. {} o  ({})",
+                thousands(SHEET_CEILING),
+                kib_expression(SHEET_CEILING)
+            ),
+            format!(
+                "  reste ..................................... {}",
+                headroom(sheet, SHEET_CEILING)
+            ),
+            String::new(),
+            "Déclarations — la même feuille, commentaires retirés".to_string(),
+            format!(
+                "  brut ...................................... {} o",
+                thousands(declarations_raw)
+            ),
+            format!(
+                "  compressées ............................... {} o",
+                thousands(declarations)
+            ),
+            format!(
+                "  DECLARATIONS_CEILING ...................... {} o  ({})",
+                thousands(DECLARATIONS_CEILING),
+                kib_expression(DECLARATIONS_CEILING)
+            ),
+            format!(
+                "  reste ..................................... {}",
+                headroom(declarations, DECLARATIONS_CEILING)
+            ),
+            String::new(),
+            "Part des commentaires — ce que la prose pèse dans la feuille".to_string(),
+            format!(
+                "  du brut ................................... {} %",
+                percent((sheet_raw - declarations_raw) as f64, sheet_raw as f64)
+            ),
+            format!(
+                "  du compressé .............................. {} %",
+                percent((sheet - declarations) as f64, sheet as f64)
+            ),
+            String::new(),
+            "Ordre des deux garde-fous — lequel mord en premier".to_string(),
+            format!(
+                "  part des déclarations dans la feuille ..... {} %",
+                percent(declarations as f64, sheet as f64)
+            ),
+            format!(
+                "  plancher d'inversion (SHEET_CEILING mini) . {} o",
+                tenths(inversion_floor)
+            ),
+            format!(
+                "  marge d'inversion ......................... {} o",
+                tenths(inversion_margin)
+            ),
+            format!(
+                "  DECLARATIONS_CEILING d'inversion .......... {} o",
+                tenths(declarations_at_inversion)
+            ),
+            format!(
+                "  → {} mord en premier.",
+                if inversion_margin > 0.0 {
+                    "DECLARATIONS_CEILING"
+                } else {
+                    "SHEET_CEILING"
+                }
+            ),
+            String::new(),
+            "Styles inline résiduels dans les routes".to_string(),
+            format!("  comptés ................................... {inline_styles}"),
+            format!("  plafond ................................... {INLINE_STYLE_CEILING}"),
+            String::new(),
+            "Ce que ce rapport ne sait pas".to_string(),
+            "  Le budget de réponse (14 KiB, seuil 1 de DESIGN.md) dépend du".to_string(),
+            "  volume de données d'un foyer : aucun test unitaire ne peut le".to_string(),
+            "  connaître, et son encodeur est celui de Caddy, pas celui-ci. Il".to_string(),
+            "  se mesure sur une stack semée — `npm run seed` puis".to_string(),
+            "  `npm run measure` dans e2e/ — et une stack vide sous-estime le".to_string(),
+            "  document d'un facteur deux à trois.".to_string(),
+            String::new(),
+            format!("└{rule}"),
+            String::new(),
+        ];
+        println!("{}", lines.join("\n"));
+    }
 
     #[test]
     fn the_compressed_stylesheet_still_arrives_in_one_round_trip() {

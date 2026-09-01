@@ -1,0 +1,69 @@
+# Empreintes des entrées atterries du journal de DESIGN.md (#95).
+#
+# Une ligne par entrée, dans l'ordre du tableau :
+#   <empreinte>  <date>  <début de la décision>
+# L'empreinte couvre la date, la décision et le motif *privé de ses renvois* :
+# ajouter un renvoi à une entrée atterrie est la seule modification que la
+# convention autorise, et c'est la seule qui ne bouge pas cette ligne.
+#
+# Étape intérimaire : le point de comparaison doit devenir `main` lui-même
+# (`git show origin/main:DESIGN.md`), seul montage qu'une PR ne puisse pas
+# éditer. Décidé, reporté à une issue de suivi — ça touche la CI.
+#
+# Ce fichier ne s'édite pas à la main. Après avoir ajouté des entrées :
+#   cargo test -p manage_our_home_web design_journal_lock_print -- --nocapture
+# et recopier la sortie ici. Une ligne *ajoutée à la fin* est une entrée
+# nouvelle ; une ligne *modifiée au milieu* est une entrée atterrie réécrite,
+# ce que DESIGN.md → Journal des décisions interdit.
+#
+# Le garde-fou : apps/web/src/design_journal.rs
+24c2e3de287df5c4  2026-07-29  Système de design initial
+179c9166d870974c  2026-07-29  Sidebar persistante desktop, onglets bas mobile
+d3f68ced82121ab5  2026-07-29  Fraunces en titres (pari assumé)
+8ceb70cb6824c80e  2026-07-29  Neutres chauds plutôt que blanc/gris-bleu
+25f47998901ddba8  2026-07-29  Couleurs membres dérivées du `user_id`
+e249bfc9fb4a7af1  2026-07-29  Polices auto-hébergées, pas de CDN
+0dad5e0b6cafe3fa  2026-07-29  Replis `var(--x, #hex)` interdits
+fd55975b2c7f71dc  2026-07-29  Vue jour + bandeau de semaine sur téléphone, `view=day`
+6951768f25890def  2026-07-29  Plancher typographique remonté sous 861 px
+28bd2d3157accb66  2026-07-30  Classes de soutien ajoutées au tableau des composants (#68)
+de8274cf31cf6d29  2026-07-30  `--accent-bg` et `--chip-bg` retirés (#68)
+5e1998580f1819aa  2026-07-30  `.badge.warn` reste un `--error` plein (#68)
+527781af22dfb0e7  2026-07-30  CSS inliné — décision datée, plus une propriété héritée (#83
+860af476a793caef  2026-07-30  Budget de livraison : 14 KiB compressés par réponse, 10 KiB 
+db03eaf3da63663f  2026-07-30  `encode zstd gzip` dans `infra/Caddyfile` (#83)
+adee150a824dc350  2026-07-30  `/messagerie` constatée hors du budget de 14 KiB (#83)
+3a0b1a3d71a1d8e0  2026-07-30  Pas de `CompressionLayer` dans `apps/web` (#83)
+d9da6bdc62fa01dc  2026-07-30  BREACH : aucune route exclue de `encode` (#83)
+9a5f03210992ee20  2026-07-31  Jetons `--accent-hover` / `--error-hover` (#69)
+36a3b43a2fa8afec  2026-07-31  Le lien de nav courant se décide sur le premier segment de c
+a27c0d9f9ebe016e  2026-07-31  Les champs neutralisent l'anneau du navigateur avec `outline
+72d6a9cbbaf71a55  2026-07-31  `prefers-reduced-motion` neutralise en remettant `--dur` à 0
+8d9962adb222e061  2026-07-31  Marges du budget : une seule formule, `(plafond − actuel) / 
+19c6fe221de64cc2  2026-07-31  `shell()` prend la largeur **et** la navigation (#70)
+3e7246ddc8bde728  2026-07-31  Un seul markup de navigation pour les deux dispositions (#70
+b2c677864c4adaf8  2026-07-31  Barre d'onglets à défilement latéral, sans icônes (#70)
+76a43ee9e62c4a7b  2026-07-31  Plancher typographique écrit à l'envers (#70)
+65fd8f3a607cc3b4  2026-08-03  **Fin de l'inlining : la feuille passe sur `/assets` (#89)**
+81e7febe848d70f3  2026-08-04  Une page peut sortir sans style pendant un déploiement (#89)
+5cba2245a4e5af5e  2026-08-03  L'URL de la feuille est l'empreinte SHA-256 de la constante 
+b4192ea373480b15  2026-08-04  Plafond de feuille : **10 KiB → 11 KiB** (11 264 o), dérivat
+72f5dadea9acb202  2026-08-04  Plafond des déclarations : **inchangé à 3 KiB**, mais son mo
+b29e72f9deb27782  2026-08-04  Le « 0,34 octet » de marge d'inversion est une mesure, pas u
+e5ba355b1a63e014  2026-08-03  Pas de `rel=preload` sur les polices (#89)
+7bbadcb8f9b5955f  2026-08-03  Seuil d'absurdité du mesureur : 2 048 → 1 024 o (#89)
+78caa8f8bdb2b5ec  2026-08-05  `.list-row.mine` se décide sur l'écriture, jamais sur `can_m
+5a7a73b1ba883d9a  2026-08-05  Le message propre prend `--surface` + une barre `--accent`, 
+028b6bdd8db31f6d  2026-08-05  La zone de saisie ne colle qu'au-dessus de 861 px (#72)
+150481ff3ad744e6  2026-08-05  Plafond des déclarations : **3 072 → 3 136** (#72)
+7c69f75ae1194b4c  2026-08-05  Le `<script>` inline de la messagerie n'est **pas** émis inc
+b300b0833016b526  2026-08-06  Plafond de feuille : **11 KiB → 13 KiB** (13 312 o) (#72)
+64e95c1cd19eb963  2026-08-06  Le tarif d'un paragraphe se mesure en supprimant de vrais co
+d1ff2e9b4c4ca8fe  2026-08-06  #89 n'avait rien omis : ce que #72 relève, c'est une allocat
+d3e91b02ff3932b9  2026-08-06  13 312 est un arrondi **sous** sa borne physique, pas cette 
+abf56e5a2ff9b3af  2026-08-29  Le tarif d'un paragraphe sort de la prose : « 73 à 125 o » é
+59316e4bb749dfaf  2026-08-29  La convention de ce journal ne vaut que pour les entrées **a
+5bdfab93dc565e52  2026-08-29  `SHEET_CEILING` ne se relève pas sans arbitrage, écrit là où
+3b130e0ddaec6765  2026-08-30  Les valeurs mesurées sortent de la prose de ce document (#95
+091cb95d0719106f  2026-08-30  La convention de ce journal est tenue par un garde-fou, pas 
+7ccce016ce409033  2026-08-30  Le texte que citent deux entrées du 2026-08-06, restaté (#95
