@@ -340,6 +340,60 @@ pub fn member_colour(user_id: Uuid) -> &'static str {
     MEMBER_RAMP[sum as usize % MEMBER_RAMP.len()]
 }
 
+/// The CSS colour expression for an event's assignees (issue #73): a single
+/// member's own token, or — for several assignees — the running average of
+/// their tokens, mixed *in the browser* via chained `color-mix(in srgb, …)`
+/// rather than averaged into one fixed hex value on the server.
+///
+/// That distinction is not an implementation detail: `member_colour` hands
+/// back a token name (`--m3`), never a hex value, precisely because the
+/// concrete colour behind it differs between the light and dark theme
+/// (`:root` vs. `@media (prefers-color-scheme: dark)`). Pre-computing a
+/// server-side RGB average would have to pick *one* theme's hex table to
+/// average from, freezing the result at that theme forever — reintroducing,
+/// for this one dynamic case, the exact bug class DESIGN.md's ban on
+/// hardcoded `var(--x, #hex)` fallbacks exists to prevent (the agenda dark
+/// theme regression named in `.claude/CLAUDE.md`). `color-mix()` mixes the
+/// *tokens*, so the mixed result still tracks each one's own light/dark
+/// declaration.
+///
+/// `color-mix(in srgb, …)` blends each channel linearly, which is what
+/// "average per RGB channel" means operationally — the browser is doing
+/// that arithmetic instead of this function, on values this function never
+/// has to know as numbers. Chained one colour at a time (each new colour
+/// mixed in at weight `1/(k+1)` where `k+1` is the count mixed so far) is
+/// how a running *unweighted* mean is expressed as pairwise mixes: after
+/// mixing colour `k+1`, the accumulator is provably the average of the
+/// first `k+1` colours.
+///
+/// A result of this function is deliberately not one of the eight `--m*`
+/// ramp tokens for more than one assignee — an accepted, narrow exception
+/// to the token system (DESIGN.md journal), not a precedent for computed
+/// colours generally.
+///
+/// Empty input is not expected (an event always keeps at least its creator
+/// as an assignee, see `resolve_assignees` on the backend) but falls back
+/// to `--accent` rather than emitting an empty `color:` declaration —
+/// historical data from before this migration is the one realistic way to
+/// hit it.
+pub fn combined_member_colour(tokens: &[&str]) -> String {
+    match tokens {
+        [] => "var(--accent)".to_string(),
+        [only] => format!("var({only})"),
+        [first, rest @ ..] => {
+            let mut acc = format!("var({first})");
+            for (i, token) in rest.iter().enumerate() {
+                // After mixing this (i+2)-th colour in, weight it 1/(i+2)
+                // against the accumulator's (i+1)/(i+2) — the running-mean
+                // identity above.
+                let weight = 100.0 / (i as f64 + 2.0);
+                acc = format!("color-mix(in srgb, {acc}, var({token}) {weight:.4}%)");
+            }
+            acc
+        }
+    }
+}
+
 /// The initial shown in a member's `.avatar`, uppercased.
 ///
 /// Colour is never the only carrier of the information (WCAG 1.4.1): the
@@ -506,6 +560,155 @@ mod tests {
             MEMBER_RAMP.len(),
             "hues actually used: {used:?}"
         );
+    }
+
+    // -- combined_member_colour (#73) -----------------------------------
+
+    #[test]
+    fn one_colour_is_returned_unmixed() {
+        assert_eq!(combined_member_colour(&["--m3"]), "var(--m3)");
+    }
+
+    #[test]
+    fn two_colours_mix_at_an_even_split() {
+        assert_eq!(
+            combined_member_colour(&["--m1", "--m2"]),
+            "color-mix(in srgb, var(--m1), var(--m2) 50.0000%)"
+        );
+    }
+
+    #[test]
+    fn three_colours_chain_into_a_running_average() {
+        // Sequential mixing computes a true unweighted average: after
+        // mixing in colour k+1 at weight 1/(k+1), the accumulator holds the
+        // average of the first k+1 colours — same identity a running mean
+        // uses. Weight of the 3rd colour is 1/3 ≈ 33.3333%.
+        assert_eq!(
+            combined_member_colour(&["--m1", "--m2", "--m3"]),
+            "color-mix(in srgb, color-mix(in srgb, var(--m1), var(--m2) 50.0000%), var(--m3) 33.3333%)"
+        );
+    }
+
+    /// Evaluates a `combined_member_colour` expression numerically, giving
+    /// each `--mN` token the stand-in value `N`. One channel is enough:
+    /// `color-mix(in srgb, …)` blends every channel by the same linear
+    /// rule, so what holds for one holds for red, green and blue alike.
+    ///
+    /// Written as a parser over the produced string, not as a second copy
+    /// of the weight chain: a reimplementation would agree with a wrong
+    /// implementation. The grammar is exactly the two shapes the function
+    /// emits — `var(--mN)`, and `color-mix(in srgb, <expr>, var(--mN)
+    /// W%)`. The accumulator always nests on the *left*, so the last
+    /// `", var("` in the body separates the two operands (the right-hand
+    /// one holds no comma).
+    fn eval_mix(expr: &str) -> f64 {
+        // Assembled, like `var_of` and `inline_styles` above: this file is
+        // one of the sources `every_token_referenced_anywhere_is_defined_in_root`
+        // scans, and a literal `var(--m` here would read as a reference to
+        // a token named `--m`.
+        let ramp_prefix = format!("var({}m", "--");
+        let Some(rest) = expr.strip_prefix("color-mix(in srgb, ") else {
+            let n = expr
+                .strip_prefix(&ramp_prefix)
+                .and_then(|r| r.strip_suffix(')'))
+                .unwrap_or_else(|| panic!("not a ramp token: {expr}"));
+            return n.parse().expect("ramp token index");
+        };
+        let body = rest.strip_suffix(')').expect("closing paren");
+        let split = body.rfind(", var(").expect("two operands");
+        let (left, right) = body.split_at(split);
+        let (token, weight) = right
+            .trim_start_matches(", ")
+            .split_once(' ')
+            .expect("weighted operand");
+        let weight: f64 = weight
+            .trim_end_matches('%')
+            .parse::<f64>()
+            .expect("percentage")
+            / 100.0;
+        eval_mix(left) * (1.0 - weight) + eval_mix(token) * weight
+    }
+
+    /// How far an evaluated mix may sit from the exact arithmetic mean.
+    /// Not slack for a wrong chain: `combined_member_colour` writes each
+    /// weight with four decimals (`33.3333%` for a third), so the error is
+    /// the rounding the CSS itself carries — about 1e-6 relative, over a
+    /// stand-in range of 1..8. A wrong chain is off by whole units.
+    const MIX_EPS: f64 = 1e-4;
+
+    #[test]
+    fn the_evaluator_reads_back_what_the_mixer_writes() {
+        // Guard on the guard: the two tests below are only worth something
+        // if this parser really understands the expressions.
+        assert!((eval_mix("var(--m3)") - 3.0).abs() < MIX_EPS);
+        assert!((eval_mix(&combined_member_colour(&["--m1", "--m3"])) - 2.0).abs() < MIX_EPS);
+    }
+
+    #[test]
+    fn the_chain_computes_the_plain_average_of_its_colours() {
+        // The `1/(k+1)` weight chain is claimed to be a running *unweighted*
+        // mean; this is that claim, checked on the emitted expression.
+        for tokens in [
+            vec!["--m2", "--m6"],
+            vec!["--m1", "--m2", "--m3"],
+            vec!["--m1", "--m2", "--m3", "--m8"],
+            vec!["--m4", "--m4", "--m7", "--m1", "--m5"],
+        ] {
+            let expected: f64 = tokens
+                .iter()
+                .map(|t| t.trim_start_matches("--m").parse::<f64>().unwrap())
+                .sum::<f64>()
+                / tokens.len() as f64;
+            let got = eval_mix(&combined_member_colour(&tokens));
+            assert!(
+                (got - expected).abs() < MIX_EPS,
+                "{tokens:?}: {got} != {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn order_does_not_change_the_colour_that_comes_out() {
+        // The name of this test used to promise an order property that its
+        // body did not check — it only asserted both tokens appeared
+        // somewhere in each string (#98 verification, round 2). The two
+        // expressions genuinely differ as text (the nesting order does),
+        // so the property has to be checked on what they *evaluate to*.
+        let permutations = [
+            vec!["--m1", "--m4", "--m6"],
+            vec!["--m4", "--m6", "--m1"],
+            vec!["--m6", "--m1", "--m4"],
+            vec!["--m6", "--m4", "--m1"],
+        ];
+        let first = eval_mix(&combined_member_colour(&permutations[0]));
+        for tokens in &permutations[1..] {
+            let got = eval_mix(&combined_member_colour(tokens));
+            assert!(
+                (got - first).abs() < MIX_EPS,
+                "{tokens:?}: {got} != {first}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_assignees_falls_back_to_the_accent_token() {
+        // Not expected in practice (an event always has at least the
+        // creator as assignee — `resolve_assignees` on the backend), but
+        // historical data or a future relaxation of that rule should still
+        // render *something* rather than an empty `color:` declaration.
+        assert_eq!(combined_member_colour(&[]), "var(--accent)");
+    }
+
+    #[test]
+    fn a_mix_expression_never_hardcodes_a_hex_colour() {
+        // The whole point of mixing `var()` references in the browser
+        // instead of averaging RGB numbers on the server: the result keeps
+        // tracking each token's own light/dark declaration instead of
+        // freezing at whichever theme was active when it was computed —
+        // the exact failure mode DESIGN.md's `var(--x, #hex)` ban exists
+        // to prevent (see the module doc comment on `combined_member_colour`).
+        let expr = combined_member_colour(&["--m1", "--m2", "--m3", "--m4"]);
+        assert!(!expr.contains('#'), "{expr}");
     }
 
     #[test]

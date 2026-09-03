@@ -886,3 +886,348 @@ async fn removed_member_ws_closes_within_recheck_bound(db: PgPool) {
 
     owner_ws.close(None).await.ok();
 }
+
+// -- read state / unread (#73, blockers found by #98's round-2 verification) --
+//
+// The dashboard's "Messages non lus" card is built entirely on
+// `POST /groups/:id/messages/read` and `GET …/messages?unread=true`, and
+// neither had a flow test: both blockers of round 2 lived in exactly this
+// surface. These cover the contract the web layer relies on
+// (`apps/web/src/routes/messagerie/thread.rs::read_watermark`).
+
+/// Posts a message and returns `(id, created_at)`.
+async fn post_message(
+    router: &axum::Router,
+    group_id: &str,
+    cookie: &str,
+    content: &str,
+) -> (String, String) {
+    let res = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/messages"),
+        Some(cookie),
+        Some(serde_json::json!({ "content": content })),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let body = json_body(res).await;
+    (
+        body["id"].as_str().unwrap().to_string(),
+        body["created_at"].as_str().unwrap().to_string(),
+    )
+}
+
+/// `GET …/messages?unread=true`, returning the contents in the order the
+/// API sent them plus `(has_more, unread_total)`.
+async fn unread(
+    router: &axum::Router,
+    group_id: &str,
+    cookie: &str,
+    limit: Option<i64>,
+) -> (Vec<String>, bool, i64) {
+    let mut path = format!("/groups/{group_id}/messages?unread=true");
+    if let Some(limit) = limit {
+        path.push_str(&format!("&limit={limit}"));
+    }
+    let res = call(router, Method::GET, &path, Some(cookie), None).await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    let contents = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["content"].as_str().unwrap().to_string())
+        .collect();
+    (
+        contents,
+        body["has_more"].as_bool().unwrap(),
+        body["unread_total"].as_i64().unwrap(),
+    )
+}
+
+async fn mark_read(router: &axum::Router, group_id: &str, cookie: &str, up_to: Option<&str>) {
+    let path = match up_to {
+        Some(t) => format!("/groups/{group_id}/messages/read?up_to={t}"),
+        None => format!("/groups/{group_id}/messages/read"),
+    };
+    let res = call(router, Method::POST, &path, Some(cookie), None).await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+}
+
+/// The nominal cycle: everything is unread until the marker is set, then
+/// only what arrived after it.
+#[sqlx::test]
+async fn unread_lists_only_what_arrived_after_the_read_marker(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner = register_verify_login(
+        &router,
+        &db,
+        "msg-read-owner@example.test",
+        "owner-password1",
+    )
+    .await;
+    let member = register_verify_login(
+        &router,
+        &db,
+        "msg-read-member@example.test",
+        "member-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner, "Foyer lecture").await;
+    invite_and_join(&router, &group_id, &owner, &member).await;
+
+    post_message(&router, &group_id, &member, "un").await;
+    let (_, second_at) = post_message(&router, &group_id, &member, "deux").await;
+
+    // Never read anything: both are unread.
+    let (contents, has_more, total) = unread(&router, &group_id, &owner, None).await;
+    assert_eq!(contents.len(), 2, "{contents:?}");
+    assert!(!has_more);
+    assert_eq!(total, 2);
+
+    mark_read(&router, &group_id, &owner, Some(&second_at)).await;
+    let (contents, _, total) = unread(&router, &group_id, &owner, None).await;
+    assert!(contents.is_empty(), "{contents:?}");
+    assert_eq!(total, 0);
+
+    // A newer message is unread again — and only for the reader who marked.
+    post_message(&router, &group_id, &member, "trois").await;
+    let (contents, _, total) = unread(&router, &group_id, &owner, None).await;
+    assert_eq!(contents, vec!["trois".to_string()]);
+    assert_eq!(total, 1);
+
+    // The member never marked anything read, so all three are unread for them.
+    let (contents, _, total) = unread(&router, &group_id, &member, None).await;
+    assert_eq!(contents.len(), 3, "{contents:?}");
+    assert_eq!(total, 3);
+}
+
+/// Blocker B1 as a backend contract: marking read "up to" an older message
+/// must leave everything newer unread. This is what lets
+/// `apps/web`'s thread mark only as far as the page it actually rendered,
+/// instead of up to `now()` — anything posted between the listing and the
+/// mark had never been shown, and `0012_message_read_state.sql` has no way
+/// to make a message unread again.
+#[sqlx::test]
+async fn marking_read_up_to_an_older_message_leaves_the_newer_ones_unread(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner = register_verify_login(
+        &router,
+        &db,
+        "msg-part-owner@example.test",
+        "owner-password1",
+    )
+    .await;
+    let member = register_verify_login(
+        &router,
+        &db,
+        "msg-part-member@example.test",
+        "member-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner, "Foyer partiel").await;
+    invite_and_join(&router, &group_id, &owner, &member).await;
+
+    let (_, first_at) = post_message(&router, &group_id, &member, "vu").await;
+    post_message(&router, &group_id, &member, "jamais affiché A").await;
+    post_message(&router, &group_id, &member, "jamais affiché B").await;
+
+    mark_read(&router, &group_id, &owner, Some(&first_at)).await;
+
+    let (contents, _, total) = unread(&router, &group_id, &owner, None).await;
+    assert_eq!(total, 2, "{contents:?}");
+    assert!(
+        contents.contains(&"jamais affiché A".to_string()),
+        "{contents:?}"
+    );
+    assert!(
+        contents.contains(&"jamais affiché B".to_string()),
+        "{contents:?}"
+    );
+    assert!(!contents.contains(&"vu".to_string()), "{contents:?}");
+}
+
+/// The marker only moves forward: a late or stale request carrying an older
+/// `up_to` cannot resurrect messages as unread (which the dashboard would
+/// then re-announce), and replaying the same call is a no-op.
+#[sqlx::test]
+async fn the_read_marker_never_moves_backwards(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner = register_verify_login(
+        &router,
+        &db,
+        "msg-mono-owner@example.test",
+        "owner-password1",
+    )
+    .await;
+    let member = register_verify_login(
+        &router,
+        &db,
+        "msg-mono-member@example.test",
+        "member-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner, "Foyer monotone").await;
+    invite_and_join(&router, &group_id, &owner, &member).await;
+
+    let (_, first_at) = post_message(&router, &group_id, &member, "un").await;
+    let (_, second_at) = post_message(&router, &group_id, &member, "deux").await;
+
+    mark_read(&router, &group_id, &owner, Some(&second_at)).await;
+    mark_read(&router, &group_id, &owner, Some(&first_at)).await;
+    mark_read(&router, &group_id, &owner, Some(&second_at)).await;
+
+    let (contents, _, total) = unread(&router, &group_id, &owner, None).await;
+    assert!(contents.is_empty(), "{contents:?}");
+    assert_eq!(total, 0);
+}
+
+/// `up_to` is clamped to `now()`: a caller cannot mark messages that do not
+/// exist yet as read, which would otherwise silence the card for good.
+#[sqlx::test]
+async fn a_future_up_to_cannot_mark_messages_that_do_not_exist_yet(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner = register_verify_login(
+        &router,
+        &db,
+        "msg-fut-owner@example.test",
+        "owner-password1",
+    )
+    .await;
+    let member = register_verify_login(
+        &router,
+        &db,
+        "msg-fut-member@example.test",
+        "member-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner, "Foyer futur").await;
+    invite_and_join(&router, &group_id, &owner, &member).await;
+
+    mark_read(
+        &router,
+        &group_id,
+        &owner,
+        Some("2099-01-01T00:00:00.000000Z"),
+    )
+    .await;
+    post_message(&router, &group_id, &member, "après").await;
+
+    let (contents, _, total) = unread(&router, &group_id, &owner, None).await;
+    assert_eq!(contents, vec!["après".to_string()]);
+    assert_eq!(total, 1);
+}
+
+/// Mi3: the unread page is capped by `limit`, so it has to say how much it
+/// is not showing — the dashboard renders "+N autre(s)" from `unread_total`
+/// and `has_more`. Both used to be `false`/absent, and a member with eight
+/// unread messages saw five with no hint of the rest.
+#[sqlx::test]
+async fn a_capped_unread_page_reports_how_many_are_left(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner = register_verify_login(
+        &router,
+        &db,
+        "msg-cap-owner@example.test",
+        "owner-password1",
+    )
+    .await;
+    let member = register_verify_login(
+        &router,
+        &db,
+        "msg-cap-member@example.test",
+        "member-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner, "Foyer plafonné").await;
+    invite_and_join(&router, &group_id, &owner, &member).await;
+
+    for i in 0..8 {
+        post_message(&router, &group_id, &member, &format!("message {i}")).await;
+    }
+
+    let (contents, has_more, total) = unread(&router, &group_id, &owner, Some(5)).await;
+    assert_eq!(contents.len(), 5, "{contents:?}");
+    assert!(has_more, "five of eight unread is not the whole set");
+    assert_eq!(total, 8);
+
+    // Newest first, same order as a normal listing.
+    assert_eq!(contents[0], "message 7");
+
+    let (contents, has_more, total) = unread(&router, &group_id, &owner, Some(50)).await;
+    assert_eq!(contents.len(), 8);
+    assert!(!has_more);
+    assert_eq!(total, 8);
+}
+
+/// The read marker is per (family, member) and RLS-scoped: marking read in
+/// one family says nothing about another.
+#[sqlx::test]
+async fn the_read_marker_is_scoped_to_one_family(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner = register_verify_login(
+        &router,
+        &db,
+        "msg-scope-owner@example.test",
+        "owner-password1",
+    )
+    .await;
+    let member = register_verify_login(
+        &router,
+        &db,
+        "msg-scope-member@example.test",
+        "member-password1",
+    )
+    .await;
+    let first = create_group(&router, &owner, "Foyer un").await;
+    let second = create_group(&router, &owner, "Foyer deux").await;
+    invite_and_join(&router, &first, &owner, &member).await;
+    invite_and_join(&router, &second, &owner, &member).await;
+
+    let (_, first_at) = post_message(&router, &first, &member, "chez un").await;
+    post_message(&router, &second, &member, "chez deux").await;
+
+    mark_read(&router, &first, &owner, Some(&first_at)).await;
+
+    assert_eq!(unread(&router, &first, &owner, None).await.2, 0);
+    assert_eq!(unread(&router, &second, &owner, None).await.2, 1);
+}
+
+/// A non-member cannot advance a read marker in a family they don't belong
+/// to — same `require_role` bar as every other endpoint on the thread.
+#[sqlx::test]
+async fn a_non_member_cannot_mark_a_family_thread_read(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner = register_verify_login(
+        &router,
+        &db,
+        "msg-out-owner@example.test",
+        "owner-password1",
+    )
+    .await;
+    let outsider = register_verify_login(
+        &router,
+        &db,
+        "msg-out-other@example.test",
+        "other-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner, "Foyer fermé").await;
+
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/messages/read"),
+        Some(&outsider),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM message_read_state")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+}

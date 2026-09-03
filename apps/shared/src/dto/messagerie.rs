@@ -47,17 +47,29 @@ pub struct MessageResponse {
 }
 
 /// `GET /groups/:id/messages` response envelope
-/// (`{ "messages": [...], "has_more": bool }`).
+/// (`{ "messages": [...], "has_more": bool, "unread_total": null | int }`).
 ///
 /// Cursor pagination, **newest first**: pass the oldest rendered message's
 /// `created_at`/`id` back as `before_created_at`/`before_id` (plus an optional
 /// `limit`, default 50, max 100) to get the window before it. `has_more` is
 /// computed backend-side by fetching `limit + 1` rows, so it means "there are
 /// older messages", never "there are newer ones".
+///
+/// `unread_total` is only populated by `?unread=true` (`None` otherwise): it
+/// is how many messages the caller has not read at all, which the page of
+/// at most `limit` messages cannot express on its own. The dashboard's
+/// "+N autre(s)" line is computed from it, the same affordance the low-stock
+/// card gives (issue #73; #98 verification, round 2, found that card silently
+/// capped at five with no hint there were fifteen more).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageList {
     pub messages: Vec<MessageResponse>,
     pub has_more: bool,
+    /// Absent on a normal (non-`unread`) listing, hence `#[serde(default)]`:
+    /// this envelope is deserialized from a backend that only emits the
+    /// field on the unread path.
+    #[serde(default)]
+    pub unread_total: Option<i64>,
 }
 
 /// The push-only WebSocket contract of `GET /groups/:id/messages/ws`, mirroring
