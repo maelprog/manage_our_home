@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT event_id, user_id FROM event_assignees\n        WHERE event_id = ANY($1)\n        ORDER BY event_id, created_at\n        ",
+  "query": "\n        SELECT event_id, user_id FROM event_assignees\n        WHERE event_id = ANY($1)\n        ORDER BY event_id, created_at, user_id\n        ",
   "describe": {
     "columns": [
       {
@@ -36,5 +36,5 @@
       false
     ]
   },
-  "hash": "755555700ef49cd70ac70a6b54c9205bad1410e652f3de6c8ad9ac1be93603c6"
+  "hash": "a834693a345c3c31c9e3c4ce30455e167a19f6efb277600fda85f5094a662711"
 }

@@ -7,7 +7,7 @@
 //! the empty string, which the backend maps to `NULL`).
 
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use manage_our_home_shared::dto::agenda::{EventResponse, UpdateEventRequest};
 use manage_our_home_shared::dto::groups::GroupMember;
@@ -22,8 +22,8 @@ use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
 use super::new::{
-    assignee_checkboxes, assignee_ids_from_raw_form, error_message, recurrence_picker,
-    rrule_from_form, EventForm,
+    assignee_checkboxes, assignee_ids_from_raw_form, error_message, is_form_urlencoded,
+    recurrence_picker, rrule_from_form, EventForm,
 };
 use super::{
     agenda_cookie, can_modify, event_not_found_page, family_context, forbidden_page,
@@ -67,7 +67,7 @@ fn page(
 <label>Description <textarea name="description" rows="3">{description_esc}</textarea></label>
 {picker}
 {assignees}
-<p class="muted">Aucune sélection = assigné à vous.</p>
+<p class="muted">Aucune sélection = assigné au créateur de l'événement.</p>
 <button type="submit">Enregistrer</button>
 </form>
 <div class="links"><a href="/agenda/{id}">Retour au détail</a></div>"#,
@@ -149,6 +149,9 @@ pub async fn post(
     Path(event_id): Path<Uuid>,
     raw_body: axum::body::Bytes,
 ) -> Response {
+    if !is_form_urlencoded(&headers) {
+        return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
+    }
     let Some(fam) =
         family_context(&state, &headers, &me, &format!("/agenda/{event_id}/edit")).await
     else {
@@ -156,7 +159,6 @@ pub async fn post(
     };
 
     let raw = String::from_utf8_lossy(&raw_body);
-    let form: EventForm = serde_urlencoded::from_bytes(&raw_body).unwrap_or_default();
     let assignee_ids = assignee_ids_from_raw_form(&raw);
     let cookie = agenda_cookie(&headers);
     let members = fetch_group_detail(&state, cookie.as_deref(), fam.gid)
@@ -165,6 +167,30 @@ pub async fn post(
         .flatten()
         .map(|g| g.members)
         .unwrap_or_default();
+
+    // Same reason as `new.rs`: an unreadable body is a 422, not a 200
+    // carrying an unrelated validation message (#98 verification, round 2).
+    let Ok(form) = serde_urlencoded::from_bytes::<EventForm>(&raw_body) else {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Html(page(
+                &fam.header,
+                event_id,
+                false,
+                "",
+                "",
+                "",
+                "",
+                "",
+                false,
+                None,
+                Some(error_message("invalid_form")),
+                &members,
+                &assignee_ids,
+            )),
+        )
+            .into_response();
+    };
 
     // Reconstruct the recurrence for re-rendering the picker on an inline
     // error, tolerating a bad picker value (falls back to "Aucune").
@@ -225,11 +251,21 @@ pub async fn post(
         rrule,
         completed: None,
         occurrence_at: None,
-        // The edit form always submits its full checkbox state (there is
-        // no "untouched" signal from a plain HTML form), so this always
-        // replaces the assignee set — `resolve_assignees` on the backend
-        // falls back to the creator if that leaves it empty.
-        assignee_ids: Some(assignee_ids.clone()),
+        // A plain HTML form has no "untouched" signal, so the fieldset
+        // carries one: `ASSIGNEES_PRESENT_FIELD` is emitted only when the
+        // picker actually listed the family's members. With it, the
+        // submitted checkbox state replaces the assignee set (and
+        // `resolve_assignees` on the backend falls back to the creator if
+        // that leaves it empty). Without it — `fetch_group_detail` failed
+        // and the picker rendered blind — the field is omitted entirely and
+        // the backend leaves the assignment alone. Sending `Some(vec![])`
+        // there silently reassigned the event to its creator: a degradation
+        // chosen as decorative was in fact destroying data (#98
+        // verification, round 2).
+        assignee_ids: form
+            .assignees_present
+            .is_some()
+            .then(|| assignee_ids.clone()),
     };
 
     let result = api_request_auth(

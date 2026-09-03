@@ -5,7 +5,13 @@
 --
 -- A junction table rather than an array column on `events`, same call as
 -- `group_members` for group/user pairs: it gets `ON DELETE CASCADE` on both
--- sides for free, and a plain index instead of a GIN one.
+-- sides for free, and a plain B-tree instead of a GIN one.
+--
+-- No separate index on `event_id`: the primary key's own index is
+-- `(event_id, user_id)` and `event_id` is its leading column, so every
+-- lookup this table serves (`WHERE event_id = ANY(...)`, the RLS join)
+-- already uses it. A second index on the same prefix would only cost
+-- another write per row.
 
 CREATE TABLE event_assignees (
     event_id            UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
@@ -13,7 +19,6 @@ CREATE TABLE event_assignees (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (event_id, user_id)
 );
-CREATE INDEX event_assignees_event_id_idx ON event_assignees (event_id);
 
 -- event_assignees has no direct group_id column, same pattern as
 -- event_reminders/event_attachments (0002_agenda.sql): the RLS policy joins

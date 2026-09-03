@@ -589,14 +589,105 @@ mod tests {
         );
     }
 
+    /// Evaluates a `combined_member_colour` expression numerically, giving
+    /// each `--mN` token the stand-in value `N`. One channel is enough:
+    /// `color-mix(in srgb, …)` blends every channel by the same linear
+    /// rule, so what holds for one holds for red, green and blue alike.
+    ///
+    /// Written as a parser over the produced string, not as a second copy
+    /// of the weight chain: a reimplementation would agree with a wrong
+    /// implementation. The grammar is exactly the two shapes the function
+    /// emits — `var(--mN)`, and `color-mix(in srgb, <expr>, var(--mN)
+    /// W%)`. The accumulator always nests on the *left*, so the last
+    /// `", var("` in the body separates the two operands (the right-hand
+    /// one holds no comma).
+    fn eval_mix(expr: &str) -> f64 {
+        // Assembled, like `var_of` and `inline_styles` above: this file is
+        // one of the sources `every_token_referenced_anywhere_is_defined_in_root`
+        // scans, and a literal `var(--m` here would read as a reference to
+        // a token named `--m`.
+        let ramp_prefix = format!("var({}m", "--");
+        let Some(rest) = expr.strip_prefix("color-mix(in srgb, ") else {
+            let n = expr
+                .strip_prefix(&ramp_prefix)
+                .and_then(|r| r.strip_suffix(')'))
+                .unwrap_or_else(|| panic!("not a ramp token: {expr}"));
+            return n.parse().expect("ramp token index");
+        };
+        let body = rest.strip_suffix(')').expect("closing paren");
+        let split = body.rfind(", var(").expect("two operands");
+        let (left, right) = body.split_at(split);
+        let (token, weight) = right
+            .trim_start_matches(", ")
+            .split_once(' ')
+            .expect("weighted operand");
+        let weight: f64 = weight
+            .trim_end_matches('%')
+            .parse::<f64>()
+            .expect("percentage")
+            / 100.0;
+        eval_mix(left) * (1.0 - weight) + eval_mix(token) * weight
+    }
+
+    /// How far an evaluated mix may sit from the exact arithmetic mean.
+    /// Not slack for a wrong chain: `combined_member_colour` writes each
+    /// weight with four decimals (`33.3333%` for a third), so the error is
+    /// the rounding the CSS itself carries — about 1e-6 relative, over a
+    /// stand-in range of 1..8. A wrong chain is off by whole units.
+    const MIX_EPS: f64 = 1e-4;
+
     #[test]
-    fn order_does_not_change_which_colours_are_mixed() {
-        // Not asserting the two expressions are equal (nesting order
-        // differs), just that both inputs are present in some form.
-        let a = combined_member_colour(&["--m1", "--m4"]);
-        let b = combined_member_colour(&["--m4", "--m1"]);
-        assert!(a.contains("--m1") && a.contains("--m4"));
-        assert!(b.contains("--m1") && b.contains("--m4"));
+    fn the_evaluator_reads_back_what_the_mixer_writes() {
+        // Guard on the guard: the two tests below are only worth something
+        // if this parser really understands the expressions.
+        assert!((eval_mix("var(--m3)") - 3.0).abs() < MIX_EPS);
+        assert!((eval_mix(&combined_member_colour(&["--m1", "--m3"])) - 2.0).abs() < MIX_EPS);
+    }
+
+    #[test]
+    fn the_chain_computes_the_plain_average_of_its_colours() {
+        // The `1/(k+1)` weight chain is claimed to be a running *unweighted*
+        // mean; this is that claim, checked on the emitted expression.
+        for tokens in [
+            vec!["--m2", "--m6"],
+            vec!["--m1", "--m2", "--m3"],
+            vec!["--m1", "--m2", "--m3", "--m8"],
+            vec!["--m4", "--m4", "--m7", "--m1", "--m5"],
+        ] {
+            let expected: f64 = tokens
+                .iter()
+                .map(|t| t.trim_start_matches("--m").parse::<f64>().unwrap())
+                .sum::<f64>()
+                / tokens.len() as f64;
+            let got = eval_mix(&combined_member_colour(&tokens));
+            assert!(
+                (got - expected).abs() < MIX_EPS,
+                "{tokens:?}: {got} != {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn order_does_not_change_the_colour_that_comes_out() {
+        // The name of this test used to promise an order property that its
+        // body did not check — it only asserted both tokens appeared
+        // somewhere in each string (#98 verification, round 2). The two
+        // expressions genuinely differ as text (the nesting order does),
+        // so the property has to be checked on what they *evaluate to*.
+        let permutations = [
+            vec!["--m1", "--m4", "--m6"],
+            vec!["--m4", "--m6", "--m1"],
+            vec!["--m6", "--m1", "--m4"],
+            vec!["--m6", "--m4", "--m1"],
+        ];
+        let first = eval_mix(&combined_member_colour(&permutations[0]));
+        for tokens in &permutations[1..] {
+            let got = eval_mix(&combined_member_colour(tokens));
+            assert!(
+                (got - first).abs() < MIX_EPS,
+                "{tokens:?}: {got} != {first}"
+            );
+        }
     }
 
     #[test]

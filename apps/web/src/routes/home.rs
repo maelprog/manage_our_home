@@ -44,13 +44,25 @@ const DASHBOARD_MESSAGE_SNIPPET_MAX_CHARS: usize = 120;
 
 // -- pure logic (TDD'd below) ------------------------------------------------
 
-/// Sorts occurrences chronologically and keeps the earliest `cap` that have
-/// not yet started — the dashboard answers "what's coming up next", not
-/// "what happened today". The API window the caller fetches starts at
-/// midnight Paris (same civil day the calendar page uses), so the raw list
-/// still holds this morning's already-finished events; filtering on `now`
-/// here (not on the query's lower bound) is what keeps a 17:00 page load
-/// from surfacing an 09:00 event as "coming up" (#98 verification finding).
+/// Sorts occurrences chronologically and keeps the earliest `cap` that are
+/// **not over yet** — the dashboard answers "what's still ahead of me
+/// today", not "what happened this morning". The API window the caller
+/// fetches starts at midnight Paris (same civil day the calendar page
+/// uses), so the raw list still holds this morning's finished events;
+/// filtering here (not on the query's lower bound) is what keeps a 17:00
+/// page load from surfacing an 09:00 event as "coming up" (#98
+/// verification, round 1).
+///
+/// The bound is `occurrence_ends_at`, not `occurrence_starts_at`, and that
+/// distinction is the whole point (#98 verification, round 2). An `all_day`
+/// event starts at Paris midnight, so a start-time filter dropped every
+/// birthday, holiday and school break from the moment the day began — the
+/// most useful class of entry on a family dashboard, and it also left
+/// `agenda_row`'s "journée" branch unreachable for today. The same filter
+/// dropped an event merely *in progress*: a 19:00-22:00 dinner vanished at
+/// 19:01. Ending the window on the end instant fixes both, and still drops
+/// what is genuinely finished.
+///
 /// An API response is not guaranteed to arrive in start-time order either,
 /// hence the sort.
 fn soonest_occurrences(
@@ -60,7 +72,7 @@ fn soonest_occurrences(
 ) -> Vec<&OccurrenceResponse> {
     let mut refs: Vec<&OccurrenceResponse> = occurrences
         .iter()
-        .filter(|o| o.occurrence_starts_at >= now)
+        .filter(|o| o.occurrence_ends_at >= now)
         .collect();
     refs.sort_by_key(|o| o.occurrence_starts_at);
     refs.truncate(cap);
@@ -295,17 +307,44 @@ fn message_row(msg: &MessageResponse, members: &[GroupMember]) -> String {
     )
 }
 
+/// How many unread messages the card is not showing, given the page it
+/// received and the family-wide unread count the API reports
+/// (`MessageList::unread_total`, `None` on a backend that didn't send it).
+/// Saturating: a total that lags the page — a message posted between the
+/// two queries of the same request — reads as "nothing more", never as a
+/// negative count.
+fn hidden_unread(shown: usize, unread_total: Option<i64>) -> usize {
+    unread_total
+        .map(|total| (total.max(0) as usize).saturating_sub(shown))
+        .unwrap_or(0)
+}
+
 /// `messages` is already the unread page (see `message_row`'s doc comment):
 /// an empty list here means "nothing unread", not "no messages ever" — same
 /// distinction `grocery_block` draws between zero-unchecked and an empty
 /// list, and the same reason the empty copy says "tout est lu" rather than
 /// "aucun message".
-fn messages_block(messages: &[MessageResponse], members: &[GroupMember]) -> String {
+///
+/// `unread_total` is what turns the cap into an honest one: the page is at
+/// most `DASHBOARD_MESSAGES_LIMIT` long, so without it a member with twenty
+/// unread messages saw five and no sign of the rest (#98 verification,
+/// round 2). Rendered as the "+N autre(s)" line `stocks_block` already used.
+fn messages_block(
+    messages: &[MessageResponse],
+    unread_total: Option<i64>,
+    members: &[GroupMember],
+) -> String {
     let body = if messages.is_empty() {
         r#"<p class="muted">Tout est lu.</p>"#.to_string()
     } else {
         let rows: String = messages.iter().map(|m| message_row(m, members)).collect();
-        format!(r#"<ul class="list">{rows}</ul>"#)
+        let hidden = hidden_unread(messages.len(), unread_total);
+        let more = if hidden > 0 {
+            format!(r#"<p class="muted">+{hidden} autre(s).</p>"#)
+        } else {
+            String::new()
+        };
+        format!(r#"<ul class="list">{rows}</ul>{more}"#)
     };
     format!(
         r#"<section class="card">
@@ -454,7 +493,12 @@ pub async fn get(
         Err(_) => return service_unavailable_page().into_response(),
     };
 
-    let messages: Vec<MessageResponse> = match api_request_auth(
+    let empty_messages = || MessageList {
+        messages: Vec::new(),
+        has_more: false,
+        unread_total: None,
+    };
+    let messages: MessageList = match api_request_auth(
         &state,
         reqwest::Method::GET,
         &format!(
@@ -467,11 +511,9 @@ pub async fn get(
     .await
     {
         Ok(resp) if resp.status == reqwest::StatusCode::OK => {
-            serde_json::from_value::<MessageList>(resp.body)
-                .map(|l| l.messages)
-                .unwrap_or_default()
+            serde_json::from_value::<MessageList>(resp.body).unwrap_or_else(|_| empty_messages())
         }
-        Ok(_) => Vec::new(),
+        Ok(_) => empty_messages(),
         Err(_) => return service_unavailable_page().into_response(),
     };
 
@@ -488,7 +530,7 @@ pub async fn get(
         stocks = stocks_block(&low_stock),
         grocery = grocery_block(count_unchecked(&grocery_items)),
         budget = budget_block(current_month_total(&budget_summary.periods, today), today),
-        messages = messages_block(&messages, &members),
+        messages = messages_block(&messages.messages, messages.unread_total, &members),
     );
 
     Html(shell_with_header(
@@ -551,27 +593,66 @@ mod pure_logic_tests {
     use chrono::{TimeZone, Utc};
     use manage_our_home_shared::dto::agenda::EventResponse;
 
-    fn occurrence(hour: u32, title: &str) -> OccurrenceResponse {
-        let starts = Utc.with_ymd_and_hms(2026, 9, 3, hour, 0, 0).unwrap();
+    /// An occurrence spanning `starts` → `ends`, flagged `all_day` or not.
+    /// The two are separate parameters on purpose: a fixture that always
+    /// sets `ends == starts` (what this block shipped with) cannot tell a
+    /// finished event from one still running, and one that never sets
+    /// `all_day` cannot tell a birthday from a meeting — both blind spots
+    /// hid a real dashboard bug (#98 verification, round 2).
+    fn occurrence_between(
+        starts: DateTime<Utc>,
+        ends: DateTime<Utc>,
+        all_day: bool,
+        title: &str,
+    ) -> OccurrenceResponse {
         OccurrenceResponse {
             event: EventResponse {
-                id: Uuid::from_u128(u128::from(hour)),
+                id: Uuid::from_u128(starts.timestamp() as u128),
                 group_id: Uuid::nil(),
                 created_by: Uuid::nil(),
                 title: title.to_string(),
                 description: None,
                 location: None,
                 starts_at: starts,
-                ends_at: starts,
-                all_day: false,
+                ends_at: ends,
+                all_day,
                 is_task: false,
                 completed_at: None,
                 rrule: None,
                 assignee_ids: vec![Uuid::nil()],
             },
             occurrence_starts_at: starts,
-            occurrence_ends_at: starts,
+            occurrence_ends_at: ends,
         }
+    }
+
+    fn at(hour: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 9, 3, hour, 0, 0).unwrap()
+    }
+
+    /// A zero-length occurrence at `hour` — the shape most of the ordering
+    /// and capping cases below only need.
+    fn occurrence(hour: u32, title: &str) -> OccurrenceResponse {
+        occurrence_between(at(hour), at(hour), false, title)
+    }
+
+    /// An occurrence running from `start_hour` to `end_hour` (UTC, same day).
+    fn occurrence_span(start_hour: u32, end_hour: u32, title: &str) -> OccurrenceResponse {
+        occurrence_between(at(start_hour), at(end_hour), false, title)
+    }
+
+    /// A whole-day occurrence for 2026-09-03 in Paris (UTC+2 in September),
+    /// i.e. 2026-09-02T22:00Z → 2026-09-03T22:00Z: exactly what the API
+    /// returns for a birthday or a public holiday, and the reason a filter
+    /// on `occurrence_starts_at` hid this whole class of entry — its start
+    /// is in the past from one minute past midnight onwards.
+    fn all_day_occurrence(title: &str) -> OccurrenceResponse {
+        occurrence_between(
+            Utc.with_ymd_and_hms(2026, 9, 2, 22, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 9, 3, 22, 0, 0).unwrap(),
+            true,
+            title,
+        )
     }
 
     // -- soonest_occurrences --------------------------------------------
@@ -647,6 +728,88 @@ mod pure_logic_tests {
         let occs = vec![occurrence(12, "Pile à l'heure")];
         let picked = soonest_occurrences(&occs, now, 5);
         assert_eq!(picked.len(), 1);
+    }
+
+    /// An all-day event today (birthday, holiday, school break) starts at
+    /// Paris midnight, so it is *always* in the past by the time anyone
+    /// loads the dashboard. Filtering on the start instant made the single
+    /// most useful class of family entry structurally invisible — and left
+    /// `agenda_row`'s "journée" branch dead for the current day (#98
+    /// verification, round 2).
+    #[test]
+    fn an_all_day_event_today_is_still_upcoming_in_the_evening() {
+        // 21:00 UTC = 23:00 Paris, the last hour of the same civil day.
+        let now = at(21);
+        let occs = vec![all_day_occurrence("Anniversaire de Camille")];
+        let picked = soonest_occurrences(&occs, now, 5);
+        assert_eq!(picked.len(), 1, "{picked:#?}");
+        assert!(picked[0].event.all_day);
+    }
+
+    /// A dinner from 19:00 to 22:00 read at 19:01 has started but is not
+    /// over: "Prochains événements" must still carry it, the way a paper
+    /// agenda still shows the slot you are sitting in.
+    #[test]
+    fn an_event_in_progress_is_still_shown() {
+        let now = Utc.with_ymd_and_hms(2026, 9, 3, 19, 1, 0).unwrap();
+        let occs = vec![occurrence_span(19, 22, "Dîner")];
+        let picked = soonest_occurrences(&occs, now, 5);
+        assert_eq!(picked.len(), 1, "{picked:#?}");
+    }
+
+    /// The symmetric guard: an event with a real duration that is genuinely
+    /// over stays out. Without it, "filter on the end instant" would be
+    /// satisfied by not filtering at all.
+    #[test]
+    fn an_event_that_ended_this_morning_is_not_shown() {
+        let occs = vec![occurrence_span(8, 9, "Petit-déjeuner")];
+        assert!(
+            soonest_occurrences(&occs, late_afternoon(), 5).is_empty(),
+            "an event over since 09:00 is not coming up at 17:16"
+        );
+    }
+
+    /// The mix a real family day produces: something finished, something
+    /// running, something later, and the all-day entry that covers all of
+    /// them.
+    #[test]
+    fn a_realistic_day_keeps_exactly_the_all_day_the_running_and_the_later() {
+        let now = Utc.with_ymd_and_hms(2026, 9, 3, 19, 1, 0).unwrap();
+        let occs = vec![
+            occurrence_span(8, 9, "Petit-déjeuner"),
+            occurrence_span(19, 22, "Dîner"),
+            occurrence_span(21, 23, "Film"),
+            all_day_occurrence("Jour férié"),
+        ];
+        let picked = soonest_occurrences(&occs, now, 5);
+        let titles: Vec<&str> = picked.iter().map(|o| o.event.title.as_str()).collect();
+        assert_eq!(titles, vec!["Jour férié", "Dîner", "Film"], "{picked:#?}");
+    }
+
+    // -- hidden_unread (#98 round-2, Mi3) ---------------------------------
+
+    #[test]
+    fn a_backend_without_the_total_hides_the_line() {
+        assert_eq!(hidden_unread(5, None), 0);
+    }
+
+    #[test]
+    fn a_page_holding_everything_unread_hides_the_line() {
+        assert_eq!(hidden_unread(3, Some(3)), 0);
+    }
+
+    /// The case the card was silently swallowing: twenty unread, five shown.
+    #[test]
+    fn the_rest_of_the_unread_set_is_counted() {
+        assert_eq!(hidden_unread(5, Some(20)), 15);
+    }
+
+    /// A total that lags its own page (a message landing between the two
+    /// queries) must not underflow into a huge count.
+    #[test]
+    fn a_total_smaller_than_the_page_does_not_underflow() {
+        assert_eq!(hidden_unread(5, Some(2)), 0);
+        assert_eq!(hidden_unread(5, Some(-1)), 0);
     }
 
     // -- count_unchecked --------------------------------------------------

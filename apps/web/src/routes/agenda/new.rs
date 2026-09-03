@@ -7,7 +7,7 @@
 //! page. Success (201) → PRG `/agenda?notice=event_created`.
 
 use axum::extract::State;
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use chrono::NaiveDate;
 use leptos::prelude::*;
@@ -37,6 +37,43 @@ pub(crate) const REMINDER_OPTIONS: [(&str, &str, i32); 5] = [
     ("10080", "1 semaine avant", 10080),
 ];
 
+/// Whether a request body may be read as an HTML form submission.
+///
+/// `/agenda/new` and `/agenda/:id/edit` read their body as raw `Bytes`
+/// rather than through `axum::Form`, because `Form`'s deserializer cannot
+/// express the repeated `assignee_ids` key a checkbox group submits
+/// (`assignee_ids_from_raw_form` below). Taking `Bytes` also dropped the
+/// media-type check `Form` performs, so a `text/plain` POST created an
+/// event where every one of the 31 other handlers in this folder answers
+/// 415 (#98 verification, round 2). This restores that check explicitly.
+///
+/// Matches on the media type alone: parameters (`; charset=UTF-8`, which
+/// some clients append) and case are not part of the decision, per RFC 9110
+/// §8.3.
+pub(crate) fn is_form_urlencoded(headers: &HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|value| {
+            value
+                .split(';')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .eq_ignore_ascii_case("application/x-www-form-urlencoded")
+        })
+        .unwrap_or(false)
+}
+
+/// Hidden field the assignee fieldset carries when it actually listed the
+/// family's members. Its absence from a submitted body means the picker was
+/// rendered blind — `fetch_group_detail` had failed and the fieldset came
+/// out empty — and the receiving handler must then leave the assignment
+/// alone instead of reading "no box checked" as "assign to nobody"
+/// (#98 verification, round 2: a decorative degradation was driving a
+/// destructive write).
+pub(crate) const ASSIGNEES_PRESENT_FIELD: &str = "assignees_present";
+
 /// Every `assignee_ids=<uuid>` pair in a raw `application/x-www-form-urlencoded`
 /// body. `axum::Form`'s deserializer (`serde_urlencoded`) has no support for
 /// several values under one key — exactly what a set of same-named
@@ -58,6 +95,17 @@ pub(crate) fn assignee_ids_from_raw_form(raw: &str) -> Vec<Uuid> {
 /// multi-select widget, so it needs no JS and degrades to plain checkboxes
 /// with JS disabled like every other form on this app.
 pub(crate) fn assignee_checkboxes(members: &[GroupMember], selected: &[Uuid]) -> String {
+    if members.is_empty() {
+        // The roster couldn't be loaded (a `fetch_group_detail` failure —
+        // a family always has at least its creator). Say so, and emit no
+        // `ASSIGNEES_PRESENT_FIELD`: the submitted form then carries no
+        // opinion about assignment at all.
+        return r#"<fieldset class="card">
+<legend>Assigné à</legend>
+<p class="muted">La liste des membres n'a pas pu être chargée&nbsp;; l'assignation reste inchangée.</p>
+</fieldset>"#
+            .to_string();
+    }
     let boxes: String = members
         .iter()
         .map(|m| {
@@ -76,8 +124,10 @@ pub(crate) fn assignee_checkboxes(members: &[GroupMember], selected: &[Uuid]) ->
     format!(
         r#"<fieldset class="card">
 <legend>Assigné à</legend>
+<input type="hidden" name="{marker}" value="1"/>
 {boxes}
-</fieldset>"#
+</fieldset>"#,
+        marker = ASSIGNEES_PRESENT_FIELD,
     )
 }
 
@@ -140,6 +190,10 @@ pub struct EventForm {
     // Create-only: optional reminder at creation.
     #[serde(default)]
     pub reminder: String,
+    /// Present iff the assignee fieldset listed real members — see
+    /// `ASSIGNEES_PRESENT_FIELD`.
+    #[serde(default)]
+    pub assignees_present: Option<String>,
 }
 
 /// Builds the RRULE string from the picker fields, or `Ok(None)` for a
@@ -283,6 +337,7 @@ pub(crate) fn error_message(code: &str) -> &'static str {
         "title_required" => "Le titre est obligatoire.",
         "ends_before_starts" => "La fin doit être après le début.",
         "invalid_rrule" => "La récurrence choisie est invalide.",
+        "invalid_form" => "Formulaire incomplet ou illisible, merci de réessayer.",
         "unavailable" => "Service momentanément indisponible, merci de réessayer.",
         _ => "Une erreur est survenue, merci de réessayer.",
     }
@@ -360,12 +415,14 @@ pub async fn post(
     headers: HeaderMap,
     raw_body: axum::body::Bytes,
 ) -> Response {
+    if !is_form_urlencoded(&headers) {
+        return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
+    }
     let Some(fam) = family_context(&state, &headers, &me, "/agenda/new").await else {
         return Redirect::to("/groups/new").into_response();
     };
 
     let raw = String::from_utf8_lossy(&raw_body);
-    let form: EventForm = serde_urlencoded::from_bytes(&raw_body).unwrap_or_default();
     let assignee_ids = assignee_ids_from_raw_form(&raw);
     let cookie = agenda_cookie(&headers);
     let members = fetch_group_detail(&state, cookie.as_deref(), fam.gid)
@@ -374,6 +431,26 @@ pub async fn post(
         .flatten()
         .map(|g| g.members)
         .unwrap_or_default();
+
+    // A body that doesn't deserialize is reported as such. Swallowing the
+    // error with `unwrap_or_default()` handed the caller a 200 carrying
+    // "La fin doit être après le début." for a body that simply had no
+    // `starts_at` at all (#98 verification, round 2).
+    let Ok(form) = serde_urlencoded::from_bytes::<EventForm>(&raw_body) else {
+        let now = chrono::Utc::now();
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Html(page(
+                &fam.header,
+                Some(error_message("invalid_form")),
+                &to_datetime_local(now),
+                &to_datetime_local(now + chrono::Duration::hours(1)),
+                &members,
+                &assignee_ids,
+            )),
+        )
+            .into_response();
+    };
 
     let render_error = |code: &str| {
         Html(page(
@@ -460,5 +537,99 @@ pub async fn post(
             forbidden_page().into_response()
         }
         Ok(_) | Err(_) => render_error("unavailable"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::header::CONTENT_TYPE;
+
+    fn headers_with(content_type: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(CONTENT_TYPE, content_type.parse().unwrap());
+        h
+    }
+
+    // -- is_form_urlencoded (#98 round-2, Mi1) ---------------------------
+
+    #[test]
+    fn a_plain_form_post_is_accepted() {
+        assert!(is_form_urlencoded(&headers_with(
+            "application/x-www-form-urlencoded"
+        )));
+    }
+
+    /// Browsers append a charset, and the media type is case-insensitive:
+    /// neither may turn a real form submission into a 415.
+    #[test]
+    fn parameters_and_casing_do_not_change_the_media_type() {
+        assert!(is_form_urlencoded(&headers_with(
+            "application/x-www-form-urlencoded; charset=UTF-8"
+        )));
+        assert!(is_form_urlencoded(&headers_with(
+            "Application/X-WWW-Form-Urlencoded"
+        )));
+        assert!(is_form_urlencoded(&headers_with(
+            " application/x-www-form-urlencoded "
+        )));
+    }
+
+    /// The regression itself: `axum::Form` answered 415 to these, taking
+    /// the body as raw `Bytes` answered 200 and created an event.
+    #[test]
+    fn any_other_media_type_is_rejected() {
+        for ct in [
+            "text/plain",
+            "application/json",
+            "multipart/form-data; boundary=x",
+            "",
+            "application/x-www-form-urlencoded-not-really",
+        ] {
+            assert!(!is_form_urlencoded(&headers_with(ct)), "{ct}");
+        }
+    }
+
+    #[test]
+    fn a_body_with_no_content_type_at_all_is_rejected() {
+        assert!(!is_form_urlencoded(&HeaderMap::new()));
+    }
+
+    // -- assignee_checkboxes / ASSIGNEES_PRESENT_FIELD (Mo4) -------------
+
+    fn member(n: u128, name: &str) -> GroupMember {
+        GroupMember {
+            user_id: Uuid::from_u128(n),
+            display_name: name.to_string(),
+            email: format!("{name}@example.test"),
+            role: "member".to_string(),
+        }
+    }
+
+    /// The marker rides along whenever the picker really listed members, so
+    /// the receiving handler can tell "nobody checked" from "nothing shown".
+    #[test]
+    fn a_populated_picker_carries_the_presence_marker() {
+        let html = assignee_checkboxes(&[member(1, "Alice"), member(2, "Bob")], &[]);
+        assert!(html.contains(ASSIGNEES_PRESENT_FIELD), "{html}");
+        assert_eq!(html.matches(r#"name="assignee_ids""#).count(), 2);
+    }
+
+    /// A roster that failed to load renders no marker and no checkbox — and
+    /// says so, rather than looking like a family with no members.
+    #[test]
+    fn a_picker_with_no_roster_carries_no_marker() {
+        let html = assignee_checkboxes(&[], &[]);
+        assert!(!html.contains(ASSIGNEES_PRESENT_FIELD), "{html}");
+        assert!(!html.contains(r#"name="assignee_ids""#), "{html}");
+        assert!(html.contains("n'a pas pu être chargée"), "{html}");
+    }
+
+    #[test]
+    fn the_selected_members_come_back_checked() {
+        let members = vec![member(1, "Alice"), member(2, "Bob")];
+        let html = assignee_checkboxes(&members, &[members[1].user_id]);
+        assert!(html.contains(&format!(r#"value="{}" checked"#, members[1].user_id)));
+        assert!(html.contains(&format!(r#"value="{}"/>"#, members[0].user_id)));
     }
 }

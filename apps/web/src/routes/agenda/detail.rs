@@ -17,11 +17,14 @@ use chrono::{DateTime, Duration, Utc};
 use manage_our_home_shared::dto::agenda::{
     AttachmentResponse, EventResponse, OccurrenceList, OccurrenceResponse, UpdateEventRequest,
 };
+use manage_our_home_shared::dto::groups::GroupMember;
 use manage_our_home_shared::validation::agenda::{parse_rrule, Freq, RecurrenceEnd};
+use manage_our_home_shared::validation::messagerie::author_name;
 use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
+use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
 use super::new::reminder_select;
@@ -65,6 +68,35 @@ fn error_text(code: &str) -> Option<&'static str> {
         "unavailable" => Some("Service momentanément indisponible, merci de réessayer."),
         _ => None,
     }
+}
+
+/// The "Assigné à" line: the display names behind an event's
+/// `assignee_ids`, in the order the API returned them.
+///
+/// The assignment introduced by #73 was visible only on the dashboard: a
+/// member could assign an event to two people, open its detail page, and
+/// find no trace of it anywhere (#98 verification, round 2). Names only, no
+/// coloured avatar: the dashboard's ring needs an inline `style=` and this
+/// app's inline-style budget (`app.rs`, `INLINE_STYLE_CEILING`) is full —
+/// and on a page that shows one event at a time the name *is* the answer,
+/// the colour would only repeat it.
+///
+/// Empty when the event has no assignee (historical rows only —
+/// `resolve_assignees` on the backend keeps at least the creator) or when
+/// the member roster couldn't be loaded, in which case a line of raw UUIDs
+/// would be worse than no line.
+fn assignees_html(assignee_ids: &[Uuid], members: &[GroupMember]) -> String {
+    if assignee_ids.is_empty() || members.is_empty() {
+        return String::new();
+    }
+    let names: Vec<&str> = assignee_ids
+        .iter()
+        .map(|id| author_name(members, *id))
+        .collect();
+    format!(
+        "<p><strong>Assigné à :</strong> {}</p>",
+        html_escape(&names.join(", ")),
+    )
 }
 
 /// A human-readable French description of a v1 RRULE (falls back to a
@@ -166,6 +198,13 @@ pub async fn get(
         Vec::new()
     };
 
+    let members = fetch_group_detail(&state, cookie.as_deref(), fam.gid)
+        .await
+        .ok()
+        .flatten()
+        .map(|g| g.members)
+        .unwrap_or_default();
+
     let can_edit = can_modify(&fam.role, event.created_by == me.user_id);
     let notice = query.notice.as_deref().and_then(notice_text);
     let error = query.error.as_deref().and_then(error_text);
@@ -176,6 +215,7 @@ pub async fn get(
         &event,
         &occurrences,
         &attachments,
+        &members,
         can_edit,
         query.occ.as_deref(),
         notice,
@@ -191,6 +231,7 @@ fn page(
     event: &EventResponse,
     occurrences: &[OccurrenceResponse],
     attachments: &[AttachmentResponse],
+    members: &[GroupMember],
     can_edit: bool,
     focus_occ: Option<&str>,
     notice: Option<&str>,
@@ -234,6 +275,7 @@ fn page(
         .filter(|d| !d.is_empty())
         .map(|d| format!("<p>{}</p>", html_escape(d)))
         .unwrap_or_default();
+    let assignees = assignees_html(&event.assignee_ids, members);
     let recurrence_html = event
         .rrule
         .as_deref()
@@ -302,6 +344,7 @@ fn page(
 {notice_html}{error_html}
 <p class="muted">{kind}</p>
 <p><strong>Quand :</strong> {when}</p>
+{assignees}
 {location_html}{description_html}{recurrence_html}
 {completion_html}
 {controls_html}
@@ -516,5 +559,61 @@ pub async fn delete(
             event_not_found_page().into_response()
         }
         Ok(_) | Err(_) => service_unavailable_page().into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Distinct, stable ids — the assertions are about names and order, so
+    /// a fixed id per member reads better than a random one.
+    fn uid(n: u128) -> Uuid {
+        Uuid::from_u128(n)
+    }
+
+    fn member(id: Uuid, name: &str) -> GroupMember {
+        GroupMember {
+            user_id: id,
+            display_name: name.to_string(),
+            email: format!("{name}@example.test"),
+            role: "member".to_string(),
+        }
+    }
+
+    // -- assignees_html (#98 round-2, Mo2) -------------------------------
+
+    #[test]
+    fn a_single_assignee_is_named() {
+        let html = assignees_html(&[uid(1)], &[member(uid(1), "Alice")]);
+        assert!(html.contains("Assigné à"), "{html}");
+        assert!(html.contains("Alice"), "{html}");
+    }
+
+    /// The case the verifier reproduced: an event assigned to two members
+    /// showed neither of their names anywhere on its own page.
+    #[test]
+    fn several_assignees_are_all_named_in_order() {
+        let members = vec![member(uid(1), "Alice"), member(uid(2), "Bob")];
+        let html = assignees_html(&[uid(2), uid(1)], &members);
+        assert!(html.contains("Bob, Alice"), "{html}");
+    }
+
+    #[test]
+    fn an_event_with_no_assignee_renders_no_line() {
+        assert_eq!(assignees_html(&[], &[member(uid(1), "Alice")]), "");
+    }
+
+    /// A roster that failed to load must not turn the line into UUIDs.
+    #[test]
+    fn an_unloadable_roster_renders_no_line() {
+        assert_eq!(assignees_html(&[uid(1)], &[]), "");
+    }
+
+    #[test]
+    fn a_display_name_is_escaped() {
+        let html = assignees_html(&[uid(1)], &[member(uid(1), "<script>")]);
+        assert!(html.contains("&lt;script&gt;"), "{html}");
+        assert!(!html.contains("<script>"), "{html}");
     }
 }

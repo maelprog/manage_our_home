@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO message_read_state (group_id, user_id, last_read_at)\n        VALUES ($1, $2, LEAST(COALESCE($3::timestamptz, now()), now()))\n        ON CONFLICT (group_id, user_id) DO UPDATE\n            SET last_read_at = GREATEST(\n                message_read_state.last_read_at,\n                EXCLUDED.last_read_at\n            )\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "08e0bf1b3379cc420369e2a79bcfaf50004f790e9b04e2b61998c73445658e14"
+}

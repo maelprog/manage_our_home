@@ -38,6 +38,16 @@ pub struct ListMessagesQuery {
     pub unread: bool,
 }
 
+/// `POST /groups/:id/messages/read` query params.
+#[derive(Deserialize)]
+pub struct MarkReadQuery {
+    /// How far the caller's marker may advance: the `created_at` of the
+    /// newest message they were actually shown. Omitted means "up to now",
+    /// which is only safe for a caller that has nothing better to offer —
+    /// see `mark_messages_read`.
+    pub up_to: Option<DateTime<Utc>>,
+}
+
 #[derive(Serialize, Clone)]
 pub struct MessageResponse {
     pub id: Uuid,
@@ -201,13 +211,16 @@ pub async fn list_messages(
         .map(MessageResponse::from)
         .collect();
 
-    // `has_more` above describes the raw (unfiltered) page; once the unread
-    // filter drops some of it, "is there another page" would need its own
-    // query (there's no unread `?unread=true` pagination UI to serve today
-    // — issue #73 asked for a dashboard preview, not a full unread inbox),
-    // so it's reported as `false` rather than a number that doesn't
-    // actually describe what's left.
-    let has_more = if query.unread {
+    // `has_more` above describes the raw (unfiltered) page. Once the unread
+    // filter drops part of it, that number no longer says anything useful,
+    // so the unread path answers the question properly instead of reporting
+    // `false` — which is what it used to do, leaving a member with twenty
+    // unread messages looking at five and no hint the rest existed (#98
+    // verification, round 2). One `count(*)` over the same predicate
+    // `unread_messages` applies gives both the honest `has_more` and the
+    // `unread_total` the dashboard renders its "+N autre(s)" line from,
+    // the same affordance the low-stock card already had.
+    let (has_more, unread_total) = if query.unread {
         let last_read_at = sqlx::query_scalar!(
             "SELECT last_read_at FROM message_read_state WHERE group_id = $1 AND user_id = $2",
             group_id,
@@ -215,26 +228,52 @@ pub async fn list_messages(
         )
         .fetch_optional(&mut *tx)
         .await?;
+        let unread_total = sqlx::query_scalar!(
+            r#"
+            SELECT count(*) AS "count!"
+            FROM messages
+            WHERE group_id = $1
+              AND ($2::timestamptz IS NULL OR created_at > $2)
+            "#,
+            group_id,
+            last_read_at,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
         messages = unread_messages(&messages, last_read_at);
-        false
+        (unread_total > messages.len() as i64, Some(unread_total))
     } else {
-        has_more
+        (has_more, None)
     };
     tx.commit().await?;
 
-    Ok(Json(json!({ "messages": messages, "has_more": has_more })))
+    Ok(Json(
+        json!({ "messages": messages, "has_more": has_more, "unread_total": unread_total }),
+    ))
 }
 
-/// Advances the caller's read watermark for this family to now — everything
-/// created up to this instant is "read" from here on (issue #73). Called
-/// when the member opens `/messagerie`
-/// (`apps/web/src/routes/messagerie/thread.rs`). Idempotent by design
-/// (`ON CONFLICT … DO UPDATE`): opening the page twice in a row just moves
-/// the watermark forward twice, which is a no-op in effect.
+/// Advances the caller's read watermark for this family (issue #73). Called
+/// when the member opens the **live** `/messagerie`
+/// (`apps/web/src/routes/messagerie/thread.rs`, `read_watermark`).
+///
+/// `?up_to=` carries the `created_at` of the newest message the caller was
+/// actually shown, and the watermark stops there. Advancing to `now()`
+/// instead — what this handler used to do — swallowed anything posted
+/// between the caller's `GET …/messages` and this call: never rendered,
+/// permanently read, since `0012_message_read_state.sql` has no way back
+/// (#98 verification, round 2). `now()` remains the fallback when no
+/// `up_to` is given, and is also the ceiling: a caller cannot mark the
+/// future read.
+///
+/// The watermark only ever moves **forward** (`GREATEST`), so a request
+/// carrying an older `up_to` — a stale tab, a request that lost a race —
+/// cannot un-read anything. Idempotent for the same reason: replaying the
+/// same call is a no-op.
 pub async fn mark_messages_read(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(group_id): Path<Uuid>,
+    Query(query): Query<MarkReadQuery>,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
@@ -242,11 +281,16 @@ pub async fn mark_messages_read(
     sqlx::query!(
         r#"
         INSERT INTO message_read_state (group_id, user_id, last_read_at)
-        VALUES ($1, $2, now())
-        ON CONFLICT (group_id, user_id) DO UPDATE SET last_read_at = now()
+        VALUES ($1, $2, LEAST(COALESCE($3::timestamptz, now()), now()))
+        ON CONFLICT (group_id, user_id) DO UPDATE
+            SET last_read_at = GREATEST(
+                message_read_state.last_read_at,
+                EXCLUDED.last_read_at
+            )
         "#,
         group_id,
         auth.user_id,
+        query.up_to,
     )
     .execute(&mut *tx)
     .await?;

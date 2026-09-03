@@ -735,3 +735,194 @@ async fn budget_entries_isolated_without_scoping(db: PgPool) {
         .await
         .unwrap();
 }
+
+/// Issue #73's `event_assignees` (migration 0011). The table carries no
+/// `group_id` of its own — its policy joins back to `events`, the same
+/// shape `event_reminders`/`event_attachments` use — which is precisely why
+/// it deserves its own guard: a join that silently stops filtering looks
+/// like nothing at all from the application side.
+#[sqlx::test]
+async fn event_assignees_isolated_without_scoping(db: PgPool) {
+    let owner_a: Uuid = sqlx::query_scalar!(
+        "INSERT INTO users (email, password_hash, display_name, email_verified) VALUES ('assignee-rls-a@example.test', 'x', 'A', true) RETURNING id"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let owner_b: Uuid = sqlx::query_scalar!(
+        "INSERT INTO users (email, password_hash, display_name, email_verified) VALUES ('assignee-rls-b@example.test', 'x', 'B', true) RETURNING id"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let group_a: Uuid = sqlx::query_scalar!(
+        "INSERT INTO groups (name, created_by) VALUES ('A', $1) RETURNING id",
+        owner_a
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let group_b: Uuid = sqlx::query_scalar!(
+        "INSERT INTO groups (name, created_by) VALUES ('B', $1) RETURNING id",
+        owner_b
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+
+    let starts_at = chrono::Utc::now();
+    let ends_at = starts_at + chrono::Duration::hours(1);
+    let event_b: Uuid = sqlx::query_scalar!(
+        "INSERT INTO events (group_id, created_by, title, starts_at, ends_at) VALUES ($1, $2, 'secret B event', $3, $4) RETURNING id",
+        group_b,
+        owner_b,
+        starts_at,
+        ends_at,
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    sqlx::query!(
+        "INSERT INTO event_assignees (event_id, user_id) VALUES ($1, $2)",
+        event_b,
+        owner_b,
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let role = format!("app_test_role_{}", Uuid::new_v4().simple());
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "GRANT SELECT ON event_assignees, events TO {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let mut tx = db.begin().await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+        .bind(group_a.to_string())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let visible: Vec<Uuid> = sqlx::query_scalar("SELECT event_id FROM event_assignees")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    assert!(
+        visible.is_empty(),
+        "group A's scope must not see who group B's events are assigned to"
+    );
+
+    tx.commit().await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "REVOKE ALL ON event_assignees, events FROM {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP ROLE {role}")))
+        .execute(&db)
+        .await
+        .unwrap();
+}
+
+/// Issue #73's `message_read_state` (migration 0012). A read watermark is
+/// not message content, but it still leaks whether and when another family
+/// is reading its thread — and it is scoped by `group_id` like the rest, so
+/// it is held to the same bar.
+#[sqlx::test]
+async fn message_read_state_isolated_without_scoping(db: PgPool) {
+    let owner_a: Uuid = sqlx::query_scalar!(
+        "INSERT INTO users (email, password_hash, display_name, email_verified) VALUES ('read-rls-a@example.test', 'x', 'A', true) RETURNING id"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let owner_b: Uuid = sqlx::query_scalar!(
+        "INSERT INTO users (email, password_hash, display_name, email_verified) VALUES ('read-rls-b@example.test', 'x', 'B', true) RETURNING id"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let group_a: Uuid = sqlx::query_scalar!(
+        "INSERT INTO groups (name, created_by) VALUES ('A', $1) RETURNING id",
+        owner_a
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let group_b: Uuid = sqlx::query_scalar!(
+        "INSERT INTO groups (name, created_by) VALUES ('B', $1) RETURNING id",
+        owner_b
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO message_read_state (group_id, user_id) VALUES ($1, $2)",
+        group_b,
+        owner_b,
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let role = format!("app_test_role_{}", Uuid::new_v4().simple());
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "GRANT SELECT ON message_read_state TO {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let mut tx = db.begin().await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+        .bind(group_a.to_string())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let visible: Vec<Uuid> = sqlx::query_scalar("SELECT group_id FROM message_read_state")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    assert!(
+        visible.is_empty(),
+        "group A's scope must not see group B's read watermarks"
+    );
+
+    tx.commit().await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "REVOKE ALL ON message_read_state FROM {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP ROLE {role}")))
+        .execute(&db)
+        .await
+        .unwrap();
+}

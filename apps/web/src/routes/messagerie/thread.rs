@@ -10,6 +10,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
+use chrono::{DateTime, Utc};
 use manage_our_home_shared::dto::groups::GroupDetailResponse;
 use manage_our_home_shared::dto::messagerie::{
     CreateMessageRequest, MessageList, MessageResponse, UpdateMessageRequest,
@@ -490,6 +491,7 @@ pub async fn get(
             serde_json::from_value::<MessageList>(resp.body).unwrap_or(MessageList {
                 messages: Vec::new(),
                 has_more: false,
+                unread_total: None,
             })
         }
         // A non-member (403, unreachable once family resolved) or any other
@@ -497,26 +499,40 @@ pub async fn get(
         Ok(_) => MessageList {
             messages: Vec::new(),
             has_more: false,
+            unread_total: None,
         },
         Err(_) => return service_unavailable_page().into_response(),
     };
 
     let members = fetch_members(&state, fam.gid, cookie.as_deref()).await;
 
-    // #73: opening the thread is what advances the read watermark — the
-    // simplest trigger the issue asked for, no "mark as read" control of
-    // its own. Best-effort and fire-and-forget, same call as the
-    // at-creation reminder in `agenda/new.rs`: a failure here means the
-    // dashboard's unread count stays one page stale, not that the thread
-    // fails to render.
-    let _ = api_request_auth(
-        &state,
-        reqwest::Method::POST,
-        &format!("/groups/{}/messages/read", fam.gid),
-        cookie.as_deref(),
-        None,
-    )
-    .await;
+    // #73: opening the *live* thread is what advances the read watermark —
+    // the simplest trigger the issue asked for, no "mark as read" control
+    // of its own. `read_watermark` decides both whether to call at all (a
+    // history window must not, see its doc comment) and how far the marker
+    // may go (the newest message actually rendered, never `now()`).
+    // Best-effort and fire-and-forget, same call as the at-creation
+    // reminder in `agenda/new.rs`: a failure here means the dashboard's
+    // unread count stays one page stale, not that the thread fails to
+    // render.
+    if let Some(up_to) = read_watermark(&list, live) {
+        let _ = api_request_auth(
+            &state,
+            reqwest::Method::POST,
+            // Same raw-RFC3339-in-a-query-value shape the cursor uses
+            // just above (`older_page_query`): with `Z` and microseconds
+            // the string holds only unreserved characters plus `:` and
+            // `.`, none of which need escaping in a query value.
+            &format!(
+                "/groups/{}/messages/read?up_to={}",
+                fam.gid,
+                up_to.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+            ),
+            cookie.as_deref(),
+            None,
+        )
+        .await;
+    }
 
     Html(page(&fam, &list, &members, &query, live, "", None)).into_response()
 }
@@ -552,11 +568,13 @@ async fn rerender_with_composer_error(
             serde_json::from_value::<MessageList>(resp.body).unwrap_or(MessageList {
                 messages: Vec::new(),
                 has_more: false,
+                unread_total: None,
             })
         }
         _ => MessageList {
             messages: Vec::new(),
             has_more: false,
+            unread_total: None,
         },
     };
     let members = fetch_members(state, fam.gid, cookie).await;
@@ -749,11 +767,13 @@ async fn rerender_with_edit_error(
             serde_json::from_value::<MessageList>(resp.body).unwrap_or(MessageList {
                 messages: Vec::new(),
                 has_more: false,
+                unread_total: None,
             })
         }
         _ => MessageList {
             messages: Vec::new(),
             has_more: false,
+            unread_total: None,
         },
     };
     let members = fetch_members(state, fam.gid, cookie).await;
@@ -860,9 +880,33 @@ pub async fn delete(
     }
 }
 
+/// How far the caller's read marker may advance after rendering `list`.
+///
+/// Two rules, both learned the hard way (#98 verification, round 2):
+///
+/// * only a **live** window (no cursor — the newest page) marks anything
+///   read. The "Charger les messages plus anciens" link this very page
+///   renders leads to a history window; marking there turned messages the
+///   member had never laid eyes on into read ones, and
+///   `0012_message_read_state.sql` is explicit that a message cannot be
+///   made unread again.
+/// * the marker stops at the **newest message actually rendered**, never at
+///   `now()`. Anything posted between the API read and the mark would
+///   otherwise be swallowed without ever having been displayed.
+///
+/// `None` means "do not touch the marker": a history window, or a live
+/// window with nothing in it (in which case there is nothing to have read).
+fn read_watermark(list: &MessageList, live: bool) -> Option<DateTime<Utc>> {
+    if !live {
+        return None;
+    }
+    list.messages.iter().map(|m| m.created_at).max()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     fn sample(content: &str) -> MessageResponse {
         let now = chrono::Utc::now();
@@ -875,6 +919,61 @@ mod tests {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    fn sample_at(hour: u32) -> MessageResponse {
+        let created_at = chrono::Utc
+            .with_ymd_and_hms(2026, 9, 3, hour, 0, 0)
+            .unwrap();
+        MessageResponse {
+            created_at,
+            updated_at: created_at,
+            ..sample("Bonjour")
+        }
+    }
+
+    fn list_of(hours: &[u32]) -> MessageList {
+        MessageList {
+            messages: hours.iter().copied().map(sample_at).collect(),
+            has_more: false,
+            unread_total: None,
+        }
+    }
+
+    // -- read_watermark (#73, #98 round-2 blocker) -----------------------
+
+    /// The blocker as the verifier reproduced it: three messages arrive, the
+    /// member clicks "Charger les messages plus anciens" without ever having
+    /// looked at them, and they were marked read — irreversibly.
+    #[test]
+    fn a_history_window_never_advances_the_read_marker() {
+        assert_eq!(read_watermark(&list_of(&[9, 10, 11]), false), None);
+    }
+
+    /// The live window is the one that means "I have seen this".
+    #[test]
+    fn the_live_window_advances_to_its_newest_rendered_message() {
+        let list = list_of(&[9, 11, 10]);
+        assert_eq!(
+            read_watermark(&list, true),
+            Some(chrono::Utc.with_ymd_and_hms(2026, 9, 3, 11, 0, 0).unwrap()),
+        );
+    }
+
+    /// Never `now()`: a message created after the page was fetched has not
+    /// been rendered, so the marker must stop short of it.
+    #[test]
+    fn the_marker_stops_at_the_newest_rendered_message_not_later() {
+        let list = list_of(&[9, 10]);
+        let watermark = read_watermark(&list, true).expect("live window with messages");
+        assert!(watermark < chrono::Utc.with_ymd_and_hms(2026, 9, 3, 11, 0, 0).unwrap());
+    }
+
+    /// Nothing rendered, nothing read — and no row written for it either.
+    #[test]
+    fn an_empty_live_window_advances_nothing() {
+        assert_eq!(read_watermark(&list_of(&[]), true), None);
+        assert_eq!(read_watermark(&list_of(&[]), false), None);
     }
 
     /// The live reconcile matches rows across renders by `data-message-id`;

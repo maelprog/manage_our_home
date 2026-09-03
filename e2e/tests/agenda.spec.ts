@@ -293,3 +293,47 @@ test.describe("Agenda — attachments", () => {
     await expect(page.getByRole("link", { name: "photo.png" })).toHaveCount(0);
   });
 });
+
+// The two write forms of this epic (`/agenda/new`, `/agenda/:id/edit`) read
+// their body as raw bytes rather than through `axum::Form`, because a
+// checkbox group submits the same `assignee_ids` key several times and
+// `Form`'s deserializer cannot express that. Taking the raw body dropped two
+// things `Form` did for free, both flagged by #98's round-2 verification:
+// the media-type check (a `text/plain` POST created an event where the 31
+// other handlers in this folder answer 415), and reporting a body that does
+// not parse (it answered 200 with an unrelated validation message).
+test.describe("Agenda — type de média et corps illisible", () => {
+  test("un POST hors formulaire est refusé, un corps incomplet est un 422", async ({ page }) => {
+    await registerAndLogin(page, "e2e-agmedia", "Media User");
+    await createGroup(page, "Famille Media");
+
+    const date = dayThisMonth(12);
+    const body = `title=Injecte&starts_at=${date}T10:00&ends_at=${date}T11:00`;
+
+    const plain = await page.request.post("/agenda/new", {
+      headers: { "content-type": "text/plain" },
+      data: body,
+    });
+    expect(plain.status()).toBe(415);
+
+    const json = await page.request.post("/agenda/new", {
+      headers: { "content-type": "application/json" },
+      data: body,
+    });
+    expect(json.status()).toBe(415);
+
+    // Right media type, body missing the required dates: the answer says the
+    // form was unreadable instead of claiming the end precedes the start.
+    const incomplete = await page.request.post("/agenda/new", {
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      data: "title=Sans+dates",
+    });
+    expect(incomplete.status()).toBe(422);
+    expect(await incomplete.text()).toContain("Formulaire incomplet");
+
+    // None of the three created anything.
+    await page.goto("/agenda");
+    await expect(page.getByRole("link", { name: /Injecte/ })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: /Sans dates/ })).toHaveCount(0);
+  });
+});

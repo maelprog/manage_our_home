@@ -197,6 +197,14 @@ async fn replace_assignees(
 /// separate-fetch-then-merge shape `list_events` already uses for
 /// `event_occurrence_completions`, so a range query costs one extra
 /// `ANY($1)` lookup rather than N.
+///
+/// `user_id` is the tie-break, and it is not decoration: `replace_assignees`
+/// inserts a whole set in one `UNNEST`, so every row of an event shares the
+/// same `created_at` and `ORDER BY created_at` alone left Postgres free to
+/// return them in any order. The dashboard renders the *first* assignee's
+/// initial in the avatar, so that would have made the letter in the ring —
+/// and the order of the names beside it — flicker between two page loads of
+/// the same unchanged event (#98 verification, round 2).
 async fn assignees_for_events(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     event_ids: &[Uuid],
@@ -208,7 +216,7 @@ async fn assignees_for_events(
         r#"
         SELECT event_id, user_id FROM event_assignees
         WHERE event_id = ANY($1)
-        ORDER BY event_id, created_at
+        ORDER BY event_id, created_at, user_id
         "#,
         event_ids,
     )
