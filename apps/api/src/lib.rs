@@ -225,6 +225,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/groups/:id/messages/ws", get(messagerie::ws::message_ws))
         .route(
+            "/groups/:id/messages/read",
+            post(messagerie::messages::mark_messages_read),
+        )
+        .route(
             "/groups/:id/messages/:message_id",
             axum::routing::patch(messagerie::messages::update_message)
                 .delete(messagerie::messages::delete_message),

@@ -24,6 +24,11 @@ pub struct CreateEventRequest {
     pub is_task: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rrule: Option<String>,
+    /// Family members this event is for. `None`/empty defaults to
+    /// `[creator]` on the backend (issue #73 — "assigned to the creator by
+    /// default").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assignee_ids: Option<Vec<Uuid>>,
 }
 
 /// `PATCH /groups/:id/events/:event_id` request body. Every field is
@@ -51,6 +56,11 @@ pub struct UpdateEventRequest {
     pub completed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub occurrence_at: Option<DateTime<Utc>>,
+    /// `None` leaves the current assignees untouched; `Some(_)` (even
+    /// empty) replaces them, falling back to `[creator]` if that would
+    /// leave none (see the backend's `resolve_assignees`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assignee_ids: Option<Vec<Uuid>>,
 }
 
 /// `GET/POST/PATCH /groups/:id/events[/:event_id]` response body. For a
@@ -70,6 +80,9 @@ pub struct EventResponse {
     pub is_task: bool,
     pub completed_at: Option<DateTime<Utc>>,
     pub rrule: Option<String>,
+    /// Family members this event is for — always at least one (the creator,
+    /// by default; see `CreateEventRequest::assignee_ids`).
+    pub assignee_ids: Vec<Uuid>,
 }
 
 /// One expanded occurrence in a `GET /groups/:id/events?from&to` window.

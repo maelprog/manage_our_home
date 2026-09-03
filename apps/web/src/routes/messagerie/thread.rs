@@ -503,6 +503,21 @@ pub async fn get(
 
     let members = fetch_members(&state, fam.gid, cookie.as_deref()).await;
 
+    // #73: opening the thread is what advances the read watermark — the
+    // simplest trigger the issue asked for, no "mark as read" control of
+    // its own. Best-effort and fire-and-forget, same call as the
+    // at-creation reminder in `agenda/new.rs`: a failure here means the
+    // dashboard's unread count stays one page stale, not that the thread
+    // fails to render.
+    let _ = api_request_auth(
+        &state,
+        reqwest::Method::POST,
+        &format!("/groups/{}/messages/read", fam.gid),
+        cookie.as_deref(),
+        None,
+    )
+    .await;
+
     Html(page(&fam, &list, &members, &query, live, "", None)).into_response()
 }
 

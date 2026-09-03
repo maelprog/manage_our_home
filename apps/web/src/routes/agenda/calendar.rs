@@ -472,6 +472,7 @@ mod tests {
                 is_task: false,
                 completed_at: None,
                 rrule: None,
+                assignee_ids: vec![Uuid::nil()],
             },
             occurrence_starts_at: starts,
             occurrence_ends_at: starts,

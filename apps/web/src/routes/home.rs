@@ -1,7 +1,7 @@
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use chrono::{Datelike, Duration, NaiveDate};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use leptos::prelude::*;
 use manage_our_home_shared::dto::agenda::{OccurrenceList, OccurrenceResponse};
 use manage_our_home_shared::dto::auth::MeResponse;
@@ -14,7 +14,10 @@ use manage_our_home_shared::validation::budget::{format_euros, month_name_fr};
 use manage_our_home_shared::validation::messagerie::author_name;
 use uuid::Uuid;
 
-use crate::app::{html_escape, member_colour, member_initial, shell, shell_with_header, Width};
+use crate::app::{
+    combined_member_colour, html_escape, member_colour, member_initial, shell, shell_with_header,
+    Width,
+};
 use crate::family::{active_group_id_from_headers, resolve_active_group};
 use crate::layout::CurrentUser;
 use crate::routes::agenda::{fmt_paris, paris_local_to_utc, today_paris};
@@ -30,8 +33,9 @@ const DASHBOARD_AGENDA_CAP: usize = 5;
 /// Same trade for stock: a taste of what's low, `/stocks?low_stock=1` for
 /// the rest.
 const DASHBOARD_STOCK_CAP: usize = 5;
-/// Requested straight from the API (`?limit=`), newest first — no client-side
-/// capping needed for messages the way the other blocks need it.
+/// Requested straight from the API (`?limit=&unread=true`), newest-unread
+/// first — no client-side capping needed for messages the way the other
+/// blocks need it.
 const DASHBOARD_MESSAGES_LIMIT: i64 = 5;
 /// A message preview is not the thread: long messages are cut to this many
 /// characters so one verbose message can't push the rest of the card (and the
@@ -40,11 +44,24 @@ const DASHBOARD_MESSAGE_SNIPPET_MAX_CHARS: usize = 120;
 
 // -- pure logic (TDD'd below) ------------------------------------------------
 
-/// Sorts occurrences chronologically and keeps the earliest `cap` — the
-/// dashboard answers "what's coming up next", and an API response is not
-/// guaranteed to arrive in start-time order.
-fn soonest_occurrences(occurrences: &[OccurrenceResponse], cap: usize) -> Vec<&OccurrenceResponse> {
-    let mut refs: Vec<&OccurrenceResponse> = occurrences.iter().collect();
+/// Sorts occurrences chronologically and keeps the earliest `cap` that have
+/// not yet started — the dashboard answers "what's coming up next", not
+/// "what happened today". The API window the caller fetches starts at
+/// midnight Paris (same civil day the calendar page uses), so the raw list
+/// still holds this morning's already-finished events; filtering on `now`
+/// here (not on the query's lower bound) is what keeps a 17:00 page load
+/// from surfacing an 09:00 event as "coming up" (#98 verification finding).
+/// An API response is not guaranteed to arrive in start-time order either,
+/// hence the sort.
+fn soonest_occurrences(
+    occurrences: &[OccurrenceResponse],
+    now: DateTime<Utc>,
+    cap: usize,
+) -> Vec<&OccurrenceResponse> {
+    let mut refs: Vec<&OccurrenceResponse> = occurrences
+        .iter()
+        .filter(|o| o.occurrence_starts_at >= now)
+        .collect();
     refs.sort_by_key(|o| o.occurrence_starts_at);
     refs.truncate(cap);
     refs
@@ -76,164 +93,6 @@ fn truncate_message(content: &str, max_chars: usize) -> String {
     } else {
         let head: String = content.chars().take(max_chars).collect();
         format!("{}…", head.trim_end())
-    }
-}
-
-#[cfg(test)]
-mod pure_logic_tests {
-    use super::*;
-    use chrono::{TimeZone, Utc};
-    use manage_our_home_shared::dto::agenda::EventResponse;
-
-    fn occurrence(hour: u32, title: &str) -> OccurrenceResponse {
-        let starts = Utc.with_ymd_and_hms(2026, 9, 3, hour, 0, 0).unwrap();
-        OccurrenceResponse {
-            event: EventResponse {
-                id: Uuid::from_u128(u128::from(hour)),
-                group_id: Uuid::nil(),
-                created_by: Uuid::nil(),
-                title: title.to_string(),
-                description: None,
-                location: None,
-                starts_at: starts,
-                ends_at: starts,
-                all_day: false,
-                is_task: false,
-                completed_at: None,
-                rrule: None,
-            },
-            occurrence_starts_at: starts,
-            occurrence_ends_at: starts,
-        }
-    }
-
-    // -- soonest_occurrences --------------------------------------------
-
-    #[test]
-    fn occurrences_are_sorted_chronologically_regardless_of_input_order() {
-        let occs = vec![occurrence(14, "Après-midi"), occurrence(9, "Matin")];
-        let picked = soonest_occurrences(&occs, 5);
-        assert_eq!(picked.len(), 2);
-        assert_eq!(picked[0].event.title, "Matin");
-        assert_eq!(picked[1].event.title, "Après-midi");
-    }
-
-    #[test]
-    fn more_occurrences_than_the_cap_keeps_only_the_soonest() {
-        let occs: Vec<OccurrenceResponse> = (0..5)
-            .map(|i| occurrence(8 + i, &format!("Événement {i}")))
-            .collect();
-        let picked = soonest_occurrences(&occs, 3);
-        assert_eq!(picked.len(), 3);
-        assert_eq!(picked[0].event.title, "Événement 0");
-        assert_eq!(picked[2].event.title, "Événement 2");
-    }
-
-    #[test]
-    fn an_empty_window_picks_nothing() {
-        assert!(soonest_occurrences(&[], 5).is_empty());
-    }
-
-    // -- count_unchecked --------------------------------------------------
-
-    fn grocery_item(checked: bool) -> GroceryItemResponse {
-        GroceryItemResponse {
-            id: Uuid::nil(),
-            group_id: Uuid::nil(),
-            created_by: Uuid::nil(),
-            name: "Lait".to_string(),
-            quantity: None,
-            unit: None,
-            checked,
-            source: "manual".to_string(),
-            source_recipe_id: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        }
-    }
-
-    #[test]
-    fn an_empty_list_has_nothing_unchecked() {
-        assert_eq!(count_unchecked(&[]), 0);
-    }
-
-    #[test]
-    fn only_unchecked_items_are_counted() {
-        let items = vec![grocery_item(false), grocery_item(true), grocery_item(false)];
-        assert_eq!(count_unchecked(&items), 2);
-    }
-
-    #[test]
-    fn a_fully_checked_list_counts_zero() {
-        let items = vec![grocery_item(true), grocery_item(true)];
-        assert_eq!(count_unchecked(&items), 0);
-    }
-
-    // -- current_month_total ----------------------------------------------
-
-    fn period(year: i32, month: u32, total: f64) -> BudgetPeriodTotal {
-        BudgetPeriodTotal {
-            period: NaiveDate::from_ymd_opt(year, month, 1).unwrap(),
-            total,
-        }
-    }
-
-    #[test]
-    fn the_period_matching_the_current_month_is_picked() {
-        let today = NaiveDate::from_ymd_opt(2026, 9, 3).unwrap();
-        let periods = vec![period(2026, 9, 42.5), period(2026, 8, 100.0)];
-        assert_eq!(current_month_total(&periods, today), Some(42.5));
-    }
-
-    #[test]
-    fn no_entry_this_month_is_none_not_zero() {
-        let today = NaiveDate::from_ymd_opt(2026, 9, 3).unwrap();
-        let periods = vec![period(2026, 8, 100.0), period(2025, 9, 30.0)];
-        assert_eq!(current_month_total(&periods, today), None);
-    }
-
-    #[test]
-    fn an_empty_summary_has_no_current_month() {
-        let today = NaiveDate::from_ymd_opt(2026, 9, 3).unwrap();
-        assert_eq!(current_month_total(&[], today), None);
-    }
-
-    // -- truncate_message ---------------------------------------------------
-
-    #[test]
-    fn a_short_message_is_returned_unchanged() {
-        assert_eq!(truncate_message("Bonjour", 120), "Bonjour");
-    }
-
-    #[test]
-    fn a_message_at_exactly_the_limit_is_unchanged() {
-        let content = "a".repeat(10);
-        assert_eq!(truncate_message(&content, 10), content);
-    }
-
-    #[test]
-    fn a_long_message_is_cut_with_an_ellipsis() {
-        let content = "a".repeat(15);
-        let out = truncate_message(&content, 10);
-        assert_eq!(out, format!("{}…", "a".repeat(10)));
-    }
-
-    #[test]
-    fn trailing_whitespace_left_by_the_cut_is_trimmed_before_the_ellipsis() {
-        let content = "dix lettres puis un mot plus long";
-        // Cut lands right after "dix lettres" (11 chars) plus a space.
-        let out = truncate_message(content, 12);
-        assert!(!out.contains(" …"), "{out}");
-        assert!(out.ends_with('…'), "{out}");
-    }
-
-    #[test]
-    fn multi_byte_characters_are_not_split_mid_codepoint() {
-        // Every character here is multi-byte in UTF-8; a byte-indexed cut
-        // would panic or produce invalid UTF-8.
-        let content = "éèàçùâêîôûëïüœ".repeat(3);
-        let out = truncate_message(&content, 10);
-        assert_eq!(out.chars().count(), 11); // 10 + the ellipsis
     }
 }
 
@@ -296,12 +155,27 @@ async fn fetch_members(state: &AppState, gid: Uuid, cookie: Option<&str>) -> Vec
     }
 }
 
-/// One upcoming-event row: the creator's coloured initial (the closest thing
-/// to an "assigned member" the Agenda domain has — events carry no separate
-/// assignee, see `EventResponse`), the time, and the title.
+/// One upcoming-event row: the assigned member(s)' coloured initial (their
+/// own colour for one assignee, the running average for several — see
+/// `combined_member_colour`), the time, and the title. The ring's letter is
+/// the first assignee's initial; with several assignees the names beside it
+/// (not just the ring) are what actually says who, matching WCAG 1.4.1
+/// (colour is never the only carrier — see `agenda/calendar.rs`'s doc
+/// comment on the same constraint).
 fn agenda_row(occ: &OccurrenceResponse, members: &[GroupMember]) -> String {
     let e = &occ.event;
-    let author = author_name(members, e.created_by);
+    let assignee_names: Vec<&str> = e
+        .assignee_ids
+        .iter()
+        .map(|id| author_name(members, *id))
+        .collect();
+    let assignees = assignee_names.join(", ");
+    let colour_tokens: Vec<&str> = e.assignee_ids.iter().copied().map(member_colour).collect();
+    let colour = combined_member_colour(&colour_tokens);
+    let initial = assignee_names
+        .first()
+        .map(|n| member_initial(n))
+        .unwrap_or_else(|| "?".to_string());
     let time = if e.all_day {
         "journée".to_string()
     } else {
@@ -312,17 +186,21 @@ fn agenda_row(occ: &OccurrenceResponse, members: &[GroupMember]) -> String {
         fmt_paris(occ.occurrence_starts_at, "%d/%m %H:%M")
     };
     format!(
-        r#"<li class="list-row"><span><span class="avatar" style="color:var({colour})" aria-hidden="true">{initial}</span> <strong>{time}</strong> {title} <span class="muted">— {author}</span></span></li>"#,
-        colour = member_colour(e.created_by),
-        initial = html_escape(&member_initial(author)),
+        r#"<li class="list-row"><span><span class="avatar" style="color:{colour}" aria-hidden="true">{initial}</span> <strong>{time}</strong> {title} <span class="muted">— {assignees}</span></span></li>"#,
+        colour = colour,
+        initial = html_escape(&initial),
         time = html_escape(&time),
         title = html_escape(&e.title),
-        author = html_escape(author),
+        assignees = html_escape(&assignees),
     )
 }
 
-fn agenda_block(occurrences: &[OccurrenceResponse], members: &[GroupMember]) -> String {
-    let picked = soonest_occurrences(occurrences, DASHBOARD_AGENDA_CAP);
+fn agenda_block(
+    occurrences: &[OccurrenceResponse],
+    now: DateTime<Utc>,
+    members: &[GroupMember],
+) -> String {
+    let picked = soonest_occurrences(occurrences, now, DASHBOARD_AGENDA_CAP);
     let body = if picked.is_empty() {
         r#"<p class="muted">Rien de prévu dans les prochains jours.</p>"#.to_string()
     } else {
@@ -403,10 +281,10 @@ fn budget_block(total: Option<f64>, today: NaiveDate) -> String {
     )
 }
 
-/// One message-preview row. No unread tracking exists in the Messagerie
-/// domain (`MessageResponse` carries no read marker, per-user or otherwise)
-/// — showing the most recent messages is the closest honest reading of "last
-/// unread messages" the data model supports; see the PR description for why.
+/// One message-preview row. Since #73, `messages` really is the unread set
+/// (`GET …/messages?unread=true`, backed by `message_read_state` — see
+/// `apps/api/src/messagerie/messages.rs::unread_messages`), not just the
+/// most recent few: this card only shows what the caller hasn't read yet.
 fn message_row(msg: &MessageResponse, members: &[GroupMember]) -> String {
     let author = author_name(members, msg.created_by);
     let snippet = truncate_message(&msg.content, DASHBOARD_MESSAGE_SNIPPET_MAX_CHARS);
@@ -417,16 +295,21 @@ fn message_row(msg: &MessageResponse, members: &[GroupMember]) -> String {
     )
 }
 
+/// `messages` is already the unread page (see `message_row`'s doc comment):
+/// an empty list here means "nothing unread", not "no messages ever" — same
+/// distinction `grocery_block` draws between zero-unchecked and an empty
+/// list, and the same reason the empty copy says "tout est lu" rather than
+/// "aucun message".
 fn messages_block(messages: &[MessageResponse], members: &[GroupMember]) -> String {
     let body = if messages.is_empty() {
-        r#"<p class="muted">Aucun message pour le moment.</p>"#.to_string()
+        r#"<p class="muted">Tout est lu.</p>"#.to_string()
     } else {
         let rows: String = messages.iter().map(|m| message_row(m, members)).collect();
         format!(r#"<ul class="list">{rows}</ul>"#)
     };
     format!(
         r#"<section class="card">
-<h2>Derniers messages</h2>
+<h2>Messages non lus</h2>
 {body}
 <a class="btn secondary" href="/messagerie">Voir la messagerie</a>
 </section>"#
@@ -436,7 +319,7 @@ fn messages_block(messages: &[MessageResponse], members: &[GroupMember]) -> Stri
 /// Authenticated home page. Since the Groups epic (#17) it carries the
 /// shared header with the active-family switcher. Since #73 it carries the
 /// active family's dashboard: what's coming up on the agenda, what's low in
-/// stock, how much is left to buy, this month's spend, and the latest chat —
+/// stock, how much is left to buy, this month's spend, and the unread chat —
 /// one card per domain, each behind its own read of the same repositories
 /// the domain's own page uses (no bespoke summary tables, no invented
 /// fields). With no family yet, the pre-#73 empty-state hint
@@ -575,7 +458,7 @@ pub async fn get(
         &state,
         reqwest::Method::GET,
         &format!(
-            "/groups/{}/messages?limit={}",
+            "/groups/{}/messages?limit={}&unread=true",
             fam.gid, DASHBOARD_MESSAGES_LIMIT
         ),
         cookie.as_deref(),
@@ -601,7 +484,7 @@ pub async fn get(
 {grocery}
 {budget}
 {messages}"#,
-        agenda = agenda_block(&occurrences, &members),
+        agenda = agenda_block(&occurrences, chrono::Utc::now(), &members),
         stocks = stocks_block(&low_stock),
         grocery = grocery_block(count_unchecked(&grocery_items)),
         budget = budget_block(current_month_total(&budget_summary.periods, today), today),
@@ -661,3 +544,210 @@ pub async fn google_callback(CurrentUserOpt(me): CurrentUserOpt) -> impl IntoRes
 }
 
 pub use crate::layout::CurrentUserOpt;
+
+#[cfg(test)]
+mod pure_logic_tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+    use manage_our_home_shared::dto::agenda::EventResponse;
+
+    fn occurrence(hour: u32, title: &str) -> OccurrenceResponse {
+        let starts = Utc.with_ymd_and_hms(2026, 9, 3, hour, 0, 0).unwrap();
+        OccurrenceResponse {
+            event: EventResponse {
+                id: Uuid::from_u128(u128::from(hour)),
+                group_id: Uuid::nil(),
+                created_by: Uuid::nil(),
+                title: title.to_string(),
+                description: None,
+                location: None,
+                starts_at: starts,
+                ends_at: starts,
+                all_day: false,
+                is_task: false,
+                completed_at: None,
+                rrule: None,
+                assignee_ids: vec![Uuid::nil()],
+            },
+            occurrence_starts_at: starts,
+            occurrence_ends_at: starts,
+        }
+    }
+
+    // -- soonest_occurrences --------------------------------------------
+
+    /// A `now` late enough that every fixture in this block (hours 8-14) is
+    /// unambiguously in the past, except where a test picks a later `now`
+    /// on purpose.
+    fn late_afternoon() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 9, 3, 17, 16, 0).unwrap()
+    }
+
+    #[test]
+    fn occurrences_are_sorted_chronologically_regardless_of_input_order() {
+        let now = Utc.with_ymd_and_hms(2026, 9, 3, 8, 0, 0).unwrap();
+        let occs = vec![occurrence(14, "Après-midi"), occurrence(9, "Matin")];
+        let picked = soonest_occurrences(&occs, now, 5);
+        assert_eq!(picked.len(), 2);
+        assert_eq!(picked[0].event.title, "Matin");
+        assert_eq!(picked[1].event.title, "Après-midi");
+    }
+
+    #[test]
+    fn more_occurrences_than_the_cap_keeps_only_the_soonest() {
+        let now = Utc.with_ymd_and_hms(2026, 9, 3, 0, 0, 0).unwrap();
+        let occs: Vec<OccurrenceResponse> = (0..5)
+            .map(|i| occurrence(8 + i, &format!("Événement {i}")))
+            .collect();
+        let picked = soonest_occurrences(&occs, now, 3);
+        assert_eq!(picked.len(), 3);
+        assert_eq!(picked[0].event.title, "Événement 0");
+        assert_eq!(picked[2].event.title, "Événement 2");
+    }
+
+    #[test]
+    fn an_empty_window_picks_nothing() {
+        assert!(soonest_occurrences(&[], late_afternoon(), 5).is_empty());
+    }
+
+    /// The exact shape of the verification finding on #98: six occurrences
+    /// this morning (08h-13h), `now` at 17h16 — every one of them is
+    /// already over, so none should be picked, even though the API window
+    /// (Paris midnight .. midnight+WINDOW_DAYS) still returns all six.
+    #[test]
+    fn occurrences_earlier_today_than_now_are_excluded() {
+        let now = late_afternoon();
+        let occs: Vec<OccurrenceResponse> = (0..6).map(|i| occurrence(8 + i, "Matin")).collect();
+        let picked = soonest_occurrences(&occs, now, 5);
+        assert!(picked.is_empty(), "{picked:#?}");
+    }
+
+    /// A mix of already-past and still-upcoming occurrences today: only the
+    /// ones at or after `now` are "coming up".
+    #[test]
+    fn only_occurrences_at_or_after_now_are_picked() {
+        let now = late_afternoon();
+        let occs = vec![
+            occurrence(9, "Petit-déjeuner"),   // past
+            occurrence(14, "Déjeuner tardif"), // past
+            occurrence(18, "Dîner"),           // future
+            occurrence(20, "Soirée"),          // future
+        ];
+        let picked = soonest_occurrences(&occs, now, 5);
+        assert_eq!(picked.len(), 2, "{picked:#?}");
+        assert_eq!(picked[0].event.title, "Dîner");
+        assert_eq!(picked[1].event.title, "Soirée");
+    }
+
+    /// An occurrence starting at exactly `now` is still upcoming, not past
+    /// — the filter is inclusive on its lower bound.
+    #[test]
+    fn an_occurrence_starting_exactly_now_is_kept() {
+        let now = Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 0).unwrap();
+        let occs = vec![occurrence(12, "Pile à l'heure")];
+        let picked = soonest_occurrences(&occs, now, 5);
+        assert_eq!(picked.len(), 1);
+    }
+
+    // -- count_unchecked --------------------------------------------------
+
+    fn grocery_item(checked: bool) -> GroceryItemResponse {
+        GroceryItemResponse {
+            id: Uuid::nil(),
+            group_id: Uuid::nil(),
+            created_by: Uuid::nil(),
+            name: "Lait".to_string(),
+            quantity: None,
+            unit: None,
+            checked,
+            source: "manual".to_string(),
+            source_recipe_id: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn an_empty_list_has_nothing_unchecked() {
+        assert_eq!(count_unchecked(&[]), 0);
+    }
+
+    #[test]
+    fn only_unchecked_items_are_counted() {
+        let items = vec![grocery_item(false), grocery_item(true), grocery_item(false)];
+        assert_eq!(count_unchecked(&items), 2);
+    }
+
+    #[test]
+    fn a_fully_checked_list_counts_zero() {
+        let items = vec![grocery_item(true), grocery_item(true)];
+        assert_eq!(count_unchecked(&items), 0);
+    }
+
+    // -- current_month_total ----------------------------------------------
+
+    fn period(year: i32, month: u32, total: f64) -> BudgetPeriodTotal {
+        BudgetPeriodTotal {
+            period: NaiveDate::from_ymd_opt(year, month, 1).unwrap(),
+            total,
+        }
+    }
+
+    #[test]
+    fn the_period_matching_the_current_month_is_picked() {
+        let today = NaiveDate::from_ymd_opt(2026, 9, 3).unwrap();
+        let periods = vec![period(2026, 9, 42.5), period(2026, 8, 100.0)];
+        assert_eq!(current_month_total(&periods, today), Some(42.5));
+    }
+
+    #[test]
+    fn no_entry_this_month_is_none_not_zero() {
+        let today = NaiveDate::from_ymd_opt(2026, 9, 3).unwrap();
+        let periods = vec![period(2026, 8, 100.0), period(2025, 9, 30.0)];
+        assert_eq!(current_month_total(&periods, today), None);
+    }
+
+    #[test]
+    fn an_empty_summary_has_no_current_month() {
+        let today = NaiveDate::from_ymd_opt(2026, 9, 3).unwrap();
+        assert_eq!(current_month_total(&[], today), None);
+    }
+
+    // -- truncate_message ---------------------------------------------------
+
+    #[test]
+    fn a_short_message_is_returned_unchanged() {
+        assert_eq!(truncate_message("Bonjour", 120), "Bonjour");
+    }
+
+    #[test]
+    fn a_message_at_exactly_the_limit_is_unchanged() {
+        let content = "a".repeat(10);
+        assert_eq!(truncate_message(&content, 10), content);
+    }
+
+    #[test]
+    fn a_long_message_is_cut_with_an_ellipsis() {
+        let content = "a".repeat(15);
+        let out = truncate_message(&content, 10);
+        assert_eq!(out, format!("{}…", "a".repeat(10)));
+    }
+
+    #[test]
+    fn trailing_whitespace_left_by_the_cut_is_trimmed_before_the_ellipsis() {
+        let content = "dix lettres puis un mot plus long";
+        // Cut lands right after "dix lettres" (11 chars) plus a space.
+        let out = truncate_message(content, 12);
+        assert!(!out.contains(" …"), "{out}");
+        assert!(out.ends_with('…'), "{out}");
+    }
+
+    #[test]
+    fn multi_byte_characters_are_not_split_mid_codepoint() {
+        // Every character here is multi-byte in UTF-8; a byte-indexed cut
+        // would panic or produce invalid UTF-8.
+        let content = "éèàçùâêîôûëïüœ".repeat(3);
+        let out = truncate_message(&content, 10);
+        assert_eq!(out.chars().count(), 11); // 10 + the ellipsis
+    }
+}

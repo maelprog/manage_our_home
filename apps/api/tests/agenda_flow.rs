@@ -92,6 +92,18 @@ async fn full_event_lifecycle(db: PgPool) {
     let event = json_body(create).await;
     let event_id = event["id"].as_str().unwrap().to_string();
     assert_eq!(event["title"], "Rendez-vous médecin");
+    // #73: no `assignee_ids` in the request defaults to the creator.
+    let owner_id: Uuid = sqlx::query_scalar!(
+        "SELECT id FROM users WHERE email = $1",
+        "owner@example.test"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        event["assignee_ids"].as_array().unwrap(),
+        &[serde_json::json!(owner_id)]
+    );
 
     let get = call(
         &router,
@@ -152,6 +164,115 @@ async fn full_event_lifecycle(db: PgPool) {
     )
     .await;
     assert_status(&get_after_delete, StatusCode::NOT_FOUND);
+}
+
+/// #73: an event can be assigned to several family members, and the
+/// assignment can be changed on update; an assignee id that isn't actually
+/// a member of the family is dropped rather than accepted verbatim.
+#[sqlx::test]
+async fn event_assignment_to_several_members(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "assign-owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    let owner_id: Uuid = sqlx::query_scalar!(
+        "SELECT id FROM users WHERE email = $1",
+        "assign-owner@example.test"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    // A second member, added directly (no invitation flow needed for this
+    // test — same shortcut `event_delete_aborts_when_the_attachment_object_
+    // cannot_be_removed` takes for the row it needs).
+    let member_cookie = register_verify_login(
+        &router,
+        &db,
+        "assign-member@example.test",
+        "member-password1",
+    )
+    .await;
+    let member_id: Uuid = sqlx::query_scalar!(
+        "SELECT id FROM users WHERE email = $1",
+        "assign-member@example.test"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let mut tx = with_family_scope(&db, &group_id).await;
+    sqlx::query("INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'standard')")
+        .bind(Uuid::parse_str(&group_id).unwrap())
+        .bind(member_id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let _ = &member_cookie; // only its side effect (membership row) matters here
+
+    let starts_at = Utc::now() + Duration::days(1);
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "Sortie vélo",
+            "starts_at": starts_at,
+            "ends_at": starts_at + Duration::hours(1),
+            "assignee_ids": [owner_id, member_id],
+        })),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let event = json_body(create).await;
+    let event_id = event["id"].as_str().unwrap().to_string();
+    let mut assignees: Vec<Uuid> = event["assignee_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| Uuid::parse_str(v.as_str().unwrap()).unwrap())
+        .collect();
+    assignees.sort();
+    let mut expected = [owner_id, member_id];
+    expected.sort();
+    assert_eq!(assignees, expected);
+
+    // An outsider id isn't a member of this family: it's dropped rather
+    // than accepted, and since that leaves nothing, the update falls back
+    // to the creator (`resolve_assignees`).
+    let outsider = Uuid::new_v4();
+    let update = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"assignee_ids": [outsider]})),
+    )
+    .await;
+    assert_status(&update, StatusCode::OK);
+    let updated = json_body(update).await;
+    assert_eq!(
+        updated["assignee_ids"].as_array().unwrap(),
+        &[serde_json::json!(owner_id)]
+    );
+
+    // Omitting `assignee_ids` entirely on a further update leaves the
+    // (just-reset-to-creator) assignment untouched.
+    let noop_update = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"title": "Sortie à vélo"})),
+    )
+    .await;
+    assert_status(&noop_update, StatusCode::OK);
+    let noop_body = json_body(noop_update).await;
+    assert_eq!(
+        noop_body["assignee_ids"].as_array().unwrap(),
+        &[serde_json::json!(owner_id)]
+    );
 }
 
 /// AC: a non-member of the group cannot read or write its events, even

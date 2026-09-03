@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO message_read_state (group_id, user_id, last_read_at)\n        VALUES ($1, $2, now())\n        ON CONFLICT (group_id, user_id) DO UPDATE SET last_read_at = now()\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bdfd374790497310e4616ddc9c2d481f17e491abcf1a9ed0222b5822732517ac"
+}

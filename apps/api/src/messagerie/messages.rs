@@ -31,6 +31,11 @@ pub struct ListMessagesQuery {
     pub before_created_at: Option<DateTime<Utc>>,
     pub before_id: Option<Uuid>,
     pub limit: Option<i64>,
+    /// #73: when set, the response holds only messages the caller hasn't
+    /// read yet (`created_at` after their `message_read_state.last_read_at`
+    /// watermark, `unread_messages` below) instead of the newest page.
+    #[serde(default)]
+    pub unread: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -79,6 +84,33 @@ fn validate_content(content: &str) -> AppResult<&str> {
         return Err(AppError::BadRequest("content_too_long".into()));
     }
     Ok(trimmed)
+}
+
+/// Which of `messages` are unread, given the caller's `last_read_at`
+/// watermark (`None` — never read anything in this family — means every
+/// message is unread). "Unread" is `created_at` strictly after the
+/// watermark: a message created at exactly `last_read_at` is what set the
+/// watermark there in the first place (an unlikely tie in practice, since
+/// `last_read_at` is `now()` at write time, not copied from a message row),
+/// so it counts as read, not unread.
+///
+/// Pulled out as pure logic (issue #73) so "what counts as unread" is
+/// TDD'd without a database; `list_messages` below calls it on an
+/// already-fetched, `created_at DESC`-ordered page rather than reimplementing
+/// the rule in SQL — unread messages are exactly the prefix of that page
+/// newer than the watermark, so no extra sort is needed.
+fn unread_messages(
+    messages: &[MessageResponse],
+    last_read_at: Option<DateTime<Utc>>,
+) -> Vec<MessageResponse> {
+    match last_read_at {
+        None => messages.to_vec(),
+        Some(watermark) => messages
+            .iter()
+            .filter(|m| m.created_at > watermark)
+            .cloned()
+            .collect(),
+    }
 }
 
 pub async fn create_message(
@@ -161,16 +193,66 @@ pub async fn list_messages(
     )
     .fetch_all(&mut *tx)
     .await?;
-    tx.commit().await?;
 
     let has_more = rows.len() as i64 > limit;
-    let messages: Vec<MessageResponse> = rows
+    let mut messages: Vec<MessageResponse> = rows
         .into_iter()
         .take(limit as usize)
         .map(MessageResponse::from)
         .collect();
 
+    // `has_more` above describes the raw (unfiltered) page; once the unread
+    // filter drops some of it, "is there another page" would need its own
+    // query (there's no unread `?unread=true` pagination UI to serve today
+    // — issue #73 asked for a dashboard preview, not a full unread inbox),
+    // so it's reported as `false` rather than a number that doesn't
+    // actually describe what's left.
+    let has_more = if query.unread {
+        let last_read_at = sqlx::query_scalar!(
+            "SELECT last_read_at FROM message_read_state WHERE group_id = $1 AND user_id = $2",
+            group_id,
+            auth.user_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        messages = unread_messages(&messages, last_read_at);
+        false
+    } else {
+        has_more
+    };
+    tx.commit().await?;
+
     Ok(Json(json!({ "messages": messages, "has_more": has_more })))
+}
+
+/// Advances the caller's read watermark for this family to now — everything
+/// created up to this instant is "read" from here on (issue #73). Called
+/// when the member opens `/messagerie`
+/// (`apps/web/src/routes/messagerie/thread.rs`). Idempotent by design
+/// (`ON CONFLICT … DO UPDATE`): opening the page twice in a row just moves
+/// the watermark forward twice, which is a no-op in effect.
+pub async fn mark_messages_read(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(group_id): Path<Uuid>,
+) -> AppResult<impl IntoResponse> {
+    let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
+    require_role(&mut tx, group_id, auth.user_id).await?;
+
+    sqlx::query!(
+        r#"
+        INSERT INTO message_read_state (group_id, user_id, last_read_at)
+        VALUES ($1, $2, now())
+        ON CONFLICT (group_id, user_id) DO UPDATE SET last_read_at = now()
+        "#,
+        group_id,
+        auth.user_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn update_message(
@@ -281,6 +363,7 @@ pub async fn delete_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     fn err_msg(result: AppResult<&str>) -> String {
         match result {
@@ -321,5 +404,59 @@ mod tests {
         // multi-byte chars must be counted as one char each, not as bytes
         let content = "é".repeat(MAX_CONTENT_CHARS);
         assert!(validate_content(&content).is_ok());
+    }
+
+    // -- unread_messages ----------------------------------------------
+
+    fn message_at(hour: u32) -> MessageResponse {
+        let created_at = chrono::Utc
+            .with_ymd_and_hms(2026, 9, 3, hour, 0, 0)
+            .unwrap();
+        MessageResponse {
+            id: Uuid::new_v4(),
+            group_id: Uuid::nil(),
+            created_by: Uuid::nil(),
+            content: "hello".to_string(),
+            edited_at: None,
+            created_at,
+            updated_at: created_at,
+        }
+    }
+
+    #[test]
+    fn never_read_before_means_every_message_is_unread() {
+        let messages = vec![message_at(8), message_at(9)];
+        assert_eq!(unread_messages(&messages, None).len(), 2);
+    }
+
+    #[test]
+    fn only_messages_after_the_watermark_are_unread() {
+        let watermark = chrono::Utc.with_ymd_and_hms(2026, 9, 3, 10, 0, 0).unwrap();
+        let messages = vec![message_at(9), message_at(11), message_at(12)];
+        let unread = unread_messages(&messages, Some(watermark));
+        assert_eq!(unread.len(), 2);
+        assert!(unread.iter().all(|m| m.created_at > watermark));
+    }
+
+    #[test]
+    fn a_message_created_exactly_at_the_watermark_is_read_not_unread() {
+        let watermark = chrono::Utc.with_ymd_and_hms(2026, 9, 3, 10, 0, 0).unwrap();
+        let mut m = message_at(9);
+        m.created_at = watermark;
+        assert!(unread_messages(&[m], Some(watermark)).is_empty());
+    }
+
+    #[test]
+    fn everything_before_the_watermark_leaves_nothing_unread() {
+        let watermark = chrono::Utc.with_ymd_and_hms(2026, 9, 3, 23, 0, 0).unwrap();
+        let messages = vec![message_at(8), message_at(9)];
+        assert!(unread_messages(&messages, Some(watermark)).is_empty());
+    }
+
+    #[test]
+    fn an_empty_message_list_has_nothing_unread() {
+        let watermark = chrono::Utc.with_ymd_and_hms(2026, 9, 3, 10, 0, 0).unwrap();
+        assert!(unread_messages(&[], Some(watermark)).is_empty());
+        assert!(unread_messages(&[], None).is_empty());
     }
 }

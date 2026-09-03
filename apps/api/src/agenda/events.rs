@@ -26,6 +26,11 @@ pub struct CreateEventRequest {
     #[serde(default)]
     pub is_task: bool,
     pub rrule: Option<String>,
+    /// Family members this event is for. Missing/empty defaults to
+    /// `[creator]` (see `resolve_assignees`) — issue #73 asked for "assigned
+    /// to the creator by default" rather than an event with nobody on it.
+    #[serde(default)]
+    pub assignee_ids: Option<Vec<Uuid>>,
 }
 
 #[derive(Deserialize)]
@@ -42,6 +47,11 @@ pub struct UpdateEventRequest {
     /// is tracked per occurrence, not on the series as a whole, so we need to
     /// know *which* occurrence is being marked done/undone.
     pub occurrence_at: Option<DateTime<Utc>>,
+    /// `None` leaves the current assignees untouched (same convention as
+    /// every other field here); `Some(_)` replaces them, defaulting back to
+    /// `[creator]` if that leaves nothing (e.g. every box unchecked).
+    #[serde(default)]
+    pub assignee_ids: Option<Vec<Uuid>>,
 }
 
 #[derive(Serialize)]
@@ -58,6 +68,7 @@ pub struct EventResponse {
     pub is_task: bool,
     pub completed_at: Option<DateTime<Utc>>,
     pub rrule: Option<String>,
+    pub assignee_ids: Vec<Uuid>,
 }
 
 fn validate_request(
@@ -106,9 +117,108 @@ pub async fn create_event(
     )
     .fetch_one(&mut *tx)
     .await?;
+
+    let valid_members = valid_member_ids(&mut tx, group_id).await?;
+    let assignee_ids = resolve_assignees(
+        &body.assignee_ids.unwrap_or_default(),
+        &valid_members,
+        auth.user_id,
+    );
+    replace_assignees(&mut tx, event.id, &assignee_ids).await?;
     tx.commit().await?;
 
-    Ok((StatusCode::CREATED, Json(EventResponse::from(event))))
+    Ok((
+        StatusCode::CREATED,
+        Json(event_response(event, assignee_ids)),
+    ))
+}
+
+/// Every family member id for `group_id` — the set an event's assignees
+/// must be drawn from (`resolve_assignees` filters against it).
+async fn valid_member_ids(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    group_id: Uuid,
+) -> AppResult<Vec<Uuid>> {
+    let rows = sqlx::query!(
+        "SELECT user_id FROM group_members WHERE group_id = $1",
+        group_id,
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows.into_iter().map(|r| r.user_id).collect())
+}
+
+/// Resolves the final assignee set for an event: the requested ids,
+/// filtered to actual family members (a stale or forged id is dropped
+/// rather than rejecting the whole request) and deduplicated in the order
+/// they were requested, or `[creator]` when that leaves nothing — the
+/// "assigned to the creator by default" rule from issue #73, which also
+/// covers an explicit empty selection (a form with no box checked): an
+/// event is never left with zero assignees.
+fn resolve_assignees(requested: &[Uuid], valid_members: &[Uuid], creator: Uuid) -> Vec<Uuid> {
+    let mut seen = std::collections::HashSet::new();
+    let resolved: Vec<Uuid> = requested
+        .iter()
+        .filter(|id| valid_members.contains(id))
+        .filter(|id| seen.insert(**id))
+        .copied()
+        .collect();
+    if resolved.is_empty() {
+        vec![creator]
+    } else {
+        resolved
+    }
+}
+
+/// Replaces `event_id`'s assignees wholesale — simpler than diffing, and
+/// the table is small (at most a family's member count).
+async fn replace_assignees(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    event_id: Uuid,
+    assignee_ids: &[Uuid],
+) -> AppResult<()> {
+    sqlx::query!("DELETE FROM event_assignees WHERE event_id = $1", event_id,)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query!(
+        r#"
+        INSERT INTO event_assignees (event_id, user_id)
+        SELECT $1, u FROM UNNEST($2::uuid[]) AS u
+        "#,
+        event_id,
+        assignee_ids,
+    )
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Assignees for a batch of events, grouped by event id — the same
+/// separate-fetch-then-merge shape `list_events` already uses for
+/// `event_occurrence_completions`, so a range query costs one extra
+/// `ANY($1)` lookup rather than N.
+async fn assignees_for_events(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    event_ids: &[Uuid],
+) -> AppResult<HashMap<Uuid, Vec<Uuid>>> {
+    if event_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows = sqlx::query!(
+        r#"
+        SELECT event_id, user_id FROM event_assignees
+        WHERE event_id = ANY($1)
+        ORDER BY event_id, created_at
+        "#,
+        event_ids,
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut map: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
+    for row in rows {
+        map.entry(row.event_id).or_default().push(row.user_id);
+    }
+    Ok(map)
 }
 
 struct EventRow {
@@ -126,22 +236,25 @@ struct EventRow {
     rrule: Option<String>,
 }
 
-impl From<EventRow> for EventResponse {
-    fn from(r: EventRow) -> Self {
-        EventResponse {
-            id: r.id,
-            group_id: r.group_id,
-            created_by: r.created_by,
-            title: r.title,
-            description: r.description,
-            location: r.location,
-            starts_at: r.starts_at,
-            ends_at: r.ends_at,
-            all_day: r.all_day,
-            is_task: r.is_task,
-            completed_at: r.completed_at,
-            rrule: r.rrule,
-        }
+/// `EventRow` doesn't carry `assignee_ids` (it comes from a separate
+/// `event_assignees` fetch, see `assignees_for_events`), so this is a plain
+/// function rather than `From` — every call site has to supply it, which is
+/// the point: there is no accidental all-zero-assignees response.
+fn event_response(r: EventRow, assignee_ids: Vec<Uuid>) -> EventResponse {
+    EventResponse {
+        id: r.id,
+        group_id: r.group_id,
+        created_by: r.created_by,
+        title: r.title,
+        description: r.description,
+        location: r.location,
+        starts_at: r.starts_at,
+        ends_at: r.ends_at,
+        all_day: r.all_day,
+        is_task: r.is_task,
+        completed_at: r.completed_at,
+        rrule: r.rrule,
+        assignee_ids,
     }
 }
 
@@ -163,9 +276,13 @@ pub async fn get_event(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    let assignee_ids = assignees_for_events(&mut tx, &[event_id])
+        .await?
+        .remove(&event_id)
+        .unwrap_or_default();
     tx.commit().await?;
 
-    Ok(Json(EventResponse::from(event)))
+    Ok(Json(event_response(event, assignee_ids)))
 }
 
 #[derive(Deserialize)]
@@ -244,16 +361,19 @@ pub async fn list_events(
             .map(|r| ((r.event_id, r.occurrence_at), r.completed_at))
             .collect()
         };
+    let event_ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
+    let assignees = assignees_for_events(&mut tx, &event_ids).await?;
     tx.commit().await?;
 
     let mut occurrences = Vec::new();
     for row in rows {
         let duration = row.ends_at - row.starts_at;
+        let assignee_ids = assignees.get(&row.id).cloned().unwrap_or_default();
         if let Some(rrule) = row.rrule.clone() {
             let starts =
                 recurrence::expand_occurrences(&rrule, row.starts_at, range.from, range.to)
                     .map_err(|_| AppError::Internal(anyhow::anyhow!("failed to expand rrule")))?;
-            let base = EventResponse::from(row);
+            let base = event_response(row, assignee_ids);
             for occurrence_starts_at in starts {
                 let completed_at = if base.is_task {
                     occurrence_completions
@@ -276,6 +396,7 @@ pub async fn list_events(
                         is_task: base.is_task,
                         completed_at,
                         rrule: base.rrule.clone(),
+                        assignee_ids: base.assignee_ids.clone(),
                     },
                     occurrence_starts_at,
                     occurrence_ends_at: occurrence_starts_at + duration,
@@ -285,7 +406,7 @@ pub async fn list_events(
             let starts_at = row.starts_at;
             let ends_at = row.ends_at;
             occurrences.push(OccurrenceResponse {
-                event: EventResponse::from(row),
+                event: event_response(row, assignee_ids),
                 occurrence_starts_at: starts_at,
                 occurrence_ends_at: ends_at,
             });
@@ -403,9 +524,21 @@ pub async fn update_event(
     )
     .fetch_one(&mut *tx)
     .await?;
+
+    // `Some(_)` replaces the assignee set (falling back to the creator if
+    // that empties it out, `resolve_assignees`); `None` leaves it as-is.
+    if let Some(requested) = &body.assignee_ids {
+        let valid_members = valid_member_ids(&mut tx, group_id).await?;
+        let assignee_ids = resolve_assignees(requested, &valid_members, existing.created_by);
+        replace_assignees(&mut tx, event_id, &assignee_ids).await?;
+    }
+    let assignee_ids = assignees_for_events(&mut tx, &[event_id])
+        .await?
+        .remove(&event_id)
+        .unwrap_or_default();
     tx.commit().await?;
 
-    Ok(Json(EventResponse::from(event)))
+    Ok(Json(event_response(event, assignee_ids)))
 }
 
 pub async fn delete_event(
@@ -446,4 +579,74 @@ pub async fn delete_event(
     tx.commit().await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn uid(n: u8) -> Uuid {
+        Uuid::from_u128(u128::from(n))
+    }
+
+    // -- resolve_assignees ------------------------------------------------
+
+    #[test]
+    fn no_requested_assignees_defaults_to_the_creator() {
+        let creator = uid(1);
+        let members = vec![creator, uid(2)];
+        assert_eq!(resolve_assignees(&[], &members, creator), vec![creator]);
+    }
+
+    #[test]
+    fn a_single_valid_assignee_is_kept_as_is() {
+        let creator = uid(1);
+        let members = vec![creator, uid(2)];
+        assert_eq!(
+            resolve_assignees(&[uid(2)], &members, creator),
+            vec![uid(2)]
+        );
+    }
+
+    #[test]
+    fn several_valid_assignees_are_kept_in_requested_order() {
+        let creator = uid(1);
+        let members = vec![uid(1), uid(2), uid(3)];
+        assert_eq!(
+            resolve_assignees(&[uid(3), uid(1)], &members, creator),
+            vec![uid(3), uid(1)]
+        );
+    }
+
+    #[test]
+    fn duplicates_in_the_request_are_deduplicated() {
+        let creator = uid(1);
+        let members = vec![uid(1), uid(2)];
+        assert_eq!(
+            resolve_assignees(&[uid(2), uid(2), uid(1)], &members, creator),
+            vec![uid(2), uid(1)]
+        );
+    }
+
+    #[test]
+    fn an_id_that_is_not_a_family_member_is_dropped() {
+        let creator = uid(1);
+        let members = vec![uid(1), uid(2)];
+        let outsider = uid(99);
+        assert_eq!(
+            resolve_assignees(&[outsider, uid(2)], &members, creator),
+            vec![uid(2)]
+        );
+    }
+
+    #[test]
+    fn requesting_only_invalid_ids_falls_back_to_the_creator() {
+        let creator = uid(1);
+        let members = vec![uid(1), uid(2)];
+        let outsider = uid(99);
+        assert_eq!(
+            resolve_assignees(&[outsider], &members, creator),
+            vec![creator]
+        );
+    }
 }

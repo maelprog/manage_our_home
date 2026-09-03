@@ -46,6 +46,12 @@ cookie = "0.18"
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "multipart"], default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Parses the raw form body for the agenda assignee checkboxes (#73): axum's
+# `Form` extractor (this same crate, one layer up) can't deserialize several
+# values under one key — what a set of same-named checkboxes submits — so
+# that one field is read from the raw body directly. Already resolved
+# transitively through axum/reqwest (see Cargo.lock); this just names it.
+serde_urlencoded = "0.7"
 uuid = { version = "1", features = ["serde"] }
 # Calendar date maths (grid) + Europe/Paris display/parse (v1 fixed tz).
 chrono = { version = "0.4", features = ["serde"] }

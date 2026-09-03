@@ -9,8 +9,8 @@
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::Form;
 use manage_our_home_shared::dto::agenda::{EventResponse, UpdateEventRequest};
+use manage_our_home_shared::dto::groups::GroupMember;
 use manage_our_home_shared::validation::agenda::{
     parse_rrule, validate_event_form, EventFormError, Recurrence,
 };
@@ -18,9 +18,13 @@ use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
+use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
-use super::new::{error_message, recurrence_picker, rrule_from_form, EventForm};
+use super::new::{
+    assignee_checkboxes, assignee_ids_from_raw_form, error_message, recurrence_picker,
+    rrule_from_form, EventForm,
+};
 use super::{
     agenda_cookie, can_modify, event_not_found_page, family_context, forbidden_page,
     paris_local_to_utc, service_unavailable_page, to_datetime_local,
@@ -39,11 +43,14 @@ fn page(
     all_day: bool,
     recurrence: Option<&Recurrence>,
     error: Option<&str>,
+    members: &[GroupMember],
+    selected_assignees: &[Uuid],
 ) -> String {
     let error_html = error
         .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
         .unwrap_or_default();
     let picker = recurrence_picker(recurrence);
+    let assignees = assignee_checkboxes(members, selected_assignees);
     let all_day_checked = if all_day { " checked" } else { "" };
     let kind = if is_task { "Tâche" } else { "Événement" };
     let body = format!(
@@ -59,6 +66,8 @@ fn page(
 <label>Lieu <input type="text" name="location" value="{location_attr}"/></label>
 <label>Description <textarea name="description" rows="3">{description_esc}</textarea></label>
 {picker}
+{assignees}
+<p class="muted">Aucune sélection = assigné à vous.</p>
 <button type="submit">Enregistrer</button>
 </form>
 <div class="links"><a href="/agenda/{id}">Retour au détail</a></div>"#,
@@ -107,6 +116,13 @@ pub async fn get(
         return forbidden_page().into_response();
     }
 
+    let members = fetch_group_detail(&state, cookie.as_deref(), fam.gid)
+        .await
+        .ok()
+        .flatten()
+        .map(|g| g.members)
+        .unwrap_or_default();
+
     let recurrence = event.rrule.as_deref().and_then(parse_rrule);
     Html(page(
         &fam.header,
@@ -120,6 +136,8 @@ pub async fn get(
         event.all_day,
         recurrence.as_ref(),
         None,
+        &members,
+        &event.assignee_ids,
     ))
     .into_response()
 }
@@ -129,13 +147,24 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(event_id): Path<Uuid>,
-    Form(form): Form<EventForm>,
+    raw_body: axum::body::Bytes,
 ) -> Response {
     let Some(fam) =
         family_context(&state, &headers, &me, &format!("/agenda/{event_id}/edit")).await
     else {
         return Redirect::to("/groups/new").into_response();
     };
+
+    let raw = String::from_utf8_lossy(&raw_body);
+    let form: EventForm = serde_urlencoded::from_bytes(&raw_body).unwrap_or_default();
+    let assignee_ids = assignee_ids_from_raw_form(&raw);
+    let cookie = agenda_cookie(&headers);
+    let members = fetch_group_detail(&state, cookie.as_deref(), fam.gid)
+        .await
+        .ok()
+        .flatten()
+        .map(|g| g.members)
+        .unwrap_or_default();
 
     // Reconstruct the recurrence for re-rendering the picker on an inline
     // error, tolerating a bad picker value (falls back to "Aucune").
@@ -162,6 +191,8 @@ pub async fn post(
             form.all_day.is_some(),
             rec_for_render.as_ref(),
             Some(error_message(code)),
+            &members,
+            &assignee_ids,
         ))
         .into_response()
     };
@@ -194,9 +225,13 @@ pub async fn post(
         rrule,
         completed: None,
         occurrence_at: None,
+        // The edit form always submits its full checkbox state (there is
+        // no "untouched" signal from a plain HTML form), so this always
+        // replaces the assignee set — `resolve_assignees` on the backend
+        // falls back to the creator if that leaves it empty.
+        assignee_ids: Some(assignee_ids.clone()),
     };
 
-    let cookie = agenda_cookie(&headers);
     let result = api_request_auth(
         &state,
         reqwest::Method::PATCH,

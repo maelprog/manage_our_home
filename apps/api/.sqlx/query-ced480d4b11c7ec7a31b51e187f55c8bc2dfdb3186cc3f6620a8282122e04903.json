@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO event_assignees (event_id, user_id)\n        SELECT $1, u FROM UNNEST($2::uuid[]) AS u\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ced480d4b11c7ec7a31b51e187f55c8bc2dfdb3186cc3f6620a8282122e04903"
+}

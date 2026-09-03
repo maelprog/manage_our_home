@@ -9,18 +9,20 @@
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::Form;
 use chrono::NaiveDate;
 use leptos::prelude::*;
 use manage_our_home_shared::dto::agenda::{
     CreateEventRequest, CreateReminderRequest, EventResponse,
 };
+use manage_our_home_shared::dto::groups::GroupMember;
 use manage_our_home_shared::validation::agenda::{
     build_rrule, validate_event_form, EventFormError, Freq, Recurrence, RecurrenceEnd,
 };
+use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
+use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
 use super::{agenda_cookie, family_context, forbidden_page, paris_local_to_utc, to_datetime_local};
@@ -34,6 +36,50 @@ pub(crate) const REMINDER_OPTIONS: [(&str, &str, i32); 5] = [
     ("1440", "1 jour avant", 1440),
     ("10080", "1 semaine avant", 10080),
 ];
+
+/// Every `assignee_ids=<uuid>` pair in a raw `application/x-www-form-urlencoded`
+/// body. `axum::Form`'s deserializer (`serde_urlencoded`) has no support for
+/// several values under one key — exactly what a set of same-named
+/// checkboxes (or a `<select multiple>`) submits — so the assignee
+/// checkboxes are read straight from the raw body instead of through
+/// `EventForm`. No percent-decoding pass is needed: every character in a
+/// canonical UUID (hex digits and hyphens) is unreserved in this encoding.
+pub(crate) fn assignee_ids_from_raw_form(raw: &str) -> Vec<Uuid> {
+    raw.split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .filter(|(k, _)| *k == "assignee_ids")
+        .filter_map(|(_, v)| Uuid::parse_str(v).ok())
+        .collect()
+}
+
+/// Renders one checkbox per family member — the "who is this for" picker
+/// (issue #73). Same `field inline` markup as the recurrence picker's day
+/// checkboxes just below, one input per option rather than a dynamic
+/// multi-select widget, so it needs no JS and degrades to plain checkboxes
+/// with JS disabled like every other form on this app.
+pub(crate) fn assignee_checkboxes(members: &[GroupMember], selected: &[Uuid]) -> String {
+    let boxes: String = members
+        .iter()
+        .map(|m| {
+            let checked = if selected.contains(&m.user_id) {
+                " checked"
+            } else {
+                ""
+            };
+            format!(
+                r#"<label class="field inline"><input type="checkbox" name="assignee_ids" value="{id}"{checked}/>{name}</label>"#,
+                id = m.user_id,
+                name = html_escape(&m.display_name),
+            )
+        })
+        .collect();
+    format!(
+        r#"<fieldset class="card">
+<legend>Assigné à</legend>
+{boxes}
+</fieldset>"#
+    )
+}
 
 /// Renders the reminder `<select>` (with a leading "no reminder" option).
 pub(crate) fn reminder_select(name: &str, selected: Option<&str>) -> String {
@@ -242,12 +288,21 @@ pub(crate) fn error_message(code: &str) -> &'static str {
     }
 }
 
-fn page(header: &str, error: Option<&str>, default_start: &str, default_end: &str) -> String {
+#[allow(clippy::too_many_arguments)]
+fn page(
+    header: &str,
+    error: Option<&str>,
+    default_start: &str,
+    default_end: &str,
+    members: &[GroupMember],
+    selected_assignees: &[Uuid],
+) -> String {
     let error_html = error
         .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
         .unwrap_or_default();
     let picker = recurrence_picker(None);
     let reminder = reminder_select("reminder", None);
+    let assignees = assignee_checkboxes(members, selected_assignees);
     // `header` is trusted HTML built by `app_header`; embed it directly at
     // the top, the same position the `view!`-based pages give it.
     let body = format!(
@@ -264,6 +319,8 @@ fn page(header: &str, error: Option<&str>, default_start: &str, default_end: &st
 <label>Lieu <input type="text" name="location"/></label>
 <label>Description <textarea name="description" rows="3"></textarea></label>
 {picker}
+{assignees}
+<p class="muted">Aucune sélection = assigné à vous.</p>
 <label>Rappel {reminder}</label>
 <button type="submit">Créer l'événement</button>
 </form>
@@ -284,18 +341,39 @@ pub async fn get(
     let now = chrono::Utc::now();
     let start = to_datetime_local(now);
     let end = to_datetime_local(now + chrono::Duration::hours(1));
-    Html(page(&fam.header, None, &start, &end)).into_response()
+    let cookie = agenda_cookie(&headers);
+    let members = fetch_group_detail(&state, cookie.as_deref(), fam.gid)
+        .await
+        .ok()
+        .flatten()
+        .map(|g| g.members)
+        .unwrap_or_default();
+    // Nobody checked yet, so the picker shows nothing selected; the actual
+    // default-to-creator happens server-side (`resolve_assignees`) when the
+    // form is submitted with an empty selection.
+    Html(page(&fam.header, None, &start, &end, &members, &[])).into_response()
 }
 
 pub async fn post(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
     headers: HeaderMap,
-    Form(form): Form<EventForm>,
+    raw_body: axum::body::Bytes,
 ) -> Response {
     let Some(fam) = family_context(&state, &headers, &me, "/agenda/new").await else {
         return Redirect::to("/groups/new").into_response();
     };
+
+    let raw = String::from_utf8_lossy(&raw_body);
+    let form: EventForm = serde_urlencoded::from_bytes(&raw_body).unwrap_or_default();
+    let assignee_ids = assignee_ids_from_raw_form(&raw);
+    let cookie = agenda_cookie(&headers);
+    let members = fetch_group_detail(&state, cookie.as_deref(), fam.gid)
+        .await
+        .ok()
+        .flatten()
+        .map(|g| g.members)
+        .unwrap_or_default();
 
     let render_error = |code: &str| {
         Html(page(
@@ -303,6 +381,8 @@ pub async fn post(
             Some(error_message(code)),
             &form.starts_at,
             &form.ends_at,
+            &members,
+            &assignee_ids,
         ))
         .into_response()
     };
@@ -336,9 +416,9 @@ pub async fn post(
         all_day: form.all_day.is_some(),
         is_task: form.is_task.is_some(),
         rrule,
+        assignee_ids: (!assignee_ids.is_empty()).then(|| assignee_ids.clone()),
     };
 
-    let cookie = agenda_cookie(&headers);
     let result = api_request_auth(
         &state,
         reqwest::Method::POST,
