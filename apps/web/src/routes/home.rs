@@ -170,18 +170,24 @@ async fn fetch_members(state: &AppState, gid: Uuid, cookie: Option<&str>) -> Vec
 /// The member ids a dashboard row actually names: the event's assignees, or
 /// — when it has none — its creator.
 ///
-/// `EventResponse::assignee_ids` is documented as never empty, and for
-/// anything the API writes it isn't: `resolve_assignees` always keeps at
-/// least the creator. But `0011_event_assignees.sql` created the junction
-/// table *empty*, so every event predating #73 came back with no assignee at
-/// all until `0013_backfill_event_assignees.sql` filled them in — and the
-/// row rendered a bare "?" ring followed by an em dash and nothing (#99).
-/// The backfill fixes the stored rows; this fallback is what makes the row
-/// correct for any that still arrive empty (a fresh deployment mid-migration,
-/// or an assignee removed from the family, whose `event_assignees` rows
-/// cascade away). `agenda/detail.rs::assignees_html` takes the other way out
-/// on the same data — it hides its line entirely — because a detail page has
-/// no ring to leave blank.
+/// For anything the API writes, `EventResponse::assignee_ids` is never empty:
+/// `resolve_assignees` always keeps at least the creator. But
+/// `0011_event_assignees.sql` created the junction table *empty*, so every
+/// event predating #73 comes back with no assignee at all — and the row then
+/// rendered a bare "?" ring followed by an em dash and nothing (#99).
+///
+/// **This fallback, not the backfill, is what fixes #99.**
+/// `0013_backfill_event_assignees.sql` repairs the stored rows only on a
+/// deployment whose migration role bypasses RLS; under the role
+/// `apps/api/README.md` prescribes for `DATABASE_URL` it inserts nothing at
+/// all (measured — see that migration's header). Add a stack part-way
+/// through the migration and there are two ways an event still reaches this
+/// function unassigned, so the row has to be right without the database's
+/// help.
+///
+/// `agenda/detail.rs::assignees_html` takes the other way out on the same
+/// data — it hides its line entirely — because a detail page has no ring to
+/// leave blank.
 fn row_assignee_ids<'a>(assignee_ids: &'a [Uuid], created_by: &'a Uuid) -> &'a [Uuid] {
     if assignee_ids.is_empty() {
         std::slice::from_ref(created_by)

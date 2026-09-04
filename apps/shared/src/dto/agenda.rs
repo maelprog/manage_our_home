@@ -83,15 +83,21 @@ pub struct EventResponse {
     /// Family members this event is for. Every write path keeps at least one
     /// (the creator, by default — see `CreateEventRequest::assignee_ids` and
     /// the backend's `resolve_assignees`), but the **database carries no such
-    /// constraint** and this list can legitimately arrive empty: `event_assignees`
-    /// was created empty by `0011_event_assignees.sql`, leaving every event
-    /// predating it unassigned until `0013_backfill_event_assignees.sql` filled
-    /// them in, and a member removed from the family takes their rows with them
-    /// (`ON DELETE CASCADE`). Claiming the invariant here was what let the
-    /// dashboard render a bare "?" ring on those rows (#99). Readers must
-    /// handle the empty case: `web/routes/home.rs::row_assignee_ids` falls back
-    /// to the creator, `web/routes/agenda/detail.rs::assignees_html` drops its
-    /// line.
+    /// constraint** and this list can legitimately arrive empty:
+    /// `0011_event_assignees.sql` created the junction table empty, leaving
+    /// every event that predated it with no assignment at all.
+    ///
+    /// `0013_backfill_event_assignees.sql` repairs those stored rows, but only
+    /// where the role running the migrations bypasses RLS (the shipped compose
+    /// stack, CI); read its header — under the role
+    /// `apps/api/README.md` prescribes for `DATABASE_URL` it inserts nothing,
+    /// so unassigned rows survive there indefinitely. A stack part-way through
+    /// the migration is the other way this list arrives empty.
+    ///
+    /// Claiming the invariant here was what let the dashboard render a bare
+    /// "?" ring on those rows (#99). Readers must handle the empty case:
+    /// `web/routes/home.rs::row_assignee_ids` falls back to the creator,
+    /// `web/routes/agenda/detail.rs::assignees_html` drops its line.
     pub assignee_ids: Vec<Uuid>,
 }
 

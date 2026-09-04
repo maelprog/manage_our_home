@@ -20,12 +20,42 @@
 -- `ON CONFLICT DO NOTHING` stays as a cheap net under a future edit of that
 -- clause; with it in place the statement is a no-op on every re-run.
 --
--- No RLS scoping clause, and none is possible: `app.family_id` is per-request
--- and unset during a migration, so the `event_assignees` policy would match
--- no row. It doesn't have to — migrations run as the schema-owning role,
--- which is a superuser and so bypasses row security even under FORCE (see
--- apps/api/README.md on why the *runtime* role must not be: that is the
--- connection RLS exists to constrain, and it is a different role).
+-- READ THIS BEFORE RELYING ON THIS FILE: on a deployment set up the way
+-- apps/api/README.md prescribes, this statement inserts nothing at all, and
+-- says so nowhere.
+--
+-- There is no separate migration role. `sqlx::migrate!("./migrations")
+-- .run(&db)` runs on the *runtime* pool (apps/api/src/main.rs), i.e. under
+-- `DATABASE_URL` — and README.md's "Deployment note on Row-Level Security"
+-- prescribes exactly one role for that URL: `CREATE ROLE app_role LOGIN ...
+-- NOSUPERUSER NOBYPASSRLS`. Such a role owns these tables but does not
+-- bypass `FORCE ROW LEVEL SECURITY`, so the *source* of this INSERT --
+-- `FROM events e` -- is filtered to zero rows by `events_isolation`
+-- (0002_agenda.sql), whose predicate reads a per-request `app.family_id`
+-- that is unset during a migration. Nothing is selected, so nothing is
+-- inserted and the `WITH CHECK` side is never even reached: no error, no
+-- warning.
+--
+-- Measured, not feared: with `0001..0012` applied by such a role (owner of
+-- the tables, `relforcerowsecurity = t`, `rolsuper = f`, `rolbypassrls = f`)
+-- over a database holding two events with no assignment, this file reports
+-- `INSERT 0 0`, exits 0, leaves both events unassigned, and is then recorded
+-- as applied -- so it never runs again. The failure is silent and permanent.
+-- No CI gate can catch it either: ci.yml and infra/docker-compose.yml both
+-- migrate as a superuser role, where this statement does work.
+--
+-- The consequence for #99: this file is *not* what fixes it. The fix that
+-- holds everywhere is the display fallback in `row_assignee_ids`
+-- (apps/web/src/routes/home.rs) -- an event that reaches the dashboard with
+-- no assignee is rendered under its creator, whatever the database holds.
+-- This backfill is kept for the deployments whose migration role does bypass
+-- RLS (the shipped compose stack, CI), where it repairs the stored rows once
+-- and for good. It is not a second line of defence for the others; for them
+-- it is a no-op.
+--
+-- Why the mismatch between main.rs and README.md is not resolved here: that
+-- is a deployment-architecture question (does this app want a distinct
+-- migration role?), not this bug fix's to answer. It is tracked separately.
 INSERT INTO event_assignees (event_id, user_id)
 SELECT e.id, e.created_by
 FROM events e
