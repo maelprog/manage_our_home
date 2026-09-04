@@ -894,6 +894,24 @@ pub async fn delete(
 ///   `now()`. Anything posted between the API read and the mark would
 ///   otherwise be swallowed without ever having been displayed.
 ///
+/// Both rules bound the marker from **above only — it has no floor**, and
+/// that is the other half of the trade-off `0012_message_read_state.sql`
+/// opens (its header names only the first half, that a message can't be
+/// marked unread again). `message_read_state` stores a single
+/// `last_read_at` per `(group_id, user_id)`, so the instant returned here
+/// does not mark *the rendered messages* read — it marks **everything older
+/// than it** read, displayed or not. Opening `/messagerie` with no
+/// parameter renders one page and still shows "Charger les messages plus
+/// anciens", yet every message behind that link becomes read, irreversibly.
+/// Reproduced on a real stack at #98's verification and filed as #100: 69
+/// unread, 50 rows rendered, the link present, `unread_total` 69 -> 0.
+///
+/// That second half is **deliberate**, not a defect waiting for a fix: #100
+/// settled on "opening the messagerie means *I have seen it, I start over
+/// from zero*". Giving the marker a floor would mean paginating from it, or
+/// a per-message granularity — a new data model two days after `0012`
+/// shipped. Don't "fix" it here without reopening that call.
+///
 /// `None` means "do not touch the marker": a history window, or a live
 /// window with nothing in it (in which case there is nothing to have read).
 fn read_watermark(list: &MessageList, live: bool) -> Option<DateTime<Utc>> {
@@ -950,7 +968,9 @@ mod tests {
         assert_eq!(read_watermark(&list_of(&[9, 10, 11]), false), None);
     }
 
-    /// The live window is the one that means "I have seen this".
+    /// The live window is the one that means "I have seen this" — and it
+    /// says so of everything older than the instant returned, not only of
+    /// the rows in `list`: the marker has a ceiling, no floor (#100).
     #[test]
     fn the_live_window_advances_to_its_newest_rendered_message() {
         let list = list_of(&[9, 11, 10]);
