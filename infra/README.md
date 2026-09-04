@@ -105,6 +105,20 @@ pourquoi et la place de cet outil dans l'ensemble sont dans
 ./infra/mcp-playwright.sh --version   # test à froid (tire l'image si absente)
 ```
 
+Le chemin est écrit `${CLAUDE_PROJECT_DIR:-.}/infra/mcp-playwright.sh`, et le
+repli `:-.` n'est pas décoratif. Claude Code pose bien `CLAUDE_PROJECT_DIR`
+dans l'environnement du serveur qu'il lance, mais pas dans le sien : au moment
+où il développe `${...}` du champ `command`, la variable n'existe pas encore.
+Sans repli, c'est la chaîne littérale qui part à l'exécution et le serveur
+meurt sur
+
+```
+playwright (ENOENT): posix_spawn '${CLAUDE_PROJECT_DIR}/infra/mcp-playwright.sh'
+```
+
+Le `.` retombe sur la racine du projet, d'où les chemins relatifs d'un
+`.mcp.json` de dépôt sont résolus.
+
 Il déclarait auparavant `npx -y @playwright/mcp@latest` et mourait au
 démarrage — il n'y a pas de Node sur l'hôte, tout passe par des conteneurs.
 Installer Node n'aurait réglé que la moitié du problème : `playwright install
