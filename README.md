@@ -1,3 +1,5 @@
+[![CI](https://github.com/maelprog/manage_our_home/actions/workflows/ci.yml/badge.svg)](https://github.com/maelprog/manage_our_home/actions/workflows/ci.yml)
+
 # manage_our_home (MHome)
 
 **Manage Our Home** is a family-management app: a shared space where the
@@ -51,22 +53,35 @@ Everything Rust lives in one Cargo workspace (`Cargo.toml` at the root).
 
 ## Quickest way to run everything: Docker Compose
 
-This brings up the whole stack — database, object storage, API, web, and a
-Caddy reverse-proxy that puts everything on one URL.
+From a clean clone to a running application with seeded data. No secrets to
+invent, nothing to fill in by hand:
 
 ```sh
-cd infra
-
-# Create a .env file next to docker-compose.yml with the required secrets
-# (see the variables it references: POSTGRES_PASSWORD, ADMIN_ROLE_PASSWORD,
-# PUBLIC_BASE_URL, GOOGLE_CLIENT_ID/SECRET, the *_ENCRYPTION_KEY values,
-# SMTP_*, MINIO_ROOT_USER/PASSWORD, ...).
-# Generate encryption keys with:  openssl rand -base64 32
-
+git clone https://github.com/maelprog/manage_our_home.git
+cd manage_our_home/infra
+cp .env.example .env
 docker compose up -d
 ```
 
-Then open **http://localhost** in your browser. Caddy routes:
+The first run compiles the Rust workspace inside Docker and takes a few
+minutes; later runs start in seconds.
+
+Then open **http://localhost** and sign in with one of the accounts the stack
+seeds for you:
+
+| Email | Password | Role |
+|-------|----------|------|
+| `alice.dev@example.test` | `devpassword` | owner of the group "Foyer Dev" |
+| `bob.dev@example.test` | `devpassword` | member of that group |
+
+`.env.example` is a throwaway local-test environment: fixed passwords, seeded
+logins, `SECURE_COOKIES=false` (there is no TLS on `http://localhost`), and a
+Mailpit container that catches the verification, reset and invitation emails
+so that nothing leaves the machine — read them at **http://localhost:8025**.
+The Google OAuth values are dummies, so `/auth/google/*` will not complete;
+everything else works.
+
+Caddy puts the whole stack on one URL:
 
 - `/` → the web front-end (`apps/web`, internally on port 3000)
 - `/api/*` → the backend API (`apps/api`, internally on port 8080)
@@ -76,6 +91,60 @@ server-to-server over the internal Docker network.
 
 Stop everything with `docker compose down` (add `-v` to also wipe the
 database and storage volumes).
+
+### Running it for real: `generate-env.sh`
+
+Never deploy `.env.example`: its passwords are in this repository, and
+`DEV_SEED_USERS` creates accounts whose password is public knowledge. For a
+real deployment, generate the same variable set with random secrets instead:
+
+```sh
+cd infra
+./generate-env.sh
+```
+
+It fills `POSTGRES_PASSWORD`, `ADMIN_ROLE_PASSWORD`, the three
+`*_ENCRYPTION_KEY` values and `MINIO_ROOT_PASSWORD` with `openssl rand`
+output, and deliberately leaves the dev-only knobs (`COMPOSE_PROFILES`,
+`SMTP_PORT`, `SMTP_ALLOW_INSECURE`, `DEV_SEED_USERS`) out.
+
+What it cannot invent, you have to fill in yourself:
+
+- **`SMTP_HOST` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `SMTP_FROM`** — a real
+  relay. `SMTP_FROM` must parse as a mailbox (`no-reply@example.com`) or the
+  API exits at startup, so a generated `.env` used as-is leaves the `api`
+  container restarting in a loop. This is the one value that blocks boot.
+- **`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`** — only for Google sign-in
+  and calendar import. Empty values boot fine; just those two flows fail.
+- **`PUBLIC_BASE_URL`** — the public origin, no trailing slash.
+
+<details>
+<summary>Writing the <code>.env</code> by hand instead</summary>
+
+`docker-compose.yml` reads exactly these variables:
+
+| Variable | Required | What it is |
+|----------|----------|------------|
+| `POSTGRES_PASSWORD` | yes | Password for the application role `mhome`. |
+| `ADMIN_ROLE_PASSWORD` | yes | Password for the `BYPASSRLS` `admin_role` created at first Postgres boot by `postgres/init/01-admin-role.sh`. |
+| `OAUTH_ENCRYPTION_KEY` | yes | `openssl rand -base64 32` |
+| `MESSAGE_ENCRYPTION_KEY` | yes | `openssl rand -base64 32` |
+| `CALENDAR_FEED_ENCRYPTION_KEY` | yes | `openssl rand -base64 32` |
+| `SMTP_HOST`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM` | yes | Mail relay. `SMTP_FROM` must parse as a mailbox. |
+| `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | yes | Object-storage credentials; also used as the API's S3 access/secret key. |
+| `PUBLIC_BASE_URL` | no — defaults to `http://localhost` | Public origin, no trailing slash. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | no | Google sign-in and calendar import. |
+| `SECURE_COOKIES` | no — defaults to `true` | Set `false` for plain-http local testing. |
+| `COMPOSE_PROFILES` | no | `dev` starts the Mailpit mail catcher. |
+| `SMTP_PORT`, `SMTP_ALLOW_INSECURE` | no | Dev-only: plaintext SMTP to Mailpit. |
+| `DEV_SEED_USERS` | no — defaults to `false` | Dev-only: seeds the two accounts above at API startup. |
+
+Postgres passwords end up embedded in `postgres://` URLs, so keep them
+URL-safe: that is why `generate-env.sh` uses `openssl rand -hex` for passwords
+and reserves `-base64` for the encryption keys, whose `+`, `/` and `=` would
+break URL parsing.
+
+</details>
 
 ### Upgrading a stack created before the `mhome` rename
 
