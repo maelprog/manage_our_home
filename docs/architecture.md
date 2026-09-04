@@ -90,7 +90,7 @@ questionnaire.
 | Scheduled reminders | **Postgres-backed job queue table + polling worker** | Survives restarts/deploys by design — the queue lives in the DB, not process memory. A cron-style in-memory scheduler is optional only for non-critical periodic ticks (e.g. cache refresh), never for user-facing reminders. |
 | Local AI (recipes, later OCR) | **Ollama**, self-hosted | Keeps all data (what you ate, fridge photos) local — matches the RGPD/self-hosted stance already established; no third-party API cost or data exposure. |
 | Web frontend | **Leptos (SSR via `leptos_axum`)** | Superseded 2026-07-08 (see Front epic #1, GH issue #15): keeps the whole stack in Rust — shared DTOs/validation between `apps/api` and `apps/web` via a new `apps/shared` crate compiled natively and to `wasm32-unknown-unknown`, no duplicated request/response types or a second language's tooling/CI/audit surface to maintain. Ecosystem gaps (calendar widgets, rich components) are accepted and closed by hand-rolling rather than pulling in a JS framework, in line with the "one Rust monolith" posture already used for the backend. |
-| Mobile client | **Capacitor wrapping the Leptos web app** | Targeted for v1.1 (not the Auth front epic). Reuses the `apps/web` build instead of maintaining a second UI; native shell only for what genuinely needs it (push notifications, camera for fridge-scan). Cross-origin cookie handling for the Capacitor WebView is an open question, to be resolved in that future epic. |
+| Mobile client | **Capacitor wrapping the Leptos web app** | Targeted for v1.1 (not the Auth front epic). Reuses the `apps/web` build instead of maintaining a second UI; native shell only for what genuinely needs it (push notifications, camera for fridge-scan, **local reminder notifications that must fire with no network** — see Questions résolues #4). Cross-origin cookie handling for the Capacitor WebView is an open question, to be resolved in that future epic. |
 | Reverse proxy / TLS | **Caddy** | Automatic TLS renewal, minimal config, fits a home-hosted single-server deployment. |
 | Deployment | **Docker Compose** on your home server | Matches "home hosted"; one compose file for Axum, Postgres, MinIO, Ollama, Caddy; straightforward volume backup for Postgres + MinIO data. |
 | Secrets / encryption keys | **sops** (age-backed) for encrypting secrets at rest in the repo, keys injected as env vars at container start, never committed | Standard practice for home-hosted secret management without a full vault service. |
@@ -228,6 +228,25 @@ remplacement) de l'isolation applicative ci-dessous.
      responsable de la sécurité applicative, des migrations DB, de la
      rotation des secrets (sops), et de la réponse à incident (notification
      CNIL sous 72h en cas de breach).
+4. **Rappels mobiles hors ligne (2026-09-03) : exigence sine qua non,
+   compatible avec le front Rust actuel.** La notification d'un rappel
+   d'événement doit se déclencher même sans réseau au moment prévu. Vérifié :
+   ça ne dépend pas du langage du front (Rust/Leptos vs JS), mais du wrapper
+   mobile — c'est le plugin natif **Local Notifications** de Capacitor
+   (ligne « Mobile client » ci-dessus) qui programme le rappel au niveau de
+   l'OS (`UNUserNotificationCenter` iOS, `AlarmManager` Android) ; une fois
+   programmé, il se déclenche sans réseau et sans que l'app tourne. L'appel au
+   plugin se fait par un pont JS, du même genre que `live_script`
+   (`apps/web/src/routes/messagerie/thread.rs`) — pas un changement
+   d'architecture front. Écarté explicitement : le PWA pur, sans coquille
+   Capacitor. L'API web qui aurait permis ça côté navigateur (*Notification
+   Triggers*, `showTrigger`) a été abandonnée par Chrome en 2019, jamais
+   standardisée ni portée ailleurs ; le Web Push classique redemande un
+   aller-retour réseau au moment de l'émission, donc échoue au même test.
+   Voir `front-stack-study.md` § 2.3 pour le détail et les contraintes qui en
+   découlent (plafond iOS de 64 notifications programmées par app, permission
+   `SCHEDULE_EXACT_ALARM` sur Android 12+, resynchronisation à l'ouverture de
+   l'app).
 
 Epic #1 (Auth + Groups) has landed on `main` (`apps/api/`). Next step is
 spec'ing the remaining epics one at a time via `/spec`, in the order given

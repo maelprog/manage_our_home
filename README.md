@@ -34,6 +34,9 @@ Everything Rust lives in one Cargo workspace (`Cargo.toml` at the root).
 - [`docs/idea.md`](docs/idea.md) — feature spec / epic clarifications.
 - [`docs/v1-scope.md`](docs/v1-scope.md) — per-epic status for v1: done,
   in progress, missing.
+- [`docs/front-stack-study.md`](docs/front-stack-study.md) — should the front
+  be rewritten in JS/TS? Mobile packaging, and the thresholds that would
+  reopen the question.
 - [`apps/api/README.md`](apps/api/README.md) — backend setup, tests,
   Row-Level-Security deployment notes.
 - [`e2e/README.md`](e2e/README.md) — end-to-end test setup.
