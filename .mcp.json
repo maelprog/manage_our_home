@@ -1,16 +1,7 @@
 {
   "mcpServers": {
-    "postgres": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-postgres",
-        "postgres://mhome:mhome@localhost:5432/manage_our_home"
-      ]
-    },
     "playwright": {
-      "command": "npx",
-      "args": ["-y", "@playwright/mcp@latest"]
+      "command": "${CLAUDE_PROJECT_DIR}/infra/mcp-playwright.sh"
     }
   }
 }
