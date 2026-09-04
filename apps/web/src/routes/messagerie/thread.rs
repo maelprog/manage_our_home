@@ -509,8 +509,11 @@ pub async fn get(
     // #73: opening the *live* thread is what advances the read watermark —
     // the simplest trigger the issue asked for, no "mark as read" control
     // of its own. `read_watermark` decides both whether to call at all (a
-    // history window must not, see its doc comment) and how far the marker
-    // may go (the newest message actually rendered, never `now()`).
+    // history window must not) and how far the marker may go (the newest
+    // message actually rendered, never `now()`). Neither is a floor: the
+    // instant sent here marks read **everything older than it**, rendered
+    // or not — deliberately, see `read_watermark`'s doc comment before
+    // changing anything here.
     // Best-effort and fire-and-forget, same call as the at-creation
     // reminder in `agenda/new.rs`: a failure here means the dashboard's
     // unread count stays one page stale, not that the thread fails to
@@ -894,10 +897,11 @@ pub async fn delete(
 ///   `now()`. Anything posted between the API read and the mark would
 ///   otherwise be swallowed without ever having been displayed.
 ///
-/// Both rules bound the marker from **above only — it has no floor**, and
-/// that is the other half of the trade-off `0012_message_read_state.sql`
-/// opens (its header names only the first half, that a message can't be
-/// marked unread again). `message_read_state` stores a single
+/// Neither rule gives the marker a **floor**. The first is a switch — it
+/// decides *whether* the marker moves at all, not how far; only the second
+/// is an upper bound. Nothing anywhere bounds it from below, and that is
+/// the other half of the trade-off `0012_message_read_state.sql` opens (its
+/// header names both halves). `message_read_state` stores a single
 /// `last_read_at` per `(group_id, user_id)`, so the instant returned here
 /// does not mark *the rendered messages* read — it marks **everything older
 /// than it** read, displayed or not. Opening `/messagerie` with no
@@ -989,7 +993,12 @@ mod tests {
         assert!(watermark < chrono::Utc.with_ymd_and_hms(2026, 9, 3, 11, 0, 0).unwrap());
     }
 
-    /// Nothing rendered, nothing read — and no row written for it either.
+    /// An *empty* window has no newest message to stop at, so the marker
+    /// stays put and no row is written for it. This is the one case where
+    /// "nothing rendered" implies "nothing read" — it does **not**
+    /// generalise: a non-empty window marks read everything older than its
+    /// newest row, rendered or not (#100). See `read_watermark`'s doc
+    /// comment.
     #[test]
     fn an_empty_live_window_advances_nothing() {
         assert_eq!(read_watermark(&list_of(&[]), true), None);

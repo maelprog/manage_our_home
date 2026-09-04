@@ -4,9 +4,21 @@
 -- "which messages are unread" (any `messages.created_at > last_read_at`,
 -- see apps/api/src/messagerie/messages.rs::unread_messages) and is far
 -- cheaper than a row per (message, user) read receipt, which this app has
--- no other use for (no per-message "seen by" UI). The trade-off: a message
--- can't be individually marked unread again once the watermark has passed
--- it. That's an accepted v1 limitation, not an oversight.
+-- no other use for (no per-message "seen by" UI). The trade-off has two
+-- halves, both accepted v1 limitations rather than oversights:
+--
+--   * a message can't be individually marked unread again once the
+--     watermark has passed it;
+--   * the watermark has **no floor**. A single instant per (family, user)
+--     cannot say "these messages were read and those were not", so
+--     advancing it marks read *everything older than it* — rendered or
+--     not. Opening `/messagerie` renders one page and still offers
+--     "Charger les messages plus anciens", yet everything behind that link
+--     becomes read. #100 settled this deliberately (reading (a): opening
+--     the messagerie means "I have seen it, I start over from zero");
+--     giving the marker a floor would mean paginating from it, or a
+--     per-message granularity — a different data model. See
+--     `read_watermark` in apps/web/src/routes/messagerie/thread.rs.
 --
 -- `last_read_at` advances when the member opens `/messagerie`
 -- (apps/web/src/routes/messagerie/thread.rs), mirroring how `messages`
