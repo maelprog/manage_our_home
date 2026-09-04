@@ -47,15 +47,26 @@
 -- The consequence for #99: this file is *not* what fixes it. The fix that
 -- holds everywhere is the display fallback in `row_assignee_ids`
 -- (apps/web/src/routes/home.rs) -- an event that reaches the dashboard with
--- no assignee is rendered under its creator, whatever the database holds.
+-- no assignee is rendered in its creator's colour token, and named after the
+-- creator whenever the member roster can be resolved; when it cannot (roster
+-- fetch failed, or the creator has left the family) the name degrades to
+-- "Membre" and the initial to "M", which is the app-wide degradation of
+-- `author_name`, not something this fallback adds.
+--
 -- This backfill is kept for the deployments whose migration role does bypass
--- RLS (the shipped compose stack, CI), where it repairs the stored rows once
--- and for good. It is not a second line of defence for the others; for them
--- it is a no-op.
+-- RLS (the shipped compose stack, CI), where it repairs the rows that exist
+-- when it runs. Not "once and for good", and not a second line of defence
+-- for anyone: a migration runs once, so every event created *after* it with
+-- no assignment row is beyond its reach -- which the Google Calendar import
+-- does on every deployment, on every import (issue #106,
+-- apps/api/src/google_calendar/imports.rs inserts into `events` and never
+-- into `event_assignees`). On a README-conformant deployment it is a no-op
+-- from the start.
 --
 -- Why the mismatch between main.rs and README.md is not resolved here: that
 -- is a deployment-architecture question (does this app want a distinct
--- migration role?), not this bug fix's to answer. It is tracked separately.
+-- migration role?), not this bug fix's to answer. It is tracked as issue
+-- #105.
 INSERT INTO event_assignees (event_id, user_id)
 SELECT e.id, e.created_by
 FROM events e
