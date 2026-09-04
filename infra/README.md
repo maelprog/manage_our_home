@@ -38,6 +38,10 @@ Le hook est installé dans `.git/hooks/`, **pas** dans `.githooks/`. Activer
 (tout passe par Docker) : chaque commit échouerait. L'installation vise
 `--git-common-dir`, donc les worktrees du dépôt sont couverts eux aussi.
 
+Un `post-merge` déjà présent et non écrit par le script n'est jamais écrasé :
+`--install-hook` refuse et sort en erreur, `--uninstall` le laisse en place.
+La reconnaissance se fait sur une signature en tête du fichier généré.
+
 Deux limites à connaître :
 
 - `git pull --rebase` ne déclenche pas `post-merge` (c'est `post-rewrite`). La
@@ -66,12 +70,16 @@ la stack est simplement à l'arrêt : sans cette liste blanche, un
 `docker compose down`. Les deux listes sont ajustables :
 
 ```sh
-PRUNE_KEEP_IMAGES='^mcr\.microsoft\.com/playwright' ./infra/docker-prune.sh
+PRUNE_KEEP_IMAGES='^(mcr\.microsoft\.com/playwright|rust:)' ./infra/docker-prune.sh
 PRUNE_KEEP_VOLUMES='(postgres_data|minio_data|mon_volume)$' ./infra/docker-prune.sh
 ```
 
-`PRUNE_KEEP_IMAGES` est vide par défaut : l'image Playwright (2,4 Go) est donc
-re-téléchargée si aucun conteneur ne la retient au moment de la purge.
+`PRUNE_KEEP_IMAGES` vaut `^mcr\.microsoft\.com/playwright` par défaut, ce qui
+couvre les **deux** images Playwright du dépôt : celle du serveur MCP (1 Go) et
+celle du runner e2e, `:*-noble` (2,4 Go). Aucun conteneur ne les retient entre
+deux sessions ; sans cette exception, chaque purge les reprendrait et il
+faudrait les re-télécharger à la session ou à la suite e2e suivante. Y donner
+une regex plus étroite les réexpose.
 
 Le script épingle `DOCKER_CONTEXT=default` — le contexte `desktop-linux` de
 Docker Desktop coexiste avec le moteur installé dans la WSL, et un
@@ -144,7 +152,9 @@ Quatre points non évidents, tous justifiés en commentaire dans le script :
   la ligne, relancer Claude Code.
 - **L'image est protégée de la purge** (`KEEP_IMAGES` dans
   `docker-prune.sh`) : aucun conteneur ne la référence entre deux sessions, et
-  sans exception la purge reprendrait 1 Go à re-télécharger à chaque fois.
+  sans exception la purge reprendrait 1 Go à re-télécharger à chaque fois. La
+  regex couvre tout le préfixe `mcr.microsoft.com/playwright`, donc aussi
+  l'image `:*-noble` du runner e2e (2,4 Go), soumise au même oubli.
 
 Après toute modification de `.mcp.json` ou du script, **relancer Claude Code** :
 les serveurs MCP ne sont démarrés qu'à l'ouverture de la session.

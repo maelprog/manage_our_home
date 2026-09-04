@@ -27,16 +27,22 @@ set -euo pipefail
 export DOCKER_CONTEXT="${DOCKER_CONTEXT:-default}"
 
 KEEP_VOLUMES="${PRUNE_KEEP_VOLUMES:-(postgres_data|minio_data|caddy_data|ollama_data)$}"
-# L'image du MCP Playwright (infra/mcp-playwright.sh) est un outil du dépôt,
-# mais aucun conteneur ne la référence entre deux sessions : sans cette
-# exception la purge la supprime et Claude Code re-télécharge 1 Go au
-# démarrage suivant.
-KEEP_IMAGES="${PRUNE_KEEP_IMAGES:-^mcr\.microsoft\.com/playwright/mcp}"
+# Les deux images Playwright — celle du serveur MCP (infra/mcp-playwright.sh)
+# et celle du runner e2e (e2e/scripts/run.mjs) — sont des outils du dépôt, mais
+# aucun conteneur ne les référence entre deux sessions : sans cette exception
+# la purge les supprime, et il faut re-télécharger 1 Go au démarrage suivant de
+# Claude Code, 2,4 Go à la prochaine suite e2e. La regex couvre donc tout le
+# préfixe, sans le suffixe /mcp.
+KEEP_IMAGES="${PRUNE_KEEP_IMAGES:-^mcr\.microsoft\.com/playwright}"
 
 DRY_RUN=0
 SERVICE_NAME="docker-prune"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+# Signature inscrite dans le hook généré : elle seule autorise ce script à
+# écraser ou supprimer un post-merge, pour ne jamais détruire celui qu'un
+# utilisateur aurait écrit à la main.
+HOOK_MARKER="# hook auto-généré par docker-prune.sh --install-hook"
 
 log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 
@@ -166,12 +172,22 @@ install_hook() {
 	# ceux du dépôt principal, donc une seule installation les couvre tous.
 	hook_dir="$(git rev-parse --path-format=absolute --git-common-dir)/hooks"
 	hook="$hook_dir/post-merge"
+
+	# Un post-merge déjà là et sans notre signature vient de l'utilisateur (ou
+	# d'un autre outil) : l'écraser lui ferait perdre son contenu en silence.
+	if [[ -e $hook ]] && ! grep -qF "$HOOK_MARKER" "$hook"; then
+		echo "$hook existe déjà et n'a pas été écrit par ce script — rien n'a été touché." >&2
+		echo "Déplacez-le, ou ajoutez-y vous-même l'appel : systemctl --user start --no-block $SERVICE_NAME.service" >&2
+		exit 1
+	fi
+
 	mkdir -p "$hook_dir"
 
 	write_service_unit
 
 	cat >"$hook" <<EOF
 #!/usr/bin/env bash
+$HOOK_MARKER
 # Purge Docker après chaque merge entrant — typiquement le \`git pull\` qui
 # rapatrie une PR fusionnée, moment où les caches de sa branche deviennent
 # des déchets. Installé par $SCRIPT_PATH --install-hook
@@ -218,11 +234,22 @@ EOF
 }
 
 uninstall_all() {
+	local hook
 	systemctl --user disable --now "$SERVICE_NAME.timer" 2>/dev/null || true
 	rm -f "$UNIT_DIR/$SERVICE_NAME.service" "$UNIT_DIR/$SERVICE_NAME.timer"
 	systemctl --user daemon-reload
-	rm -f "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/hooks/post-merge"
-	log "hook et timer retirés"
+
+	# `|| true` : hors dépôt git la substitution échouerait, et `set -e` avec
+	# elle. Le chemin obtenu est alors inexistant, donc simplement signalé.
+	hook="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)/hooks/post-merge"
+	if [[ -e $hook ]] && grep -qF "$HOOK_MARKER" "$hook"; then
+		rm -f "$hook"
+		log "hook et timer retirés"
+	elif [[ -e $hook ]]; then
+		log "timer retiré — $hook laissé en place (pas écrit par ce script)"
+	else
+		log "timer retiré — aucun hook post-merge installé"
+	fi
 }
 
 case "${1:-}" in
