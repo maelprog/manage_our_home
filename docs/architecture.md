@@ -240,7 +240,8 @@ remplacement) de l'isolation applicative ci-dessous.
    (`apps/web/src/routes/messagerie/thread.rs`) — pas un changement
    d'architecture front. Écarté explicitement : le PWA pur, sans coquille
    Capacitor. L'API web qui aurait permis ça côté navigateur (*Notification
-   Triggers*, `showTrigger`) a été abandonnée par Chrome en 2019, jamais
+   Triggers*, `showTrigger`) a été abandonnée par Chrome en décembre 2021
+   après deux origin trials, sans jamais atteindre le canal stable, jamais
    standardisée ni portée ailleurs ; le Web Push classique redemande un
    aller-retour réseau au moment de l'émission, donc échoue au même test.
    Voir `front-stack-study.md` § 2.3 pour le détail et les contraintes qui en

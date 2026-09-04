@@ -187,7 +187,8 @@ wrapper (Capacitor Modèle A, § 2) qui porte la capacité, pas le framework fro
 **Ce qui est explicitement écarté : le PWA pur, sans coquille Capacitor.**
 L'API web qui aurait permis de programmer une notification à l'avance côté
 navigateur, *Notification Triggers* (`Notification.showTrigger`), a été
-abandonnée par Chrome en 2019 — jamais sortie d'origin trial, jamais portée
+abandonnée par Chrome en décembre 2021 — deux origin trials (Chrome 80-83
+puis 86-88, 2020-2021) sans jamais atteindre le canal stable, jamais portée
 sur les autres navigateurs ni sur Safari iOS :
 
 > « The development of Notification Triggers API […] has ended. It wasn't
@@ -365,4 +366,4 @@ de code.
 | Date | Événement |
 |---|---|
 | 2026-08-28 | Étude initiale. Correction en cours de route : `live_script` (169 l., WebSocket) invalide l'hypothèse « le front n'a pas de JS » et le manque « messagerie temps réel » qui en découlait. Vérification du push PWA iOS dans l'UE : disponible, l'annonce de retrait de février 2024 ayant été annulée le 1er mars 2024. |
-| 2026-09-03 | Exigence sine qua non testée : rappels de notification mobile devant se déclencher hors ligne (§ 2.3). Vérifié compatible avec le front Rust actuel — la capacité vient du plugin natif Capacitor (Local Notifications), pas du framework front ; le PWA pur est écarté (*Notification Triggers* abandonnée par Chrome en 2019). Ne change pas la conclusion § 0. |
+| 2026-09-03 | Exigence sine qua non testée : rappels de notification mobile devant se déclencher hors ligne (§ 2.3). Vérifié compatible avec le front Rust actuel — la capacité vient du plugin natif Capacitor (Local Notifications), pas du framework front ; le PWA pur est écarté (*Notification Triggers* abandonnée par Chrome en décembre 2021, après deux origin trials sans passage en stable). Ne change pas la conclusion § 0. |
