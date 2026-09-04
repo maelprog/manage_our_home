@@ -167,27 +167,54 @@ async fn fetch_members(state: &AppState, gid: Uuid, cookie: Option<&str>) -> Vec
     }
 }
 
+/// The member ids a dashboard row actually names: the event's assignees, or
+/// — when it has none — its creator.
+///
+/// The `/agenda` write paths keep at least the creator on every event they
+/// touch (`resolve_assignees`), but they are not the only way a row enters
+/// `events`, and `EventResponse::assignee_ids` can arrive empty — its own
+/// doc comment lists the ways known so far. Before this fallback, such a row
+/// rendered a bare "?" ring followed by an em dash and nothing (#99).
+///
+/// **This fallback, not the backfill, is what fixes #99**, and it is not a
+/// transitional measure. `0013_backfill_event_assignees.sql` repairs stored
+/// rows only on a deployment whose migration role bypasses RLS — under the
+/// role `apps/api/README.md` prescribes for `DATABASE_URL` it inserts
+/// nothing at all (measured; see that migration's header) — and a migration
+/// runs once either way, so it cannot reach an event created later with no
+/// assignment. The Google Calendar import creates exactly those, on every
+/// deployment, on every import (issue #106). The row therefore has to be
+/// right without the database's help, indefinitely.
+///
+/// `agenda/detail.rs::assignees_html` takes the other way out on the same
+/// data — it hides its line entirely — because a detail page has no ring to
+/// leave blank.
+fn row_assignee_ids<'a>(assignee_ids: &'a [Uuid], created_by: &'a Uuid) -> &'a [Uuid] {
+    if assignee_ids.is_empty() {
+        std::slice::from_ref(created_by)
+    } else {
+        assignee_ids
+    }
+}
+
 /// One upcoming-event row: the assigned member(s)' coloured initial (their
 /// own colour for one assignee, the running average for several — see
-/// `combined_member_colour`), the time, and the title. The ring's letter is
-/// the first assignee's initial; with several assignees the names beside it
-/// (not just the ring) are what actually says who, matching WCAG 1.4.1
-/// (colour is never the only carrier — see `agenda/calendar.rs`'s doc
-/// comment on the same constraint).
+/// `combined_member_colour`, and `row_assignee_ids` for who counts as
+/// assigned on an event carrying no assignee at all), the time, and the
+/// title. The ring's letter is the first assignee's initial; with several
+/// assignees the names beside it (not just the ring) are what actually says
+/// who, matching WCAG 1.4.1 (colour is never the only carrier — see
+/// `agenda/calendar.rs`'s doc comment on the same constraint).
 fn agenda_row(occ: &OccurrenceResponse, members: &[GroupMember]) -> String {
     let e = &occ.event;
-    let assignee_names: Vec<&str> = e
-        .assignee_ids
-        .iter()
-        .map(|id| author_name(members, *id))
-        .collect();
+    let shown = row_assignee_ids(&e.assignee_ids, &e.created_by);
+    let assignee_names: Vec<&str> = shown.iter().map(|id| author_name(members, *id)).collect();
     let assignees = assignee_names.join(", ");
-    let colour_tokens: Vec<&str> = e.assignee_ids.iter().copied().map(member_colour).collect();
+    let colour_tokens: Vec<&str> = shown.iter().copied().map(member_colour).collect();
     let colour = combined_member_colour(&colour_tokens);
-    let initial = assignee_names
-        .first()
-        .map(|n| member_initial(n))
-        .unwrap_or_else(|| "?".to_string());
+    // `shown` is never empty, so this always names somebody; `member_initial`
+    // keeps its own `?` for a name with no usable letter in it.
+    let initial = member_initial(assignee_names.first().copied().unwrap_or_default());
     let time = if e.all_day {
         "journée".to_string()
     } else {
@@ -912,5 +939,78 @@ mod pure_logic_tests {
         let content = "éèàçùâêîôûëïüœ".repeat(3);
         let out = truncate_message(&content, 10);
         assert_eq!(out.chars().count(), 11); // 10 + the ellipsis
+    }
+
+    // -- row_assignee_ids / agenda_row (#99) -------------------------------
+
+    fn member(user_id: Uuid, display_name: &str) -> GroupMember {
+        GroupMember {
+            user_id,
+            role: "member".to_string(),
+            display_name: display_name.to_string(),
+            email: format!("{display_name}@example.test").to_lowercase(),
+        }
+    }
+
+    /// An occurrence created by `created_by` and assigned to `assignees` —
+    /// `assignees` empty is the shape every event predating #73 has in the
+    /// database, since `0011_event_assignees.sql` created the table empty.
+    fn occurrence_assigned_to(created_by: Uuid, assignees: &[Uuid]) -> OccurrenceResponse {
+        let mut occ = occurrence(18, "Dîner");
+        occ.event.created_by = created_by;
+        occ.event.assignee_ids = assignees.to_vec();
+        occ
+    }
+
+    #[test]
+    fn an_event_with_assignees_names_exactly_them() {
+        let creator = Uuid::from_u128(1);
+        let assignees = [Uuid::from_u128(2), Uuid::from_u128(3)];
+        assert_eq!(row_assignee_ids(&assignees, &creator), &assignees);
+    }
+
+    /// The #99 bug: `0011_event_assignees.sql` created the junction table
+    /// empty, so every event that predates #73 comes back with no assignee
+    /// at all. Without a fallback the dashboard row rendered a bare "?" ring
+    /// and an em dash followed by nothing.
+    #[test]
+    fn an_event_with_no_assignee_falls_back_to_its_creator() {
+        let creator = Uuid::from_u128(1);
+        assert_eq!(row_assignee_ids(&[], &creator), &[creator]);
+    }
+
+    #[test]
+    fn a_legacy_row_names_its_creator_instead_of_a_question_mark() {
+        let creator = Uuid::from_u128(7);
+        let members = vec![member(creator, "Camille")];
+        let html = agenda_row(&occurrence_assigned_to(creator, &[]), &members);
+        assert!(html.contains("Camille"), "{html}");
+        assert!(html.contains(">C</span>"), "{html}");
+        assert!(!html.contains('?'), "{html}");
+        assert!(!html.contains("— </span>"), "{html}");
+    }
+
+    /// The fallback must not paint the ring with a colour that belongs to
+    /// nobody: a legacy row is shown in its creator's own ramp token, the
+    /// same one the event gets the moment someone re-edits it.
+    #[test]
+    fn a_legacy_row_wears_its_creator_s_own_colour() {
+        let creator = Uuid::from_u128(7);
+        let members = vec![member(creator, "Camille")];
+        let legacy = agenda_row(&occurrence_assigned_to(creator, &[]), &members);
+        let explicit = agenda_row(&occurrence_assigned_to(creator, &[creator]), &members);
+        assert_eq!(legacy, explicit);
+    }
+
+    /// An event assigned to someone other than its creator keeps naming the
+    /// assignee — the fallback only fires on an empty list.
+    #[test]
+    fn an_explicit_assignee_is_not_overridden_by_the_creator() {
+        let creator = Uuid::from_u128(7);
+        let other = Uuid::from_u128(8);
+        let members = vec![member(creator, "Camille"), member(other, "Robin")];
+        let html = agenda_row(&occurrence_assigned_to(creator, &[other]), &members);
+        assert!(html.contains("Robin"), "{html}");
+        assert!(!html.contains("Camille"), "{html}");
     }
 }

@@ -80,8 +80,32 @@ pub struct EventResponse {
     pub is_task: bool,
     pub completed_at: Option<DateTime<Utc>>,
     pub rrule: Option<String>,
-    /// Family members this event is for — always at least one (the creator,
-    /// by default; see `CreateEventRequest::assignee_ids`).
+    /// Family members this event is for. **Treat this list as possibly
+    /// empty.** The `/agenda` write paths do keep at least one (the creator,
+    /// by default — see `CreateEventRequest::assignee_ids` and the backend's
+    /// `resolve_assignees`), but they are not the only way a row enters
+    /// `events`, and the database carries no constraint of its own.
+    ///
+    /// Known ways this arrives empty, at least three:
+    ///
+    /// - the Google Calendar import inserts into `events` and never into
+    ///   `event_assignees` (issue #106,
+    ///   `apps/api/src/google_calendar/imports.rs`) — this one holds on every
+    ///   deployment, before or after any backfill, and does not go away on
+    ///   its own;
+    /// - events predating `0011_event_assignees.sql`, which created the
+    ///   junction table empty, on a deployment where
+    ///   `0013_backfill_event_assignees.sql` inserted nothing — read that
+    ///   file's header: under the role `apps/api/README.md` prescribes for
+    ///   `DATABASE_URL` it is a silent no-op, so those rows survive
+    ///   indefinitely;
+    /// - the same events on a stack part-way through that migration.
+    ///
+    /// Claiming an invariant here that no write path enforces was what let
+    /// the dashboard render a bare "?" ring on those rows (#99). Readers must
+    /// handle the empty case: `web/routes/home.rs::row_assignee_ids` falls
+    /// back to the creator, `web/routes/agenda/detail.rs::assignees_html`
+    /// drops its line.
     pub assignee_ids: Vec<Uuid>,
 }
 

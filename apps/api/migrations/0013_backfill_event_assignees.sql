@@ -1,0 +1,76 @@
+-- Issue #99. `0011_event_assignees.sql` created the junction table empty:
+-- every event already in the database got no assignment row at all, so
+-- `assignees_for_events` returned `[]` for it and the dashboard's
+-- "Prochains événements" card (apps/web/src/routes/home.rs, `agenda_row`)
+-- painted a bare "?" ring followed by an em dash and nothing — on *every*
+-- pre-#73 event, until someone re-edited it.
+--
+-- The assignment those rows should have had is the one #73 chose as the
+-- default for a new event: its creator (apps/api/src/agenda/events.rs,
+-- `resolve_assignees`, which falls back to `[creator]` on the same terms).
+-- Backfilling it is a data fix, not a schema change, so it lands as its own
+-- migration rather than an edit to 0011.
+--
+-- The `NOT EXISTS` guard is load-bearing, and `ON CONFLICT DO NOTHING` is
+-- not a substitute for it: the conflict target is (event_id, user_id), so a
+-- plain `SELECT id, created_by FROM events` would happily *add* the creator
+-- to an event somebody had deliberately assigned to someone else — turning
+-- "assigné à Robin" into "assigné à Camille, Robin", complete with a mixed
+-- avatar colour. Only events carrying no assignment at all are touched.
+-- `ON CONFLICT DO NOTHING` stays as a cheap net under a future edit of that
+-- clause; with it in place the statement is a no-op on every re-run.
+--
+-- READ THIS BEFORE RELYING ON THIS FILE: on a deployment set up the way
+-- apps/api/README.md prescribes, this statement inserts nothing at all, and
+-- says so nowhere.
+--
+-- There is no separate migration role. `sqlx::migrate!("./migrations")
+-- .run(&db)` runs on the *runtime* pool (apps/api/src/main.rs), i.e. under
+-- `DATABASE_URL` — and README.md's "Deployment note on Row-Level Security"
+-- prescribes exactly one role for that URL: `CREATE ROLE app_role LOGIN ...
+-- NOSUPERUSER NOBYPASSRLS`. Such a role owns these tables but does not
+-- bypass `FORCE ROW LEVEL SECURITY`, so the *source* of this INSERT --
+-- `FROM events e` -- is filtered to zero rows by `events_isolation`
+-- (0002_agenda.sql), whose predicate reads a per-request `app.family_id`
+-- that is unset during a migration. Nothing is selected, so nothing is
+-- inserted and the `WITH CHECK` side is never even reached: no error, no
+-- warning.
+--
+-- Measured, not feared: with `0001..0012` applied by such a role (owner of
+-- the tables, `relforcerowsecurity = t`, `rolsuper = f`, `rolbypassrls = f`)
+-- over a database holding two events with no assignment, this file reports
+-- `INSERT 0 0`, exits 0, leaves both events unassigned, and is then recorded
+-- as applied -- so it never runs again. The failure is silent and permanent.
+-- No CI gate can catch it either: ci.yml and infra/docker-compose.yml both
+-- migrate as a superuser role, where this statement does work.
+--
+-- The consequence for #99: this file is *not* what fixes it. The fix that
+-- holds everywhere is the display fallback in `row_assignee_ids`
+-- (apps/web/src/routes/home.rs) -- an event that reaches the dashboard with
+-- no assignee is rendered in its creator's colour token, and named after the
+-- creator whenever the member roster can be resolved; when it cannot (roster
+-- fetch failed, or the creator has left the family) the name degrades to
+-- "Membre" and the initial to "M", which is the app-wide degradation of
+-- `author_name`, not something this fallback adds.
+--
+-- This backfill is kept for the deployments whose migration role does bypass
+-- RLS (the shipped compose stack, CI), where it repairs the rows that exist
+-- when it runs. Not "once and for good", and not a second line of defence
+-- for anyone: a migration runs once, so every event created *after* it with
+-- no assignment row is beyond its reach -- which the Google Calendar import
+-- does on every deployment, on every import (issue #106,
+-- apps/api/src/google_calendar/imports.rs inserts into `events` and never
+-- into `event_assignees`). On a README-conformant deployment it is a no-op
+-- from the start.
+--
+-- Why the mismatch between main.rs and README.md is not resolved here: that
+-- is a deployment-architecture question (does this app want a distinct
+-- migration role?), not this bug fix's to answer. It is tracked as issue
+-- #105.
+INSERT INTO event_assignees (event_id, user_id)
+SELECT e.id, e.created_by
+FROM events e
+WHERE NOT EXISTS (
+    SELECT 1 FROM event_assignees ea WHERE ea.event_id = e.id
+)
+ON CONFLICT DO NOTHING;
