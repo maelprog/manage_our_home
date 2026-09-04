@@ -30,6 +30,25 @@ use super::{
     paris_local_to_utc, service_unavailable_page, to_datetime_local,
 };
 
+/// The line under the assignee picker explaining what an empty selection
+/// means — and nothing at all when the roster failed to load.
+///
+/// On that degraded path `assignee_checkboxes` emits no
+/// `ASSIGNEES_PRESENT_FIELD`, so `post` below sends no `assignee_ids` and
+/// the backend leaves the assignment exactly as it was. The fieldset says so
+/// ("l'assignation reste inchangée") — keeping the "no selection = the
+/// creator" hint next to it announced a fallback that will not happen (#99).
+/// `new.rs` keeps its own hint unconditionally on purpose: creating with no
+/// `assignee_ids` really does fall back to the creator (`resolve_assignees`),
+/// roster or no roster.
+fn assignment_hint(members: &[GroupMember]) -> &'static str {
+    if members.is_empty() {
+        ""
+    } else {
+        r#"<p class="muted">Aucune sélection = assigné au créateur de l'événement.</p>"#
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn page(
     header: &str,
@@ -51,6 +70,7 @@ fn page(
         .unwrap_or_default();
     let picker = recurrence_picker(recurrence);
     let assignees = assignee_checkboxes(members, selected_assignees);
+    let hint = assignment_hint(members);
     let all_day_checked = if all_day { " checked" } else { "" };
     let kind = if is_task { "Tâche" } else { "Événement" };
     let body = format!(
@@ -67,7 +87,7 @@ fn page(
 <label>Description <textarea name="description" rows="3">{description_esc}</textarea></label>
 {picker}
 {assignees}
-<p class="muted">Aucune sélection = assigné au créateur de l'événement.</p>
+{hint}
 <button type="submit">Enregistrer</button>
 </form>
 <div class="links"><a href="/agenda/{id}">Retour au détail</a></div>"#,
@@ -291,5 +311,35 @@ pub async fn post(
             render_error("ends_before_starts")
         }
         Ok(_) | Err(_) => render_error("unavailable"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn member(display_name: &str) -> GroupMember {
+        GroupMember {
+            user_id: Uuid::from_u128(1),
+            role: "member".to_string(),
+            display_name: display_name.to_string(),
+            email: "camille@example.test".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_loaded_roster_still_explains_the_empty_selection_default() {
+        let hint = assignment_hint(&[member("Camille")]);
+        assert!(hint.contains("créateur de l'événement"), "{hint}");
+    }
+
+    /// #99: on the degraded path the fieldset already says the assignment
+    /// stays unchanged, and the form carries no opinion about it at all
+    /// (`ASSIGNEES_PRESENT_FIELD` is absent, so the handler sends no
+    /// `assignee_ids`). Promising a fallback to the creator there announced
+    /// a write that never happens.
+    #[test]
+    fn a_roster_that_failed_to_load_promises_no_fallback() {
+        assert_eq!(assignment_hint(&[]), "");
     }
 }

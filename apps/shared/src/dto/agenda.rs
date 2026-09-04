@@ -80,8 +80,18 @@ pub struct EventResponse {
     pub is_task: bool,
     pub completed_at: Option<DateTime<Utc>>,
     pub rrule: Option<String>,
-    /// Family members this event is for — always at least one (the creator,
-    /// by default; see `CreateEventRequest::assignee_ids`).
+    /// Family members this event is for. Every write path keeps at least one
+    /// (the creator, by default — see `CreateEventRequest::assignee_ids` and
+    /// the backend's `resolve_assignees`), but the **database carries no such
+    /// constraint** and this list can legitimately arrive empty: `event_assignees`
+    /// was created empty by `0011_event_assignees.sql`, leaving every event
+    /// predating it unassigned until `0013_backfill_event_assignees.sql` filled
+    /// them in, and a member removed from the family takes their rows with them
+    /// (`ON DELETE CASCADE`). Claiming the invariant here was what let the
+    /// dashboard render a bare "?" ring on those rows (#99). Readers must
+    /// handle the empty case: `web/routes/home.rs::row_assignee_ids` falls back
+    /// to the creator, `web/routes/agenda/detail.rs::assignees_html` drops its
+    /// line.
     pub assignee_ids: Vec<Uuid>,
 }
 
