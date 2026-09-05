@@ -87,17 +87,24 @@ dependency): the only runtime import outside `node:` is `pg`, already a
 dependency here, and `node:zlib` ships both gzip **and** zstd.
 
 That needs **Node ≥ 22.18** — `≥ 22.15` for `zstdCompressSync`, `≥ 22.18`
-to run `.ts` without a flag. It is declared in `engines` and enforced at
-startup by `scripts/run.mjs`, which both npm scripts go through: a `.ts`
+to run `.ts` without a flag. It is declared in `engines`, enforced by npm
+(`.npmrc` sets `engine-strict=true`, so `npm ci` on an older Node fails
+with `EBADENGINE` instead of only warning), and enforced again at startup
+by `scripts/run.mjs`, which both npm scripts go through: a `.ts`
 entrypoint on an older Node dies with `ERR_UNKNOWN_FILE_EXTENSION`, which
-names neither the required version nor the fix. The
-`mcr.microsoft.com/playwright:*-noble` image used by the docker recipe
-above carries Node 24.
+names neither the required version nor the fix. A
+`mcr.microsoft.com/playwright:*-noble` image carries Node 24 at the tag
+matching the pinned Playwright version (`v1.61.1-noble` → Node 24.17) —
+but not at every tag: `v1.55.0-noble` still ships Node 22.18. Pick the
+tag `package-lock.json` pins.
 
-⚠ **The `e2e` job in `.github/workflows/ci.yml` pins `node-version: 20`.**
-Wiring `npm run measure` in as a merge gate would therefore need that
-version raised first. Nothing here changes CI — flagging the gap is all
-this PR does about it.
+The `e2e` job in `.github/workflows/ci.yml` runs on **Node 24** and calls
+`npm run test:scripts` right after `npm ci`, before the stack is built —
+these tests are pure logic, so running them there keeps their verdict
+readable even when the stack fails to come up (#91). `npm run measure` is
+still **not** a merge gate: the pinned version that blocked it is raised,
+but turning a budget report into a gate is a separate decision, left out
+of #91 on purpose.
 
 A shell script was the
 alternative for the measurement half, but it could not reuse `lib/db.ts`,
