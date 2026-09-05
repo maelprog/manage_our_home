@@ -79,7 +79,7 @@ DATABASE_URL=postgres://<role>:<password>@localhost:5432/<db> \
 WEB_BASE_URL=http://localhost \
   npm run measure
 
-npm run test:scripts   # the pure logic behind both, no stack needed
+npm run test:scripts   # pure logic: the two scripts, plus lib/, no stack needed
 ```
 
 Both are TypeScript run straight by `node` (no build step, no new
@@ -104,6 +104,18 @@ alternative for the measurement half, but it could not reuse `lib/db.ts`,
 would need `zstd`/`curl` binaries present, and none of its guardrails
 could be unit-tested — so both halves are Node, and the guardrail logic
 is shared and covered by `npm run test:scripts`.
+
+### Dates de test : `lib/dates.ts`
+
+Les specs qui fabriquent un événement « aujourd'hui » passent par `parisDay` /
+`parisDayOfMonth`, jamais par `new Date()` directement. L'app affiche en
+**Europe/Paris** (fuseau v1 figé) alors que le runner GitHub tourne en UTC :
+entre 22 h et minuit UTC les deux ne désignent plus le même jour, et un
+événement « du jour » selon le runner est déjà terminé selon l'app. Le test
+`home.spec.ts` « un événement toute la journée aujourd'hui est bien affiché »
+échouait sur cette seule fenêtre — reproductible à l'heure, invisible le reste
+du temps. `lib/dates.test.ts` fige les instants concernés, changements d'heure
+compris ; ils tournent sous `npm run test:scripts`.
 
 ### `npm run seed` — `scripts/seed-perf-data.ts`
 

@@ -1,5 +1,6 @@
 import { Browser, expect, Page, test } from "@playwright/test";
 import { fetchVerificationToken } from "../lib/db";
+import { parisDay } from "../lib/dates";
 
 // Issue #73 — the home dashboard. `/` is the first page after login and,
 // until this epic, it said "Bienvenue / Vous êtes connecté." and led
@@ -84,12 +85,12 @@ async function joinAsMember(
 }
 
 /** `YYYY-MM-DD` for today (+`offset` days) in the browser's own timezone. */
+/**
+ * `YYYY-MM-DD`, dans le fuseau de l'app et non celui du runner — voir
+ * `lib/dates.ts` pour la fenêtre nocturne que ça corrige.
+ */
 function isoDay(offset = 0): string {
-  const d = new Date();
-  d.setDate(d.getDate() + offset);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-    d.getDate(),
-  ).padStart(2, "0")}`;
+  return parisDay(offset);
 }
 
 interface EventOpts {

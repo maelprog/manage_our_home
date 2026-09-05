@@ -1,5 +1,6 @@
 import { expect, Page, test } from "@playwright/test";
 import { fetchVerificationToken } from "../lib/db";
+import { parisDayOfMonth } from "../lib/dates";
 
 // Front epic #3 — Agenda (issue #18): every user journey the epic
 // introduces, happy paths plus the documented error states from
@@ -41,10 +42,7 @@ async function createGroup(page: Page, name: string): Promise<void> {
 
 /** A fixed date in the current month, avoiding month boundaries. */
 function dayThisMonth(day: number): string {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  return `${y}-${m}-${String(day).padStart(2, "0")}`;
+  return parisDayOfMonth(day);
 }
 
 interface EventOpts {
