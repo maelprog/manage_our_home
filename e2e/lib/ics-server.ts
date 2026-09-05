@@ -1,5 +1,6 @@
 import { createServer, Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { parisDayOfMonth } from "./dates";
 
 // A throwaway static file server for the Google Calendar import suite (front
 // epic F11, issue #52).
@@ -70,10 +71,7 @@ export async function startIcsFixtureServer(): Promise<IcsFixture> {
 
 /** `YYYYMMDD` for a day of the month currently on screen in `/agenda`. */
 export function icsDayThisMonth(day: number): string {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  return `${y}${m}${String(day).padStart(2, "0")}`;
+  return parisDayOfMonth(day).replaceAll("-", "");
 }
 
 export interface IcsEvent {
