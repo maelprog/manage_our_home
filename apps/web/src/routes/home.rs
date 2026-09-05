@@ -669,10 +669,22 @@ mod pure_logic_tests {
     }
 
     /// A whole-day occurrence for 2026-09-03 in Paris (UTC+2 in September),
-    /// i.e. 2026-09-02T22:00Z → 2026-09-03T22:00Z: exactly what the API
-    /// returns for a birthday or a public holiday, and the reason a filter
+    /// i.e. 2026-09-02T22:00Z → 2026-09-03T22:00Z, and the reason a filter
     /// on `occurrence_starts_at` hid this whole class of entry — its start
     /// is in the past from one minute past midnight onwards.
+    ///
+    /// This block used to claim these bounds were "exactly what the API
+    /// returns for a birthday or a public holiday". They were not, and #101
+    /// is the bug that claim hid: until then nothing normalized an `all_day`
+    /// event, so the app's own form stored whatever its two
+    /// `datetime-local` fields held — 08:00 → 09:00 for a birthday added in
+    /// the morning, which is *finished* by 09:01. The API now stores whole
+    /// Paris civil days (`validation::agenda::normalize_all_day`), so the
+    /// claim is true of anything created or edited through it — but still
+    /// not of the Google Calendar mirror, which writes to `events` directly
+    /// and anchors an all-day VEVENT on **UTC** midnight
+    /// (`apps/api/src/google_calendar/parse.rs`), collapsing it to a
+    /// zero-length instant when the feed carries no DTEND.
     fn all_day_occurrence(title: &str) -> OccurrenceResponse {
         occurrence_between(
             Utc.with_ymd_and_hms(2026, 9, 2, 22, 0, 0).unwrap(),

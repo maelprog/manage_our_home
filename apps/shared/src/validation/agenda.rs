@@ -19,7 +19,8 @@
 //! `month_grid`/`week_days` are the civil-date maths behind the hand-rolled
 //! calendar (no calendar library, the accepted Leptos trade-off).
 
-use chrono::{Datelike, NaiveDate, Weekday};
+use chrono::{DateTime, Datelike, NaiveDate, NaiveTime, TimeZone, Utc, Weekday};
+use chrono_tz::Europe::Paris;
 
 // ---------------------------------------------------------------------------
 // RRULE v1 subset
@@ -219,6 +220,96 @@ pub fn validate_event_form(
         return Err(EventFormError::EndsBeforeStarts);
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// All-day normalization
+// ---------------------------------------------------------------------------
+
+/// The Europe/Paris civil date `dt` falls on — the day a reader of the app
+/// would call it, whatever the UTC date says.
+pub fn paris_date(dt: DateTime<Utc>) -> NaiveDate {
+    dt.with_timezone(&Paris).date_naive()
+}
+
+/// Europe/Paris wall-clock midnight opening `date`, as a UTC instant.
+///
+/// Since 1977 Paris has shifted its clocks at 02:00/03:00 local, so midnight
+/// is neither skipped nor repeated and `earliest()` always resolves. It was
+/// not always so — 1944-10-08 and 1976-09-26 each had an ambiguous Paris
+/// midnight, and on those two dates `earliest()` picks the first of the two,
+/// which is the one that opens the day. The remaining arms keep the function
+/// total rather than panicking on a date the tz database has no offset for
+/// at all.
+pub fn paris_start_of_day(date: NaiveDate) -> DateTime<Utc> {
+    let naive = date.and_time(NaiveTime::MIN);
+    let local = Paris.from_local_datetime(&naive);
+    local
+        .earliest()
+        .or_else(|| local.latest())
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(|| naive.and_utc())
+}
+
+/// The timestamps an `all_day` event must be stored with: Paris midnight
+/// opening its first day, to Paris midnight opening the day *after* its
+/// last one.
+///
+/// Nothing enforced this before (#101). `all_day` was a display flag and
+/// nothing else, so an event ticked "journée entière" kept whatever the two
+/// `datetime-local` fields held — and the fields' own defaults are "now" and
+/// "now + 1 h". The dashboard keeps occurrences whose `occurrence_ends_at`
+/// is still ahead (`apps/web/src/routes/home.rs`, #73), so a birthday
+/// created at 08:00 → 09:00 vanished from it at 09:01 while still being,
+/// to the reader, an event happening today.
+///
+/// **The end is exclusive**, i.e. the midnight that opens the next day, not
+/// 23:59. Three reasons: it is RFC 5545's own convention for a DATE-valued
+/// `DTEND` (so an ICS feed carrying one already agrees with us); it makes
+/// the event's duration exactly the civil day, DST included — 23 h on the
+/// spring-forward day, 25 h on the fall-back one, which a fixed `+24 h`
+/// would get wrong twice a year; and it leaves no dead minute between
+/// 23:59 and midnight during which a still-current event reads as finished.
+///
+/// The same convention makes the function **idempotent**: an end already
+/// sitting on a Paris midnight is read as the exclusive end it is, rather
+/// than being pushed one more day out. That matters because `update_event`
+/// re-normalizes on *every* PATCH — including ones that touch neither
+/// timestamp — so a non-idempotent version would grow an event by a day
+/// each time somebody edited its title.
+///
+/// Europe/Paris, not the caller's zone: it is the fixed v1 display timezone
+/// (F3's `DISPLAY_TZ`), the one the forms parse into and every page renders
+/// back from. There is no per-family timezone in v1.
+pub fn normalize_all_day(
+    starts_at: DateTime<Utc>,
+    ends_at: DateTime<Utc>,
+) -> (DateTime<Utc>, DateTime<Utc>) {
+    let start_day = starts_at.with_timezone(&Paris).date_naive();
+    let end_paris = ends_at.with_timezone(&Paris);
+    let end_day = end_paris.date_naive();
+
+    // An end already on Paris midnight names the first day *past* the
+    // event; any other time of day is inside the last day it covers, which
+    // therefore has to be included.
+    let mut exclusive_end_day = if end_paris.time() == NaiveTime::MIN && end_day > start_day {
+        end_day
+    } else {
+        end_day.succ_opt().unwrap_or(end_day)
+    };
+    // A backwards or same-instant pair still yields one whole day. The API
+    // rejects `ends_at < starts_at` before ever calling this, but the
+    // invariant "an all-day event lasts at least a day" belongs here, not
+    // in the caller.
+    let first_day_after_start = start_day.succ_opt().unwrap_or(start_day);
+    if exclusive_end_day < first_day_after_start {
+        exclusive_end_day = first_day_after_start;
+    }
+
+    (
+        paris_start_of_day(start_day),
+        paris_start_of_day(exclusive_end_day),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -509,5 +600,107 @@ mod tests {
         assert_eq!(days.len(), 7);
         assert_eq!(days[0], NaiveDate::from_ymd_opt(2026, 7, 20).unwrap()); // Mon
         assert_eq!(days[6], NaiveDate::from_ymd_opt(2026, 7, 26).unwrap()); // Sun
+    }
+
+    // -- normalize_all_day ---------------------------------------------------
+
+    fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(y, mo, d, h, mi, 0).unwrap()
+    }
+
+    /// Paris is UTC+2 in September, so the civil day D runs from
+    /// `D-1T22:00Z` to `DT22:00Z`.
+    fn sept(d: u32, h: u32, mi: u32) -> DateTime<Utc> {
+        utc(2026, 9, d, h, mi)
+    }
+
+    #[test]
+    fn a_morning_slot_becomes_the_whole_paris_day() {
+        // The reproduction from #101: 08:00 -> 09:00 Paris on 2026-09-03,
+        // i.e. 06:00Z -> 07:00Z, with "journée entière" ticked.
+        let (s, e) = normalize_all_day(sept(3, 6, 0), sept(3, 7, 0));
+        assert_eq!(s, sept(2, 22, 0));
+        assert_eq!(e, sept(3, 22, 0));
+    }
+
+    #[test]
+    fn normalization_is_idempotent() {
+        // `update_event` re-normalizes on every PATCH, including ones that
+        // touch neither timestamp: a second pass must not push the event out
+        // by a day.
+        let (s1, e1) = normalize_all_day(sept(3, 6, 0), sept(3, 7, 0));
+        let (s2, e2) = normalize_all_day(s1, e1);
+        assert_eq!((s1, e1), (s2, e2));
+    }
+
+    #[test]
+    fn a_multi_day_span_keeps_every_day_it_covered() {
+        // 2026-09-03 08:00 -> 2026-09-05 09:00 Paris covers three civil
+        // days; the normalized end is the midnight *after* the last of them.
+        let (s, e) = normalize_all_day(sept(3, 6, 0), sept(5, 7, 0));
+        assert_eq!(s, sept(2, 22, 0));
+        assert_eq!(e, sept(5, 22, 0));
+    }
+
+    #[test]
+    fn a_zero_length_instant_becomes_a_full_day() {
+        // What an ICS feed without DTEND produces (`google_calendar::parse`
+        // falls back to `ends_at = starts_at`), and what the form allows too.
+        let (s, e) = normalize_all_day(sept(3, 6, 0), sept(3, 6, 0));
+        assert_eq!(s, sept(2, 22, 0));
+        assert_eq!(e, sept(3, 22, 0));
+    }
+
+    #[test]
+    fn an_end_before_the_start_still_yields_one_whole_day() {
+        // The API rejects this pair before normalizing, but the function is
+        // total: it never returns an end at or before its start.
+        let (s, e) = normalize_all_day(sept(3, 6, 0), sept(1, 6, 0));
+        assert_eq!(s, sept(2, 22, 0));
+        assert_eq!(e, sept(3, 22, 0));
+        assert!(e > s);
+    }
+
+    #[test]
+    fn the_spring_forward_day_is_twenty_three_hours_long() {
+        // 2026-03-29: Paris jumps 02:00 -> 03:00, so the civil day is 23 h.
+        // A fixed `+ 24 h` end would overshoot into the next day here.
+        let start = utc(2026, 3, 29, 10, 0);
+        let (s, e) = normalize_all_day(start, start);
+        assert_eq!(s, utc(2026, 3, 28, 23, 0));
+        assert_eq!(e, utc(2026, 3, 29, 22, 0));
+        assert_eq!((e - s).num_hours(), 23);
+    }
+
+    #[test]
+    fn the_fall_back_day_is_twenty_five_hours_long() {
+        // 2026-10-25: Paris repeats 02:00 -> 03:00, so the civil day is
+        // 25 h — and a fixed `+ 24 h` end would fall an hour short.
+        let start = utc(2026, 10, 25, 10, 0);
+        let (s, e) = normalize_all_day(start, start);
+        assert_eq!(s, utc(2026, 10, 24, 22, 0));
+        assert_eq!(e, utc(2026, 10, 25, 23, 0));
+        assert_eq!((e - s).num_hours(), 25);
+    }
+
+    #[test]
+    fn the_paris_day_is_not_the_utc_day() {
+        // 23:30Z on 2026-09-03 is already 01:30 on the 4th in Paris, so the
+        // day to normalize onto is the 4th. Anchoring on UTC midnight (what
+        // `google_calendar::parse` does for an ICS DATE) names the 3rd here.
+        let start = utc(2026, 9, 3, 23, 30);
+        let (s, e) = normalize_all_day(start, start);
+        assert_eq!(s, sept(3, 22, 0));
+        assert_eq!(e, sept(4, 22, 0));
+    }
+
+    #[test]
+    fn a_winter_day_is_anchored_on_cet_midnight() {
+        // January: Paris is UTC+1, so the civil day opens at 23:00Z the day
+        // before. The fixed display timezone carries its DST with it.
+        let start = utc(2026, 1, 5, 9, 0);
+        let (s, e) = normalize_all_day(start, start);
+        assert_eq!(s, utc(2026, 1, 4, 23, 0));
+        assert_eq!(e, utc(2026, 1, 5, 23, 0));
     }
 }

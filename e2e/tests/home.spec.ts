@@ -188,10 +188,14 @@ test.describe("Accueil — le tableau de bord d'une famille peuplée", () => {
     await createGroup(page, FAMILY);
 
     const today = isoDay();
+    // Un créneau du matin, la forme même que le formulaire propose (ses deux
+    // champs valent « maintenant » et « maintenant + 1 h »). Ce test écrivait
+    // `23:59` à la main : il fabriquait donc l'invariant que #101 dit
+    // manquant, et n'aurait pas vu la régression.
     await createEvent(page, {
       title: "Anniversaire de Léa",
-      start: `${today}T00:00`,
-      end: `${today}T23:59`,
+      start: `${today}T08:00`,
+      end: `${today}T09:00`,
       allDay: true,
     });
 
@@ -204,6 +208,16 @@ test.describe("Accueil — le tableau de bord d'une famille peuplée", () => {
     // The all-day row says "journée" instead of a clock time; that branch
     // was unreachable for the current day.
     await expect(agenda.getByText("journée")).toBeVisible();
+
+    // L'invariant lui-même, et pas seulement son symptôme : le formulaire
+    // d'édition relit ce que la base porte. Cette assertion échoue à toute
+    // heure sans #101, là où la carte ci-dessus ne trahit le défaut qu'après
+    // 09 h 00 à Paris — la suite tourne à n'importe quelle heure.
+    await page.goto("/agenda");
+    await page.getByRole("link", { name: "Anniversaire de Léa" }).click();
+    await page.getByRole("link", { name: "Modifier" }).click();
+    await expect(page.getByLabel("Début")).toHaveValue(`${today}T00:00`);
+    await expect(page.getByLabel("Fin")).toHaveValue(`${isoDay(1)}T00:00`);
   });
 
   test("un événement déjà commencé mais pas terminé reste affiché", async ({ page }) => {
