@@ -126,11 +126,37 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # e2e/package.json has declared `engines: {"node": ">=22.18.0"}` since
+      # #85 (2026-07-31): the scripts under e2e/scripts/ are TypeScript
+      # executed straight by node (needs >= 22.18) and use
+      # `zlib.zstdCompressSync` (>= 22.15). Pinning 20 here is what kept
+      # `npm run test:scripts` out of this job from that day until #91 --
+      # about five weeks.
+      # Separately, and for much longer: Node 20 reached end of life on
+      # 2026-04-30, so this job had been running on an unpatched runtime for
+      # over four months. Two different clocks; #91 only owns the first.
+      # 24 rather than the 22.18 floor: Node 24 is supported until 2028-04-30
+      # (22 entered maintenance on 2025-10-21), and Node 24 is what the
+      # Playwright image matching the pinned @playwright/test carries
+      # (v1.61.1-noble -> Node 24.17; older tags do not -- v1.55.0-noble is
+      # still on 22.18). Local runs already use that image, so raising this
+      # line removes a CI/local divergence rather than creating one.
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: e2e/package-lock.json
+      # `npm ci` and the pure-logic script tests run here, before the stack is
+      # built and started, on purpose. e2e/scripts/lib/*.test.ts and
+      # e2e/lib/*.test.ts exercise the seed/measure/date logic only: no
+      # Postgres, no MinIO, no browser. Placed after "Wait for both services"
+      # they would be hidden by any stack that fails to come up -- the failure
+      # mode this job is most prone to -- and a lockfile or engines problem
+      # would only surface after the cargo build. Here they report either way.
+      - run: npm ci
+        working-directory: e2e
+      - run: npm run test:scripts
+        working-directory: e2e
       - run: cargo build -p manage_our_home -p manage_our_home_web
       - name: Start MinIO and create the attachments bucket
         run: |
@@ -180,8 +206,6 @@ jobs:
           done
           echo "stack did not come up in 60s" >&2
           exit 1
-      - run: npm ci
-        working-directory: e2e
       - run: npx playwright install --with-deps chromium
         working-directory: e2e
       - run: npx playwright test

@@ -9,10 +9,23 @@
 //   - ≥ 22.18 : exécution directe des `.ts` sans drapeau.
 // La seconde domine, c'est elle qu'on exige.
 //
-// ATTENTION : le job `e2e` de `.github/workflows/ci.yml` épingle
-// `node-version: 20`. Câbler `npm run measure` en CI demanderait donc de
-// relever cette version — c'est signalé dans e2e/README.md et volontairement
-// pas fait ici (modifier la CI sort du périmètre de ce changement).
+// Le job `e2e` de `.github/workflows/ci.yml` tourne en Node 24 depuis #91, et
+// y câble `npm run test:scripts`. `npm run measure` reste non câblé : la
+// version qui l'en empêchait est levée, mais faire d'un rapport de budget une
+// porte de merge est une autre décision.
+//
+// Portée exacte des garde-fous de version, parce qu'ils ne couvrent pas la
+// même chose et qu'on s'y trompe :
+//   - `e2e/.npmrc` (`engine-strict=true`, #91) n'agit qu'à l'INSTALLATION :
+//     `npm ci` / `npm install` échouent en EBADENGINE sur un Node trop ancien.
+//     Un `npm run …` n'est pas filtré, npm n'y relit pas `engines` ;
+//   - ce fichier-ci ne couvre que `npm run seed` et `npm run measure`, les
+//     seuls scripts qui passent par lui ;
+//   - `npm run test:scripts` appelle `node --test` directement, donc ni l'un
+//     ni l'autre. Sur un Node trop ancien il meurt sur le message obscur
+//     d'origine — `ERR_UNKNOWN_FILE_EXTENSION`, ou « Could not find » si la
+//     version ne sait pas encore développer les globs de `--test` (Node 20).
+//     En CI le trou est bouché en amont par `node-version: 24`.
 
 // Aucun import statique ici, et surtout pas `{ zstdCompressSync }` depuis
 // node:zlib : sur Node 20 cet import échoue à l'instanciation du module, AVANT
@@ -42,8 +55,12 @@ if (tooOld(current, REQUIRED)) {
       "    - >= 22.15 pour zlib.zstdCompressSync, qui sert à peser les pages.\n\n" +
       "  Sans ce contrôle, Node échouerait sur « ERR_UNKNOWN_FILE_EXTENSION:\n" +
       '  Unknown file extension ".ts" », qui ne dit pas quelle version installer.\n\n' +
-      "  L'image mcr.microsoft.com/playwright:*-noble utilisée par les recettes\n" +
-      "  docker de e2e/README.md embarque Node 24.\n\n",
+      "  N'importe quel Node >= 22.18 convient : les images officielles\n" +
+      "  node:22 / node:24, ou une image mcr.microsoft.com/playwright:*-noble\n" +
+      "  dont le tag correspond au @playwright/test épinglé par\n" +
+      "  package-lock.json (v1.61.1-noble porte Node 24.17). Ne pas supposer\n" +
+      "  que tous les tags -noble portent Node 24 : v1.55.0-noble est en\n" +
+      "  22.18.\n\n",
   );
   process.exit(1);
 }
