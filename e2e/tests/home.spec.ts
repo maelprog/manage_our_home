@@ -84,7 +84,6 @@ async function joinAsMember(
   return member;
 }
 
-/** `YYYY-MM-DD` for today (+`offset` days) in the browser's own timezone. */
 /**
  * `YYYY-MM-DD`, dans le fuseau de l'app et non celui du runner — voir
  * `lib/dates.ts` pour la fenêtre nocturne que ça corrige.

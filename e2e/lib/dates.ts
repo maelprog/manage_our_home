@@ -2,7 +2,7 @@
 //! runner.
 //!
 //! L'app affiche tout en **Europe/Paris** — le fuseau v1 figé, cf.
-//! `apps/shared/src/validation/messagerie.rs` (`DISPLAY_TZ`). Les helpers de
+//! `apps/web/src/routes/agenda/mod.rs` (`DISPLAY_TZ`). Les helpers de
 //! date des specs lisaient `new Date()` dans l'horloge locale du processus
 //! Node, qui vaut UTC sur un runner GitHub. Entre 22 h et minuit UTC les deux
 //! ne désignent plus le même jour, et un événement construit sur « aujourd'hui
