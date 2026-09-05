@@ -226,13 +226,22 @@ pub fn validate_event_form(
 // All-day normalization
 // ---------------------------------------------------------------------------
 
+/// The Europe/Paris civil date `dt` falls on — the day a reader of the app
+/// would call it, whatever the UTC date says.
+pub fn paris_date(dt: DateTime<Utc>) -> NaiveDate {
+    dt.with_timezone(&Paris).date_naive()
+}
+
 /// Europe/Paris wall-clock midnight opening `date`, as a UTC instant.
 ///
-/// Paris shifts its clocks at 02:00/03:00 local, so midnight is never
-/// skipped nor repeated and `earliest()` always resolves. The remaining
-/// arms keep the function total rather than panicking on a hypothetical
-/// the tz database would have to invent.
-fn paris_start_of_day(date: NaiveDate) -> DateTime<Utc> {
+/// Since 1977 Paris has shifted its clocks at 02:00/03:00 local, so midnight
+/// is neither skipped nor repeated and `earliest()` always resolves. It was
+/// not always so — 1944-10-08 and 1976-09-26 each had an ambiguous Paris
+/// midnight, and on those two dates `earliest()` picks the first of the two,
+/// which is the one that opens the day. The remaining arms keep the function
+/// total rather than panicking on a date the tz database has no offset for
+/// at all.
+pub fn paris_start_of_day(date: NaiveDate) -> DateTime<Utc> {
     let naive = date.and_time(NaiveTime::MIN);
     let local = Paris.from_local_datetime(&naive);
     local

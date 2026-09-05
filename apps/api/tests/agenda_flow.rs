@@ -274,6 +274,82 @@ async fn an_all_day_event_is_stored_as_whole_paris_days(db: PgPool) {
     assert_eq!(instant(&untick, "ends_at"), asked_end);
 }
 
+/// #101, round 2: the invariant has to hold for every **occurrence** of a
+/// recurring all-day event, not just for the stored row.
+///
+/// Anchoring the row on Paris midnight puts its `starts_at` on the DST
+/// cliff (22:00Z in summer, 23:00Z in winter). Unrolled in UTC — which is
+/// what `expand_occurrences` does — every later occurrence keeps September's
+/// offset and lands at 22:00Z, i.e. 23:00 on the *previous* day once the
+/// clocks go back. The event then vanishes from a dashboard window that
+/// starts at Paris midnight, which is #101's own symptom one level up.
+///
+/// This is the reproduction from the review of PR #115, verbatim.
+#[sqlx::test]
+async fn a_recurring_all_day_event_lands_on_its_civil_day_after_the_clocks_change(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "Loyer",
+            "starts_at": "2026-09-05T06:00:00Z",
+            "ends_at": "2026-09-05T07:00:00Z",
+            "all_day": true,
+            "rrule": "FREQ=MONTHLY",
+        })),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let event = json_body(create).await;
+    // Paris is UTC+2 in September: the civil day of the 5th.
+    assert_eq!(
+        instant(&event, "starts_at"),
+        Utc.with_ymd_and_hms(2026, 9, 4, 22, 0, 0).unwrap()
+    );
+    assert_eq!(
+        instant(&event, "ends_at"),
+        Utc.with_ymd_and_hms(2026, 9, 5, 22, 0, 0).unwrap()
+    );
+
+    // The window the dashboard renders on 2026-11-05: it opens at Paris
+    // midnight, which is 23:00Z on the 4th now that Paris is UTC+1.
+    let from = Utc.with_ymd_and_hms(2026, 11, 4, 23, 0, 0).unwrap();
+    let to = Utc.with_ymd_and_hms(2026, 11, 7, 22, 59, 59).unwrap();
+    let list = call(
+        &router,
+        Method::GET,
+        &format!(
+            "/groups/{group_id}/events?from={}&to={}",
+            urlenc(&from.to_rfc3339()),
+            urlenc(&to.to_rfc3339())
+        ),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&list, StatusCode::OK);
+    let body = json_body(list).await;
+    let occurrences = body["occurrences"].as_array().unwrap();
+    assert_eq!(
+        occurrences.len(),
+        1,
+        "the November occurrence is missing from the window that opens on its own day: {body}"
+    );
+    let occ = &occurrences[0];
+    assert_eq!(instant(occ, "occurrence_starts_at"), from);
+    assert_eq!(
+        instant(occ, "occurrence_ends_at"),
+        Utc.with_ymd_and_hms(2026, 11, 5, 23, 0, 0).unwrap()
+    );
+}
+
 /// #101: a backwards range is still a 400 on an `all_day` event — the
 /// normalization runs *after* validation, so it repairs the day boundaries
 /// of a sane request rather than papering over a nonsensical one.

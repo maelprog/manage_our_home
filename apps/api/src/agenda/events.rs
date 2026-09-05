@@ -416,11 +416,27 @@ pub async fn list_events(
         let duration = row.ends_at - row.starts_at;
         let assignee_ids = assignees.get(&row.id).cloned().unwrap_or_default();
         if let Some(rrule) = row.rrule.clone() {
-            let starts =
+            // An all-day series is unrolled on civil dates, not on instants.
+            // Its stored start sits on Paris midnight — 22:00Z in summer,
+            // 23:00Z in winter — so unrolling it in UTC carries every later
+            // occurrence onto the neighbouring day as soon as the clocks
+            // change, which is #101's own symptom re-created one level up.
+            // See `recurrence::expand_all_day_occurrences`.
+            let spans: Vec<recurrence::OccurrenceSpan> = if row.all_day {
+                recurrence::expand_all_day_occurrences(
+                    &rrule,
+                    row.starts_at,
+                    row.ends_at,
+                    range.from,
+                    range.to,
+                )
+            } else {
                 recurrence::expand_occurrences(&rrule, row.starts_at, range.from, range.to)
-                    .map_err(|_| AppError::Internal(anyhow::anyhow!("failed to expand rrule")))?;
+                    .map(|starts| starts.into_iter().map(|s| (s, s + duration)).collect())
+            }
+            .map_err(|_| AppError::Internal(anyhow::anyhow!("failed to expand rrule")))?;
             let base = event_response(row, assignee_ids);
-            for occurrence_starts_at in starts {
+            for (occurrence_starts_at, occurrence_ends_at) in spans {
                 let completed_at = if base.is_task {
                     occurrence_completions
                         .get(&(base.id, occurrence_starts_at))
@@ -445,7 +461,7 @@ pub async fn list_events(
                         assignee_ids: base.assignee_ids.clone(),
                     },
                     occurrence_starts_at,
-                    occurrence_ends_at: occurrence_starts_at + duration,
+                    occurrence_ends_at,
                 });
             }
         } else if row.starts_at <= range.to && row.ends_at >= range.from {
