@@ -4,6 +4,7 @@ use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
 use chrono::{DateTime, Utc};
+use manage_our_home_shared::validation::agenda::normalize_all_day;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -86,13 +87,50 @@ fn validate_request(
     Ok(())
 }
 
+/// The timestamps to store for an event, given whether it is `all_day`.
+///
+/// `all_day` is not a display flag: it carries the promise that the event
+/// covers whole civil days, and nothing enforced that promise before #101 —
+/// `new.rs` only set the checkbox, and the two `datetime-local` fields
+/// default to "now" and "now + 1 h". A birthday created at 08:00 → 09:00 was
+/// therefore *finished* at 09:01 and dropped off the dashboard, which keeps
+/// occurrences by `occurrence_ends_at` (`apps/web/src/routes/home.rs`, #73).
+///
+/// This sits in the API rather than in the form that reported the bug on
+/// purpose. `apps/web` writes events from two places (`agenda/new.rs` and
+/// `agenda/edit.rs`), and an invariant one of them upholds is not an
+/// invariant — the edit form, or any other client of `POST/PATCH
+/// /groups/:id/events`, would keep minting rows that break it. Every write
+/// those routes make funnels through `create_event`/`update_event`, so this
+/// is the narrowest place that covers all of them.
+///
+/// The one write path it does *not* cover is the Google Calendar mirror
+/// (`google_calendar/imports.rs`), which INSERTs into `events` directly. Its
+/// timestamps come from the feed rather than from a user, and are left as
+/// the feed states them — see the PR for #101.
+fn normalized_bounds(
+    all_day: bool,
+    starts_at: DateTime<Utc>,
+    ends_at: DateTime<Utc>,
+) -> (DateTime<Utc>, DateTime<Utc>) {
+    if all_day {
+        normalize_all_day(starts_at, ends_at)
+    } else {
+        (starts_at, ends_at)
+    }
+}
+
 pub async fn create_event(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(group_id): Path<Uuid>,
     Json(body): Json<CreateEventRequest>,
 ) -> AppResult<impl IntoResponse> {
+    // Validated on what the client actually sent, *then* normalized: a
+    // genuinely backwards range stays a 400 instead of being silently
+    // repaired into a valid day.
     validate_request(body.starts_at, body.ends_at, body.rrule.as_deref())?;
+    let (starts_at, ends_at) = normalized_bounds(body.all_day, body.starts_at, body.ends_at);
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
@@ -109,8 +147,8 @@ pub async fn create_event(
         body.title,
         body.description,
         body.location,
-        body.starts_at,
-        body.ends_at,
+        starts_at,
+        ends_at,
         body.all_day,
         body.is_task,
         body.rrule,
@@ -434,7 +472,7 @@ pub async fn update_event(
     let actor_role = require_role(&mut tx, group_id, auth.user_id).await?;
 
     let existing = sqlx::query!(
-        "SELECT created_by, starts_at, ends_at, rrule, is_task, completed_at FROM events WHERE id = $1 AND group_id = $2",
+        "SELECT created_by, starts_at, ends_at, all_day, rrule, is_task, completed_at FROM events WHERE id = $1 AND group_id = $2",
         event_id,
         group_id,
     )
@@ -454,6 +492,13 @@ pub async fn update_event(
         None => existing.rrule.clone(),
     };
     validate_request(starts_at, ends_at, rrule.as_deref())?;
+    // `all_day` uses the same "absent field leaves it alone" convention as
+    // the SQL below (`COALESCE($8, all_day)`), so the flag the row will end
+    // up with is what decides normalization — a PATCH that touches neither
+    // the flag nor the timestamps still re-asserts the invariant, which is
+    // exactly what makes `normalize_all_day` idempotent worth having.
+    let all_day = body.all_day.unwrap_or(existing.all_day);
+    let (starts_at, ends_at) = normalized_bounds(all_day, starts_at, ends_at);
 
     if body.completed.is_some() && !existing.is_task {
         return Err(AppError::BadRequest(

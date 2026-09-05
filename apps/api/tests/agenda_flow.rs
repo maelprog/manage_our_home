@@ -1,7 +1,7 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, TimeZone, Utc};
 use common::{
     assert_status, call, call_upload, json_body, real_minio_from_env, set_cookie, test_router,
     test_router_with_storage,
@@ -164,6 +164,140 @@ async fn full_event_lifecycle(db: PgPool) {
     )
     .await;
     assert_status(&get_after_delete, StatusCode::NOT_FOUND);
+}
+
+/// One RFC 3339 field of an event JSON body, as the instant it names.
+fn instant(body: &serde_json::Value, field: &str) -> DateTime<Utc> {
+    body[field]
+        .as_str()
+        .unwrap_or_else(|| panic!("{field} missing from {body}"))
+        .parse::<DateTime<Utc>>()
+        .unwrap()
+}
+
+/// #101: `all_day` is an invariant on the stored row, not a display flag.
+/// The form's two `datetime-local` fields default to "now" and "now + 1 h",
+/// so a birthday ticked "journée entière" used to be stored as the 08:00 →
+/// 09:00 slot it was filled with and read as *finished* at 09:01 — the
+/// dashboard keeps occurrences by `occurrence_ends_at` (#73). Both write
+/// endpoints now store whole Europe/Paris civil days, and a later PATCH
+/// that names neither timestamp must not drift them.
+#[sqlx::test]
+async fn an_all_day_event_is_stored_as_whole_paris_days(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    // 2026-09-03, 08:00 → 09:00 as the form would submit it. Paris is UTC+2
+    // in September, so the civil day runs 09-02T22:00Z → 09-03T22:00Z.
+    let asked_start = Utc.with_ymd_and_hms(2026, 9, 3, 6, 0, 0).unwrap();
+    let asked_end = Utc.with_ymd_and_hms(2026, 9, 3, 7, 0, 0).unwrap();
+    let day_start = Utc.with_ymd_and_hms(2026, 9, 2, 22, 0, 0).unwrap();
+    let day_end = Utc.with_ymd_and_hms(2026, 9, 3, 22, 0, 0).unwrap();
+
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "Anniversaire de Léa",
+            "starts_at": asked_start,
+            "ends_at": asked_end,
+            "all_day": true,
+        })),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let event = json_body(create).await;
+    let event_id = event["id"].as_str().unwrap().to_string();
+    assert_eq!(instant(&event, "starts_at"), day_start);
+    assert_eq!(instant(&event, "ends_at"), day_end);
+
+    // A PATCH naming neither the flag nor the timestamps re-runs the
+    // normalization on the row's own values: it must be a no-op, not a
+    // one-day-per-edit drift.
+    let retitled = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"title": "Anniversaire de Camille"})),
+    )
+    .await;
+    assert_status(&retitled, StatusCode::OK);
+    let retitled = json_body(retitled).await;
+    assert_eq!(instant(&retitled, "starts_at"), day_start);
+    assert_eq!(instant(&retitled, "ends_at"), day_end);
+
+    // Editing the times while the flag stays on re-normalizes to the new day.
+    let moved = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "starts_at": Utc.with_ymd_and_hms(2026, 9, 10, 14, 30, 0).unwrap(),
+            "ends_at": Utc.with_ymd_and_hms(2026, 9, 10, 15, 30, 0).unwrap(),
+        })),
+    )
+    .await;
+    assert_status(&moved, StatusCode::OK);
+    let moved = json_body(moved).await;
+    assert_eq!(
+        instant(&moved, "starts_at"),
+        Utc.with_ymd_and_hms(2026, 9, 9, 22, 0, 0).unwrap()
+    );
+    assert_eq!(
+        instant(&moved, "ends_at"),
+        Utc.with_ymd_and_hms(2026, 9, 10, 22, 0, 0).unwrap()
+    );
+
+    // Unticking the box hands the timestamps back verbatim: normalization
+    // applies to `all_day` rows and nothing else.
+    let untick = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "all_day": false,
+            "starts_at": asked_start,
+            "ends_at": asked_end,
+        })),
+    )
+    .await;
+    assert_status(&untick, StatusCode::OK);
+    let untick = json_body(untick).await;
+    assert_eq!(instant(&untick, "starts_at"), asked_start);
+    assert_eq!(instant(&untick, "ends_at"), asked_end);
+}
+
+/// #101: a backwards range is still a 400 on an `all_day` event — the
+/// normalization runs *after* validation, so it repairs the day boundaries
+/// of a sane request rather than papering over a nonsensical one.
+#[sqlx::test]
+async fn an_all_day_event_with_a_backwards_range_is_still_rejected(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "À l'envers",
+            "starts_at": Utc.with_ymd_and_hms(2026, 9, 3, 6, 0, 0).unwrap(),
+            "ends_at": Utc.with_ymd_and_hms(2026, 9, 1, 6, 0, 0).unwrap(),
+            "all_day": true,
+        })),
+    )
+    .await;
+    assert_status(&create, StatusCode::BAD_REQUEST);
 }
 
 /// #73: an event can be assigned to several family members, and the
