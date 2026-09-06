@@ -12,8 +12,17 @@
 //! Rien ici ne dépend d'un `TZ=` posé à l'extérieur : le fuseau est nommé, donc
 //! le résultat est le même sur le poste d'un développeur et en CI.
 
-/** Composantes de la date courante à Paris, sûres pour un calcul calendaire. */
-function parisParts(now: Date): { y: number; m: number; d: number } {
+/**
+ * Composantes de la date courante à Paris, sûres pour un calcul calendaire.
+ *
+ * `m` est en **base 1** (janvier = 1), comme dans les chaînes `YYYY-MM-DD`
+ * rendues ici, et à l'inverse de `Date.getMonth()`.
+ *
+ * Exporté parce que `scripts/lib/seed-core.ts` a besoin du mois et de l'année
+ * eux-mêmes — pas d'une chaîne qu'il faudrait redécouper — pour choisir la
+ * grille que `/agenda` rend.
+ */
+export function parisParts(now: Date): { y: number; m: number; d: number } {
 	// `en-CA` rend `YYYY-MM-DD`, le seul format ISO qu'Intl produise nativement.
 	const [y, m, d] = new Intl.DateTimeFormat("en-CA", {
 		timeZone: "Europe/Paris",

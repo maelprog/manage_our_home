@@ -3,6 +3,8 @@
 //! same bytes today and next week, otherwise the page-weight numbers it
 //! exists to make measurable stop being comparable.
 
+import { parisParts } from "../../lib/dates.ts";
+
 /**
  * mulberry32 — a tiny, seeded PRNG.
  *
@@ -62,6 +64,13 @@ export const GRID_DAYS = 42;
  * **La** fenêtre : les 42 jours que `/agenda` rend pour le mois de
  * `reference`, du lundi qui précède (ou est) le 1er au 42ᵉ jour inclus.
  *
+ * Le mois retenu est celui de `reference` **à Paris** (`DISPLAY_TZ`), pas
+ * celui de l'horloge du processus : pendant les deux dernières heures UTC du
+ * dernier jour d'un mois (CEST = UTC+2), Paris est déjà au mois suivant, et
+ * `getUTC*` sur l'instant brut rendait alors la grille du mois précédent —
+ * celle que `/agenda` ne rend pas. Même faille de fuseau que celle que #114 a
+ * corrigée dans les specs ; corrigée ici par #121.
+ *
  * Calquée sur `month_grid` (apps/shared/src/validation/agenda.rs) — mais en
  * **minuit UTC**, là où la vraie fenêtre est bornée en heure de Paris
  * (`calendar.rs` : `paris_local_to_utc` du premier jour à T00:00 au dernier à
@@ -79,9 +88,8 @@ export const GRID_DAYS = 42;
  * imprime, ne créait alors plus rien. La stack devenait irréparable.
  */
 export function monthGridWindow(reference: Date): { from: Date; to: Date } {
-  const first = new Date(
-    Date.UTC(reference.getUTCFullYear(), reference.getUTCMonth(), 1, 0, 0, 0, 0),
-  );
+  const { y, m } = parisParts(reference);
+  const first = new Date(Date.UTC(y, m - 1, 1, 0, 0, 0, 0));
   // getUTCDay() : 0 = dimanche. On veut le décalage depuis lundi.
   const offsetFromMonday = (first.getUTCDay() + 6) % 7;
   const from = new Date(first.getTime() - offsetFromMonday * 86_400_000);
@@ -97,10 +105,17 @@ export function monthGridWindow(reference: Date): { from: Date; to: Date } {
  * the failure mode this whole pair of scripts exists to prevent. Days 1..28
  * only, so the spread doesn't depend on the month's length (and therefore
  * neither do the byte counts).
+ *
+ * Le mois est celui de `reference` **à Paris**, pour la même raison et par le
+ * même appel que `monthGridWindow` : les deux doivent désigner le même mois à
+ * chaque instant, sinon le seed remplit une grille que la mesure n'interroge
+ * pas. Les créneaux restent construits en UTC (07:00-19:00), à plus d'une
+ * journée des deux bords de la fenêtre.
  */
 export function spreadOverMonth(reference: Date, count: number): Date[] {
-  const year = reference.getUTCFullYear();
-  const month = reference.getUTCMonth();
+  const { y: year, m } = parisParts(reference);
+  // `parisParts` rend le mois en base 1, `Date.UTC` l'attend en base 0.
+  const month = m - 1;
   return Array.from({ length: count }, (_, i) => {
     const day = 1 + (i % 28);
     // Hours cycle through the waking day so several events share a day cell

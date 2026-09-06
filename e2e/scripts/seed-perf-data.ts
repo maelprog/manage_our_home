@@ -38,6 +38,7 @@
 
 import { Client } from "pg";
 
+import { parisDay } from "../lib/dates.ts";
 import {
   BUDGET_ENTRIES,
   EVENTS,
@@ -56,7 +57,15 @@ const GROUP_NAME = process.env.SEED_GROUP_NAME ?? "Foyer Perrin";
 const PASSWORD = process.env.SEED_PASSWORD ?? "mesure du poids des pages";
 const RNG_SEED = Number(process.env.SEED_RNG_SEED ?? 424242);
 
-/** Ancré sur *aujourd'hui* par défaut, et c'est important : voir REFERENCE. */
+/**
+ * Ancré sur *aujourd'hui* par défaut, et c'est important : les données datées
+ * doivent tomber dans le mois que `/agenda` rend.
+ *
+ * L'instant est brut ; c'est `monthGridWindow` / `spreadOverMonth`
+ * (`lib/seed-core.ts`) qui en tirent le mois **de Paris**. Rien ici ne doit
+ * donc redériver un mois ou un jour avec `getUTC*` ou `toISOString()` : entre
+ * 22 h UTC et minuit, ce ne serait pas le même que celui du reste du script.
+ */
 const REFERENCE = process.env.SEED_REFERENCE_DATE
   ? new Date(`${process.env.SEED_REFERENCE_DATE}T12:00:00Z`)
   : new Date();
@@ -90,8 +99,16 @@ function log(message: string): void {
   process.stdout.write(`${message}\n`);
 }
 
+/**
+ * `YYYY-MM-DD` d'un instant, lu à Paris — le fuseau de l'app, pas celui du
+ * processus. `toISOString().slice(0, 10)` rendait ici la date UTC : correct
+ * pour les créneaux de `spreadOverMonth` (07:00-19:00 UTC, jamais à cheval),
+ * faux pour `REFERENCE` les deux dernières heures UTC d'une journée. Un seul
+ * chemin pour les deux, plutôt qu'un helper local dont il faut à chaque appel
+ * se demander s'il est dans le cas sûr.
+ */
 function isoDay(d: Date): string {
-  return d.toISOString().slice(0, 10);
+  return parisDay(0, d);
 }
 
 /**

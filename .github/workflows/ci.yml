@@ -4,6 +4,17 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Deux des quatre portes dépendent de choses qui bougent hors du dépôt :
+  # `dtolnay/rust-toolchain@stable` suit la stable du jour, et `cargo audit`
+  # suit la base d'avis RustSec. `main` peut donc virer au rouge sans qu'une
+  # ligne ait changé, et les deux autres déclencheurs sont des événements de
+  # code : rien ne permettait de rejouer les portes sur `main` sans y pousser
+  # un commit. C'est ainsi que #93 a été découverte — deux portes rouges sur
+  # du code identique à `main`, trouvées par accident en tentant un merge.
+  # Le bouton « Run workflow » de la page Actions est le seul levier de
+  # visibilité restant : épingler le toolchain a été écarté par arbitrage le
+  # 2026-08-29, et #121 ne rouvre pas cette décision.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always

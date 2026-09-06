@@ -344,7 +344,14 @@ function rangeQuery(from: Date, to: Date): string {
   return `?from=${encodeURIComponent(from.toISOString())}&to=${encodeURIComponent(to.toISOString())}`;
 }
 
-/** Les 42 jours que `/agenda` rend aujourd'hui — la fenêtre de référence. */
+/**
+ * Les 42 jours que `/agenda` rend aujourd'hui — la fenêtre de référence.
+ *
+ * L'instant est passé brut : `monthGridWindow` en tire le mois **de Paris**,
+ * celui que la page rend. Ne pas redériver un mois ici — c'est exactement ce
+ * que faisait la version d'avant #121, et entre 22 h UTC et minuit elle
+ * interrogeait la grille du mois où le seed n'avait rien posé.
+ */
 function gridWindowQuery(): string {
   const win = monthGridWindow(new Date());
   return rangeQuery(win.from, win.to);
