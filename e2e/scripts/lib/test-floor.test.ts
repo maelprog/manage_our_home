@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   executedTests,
   floorViolation,
   parseTapSummary,
+  wiringViolation,
 } from "./test-floor.ts";
 
 // ---------------------------------------------------------------------------
@@ -196,4 +200,110 @@ test("floorViolation accepte un seuil supérieur à 1", () => {
   // Le seuil est un paramètre : #123 se contente de « au moins 1 », mais rien
   // dans la logique ne le suppose.
   assert.ok(floorViolation(TAP_MIXED, 4), "3 exécutés < 4 exigés");
+});
+
+// ---------------------------------------------------------------------------
+// wiringViolation — le plancher ne sert à rien s'il est débranché.
+//
+// Remettre `node --test …` sur la ligne `test:scripts` de package.json est une
+// modification d'UNE ligne qui rouvre #123 en entier, et tous les tests
+// ci-dessus continueraient de passer : ils exercent la logique pure, pas le
+// câblage. Ce cas-ci lit le vrai package.json, sur le modèle du garde-fou de
+// dérive de `seed-core.test.ts`, qui lit `apps/shared/src/validation/agenda.rs`.
+// ---------------------------------------------------------------------------
+
+// La ligne d'avant #123, mot pour mot : le contrôle négatif.
+const PKG_AVANT_123 = JSON.stringify({
+  scripts: {
+    test: "playwright test",
+    "test:scripts": 'node --test "scripts/lib/*.test.ts" "lib/*.test.ts"',
+  },
+});
+
+test("wiringViolation refuse la ligne test:scripts d'avant #123", () => {
+  const message = wiringViolation(PKG_AVANT_123);
+  assert.ok(message, "un `node --test` direct débranche le plancher");
+  assert.match(message, /test:scripts/);
+});
+
+test("wiringViolation refuse un package.json sans test:scripts", () => {
+  assert.ok(wiringViolation(JSON.stringify({ scripts: { test: "x" } })));
+  assert.ok(wiringViolation(JSON.stringify({})));
+});
+
+test("wiringViolation refuse un package.json illisible", () => {
+  assert.ok(wiringViolation("{ pas du JSON"));
+});
+
+test("wiringViolation accepte une ligne qui passe par le lanceur", () => {
+  const pkg = JSON.stringify({
+    scripts: {
+      "test:scripts":
+        'node scripts/run-script-tests.mjs "scripts/lib/*.test.ts"',
+    },
+  });
+  assert.equal(wiringViolation(pkg), null);
+});
+
+test("wiringViolation refuse un `node --test` lancé à côté du lanceur", () => {
+  // Refactor ordinaire : couper `test:scripts` en deux moitiés dont une seule
+  // passe par le lanceur. La première n'a plus de plancher et sort en 0 sur un
+  // glob qui ne matche rien — #123 mot pour mot, sur la moitié orpheline —
+  // pendant que la seconde tient la porte verte.
+  const pkg = JSON.stringify({
+    scripts: {
+      "test:scripts":
+        'node --test "lib/*.test.ts" && node scripts/run-script-tests.mjs "scripts/lib/*.test.ts"',
+    },
+  });
+  const message = wiringViolation(pkg);
+  assert.ok(message, "une moitié de porte sans plancher doit être refusée");
+  assert.match(message, /--test/);
+});
+
+test("wiringViolation refuse une ligne qui ne nomme le lanceur qu'en commentaire", () => {
+  // `#` est un commentaire shell : npm exécute bien la ligne, et le lanceur
+  // n'est jamais appelé. La recherche de sous-chaîne, seule, l'accepterait.
+  const pkg = JSON.stringify({
+    scripts: {
+      "test:scripts": 'node --test "scripts/lib/*.test.ts" # run-script-tests.mjs',
+    },
+  });
+  assert.ok(wiringViolation(pkg));
+});
+
+test("wiringViolation accepte un drapeau --test-* passé au lanceur", () => {
+  // Contrôle négatif, et il fixe la portée du refus : c'est le drapeau `--test`
+  // SEUL qui est refusé, pas la famille `--test-reporter` / `--test-concurrency`
+  // que le lanceur pourrait un jour relayer.
+  const pkg = JSON.stringify({
+    scripts: {
+      "test:scripts":
+        'node scripts/run-script-tests.mjs --test-concurrency=2 "scripts/lib/*.test.ts"',
+    },
+  });
+  assert.equal(wiringViolation(pkg), null);
+});
+
+test("wiringViolation accepte deux invocations du lanceur", () => {
+  // Contrôle négatif : couper la porte en deux est légitime tant que les deux
+  // moitiés passent par le lanceur.
+  const pkg = JSON.stringify({
+    scripts: {
+      "test:scripts":
+        'node scripts/run-script-tests.mjs "a/*.test.ts" && node scripts/run-script-tests.mjs "b/*.test.ts"',
+    },
+  });
+  assert.equal(wiringViolation(pkg), null);
+});
+
+test("le vrai package.json câble bien test:scripts sur le lanceur", () => {
+  const pkgPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "..",
+    "package.json",
+  );
+  const violation = wiringViolation(readFileSync(pkgPath, "utf8"));
+  assert.equal(violation, null, `${pkgPath} : ${violation ?? ""}`);
 });
