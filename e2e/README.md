@@ -79,7 +79,8 @@ DATABASE_URL=postgres://<role>:<password>@localhost:5432/<db> \
 WEB_BASE_URL=http://localhost \
   npm run measure
 
-npm run test:scripts   # pure logic: the two scripts, plus lib/, no stack needed
+npm run test:scripts   # pure logic: the two scripts, lib/, and the gate's own
+                       # floor — no stack needed
 ```
 
 Both are TypeScript run straight by `node` (no build step, no new
@@ -111,6 +112,62 @@ alternative for the measurement half, but it could not reuse `lib/db.ts`,
 would need `zstd`/`curl` binaries present, and none of its guardrails
 could be unit-tested — so both halves are Node, and the guardrail logic
 is shared and covered by `npm run test:scripts`.
+
+### The floor under `npm run test:scripts` (`scripts/run-script-tests.mjs`)
+
+The script goes through `scripts/run-script-tests.mjs` rather than calling
+`node --test` directly, because **`node --test` exits 0 when its globs
+match no file at all** (checked on Node 24.20.0: `tests 0 / pass 0 / fail
+0`, exit 0). A renamed directory, a moved `lib/`, a changed extension
+would take the whole suite out of CI while the job stayed green — the very
+failure mode #91 fixed, except CI would call it green (#123).
+
+The wrapper runs the same `node --test`, with two reporters: `spec` on
+stdout (the readable output, unchanged) and `tap` into a temp file outside
+the repo, which is the machine-readable source for the count. It then
+refuses to exit 0 on fewer than **one executed test**
+(`scripts/lib/test-floor.ts`, unit-tested by `test-floor.test.ts` — which
+the globs match, so the floor covers itself).
+
+It counts **executed tests** (`pass + fail`), not matched files. What that
+catches, at a threshold of 1: the glob that matches nothing (`tests 0`); a
+suite whose cases are all `skip`/`todo` — tests exist, none runs its body;
+and a file cut down to a bare `describe(...)`/`suite(...)` shell, which
+`node --test` reports as `tests 0 / suites 1`. A matched-file count would
+clear the last two; this floor is red on them.
+
+What it does **not** catch, and the distinction matters because it is the
+whole gap between the two forms of floor:
+
+- **a file emptied until it registers nothing at all**. `node --test`
+  counts a matched file that registers no test as *one passing test* —
+  checked on Node 24.20.0: two files cut down to
+  `import test from "node:test";` give `tests 2 / pass 2 / fail 0`, exit 0,
+  with the `spec` reporter printing `✔ lib/dates.test.ts`. On that family,
+  counting executed tests is worth no more than counting files; covering it
+  would mean counting the `test(...)` calls actually registered, which is
+  outside #123. Mind the nuance: emptied down to a `describe` shell the
+  file is *red* (above) — it is the file registering nothing whatsoever
+  that slips through;
+- a suite that **shrinks**: three files down to one, or the whole suite
+  down to a single test, stays green. Catching that needs a number kept up
+  to date on every test added, and #123 says "at least 1" is enough.
+
+So at threshold 1 this floor is equivalent to a matched-file floor
+**except** on the families where `node --test` counts no executed test —
+all-skipped/`todo`, or a file reduced to a `describe`/`suite` shell —
+where only it bites. That is a real advantage, but a narrow one.
+
+Two more properties, independent of the above:
+
+- `node --test`'s own exit code is checked **first**. A real test failure
+  exits with that code and never reaches the floor, so the floor cannot
+  mask a failure or relabel it;
+- `test-floor.test.ts` also asserts that `package.json`'s `test:scripts`
+  still goes through `run-script-tests.mjs`. Putting `node --test …` back
+  on that line is a one-line way to reopen #123 while every other test
+  keeps passing, since the rest of them exercise the pure logic and not
+  the wiring.
 
 ### Dates de test : `lib/dates.ts`
 
