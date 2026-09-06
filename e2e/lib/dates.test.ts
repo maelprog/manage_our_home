@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { parisDay, parisDayOfMonth } from "./dates.ts";
+import { parisDay, parisDayOfMonth, parisParts } from "./dates.ts";
 
 // Le fuseau d'affichage v1 est Europe/Paris (apps/shared/src/validation/*.rs,
 // `chrono_tz::Europe::Paris`). Le runner CI, lui, est en UTC : c'est tout
@@ -41,4 +41,24 @@ test("parisDayOfMonth garde le mois de Paris, pas celui du runner", () => {
 	assert.equal(parisDayOfMonth(15, new Date("2026-09-04T12:00:00Z")), "2026-09-15");
 	// Dernier jour du mois passé 22 h UTC : Paris est en octobre.
 	assert.equal(parisDayOfMonth(15, new Date("2026-09-30T23:00:00Z")), "2026-10-15");
+});
+
+// `parisParts` est exporté depuis #121 : `e2e/scripts/lib/seed-core.ts` a
+// besoin des composantes calendaires elles-mêmes — mois et année — et non
+// d'une chaîne `YYYY-MM-DD` qu'il faudrait redécouper. Les mois sont rendus
+// en base 1 (janvier = 1), comme dans les chaînes produites ici et à
+// l'inverse de `Date.getMonth()`.
+
+test("parisParts rend des composantes en base 1, dans le fuseau de l'app", () => {
+	assert.deepEqual(parisParts(new Date("2026-09-04T12:00:00Z")), { y: 2026, m: 9, d: 4 });
+	assert.deepEqual(parisParts(new Date("2026-01-15T12:00:00Z")), { y: 2026, m: 1, d: 15 });
+});
+
+test("parisParts change de mois — et d'année — avant UTC", () => {
+	// 22:30 UTC le 30 septembre = 00:30 le 1er octobre à Paris (CEST, UTC+2).
+	assert.deepEqual(parisParts(new Date("2026-09-30T22:30:00Z")), { y: 2026, m: 10, d: 1 });
+	// L'hiver (CET, UTC+1) la bascule est une heure plus tard : à 22:30 UTC on
+	// est encore le 31 décembre à Paris, à 23:30 on a changé d'année.
+	assert.deepEqual(parisParts(new Date("2026-12-31T22:30:00Z")), { y: 2026, m: 12, d: 31 });
+	assert.deepEqual(parisParts(new Date("2026-12-31T23:30:00Z")), { y: 2027, m: 1, d: 1 });
 });

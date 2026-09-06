@@ -193,3 +193,70 @@ test("spreadOverMonth wraps past 28 instead of leaking into the next month", () 
   // ...but the times differ, so the two events on day 1 are not duplicates.
   assert.notEqual(days[0].getUTCHours(), days[28].getUTCHours());
 });
+
+// ---------------------------------------------------------------------------
+// Le mois est celui de Paris, pas celui de l'horloge du processus.
+//
+// `/agenda` rend la grille du mois courant **à Paris** (`DISPLAY_TZ`,
+// apps/web/src/routes/agenda/mod.rs). Les deux fonctions ci-dessus lisaient
+// `getUTC*` sur l'instant brut : pendant les deux dernières heures UTC du
+// dernier jour d'un mois (CEST = UTC+2), Paris est déjà au mois suivant. Le
+// seed posait alors ses 40 événements dans le mois précédent pendant que la
+// mesure interrogeait la grille du suivant, vide — la panne que cette paire de
+// scripts existe précisément pour empêcher. Même faille de fuseau que celle que
+// #114 a corrigée dans les specs, restée ici parce que #114 n'a pas touché
+// `scripts/`.
+//
+// Ce qui change est le **mois retenu**, pas l'ancrage des bords : la fenêtre
+// reste bornée à minuit UTC, avec l'écart de ~2 h à chaque bord que
+// `monthGridWindow` documente et assume.
+// ---------------------------------------------------------------------------
+
+test("monthGridWindow suit le mois de Paris quand UTC est encore la veille", () => {
+  // 22:30 UTC le 30 septembre = 00:30 le 1er octobre à Paris (CEST, UTC+2).
+  const win = monthGridWindow(new Date("2026-09-30T22:30:00Z"));
+  // Grille d'octobre : le 1er octobre 2026 tombe un jeudi, elle démarre donc
+  // au lundi 28 septembre et court 42 jours, jusqu'au dimanche 8 novembre.
+  // En UTC on aurait eu la grille de septembre, ancrée au lundi 31 août.
+  assert.equal(win.from.toISOString().slice(0, 10), "2026-09-28");
+  assert.equal(win.to.toISOString().slice(0, 10), "2026-11-08");
+});
+
+test("monthGridWindow suit le mois de Paris par-dessus le changement d'année", () => {
+  // 23:30 UTC le 31 décembre = 00:30 le 1er janvier à Paris (CET, UTC+1) :
+  // l'hiver, la bascule est une heure plus tard.
+  const win = monthGridWindow(new Date("2026-12-31T23:30:00Z"));
+  // Grille de janvier 2027 : le 1er janvier 2027 tombe un vendredi, la grille
+  // démarre au lundi 28 décembre 2026 et finit au dimanche 7 février 2027.
+  assert.equal(win.from.toISOString().slice(0, 10), "2026-12-28");
+  assert.equal(win.to.toISOString().slice(0, 10), "2027-02-07");
+});
+
+test("monthGridWindow ne bascule pas avant Paris, l'hiver", () => {
+  // 22:30 UTC le 31 décembre = 23:30 le 31 décembre à Paris : toujours
+  // décembre. Le correctif ne doit pas avancer d'un mois ce qui n'a pas encore
+  // basculé — le 1er décembre 2026 tombe un mardi, la grille démarre au lundi
+  // 30 novembre.
+  const win = monthGridWindow(new Date("2026-12-31T22:30:00Z"));
+  assert.equal(win.from.toISOString().slice(0, 10), "2026-11-30");
+});
+
+test("spreadOverMonth sème dans le mois de Paris, pas dans celui d'UTC", () => {
+  const days = spreadOverMonth(new Date("2026-09-30T22:30:00Z"), 40);
+  for (const d of days) {
+    assert.equal(d.getUTCFullYear(), 2026);
+    // 9 = octobre. En UTC on aurait eu 8, septembre.
+    assert.equal(d.getUTCMonth(), 9);
+  }
+});
+
+test("le contrat seed/mesure tient aussi sur la bascule de fuseau", () => {
+  // Le même instant des deux côtés : ce que le seed pose doit rester dans la
+  // fenêtre que la mesure interroge, y compris dans les deux heures où UTC et
+  // Paris ne sont pas dans le même mois.
+  const reference = new Date("2026-09-30T22:30:00Z");
+  const win = monthGridWindow(reference);
+  for (const d of spreadOverMonth(reference, 40)) {
+    assert.ok(win.from <= d && d <= win.to, `${d.toISOString()} hors grille`);
+  }
+});
