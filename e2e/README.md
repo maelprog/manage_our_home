@@ -163,11 +163,51 @@ Two more properties, independent of the above:
 - `node --test`'s own exit code is checked **first**. A real test failure
   exits with that code and never reaches the floor, so the floor cannot
   mask a failure or relabel it;
-- `test-floor.test.ts` also asserts that `package.json`'s `test:scripts`
-  still goes through `run-script-tests.mjs`. Putting `node --test …` back
-  on that line is a one-line way to reopen #123 while every other test
-  keeps passing, since the rest of them exercise the pure logic and not
-  the wiring.
+- `test-floor.test.ts` also reads `package.json` and checks its
+  `test:scripts` line against `run-script-tests.mjs`. Putting `node --test
+  …` back on that line is a one-line way to reopen #123 while every other
+  test keeps passing, since the rest of them exercise the pure logic and
+  not the wiring. That check has a condition and two error directions,
+  spelled out below.
+
+#### What the wiring check can and cannot do
+
+**Start with the condition it runs under**, because everything else
+depends on it and the code does not show it: the check is asserted **from
+inside the suite it protects**. Only `test-floor.test.ts` calls
+`wiringViolation`, and it runs only if `test:scripts`'s globs match it. So
+**it bites only while the suite still runs.** An unwiring that also
+empties the globs never executes it: the pre-#123 line pointed at paths
+that no longer match gives `tests 0` and **exit 0** (measured) — which is
+exactly the state #123 describes, guardrail included. No test living
+inside a suite can guard that suite's invocation; closing this would need
+a check outside npm, e.g. a `grep` step in `ci.yml`. Out of scope for
+#123, and accepted as such.
+
+Everything below therefore holds **only while the suite runs**.
+
+**What the check does** then: a text heuristic, not a command parser — a
+substring search for the runner's name, plus a refusal of a bare `--test`
+token, unquoted and standalone (`--test-reporter` and friends do not
+count). On the lines probed it refuses the pre-#123 line, a gate split
+into two halves where only one goes through the runner — the other half is
+#123 verbatim — and a line that names the runner only inside a shell
+comment.
+
+**A heuristic errs in both directions**, and both are real here:
+
+- it **accepts broken wiring**: any line that *names* the runner without
+  invoking it and without writing `--test` — `bash foo.sh #
+  run-script-tests.mjs`, or a second gate launched by some other wrapper
+  with no floor of its own;
+- it **refuses correct wiring**: a correct line whose *comment* contains
+  the `--test` token. Not a contrived case —
+  `node scripts/run-script-tests.mjs "…" # replaces the old direct node
+  --test` is refused (measured), and that is the most likely comment a
+  maintainer would write here. The failure is loud and names the offending
+  line, which beats a silent hole, but it is a false positive.
+
+Both lists are what was probed, not a demonstrated boundary.
 
 ### Dates de test : `lib/dates.ts`
 

@@ -93,6 +93,93 @@ export function executedTests(summary: TapSummary): number {
 }
 
 /**
+ * Le lanceur par lequel `npm run test:scripts` doit passer pour que le
+ * plancher s'applique. Débrancher cette ligne rouvre #123 en entier.
+ */
+export const RUNNER = "run-script-tests.mjs";
+
+// Le drapeau `--test` de node, en jeton isolé. `--test-reporter`,
+// `--test-concurrency` et le reste de la famille ne matchent pas : c'est
+// l'invocation nue de `node --test` qu'on refuse, pas les options que le
+// lanceur pourrait relayer un jour.
+const BARE_TEST_FLAG = /(^|\s)--test(\s|$)/;
+
+/**
+ * Rend `null` si `scripts["test:scripts"]` du package.json donné mentionne le
+ * lanceur et ne porte aucun `node --test` nu à côté, sinon le message d'erreur
+ * à afficher.
+ *
+ * **D'abord la condition sous laquelle ce contrôle s'exécute**, parce que tout
+ * le reste en dépend et qu'elle ne se voit pas depuis le code : ce contrôle est
+ * asserté **depuis l'intérieur de la suite qu'il protège**. Seul
+ * `test-floor.test.ts` appelle cette fonction, et il n'est exécuté que si les
+ * globs de `test:scripts` le matchent. **Il ne mord donc que tant que la suite
+ * tourne encore.** Un débranchement qui vide aussi les globs ne l'exécute
+ * jamais : la ligne d'avant #123 pointée sur des chemins qui ne matchent plus
+ * rend `tests 0` et **exit 0** (mesuré) — c'est-à-dire précisément l'état que
+ * #123 décrit, garde-fou compris. Aucun test vivant dans une suite ne peut
+ * garder l'invocation de cette suite ; fermer ce trou demanderait un contrôle
+ * hors de npm, par exemple une étape `grep` dans `ci.yml`. Hors périmètre de
+ * #123, et assumé.
+ *
+ * Tout ce qui suit ne vaut donc que **quand la suite tourne**.
+ *
+ * **Ce que le contrôle fait**, alors : une heuristique sur du texte, pas une
+ * analyse de commande — recherche de sous-chaîne pour le nom du lanceur, plus
+ * un refus du jeton `--test` isolé et non quoté. Un vrai parseur de ligne de
+ * commande serait disproportionné pour une ligne de `package.json`. Sur les
+ * lignes sondées, ça refuse la ligne d'avant #123, une porte coupée en deux
+ * moitiés dont une seule passe par le lanceur (l'autre retrouve exactement la
+ * panne de #123), et une ligne qui ne nomme le lanceur que dans un commentaire
+ * shell.
+ *
+ * **Une heuristique se trompe dans les deux sens**, et les deux sont réels
+ * ici :
+ *
+ *   - elle **accepte du cassé** : toute ligne qui nomme le lanceur sans
+ *     l'appeler et sans écrire `--test` — `bash foo.sh # run-script-tests.mjs`,
+ *     ou une seconde porte lancée par un autre wrapper sans plancher ;
+ *   - elle **refuse du correct** : un câblage juste dont le commentaire
+ *     contient le jeton `--test`. Ce n'est pas un cas tiré par les cheveux —
+ *     `node scripts/run-script-tests.mjs "…" # remplace l'ancien node --test
+ *     direct` est refusé (mesuré), et c'est le commentaire le plus probable
+ *     qu'un mainteneur écrirait ici. L'échec est bruyant et nomme la ligne
+ *     fautive, ce qui vaut mieux qu'un trou silencieux, mais c'est bien un
+ *     faux positif.
+ *
+ * Ces deux listes sont ce qui a été sondé, pas une frontière démontrée.
+ *
+ * Un JSON illisible, un `scripts` absent ou une ligne `test:scripts` absente
+ * comptent comme une violation : on ne suppose pas le câblage bon faute de
+ * savoir le lire.
+ */
+export function wiringViolation(packageJsonText: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(packageJsonText);
+  } catch {
+    return "Câblage de la porte : package.json illisible (JSON invalide).";
+  }
+  const scripts = (parsed as { scripts?: Record<string, unknown> })?.scripts;
+  const command = scripts?.["test:scripts"];
+  if (typeof command !== "string") {
+    return (
+      "Câblage de la porte : `scripts[\"test:scripts\"]` est absent de " +
+      "package.json, ou n'est pas une chaîne."
+    );
+  }
+  if (command.includes(RUNNER) && !BARE_TEST_FLAG.test(command)) return null;
+  return (
+    `Câblage de la porte : \`scripts["test:scripts"]\` ne passe pas (ou pas ` +
+    `entièrement) par \`${RUNNER}\`.\n` +
+    `  ligne trouvée : ${command}\n` +
+    "  Un `node --test` nu n'a pas de plancher : il sort en 0 quand ses globs\n" +
+    "  ne matchent rien, ce qui est #123 rouvert — pour toute la porte, ou\n" +
+    "  seulement pour la moitié qui ne passe pas par le lanceur."
+  );
+}
+
+/**
  * Rend `null` si le plancher est tenu, sinon le message d'erreur à afficher.
  */
 export function floorViolation(report: string, minimum: number): string | null {
