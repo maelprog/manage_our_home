@@ -164,6 +164,12 @@ jobs:
       # they would be hidden by any stack that fails to come up -- the failure
       # mode this job is most prone to -- and a lockfile or engines problem
       # would only surface after the cargo build. Here they report either way.
+      #
+      # "Here they report either way" was half true until #123: `node --test`
+      # exits 0 when its globs match no file, so this step was green on zero
+      # executed tests and a renamed directory would have removed the whole
+      # suite in silence. `npm run test:scripts` now goes through
+      # e2e/scripts/run-script-tests.mjs, which fails under one executed test.
       - run: npm ci
         working-directory: e2e
       - run: npm run test:scripts

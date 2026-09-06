@@ -21,11 +21,12 @@
 //     Un `npm run …` n'est pas filtré, npm n'y relit pas `engines` ;
 //   - ce fichier-ci ne couvre que `npm run seed` et `npm run measure`, les
 //     seuls scripts qui passent par lui ;
-//   - `npm run test:scripts` appelle `node --test` directement, donc ni l'un
-//     ni l'autre. Sur un Node trop ancien il meurt sur le message obscur
-//     d'origine — `ERR_UNKNOWN_FILE_EXTENSION`, ou « Could not find » si la
-//     version ne sait pas encore développer les globs de `--test` (Node 20).
-//     En CI le trou est bouché en amont par `node-version: 24`.
+//   - `npm run test:scripts` passe par `scripts/run-script-tests.mjs`, qui
+//     lance `node --test` sans repasser par ce contrôle-ci. Sur un Node trop
+//     ancien il meurt donc sur le message obscur d'origine —
+//     `ERR_UNKNOWN_FILE_EXTENSION`, ou « Could not find » si la version ne
+//     sait pas encore développer les globs de `--test` (Node 20). En CI le
+//     trou est bouché en amont par `node-version: 24`.
 
 // Aucun import statique ici, et surtout pas `{ zstdCompressSync }` depuis
 // node:zlib : sur Node 20 cet import échoue à l'instanciation du module, AVANT
