@@ -10,6 +10,54 @@ and RGPD-compliant data handling.
 This is a monorepo containing the backend API, the web front-end, shared
 code, and the infrastructure to run it all.
 
+```mermaid
+flowchart TB
+    browser["Browser"]
+    caddy["Caddy reverse proxy"]
+    web["apps/web · Leptos SSR"]
+    api["apps/api · axum + sqlx"]
+    shared["apps/shared · DTOs + validation"]
+    minio["MinIO · S3 object storage"]
+    google["Google · OAuth + ICS import"]
+    smtp["SMTP relay"]
+    ollama["Ollama · self-hosted"]
+
+    subgraph pg["PostgreSQL 16 · 13 migrations"]
+        rls["RLS policies · every scoped table"]
+        jobs["Job queue table · persisted"]
+        crypto["pgcrypto · encrypted at rest"]
+    end
+
+    browser --> caddy
+    caddy -->|"HTML pages"| web
+    caddy -->|"WebSocket, OAuth callback"| api
+    web -->|"server-to-server JSON"| api
+    shared -.->|"compiled natively"| web
+    shared -.->|"compiled natively"| api
+    api -->|"app scoping, then SET LOCAL"| rls
+    api -->|"background worker polls"| jobs
+    api --> crypto
+    api -->|"presigned URLs"| minio
+    api --> google
+    api --> smtp
+    api -.->|"not called in v1"| ollama
+```
+
+Three things the diagram is meant to make obvious:
+
+- **Tenant isolation is two layers, not one.** Handlers open their
+  transactions through the scoped-transaction helpers in
+  [`apps/api/src/auth/session.rs`](apps/api/src/auth/session.rs), *and*
+  Postgres enforces RLS policies on all 19 group-scoped tables via
+  `SET LOCAL app.family_id` — a mis-written handler still cannot read another
+  household's rows. One pool deliberately bypasses RLS: the super-admin routes
+  behind the `SuperAdminUser` extractor (`apps/api/src/user_admin/`).
+- **`apps/shared` holds the DTOs and validation once**, and is compiled into
+  both binaries, so no request/response type is duplicated between the API and
+  the front-end.
+- **The reminder queue is a Postgres table, not an in-memory scheduler** — a
+  background worker polls it, so a restart loses nothing.
+
 ---
 
 ## What's in here
@@ -86,8 +134,13 @@ Caddy puts the whole stack on one URL:
 - `/` → the web front-end (`apps/web`, internally on port 3000)
 - `/api/*` → the backend API (`apps/api`, internally on port 8080)
 
-The browser only ever talks to the web app; the web app calls the API
-server-to-server over the internal Docker network.
+Page rendering goes through the web app only, which calls the API
+server-to-server over the internal Docker network. The browser reaches
+`apps/api` directly for the two things a rendered page cannot carry: the
+messaging WebSocket (`/api/groups/<id>/messages/ws`) and the Google sign-in
+redirect (`/api/auth/google/start`, and Google's callback back to it). Both
+sit under the same origin, so the session cookie rides along with no CORS
+configuration.
 
 Stop everything with `docker compose down` (add `-v` to also wipe the
 database and storage volumes).
