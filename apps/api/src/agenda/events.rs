@@ -104,10 +104,12 @@ fn validate_request(
 /// those routes make funnels through `create_event`/`update_event`, so this
 /// is the narrowest place that covers all of them.
 ///
-/// The one write path it does *not* cover is the Google Calendar mirror
-/// (`google_calendar/imports.rs`), which INSERTs into `events` directly. Its
-/// timestamps come from the feed rather than from a user, and are left as
-/// the feed states them — see the PR for #101.
+/// The one write path it does not cover is the Google Calendar mirror
+/// (`google_calendar/imports.rs`), which writes `events` directly. That used
+/// to mean imported events kept whatever bounds the feed stated, invariant or
+/// no invariant (#118); the mirror now upholds the same promise through its
+/// own `import_bounds`, which has to re-anchor the feed's UTC-midnight dates
+/// on Paris before normalizing and so cannot simply call this.
 fn normalized_bounds(
     all_day: bool,
     starts_at: DateTime<Utc>,

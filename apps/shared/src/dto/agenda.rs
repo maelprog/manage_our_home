@@ -86,13 +86,8 @@ pub struct EventResponse {
     /// `resolve_assignees`), but they are not the only way a row enters
     /// `events`, and the database carries no constraint of its own.
     ///
-    /// Known ways this arrives empty, at least three:
+    /// Known ways this arrives empty:
     ///
-    /// - the Google Calendar import inserts into `events` and never into
-    ///   `event_assignees` (issue #106,
-    ///   `apps/api/src/google_calendar/imports.rs`) — this one holds on every
-    ///   deployment, before or after any backfill, and does not go away on
-    ///   its own;
     /// - events predating `0011_event_assignees.sql`, which created the
     ///   junction table empty, on a deployment where
     ///   `0013_backfill_event_assignees.sql` inserted nothing — read that
@@ -100,6 +95,14 @@ pub struct EventResponse {
     ///   `DATABASE_URL` it is a silent no-op, so those rows survive
     ///   indefinitely;
     /// - the same events on a stack part-way through that migration.
+    ///
+    /// A third one was listed here until #106: the Google Calendar import
+    /// inserted into `events` and never into `event_assignees`, which held on
+    /// every deployment, before or after any backfill, and did not go away on
+    /// its own. It now assigns the account that ran the sync and rewrites the
+    /// rows it wrote before (`apps/api/src/google_calendar/imports.rs`), so
+    /// the two remaining ways are both about rows older than `0011` — but
+    /// those do survive indefinitely, so this stays "possibly empty".
     ///
     /// Claiming an invariant here that no write path enforces was what let
     /// the dashboard render a bare "?" ring on those rows (#99). Readers must

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO event_assignees (event_id, user_id)\n        SELECT $1, $2\n        WHERE NOT EXISTS (SELECT 1 FROM event_assignees WHERE event_id = $1)\n        ON CONFLICT DO NOTHING\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a1b8ea4f1054a91c433465ac86591c6699f458a87ac90d5ef6179ba2c6cb5cc0"
+}
