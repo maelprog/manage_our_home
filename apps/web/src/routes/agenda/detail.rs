@@ -81,10 +81,18 @@ fn error_text(code: &str) -> Option<&'static str> {
 /// and on a page that shows one event at a time the name *is* the answer,
 /// the colour would only repeat it.
 ///
-/// Empty when the event has no assignee (historical rows only —
-/// `resolve_assignees` on the backend keeps at least the creator) or when
-/// the member roster couldn't be loaded, in which case a line of raw UUIDs
-/// would be worse than no line.
+/// Empty when the event has no assignee, or when the member roster couldn't
+/// be loaded — in which case a line of raw UUIDs would be worse than no line.
+///
+/// "Historical rows only" is what this used to say, on the strength of
+/// `resolve_assignees` keeping at least the creator. That covered the
+/// `/agenda` write paths and missed the Google Calendar mirror, which wrote
+/// `events` directly and never wrote `event_assignees` at all (#106) — a
+/// permanent source of assignee-less events, not a leftover. The import now
+/// assigns the account that ran it and repairs the rows it wrote before, so
+/// the remaining ways in are genuinely historical again; the branch stays
+/// because a detail page that guesses at who an event is for would be worse
+/// than one that says nothing.
 fn assignees_html(assignee_ids: &[Uuid], members: &[GroupMember]) -> String {
     if assignee_ids.is_empty() || members.is_empty() {
         return String::new();

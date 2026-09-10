@@ -371,11 +371,22 @@ pub fn member_colour(user_id: Uuid) -> &'static str {
 /// to the token system (DESIGN.md journal), not a precedent for computed
 /// colours generally.
 ///
-/// Empty input is not expected (an event always keeps at least its creator
-/// as an assignee, see `resolve_assignees` on the backend) but falls back
-/// to `--accent` rather than emitting an empty `color:` declaration —
-/// historical data from before this migration is the one realistic way to
-/// hit it.
+/// The `[]` arm is **unreachable from this function's only caller** and is
+/// kept for exhaustiveness, not as a fallback anyone should rely on.
+///
+/// It used to be justified by "an event always keeps at least its creator as
+/// an assignee, see `resolve_assignees`", with historical rows named as the
+/// one way to hit it. Both halves were wrong: the Google Calendar mirror
+/// wrote `events` without ever writing `event_assignees` (#106), so
+/// unassigned events were being minted continuously, not left over from a
+/// migration. That is now closed on the writing side — the import assigns
+/// the account that ran it and repairs the rows it wrote before — and on the
+/// reading side `home.rs::row_assignee_ids` (#104) substitutes the creator
+/// before calling here, so the slice this receives is never empty.
+///
+/// It still has to compile: this is a `pub fn` over an arbitrary slice and
+/// the `match` must be total. `--accent` remains the answer rather than an
+/// empty `color:` declaration, which would be an invalid one.
 pub fn combined_member_colour(tokens: &[&str]) -> String {
     match tokens {
         [] => "var(--accent)".to_string(),

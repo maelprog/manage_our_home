@@ -182,9 +182,13 @@ async fn fetch_members(state: &AppState, gid: Uuid, cookie: Option<&str>) -> Vec
 /// role `apps/api/README.md` prescribes for `DATABASE_URL` it inserts
 /// nothing at all (measured; see that migration's header) — and a migration
 /// runs once either way, so it cannot reach an event created later with no
-/// assignment. The Google Calendar import creates exactly those, on every
-/// deployment, on every import (issue #106). The row therefore has to be
-/// right without the database's help, indefinitely.
+/// assignment. The Google Calendar import used to create exactly those, on
+/// every deployment, on every import (issue #106); it now assigns the account
+/// that ran the sync, and repairs the rows it wrote before. That closes the
+/// one source that was still producing them, but it does not make this
+/// fallback transitional: it is the last thing standing between a row whose
+/// assignees failed to arrive — for any reason, including a deployment whose
+/// backfill inserted nothing — and a bare "?" ring.
 ///
 /// `agenda/detail.rs::assignees_html` takes the other way out on the same
 /// data — it hides its line entirely — because a detail page has no ring to

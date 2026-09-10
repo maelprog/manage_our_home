@@ -2,6 +2,7 @@ use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
 use chrono::{DateTime, Utc};
+use manage_our_home_shared::validation::agenda::{normalize_all_day, paris_start_of_day};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -296,9 +297,21 @@ pub async fn trigger_calendar_import(
     let mut skipped = 0usize;
 
     for event in parsed {
+        // The mapped row's current shape comes back with the mapping: the
+        // `skipped` arm below needs it to decide whether this row predates
+        // #106/#118 and has to be repaired. The join is total — the mapping's
+        // `event_id` is a NOT NULL FK with ON DELETE CASCADE
+        // (`0010_google_calendar_import.sql`), so a mapping cannot outlive its
+        // event.
         let existing = sqlx::query!(
-            r#"SELECT event_id, external_updated_at FROM calendar_import_events
-               WHERE calendar_import_id = $1 AND external_uid = $2"#,
+            r#"SELECT cie.event_id, cie.external_updated_at,
+                      e.all_day, e.starts_at, e.ends_at,
+                      EXISTS (
+                          SELECT 1 FROM event_assignees ea WHERE ea.event_id = e.id
+                      ) AS "has_assignee!"
+               FROM calendar_import_events cie
+               JOIN events e ON e.id = cie.event_id
+               WHERE cie.calendar_import_id = $1 AND cie.external_uid = $2"#,
             import_id,
             event.external_uid,
         )
@@ -310,10 +323,45 @@ pub async fn trigger_calendar_import(
                 if existing.external_updated_at.is_some()
                     && existing.external_updated_at == event.external_updated_at =>
             {
-                // Upstream version unchanged since last import: nothing to do.
+                // Upstream version unchanged since last import: nothing to
+                // pull. The row may still predate #106/#118 though, and
+                // nothing else will ever come back for it — this arm is the
+                // only one that runs on an event Google never touches again.
+                let repair = plan_row_repair(
+                    existing.all_day,
+                    existing.starts_at,
+                    existing.ends_at,
+                    existing.has_assignee,
+                );
+                if repair.is_needed() {
+                    if let Some((starts_at, ends_at)) = repair.bounds {
+                        sqlx::query!(
+                            r#"
+                            UPDATE events SET starts_at = $3, ends_at = $4, updated_at = now()
+                            WHERE id = $1 AND group_id = $2
+                            "#,
+                            existing.event_id,
+                            group_id,
+                            starts_at,
+                            ends_at,
+                        )
+                        .execute(&mut *tx)
+                        .await?;
+                    }
+                    if repair.missing_assignee {
+                        ensure_assignee(&mut tx, existing.event_id, auth.user_id).await?;
+                    }
+                }
+                // Counted `skipped` either way: the counters report what the
+                // *feed* did — `import_run_summary` renders this one as
+                // "inchangé", and upstream is indeed unchanged. A repair is
+                // this deployment catching up with itself, not news from
+                // Google.
                 skipped += 1;
             }
             Some(existing) => {
+                let (starts_at, ends_at) =
+                    import_bounds(event.all_day, event.starts_at, event.ends_at);
                 sqlx::query!(
                     r#"
                     UPDATE events SET
@@ -326,12 +374,13 @@ pub async fn trigger_calendar_import(
                     event.title,
                     event.description,
                     event.location,
-                    event.starts_at,
-                    event.ends_at,
+                    starts_at,
+                    ends_at,
                     event.all_day,
                 )
                 .execute(&mut *tx)
                 .await?;
+                ensure_assignee(&mut tx, existing.event_id, auth.user_id).await?;
                 sqlx::query!(
                     "UPDATE calendar_import_events SET external_updated_at = $2 WHERE calendar_import_id = $1 AND external_uid = $3",
                     import_id,
@@ -343,6 +392,8 @@ pub async fn trigger_calendar_import(
                 updated += 1;
             }
             None => {
+                let (starts_at, ends_at) =
+                    import_bounds(event.all_day, event.starts_at, event.ends_at);
                 let new_event_id = sqlx::query_scalar!(
                     r#"
                     INSERT INTO events (group_id, created_by, title, description, location, starts_at, ends_at, all_day)
@@ -354,12 +405,13 @@ pub async fn trigger_calendar_import(
                     event.title,
                     event.description,
                     event.location,
-                    event.starts_at,
-                    event.ends_at,
+                    starts_at,
+                    ends_at,
                     event.all_day,
                 )
                 .fetch_one(&mut *tx)
                 .await?;
+                ensure_assignee(&mut tx, new_event_id, auth.user_id).await?;
                 sqlx::query!(
                     r#"
                     INSERT INTO calendar_import_events (calendar_import_id, event_id, external_uid, external_updated_at)
@@ -393,9 +445,142 @@ pub async fn trigger_calendar_import(
     }))
 }
 
+// ---------------------------------------------------------------------------
+// What the mirror stores (issues #106, #118)
+// ---------------------------------------------------------------------------
+
+/// The bounds to store for a feed event, upholding #101's invariant — an
+/// `all_day` event covers whole **Paris** civil days — on the mirror's two
+/// write paths, which bypass `create_event`/`update_event` (and therefore
+/// their `normalized_bounds`) entirely. That gap was issue #118.
+///
+/// A timed event is stored as the feed states it: its DTSTART/DTEND are
+/// absolute instants and #101's invariant says nothing about them. That
+/// includes the zero-length row `parse.rs:76-80` produces for a VEVENT with
+/// no DTEND — giving it a duration here would be inventing one.
+///
+/// **The all-day case is not just `normalize_all_day(starts_at, ends_at)`,
+/// and this is the subtle part.** `parse.rs:37-38` anchors a
+/// `DTSTART;VALUE=DATE` on midnight **UTC**, not midnight Paris. So a feed
+/// saying "1 June, all day" (DTSTART:20260601, DTEND:20260602 — RFC 5545's
+/// end is exclusive) reaches us as 00:00Z → 00:00Z, which in Paris reads
+/// 02:00 on the 1st → 02:00 on the 2nd. `normalize_all_day` would take that
+/// end for an instant *inside* 2 June, include that day too, and hand back
+/// a **two-day** event: every all-day event in the mirror would silently
+/// grow by a day.
+///
+/// What those two 00:00Z instants really carry is a pair of civil *dates*,
+/// losslessly (`date_naive()` in UTC recovers exactly the DATE the feed
+/// wrote). So they are re-anchored onto Paris first, and `normalize_all_day`
+/// then applies its own two rules to a pair it can read correctly: an end
+/// already sitting on Paris midnight names the first day past the event, and
+/// an event covers at least one whole day — which is what turns the
+/// no-DTEND `ends_at == starts_at` row into a real civil day.
+fn import_bounds(
+    all_day: bool,
+    starts_at: DateTime<Utc>,
+    ends_at: DateTime<Utc>,
+) -> (DateTime<Utc>, DateTime<Utc>) {
+    if !all_day {
+        return (starts_at, ends_at);
+    }
+    normalize_all_day(
+        paris_start_of_day(starts_at.date_naive()),
+        paris_start_of_day(ends_at.date_naive()),
+    )
+}
+
+/// Gives an imported event an assignee when it has none — issue #106.
+///
+/// The mirror writes `events` directly and never wrote `event_assignees` at
+/// all, so every imported event arrived with `assignee_ids = []` and
+/// degraded to "? —" in `--accent` instead of carrying a member's pastille.
+/// It was the third and only *permanent* route to an unassigned event, the
+/// other two being historical rows around migration `0013`.
+///
+/// `user_id` is the account that ran the sync — the same one the INSERT
+/// already stores in `created_by`, so a freshly imported event ends up
+/// assigned to its creator exactly as `resolve_assignees`
+/// (`agenda/events.rs`) guarantees for every applicative write.
+///
+/// **Fills only when empty, never replaces.** Three reasons, and the first
+/// is the one that matters: an imported event may since have picked up local
+/// work with no Google counterpart (`apps/web/src/routes/agenda/imports.rs`
+/// says so where it refuses to cascade-delete them), and a member who
+/// assigned the school run to one child must not have that undone by the
+/// next sync. Second, it makes this callable from all three arms — new
+/// event, upstream change, and the `skipped` repair — with one meaning.
+/// Third, it is the same rule `0013_backfill_event_assignees.sql` used
+/// (`WHERE NOT EXISTS`), which is the shape a catch-up wants: idempotent,
+/// and silent when there is nothing to do.
+async fn ensure_assignee(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    event_id: Uuid,
+    user_id: Uuid,
+) -> AppResult<()> {
+    sqlx::query!(
+        r#"
+        INSERT INTO event_assignees (event_id, user_id)
+        SELECT $1, $2
+        WHERE NOT EXISTS (SELECT 1 FROM event_assignees WHERE event_id = $1)
+        ON CONFLICT DO NOTHING
+        "#,
+        event_id,
+        user_id,
+    )
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// What a row already in `events` is missing relative to what the import
+/// writes today — the `skipped` path's business (#106, #118).
+///
+/// Fixing the two write paths repairs nothing already in the database: when
+/// a feed's `LAST-MODIFIED` hasn't moved, the sync counts the row `skipped`
+/// and never touches it, so a row written wrong stays wrong until Google
+/// happens to edit that event. The arbitration on #106 put the catch-up
+/// here rather than in a backfill migration, which keeps #105's constraint
+/// ("no migration may depend on its DML while that is unsettled") intact.
+///
+/// The bounds test is `normalize_all_day`'s own fixed point: it is
+/// idempotent, so a conforming row compares equal and is left alone. A row
+/// that fails it can only have come from the pre-fix import — this path
+/// visits none but rows mapped in `calendar_import_events` — so it is
+/// UTC-date-carrier shaped and goes back through `import_bounds`, the same
+/// transform the write paths use. `import_bounds`' output is itself a fixed
+/// point of `normalize_all_day` (unit-tested), so the repair converges on
+/// the first sync and never fires again.
+#[derive(Debug, PartialEq, Eq)]
+struct RowRepair {
+    bounds: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    missing_assignee: bool,
+}
+
+impl RowRepair {
+    fn is_needed(&self) -> bool {
+        self.bounds.is_some() || self.missing_assignee
+    }
+}
+
+fn plan_row_repair(
+    all_day: bool,
+    starts_at: DateTime<Utc>,
+    ends_at: DateTime<Utc>,
+    has_assignee: bool,
+) -> RowRepair {
+    let conforming = !all_day || normalize_all_day(starts_at, ends_at) == (starts_at, ends_at);
+    RowRepair {
+        bounds: (!conforming).then(|| import_bounds(all_day, starts_at, ends_at)),
+        missing_assignee: !has_assignee,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::validate_feed_url;
+    use super::{import_bounds, plan_row_repair, validate_feed_url};
+    use chrono::{DateTime, Utc};
+    use manage_our_home_shared::validation::agenda::normalize_all_day;
 
     #[test]
     fn accepts_https_url() {
@@ -421,5 +606,191 @@ mod tests {
     fn rejects_unsupported_schemes() {
         assert!(validate_feed_url("file:///etc/passwd").is_err());
         assert!(validate_feed_url("ftp://example.com/x.ics").is_err());
+    }
+
+    // -- import_bounds (#118) -----------------------------------------------
+
+    fn utc(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s)
+            .expect("valid rfc3339")
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn a_timed_event_keeps_the_bounds_the_feed_gave_it() {
+        // Not an all-day event: #101's invariant says nothing about it, and
+        // the feed's instants are already absolute.
+        let starts = utc("2026-06-01T14:00:00Z");
+        let ends = utc("2026-06-01T15:00:00Z");
+        assert_eq!(import_bounds(false, starts, ends), (starts, ends));
+    }
+
+    #[test]
+    fn a_zero_duration_timed_event_is_left_alone_too() {
+        // `parse.rs:76-80` yields `ends_at == starts_at` when a VEVENT has no
+        // DTEND. For a *timed* event that stays a zero-length row: widening it
+        // would invent a duration the feed never stated, and it is not what
+        // #118 is about.
+        let at = utc("2026-06-01T14:00:00Z");
+        assert_eq!(import_bounds(false, at, at), (at, at));
+    }
+
+    #[test]
+    fn an_all_day_event_covers_the_paris_day_its_feed_date_names() {
+        // DTSTART;VALUE=DATE:20260601 + DTEND;VALUE=DATE:20260602 — RFC 5545's
+        // exclusive end, so the event covers 1 June and nothing else.
+        //
+        // `parse.rs:37-38` anchors both dates on **UTC** midnight, so what
+        // reaches us is 00:00Z, which is 02:00 *Paris*. Feeding that straight
+        // to `normalize_all_day` would read the end as "inside 2 June" and
+        // hand back a two-day event; the dates are re-anchored on Paris first.
+        assert_eq!(
+            import_bounds(
+                true,
+                utc("2026-06-01T00:00:00Z"),
+                utc("2026-06-02T00:00:00Z"),
+            ),
+            (utc("2026-05-31T22:00:00Z"), utc("2026-06-01T22:00:00Z")),
+        );
+    }
+
+    #[test]
+    fn an_all_day_event_without_a_dtend_still_covers_one_whole_day() {
+        // The `ends_at == starts_at` case of `parse.rs:76-80`, all-day side:
+        // a zero-length row, invisible on the dashboard all day.
+        assert_eq!(
+            import_bounds(
+                true,
+                utc("2026-09-05T00:00:00Z"),
+                utc("2026-09-05T00:00:00Z"),
+            ),
+            (utc("2026-09-04T22:00:00Z"), utc("2026-09-05T22:00:00Z")),
+        );
+    }
+
+    #[test]
+    fn a_winter_all_day_event_uses_the_winter_offset() {
+        // Paris midnight is 23:00Z in winter and 22:00Z in summer — the reason
+        // this is a timezone conversion and not a fixed subtraction.
+        assert_eq!(
+            import_bounds(
+                true,
+                utc("2026-01-01T00:00:00Z"),
+                utc("2026-01-02T00:00:00Z"),
+            ),
+            (utc("2025-12-31T23:00:00Z"), utc("2026-01-01T23:00:00Z")),
+        );
+    }
+
+    #[test]
+    fn a_multi_day_all_day_event_keeps_its_span() {
+        // DTSTART:20260601, DTEND:20260604 — three civil days.
+        assert_eq!(
+            import_bounds(
+                true,
+                utc("2026-06-01T00:00:00Z"),
+                utc("2026-06-04T00:00:00Z"),
+            ),
+            (utc("2026-05-31T22:00:00Z"), utc("2026-06-03T22:00:00Z")),
+        );
+    }
+
+    #[test]
+    fn what_import_bounds_returns_is_already_normalized() {
+        // The property the repair path leans on: what the write paths store is
+        // a fixed point of `normalize_all_day`, so `plan_row_repair` reads it
+        // back as conforming and never rewrites it a second time.
+        let (starts, ends) = import_bounds(
+            true,
+            utc("2026-06-01T00:00:00Z"),
+            utc("2026-06-02T00:00:00Z"),
+        );
+        assert_eq!(normalize_all_day(starts, ends), (starts, ends));
+    }
+
+    // -- plan_row_repair (#106 + #118, the `skipped` path) ------------------
+
+    #[test]
+    fn a_conforming_row_with_an_assignee_needs_nothing() {
+        let repair = plan_row_repair(
+            true,
+            utc("2026-05-31T22:00:00Z"),
+            utc("2026-06-01T22:00:00Z"),
+            true,
+        );
+        assert_eq!(repair.bounds, None);
+        assert!(!repair.missing_assignee);
+        assert!(!repair.is_needed());
+    }
+
+    #[test]
+    fn a_row_written_by_the_old_import_is_rewritten_onto_paris_days() {
+        // Exactly what every all-day row imported before this fix looks like:
+        // UTC midnight to UTC midnight.
+        let repair = plan_row_repair(
+            true,
+            utc("2026-06-01T00:00:00Z"),
+            utc("2026-06-02T00:00:00Z"),
+            true,
+        );
+        assert_eq!(
+            repair.bounds,
+            Some((utc("2026-05-31T22:00:00Z"), utc("2026-06-01T22:00:00Z"))),
+        );
+        assert!(repair.is_needed());
+    }
+
+    #[test]
+    fn repairing_the_same_row_twice_changes_nothing() {
+        // The repair runs on every sync of an unchanged event, so it has to
+        // converge — a transform drifting by a day per run would walk an event
+        // off the calendar.
+        let (starts, ends) = plan_row_repair(
+            true,
+            utc("2026-06-01T00:00:00Z"),
+            utc("2026-06-02T00:00:00Z"),
+            true,
+        )
+        .bounds
+        .expect("first pass repairs");
+        assert_eq!(plan_row_repair(true, starts, ends, true).bounds, None);
+    }
+
+    #[test]
+    fn a_timed_row_is_never_rewritten() {
+        let repair = plan_row_repair(
+            false,
+            utc("2026-06-01T14:00:00Z"),
+            utc("2026-06-01T15:00:00Z"),
+            true,
+        );
+        assert_eq!(repair.bounds, None);
+    }
+
+    #[test]
+    fn a_row_with_no_assignee_is_flagged_whatever_its_bounds() {
+        // #106: the mirror never wrote `event_assignees` at all, so a row with
+        // conforming bounds can still be missing its assignee.
+        let repair = plan_row_repair(
+            true,
+            utc("2026-05-31T22:00:00Z"),
+            utc("2026-06-01T22:00:00Z"),
+            false,
+        );
+        assert_eq!(repair.bounds, None);
+        assert!(repair.missing_assignee);
+        assert!(repair.is_needed());
+    }
+
+    #[test]
+    fn a_row_can_need_both_repairs_at_once() {
+        let repair = plan_row_repair(
+            true,
+            utc("2026-06-01T00:00:00Z"),
+            utc("2026-06-02T00:00:00Z"),
+            false,
+        );
+        assert!(repair.bounds.is_some());
+        assert!(repair.missing_assignee);
     }
 }

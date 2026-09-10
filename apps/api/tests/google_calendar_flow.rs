@@ -1,6 +1,7 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
+use chrono::{DateTime, Utc};
 use common::{
     assert_status, call, call_upload, json_body, real_minio_from_env, set_cookie, test_router,
     test_router_with_storage,
@@ -8,6 +9,7 @@ use common::{
 use sqlx::PgPool;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use uuid::Uuid;
 
 async fn register_verify_login(
     router: &axum::Router,
@@ -72,6 +74,24 @@ DTSTART:20260601T140000Z
 DTEND:20260601T150000Z
 SUMMARY:Family dinner
 LOCATION:Home
+LAST-MODIFIED:20260101T090000Z
+END:VEVENT
+END:VCALENDAR
+";
+
+/// An all-day VEVENT, the shape Google emits for one: both bounds are
+/// `VALUE=DATE`, and RFC 5545's DTEND is exclusive — so this names 1 June
+/// 2026 and nothing else. `parse.rs` anchors both dates on midnight **UTC**,
+/// which is 02:00 Paris in June; the import re-anchors them (#118).
+const ICS_ALL_DAY_BODY: &str = "\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:flow-allday-1@google.com
+DTSTAMP:20260101T090000Z
+DTSTART;VALUE=DATE:20260601
+DTEND;VALUE=DATE:20260602
+SUMMARY:Anniversaire
 LAST-MODIFIED:20260101T090000Z
 END:VEVENT
 END:VCALENDAR
@@ -292,6 +312,315 @@ async fn trigger_import_creates_and_dedupes_events(db: PgPool) {
         events_after_body["occurrences"].as_array().unwrap().len(),
         1
     );
+}
+
+/// The single event the feed produced, straight from the table — the
+/// assertions below are about what was *stored*, which is exactly what the
+/// two bugs got wrong, so they read the row rather than the API's view of it.
+async fn stored_event(db: &PgPool) -> (DateTime<Utc>, DateTime<Utc>, bool, Vec<Uuid>) {
+    let row: (DateTime<Utc>, DateTime<Utc>, bool) =
+        sqlx::query_as("SELECT starts_at, ends_at, all_day FROM events")
+            .fetch_one(db)
+            .await
+            .unwrap();
+    let assignees: Vec<Uuid> = sqlx::query_scalar("SELECT user_id FROM event_assignees")
+        .fetch_all(db)
+        .await
+        .unwrap();
+    (row.0, row.1, row.2, assignees)
+}
+
+async fn user_id_of(db: &PgPool, email: &str) -> Uuid {
+    sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind(email)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+/// AC (#106): an imported event is assigned to the account that ran the
+/// sync — the same one the INSERT already stores in `created_by`.
+///
+/// The mirror writes `events` directly and never wrote `event_assignees` at
+/// all, so every imported event arrived with `assignee_ids = []` and the
+/// Agenda rendered it "? —" in `--accent`. This was the third route to an
+/// unassigned event and the only permanent one.
+#[sqlx::test]
+async fn an_imported_event_is_assigned_to_whoever_ran_the_import(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "cal-assign1@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let feed_url = spawn_ics_server(ICS_BODY, 1).await;
+
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/calendar-imports"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"label": "Foyer calendar", "feed_url": feed_url})),
+    )
+    .await;
+    let import_id = json_body(create).await["id"].as_str().unwrap().to_string();
+    let run = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/calendar-imports/{import_id}/import"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&run, StatusCode::OK);
+
+    let owner_id = user_id_of(&db, "cal-assign1@example.test").await;
+    let (_, _, _, assignees) = stored_event(&db).await;
+    assert_eq!(assignees, vec![owner_id]);
+
+    // And it reaches the reader: the Agenda's assignee pastille is driven by
+    // `assignee_ids` off this endpoint.
+    let events = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/events?from=2026-01-01T00:00:00Z&to=2027-01-01T00:00:00Z"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    let body = json_body(events).await;
+    assert_eq!(
+        body["occurrences"][0]["assignee_ids"],
+        serde_json::json!([owner_id]),
+    );
+}
+
+/// AC (#118): an all-day event from the feed is stored as the whole Paris
+/// civil day it names, not as the UTC-midnight pair `parse.rs` produced.
+///
+/// The exclusive DTEND of 2 June means the event covers 1 June alone, so the
+/// stored pair must be Paris midnight opening 1 June (22:00Z on 31 May, June
+/// being CEST) to Paris midnight opening 2 June. Getting this wrong in the
+/// other direction — handing the feed's instants to `normalize_all_day`
+/// unchanged — yields 22:00Z on 2 June and a birthday that lasts two days.
+#[sqlx::test]
+async fn an_all_day_import_is_stored_as_a_whole_paris_day(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "cal-allday1@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let feed_url = spawn_ics_server(ICS_ALL_DAY_BODY, 1).await;
+
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/calendar-imports"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"label": "Foyer calendar", "feed_url": feed_url})),
+    )
+    .await;
+    let import_id = json_body(create).await["id"].as_str().unwrap().to_string();
+    call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/calendar-imports/{import_id}/import"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+
+    let (starts_at, ends_at, all_day, _) = stored_event(&db).await;
+    assert!(all_day);
+    assert_eq!(starts_at.to_rfc3339(), "2026-05-31T22:00:00+00:00");
+    assert_eq!(ends_at.to_rfc3339(), "2026-06-01T22:00:00+00:00");
+}
+
+/// AC (#106 + #118): a row written by the *old* import is repaired on the
+/// next sync, even though the feed hasn't changed.
+///
+/// This is the arbitration's second point, and the reason the fix is not
+/// only in the two write paths: when `LAST-MODIFIED` hasn't moved, the sync
+/// counts the row `skipped` and never rewrites it, so a bad row would stay
+/// bad until Google happened to edit that event. The row is put back into
+/// its pre-fix shape by hand here — UTC-midnight bounds, no assignee — which
+/// is exactly what the mirror used to write.
+#[sqlx::test]
+async fn the_next_sync_repairs_a_row_the_old_import_wrote(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "cal-repair1@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let feed_url = spawn_ics_server(ICS_ALL_DAY_BODY, 2).await;
+
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/calendar-imports"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"label": "Foyer calendar", "feed_url": feed_url})),
+    )
+    .await;
+    let import_id = json_body(create).await["id"].as_str().unwrap().to_string();
+    call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/calendar-imports/{import_id}/import"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+
+    sqlx::query(
+        "UPDATE events SET starts_at = '2026-06-01T00:00:00Z', ends_at = '2026-06-02T00:00:00Z'",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM event_assignees")
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let run = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/calendar-imports/{import_id}/import"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&run, StatusCode::OK);
+    let run_body = json_body(run).await;
+    // Still reported as unchanged: the counters say what the *feed* did, and
+    // the feed did nothing. The repair is the deployment catching up.
+    assert_eq!(run_body["imported"], 0);
+    assert_eq!(run_body["updated"], 0);
+    assert_eq!(run_body["skipped"], 1);
+
+    let owner_id = user_id_of(&db, "cal-repair1@example.test").await;
+    let (starts_at, ends_at, _, assignees) = stored_event(&db).await;
+    assert_eq!(starts_at.to_rfc3339(), "2026-05-31T22:00:00+00:00");
+    assert_eq!(ends_at.to_rfc3339(), "2026-06-01T22:00:00+00:00");
+    assert_eq!(assignees, vec![owner_id]);
+}
+
+/// AC: the repair converges. A second sync over an already-repaired row must
+/// leave it exactly where it is — a transform that re-applied itself would
+/// walk the event a day earlier on every sync, which is the failure mode a
+/// non-idempotent normalisation would have shipped silently.
+#[sqlx::test]
+async fn repairing_an_already_repaired_row_is_a_no_op(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "cal-repair2@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let feed_url = spawn_ics_server(ICS_ALL_DAY_BODY, 3).await;
+
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/calendar-imports"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"label": "Foyer calendar", "feed_url": feed_url})),
+    )
+    .await;
+    let import_id = json_body(create).await["id"].as_str().unwrap().to_string();
+    for _ in 0..3 {
+        call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/calendar-imports/{import_id}/import"),
+            Some(&owner_cookie),
+            None,
+        )
+        .await;
+    }
+
+    let (starts_at, ends_at, _, assignees) = stored_event(&db).await;
+    assert_eq!(starts_at.to_rfc3339(), "2026-05-31T22:00:00+00:00");
+    assert_eq!(ends_at.to_rfc3339(), "2026-06-01T22:00:00+00:00");
+    assert_eq!(assignees.len(), 1);
+}
+
+/// AC: the sync fills an assignee in, it never replaces one. An imported
+/// event can pick up local work with no Google counterpart — the delete
+/// confirmation page (`apps/web/src/routes/agenda/imports.rs`) is built
+/// around that fact — so a member's deliberate assignment must survive the
+/// next sync rather than being reset to whoever happens to press the button.
+#[sqlx::test]
+async fn a_sync_does_not_overwrite_an_assignment_made_locally(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "cal-keep1@example.test", "owner-password1").await;
+    let member_cookie =
+        register_verify_login(&router, &db, "cal-keep2@example.test", "member-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    let invite = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/invitations"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    let token = json_body(invite).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    call(
+        &router,
+        Method::POST,
+        &format!("/groups/invitations/{token}/accept"),
+        Some(&member_cookie),
+        None,
+    )
+    .await;
+
+    let feed_url = spawn_ics_server(ICS_BODY, 2).await;
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/calendar-imports"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"label": "Foyer calendar", "feed_url": feed_url})),
+    )
+    .await;
+    let import_id = json_body(create).await["id"].as_str().unwrap().to_string();
+    call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/calendar-imports/{import_id}/import"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+
+    // The family reassigns the imported event to the other member.
+    let member_id = user_id_of(&db, "cal-keep2@example.test").await;
+    let event_id: Uuid = sqlx::query_scalar("SELECT id FROM events")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    let patch = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({ "assignee_ids": [member_id] })),
+    )
+    .await;
+    assert_status(&patch, StatusCode::OK);
+
+    call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/calendar-imports/{import_id}/import"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+
+    let (_, _, _, assignees) = stored_event(&db).await;
+    assert_eq!(assignees, vec![member_id]);
 }
 
 /// AC: only an admin/owner may delete a calendar-import connection.
