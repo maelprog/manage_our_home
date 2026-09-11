@@ -250,13 +250,63 @@ test("spreadOverMonth sème dans le mois de Paris, pas dans celui d'UTC", () => 
   }
 });
 
-test("le contrat seed/mesure tient aussi sur la bascule de fuseau", () => {
-  // Le même instant des deux côtés : ce que le seed pose doit rester dans la
-  // fenêtre que la mesure interroge, y compris dans les deux heures où UTC et
-  // Paris ne sont pas dans le même mois.
-  const reference = new Date("2026-09-30T22:30:00Z");
-  const win = monthGridWindow(reference);
-  for (const d of spreadOverMonth(reference, 40)) {
-    assert.ok(win.from <= d && d <= win.to, `${d.toISOString()} hors grille`);
+// ---------------------------------------------------------------------------
+// Le contrat inter-fonctions : balayé, et non plus échantillonné en un point.
+//
+// L'invariant que `seed-core.ts` pose en commentaire — « `spreadOverMonth` et
+// `monthGridWindow` doivent désigner le même mois à chaque instant » — est
+// celui qui compte : s'il tombe, le seed remplit une grille que
+// `measure-page-weight` n'interroge pas, la mesure porte sur une page vide, et
+// c'est exactement la panne que #121 corrigeait.
+//
+// La PR #124 (issue #121), qui l'a posé, ne l'évaluait qu'à **un** instant,
+// `2026-09-30T22:30:00Z`. #126 l'a montré par mutation : décaler de +2 h la
+// seule dérivation de mois de `spreadOverMonth` —
+// `parisParts(new Date(reference.getTime() + 7200000))` — laissait la porte
+// entièrement verte, alors que l'invariant tombe à 48 instants de 2026.
+//
+// D'où un balayage : toute l'année 2026, un instant toutes les demi-heures.
+// Les douze bascules de mois y passent, dans les deux régimes horaires (CET
+// l'hiver, CEST l'été), et l'assertion ne présume nulle part *où* ça devrait
+// casser.
+//
+// Finesse et coût, dits franchement : un décalage d'au moins un pas est
+// attrapé où qu'il soit dans l'année, un décalage plus fin (quelques minutes)
+// passerait encore. Descendre à la minute coûte ~38 s contre ~1,4 s ici
+// (node 24, mesuré) sur une porte qui tenait en 0,13 s, pour ne gagner qu'une
+// classe de mutant qu'aucune confusion de fuseau ne produit : l'écart dont il
+// est question est celui de Paris à UTC, une ou deux heures pleines.
+//
+// L'année est fixe et non « l'année courante » : les tests de ce fichier
+// doivent rendre le même verdict dans dix ans, et les règles d'heure d'été
+// des années futures ne sont pas acquises.
+// ---------------------------------------------------------------------------
+
+/** Pas du balayage : 30 min, soit les 48 instants d'une journée. */
+const SWEEP_STEP_MS = 30 * 60_000;
+
+test("le contrat seed/mesure tient à chaque instant de l'année, pas qu'à un", () => {
+  const violations: string[] = [];
+  for (
+    let t = Date.UTC(2026, 0, 1, 0, 0, 0);
+    t < Date.UTC(2027, 0, 1, 0, 0, 0);
+    t += SWEEP_STEP_MS
+  ) {
+    // Le même instant des deux côtés : ce que le seed pose doit rester dans la
+    // fenêtre que la mesure interroge.
+    const reference = new Date(t);
+    const win = monthGridWindow(reference);
+    const seeded = spreadOverMonth(reference, 40);
+    const outside = seeded.filter((d) => d < win.from || d > win.to);
+    if (outside.length > 0) {
+      violations.push(
+        `${reference.toISOString()} : ${outside.length}/${seeded.length} hors grille, à partir de ${outside[0].toISOString()}`,
+      );
+    }
   }
+  assert.deepEqual(
+    violations,
+    [],
+    `${violations.length} instants violent le contrat seed/mesure, le premier : ${violations[0]}`,
+  );
 });
