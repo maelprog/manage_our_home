@@ -12,12 +12,21 @@ async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
+    // Migrations run first, on their own connection, as their own role
+    // (`MIGRATION_DATABASE_URL`) — never on the runtime pool. The runtime
+    // role is `NOSUPERUSER NOBYPASSRLS` on any deployment that follows
+    // apps/api/README.md, and under it a migration's DML reads its source
+    // tables back empty and applies to nothing without saying so
+    // (issue #105). `migrations::apply` refuses to start rather than let
+    // that happen, and closes the elevated connection before returning.
+    manage_our_home::migrations::apply(env::var(manage_our_home::migrations::MIGRATION_URL_VAR).ok())
+        .await?;
+
     let database_url = env::var("DATABASE_URL")?;
     let db = PgPoolOptions::new()
         .max_connections(20)
         .connect(&database_url)
         .await?;
-    sqlx::migrate!("./migrations").run(&db).await?;
 
     // Local-dev convenience only (infra/.env.example): pre-verified logins
     // so a fresh stack is usable without completing email verification.
