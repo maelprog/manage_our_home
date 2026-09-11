@@ -5,8 +5,15 @@
 //! run it against a real Postgres, and — the load-bearing half — first
 //! reproduce the failure it exists to stop: `0013`'s backfill statement,
 //! executed by a role shaped exactly as `apps/api/README.md` prescribes
-//! for `DATABASE_URL`, reports `INSERT 0 0` over a database that visibly
-//! holds an event needing the row.
+//! for `DATABASE_URL` — **owner** of the tables, `NOSUPERUSER
+//! NOBYPASSRLS` — reports `INSERT 0 0` over a database that visibly holds
+//! an event needing the row.
+//!
+//! The ownership is not incidental. `FORCE ROW LEVEL SECURITY` is what
+//! makes the owner subject to its own policies; without the `ALTER TABLE
+//! … OWNER TO` in `tx_as_role`, these assertions would hold against a
+//! plain `ENABLE ROW LEVEL SECURITY` too and would say nothing about the
+//! configuration #105 is about.
 
 use manage_our_home::migrations::ensure_migration_role;
 use sqlx::PgPool;
@@ -24,15 +31,39 @@ WHERE NOT EXISTS (
 )
 ON CONFLICT DO NOTHING";
 
-const GRANTED_TABLES: &str = "events, event_assignees, groups, users";
+/// The tables the throwaway role is made to **own**, not merely to hold
+/// grants on. Ownership is the whole point: `FORCE ROW LEVEL SECURITY`
+/// exists precisely so that the owner is not exempt, and #105 is about a
+/// role that owns these tables and still cannot see a row in them. A test
+/// run by a non-owner would pass just as well against a plain `ENABLE ROW
+/// LEVEL SECURITY`, and would prove nothing about the case at hand.
+const OWNED_TABLES: [&str; 4] = ["events", "event_assignees", "groups", "users"];
 
-/// Creates a throwaway login-less role with the given attributes and
-/// returns a transaction that has already switched to it, so
-/// `current_user` — what the guard reads — is that role.
+async fn set_owner(db: &PgPool, owner: &str) {
+    for table in OWNED_TABLES {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "ALTER TABLE {table} OWNER TO {owner}"
+        )))
+        .execute(db)
+        .await
+        .unwrap();
+    }
+}
+
+/// Creates a throwaway login-less role with the given attributes, hands it
+/// ownership of `OWNED_TABLES`, and returns a transaction that has already
+/// switched to it — so `current_user`, what the guard reads, is that role.
+///
+/// Returns the role name and the harness's own role, which `drop_role`
+/// needs in order to hand ownership back.
 async fn tx_as_role<'a>(
     db: &'a PgPool,
     attributes: &str,
-) -> (String, sqlx::Transaction<'a, sqlx::Postgres>) {
+) -> (String, String, sqlx::Transaction<'a, sqlx::Postgres>) {
+    let harness_role: String = sqlx::query_scalar("SELECT current_user::text")
+        .fetch_one(db)
+        .await
+        .unwrap();
     let role = format!("mig_test_role_{}", Uuid::new_v4().simple());
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "CREATE ROLE {role} NOSUPERUSER {attributes}"
@@ -40,24 +71,28 @@ async fn tx_as_role<'a>(
     .execute(db)
     .await
     .unwrap();
+    // A new table owner must hold CREATE on the schema, and the migration
+    // role of a real deployment holds it for the same reason.
     sqlx::query(sqlx::AssertSqlSafe(format!(
-        "GRANT SELECT, INSERT, UPDATE, DELETE ON {GRANTED_TABLES} TO {role}"
+        "GRANT USAGE, CREATE ON SCHEMA public TO {role}"
     )))
     .execute(db)
     .await
     .unwrap();
+    set_owner(db, &role).await;
 
     let mut tx = db.begin().await.unwrap();
     sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
         .execute(&mut *tx)
         .await
         .unwrap();
-    (role, tx)
+    (role, harness_role, tx)
 }
 
-async fn drop_role(db: &PgPool, role: &str) {
+async fn drop_role(db: &PgPool, role: &str, harness_role: &str) {
+    set_owner(db, harness_role).await;
     sqlx::query(sqlx::AssertSqlSafe(format!(
-        "REVOKE ALL ON {GRANTED_TABLES} FROM {role}"
+        "REVOKE ALL ON SCHEMA public FROM {role}"
     )))
     .execute(db)
     .await
@@ -105,7 +140,7 @@ async fn seed_event_without_assignee(db: &PgPool) -> Uuid {
 async fn backfill_dml_touches_nothing_under_the_role_the_readme_prescribes(db: PgPool) {
     let event = seed_event_without_assignee(&db).await;
 
-    let (role, mut tx) = tx_as_role(&db, "NOBYPASSRLS").await;
+    let (role, harness_role, mut tx) = tx_as_role(&db, "NOBYPASSRLS").await;
 
     let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
         .fetch_one(&mut *tx)
@@ -130,7 +165,7 @@ async fn backfill_dml_touches_nothing_under_the_role_the_readme_prescribes(db: P
     );
 
     tx.rollback().await.unwrap();
-    drop_role(&db, &role).await;
+    drop_role(&db, &role, &harness_role).await;
 
     // And the row really was missing, i.e. the statement had work to do.
     let assignees: i64 =
@@ -147,7 +182,7 @@ async fn backfill_dml_touches_nothing_under_the_role_the_readme_prescribes(db: P
 async fn backfill_dml_applies_under_a_bypassrls_role(db: PgPool) {
     let event = seed_event_without_assignee(&db).await;
 
-    let (role, mut tx) = tx_as_role(&db, "BYPASSRLS").await;
+    let (role, harness_role, mut tx) = tx_as_role(&db, "BYPASSRLS").await;
 
     ensure_migration_role(&mut tx)
         .await
@@ -169,7 +204,7 @@ async fn backfill_dml_applies_under_a_bypassrls_role(db: PgPool) {
     assert_eq!(assigned, 1);
 
     tx.rollback().await.unwrap();
-    drop_role(&db, &role).await;
+    drop_role(&db, &role, &harness_role).await;
 }
 
 /// The connection the suite itself runs on is a superuser, which the
