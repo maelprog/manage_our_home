@@ -39,6 +39,27 @@
 // exécuté : tout sauté/todo, ou un fichier réduit à une coquille
 // `describe`/`suite`. C'est un avantage réel mais étroit, et il vaut mieux
 // l'écrire que le laisser croire plus large.
+//
+// ---------------------------------------------------------------------------
+// Le VERDICT et le DIAGNOSTIC sont deux choses (#128).
+//
+// Tout ce qui précède parle du verdict, et le verdict était déjà juste sur les
+// trois familles. #128 porte sur ce qui s'affiche ensuite : le message
+// envoyait chercher au mauvais endroit sur deux d'entre elles.
+//
+//   - il invoquait « sautés, annulés ou todo » tout en n'affichant que
+//     `skipped` : sur une suite entièrement `test.todo`, le lecteur voyait
+//     « tests 2, pass 0, fail 0, skipped 0 » et ne pouvait pas retrouver la
+//     cause depuis les chiffres (mesuré en Node 24.20.0). Le résumé lu porte
+//     donc désormais les sept compteurs entiers du bloc TAP, `cancelled` et
+//     `todo` compris ;
+//   - il accusait le glob dès `tests 0`, alors qu'un fichier réduit à une
+//     coquille `describe(...)` rend `tests 0 / suites 1` : un fichier A
+//     matché, et les chemins sont bons. `suites` discrimine les deux cas.
+//
+// Rien de tout ça ne change un exit code : les trois familles sortaient en 1
+// avant, elles sortent en 1 après.
+// ---------------------------------------------------------------------------
 
 /**
  * Seuil du plancher : « au moins un test a tourné ».
@@ -56,23 +77,30 @@ export const MINIMUM_TESTS = 1;
 
 export interface TapSummary {
   tests: number;
+  suites: number;
   pass: number;
   fail: number;
   skipped: number;
+  cancelled: number;
+  todo: number;
 }
 
-// Les compteurs du bloc de résumé TAP, en colonne 0. L'ancrage sans espace de
-// tête est délibéré : un sous-test imbriqué indente tout ce qu'il émet, et
-// seul le résumé racine nous intéresse.
-const COUNTER = /^# (tests|pass|fail|skipped) (\d+)$/;
+// Les sept compteurs entiers du bloc de résumé TAP, en colonne 0. L'ancrage
+// sans espace de tête est délibéré : un sous-test imbriqué indente tout ce
+// qu'il émet, et seul le résumé racine nous intéresse. `duration_ms` est
+// laissé de côté : il n'est pas entier et ne sert à aucun verdict.
+const COUNTER = /^# (tests|suites|pass|fail|skipped|cancelled|todo) (\d+)$/;
 
 /**
  * Lit le bloc de résumé d'un rapport `node --test --test-reporter=tap`.
  *
- * Rend `null` si l'un des quatre compteurs manque — rapport tronqué, coupé,
- * ou produit par un format qu'on ne sait pas lire. L'appelant traite ce `null`
+ * Rend `null` si l'un des sept compteurs manque — rapport tronqué, coupé, ou
+ * produit par un format qu'on ne sait pas lire. L'appelant traite ce `null`
  * comme un échec : on ne déclare pas une porte verte sur un rapport qu'on n'a
- * pas su relire.
+ * pas su relire. Exiger les sept plutôt que les quatre qui décident du verdict
+ * est délibéré et joue dans le sens sûr : `suites`, `cancelled` et `todo` sont
+ * ce qui rend le diagnostic juste (#128), et un rapport qui ne les porte pas
+ * n'est pas celui qu'on croit lire.
  */
 export function parseTapSummary(report: string): TapSummary | null {
   const found = new Map<string, number>();
@@ -82,27 +110,35 @@ export function parseTapSummary(report: string): TapSummary | null {
     if (match) found.set(match[1], Number.parseInt(match[2], 10));
   }
   const tests = found.get("tests");
+  const suites = found.get("suites");
   const pass = found.get("pass");
   const fail = found.get("fail");
   const skipped = found.get("skipped");
+  const cancelled = found.get("cancelled");
+  const todo = found.get("todo");
   if (
     tests === undefined ||
+    suites === undefined ||
     pass === undefined ||
     fail === undefined ||
-    skipped === undefined
+    skipped === undefined ||
+    cancelled === undefined ||
+    todo === undefined
   ) {
     return null;
   }
-  return { tests, pass, fail, skipped };
+  return { tests, suites, pass, fail, skipped, cancelled, todo };
 }
 
 /**
  * Nombre de tests qui ont réellement exécuté leur corps.
  *
- * `tests` compte aussi les sautés et les `todo` ; un test sauté n'exerce rien,
- * donc il ne compte pas pour le plancher.
+ * `tests` compte aussi les sautés, les annulés et les `todo` ; aucun de
+ * ceux-là n'exerce quoi que ce soit, donc aucun ne compte pour le plancher.
  */
-export function executedTests(summary: TapSummary): number {
+export function executedTests(
+  summary: Pick<TapSummary, "pass" | "fail">,
+): number {
   return summary.pass + summary.fail;
 }
 
@@ -207,22 +243,65 @@ export function floorViolation(report: string, minimum: number): string | null {
   }
   const executed = executedTests(summary);
   if (executed >= minimum) return null;
-  // Le diagnostic dépend de ce qui manque : aucun test trouvé du tout, ou des
-  // tests trouvés mais tous sautés. Accuser le glob dans le second cas
-  // enverrait sur une fausse piste.
-  const hint =
-    summary.tests === 0
-      ? "  Un glob de `test:scripts` ne matche probablement plus rien :\n" +
-        "  vérifier les chemins passés à scripts/run-script-tests.mjs dans\n" +
-        "  e2e/package.json."
-      : `  ${summary.tests} test(s) ont été trouvés mais aucun n'a exécuté son ` +
-        "corps\n  (sautés, annulés ou todo) : la couverture est nulle malgré " +
-        "les fichiers.";
   return (
     `Plancher de tests : ${executed} test(s) exécuté(s), au moins ${minimum} ` +
     `exigé(s).\n` +
-    `  (rapporté par node --test : tests ${summary.tests}, pass ` +
-    `${summary.pass}, fail ${summary.fail}, skipped ${summary.skipped})\n` +
-    hint
+    `  (rapporté par node --test : tests ${summary.tests}, suites ` +
+    `${summary.suites}, pass ${summary.pass}, fail ${summary.fail},\n` +
+    `   skipped ${summary.skipped}, cancelled ${summary.cancelled}, todo ` +
+    `${summary.todo})\n` +
+    diagnose(summary)
+  );
+}
+
+/**
+ * La phrase qui dit OÙ CHERCHER, à partir des compteurs. Pas de verdict ici :
+ * l'appelant a déjà tranché, on explique.
+ *
+ * Trois familles, discriminées par `tests` et `suites` — c'est l'objet de
+ * #128, où le message accusait le glob sur une famille qui n'a rien à voir :
+ *
+ *   - `tests 0 / suites 0` : plus rien n'a matché. Le glob est le bon suspect.
+ *   - `tests 0 / suites > 0` : un fichier A matché, et il a enregistré des
+ *     `describe(...)` / `suite(...)`, mais aucun `test(...)` dedans. Les
+ *     chemins sont bons ; c'est le contenu des fichiers qu'il faut regarder.
+ *     Le mot « glob » est réservé à la branche du dessus — c'est ce qui rend
+ *     `assert.doesNotMatch(message, /glob/i)` un contrôle qui veut dire
+ *     quelque chose dans `test-floor.test.ts`, et pas un hasard de rédaction.
+ *   - `tests > 0` : des cas existent, aucun n'a exécuté son corps. On nomme
+ *     alors les compteurs non nuls qui l'expliquent plutôt que de réciter
+ *     « sautés, annulés ou todo » — c'est exactement ce que #128 reproche à
+ *     l'affichage précédent, qui invoquait trois familles tout en n'affichant
+ *     que `skipped`.
+ */
+function diagnose(summary: TapSummary): string {
+  if (summary.tests === 0) {
+    if (summary.suites === 0) {
+      return (
+        "  Un glob de `test:scripts` ne matche probablement plus rien :\n" +
+        "  vérifier les chemins passés à scripts/run-script-tests.mjs dans\n" +
+        "  e2e/package.json."
+      );
+    }
+    return (
+      `  ${summary.suites} suite(s) ont matché et se sont enregistrées, mais ` +
+      "aucune\n  n'a déclaré de cas : une coquille `describe(...)` / " +
+      "`suite(...)` vidée de\n  ses `test(...)`. Les chemins de " +
+      "`test:scripts` matchent donc encore —\n  chercher dans le contenu des " +
+      "fichiers, pas dans les chemins."
+    );
+  }
+  // Ne citer que ce qui a réellement empêché l'exécution. Si rien ne
+  // l'explique (compteurs incohérents), on garde la formule générique plutôt
+  // que d'inventer une cause.
+  const causes: string[] = [];
+  if (summary.skipped > 0) causes.push(`${summary.skipped} sauté(s)`);
+  if (summary.cancelled > 0) causes.push(`${summary.cancelled} annulé(s)`);
+  if (summary.todo > 0) causes.push(`${summary.todo} todo`);
+  const cause =
+    causes.length > 0 ? causes.join(", ") : "sautés, annulés ou todo";
+  return (
+    `  ${summary.tests} test(s) ont été trouvés mais aucun n'a exécuté son ` +
+    `corps\n  (${cause}) : la couverture est nulle malgré les fichiers.`
   );
 }
