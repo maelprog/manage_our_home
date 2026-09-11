@@ -177,18 +177,18 @@ async fn fetch_members(state: &AppState, gid: Uuid, cookie: Option<&str>) -> Vec
 /// rendered a bare "?" ring followed by an em dash and nothing (#99).
 ///
 /// **This fallback, not the backfill, is what fixes #99**, and it is not a
-/// transitional measure. `0013_backfill_event_assignees.sql` repairs stored
-/// rows only on a deployment whose migration role bypasses RLS — under the
-/// role `apps/api/README.md` prescribes for `DATABASE_URL` it inserts
-/// nothing at all (measured; see that migration's header) — and a migration
-/// runs once either way, so it cannot reach an event created later with no
+/// transitional measure. `0013_backfill_event_assignees.sql` repairs the
+/// stored rows that exist at the moment it runs, and nothing else — it used
+/// to repair none at all under the role `apps/api/README.md` prescribes for
+/// `DATABASE_URL`, which #105 closed by moving migrations onto their own
+/// `BYPASSRLS` role (see that migration's header) — and a migration runs
+/// once either way, so it cannot reach an event created later with no
 /// assignment. The Google Calendar import used to create exactly those, on
 /// every deployment, on every import (issue #106); it now assigns the account
 /// that ran the sync, and repairs the rows it wrote before. That closes the
 /// one source that was still producing them, but it does not make this
 /// fallback transitional: it is the last thing standing between a row whose
-/// assignees failed to arrive — for any reason, including a deployment whose
-/// backfill inserted nothing — and a bare "?" ring.
+/// assignees failed to arrive — for any reason — and a bare "?" ring.
 ///
 /// `agenda/detail.rs::assignees_html` takes the other way out on the same
 /// data — it hides its line entirely — because a detail page has no ring to
