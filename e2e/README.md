@@ -129,6 +129,14 @@ refuses to exit 0 on fewer than **one executed test**
 (`scripts/lib/test-floor.ts`, unit-tested by `test-floor.test.ts` — which
 the globs match, so the floor covers itself).
 
+The threshold itself lives in `scripts/lib/test-floor.ts` as the exported
+`MINIMUM_TESTS`, not in the runner: the runner is not importable (it spawns
+`node --test` on load), so a `1` -> `0` edit there killed the floor without
+a single test moving (#128). Two cases in `test-floor.test.ts` now pin it —
+they do not prove the runner still *passes* it rather than a literal, which
+is the same family of hole as the wiring check below and accepted for the
+same reason: it shows up in the diff.
+
 It counts **executed tests** (`pass + fail`), not matched files. What that
 catches, at a threshold of 1: the glob that matches nothing (`tests 0`); a
 suite whose cases are all `skip`/`todo` — tests exist, none runs its body;
@@ -157,6 +165,24 @@ So at threshold 1 this floor is equivalent to a matched-file floor
 **except** on the families where `node --test` counts no executed test —
 all-skipped/`todo`, or a file reduced to a `describe`/`suite` shell —
 where only it bites. That is a real advantage, but a narrow one.
+
+#### Verdict and diagnosis are two different things (#128)
+
+Everything above is about the **verdict**, which was already right on all
+three families. What #128 fixed is the **message** printed afterwards, which
+sent the reader to the wrong place on two of them:
+
+- it invoked "skipped, cancelled or todo" while printing only `skipped`, so
+  an all-`test.todo` suite read as a contradiction — `tests 2, pass 0,
+  fail 0, skipped 0` (measured on Node 24.20.0). The summary line now
+  carries all seven integer counters of the TAP block, and the diagnosis
+  names only the non-zero ones that actually explain the zero;
+- it blamed the glob on any `tests 0`, but a file cut down to a
+  `describe(...)` shell gives `tests 0 / suites 1` — a file *did* match and
+  the paths are fine. `suites` now discriminates the two, and the word
+  "glob" appears only in the branch where the glob really is the suspect.
+
+No exit code changed: all three families exited 1 before and exit 1 after.
 
 Two more properties, independent of the above:
 

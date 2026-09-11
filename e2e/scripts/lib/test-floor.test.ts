@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   executedTests,
   floorViolation,
+  MINIMUM_TESTS,
   parseTapSummary,
   wiringViolation,
 } from "./test-floor.ts";
@@ -71,6 +72,47 @@ ok 3 - saute # SKIP
 # duration_ms 155.842602
 `;
 
+// Une suite entièrement `test.todo`. Le cas de #128 : `tests 2`, mais
+// `pass`, `fail` ET `skipped` à zéro — les compteurs affichés jusqu'ici ne
+// laissaient aucun moyen de retrouver la cause. Copié d'une exécution.
+const TAP_TOUT_TODO = `# Subtest: deux
+ok 2 - deux # TODO
+  ---
+  duration_ms: 0.060506
+  type: 'test'
+  ...
+1..2
+# tests 2
+# suites 0
+# pass 0
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 2
+# duration_ms 51.164494
+`;
+
+// Un fichier réduit à une coquille `describe(...)` sans aucun cas : `tests 0`,
+// mais `suites 1`. Un fichier A MATCHÉ — accuser le glob envoie chercher au
+// mauvais endroit (#128). Copié d'une exécution.
+const TAP_COQUILLE = `TAP version 13
+# Subtest: coquille
+ok 1 - coquille
+  ---
+  duration_ms: 0.261037
+  type: 'suite'
+  ...
+1..1
+# tests 0
+# suites 1
+# pass 0
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 51.206292
+`;
+
 // ---------------------------------------------------------------------------
 // parseTapSummary
 // ---------------------------------------------------------------------------
@@ -78,18 +120,24 @@ ok 3 - saute # SKIP
 test("parseTapSummary lit le bloc de résumé d'un rapport vide", () => {
   assert.deepEqual(parseTapSummary(TAP_ZERO_MATCH), {
     tests: 0,
+    suites: 0,
     pass: 0,
     fail: 0,
     skipped: 0,
+    cancelled: 0,
+    todo: 0,
   });
 });
 
 test("parseTapSummary lit le résumé malgré des sous-tests imbriqués", () => {
   assert.deepEqual(parseTapSummary(TAP_MIXED), {
     tests: 4,
+    suites: 0,
     pass: 3,
     fail: 0,
     skipped: 1,
+    cancelled: 0,
+    todo: 0,
   });
 });
 
@@ -112,9 +160,12 @@ test("parseTapSummary ignore les lignes indentées d'un sous-test", () => {
 `;
   assert.deepEqual(parseTapSummary(tap), {
     tests: 1,
+    suites: 0,
     pass: 1,
     fail: 0,
     skipped: 0,
+    cancelled: 0,
+    todo: 0,
   });
 });
 
@@ -187,6 +238,80 @@ test("floorViolation accuse le glob quand rien n'a même été trouvé", () => {
   const message = floorViolation(TAP_ZERO_MATCH, 1);
   assert.ok(message);
   assert.match(message, /glob/i);
+});
+
+test("floorViolation affiche les compteurs todo et cancelled (#128)", () => {
+  // Le message invoque « sautés, annulés ou todo » : les trois compteurs
+  // correspondants doivent figurer dans le résumé affiché, sinon le lecteur
+  // voit « tests 2, pass 0, fail 0, skipped 0 » et ne peut pas retrouver la
+  // cause depuis les chiffres.
+  const message = floorViolation(TAP_TOUT_TODO, 1);
+  assert.ok(message, "une suite entièrement todo n'exécute rien");
+  assert.match(message, /todo 2/);
+  assert.match(message, /cancelled 0/);
+});
+
+test("floorViolation nomme ce qui a empêché l'exécution, pas la liste entière", () => {
+  // Deux tests, tous todo : le diagnostic doit dire « todo », pas réciter
+  // « sautés, annulés ou todo » quand un seul des trois est en cause.
+  const message = floorViolation(TAP_TOUT_TODO, 1);
+  assert.ok(message);
+  assert.match(message, /2 todo/);
+  assert.doesNotMatch(message, /annul/i);
+  assert.doesNotMatch(message, /glob/i);
+});
+
+test("floorViolation nomme les annulés quand c'est eux", () => {
+  const tap = `1..1
+# tests 1
+# suites 0
+# pass 0
+# fail 0
+# cancelled 1
+# skipped 0
+# todo 0
+`;
+  const message = floorViolation(tap, 1);
+  assert.ok(message);
+  assert.match(message, /1 annulé/);
+  // Les sept compteurs sont affichés tels quels (« todo 0 ») : ce qu'on
+  // interdit ici, c'est de NOMMER todo ou sauté comme cause.
+  assert.doesNotMatch(message, /\d+ todo/);
+  assert.doesNotMatch(message, /saut/i);
+});
+
+test("floorViolation garde la formule générique quand aucun compteur n'explique", () => {
+  // Compteurs incohérents (un test trouvé, rien d'exécuté, rien de sauté ni
+  // annulé ni todo) : on ne peut pas nommer la cause, on ne l'invente pas.
+  const tap = `1..1
+# tests 1
+# suites 0
+# pass 0
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+`;
+  const message = floorViolation(tap, 1);
+  assert.ok(message);
+  assert.match(message, /sautés, annulés ou todo/);
+});
+
+test("floorViolation n'accuse pas le glob quand une coquille a matché (#128)", () => {
+  // `tests 0 / suites 1` : un fichier A matché, mais il ne porte plus aucun
+  // cas. Accuser le glob envoie vérifier des chemins qui sont bons.
+  const message = floorViolation(TAP_COQUILLE, 1);
+  assert.ok(message, "une coquille describe() n'exécute aucun test");
+  assert.doesNotMatch(message, /glob/i);
+  assert.match(message, /suite/i);
+  assert.match(message, /describe/);
+});
+
+test("floorViolation accuse le glob seulement quand aucune suite n'a matché", () => {
+  // La discrimination tient sur `suites` : 0 suite ET 0 test = plus rien ne
+  // matche ; au moins une suite = les chemins sont bons.
+  assert.match(floorViolation(TAP_ZERO_MATCH, 1) ?? "", /glob/i);
+  assert.doesNotMatch(floorViolation(TAP_COQUILLE, 1) ?? "", /glob/i);
 });
 
 test("floorViolation mord quand le rapport est illisible", () => {
@@ -306,4 +431,36 @@ test("le vrai package.json câble bien test:scripts sur le lanceur", () => {
   );
   const violation = wiringViolation(readFileSync(pkgPath, "utf8"));
   assert.equal(violation, null, `${pkgPath} : ${violation ?? ""}`);
+});
+
+// ---------------------------------------------------------------------------
+// MINIMUM_TESTS — le seuil lui-même (#128).
+//
+// Le passer à 0 tue le plancher sans qu'aucun autre test ne bouge : toutes les
+// assertions ci-dessus passent un seuil explicite en paramètre et ne touchent
+// jamais à la constante. Ces deux cas-ci l'épinglent, pour que le
+// débranchement coûte la modification d'un test et se voie en revue de diff.
+//
+// Ce qu'ils ne couvrent PAS : que `run-script-tests.mjs` passe encore cette
+// constante à `floorViolation` plutôt qu'un littéral. Même classe de trou que
+// le câblage de `wiringViolation`, assumée pour la raison que #128 donne — le
+// changement reste visible dans le diff.
+// ---------------------------------------------------------------------------
+
+test("MINIMUM_TESTS vaut 1 : au moins un test doit avoir tourné", () => {
+  assert.equal(MINIMUM_TESTS, 1);
+});
+
+test("MINIMUM_TESTS rend le plancher mordant sur une porte vide", () => {
+  // La propriété qui compte, formulée sans citer la valeur : quel que soit le
+  // seuil retenu, il doit refuser un rapport à zéro test exécuté. À 0,
+  // `floorViolation` serait muette sur exactement la panne de #123.
+  assert.ok(
+    floorViolation(TAP_ZERO_MATCH, MINIMUM_TESTS),
+    "un seuil à 0 laisserait la porte verte sur zéro test",
+  );
+  assert.ok(
+    floorViolation(TAP_TOUT_TODO, MINIMUM_TESTS),
+    "un seuil à 0 laisserait la porte verte sur une suite entièrement todo",
+  );
 });

@@ -12,6 +12,11 @@
 //   - `tap` dans un fichier temporaire — la source machine du compte de tests.
 // Puis il applique le plancher de `lib/test-floor.ts`.
 //
+// Le seuil lui-même (`MINIMUM_TESTS`) est importé de ce module et n'est plus
+// déclaré ici : ce fichier lance `node --test` à son chargement, donc rien ne
+// peut l'importer pour vérifier la valeur, et la passer de 1 à 0 tuait le
+// plancher sans qu'aucun test ne bouge (#128).
+//
 // Ordre des verdicts, et c'est le point délicat : **le code de sortie de
 // `node --test` prime**. Si un test échoue vraiment, on sort avec son code,
 // sans consulter le plancher. Le plancher ne peut donc jamais masquer un
@@ -32,12 +37,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { floorViolation } from "./lib/test-floor.ts";
-
-// « Au moins un test a tourné. » #123 dit explicitement que ce seuil suffit :
-// il attrape le glob qui ne matche plus, sans rien à maintenir à chaque test
-// ajouté. Le relever transformerait ce fichier en compteur à tenir à jour.
-const MINIMUM_TESTS = 1;
+import { floorViolation, MINIMUM_TESTS } from "./lib/test-floor.ts";
 
 const globs = process.argv.slice(2);
 if (globs.length === 0) {
