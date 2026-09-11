@@ -9,8 +9,14 @@ Epic 1 — Auth + Groups. See `../../docs/architecture.md` and
 cp .env.example .env   # fill in real secrets
 createdb manage_our_home
 cargo sqlx prepare      # regenerate .sqlx query cache after schema changes
-cargo run
+cargo run               # applies migrations through MIGRATION_DATABASE_URL
 ```
+
+`MIGRATION_DATABASE_URL` has no default and no fallback — `cargo run` stops
+before opening the runtime pool if it is unset. For a single-role local
+database, point it at the same superuser role `DATABASE_URL` uses; see
+"Deployment note on Row-Level Security" below for why real deployments must
+not.
 
 ## Running tests
 
@@ -37,7 +43,77 @@ normal app connection (`DATABASE_URL`):
 ```sql
 CREATE ROLE app_role LOGIN PASSWORD '...' NOSUPERUSER NOBYPASSRLS;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_role;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_role;
 ```
+
+`app_role` no longer owns the tables (see `migration_role` below), so the
+sequence grant is not optional: `audit_log.id` is `BIGSERIAL`, and an
+`INSERT` by a non-owner without `USAGE` on its sequence fails on `nextval()`.
+
+### `migration_role` (#105) — who applies the migrations
+
+The role above is the one that serves requests. It is **not** the one that
+applies the schema. Migrations run on their own connection,
+`MIGRATION_DATABASE_URL`, as a third role that owns the tables and carries
+`BYPASSRLS`:
+
+```sql
+CREATE ROLE migration_role LOGIN PASSWORD '...' NOSUPERUSER BYPASSRLS;
+GRANT USAGE, CREATE ON SCHEMA public TO migration_role;
+-- `0001_users_auth_groups.sql` opens on CREATE EXTENSION IF NOT EXISTS
+-- pgcrypto. pgcrypto is a trusted extension, so a non-superuser may install
+-- it — but only with CREATE on the *database*, which CREATE on the schema
+-- does not confer. Without this line the very first migration stops on
+-- "permission denied to create extension" and nothing is applied at all.
+GRANT CREATE ON DATABASE manage_our_home TO migration_role;
+-- Every table a migration creates belongs to migration_role, so the grants
+-- the other two roles need must be declared as its default privileges —
+-- otherwise the next migration ships a table nobody else can read.
+ALTER DEFAULT PRIVILEGES FOR ROLE migration_role IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_role, admin_role;
+ALTER DEFAULT PRIVILEGES FOR ROLE migration_role IN SCHEMA public
+    GRANT USAGE, SELECT ON SEQUENCES TO app_role, admin_role;
+```
+
+If you would rather not hand the migration role `CREATE` on the database,
+install the extension once as a superuser instead — `CREATE EXTENSION IF NOT
+EXISTS pgcrypto;` — and drop that `GRANT` line. `0001`'s statement is then a
+no-op. That is the route `infra/postgres/init/01-roles.sh` takes, because a
+superuser is running there anyway at first boot.
+
+Why it exists: every family-scoped table is `FORCE ROW LEVEL SECURITY` with
+a policy keyed on `current_setting('app.family_id', true)`, which is `NULL`
+outside an HTTP request. DDL is not subject to RLS — which is why
+`0001..0012`, all pure DDL, never noticed — but the moment a migration does
+DML, `app_role` reads its source tables back **empty**. The statement
+applies to zero rows, reports `INSERT 0 0`, exits 0, and `sqlx::migrate!`
+records the migration as applied in the same transaction without ever
+looking at the row count. It never runs again. Nothing logs, nothing warns.
+`0013_backfill_event_assignees.sql` is the first migration to do DML and the
+one that made this visible.
+
+Two things it will not let you get wrong, mirroring `reconcile-attachments`
+below:
+
+- **`MIGRATION_DATABASE_URL` is required, with no `DATABASE_URL` fallback.**
+  A fallback would put the migration back on the runtime role — precisely
+  the configuration this section exists to rule out — and it would do so in
+  silence. Unset, or set to an empty string, the API refuses to start.
+- **The connection is checked before anything is applied.** `migrations::apply`
+  asserts `rolsuper OR rolbypassrls` for its own role and aborts if neither
+  holds, so a `MIGRATION_DATABASE_URL` pointed at the wrong role fails loudly
+  instead of recording a migration that did nothing. An unknown role fails
+  closed too: the defect being guarded against leaves no trace, so an
+  inconclusive answer is treated as a refusal.
+
+The elevated connection is opened for the migration pass and closed again
+before the server starts listening; it is not held for the life of the
+process.
+
+`infra/` sets this up for the shipped compose stack:
+`postgres/init/01-roles.sh` creates both `migration_role` and `admin_role` at
+first boot of the postgres volume, and `docker-compose.yml` passes
+`MIGRATION_DATABASE_URL` to the api service.
 
 ### Epic #8 — `admin_role` (superadmin endpoints)
 

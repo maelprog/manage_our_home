@@ -191,6 +191,12 @@ jobs:
       - name: Start apps/api (applies migrations on boot)
         run: ./target/debug/manage_our_home &
         env:
+          # Required since #105, with no DATABASE_URL fallback: migrations
+          # run on their own connection, as a role that bypasses RLS, and
+          # the API refuses to start otherwise. The postgres service above
+          # only has the superuser role, which qualifies — the point of the
+          # variable here is that the value is stated, not inferred.
+          MIGRATION_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
           PUBLIC_BASE_URL: http://localhost:8080
           FRONTEND_BASE_URL: http://localhost:3000
           GOOGLE_CLIENT_ID: ci-dummy

@@ -12,6 +12,7 @@ pub mod grocery_list;
 pub mod groups;
 pub mod jobs;
 pub mod messagerie;
+pub mod migrations;
 pub mod recipes;
 pub mod rgpd;
 pub mod stocks;

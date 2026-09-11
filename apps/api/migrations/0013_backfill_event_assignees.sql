@@ -20,29 +20,41 @@
 -- `ON CONFLICT DO NOTHING` stays as a cheap net under a future edit of that
 -- clause; with it in place the statement is a no-op on every re-run.
 --
--- READ THIS BEFORE RELYING ON THIS FILE: on a deployment set up the way
--- apps/api/README.md prescribes, this statement inserts nothing at all, and
--- says so nowhere.
+-- READ THIS BEFORE RELYING ON THIS FILE: what it repairs depends entirely on
+-- the role that applies it. Until #105 that role was the wrong one, and this
+-- file is where that was first written down. The paragraphs below are that
+-- history, not a live caveat -- #105 closed it, and no database had recorded
+-- this migration as applied when it did.
 --
--- There is no separate migration role. `sqlx::migrate!("./migrations")
--- .run(&db)` runs on the *runtime* pool (apps/api/src/main.rs), i.e. under
--- `DATABASE_URL` — and README.md's "Deployment note on Row-Level Security"
--- prescribes exactly one role for that URL: `CREATE ROLE app_role LOGIN ...
--- NOSUPERUSER NOBYPASSRLS`. Such a role owns these tables but does not
--- bypass `FORCE ROW LEVEL SECURITY`, so the *source* of this INSERT --
--- `FROM events e` -- is filtered to zero rows by `events_isolation`
+-- Until #105 there was no separate migration role: `sqlx::migrate!(
+-- "./migrations").run(&db)` ran on the *runtime* pool (apps/api/src/main.rs),
+-- i.e. under `DATABASE_URL` -- and README.md's "Deployment note on Row-Level
+-- Security" prescribes exactly one role for that URL: `CREATE ROLE app_role
+-- LOGIN ... NOSUPERUSER NOBYPASSRLS`. Such a role owns these tables but does
+-- not bypass `FORCE ROW LEVEL SECURITY`, so the *source* of this INSERT --
+-- `FROM events e` -- was filtered to zero rows by `events_isolation`
 -- (0002_agenda.sql), whose predicate reads a per-request `app.family_id`
--- that is unset during a migration. Nothing is selected, so nothing is
--- inserted and the `WITH CHECK` side is never even reached: no error, no
+-- that is unset during a migration. Nothing was selected, so nothing was
+-- inserted and the `WITH CHECK` side was never even reached: no error, no
 -- warning.
 --
 -- Measured, not feared: with `0001..0012` applied by such a role (owner of
 -- the tables, `relforcerowsecurity = t`, `rolsuper = f`, `rolbypassrls = f`)
--- over a database holding two events with no assignment, this file reports
--- `INSERT 0 0`, exits 0, leaves both events unassigned, and is then recorded
--- as applied -- so it never runs again. The failure is silent and permanent.
--- No CI gate can catch it either: ci.yml and infra/docker-compose.yml both
--- migrate as a superuser role, where this statement does work.
+-- over a database holding events with no assignment, this file reported
+-- `INSERT 0 0`, exited 0, left them unassigned, and was then recorded as
+-- applied -- so it would never have run again. The failure was silent and
+-- permanent. No CI gate caught it either: ci.yml and infra/docker-compose.yml
+-- both migrate as a superuser role, where this statement does work.
+--
+-- What #105 changed: migrations no longer run on the runtime pool at all.
+-- They run on their own connection (`MIGRATION_DATABASE_URL`,
+-- apps/api/src/migrations.rs), as a role that owns the tables *and* carries
+-- `BYPASSRLS`; the variable is required with no `DATABASE_URL` fallback, and
+-- the pass refuses to start unless that connection provably bypasses RLS.
+-- So wherever the API boots at all, this statement is now reached with its
+-- source visible. `apps/api/tests/migration_role_flow.rs` holds both halves
+-- of that as tests: the statement below applying to zero rows under a
+-- NOBYPASSRLS owner, and to one row under a BYPASSRLS role.
 --
 -- The consequence for #99: this file is *not* what fixes it. The fix that
 -- holds everywhere is the display fallback in `row_assignee_ids`
@@ -53,20 +65,15 @@
 -- "Membre" and the initial to "M", which is the app-wide degradation of
 -- `author_name`, not something this fallback adds.
 --
--- This backfill is kept for the deployments whose migration role does bypass
--- RLS (the shipped compose stack, CI), where it repairs the rows that exist
--- when it runs. Not "once and for good", and not a second line of defence
--- for anyone: a migration runs once, so every event created *after* it with
--- no assignment row is beyond its reach -- which the Google Calendar import
--- does on every deployment, on every import (issue #106,
--- apps/api/src/google_calendar/imports.rs inserts into `events` and never
--- into `event_assignees`). On a README-conformant deployment it is a no-op
--- from the start.
---
--- Why the mismatch between main.rs and README.md is not resolved here: that
--- is a deployment-architecture question (does this app want a distinct
--- migration role?), not this bug fix's to answer. It is tracked as issue
--- #105.
+-- What this backfill does repair, now that it is reached everywhere, is the
+-- rows that exist at the moment it runs. That is all it can ever be: not
+-- "once and for good", and not a second line of defence for anyone. A
+-- migration runs once, so every event created *after* it with no assignment
+-- row is beyond its reach -- which the Google Calendar import produced on
+-- every import until #106/#147 (apps/api/src/google_calendar/imports.rs
+-- inserted into `events` and never into `event_assignees`; it now writes the
+-- assignee and catches up the rows it wrote before). The display fallback
+-- above is what covers whatever arrives that way next.
 INSERT INTO event_assignees (event_id, user_id)
 SELECT e.id, e.created_by
 FROM events e
