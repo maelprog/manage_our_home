@@ -217,23 +217,52 @@ docker compose exec postgres \
 
 # The tables already exist and belong to mhome, so migration_role needs
 # rights on them — not just the default privileges the init script sets for
-# the tables it would have created itself.
+# the tables it would have created itself. It also needs ownership: ALTER
+# TABLE is an owner-only right that no grant confers, and the next migration
+# that alters an existing table will use it.
 docker compose exec postgres \
   psql -U mhome -d manage_our_home -c \
   "GRANT USAGE, CREATE ON SCHEMA public TO migration_role;
-   GRANT ALL ON ALL TABLES IN SCHEMA public TO migration_role;
-   GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO migration_role;"
+   DO \$\$
+   DECLARE r record;
+   BEGIN
+     FOR r IN SELECT tablename FROM pg_tables WHERE schemaname='public' LOOP
+       EXECUTE format('ALTER TABLE public.%I OWNER TO migration_role', r.tablename);
+     END LOOP;
+   END \$\$;"
+
+# And — this is the step it is easiest to miss — every table a migration
+# creates from now on belongs to migration_role, so admin_role's grants must
+# be declared as *its* default privileges. The ones the old init script set
+# (FOR ROLE mhome) still exist but no longer cover anything, because mhome
+# creates no more tables. Without these two lines the three /admin/* endpoints
+# break on every table added after the upgrade.
+docker compose exec postgres \
+  psql -U mhome -d manage_our_home -c \
+  "ALTER DEFAULT PRIVILEGES FOR ROLE migration_role IN SCHEMA public
+     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO admin_role;
+   ALTER DEFAULT PRIVILEGES FOR ROLE migration_role IN SCHEMA public
+     GRANT USAGE, SELECT ON SEQUENCES TO admin_role;"
 
 docker compose up -d
 ```
 
-`GRANT ALL` rather than ownership: on this stack `mhome` is the bootstrap
-superuser and already owns everything, and a `REASSIGN OWNED` would be a
-bigger change than the upgrade needs. A future migration that alters an
-existing table will need ownership too — `ALTER TABLE` is an owner-only
-right that no grant confers — so a stack kept this way should reassign
-ownership before the next schema-altering migration, or start from a fresh
-volume.
+Per-object `ALTER TABLE ... OWNER TO` rather than `REASSIGN OWNED BY mhome`:
+on the shipped stack `mhome` is the bootstrap superuser created by `initdb`,
+so it also owns objects the cluster pins, and the bulk form refuses outright —
+
+```
+ERROR: cannot reassign ownership of objects owned by role mhome
+       because they are required by the database system
+```
+
+The loop above touches only `public` tables and completes. Note that
+ownership and privileges are independent problems here: transferring
+ownership does **not** grant anything to `admin_role`, which is why the
+`ALTER DEFAULT PRIVILEGES` block is separate and not optional.
+
+Starting from a fresh volume (`docker compose down -v`) skips all of this —
+`01-roles.sh` sets it up correctly on its own.
 
 ### Upgrading a stack created before the `mhome` rename
 

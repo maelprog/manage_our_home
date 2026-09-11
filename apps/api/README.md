@@ -60,6 +60,12 @@ applies the schema. Migrations run on their own connection,
 ```sql
 CREATE ROLE migration_role LOGIN PASSWORD '...' NOSUPERUSER BYPASSRLS;
 GRANT USAGE, CREATE ON SCHEMA public TO migration_role;
+-- `0001_users_auth_groups.sql` opens on CREATE EXTENSION IF NOT EXISTS
+-- pgcrypto. pgcrypto is a trusted extension, so a non-superuser may install
+-- it — but only with CREATE on the *database*, which CREATE on the schema
+-- does not confer. Without this line the very first migration stops on
+-- "permission denied to create extension" and nothing is applied at all.
+GRANT CREATE ON DATABASE manage_our_home TO migration_role;
 -- Every table a migration creates belongs to migration_role, so the grants
 -- the other two roles need must be declared as its default privileges —
 -- otherwise the next migration ships a table nobody else can read.
@@ -68,6 +74,12 @@ ALTER DEFAULT PRIVILEGES FOR ROLE migration_role IN SCHEMA public
 ALTER DEFAULT PRIVILEGES FOR ROLE migration_role IN SCHEMA public
     GRANT USAGE, SELECT ON SEQUENCES TO app_role, admin_role;
 ```
+
+If you would rather not hand the migration role `CREATE` on the database,
+install the extension once as a superuser instead — `CREATE EXTENSION IF NOT
+EXISTS pgcrypto;` — and drop that `GRANT` line. `0001`'s statement is then a
+no-op. That is the route `infra/postgres/init/01-roles.sh` takes, because a
+superuser is running there anyway at first boot.
 
 Why it exists: every family-scoped table is `FORCE ROW LEVEL SECURITY` with
 a policy keyed on `current_setting('app.family_id', true)`, which is `NULL`
