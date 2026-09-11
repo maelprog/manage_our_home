@@ -179,7 +179,8 @@ What it cannot invent, you have to fill in yourself:
 | Variable | Required | What it is |
 |----------|----------|------------|
 | `POSTGRES_PASSWORD` | yes | Password for the application role `mhome`. |
-| `ADMIN_ROLE_PASSWORD` | yes | Password for the `BYPASSRLS` `admin_role` created at first Postgres boot by `postgres/init/01-admin-role.sh`. |
+| `MIGRATION_ROLE_PASSWORD` | yes | Password for the `BYPASSRLS` `migration_role` created at first Postgres boot by `postgres/init/01-roles.sh`. It applies the migrations and owns the tables (see `apps/api/README.md`, issue #105); the API refuses to start without it. |
+| `ADMIN_ROLE_PASSWORD` | yes | Password for the `BYPASSRLS` `admin_role` created at first Postgres boot by `postgres/init/01-roles.sh`. |
 | `OAUTH_ENCRYPTION_KEY` | yes | `openssl rand -base64 32` |
 | `MESSAGE_ENCRYPTION_KEY` | yes | `openssl rand -base64 32` |
 | `CALENDAR_FEED_ENCRYPTION_KEY` | yes | `openssl rand -base64 32` |
@@ -198,6 +199,41 @@ and reserves `-base64` for the encryption keys, whose `+`, `/` and `=` would
 break URL parsing.
 
 </details>
+
+### Upgrading a stack created before `migration_role` (#105)
+
+`postgres/init/01-roles.sh` only runs when the `postgres_data` volume is
+first initialized, so an existing volume has no `migration_role` and the api
+will refuse to start: `MIGRATION_DATABASE_URL` is required and the role
+behind it must bypass RLS. Create it once, against the existing volume:
+
+```sh
+cd infra
+docker compose up -d postgres
+
+docker compose exec postgres \
+  psql -U mhome -d manage_our_home -c \
+  "CREATE ROLE migration_role LOGIN PASSWORD '<MIGRATION_ROLE_PASSWORD from .env>' NOSUPERUSER BYPASSRLS;"
+
+# The tables already exist and belong to mhome, so migration_role needs
+# rights on them — not just the default privileges the init script sets for
+# the tables it would have created itself.
+docker compose exec postgres \
+  psql -U mhome -d manage_our_home -c \
+  "GRANT USAGE, CREATE ON SCHEMA public TO migration_role;
+   GRANT ALL ON ALL TABLES IN SCHEMA public TO migration_role;
+   GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO migration_role;"
+
+docker compose up -d
+```
+
+`GRANT ALL` rather than ownership: on this stack `mhome` is the bootstrap
+superuser and already owns everything, and a `REASSIGN OWNED` would be a
+bigger change than the upgrade needs. A future migration that alters an
+existing table will need ownership too — `ALTER TABLE` is an owner-only
+right that no grant confers — so a stack kept this way should reassign
+ownership before the next schema-altering migration, or start from a fresh
+volume.
 
 ### Upgrading a stack created before the `mhome` rename
 

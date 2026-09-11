@@ -10,8 +10,9 @@ services:
       POSTGRES_DB: manage_our_home
       POSTGRES_USER: mhome
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      # Consumed by postgres/init/01-admin-role.sh at first boot to create
-      # the BYPASSRLS role behind ADMIN_DATABASE_URL.
+      # Consumed by postgres/init/01-roles.sh at first boot to create the two
+      # BYPASSRLS roles behind MIGRATION_DATABASE_URL and ADMIN_DATABASE_URL.
+      MIGRATION_ROLE_PASSWORD: ${MIGRATION_ROLE_PASSWORD}
       ADMIN_ROLE_PASSWORD: ${ADMIN_ROLE_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -68,6 +69,13 @@ services:
     depends_on: [postgres, minio]
     environment:
       DATABASE_URL: postgres://mhome:${POSTGRES_PASSWORD}@postgres/manage_our_home
+      # Migrations run here, not on DATABASE_URL's pool — a runtime role set
+      # up the way apps/api/README.md prescribes (NOSUPERUSER NOBYPASSRLS)
+      # reads every family-scoped table back empty during a migration, so a
+      # migration's DML would apply to zero rows and be recorded as applied
+      # anyway (issue #105). The API refuses to start if this role doesn't
+      # bypass RLS.
+      MIGRATION_DATABASE_URL: postgres://migration_role:${MIGRATION_ROLE_PASSWORD}@postgres/manage_our_home
       ADMIN_DATABASE_URL: postgres://admin_role:${ADMIN_ROLE_PASSWORD}@postgres/manage_our_home
       # Behind Caddy the API is publicly reachable under /api (see
       # infra/Caddyfile), so its own public base URL — used for the Google

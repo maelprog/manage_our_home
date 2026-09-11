@@ -37,8 +37,11 @@ PUBLIC_BASE_URL=http://localhost
 
 POSTGRES_PASSWORD=$(gen_pwd)
 
-# BYPASSRLS role created at first postgres boot by
-# postgres/init/01-admin-role.sh (superadmin endpoints, apps/api/README.md).
+# BYPASSRLS roles created at first postgres boot by
+# postgres/init/01-roles.sh: migration_role applies the migrations and owns
+# the tables (issue #105), admin_role serves the superadmin endpoints. Both
+# are described in apps/api/README.md.
+MIGRATION_ROLE_PASSWORD=$(gen_pwd)
 ADMIN_ROLE_PASSWORD=$(gen_pwd)
 
 ########################################

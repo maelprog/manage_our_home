@@ -78,11 +78,13 @@ async fn seed_event_without_assignee(db: &PgPool) -> Uuid {
     .fetch_one(db)
     .await
     .unwrap();
-    let group: Uuid =
-        sqlx::query_scalar!("INSERT INTO groups (name, created_by) VALUES ('Mig', $1) RETURNING id", user)
-            .fetch_one(db)
-            .await
-            .unwrap();
+    let group: Uuid = sqlx::query_scalar!(
+        "INSERT INTO groups (name, created_by) VALUES ('Mig', $1) RETURNING id",
+        user
+    )
+    .fetch_one(db)
+    .await
+    .unwrap();
     sqlx::query_scalar!(
         "INSERT INTO events (group_id, created_by, title, starts_at, ends_at) \
          VALUES ($1, $2, 'E', now(), now()) RETURNING id",
@@ -118,7 +120,7 @@ async fn backfill_dml_touches_nothing_under_the_role_the_readme_prescribes(db: P
         .rows_affected();
     assert_eq!(affected, 0, "the backfill silently applies to nothing");
 
-    let err = ensure_migration_role(&mut *tx)
+    let err = ensure_migration_role(&mut tx)
         .await
         .expect_err("the guard must refuse this role")
         .to_string();
@@ -147,7 +149,7 @@ async fn backfill_dml_applies_under_a_bypassrls_role(db: PgPool) {
 
     let (role, mut tx) = tx_as_role(&db, "BYPASSRLS").await;
 
-    ensure_migration_role(&mut *tx)
+    ensure_migration_role(&mut tx)
         .await
         .expect("the guard must accept a BYPASSRLS role");
 

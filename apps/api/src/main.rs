@@ -19,8 +19,10 @@ async fn main() -> anyhow::Result<()> {
     // tables back empty and applies to nothing without saying so
     // (issue #105). `migrations::apply` refuses to start rather than let
     // that happen, and closes the elevated connection before returning.
-    manage_our_home::migrations::apply(env::var(manage_our_home::migrations::MIGRATION_URL_VAR).ok())
-        .await?;
+    manage_our_home::migrations::apply(
+        env::var(manage_our_home::migrations::MIGRATION_URL_VAR).ok(),
+    )
+    .await?;
 
     let database_url = env::var("DATABASE_URL")?;
     let db = PgPoolOptions::new()

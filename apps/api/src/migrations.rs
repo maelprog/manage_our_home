@@ -70,9 +70,10 @@ pub fn may_apply_migrations(rolsuper: Option<bool>, rolbypassrls: Option<bool>) 
 
 /// Aborts unless the connection provably bypasses RLS.
 pub async fn ensure_migration_role(conn: &mut sqlx::PgConnection) -> anyhow::Result<()> {
-    let row = sqlx::query!("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user")
-        .fetch_optional(&mut *conn)
-        .await?;
+    let row =
+        sqlx::query!("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user")
+            .fetch_optional(&mut *conn)
+            .await?;
     let (rolsuper, rolbypassrls) = match row {
         Some(r) => (r.rolsuper, r.rolbypassrls),
         None => (None, None),
