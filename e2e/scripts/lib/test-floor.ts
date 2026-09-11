@@ -40,6 +40,20 @@
 // `describe`/`suite`. C'est un avantage réel mais étroit, et il vaut mieux
 // l'écrire que le laisser croire plus large.
 
+/**
+ * Seuil du plancher : « au moins un test a tourné ».
+ *
+ * #123 dit explicitement que ce seuil suffit — il attrape le glob qui ne
+ * matche plus, sans rien à maintenir à chaque test ajouté ; le relever
+ * transformerait le lanceur en compteur à tenir à jour.
+ *
+ * Elle vit ici, et non dans `scripts/run-script-tests.mjs`, pour une raison
+ * de couverture (#128) : là-bas, la passer de 1 à 0 tuait le plancher sans
+ * qu'aucun test ne bouge, parce que le lanceur n'est importable par personne
+ * (il lance `node --test` au chargement). Ici, `test-floor.test.ts` l'épingle.
+ */
+export const MINIMUM_TESTS = 1;
+
 export interface TapSummary {
   tests: number;
   pass: number;
