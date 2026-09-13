@@ -74,17 +74,25 @@ jobs:
       # its objects behind, and only a real bucket can catch that). Tests
       # needing MinIO skip themselves when these vars are unset, so a bare
       # `cargo test` against Postgres alone still passes locally.
+      # Registry is quay.io, not Docker Hub: docker.io/minio/minio and
+      # docker.io/minio/mc stopped answering anonymous pulls on 2026-09-11
+      # and this step died with exit 125 on every job (issue #157). Both
+      # tags are pinned rather than `latest`, because an unpinned `latest`
+      # is exactly what let the images move under CI with nothing to
+      # signal it. The two repos publish on separate release clocks, so
+      # their RELEASE stamps do not match and are not meant to.
       - name: Start MinIO and create the attachments bucket
         run: |
           docker run -d --name minio -p 9000:9000 \
             -e MINIO_ROOT_USER=ci-dummy \
             -e MINIO_ROOT_PASSWORD=ci-dummy-secret \
-            minio/minio server /data
+            quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
           for i in $(seq 1 30); do
             curl -sf http://localhost:9000/minio/health/ready && break
             sleep 1
           done
-          docker run --rm --network host --entrypoint /bin/sh minio/mc -c \
+          docker run --rm --network host --entrypoint /bin/sh \
+            quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z -c \
             "mc alias set local http://localhost:9000 ci-dummy ci-dummy-secret && \
              mc mb -p local/manage-our-home"
       - run: cargo build --workspace --all-targets
@@ -175,17 +183,25 @@ jobs:
       - run: npm run test:scripts
         working-directory: e2e
       - run: cargo build -p manage_our_home -p manage_our_home_web
+      # Registry is quay.io, not Docker Hub: docker.io/minio/minio and
+      # docker.io/minio/mc stopped answering anonymous pulls on 2026-09-11
+      # and this step died with exit 125 on every job (issue #157). Both
+      # tags are pinned rather than `latest`, because an unpinned `latest`
+      # is exactly what let the images move under CI with nothing to
+      # signal it. The two repos publish on separate release clocks, so
+      # their RELEASE stamps do not match and are not meant to.
       - name: Start MinIO and create the attachments bucket
         run: |
           docker run -d --name minio -p 9000:9000 \
             -e MINIO_ROOT_USER=ci-dummy \
             -e MINIO_ROOT_PASSWORD=ci-dummy-secret \
-            minio/minio server /data
+            quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
           for i in $(seq 1 30); do
             curl -sf http://localhost:9000/minio/health/ready && break
             sleep 1
           done
-          docker run --rm --network host --entrypoint /bin/sh minio/mc -c \
+          docker run --rm --network host --entrypoint /bin/sh \
+            quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z -c \
             "mc alias set local http://localhost:9000 ci-dummy ci-dummy-secret && \
              mc mb -p local/manage-our-home"
       - name: Start apps/api (applies migrations on boot)

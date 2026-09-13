@@ -18,8 +18,12 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init:/docker-entrypoint-initdb.d:ro
 
+  # Registry is quay.io, not Docker Hub: docker.io/minio/minio no longer
+  # answers anonymous pulls (issue #157). The tag is pinned rather than
+  # `latest` so the server cannot move under an existing stack unnoticed;
+  # keep it in step with .github/workflows/ci.yml when bumping.
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
@@ -31,8 +35,12 @@ services:
   # One-shot: creates the bucket the api expects (MINIO_BUCKET below) —
   # MinIO doesn't auto-create buckets and neither does the api's S3 client.
   # Idempotent (--ignore-existing), exits once done.
+  # Same story as the minio service above: quay.io because Docker Hub no
+  # longer serves this repo anonymously (issue #157), and a pinned tag
+  # rather than `latest`. mc has its own release clock, so this stamp is
+  # deliberately not the server's.
   minio-init:
-    image: minio/mc:latest
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
     depends_on: [minio]
     restart: "no"
     environment:
