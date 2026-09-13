@@ -8,6 +8,12 @@ use rrule::{RRuleSet, Tz};
 /// number of rows. 1000 comfortably covers "daily for 2+ years".
 const MAX_OCCURRENCES: u16 = 1000;
 
+/// The fixed v1 display timezone, the one every form parses into and every
+/// page renders back from (`apps/web/src/routes/agenda/mod.rs`'s
+/// `DISPLAY_TZ`, `apps/shared`'s `paris_date`/`paris_start_of_day`). There
+/// is no per-family timezone in v1.
+const PARIS: Tz = Tz::Europe__Paris;
+
 /// One expanded occurrence: the instant it starts, and the instant it ends.
 /// Named because an all-day occurrence's end is not its start plus a fixed
 /// duration — see `expand_all_day_occurrences`.
@@ -155,6 +161,82 @@ mod tests {
         let start = Utc.with_ymd_and_hms(2026, 1, 5, 9, 0, 0).unwrap(); // Monday
         let occurrences = expand_occurrences("FREQ=WEEKLY;COUNT=2", start, start, start).unwrap();
         assert_eq!(occurrences, vec![start]);
+    }
+
+    // -- expand_occurrences across a DST change (#116) ------------------------
+    //
+    // An hour-bound series is a wall-clock promise: « tous les lundis à 9 h »
+    // means 9 h on the clock in the hall, on both sides of a change of hour —
+    // what RFC 5545 says a `DTSTART;TZID=` rule means. Unrolling in UTC
+    // freezes the offset in force the day the series was created, so every
+    // occurrence past the next change reads an hour off.
+
+    /// The UTC instant a row stores for a Paris wall-clock time — what the
+    /// form produces (`apps/web`'s `paris_local_to_utc`).
+    fn paris(y: i32, m: u32, d: u32, h: u32, min: u32) -> DateTime<Utc> {
+        PARIS
+            .with_ymd_and_hms(y, m, d, h, min, 0)
+            .single()
+            .expect("unambiguous Paris wall clock")
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn a_monthly_hourly_rule_keeps_its_paris_wall_clock_after_the_clocks_go_back() {
+        // The reproduction from #116, measured on a live stack: a 09:00
+        // meeting created on 2026-09-05 (Paris UTC+2) came back in November
+        // (UTC+1) at 2026-11-05T07:00:00Z — 08:00 in Paris, an hour early.
+        let occs = expand_occurrences(
+            "FREQ=MONTHLY",
+            paris(2026, 9, 5, 9, 0),
+            paris(2026, 11, 1, 0, 0),
+            paris(2026, 11, 30, 0, 0),
+        )
+        .unwrap();
+        assert_eq!(occs.len(), 1);
+        assert_eq!(occs[0], paris(2026, 11, 5, 9, 0));
+    }
+
+    #[test]
+    fn a_monthly_hourly_rule_keeps_its_paris_wall_clock_after_the_clocks_go_forward() {
+        // The mirror case, which a fix pinned to one offset would miss: a
+        // series created in winter (UTC+1) whose occurrence falls in summer
+        // (UTC+2) drifts an hour *late* rather than early.
+        let occs = expand_occurrences(
+            "FREQ=MONTHLY",
+            paris(2026, 1, 5, 9, 0),
+            paris(2026, 7, 1, 0, 0),
+            paris(2026, 7, 31, 0, 0),
+        )
+        .unwrap();
+        assert_eq!(occs.len(), 1);
+        assert_eq!(occs[0], paris(2026, 7, 5, 9, 0));
+    }
+
+    #[test]
+    fn a_weekly_hourly_rule_keeps_its_paris_wall_clock_and_weekday_across_the_change() {
+        // 2026-10-19 is a Monday; Paris goes back to UTC+1 on 2026-10-25.
+        // Every Monday of the window has to read 09:00 in Paris, and has to
+        // still be a Monday there.
+        let occs = expand_occurrences(
+            "FREQ=WEEKLY;BYDAY=MO",
+            paris(2026, 10, 19, 9, 0),
+            paris(2026, 10, 19, 0, 0),
+            paris(2026, 11, 9, 23, 59),
+        )
+        .unwrap();
+        assert_eq!(
+            occs,
+            vec![
+                paris(2026, 10, 19, 9, 0),
+                paris(2026, 10, 26, 9, 0),
+                paris(2026, 11, 2, 9, 0),
+                paris(2026, 11, 9, 9, 0),
+            ]
+        );
+        for occ in &occs {
+            assert_eq!(paris_date(*occ).weekday(), Weekday::Mon);
+        }
     }
 
     // -- expand_all_day_occurrences ------------------------------------------
