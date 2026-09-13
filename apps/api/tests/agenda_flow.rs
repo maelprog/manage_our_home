@@ -279,10 +279,11 @@ async fn an_all_day_event_is_stored_as_whole_paris_days(db: PgPool) {
 ///
 /// Anchoring the row on Paris midnight puts its `starts_at` on the DST
 /// cliff (22:00Z in summer, 23:00Z in winter). Unrolled in UTC — which is
-/// what `expand_occurrences` does — every later occurrence keeps September's
-/// offset and lands at 22:00Z, i.e. 23:00 on the *previous* day once the
-/// clocks go back. The event then vanishes from a dashboard window that
-/// starts at Paris midnight, which is #101's own symptom one level up.
+/// what this path still does, on a midnight stand-in — every later
+/// occurrence would keep September's offset and land at 22:00Z, i.e. 23:00
+/// on the *previous* day once the clocks go back. The event then vanishes
+/// from a dashboard window that starts at Paris midnight, which is #101's
+/// own symptom one level up.
 ///
 /// This is the reproduction from the review of PR #115, verbatim.
 #[sqlx::test]
@@ -347,6 +348,71 @@ async fn a_recurring_all_day_event_lands_on_its_civil_day_after_the_clocks_chang
     assert_eq!(
         instant(occ, "occurrence_ends_at"),
         Utc.with_ymd_and_hms(2026, 11, 5, 23, 0, 0).unwrap()
+    );
+}
+
+/// #116: the same promise for an **hour-bound** recurring event, end to
+/// end. « Tous les mois à 9 h » has to keep reading 09:00 in Paris once the
+/// clocks go back, `occurrence_ends_at` included — the reproduction
+/// measured on a live stack at the verification of #115, replayed here
+/// against a real database and through the whole `GET /events` path, which
+/// is where the occurrence's end is derived from the stored duration.
+#[sqlx::test]
+async fn a_recurring_hourly_event_keeps_its_paris_wall_clock_after_the_clocks_change(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    // 09:00 → 10:00 Paris on 2026-09-05, where Paris is UTC+2.
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "Point famille",
+            "starts_at": "2026-09-05T07:00:00Z",
+            "ends_at": "2026-09-05T08:00:00Z",
+            "all_day": false,
+            "rrule": "FREQ=MONTHLY",
+        })),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+
+    // November, where Paris is UTC+1: 09:00 local is 08:00Z. Unrolled in
+    // UTC the occurrence came back at 07:00Z — 08:00 in Paris.
+    let from = Utc.with_ymd_and_hms(2026, 11, 4, 23, 0, 0).unwrap();
+    let to = Utc.with_ymd_and_hms(2026, 11, 7, 22, 59, 59).unwrap();
+    let list = call(
+        &router,
+        Method::GET,
+        &format!(
+            "/groups/{group_id}/events?from={}&to={}",
+            urlenc(&from.to_rfc3339()),
+            urlenc(&to.to_rfc3339())
+        ),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&list, StatusCode::OK);
+    let body = json_body(list).await;
+    let occurrences = body["occurrences"].as_array().unwrap();
+    assert_eq!(
+        occurrences.len(),
+        1,
+        "expected one November occurrence: {body}"
+    );
+    let occ = &occurrences[0];
+    assert_eq!(
+        instant(occ, "occurrence_starts_at"),
+        Utc.with_ymd_and_hms(2026, 11, 5, 8, 0, 0).unwrap()
+    );
+    assert_eq!(
+        instant(occ, "occurrence_ends_at"),
+        Utc.with_ymd_and_hms(2026, 11, 5, 9, 0, 0).unwrap()
     );
 }
 

@@ -23,18 +23,51 @@ pub type OccurrenceSpan = (DateTime<Utc>, DateTime<Utc>);
 /// that's derived from `starts_at`) into occurrence start times that fall
 /// within `[from, to]`. Returns an error only for a malformed RRULE string;
 /// callers validate on write (`validate`) so this should not normally fail.
+///
+/// The rule is unrolled in **Europe/Paris**, from a
+/// `DTSTART;TZID=Europe/Paris` line (#116). A recurring event is a
+/// wall-clock promise — « tous les lundis à 9 h » means 9 h on the clock in
+/// the hall, on both sides of a change of hour — and that is exactly what
+/// RFC 5545 makes a local `DTSTART` mean. Unrolled from `DTSTART:<..>Z` in
+/// UTC instead, every occurrence inherited the offset in force the day the
+/// series was created: a 09:00 meeting created in September came back at
+/// 08:00 in November, measured on a live stack at the verification of #115.
+///
+/// Europe/Paris rather than a per-family zone because there is no per-family
+/// zone in v1 — see `PARIS`.
 pub fn expand_occurrences(
     rrule: &str,
     starts_at: DateTime<Utc>,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
 ) -> Result<Vec<DateTime<Utc>>, rrule::RRuleError> {
-    let ical = format!(
-        "DTSTART:{}\nRRULE:{}",
-        starts_at.format("%Y%m%dT%H%M%SZ"),
-        rrule
-    );
-    let set: RRuleSet = ical.parse()?;
+    expand_from_dtstart(&paris_dtstart(starts_at), rrule, from, to)
+}
+
+/// The `DTSTART` line for a wall-clock unroll: the Paris local time
+/// `starts_at` reads as, tagged with its zone.
+fn paris_dtstart(starts_at: DateTime<Utc>) -> String {
+    format!(
+        "DTSTART;TZID=Europe/Paris:{}",
+        starts_at.with_timezone(&PARIS).format("%Y%m%dT%H%M%S")
+    )
+}
+
+/// The `DTSTART` line for an unroll on instants, in UTC. Only the all-day
+/// stand-in uses it — see `expand_all_day_occurrences`.
+fn utc_dtstart(starts_at: DateTime<Utc>) -> String {
+    format!("DTSTART:{}", starts_at.format("%Y%m%dT%H%M%SZ"))
+}
+
+/// Shared body of both expansions: parse `<dtstart>\nRRULE:<rrule>`, keep
+/// the occurrences inside `[from, to]`.
+fn expand_from_dtstart(
+    dtstart: &str,
+    rrule: &str,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<DateTime<Utc>>, rrule::RRuleError> {
+    let set: RRuleSet = format!("{dtstart}\nRRULE:{rrule}").parse()?;
     // `RRuleSet::after`/`before` are exclusive of the boundary instant, but
     // callers (list_events) treat `[from, to]` as inclusive on both ends —
     // nudge by a second so an occurrence landing exactly on `from` or `to`
@@ -56,17 +89,17 @@ pub fn expand_occurrences(
 /// whole Europe/Paris days, the same invariant `normalize_all_day` puts on
 /// the stored row.
 ///
-/// `expand_occurrences` cannot be used directly here, and the reason is the
-/// invariant itself (#101, round 2). An all-day row is anchored on Paris
-/// midnight, which is 22:00Z the previous day in summer and 23:00Z in
-/// winter — i.e. exactly on the DST cliff. `expand_occurrences` writes that
-/// instant into `DTSTART:<..>Z` and unrolls in UTC, so every occurrence
-/// inherits the offset in force the month the series was created and slides
-/// onto the neighbouring civil day once the clocks change. A monthly
-/// reminder set on the 5th of September comes back on 2026-11-04T22:00Z —
-/// 23:00 on the *4th* in Paris. The dashboard then drops it on the day it
-/// actually falls, and `/agenda` files it under the wrong date: the very
-/// symptom #101 is about, re-created for recurring events.
+/// Unrolling the stored instants directly cannot work here, and the reason
+/// is the invariant itself (#101, round 2). An all-day row is anchored on
+/// Paris midnight, which is 22:00Z the previous day in summer and 23:00Z in
+/// winter — i.e. exactly on the DST cliff. Written into `DTSTART:<..>Z` and
+/// unrolled in UTC, every occurrence inherits the offset in force the month
+/// the series was created and slides onto the neighbouring civil day once
+/// the clocks change. A monthly reminder set on the 5th of September comes
+/// back on 2026-11-04T22:00Z — 23:00 on the *4th* in Paris. The dashboard
+/// then drops it on the day it actually falls, and `/agenda` files it under
+/// the wrong date: the very symptom #101 is about, re-created for recurring
+/// events.
 ///
 /// The same cliff breaks `BYDAY` outright, DST or no DST: Paris midnight on
 /// a Saturday is a *Friday* in UTC, so `FREQ=WEEKLY;BYDAY=SA` unrolled in
@@ -79,14 +112,18 @@ pub fn expand_occurrences(
 /// and the results filtered on the real instants, so `[from, to]` stays
 /// inclusive on both ends exactly as `expand_occurrences` promises.
 ///
+/// The stand-in is unrolled through `utc_dtstart`, not through
+/// `expand_occurrences`, on purpose: since #116 the latter unrolls in
+/// Europe/Paris, and this path's whole construction — and the tests below
+/// that pin it — rest on a zone where no offset can move a date. Keeping it
+/// on its own `DTSTART` line makes it independent of that choice rather
+/// than quietly riding on it. Whether the two unrollings can now be folded
+/// into one is a question of structure, not of behaviour, and is tracked
+/// apart from #116.
+///
 /// `ends_at` is read as a **span in civil days**, not as a duration: a
 /// three-day break stays three days in a month where one of them is 23 or
 /// 25 hours long.
-///
-/// Only all-day events go through here. Hour-bound recurring events keep
-/// unrolling in UTC and keep their own DST drift (a 09:00 meeting comes
-/// back at 08:00 after the clocks change) — a distinct, pre-existing defect
-/// that affects every event and is not #101's to fix.
 pub fn expand_all_day_occurrences(
     rrule: &str,
     starts_at: DateTime<Utc>,
@@ -98,9 +135,9 @@ pub fn expand_all_day_occurrences(
     let span_days = (paris_date(ends_at) - first_day).num_days().max(1);
 
     let stand_in_start = first_day.and_time(NaiveTime::MIN).and_utc();
-    let dates = expand_occurrences(
+    let dates = expand_from_dtstart(
+        &utc_dtstart(stand_in_start),
         rrule,
-        stand_in_start,
         from - Duration::days(1),
         to + Duration::days(1),
     )?;
@@ -125,13 +162,17 @@ fn add_days(date: NaiveDate, n: i64) -> NaiveDate {
 /// Validates that `rrule` parses as a well-formed RRULE, used when
 /// creating/updating an event so a bad value is rejected at write time
 /// (400) instead of surfacing as a silent empty expansion later.
+///
+/// Validates against the same `DTSTART` line `expand_occurrences` will
+/// unroll from, so nothing accepted at write time can fail to expand at
+/// read time. It covers the all-day path too: the one rule `rrule` makes
+/// zone-dependent is that an `UNTIL` must be UTC unless `DTSTART` is
+/// floating, and neither of our two `DTSTART` forms is floating — so both
+/// accept and reject exactly the same strings.
 pub fn validate(rrule: &str, starts_at: DateTime<Utc>) -> Result<(), rrule::RRuleError> {
-    let ical = format!(
-        "DTSTART:{}\nRRULE:{}",
-        starts_at.format("%Y%m%dT%H%M%SZ"),
-        rrule
-    );
-    ical.parse::<RRuleSet>().map(|_| ())
+    format!("{}\nRRULE:{rrule}", paris_dtstart(starts_at))
+        .parse::<RRuleSet>()
+        .map(|_| ())
 }
 
 #[cfg(test)]
