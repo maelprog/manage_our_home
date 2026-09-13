@@ -416,6 +416,91 @@ async fn a_recurring_hourly_event_keeps_its_paris_wall_clock_after_the_clocks_ch
     );
 }
 
+/// #116, round 2: a series anchored on the **repeated hour** must survive
+/// both ends of the round trip.
+///
+/// Paris repeats 02:30 on 2026-10-25 — 00:30Z in CEST, then 01:30Z in CET —
+/// and the web form reaches the first of the two (`paris_local_to_utc`
+/// resolves with `earliest()`). Naming that hour as a bare wall clock is
+/// ambiguous, and `rrule` rejects an ambiguous `DTSTART;TZID=` rather than
+/// picking a side: unrolling from a formatted wall clock turned a « garde
+/// de nuit, 02:30, tous les mois » into a 400 on write, and into a **500 on
+/// the whole window** on read, because `list_events` reports an expansion
+/// failure as `AppError::Internal` for every event in the range at once.
+#[sqlx::test]
+async fn a_recurring_event_anchored_on_the_repeated_hour_survives_write_and_read(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    // 02:30 → 03:30 Paris on 2026-10-25, taking the first of the two 02:30.
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "Garde de nuit",
+            "starts_at": "2026-10-25T00:30:00Z",
+            "ends_at": "2026-10-25T01:30:00Z",
+            "all_day": false,
+            "rrule": "FREQ=MONTHLY",
+        })),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+
+    // A second, ordinary event in the same window: the 500 took the whole
+    // list down, so its presence is what shows the blast radius.
+    let plain = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "Courses",
+            "starts_at": "2026-11-25T09:00:00Z",
+            "ends_at": "2026-11-25T10:00:00Z",
+            "all_day": false,
+        })),
+    )
+    .await;
+    assert_status(&plain, StatusCode::CREATED);
+
+    let from = Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap();
+    let to = Utc.with_ymd_and_hms(2026, 11, 30, 0, 0, 0).unwrap();
+    let list = call(
+        &router,
+        Method::GET,
+        &format!(
+            "/groups/{group_id}/events?from={}&to={}",
+            urlenc(&from.to_rfc3339()),
+            urlenc(&to.to_rfc3339())
+        ),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&list, StatusCode::OK);
+    let body = json_body(list).await;
+    let occurrences = body["occurrences"].as_array().unwrap();
+    assert_eq!(
+        occurrences.len(),
+        2,
+        "both events belong to November: {body}"
+    );
+    let night = occurrences
+        .iter()
+        .find(|o| o["title"] == "Garde de nuit")
+        .unwrap_or_else(|| panic!("the recurring occurrence is missing: {body}"));
+    // November has no repeated hour: 02:30 Paris is 01:30Z.
+    assert_eq!(
+        instant(night, "occurrence_starts_at"),
+        Utc.with_ymd_and_hms(2026, 11, 25, 1, 30, 0).unwrap()
+    );
+}
+
 /// #101: a backwards range is still a 400 on an `all_day` event — the
 /// normalization runs *after* validation, so it repairs the day boundaries
 /// of a sane request rather than papering over a nonsensical one.

@@ -280,6 +280,54 @@ mod tests {
         }
     }
 
+    // -- the repeated hour (#116, round 2) -----------------------------------
+    //
+    // Paris does not just change offset, it *repeats* an hour: on
+    // 2026-10-25, 02:30 happens twice — 00:30Z in CEST, then 01:30Z in CET.
+    // A wall-clock string naming that hour is ambiguous, and `rrule` 0.14
+    // refuses one outright rather than picking a side. Both instants are
+    // reachable: `apps/web`'s `paris_local_to_utc` resolves the form's
+    // `02:30` with `earliest()` and stores the first of the two.
+    //
+    // A rule anchored there has to keep being accepted on write and keep
+    // expanding on read. The second matters most: `list_events` turns an
+    // expansion error into a 500 for the *whole* window, so one such row
+    // would take `/agenda` and the dashboard down with it.
+
+    /// The two instants Paris wall-clock 02:30 names on 2026-10-25.
+    fn first_repeated_0230() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 10, 25, 0, 30, 0).unwrap()
+    }
+    fn second_repeated_0230() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 10, 25, 1, 30, 0).unwrap()
+    }
+
+    #[test]
+    fn a_rule_anchored_on_the_repeated_hour_still_expands() {
+        for anchor in [first_repeated_0230(), second_repeated_0230()] {
+            let occs = expand_occurrences(
+                "FREQ=MONTHLY",
+                anchor,
+                Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap(),
+                Utc.with_ymd_and_hms(2026, 11, 30, 0, 0, 0).unwrap(),
+            )
+            .unwrap_or_else(|e| panic!("anchor {anchor} failed to expand: {e}"));
+            // November has no repeated hour: 02:30 Paris is 01:30Z, whichever
+            // of the two October instants the series was anchored on.
+            assert_eq!(occs, vec![paris(2026, 11, 25, 2, 30)]);
+        }
+    }
+
+    #[test]
+    fn a_rule_anchored_on_the_repeated_hour_is_accepted_on_write() {
+        for anchor in [first_repeated_0230(), second_repeated_0230()] {
+            assert!(
+                validate("FREQ=MONTHLY", anchor).is_ok(),
+                "anchor {anchor} was rejected at write time"
+            );
+        }
+    }
+
     // -- expand_all_day_occurrences ------------------------------------------
     //
     // #101, round 2. Anchoring an all-day event on Paris midnight puts its
