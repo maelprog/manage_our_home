@@ -776,6 +776,12 @@ async fn a_rule_the_reminders_cannot_unroll_is_refused_on_write(db: PgPool) {
         // One line, and still read one way by `list_events` and refused by
         // the reminders.
         "FREQ=WEEKLY;BYDAY=X:MO",
+        // A `:` on one line, read two ways: all-day on a Saturday, Mondays
+        // for `list_events` and Saturdays for the reminders; hour-bound,
+        // stored as written and unrolled as `FREQ=DAILY`.
+        "BYDAY=1:WKST=MO;FREQ=WEEKLY",
+        "FREQ=WEEKLY;X:FREQ=DAILY",
+        "RRULE:FREQ=DAILY",
     ];
     for rule in refused {
         for all_day in [true, false] {
