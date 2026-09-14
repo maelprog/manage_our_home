@@ -470,10 +470,22 @@ fn add_days(date: NaiveDate, n: i64) -> NaiveDate {
 /// was a 201, then a 500 on `POST /reminders`.
 ///
 /// Both readers now unroll through `expand_series` (#169), so the reminders
-/// read an all-day row on `all_day_rule_set` too. The check on
-/// `paris_rule_set` is kept all the same: dropping it would accept on write
-/// rules refused today, which is a decision of its own, not a consequence
-/// of #169.
+/// read an all-day row on `all_day_rule_set` too, and no reader builds
+/// `paris_rule_set` for an all-day row any more. The check on it is still
+/// here, and as far as can be seen it is **redundant** for such a row, with
+/// `rrule` 0.14: once `:` and line breaks are refused, both constructions
+/// parse the same value the same way, and the only checks that depend on
+/// the anchor are the zone of `UNTIL` (UTC, on both) and `UNTIL` not before
+/// it. The Paris midnight the row stores always precedes the UTC-midnight
+/// stand-in by an hour or two, so an `UNTIL` the stand-in takes is taken by
+/// the stored instant too. Measured, not proven: a fuzz at the verification
+/// of #172 found 0 of 240 000 (rule, anchor) pairs accepted by
+/// `all_day_rule_set` and refused by `paris_rule_set`, and a narrower one
+/// run while fixing it 0 of 183 960 (every Paris day of 2026, 7 frequencies,
+/// 6 extra parts, 12 `COUNT`/`UNTIL` forms around both anchors). Kept rather
+/// than removed because removing it was not #169's to decide — #162 is where
+/// the two constructions are weighed — and because the redundancy rests on
+/// `rrule`'s current checks, which an upgrade could change.
 ///
 /// And a rule is **one value**, whichever the path: no line break, no `:`.
 /// A rule carrying a line break injected its own `EXDATE:`, `RDATE:` or
@@ -1072,14 +1084,16 @@ mod tests {
 
     // -- a rule is one line, and every reader unrolls it (#165) --------------
     //
-    // An all-day series has two readers, and they build its rule set two
-    // ways: `list_events` wraps the rule in `all_day_rule_set`'s text,
-    // `refill_notifications` parses the rule alone through
+    // At #165 an all-day series had two readers building its rule set two
+    // ways: `list_events` wrapped the rule in `all_day_rule_set`'s text,
+    // `refill_notifications` parsed the rule alone through
     // `expand_occurrences`, from the instant the row stores. A rule carrying
     // a line break injected its own `EXDATE:`/`RDATE:`/`DTSTART:` lines into
     // the first and was refused by the second: a 201 on write, then a 500 on
     // `POST /reminders` and an error logged by the reminders job at every
-    // pass. Write has to refuse what *either* reader refuses.
+    // pass. Since #169 both readers go through `expand_series`, i.e.
+    // `all_day_rule_set` for an all-day row; `validate` still checks both
+    // constructions (see its doc), and these tests pin that.
 
     /// Rules that bring lines of their own — through `\n`, `\r\n`, or a bare
     /// `\r`, which `str::lines` strips on one reader and not on the other.
@@ -1118,21 +1132,30 @@ mod tests {
     }
 
     #[test]
-    fn an_all_day_rule_the_reminders_cannot_unroll_is_refused_on_write() {
+    fn an_all_day_rule_the_hour_bound_construction_cannot_unroll_is_refused_on_write() {
         // One line, no break: `all_day_rule_set` reads everything after
         // `RRULE:` and takes `X:MO` for a Monday; `expand_occurrences` finds
         // a `:` in a line with no property name and parses `MO` alone.
+        // `expand_occurrences` was the reminders' reader of an all-day row
+        // until #169; it is still the construction `validate` checks.
         let rule = "FREQ=WEEKLY;BYDAY=X:MO";
         let stored = midnight(2026, 9, 5);
         assert!(
             expand_occurrences(rule, stored, stored, stored + Duration::days(30)).is_err(),
-            "the premise: the reminders reader refuses {rule}"
+            "the premise: the hour-bound construction refuses {rule}"
         );
         assert!(validate(rule, stored, true).is_err());
     }
 
     #[test]
-    fn validate_accepts_exactly_the_all_day_rules_both_readers_accept() {
+    fn validate_accepts_exactly_the_all_day_rules_both_constructions_accept() {
+        // What this compares: acceptance on write against acceptance by the
+        // all-day unroll (`listed`, what both readers use since #169) **and**
+        // by the hour-bound construction from the stored instant
+        // (`hour_bound`, the reminders' reader of an all-day row until #169,
+        // still checked by `validate`). It does not compare two live readers
+        // any more.
+        //
         // Checked from the instant the client sends as well as from the one
         // the row stores: `validate` runs before `normalize_all_day`.
         let rules = [
@@ -1161,15 +1184,15 @@ mod tests {
                     window.1,
                 )
                 .is_ok();
-                let reminded = expand_occurrences(rule, stored, window.0, window.1).is_ok();
+                let hour_bound = expand_occurrences(rule, stored, window.0, window.1).is_ok();
                 let one_value = !rule.contains(['\r', '\n', ':']);
                 for sent in [stored, stored + Duration::hours(12)] {
                     let written = validate(rule, sent, true).is_ok();
                     assert_eq!(
                         written,
-                        listed && reminded && one_value,
+                        listed && hour_bound && one_value,
                         "{rule:?} sent at {sent}: accepted on write = {written}, \
-                         listed = {listed}, reminded = {reminded}"
+                         listed = {listed}, hour_bound = {hour_bound}"
                     );
                 }
             }
@@ -1204,13 +1227,15 @@ mod tests {
     // -- a rule holds no `:` (#165) -------------------------------------------
     //
     // A `:` is how a content line separates a property name from its value;
-    // an RRULE value (RFC 5545 §3.3.10) never holds one. The two readers do
-    // not agree on what to do with it: `all_day_rule_set` keeps the rule
-    // whole after its own `RRULE:`, `expand_occurrences` keeps only what
-    // follows the first `:`. On one line, with no break, a rule could still
-    // be read two ways, or stored as written and unrolled as something else.
+    // an RRULE value (RFC 5545 §3.3.10) never holds one. The two
+    // constructions do not agree on what to do with it: `all_day_rule_set`
+    // keeps the rule whole after its own `RRULE:`, `expand_occurrences` keeps
+    // only what follows the first `:`. At #165 they were the agenda's and the
+    // reminders' readers of an all-day row (both use the first since #169):
+    // on one line, with no break, a rule could still be read two ways, or
+    // stored as written and unrolled as something else.
 
-    /// One-line rules carrying a `:`. Some are refused by one reader, some
+    /// One-line rules carrying a `:`. Some are refused by one construction, some
     /// accepted by both and read differently, some accepted as written and
     /// unrolled as their tail.
     const COLON_RULES: [&str; 6] = [
@@ -1223,9 +1248,10 @@ mod tests {
     ];
 
     #[test]
-    fn the_two_readers_part_on_a_rule_holding_a_colon() {
+    fn the_two_constructions_part_on_a_rule_holding_a_colon() {
         // The premise of the refusal, measured on both examples from the
-        // verification of #166.
+        // verification of #166. `hour_bound` is what the reminders read for
+        // an all-day row until #169; since then they read `listed`.
         let saturday = midnight(2026, 9, 5);
         assert_eq!(paris_date(saturday).weekday(), Weekday::Sat);
         let rule = "BYDAY=1:WKST=MO;FREQ=WEEKLY";
@@ -1241,7 +1267,7 @@ mod tests {
         .into_iter()
         .map(|(start, _)| paris_date(start).weekday())
         .collect();
-        let reminded: Vec<Weekday> = expand_occurrences(rule, saturday, window.0, window.1)
+        let hour_bound: Vec<Weekday> = expand_occurrences(rule, saturday, window.0, window.1)
             .unwrap()
             .into_iter()
             .map(|start| paris_date(start).weekday())
@@ -1251,8 +1277,8 @@ mod tests {
             "{listed:?}"
         );
         assert!(
-            !reminded.is_empty() && reminded.iter().all(|d| *d == Weekday::Sat),
-            "{reminded:?}"
+            !hour_bound.is_empty() && hour_bound.iter().all(|d| *d == Weekday::Sat),
+            "{hour_bound:?}"
         );
 
         // Hour-bound: stored as written, unrolled as its tail, every day.
@@ -1292,7 +1318,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_checks_the_reminders_reader_from_the_instant_normalize_all_day_stores() {
+    fn validate_checks_the_hour_bound_construction_from_the_instant_normalize_all_day_stores() {
         // `validate` runs before `normalize_all_day` and rebuilds the stored
         // anchor itself. Pinned on the edges of a Paris day and across both
         // changes of hour, where an offset slip would move it by a day.
