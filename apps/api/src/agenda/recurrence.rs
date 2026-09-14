@@ -514,16 +514,36 @@ fn add_days(date: NaiveDate, n: i64) -> NaiveDate {
 /// byte, wherever it sits, before any parser sees it.
 ///
 /// And an all-day rule **steps by days** (#171): no `FREQ=HOURLY`,
-/// `MINUTELY` or `SECONDLY`, no `BYHOUR`, `BYMINUTE` or `BYSECOND` (RFC 5545
-/// §3.3.10). `expand_all_day_occurrences` keeps the date of each occurrence
-/// and nothing of its time, so such a rule unrolls into copies of the same
-/// day: `FREQ=HOURLY;COUNT=5` was listed five times on its one day and
-/// reminded once, the reminders keeping one row per instant, and an
-/// unbounded `FREQ=MINUTELY` spent `MAX_OCCURRENCES` on its first day, the
-/// rest of the window empty on both readers. Read on the parsed rule, so a
-/// part is caught in any case and at any place the parser takes it. An
-/// hour-bound row keeps them. A row stored before this check still unrolls
-/// as it did: nothing refuses it on read.
+/// `MINUTELY` or `SECONDLY`, no `BYHOUR`, `BYMINUTE` or `BYSECOND`.
+/// `expand_all_day_occurrences` keeps the date of each occurrence and
+/// nothing of its time, so such a rule unrolls into copies of the same day:
+/// `FREQ=HOURLY;COUNT=5` was listed five times on its one day and reminded
+/// once, the reminders keeping one row per instant, and an unbounded
+/// `FREQ=MINUTELY` spent `MAX_OCCURRENCES` on its first day, the rest of the
+/// window empty on both readers. Refusing them on write rather than
+/// collapsing the copies on read is the maintainer's call (2026-09-15, not
+/// the RFC's). RFC 5545 §3.3.10 only speaks to the `BY*` parts: it says
+/// `BYSECOND`, `BYMINUTE` and `BYHOUR` MUST NOT be used when `DTSTART` is a
+/// DATE, and that such values MUST be ignored — it prescribes ignoring
+/// them, not refusing them; the refusal is ours too. It says nothing
+/// against a sub-daily `FREQ` on a DATE.
+///
+/// Read on the parsed rule, so a part the parser fills is caught whatever
+/// its case and wherever it sits. A part with an empty value
+/// (`FREQ=DAILY;BYHOUR=`) parses to an empty list, has no effect on either
+/// reader, and is accepted. An hour-bound row keeps all of these.
+///
+/// This closes `POST` and `PATCH`, not every way a row gets there:
+///
+/// - A row **stored before this check** still unrolls as it did; nothing
+///   refuses it on read, and no migration rewrites it. It does get a 400 on
+///   any `PATCH` that does not replace its rule — a title, `completed` —
+///   because `update_event` validates the merged rule.
+/// - A **calendar re-import** rewrites `all_day` from the feed without
+///   coming back here (`google_calendar/imports.rs`). An hour-bound imported
+///   event given `FREQ=HOURLY;COUNT=5` by `PATCH`, then turned into a
+///   `VALUE=DATE` event by the feed, becomes an all-day row holding that
+///   rule, and lists five entries for one reminder again. Not closed here.
 pub fn validate(
     rrule: &str,
     starts_at: DateTime<Utc>,
