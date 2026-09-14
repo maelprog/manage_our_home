@@ -30,9 +30,9 @@ pub type OccurrenceSpan = (DateTime<Utc>, DateTime<Utc>);
 /// every stored series unrolls: what is stored is not always what was
 /// validated. A calendar re-import rewrites `starts_at` from the feed
 /// without going back through `validate` (`google_calendar/imports.rs`),
-/// and can move it past the rule's `UNTIL`; an all-day row is unrolled on
-/// another anchor altogether (see `validate`). Either way a stored series
-/// fails here, and `list_events` then fails the whole window — #161.
+/// and can move it past the rule's `UNTIL`, or a row can predate a check.
+/// A stored series can therefore fail here; `list_events` then renders that
+/// row on its own and logs why, instead of failing the whole window (#161).
 ///
 /// The rule is unrolled in **Europe/Paris** (#116). A recurring event is a
 /// wall-clock promise — « tous les lundis à 9 h » means 9 h on the clock in
@@ -285,17 +285,16 @@ fn utc_dtstart(starts_at: DateTime<Utc>) -> String {
     format!("DTSTART:{}", starts_at.format("%Y%m%dT%H%M%SZ"))
 }
 
-/// Unrolls from a `<dtstart>\nRRULE:<rrule>` text. Only the all-day
-/// stand-in uses it: its `DTSTART` is a UTC midnight, which no zone can
-/// make ambiguous.
-fn expand_from_dtstart(
-    dtstart: &str,
-    rrule: &str,
-    from: DateTime<Utc>,
-    to: DateTime<Utc>,
-) -> Result<Vec<DateTime<Utc>>, rrule::RRuleError> {
-    let set: RRuleSet = format!("{dtstart}\nRRULE:{rrule}").parse()?;
-    Ok(occurrences_in(set, from, to))
+/// The rule set an all-day series unrolls from: `rrule` anchored on the
+/// UTC-midnight stand-in for the Paris date `starts_at` opens — see
+/// `expand_all_day_occurrences`. Its `DTSTART` is a UTC midnight, which no
+/// zone can make ambiguous.
+///
+/// `expand_all_day_occurrences` unrolls this set and `validate` builds it
+/// for an all-day row, so the two accept and refuse the same rules (#161).
+fn all_day_rule_set(rrule: &str, starts_at: DateTime<Utc>) -> Result<RRuleSet, rrule::RRuleError> {
+    let stand_in_start = paris_date(starts_at).and_time(NaiveTime::MIN).and_utc();
+    format!("{}\nRRULE:{rrule}", utc_dtstart(stand_in_start)).parse()
 }
 
 /// The occurrences of `set` inside `[from, to]`, as UTC instants.
@@ -365,13 +364,11 @@ pub fn expand_all_day_occurrences(
     let first_day = paris_date(starts_at);
     let span_days = (paris_date(ends_at) - first_day).num_days().max(1);
 
-    let stand_in_start = first_day.and_time(NaiveTime::MIN).and_utc();
-    let dates = expand_from_dtstart(
-        &utc_dtstart(stand_in_start),
-        rrule,
+    let dates = occurrences_in(
+        all_day_rule_set(rrule, starts_at)?,
         from - Duration::days(1),
         to + Duration::days(1),
-    )?;
+    );
 
     Ok(dates
         .into_iter()
@@ -404,27 +401,35 @@ fn add_days(date: NaiveDate, n: i64) -> NaiveDate {
 /// strings; they did not, and the gap was exactly the ambiguous Paris wall
 /// clock that `paris_rule_set` now sidesteps.
 ///
-/// The identity says nothing about a `starts_at` that changes without
+/// An **all-day** row (`all_day`) is checked on its own construction
+/// instead, `all_day_rule_set`, because that is what
+/// `expand_all_day_occurrences` unrolls: a UTC-midnight stand-in for its
+/// Paris date, not the Paris midnight the row stores. Checked on the stored
+/// instant, the two parted on an `UNTIL` between them (#161): an all-day
+/// event on 2026-09-05 is stored at 2026-09-04T22:00Z, and
+/// `FREQ=DAILY;UNTIL=20260904T235959Z` — what `build_rrule` writes for
+/// « Jusqu'au 2026-09-04 » — was a 201 on write, then `UntilBeforeStart`
+/// and a 500 on the whole window on read. The same identity holds: a rule
+/// accepted here unrolls from the same row.
+///
+/// Neither identity says anything about a `starts_at` that changes without
 /// coming back here. A calendar re-import does exactly that: it rewrites
 /// `starts_at` from the feed and leaves `rrule` alone
 /// (`google_calendar/imports.rs`). An imported event on 2026-10-01 given
 /// `FREQ=DAILY;UNTIL=20261010T235959Z` by `PATCH` passes here; moved by
-/// the feed to 2026-10-25 and re-imported, it fails to expand with
-/// `UntilBeforeStart` — a 500 on the whole window. Pre-existing, tracked in
-/// #161 with the all-day gap below.
-///
-/// That identity does **not** extend to all-day rows. They go through here
-/// on their own `starts_at`, while `expand_all_day_occurrences` unrolls a
-/// UTC midnight stand-in, and the two do not accept the same rules. They
-/// part at least on an `UNTIL` that falls before the stand-in: an all-day
-/// event on 2026-09-05 is stored at 2026-09-04T22:00Z, and
-/// `FREQ=DAILY;UNTIL=20260904T235959Z` — what `build_rrule` writes for
-/// « Jusqu'au 2026-09-04 » — passes here, then fails there with
-/// `UntilBeforeStart`: a 201 on write, a 500 on the whole window on read.
-/// Pre-existing (the same on `main`), tracked in #161 and deliberately left
-/// out of #116. Nothing here shows that it is the only such gap.
-pub fn validate(rrule: &str, starts_at: DateTime<Utc>) -> Result<(), rrule::RRuleError> {
-    paris_rule_set(rrule, starts_at).map(|_| ())
+/// the feed to 2026-10-25 and re-imported, it no longer unrolls. That is
+/// not closed here but on read: `list_events` renders such a row on its
+/// own and logs why, rather than failing the window (#161).
+pub fn validate(
+    rrule: &str,
+    starts_at: DateTime<Utc>,
+    all_day: bool,
+) -> Result<(), rrule::RRuleError> {
+    if all_day {
+        all_day_rule_set(rrule, starts_at).map(|_| ())
+    } else {
+        paris_rule_set(rrule, starts_at).map(|_| ())
+    }
 }
 
 #[cfg(test)]
@@ -446,7 +451,7 @@ mod tests {
     #[test]
     fn rejects_malformed_rrule() {
         let start = Utc.with_ymd_and_hms(2026, 1, 5, 9, 0, 0).unwrap();
-        assert!(validate("NOT_A_VALID_RRULE", start).is_err());
+        assert!(validate("NOT_A_VALID_RRULE", start, false).is_err());
     }
 
     #[test]
@@ -544,9 +549,10 @@ mod tests {
     // given a rule by `PATCH` (the import rewrites `starts_at`, not `rrule`).
     //
     // A rule anchored there has to keep being accepted on write and keep
-    // expanding on read. The second matters most: `list_events` turns an
-    // expansion error into a 500 for the *whole* window, so one such row
-    // would take `/agenda` and the dashboard down with it.
+    // expanding on read. The second matters most: `list_events` used to turn
+    // an expansion error into a 500 for the *whole* window, so one such row
+    // took `/agenda` and the dashboard down with it. Since #161 it renders
+    // the row on its own instead — which still loses the series.
     //
     // Not erroring is not enough, and the two tests below missed that at
     // first because their window opened in November. Unrolling walks the
@@ -632,7 +638,7 @@ mod tests {
     fn a_rule_anchored_on_the_repeated_hour_is_accepted_on_write() {
         for anchor in [first_repeated_0230(), second_repeated_0230()] {
             assert!(
-                validate("FREQ=MONTHLY", anchor).is_ok(),
+                validate("FREQ=MONTHLY", anchor, false).is_ok(),
                 "anchor {anchor} was rejected at write time"
             );
         }
@@ -902,5 +908,87 @@ mod tests {
         .unwrap();
         assert_eq!(occs.len(), 1);
         assert_eq!(occs[0].0, bound);
+    }
+
+    // -- validate on the all-day anchor (#161) -------------------------------
+    //
+    // An all-day row is unrolled on a UTC-midnight stand-in for its Paris
+    // date, not on the Paris midnight it stores (22:00Z or 23:00Z the day
+    // before). A rule validated on the stored instant but unrolled on the
+    // stand-in was accepted on write and failed on read — a 201, then a 500
+    // on the whole window. Write has to refuse what the unroll refuses.
+
+    #[test]
+    fn an_all_day_rule_until_the_day_before_is_refused_on_write() {
+        // The reproduction from #161: an all-day event on 2026-09-05, stored
+        // at 2026-09-04T22:00Z, with what `build_rrule` writes for
+        // « Jusqu'au 2026-09-04 ».
+        assert!(validate(
+            "FREQ=DAILY;UNTIL=20260904T235959Z",
+            midnight(2026, 9, 5),
+            true
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn an_all_day_rule_until_its_own_day_is_accepted_on_write() {
+        assert!(validate(
+            "FREQ=DAILY;UNTIL=20260905T235959Z",
+            midnight(2026, 9, 5),
+            true
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn an_hour_bound_rule_is_still_validated_on_its_own_instant() {
+        // Same instant, same rule, not all-day: it unrolls from
+        // 2026-09-04T22:00Z itself, which the UNTIL does not precede.
+        assert!(validate(
+            "FREQ=DAILY;UNTIL=20260904T235959Z",
+            midnight(2026, 9, 5),
+            false
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_exactly_the_all_day_rules_the_unroll_accepts() {
+        // Anchors on both offsets, and UNTILs on each side of both the stored
+        // instant and the stand-in — the two anchors part between them.
+        let anchors = [midnight(2026, 9, 5), midnight(2026, 12, 5)];
+        let rules = [
+            "FREQ=DAILY",
+            "FREQ=WEEKLY;BYDAY=SA;COUNT=3",
+            "FREQ=DAILY;UNTIL=20260904T215959Z",
+            "FREQ=DAILY;UNTIL=20260904T220000Z",
+            "FREQ=DAILY;UNTIL=20260904T230000Z",
+            "FREQ=DAILY;UNTIL=20260904T235959Z",
+            "FREQ=DAILY;UNTIL=20260905T000000Z",
+            "FREQ=DAILY;UNTIL=20260905T235959Z",
+            "FREQ=MONTHLY;UNTIL=20261204T225959Z",
+            "FREQ=MONTHLY;UNTIL=20261204T230000Z",
+            "FREQ=MONTHLY;UNTIL=20261204T235959Z",
+            "FREQ=MONTHLY;UNTIL=20261205T000000Z",
+            "NOT_A_VALID_RRULE",
+        ];
+        for anchor in anchors {
+            for rule in rules {
+                let written = validate(rule, anchor, true).is_ok();
+                let read = expand_all_day_occurrences(
+                    rule,
+                    anchor,
+                    anchor + Duration::days(1),
+                    midnight(2026, 1, 1),
+                    midnight(2027, 12, 31),
+                )
+                .is_ok();
+                assert_eq!(
+                    written, read,
+                    "{rule} from {anchor}: accepted on write = {written}, unrolls on read = {read}"
+                );
+            }
+        }
     }
 }
