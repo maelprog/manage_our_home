@@ -312,6 +312,17 @@ mod tests {
     // expanding on read. The second matters most: `list_events` turns an
     // expansion error into a 500 for the *whole* window, so one such row
     // would take `/agenda` and the dashboard down with it.
+    //
+    // Not erroring is not enough, and the two tests below missed that at
+    // first because their window opened in November. Unrolling walks the
+    // wall clock, and mapping 02:30 back to an instant resolves to the
+    // *first* pass — so a series anchored on the second pass regenerated
+    // its own start an hour early, `rrule` dropped it as earlier than
+    // `DTSTART`, and the series silently lost its first occurrence (and,
+    // under `COUNT`, slid a day and spent the count elsewhere). A 200 OK
+    // with an occurrence missing, where the round before had a 500. So the
+    // window has to contain October, and the assertions below pin the
+    // instants, not just the absence of an error.
 
     /// The two instants Paris wall-clock 02:30 names on 2026-10-25.
     fn first_repeated_0230() -> DateTime<Utc> {
@@ -334,6 +345,51 @@ mod tests {
             // November has no repeated hour: 02:30 Paris is 01:30Z, whichever
             // of the two October instants the series was anchored on.
             assert_eq!(occs, vec![paris(2026, 11, 25, 2, 30)]);
+        }
+    }
+
+    #[test]
+    fn a_rule_anchored_on_the_repeated_hour_renders_its_own_start() {
+        // The window opens in October, on purpose: an occurrence lost at the
+        // head of the series is invisible to a November-only window.
+        for anchor in [first_repeated_0230(), second_repeated_0230()] {
+            let occs = expand_occurrences(
+                "FREQ=MONTHLY",
+                anchor,
+                Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap(),
+                Utc.with_ymd_and_hms(2026, 11, 30, 0, 0, 0).unwrap(),
+            )
+            .unwrap_or_else(|e| panic!("anchor {anchor} failed to expand: {e}"));
+            assert_eq!(
+                occs,
+                vec![anchor, paris(2026, 11, 25, 2, 30)],
+                "the series anchored on {anchor} does not render its own start"
+            );
+        }
+    }
+
+    #[test]
+    fn a_daily_rule_on_the_repeated_hour_keeps_its_days_and_its_count() {
+        // `COUNT` makes the loss double: the dropped head is not replaced at
+        // the head, it is spent at the tail, so the series both starts a day
+        // late and ends a day late.
+        for anchor in [first_repeated_0230(), second_repeated_0230()] {
+            let occs = expand_occurrences(
+                "FREQ=DAILY;COUNT=3",
+                anchor,
+                Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap(),
+                Utc.with_ymd_and_hms(2026, 11, 30, 0, 0, 0).unwrap(),
+            )
+            .unwrap_or_else(|e| panic!("anchor {anchor} failed to expand: {e}"));
+            assert_eq!(
+                occs,
+                vec![
+                    anchor,
+                    paris(2026, 10, 26, 2, 30),
+                    paris(2026, 10, 27, 2, 30),
+                ],
+                "the series anchored on {anchor} lost or slid its days"
+            );
         }
     }
 
