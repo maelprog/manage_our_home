@@ -79,6 +79,42 @@ export async function makeSuperadmin(email: string): Promise<void> {
   }
 }
 
+/**
+ * The stored bounds of the event `title` created by `email`, as Europe/Paris
+ * wall-clock `YYYY-MM-DDTHH:MM` strings — the app's fixed display timezone.
+ *
+ * Since #117 an all-day event's edit form shows two dates, the end being the
+ * last day covered, so the form can no longer tell a normalized row
+ * (midnight → the midnight after) from one that kept the time of day it was
+ * typed with. The normalization #101 added is a property of what is
+ * *stored*; this reads it where it lives.
+ */
+export async function fetchEventBounds(
+  email: string,
+  title: string,
+): Promise<{ starts: string; ends: string }> {
+  const client = new Client({ connectionString: requireDatabaseUrl() });
+  await client.connect();
+  try {
+    const { rows } = await client.query(
+      `SELECT to_char(e.starts_at AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD"T"HH24:MI') AS starts,
+              to_char(e.ends_at AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD"T"HH24:MI') AS ends
+       FROM events e
+       JOIN users u ON u.id = e.created_by
+       WHERE u.email = $1 AND e.title = $2
+       ORDER BY e.created_at DESC
+       LIMIT 1`,
+      [email, title],
+    );
+    if (rows.length === 0) {
+      throw new Error(`no event "${title}" found for ${email}`);
+    }
+    return { starts: rows[0].starts as string, ends: rows[0].ends as string };
+  } finally {
+    await client.end();
+  }
+}
+
 function requireDatabaseUrl(): string {
   const url = process.env.DATABASE_URL;
   if (!url) {

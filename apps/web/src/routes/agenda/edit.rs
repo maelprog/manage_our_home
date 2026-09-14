@@ -23,11 +23,11 @@ use crate::state::{api_request_auth, AppState};
 
 use super::new::{
     assignee_checkboxes, assignee_ids_from_raw_form, error_message, is_form_urlencoded,
-    recurrence_picker, rrule_from_form, EventForm,
+    recurrence_picker, rrule_from_form, schedule_fields, EventForm,
 };
 use super::{
-    agenda_cookie, can_modify, event_not_found_page, family_context, forbidden_page,
-    paris_local_to_utc, service_unavailable_page, to_datetime_local,
+    agenda_cookie, all_day_field_values, can_modify, event_not_found_page, family_context,
+    forbidden_page, form_bounds, service_unavailable_page, to_datetime_local,
 };
 
 /// The line under the assignee picker explaining what an empty selection
@@ -71,7 +71,7 @@ fn page(
     let picker = recurrence_picker(recurrence);
     let assignees = assignee_checkboxes(members, selected_assignees);
     let hint = assignment_hint(members);
-    let all_day_checked = if all_day { " checked" } else { "" };
+    let schedule = schedule_fields(all_day, starts_local, ends_local);
     let kind = if is_task { "Tâche" } else { "Événement" };
     let body = format!(
         r#"<h1>Modifier — {title_esc}</h1>
@@ -79,10 +79,7 @@ fn page(
 {error_html}
 <form method="post" action="/agenda/{id}/edit">
 <label>Titre <input type="text" name="title" required value="{title_attr}"/></label>
-<label class="field inline">
-<input type="checkbox" name="all_day"{all_day_checked}/> Journée entière</label>
-<label>Début <input type="datetime-local" name="starts_at" value="{starts_local}" required/></label>
-<label>Fin <input type="datetime-local" name="ends_at" value="{ends_local}" required/></label>
+{schedule}
 <label>Lieu <input type="text" name="location" value="{location_attr}"/></label>
 <label>Description <textarea name="description" rows="3">{description_esc}</textarea></label>
 {picker}
@@ -144,6 +141,17 @@ pub async fn get(
         .unwrap_or_default();
 
     let recurrence = event.rrule.as_deref().and_then(parse_rrule);
+    // An all-day event is edited as two dates, Fin being its last day: the
+    // stored exclusive end shown as `datetime-local` read as one day too
+    // many, and "correcting" it lost a day (#117).
+    let (starts_value, ends_value) = if event.all_day {
+        all_day_field_values(event.starts_at, event.ends_at)
+    } else {
+        (
+            to_datetime_local(event.starts_at),
+            to_datetime_local(event.ends_at),
+        )
+    };
     Html(page(
         &fam.header,
         event_id,
@@ -151,8 +159,8 @@ pub async fn get(
         &event.title,
         event.description.as_deref().unwrap_or(""),
         event.location.as_deref().unwrap_or(""),
-        &to_datetime_local(event.starts_at),
-        &to_datetime_local(event.ends_at),
+        &starts_value,
+        &ends_value,
         event.all_day,
         recurrence.as_ref(),
         None,
@@ -243,10 +251,7 @@ pub async fn post(
         .into_response()
     };
 
-    let (Some(starts_at), Some(ends_at)) = (
-        paris_local_to_utc(&form.starts_at),
-        paris_local_to_utc(&form.ends_at),
-    ) else {
+    let Some((starts_at, ends_at)) = form_bounds(&form.starts_at, &form.ends_at) else {
         return render_error("ends_before_starts");
     };
     match validate_event_form(&form.title, starts_at, ends_at) {

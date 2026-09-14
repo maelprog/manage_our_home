@@ -1,5 +1,5 @@
 import { expect, Page, test } from "@playwright/test";
-import { fetchVerificationToken } from "../lib/db";
+import { fetchEventBounds, fetchVerificationToken } from "../lib/db";
 import { parisDayOfMonth } from "../lib/dates";
 
 // Front epic #3 — Agenda (issue #18): every user journey the epic
@@ -333,5 +333,130 @@ test.describe("Agenda — type de média et corps illisible", () => {
     await page.goto("/agenda");
     await expect(page.getByRole("link", { name: /Injecte/ })).toHaveCount(0);
     await expect(page.getByRole("link", { name: /Sans dates/ })).toHaveCount(0);
+  });
+});
+
+// #117. An all-day event is stored with an exclusive end — the Paris
+// midnight opening the day after its last one (#101). The edit form used to
+// show that midnight in a `datetime-local` field: an event covering the 5th
+// to the 7th read "Fin : 08 00:00", and a user "correcting" it to 07 00:00
+// lost the 7th without a word. "Journée entière" now turns Début/Fin into
+// two date fields, Fin being the last day covered; the web layer adds the
+// day back on submit. Stored bounds are read in Postgres: the date fields
+// can no longer show them.
+test.describe("Agenda — journée entière", () => {
+  test("un événement de plusieurs jours se rouvre sur son dernier jour et s'enregistre sans en perdre un", async ({
+    page,
+  }) => {
+    const email = await registerAndLogin(page, "e2e-agallday", "AllDay User");
+    await createGroup(page, "Famille Vacances");
+    const [first, last, dayAfter] = [dayThisMonth(5), dayThisMonth(7), dayThisMonth(8)];
+    const stored = { starts: `${first}T00:00`, ends: `${dayAfter}T00:00` };
+
+    await page.goto("/agenda/new");
+    await page.getByLabel("Titre").fill("Séjour au ski");
+    await page.locator('input[name="all_day"]').check();
+    await expect(page.getByLabel("Début")).toHaveAttribute("type", "date");
+    await expect(page.getByLabel("Fin")).toHaveAttribute("type", "date");
+    await page.getByLabel("Début").fill(first);
+    await page.getByLabel("Fin").fill(last);
+    await page.getByRole("button", { name: "Créer l'événement" }).click();
+    await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
+    expect(await fetchEventBounds(email, "Séjour au ski")).toEqual(stored);
+
+    // The edit form shows the 7th, not the exclusive 8th.
+    await openEventDetail(page, "Séjour au ski");
+    await page.getByRole("link", { name: "Modifier" }).click();
+    await expect(page.locator('input[name="all_day"]')).toBeChecked();
+    await expect(page.getByLabel("Début")).toHaveAttribute("type", "date");
+    await expect(page.getByLabel("Début")).toHaveValue(first);
+    await expect(page.getByLabel("Fin")).toHaveValue(last);
+
+    // A correction that leaves the dates alone keeps every day.
+    await page.getByLabel("Lieu").fill("Chamonix");
+    await page.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(page.getByText("Événement mis à jour.")).toBeVisible();
+    expect(await fetchEventBounds(email, "Séjour au ski")).toEqual(stored);
+
+    await page.getByRole("link", { name: "Modifier" }).click();
+    await expect(page.getByLabel("Début")).toHaveValue(first);
+    await expect(page.getByLabel("Fin")).toHaveValue(last);
+  });
+
+  test("cocher puis décocher la case convertit les champs sans déplacer une borne", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-agtoggle", "Toggle User");
+    await createGroup(page, "Famille Bascule");
+    const [first, last, dayAfter] = [dayThisMonth(5), dayThisMonth(7), dayThisMonth(8)];
+    const box = page.locator('input[name="all_day"]');
+    const start = page.getByLabel("Début");
+    const end = page.getByLabel("Fin");
+
+    await page.goto("/agenda/new");
+    await start.fill(`${first}T10:00`);
+    // An end on midnight is the exclusive bound: the last day is the 7th.
+    await end.fill(`${dayAfter}T00:00`);
+
+    await box.check();
+    await expect(start).toHaveAttribute("type", "date");
+    await expect(start).toHaveValue(first);
+    await expect(end).toHaveValue(last);
+
+    // Unticking gives back the instants the dates stand for.
+    await box.uncheck();
+    await expect(start).toHaveAttribute("type", "datetime-local");
+    await expect(start).toHaveValue(`${first}T00:00`);
+    await expect(end).toHaveValue(`${dayAfter}T00:00`);
+
+    // And ticking again does not eat a day.
+    await box.check();
+    await expect(start).toHaveValue(first);
+    await expect(end).toHaveValue(last);
+  });
+
+  test("sans JS : dates lues fin incluse, créneau coché normalisé, dates inversées refusées", async ({
+    page,
+  }) => {
+    const email = await registerAndLogin(page, "e2e-agnojs", "NoJS User");
+    await createGroup(page, "Famille Formulaire");
+    const [d5, d6, d7, d8] = [5, 6, 7, 8].map(dayThisMonth);
+    const post = (body: string) =>
+      page.request.post("/agenda/new", {
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        data: body,
+        maxRedirects: 0,
+      });
+
+    // Date fields, whatever rendered them: the end is the last day covered.
+    const dates = await post(`title=Dates+seules&all_day=on&starts_at=${d5}&ends_at=${d7}`);
+    expect(dates.status()).toBe(303);
+    expect(await fetchEventBounds(email, "Dates seules")).toEqual({
+      starts: `${d5}T00:00`,
+      ends: `${d8}T00:00`,
+    });
+
+    // The box ticked without JS leaves the fields timed; the API still
+    // normalizes onto the whole Paris day (#101).
+    const timed = await post(
+      `title=Creneau+coche&all_day=on&starts_at=${d5}T08:00&ends_at=${d5}T09:00`,
+    );
+    expect(timed.status()).toBe(303);
+    expect(await fetchEventBounds(email, "Creneau coche")).toEqual({
+      starts: `${d5}T00:00`,
+      ends: `${d6}T00:00`,
+    });
+
+    // Fin the day before Début would convert to an end equal to the start,
+    // which the shared validation accepts: it is refused, and the form comes
+    // back in date mode with what was typed.
+    const reversed = await post(
+      `title=Dates+inversees&all_day=on&starts_at=${d7}&ends_at=${d6}`,
+    );
+    expect(reversed.status()).toBe(200);
+    const html = await reversed.text();
+    expect(html).toContain("La fin doit être après le début.");
+    expect(html).toContain(`type="date" name="ends_at" value="${d6}"`);
+    await expect(fetchEventBounds(email, "Dates inversees")).rejects.toThrow();
   });
 });

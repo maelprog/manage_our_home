@@ -25,7 +25,9 @@ use crate::layout::CurrentUser;
 use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
-use super::{agenda_cookie, family_context, forbidden_page, paris_local_to_utc, to_datetime_local};
+use super::{
+    agenda_cookie, date_only, family_context, forbidden_page, form_bounds, to_datetime_local,
+};
 
 /// Reminder offset presets exposed by the "Rappel" select — key → minutes
 /// before the occurrence. Shared with the detail page's add-reminder form.
@@ -332,6 +334,64 @@ pub(crate) fn recurrence_picker(current: Option<&Recurrence>) -> String {
     )
 }
 
+/// Inline `onchange` of the "Journée entière" box: swaps `Début`/`Fin`
+/// between `datetime-local` and `date` in place, converting their values
+/// (#117). Progressive enhancement, like `app::password_field`'s toggle —
+/// without JS the fields keep the type they were rendered with, and
+/// `form_bounds` reads either shape.
+///
+/// Ticking: each value keeps its date, except an end sitting on midnight
+/// past the start's day, which becomes the day before — the same reading
+/// `normalize_all_day` gives an exclusive end. Unticking: the start opens
+/// its day and the end becomes the midnight after its last day, i.e. the
+/// instants the date pair stands for. For a well-ordered pair (end after
+/// start) the two directions are inverses, so ticking and unticking again
+/// never moves a bound (e.g. `08 00:00` → `07` → `08 00:00`); a one-way
+/// `slice(0, 10)` lost a day per round trip. A reversed pair can move on
+/// its first round trip before settling — it is refused on submit anyway
+/// (`form_bounds` / `validate_event_form`).
+/// Values are read before the type changes, since changing the type
+/// sanitizes a value the new type cannot hold down to "". Date arithmetic
+/// runs at UTC noon, where no offset can shift the calendar day.
+pub(crate) const ALL_DAY_TOGGLE: &str = "var f=this.form,a=this.checked,s=f.elements.starts_at,e=f.elements.ends_at;\
+function d(v,n){var t=new Date(v.slice(0,10)+'T12:00Z');t.setUTCDate(t.getUTCDate()+n);return t.toISOString().slice(0,10)}\
+[s,e].forEach(function(i){var v=i.value,x=i==e;if(a==(i.type=='date'))return;\
+if(a){i.type='date';if(v)i.value=d(v,x?(v.slice(11,16)=='00:00'?(v.slice(0,10)>s.value?-1:0):0):0)}\
+else{i.type='datetime-local';if(v)i.value=d(v,x?1:0)+'T00:00'}})";
+
+/// The "Journée entière" box and the `Début`/`Fin` fields, shared by the
+/// create and edit forms so the two cannot drift apart (#117).
+///
+/// Each field's type follows its own value, the rule `form_bounds` reads it
+/// back with: a `YYYY-MM-DD` value renders `<input type="date">`, anything
+/// else `datetime-local`. Callers therefore choose the mode by the values
+/// they pass — the edit form of an all-day event passes
+/// `all_day_field_values`, and an error re-render passes back exactly what
+/// was submitted, JS-less shapes included. Names and labels are the same in
+/// both modes (DESIGN.md, constraint 5).
+pub(crate) fn schedule_fields(all_day: bool, starts: &str, ends: &str) -> String {
+    let field = |label: &str, name: &str, value: &str| {
+        let kind = if date_only(value).is_some() {
+            "date"
+        } else {
+            "datetime-local"
+        };
+        format!(
+            r#"<label>{label} <input type="{kind}" name="{name}" value="{value}" required/></label>"#,
+            value = html_escape(value),
+        )
+    };
+    format!(
+        r#"<label class="field inline">
+<input type="checkbox" name="all_day"{checked} onchange="{ALL_DAY_TOGGLE}"/> Journée entière</label>
+{starts}
+{ends}"#,
+        checked = if all_day { " checked" } else { "" },
+        starts = field("Début", "starts_at", starts),
+        ends = field("Fin", "ends_at", ends),
+    )
+}
+
 pub(crate) fn error_message(code: &str) -> &'static str {
     match code {
         "title_required" => "Le titre est obligatoire.",
@@ -347,6 +407,7 @@ pub(crate) fn error_message(code: &str) -> &'static str {
 fn page(
     header: &str,
     error: Option<&str>,
+    all_day: bool,
     default_start: &str,
     default_end: &str,
     members: &[GroupMember],
@@ -355,6 +416,7 @@ fn page(
     let error_html = error
         .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
         .unwrap_or_default();
+    let schedule = schedule_fields(all_day, default_start, default_end);
     let picker = recurrence_picker(None);
     let reminder = reminder_select("reminder", None);
     let assignees = assignee_checkboxes(members, selected_assignees);
@@ -367,10 +429,7 @@ fn page(
 <label>Titre <input type="text" name="title" required/></label>
 <label class="field inline">
 <input type="checkbox" name="is_task"/> Il s'agit d'une tâche (à cocher une fois faite)</label>
-<label class="field inline">
-<input type="checkbox" name="all_day"/> Journée entière</label>
-<label>Début <input type="datetime-local" name="starts_at" value="{default_start}" required/></label>
-<label>Fin <input type="datetime-local" name="ends_at" value="{default_end}" required/></label>
+{schedule}
 <label>Lieu <input type="text" name="location"/></label>
 <label>Description <textarea name="description" rows="3"></textarea></label>
 {picker}
@@ -406,7 +465,7 @@ pub async fn get(
     // Nobody checked yet, so the picker shows nothing selected; the actual
     // default-to-creator happens server-side (`resolve_assignees`) when the
     // form is submitted with an empty selection.
-    Html(page(&fam.header, None, &start, &end, &members, &[])).into_response()
+    Html(page(&fam.header, None, false, &start, &end, &members, &[])).into_response()
 }
 
 pub async fn post(
@@ -443,6 +502,7 @@ pub async fn post(
             Html(page(
                 &fam.header,
                 Some(error_message("invalid_form")),
+                false,
                 &to_datetime_local(now),
                 &to_datetime_local(now + chrono::Duration::hours(1)),
                 &members,
@@ -456,6 +516,7 @@ pub async fn post(
         Html(page(
             &fam.header,
             Some(error_message(code)),
+            form.all_day.is_some(),
             &form.starts_at,
             &form.ends_at,
             &members,
@@ -464,10 +525,7 @@ pub async fn post(
         .into_response()
     };
 
-    let (Some(starts_at), Some(ends_at)) = (
-        paris_local_to_utc(&form.starts_at),
-        paris_local_to_utc(&form.ends_at),
-    ) else {
+    let Some((starts_at, ends_at)) = form_bounds(&form.starts_at, &form.ends_at) else {
         return render_error("ends_before_starts");
     };
 
@@ -623,6 +681,98 @@ mod tests {
         assert!(!html.contains(ASSIGNEES_PRESENT_FIELD), "{html}");
         assert!(!html.contains(r#"name="assignee_ids""#), "{html}");
         assert!(html.contains("n'a pas pu être chargée"), "{html}");
+    }
+
+    // -- schedule_fields (#117) ---------------------------------------------
+
+    fn input_types(html: &str) -> Vec<&str> {
+        html.match_indices(r#"type=""#)
+            .map(|(i, m)| {
+                let rest = &html[i + m.len()..];
+                &rest[..rest.find('"').unwrap()]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn timed_values_render_datetime_local_fields_and_an_unticked_box() {
+        let html = schedule_fields(false, "2026-09-05T10:00", "2026-09-05T11:00");
+        assert_eq!(
+            input_types(&html),
+            ["checkbox", "datetime-local", "datetime-local"],
+            "{html}"
+        );
+        assert!(!html.contains(" checked"), "{html}");
+        assert!(html.contains(r#"value="2026-09-05T10:00""#), "{html}");
+        assert!(html.contains(r#"value="2026-09-05T11:00""#), "{html}");
+    }
+
+    /// The edit form of an all-day event: two date fields, the end being
+    /// the last day covered.
+    #[test]
+    fn date_values_render_date_fields_and_a_ticked_box() {
+        let html = schedule_fields(true, "2026-09-05", "2026-09-07");
+        assert_eq!(input_types(&html), ["checkbox", "date", "date"], "{html}");
+        assert!(html.contains(" checked"), "{html}");
+        assert!(html.contains(r#"value="2026-09-05""#), "{html}");
+        assert!(html.contains(r#"value="2026-09-07""#), "{html}");
+    }
+
+    /// Without JS the box can be ticked while the fields are still timed:
+    /// an error re-render gives back exactly what was submitted, each field
+    /// typed by its own value, as `form_bounds` reads it.
+    #[test]
+    fn each_field_is_typed_by_its_own_value() {
+        let html = schedule_fields(true, "2026-09-05T08:00", "2026-09-05T09:00");
+        assert_eq!(
+            input_types(&html),
+            ["checkbox", "datetime-local", "datetime-local"],
+            "{html}"
+        );
+        assert!(html.contains(" checked"), "{html}");
+    }
+
+    /// DESIGN.md, constraint 5: names and visible labels are what the
+    /// Playwright suite holds on to. Swapping the field type changes neither.
+    #[test]
+    fn names_labels_and_required_survive_the_swap() {
+        for html in [
+            schedule_fields(false, "2026-09-05T10:00", "2026-09-05T11:00"),
+            schedule_fields(true, "2026-09-05", "2026-09-05"),
+        ] {
+            assert!(html.contains(r#"name="all_day""#), "{html}");
+            assert!(html.contains("Journée entière"), "{html}");
+            assert!(html.contains(r#"<label>Début <input"#), "{html}");
+            assert!(html.contains(r#"<label>Fin <input"#), "{html}");
+            assert!(html.contains(r#"name="starts_at""#), "{html}");
+            assert!(html.contains(r#"name="ends_at""#), "{html}");
+            assert_eq!(html.matches(" required").count(), 2, "{html}");
+        }
+    }
+
+    /// The box swaps the fields in place when JS runs. The script lives in a
+    /// double-quoted attribute, so it may carry neither a double quote nor
+    /// anything HTML would read as markup or a character reference.
+    #[test]
+    fn the_box_carries_an_attribute_safe_field_swap() {
+        let html = schedule_fields(false, "", "");
+        assert!(
+            html.contains(&format!(r#"onchange="{ALL_DAY_TOGGLE}""#)),
+            "{html}"
+        );
+        assert!(ALL_DAY_TOGGLE.contains("datetime-local"));
+        assert!(ALL_DAY_TOGGLE.contains("'date'"));
+        for forbidden in ['"', '&', '<'] {
+            assert!(!ALL_DAY_TOGGLE.contains(forbidden), "{forbidden}");
+        }
+    }
+
+    /// Error re-renders echo raw submitted strings back into `value`.
+    #[test]
+    fn submitted_values_are_escaped() {
+        let html = schedule_fields(false, r#""><script>"#, "x");
+        assert!(!html.contains("<script>"), "{html}");
+        assert!(html.contains("&quot;&gt;&lt;script&gt;"), "{html}");
     }
 
     #[test]

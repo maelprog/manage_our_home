@@ -1,5 +1,5 @@
 import { Browser, expect, Page, test } from "@playwright/test";
-import { fetchVerificationToken } from "../lib/db";
+import { fetchEventBounds, fetchVerificationToken } from "../lib/db";
 import { parisDay } from "../lib/dates";
 
 // Issue #73 — the home dashboard. `/` is the first page after login and,
@@ -100,13 +100,28 @@ interface EventOpts {
 }
 
 async function createEvent(page: Page, opts: EventOpts): Promise<void> {
-  await page.goto("/agenda/new");
-  await page.getByLabel("Titre").fill(opts.title);
-  if (opts.allDay) await page.locator('input[name="all_day"]').check();
-  await page.getByLabel("Début").fill(opts.start);
-  await page.getByLabel("Fin").fill(opts.end);
-  await page.getByRole("button", { name: "Créer l'événement" }).click();
-  await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
+  // An all-day event is created from a copy of the session with JS turned
+  // off. Since #117 the box's `onchange` turns both fields into dates, and
+  // the web layer then sends midnight → midnight itself: the API's
+  // normalization (#101) would have nothing left to do, and a regression
+  // there would go unseen (verification of #163). Without JS the fields
+  // stay timed and the slot reaches the API as typed — a real browser
+  // path, the one `form_bounds` still accepts.
+  const noJs = opts.allDay
+    ? await page.context().browser()!.newContext({
+        javaScriptEnabled: false,
+        storageState: await page.context().storageState(),
+      })
+    : null;
+  const form = noJs ? await noJs.newPage() : page;
+  await form.goto("/agenda/new");
+  await form.getByLabel("Titre").fill(opts.title);
+  if (opts.allDay) await form.locator('input[name="all_day"]').check();
+  await form.getByLabel("Début").fill(opts.start);
+  await form.getByLabel("Fin").fill(opts.end);
+  await form.getByRole("button", { name: "Créer l'événement" }).click();
+  await expect(form).toHaveURL(/\/agenda\?notice=event_created$/);
+  await noJs?.close();
 }
 
 async function createLowStockItem(page: Page, name: string): Promise<void> {
@@ -184,7 +199,7 @@ test.describe("Accueil — le tableau de bord d'une famille peuplée", () => {
   });
 
   test("un événement toute la journée aujourd'hui est bien affiché", async ({ page }) => {
-    await registerAndLogin(page, "e2e-homeallday", "AllDay Owner");
+    const email = await registerAndLogin(page, "e2e-homeallday", "AllDay Owner");
     await createGroup(page, FAMILY);
 
     const today = isoDay();
@@ -209,15 +224,27 @@ test.describe("Accueil — le tableau de bord d'une famille peuplée", () => {
     // was unreachable for the current day.
     await expect(agenda.getByText("journée")).toBeVisible();
 
-    // L'invariant lui-même, et pas seulement son symptôme : le formulaire
-    // d'édition relit ce que la base porte. Cette assertion échoue à toute
-    // heure sans #101, là où la carte ci-dessus ne trahit le défaut qu'après
-    // 09 h 00 à Paris — la suite tourne à n'importe quelle heure.
+    // L'invariant lui-même, et pas seulement son symptôme : ce que la base
+    // porte. Cette assertion échoue à toute heure sans #101, là où la carte
+    // ci-dessus ne trahit le défaut qu'après 09 h 00 à Paris — la suite
+    // tourne à n'importe quelle heure. Elle lisait le formulaire d'édition
+    // jusqu'à #117 ; il montre désormais deux dates, qui ne distinguent plus
+    // minuit de 08 h 00 — d'où la lecture en base. Et le créneau est soumis
+    // sans JS (`createEvent`), sans quoi le script de la case convertirait
+    // 08:00–09:00 en dates avant l'API et cette assertion passerait sans #101.
+    expect(await fetchEventBounds(email, "Anniversaire de Léa")).toEqual({
+      starts: `${today}T00:00`,
+      ends: `${isoDay(1)}T00:00`,
+    });
+
+    // Et le formulaire d'édition montre le jour couvert, fin incluse (#117) :
+    // le 1er jour et le dernier, pas le minuit exclusif du lendemain.
     await page.goto("/agenda");
     await page.getByRole("link", { name: "Anniversaire de Léa" }).click();
     await page.getByRole("link", { name: "Modifier" }).click();
-    await expect(page.getByLabel("Début")).toHaveValue(`${today}T00:00`);
-    await expect(page.getByLabel("Fin")).toHaveValue(`${isoDay(1)}T00:00`);
+    await expect(page.getByLabel("Début")).toHaveAttribute("type", "date");
+    await expect(page.getByLabel("Début")).toHaveValue(today);
+    await expect(page.getByLabel("Fin")).toHaveValue(today);
   });
 
   test("un événement déjà commencé mais pas terminé reste affiché", async ({ page }) => {
