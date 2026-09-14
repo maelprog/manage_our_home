@@ -35,6 +35,31 @@ pub type OccurrenceSpan = (DateTime<Utc>, DateTime<Utc>);
 ///
 /// Europe/Paris rather than a per-family zone because there is no per-family
 /// zone in v1 — see `PARIS`.
+///
+/// « Keeps its wall clock » is not the whole story on the two nights a year
+/// Paris changes hour, where a wall clock names no instant or two. What
+/// happens there is a resolution, not a consequence of the promise:
+///
+/// - **The hour Paris skips** (last Sunday of March, no 02:00-02:59). An
+///   occurrence whose wall clock falls there is not dropped: it is read with
+///   the offset in force before the gap, so it lands an hour later on the
+///   clock. A monthly series anchored on 2026-01-29T01:30Z (02:30 in Paris)
+///   comes back on 2026-03-29 at 01:30Z — 03:30 in Paris — and at 02:30
+///   again in April. Nothing in this file decides that; it is what `rrule`
+///   0.14 does. RFC 5545 §3.3.10 says both things: first that an instance
+///   with a « nonexistent local time » MUST be ignored and not counted, then
+///   that such a time is interpreted as a DATE-TIME (§3.3.5), i.e. with the
+///   offset before the gap. `rrule` follows the second reading.
+/// - **The hour Paris repeats** (last Sunday of October). RFC 5545 resolves
+///   a repeated wall clock to its first pass (§3.3.5, applied to recurrence
+///   instances by §3.3.10), and so does the unroll. But a row stores an
+///   instant, and it can store the *second* pass, which no
+///   `DTSTART;TZID=` line can name. For a series anchored there — and only
+///   there — this function moves the occurrences that land on a repeated
+///   hour onto the second pass as well. That is a choice made here, not
+///   something the RFC or `rrule` prescribes: left on the first pass, the
+///   series would not render its own start as the row stores it (#116,
+///   round 3). A series anchored anywhere else keeps the first pass.
 pub fn expand_occurrences(
     rrule: &str,
     starts_at: DateTime<Utc>,
@@ -45,11 +70,12 @@ pub fn expand_occurrences(
     if !is_second_pass_of_a_repeated_hour(starts_at) {
         return Ok(occurrences_in(set, from, to));
     }
-    // The series is anchored on the second pass, so every occurrence that
-    // lands on a repeated hour belongs on the second pass too — and the
-    // unroll put it on the first, an hour early. Widen by that hour before
-    // moving them, then filter on the real instants, so `[from, to]` stays
-    // inclusive on both ends exactly as this function promises.
+    // The series is anchored on the second pass. Every occurrence that lands
+    // on a repeated hour is put on the second pass too — a choice, not a
+    // deduction, see the doc above — where the unroll put it on the first,
+    // an hour earlier. Widen by that hour before moving them, then filter on
+    // the real instants, so `[from, to]` stays inclusive on both ends exactly
+    // as this function promises.
     Ok(
         occurrences_in(set, from - Duration::hours(1), to + Duration::hours(1))
             .into_iter()
@@ -68,9 +94,13 @@ pub fn expand_occurrences(
 /// 2026-10-25 the wall clock reads 02:30 twice — 00:30Z in CEST, then
 /// 01:30Z in CET — and `rrule` 0.14 refuses an ambiguous `DTSTART;TZID=`
 /// outright rather than picking a side. The web form only reaches the first
-/// of the two (`paris_local_to_utc` resolves with `earliest()`); the API
-/// reaches either. A formatted wall clock turned a « garde de nuit, 02:30,
-/// tous les mois » into a 400 on write and a 500 on read.
+/// of the two (`paris_local_to_utc` resolves with `earliest()`). A direct
+/// API call reaches either, and so can a calendar re-import: it rewrites
+/// `starts_at` from the feed without touching `rrule`
+/// (`google_calendar/imports.rs`), so an imported event later given a rule
+/// by `PATCH` can end up on the second pass. A formatted wall clock turned a
+/// « garde de nuit, 02:30, tous les mois » into a 400 on write and a 500 on
+/// read.
 ///
 /// The anchor is the **first** pass of `starts_at`'s wall clock (#116,
 /// round 3). That is not the instant the row stores when the row sits on
@@ -80,7 +110,8 @@ pub fn expand_occurrences(
 /// earlier than `DTSTART`, and — under `COUNT` — spend the freed count a
 /// day past the tail. Anchoring on the pass `rrule` will itself produce
 /// keeps the head and the count; `expand_occurrences` then moves the
-/// occurrences that land on a repeated hour back onto the second pass.
+/// occurrences that land on a repeated hour back onto the second pass — a
+/// choice of its own, documented there.
 fn paris_rule_set(rrule: &str, starts_at: DateTime<Utc>) -> Result<RRuleSet, rrule::RRuleError> {
     rrule
         .parse::<RRule<Unvalidated>>()?
@@ -236,15 +267,22 @@ fn add_days(date: NaiveDate, n: i64) -> NaiveDate {
 /// It runs `paris_rule_set` — the very construction `expand_occurrences`
 /// unrolls from — and throws the result away. That identity is the point,
 /// and it is structural rather than argued: whatever is accepted here can
-/// be expanded later, because it is literally the same call. An earlier
-/// version of this PR argued instead that the two `DTSTART` forms accept
-/// the same strings; they did not, and the gap was exactly the ambiguous
-/// Paris wall clock that `paris_rule_set` now sidesteps.
+/// be expanded later by `expand_occurrences`, because it is literally the
+/// same call. An earlier version of this PR argued instead that the two
+/// `DTSTART` forms accept the same strings; they did not, and the gap was
+/// exactly the ambiguous Paris wall clock that `paris_rule_set` now
+/// sidesteps.
 ///
-/// All-day rows go through here too, on their own `starts_at` rather than
-/// on the UTC midnight stand-in `expand_all_day_occurrences` really
-/// unrolls. The two agree on every rule this validates; the stand-in is a
-/// UTC midnight, which no zone can make ambiguous or skip.
+/// That identity does **not** extend to all-day rows. They go through here
+/// on their own `starts_at`, while `expand_all_day_occurrences` unrolls a
+/// UTC midnight stand-in, and the two do not accept the same rules. They
+/// part at least on an `UNTIL` that falls before the stand-in: an all-day
+/// event on 2026-09-05 is stored at 2026-09-04T22:00Z, and
+/// `FREQ=DAILY;UNTIL=20260904T235959Z` — what `build_rrule` writes for
+/// « Jusqu'au 2026-09-04 » — passes here, then fails there with
+/// `UntilBeforeStart`: a 201 on write, a 500 on the whole window on read.
+/// Pre-existing (the same on `main`), tracked in #161 and deliberately left
+/// out of #116. Nothing here shows that it is the only such gap.
 pub fn validate(rrule: &str, starts_at: DateTime<Utc>) -> Result<(), rrule::RRuleError> {
     paris_rule_set(rrule, starts_at).map(|_| ())
 }
@@ -361,7 +399,9 @@ mod tests {
     // A wall-clock string naming that hour is ambiguous, and `rrule` 0.14
     // refuses one outright rather than picking a side. The web form only
     // reaches the first of the two — `apps/web`'s `paris_local_to_utc`
-    // resolves `02:30` with `earliest()` — and the API reaches either.
+    // resolves `02:30` with `earliest()` — while a direct API call reaches
+    // either, and so can a calendar re-import on an imported event later
+    // given a rule by `PATCH` (the import rewrites `starts_at`, not `rrule`).
     //
     // A rule anchored there has to keep being accepted on write and keep
     // expanding on read. The second matters most: `list_events` turns an

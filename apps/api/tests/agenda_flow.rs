@@ -507,9 +507,12 @@ async fn a_recurring_event_anchored_on_the_repeated_hour_survives_write_and_read
 /// of 2026-10-25. A series anchored on the second pass therefore regenerated
 /// its own start an hour early, `rrule` dropped it as earlier than
 /// `DTSTART`, and `GET /events` answered **200 OK with the first occurrence
-/// missing** — no error anywhere. Only the API reaches this instant (the web
-/// form's `paris_local_to_utc` resolves `02:30` with `earliest()`), which is
-/// exactly why nothing else would have caught it.
+/// missing** — no error anywhere. The web form never reaches this instant
+/// (its `paris_local_to_utc` resolves `02:30` with `earliest()`), so a check
+/// through the form could not have caught it. A direct API call does reach
+/// it, as below, and so can a calendar re-import on an imported event later
+/// given a rule by `PATCH`: `google_calendar/imports.rs` rewrites
+/// `starts_at` from the feed without touching `rrule`.
 #[sqlx::test]
 async fn a_recurring_event_on_the_second_pass_of_the_repeated_hour_renders_its_own_start(
     db: PgPool,
