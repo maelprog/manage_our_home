@@ -879,6 +879,90 @@ async fn a_rule_the_reminders_cannot_unroll_is_refused_on_write(db: PgPool) {
     assert!(scheduled > 0);
 }
 
+/// #170: `FREQ=WEEKLY;BYDAY=éA` made `rrule` panic inside `validate`, all-day
+/// or not, and the handler went down with it. A non-ASCII rule is a 400
+/// `invalid_rrule` now, on create and on update, and the stored rule stays.
+#[sqlx::test]
+async fn a_non_ascii_rule_is_refused_on_write(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let events_path = format!("/groups/{group_id}/events");
+
+    let starts_at = Utc::now() + Duration::days(1);
+    let refused = ["FREQ=WEEKLY;BYDAY=éA", "FREQ=MONTHLY;BYDAY=1éA"];
+    for rule in refused {
+        for all_day in [true, false] {
+            let create = call(
+                &router,
+                Method::POST,
+                &events_path,
+                Some(&owner_cookie),
+                Some(serde_json::json!({
+                    "title": "Sport",
+                    "starts_at": starts_at,
+                    "ends_at": starts_at + Duration::hours(1),
+                    "all_day": all_day,
+                    "rrule": rule,
+                })),
+            )
+            .await;
+            assert_eq!(
+                create.status(),
+                StatusCode::BAD_REQUEST,
+                "{rule:?}, all_day = {all_day}"
+            );
+            assert_eq!(json_body(create).await["error"], "invalid_rrule");
+        }
+    }
+
+    for all_day in [true, false] {
+        let create = call(
+            &router,
+            Method::POST,
+            &events_path,
+            Some(&owner_cookie),
+            Some(serde_json::json!({
+                "title": "Sport",
+                "starts_at": starts_at,
+                "ends_at": starts_at + Duration::hours(1),
+                "all_day": all_day,
+                "rrule": "FREQ=WEEKLY",
+            })),
+        )
+        .await;
+        assert_status(&create, StatusCode::CREATED);
+        let event_id: Uuid = json_body(create).await["id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        for rule in refused {
+            let patch = call(
+                &router,
+                Method::PATCH,
+                &format!("{events_path}/{event_id}"),
+                Some(&owner_cookie),
+                Some(serde_json::json!({"rrule": rule})),
+            )
+            .await;
+            assert_eq!(
+                patch.status(),
+                StatusCode::BAD_REQUEST,
+                "{rule:?}, all_day = {all_day}"
+            );
+            assert_eq!(json_body(patch).await["error"], "invalid_rrule");
+        }
+        let stored: Option<String> = sqlx::query_scalar("SELECT rrule FROM events WHERE id = $1")
+            .bind(event_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(stored.as_deref(), Some("FREQ=WEEKLY"));
+    }
+}
+
 /// #161: a series stored but impossible to unroll no longer takes the whole
 /// window down. Write refuses the all-day case now, but a row can still get
 /// there — written before the check, or moved by a calendar re-import (see
