@@ -498,6 +498,142 @@ mod tests {
         }
     }
 
+    // -- the skipped hour, under an hour-bound frequency (#116, round 4) ------
+    //
+    // Paris skips 02:00-02:59 on 2026-03-29: 01:59 CET (00:59Z) is followed
+    // by 03:00 CEST (01:00Z). `rrule` reads a wall clock in the gap with the
+    // offset before it, so 02:00 comes back as 01:00Z — which is also what
+    // 03:00 names. A daily rule never produces both, but a rule that steps
+    // by the hour or less, or lists both hours, produces 02:00 *and* 03:00
+    // on that day: the same instant twice, and under `COUNT` a unit of the
+    // count spent on the copy. Unrolled in UTC, before #116, no rule could
+    // produce a duplicate at all.
+
+    fn utc(y: i32, m: u32, d: u32, h: u32, min: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(y, m, d, h, min, 0).unwrap()
+    }
+
+    #[test]
+    fn an_hourly_rule_across_the_skipped_hour_has_no_duplicate_and_keeps_its_count() {
+        // 00:00 Paris on 2026-03-29. Four hours on the clock: 00:00, 01:00,
+        // (02:00 does not exist), 03:00, 04:00.
+        let occs = expand_occurrences(
+            "FREQ=HOURLY;COUNT=4",
+            utc(2026, 3, 28, 23, 0),
+            utc(2026, 3, 28, 0, 0),
+            utc(2026, 3, 30, 0, 0),
+        )
+        .unwrap();
+        assert_eq!(
+            occs,
+            vec![
+                utc(2026, 3, 28, 23, 0),
+                utc(2026, 3, 29, 0, 0),
+                utc(2026, 3, 29, 1, 0),
+                utc(2026, 3, 29, 2, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_count_spent_on_the_skipped_hour_is_given_back_past_a_window_that_opens_later() {
+        // Same series, `COUNT=5`, seen through a window that opens after the
+        // gap: the count is spent from `DTSTART`, not from `from`, so the
+        // copy made in the gap still has to be given back here.
+        let occs = expand_occurrences(
+            "FREQ=HOURLY;COUNT=5",
+            utc(2026, 3, 28, 23, 0),
+            utc(2026, 3, 29, 2, 0),
+            utc(2026, 3, 30, 0, 0),
+        )
+        .unwrap();
+        assert_eq!(occs, vec![utc(2026, 3, 29, 2, 0), utc(2026, 3, 29, 3, 0)]);
+    }
+
+    #[test]
+    fn a_minutely_rule_across_the_skipped_hour_has_no_duplicate_and_keeps_its_count() {
+        // 01:00 Paris, every 30 minutes, six times: 01:00, 01:30, then the
+        // gap's 02:00 and 02:30 (read as 03:00 and 03:30 CEST), whose copies
+        // at 03:00 and 03:30 are the same instants, then 04:00 and 04:30.
+        let occs = expand_occurrences(
+            "FREQ=MINUTELY;INTERVAL=30;COUNT=6",
+            utc(2026, 3, 29, 0, 0),
+            utc(2026, 3, 28, 0, 0),
+            utc(2026, 3, 30, 0, 0),
+        )
+        .unwrap();
+        assert_eq!(
+            occs,
+            vec![
+                utc(2026, 3, 29, 0, 0),
+                utc(2026, 3, 29, 0, 30),
+                utc(2026, 3, 29, 1, 0),
+                utc(2026, 3, 29, 1, 30),
+                utc(2026, 3, 29, 2, 0),
+                utc(2026, 3, 29, 2, 30),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_daily_rule_listing_both_hours_of_the_gap_has_no_duplicate_and_keeps_its_count() {
+        // 02:30 and 03:30 Paris every day, from 2026-03-28. On the 29th the
+        // two name the same instant (01:30Z); the fourth distinct occurrence
+        // is the 30th's 02:30 (00:30Z, CEST).
+        let occs = expand_occurrences(
+            "FREQ=DAILY;BYHOUR=2,3;BYMINUTE=30;COUNT=4",
+            paris(2026, 3, 28, 2, 30),
+            utc(2026, 3, 27, 0, 0),
+            utc(2026, 4, 1, 0, 0),
+        )
+        .unwrap();
+        assert_eq!(
+            occs,
+            vec![
+                utc(2026, 3, 28, 1, 30),
+                utc(2026, 3, 28, 2, 30),
+                utc(2026, 3, 29, 1, 30),
+                utc(2026, 3, 30, 0, 30),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_rule_whose_skipped_hour_lands_on_no_other_occurrence_keeps_it_an_hour_later() {
+        // The witness: where the gap's occurrence does not coincide with
+        // another one, it is kept, an hour later on the clock — not dropped.
+        // Daily and weekly at 02:30 Paris:
+        for (rule, anchor) in [
+            ("FREQ=DAILY;COUNT=3", paris(2026, 3, 28, 2, 30)),
+            ("FREQ=WEEKLY;COUNT=3", paris(2026, 3, 22, 2, 30)),
+        ] {
+            let occs = expand_occurrences(rule, anchor, anchor, utc(2026, 4, 30, 0, 0)).unwrap();
+            assert_eq!(occs.len(), 3, "{rule}: {occs:?}");
+            assert_eq!(
+                occs[1],
+                utc(2026, 3, 29, 1, 30),
+                "{rule}: the 29th's 02:30 is not kept as 03:30 CEST: {occs:?}"
+            );
+        }
+        // …and every two hours from 00:00 Paris: 02:00 lands on 03:00 CEST,
+        // which the rule does not otherwise produce.
+        let occs = expand_occurrences(
+            "FREQ=HOURLY;INTERVAL=2;COUNT=3",
+            utc(2026, 3, 28, 23, 0),
+            utc(2026, 3, 28, 0, 0),
+            utc(2026, 3, 30, 0, 0),
+        )
+        .unwrap();
+        assert_eq!(
+            occs,
+            vec![
+                utc(2026, 3, 28, 23, 0),
+                utc(2026, 3, 29, 1, 0),
+                utc(2026, 3, 29, 2, 0),
+            ]
+        );
+    }
+
     // -- expand_all_day_occurrences ------------------------------------------
     //
     // #101, round 2. Anchoring an all-day event on Paris midnight puts its

@@ -567,6 +567,69 @@ async fn a_recurring_event_on_the_second_pass_of_the_repeated_hour_renders_its_o
     );
 }
 
+/// #116, round 4: an hourly series across the hour Paris **skips**, end to
+/// end.
+///
+/// On 2026-03-29 Paris goes from 01:59 CET to 03:00 CEST. `rrule` reads the
+/// missing 02:00 with the offset before the gap — 01:00Z, the very instant
+/// 03:00 names — so unrolled in Paris the series produced 01:00Z twice, and
+/// `COUNT` spent a unit on the copy. `list_events` does not deduplicate: the
+/// same occurrence came back twice in `GET /events`, and the last one went
+/// missing. The web form offers no hourly rule (`parse_rrule`); a direct API
+/// call, as below, does.
+#[sqlx::test]
+async fn an_hourly_event_across_the_skipped_hour_is_listed_once_per_instant(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    // 00:00 → 00:15 Paris on 2026-03-29, every hour, four times.
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "Biberon",
+            "starts_at": "2026-03-28T23:00:00Z",
+            "ends_at": "2026-03-28T23:15:00Z",
+            "all_day": false,
+            "rrule": "FREQ=HOURLY;COUNT=4",
+        })),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+
+    let from = Utc.with_ymd_and_hms(2026, 3, 28, 0, 0, 0).unwrap();
+    let to = Utc.with_ymd_and_hms(2026, 3, 30, 0, 0, 0).unwrap();
+    let list = call(
+        &router,
+        Method::GET,
+        &format!(
+            "/groups/{group_id}/events?from={}&to={}",
+            urlenc(&from.to_rfc3339()),
+            urlenc(&to.to_rfc3339())
+        ),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&list, StatusCode::OK);
+    let body = json_body(list).await;
+    // 00:00 and 01:00 CET, then 03:00 and 04:00 CEST: four distinct instants.
+    assert_eq!(
+        occurrence_titles_and_starts(&body),
+        vec![
+            ("Biberon".into(), "2026-03-28T23:00:00Z".into()),
+            ("Biberon".into(), "2026-03-29T00:00:00Z".into()),
+            ("Biberon".into(), "2026-03-29T01:00:00Z".into()),
+            ("Biberon".into(), "2026-03-29T02:00:00Z".into()),
+        ],
+        "{body}"
+    );
+}
+
 /// Every occurrence of a `GET /events` body as `(title, occurrence start)`,
 /// ordered by start then title — what the caller actually means when it
 /// wants to say "these occurrences and no others".
