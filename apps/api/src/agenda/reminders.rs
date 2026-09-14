@@ -330,6 +330,96 @@ mod tests {
         }
     }
 
+    /// What the reminders keep of `reminder_occurrences`: one
+    /// `scheduled_notifications` row per instant, `ON CONFLICT
+    /// (event_reminder_id, occurrence_at) DO NOTHING` dropping the copies.
+    fn stored(occurrences: Vec<DateTime<Utc>>) -> Vec<DateTime<Utc>> {
+        occurrences
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    // -- an all-day series the API takes is read alike by both readers (#171)
+    //
+    // Both readers unroll through `expand_series`, but they do not keep the
+    // same thing of it: the agenda lists every occurrence, the reminders
+    // store one row per instant. They part as soon as an all-day unroll
+    // gives the same day twice, which it does for any rule stepping by less
+    // than a day or naming a time of day — `FREQ=HOURLY;COUNT=5` is five
+    // entries on the agenda and one reminder. Compared here on what each
+    // reader ends up with, for every rule `validate` lets through, rather
+    // than on which rules it refuses.
+
+    #[test]
+    fn every_all_day_series_accepted_on_write_is_listed_as_often_as_it_is_reminded() {
+        let frequencies = [
+            "YEARLY", "MONTHLY", "WEEKLY", "DAILY", "HOURLY", "MINUTELY", "SECONDLY",
+        ];
+        let parts = [
+            "",
+            ";BYHOUR=12",
+            ";BYHOUR=9,17",
+            ";BYMINUTE=0,30",
+            ";BYSECOND=0,15",
+            ";BYDAY=SA",
+            ";BYMONTHDAY=5,6",
+        ];
+        let ends = ["", ";COUNT=5", ";UNTIL=20261020T235959Z"];
+
+        let mut accepted = 0;
+        let mut parted = Vec::new();
+        for frequency in frequencies {
+            for part in parts {
+                for end in ends {
+                    let rule = format!("FREQ={frequency}{part}{end}");
+                    for first in [midnight(2026, 9, 5), midnight(2026, 10, 20)] {
+                        let ends_at = first + Duration::days(1);
+                        let (from, to) = (first - Duration::days(1), first + Duration::days(30));
+                        let Ok(listed) =
+                            recurrence::expand_series(&rule, true, first, ends_at, from, to)
+                        else {
+                            continue;
+                        };
+                        let listed: Vec<DateTime<Utc>> =
+                            listed.into_iter().map(|(s, _)| s).collect();
+                        let reminded = stored(
+                            reminder_occurrences(Some(&rule), true, first, ends_at, from, to)
+                                .unwrap(),
+                        );
+                        if recurrence::validate(&rule, first, true).is_ok() {
+                            accepted += 1;
+                            assert_eq!(
+                                listed,
+                                reminded,
+                                "{rule} from {first}: listed {} times, reminded {} times",
+                                listed.len(),
+                                reminded.len()
+                            );
+                        } else if listed != reminded {
+                            parted.push((rule.clone(), first, listed.len(), reminded.len()));
+                        }
+                    }
+                }
+            }
+        }
+        // Neither half of the comparison may be empty: the corpus holds rules
+        // the API takes, and rules on which the two readers would part — five
+        // entries against one reminder, and an unbounded `FREQ=MINUTELY`
+        // spending `MAX_OCCURRENCES` on one day.
+        assert!(accepted > 0);
+        let first = midnight(2026, 9, 5);
+        let premises = [("FREQ=HOURLY;COUNT=5", 5, 1), ("FREQ=MINUTELY", 1000, 1)];
+        for (rule, listed, reminded) in premises {
+            let premise = (rule.to_string(), first, listed, reminded);
+            assert!(
+                parted.contains(&premise),
+                "the premise {premise:?}, parted = {parted:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_one_off_is_reminded_on_its_own_start() {
         let at = midnight(2026, 10, 1);

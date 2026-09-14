@@ -963,6 +963,136 @@ async fn a_non_ascii_rule_is_refused_on_write(db: PgPool) {
     }
 }
 
+/// #171: an all-day series is unrolled on civil dates, so a rule stepping by
+/// less than a day or naming a time of day unrolled into copies of one day —
+/// `FREQ=HOURLY;COUNT=5` listed five times and reminded once. It is a 400
+/// `invalid_rrule` on an all-day row now, on create and on update, whether
+/// the update brings the rule or the flag; an hour-bound row keeps it. A row
+/// stored before the check still reads.
+#[sqlx::test]
+async fn an_all_day_rule_stepping_by_less_than_a_day_is_refused_on_write(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let events_path = format!("/groups/{group_id}/events");
+    let create = |all_day: bool, rule: &str| {
+        call(
+            &router,
+            Method::POST,
+            &events_path,
+            Some(&owner_cookie),
+            Some(serde_json::json!({
+                "title": "Anniversaire",
+                "starts_at": "2026-09-04T22:00:00Z",
+                "ends_at": "2026-09-05T22:00:00Z",
+                "all_day": all_day,
+                "rrule": rule,
+            })),
+        )
+    };
+    let patch = |event_id: Uuid, body: serde_json::Value| {
+        let path = format!("{events_path}/{event_id}");
+        let (router, owner_cookie) = (&router, &owner_cookie);
+        async move { call(router, Method::PATCH, &path, Some(owner_cookie), Some(body)).await }
+    };
+
+    let refused = [
+        "FREQ=HOURLY;COUNT=5",
+        "FREQ=MINUTELY",
+        "FREQ=SECONDLY;COUNT=3",
+        "FREQ=DAILY;BYHOUR=12;COUNT=3",
+        "FREQ=WEEKLY;BYMINUTE=30",
+        "FREQ=MONTHLY;BYSECOND=0",
+    ];
+    for rule in refused {
+        let all_day = create(true, rule).await;
+        assert_eq!(all_day.status(), StatusCode::BAD_REQUEST, "{rule:?}");
+        assert_eq!(json_body(all_day).await["error"], "invalid_rrule");
+
+        let hour_bound = create(false, rule).await;
+        assert_eq!(hour_bound.status(), StatusCode::CREATED, "{rule:?}");
+    }
+
+    // Update bringing the rule onto an all-day row.
+    let daily = create(true, "FREQ=DAILY").await;
+    assert_status(&daily, StatusCode::CREATED);
+    let daily_id: Uuid = json_body(daily).await["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    for rule in refused {
+        let response = patch(daily_id, serde_json::json!({"rrule": rule})).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{rule:?}");
+        assert_eq!(json_body(response).await["error"], "invalid_rrule");
+    }
+    let stored: Option<String> = sqlx::query_scalar("SELECT rrule FROM events WHERE id = $1")
+        .bind(daily_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(stored.as_deref(), Some("FREQ=DAILY"));
+
+    // Update bringing the flag onto an hour-bound row holding the rule.
+    let hourly = create(false, "FREQ=HOURLY;COUNT=5").await;
+    assert_status(&hourly, StatusCode::CREATED);
+    let hourly_id: Uuid = json_body(hourly).await["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let response = patch(hourly_id, serde_json::json!({"all_day": true})).await;
+    assert_status(&response, StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(response).await["error"], "invalid_rrule");
+    let still_hour_bound: bool = sqlx::query_scalar("SELECT all_day FROM events WHERE id = $1")
+        .bind(hourly_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert!(!still_hour_bound);
+
+    // A row stored before the check: no migration, and the window still
+    // answers with it, on its own day.
+    let mut tx = with_family_scope(&db, &group_id).await;
+    let updated = sqlx::query("UPDATE events SET rrule = $1 WHERE id = $2")
+        .bind("FREQ=HOURLY;COUNT=5")
+        .bind(daily_id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(updated.rows_affected(), 1);
+    tx.commit().await.unwrap();
+    let list = call(
+        &router,
+        Method::GET,
+        &format!(
+            "/groups/{group_id}/events?from={}&to={}",
+            urlenc("2026-08-31T22:00:00+00:00"),
+            urlenc("2026-09-30T21:59:59+00:00")
+        ),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&list, StatusCode::OK);
+    let body = json_body(list).await;
+    let stored_days: Vec<DateTime<Utc>> = body["occurrences"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|o| o["id"].as_str() == Some(&daily_id.to_string()))
+        .map(|o| instant(o, "occurrence_starts_at"))
+        .collect();
+    assert!(!stored_days.is_empty(), "{body}");
+    assert!(
+        stored_days
+            .iter()
+            .all(|at| *at == "2026-09-04T22:00:00Z".parse::<DateTime<Utc>>().unwrap()),
+        "{body}"
+    );
+}
+
 /// #161: a series stored but impossible to unroll no longer takes the whole
 /// window down. Write refuses the all-day case now, but a row can still get
 /// there — written before the check, or moved by a calendar re-import (see

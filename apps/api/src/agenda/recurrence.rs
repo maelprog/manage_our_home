@@ -1,6 +1,6 @@
 use chrono::{DateTime, Duration, NaiveDate, NaiveTime, TimeZone, Utc};
 use manage_our_home_shared::validation::agenda::{paris_date, paris_start_of_day};
-use rrule::{RRule, RRuleSet, Tz, Unvalidated};
+use rrule::{Frequency, RRule, RRuleSet, Tz, Unvalidated};
 
 /// Cap on occurrences expanded per request — a window query is always
 /// date-bounded, but an unbounded RRULE (no COUNT/UNTIL) combined with a
@@ -512,6 +512,18 @@ fn add_days(date: NaiveDate, n: i64) -> NaiveDate {
 /// handler down instead of answering. RFC 5545 §3.3.10 writes a whole
 /// RRULE value in ASCII, so the rule is refused on its first non-ASCII
 /// byte, wherever it sits, before any parser sees it.
+///
+/// And an all-day rule **steps by days** (#171): no `FREQ=HOURLY`,
+/// `MINUTELY` or `SECONDLY`, no `BYHOUR`, `BYMINUTE` or `BYSECOND` (RFC 5545
+/// §3.3.10). `expand_all_day_occurrences` keeps the date of each occurrence
+/// and nothing of its time, so such a rule unrolls into copies of the same
+/// day: `FREQ=HOURLY;COUNT=5` was listed five times on its one day and
+/// reminded once, the reminders keeping one row per instant, and an
+/// unbounded `FREQ=MINUTELY` spent `MAX_OCCURRENCES` on its first day, the
+/// rest of the window empty on both readers. Read on the parsed rule, so a
+/// part is caught in any case and at any place the parser takes it. An
+/// hour-bound row keeps them. A row stored before this check still unrolls
+/// as it did: nothing refuses it on read.
 pub fn validate(
     rrule: &str,
     starts_at: DateTime<Utc>,
@@ -523,10 +535,28 @@ pub fn validate(
     if all_day {
         all_day_rule_set(rrule, starts_at)?;
         let stored = paris_start_of_day(paris_date(starts_at));
-        paris_rule_set(rrule, stored).map(|_| ())
+        paris_rule_set(rrule, stored)?;
+        if steps_by_days(&rrule.parse()?) {
+            Ok(())
+        } else {
+            Err(rrule::ParseError::InvalidParameterFormat(rrule.into()).into())
+        }
     } else {
         paris_rule_set(rrule, starts_at).map(|_| ())
     }
+}
+
+/// Whether `rule` steps by whole days and names no time of day — what an
+/// all-day series has to do to unroll one occurrence per day: see `validate`.
+/// Read on the rule as parsed, before `rrule` fills a `BYHOUR` in from the
+/// anchor.
+fn steps_by_days(rule: &RRule<Unvalidated>) -> bool {
+    !matches!(
+        rule.get_freq(),
+        Frequency::Hourly | Frequency::Minutely | Frequency::Secondly
+    ) && rule.get_by_hour().is_empty()
+        && rule.get_by_minute().is_empty()
+        && rule.get_by_second().is_empty()
 }
 
 #[cfg(test)]
@@ -1413,6 +1443,77 @@ mod tests {
                 paris_start_of_day(paris_date(sent)),
                 normalize_all_day(sent, sent + Duration::hours(1)).0,
                 "{sent}"
+            );
+        }
+    }
+
+    // -- an all-day rule steps by days (#171) ---------------------------------
+    //
+    // An all-day series is unrolled on civil dates: `expand_all_day_occurrences`
+    // keeps the date of each occurrence and drops its time. A rule that steps
+    // by the hour or less, or names a time of day, has nothing left once the
+    // time is dropped but copies of the same day: `FREQ=HOURLY;COUNT=5` was
+    // listed five times on its one day, and reminded once, the reminder rows
+    // being keyed by instant. Unbounded, `FREQ=MINUTELY` spent the whole
+    // `MAX_OCCURRENCES` on its first day and the window saw no other.
+
+    /// All-day rules that step by less than a day, or name a time of day —
+    /// in either case, and wherever the part sits.
+    const TIME_OF_DAY_RULES: [&str; 12] = [
+        "FREQ=HOURLY",
+        "FREQ=HOURLY;COUNT=5",
+        "FREQ=MINUTELY",
+        "FREQ=SECONDLY;COUNT=3",
+        "COUNT=5;FREQ=HOURLY;INTERVAL=24",
+        "freq=hourly",
+        "FREQ=DAILY;BYHOUR=12;COUNT=3",
+        "FREQ=DAILY;BYHOUR=0",
+        "FREQ=WEEKLY;BYDAY=SA;BYMINUTE=30",
+        "FREQ=MONTHLY;BYSECOND=0",
+        "BYMINUTE=0;FREQ=YEARLY",
+        "FREQ=DAILY;byhour=12",
+    ];
+
+    #[test]
+    fn an_all_day_rule_stepping_by_less_than_a_day_or_naming_a_time_is_refused_on_write() {
+        for rule in TIME_OF_DAY_RULES {
+            for stored in [midnight(2026, 9, 5), midnight(2026, 12, 5)] {
+                for sent in [stored, stored + Duration::hours(12)] {
+                    assert!(
+                        validate(rule, sent, true).is_err(),
+                        "{rule:?} sent at {sent} accepted on an all-day row"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_hour_bound_rule_may_still_step_by_the_hour_or_name_a_time() {
+        for rule in TIME_OF_DAY_RULES {
+            assert!(
+                validate(rule, utc(2026, 9, 5, 9, 0), false).is_ok(),
+                "{rule:?} refused on an hour-bound row"
+            );
+        }
+    }
+
+    #[test]
+    fn an_all_day_rule_stepping_by_days_is_still_accepted_on_write() {
+        let rules = [
+            "FREQ=DAILY",
+            "FREQ=DAILY;INTERVAL=2;COUNT=4",
+            "FREQ=WEEKLY;BYDAY=MO,SA",
+            "FREQ=MONTHLY;BYMONTHDAY=5",
+            "FREQ=MONTHLY;BYDAY=-1FR",
+            "FREQ=YEARLY;BYMONTH=9;BYMONTHDAY=5",
+            "FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1",
+            "FREQ=DAILY;UNTIL=20261010T235959Z",
+        ];
+        for rule in rules {
+            assert!(
+                validate(rule, midnight(2026, 9, 5), true).is_ok(),
+                "{rule:?} refused on an all-day row"
             );
         }
     }
