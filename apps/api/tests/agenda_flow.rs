@@ -1274,6 +1274,100 @@ async fn reminder_creates_scheduled_notification(db: PgPool) {
     );
 }
 
+/// #169: an all-day series is reminded on the occurrences the agenda lists.
+/// `UNTIL` at 23:59:59Z on its last day — what the web form writes for
+/// « Jusqu'au … » — sits after Paris midnight on the following day (22:00Z
+/// or 23:00Z), and the reminders, unrolling on instants, used to schedule
+/// that extra day. The window of the reminders opens at `now`, so the series
+/// is placed a few days ahead and this test meets whichever offset Paris is
+/// on when it runs; both are pinned in `agenda::reminders`' unit tests.
+#[sqlx::test]
+async fn an_all_day_series_is_reminded_on_exactly_the_days_the_agenda_lists(db: PgPool) {
+    use manage_our_home_shared::validation::agenda::{paris_date, paris_start_of_day};
+
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let events_path = format!("/groups/{group_id}/events");
+
+    let first = paris_date(Utc::now()) + Duration::days(2);
+    let last = first + Duration::days(9);
+    let starts_at = paris_start_of_day(first);
+    let rrule = format!("FREQ=DAILY;UNTIL={}T235959Z", last.format("%Y%m%d"));
+    let create = call(
+        &router,
+        Method::POST,
+        &events_path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "Stage",
+            "starts_at": starts_at,
+            "ends_at": starts_at + Duration::hours(1),
+            "all_day": true,
+            "rrule": rrule,
+        })),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let event_id: Uuid = json_body(create).await["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let reminder = call(
+        &router,
+        Method::POST,
+        &format!("{events_path}/{event_id}/reminders"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"offset_minutes": 0})),
+    )
+    .await;
+    assert_status(&reminder, StatusCode::CREATED);
+
+    let (from, to) = (
+        starts_at - Duration::days(3),
+        starts_at + Duration::days(25),
+    );
+    let list = call(
+        &router,
+        Method::GET,
+        &format!(
+            "{events_path}?from={}&to={}",
+            urlenc(&from.to_rfc3339()),
+            urlenc(&to.to_rfc3339())
+        ),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&list, StatusCode::OK);
+    let body = json_body(list).await;
+    let listed: Vec<DateTime<Utc>> = body["occurrences"]
+        .as_array()
+        .expect("occurrences array")
+        .iter()
+        .map(|o| instant(o, "occurrence_starts_at"))
+        .collect();
+
+    let reminded: Vec<DateTime<Utc>> = sqlx::query_scalar(
+        "SELECT occurrence_at FROM scheduled_notifications WHERE event_id = $1 ORDER BY occurrence_at",
+    )
+    .bind(event_id)
+    .fetch_all(&db)
+    .await
+    .unwrap();
+
+    let days: Vec<_> = first.iter_days().take_while(|d| *d <= last).collect();
+    assert_eq!(
+        listed.iter().map(|s| paris_date(*s)).collect::<Vec<_>>(),
+        days,
+        "{rrule}: {body}"
+    );
+    assert_eq!(reminded, listed, "{rrule}");
+}
+
 /// AC: tasks-as-events — `completed` can only be toggled on an
 /// `is_task` event, and setting it stamps `completed_at`.
 #[sqlx::test]
