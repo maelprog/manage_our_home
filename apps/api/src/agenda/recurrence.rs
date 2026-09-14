@@ -505,12 +505,19 @@ fn add_days(date: NaiveDate, n: i64) -> NaiveDate {
 /// `RRULE:FREQ=DAILY` too, which the hour-bound path used to take as
 /// `FREQ=DAILY`: the property name is not part of the value, and the API
 /// derives that line itself.
+///
+/// And a rule is **ASCII** (#170). `rrule` 0.14 cuts a `BYDAY` entry two
+/// bytes before its end (`NWeekday::from_str`) and panics when that cut
+/// lands inside a multibyte character: `FREQ=WEEKLY;BYDAY=éA` took the
+/// handler down instead of answering. RFC 5545 §3.3.10 writes a whole
+/// RRULE value in ASCII, so the rule is refused on its first non-ASCII
+/// byte, wherever it sits, before any parser sees it.
 pub fn validate(
     rrule: &str,
     starts_at: DateTime<Utc>,
     all_day: bool,
 ) -> Result<(), rrule::RRuleError> {
-    if rrule.contains(['\r', '\n', ':']) {
+    if !rrule.is_ascii() || rrule.contains(['\r', '\n', ':']) {
         return Err(rrule::ParseError::InvalidParameterFormat(rrule.into()).into());
     }
     if all_day {
@@ -1314,6 +1321,65 @@ mod tests {
                 validate(rule, utc(2026, 9, 5, 9, 0), false).is_err(),
                 "{rule:?} accepted on an hour-bound row"
             );
+        }
+    }
+
+    // -- a rule is ASCII (#170) -----------------------------------------------
+    //
+    // `rrule` 0.14 cuts a `BYDAY` entry two bytes before its end
+    // (`NWeekday::from_str`): past a multibyte character that cut lands
+    // inside it, and the parser panics instead of returning an error. The
+    // panic went up through the handler, and the client got no response.
+
+    /// Non-ASCII rules. The first three made `rrule` panic at #170; the
+    /// others carry a non-ASCII character the parser refused without one.
+    const NON_ASCII_RULES: [&str; 6] = [
+        "FREQ=WEEKLY;BYDAY=éA",
+        "FREQ=WEEKLY;BYDAY=MO,éA",
+        "FREQ=MONTHLY;BYDAY=1éA",
+        "FREQ=WEEKLY;BYDAY=MOé",
+        "FREQ=WEEKLÝ",
+        "FREQ=WEEKLY;COUNT=５",
+    ];
+
+    /// Whether `validate` refuses `rule`, a panic being reported as one
+    /// rather than as a failed assertion.
+    fn refused_without_panic(rule: &str, starts_at: DateTime<Utc>, all_day: bool) -> bool {
+        std::panic::catch_unwind(|| validate(rule, starts_at, all_day))
+            .unwrap_or_else(|_| panic!("{rule:?} panicked, all_day = {all_day}"))
+            .is_err()
+    }
+
+    #[test]
+    fn a_non_ascii_rule_is_refused_on_write_all_day() {
+        for rule in NON_ASCII_RULES {
+            assert!(
+                refused_without_panic(rule, midnight(2026, 9, 5), true),
+                "{rule:?} accepted on an all-day row"
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_ascii_rule_is_refused_on_write_hour_bound() {
+        for rule in NON_ASCII_RULES {
+            assert!(
+                refused_without_panic(rule, utc(2026, 9, 5, 9, 0), false),
+                "{rule:?} accepted on an hour-bound row"
+            );
+        }
+    }
+
+    #[test]
+    fn an_ascii_byday_is_still_accepted_on_write() {
+        let anchors = [(midnight(2026, 9, 5), true), (utc(2026, 9, 5, 9, 0), false)];
+        for (starts_at, all_day) in anchors {
+            for rule in ["FREQ=WEEKLY;BYDAY=MO,SA", "FREQ=MONTHLY;BYDAY=-1FR"] {
+                assert!(
+                    validate(rule, starts_at, all_day).is_ok(),
+                    "{rule:?} refused, all_day = {all_day}"
+                );
+            }
         }
     }
 
