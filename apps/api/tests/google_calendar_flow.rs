@@ -433,6 +433,179 @@ async fn an_all_day_import_is_stored_as_a_whole_paris_day(db: PgPool) {
     assert_eq!(ends_at.to_rfc3339(), "2026-06-01T22:00:00+00:00");
 }
 
+/// Serves `bodies` in order, one per accepted connection — a feed that
+/// changes between two syncs. Same wire format as `spawn_ics_server`.
+async fn spawn_changing_ics_server(bodies: &'static [&'static str]) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        for body in bodies {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/calendar\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        }
+    });
+    format!("http://{addr}/changing.ics")
+}
+
+/// The feed of the #161 re-import reproduction, before and after Google
+/// moves « Garde » from 1 to 25 October. « Réunion » does not move.
+const ICS_BEFORE_THE_MOVE: &str = "\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:flow-moved-1@google.com
+DTSTAMP:20260101T090000Z
+DTSTART:20261001T013000Z
+DTEND:20261001T023000Z
+SUMMARY:Garde
+LAST-MODIFIED:20260101T090000Z
+END:VEVENT
+BEGIN:VEVENT
+UID:flow-still-1@google.com
+DTSTAMP:20260101T090000Z
+DTSTART:20261015T160000Z
+DTEND:20261015T170000Z
+SUMMARY:Réunion
+LAST-MODIFIED:20260101T090000Z
+END:VEVENT
+END:VCALENDAR
+";
+const ICS_AFTER_THE_MOVE: &str = "\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:flow-moved-1@google.com
+DTSTAMP:20260201T090000Z
+DTSTART:20261025T013000Z
+DTEND:20261025T023000Z
+SUMMARY:Garde
+LAST-MODIFIED:20260201T090000Z
+END:VEVENT
+BEGIN:VEVENT
+UID:flow-still-1@google.com
+DTSTAMP:20260101T090000Z
+DTSTART:20261015T160000Z
+DTEND:20261015T170000Z
+SUMMARY:Réunion
+LAST-MODIFIED:20260101T090000Z
+END:VEVENT
+END:VCALENDAR
+";
+
+/// #161, second cause: a re-import rewrites `starts_at` from the feed and
+/// leaves a locally added `rrule` alone, without going back through
+/// `validate` — so it can move a series past its own `UNTIL`. That series
+/// no longer unrolls, and it used to fail `GET /events` for the whole
+/// window. The re-import is left as it is; the window answers 200 with
+/// every other event, and the moved series is rendered as its own row.
+#[sqlx::test]
+async fn a_reimport_that_moves_a_series_past_its_until_does_not_take_the_window_down(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "cal-moved1@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let feed_url = spawn_changing_ics_server(&[ICS_BEFORE_THE_MOVE, ICS_AFTER_THE_MOVE]).await;
+
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/calendar-imports"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"label": "Foyer calendar", "feed_url": feed_url})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let import_id = json_body(create).await["id"].as_str().unwrap().to_string();
+    let import_path = format!("/groups/{group_id}/calendar-imports/{import_id}/import");
+
+    let first = call(
+        &router,
+        Method::POST,
+        &import_path,
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&first, StatusCode::OK);
+    assert_eq!(json_body(first).await["imported"], 2);
+
+    let garde_id: Uuid = sqlx::query_scalar("SELECT id FROM events WHERE title = 'Garde'")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    let patch = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/events/{garde_id}"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"rrule": "FREQ=DAILY;UNTIL=20261010T235959Z"})),
+    )
+    .await;
+    assert_status(&patch, StatusCode::OK);
+
+    let second = call(
+        &router,
+        Method::POST,
+        &import_path,
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&second, StatusCode::OK);
+    assert_eq!(json_body(second).await["updated"], 1);
+    let (moved_to, still_rrule): (DateTime<Utc>, Option<String>) =
+        sqlx::query_as("SELECT starts_at, rrule FROM events WHERE id = $1")
+            .bind(garde_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(moved_to.to_rfc3339(), "2026-10-25T01:30:00+00:00");
+    assert_eq!(
+        still_rrule.as_deref(),
+        Some("FREQ=DAILY;UNTIL=20261010T235959Z")
+    );
+
+    let list = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/events?from=2026-10-01T00:00:00Z&to=2026-10-31T23:59:59Z"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&list, StatusCode::OK);
+    let body = json_body(list).await;
+    let mut seen: Vec<(String, String)> = body["occurrences"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| {
+            (
+                o["title"].as_str().unwrap().to_string(),
+                o["occurrence_starts_at"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    seen.sort_by(|a, b| a.1.cmp(&b.1));
+    assert_eq!(
+        seen,
+        vec![
+            ("Réunion".to_string(), "2026-10-15T16:00:00Z".to_string()),
+            ("Garde".to_string(), "2026-10-25T01:30:00Z".to_string()),
+        ],
+        "{body}"
+    );
+}
+
 /// AC (#106 + #118): a row written by the *old* import is repaired on the
 /// next sync, even though the feed hasn't changed.
 ///

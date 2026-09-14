@@ -678,6 +678,181 @@ async fn an_all_day_event_with_a_backwards_range_is_still_rejected(db: PgPool) {
     assert_status(&create, StatusCode::BAD_REQUEST);
 }
 
+/// #161: an all-day series is unrolled on a UTC-midnight stand-in for its
+/// date, so its rule has to be validated there — not on the Paris midnight
+/// the row stores, which sits two hours earlier. The reproduction from the
+/// issue: an all-day event on 2026-09-05 « jusqu'au 2026-09-04 » was a 201,
+/// then a 500 on the whole month.
+#[sqlx::test]
+async fn an_all_day_series_until_the_day_before_is_refused_on_write(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    let events_path = format!("/groups/{group_id}/events");
+    let post = |rrule: &'static str| {
+        call(
+            &router,
+            Method::POST,
+            &events_path,
+            Some(&owner_cookie),
+            Some(serde_json::json!({
+                "title": "Anniversaire",
+                "starts_at": "2026-09-04T22:00:00Z",
+                "ends_at": "2026-09-04T23:00:00Z",
+                "all_day": true,
+                "rrule": rrule,
+            })),
+        )
+    };
+
+    let until_the_day_before = post("FREQ=DAILY;UNTIL=20260904T235959Z").await;
+    assert_status(&until_the_day_before, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        json_body(until_the_day_before).await["error"],
+        "invalid_rrule"
+    );
+
+    let until_its_own_day = post("FREQ=DAILY;UNTIL=20260905T235959Z").await;
+    assert_status(&until_its_own_day, StatusCode::CREATED);
+
+    // A PATCH that turns an hour-bound series all-day is checked on the
+    // all-day anchor as well: the same rule from the same instant is valid
+    // hour-bound, and not all-day.
+    let hour_bound = call(
+        &router,
+        Method::POST,
+        &events_path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "Garde",
+            "starts_at": "2026-09-04T22:00:00Z",
+            "ends_at": "2026-09-04T23:00:00Z",
+            "rrule": "FREQ=DAILY;UNTIL=20260904T235959Z",
+        })),
+    )
+    .await;
+    assert_status(&hour_bound, StatusCode::CREATED);
+    let event_id = json_body(hour_bound).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let to_all_day = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"all_day": true})),
+    )
+    .await;
+    assert_status(&to_all_day, StatusCode::BAD_REQUEST);
+}
+
+/// #161: a series stored but impossible to unroll no longer takes the whole
+/// window down. Write refuses the all-day case now, but a row can still get
+/// there — written before the check, or moved by a calendar re-import (see
+/// `google_calendar_flow.rs` for that path) — so the row is put there by
+/// hand. The window answers 200, the other events are all there, and the
+/// broken series is rendered as its own row.
+#[sqlx::test]
+async fn a_stored_series_that_does_not_unroll_does_not_take_the_window_down(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    let events_path = format!("/groups/{group_id}/events");
+    let create = |body: serde_json::Value| {
+        call(
+            &router,
+            Method::POST,
+            &events_path,
+            Some(&owner_cookie),
+            Some(body),
+        )
+    };
+    let one_off = create(serde_json::json!({
+        "title": "Dentiste",
+        "starts_at": "2026-09-10T08:00:00Z",
+        "ends_at": "2026-09-10T09:00:00Z",
+    }))
+    .await;
+    assert_status(&one_off, StatusCode::CREATED);
+    let weekly = create(serde_json::json!({
+        "title": "Piscine",
+        "starts_at": "2026-09-02T16:00:00Z",
+        "ends_at": "2026-09-02T17:00:00Z",
+        "rrule": "FREQ=WEEKLY;COUNT=2",
+    }))
+    .await;
+    assert_status(&weekly, StatusCode::CREATED);
+    let all_day = create(serde_json::json!({
+        "title": "Anniversaire",
+        "starts_at": "2026-09-04T22:00:00Z",
+        "ends_at": "2026-09-04T23:00:00Z",
+        "all_day": true,
+        "rrule": "FREQ=DAILY;UNTIL=20260905T235959Z",
+    }))
+    .await;
+    assert_status(&all_day, StatusCode::CREATED);
+    let all_day_id: Uuid = json_body(all_day).await["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    // The rule the issue reproduced, written past the write-time check.
+    let mut tx = with_family_scope(&db, &group_id).await;
+    let updated = sqlx::query("UPDATE events SET rrule = $1 WHERE id = $2")
+        .bind("FREQ=DAILY;UNTIL=20260904T235959Z")
+        .bind(all_day_id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(updated.rows_affected(), 1);
+    tx.commit().await.unwrap();
+
+    // September as `/agenda` asks for it: Paris midnight to Paris midnight.
+    let list = call(
+        &router,
+        Method::GET,
+        &format!(
+            "/groups/{group_id}/events?from={}&to={}",
+            urlenc("2026-08-31T22:00:00+00:00"),
+            urlenc("2026-09-30T21:59:59+00:00")
+        ),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&list, StatusCode::OK);
+    let body = json_body(list).await;
+    let mut seen: Vec<(String, DateTime<Utc>)> = body["occurrences"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| {
+            (
+                o["title"].as_str().unwrap().to_string(),
+                instant(o, "occurrence_starts_at"),
+            )
+        })
+        .collect();
+    seen.sort_by_key(|(_, at)| *at);
+    let at = |s: &str| s.parse::<DateTime<Utc>>().unwrap();
+    assert_eq!(
+        seen,
+        vec![
+            ("Piscine".to_string(), at("2026-09-02T16:00:00Z")),
+            ("Anniversaire".to_string(), at("2026-09-04T22:00:00Z")),
+            ("Piscine".to_string(), at("2026-09-09T16:00:00Z")),
+            ("Dentiste".to_string(), at("2026-09-10T08:00:00Z")),
+        ],
+        "{body}"
+    );
+}
+
 /// #73: an event can be assigned to several family members, and the
 /// assignment can be changed on update; an assignee id that isn't actually
 /// a member of the family is dropped rather than accepted verbatim.

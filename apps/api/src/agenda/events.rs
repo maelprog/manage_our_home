@@ -72,16 +72,20 @@ pub struct EventResponse {
     pub assignee_ids: Vec<Uuid>,
 }
 
+/// `all_day` is the flag the row will be stored with: an all-day series is
+/// unrolled on another anchor, and its rule has to be checked on that one
+/// (`recurrence::validate`, #161).
 fn validate_request(
     starts_at: DateTime<Utc>,
     ends_at: DateTime<Utc>,
+    all_day: bool,
     rrule: Option<&str>,
 ) -> AppResult<()> {
     if ends_at < starts_at {
         return Err(AppError::BadRequest("ends_at_before_starts_at".into()));
     }
     if let Some(r) = rrule {
-        recurrence::validate(r, starts_at)
+        recurrence::validate(r, starts_at, all_day)
             .map_err(|_| AppError::BadRequest("invalid_rrule".into()))?;
     }
     Ok(())
@@ -131,7 +135,12 @@ pub async fn create_event(
     // Validated on what the client actually sent, *then* normalized: a
     // genuinely backwards range stays a 400 instead of being silently
     // repaired into a valid day.
-    validate_request(body.starts_at, body.ends_at, body.rrule.as_deref())?;
+    validate_request(
+        body.starts_at,
+        body.ends_at,
+        body.all_day,
+        body.rrule.as_deref(),
+    )?;
     let (starts_at, ends_at) = normalized_bounds(body.all_day, body.starts_at, body.ends_at);
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
@@ -347,6 +356,59 @@ pub struct OccurrenceResponse {
     pub occurrence_ends_at: DateTime<Utc>,
 }
 
+/// The spans a stored row renders in `[from, to]` (inclusive): its unrolled
+/// occurrences for a series, the row itself for a one-off.
+///
+/// A series that does not unroll is rendered **as a one-off** — the row on
+/// its own, if it meets the window — and the error is handed back for the
+/// caller to log. It used to fail `list_events` outright, and with it every
+/// other event of the window: `/agenda` and the dashboard went down for one
+/// row (#161). Such rows get stored by paths `validate` does not see — a
+/// calendar re-import moving `starts_at` past the rule's `UNTIL`, or a row
+/// written before a check existed.
+///
+/// Rendered rather than skipped, on purpose. Skipped, the event would
+/// vanish from every view without a trace, and the family could neither see
+/// that something is wrong nor open it to fix or delete it. Its own row is
+/// also the one instance RFC 5545 always grants a series: `DTSTART` is its
+/// first occurrence (§3.8.5.3). What is lost is the rest of the series; the
+/// log is there so it does not go unnoticed.
+fn row_spans(
+    rrule: Option<&str>,
+    all_day: bool,
+    starts_at: DateTime<Utc>,
+    ends_at: DateTime<Utc>,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> (Vec<recurrence::OccurrenceSpan>, Option<rrule::RRuleError>) {
+    let row_on_its_own = || {
+        (starts_at <= to && ends_at >= from)
+            .then_some((starts_at, ends_at))
+            .into_iter()
+            .collect()
+    };
+    let Some(rrule) = rrule else {
+        return (row_on_its_own(), None);
+    };
+    // An all-day series is unrolled on civil dates, not on instants.
+    // Its stored start sits on Paris midnight — 22:00Z in summer,
+    // 23:00Z in winter — so unrolling it in UTC carries every later
+    // occurrence onto the neighbouring day as soon as the clocks
+    // change, which is #101's own symptom re-created one level up.
+    // See `recurrence::expand_all_day_occurrences`.
+    let unrolled = if all_day {
+        recurrence::expand_all_day_occurrences(rrule, starts_at, ends_at, from, to)
+    } else {
+        let duration = ends_at - starts_at;
+        recurrence::expand_occurrences(rrule, starts_at, from, to)
+            .map(|starts| starts.into_iter().map(|s| (s, s + duration)).collect())
+    };
+    match unrolled {
+        Ok(spans) => (spans, None),
+        Err(error) => (row_on_its_own(), Some(error)),
+    }
+}
+
 /// AC: lists events (and tasks, since tasks are events) visible in
 /// `[from, to]`, expanding any recurring event's occurrences on the fly
 /// rather than materializing them in the DB.
@@ -415,64 +477,58 @@ pub async fn list_events(
 
     let mut occurrences = Vec::new();
     for row in rows {
-        let duration = row.ends_at - row.starts_at;
         let assignee_ids = assignees.get(&row.id).cloned().unwrap_or_default();
-        if let Some(rrule) = row.rrule.clone() {
-            // An all-day series is unrolled on civil dates, not on instants.
-            // Its stored start sits on Paris midnight — 22:00Z in summer,
-            // 23:00Z in winter — so unrolling it in UTC carries every later
-            // occurrence onto the neighbouring day as soon as the clocks
-            // change, which is #101's own symptom re-created one level up.
-            // See `recurrence::expand_all_day_occurrences`.
-            let spans: Vec<recurrence::OccurrenceSpan> = if row.all_day {
-                recurrence::expand_all_day_occurrences(
-                    &rrule,
-                    row.starts_at,
-                    row.ends_at,
-                    range.from,
-                    range.to,
-                )
+        let (spans, unroll_error) = row_spans(
+            row.rrule.as_deref(),
+            row.all_day,
+            row.starts_at,
+            row.ends_at,
+            range.from,
+            range.to,
+        );
+        if let Some(error) = unroll_error {
+            tracing::error!(
+                event_id = %row.id,
+                group_id = %row.group_id,
+                rrule = ?row.rrule,
+                starts_at = %row.starts_at,
+                all_day = row.all_day,
+                error = %error,
+                "stored series does not unroll, rendering its row on its own (#161)"
+            );
+        }
+        let is_series = row.rrule.is_some();
+        let base = event_response(row, assignee_ids);
+        for (occurrence_starts_at, occurrence_ends_at) in spans {
+            // A series' tasks are completed per occurrence
+            // (event_occurrence_completions), a one-off on its own row.
+            let completed_at = if !is_series {
+                base.completed_at
+            } else if base.is_task {
+                occurrence_completions
+                    .get(&(base.id, occurrence_starts_at))
+                    .copied()
             } else {
-                recurrence::expand_occurrences(&rrule, row.starts_at, range.from, range.to)
-                    .map(|starts| starts.into_iter().map(|s| (s, s + duration)).collect())
-            }
-            .map_err(|_| AppError::Internal(anyhow::anyhow!("failed to expand rrule")))?;
-            let base = event_response(row, assignee_ids);
-            for (occurrence_starts_at, occurrence_ends_at) in spans {
-                let completed_at = if base.is_task {
-                    occurrence_completions
-                        .get(&(base.id, occurrence_starts_at))
-                        .copied()
-                } else {
-                    None
-                };
-                occurrences.push(OccurrenceResponse {
-                    event: EventResponse {
-                        id: base.id,
-                        group_id: base.group_id,
-                        created_by: base.created_by,
-                        title: base.title.clone(),
-                        description: base.description.clone(),
-                        location: base.location.clone(),
-                        starts_at: base.starts_at,
-                        ends_at: base.ends_at,
-                        all_day: base.all_day,
-                        is_task: base.is_task,
-                        completed_at,
-                        rrule: base.rrule.clone(),
-                        assignee_ids: base.assignee_ids.clone(),
-                    },
-                    occurrence_starts_at,
-                    occurrence_ends_at,
-                });
-            }
-        } else if row.starts_at <= range.to && row.ends_at >= range.from {
-            let starts_at = row.starts_at;
-            let ends_at = row.ends_at;
+                None
+            };
             occurrences.push(OccurrenceResponse {
-                event: event_response(row, assignee_ids),
-                occurrence_starts_at: starts_at,
-                occurrence_ends_at: ends_at,
+                event: EventResponse {
+                    id: base.id,
+                    group_id: base.group_id,
+                    created_by: base.created_by,
+                    title: base.title.clone(),
+                    description: base.description.clone(),
+                    location: base.location.clone(),
+                    starts_at: base.starts_at,
+                    ends_at: base.ends_at,
+                    all_day: base.all_day,
+                    is_task: base.is_task,
+                    completed_at,
+                    rrule: base.rrule.clone(),
+                    assignee_ids: base.assignee_ids.clone(),
+                },
+                occurrence_starts_at,
+                occurrence_ends_at,
             });
         }
     }
@@ -509,13 +565,14 @@ pub async fn update_event(
         Some(r) => Some(r.clone()),
         None => existing.rrule.clone(),
     };
-    validate_request(starts_at, ends_at, rrule.as_deref())?;
     // `all_day` uses the same "absent field leaves it alone" convention as
     // the SQL below (`COALESCE($8, all_day)`), so the flag the row will end
     // up with is what decides normalization — a PATCH that touches neither
     // the flag nor the timestamps still re-asserts the invariant, which is
-    // exactly what makes `normalize_all_day` idempotent worth having.
+    // exactly what makes `normalize_all_day` idempotent worth having. It
+    // decides the anchor the rule is validated on, too.
     let all_day = body.all_day.unwrap_or(existing.all_day);
+    validate_request(starts_at, ends_at, all_day, rrule.as_deref())?;
     let (starts_at, ends_at) = normalized_bounds(all_day, starts_at, ends_at);
 
     if body.completed.is_some() && !existing.is_task {
@@ -719,5 +776,114 @@ mod tests {
             resolve_assignees(&[outsider], &members, creator),
             vec![creator]
         );
+    }
+
+    // -- row_spans (#161) -------------------------------------------------
+
+    fn utc(y: i32, m: u32, d: u32, h: u32, min: u32) -> DateTime<Utc> {
+        use chrono::TimeZone;
+        Utc.with_ymd_and_hms(y, m, d, h, min, 0).unwrap()
+    }
+
+    #[test]
+    fn a_one_off_row_inside_the_window_renders_once() {
+        let (s, e) = (utc(2026, 9, 10, 8, 0), utc(2026, 9, 10, 9, 0));
+        let (spans, error) = row_spans(
+            None,
+            false,
+            s,
+            e,
+            utc(2026, 9, 1, 0, 0),
+            utc(2026, 9, 30, 0, 0),
+        );
+        assert_eq!(spans, vec![(s, e)]);
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn a_one_off_row_touching_a_window_bound_is_kept_and_one_outside_is_not() {
+        let (s, e) = (utc(2026, 9, 10, 8, 0), utc(2026, 9, 10, 9, 0));
+        assert_eq!(
+            row_spans(None, false, s, e, e, utc(2026, 9, 11, 0, 0)).0,
+            vec![(s, e)]
+        );
+        assert_eq!(
+            row_spans(None, false, s, e, utc(2026, 9, 9, 0, 0), s).0,
+            vec![(s, e)]
+        );
+        assert!(row_spans(
+            None,
+            false,
+            s,
+            e,
+            utc(2026, 9, 11, 0, 0),
+            utc(2026, 9, 12, 0, 0)
+        )
+        .0
+        .is_empty());
+    }
+
+    #[test]
+    fn a_series_that_unrolls_renders_its_occurrences() {
+        let s = utc(2026, 9, 10, 8, 0);
+        let (spans, error) = row_spans(
+            Some("FREQ=DAILY;COUNT=3"),
+            false,
+            s,
+            s + chrono::Duration::hours(1),
+            utc(2026, 9, 1, 0, 0),
+            utc(2026, 9, 30, 0, 0),
+        );
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[2].0, utc(2026, 9, 12, 8, 0));
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn a_series_moved_past_its_until_renders_its_row_and_reports_why() {
+        // The re-import reproduction from #161: a series valid on
+        // 2026-10-01, moved by the feed to 2026-10-25 past its UNTIL.
+        let (s, e) = (utc(2026, 10, 25, 1, 30), utc(2026, 10, 25, 2, 30));
+        let (spans, error) = row_spans(
+            Some("FREQ=DAILY;UNTIL=20261010T235959Z"),
+            false,
+            s,
+            e,
+            utc(2026, 10, 1, 0, 0),
+            utc(2026, 10, 31, 23, 59),
+        );
+        assert_eq!(spans, vec![(s, e)]);
+        assert!(error.is_some());
+    }
+
+    #[test]
+    fn an_all_day_series_until_the_day_before_renders_its_row_and_reports_why() {
+        // The all-day reproduction from #161, stored before write refused it.
+        let (s, e) = (utc(2026, 9, 4, 22, 0), utc(2026, 9, 5, 22, 0));
+        let (spans, error) = row_spans(
+            Some("FREQ=DAILY;UNTIL=20260904T235959Z"),
+            true,
+            s,
+            e,
+            utc(2026, 8, 31, 22, 0),
+            utc(2026, 9, 30, 21, 59),
+        );
+        assert_eq!(spans, vec![(s, e)]);
+        assert!(error.is_some());
+    }
+
+    #[test]
+    fn a_series_that_does_not_unroll_outside_the_window_renders_nothing() {
+        let (s, e) = (utc(2026, 10, 25, 1, 30), utc(2026, 10, 25, 2, 30));
+        let (spans, error) = row_spans(
+            Some("FREQ=DAILY;UNTIL=20261010T235959Z"),
+            false,
+            s,
+            e,
+            utc(2026, 11, 1, 0, 0),
+            utc(2026, 11, 30, 0, 0),
+        );
+        assert!(spans.is_empty());
+        assert!(error.is_some());
     }
 }
