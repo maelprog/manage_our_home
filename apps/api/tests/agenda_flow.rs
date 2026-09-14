@@ -279,10 +279,11 @@ async fn an_all_day_event_is_stored_as_whole_paris_days(db: PgPool) {
 ///
 /// Anchoring the row on Paris midnight puts its `starts_at` on the DST
 /// cliff (22:00Z in summer, 23:00Z in winter). Unrolled in UTC — which is
-/// what `expand_occurrences` does — every later occurrence keeps September's
-/// offset and lands at 22:00Z, i.e. 23:00 on the *previous* day once the
-/// clocks go back. The event then vanishes from a dashboard window that
-/// starts at Paris midnight, which is #101's own symptom one level up.
+/// what this path still does, on a midnight stand-in — every later
+/// occurrence would keep September's offset and land at 22:00Z, i.e. 23:00
+/// on the *previous* day once the clocks go back. The event then vanishes
+/// from a dashboard window that starts at Paris midnight, which is #101's
+/// own symptom one level up.
 ///
 /// This is the reproduction from the review of PR #115, verbatim.
 #[sqlx::test]
@@ -348,6 +349,307 @@ async fn a_recurring_all_day_event_lands_on_its_civil_day_after_the_clocks_chang
         instant(occ, "occurrence_ends_at"),
         Utc.with_ymd_and_hms(2026, 11, 5, 23, 0, 0).unwrap()
     );
+}
+
+/// #116: the same promise for an **hour-bound** recurring event, end to
+/// end. « Tous les mois à 9 h » has to keep reading 09:00 in Paris once the
+/// clocks go back, `occurrence_ends_at` included — the reproduction
+/// measured on a live stack at the verification of #115, replayed here
+/// against a real database and through the whole `GET /events` path, which
+/// is where the occurrence's end is derived from the stored duration.
+#[sqlx::test]
+async fn a_recurring_hourly_event_keeps_its_paris_wall_clock_after_the_clocks_change(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    // 09:00 → 10:00 Paris on 2026-09-05, where Paris is UTC+2.
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "Point famille",
+            "starts_at": "2026-09-05T07:00:00Z",
+            "ends_at": "2026-09-05T08:00:00Z",
+            "all_day": false,
+            "rrule": "FREQ=MONTHLY",
+        })),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+
+    // November, where Paris is UTC+1: 09:00 local is 08:00Z. Unrolled in
+    // UTC the occurrence came back at 07:00Z — 08:00 in Paris.
+    let from = Utc.with_ymd_and_hms(2026, 11, 4, 23, 0, 0).unwrap();
+    let to = Utc.with_ymd_and_hms(2026, 11, 7, 22, 59, 59).unwrap();
+    let list = call(
+        &router,
+        Method::GET,
+        &format!(
+            "/groups/{group_id}/events?from={}&to={}",
+            urlenc(&from.to_rfc3339()),
+            urlenc(&to.to_rfc3339())
+        ),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&list, StatusCode::OK);
+    let body = json_body(list).await;
+    let occurrences = body["occurrences"].as_array().unwrap();
+    assert_eq!(
+        occurrences.len(),
+        1,
+        "expected one November occurrence: {body}"
+    );
+    let occ = &occurrences[0];
+    assert_eq!(
+        instant(occ, "occurrence_starts_at"),
+        Utc.with_ymd_and_hms(2026, 11, 5, 8, 0, 0).unwrap()
+    );
+    assert_eq!(
+        instant(occ, "occurrence_ends_at"),
+        Utc.with_ymd_and_hms(2026, 11, 5, 9, 0, 0).unwrap()
+    );
+}
+
+/// #116, round 2: a series anchored on the **repeated hour** must survive
+/// both ends of the round trip.
+///
+/// Paris repeats 02:30 on 2026-10-25 — 00:30Z in CEST, then 01:30Z in CET —
+/// and the web form reaches the first of the two (`paris_local_to_utc`
+/// resolves with `earliest()`). Naming that hour as a bare wall clock is
+/// ambiguous, and `rrule` rejects an ambiguous `DTSTART;TZID=` rather than
+/// picking a side: unrolling from a formatted wall clock turned a « garde
+/// de nuit, 02:30, tous les mois » into a 400 on write, and into a **500 on
+/// the whole window** on read, because `list_events` reports an expansion
+/// failure as `AppError::Internal` for every event in the range at once.
+#[sqlx::test]
+async fn a_recurring_event_anchored_on_the_repeated_hour_survives_write_and_read(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    // 02:30 → 03:30 Paris on 2026-10-25, taking the first of the two 02:30.
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "Garde de nuit",
+            "starts_at": "2026-10-25T00:30:00Z",
+            "ends_at": "2026-10-25T01:30:00Z",
+            "all_day": false,
+            "rrule": "FREQ=MONTHLY",
+        })),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+
+    // A second, ordinary event in the same window: the 500 took the whole
+    // list down, so its presence is what shows the blast radius.
+    let plain = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "Courses",
+            "starts_at": "2026-11-25T09:00:00Z",
+            "ends_at": "2026-11-25T10:00:00Z",
+            "all_day": false,
+        })),
+    )
+    .await;
+    assert_status(&plain, StatusCode::CREATED);
+
+    // The window opens in October, so the series' own start is inside it.
+    let from = Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
+    let to = Utc.with_ymd_and_hms(2026, 11, 30, 0, 0, 0).unwrap();
+    let list = call(
+        &router,
+        Method::GET,
+        &format!(
+            "/groups/{group_id}/events?from={}&to={}",
+            urlenc(&from.to_rfc3339()),
+            urlenc(&to.to_rfc3339())
+        ),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&list, StatusCode::OK);
+    let body = json_body(list).await;
+    // Naming every occurrence rather than counting them: a count couples
+    // this test to whatever else happens to be seeded in the window, and
+    // says nothing about which occurrence went missing when it breaks.
+    assert_eq!(
+        occurrence_titles_and_starts(&body),
+        vec![
+            // Its own start, the first of the two 02:30 (CEST).
+            ("Garde de nuit".into(), "2026-10-25T00:30:00Z".into()),
+            // November has no repeated hour: 02:30 Paris is 01:30Z.
+            ("Garde de nuit".into(), "2026-11-25T01:30:00Z".into()),
+            ("Courses".into(), "2026-11-25T09:00:00Z".into()),
+        ],
+        "{body}"
+    );
+}
+
+/// #116, round 3: the **second** pass of the repeated hour, end to end.
+///
+/// Unrolling walks the wall clock, and 02:30 maps back to the *first* pass
+/// of 2026-10-25. A series anchored on the second pass therefore regenerated
+/// its own start an hour early, `rrule` dropped it as earlier than
+/// `DTSTART`, and `GET /events` answered **200 OK with the first occurrence
+/// missing** — no error anywhere. The web form never reaches this instant
+/// (its `paris_local_to_utc` resolves `02:30` with `earliest()`), so a check
+/// through the form could not have caught it. A direct API call does reach
+/// it, as below, and so can a calendar re-import on an imported event later
+/// given a rule by `PATCH`: `google_calendar/imports.rs` rewrites
+/// `starts_at` from the feed without touching `rrule`.
+#[sqlx::test]
+async fn a_recurring_event_on_the_second_pass_of_the_repeated_hour_renders_its_own_start(
+    db: PgPool,
+) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "Relève",
+            "starts_at": "2026-10-25T01:30:00Z",
+            "ends_at": "2026-10-25T02:30:00Z",
+            "all_day": false,
+            "rrule": "FREQ=DAILY;COUNT=3",
+        })),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+
+    let from = Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
+    let to = Utc.with_ymd_and_hms(2026, 11, 30, 0, 0, 0).unwrap();
+    let list = call(
+        &router,
+        Method::GET,
+        &format!(
+            "/groups/{group_id}/events?from={}&to={}",
+            urlenc(&from.to_rfc3339()),
+            urlenc(&to.to_rfc3339())
+        ),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&list, StatusCode::OK);
+    let body = json_body(list).await;
+    // Three days at 02:30 Paris, starting on its own start — the second
+    // 02:30 of the 25th (CET), then two ordinary ones.
+    assert_eq!(
+        occurrence_titles_and_starts(&body),
+        vec![
+            ("Relève".into(), "2026-10-25T01:30:00Z".into()),
+            ("Relève".into(), "2026-10-26T01:30:00Z".into()),
+            ("Relève".into(), "2026-10-27T01:30:00Z".into()),
+        ],
+        "{body}"
+    );
+}
+
+/// #116, round 4: an hourly series across the hour Paris **skips**, end to
+/// end.
+///
+/// On 2026-03-29 Paris goes from 01:59 CET to 03:00 CEST. `rrule` reads the
+/// missing 02:00 with the offset before the gap — 01:00Z, the very instant
+/// 03:00 names — so unrolled in Paris the series produced 01:00Z twice, and
+/// `COUNT` spent a unit on the copy. `list_events` does not deduplicate: the
+/// same occurrence came back twice in `GET /events`, and the last one went
+/// missing. The web form offers no hourly rule (`parse_rrule`); a direct API
+/// call, as below, does.
+#[sqlx::test]
+async fn an_hourly_event_across_the_skipped_hour_is_listed_once_per_instant(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    // 00:00 → 00:15 Paris on 2026-03-29, every hour, four times.
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "Biberon",
+            "starts_at": "2026-03-28T23:00:00Z",
+            "ends_at": "2026-03-28T23:15:00Z",
+            "all_day": false,
+            "rrule": "FREQ=HOURLY;COUNT=4",
+        })),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+
+    let from = Utc.with_ymd_and_hms(2026, 3, 28, 0, 0, 0).unwrap();
+    let to = Utc.with_ymd_and_hms(2026, 3, 30, 0, 0, 0).unwrap();
+    let list = call(
+        &router,
+        Method::GET,
+        &format!(
+            "/groups/{group_id}/events?from={}&to={}",
+            urlenc(&from.to_rfc3339()),
+            urlenc(&to.to_rfc3339())
+        ),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&list, StatusCode::OK);
+    let body = json_body(list).await;
+    // 00:00 and 01:00 CET, then 03:00 and 04:00 CEST: four distinct instants.
+    assert_eq!(
+        occurrence_titles_and_starts(&body),
+        vec![
+            ("Biberon".into(), "2026-03-28T23:00:00Z".into()),
+            ("Biberon".into(), "2026-03-29T00:00:00Z".into()),
+            ("Biberon".into(), "2026-03-29T01:00:00Z".into()),
+            ("Biberon".into(), "2026-03-29T02:00:00Z".into()),
+        ],
+        "{body}"
+    );
+}
+
+/// Every occurrence of a `GET /events` body as `(title, occurrence start)`,
+/// ordered by start then title — what the caller actually means when it
+/// wants to say "these occurrences and no others".
+fn occurrence_titles_and_starts(body: &serde_json::Value) -> Vec<(String, String)> {
+    let mut rows: Vec<(String, String)> = body["occurrences"]
+        .as_array()
+        .expect("occurrences array")
+        .iter()
+        .map(|o| {
+            (
+                o["title"].as_str().unwrap_or_default().to_string(),
+                o["occurrence_starts_at"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+            )
+        })
+        .collect();
+    rows.sort_by(|a, b| (&a.1, &a.0).cmp(&(&b.1, &b.0)));
+    rows
 }
 
 /// #101: a backwards range is still a 400 on an `all_day` event — the
