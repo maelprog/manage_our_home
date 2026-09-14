@@ -401,8 +401,8 @@ fn add_days(date: NaiveDate, n: i64) -> NaiveDate {
 /// strings; they did not, and the gap was exactly the ambiguous Paris wall
 /// clock that `paris_rule_set` now sidesteps.
 ///
-/// An **all-day** row (`all_day`) is checked on its own construction
-/// instead, `all_day_rule_set`, because that is what
+/// An **all-day** row (`all_day`) is checked on its own construction as
+/// well, `all_day_rule_set`, because that is what
 /// `expand_all_day_occurrences` unrolls: a UTC-midnight stand-in for its
 /// Paris date, not the Paris midnight the row stores. Checked on the stored
 /// instant, the two parted on an `UNTIL` between them (#161): an all-day
@@ -420,13 +420,38 @@ fn add_days(date: NaiveDate, n: i64) -> NaiveDate {
 /// the feed to 2026-10-25 and re-imported, it no longer unrolls. That is
 /// not closed here but on read: `list_events` renders such a row on its
 /// own and logs why, rather than failing the window (#161).
+///
+/// An all-day series has a **second reader**, and it does not unroll the
+/// same construction: `refill_notifications` goes through
+/// `expand_occurrences`, i.e. `paris_rule_set`, from the Paris midnight the
+/// row stores. The two parse the rule differently — `all_day_rule_set`
+/// formats it into a text of several lines, `paris_rule_set` parses it as
+/// one — and they part on rules that either one alone would take. So an
+/// all-day rule is checked on both, the second from the instant
+/// `normalize_all_day` will store rather than the one the client sent
+/// (#165). Checked on `all_day_rule_set` alone, `FREQ=WEEKLY;BYDAY=X:MO`
+/// was a 201, then a 500 on `POST /reminders`.
+///
+/// And a rule is **one line**, whichever the path. A rule carrying a line
+/// break injected its own `EXDATE:`, `RDATE:` or `DTSTART:` lines into
+/// `all_day_rule_set`'s text; on the hour-bound path, the parser picks a
+/// property name from any line, so `FREQ=WEEKLY\nRRULE:FREQ=DAILY` was
+/// stored as written and unrolled as `FREQ=DAILY`. Neither is an RRULE
+/// value (RFC 5545 §3.3.10), and none of our clients writes one; it is
+/// refused before any parser sees it rather than left to how each parser
+/// happens to split lines (#165).
 pub fn validate(
     rrule: &str,
     starts_at: DateTime<Utc>,
     all_day: bool,
 ) -> Result<(), rrule::RRuleError> {
+    if rrule.contains(['\r', '\n']) {
+        return Err(rrule::ParseError::InvalidParameterFormat(rrule.into()).into());
+    }
     if all_day {
-        all_day_rule_set(rrule, starts_at).map(|_| ())
+        all_day_rule_set(rrule, starts_at)?;
+        let stored = paris_start_of_day(paris_date(starts_at));
+        paris_rule_set(rrule, stored).map(|_| ())
     } else {
         paris_rule_set(rrule, starts_at).map(|_| ())
     }
@@ -989,6 +1014,135 @@ mod tests {
                     "{rule} from {anchor}: accepted on write = {written}, unrolls on read = {read}"
                 );
             }
+        }
+    }
+
+    // -- a rule is one line, and every reader unrolls it (#165) --------------
+    //
+    // An all-day series has two readers, and they build its rule set two
+    // ways: `list_events` wraps the rule in `all_day_rule_set`'s text,
+    // `refill_notifications` parses the rule alone through
+    // `expand_occurrences`, from the instant the row stores. A rule carrying
+    // a line break injected its own `EXDATE:`/`RDATE:`/`DTSTART:` lines into
+    // the first and was refused by the second: a 201 on write, then a 500 on
+    // `POST /reminders` and an error logged by the reminders job at every
+    // pass. Write has to refuse what *either* reader refuses.
+
+    /// Rules that bring lines of their own — through `\n`, `\r\n`, or a bare
+    /// `\r`, which `str::lines` strips on one reader and not on the other.
+    const MULTI_LINE_RULES: [&str; 8] = [
+        "FREQ=WEEKLY\nEXDATE:20260927T000000Z",
+        "FREQ=WEEKLY\nRDATE:20260927T000000Z",
+        "FREQ=WEEKLY\nDTSTART:20260101T000000Z",
+        "FREQ=WEEKLY\nRRULE:FREQ=DAILY",
+        "FREQ=WEEKLY\r\nEXDATE:20260927T000000Z",
+        "FREQ=WEEKLY\rEXDATE:20260927T000000Z",
+        "FREQ=WEEKLY\r",
+        "FREQ=WEEKLY\n",
+    ];
+
+    #[test]
+    fn a_rule_with_a_line_break_is_refused_on_write_all_day() {
+        for rule in MULTI_LINE_RULES {
+            assert!(
+                validate(rule, midnight(2026, 9, 5), true).is_err(),
+                "{rule:?} accepted on an all-day row"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rule_with_a_line_break_is_refused_on_write_hour_bound() {
+        // `FREQ=WEEKLY\nRRULE:FREQ=DAILY` parses on this path too — as
+        // `FREQ=DAILY`, the line after the break — so the check cannot be
+        // left to the parser.
+        for rule in MULTI_LINE_RULES {
+            assert!(
+                validate(rule, utc(2026, 9, 5, 9, 0), false).is_err(),
+                "{rule:?} accepted on an hour-bound row"
+            );
+        }
+    }
+
+    #[test]
+    fn an_all_day_rule_the_reminders_cannot_unroll_is_refused_on_write() {
+        // One line, no break: `all_day_rule_set` reads everything after
+        // `RRULE:` and takes `X:MO` for a Monday; `expand_occurrences` finds
+        // a `:` in a line with no property name and parses `MO` alone.
+        let rule = "FREQ=WEEKLY;BYDAY=X:MO";
+        let stored = midnight(2026, 9, 5);
+        assert!(
+            expand_occurrences(rule, stored, stored, stored + Duration::days(30)).is_err(),
+            "the premise: the reminders reader refuses {rule}"
+        );
+        assert!(validate(rule, stored, true).is_err());
+    }
+
+    #[test]
+    fn validate_accepts_exactly_the_all_day_rules_both_readers_accept() {
+        // Checked from the instant the client sends as well as from the one
+        // the row stores: `validate` runs before `normalize_all_day`.
+        let rules = [
+            "FREQ=DAILY",
+            "FREQ=WEEKLY;BYDAY=SA;COUNT=3",
+            "FREQ=DAILY;UNTIL=20260904T215959Z",
+            "FREQ=DAILY;UNTIL=20260904T235959Z",
+            "FREQ=DAILY;UNTIL=20260905T235959Z",
+            "FREQ=MONTHLY;UNTIL=20261204T235959Z",
+            "FREQ=DAILY;UNTIL=20261010",
+            "RRULE:FREQ=DAILY",
+            "EXRULE:FREQ=DAILY",
+            ";FREQ=DAILY",
+            "FREQ=WEEKLY;BYDAY=X:MO",
+            "FREQ=WEEKLY;BYDAY=MO:",
+            "NOT_A_VALID_RRULE",
+        ];
+        let window = (midnight(2026, 1, 1), midnight(2027, 12, 31));
+        for rule in rules.iter().chain(MULTI_LINE_RULES.iter()) {
+            for stored in [midnight(2026, 9, 5), midnight(2026, 12, 5)] {
+                let listed = expand_all_day_occurrences(
+                    rule,
+                    stored,
+                    stored + Duration::days(1),
+                    window.0,
+                    window.1,
+                )
+                .is_ok();
+                let reminded = expand_occurrences(rule, stored, window.0, window.1).is_ok();
+                let one_line = !rule.contains(['\r', '\n']);
+                for sent in [stored, stored + Duration::hours(12)] {
+                    let written = validate(rule, sent, true).is_ok();
+                    assert_eq!(
+                        written,
+                        listed && reminded && one_line,
+                        "{rule:?} sent at {sent}: accepted on write = {written}, \
+                         listed = {listed}, reminded = {reminded}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn validate_accepts_exactly_the_hour_bound_rules_the_unroll_accepts() {
+        let rules = [
+            "FREQ=DAILY",
+            "FREQ=DAILY;UNTIL=20260905T085959Z",
+            "FREQ=DAILY;UNTIL=20260905T090000Z",
+            "RRULE:FREQ=DAILY",
+            "FREQ=WEEKLY;BYDAY=X:MO",
+            "NOT_A_VALID_RRULE",
+        ];
+        let start = utc(2026, 9, 5, 9, 0);
+        for rule in rules.iter().chain(MULTI_LINE_RULES.iter()) {
+            let written = validate(rule, start, false).is_ok();
+            let read = expand_occurrences(rule, start, start, start + Duration::days(30)).is_ok();
+            let one_line = !rule.contains(['\r', '\n']);
+            assert_eq!(
+                written,
+                read && one_line,
+                "{rule:?}: accepted on write = {written}, unrolls = {read}"
+            );
         }
     }
 }

@@ -749,6 +749,130 @@ async fn an_all_day_series_until_the_day_before_is_refused_on_write(db: PgPool) 
     assert_status(&to_all_day, StatusCode::BAD_REQUEST);
 }
 
+/// #165: an all-day series has two readers — `list_events`, and the reminders
+/// (`refill_notifications`) — and write has to refuse what either refuses.
+/// The reproduction from the issue: `FREQ=WEEKLY\nEXDATE:…` on an all-day
+/// event was a 201, then `POST /reminders` on it a 500. Every such rule is a
+/// 400 now, on create and on update, all-day or not, so the reminders never
+/// meet one written through the API.
+#[sqlx::test]
+async fn a_rule_the_reminders_cannot_unroll_is_refused_on_write(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let events_path = format!("/groups/{group_id}/events");
+
+    // Tomorrow, so the reminders window (30 days from now) holds occurrences.
+    let starts_at = Utc::now() + Duration::days(1);
+    let refused = [
+        "FREQ=WEEKLY\nEXDATE:20260927T000000Z",
+        "FREQ=WEEKLY\nRDATE:20260927T000000Z",
+        "FREQ=WEEKLY\nDTSTART:20260101T000000Z",
+        "FREQ=WEEKLY\r\nEXDATE:20260927T000000Z",
+        "FREQ=WEEKLY\rEXDATE:20260927T000000Z",
+        "FREQ=WEEKLY\r",
+        "FREQ=WEEKLY\nRRULE:FREQ=DAILY",
+        // One line, and still read one way by `list_events` and refused by
+        // the reminders.
+        "FREQ=WEEKLY;BYDAY=X:MO",
+    ];
+    for rule in refused {
+        for all_day in [true, false] {
+            let create = call(
+                &router,
+                Method::POST,
+                &events_path,
+                Some(&owner_cookie),
+                Some(serde_json::json!({
+                    "title": "Sport",
+                    "starts_at": starts_at,
+                    "ends_at": starts_at + Duration::hours(1),
+                    "all_day": all_day,
+                    "rrule": rule,
+                })),
+            )
+            .await;
+            assert_eq!(
+                create.status(),
+                StatusCode::BAD_REQUEST,
+                "{rule:?}, all_day = {all_day}"
+            );
+            assert_eq!(json_body(create).await["error"], "invalid_rrule");
+        }
+    }
+
+    // A valid all-day series takes a reminder…
+    let create = call(
+        &router,
+        Method::POST,
+        &events_path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "Sport",
+            "starts_at": starts_at,
+            "ends_at": starts_at + Duration::hours(1),
+            "all_day": true,
+            "rrule": "FREQ=WEEKLY",
+        })),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let event_id: Uuid = json_body(create).await["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let event_path = format!("{events_path}/{event_id}");
+    let reminders_path = format!("{event_path}/reminders");
+    let reminder = call(
+        &router,
+        Method::POST,
+        &reminders_path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"offset_minutes": 60})),
+    )
+    .await;
+    assert_status(&reminder, StatusCode::CREATED);
+
+    // …cannot be given one of those rules by PATCH either…
+    for rule in refused {
+        let patch = call(
+            &router,
+            Method::PATCH,
+            &event_path,
+            Some(&owner_cookie),
+            Some(serde_json::json!({"rrule": rule})),
+        )
+        .await;
+        assert_eq!(patch.status(), StatusCode::BAD_REQUEST, "{rule:?}");
+    }
+    let stored: Option<String> = sqlx::query_scalar("SELECT rrule FROM events WHERE id = $1")
+        .bind(event_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(stored.as_deref(), Some("FREQ=WEEKLY"));
+
+    // …and so a second reminder on it still schedules instead of failing.
+    let second = call(
+        &router,
+        Method::POST,
+        &reminders_path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"offset_minutes": 1440})),
+    )
+    .await;
+    assert_status(&second, StatusCode::CREATED);
+    let scheduled: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM scheduled_notifications WHERE event_id = $1")
+            .bind(event_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert!(scheduled > 0);
+}
+
 /// #161: a series stored but impossible to unroll no longer takes the whole
 /// window down. Write refuses the all-day case now, but a row can still get
 /// there — written before the check, or moved by a calendar re-import (see
