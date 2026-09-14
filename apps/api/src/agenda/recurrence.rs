@@ -381,6 +381,43 @@ pub fn expand_all_day_occurrences(
         .collect())
 }
 
+/// The occurrences of a stored series inside `[from, to]` (inclusive), as
+/// `(starts_at, ends_at)` spans — the one unroll **every reader** of a
+/// series goes through: `list_events` for the agenda, `refill_notifications`
+/// for the reminders.
+///
+/// An all-day series is unrolled on civil dates, not on instants. Its stored
+/// start sits on Paris midnight — 22:00Z in summer, 23:00Z in winter — so
+/// unrolling it in UTC carries every later occurrence onto the neighbouring
+/// day as soon as the clocks change, which is #101's own symptom re-created
+/// one level up: see `expand_all_day_occurrences`. An hour-bound series
+/// keeps its duration in real time: see `expand_occurrences`.
+///
+/// One function rather than two call sites each choosing an unroll (#169).
+/// The reminders used to call `expand_occurrences` whatever the row, i.e.
+/// unroll an all-day series on instants from the Paris midnight it stores,
+/// and the two readers parted on an `UNTIL` between that midnight and the
+/// end of its UTC day. `FREQ=DAILY;UNTIL=20261010T235959Z` — what
+/// `build_rrule` writes for « Jusqu'au 10/10 » — listed ten days from
+/// 1 October and reminded eleven: Paris midnight on the 11th is
+/// 2026-10-10T22:00Z, before the `UNTIL`. On civil dates the 11th is past it.
+pub fn expand_series(
+    rrule: &str,
+    all_day: bool,
+    starts_at: DateTime<Utc>,
+    ends_at: DateTime<Utc>,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<OccurrenceSpan>, rrule::RRuleError> {
+    if all_day {
+        expand_all_day_occurrences(rrule, starts_at, ends_at, from, to)
+    } else {
+        let duration = ends_at - starts_at;
+        expand_occurrences(rrule, starts_at, from, to)
+            .map(|starts| starts.into_iter().map(|s| (s, s + duration)).collect())
+    }
+}
+
 /// `date + n` days, saturating at chrono's representable range instead of
 /// panicking. Only a rule reaching the year 262143 can hit the fallback.
 fn add_days(date: NaiveDate, n: i64) -> NaiveDate {
@@ -421,8 +458,8 @@ fn add_days(date: NaiveDate, n: i64) -> NaiveDate {
 /// not closed here but on read: `list_events` renders such a row on its
 /// own and logs why, rather than failing the window (#161).
 ///
-/// An all-day series has a **second reader**, and it does not unroll the
-/// same construction: `refill_notifications` goes through
+/// An all-day series has a **second reader**, and until #169 it did not
+/// unroll the same construction: `refill_notifications` went through
 /// `expand_occurrences`, i.e. `paris_rule_set`, from the Paris midnight the
 /// row stores. The two parse the rule differently — `all_day_rule_set`
 /// formats it into a text of several lines, `paris_rule_set` parses it as
@@ -431,6 +468,12 @@ fn add_days(date: NaiveDate, n: i64) -> NaiveDate {
 /// `normalize_all_day` will store rather than the one the client sent
 /// (#165). Checked on `all_day_rule_set` alone, `FREQ=WEEKLY;BYDAY=X:MO`
 /// was a 201, then a 500 on `POST /reminders`.
+///
+/// Both readers now unroll through `expand_series` (#169), so the reminders
+/// read an all-day row on `all_day_rule_set` too. The check on
+/// `paris_rule_set` is kept all the same: dropping it would accept on write
+/// rules refused today, which is a decision of its own, not a consequence
+/// of #169.
 ///
 /// And a rule is **one value**, whichever the path: no line break, no `:`.
 /// A rule carrying a line break injected its own `EXDATE:`, `RDATE:` or

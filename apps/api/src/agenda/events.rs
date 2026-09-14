@@ -390,20 +390,9 @@ fn row_spans(
     let Some(rrule) = rrule else {
         return (row_on_its_own(), None);
     };
-    // An all-day series is unrolled on civil dates, not on instants.
-    // Its stored start sits on Paris midnight — 22:00Z in summer,
-    // 23:00Z in winter — so unrolling it in UTC carries every later
-    // occurrence onto the neighbouring day as soon as the clocks
-    // change, which is #101's own symptom re-created one level up.
-    // See `recurrence::expand_all_day_occurrences`.
-    let unrolled = if all_day {
-        recurrence::expand_all_day_occurrences(rrule, starts_at, ends_at, from, to)
-    } else {
-        let duration = ends_at - starts_at;
-        recurrence::expand_occurrences(rrule, starts_at, from, to)
-            .map(|starts| starts.into_iter().map(|s| (s, s + duration)).collect())
-    };
-    match unrolled {
+    // The unroll the reminders read as well (#169), all-day on civil
+    // dates: see `recurrence::expand_series`.
+    match recurrence::expand_series(rrule, all_day, starts_at, ends_at, from, to) {
         Ok(spans) => (spans, None),
         Err(error) => (row_on_its_own(), Some(error)),
     }

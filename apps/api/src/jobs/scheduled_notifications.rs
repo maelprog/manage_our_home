@@ -4,7 +4,7 @@ use sqlx::PgPool;
 use tokio::time::interval;
 use uuid::Uuid;
 
-use crate::agenda::reminders::refill_notifications;
+use crate::agenda::reminders::{refill_notifications, EventTimes};
 use crate::email::EmailSender;
 
 const SEND_POLL_INTERVAL_SECS: u64 = 60;
@@ -46,7 +46,7 @@ pub async fn run(pool: PgPool, email: EmailSender) {
 async fn refill_recurring_reminders(pool: &PgPool) -> anyhow::Result<()> {
     let reminders = sqlx::query!(
         r#"
-        SELECT r.id as reminder_id, r.offset_minutes, e.id as event_id, e.starts_at, e.rrule
+        SELECT r.id as reminder_id, r.offset_minutes, e.id as event_id, e.starts_at, e.ends_at, e.all_day, e.rrule
         FROM event_reminders r
         JOIN events e ON e.id = r.event_id
         WHERE e.rrule IS NOT NULL
@@ -61,8 +61,12 @@ async fn refill_recurring_reminders(pool: &PgPool) -> anyhow::Result<()> {
             &mut tx,
             row.reminder_id,
             row.event_id,
-            row.starts_at,
-            row.rrule.as_deref(),
+            EventTimes {
+                starts_at: row.starts_at,
+                ends_at: row.ends_at,
+                all_day: row.all_day,
+                rrule: row.rrule.as_deref(),
+            },
             row.offset_minutes,
         )
         .await
