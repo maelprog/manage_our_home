@@ -1,5 +1,5 @@
 import { Browser, expect, Page, test } from "@playwright/test";
-import { fetchVerificationToken } from "../lib/db";
+import { fetchEventBounds, fetchVerificationToken } from "../lib/db";
 import { parisDay } from "../lib/dates";
 
 // Issue #73 — the home dashboard. `/` is the first page after login and,
@@ -102,9 +102,12 @@ interface EventOpts {
 async function createEvent(page: Page, opts: EventOpts): Promise<void> {
   await page.goto("/agenda/new");
   await page.getByLabel("Titre").fill(opts.title);
-  if (opts.allDay) await page.locator('input[name="all_day"]').check();
   await page.getByLabel("Début").fill(opts.start);
   await page.getByLabel("Fin").fill(opts.end);
+  // Ticked last, the way a user ticks it over the form's timed defaults:
+  // since #117 the box turns both fields into dates, converting what they
+  // hold, so a `datetime-local` value can no longer be typed after it.
+  if (opts.allDay) await page.locator('input[name="all_day"]').check();
   await page.getByRole("button", { name: "Créer l'événement" }).click();
   await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
 }
@@ -184,7 +187,7 @@ test.describe("Accueil — le tableau de bord d'une famille peuplée", () => {
   });
 
   test("un événement toute la journée aujourd'hui est bien affiché", async ({ page }) => {
-    await registerAndLogin(page, "e2e-homeallday", "AllDay Owner");
+    const email = await registerAndLogin(page, "e2e-homeallday", "AllDay Owner");
     await createGroup(page, FAMILY);
 
     const today = isoDay();
@@ -209,15 +212,25 @@ test.describe("Accueil — le tableau de bord d'une famille peuplée", () => {
     // was unreachable for the current day.
     await expect(agenda.getByText("journée")).toBeVisible();
 
-    // L'invariant lui-même, et pas seulement son symptôme : le formulaire
-    // d'édition relit ce que la base porte. Cette assertion échoue à toute
-    // heure sans #101, là où la carte ci-dessus ne trahit le défaut qu'après
-    // 09 h 00 à Paris — la suite tourne à n'importe quelle heure.
+    // L'invariant lui-même, et pas seulement son symptôme : ce que la base
+    // porte. Cette assertion échoue à toute heure sans #101, là où la carte
+    // ci-dessus ne trahit le défaut qu'après 09 h 00 à Paris — la suite
+    // tourne à n'importe quelle heure. Elle lisait le formulaire d'édition
+    // jusqu'à #117 ; il montre désormais deux dates, qui ne distinguent plus
+    // minuit de 08 h 00 — d'où la lecture en base.
+    expect(await fetchEventBounds(email, "Anniversaire de Léa")).toEqual({
+      starts: `${today}T00:00`,
+      ends: `${isoDay(1)}T00:00`,
+    });
+
+    // Et le formulaire d'édition montre le jour couvert, fin incluse (#117) :
+    // le 1er jour et le dernier, pas le minuit exclusif du lendemain.
     await page.goto("/agenda");
     await page.getByRole("link", { name: "Anniversaire de Léa" }).click();
     await page.getByRole("link", { name: "Modifier" }).click();
-    await expect(page.getByLabel("Début")).toHaveValue(`${today}T00:00`);
-    await expect(page.getByLabel("Fin")).toHaveValue(`${isoDay(1)}T00:00`);
+    await expect(page.getByLabel("Début")).toHaveAttribute("type", "date");
+    await expect(page.getByLabel("Début")).toHaveValue(today);
+    await expect(page.getByLabel("Fin")).toHaveValue(today);
   });
 
   test("un événement déjà commencé mais pas terminé reste affiché", async ({ page }) => {
