@@ -126,24 +126,26 @@ pub(crate) fn date_only(input: &str) -> Option<NaiveDate> {
 /// what timed events submit, and what an all-day event submits when the box
 /// was ticked without JS to swap the fields (the API then normalizes it).
 ///
-/// `None` when a field is unreadable, or when a date end names a day before
-/// a date start: that pair converts to an exclusive end *equal* to the
-/// start, which `validate_event_form` accepts and the API would silently
-/// widen to one day. Any other ordering stays `validate_event_form`'s call.
+/// `None` when a field is unreadable, or when either field is a date and the
+/// end does not land strictly after the start. A date end naming the day
+/// before a date start converts to an exclusive end *equal* to the start —
+/// and so does a forged mixed pair such as Début = `07`, Fin = `07T00:00`.
+/// `validate_event_form` accepts that zero-length span and the API would
+/// silently widen it to one day. A pair of two timed fields keeps its
+/// ordering check in `validate_event_form`, zero length included, as before.
 pub(crate) fn form_bounds(starts: &str, ends: &str) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
     let starts_at = match date_only(starts) {
         Some(day) => paris_start_of_day(day),
         None => paris_local_to_utc(starts)?,
     };
     let ends_at = match date_only(ends) {
-        Some(last_day) => {
-            if date_only(starts).is_some_and(|first_day| last_day < first_day) {
-                return None;
-            }
-            paris_start_of_day(last_day.succ_opt()?)
-        }
+        Some(last_day) => paris_start_of_day(last_day.succ_opt()?),
         None => paris_local_to_utc(ends)?,
     };
+    let has_date_field = date_only(starts).is_some() || date_only(ends).is_some();
+    if has_date_field && ends_at <= starts_at {
+        return None;
+    }
     Some((starts_at, ends_at))
 }
 
@@ -327,14 +329,42 @@ mod tests {
         assert_eq!(form_bounds("2026-09-05T10:00", "demain"), None);
     }
 
-    /// A timed start after a date end is still caught by the shared
-    /// validation, whatever mix of field kinds produced it.
+    /// Two timed fields out of order are still left to the shared
+    /// validation, which reports them.
     #[test]
-    fn a_mixed_pair_still_goes_through_the_shared_validation() {
-        let (s, e) = form_bounds("2026-09-07T10:00", "2026-09-06").unwrap();
+    fn a_reversed_timed_pair_still_goes_through_the_shared_validation() {
+        let (s, e) = form_bounds("2026-09-07T10:00", "2026-09-07T09:00").unwrap();
         assert_eq!(
             validate_event_form("x", s, e),
             Err(EventFormError::EndsBeforeStarts)
+        );
+    }
+
+    /// The same widening through a mixed pair (a forged POST): a date field
+    /// on either side and an end landing exactly on the start converts to a
+    /// zero-length span, which `validate_event_form` accepts and the API
+    /// would widen to one day. As soon as a field is a date, the end must
+    /// be strictly after the start.
+    #[test]
+    fn a_mixed_pair_ending_on_its_start_is_refused() {
+        // Début = 07 (date), Fin = 07 00:00.
+        assert_eq!(form_bounds("2026-09-07", "2026-09-07T00:00"), None);
+        // Début = 07 00:00, Fin = 06 (date, i.e. up to 07 00:00).
+        assert_eq!(form_bounds("2026-09-07T00:00", "2026-09-06"), None);
+        // And a mixed pair plainly out of order.
+        assert_eq!(form_bounds("2026-09-07T10:00", "2026-09-06"), None);
+    }
+
+    /// A mixed pair that does cover time is still read, not refused.
+    #[test]
+    fn a_well_ordered_mixed_pair_is_still_read() {
+        assert_eq!(
+            form_bounds("2026-09-07", "2026-09-07T10:00"),
+            Some((utc(2026, 9, 6, 22, 0), utc(2026, 9, 7, 8, 0)))
+        );
+        assert_eq!(
+            form_bounds("2026-09-07T10:00", "2026-09-07"),
+            Some((utc(2026, 9, 7, 8, 0), utc(2026, 9, 7, 22, 0)))
         );
     }
 

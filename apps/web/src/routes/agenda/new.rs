@@ -344,9 +344,12 @@ pub(crate) fn recurrence_picker(current: Option<&Recurrence>) -> String {
 /// past the start's day, which becomes the day before — the same reading
 /// `normalize_all_day` gives an exclusive end. Unticking: the start opens
 /// its day and the end becomes the midnight after its last day, i.e. the
-/// instants the date pair stands for. The two directions are inverses, so
-/// ticking and unticking again never moves a bound (e.g. `08 00:00` → `07`
-/// → `08 00:00`); a one-way `slice(0, 10)` lost a day per round trip.
+/// instants the date pair stands for. For a well-ordered pair (end after
+/// start) the two directions are inverses, so ticking and unticking again
+/// never moves a bound (e.g. `08 00:00` → `07` → `08 00:00`); a one-way
+/// `slice(0, 10)` lost a day per round trip. A reversed pair can move on
+/// its first round trip before settling — it is refused on submit anyway
+/// (`form_bounds` / `validate_event_form`).
 /// Values are read before the type changes, since changing the type
 /// sanitizes a value the new type cannot hold down to "". Date arithmetic
 /// runs at UTC noon, where no offset can shift the calendar day.
