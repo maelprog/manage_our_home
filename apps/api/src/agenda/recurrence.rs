@@ -21,9 +21,18 @@ pub type OccurrenceSpan = (DateTime<Utc>, DateTime<Utc>);
 
 /// Expands `rrule` (an RFC 5545 RRULE string, without the DTSTART line —
 /// that's derived from `starts_at`) into occurrence start times that fall
-/// within `[from, to]`. Returns an error only for a malformed or invalid
-/// RRULE string; `validate` puts the very same rule set together on write,
-/// so anything stored can be expanded and this should not normally fail.
+/// within `[from, to]`. Returns an error when the rule cannot be unrolled
+/// from that anchor: malformed, or invalid against it (an `UNTIL` earlier
+/// than `starts_at`, say).
+///
+/// `validate` runs the same construction on write, so a rule unrolls from
+/// the `starts_at` it was accepted with. That is **not** a promise that
+/// every stored series unrolls: what is stored is not always what was
+/// validated. A calendar re-import rewrites `starts_at` from the feed
+/// without going back through `validate` (`google_calendar/imports.rs`),
+/// and can move it past the rule's `UNTIL`; an all-day row is unrolled on
+/// another anchor altogether (see `validate`). Either way a stored series
+/// fails here, and `list_events` then fails the whole window — #161.
 ///
 /// The rule is unrolled in **Europe/Paris** (#116). A recurring event is a
 /// wall-clock promise — « tous les lundis à 9 h » means 9 h on the clock in
@@ -45,11 +54,28 @@ pub type OccurrenceSpan = (DateTime<Utc>, DateTime<Utc>);
 ///   the offset in force before the gap, so it lands an hour later on the
 ///   clock. A monthly series anchored on 2026-01-29T01:30Z (02:30 in Paris)
 ///   comes back on 2026-03-29 at 01:30Z — 03:30 in Paris — and at 02:30
-///   again in April. Nothing in this file decides that; it is what `rrule`
-///   0.14 does. RFC 5545 §3.3.10 says both things: first that an instance
-///   with a « nonexistent local time » MUST be ignored and not counted, then
-///   that such a time is interpreted as a DATE-TIME (§3.3.5), i.e. with the
-///   offset before the gap. `rrule` follows the second reading.
+///   again in April. That much is what `rrule` 0.14 does. RFC 5545 §3.3.10
+///   says both things: first that an instance with a « nonexistent local
+///   time » MUST be ignored and not counted, then that such a time is
+///   interpreted as a DATE-TIME (§3.3.5), i.e. with the offset before the
+///   gap. `rrule` follows the second reading.
+///
+///   Read that way, a rule that steps by the hour or less — or that lists
+///   both 02:xx and 03:xx — produces on that day an instant it also
+///   produces from 03:xx: 02:00 is read as 01:00Z, which is what 03:00
+///   names. `rrule` returns both, and under `COUNT` spends a unit on each
+///   (#116, round 4). **This function keeps one**: an instant the series
+///   has already produced is not produced again, and is not counted, so a
+///   `COUNT=n` series has n distinct instants. That is a choice made here.
+///   The RFC does not say how its two sentences combine; it does say a
+///   recurrence set holds an instant once (« Duplicate instances are
+///   ignored », §3.8.5.3, written for RRULE against RDATE). And it is what
+///   the first sentence gives wherever the two readings collide — the gap's
+///   copy is ignored and not counted — while the second keeps governing
+///   everywhere they do not: daily, weekly, or every two hours from
+///   midnight, the gap's occurrence lands on no other one and stays, an
+///   hour later on the clock. Only instants in the hour right after a gap
+///   are compared; nothing else is touched.
 /// - **The hour Paris repeats** (last Sunday of October). RFC 5545 resolves
 ///   a repeated wall clock to its first pass (§3.3.5, applied to recurrence
 ///   instances by §3.3.10), and so does the unroll. But a row stores an
@@ -60,15 +86,21 @@ pub type OccurrenceSpan = (DateTime<Utc>, DateTime<Utc>);
 ///   something the RFC or `rrule` prescribes: left on the first pass, the
 ///   series would not render its own start as the row stores it (#116,
 ///   round 3). A series anchored anywhere else keeps the first pass.
+///
+///   The first pass is the *only* pass such a series gets: a rule that steps
+///   by the hour or less, walking wall clocks, reaches 02:00 once and goes
+///   on to 03:00. `FREQ=HOURLY` from 2026-10-25T00:00Z (02:00 CEST) gives
+///   00:00Z, then 02:00Z (03:00 CET) — never 01:00Z, the second 02:00.
+///   Unrolled in UTC, before #116, it did give 01:00Z. That follows from
+///   the first-pass reading above, and is left as is.
 pub fn expand_occurrences(
     rrule: &str,
     starts_at: DateTime<Utc>,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
 ) -> Result<Vec<DateTime<Utc>>, rrule::RRuleError> {
-    let set = paris_rule_set(rrule, starts_at)?;
     if !is_second_pass_of_a_repeated_hour(starts_at) {
-        return Ok(occurrences_in(set, from, to));
+        return paris_occurrences_in(rrule, starts_at, from, to);
     }
     // The series is anchored on the second pass. Every occurrence that lands
     // on a repeated hour is put on the second pass too — a choice, not a
@@ -76,13 +108,16 @@ pub fn expand_occurrences(
     // an hour earlier. Widen by that hour before moving them, then filter on
     // the real instants, so `[from, to]` stays inclusive on both ends exactly
     // as this function promises.
-    Ok(
-        occurrences_in(set, from - Duration::hours(1), to + Duration::hours(1))
-            .into_iter()
-            .map(second_pass_of_a_repeated_hour)
-            .filter(|occurrence| *occurrence >= from && *occurrence <= to)
-            .collect(),
-    )
+    Ok(paris_occurrences_in(
+        rrule,
+        starts_at,
+        from - Duration::hours(1),
+        to + Duration::hours(1),
+    )?
+    .into_iter()
+    .map(second_pass_of_a_repeated_hour)
+    .filter(|occurrence| *occurrence >= from && *occurrence <= to)
+    .collect())
 }
 
 /// The rule set an hour-bound series unrolls from: `rrule` anchored on
@@ -113,9 +148,104 @@ pub fn expand_occurrences(
 /// occurrences that land on a repeated hour back onto the second pass — a
 /// choice of its own, documented there.
 fn paris_rule_set(rrule: &str, starts_at: DateTime<Utc>) -> Result<RRuleSet, rrule::RRuleError> {
-    rrule
-        .parse::<RRule<Unvalidated>>()?
-        .build(first_pass_of_a_repeated_hour(starts_at).with_timezone(&PARIS))
+    build_paris_rule_set(rrule.parse()?, starts_at)
+}
+
+fn build_paris_rule_set(
+    rule: RRule<Unvalidated>,
+    starts_at: DateTime<Utc>,
+) -> Result<RRuleSet, rrule::RRuleError> {
+    rule.build(first_pass_of_a_repeated_hour(starts_at).with_timezone(&PARIS))
+}
+
+/// The occurrences of an hour-bound series inside `[from, to]`, each instant
+/// once — see « the hour Paris skips » on `expand_occurrences`.
+///
+/// `rrule` counts `COUNT` itself, copies included, so the rule is unrolled
+/// with its count lifted and the count is kept here, on distinct instants.
+/// `validate` builds the same rule with its own `COUNT`; nothing `rrule`
+/// validates depends on the count's value, so both accept and refuse the
+/// same rules. Everything else follows what `RRuleSet::all` does on the
+/// window `occurrences_in` gives it — same bounds, same stop past `to`,
+/// same `MAX_OCCURRENCES`, same iteration limits — so a series that
+/// produces no copy unrolls exactly as it did through `occurrences_in`.
+fn paris_occurrences_in(
+    rrule: &str,
+    starts_at: DateTime<Utc>,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<DateTime<Utc>>, rrule::RRuleError> {
+    let rule: RRule<Unvalidated> = rrule.parse()?;
+    let count = rule.get_count();
+    let rule = match count {
+        Some(_) => rule.count(u32::MAX),
+        None => rule,
+    };
+    let set = build_paris_rule_set(rule, starts_at)?.limit();
+
+    // The same one-second nudge as `occurrences_in`, for the same reason.
+    let (after, before) = (from - Duration::seconds(1), to + Duration::seconds(1));
+    let mut produced_after_a_gap = ProducedAfterAGap::default();
+    let mut distinct: u32 = 0;
+    let mut dates = Vec::new();
+    let mut iter = set.into_iter();
+    while dates.len() < usize::from(MAX_OCCURRENCES) && count.is_none_or(|n| distinct < n) {
+        let Some(occurrence) = iter.next() else { break };
+        let occurrence = occurrence.with_timezone(&Utc);
+        if !produced_after_a_gap.first_time(occurrence) {
+            continue;
+        }
+        distinct += 1;
+        if occurrence >= after && occurrence <= before {
+            dates.push(occurrence);
+        }
+        if occurrence > before {
+            break;
+        }
+    }
+    Ok(dates)
+}
+
+/// The instants a series has produced in the hour right after a skipped
+/// hour — the only hour where `rrule` can produce one twice (02:00 read as
+/// 03:00). Forgotten once the series is well past that hour, so a series
+/// unrolled over years holds at most one such hour at a time.
+#[derive(Default)]
+struct ProducedAfterAGap {
+    seen: std::collections::HashSet<DateTime<Utc>>,
+    latest: Option<DateTime<Utc>>,
+}
+
+impl ProducedAfterAGap {
+    /// Whether `occurrence` is produced for the first time. Always true
+    /// outside the hour after a gap.
+    fn first_time(&mut self, occurrence: DateTime<Utc>) -> bool {
+        if !follows_a_skipped_hour(occurrence) {
+            // A copy is at most an hour behind the instant produced before
+            // it; two hours past the last one seen, none can come back.
+            if self
+                .latest
+                .is_some_and(|latest| occurrence > latest + Duration::hours(2))
+            {
+                self.seen.clear();
+                self.latest = None;
+            }
+            return true;
+        }
+        self.latest = self.latest.max(Some(occurrence));
+        self.seen.insert(occurrence)
+    }
+}
+
+/// Whether `dt` falls in the hour right after one Paris skips: its wall
+/// clock an hour earlier does not exist (2026-03-29T01:00Z reads 03:00, and
+/// there was no 02:00). False everywhere else.
+fn follows_a_skipped_hour(dt: DateTime<Utc>) -> bool {
+    let an_hour_earlier = dt.with_timezone(&PARIS).naive_local() - Duration::hours(1);
+    PARIS
+        .from_local_datetime(&an_hour_earlier)
+        .earliest()
+        .is_none()
 }
 
 /// The two instants a Paris wall clock names when the clocks go back, or
@@ -264,14 +394,24 @@ fn add_days(date: NaiveDate, n: i64) -> NaiveDate {
 /// creating/updating an event so a bad value is rejected at write time
 /// (400) instead of surfacing as a silent empty expansion later.
 ///
-/// It runs `paris_rule_set` — the very construction `expand_occurrences`
-/// unrolls from — and throws the result away. That identity is the point,
-/// and it is structural rather than argued: whatever is accepted here can
-/// be expanded later by `expand_occurrences`, because it is literally the
-/// same call. An earlier version of this PR argued instead that the two
-/// `DTSTART` forms accept the same strings; they did not, and the gap was
-/// exactly the ambiguous Paris wall clock that `paris_rule_set` now
-/// sidesteps.
+/// It runs `paris_rule_set` — the construction `expand_occurrences` unrolls
+/// from, down to the anchor; the unroll only lifts `COUNT` to keep it
+/// itself, and `rrule` validates nothing on the count's value — and throws
+/// the result away. That identity is structural rather than argued: a rule
+/// accepted here with a given `starts_at` can be expanded later by
+/// `expand_occurrences` **from that same `starts_at`**. An earlier version
+/// of this PR argued instead that the two `DTSTART` forms accept the same
+/// strings; they did not, and the gap was exactly the ambiguous Paris wall
+/// clock that `paris_rule_set` now sidesteps.
+///
+/// The identity says nothing about a `starts_at` that changes without
+/// coming back here. A calendar re-import does exactly that: it rewrites
+/// `starts_at` from the feed and leaves `rrule` alone
+/// (`google_calendar/imports.rs`). An imported event on 2026-10-01 given
+/// `FREQ=DAILY;UNTIL=20261010T235959Z` by `PATCH` passes here; moved by
+/// the feed to 2026-10-25 and re-imported, it fails to expand with
+/// `UntilBeforeStart` — a 500 on the whole window. Pre-existing, tracked in
+/// #161 with the all-day gap below.
 ///
 /// That identity does **not** extend to all-day rows. They go through here
 /// on their own `starts_at`, while `expand_all_day_occurrences` unrolls a
