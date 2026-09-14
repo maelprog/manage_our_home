@@ -1,4 +1,4 @@
-use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
+use chrono::{DateTime, Duration, NaiveDate, NaiveTime, TimeZone, Utc};
 use manage_our_home_shared::validation::agenda::{paris_date, paris_start_of_day};
 use rrule::{RRule, RRuleSet, Tz, Unvalidated};
 
@@ -41,26 +41,81 @@ pub fn expand_occurrences(
     from: DateTime<Utc>,
     to: DateTime<Utc>,
 ) -> Result<Vec<DateTime<Utc>>, rrule::RRuleError> {
-    Ok(occurrences_in(paris_rule_set(rrule, starts_at)?, from, to))
+    let set = paris_rule_set(rrule, starts_at)?;
+    if !is_second_pass_of_a_repeated_hour(starts_at) {
+        return Ok(occurrences_in(set, from, to));
+    }
+    // The series is anchored on the second pass, so every occurrence that
+    // lands on a repeated hour belongs on the second pass too — and the
+    // unroll put it on the first, an hour early. Widen by that hour before
+    // moving them, then filter on the real instants, so `[from, to]` stays
+    // inclusive on both ends exactly as this function promises.
+    Ok(
+        occurrences_in(set, from - Duration::hours(1), to + Duration::hours(1))
+            .into_iter()
+            .map(second_pass_of_a_repeated_hour)
+            .filter(|occurrence| *occurrence >= from && *occurrence <= to)
+            .collect(),
+    )
 }
 
 /// The rule set an hour-bound series unrolls from: `rrule` anchored on
-/// `starts_at` read as the Paris instant it is.
+/// `starts_at` read as a Paris instant.
 ///
 /// Built from the typed instant, **not** from a formatted
 /// `DTSTART;TZID=Europe/Paris:<wall clock>` line, and that is not a matter
 /// of style (#116, round 2). Paris repeats an hour every October: on
 /// 2026-10-25 the wall clock reads 02:30 twice — 00:30Z in CEST, then
 /// 01:30Z in CET — and `rrule` 0.14 refuses an ambiguous `DTSTART;TZID=`
-/// outright rather than picking a side. Both instants are reachable from
-/// the form, whose `paris_local_to_utc` resolves `02:30` with `earliest()`,
-/// so a formatted wall clock turned a « garde de nuit, 02:30, tous les
-/// mois » into a 400 on write and a 500 on read. A `DateTime<Tz>` carries
-/// the offset a wall clock leaves out, so no stored instant is unnameable.
+/// outright rather than picking a side. The web form only reaches the first
+/// of the two (`paris_local_to_utc` resolves with `earliest()`); the API
+/// reaches either. A formatted wall clock turned a « garde de nuit, 02:30,
+/// tous les mois » into a 400 on write and a 500 on read.
+///
+/// The anchor is the **first** pass of `starts_at`'s wall clock (#116,
+/// round 3). That is not the instant the row stores when the row sits on
+/// the second pass, and it is deliberate: `rrule` walks wall clocks and
+/// resolves each one back with `earliest()`, so anchoring on the second
+/// pass made it regenerate the head of the series an hour early, drop it as
+/// earlier than `DTSTART`, and — under `COUNT` — spend the freed count a
+/// day past the tail. Anchoring on the pass `rrule` will itself produce
+/// keeps the head and the count; `expand_occurrences` then moves the
+/// occurrences that land on a repeated hour back onto the second pass.
 fn paris_rule_set(rrule: &str, starts_at: DateTime<Utc>) -> Result<RRuleSet, rrule::RRuleError> {
     rrule
         .parse::<RRule<Unvalidated>>()?
-        .build(starts_at.with_timezone(&PARIS))
+        .build(first_pass_of_a_repeated_hour(starts_at).with_timezone(&PARIS))
+}
+
+/// The two instants a Paris wall clock names when the clocks go back, or
+/// `None` when it names just one — which is every wall clock but those of
+/// the hour repeated once a year.
+fn repeated_hour_passes(dt: DateTime<Utc>) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    let resolved = PARIS.from_local_datetime(&dt.with_timezone(&PARIS).naive_local());
+    match (resolved.earliest(), resolved.latest()) {
+        (Some(first), Some(second)) if first != second => {
+            Some((first.with_timezone(&Utc), second.with_timezone(&Utc)))
+        }
+        _ => None,
+    }
+}
+
+/// Whether `dt` is the **second** of the two instants its Paris wall clock
+/// names. False for every instant outside the repeated hour.
+fn is_second_pass_of_a_repeated_hour(dt: DateTime<Utc>) -> bool {
+    repeated_hour_passes(dt).is_some_and(|(_, second)| dt == second)
+}
+
+/// `dt` moved onto the first pass of its Paris wall clock; `dt` unchanged
+/// when that wall clock names only one instant.
+fn first_pass_of_a_repeated_hour(dt: DateTime<Utc>) -> DateTime<Utc> {
+    repeated_hour_passes(dt).map_or(dt, |(first, _)| first)
+}
+
+/// `dt` moved onto the second pass of its Paris wall clock; `dt` unchanged
+/// when that wall clock names only one instant.
+fn second_pass_of_a_repeated_hour(dt: DateTime<Utc>) -> DateTime<Utc> {
+    repeated_hour_passes(dt).map_or(dt, |(_, second)| second)
 }
 
 /// The `DTSTART` line for an unroll on instants, in UTC. Only the all-day
@@ -304,9 +359,9 @@ mod tests {
     // Paris does not just change offset, it *repeats* an hour: on
     // 2026-10-25, 02:30 happens twice — 00:30Z in CEST, then 01:30Z in CET.
     // A wall-clock string naming that hour is ambiguous, and `rrule` 0.14
-    // refuses one outright rather than picking a side. Both instants are
-    // reachable: `apps/web`'s `paris_local_to_utc` resolves the form's
-    // `02:30` with `earliest()` and stores the first of the two.
+    // refuses one outright rather than picking a side. The web form only
+    // reaches the first of the two — `apps/web`'s `paris_local_to_utc`
+    // resolves `02:30` with `earliest()` — and the API reaches either.
     //
     // A rule anchored there has to keep being accepted on write and keep
     // expanding on read. The second matters most: `list_events` turns an
