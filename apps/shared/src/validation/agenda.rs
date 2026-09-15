@@ -205,9 +205,14 @@ pub enum EventFormError {
 }
 
 /// Mirrors `apps/api/src/agenda/events.rs`: a non-empty title and
-/// `ends_at >= starts_at`. `starts_at`/`ends_at` are already resolved to
-/// UTC instants by the caller (naive-local → Europe/Paris → UTC happens in
-/// `apps/web`); this stays timezone-agnostic on purpose.
+/// `ends_at >= starts_at`. Both are guards there too — the title only since
+/// #120, until when this was the only one and `POST` took `"  "`. Refusing
+/// here spares the user a round-trip on a field they can fix in place; it is
+/// not what makes the rule hold.
+///
+/// `starts_at`/`ends_at` are already resolved to UTC instants by the caller
+/// (naive-local → Europe/Paris → UTC happens in `apps/web`); this stays
+/// timezone-agnostic on purpose.
 pub fn validate_event_form(
     title: &str,
     starts_at: chrono::DateTime<chrono::Utc>,

@@ -678,6 +678,73 @@ async fn an_all_day_event_with_a_backwards_range_is_still_rejected(db: PgPool) {
     assert_status(&create, StatusCode::BAD_REQUEST);
 }
 
+/// #120: a non-empty title was an invariant of the web forms alone
+/// (`validate_event_form`), so `POST` and `PATCH` took `"  "` and stored it.
+/// The API holds it now, on both verbs, and a PATCH that carries no title at
+/// all still leaves the stored one alone.
+#[sqlx::test]
+async fn an_event_title_that_is_blank_is_refused_on_write(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let events_path = format!("/groups/{group_id}/events");
+
+    let blank = call(
+        &router,
+        Method::POST,
+        &events_path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "  ",
+            "starts_at": "2026-09-10T08:00:00Z",
+            "ends_at": "2026-09-10T09:00:00Z",
+        })),
+    )
+    .await;
+    assert_status(&blank, StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(blank).await["error"], "title_required");
+
+    let created = call(
+        &router,
+        Method::POST,
+        &events_path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "Anniversaire",
+            "starts_at": "2026-09-10T08:00:00Z",
+            "ends_at": "2026-09-10T09:00:00Z",
+        })),
+    )
+    .await;
+    assert_status(&created, StatusCode::CREATED);
+    let event_id = json_body(created).await["id"].as_str().unwrap().to_string();
+    let event_path = format!("/groups/{group_id}/events/{event_id}");
+
+    let blanked = call(
+        &router,
+        Method::PATCH,
+        &event_path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"title": "\t"})),
+    )
+    .await;
+    assert_status(&blanked, StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(blanked).await["error"], "title_required");
+
+    // No `title` field at all: nothing to check, and the stored title stays.
+    let untouched = call(
+        &router,
+        Method::PATCH,
+        &event_path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"location": "Maison"})),
+    )
+    .await;
+    assert_status(&untouched, StatusCode::OK);
+    assert_eq!(json_body(untouched).await["title"], "Anniversaire");
+}
+
 /// #161: an all-day series is unrolled on a UTC-midnight stand-in for its
 /// date, so its rule has to be validated there — not on the Paris midnight
 /// the row stores, which sits two hours earlier. The reproduction from the
