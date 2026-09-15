@@ -363,6 +363,11 @@ test("floorViolation ne dit pas « aucun » quand des tests ont tourné sous un 
   assert.doesNotMatch(message, /nulle/i);
   // Ce qui n'a pas tourné reste nommé.
   assert.match(message, /3 sauté/);
+  // Le diagnostic donne le nombre d'exécutés, pas celui des trouvés. La
+  // première ligne dit « 2 test(s) exécuté(s) », que ni l'une ni l'autre de
+  // ces deux formes ne matche : c'est bien le diagnostic qui est lu.
+  assert.match(message, /\b2 exécuté/);
+  assert.doesNotMatch(message, /\b5 exécuté/);
 });
 
 test("floorViolation compte un test en échec comme exécuté dans le diagnostic (#152)", () => {
