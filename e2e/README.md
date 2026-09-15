@@ -184,6 +184,14 @@ sent the reader to the wrong place on two of them:
 
 No exit code changed: all three families exited 1 before and exit 1 after.
 
+Above a threshold of 1 there is a fourth case (#152): some bodies ran, just
+fewer than required. The diagnosis used to say "none ran its body … coverage
+is nil" there without looking at `pass`/`fail`, contradicting the line
+above it. It now gives the found and executed counts, names the non-zero
+counters among skipped/cancelled/todo, and invents no cause when none of
+them is set. Unreachable while `MINIMUM_TESTS` is 1, but `minimum` is a
+parameter.
+
 Two more properties, independent of the above:
 
 - `node --test`'s own exit code is checked **first**. A real test failure
@@ -208,8 +216,10 @@ that no longer match gives `tests 0` and **exit 0** (measured) — which is
 exactly the state #123 describes, guardrail included. No test living
 inside a suite can guard that suite's invocation; closing this would need
 a check outside the suite — a `"pretest:scripts"` hook, which stays inside
-npm but fires whatever the `test:scripts` line is rewritten to (measured),
-or a `grep` step in `ci.yml`. Out of scope for #123, and accepted as such.
+npm but fires under `npm run` whatever the `test:scripts` line is rewritten
+to (measured), and which `--ignore-scripts` skips while still running the
+line itself (measured on npm 11.19.0; CI does not pass that flag), or a
+`grep` step in `ci.yml`. Out of scope for #123, and accepted as such.
 
 Everything below therefore holds **only while the suite runs**.
 

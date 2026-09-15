@@ -170,8 +170,10 @@ const BARE_TEST_FLAG = /(^|\s)--test(\s|$)/;
  * #123 décrit, garde-fou compris. Aucun test vivant dans une suite ne peut
  * garder l'invocation de cette suite ; fermer ce trou demanderait un contrôle
  * hors de la suite — un hook `"pretest:scripts"`, qui reste dans npm mais se
- * déclenche quelle que soit la ligne `test:scripts` réécrite (mesuré), ou une
- * étape `grep` dans `ci.yml`. Hors périmètre de #123, et assumé.
+ * déclenche sous `npm run` quelle que soit la ligne `test:scripts` réécrite
+ * (mesuré), et que `--ignore-scripts` saute en lançant quand même la ligne
+ * (mesuré en npm 11.19.0 ; la CI ne passe pas ce drapeau), ou une étape `grep`
+ * dans `ci.yml`. Hors périmètre de #123, et assumé.
  *
  * Tout ce qui suit ne vaut donc que **quand la suite tourne**.
  *
@@ -278,6 +280,12 @@ export function floorViolation(report: string, minimum: number): string | null {
  *     « sautés, annulés ou todo » — c'est exactement ce que #128 reproche à
  *     l'affichage précédent, qui invoquait trois familles tout en n'affichant
  *     que `skipped`.
+ *
+ * Une quatrième, qui n'existe qu'au-dessus du seuil 1 (#152) : `tests > 0`
+ * avec des corps exécutés, mais moins que le seuil. `diagnose` affirmait
+ * « aucun n'a exécuté … la couverture est nulle » sans regarder `pass` /
+ * `fail`, et contredisait la ligne qu'il suit. Inatteignable tant que
+ * `MINIMUM_TESTS` vaut 1, mais `minimum` est un paramètre de `floorViolation`.
  */
 function diagnose(summary: TapSummary): string {
   if (summary.tests === 0) {
@@ -303,6 +311,17 @@ function diagnose(summary: TapSummary): string {
   if (summary.skipped > 0) causes.push(`${summary.skipped} sauté(s)`);
   if (summary.cancelled > 0) causes.push(`${summary.cancelled} annulé(s)`);
   if (summary.todo > 0) causes.push(`${summary.todo} todo`);
+  const executed = executedTests(summary);
+  if (executed > 0) {
+    // Seuil > 1 seulement : des corps ont tourné, pas assez. Ni « aucun », ni
+    // « couverture nulle » — et pas de formule générique non plus : sans
+    // compteur qui explique l'écart, on donne les deux nombres et rien d'autre.
+    const rest = causes.map((c) => `, ${c}`).join("");
+    return (
+      `  ${summary.tests} test(s) trouvé(s), dont ${executed} exécuté(s)` +
+      `${rest} :\n  la couverture existe mais reste sous le seuil exigé.`
+    );
+  }
   const cause =
     causes.length > 0 ? causes.join(", ") : "sautés, annulés ou todo";
   return (

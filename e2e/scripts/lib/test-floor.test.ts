@@ -280,9 +280,15 @@ test("floorViolation nomme les annulés quand c'est eux", () => {
   assert.doesNotMatch(message, /saut/i);
 });
 
-test("floorViolation garde la formule générique quand aucun compteur n'explique", () => {
+test("épingle : floorViolation garde la formule générique quand aucun compteur n'explique", () => {
   // Compteurs incohérents (un test trouvé, rien d'exécuté, rien de sauté ni
   // annulé ni todo) : on ne peut pas nommer la cause, on ne l'invente pas.
+  //
+  // Épingle de régression, PAS un cas TDD (#152) : il passe aussi sur
+  // `test-floor.ts` tel qu'en 14dd30d, avant le correctif du diagnostic de
+  // #128, qui récitait toujours cette formule. Il ne discrimine donc pas ce
+  // correctif ; il mord si le repli générique est supprimé au profit d'un
+  // `causes.join(", ")` vide.
   const tap = `1..1
 # tests 1
 # suites 0
@@ -311,7 +317,14 @@ test("floorViolation accuse le glob seulement quand aucune suite n'a matché", (
   // La discrimination tient sur `suites` : 0 suite ET 0 test = plus rien ne
   // matche ; au moins une suite = les chemins sont bons.
   assert.match(floorViolation(TAP_ZERO_MATCH, 1) ?? "", /glob/i);
-  assert.doesNotMatch(floorViolation(TAP_COQUILLE, 1) ?? "", /glob/i);
+  // Pas de `?? ""` de ce côté-ci (#152) : si le plancher cessait de mordre sur
+  // une coquille, `null` deviendrait `""`, qui ne matche pas /glob/, et
+  // l'assertion passerait sur la régression même. D'où le `assert.ok`
+  // d'abord. La ligne du dessus n'a pas le problème : `""` ne matche pas
+  // /glob/i, un `null` y sort rouge.
+  const coquille = floorViolation(TAP_COQUILLE, 1);
+  assert.ok(coquille, "une coquille describe() doit violer le plancher");
+  assert.doesNotMatch(coquille, /glob/i);
 });
 
 test("floorViolation mord quand le rapport est illisible", () => {
@@ -325,6 +338,76 @@ test("floorViolation accepte un seuil supérieur à 1", () => {
   // Le seuil est un paramètre : #123 se contente de « au moins 1 », mais rien
   // dans la logique ne le suppose.
   assert.ok(floorViolation(TAP_MIXED, 4), "3 exécutés < 4 exigés");
+});
+
+// Au-dessus du seuil 1, « rien n'a exécuté » n'est plus la seule façon d'être
+// sous le plancher : des tests peuvent avoir tourné, juste pas assez (#152).
+// Le diagnostic ne doit alors dire ni « aucun », ni « couverture nulle ».
+// Inatteignable tant que `MINIMUM_TESTS` vaut 1, mais `minimum` est un
+// paramètre et le cas ci-dessus le traite comme un contrat.
+
+test("floorViolation ne dit pas « aucun » quand des tests ont tourné sous un seuil > 1 (#152)", () => {
+  // La reproduction de #152 : 2 exécutés, 3 sautés, 5 exigés.
+  const tap = `1..5
+# tests 5
+# suites 0
+# pass 2
+# fail 0
+# cancelled 0
+# skipped 3
+# todo 0
+`;
+  const message = floorViolation(tap, 5);
+  assert.ok(message, "2 exécutés < 5 exigés");
+  assert.doesNotMatch(message, /aucun/i);
+  assert.doesNotMatch(message, /nulle/i);
+  // Ce qui n'a pas tourné reste nommé.
+  assert.match(message, /3 sauté/);
+  // Le diagnostic donne le nombre d'exécutés, pas celui des trouvés. La
+  // première ligne dit « 2 test(s) exécuté(s) », que ni l'une ni l'autre de
+  // ces deux formes ne matche : c'est bien le diagnostic qui est lu.
+  assert.match(message, /\b2 exécuté/);
+  assert.doesNotMatch(message, /\b5 exécuté/);
+});
+
+test("floorViolation compte un test en échec comme exécuté dans le diagnostic (#152)", () => {
+  // `fail` a exécuté son corps autant que `pass` : un échec, deux sautés,
+  // deux exigés. (Dans le lanceur, un vrai échec sort avant le plancher ; ici
+  // on n'exerce que le texte.)
+  const tap = `1..3
+# tests 3
+# suites 0
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 2
+# todo 0
+`;
+  const message = floorViolation(tap, 2);
+  assert.ok(message, "1 exécuté < 2 exigés");
+  assert.doesNotMatch(message, /aucun/i);
+  assert.doesNotMatch(message, /nulle/i);
+});
+
+test("floorViolation n'invente pas de cause quand tout a tourné sous un seuil > 1 (#152)", () => {
+  // Cinq tests, cinq exécutés, dix exigés : rien n'a été sauté, annulé ni
+  // todo. La suite est simplement plus petite que le seuil ; réciter
+  // « sautés, annulés ou todo » enverrait chercher une cause qui n'existe pas.
+  const tap = `1..5
+# tests 5
+# suites 0
+# pass 5
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+`;
+  const message = floorViolation(tap, 10);
+  assert.ok(message, "5 exécutés < 10 exigés");
+  assert.doesNotMatch(message, /aucun/i);
+  assert.doesNotMatch(message, /nulle/i);
+  assert.doesNotMatch(message, /sautés, annulés ou todo/);
+  assert.doesNotMatch(message, /glob/i);
 });
 
 // ---------------------------------------------------------------------------
