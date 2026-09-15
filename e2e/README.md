@@ -207,8 +207,9 @@ empties the globs never executes it: the pre-#123 line pointed at paths
 that no longer match gives `tests 0` and **exit 0** (measured) — which is
 exactly the state #123 describes, guardrail included. No test living
 inside a suite can guard that suite's invocation; closing this would need
-a check outside npm, e.g. a `grep` step in `ci.yml`. Out of scope for
-#123, and accepted as such.
+a check outside the suite — a `"pretest:scripts"` hook, which stays inside
+npm but fires whatever the `test:scripts` line is rewritten to (measured),
+or a `grep` step in `ci.yml`. Out of scope for #123, and accepted as such.
 
 Everything below therefore holds **only while the suite runs**.
 
@@ -225,7 +226,10 @@ comment.
 - it **accepts broken wiring**: any line that *names* the runner without
   invoking it and without writing `--test` — `bash foo.sh #
   run-script-tests.mjs`, or a second gate launched by some other wrapper
-  with no floor of its own;
+  with no floor of its own. And a line that *does* invoke the runner but
+  neutralises its exit code: `node scripts/run-script-tests.mjs "…" "…" ||
+  true` exits 0 with a genuinely failing test, and no wiring message
+  (measured). Nothing specific to this check — `|| true` defeats any gate;
 - it **refuses correct wiring**: a correct line whose *comment* contains
   the `--test` token. Not a contrived case —
   `node scripts/run-script-tests.mjs "…" # replaces the old direct node

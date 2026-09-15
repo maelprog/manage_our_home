@@ -169,8 +169,9 @@ const BARE_TEST_FLAG = /(^|\s)--test(\s|$)/;
  * rend `tests 0` et **exit 0** (mesuré) — c'est-à-dire précisément l'état que
  * #123 décrit, garde-fou compris. Aucun test vivant dans une suite ne peut
  * garder l'invocation de cette suite ; fermer ce trou demanderait un contrôle
- * hors de npm, par exemple une étape `grep` dans `ci.yml`. Hors périmètre de
- * #123, et assumé.
+ * hors de la suite — un hook `"pretest:scripts"`, qui reste dans npm mais se
+ * déclenche quelle que soit la ligne `test:scripts` réécrite (mesuré), ou une
+ * étape `grep` dans `ci.yml`. Hors périmètre de #123, et assumé.
  *
  * Tout ce qui suit ne vaut donc que **quand la suite tourne**.
  *
@@ -188,7 +189,11 @@ const BARE_TEST_FLAG = /(^|\s)--test(\s|$)/;
  *
  *   - elle **accepte du cassé** : toute ligne qui nomme le lanceur sans
  *     l'appeler et sans écrire `--test` — `bash foo.sh # run-script-tests.mjs`,
- *     ou une seconde porte lancée par un autre wrapper sans plancher ;
+ *     ou une seconde porte lancée par un autre wrapper sans plancher. Et une
+ *     ligne qui **appelle** bien le lanceur mais en neutralise le code de
+ *     sortie : `node scripts/run-script-tests.mjs "…" "…" || true` sort en 0
+ *     avec un vrai test en échec, sans message de câblage (mesuré). Rien de
+ *     propre à ce contrôle — `|| true` neutralise n'importe quelle porte ;
  *   - elle **refuse du correct** : un câblage juste dont le commentaire
  *     contient le jeton `--test`. Ce n'est pas un cas tiré par les cheveux —
  *     `node scripts/run-script-tests.mjs "…" # remplace l'ancien node --test
