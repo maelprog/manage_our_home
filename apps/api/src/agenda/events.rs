@@ -72,15 +72,26 @@ pub struct EventResponse {
     pub assignee_ids: Vec<Uuid>,
 }
 
-/// `all_day` is the flag the row will be stored with: an all-day series is
-/// unrolled on another anchor, and its rule has to be checked on that one
+/// `title` is `None` when the request does not carry one at all — a PATCH
+/// leaving the stored title alone (`COALESCE($3, title)` below). `all_day` is
+/// the flag the row will be stored with: an all-day series is unrolled on
+/// another anchor, and its rule has to be checked on that one
 /// (`recurrence::validate`, #161).
 fn validate_request(
+    title: Option<&str>,
     starts_at: DateTime<Utc>,
     ends_at: DateTime<Utc>,
     all_day: bool,
     rrule: Option<&str>,
 ) -> AppResult<()> {
+    // A title only the web forms refused (`validate_event_form`) was not an
+    // invariant (#120): every other client of these two routes could store a
+    // blank one, and an event with no readable name is unusable in the agenda
+    // and in the reminders. Same `trim()` as the form, so both refuse the
+    // same strings.
+    if title.is_some_and(|t| t.trim().is_empty()) {
+        return Err(AppError::BadRequest("title_required".into()));
+    }
     if ends_at < starts_at {
         return Err(AppError::BadRequest("ends_at_before_starts_at".into()));
     }
@@ -136,6 +147,7 @@ pub async fn create_event(
     // genuinely backwards range stays a 400 instead of being silently
     // repaired into a valid day.
     validate_request(
+        Some(&body.title),
         body.starts_at,
         body.ends_at,
         body.all_day,
@@ -561,7 +573,13 @@ pub async fn update_event(
     // exactly what makes `normalize_all_day` idempotent worth having. It
     // decides the anchor the rule is validated on, too.
     let all_day = body.all_day.unwrap_or(existing.all_day);
-    validate_request(starts_at, ends_at, all_day, rrule.as_deref())?;
+    validate_request(
+        body.title.as_deref(),
+        starts_at,
+        ends_at,
+        all_day,
+        rrule.as_deref(),
+    )?;
     let (starts_at, ends_at) = normalized_bounds(all_day, starts_at, ends_at);
 
     if body.completed.is_some() && !existing.is_task {
@@ -764,6 +782,93 @@ mod tests {
         assert_eq!(
             resolve_assignees(&[outsider], &members, creator),
             vec![creator]
+        );
+    }
+
+    // -- validate_request: title (#120) -----------------------------------
+
+    fn refused_code(result: AppResult<()>) -> String {
+        match result {
+            Err(AppError::BadRequest(code)) => code,
+            _ => panic!("expected a 400"),
+        }
+    }
+
+    fn an_hour() -> (DateTime<Utc>, DateTime<Utc>) {
+        use chrono::TimeZone;
+        (
+            Utc.with_ymd_and_hms(2026, 9, 10, 8, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 9, 10, 9, 0, 0).unwrap(),
+        )
+    }
+
+    #[test]
+    fn an_empty_title_is_refused() {
+        let (s, e) = an_hour();
+        assert_eq!(
+            refused_code(validate_request(Some(""), s, e, false, None)),
+            "title_required"
+        );
+    }
+
+    #[test]
+    fn a_title_of_spaces_is_refused() {
+        let (s, e) = an_hour();
+        assert_eq!(
+            refused_code(validate_request(Some("   "), s, e, false, None)),
+            "title_required"
+        );
+    }
+
+    /// `str::trim` drops every Unicode whitespace, U+00A0 included — the same
+    /// call `apps/shared`'s `validate_event_form` makes, so the form and the
+    /// API refuse the same strings rather than merely similar ones.
+    #[test]
+    fn a_title_of_non_breaking_spaces_is_refused() {
+        let (s, e) = an_hour();
+        assert_eq!(
+            refused_code(validate_request(
+                Some("\u{00a0}\u{00a0}"),
+                s,
+                e,
+                false,
+                None
+            )),
+            "title_required"
+        );
+    }
+
+    #[test]
+    fn a_title_padded_with_spaces_is_accepted() {
+        let (s, e) = an_hour();
+        assert!(validate_request(Some("  Anniversaire  "), s, e, false, None).is_ok());
+    }
+
+    /// A PATCH that carries no `title` leaves the stored one alone, so there
+    /// is nothing to check — and nothing to refuse.
+    #[test]
+    fn an_absent_title_is_not_checked() {
+        let (s, e) = an_hour();
+        assert!(validate_request(None, s, e, false, None).is_ok());
+    }
+
+    /// Both guards broken: the title is the one reported, so the client fixes
+    /// the field the form would have flagged first.
+    #[test]
+    fn a_blank_title_outranks_a_backwards_range() {
+        let (s, e) = an_hour();
+        assert_eq!(
+            refused_code(validate_request(Some(" "), e, s, false, None)),
+            "title_required"
+        );
+    }
+
+    #[test]
+    fn a_backwards_range_under_a_valid_title_is_still_refused() {
+        let (s, e) = an_hour();
+        assert_eq!(
+            refused_code(validate_request(Some("Anniversaire"), e, s, false, None)),
+            "ends_at_before_starts_at"
         );
     }
 
