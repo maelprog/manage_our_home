@@ -263,19 +263,40 @@ test("spreadOverMonth sème dans le mois de Paris, pas dans celui d'UTC", () => 
 // `2026-09-30T22:30:00Z`. #126 l'a montré par mutation : décaler de +2 h la
 // seule dérivation de mois de `spreadOverMonth` —
 // `parisParts(new Date(reference.getTime() + 7200000))` — laissait la porte
-// entièrement verte, alors que l'invariant tombe à 48 instants de 2026.
+// entièrement verte, alors que l'invariant tombe pendant les deux heures qui
+// précèdent chaque changement de mois à Paris, soit 24 h sur 2026. Le balayage
+// ci-dessous en compte 48 instants : c'est le nombre de ses pas de 30 min qui
+// tombent dans ces 24 h, pas une propriété de l'année — 144 au pas de 10 min,
+// 1 440 à la minute, pour les mêmes 24 h.
 //
 // D'où un balayage : toute l'année 2026, un instant toutes les demi-heures.
 // Les douze bascules de mois y passent, dans les deux régimes horaires (CET
 // l'hiver, CEST l'été), et l'assertion ne présume nulle part *où* ça devrait
 // casser.
 //
-// Finesse et coût, dits franchement : un décalage d'au moins un pas est
-// attrapé où qu'il soit dans l'année, un décalage plus fin (quelques minutes)
-// passerait encore. Descendre à la minute coûte ~38 s contre ~1,4 s ici
-// (node 24, mesuré) sur une porte qui tenait en 0,13 s, pour ne gagner qu'une
-// classe de mutant qu'aucune confusion de fuseau ne produit : l'écart dont il
-// est question est celui de Paris à UTC, une ou deux heures pleines.
+// Ce que le balayage n'atteste pas : que ce mois soit celui de **Paris**. Il
+// vérifie que les deux fonctions s'accordent entre elles, et deux fonctions
+// fausses de la même façon s'accordent. Rebasculer les deux sur `getUTC*` — la
+// régression même que #121 corrigeait — le laisse vert ; ce sont les témoins
+// ponctuels de la section précédente qui la prennent (« suit le mois de Paris
+// quand UTC est encore la veille », « … par-dessus le changement d'année »,
+// « spreadOverMonth sème dans le mois de Paris »). Cohérence mutuelle d'un
+// côté, mois de Paris de l'autre : deux propriétés distinctes, aucune ne
+// subsume l'autre, et ni le balayage ni ces témoins ne se retirent au motif
+// que l'autre existe.
+//
+// Finesse et coût, dits franchement. Les changements de mois de Paris tombent
+// à 23:00Z (CET) ou 22:00Z (CEST), donc **sur** la grille du balayage. Pour un
+// décalage constant de l'instant dont l'une ou l'autre fonction tire son mois,
+// la finesse n'est donc pas symétrique :
+// - un recul, si petit soit-il, fait diverger les deux fonctions à partir du
+//   changement de mois lui-même, qui est un point de la grille : attrapé ;
+// - une avance les fait diverger juste *avant* ce point : attrapée à partir
+//   d'un pas (30 min), elle passe en deçà — +5 min comme +25 min restent verts.
+// Descendre à la minute coûte ~38 s contre ~1,4 s ici (node 24, mesuré) sur
+// une porte qui tenait en 0,13 s, pour ne gagner que ces avances de moins d'un
+// pas, qu'aucune confusion de fuseau ne produit : l'écart dont il est question
+// est celui de Paris à UTC, une ou deux heures pleines.
 //
 // L'année est fixe et non « l'année courante » : les tests de ce fichier
 // doivent rendre le même verdict dans dix ans, et les règles d'heure d'été
