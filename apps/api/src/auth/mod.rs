@@ -176,9 +176,15 @@ pub async fn verify_email(
 /// statements and the remainder, and logs the split on the `login_timing`
 /// target (issue #113 §5). The body is `login_inner` so that each early
 /// return is still accounted for: the phases a rejected login never reached
-/// stay at zero and the line is emitted exactly once, whatever the outcome —
-/// and `outcome_label` keeps a 500 apart from a 401, so a zero can be read
-/// as the phase not needed rather than the phase that broke.
+/// stay at zero, and `outcome_label` keeps a 500 apart from a 401, so a zero
+/// can be read as the phase not needed rather than the phase that broke.
+///
+/// One line per request **that reaches this handler** — not per request to
+/// `/auth/login`. A body axum's extractor refuses never gets here and is
+/// never counted: malformed JSON (400), a missing `password` (422), a wrong
+/// or absent `content-type` (415) all answer before `login` runs. The
+/// instrument measures the handler, so the requests it never sees are
+/// outside it.
 pub async fn login(
     State(state): State<AppState>,
     cookies: Cookies,

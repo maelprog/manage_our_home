@@ -39,11 +39,23 @@ pub const TARGET: &str = "login_timing";
 /// measurement of that outcome, not missing data.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LoginTiming {
-    /// `SELECT id, password_hash, email_verified FROM users WHERE email = $1`.
+    /// `SELECT id, password_hash, email_verified FROM users WHERE email = $1`
+    /// — **and the pool checkout it waits for first.** Both statements are
+    /// issued against the pool, not a held connection, so acquiring one is
+    /// inside the phase that asks for it, never in
+    /// [`LoginTiming::other`]. Kill the pool's connections and this is the
+    /// phase that grows — by orders of magnitude — while `other` does not
+    /// move at all.
+    ///
+    /// So a `lookup` of a few hundred microseconds is not a few hundred
+    /// microseconds of query: the `SELECT` itself is an index scan costing a
+    /// few tens of microseconds, and the rest is the checkout.
     pub lookup: Duration,
     /// `crypto::verify_password` — argon2id, CPU-bound, no I/O.
     pub verify: Duration,
-    /// `session::create_session` — `INSERT INTO sessions ... RETURNING id`.
+    /// `session::create_session` — `INSERT INTO sessions ... RETURNING id`,
+    /// its commit, and its own pool checkout (same reasoning as
+    /// [`LoginTiming::lookup`]).
     pub session: Duration,
     /// The handler body, measured around everything above. It starts once
     /// axum's extractors have already run, so request-body deserialization
@@ -58,10 +70,19 @@ impl LoginTiming {
     }
 
     /// Everything `total` holds that none of the three named phases claims:
-    /// pool checkout, cookie construction, the framework's own work inside
-    /// the handler. Request-body deserialization is **not** in here: axum's
-    /// extractor runs it before `total` starts, so it is outside `total`
-    /// altogether (see [`LoginTiming::total`]).
+    /// cookie construction, the branching between the phases, the handler's
+    /// own bookkeeping. It is the *thinnest* of the four, and measured as
+    /// tens of microseconds — nothing that blocks lives here.
+    ///
+    /// Two things that sound like they belong here do not:
+    ///
+    /// - **Pool checkout.** Waiting for a connection happens inside the
+    ///   phase that needs one, `lookup` or `session` — see
+    ///   [`LoginTiming::lookup`]. Starve the pool and `lookup` explodes
+    ///   while `other` stays flat.
+    /// - **Request-body deserialization.** Axum's extractor runs it before
+    ///   `total` starts, so it is outside `total` altogether (see
+    ///   [`LoginTiming::total`]).
     ///
     /// Saturates at zero rather than panicking. The phases are measured
     /// inside `total`, so a negative remainder can only come from a clock
@@ -104,6 +125,16 @@ impl LoginTiming {
 /// not finish the one it was in. Collapsing them would make the attribution
 /// report a crashed `INSERT` as a wrong password and hide the phase that
 /// actually broke.
+///
+/// Scope of each label, precisely: `"rejected"` is `AppError::Unauthorized`
+/// alone, which is the only rejection `login` produces. `"error"` is every
+/// other `AppError` — so it covers the 500s `login` can reach today
+/// (`Sqlx` from either statement, `Internal` from the hashing) but is not
+/// limited to them: the signature is generic, and any future error variant
+/// on this path lands in `"error"` rather than being mislabelled a refusal.
+/// The variants that are not reachable from `login` (`NotFound`,
+/// `Conflict`, …) would also read as `"error"`; none of them is a 500, so
+/// read the label as "not a refusal", not as a status code.
 pub fn outcome_label<T>(result: &Result<T, AppError>) -> &'static str {
     match result {
         Ok(_) => "ok",

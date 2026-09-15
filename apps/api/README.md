@@ -204,26 +204,49 @@ DEBUG login_timing: login timing outcome="ok" total_us=271310 lookup_us=435
   verify_us=257946 session_us=13498 sql_us=13917 other_us=27
 ```
 
-- `lookup_us` — `SELECT … FROM users WHERE email = $1`
+- `lookup_us` — `SELECT … FROM users WHERE email = $1`, plus the pool
+  checkout it waits for first
 - `verify_us` — argon2id verification (CPU, no I/O)
-- `session_us` — `INSERT INTO sessions … RETURNING id`
+- `session_us` — `INSERT INTO sessions … RETURNING id`, its commit, and its
+  own pool checkout
 - `sql_us` — `lookup + session`
-- `other_us` — `total` minus the three above: pool checkout, cookie
-  building, framework overhead. It does **not** include request-body
-  deserialization, which axum's extractor does before `total` starts.
+- `other_us` — `total` minus the three above: cookie building, the handler's
+  own bookkeeping. It is the thinnest of the four, tens of microseconds, and
+  nothing that blocks lives in it.
 
-One line per request whatever the outcome, and `outcome` says which of three
-endings produced these phases:
+Two costs are **not** in `other_us`, and both surprise people:
+
+- **Waiting for a database connection** is inside `lookup_us` or
+  `session_us`, whichever asked for it — the handler goes through the pool,
+  not a held connection. Kill the pool's connections
+  (`pg_terminate_backend`) and those two jump by orders of magnitude while
+  `other_us` does not move: 0,70 ms → 35,9 ms on `lookup_us`, 6,2 ms →
+  39,2 ms on `session_us`, `other_us` 37 µs → 30 µs.
+  A corollary for reading the numbers: `lookup_us` is checkout **plus**
+  query, and the `SELECT` is the small half — an index scan on
+  `users_email_key` whose `Execution Time` is a few hundredths of a
+  millisecond, two orders of magnitude under a `lookup_us` of ~0,4 ms.
+- **Request-body deserialization** is outside `total_us` entirely: axum's
+  extractor runs it before the handler starts.
+
+One line per request **that reaches the handler**, and `outcome` says which
+of three endings produced these phases. Requests axum's extractor refuses
+never reach it and emit nothing: malformed JSON (400), a missing `password`
+(422), a wrong or absent `content-type` (415). A `/auth/login` request with
+no line is one of those, not a lost measurement.
 
 - `"ok"` — the login completed.
 - `"rejected"` — 401: unknown email, wrong password, or unverified address.
   The phases it never reached stay at zero, which is the measurement of that
   path, not missing data.
-- `"error"` — 500: a statement or the hashing failed. Phases are zero here
-  too, for the opposite reason — not "never needed" but "never finished". The
-  two are kept apart on purpose: collapsed into one label, a crashed `INSERT`
-  would read as a wrong password and the phase that actually broke would be
-  invisible.
+- `"error"` — every error that is not that 401. On today's login path those
+  are 500s (a statement failed, or the hashing did), but read the label as
+  "not a refusal" rather than as a status code: it is derived from the error
+  type, so anything new on this path lands here instead of being mislabelled
+  a refusal. Phases are zero here too, for the opposite reason — not "never
+  needed" but "never finished". The two are kept apart on purpose: collapsed
+  into one label, a crashed `INSERT` would read as a wrong password and the
+  phase that actually broke would be invisible.
 
 Numbers measured on this instrumentation are in the body of the PR that
 added it. The short version: on the debug profile the e2e gate builds,
