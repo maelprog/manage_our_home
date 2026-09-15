@@ -187,3 +187,37 @@ Two things it will not let you get wrong:
 `--prefix <group-id>/` walks one family. Every deleted key is written to
 stdout and logged at INFO before the delete — the delete is unrecoverable
 and that record is the only trace left.
+
+## Ops: where a login's time goes (`login_timing`, #113)
+
+`POST /auth/login` splits its own wall time between the argon2 verification,
+its two SQL statements and the remainder, and emits the split as one
+structured line. The line is a `debug` event on its own tracing target, so
+an **already-built** binary reports it — no rebuild, no patch:
+
+```
+RUST_LOG=login_timing=debug ./manage_our_home
+```
+
+```
+DEBUG login_timing: login timing outcome="ok" total_us=271310 lookup_us=435
+  verify_us=257946 session_us=13498 sql_us=13917 other_us=27
+```
+
+- `lookup_us` — `SELECT … FROM users WHERE email = $1`
+- `verify_us` — argon2id verification (CPU, no I/O)
+- `session_us` — `INSERT INTO sessions … RETURNING id`
+- `sql_us` — `lookup + session`
+- `other_us` — `total` minus the three above: pool checkout, cookie
+  building, framework overhead. It does **not** include request-body
+  deserialization, which axum's extractor does before `total` starts.
+
+One line per request whatever the outcome; `outcome="rejected"` (unknown
+email, wrong password, unverified address) leaves the phases it never
+reached at zero, which is the measurement of that path, not missing data.
+
+Numbers measured on this instrumentation are in the body of the PR that
+added it. The short version: on the debug profile the e2e gate builds,
+`verify_us` is ~95 % of the request and none of the three phases grows with
+the size of `users` — so a login that gets slower as a database fills up is
+not getting slower here.

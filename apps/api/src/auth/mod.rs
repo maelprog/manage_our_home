@@ -1,5 +1,6 @@
 pub mod oauth_google;
 pub mod session;
+pub mod timing;
 
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
@@ -7,6 +8,7 @@ use axum::{http::StatusCode, Json};
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::time::Instant;
 use tower_cookies::Cookies;
 use uuid::Uuid;
 
@@ -27,6 +29,7 @@ use self::session::{
     build_session_cookie, create_session, expired_session_cookie, revoke_all_sessions,
     revoke_session, AuthUser, SESSION_COOKIE_NAME,
 };
+use self::timing::LoginTiming;
 
 const EMAIL_VERIFICATION_TTL_HOURS: i64 = 24;
 const PASSWORD_RESET_TTL_HOURS: i64 = 24;
@@ -169,17 +172,38 @@ pub async fn verify_email(
     Ok(StatusCode::OK)
 }
 
+/// Splits its own wall time between the argon2 verification, the two SQL
+/// statements and the remainder, and logs the split on the `login_timing`
+/// target (issue #113 §5). The body is `login_inner` so that each early
+/// return is still accounted for: the phases a rejected login never reached
+/// stay at zero and the line is emitted exactly once, whatever the outcome.
 pub async fn login(
     State(state): State<AppState>,
     cookies: Cookies,
     Json(body): Json<LoginRequest>,
 ) -> AppResult<impl IntoResponse> {
+    let started = Instant::now();
+    let mut timing = LoginTiming::default();
+    let result = login_inner(&state, &cookies, body, &mut timing).await;
+    timing.total = started.elapsed();
+    timing.emit(if result.is_ok() { "ok" } else { "rejected" });
+    result
+}
+
+async fn login_inner(
+    state: &AppState,
+    cookies: &Cookies,
+    body: LoginRequest,
+    timing: &mut LoginTiming,
+) -> AppResult<(StatusCode, Json<serde_json::Value>)> {
+    let at = Instant::now();
     let user = sqlx::query!(
         "SELECT id, password_hash, email_verified FROM users WHERE email = $1 AND deleted_at IS NULL",
         body.email
     )
     .fetch_optional(&state.db)
     .await?;
+    timing.lookup = at.elapsed();
 
     let user = match user {
         Some(u) => u,
@@ -190,7 +214,9 @@ pub async fn login(
         return Err(AppError::Unauthorized);
     };
 
+    let at = Instant::now();
     let ok = verify_password(&body.password, &hash).map_err(AppError::Internal)?;
+    timing.verify = at.elapsed();
     if !ok {
         return Err(AppError::Unauthorized);
     }
@@ -201,7 +227,9 @@ pub async fn login(
         return Err(AppError::Unauthorized);
     }
 
+    let at = Instant::now();
     let session_id = create_session(&state.db, user.id).await?;
+    timing.session = at.elapsed();
     cookies.add(build_session_cookie(session_id, state.secure_cookies));
 
     Ok((StatusCode::OK, Json(json!({ "user_id": user.id }))))
