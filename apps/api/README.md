@@ -212,9 +212,18 @@ DEBUG login_timing: login timing outcome="ok" total_us=271310 lookup_us=435
   building, framework overhead. It does **not** include request-body
   deserialization, which axum's extractor does before `total` starts.
 
-One line per request whatever the outcome; `outcome="rejected"` (unknown
-email, wrong password, unverified address) leaves the phases it never
-reached at zero, which is the measurement of that path, not missing data.
+One line per request whatever the outcome, and `outcome` says which of three
+endings produced these phases:
+
+- `"ok"` — the login completed.
+- `"rejected"` — 401: unknown email, wrong password, or unverified address.
+  The phases it never reached stay at zero, which is the measurement of that
+  path, not missing data.
+- `"error"` — 500: a statement or the hashing failed. Phases are zero here
+  too, for the opposite reason — not "never needed" but "never finished". The
+  two are kept apart on purpose: collapsed into one label, a crashed `INSERT`
+  would read as a wrong password and the phase that actually broke would be
+  invisible.
 
 Numbers measured on this instrumentation are in the body of the PR that
 added it. The short version: on the debug profile the e2e gate builds,

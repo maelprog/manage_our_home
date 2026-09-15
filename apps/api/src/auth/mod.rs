@@ -176,7 +176,9 @@ pub async fn verify_email(
 /// statements and the remainder, and logs the split on the `login_timing`
 /// target (issue #113 §5). The body is `login_inner` so that each early
 /// return is still accounted for: the phases a rejected login never reached
-/// stay at zero and the line is emitted exactly once, whatever the outcome.
+/// stay at zero and the line is emitted exactly once, whatever the outcome —
+/// and `outcome_label` keeps a 500 apart from a 401, so a zero can be read
+/// as the phase not needed rather than the phase that broke.
 pub async fn login(
     State(state): State<AppState>,
     cookies: Cookies,
@@ -186,7 +188,7 @@ pub async fn login(
     let mut timing = LoginTiming::default();
     let result = login_inner(&state, &cookies, body, &mut timing).await;
     timing.total = started.elapsed();
-    timing.emit(if result.is_ok() { "ok" } else { "rejected" });
+    timing.emit(timing::outcome_label(&result));
     result
 }
 
