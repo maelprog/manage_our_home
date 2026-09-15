@@ -6,6 +6,10 @@ use rrule::{Frequency, RRule, RRuleSet, Tz, Unvalidated};
 /// date-bounded, but an unbounded RRULE (no COUNT/UNTIL) combined with a
 /// huge `[from, to]` window could otherwise generate an unreasonable
 /// number of rows. 1000 comfortably covers "daily for 2+ years".
+///
+/// It counts the occurrences a call **returns**, on both paths: an
+/// occurrence outside `[from, to]` that the unroll walks past costs nothing
+/// (#119).
 const MAX_OCCURRENCES: u16 = 1000;
 
 /// The fixed v1 display timezone, the one every form parses into and every
@@ -297,21 +301,27 @@ fn all_day_rule_set(rrule: &str, starts_at: DateTime<Utc>) -> Result<RRuleSet, r
     format!("{}\nRRULE:{rrule}", utc_dtstart(stand_in_start)).parse()
 }
 
-/// The occurrences of `set` inside `[from, to]`, as UTC instants.
-fn occurrences_in(set: RRuleSet, from: DateTime<Utc>, to: DateTime<Utc>) -> Vec<DateTime<Utc>> {
-    // `RRuleSet::after`/`before` are exclusive of the boundary instant, but
-    // callers (list_events) treat `[from, to]` as inclusive on both ends —
-    // nudge by a second so an occurrence landing exactly on `from` or `to`
-    // isn't silently dropped.
-    let set = set
-        .after((from - Duration::seconds(1)).with_timezone(&Tz::UTC))
-        .before((to + Duration::seconds(1)).with_timezone(&Tz::UTC));
-
-    set.all(MAX_OCCURRENCES)
-        .dates
-        .into_iter()
-        .map(|d| d.with_timezone(&Utc))
-        .collect()
+/// The occurrences of `set` from the start of the series, as UTC instants:
+/// lazily, with no window and no cap. The caller stops the walk.
+///
+/// Neither bound belongs here (#119). An all-day occurrence is a civil date,
+/// and the instant returned for it sits an hour or two *before* the
+/// UTC-midnight stand-in the unroll produces, so only the caller, once it
+/// has mapped a stand-in back to its Paris day, can tell whether the
+/// occurrence falls in the window — and only there can the cap count
+/// occurrences the caller actually returns. Handing `RRuleSet` the widened
+/// window and letting `all` cap the widened result spent part of
+/// `MAX_OCCURRENCES` outside the window asked for: a series with an
+/// occurrence on the extra day before `from` — any series that started
+/// before the window — came back with 999 occurrences instead of 1000, the
+/// last one dropped in silence at the far end.
+///
+/// `after`/`before` would not have carried over anyway: `rrule` 0.14 honours
+/// them in `RRuleSet::all` and ignores them in the iterator API. `limit`
+/// keeps the iteration guards `all` enables, the ones that stop a rule which
+/// walks without producing.
+fn occurrences_of(set: RRuleSet) -> impl Iterator<Item = DateTime<Utc>> {
+    set.limit().into_iter().map(|d| d.with_timezone(&Utc))
 }
 
 /// Expands an **all-day** event's recurrence, on civil dates rather than on
@@ -337,10 +347,12 @@ fn occurrences_in(set: RRuleSet, from: DateTime<Utc>, to: DateTime<Utc>) -> Vec<
 ///
 /// So the rule is unrolled on a UTC-midnight stand-in for each civil date,
 /// where no offset can move a date, and each resulting date is then mapped
-/// back to the Paris day it names. The window is widened by a day on each
-/// side before unrolling (a real instant sits 1-2 h before its stand-in)
-/// and the results filtered on the real instants, so `[from, to]` stays
-/// inclusive on both ends exactly as `expand_occurrences` promises.
+/// back to the Paris day it names. `[from, to]` is compared against those
+/// Paris instants and not against the stand-ins, which sit an hour or two
+/// later, so it stays inclusive on both ends exactly as `expand_occurrences`
+/// promises. `MAX_OCCURRENCES` is spent on the occurrences this function
+/// returns, and on nothing else: the unroll is walked lazily and stopped
+/// here rather than capped on a widened window (#119, see `occurrences_of`).
 ///
 /// The stand-in is unrolled through `utc_dtstart`, not through
 /// `expand_occurrences`, on purpose: since #116 the latter unrolls in
@@ -364,21 +376,21 @@ pub fn expand_all_day_occurrences(
     let first_day = paris_date(starts_at);
     let span_days = (paris_date(ends_at) - first_day).num_days().max(1);
 
-    let dates = occurrences_in(
-        all_day_rule_set(rrule, starts_at)?,
-        from - Duration::days(1),
-        to + Duration::days(1),
-    );
-
-    Ok(dates
-        .into_iter()
-        .filter_map(|stand_in| {
-            let day = stand_in.date_naive();
-            let start = paris_start_of_day(day);
-            let end = paris_start_of_day(add_days(day, span_days));
-            (start >= from && start <= to).then_some((start, end))
-        })
-        .collect())
+    let mut spans = Vec::new();
+    for stand_in in occurrences_of(all_day_rule_set(rrule, starts_at)?) {
+        let day = stand_in.date_naive();
+        let start = paris_start_of_day(day);
+        if start > to {
+            break;
+        }
+        if start >= from {
+            spans.push((start, paris_start_of_day(add_days(day, span_days))));
+            if spans.len() == usize::from(MAX_OCCURRENCES) {
+                break;
+            }
+        }
+    }
+    Ok(spans)
 }
 
 /// The occurrences of a stored series inside `[from, to]` (inclusive), as
@@ -1548,6 +1560,82 @@ mod tests {
             assert!(
                 validate(rule, midnight(2026, 9, 5), true).is_ok(),
                 "{rule:?} refused on an all-day row"
+            );
+        }
+    }
+
+    // -- the cap counts what the window keeps (#119) --------------------------
+    //
+    // Both readers cap an unroll at `MAX_OCCURRENCES`, so a window far wider
+    // than the cap comes back truncated rather than unbounded. The all-day
+    // path used to spend part of that budget outside the window it was asked
+    // for: it unrolled over a window widened by a day on each side and let
+    // `RRuleSet::all` cap the widened result, so a series with an occurrence
+    // on the extra day before `from` — any series started before the window —
+    // came back one occurrence short, 999 instead of 1000, and the missing
+    // one was the *last*, dropped in silence at the far end.
+
+    /// A daily all-day series whose first day is `lead_days` before the
+    /// window, listed over a window of `window_days` civil days.
+    fn all_day_days_in_window(lead_days: i64, window_days: i64) -> Vec<NaiveDate> {
+        let first_day = day(2025, 1, 1);
+        let from_day = add_days(first_day, lead_days);
+        expand_all_day_occurrences(
+            "FREQ=DAILY",
+            paris_start_of_day(first_day),
+            paris_start_of_day(add_days(first_day, 1)),
+            paris_start_of_day(from_day),
+            paris_start_of_day(add_days(from_day, window_days - 1)),
+        )
+        .unwrap()
+        .into_iter()
+        .map(|(start, _)| paris_date(start))
+        .collect()
+    }
+
+    #[test]
+    fn an_all_day_window_is_filled_up_to_the_cap_whatever_precedes_it() {
+        let cap = i64::from(MAX_OCCURRENCES);
+        for lead_days in [0, 1, 400] {
+            let from_day = add_days(day(2025, 1, 1), lead_days);
+            // A window exactly the size of the cap is filled, to its last day.
+            let days = all_day_days_in_window(lead_days, cap);
+            assert_eq!(days.len(), usize::from(MAX_OCCURRENCES), "lead {lead_days}");
+            assert_eq!(days[0], from_day, "lead {lead_days}");
+            assert_eq!(
+                days[days.len() - 1],
+                add_days(from_day, cap - 1),
+                "lead {lead_days}"
+            );
+            // A wider one is truncated at the cap, from the start of the window.
+            let days = all_day_days_in_window(lead_days, cap + 500);
+            assert_eq!(days.len(), usize::from(MAX_OCCURRENCES), "lead {lead_days}");
+            assert_eq!(days[0], from_day, "lead {lead_days}");
+            assert_eq!(
+                days[days.len() - 1],
+                add_days(from_day, cap - 1),
+                "lead {lead_days}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_all_day_path_caps_where_the_hour_bound_one_does() {
+        let cap = i64::from(MAX_OCCURRENCES);
+        let first_day = day(2025, 1, 1);
+        let from_day = add_days(first_day, 400);
+        for window_days in [cap - 1, cap, cap + 1, cap + 500] {
+            let hour_bound = expand_occurrences(
+                "FREQ=DAILY",
+                paris_start_of_day(first_day) + Duration::hours(9),
+                paris_start_of_day(from_day),
+                paris_start_of_day(add_days(from_day, window_days - 1)) + Duration::hours(23),
+            )
+            .unwrap();
+            assert_eq!(
+                all_day_days_in_window(400, window_days).len(),
+                hour_bound.len(),
+                "window of {window_days} days"
             );
         }
     }
