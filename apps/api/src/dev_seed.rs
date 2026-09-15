@@ -32,7 +32,7 @@ pub async fn seed_dev_users(db: &PgPool) -> Result<()> {
         return Ok(());
     }
 
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin(db).await?;
 
     let mut user_ids = Vec::with_capacity(DEV_USERS.len());
     for (email, display_name) in DEV_USERS {

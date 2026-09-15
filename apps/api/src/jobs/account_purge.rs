@@ -37,7 +37,7 @@ pub async fn purge_due_accounts(pool: &PgPool) -> Result<(), sqlx::Error> {
     .await?;
 
     for row in due {
-        let mut tx = pool.begin().await?;
+        let mut tx = crate::db::begin(pool).await?;
         sqlx::query!("DELETE FROM oauth_identities WHERE user_id = $1", row.id)
             .execute(&mut *tx)
             .await?;
