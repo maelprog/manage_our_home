@@ -74,11 +74,20 @@ export const GRID_DAYS = 42;
  * Calquée sur `month_grid` (apps/shared/src/validation/agenda.rs) — mais en
  * **minuit UTC**, là où la vraie fenêtre est bornée en heure de Paris
  * (`calendar.rs` : `paris_local_to_utc` du premier jour à T00:00 au dernier à
- * T23:59:59). Écart : ~2 h à chaque bord. Assumé plutôt que corrigé, parce
- * que le seed pose ses événements entre 07:00 et 19:00 UTC sur les jours 1 à
- * 28, donc à plus d'une journée des deux bords : aucun événement de ce jeu ne
- * peut tomber dans la marge. Ce n'est donc pas un miroir exact, et un jeu
- * semé autrement (minuit, fins de mois) devrait le resserrer.
+ * T23:59:59). Écart : 1 h (CET) ou 2 h (CEST) à chaque bord. Assumé plutôt
+ * que corrigé, parce que le seed pose ses événements sur les jours 1 à 28 et
+ * qu'aucun ne peut tomber dans l'écart :
+ * - au bord gauche, l'écart tient dans les heures qui précèdent minuit UTC
+ *   du premier jour de la grille : il précède donc tout créneau posé sur les
+ *   jours 1 à 28, **quelle que soit son heure**. Les créneaux actuels
+ *   (07:00-19:00 UTC) n'en sont qu'à 7 h quand le 1er tombe un lundi, et ces
+ *   7 h ne sont pas ce qui protège ce bord ;
+ * - au bord droit, la grille couvre au moins les 36 jours qui partent du
+ *   1er : un créneau du 28 commence à plus de 8 jours de sa fin (205,75 h
+ *   au plus juste avec les 40 événements par défaut, sur 2024-2032).
+ * Ce n'est donc pas un miroir exact : ce qui le rend sûr est de s'en tenir au
+ * mois, et un jeu qui en déborderait (veille du 1er, début du mois suivant)
+ * devrait le resserrer.
  *
  * Le seed s'en sert pour compter ce qui existe déjà, la mesure pour ce qui est
  * stocké : **une seule fenêtre pour les deux**. La version précédente en avait
@@ -109,8 +118,9 @@ export function monthGridWindow(reference: Date): { from: Date; to: Date } {
  * Le mois est celui de `reference` **à Paris**, pour la même raison et par le
  * même appel que `monthGridWindow` : les deux doivent désigner le même mois à
  * chaque instant, sinon le seed remplit une grille que la mesure n'interroge
- * pas. Les créneaux restent construits en UTC (07:00-19:00), à plus d'une
- * journée des deux bords de la fenêtre.
+ * pas. Les créneaux restent construits en UTC (07:00-19:00) : à 7 h au moins
+ * du bord gauche de la fenêtre et à plus de 8 jours du bord droit — voir
+ * `monthGridWindow` pour ce qui rend ces bords sûrs.
  */
 export function spreadOverMonth(reference: Date, count: number): Date[] {
   const { y: year, m } = parisParts(reference);

@@ -348,9 +348,11 @@ function rangeQuery(from: Date, to: Date): string {
  * Les 42 jours que `/agenda` rend aujourd'hui — la fenêtre de référence.
  *
  * L'instant est passé brut : `monthGridWindow` en tire le mois **de Paris**,
- * celui que la page rend. Ne pas redériver un mois ici — c'est exactement ce
- * que faisait la version d'avant #121, et entre 22 h UTC et minuit elle
- * interrogeait la grille du mois où le seed n'avait rien posé.
+ * celui que la page rend. Ne pas redériver un mois ici avec `getUTC*` — c'est
+ * exactement ce que faisait `monthGridWindow` avant #121 (cette fonction-ci
+ * n'a pas changé) : le dernier jour d'un mois, de 22 h UTC (CEST) ou 23 h
+ * UTC (CET) à minuit, la mesure comptait alors les événements de la grille
+ * du mois UTC pendant que `/agenda` rendait celle du mois de Paris.
  */
 function gridWindowQuery(): string {
   const win = monthGridWindow(new Date());
