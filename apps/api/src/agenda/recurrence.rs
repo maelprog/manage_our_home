@@ -542,8 +542,10 @@ fn add_days(date: NaiveDate, n: i64) -> NaiveDate {
 /// - A **calendar re-import** rewrites `all_day` from the feed without
 ///   coming back here (`google_calendar/imports.rs`). An hour-bound imported
 ///   event given `FREQ=HOURLY;COUNT=5` by `PATCH`, then turned into a
-///   `VALUE=DATE` event by the feed, becomes an all-day row holding that
-///   rule, and lists five entries for one reminder again. Not closed here.
+///   `VALUE=DATE` event by the feed, became an all-day row holding that
+///   rule, and listed five entries for one reminder again. Not closed here
+///   but in the re-import, which drops such a rule from the row it turns
+///   all-day (#175, `steps_by_less_than_a_day`).
 pub fn validate(
     rrule: &str,
     starts_at: DateTime<Utc>,
@@ -577,6 +579,18 @@ fn steps_by_days(rule: &RRule<Unvalidated>) -> bool {
     ) && rule.get_by_hour().is_empty()
         && rule.get_by_minute().is_empty()
         && rule.get_by_second().is_empty()
+}
+
+/// Whether `rrule` parses and does **not** step by days — the rules
+/// `validate` refuses on an all-day row for that reason alone (#171). A rule
+/// that does not parse is not one of them: it is refused for that.
+///
+/// For the calendar re-import (#175), which turns rows all-day without
+/// coming back through `validate` and drops such a rule rather than store it.
+pub fn steps_by_less_than_a_day(rrule: &str) -> bool {
+    rrule
+        .parse::<RRule<Unvalidated>>()
+        .is_ok_and(|rule| !steps_by_days(&rule))
 }
 
 #[cfg(test)]

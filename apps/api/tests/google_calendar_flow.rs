@@ -606,6 +606,189 @@ async fn a_reimport_that_moves_a_series_past_its_until_does_not_take_the_window_
     );
 }
 
+/// The feed of the #175 reproduction, before and after Google turns both
+/// events into all-day ones. Each keeps its day.
+const ICS_BEFORE_ALL_DAY: &str = "\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:flow-hourly-1@google.com
+DTSTAMP:20260101T090000Z
+DTSTART:20260905T090000Z
+DTEND:20260905T100000Z
+SUMMARY:Relève
+LAST-MODIFIED:20260101T090000Z
+END:VEVENT
+BEGIN:VEVENT
+UID:flow-daily-1@google.com
+DTSTAMP:20260101T090000Z
+DTSTART:20260912T080000Z
+DTEND:20260912T090000Z
+SUMMARY:Marché
+LAST-MODIFIED:20260101T090000Z
+END:VEVENT
+END:VCALENDAR
+";
+const ICS_AFTER_ALL_DAY: &str = "\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:flow-hourly-1@google.com
+DTSTAMP:20260201T090000Z
+DTSTART;VALUE=DATE:20260905
+DTEND;VALUE=DATE:20260906
+SUMMARY:Relève
+LAST-MODIFIED:20260201T090000Z
+END:VEVENT
+BEGIN:VEVENT
+UID:flow-daily-1@google.com
+DTSTAMP:20260201T090000Z
+DTSTART;VALUE=DATE:20260912
+DTEND;VALUE=DATE:20260913
+SUMMARY:Marché
+LAST-MODIFIED:20260201T090000Z
+END:VEVENT
+END:VCALENDAR
+";
+
+/// #175: a re-import rewrites `all_day` from the feed without going through
+/// `validate`, so an hour-bound event given `FREQ=HOURLY;COUNT=5` by `PATCH`
+/// became an all-day row holding that rule once the feed turned it into a
+/// `VALUE=DATE` event — five entries listed on its one day, one reminder,
+/// and a 400 on a `PATCH` of its title. The re-import now drops such a rule,
+/// and only such a rule: a `FREQ=DAILY` series turned all-day keeps its own.
+#[sqlx::test]
+async fn a_reimport_turning_a_row_all_day_drops_a_rule_stepping_by_less_than_a_day(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "cal-allday2@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let feed_url = spawn_changing_ics_server(&[ICS_BEFORE_ALL_DAY, ICS_AFTER_ALL_DAY]).await;
+
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/calendar-imports"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"label": "Foyer calendar", "feed_url": feed_url})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let import_id = json_body(create).await["id"].as_str().unwrap().to_string();
+    let import_path = format!("/groups/{group_id}/calendar-imports/{import_id}/import");
+
+    let first = call(
+        &router,
+        Method::POST,
+        &import_path,
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&first, StatusCode::OK);
+    assert_eq!(json_body(first).await["imported"], 2);
+
+    let id_of = |title: &'static str| {
+        let db = db.clone();
+        async move {
+            sqlx::query_scalar::<_, Uuid>("SELECT id FROM events WHERE title = $1")
+                .bind(title)
+                .fetch_one(&db)
+                .await
+                .unwrap()
+        }
+    };
+    let (hourly_id, daily_id) = (id_of("Relève").await, id_of("Marché").await);
+    for (id, rule) in [
+        (hourly_id, "FREQ=HOURLY;COUNT=5"),
+        (daily_id, "FREQ=DAILY;COUNT=3"),
+    ] {
+        let patch = call(
+            &router,
+            Method::PATCH,
+            &format!("/groups/{group_id}/events/{id}"),
+            Some(&owner_cookie),
+            Some(serde_json::json!({"rrule": rule})),
+        )
+        .await;
+        assert_status(&patch, StatusCode::OK);
+    }
+
+    let second = call(
+        &router,
+        Method::POST,
+        &import_path,
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&second, StatusCode::OK);
+    assert_eq!(json_body(second).await["updated"], 2);
+
+    let row = |id: Uuid| {
+        let db = db.clone();
+        async move {
+            sqlx::query_as::<_, (bool, Option<String>)>(
+                "SELECT all_day, rrule FROM events WHERE id = $1",
+            )
+            .bind(id)
+            .fetch_one(&db)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(row(hourly_id).await, (true, None));
+    assert_eq!(
+        row(daily_id).await,
+        (true, Some("FREQ=DAILY;COUNT=3".to_string()))
+    );
+
+    let list = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/events?from=2026-09-01T00:00:00Z&to=2026-09-30T23:59:59Z"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&list, StatusCode::OK);
+    let body = json_body(list).await;
+    let mut seen: Vec<(String, String)> = body["occurrences"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| {
+            (
+                o["title"].as_str().unwrap().to_string(),
+                o["occurrence_starts_at"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    seen.sort_by(|a, b| a.1.cmp(&b.1));
+    assert_eq!(
+        seen,
+        vec![
+            ("Relève".to_string(), "2026-09-04T22:00:00Z".to_string()),
+            ("Marché".to_string(), "2026-09-11T22:00:00Z".to_string()),
+            ("Marché".to_string(), "2026-09-12T22:00:00Z".to_string()),
+            ("Marché".to_string(), "2026-09-13T22:00:00Z".to_string()),
+        ],
+        "{body}"
+    );
+
+    // The row is an ordinary all-day event again: a `PATCH` keeping its flag
+    // is taken.
+    let rename = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/events/{hourly_id}"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"title": "Relève du matin"})),
+    )
+    .await;
+    assert_status(&rename, StatusCode::OK);
+}
+
 /// AC (#106 + #118): a row written by the *old* import is repaired on the
 /// next sync, even though the feed hasn't changed.
 ///
