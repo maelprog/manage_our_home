@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT cie.event_id, cie.external_updated_at,\n                      e.all_day, e.starts_at, e.ends_at,\n                      EXISTS (\n                          SELECT 1 FROM event_assignees ea WHERE ea.event_id = e.id\n                      ) AS \"has_assignee!\"\n               FROM calendar_import_events cie\n               JOIN events e ON e.id = cie.event_id\n               WHERE cie.calendar_import_id = $1 AND cie.external_uid = $2",
+  "query": "SELECT cie.event_id, cie.external_updated_at,\n                      e.all_day, e.starts_at, e.ends_at, e.rrule,\n                      EXISTS (\n                          SELECT 1 FROM event_assignees ea WHERE ea.event_id = e.id\n                      ) AS \"has_assignee!\"\n               FROM calendar_import_events cie\n               JOIN events e ON e.id = cie.event_id\n               WHERE cie.calendar_import_id = $1 AND cie.external_uid = $2",
   "describe": {
     "columns": [
       {
@@ -60,6 +60,17 @@
       },
       {
         "ordinal": 5,
+        "name": "rrule",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "rrule"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
         "name": "has_assignee!",
         "type_info": "Bool",
         "origin": "Expression"
@@ -77,8 +88,9 @@
       false,
       false,
       false,
+      true,
       null
     ]
   },
-  "hash": "1af94aa7893633b9e96fcaa4c7dd42b21276a35662838055a1e2453d82cdfdd3"
+  "hash": "bd5958cc57ecb995fb754a203176a24e5e07585c1d68cd4296ab821e27f42e12"
 }

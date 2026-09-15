@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::agenda::attachments;
+use crate::agenda::{attachments, recurrence};
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::google_calendar::can_configure;
@@ -305,7 +305,7 @@ pub async fn trigger_calendar_import(
         // event.
         let existing = sqlx::query!(
             r#"SELECT cie.event_id, cie.external_updated_at,
-                      e.all_day, e.starts_at, e.ends_at,
+                      e.all_day, e.starts_at, e.ends_at, e.rrule,
                       EXISTS (
                           SELECT 1 FROM event_assignees ea WHERE ea.event_id = e.id
                       ) AS "has_assignee!"
@@ -362,11 +362,29 @@ pub async fn trigger_calendar_import(
             Some(existing) => {
                 let (starts_at, ends_at) =
                     import_bounds(event.all_day, event.starts_at, event.ends_at);
+                // The feed decides `all_day`, and nothing here goes back
+                // through `validate`: a rule this row took while hour-bound
+                // is dropped rather than stored on an all-day row that
+                // refuses it (#175). The rule is only ever cleared here,
+                // never rewritten.
+                let drop_rule = drops_rule_on_reimport(event.all_day, existing.rrule.as_deref());
+                if drop_rule {
+                    tracing::warn!(
+                        event_id = %existing.event_id,
+                        group_id = %group_id,
+                        calendar_import_id = %import_id,
+                        rrule = ?existing.rrule,
+                        was_all_day = existing.all_day,
+                        "calendar re-import turned the event all-day, dropping a rule that steps by less than a day (#175)"
+                    );
+                }
                 sqlx::query!(
                     r#"
                     UPDATE events SET
                         title = $3, description = $4, location = $5,
-                        starts_at = $6, ends_at = $7, all_day = $8, updated_at = now()
+                        starts_at = $6, ends_at = $7, all_day = $8,
+                        rrule = CASE WHEN $9 THEN NULL ELSE rrule END,
+                        updated_at = now()
                     WHERE id = $1 AND group_id = $2
                     "#,
                     existing.event_id,
@@ -377,6 +395,7 @@ pub async fn trigger_calendar_import(
                     starts_at,
                     ends_at,
                     event.all_day,
+                    drop_rule,
                 )
                 .execute(&mut *tx)
                 .await?;
@@ -576,9 +595,40 @@ fn plan_row_repair(
     }
 }
 
+/// Whether a re-import has to drop the `rrule` of the row it rewrites
+/// (#175): the feed makes the row all-day, and its rule steps by less than a
+/// day or names a time of day.
+///
+/// A re-import rewrites `all_day` from the feed and does not go back through
+/// `validate`, which refuses such a rule on an all-day row (#171). An import
+/// cannot refuse what the feed says, so the rule goes: kept, an hour-bound
+/// event given `FREQ=HOURLY;COUNT=5` by `PATCH` and turned into a
+/// `VALUE=DATE` event by the feed listed five entries on its day for one
+/// reminder, and took a 400 on any `PATCH` keeping both the rule and the
+/// flag. The feed carries no rule of its own (`parse.rs`), so every rule on
+/// a mapped row was added locally.
+///
+/// **The whole rule, not its sub-daily parts.** `FREQ=HOURLY` has no daily
+/// counterpart to fall back on, and taking `BYHOUR` out of
+/// `FREQ=DAILY;BYHOUR=9,17;COUNT=4` would write a rule nobody wrote — four
+/// days instead of two — on a path `validate` does not guard. A rule that
+/// steps by days is kept, whatever the row was before; so is a rule on a row
+/// that stays or becomes hour-bound.
+///
+/// The test is `validate`'s own (`recurrence::steps_by_less_than_a_day`),
+/// so among the rules an hour-bound row takes, the re-import drops exactly
+/// those `validate` refuses on the all-day row for that reason. It drops
+/// nothing for any other reason: a rule moved past its `UNTIL` by the feed
+/// stays, and `list_events` renders it on its own (#161).
+fn drops_rule_on_reimport(all_day: bool, rrule: Option<&str>) -> bool {
+    all_day && rrule.is_some_and(recurrence::steps_by_less_than_a_day)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{import_bounds, plan_row_repair, validate_feed_url};
+    use super::{
+        drops_rule_on_reimport, import_bounds, plan_row_repair, recurrence, validate_feed_url,
+    };
     use chrono::{DateTime, Utc};
     use manage_our_home_shared::validation::agenda::normalize_all_day;
 
@@ -792,5 +842,118 @@ mod tests {
         );
         assert!(repair.bounds.is_some());
         assert!(repair.missing_assignee);
+    }
+
+    // -- drops_rule_on_reimport (#175) ----------------------------------------
+    //
+    // A re-import rewrites `all_day` from the feed without going through
+    // `validate`. A rule a `PATCH` gave an hour-bound row — `FREQ=HOURLY;
+    // COUNT=5` — stayed on the row once the feed turned the event into a
+    // `VALUE=DATE` one: five entries listed on its day, one reminder stored,
+    // and a 400 on any `PATCH` keeping both the rule and the flag.
+
+    /// Rules an hour-bound row takes and an all-day row refuses (#171).
+    const SUB_DAILY_RULES: [&str; 8] = [
+        "FREQ=HOURLY;COUNT=5",
+        "FREQ=MINUTELY",
+        "FREQ=SECONDLY;COUNT=3",
+        "freq=hourly",
+        "FREQ=DAILY;BYHOUR=12;COUNT=3",
+        "FREQ=WEEKLY;BYDAY=SA;BYMINUTE=30",
+        "FREQ=MONTHLY;BYSECOND=0",
+        "FREQ=DAILY;byhour=9,17",
+    ];
+
+    #[test]
+    fn a_rule_stepping_by_less_than_a_day_is_dropped_when_the_row_turns_all_day() {
+        for rule in SUB_DAILY_RULES {
+            assert!(
+                drops_rule_on_reimport(true, Some(rule)),
+                "{rule:?} kept on an all-day row"
+            );
+        }
+    }
+
+    #[test]
+    fn an_hour_bound_row_keeps_its_rule_whatever_it_steps_by() {
+        for rule in SUB_DAILY_RULES {
+            assert!(
+                !drops_rule_on_reimport(false, Some(rule)),
+                "{rule:?} dropped from an hour-bound row"
+            );
+        }
+    }
+
+    #[test]
+    fn an_all_day_row_keeps_a_rule_stepping_by_days() {
+        for rule in [
+            "FREQ=DAILY",
+            "FREQ=DAILY;COUNT=3",
+            "FREQ=WEEKLY;BYDAY=MO,SA",
+            "FREQ=MONTHLY;BYMONTHDAY=5",
+            "FREQ=YEARLY;BYMONTH=9;BYMONTHDAY=5",
+            "FREQ=DAILY;UNTIL=20261010T235959Z",
+            "FREQ=DAILY;BYHOUR=",
+        ] {
+            assert!(
+                !drops_rule_on_reimport(true, Some(rule)),
+                "{rule:?} dropped from an all-day row"
+            );
+        }
+    }
+
+    #[test]
+    fn a_row_without_a_rule_has_nothing_to_drop() {
+        assert!(!drops_rule_on_reimport(true, None));
+        assert!(!drops_rule_on_reimport(false, None));
+    }
+
+    /// Among the rules a `PATCH` gives an hour-bound row, the re-import drops
+    /// exactly those `validate` refuses on the all-day row it writes: what it
+    /// keeps, a `PATCH` would take; what it drops, a `PATCH` would refuse.
+    #[test]
+    fn a_rule_is_dropped_on_reimport_exactly_when_the_all_day_row_would_refuse_it() {
+        let frequencies = [
+            "YEARLY", "MONTHLY", "WEEKLY", "DAILY", "HOURLY", "MINUTELY", "SECONDLY",
+        ];
+        let parts = [
+            "",
+            ";BYHOUR=12",
+            ";BYHOUR=9,17",
+            ";BYMINUTE=0,30",
+            ";BYSECOND=0,15",
+            ";BYHOUR=",
+            ";BYDAY=SA",
+            ";BYMONTHDAY=5,6",
+        ];
+        let ends = ["", ";COUNT=5", ";UNTIL=20261020T235959Z"];
+        // The feed's hour-bound event, then the same day as a `VALUE=DATE`.
+        let timed = utc("2026-09-05T09:00:00Z");
+        let date = utc("2026-09-05T00:00:00Z");
+        let (all_day_start, _) = import_bounds(true, date, date);
+
+        let (mut kept, mut dropped) = (0, 0);
+        for frequency in frequencies {
+            for part in parts {
+                for end in ends {
+                    let rule = format!("FREQ={frequency}{part}{end}");
+                    if recurrence::validate(&rule, timed, false).is_err() {
+                        continue;
+                    }
+                    let refused = recurrence::validate(&rule, all_day_start, true).is_err();
+                    assert_eq!(
+                        drops_rule_on_reimport(true, Some(&rule)),
+                        refused,
+                        "{rule:?}: dropped on re-import, refused on the all-day row"
+                    );
+                    if refused {
+                        dropped += 1;
+                    } else {
+                        kept += 1;
+                    }
+                }
+            }
+        }
+        assert!(kept > 0 && dropped > 0, "kept {kept}, dropped {dropped}");
     }
 }
