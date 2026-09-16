@@ -226,6 +226,11 @@ Two costs are **not** in `other_us`, and both surprise people:
   query, and the `SELECT` is the small half — an index scan on
   `users_email_key` whose `Execution Time` is a few hundredths of a
   millisecond, two orders of magnitude under a `lookup_us` of ~0,4 ms.
+  The figures in this bullet are the ones reported in the body of #177,
+  measured in that PR's own environment (debug build, Postgres 16); they
+  are not constants of the instrument, and another machine, a release
+  build or a loaded CI runner gives other values. What carries over is
+  which phases move and which one does not, not by how much.
 - **Request-body deserialization** is outside `total_us` entirely: axum's
   extractor runs it before the handler starts.
 
