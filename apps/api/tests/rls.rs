@@ -942,13 +942,14 @@ async fn two_owned_groups(db: &PgPool) -> ((Uuid, Uuid), (Uuid, Uuid)) {
         .fetch_one(db)
         .await
         .unwrap();
-        let group: Uuid =
-            sqlx::query_scalar("INSERT INTO groups (name, created_by) VALUES ($1, $2) RETURNING id")
-                .bind(tag)
-                .bind(user)
-                .fetch_one(db)
-                .await
-                .unwrap();
+        let group: Uuid = sqlx::query_scalar(
+            "INSERT INTO groups (name, created_by) VALUES ($1, $2) RETURNING id",
+        )
+        .bind(tag)
+        .bind(user)
+        .fetch_one(db)
+        .await
+        .unwrap();
         sqlx::query("INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'owner')")
             .bind(group)
             .bind(user)
@@ -1020,13 +1021,21 @@ async fn membership_reads_grant_no_write_without_family_scope(db: PgPool) {
         .execute(&mut *tx)
         .await
         .unwrap();
-    assert_eq!(renamed.rows_affected(), 0, "own group renamed without app.family_id");
+    assert_eq!(
+        renamed.rows_affected(),
+        0,
+        "own group renamed without app.family_id"
+    );
     let removed = sqlx::query("DELETE FROM groups WHERE id = $1")
         .bind(group_a)
         .execute(&mut *tx)
         .await
         .unwrap();
-    assert_eq!(removed.rows_affected(), 0, "own group deleted without app.family_id");
+    assert_eq!(
+        removed.rows_affected(),
+        0,
+        "own group deleted without app.family_id"
+    );
     tx.commit().await.unwrap();
     drop_restricted_role(&db, &role).await;
 
@@ -1037,13 +1046,21 @@ async fn membership_reads_grant_no_write_without_family_scope(db: PgPool) {
         .execute(&mut *tx)
         .await
         .unwrap();
-    assert_eq!(updated.rows_affected(), 0, "own membership updated without app.family_id");
+    assert_eq!(
+        updated.rows_affected(),
+        0,
+        "own membership updated without app.family_id"
+    );
     let deleted = sqlx::query("DELETE FROM group_members WHERE user_id = $1")
         .bind(owner_a)
         .execute(&mut *tx)
         .await
         .unwrap();
-    assert_eq!(deleted.rows_affected(), 0, "own membership deleted without app.family_id");
+    assert_eq!(
+        deleted.rows_affected(),
+        0,
+        "own membership deleted without app.family_id"
+    );
     tx.commit().await.unwrap();
     drop_restricted_role(&db, &role).await;
 
