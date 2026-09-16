@@ -220,7 +220,7 @@ pub async fn export_account(
         },
     );
 
-    let mut audit_tx = state.db.begin().await?;
+    let mut audit_tx = crate::db::begin(&state.db).await?;
     audit::record(
         &mut audit_tx,
         Some(auth.user_id),

@@ -60,7 +60,7 @@ pub async fn list_groups(
         })
         .collect();
 
-    let mut tx = state.admin_db.begin().await?;
+    let mut tx = crate::db::begin(&state.admin_db).await?;
     audit::record(
         &mut tx,
         Some(actor.user_id),
@@ -95,7 +95,7 @@ pub async fn list_users(
     .fetch_all(&state.admin_db)
     .await?;
 
-    let mut tx = state.admin_db.begin().await?;
+    let mut tx = crate::db::begin(&state.admin_db).await?;
     audit::record(
         &mut tx,
         Some(actor.user_id),
@@ -120,7 +120,7 @@ pub async fn deactivate_user(
     actor: SuperAdminUser,
     Path(target_user_id): Path<Uuid>,
 ) -> AppResult<impl IntoResponse> {
-    let mut tx = state.admin_db.begin().await?;
+    let mut tx = crate::db::begin(&state.admin_db).await?;
 
     let updated = sqlx::query!(
         "UPDATE users SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL",

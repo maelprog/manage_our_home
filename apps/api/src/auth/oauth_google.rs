@@ -102,7 +102,7 @@ pub async fn callback(
 
     let refresh_token_plain = token.refresh_token().map(|t| t.secret().clone());
 
-    let mut tx = state.db.begin().await?;
+    let mut tx = crate::db::begin(&state.db).await?;
 
     let existing_identity = sqlx::query!(
         "SELECT user_id FROM oauth_identities WHERE provider = 'google' AND provider_user_id = $1",

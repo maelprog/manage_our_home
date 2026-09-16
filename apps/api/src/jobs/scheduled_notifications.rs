@@ -56,7 +56,7 @@ async fn refill_recurring_reminders(pool: &PgPool) -> anyhow::Result<()> {
     .await?;
 
     for row in reminders {
-        let mut tx = pool.begin().await?;
+        let mut tx = crate::db::begin(pool).await?;
         if let Err(e) = refill_notifications(
             &mut tx,
             row.reminder_id,

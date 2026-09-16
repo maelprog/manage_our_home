@@ -45,7 +45,7 @@ pub async fn create_group(
         return Err(AppError::Unprocessable("too_many_groups".into()));
     }
 
-    let mut tx = state.db.begin().await?;
+    let mut tx = crate::db::begin(&state.db).await?;
     let group = sqlx::query!(
         r#"
         INSERT INTO groups (name, created_by)

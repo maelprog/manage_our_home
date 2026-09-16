@@ -4,6 +4,7 @@ pub mod audit;
 pub mod auth;
 pub mod budget;
 pub mod crypto;
+pub mod db;
 pub mod dev_seed;
 pub mod email;
 pub mod error;
