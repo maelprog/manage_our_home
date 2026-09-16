@@ -1,5 +1,6 @@
 mod app;
 mod assets;
+mod client_ip;
 // The DESIGN.md journal guard (#95). Test-only: it embeds the document
 // and its lock file, neither of which belongs in the shipped binary.
 #[cfg(test)]
@@ -249,5 +250,14 @@ async fn main() {
 
     tracing::info!(%bind_addr, "starting manage_our_home_web");
     let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    // `into_make_service_with_connect_info` is what puts the peer address in
+    // each request's extensions. `/login` appends it to the `X-Forwarded-For`
+    // it relays to apps/api, which is the only way apps/api can tell one
+    // browser from another behind this SSR layer (#178).
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .unwrap();
 }

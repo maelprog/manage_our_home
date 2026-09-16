@@ -230,16 +230,21 @@ Two costs are **not** in `other_us`, and both surprise people:
   extractor runs it before the handler starts.
 
 One line per request **that reaches the handler**, and `outcome` says which
-of three endings produced these phases. Requests axum's extractor refuses
+of four endings produced these phases. Requests axum's extractor refuses
 never reach it and emit nothing: malformed JSON (400), a missing `password`
 (422), a wrong or absent `content-type` (415). A `/auth/login` request with
 no line is one of those, not a lost measurement.
 
 - `"ok"` — the login completed.
-- `"rejected"` — 401: unknown email, wrong password, or unverified address.
-  The phases it never reached stay at zero, which is the measurement of that
-  path, not missing data.
-- `"error"` — every error that is not that 401. On today's login path those
+- `"rejected"` — 401: unknown email, Google-only account, wrong password, or
+  unverified address. Since #178 every one of them pays `lookup_us` **and**
+  `verify_us` — an account with no stored hash is checked against a decoy —
+  so only `session_us` is zero. A `"rejected"` line with `verify_us=0` is
+  the enumeration oracle back.
+- `"throttled"` — 429: the (client address, email) pair is locked (see
+  below). All four phases are zero: the lock is consulted before the lookup
+  and before argon2id, which is the point of it.
+- `"error"` — every error that is not one of the above. On today's login path those
   are 500s (a statement failed, or the hashing did), but read the label as
   "not a refusal" rather than as a status code: it is derived from the error
   type, so anything new on this path lands here instead of being mislabelled
@@ -253,3 +258,53 @@ added it. The short version: on the debug profile the e2e gate builds,
 `verify_us` is ~95 % of the request and none of the three phases grows with
 the size of `users` — so a login that gets slower as a database fills up is
 not getting slower here.
+
+**Which refusal was it?** Deliberately not on that line (#178). Whether a
+401 came from an unknown email, a Google-only account, a wrong password or
+an unverified address is exactly what the enumeration oracle leaked; a log
+line saying so per request would hand it to whoever reads the journal. The
+split is published instead as a cumulative aggregate on the same target, at
+most once a minute, with seven counts and nothing that identifies an
+attempt:
+
+```
+DEBUG login_timing: login branches ok=41 unknown_email=3 no_password=0
+  wrong_password=5 unverified=1 throttled=0 error=0
+```
+
+The counts are since the process started. To check the fix still holds, the
+refusal counters should move while the per-request `verify_us` of
+`"rejected"` lines stays in one population.
+
+## Login lock and client addresses (#178)
+
+`POST /auth/login` locks a **(client address, email)** pair for 15 minutes
+after 10 failures within 15 minutes, and answers `429 {"error":
+"too_many_attempts"}` while locked. The pair, never the email alone: a lock
+per account would let anyone who knows a household member's address lock
+them out. A success clears the pair. The lock is checked before any work, so
+a locked request costs no argon2id. Constants are in `src/auth/throttle.rs`.
+
+The counter is **in this process's memory**, which is correct only because
+`infra/docker-compose.yml` runs one `api`. **If `api` ever runs as more than
+one instance, it must move to a shared store (Redis/Valkey, not Postgres —
+a database write per failed attempt is itself an amplification).**
+
+The client address comes from `X-Forwarded-For`, which is only believed from
+a peer listed in **`TRUSTED_PROXY_CIDRS`** (comma-separated CIDRs or bare
+addresses; default `127.0.0.0/8,::1/128,172.16.0.0/12`). The entry used is
+the rightmost one that is not itself a trusted peer. From any other peer the
+header is ignored and the peer address is the client. The API refuses to
+start on a malformed list.
+
+Get this list wrong and the lock fails in one of two ways:
+
+- **too narrow** (it misses `caddy`/`web`): every browser resolves to the
+  proxy's address, and the lock becomes one lock for the whole household;
+- **too wide** (it covers addresses browsers connect from): those clients
+  choose their own address, dodge the lock, or aim it at someone else.
+
+apps/web relays the chain on its internal call and appends the address it
+saw (`apps/web/src/client_ip.rs`). Caddy replaces any `X-Forwarded-For` a
+browser sends with the address it saw (checked against `caddy:2`, see
+`infra/Caddyfile`).

@@ -43,6 +43,15 @@ pub fn test_state(db: PgPool) -> AppState {
         message_ws_recheck_interval: std::time::Duration::from_secs(30),
         secure_cookies: false,
         storage: test_storage(),
+        // No socket behind these requests (the router is driven directly),
+        // so there is no peer to trust and `X-Forwarded-For` is ignored:
+        // every test client resolves to the unspecified address. Tests
+        // that need several distinct clients build their own state.
+        trusted_proxies: std::sync::Arc::new(manage_our_home::client_ip::TrustedProxies::none()),
+        login_throttle: std::sync::Arc::new(manage_our_home::auth::throttle::LoginThrottle::new()),
+        login_branches: std::sync::Arc::new(
+            manage_our_home::auth::timing::BranchCounters::default(),
+        ),
     }
 }
 

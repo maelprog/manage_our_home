@@ -2356,6 +2356,7 @@ dependencies = [
  "hyper",
  "icalendar",
  "infer",
+ "ipnet",
  "lettre",
  "manage_our_home_shared",
  "oauth2",

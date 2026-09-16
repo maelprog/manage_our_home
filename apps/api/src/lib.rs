@@ -3,6 +3,7 @@ pub mod attachment_reconcile;
 pub mod audit;
 pub mod auth;
 pub mod budget;
+pub mod client_ip;
 pub mod crypto;
 pub mod db;
 pub mod dev_seed;
@@ -69,6 +70,18 @@ pub struct AppState {
     pub secure_cookies: bool,
     /// MinIO/S3 client for event file attachments (architecture.md epic #10).
     pub storage: Storage,
+    /// Peers whose `X-Forwarded-For` is believed when resolving a client
+    /// address (#178). Empty in integration tests, which reach the router
+    /// without a socket at all — see `client_ip::resolve`.
+    pub trusted_proxies: std::sync::Arc<client_ip::TrustedProxies>,
+    /// Per-(address, email) lock on failed logins (#178). Consulted
+    /// before the argon2 work, in-process because `infra/docker-compose.yml`
+    /// runs exactly one `api`; see `auth::throttle` for what has to change
+    /// if that ever stops being true.
+    pub login_throttle: std::sync::Arc<auth::throttle::LoginThrottle>,
+    /// Cumulative count of logins per ending, published as an aggregate
+    /// and never per request (#178 bis).
+    pub login_branches: std::sync::Arc<auth::timing::BranchCounters>,
     /// Second pool, connected as `admin_role` (`BYPASSRLS`). Only ever
     /// touched by handlers gated behind `SuperAdminUser` (Epic #8) — see
     /// `src/user_admin/mod.rs` for why this is a narrow, deliberate
@@ -77,6 +90,12 @@ pub struct AppState {
 }
 
 pub fn build_router(state: AppState) -> Router {
+    // Derive the login decoy hash now rather than inside whichever login
+    // happens to be first: it costs one argon2id, and paying it in a
+    // request would make that one request the odd one out on a stopwatch —
+    // the exact signal #178 exists to remove.
+    let _ = crypto::decoy_hash();
+
     Router::new()
         .route("/auth/register", post(auth::register))
         .route("/auth/verify-email", get(auth::verify_email))

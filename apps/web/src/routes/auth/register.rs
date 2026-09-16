@@ -110,6 +110,7 @@ pub async fn post(
             password: form.password.clone(),
             display_name: form.display_name.clone(),
         },
+        None,
     )
     .await;
 

@@ -37,6 +37,25 @@
 	# excluded from `encode` — see the PR for #83 for the full reasoning.
 	encode zstd gzip
 
+	# `X-Forwarded-For` (#178): nothing to configure here, but the behaviour
+	# is load-bearing, so it is written down. Measured against `caddy:2`
+	# (v2.11.4) with this same `handle` layout, on both paths:
+	#
+	#   curl -H 'X-Forwarded-For: 8.8.8.8' http://caddy/login
+	#     -> upstream sees X-Forwarded-For: <the caller's real address>
+	#
+	# `reverse_proxy` sets the header to the address it accepted the
+	# connection from, and a value the caller supplied is **discarded**, not
+	# appended to — there is no `trusted_proxies` here, so no client counts
+	# as a proxy. So the header apps/web and apps/api receive from this hop
+	# cannot be chosen by the browser.
+	#
+	# apps/api does not take that on faith (`src/client_ip.rs`): it honours
+	# the header only from a peer inside TRUSTED_PROXY_CIDRS and reads the
+	# rightmost entry that is not itself such a peer. If this proxy is ever
+	# put behind another one, the chain keeps working and this comment stops
+	# being the whole story — the entry to trust would then be the one that
+	# outer proxy appended.
 	handle /api/* {
 		uri strip_prefix /api
 		reverse_proxy api:8080

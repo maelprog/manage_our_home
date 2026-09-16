@@ -732,3 +732,292 @@ async fn resend_verification_cooldown_is_silent_noop(db: PgPool) {
     .unwrap();
     assert_eq!(count_after_first, count_after_second);
 }
+
+// --- #178: the login enumeration oracle, and the lock that bounds the cost
+// of closing it ---
+
+/// A router whose state trusts `10.0.0.0/8` as a proxy range, so the tests
+/// below can pose as several distinct clients. `common::test_state` trusts
+/// nobody, which is right for every other test: without a trust list the
+/// peer address is the client and `X-Forwarded-For` is ignored.
+fn router_trusting_10_0_0_0_8(db: PgPool) -> axum::Router {
+    let mut state = common::test_state(db);
+    state.trusted_proxies = std::sync::Arc::new(
+        manage_our_home::client_ip::TrustedProxies::parse("10.0.0.0/8").unwrap(),
+    );
+    manage_our_home::build_router(state)
+}
+
+/// `POST /auth/login` from a named peer, optionally carrying an
+/// `X-Forwarded-For`. `common::call` cannot do this: it drives the router
+/// directly, with no socket behind the request.
+async fn login_from(
+    router: &axum::Router,
+    peer: &str,
+    forwarded_for: Option<&str>,
+    email: &str,
+    password: &str,
+) -> axum::http::Response<axum::body::Body> {
+    use axum::body::Body;
+    use axum::extract::ConnectInfo;
+    use axum::http::{header, Request};
+    use tower::ServiceExt;
+
+    let peer: std::net::SocketAddr = peer.parse().unwrap();
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri("/auth/login")
+        .header(header::CONTENT_TYPE, "application/json")
+        .extension(ConnectInfo(peer));
+    if let Some(value) = forwarded_for {
+        builder = builder.header("x-forwarded-for", value);
+    }
+    let body = serde_json::json!({"email": email, "password": password});
+    let request = builder
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    router.clone().oneshot(request).await.unwrap()
+}
+
+/// The fix for #178: the three regimes of `login_inner` must be
+/// indistinguishable, in the response *and* on a stopwatch.
+///
+/// Before this, an unknown email answered in ~0,22 ms and a known one in
+/// ~256 ms because only the second reached argon2id — three orders of
+/// magnitude, readable with no credentials at all. The Google-only account
+/// (`password_hash IS NULL`) was the third regime and the finer leak: it
+/// short-circuited like an unknown email while meaning "this account exists
+/// and has no password".
+///
+/// The bound below is deliberately loose (a quarter of the slowest branch)
+/// because this measures wall time on a shared runner. It is three orders
+/// of magnitude away from what the bug produced, so it separates "pays for
+/// argon2id" from "does not" without pretending to measure the difference
+/// between two hashes.
+#[sqlx::test]
+async fn the_three_login_regimes_answer_alike_and_take_comparable_time(db: PgPool) {
+    let router = test_router(db.clone());
+
+    // Regime (c): a real account with a password hash.
+    register_verify_login(&router, &db, "known@example.test", "known-password1").await;
+    // Regime (b): Google-only — a row with no password hash at all. The
+    // oauth identity goes in the same transaction because `users` refuses
+    // a row with no auth method at all (deferred trigger, migration 0001).
+    let mut tx = db.begin().await.unwrap();
+    let google_only = sqlx::query_scalar!(
+        "INSERT INTO users (email, password_hash, display_name, email_verified) VALUES ($1, NULL, 'Google Only', true) RETURNING id",
+        "google-only@example.test"
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query!(
+        "INSERT INTO oauth_identities (user_id, provider, provider_user_id) VALUES ($1, 'google', $2)",
+        google_only,
+        "google-subject-178"
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut elapsed = Vec::new();
+    let mut bodies = Vec::new();
+    for email in [
+        "unknown@example.test",
+        "google-only@example.test",
+        "known@example.test",
+    ] {
+        let started = std::time::Instant::now();
+        let response = call(
+            &router,
+            Method::POST,
+            "/auth/login",
+            None,
+            Some(serde_json::json!({"email": email, "password": "wrong-password1"})),
+        )
+        .await;
+        elapsed.push(started.elapsed());
+        assert_status(&response, StatusCode::UNAUTHORIZED);
+        bodies.push(json_body(response).await);
+    }
+
+    assert_eq!(bodies[0], bodies[1], "unknown vs Google-only");
+    assert_eq!(bodies[1], bodies[2], "Google-only vs known");
+
+    let slowest = *elapsed.iter().max().unwrap();
+    let fastest = *elapsed.iter().min().unwrap();
+    assert!(
+        fastest >= slowest / 4,
+        "one branch skipped the hashing: {elapsed:?}"
+    );
+}
+
+/// The lock of #178 (piste 3), consulted before the argon2 work the decoy
+/// hash added to every invalid attempt.
+#[sqlx::test]
+async fn repeated_failures_from_one_address_are_locked_out(db: PgPool) {
+    let router = router_trusting_10_0_0_0_8(db.clone());
+    let peer = "10.0.0.2:40000";
+
+    for _ in 0..manage_our_home::auth::throttle::MAX_FAILURES {
+        let response = login_from(
+            &router,
+            peer,
+            Some("192.168.1.42"),
+            "nobody@example.test",
+            "wrong-password1",
+        )
+        .await;
+        assert_status(&response, StatusCode::UNAUTHORIZED);
+    }
+
+    let locked = login_from(
+        &router,
+        peer,
+        Some("192.168.1.42"),
+        "nobody@example.test",
+        "wrong-password1",
+    )
+    .await;
+    assert_status(&locked, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(json_body(locked).await["error"], "too_many_attempts");
+}
+
+/// The key is the pair, never the email alone: locking one pair must not
+/// lock the account for the rest of the household, nor the address for the
+/// rest of the accounts.
+#[sqlx::test]
+async fn the_lock_is_scoped_to_one_address_and_email_pair(db: PgPool) {
+    let router = router_trusting_10_0_0_0_8(db.clone());
+    let proxy = "10.0.0.2:40000";
+    register_verify_login(&router, &db, "victim@example.test", "victim-password1").await;
+
+    for _ in 0..manage_our_home::auth::throttle::MAX_FAILURES {
+        login_from(
+            &router,
+            proxy,
+            Some("203.0.113.9"),
+            "victim@example.test",
+            "wrong-password1",
+        )
+        .await;
+    }
+    let attacker_again = login_from(
+        &router,
+        proxy,
+        Some("203.0.113.9"),
+        "victim@example.test",
+        "wrong-password1",
+    )
+    .await;
+    assert_status(&attacker_again, StatusCode::TOO_MANY_REQUESTS);
+
+    // The owner, from their own address, is untouched — with the right
+    // password *and* with a wrong one.
+    let owner_wrong = login_from(
+        &router,
+        proxy,
+        Some("192.168.1.42"),
+        "victim@example.test",
+        "wrong-password1",
+    )
+    .await;
+    assert_status(&owner_wrong, StatusCode::UNAUTHORIZED);
+    let owner_right = login_from(
+        &router,
+        proxy,
+        Some("192.168.1.42"),
+        "victim@example.test",
+        "victim-password1",
+    )
+    .await;
+    assert_status(&owner_right, StatusCode::OK);
+
+    // And the attacker's address can still reach another account.
+    let other_account = login_from(
+        &router,
+        proxy,
+        Some("203.0.113.9"),
+        "someone-else@example.test",
+        "wrong-password1",
+    )
+    .await;
+    assert_status(&other_account, StatusCode::UNAUTHORIZED);
+}
+
+/// The trap the arbitration on #178 called non-negotiable: an
+/// `X-Forwarded-For` from a peer that is not a trusted proxy is worth
+/// nothing. If it were honoured, rotating the header would buy an
+/// unlimited number of attempts — and naming a neighbour's address would
+/// lock *them* out.
+#[sqlx::test]
+async fn a_forged_forwarded_for_from_an_untrusted_peer_buys_no_extra_attempts(db: PgPool) {
+    let router = router_trusting_10_0_0_0_8(db.clone());
+
+    for i in 0..manage_our_home::auth::throttle::MAX_FAILURES {
+        let response = login_from(
+            &router,
+            // 203.0.113.x is outside the trusted 10.0.0.0/8, so this peer
+            // is a client, not a proxy.
+            "203.0.113.9:40000",
+            Some(&format!("198.51.100.{i}")),
+            "nobody@example.test",
+            "wrong-password1",
+        )
+        .await;
+        assert_status(&response, StatusCode::UNAUTHORIZED);
+    }
+
+    let next = login_from(
+        &router,
+        "203.0.113.9:40000",
+        Some("198.51.100.200"),
+        "nobody@example.test",
+        "wrong-password1",
+    )
+    .await;
+    assert_status(&next, StatusCode::TOO_MANY_REQUESTS);
+}
+
+/// A login that succeeds clears what came before it, so a household member
+/// who mistypes their way to the edge of the lock and then gets it right
+/// starts from a clean slate.
+#[sqlx::test]
+async fn a_successful_login_clears_the_failures_before_it(db: PgPool) {
+    let router = router_trusting_10_0_0_0_8(db.clone());
+    let proxy = "10.0.0.2:40000";
+    register_verify_login(&router, &db, "clumsy@example.test", "clumsy-password1").await;
+
+    for _ in 0..(manage_our_home::auth::throttle::MAX_FAILURES - 1) {
+        login_from(
+            &router,
+            proxy,
+            Some("192.168.1.42"),
+            "clumsy@example.test",
+            "wrong-password1",
+        )
+        .await;
+    }
+    let right = login_from(
+        &router,
+        proxy,
+        Some("192.168.1.42"),
+        "clumsy@example.test",
+        "clumsy-password1",
+    )
+    .await;
+    assert_status(&right, StatusCode::OK);
+
+    for _ in 0..(manage_our_home::auth::throttle::MAX_FAILURES - 1) {
+        let response = login_from(
+            &router,
+            proxy,
+            Some("192.168.1.42"),
+            "clumsy@example.test",
+            "wrong-password1",
+        )
+        .await;
+        assert_status(&response, StatusCode::UNAUTHORIZED);
+    }
+}
