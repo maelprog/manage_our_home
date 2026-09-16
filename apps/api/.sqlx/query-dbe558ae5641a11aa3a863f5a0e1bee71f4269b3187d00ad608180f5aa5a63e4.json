@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, name, created_at FROM groups ORDER BY created_at",
+  "query": "\n        SELECT g.id, g.name, g.created_at, gm.role as \"role: String\"\n        FROM group_members gm\n        JOIN groups g ON g.id = gm.group_id\n        WHERE gm.user_id = $1\n        ORDER BY g.created_at\n        ",
   "describe": {
     "columns": [
       {
@@ -35,16 +35,41 @@
             "name": "created_at"
           }
         }
+      },
+      {
+        "ordinal": 3,
+        "name": "role: String",
+        "type_info": {
+          "Custom": {
+            "name": "group_role",
+            "kind": {
+              "Enum": [
+                "owner",
+                "admin",
+                "standard"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "group_members",
+            "name": "role"
+          }
+        }
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Uuid"
+      ]
     },
     "nullable": [
+      false,
       false,
       false,
       false
     ]
   },
-  "hash": "507b6880359dd58886fecf85573b473f51e54a6eb567bd3082278d937714f14e"
+  "hash": "dbe558ae5641a11aa3a863f5a0e1bee71f4269b3187d00ad608180f5aa5a63e4"
 }

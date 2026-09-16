@@ -926,3 +926,148 @@ async fn message_read_state_isolated_without_scoping(db: PgPool) {
         .await
         .unwrap();
 }
+
+/// Seeds two users, each owning one group. Written as the harness role
+/// (which bypasses RLS), so the fixture never depends on the policies the
+/// test is about.
+async fn two_owned_groups(db: &PgPool) -> ((Uuid, Uuid), (Uuid, Uuid)) {
+    let mut owned = Vec::new();
+    for tag in ["a", "b"] {
+        let user: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (email, password_hash, display_name, email_verified) \
+             VALUES ($1, 'x', $2, true) RETURNING id",
+        )
+        .bind(format!("{tag}@example.test"))
+        .bind(tag)
+        .fetch_one(db)
+        .await
+        .unwrap();
+        let group: Uuid =
+            sqlx::query_scalar("INSERT INTO groups (name, created_by) VALUES ($1, $2) RETURNING id")
+                .bind(tag)
+                .bind(user)
+                .fetch_one(db)
+                .await
+                .unwrap();
+        sqlx::query("INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'owner')")
+            .bind(group)
+            .bind(user)
+            .execute(db)
+            .await
+            .unwrap();
+        owned.push((user, group));
+    }
+    (owned[0], owned[1])
+}
+
+async fn set_user_id(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, user_id: Uuid) {
+    sqlx::query("SELECT set_config('app.user_id', $1, true)")
+        .bind(user_id.to_string())
+        .execute(&mut **tx)
+        .await
+        .unwrap();
+}
+
+/// Issue #113: "my groups" is read with only `app.user_id` set
+/// (`user_scoped_tx`), and the `groups` policy's membership branch looks
+/// the caller up in `group_members`. That lookup is itself subject to
+/// `group_members`' policy, which only ever matched `app.family_id` — so
+/// under a role that does not bypass RLS the branch never matched and a
+/// member saw none of their own groups.
+#[sqlx::test]
+async fn groups_visible_to_their_members_with_only_user_id(db: PgPool) {
+    let ((owner_a, group_a), (_owner_b, _group_b)) = two_owned_groups(&db).await;
+    let (role, mut tx) = restricted_role_tx(&db).await;
+    set_user_id(&mut tx, owner_a).await;
+
+    let groups: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM groups")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(
+        groups,
+        vec![group_a],
+        "a member must see their own group, and only it"
+    );
+
+    let memberships: Vec<(Uuid, Uuid)> =
+        sqlx::query_as("SELECT group_id, user_id FROM group_members")
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(
+        memberships,
+        vec![(group_a, owner_a)],
+        "only the caller's own membership rows are readable without app.family_id"
+    );
+    tx.commit().await.unwrap();
+    drop_restricted_role(&db, &role).await;
+}
+
+/// The other half of the #113 change: seeing one's own membership and
+/// groups is not a licence to write them. Without `app.family_id` nothing
+/// can be updated, deleted or inserted in `group_members` — not even a row
+/// that names the caller, which would let a user join any family by id —
+/// and the groups the caller belongs to can be neither renamed nor deleted.
+#[sqlx::test]
+async fn membership_reads_grant_no_write_without_family_scope(db: PgPool) {
+    let ((owner_a, group_a), (owner_b, group_b)) = two_owned_groups(&db).await;
+
+    let (role, mut tx) = restricted_role_tx(&db).await;
+    set_user_id(&mut tx, owner_a).await;
+    let renamed = sqlx::query("UPDATE groups SET name = 'renamed' WHERE id = $1")
+        .bind(group_a)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(renamed.rows_affected(), 0, "own group renamed without app.family_id");
+    let removed = sqlx::query("DELETE FROM groups WHERE id = $1")
+        .bind(group_a)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(removed.rows_affected(), 0, "own group deleted without app.family_id");
+    tx.commit().await.unwrap();
+    drop_restricted_role(&db, &role).await;
+
+    let (role, mut tx) = restricted_role_tx(&db).await;
+    set_user_id(&mut tx, owner_a).await;
+    let updated = sqlx::query("UPDATE group_members SET role = 'admin' WHERE user_id = $1")
+        .bind(owner_a)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(updated.rows_affected(), 0, "own membership updated without app.family_id");
+    let deleted = sqlx::query("DELETE FROM group_members WHERE user_id = $1")
+        .bind(owner_a)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(deleted.rows_affected(), 0, "own membership deleted without app.family_id");
+    tx.commit().await.unwrap();
+    drop_restricted_role(&db, &role).await;
+
+    let (role, mut tx) = restricted_role_tx(&db).await;
+    set_user_id(&mut tx, owner_a).await;
+    let self_join = sqlx::query(
+        "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'standard')",
+    )
+    .bind(group_b)
+    .bind(owner_a)
+    .execute(&mut *tx)
+    .await;
+    assert!(
+        self_join.is_err(),
+        "a user joined another family by naming themselves, without app.family_id"
+    );
+    tx.rollback().await.unwrap();
+    drop_restricted_role(&db, &role).await;
+
+    let members_of_b: Vec<Uuid> =
+        sqlx::query_scalar("SELECT user_id FROM group_members WHERE group_id = $1")
+            .bind(group_b)
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    assert_eq!(members_of_b, vec![owner_b]);
+}
