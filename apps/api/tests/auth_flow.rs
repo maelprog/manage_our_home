@@ -1273,5 +1273,8 @@ async fn google_callback_sends_the_stored_pkce_verifier_with_the_code(db: PgPool
         .take()
         .expect("callback never reached the token endpoint");
     assert_eq!(form.get("code").map(String::as_str), Some("the-code"));
-    assert_eq!(form.get("code_verifier").map(String::as_str), Some(verifier));
+    assert_eq!(
+        form.get("code_verifier").map(String::as_str),
+        Some(verifier)
+    );
 }
