@@ -1151,7 +1151,10 @@ async fn google_start_sends_an_s256_challenge_and_keeps_the_verifier_in_a_cookie
     );
     assert_eq!(param("code_challenge").as_deref(), Some(expected.as_str()));
     assert_eq!(param("state").as_deref(), Some(state.as_str()));
-    assert!(!location.contains(&verifier), "verifier leaked into the URL");
+    assert!(
+        !location.contains(&verifier),
+        "verifier leaked into the URL"
+    );
 
     let verifier_line = cookies
         .iter()
@@ -1162,11 +1165,22 @@ async fn google_start_sends_an_s256_challenge_and_keeps_the_verifier_in_a_cookie
     assert!(verifier_line.contains("SameSite=Lax"));
 }
 
+/// Asserts `response` expires `name` for the whole site: an expiry without
+/// `start`'s `Path=/` would leave the browser's cookie in place.
+fn assert_cleared(response: &axum::response::Response, name: &str) {
+    let cookies = set_cookies(response);
+    let line = cookies
+        .iter()
+        .find(|l| l.starts_with(&format!("{name}=")))
+        .unwrap_or_else(|| panic!("{name} not cleared"));
+    assert!(line.contains("Max-Age=0"), "{line}");
+    assert!(line.contains("Path=/"), "{line}");
+}
+
 /// #193: a callback whose `state` checks out but whose PKCE verifier cookie
 /// is gone is refused before any code exchange — never retried without
 /// PKCE. (An attempted exchange would answer 500 here: the test client's
-/// token endpoint is unreachable from the suite.) Both flow cookies are
-/// cleared either way.
+/// token endpoint is unreachable from the suite.)
 #[sqlx::test]
 async fn google_callback_without_the_pkce_verifier_is_refused_before_exchange(db: PgPool) {
     let router = test_router(db);
@@ -1180,20 +1194,12 @@ async fn google_callback_without_the_pkce_verifier_is_refused_before_exchange(db
     )
     .await;
     assert_status(&response, StatusCode::UNAUTHORIZED);
-
-    let cookies = set_cookies(&response);
-    for name in ["google_oauth_state", "google_oauth_pkce_verifier"] {
-        let line = cookies
-            .iter()
-            .find(|l| l.starts_with(&format!("{name}=")))
-            .unwrap_or_else(|| panic!("{name} not cleared"));
-        assert!(line.contains("Max-Age=0"), "{name}: {line}");
-        assert!(line.contains("Path=/"), "{name}: {line}");
-    }
+    assert_cleared(&response, "google_oauth_state");
 }
 
 /// #193: the verifier does not stand in for the CSRF check — a mismatched
-/// `state` is still refused with the verifier cookie present.
+/// `state` is still refused with the verifier cookie present, and both
+/// single-use flow cookies are cleared.
 #[sqlx::test]
 async fn google_callback_with_a_verifier_but_a_mismatched_state_is_refused(db: PgPool) {
     let router = test_router(db);
@@ -1210,4 +1216,6 @@ async fn google_callback_with_a_verifier_but_a_mismatched_state_is_refused(db: P
     )
     .await;
     assert_status(&response, StatusCode::UNAUTHORIZED);
+    assert_cleared(&response, "google_oauth_state");
+    assert_cleared(&response, "google_oauth_pkce_verifier");
 }

@@ -25,7 +25,17 @@ const OAUTH_PKCE_VERIFIER_COOKIE: &str = "google_oauth_pkce_verifier";
 /// PKCE challenge. Returns the verifier the caller must persist until the
 /// callback: it is never sent to Google on this leg.
 fn authorization_request(client: &GoogleOauthClient) -> (Url, CsrfToken, PkceCodeVerifier) {
-    todo!()
+    let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
+    let (auth_url, csrf_token) = client
+        .authorize_url(CsrfToken::new_random)
+        .add_scope(Scope::new("openid".to_string()))
+        .add_scope(Scope::new("email".to_string()))
+        .add_scope(Scope::new("profile".to_string()))
+        .add_extra_param("access_type", "offline")
+        .add_extra_param("prompt", "consent")
+        .set_pkce_challenge(pkce_challenge)
+        .url();
+    (auth_url, csrf_token, pkce_verifier)
 }
 
 /// Decides, from what `start` left in the browser and what Google sent
@@ -37,7 +47,18 @@ fn callback_verifier(
     pkce_verifier: Option<String>,
     presented_state: &str,
 ) -> Option<PkceCodeVerifier> {
-    todo!()
+    if expected_state? != presented_state {
+        return None;
+    }
+    let verifier = pkce_verifier?;
+    // RFC 7636 §4.1: 43 to 128 characters from the unreserved set. Anything
+    // else was not minted by `start`, so it is refused here rather than
+    // forwarded to Google's token endpoint.
+    let well_formed = (43..=128).contains(&verifier.len())
+        && verifier
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~'));
+    well_formed.then(|| PkceCodeVerifier::new(verifier))
 }
 
 fn flow_cookie(name: &'static str, value: String, secure: bool) -> Cookie<'static> {
@@ -115,8 +136,15 @@ pub async fn callback(
     let pkce_verifier = cookies
         .get(OAUTH_PKCE_VERIFIER_COOKIE)
         .map(|c| c.value().to_string());
-    cookies.remove(Cookie::new(OAUTH_STATE_COOKIE, ""));
-    cookies.remove(Cookie::new(OAUTH_PKCE_VERIFIER_COOKIE, ""));
+    // Both are single-use, spent or not. The removal carries `start`'s
+    // `Path=/`: without it the browser scopes the expiry to this request's
+    // directory and keeps the original cookies.
+    cookies.remove(Cookie::build((OAUTH_STATE_COOKIE, "")).path("/").into());
+    cookies.remove(
+        Cookie::build((OAUTH_PKCE_VERIFIER_COOKIE, ""))
+            .path("/")
+            .into(),
+    );
 
     let pkce_verifier = callback_verifier(expected_state, pkce_verifier, &query.state)
         .ok_or(AppError::Unauthorized)?;
@@ -222,7 +250,9 @@ mod tests {
     fn client() -> GoogleOauthClient {
         BasicClient::new(ClientId::new("client-id".into()))
             .set_client_secret(ClientSecret::new("client-secret".into()))
-            .set_auth_uri(AuthUrl::new("https://accounts.google.com/o/oauth2/v2/auth".into()).unwrap())
+            .set_auth_uri(
+                AuthUrl::new("https://accounts.google.com/o/oauth2/v2/auth".into()).unwrap(),
+            )
             .set_token_uri(TokenUrl::new("https://oauth2.googleapis.com/token".into()).unwrap())
             .set_redirect_uri(
                 RedirectUrl::new("http://localhost:8080/auth/google/callback".into()).unwrap(),
@@ -262,13 +292,19 @@ mod tests {
     #[test]
     fn authorization_url_state_is_the_returned_csrf_token() {
         let (url, csrf, _) = authorization_request(&client());
-        assert_eq!(query_param(&url, "state").as_deref(), Some(csrf.secret().as_str()));
+        assert_eq!(
+            query_param(&url, "state").as_deref(),
+            Some(csrf.secret().as_str())
+        );
     }
 
     #[test]
     fn authorization_url_keeps_the_scopes_and_offline_access() {
         let (url, _, _) = authorization_request(&client());
-        assert_eq!(query_param(&url, "scope").as_deref(), Some("openid email profile"));
+        assert_eq!(
+            query_param(&url, "scope").as_deref(),
+            Some("openid email profile")
+        );
         assert_eq!(query_param(&url, "access_type").as_deref(), Some("offline"));
         assert_eq!(query_param(&url, "prompt").as_deref(), Some("consent"));
     }
