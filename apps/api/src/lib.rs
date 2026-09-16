@@ -110,7 +110,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/password/reset", post(auth::reset_password))
         .route("/settings/password/change", post(auth::change_password))
         .route("/settings/password/set", post(auth::set_password))
-        .route("/settings/google/link", post(auth::oauth_google::link))
         .route("/account/delete", post(auth::delete_account))
         .route("/account/delete/cancel", post(auth::cancel_delete_account))
         .route("/account/export", get(rgpd::export_account))

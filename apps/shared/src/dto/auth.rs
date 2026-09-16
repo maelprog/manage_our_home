@@ -48,11 +48,6 @@ pub struct SetPasswordRequest {
     pub new_password: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LinkGoogleRequest {
-    pub code: String,
-}
-
 /// Body of `POST /account/delete` (RGPD Art. 17 self-service erasure, front
 /// epic F10). `current_password` is required — and verified — only for an
 /// account that has a password; a Google-only account sends `None` (see

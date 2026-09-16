@@ -1,7 +1,5 @@
 use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Redirect};
-use axum::{http::StatusCode, Json};
-use manage_our_home_shared::dto::auth::LinkGoogleRequest;
 use oauth2::{AuthorizationCode, CsrfToken, Scope, TokenResponse};
 use serde::Deserialize;
 use tower_cookies::{Cookie, Cookies};
@@ -9,7 +7,7 @@ use tower_cookies::{Cookie, Cookies};
 use crate::error::{AppError, AppResult};
 use crate::AppState;
 
-use super::session::{build_session_cookie, create_session, AuthUser};
+use super::session::{build_session_cookie, create_session};
 
 const OAUTH_STATE_COOKIE: &str = "google_oauth_state";
 
@@ -173,63 +171,4 @@ pub async fn callback(
     cookies.add(build_session_cookie(session_id, state.secure_cookies));
 
     Ok(Redirect::to(&state.frontend_base_url))
-}
-
-/// AC #8: links Google to an already-authenticated account. Requires a
-/// live session (`AuthUser`) and that Google's verified email matches the
-/// account's email exactly.
-pub async fn link(
-    State(state): State<AppState>,
-    auth: AuthUser,
-    Json(body): Json<LinkGoogleRequest>,
-) -> AppResult<impl IntoResponse> {
-    let token = state
-        .google_oauth
-        .exchange_code(AuthorizationCode::new(body.code))
-        .request_async(&reqwest::Client::new())
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("token exchange failed: {e}")))?;
-
-    let userinfo = fetch_google_userinfo(token.access_token().secret())
-        .await
-        .map_err(AppError::Internal)?;
-
-    if !userinfo.email_verified {
-        return Err(AppError::Unauthorized);
-    }
-    if userinfo.email != auth.email {
-        return Err(AppError::Unprocessable("email_mismatch".into()));
-    }
-
-    let refresh_token_plain = token.refresh_token().map(|t| t.secret().clone());
-
-    if let Some(refresh_token) = &refresh_token_plain {
-        sqlx::query!(
-            r#"
-            INSERT INTO oauth_identities (user_id, provider, provider_user_id, refresh_token_encrypted)
-            VALUES ($1, 'google', $2, pgp_sym_encrypt($3, $4))
-            ON CONFLICT (provider, provider_user_id) DO NOTHING
-            "#,
-            auth.user_id,
-            userinfo.sub,
-            refresh_token,
-            state.oauth_encryption_key,
-        )
-        .execute(&state.db)
-        .await?;
-    } else {
-        sqlx::query!(
-            r#"
-            INSERT INTO oauth_identities (user_id, provider, provider_user_id)
-            VALUES ($1, 'google', $2)
-            ON CONFLICT (provider, provider_user_id) DO NOTHING
-            "#,
-            auth.user_id,
-            userinfo.sub,
-        )
-        .execute(&state.db)
-        .await?;
-    }
-
-    Ok(StatusCode::OK)
 }
