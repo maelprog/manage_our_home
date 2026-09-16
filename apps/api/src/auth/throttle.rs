@@ -15,11 +15,9 @@
 //! Counting failures only once they are known would let a burst of
 //! concurrent requests all read "not locked" before the first of them
 //! finished its argon2id — the bound would then be the concurrency the
-//! attacker chooses, not [`MAX_FAILURES`]. Counted at admission, a pair
-//! gets at most `MAX_FAILURES` hashes per window however many requests
-//! arrive at once. The price is that an attempt that ends in a 500 counts
-//! as a failure too; it is rare, and not counting it would reopen the
-//! window this closes.
+//! attacker chooses, not [`MAX_FAILURES`]. The price is that an attempt
+//! that ends in a 500 counts as a failure too; it is rare, and not counting
+//! it would reopen the window this closes.
 //!
 //! **Key: (address, email), never the email alone.** A per-account lock is
 //! a denial of service anyone can aim at any address they know, which on a
@@ -28,6 +26,14 @@
 //! — without handing out that weapon. That property only holds if the
 //! address is really the client's: see `apps/api/README.md` for the
 //! deployments where every client arrives with the same address.
+//!
+//! **Each address holds at most [`MAX_PAIRS_PER_IP`] pairs.** A new email
+//! from an address already at its share is refused (a 429, like a lock)
+//! rather than counted by pushing out someone's pair. Without the share, a
+//! single address could fill the table and then churn new emails to evict
+//! — and so reset — the pair it was attacking: 9 000 attempts admitted on
+//! one pair for 1 000 new emails, measured against the previous version.
+//! Refusing at the share only ever costs the address that asked.
 //!
 //! **The counter lives in this process's memory.** `infra/docker-compose.yml`
 //! declares a single `api` service with no `replicas` and no `deploy:`, so
@@ -65,6 +71,16 @@ pub const LOCKOUT: Duration = Duration::from_secs(15 * 60);
 /// attacker picks how much memory this process holds.
 pub const MAX_TRACKED: usize = 10_000;
 
+/// Pairs one address may hold at once — distinct emails tried from it
+/// that have neither succeeded nor gone stale. 32 is far above what a
+/// household behind one NAT address types in a quarter of an hour, and it
+/// bounds what one address can try: 32 emails, 10 attempts each, per
+/// window.
+///
+/// It also means a full table ([`MAX_TRACKED`]) spans at least
+/// `MAX_TRACKED / MAX_PAIRS_PER_IP` = 313 distinct addresses.
+pub const MAX_PAIRS_PER_IP: usize = 32;
+
 /// Longest email kept in a key: RFC 5321's maximum path length. Anything
 /// longer cannot be a deliverable address, and truncating bounds the key
 /// rather than the map alone.
@@ -75,7 +91,9 @@ const MAX_KEY_EMAIL_LEN: usize = 320;
 pub enum Decision {
     /// Admitted, and already counted — the caller may do the expensive work.
     Allow,
-    /// Locked; `retry_after` is what is left of [`LOCKOUT`].
+    /// Refused before any work: the pair is locked, or its address already
+    /// holds its share of pairs. `retry_after` is when that stops being
+    /// true at the earliest.
     Locked { retry_after: Duration },
 }
 
@@ -117,13 +135,106 @@ impl Entry {
         self.locked_at(now).is_none()
             && (self.locked_until.is_some() || now.duration_since(self.window_start) > WINDOW)
     }
+
+    /// When this entry stops holding its address's share, at the earliest.
+    fn frees_at(&self, now: Instant) -> Instant {
+        self.locked_at(now).unwrap_or(self.window_start + WINDOW)
+    }
+}
+
+/// Pairs grouped by address, so an address's share is one `len()` away.
+#[derive(Debug, Default)]
+struct Table {
+    by_ip: HashMap<IpAddr, HashMap<String, Entry>>,
+    total: usize,
+}
+
+impl Table {
+    fn held_by(&self, ip: IpAddr) -> usize {
+        self.by_ip.get(&ip).map_or(0, HashMap::len)
+    }
+
+    fn remove(&mut self, ip: IpAddr, email: &str) {
+        if let Some(pairs) = self.by_ip.get_mut(&ip) {
+            if pairs.remove(email).is_some() {
+                self.total -= 1;
+            }
+            if pairs.is_empty() {
+                self.by_ip.remove(&ip);
+            }
+        }
+    }
+
+    fn reclaim_address(&mut self, ip: IpAddr, now: Instant) {
+        if let Some(pairs) = self.by_ip.get_mut(&ip) {
+            let before = pairs.len();
+            pairs.retain(|_, e| !e.is_stale(now));
+            self.total -= before - pairs.len();
+            if pairs.is_empty() {
+                self.by_ip.remove(&ip);
+            }
+        }
+    }
+
+    fn address_frees_up_in(&self, ip: IpAddr, now: Instant) -> Duration {
+        self.by_ip
+            .get(&ip)
+            .and_then(|pairs| pairs.values().map(|e| e.frees_at(now)).min())
+            .map_or(Duration::ZERO, |at| at.saturating_duration_since(now))
+    }
+
+    /// Makes room for one more pair when the table is full, without ever
+    /// letting the newcomer through uncounted.
+    ///
+    /// Stale entries go first. If the table is still full of live pairs,
+    /// one is evicted **from an address holding the most pairs** — the
+    /// unlocked one whose window started earliest, a locked one only if
+    /// that address has nothing else, soonest-to-expire first. A pair can
+    /// therefore only be evicted once no address holds more pairs than its
+    /// own: for a pair whose address holds `k` pairs, that takes the table
+    /// spread over at least `MAX_TRACKED / k` addresses — 313 at the very
+    /// least, 10 000 for an address holding a single pair. One address, or
+    /// a handful, cannot evict anyone else's pair; what an eviction then
+    /// resets is up to [`MAX_FAILURES`] − 1 attempts on that one pair.
+    ///
+    /// Linear in the table size, and only on the path that inserts a new
+    /// pair into a full table.
+    fn make_room(&mut self, now: Instant) {
+        if self.total < MAX_TRACKED {
+            return;
+        }
+        let mut total = 0;
+        self.by_ip.retain(|_, pairs| {
+            pairs.retain(|_, e| !e.is_stale(now));
+            total += pairs.len();
+            !pairs.is_empty()
+        });
+        self.total = total;
+        if self.total < MAX_TRACKED {
+            return;
+        }
+        let most = self.by_ip.values().map(HashMap::len).max().unwrap_or(0);
+        let victim = self
+            .by_ip
+            .iter()
+            .filter(|(_, pairs)| pairs.len() == most)
+            .flat_map(|(ip, pairs)| pairs.iter().map(move |(email, e)| (*ip, email, e)))
+            .min_by_key(|(_, _, e)| match e.locked_at(now) {
+                None => (0, e.window_start),
+                Some(until) => (1, until),
+            })
+            .map(|(ip, email, _)| (ip, email.clone()));
+        if let Some((ip, email)) = victim {
+            self.remove(ip, &email);
+        }
+    }
 }
 
 /// The counter itself. Held in `AppState` behind an `Arc`; every method
 /// takes `&self`.
 #[derive(Debug, Default)]
 pub struct LoginThrottle {
-    entries: Mutex<HashMap<(IpAddr, String), Entry>>,
+    table: Mutex<Table>,
 }
 
 impl LoginThrottle {
@@ -138,13 +249,33 @@ impl LoginThrottle {
     /// The attempt that reaches [`MAX_FAILURES`] is still admitted and sets
     /// the lock for the ones after it.
     pub fn admit(&self, key: &(IpAddr, String), now: Instant) -> Decision {
-        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut table = self.table.lock().unwrap_or_else(|e| e.into_inner());
+        let (ip, email) = (key.0, key.1.as_str());
 
-        if !entries.contains_key(key) {
-            make_room(&mut entries, now);
-            entries.insert(key.clone(), Entry::fresh(now));
+        let known = table
+            .by_ip
+            .get(&ip)
+            .is_some_and(|pairs| pairs.contains_key(email));
+        if !known {
+            table.reclaim_address(ip, now);
+            if table.held_by(ip) >= MAX_PAIRS_PER_IP {
+                return Decision::Locked {
+                    retry_after: table.address_frees_up_in(ip, now),
+                };
+            }
+            table.make_room(now);
+            table
+                .by_ip
+                .entry(ip)
+                .or_default()
+                .insert(email.to_owned(), Entry::fresh(now));
+            table.total += 1;
         }
-        let entry = entries.get_mut(key).expect("inserted above");
+        let entry = table
+            .by_ip
+            .get_mut(&ip)
+            .and_then(|pairs| pairs.get_mut(email))
+            .expect("present or inserted above");
 
         if let Some(until) = entry.locked_at(now) {
             return Decision::Locked {
@@ -165,54 +296,21 @@ impl LoginThrottle {
     /// one the throttle is there for, and the attempts it made — this one
     /// included — were not an attack.
     pub fn record_success(&self, key: &(IpAddr, String)) {
-        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        entries.remove(key);
+        let mut table = self.table.lock().unwrap_or_else(|e| e.into_inner());
+        table.remove(key.0, &key.1);
     }
 
     /// Pairs currently held. Exists for the memory-ceiling tests and for
     /// an operator reading a heap dump; nothing in the handler calls it.
     pub fn tracked(&self) -> usize {
-        self.entries.lock().unwrap_or_else(|e| e.into_inner()).len()
-    }
-}
-
-/// Makes room for one more pair without ever answering "not counted".
-///
-/// Stale entries go first. If the table is still full of live pairs, one is
-/// evicted rather than the newcomer being let through untracked — a table
-/// that opened the lock when full would be an off switch any single address
-/// can flip by cycling through 10 000 emails. The victim is the unlocked
-/// pair whose window started earliest; locked pairs are evicted only when
-/// nothing else is left, soonest-to-expire first. Filling the table with
-/// locked pairs means paying [`MAX_FAILURES`] argon2id runs for each of
-/// them, so evicting one costs an attacker far more than it frees.
-///
-/// Linear in the table size, and only on the path that inserts a new pair
-/// into a full table — a path that goes on to an argon2id, next to which a
-/// scan of 10 000 entries does not register.
-fn make_room(entries: &mut HashMap<(IpAddr, String), Entry>, now: Instant) {
-    if entries.len() < MAX_TRACKED {
-        return;
-    }
-    entries.retain(|_, e| !e.is_stale(now));
-    if entries.len() < MAX_TRACKED {
-        return;
-    }
-    let victim = entries
-        .iter()
-        .min_by_key(|(_, e)| match e.locked_at(now) {
-            None => (0, e.window_start),
-            Some(until) => (1, until),
-        })
-        .map(|(k, _)| k.clone());
-    if let Some(victim) = victim {
-        entries.remove(&victim);
+        self.table.lock().unwrap_or_else(|e| e.into_inner()).total
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::Ipv4Addr;
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
@@ -220,6 +318,17 @@ mod tests {
 
     fn t0() -> Instant {
         Instant::now()
+    }
+
+    /// The `i`-th of the addresses a table is filled from, each holding at
+    /// most its share of pairs.
+    fn bulk_ip(i: usize) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::from(0x0A00_0000 + (i / MAX_PAIRS_PER_IP) as u32))
+    }
+
+    /// A fresh address, disjoint from every `bulk_ip`.
+    fn fresh_ip(j: usize) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::from(0x0B00_0000 + j as u32))
     }
 
     fn admit_n(throttle: &LoginThrottle, k: &(IpAddr, String), n: u32, now: Instant) {
@@ -359,9 +468,83 @@ mod tests {
         assert!(email.chars().all(|c| c == 'é'));
     }
 
+    #[test]
+    fn an_address_tracks_at_most_its_share_of_pairs() {
+        let throttle = LoginThrottle::new();
+        let now = t0();
+        let attacker = ip("203.0.113.9");
+        for i in 0..MAX_PAIRS_PER_IP {
+            let k = key(attacker, &format!("{i}@example.test"));
+            assert_eq!(throttle.admit(&k, now), Decision::Allow);
+        }
+        // One email more is refused rather than counted somewhere else...
+        let extra = key(attacker, "one-more@example.test");
+        assert!(matches!(
+            throttle.admit(&extra, now),
+            Decision::Locked { .. }
+        ));
+        // ...the pairs it already holds keep their own budget...
+        assert_eq!(
+            throttle.admit(&key(attacker, "0@example.test"), now),
+            Decision::Allow
+        );
+        // ...and nobody else pays for it.
+        assert_eq!(
+            throttle.admit(&key(ip("192.168.1.42"), "one-more@example.test"), now),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn the_share_frees_up_as_the_address_pairs_go_stale() {
+        let throttle = LoginThrottle::new();
+        let now = t0();
+        let attacker = ip("203.0.113.9");
+        for i in 0..MAX_PAIRS_PER_IP {
+            throttle.admit(&key(attacker, &format!("{i}@example.test")), now);
+        }
+        let later = now + WINDOW + Duration::from_secs(1);
+        assert_eq!(
+            throttle.admit(&key(attacker, "next@example.test"), later),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn one_address_cannot_reset_a_pair_by_churning_new_emails() {
+        // The probe from review round 3, against the previous eviction:
+        // one address locks as many pairs as it can, then alternates nine
+        // attempts on its target with one brand-new email. Evicting the
+        // oldest unlocked pair reset the target on every new email — 9 000
+        // attempts admitted for 1 000 new emails.
+        let throttle = LoginThrottle::new();
+        let now = t0();
+        let attacker = ip("203.0.113.9");
+        for i in 0..(MAX_TRACKED - 1) {
+            let k = key(attacker, &format!("filler-{i}@example.test"));
+            for _ in 0..MAX_FAILURES {
+                throttle.admit(&k, now);
+            }
+        }
+        let target = key(attacker, "victim@example.test");
+        let mut admitted_on_target = 0;
+        for c in 0..1_000 {
+            for _ in 0..(MAX_FAILURES - 1) {
+                if throttle.admit(&target, now) == Decision::Allow {
+                    admitted_on_target += 1;
+                }
+            }
+            throttle.admit(&key(attacker, &format!("new-{c}@example.test")), now);
+        }
+        assert!(
+            admitted_on_target <= MAX_FAILURES,
+            "{admitted_on_target} attempts admitted on one pair"
+        );
+    }
+
     fn fill(throttle: &LoginThrottle, now: Instant) {
         for i in 0..MAX_TRACKED {
-            throttle.admit(&key(ip("203.0.113.9"), &format!("{i}@example.test")), now);
+            throttle.admit(&key(bulk_ip(i), &format!("{i}@example.test")), now);
         }
         assert_eq!(throttle.tracked(), MAX_TRACKED);
     }
@@ -372,7 +555,7 @@ mod tests {
         let now = t0();
         fill(&throttle, now);
         let later = now + WINDOW + Duration::from_secs(1);
-        throttle.admit(&key(ip("203.0.113.9"), "fresh@example.test"), later);
+        throttle.admit(&key(fresh_ip(0), "fresh@example.test"), later);
         assert_eq!(throttle.tracked(), 1);
     }
 
@@ -381,45 +564,58 @@ mod tests {
         let throttle = LoginThrottle::new();
         let now = t0();
         fill(&throttle, now);
-        for i in 0..500 {
-            throttle.admit(
-                &key(ip("203.0.113.9"), &format!("more-{i}@example.test")),
-                now,
-            );
+        for j in 0..500 {
+            throttle.admit(&key(fresh_ip(j), "more@example.test"), now);
         }
         assert_eq!(throttle.tracked(), MAX_TRACKED);
     }
 
     #[test]
     fn a_full_table_does_not_open_the_lock_for_a_new_pair() {
-        // The off switch the review found: once 10 000 live pairs were
-        // tracked, a new pair was never counted and stayed admitted after
-        // any number of attempts.
         let throttle = LoginThrottle::new();
         let now = t0();
         fill(&throttle, now);
-        let k = key(ip("203.0.113.9"), "target@example.test");
+        let k = key(fresh_ip(0), "target@example.test");
         admit_n(&throttle, &k, MAX_FAILURES, now);
         assert!(matches!(throttle.admit(&k, now), Decision::Locked { .. }));
+    }
+
+    #[test]
+    fn eviction_takes_from_the_addresses_holding_the_most_pairs() {
+        // The target pair is the oldest in the table and unlocked — the
+        // first to go under eviction by age. Its address holds one pair;
+        // the bulk addresses hold up to their share each. A thousand new
+        // addresses arriving must not evict it.
+        let throttle = LoginThrottle::new();
+        let now = t0();
+        let target = key(ip("192.168.1.42"), "victim@example.test");
+        admit_n(&throttle, &target, MAX_FAILURES - 1, now);
+
+        let later = now + Duration::from_secs(1);
+        fill(&throttle, later);
+        for j in 0..1_000 {
+            throttle.admit(&key(fresh_ip(j), "new@example.test"), later);
+        }
+
+        assert_eq!(throttle.admit(&target, later), Decision::Allow);
+        assert!(matches!(
+            throttle.admit(&target, later),
+            Decision::Locked { .. }
+        ));
     }
 
     #[test]
     fn eviction_takes_an_unlocked_pair_before_a_locked_one() {
         let throttle = LoginThrottle::new();
         let now = t0();
-        let locked = key(ip("203.0.113.9"), "locked@example.test");
+        let locked = key(bulk_ip(0), "locked@example.test");
         admit_n(&throttle, &locked, MAX_FAILURES, now);
-        // Every other pair is younger than the locked one: an eviction by
-        // age alone would pick the locked pair and lift its lock.
         let later = now + Duration::from_secs(1);
-        for i in 0..(MAX_TRACKED - 1) {
-            throttle.admit(&key(ip("203.0.113.9"), &format!("{i}@example.test")), later);
+        for i in 1..MAX_TRACKED {
+            throttle.admit(&key(bulk_ip(i), &format!("{i}@example.test")), later);
         }
-        for i in 0..500 {
-            throttle.admit(
-                &key(ip("203.0.113.9"), &format!("more-{i}@example.test")),
-                later,
-            );
+        for j in 0..500 {
+            throttle.admit(&key(fresh_ip(j), "more@example.test"), later);
         }
         assert!(matches!(
             throttle.admit(&locked, later),

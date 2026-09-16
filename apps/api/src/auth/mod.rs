@@ -200,7 +200,7 @@ pub async fn login(
     timing.emit(timing::outcome_label(&result));
 
     // The branch goes into a cumulative counter and, at most once a minute
-    // and never for fewer than `timing::MIN_BATCH` new logins, into one
+    // and never for fewer than `timing::MIN_BATCH` new refusals, into one
     // aggregate line (#178 bis). It is deliberately absent from the
     // per-request line above: "this address has an account here" written
     // once per attempt does not close the enumeration oracle, it hands it to

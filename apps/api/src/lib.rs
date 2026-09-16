@@ -74,8 +74,9 @@ pub struct AppState {
     /// address (#178). Empty in integration tests, which reach the router
     /// without a socket at all — see `client_ip::resolve`.
     pub trusted_proxies: std::sync::Arc<client_ip::TrustedProxies>,
-    /// Per-(address, email) lock on failed logins (#178). Consulted
-    /// before the argon2 work, in-process because `infra/docker-compose.yml`
+    /// Per-(address, email) lock on login attempts (#178): every attempt is
+    /// counted when admitted, before the argon2 work, and a success clears
+    /// the pair. In-process because `infra/docker-compose.yml`
     /// runs exactly one `api`; see `auth::throttle` for what has to change
     /// if that ever stops being true.
     pub login_throttle: std::sync::Arc<auth::throttle::LoginThrottle>,

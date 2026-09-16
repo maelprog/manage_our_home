@@ -276,7 +276,7 @@ impl BranchCounters {
             counts: Default::default(),
             schedule: Mutex::new(Schedule {
                 next_emit: now + AGGREGATE_INTERVAL,
-                published_logins: 0,
+                published_refusals: 0,
             }),
         }
     }
@@ -294,9 +294,9 @@ impl BranchCounters {
     }
 
     /// The totals to publish now, if a line is due: at most once per
-    /// [`AGGREGATE_INTERVAL`], only once at least [`MIN_BATCH`] logins have
-    /// happened since the previous line, and only for the caller that got
-    /// there first — the deadline and the watermark move under the same
+    /// [`AGGREGATE_INTERVAL`], only once at least [`MIN_BATCH`] refusals
+    /// have happened since the previous line, and only for the caller that
+    /// got there first — the deadline and the watermark move under the same
     /// lock, so concurrent logins produce one line between them.
     pub fn take_due(&self, now: Instant) -> Option<BranchTotals> {
         let mut schedule = self.schedule.lock().unwrap_or_else(|e| e.into_inner());
@@ -304,34 +304,59 @@ impl BranchCounters {
             return None;
         }
         let totals = self.totals();
-        let logins: u64 = totals.0.iter().sum();
-        if logins < schedule.published_logins + MIN_BATCH {
+        let refusals = totals.refusals();
+        if refusals < schedule.published_refusals + MIN_BATCH {
             // Deadline kept: the line goes out as soon as the batch fills.
             return None;
         }
         schedule.next_emit = now + AGGREGATE_INTERVAL;
-        schedule.published_logins = logins;
+        schedule.published_refusals = refusals;
         Some(totals)
     }
 }
 
-/// Fewest new logins a published line must cover.
+impl BranchTotals {
+    /// Logins the per-request line reports as `"rejected"`: the four
+    /// branches only the aggregate tells apart.
+    fn refusals(&self) -> u64 {
+        [
+            LoginBranch::UnknownEmail,
+            LoginBranch::NoPassword,
+            LoginBranch::WrongPassword,
+            LoginBranch::Unverified,
+        ]
+        .iter()
+        .map(|b| self.get(*b))
+        .sum()
+    }
+}
+
+/// Fewest new **refusals** a published line must cover.
 ///
-/// The counts are cumulative, so the difference between two lines is the
-/// branches taken by the logins in between. With one login in between, that
-/// difference names its branch — "unknown email" or "Google-only" — which is
-/// the per-request fact #178 bis keeps out of the journal. Requiring a batch
-/// means a passive reader of the journal can only ever see branches mixed
-/// over at least this many logins. It does not stop someone who *also* sends
-/// the other logins of the batch with emails they know to be unknown: they
-/// can still isolate one foreign login. That residual is stated in the PR;
-/// the aggregate is `debug`-level and off unless an operator enables it.
+/// The counts are cumulative, so the difference between two lines gives the
+/// branches taken by the logins in between. The per-request line already
+/// names `ok`, `throttled` and `error`; what it hides is which of four
+/// branches a `"rejected"` took. So the batch is counted in refusals, not in
+/// logins: with 19 `ok` and one `rejected` between two lines, a batch of
+/// logins would publish a difference that names that refusal's branch.
+///
+/// What this buys, precisely: between two published lines there are at
+/// least this many `"rejected"` lines, and the aggregate gives their
+/// branches in total, not one by one. It is not anonymity:
+///
+/// - if every refusal of the batch took the same branch, the difference
+///   says so for each of them;
+/// - someone who reads the journal *and* sends 19 refusals of the batch
+///   with emails they know to be unknown can still isolate the 20th.
+///
+/// The per-request line carries no email and no address, and the
+/// aggregate is `debug`-level, off unless an operator enables it.
 pub const MIN_BATCH: u64 = 20;
 
 #[derive(Debug)]
 struct Schedule {
     next_emit: Instant,
-    published_logins: u64,
+    published_refusals: u64,
 }
 
 impl Default for BranchCounters {
@@ -523,7 +548,7 @@ mod tests {
     fn the_aggregate_is_due_once_per_interval_and_not_before() {
         let start = Instant::now();
         let counters = BranchCounters::new(start);
-        record_n(&counters, LoginBranch::Ok, MIN_BATCH);
+        record_n(&counters, LoginBranch::WrongPassword, MIN_BATCH);
 
         assert!(counters.take_due(start).is_none());
         assert!(counters
@@ -532,43 +557,49 @@ mod tests {
         assert!(counters.take_due(start + AGGREGATE_INTERVAL).is_some());
         // The deadline moved: the next login in the same second does not
         // get a second line.
-        record_n(&counters, LoginBranch::Ok, MIN_BATCH);
+        record_n(&counters, LoginBranch::WrongPassword, MIN_BATCH);
         assert!(counters.take_due(start + AGGREGATE_INTERVAL).is_none());
         assert!(counters.take_due(start + AGGREGATE_INTERVAL * 2).is_some());
     }
 
     #[test]
-    fn a_quiet_interval_publishes_nothing_until_a_batch_has_accumulated() {
-        // Cumulative counts read twice around a single login say which
-        // branch that login took. At low traffic that is one request
-        // isolated, so a line is only published once it covers at least
-        // `MIN_BATCH` logins the previous line did not.
+    fn one_refusal_among_many_successes_is_never_published_on_its_own() {
+        // Review round 3: the per-request line says `ok` or `rejected`. A
+        // reader who sees 19 `ok` and one `rejected` between two aggregate
+        // lines, and an aggregate that moved by `ok+19 no_password+1`, has
+        // the branch of that one refusal. Successes must not fill the batch.
         let start = Instant::now();
         let counters = BranchCounters::new(start);
         let later = start + AGGREGATE_INTERVAL * 3;
 
-        counters.record(LoginBranch::UnknownEmail);
+        record_n(&counters, LoginBranch::Ok, MIN_BATCH - 1);
+        counters.record(LoginBranch::NoPassword);
         assert!(counters.take_due(later).is_none());
 
-        record_n(&counters, LoginBranch::Ok, MIN_BATCH - 1);
-        let published = counters.take_due(later).expect("a full batch");
-        assert_eq!(published.get(LoginBranch::UnknownEmail), 1);
-        assert_eq!(published.get(LoginBranch::Ok), MIN_BATCH - 1);
+        // Nor any number of them, nor of the endings the per-request line
+        // already names.
+        record_n(&counters, LoginBranch::Ok, 1_000);
+        record_n(&counters, LoginBranch::Throttled, 1_000);
+        record_n(&counters, LoginBranch::Error, 1_000);
+        assert!(counters.take_due(later).is_none());
     }
 
     #[test]
-    fn consecutive_lines_are_always_a_batch_apart() {
+    fn consecutive_lines_are_always_a_batch_of_refusals_apart() {
         let start = Instant::now();
         let counters = BranchCounters::new(start);
-        record_n(&counters, LoginBranch::Ok, MIN_BATCH);
+        record_n(&counters, LoginBranch::UnknownEmail, MIN_BATCH);
         assert!(counters.take_due(start + AGGREGATE_INTERVAL).is_some());
 
+        let later = start + AGGREGATE_INTERVAL * 5;
         counters.record(LoginBranch::NoPassword);
-        assert!(counters.take_due(start + AGGREGATE_INTERVAL * 5).is_none());
-        record_n(&counters, LoginBranch::Ok, MIN_BATCH - 2);
-        assert!(counters.take_due(start + AGGREGATE_INTERVAL * 5).is_none());
-        counters.record(LoginBranch::Ok);
-        assert!(counters.take_due(start + AGGREGATE_INTERVAL * 5).is_some());
+        record_n(&counters, LoginBranch::Ok, MIN_BATCH * 3);
+        assert!(counters.take_due(later).is_none());
+        record_n(&counters, LoginBranch::WrongPassword, MIN_BATCH - 2);
+        assert!(counters.take_due(later).is_none());
+        counters.record(LoginBranch::Unverified);
+        let published = counters.take_due(later).expect("a full batch of refusals");
+        assert_eq!(published.get(LoginBranch::NoPassword), 1);
     }
 
     #[test]

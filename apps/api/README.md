@@ -264,8 +264,9 @@ not getting slower here.
 an unverified address is exactly what the enumeration oracle leaked; a log
 line saying so per request would hand it to whoever reads the journal. The
 split is published instead as a cumulative aggregate on the same target, at
-most once a minute and only once at least 20 new logins have happened since
-the previous line, with seven counts and nothing that identifies an attempt:
+most once a minute and only once at least 20 new **refusals** have happened
+since the previous line, with seven counts and nothing that identifies an
+attempt:
 
 ```
 DEBUG login_timing: login branches ok=41 unknown_email=3 no_password=0
@@ -275,6 +276,15 @@ DEBUG login_timing: login branches ok=41 unknown_email=3 no_password=0
 The counts are since the process started. To check the fix still holds, the
 refusal counters should move while the per-request `verify_us` of
 `"rejected"` lines stays in one population.
+
+The batch is counted in refusals, not logins, because the per-request line
+already says `ok`, `throttled` or `error`: with a batch of logins, 19 `ok`
+and one `rejected` between two lines would let the difference name that
+refusal's branch. What it guarantees is that at least 20 `"rejected"` lines
+separate two aggregate lines and that their branches are only given in
+total. That is not anonymity: if all 20 took the same branch the difference
+says so for each, and someone who reads the journal *and* sends 19 of the
+refusals with emails they know to be unknown can isolate the 20th.
 
 ## Login lock and client addresses (#178)
 
@@ -291,10 +301,21 @@ gets 10 hashes, not one per request (counting refusals only once known let
 40 concurrent attempts through as 40 × 401). An attempt that ends in a 500
 counts too.
 
-The table holds at most 10 000 pairs. When it is full of live pairs a new
-one **evicts** an old one — the unlocked pair with the oldest window first,
-a locked one only if nothing else is left — rather than going uncounted:
-a full table must not switch the lock off.
+One address holds at most **32 pairs** — distinct emails tried from it that
+have neither succeeded nor gone stale. A 33rd email from that address gets
+the same 429, and only that address pays for it. Without that share, one
+address could fill the table and churn new emails to evict, and so reset,
+the pair it was attacking (measured against the previous version: 9 000
+attempts admitted on one pair for 1 000 new emails).
+
+The table holds at most 10 000 pairs, so a full table spans at least 313
+addresses. When it is full of live pairs, a new pair **evicts** one from an
+address holding the most pairs — its unlocked pair with the oldest window,
+a locked one only if that address has nothing else — rather than going
+uncounted. A pair can only be evicted once no address holds more pairs than
+its own: for an address holding `k` pairs that takes the table spread over
+at least `10 000 / k` addresses (10 000 for an address holding one). An
+eviction then resets at most 9 attempts on that pair.
 
 The counter is **in this process's memory**, which is correct only because
 `infra/docker-compose.yml` runs one `api`. **If `api` ever runs as more than
@@ -312,8 +333,13 @@ Get this list wrong and the lock fails in one of two ways:
 
 - **too narrow** (it misses `caddy`/`web`): every browser resolves to the
   proxy's address, and the lock becomes one lock for the whole household;
-- **too wide** (it covers addresses browsers connect from): those clients
-  choose their own address, dodge the lock, or aim it at someone else.
+- **too wide** (it covers addresses browsers connect from): **if those
+  clients can reach `web` or `api` directly** — not only through Caddy,
+  which discards the header a browser sends — they choose their own
+  address, dodge the lock, or aim it at someone else. With
+  `infra/docker-compose.yml` as shipped only Caddy publishes a port, so this
+  needs a port published on `web` or `api`, or a client on the Compose
+  network itself.
 
 apps/web relays the chain on its internal call and appends the address it
 saw (`apps/web/src/client_ip.rs`). Caddy replaces any `X-Forwarded-For` a
@@ -339,13 +365,31 @@ the case, among others, for
 There is no error: the gateway sits inside `172.16.0.0/12`, so every hop is
 trusted and every client resolves to the gateway. The key becomes **(one
 address, email)** — the email alone in practice — and ten wrong passwords
-from anyone lock that account for everyone for 15 minutes. That is the
-denial of service the pair exists to prevent.
+from anyone lock that account for everyone for 15 minutes — the denial of
+service the pair exists to prevent. It gets worse with the per-address
+share: 32 wrong logins on 32 made-up emails from anywhere use up the share
+of the one address everybody appears to have, and every *new* email is
+refused with a 429 until those pairs go stale.
 
-To check a deployment, sign in from two machines and read Caddy's access log
-(`docker compose logs caddy`, field `remote_ip`): two different addresses
-means the chain works; the same `172.x.0.1` twice means it does not. The fix
-is on the deployment side, never by trusting a wider range:
+To check a deployment, open the site in a browser from another machine
+(not from the Docker host itself), then within a minute or two, while the
+browser still holds its keep-alive connection, list Caddy's connections:
+
+```
+docker compose exec caddy netstat -tn
+```
+
+The `Foreign Address` column is what Caddy saw. `infra/Caddyfile` has no
+`log` directive, so Caddy writes no access log and the connection table is
+where to look; `netstat` ships in the `caddy:2` image. The browser machine's
+own address means the chain works; `172.x.0.1`, the network's gateway
+(`docker network inspect`), means it does not. Checked against `caddy:2`
+v2.11.4 with this repository's Caddyfile: a keep-alive connection from a
+container on the network showed that container's address, and one made
+through the published port from the Docker host's loopback showed the
+gateway. A browser on another machine was not part of that check.
+
+The fix is on the deployment side, never by trusting a wider range:
 
 - give Caddy the host's network (`network_mode: host`, then reach `web` and
   `api` through published loopback ports), so it sees real sources;
