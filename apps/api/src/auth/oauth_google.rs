@@ -17,8 +17,10 @@ const OAUTH_STATE_COOKIE: &str = "google_oauth_state";
 /// The CSRF `state` only proves the callback request follows one of our
 /// `start`s; the verifier proves the *code* presented was issued for that
 /// same `start`, so a code obtained elsewhere and replayed on
-/// `/auth/google/callback` fails at Google's token endpoint (RFC 9700
-/// requires PKCE for confidential clients too).
+/// `/auth/google/callback` fails at Google's token endpoint. RFC 9700
+/// §2.1.1 makes PKCE a MUST for public clients and RECOMMENDED for
+/// confidential ones like this backend, where the OIDC `nonce` is the
+/// admitted alternative against code injection; we do not check `nonce`.
 const OAUTH_PKCE_VERIFIER_COOKIE: &str = "google_oauth_pkce_verifier";
 
 /// Builds Google's consent URL with a fresh CSRF `state` and a fresh S256
