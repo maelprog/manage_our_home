@@ -142,8 +142,10 @@ export function parseTapSummary(report: string): TapSummary | null {
  *     les compteurs ne distinguent pas les deux ;
  *   - un `todo` l'exécute s'il en a un, mais son issue n'entre ni dans `pass`
  *     ni dans `fail` : un corps qui lève sort `not ok … # TODO`, exit 0 ;
- *   - un annulé a pu commencer (timeout) ou ne jamais démarrer.
- * Aucun des trois ne peut rendre la porte rouge, donc aucun ne tient le
+ *   - un annulé peut ne jamais démarrer ; annulé par timeout, son corps a
+ *     démarré et peut aller jusqu'au bout — node cesse de l'attendre sans
+ *     l'interrompre.
+ * Aucun des trois n'entre dans `pass` ni dans `fail`, donc aucun ne tient le
  * plancher. Le diagnostic, lui, doit les distinguer (voir `diagnose`).
  */
 export function countedTests(
@@ -328,7 +330,8 @@ function diagnose(summary: TapSummary): string {
   }
   if (summary.cancelled > 0) {
     causes.push(
-      `${summary.cancelled} annulé(s) (corps interrompu ou jamais lancé)`,
+      `${summary.cancelled} annulé(s) (corps peut-être lancé, jusqu'au bout ` +
+        "ou non)",
     );
   }
   if (summary.todo > 0) {
