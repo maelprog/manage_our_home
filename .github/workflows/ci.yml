@@ -177,7 +177,8 @@ jobs:
       # exits 0 when its globs match no file, so this step was green on zero
       # executed tests and a renamed directory would have removed the whole
       # suite in silence. `npm run test:scripts` now goes through
-      # e2e/scripts/run-script-tests.mjs, which fails under one executed test.
+      # e2e/scripts/run-script-tests.mjs, which fails unless at least one test
+      # passed or failed (skipped, cancelled and todo tests do not count).
       - run: npm ci
         working-directory: e2e
       - run: npm run test:scripts

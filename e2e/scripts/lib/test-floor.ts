@@ -1,17 +1,18 @@
 // Plancher de la porte `npm run test:scripts` (#123).
 //
 // `node --test` sort en 0 quand aucun fichier ne matche ses globs : la porte
-// est alors verte sur zéro test exécuté, et la couverture peut disparaître en
+// est alors verte sur zéro test, et la couverture peut disparaître en
 // silence (répertoire renommé, `lib/` déplacé, extension changée). Ce module
 // porte la logique pure qui relit le compte de tests d'un rapport TAP et le
 // compare à un seuil ; `scripts/run-script-tests.mjs` l'utilise pour décider
 // du code de sortie.
 //
-// Le plancher compte les tests EXÉCUTÉS (`pass + fail`) et pas les fichiers
-// matchés. Ce qu'il attrape, à seuil 1 :
+// Le plancher compte les tests dont le résultat compte (`pass + fail`) et pas
+// les fichiers matchés. Ce qu'il attrape, à seuil 1 :
 //   - le glob qui ne matche plus rien (`tests 0`) — la panne de #123 ;
 //   - la suite dont tous les cas sont `skip` ou `todo` : des tests existent,
-//     aucun n'exécute son corps ;
+//     aucun n'est compté en pass ni en fail — ce qui ne veut pas dire qu'aucun
+//     corps n'a tourné (#186, voir `countedTests`) ;
 //   - le fichier réduit à une coquille `describe(...)` / `suite(...)` :
 //     `node --test` rapporte alors `tests 0 / suites 1`.
 //   Un plancher sur les fichiers matchés laisserait passer ces deux
@@ -24,19 +25,19 @@
 //     PASSE — vérifié en Node 24.20.0 : deux fichiers réduits à
 //     `import test from "node:test";` donnent `tests 2 / pass 2 / fail 0`,
 //     exit 0, le rapporteur `spec` affichant « ✔ lib/dates.test.ts ». Sur
-//     cette famille-là, compter les tests exécutés ne vaut pas mieux que
-//     compter les fichiers ; la couvrir demanderait un compte des `test(...)`
-//     réellement enregistrés, hors du périmètre de #123. Attention à la
-//     nuance : vidé jusqu'à une coquille `describe(...)`, le fichier est
-//     rouge (voir ci-dessus) ; c'est le fichier qui n'enregistre plus rien du
-//     tout qui passe ;
+//     cette famille-là, compter les tests passés ou en échec ne vaut pas
+//     mieux que compter les fichiers ; la couvrir demanderait un compte des
+//     `test(...)` réellement enregistrés, hors du périmètre de #123.
+//     Attention à la nuance : vidé jusqu'à une coquille `describe(...)`, le
+//     fichier est rouge (voir ci-dessus) ; c'est le fichier qui n'enregistre
+//     plus rien du tout qui passe ;
 //   - la suite qui rétrécit : trois fichiers qui tombent à un seul, ou vingt
 //     tests qui tombent à un, restent verts. Attraper ça demanderait un seuil
 //     à maintenir à chaque test ajouté — #123 dit que « au moins 1 » suffit.
 //
 // Autrement dit, à seuil 1, ce plancher équivaut à un plancher sur les
 // fichiers matchés SAUF sur les familles où `node --test` ne compte aucun test
-// exécuté : tout sauté/todo, ou un fichier réduit à une coquille
+// passé ni en échec : tout sauté/todo, ou un fichier réduit à une coquille
 // `describe`/`suite`. C'est un avantage réel mais étroit, et il vaut mieux
 // l'écrire que le laisser croire plus large.
 //
@@ -62,7 +63,7 @@
 // ---------------------------------------------------------------------------
 
 /**
- * Seuil du plancher : « au moins un test a tourné ».
+ * Seuil du plancher : « au moins un test passé ou en échec ».
  *
  * #123 dit explicitement que ce seuil suffit — il attrape le glob qui ne
  * matche plus, sans rien à maintenir à chaque test ajouté ; le relever
@@ -131,12 +132,23 @@ export function parseTapSummary(report: string): TapSummary | null {
 }
 
 /**
- * Nombre de tests qui ont réellement exécuté leur corps.
+ * Nombre de tests dont le résultat compte : `pass + fail`.
  *
- * `tests` compte aussi les sautés, les annulés et les `todo` ; aucun de
- * ceux-là n'exerce quoi que ce soit, donc aucun ne compte pour le plancher.
+ * Ce n'est PAS le nombre de corps exécutés (#186). `tests` compte aussi les
+ * sautés, les annulés et les `todo`, et ces trois-là ne tournent pas de la
+ * même façon — mesuré en Node 24.20.0 :
+ *   - un sauté déclaré `test.skip(...)` n'exécute pas son corps ; mais
+ *     `t.skip()` appelé DANS le corps le marque sauté après l'avoir lancé, et
+ *     les compteurs ne distinguent pas les deux ;
+ *   - un `todo` l'exécute s'il en a un, mais son issue n'entre ni dans `pass`
+ *     ni dans `fail` : un corps qui lève sort `not ok … # TODO`, exit 0 ;
+ *   - un annulé peut ne jamais démarrer (hook `before` en échec) ; annulé
+ *     par timeout, son corps a démarré et peut aller jusqu'au bout — node
+ *     cesse de l'attendre sans l'interrompre.
+ * Aucun des trois n'entre dans `pass` ni dans `fail`, donc aucun ne tient le
+ * plancher. Le diagnostic, lui, doit les distinguer (voir `diagnose`).
  */
-export function executedTests(
+export function countedTests(
   summary: Pick<TapSummary, "pass" | "fail">,
 ): number {
   return summary.pass + summary.fail;
@@ -248,11 +260,11 @@ export function floorViolation(report: string, minimum: number): string | null {
       "est rouge. Voir e2e/scripts/lib/test-floor.ts."
     );
   }
-  const executed = executedTests(summary);
-  if (executed >= minimum) return null;
+  const counted = countedTests(summary);
+  if (counted >= minimum) return null;
   return (
-    `Plancher de tests : ${executed} test(s) exécuté(s), au moins ${minimum} ` +
-    `exigé(s).\n` +
+    `Plancher de tests : ${counted} test(s) passé(s) ou en échec, au moins ` +
+    `${minimum} exigé(s).\n` +
     `  (rapporté par node --test : tests ${summary.tests}, suites ` +
     `${summary.suites}, pass ${summary.pass}, fail ${summary.fail},\n` +
     `   skipped ${summary.skipped}, cancelled ${summary.cancelled}, todo ` +
@@ -275,16 +287,18 @@ export function floorViolation(report: string, minimum: number): string | null {
  *     Le mot « glob » est réservé à la branche du dessus — c'est ce qui rend
  *     `assert.doesNotMatch(message, /glob/i)` un contrôle qui veut dire
  *     quelque chose dans `test-floor.test.ts`, et pas un hasard de rédaction.
- *   - `tests > 0` : des cas existent, aucun n'a exécuté son corps. On nomme
+ *   - `tests > 0` : des cas existent, aucun n'est passé ni en échec. On nomme
  *     alors les compteurs non nuls qui l'expliquent plutôt que de réciter
  *     « sautés, annulés ou todo » — c'est exactement ce que #128 reproche à
  *     l'affichage précédent, qui invoquait trois familles tout en n'affichant
- *     que `skipped`.
+ *     que `skipped`. Et chacun dit ce qu'il sait du corps (#186) : le
+ *     message affirmait « aucun n'a exécuté son corps » sur une suite `todo`,
+ *     dont Node 24 exécute bien les corps quand ils en ont.
  *
  * Une quatrième, qui n'existe qu'au-dessus du seuil 1 (#152) : `tests > 0`
- * avec des corps exécutés, mais moins que le seuil. `diagnose` affirmait
- * « aucun n'a exécuté … la couverture est nulle » sans regarder `pass` /
- * `fail`, et contredisait la ligne qu'il suit. Inatteignable tant que
+ * avec des tests passés ou en échec, mais moins que le seuil. `diagnose`
+ * affirmait « aucun n'a exécuté … la couverture est nulle » sans regarder
+ * `pass` / `fail`, et contredisait la ligne qu'il suit. Inatteignable tant que
  * `MINIMUM_TESTS` vaut 1, mais `minimum` est un paramètre de `floorViolation`.
  */
 function diagnose(summary: TapSummary): string {
@@ -304,28 +318,68 @@ function diagnose(summary: TapSummary): string {
       "fichiers, pas dans les chemins."
     );
   }
-  // Ne citer que ce qui a réellement empêché l'exécution. Si rien ne
-  // l'explique (compteurs incohérents), on garde la formule générique plutôt
-  // que d'inventer une cause.
+  // Ne citer que les compteurs non nuls, chacun avec ce qu'il dit du corps :
+  // un todo a tourné s'il avait un corps, un sauté seulement si `t.skip()` a
+  // été appelé dedans, un annulé peut-être (#186).
   const causes: string[] = [];
-  if (summary.skipped > 0) causes.push(`${summary.skipped} sauté(s)`);
-  if (summary.cancelled > 0) causes.push(`${summary.cancelled} annulé(s)`);
-  if (summary.todo > 0) causes.push(`${summary.todo} todo`);
-  const executed = executedTests(summary);
-  if (executed > 0) {
-    // Seuil > 1 seulement : des corps ont tourné, pas assez. Ni « aucun », ni
-    // « couverture nulle » — et pas de formule générique non plus : sans
-    // compteur qui explique l'écart, on donne les deux nombres et rien d'autre.
-    const rest = causes.map((c) => `, ${c}`).join("");
-    return (
-      `  ${summary.tests} test(s) trouvé(s), dont ${executed} exécuté(s)` +
-      `${rest} :\n  la couverture existe mais reste sous le seuil exigé.`
+  if (summary.skipped > 0) {
+    causes.push(
+      `${summary.skipped} sauté(s) (corps non lancé, sauf t.skip() appelé ` +
+        "dans le corps)",
     );
   }
-  const cause =
-    causes.length > 0 ? causes.join(", ") : "sautés, annulés ou todo";
+  if (summary.cancelled > 0) {
+    causes.push(
+      `${summary.cancelled} annulé(s) (corps peut-être lancé, jusqu'au bout ` +
+        "ou non)",
+    );
+  }
+  if (summary.todo > 0) {
+    causes.push(
+      `${summary.todo} todo (corps exécuté s'il existe, issue non comptée)`,
+    );
+  }
+  const counted = countedTests(summary);
+  const outcomes =
+    counted + summary.skipped + summary.cancelled + summary.todo;
+  if (outcomes > summary.tests) {
+    // Sur les rapports mesurés, `tests` vaut la somme des cinq issues. Plus
+    // d'issues que de tests, aucun rapport mesuré ne le montre : écrire
+    // « dont » présenterait comme un sous-ensemble ce qui n'en est pas un. On dit
+    // l'incohérence et on renvoie aux chiffres. Le cas inverse, moins
+    // d'issues que de tests, n'est pas signalé : les branches suivantes
+    // nomment les compteurs non nuls comme d'habitude, et la formule
+    // générique ne sort que si pass, fail, skipped, cancelled et todo valent
+    // tous 0.
+    return (
+      `  Compteurs incohérents : ${outcomes} issue(s) (pass, fail, skipped, ` +
+      `cancelled, todo)\n  pour ${summary.tests} test(s) trouvé(s). Relire ` +
+      "le rapport de node --test : la cause\n  ne se déduit pas de ces " +
+      "chiffres."
+    );
+  }
+  if (counted > 0) {
+    // Seuil > 1 seulement : des résultats comptent, pas assez. Ni « aucun »,
+    // ni « couverture nulle » — et pas de formule générique non plus : sans
+    // compteur qui explique l'écart, on donne les deux nombres et rien d'autre.
+    return (
+      `  ${summary.tests} test(s) trouvé(s), dont ${counted} passé(s) ou en ` +
+      "échec : la couverture existe\n  mais reste sous le seuil exigé." +
+      bullets(causes)
+    );
+  }
+  // Rien de compté. Si aucun compteur ne l'explique (tests > 0, tout le reste
+  // à zéro : compteurs incohérents), on garde la formule générique plutôt que
+  // d'inventer une cause.
+  const detail =
+    causes.length > 0 ? bullets(causes) : "\n    - sautés, annulés ou todo";
   return (
-    `  ${summary.tests} test(s) ont été trouvés mais aucun n'a exécuté son ` +
-    `corps\n  (${cause}) : la couverture est nulle malgré les fichiers.`
+    `  ${summary.tests} test(s) trouvé(s), aucun passé ni en échec :\n` +
+    "  aucun résultat ne tient le plancher." +
+    detail
   );
+}
+
+function bullets(lines: string[]): string {
+  return lines.map((line) => `\n    - ${line}`).join("");
 }
