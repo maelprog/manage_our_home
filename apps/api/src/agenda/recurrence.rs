@@ -58,11 +58,15 @@ pub type OccurrenceSpan = (DateTime<Utc>, DateTime<Utc>);
 ///   the offset in force before the gap, so it lands an hour later on the
 ///   clock. A monthly series anchored on 2026-01-29T01:30Z (02:30 in Paris)
 ///   comes back on 2026-03-29 at 01:30Z — 03:30 in Paris — and at 02:30
-///   again in April. That much is what `rrule` 0.14 does. RFC 5545 §3.3.10
-///   says both things: first that an instance with a « nonexistent local
-///   time » MUST be ignored and not counted, then that such a time is
-///   interpreted as a DATE-TIME (§3.3.5), i.e. with the offset before the
-///   gap. `rrule` follows the second reading.
+///   again in April. The occurrence **counts**: under `COUNT` it is one of
+///   the n. That is RFC 5545 as corrected by its erratum 4271 (status
+///   *Verified*), and what `rrule` 0.14 does. The published §3.3.10 said
+///   two things: that an instance with a « nonexistent local time » MUST be
+///   ignored and MUST NOT be counted, and, further on, that such a time is
+///   interpreted as an explicit DATE-TIME (§3.3.5). The erratum removes the
+///   first for times and keeps it for invalid dates only (February 30): a
+///   nonexistent local time is « handled as specified in Section 3.3.5 »,
+///   which reads it with the UTC offset in force before the gap.
 ///
 ///   Read that way, a rule that steps by the hour or less — or that lists
 ///   both 02:xx and 03:xx — produces on that day an instant it also
@@ -71,15 +75,14 @@ pub type OccurrenceSpan = (DateTime<Utc>, DateTime<Utc>);
 ///   (#116, round 4). **This function keeps one**: an instant the series
 ///   has already produced is not produced again, and is not counted, so a
 ///   `COUNT=n` series has n distinct instants. That is a choice made here.
-///   The RFC does not say how its two sentences combine; it does say a
-///   recurrence set holds an instant once (« Duplicate instances are
-///   ignored », §3.8.5.3, written for RRULE against RDATE). And it is what
-///   the first sentence gives wherever the two readings collide — the gap's
-///   copy is ignored and not counted — while the second keeps governing
-///   everywhere they do not: daily, weekly, or every two hours from
-///   midnight, the gap's occurrence lands on no other one and stays, an
-///   hour later on the clock. Only instants in the hour right after a gap
-///   are compared; nothing else is touched.
+///   The RFC, erratum included, does not say what becomes of a gap's
+///   occurrence that lands on another one; it does say a recurrence set
+///   holds an instant once (« Duplicate instances are ignored », §3.8.5.3,
+///   written for RRULE against RDATE). Everywhere no such collision happens
+///   — daily, weekly, or every two hours from midnight — the gap's
+///   occurrence lands on no other one and stays, an hour later on the
+///   clock. Only instants in the hour right after a gap are compared;
+///   nothing else is touched.
 /// - **The hour Paris repeats** (last Sunday of October). RFC 5545 resolves
 ///   a repeated wall clock to its first pass (§3.3.5, applied to recurrence
 ///   instances by §3.3.10), and so does the unroll. But a row stores an
@@ -151,8 +154,36 @@ pub fn expand_occurrences(
 /// keeps the head and the count; `expand_occurrences` then moves the
 /// occurrences that land on a repeated hour back onto the second pass — a
 /// choice of its own, documented there.
+///
+/// The rule is refused if it is not ASCII — see `ascii`.
 fn paris_rule_set(rrule: &str, starts_at: DateTime<Utc>) -> Result<RRuleSet, rrule::RRuleError> {
-    build_paris_rule_set(rrule.parse()?, starts_at)
+    build_paris_rule_set(parse_rule(rrule)?, starts_at)
+}
+
+/// `rrule` parsed on its own, once it is known to be ASCII (see `ascii`).
+fn parse_rule(rrule: &str) -> Result<RRule<Unvalidated>, rrule::RRuleError> {
+    ascii(rrule)?.parse()
+}
+
+/// `rrule` unchanged when it is ASCII, an error otherwise — before any parser
+/// sees it (#170, #162). `rrule` 0.14 panics on some non-ASCII rules instead
+/// of returning an error: see « a rule is **ASCII** » on `validate`.
+///
+/// `validate` refuses such a rule on write. Today `POST` and `PATCH`, which
+/// go through it, are the only writers of a rule — the calendar re-import
+/// only ever clears one — but nothing holds that in place, and every reader of a
+/// stored rule would panic on one: the agenda (`list_events`) and the
+/// reminders (`refill_notifications`, also run by the reminders job on
+/// every recurring event that has a reminder) through `expand_series`, the
+/// calendar re-import through `steps_by_less_than_a_day`. So the check is
+/// made here too, where a stored rule meets the parser, and such a row
+/// fails with an error like any other rule that does not unroll.
+fn ascii(rrule: &str) -> Result<&str, rrule::RRuleError> {
+    if rrule.is_ascii() {
+        Ok(rrule)
+    } else {
+        Err(rrule::ParseError::InvalidParameterFormat(rrule.into()).into())
+    }
 }
 
 fn build_paris_rule_set(
@@ -179,7 +210,7 @@ fn paris_occurrences_in(
     from: DateTime<Utc>,
     to: DateTime<Utc>,
 ) -> Result<Vec<DateTime<Utc>>, rrule::RRuleError> {
-    let rule: RRule<Unvalidated> = rrule.parse()?;
+    let rule = parse_rule(rrule)?;
     let count = rule.get_count();
     let rule = match count {
         Some(_) => rule.count(u32::MAX),
@@ -296,7 +327,10 @@ fn utc_dtstart(starts_at: DateTime<Utc>) -> String {
 ///
 /// `expand_all_day_occurrences` unrolls this set and `validate` builds it
 /// for an all-day row, so the two accept and refuse the same rules (#161).
+///
+/// The rule is refused if it is not ASCII — see `ascii`.
 fn all_day_rule_set(rrule: &str, starts_at: DateTime<Utc>) -> Result<RRuleSet, rrule::RRuleError> {
+    let rrule = ascii(rrule)?;
     let stand_in_start = paris_date(starts_at).and_time(NaiveTime::MIN).and_utc();
     format!("{}\nRRULE:{rrule}", utc_dtstart(stand_in_start)).parse()
 }
@@ -361,7 +395,7 @@ fn occurrences_of(set: RRuleSet) -> impl Iterator<Item = DateTime<Utc>> {
 /// on its own `DTSTART` line makes it independent of that choice rather
 /// than quietly riding on it. Whether the two unrollings can now be folded
 /// into one is a question of structure, not of behaviour; it was left out
-/// of #116 deliberately, and no issue carries it yet.
+/// of #116 deliberately, and #162 carries it.
 ///
 /// `ends_at` is read as a **span in civil days**, not as a duration: a
 /// three-day break stays three days in a month where one of them is 23 or
@@ -505,10 +539,12 @@ fn add_days(date: NaiveDate, n: i64) -> NaiveDate {
 /// the parser picks a property name from any line, so
 /// `FREQ=WEEKLY\nRRULE:FREQ=DAILY` was stored as written and unrolled as
 /// `FREQ=DAILY`. A `:` does the same on a single line, because the two
-/// readers do not cut the rule at the same place: `all_day_rule_set` keeps
-/// it whole after its own `RRULE:`, `paris_rule_set` keeps only what follows
-/// its first `:`. An all-day `BYDAY=1:WKST=MO;FREQ=WEEKLY` on a Saturday was
-/// accepted by both, then listed on Mondays and reminded on Saturdays; the
+/// constructions do not cut the rule at the same place: `all_day_rule_set`
+/// keeps it whole after its own `RRULE:`, `paris_rule_set` keeps only what
+/// follows its first `:`. Until #169 they were the agenda's and the
+/// reminders' readers of an all-day row, and an all-day
+/// `BYDAY=1:WKST=MO;FREQ=WEEKLY` on a Saturday was accepted by both, then
+/// listed on Mondays and reminded on Saturdays; the
 /// hour-bound `FREQ=WEEKLY;X:FREQ=DAILY` was stored as written and unrolled
 /// every day. None of these is an RRULE value — RFC 5545 §3.3.10 gives a
 /// value no `:` and no line — and none of our clients writes one
@@ -523,7 +559,9 @@ fn add_days(date: NaiveDate, n: i64) -> NaiveDate {
 /// lands inside a multibyte character: `FREQ=WEEKLY;BYDAY=éA` took the
 /// handler down instead of answering. RFC 5545 §3.3.10 writes a whole
 /// RRULE value in ASCII, so the rule is refused on its first non-ASCII
-/// byte, wherever it sits, before any parser sees it.
+/// byte, wherever it sits, before any parser sees it. The constructions a
+/// stored rule is read through refuse it as well (`ascii`, #162), so a rule
+/// that reaches the base another way fails on read instead of panicking.
 ///
 /// And an all-day rule **steps by days** (#171): no `FREQ=HOURLY`,
 /// `MINUTELY` or `SECONDLY`, no `BYHOUR`, `BYMINUTE` or `BYSECOND`.
@@ -534,11 +572,12 @@ fn add_days(date: NaiveDate, n: i64) -> NaiveDate {
 /// `FREQ=MINUTELY` spent `MAX_OCCURRENCES` on its first day, the rest of the
 /// window empty on both readers. Refusing them on write rather than
 /// collapsing the copies on read is the maintainer's call (2026-09-15, not
-/// the RFC's). RFC 5545 §3.3.10 only speaks to the `BY*` parts: it says
-/// `BYSECOND`, `BYMINUTE` and `BYHOUR` MUST NOT be used when `DTSTART` is a
-/// DATE, and that such values MUST be ignored — it prescribes ignoring
-/// them, not refusing them; the refusal is ours too. It says nothing
-/// against a sub-daily `FREQ` on a DATE.
+/// the RFC's). On a `DTSTART` that is a DATE, RFC 5545 §3.3.10 constrains
+/// `UNTIL`, which MUST have the same value type, and the `BY*` parts: it
+/// says `BYSECOND`, `BYMINUTE` and `BYHOUR` MUST NOT be specified, and that
+/// they MUST be ignored in a value that violates this — it prescribes
+/// ignoring them, not refusing them; the refusal is ours too. It says
+/// nothing against a sub-daily `FREQ` on a DATE.
 ///
 /// Read on the parsed rule, so a part the parser fills is caught whatever
 /// its case and wherever it sits. A part with an empty value
@@ -549,8 +588,11 @@ fn add_days(date: NaiveDate, n: i64) -> NaiveDate {
 ///
 /// - A row **stored before this check** still unrolls as it did; nothing
 ///   refuses it on read, and no migration rewrites it. It does get a 400 on
-///   any `PATCH` that does not replace its rule — a title, `completed` —
-///   because `update_event` validates the merged rule.
+///   any `PATCH` that leaves it all-day without replacing its rule — a
+///   title, `completed` — because `update_event` validates the merged rule
+///   against the merged `all_day`. A `PATCH` that turns it hour-bound
+///   (`{"all_day": false}`) is not refused: an hour-bound row keeps these
+///   parts.
 /// - A **calendar re-import** rewrites `all_day` from the feed without
 ///   coming back here (`google_calendar/imports.rs`). An hour-bound imported
 ///   event given `FREQ=HOURLY;COUNT=5` by `PATCH`, then turned into a
@@ -600,9 +642,7 @@ fn steps_by_days(rule: &RRule<Unvalidated>) -> bool {
 /// For the calendar re-import (#175), which turns rows all-day without
 /// coming back through `validate` and drops such a rule rather than store it.
 pub fn steps_by_less_than_a_day(rrule: &str) -> bool {
-    rrule
-        .parse::<RRule<Unvalidated>>()
-        .is_ok_and(|rule| !steps_by_days(&rule))
+    parse_rule(rrule).is_ok_and(|rule| !steps_by_days(&rule))
 }
 
 #[cfg(test)]
@@ -1446,6 +1486,63 @@ mod tests {
         }
     }
 
+    /// `read` run on `rule`, a panic being reported as one rather than as a
+    /// failed assertion.
+    fn read_without_panic<T>(
+        rule: &str,
+        what: &str,
+        read: impl FnOnce() -> Result<T, rrule::RRuleError> + std::panic::UnwindSafe,
+    ) -> Result<T, rrule::RRuleError> {
+        std::panic::catch_unwind(read).unwrap_or_else(|_| panic!("{rule:?} panicked in {what}"))
+    }
+
+    #[test]
+    fn a_non_ascii_rule_is_refused_by_both_constructions_without_panicking() {
+        // `validate` refuses these on write, but the constructions do not
+        // rely on it: a row that reaches the base some other way than
+        // `POST`/`PATCH` is read through them too, by `list_events` and by
+        // the reminders job alike.
+        for rule in NON_ASCII_RULES {
+            for starts_at in [midnight(2026, 9, 5), utc(2026, 9, 5, 9, 0)] {
+                assert!(
+                    read_without_panic(rule, "paris_rule_set", || paris_rule_set(rule, starts_at))
+                        .is_err(),
+                    "{rule:?} built by paris_rule_set"
+                );
+                assert!(
+                    read_without_panic(rule, "all_day_rule_set", || all_day_rule_set(
+                        rule, starts_at
+                    ))
+                    .is_err(),
+                    "{rule:?} built by all_day_rule_set"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_non_ascii_rule_stored_anyway_is_refused_on_read_without_panicking() {
+        let anchors = [(midnight(2026, 9, 5), true), (utc(2026, 9, 5, 9, 0), false)];
+        for rule in NON_ASCII_RULES {
+            for (starts_at, all_day) in anchors {
+                let read = read_without_panic(rule, "expand_series", || {
+                    expand_series(
+                        rule,
+                        all_day,
+                        starts_at,
+                        starts_at + Duration::hours(1),
+                        starts_at,
+                        starts_at + Duration::days(30),
+                    )
+                });
+                assert!(read.is_err(), "{rule:?} unrolled, all_day = {all_day}");
+            }
+            let steps = std::panic::catch_unwind(|| steps_by_less_than_a_day(rule))
+                .unwrap_or_else(|_| panic!("{rule:?} panicked in steps_by_less_than_a_day"));
+            assert!(!steps, "{rule:?} read as a sub-daily rule");
+        }
+    }
+
     #[test]
     fn an_ascii_byday_is_still_accepted_on_write() {
         let anchors = [(midnight(2026, 9, 5), true), (utc(2026, 9, 5, 9, 0), false)];
@@ -1460,10 +1557,12 @@ mod tests {
     }
 
     #[test]
-    fn validate_checks_the_hour_bound_construction_from_the_instant_normalize_all_day_stores() {
+    fn the_start_of_the_paris_date_is_the_anchor_normalize_all_day_stores() {
         // `validate` runs before `normalize_all_day` and rebuilds the stored
-        // anchor itself. Pinned on the edges of a Paris day and across both
-        // changes of hour, where an offset slip would move it by a day.
+        // anchor itself, as `paris_start_of_day(paris_date(_))`. This pins
+        // that expression, not `validate`: on the edges of a Paris day and
+        // across both changes of hour, where an offset slip would move it by
+        // a day.
         use manage_our_home_shared::validation::agenda::normalize_all_day;
         let instants = [
             utc(2026, 1, 1, 0, 0),
