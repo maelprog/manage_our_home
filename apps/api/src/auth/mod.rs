@@ -1,5 +1,6 @@
 pub mod oauth_google;
 pub mod session;
+pub mod throttle;
 pub mod timing;
 
 use axum::extract::{Query, State};
@@ -21,6 +22,7 @@ use manage_our_home_shared::validation::auth::{
     validate_display_name, validate_email, validate_password,
 };
 
+use crate::client_ip::ClientIp;
 use crate::crypto::{hash_password, verify_password};
 use crate::error::{AppError, AppResult};
 use crate::AppState;
@@ -29,7 +31,7 @@ use self::session::{
     build_session_cookie, create_session, expired_session_cookie, revoke_all_sessions,
     revoke_session, AuthUser, SESSION_COOKIE_NAME,
 };
-use self::timing::LoginTiming;
+use self::timing::{LoginBranch, LoginTiming};
 
 const EMAIL_VERIFICATION_TTL_HOURS: i64 = 24;
 const PASSWORD_RESET_TTL_HOURS: i64 = 24;
@@ -187,60 +189,132 @@ pub async fn verify_email(
 /// outside it.
 pub async fn login(
     State(state): State<AppState>,
+    ClientIp(client_ip): ClientIp,
     cookies: Cookies,
     Json(body): Json<LoginRequest>,
 ) -> AppResult<impl IntoResponse> {
     let started = Instant::now();
     let mut timing = LoginTiming::default();
-    let result = login_inner(&state, &cookies, body, &mut timing).await;
+    let (branch, result) = login_inner(&state, client_ip, &cookies, body, &mut timing).await;
     timing.total = started.elapsed();
     timing.emit(timing::outcome_label(&result));
+
+    // The branch goes into a cumulative counter and, at most once a minute
+    // and never for fewer than `timing::MIN_BATCH` new refusals, into one
+    // aggregate line (#178 bis). It is deliberately absent from the
+    // per-request line above: "this address has an account here" written
+    // once per attempt does not close the enumeration oracle, it hands it to
+    // everyone who can read the journal.
+    state.login_branches.record(branch);
+    if let Some(totals) = state.login_branches.take_due(Instant::now()) {
+        totals.emit();
+    }
     result
+}
+
+/// Refuses in the one generic way all four refusals share. The 401 carries
+/// no detail, and the attempt was already counted against the (address,
+/// email) pair when it was admitted, whatever the reason turns out to be —
+/// so an attacker learns nothing from *which* refusal they got, and burns
+/// the same budget either way.
+fn refused(
+    branch: LoginBranch,
+) -> (
+    LoginBranch,
+    AppResult<(StatusCode, Json<serde_json::Value>)>,
+) {
+    (branch, Err(AppError::Unauthorized))
 }
 
 async fn login_inner(
     state: &AppState,
+    client_ip: std::net::IpAddr,
     cookies: &Cookies,
     body: LoginRequest,
     timing: &mut LoginTiming,
-) -> AppResult<(StatusCode, Json<serde_json::Value>)> {
+) -> (
+    LoginBranch,
+    AppResult<(StatusCode, Json<serde_json::Value>)>,
+) {
+    let key = throttle::key(client_ip, &body.email);
+
+    // **Before** the lookup and before argon2, never after — and counted in
+    // the same step. The decoy hash below makes every invalid attempt cost
+    // a full argon2id; a lock consulted afterwards would let an attacker
+    // spend that CPU first, and a count recorded only once the outcome is
+    // known would let a burst of concurrent requests all pass the check
+    // before the first one finished hashing (#178). A success clears the
+    // pair below.
+    if let throttle::Decision::Locked { .. } = state.login_throttle.admit(&key, Instant::now()) {
+        return (LoginBranch::Throttled, Err(AppError::TooManyRequests));
+    }
+
     let at = Instant::now();
     let user = sqlx::query!(
         "SELECT id, password_hash, email_verified FROM users WHERE email = $1 AND deleted_at IS NULL",
         body.email
     )
     .fetch_optional(&state.db)
-    .await?;
+    .await;
     timing.lookup = at.elapsed();
-
     let user = match user {
-        Some(u) => u,
-        None => return Err(AppError::Unauthorized),
+        Ok(user) => user,
+        Err(e) => return (LoginBranch::Error, Err(e.into())),
     };
 
-    let Some(hash) = user.password_hash else {
-        return Err(AppError::Unauthorized);
+    // The three regimes of #178 — no such email, a Google-only account with
+    // `password_hash = NULL`, and an account with a hash — all pay the same
+    // argon2id from here on. The first two verify the submitted password
+    // against a decoy nothing matches (`crypto::decoy_hash`) instead of
+    // returning on the spot; before this, they answered in ~0,22 ms against
+    // the ~256 ms of the third, which is three orders of magnitude of
+    // "does this address have an account here", readable with a stopwatch
+    // and no credentials.
+    let stored_hash = user.as_ref().and_then(|u| u.password_hash.clone());
+    let hash: &str = match stored_hash.as_deref() {
+        Some(hash) => hash,
+        None => crate::crypto::decoy_hash(),
     };
 
     let at = Instant::now();
-    let ok = verify_password(&body.password, &hash).map_err(AppError::Internal)?;
+    let verified = verify_password(&body.password, hash);
     timing.verify = at.elapsed();
-    if !ok {
-        return Err(AppError::Unauthorized);
+    let verified = match verified {
+        Ok(verified) => verified,
+        Err(e) => return (LoginBranch::Error, Err(AppError::Internal(e))),
+    };
+
+    let Some(user) = user else {
+        return refused(LoginBranch::UnknownEmail);
+    };
+    if stored_hash.is_none() {
+        // Verified against the decoy, so `verified` is false here whatever
+        // was submitted; the branch is kept separate for the counter only.
+        return refused(LoginBranch::NoPassword);
+    }
+    if !verified {
+        return refused(LoginBranch::WrongPassword);
     }
     // A password is only usable once its owning email has been verified —
     // covers both fresh registrations and password added to a
     // previously Google-only account (AC #7).
     if !user.email_verified {
-        return Err(AppError::Unauthorized);
+        return refused(LoginBranch::Unverified);
     }
 
     let at = Instant::now();
-    let session_id = create_session(&state.db, user.id).await?;
+    let session_id = match create_session(&state.db, user.id).await {
+        Ok(session_id) => session_id,
+        Err(e) => return (LoginBranch::Error, Err(e.into())),
+    };
     timing.session = at.elapsed();
     cookies.add(build_session_cookie(session_id, state.secure_cookies));
+    state.login_throttle.record_success(&key);
 
-    Ok((StatusCode::OK, Json(json!({ "user_id": user.id }))))
+    (
+        LoginBranch::Ok,
+        Ok((StatusCode::OK, Json(json!({ "user_id": user.id })))),
+    )
 }
 
 pub async fn logout(

@@ -230,16 +230,21 @@ Two costs are **not** in `other_us`, and both surprise people:
   extractor runs it before the handler starts.
 
 One line per request **that reaches the handler**, and `outcome` says which
-of three endings produced these phases. Requests axum's extractor refuses
+of four endings produced these phases. Requests axum's extractor refuses
 never reach it and emit nothing: malformed JSON (400), a missing `password`
 (422), a wrong or absent `content-type` (415). A `/auth/login` request with
 no line is one of those, not a lost measurement.
 
 - `"ok"` — the login completed.
-- `"rejected"` — 401: unknown email, wrong password, or unverified address.
-  The phases it never reached stay at zero, which is the measurement of that
-  path, not missing data.
-- `"error"` — every error that is not that 401. On today's login path those
+- `"rejected"` — 401: unknown email, Google-only account, wrong password, or
+  unverified address. Since #178 every one of them pays `lookup_us` **and**
+  `verify_us` — an account with no stored hash is checked against a decoy —
+  so only `session_us` is zero. A `"rejected"` line with `verify_us=0` is
+  the enumeration oracle back.
+- `"throttled"` — 429: the (client address, email) pair is locked (see
+  below). All four phases are zero: the lock is consulted before the lookup
+  and before argon2id, which is the point of it.
+- `"error"` — every error that is not one of the above. On today's login path those
   are 500s (a statement failed, or the hashing did), but read the label as
   "not a refusal" rather than as a status code: it is derived from the error
   type, so anything new on this path lands here instead of being mislabelled
@@ -253,3 +258,159 @@ added it. The short version: on the debug profile the e2e gate builds,
 `verify_us` is ~95 % of the request and none of the three phases grows with
 the size of `users` — so a login that gets slower as a database fills up is
 not getting slower here.
+
+**Which refusal was it?** Deliberately not on that line (#178). Whether a
+401 came from an unknown email, a Google-only account, a wrong password or
+an unverified address is exactly what the enumeration oracle leaked; a log
+line saying so per request would hand it to whoever reads the journal. The
+split is published instead as a cumulative aggregate on the same target, at
+most once a minute and only once at least 20 new **refusals** have happened
+since the previous line, with seven counts and nothing that identifies an
+attempt:
+
+```
+DEBUG login_timing: login branches ok=41 unknown_email=3 no_password=0
+  wrong_password=5 unverified=1 throttled=0 error=0
+```
+
+The counts are since the process started. To check the fix still holds, the
+refusal counters should move while the per-request `verify_us` of
+`"rejected"` lines stays in one population.
+
+The batch is counted in refusals, not logins, because the per-request line
+already says `ok`, `throttled` or `error`: with a batch of logins, 19 `ok`
+and one `rejected` between two lines would let the difference name that
+refusal's branch. What it guarantees is that at least 20 `"rejected"` lines
+separate two aggregate lines and that their branches are only given in
+total. That is not anonymity: if all 20 took the same branch the difference
+says so for each, and someone who reads the journal *and* sends 19 of the
+refusals with emails they know to be unknown can isolate the 20th.
+
+## Login lock and client addresses (#178)
+
+`POST /auth/login` admits at most 10 attempts per **(client address, email)**
+pair within 15 minutes, then locks the pair for 15 minutes and answers `429
+{"error": "too_many_attempts"}`. The pair, never the email alone: a lock per
+account would let anyone who knows a household member's address lock them
+out. Constants are in `src/auth/throttle.rs`.
+
+An attempt is **counted when it is admitted**, in the same step as the lock
+check and before any work; a success then clears the pair. So a locked
+request costs no argon2id, and a burst of concurrent requests on one pair
+gets 10 hashes, not one per request (counting refusals only once known let
+40 concurrent attempts through as 40 × 401). An attempt that ends in a 500
+counts too.
+
+One address holds at most **50 pairs** — distinct emails tried from it that
+have neither succeeded nor gone stale (50 per household address is a user
+decision on #178). A 51st email from that address gets
+the same 429, and only that address pays for it. Without that share, one
+address could fill the table and churn new emails to evict, and so reset,
+the pair it was attacking (measured against the previous version: 9 000
+attempts admitted on one pair for 1 000 new emails).
+
+The table holds at most 10 000 pairs, so a full table spans at least 200
+addresses. When it is full of live pairs, a new pair **evicts** one from the
+addresses holding the most pairs — among all their pairs taken together, the
+unlocked one with the oldest window; a locked one, soonest to expire, only
+if none of those addresses holds an unlocked pair — rather than going
+uncounted. A pair can only be evicted once no address holds more pairs than
+its own: for an address holding `k` pairs that takes the table spread over
+at least `10 000 / k` addresses (10 000 for an address holding one).
+
+Each eviction resets up to 10 attempts on the evicted pair, its lock
+included — a locked pair can be evicted, and then admits ten fresh attempts —
+and **it can be repeated**: an attacker who controls enough addresses to keep the table full
+replays it as often as they like within one window, and nothing bounds the
+total. The review of #178 measured 27 000 attempts admitted on one pair for
+3 000 cycles in one window (figure from the review, not reproduced here).
+The share makes every cycle cost a full table of live pairs spread over at
+least 200 addresses; it does not limit the number of cycles.
+
+The counter is **in this process's memory**, which is correct only because
+`infra/docker-compose.yml` runs one `api`. **If `api` ever runs as more than
+one instance, it must move to a shared store (Redis/Valkey, not Postgres —
+a database write per failed attempt is itself an amplification).**
+
+The client address comes from `X-Forwarded-For`, which is only believed from
+a peer listed in **`TRUSTED_PROXY_CIDRS`** (comma-separated CIDRs or bare
+addresses; default `127.0.0.0/8,::1/128,172.16.0.0/12`). The entry used is
+the rightmost one that is not itself a trusted peer. From any other peer the
+header is ignored and the peer address is the client. The API refuses to
+start on a malformed list.
+
+Get this list wrong and the lock fails in one of two ways:
+
+- **too narrow** (it misses `caddy`/`web`): every browser resolves to the
+  proxy's address, and the lock becomes one lock for the whole household;
+- **too wide** (it covers addresses browsers connect from): **if those
+  clients can reach `web` or `api` directly** — not only through Caddy,
+  which discards the header a browser sends — they choose their own
+  address, dodge the lock, or aim it at someone else. With
+  `infra/docker-compose.yml` as shipped only Caddy publishes a port, so this
+  needs a port published on `web` or `api`, or a client on the Compose
+  network itself.
+
+apps/web relays the chain on its internal call and appends the address it
+saw (`apps/web/src/client_ip.rs`). Caddy replaces any `X-Forwarded-For` a
+browser sends with the address it saw (checked against `caddy:2`, see
+`infra/Caddyfile`).
+
+### When Caddy cannot see the browser's address
+
+Everything above assumes the address Caddy accepts the connection from *is*
+the browser's. With Compose's `ports: "80:80"` that holds only when Docker
+forwards the port with NAT rules that keep the source address. It does
+**not** hold when the connection goes through `docker-proxy`, Docker's
+userland proxy, which reconnects to the container from the network's
+gateway: every browser then reaches Caddy as the same `172.x.0.1`. That is
+the case, among others, for
+
+- an IPv6 client on a host whose Compose network is IPv4-only;
+- Docker Desktop (macOS, Windows), where the port goes through its VM proxy;
+- rootless Docker, whose port driver hides the source by default;
+- a daemon started with `"userland-proxy": true` where the NAT rules do not
+  apply (loopback traffic, for instance).
+
+There is no error: the gateway sits inside `172.16.0.0/12`, so every hop is
+trusted and every client resolves to the gateway. `client_ip::resolve` does
+know when it falls back to a trusted address — no untrusted hop in the
+chain — but nothing logs or acts on it today. The key becomes **(one
+address, email)** — the email alone in practice — and ten wrong passwords
+from anyone lock that account for everyone for 15 minutes — the denial of
+service the pair exists to prevent. It gets worse with the per-address
+share: 50 wrong logins on 50 made-up emails from anywhere use up the share
+of the one address everybody appears to have, and every *new* email is
+refused with a 429 until those pairs go stale. The attacker can keep it that
+way indefinitely: one attempt on each of the 50 pairs right after they go
+stale re-arms them, about 50 requests every 15 minutes.
+
+To check a deployment, open the site in a browser from another machine
+(not from the Docker host itself), then within a minute or two, while the
+browser still holds its keep-alive connection, list Caddy's connections:
+
+```
+docker compose exec caddy netstat -tn
+```
+
+The `Foreign Address` column is what Caddy saw. `infra/Caddyfile` has no
+`log` directive, so Caddy writes no access log and the connection table is
+where to look; `netstat` ships in the `caddy:2` image. The browser machine's
+own address means the chain works; `172.x.0.1`, the network's gateway
+(`docker network inspect`), means it does not. Checked against `caddy:2`
+v2.11.4 with this repository's Caddyfile: a keep-alive connection from a
+container on the network showed that container's address, and one made
+through the published port from the Docker host's loopback showed the
+gateway. A browser on another machine was not part of that check.
+
+The fix is on the deployment side, never by trusting a wider range:
+
+- give Caddy the host's network (`network_mode: host`, then reach `web` and
+  `api` through published loopback ports), so it sees real sources;
+- or keep the IPv4 NAT path — IPv4-only listener, or IPv6 enabled on the
+  Compose network — and `"userland-proxy": false` where that is supported.
+  With IPv6 clients, note #198: the key uses the full /128, which a client
+  holding a /64 can rotate through at will;
+- or, if another proxy or load balancer terminates connections in front of
+  Caddy, add its address to Caddy's `trusted_proxies` so the address it
+  forwards is kept.

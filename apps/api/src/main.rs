@@ -94,6 +94,13 @@ async fn main() -> anyhow::Result<()> {
 
     let storage = manage_our_home::storage::Storage::from_env().await?;
 
+    // Refuse to start on a malformed trust list rather than fall back to a
+    // default: this list decides whose `X-Forwarded-For` is believed, and a
+    // typo either collapses every client onto one throttle bucket or hands
+    // the header to a range nobody meant to trust (#178).
+    let trusted_proxies = manage_our_home::client_ip::TrustedProxies::from_env()
+        .map_err(|e| anyhow::anyhow!("{}: {e}", manage_our_home::client_ip::TRUSTED_PROXIES_VAR))?;
+
     let state = AppState {
         db: db.clone(),
         google_oauth,
@@ -110,6 +117,11 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or(true),
         storage,
         admin_db,
+        trusted_proxies: std::sync::Arc::new(trusted_proxies),
+        login_throttle: std::sync::Arc::new(manage_our_home::auth::throttle::LoginThrottle::new()),
+        login_branches: std::sync::Arc::new(
+            manage_our_home::auth::timing::BranchCounters::default(),
+        ),
     };
 
     tokio::spawn(jobs::account_purge::run(db.clone()));
@@ -118,6 +130,14 @@ async fn main() -> anyhow::Result<()> {
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
     tracing::info!("listening on {}", listener.local_addr()?);
-    axum::serve(listener, app).await?;
+    // `into_make_service_with_connect_info` is what puts the peer address
+    // in each request's extensions; without it `client_ip::resolve` has
+    // nothing to check `X-Forwarded-For` against and every client shares
+    // one throttle bucket (#178).
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }

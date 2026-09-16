@@ -16,7 +16,9 @@
 //! measures can see it. What it can do is say whether the seeded rows make
 //! the phases it *does* measure any slower.
 
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::error::AppError;
 
@@ -34,9 +36,13 @@ pub const TARGET: &str = "login_timing";
 /// `total` is the whole handler, so whatever it holds beyond the three
 /// named phases is [`LoginTiming::other`].
 ///
-/// A login that ends early (unknown email, wrong password, unverified
-/// address) leaves the phases it never reached at zero: that is a real
-/// measurement of that outcome, not missing data.
+/// A login that ends early leaves the phases it never reached at zero:
+/// that is a real measurement of that outcome, not missing data. Since
+/// #178 that means `session` alone on any refusal — `lookup` and `verify`
+/// are paid by every attempt that gets past the lock, including one on an
+/// email that does not exist, which is exactly the property that closes
+/// the enumeration oracle. A line with all four phases at zero is a login
+/// the throttle stopped before it did anything.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LoginTiming {
     /// `SELECT id, password_hash, email_verified FROM users WHERE email = $1`
@@ -96,11 +102,11 @@ impl LoginTiming {
     }
 
     /// Emits the attribution as one structured line on [`TARGET`], at
-    /// `debug`. A login pays only the `Instant::now()` calls it reaches —
-    /// four for a completed one, two for a refusal on an unknown email —
-    /// and none pays the formatting unless the target is enabled.
+    /// `debug`. A login pays only the `Instant::now()` calls of the phases
+    /// it reaches — a request the throttle stops pays almost none of them
+    /// — and none pays the formatting unless the target is enabled.
     ///
-    /// `outcome` comes from [`outcome_label`]: it says which of the three
+    /// `outcome` comes from [`outcome_label`]: it says which of the four
     /// endings produced these phases, so a zero can be read as "never
     /// reached" and not as "instantaneous".
     pub fn emit(&self, outcome: &'static str) {
@@ -120,26 +126,242 @@ impl LoginTiming {
 
 /// The `outcome` label for a login, from what the handler returned.
 ///
-/// Three endings, not two. A 401 and a 500 both leave phases at zero, but
+/// Four endings, not two. A 401 and a 500 both leave phases at zero, but
 /// for opposite reasons: the refusal never needed them, the failure could
 /// not finish the one it was in. Collapsing them would make the attribution
 /// report a crashed `INSERT` as a wrong password and hide the phase that
 /// actually broke.
 ///
 /// Scope of each label, precisely: `"rejected"` is `AppError::Unauthorized`
-/// alone, which is the only rejection `login` produces. `"error"` is every
-/// other `AppError` — so it covers the 500s `login` can reach today
-/// (`Sqlx` from either statement, `Internal` from the hashing) but is not
-/// limited to them: the signature is generic, and any future error variant
-/// on this path lands in `"error"` rather than being mislabelled a refusal.
-/// The variants that are not reachable from `login` (`NotFound`,
-/// `Conflict`, …) would also read as `"error"`; none of them is a 500, so
-/// read the label as "not a refusal", not as a status code.
+/// alone, which is the only authentication refusal `login` produces.
+/// `"throttled"` is `AppError::TooManyRequests`, the 429 the per-(address,
+/// email) lock returns *before* any work — its phases are all zero because
+/// none of them ran, which is what distinguishes it from a refusal that
+/// paid a full argon2id. `"error"` is every other `AppError` — so it covers
+/// the 500s `login` can reach today (`Sqlx` from either statement,
+/// `Internal` from the hashing) but is not limited to them: the signature
+/// is generic, and any future error variant on this path lands in
+/// `"error"` rather than being mislabelled a refusal. The variants that
+/// are not reachable from `login` (`NotFound`, `Conflict`, …) would also
+/// read as `"error"`; none of them is a 500, so read the label as "not a
+/// refusal and not a lock", not as a status code.
+///
+/// **What this label deliberately does not say is *why* a login was
+/// refused** (#178 bis). Whether the email was unknown, the account was
+/// Google-only, the password was wrong or the address was unverified is
+/// counted in [`BranchCounters`] and published as an aggregate; a
+/// per-request line naming the branch would not close the enumeration
+/// oracle, it would move it to whoever can read the journal.
 pub fn outcome_label<T>(result: &Result<T, AppError>) -> &'static str {
     match result {
         Ok(_) => "ok",
         Err(AppError::Unauthorized) => "rejected",
+        Err(AppError::TooManyRequests) => "throttled",
         Err(_) => "error",
+    }
+}
+
+/// Which ending a login took, in enough detail to watch the #178 fix hold.
+///
+/// The three regimes the issue is about — unknown email, Google-only
+/// account, known account with a hash — are separate variants here and
+/// nowhere else. They must stay indistinguishable *in the response and in
+/// its timing*; counting them in aggregate is how an operator checks that
+/// they still are (the three refusal counters should all move, and the
+/// `verify_us` of the per-request lines should not separate into two
+/// populations).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginBranch {
+    /// The login completed.
+    Ok,
+    /// No `users` row for this email.
+    UnknownEmail,
+    /// The row exists with `password_hash = NULL` — a Google-only account.
+    NoPassword,
+    /// The row exists, the hash is there, the password did not match.
+    WrongPassword,
+    /// Correct password on an address that has never been verified.
+    Unverified,
+    /// Refused by the per-(address, email) lock, before any work.
+    Throttled,
+    /// A statement or the hashing failed.
+    Error,
+}
+
+impl LoginBranch {
+    const ALL: [LoginBranch; 7] = [
+        LoginBranch::Ok,
+        LoginBranch::UnknownEmail,
+        LoginBranch::NoPassword,
+        LoginBranch::WrongPassword,
+        LoginBranch::Unverified,
+        LoginBranch::Throttled,
+        LoginBranch::Error,
+    ];
+
+    /// Field name this branch is counted under on the aggregate line.
+    pub fn label(self) -> &'static str {
+        match self {
+            LoginBranch::Ok => "ok",
+            LoginBranch::UnknownEmail => "unknown_email",
+            LoginBranch::NoPassword => "no_password",
+            LoginBranch::WrongPassword => "wrong_password",
+            LoginBranch::Unverified => "unverified",
+            LoginBranch::Throttled => "throttled",
+            LoginBranch::Error => "error",
+        }
+    }
+
+    fn index(self) -> usize {
+        match self {
+            LoginBranch::Ok => 0,
+            LoginBranch::UnknownEmail => 1,
+            LoginBranch::NoPassword => 2,
+            LoginBranch::WrongPassword => 3,
+            LoginBranch::Unverified => 4,
+            LoginBranch::Throttled => 5,
+            LoginBranch::Error => 6,
+        }
+    }
+}
+
+/// How often the aggregate line is emitted, at most. The counters are
+/// cumulative, so a longer interval loses resolution, never totals.
+pub const AGGREGATE_INTERVAL: Duration = Duration::from_secs(60);
+
+/// A reading of [`BranchCounters`]: how many logins have taken each
+/// ending since this process started.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BranchTotals([u64; 7]);
+
+impl BranchTotals {
+    pub fn get(&self, branch: LoginBranch) -> u64 {
+        self.0[branch.index()]
+    }
+
+    /// Emits the aggregate on [`TARGET`], at `debug`, as one line.
+    ///
+    /// **Seven counts and nothing else** — no email, no address, no
+    /// timestamp of an individual attempt. That is the whole compromise of
+    /// #178 bis: the split is visible to whoever watches the service, and
+    /// invisible per request, so reading the journal tells nobody which
+    /// addresses have an account here.
+    pub fn emit(&self) {
+        tracing::debug!(
+            target: TARGET,
+            ok = self.get(LoginBranch::Ok),
+            unknown_email = self.get(LoginBranch::UnknownEmail),
+            no_password = self.get(LoginBranch::NoPassword),
+            wrong_password = self.get(LoginBranch::WrongPassword),
+            unverified = self.get(LoginBranch::Unverified),
+            throttled = self.get(LoginBranch::Throttled),
+            error = self.get(LoginBranch::Error),
+            "login branches"
+        );
+    }
+}
+
+/// Cumulative per-branch counters for `POST /auth/login`.
+///
+/// Held in `AppState` behind an `Arc`, shared by every request.
+#[derive(Debug)]
+pub struct BranchCounters {
+    counts: [AtomicU64; 7],
+    schedule: Mutex<Schedule>,
+}
+
+impl BranchCounters {
+    pub fn new(now: Instant) -> Self {
+        Self {
+            counts: Default::default(),
+            schedule: Mutex::new(Schedule {
+                next_emit: now + AGGREGATE_INTERVAL,
+                published_refusals: 0,
+            }),
+        }
+    }
+
+    pub fn record(&self, branch: LoginBranch) {
+        self.counts[branch.index()].fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn totals(&self) -> BranchTotals {
+        let mut totals = BranchTotals::default();
+        for branch in LoginBranch::ALL {
+            totals.0[branch.index()] = self.counts[branch.index()].load(Ordering::Relaxed);
+        }
+        totals
+    }
+
+    /// The totals to publish now, if a line is due: at most once per
+    /// [`AGGREGATE_INTERVAL`], only once at least [`MIN_BATCH`] refusals
+    /// have happened since the previous line, and only for the caller that
+    /// got there first — the deadline and the watermark move under the same
+    /// lock, so concurrent logins produce one line between them.
+    pub fn take_due(&self, now: Instant) -> Option<BranchTotals> {
+        let mut schedule = self.schedule.lock().unwrap_or_else(|e| e.into_inner());
+        if now < schedule.next_emit {
+            return None;
+        }
+        let totals = self.totals();
+        let refusals = totals.refusals();
+        if refusals < schedule.published_refusals + MIN_BATCH {
+            // Deadline kept: the line goes out as soon as the batch fills.
+            return None;
+        }
+        schedule.next_emit = now + AGGREGATE_INTERVAL;
+        schedule.published_refusals = refusals;
+        Some(totals)
+    }
+}
+
+impl BranchTotals {
+    /// Logins the per-request line reports as `"rejected"`: the four
+    /// branches only the aggregate tells apart.
+    fn refusals(&self) -> u64 {
+        [
+            LoginBranch::UnknownEmail,
+            LoginBranch::NoPassword,
+            LoginBranch::WrongPassword,
+            LoginBranch::Unverified,
+        ]
+        .iter()
+        .map(|b| self.get(*b))
+        .sum()
+    }
+}
+
+/// Fewest new **refusals** a published line must cover.
+///
+/// The counts are cumulative, so the difference between two lines gives the
+/// branches taken by the logins in between. The per-request line already
+/// names `ok`, `throttled` and `error`; what it hides is which of four
+/// branches a `"rejected"` took. So the batch is counted in refusals, not in
+/// logins: with 19 `ok` and one `rejected` between two lines, a batch of
+/// logins would publish a difference that names that refusal's branch.
+///
+/// What this buys, precisely: between two published lines there are at
+/// least this many `"rejected"` lines, and the aggregate gives their
+/// branches in total, not one by one. It is not anonymity:
+///
+/// - if every refusal of the batch took the same branch, the difference
+///   says so for each of them;
+/// - someone who reads the journal *and* sends 19 refusals of the batch
+///   with emails they know to be unknown can still isolate the 20th.
+///
+/// The per-request line carries no email and no address, and the
+/// aggregate is `debug`-level, off unless an operator enables it.
+pub const MIN_BATCH: u64 = 20;
+
+#[derive(Debug)]
+struct Schedule {
+    next_emit: Instant,
+    published_refusals: u64,
+}
+
+impl Default for BranchCounters {
+    fn default() -> Self {
+        Self::new(Instant::now())
     }
 }
 
@@ -233,6 +455,177 @@ mod tests {
 
         let hashing: Result<(), AppError> = Err(AppError::Internal(anyhow::anyhow!("argon2")));
         assert_eq!(outcome_label(&hashing), "error");
+    }
+
+    #[test]
+    fn a_login_stopped_by_the_lock_is_labelled_throttled() {
+        // Its phases are all zero because none of them ran — the opposite
+        // of a refusal, which now pays a full argon2id before answering.
+        let locked: Result<(), AppError> = Err(AppError::TooManyRequests);
+        assert_eq!(outcome_label(&locked), "throttled");
+    }
+
+    #[test]
+    fn the_per_request_line_never_names_which_branch_refused() {
+        // #178 bis: the branch split is an aggregate, never a per-request
+        // line. A journal line saying "this address has an account" does
+        // not close the enumeration oracle, it hands it to whoever reads
+        // the journal.
+        let refused: Result<(), AppError> = Err(AppError::Unauthorized);
+        let lines = capture(|| {
+            LoginTiming {
+                lookup: ms(1),
+                verify: ms(250),
+                total: ms(252),
+                ..Default::default()
+            }
+            .emit(outcome_label(&refused))
+        });
+
+        assert_eq!(lines[0].outcome, "rejected");
+        for branch in [
+            LoginBranch::UnknownEmail,
+            LoginBranch::NoPassword,
+            LoginBranch::WrongPassword,
+            LoginBranch::Unverified,
+        ] {
+            assert_ne!(lines[0].outcome, branch.label());
+            assert_eq!(
+                lines[0].field(branch.label()),
+                None,
+                "{} must not appear on a per-request line",
+                branch.label()
+            );
+        }
+    }
+
+    #[test]
+    fn counters_start_at_zero_and_count_only_the_branch_recorded() {
+        let counters = BranchCounters::new(Instant::now());
+        assert_eq!(counters.totals(), BranchTotals::default());
+
+        counters.record(LoginBranch::UnknownEmail);
+        counters.record(LoginBranch::UnknownEmail);
+        counters.record(LoginBranch::NoPassword);
+
+        let totals = counters.totals();
+        assert_eq!(totals.get(LoginBranch::UnknownEmail), 2);
+        assert_eq!(totals.get(LoginBranch::NoPassword), 1);
+        assert_eq!(totals.get(LoginBranch::WrongPassword), 0);
+        assert_eq!(totals.get(LoginBranch::Ok), 0);
+    }
+
+    #[test]
+    fn every_branch_has_its_own_slot() {
+        let counters = BranchCounters::new(Instant::now());
+        for branch in LoginBranch::ALL {
+            counters.record(branch);
+        }
+        let totals = counters.totals();
+        for branch in LoginBranch::ALL {
+            assert_eq!(totals.get(branch), 1, "{}", branch.label());
+        }
+    }
+
+    #[test]
+    fn branch_labels_are_all_distinct() {
+        // They are field names on one line: two branches sharing a label
+        // would silently merge into one count.
+        let mut labels: Vec<&str> = LoginBranch::ALL.iter().map(|b| b.label()).collect();
+        labels.sort_unstable();
+        let before = labels.len();
+        labels.dedup();
+        assert_eq!(labels.len(), before);
+    }
+
+    fn record_n(counters: &BranchCounters, branch: LoginBranch, n: u64) {
+        for _ in 0..n {
+            counters.record(branch);
+        }
+    }
+
+    #[test]
+    fn the_aggregate_is_due_once_per_interval_and_not_before() {
+        let start = Instant::now();
+        let counters = BranchCounters::new(start);
+        record_n(&counters, LoginBranch::WrongPassword, MIN_BATCH);
+
+        assert!(counters.take_due(start).is_none());
+        assert!(counters
+            .take_due(start + AGGREGATE_INTERVAL - Duration::from_millis(1))
+            .is_none());
+        assert!(counters.take_due(start + AGGREGATE_INTERVAL).is_some());
+        // The deadline moved: the next login in the same second does not
+        // get a second line.
+        record_n(&counters, LoginBranch::WrongPassword, MIN_BATCH);
+        assert!(counters.take_due(start + AGGREGATE_INTERVAL).is_none());
+        assert!(counters.take_due(start + AGGREGATE_INTERVAL * 2).is_some());
+    }
+
+    #[test]
+    fn one_refusal_among_many_successes_is_never_published_on_its_own() {
+        // Review round 3: the per-request line says `ok` or `rejected`. A
+        // reader who sees 19 `ok` and one `rejected` between two aggregate
+        // lines, and an aggregate that moved by `ok+19 no_password+1`, has
+        // the branch of that one refusal. Successes must not fill the batch.
+        let start = Instant::now();
+        let counters = BranchCounters::new(start);
+        let later = start + AGGREGATE_INTERVAL * 3;
+
+        record_n(&counters, LoginBranch::Ok, MIN_BATCH - 1);
+        counters.record(LoginBranch::NoPassword);
+        assert!(counters.take_due(later).is_none());
+
+        // Nor any number of them, nor of the endings the per-request line
+        // already names.
+        record_n(&counters, LoginBranch::Ok, 1_000);
+        record_n(&counters, LoginBranch::Throttled, 1_000);
+        record_n(&counters, LoginBranch::Error, 1_000);
+        assert!(counters.take_due(later).is_none());
+    }
+
+    #[test]
+    fn consecutive_lines_are_always_a_batch_of_refusals_apart() {
+        let start = Instant::now();
+        let counters = BranchCounters::new(start);
+        record_n(&counters, LoginBranch::UnknownEmail, MIN_BATCH);
+        assert!(counters.take_due(start + AGGREGATE_INTERVAL).is_some());
+
+        let later = start + AGGREGATE_INTERVAL * 5;
+        counters.record(LoginBranch::NoPassword);
+        record_n(&counters, LoginBranch::Ok, MIN_BATCH * 3);
+        assert!(counters.take_due(later).is_none());
+        record_n(&counters, LoginBranch::WrongPassword, MIN_BATCH - 2);
+        assert!(counters.take_due(later).is_none());
+        counters.record(LoginBranch::Unverified);
+        let published = counters.take_due(later).expect("a full batch of refusals");
+        assert_eq!(published.get(LoginBranch::NoPassword), 1);
+    }
+
+    #[test]
+    fn the_aggregate_line_carries_one_count_per_branch_and_nothing_identifying() {
+        let counters = BranchCounters::new(Instant::now());
+        counters.record(LoginBranch::Ok);
+        counters.record(LoginBranch::UnknownEmail);
+        counters.record(LoginBranch::Throttled);
+        counters.record(LoginBranch::Throttled);
+
+        let lines = capture(|| counters.totals().emit());
+        assert_eq!(lines.len(), 1);
+        let line = &lines[0];
+        assert_eq!(line.target, TARGET);
+        assert_eq!(line.field("ok"), Some(1));
+        assert_eq!(line.field("unknown_email"), Some(1));
+        assert_eq!(line.field("throttled"), Some(2));
+        assert_eq!(line.field("wrong_password"), Some(0));
+
+        let names: Vec<&str> = line.fields.iter().map(|(n, _)| n.as_str()).collect();
+        let mut expected: Vec<&str> = LoginBranch::ALL.iter().map(|b| b.label()).collect();
+        let mut got = names.clone();
+        got.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(got, expected, "no field beyond the seven counts");
+        assert_eq!(line.outcome, "", "no per-attempt string on the aggregate");
     }
 
     #[test]

@@ -57,18 +57,27 @@ pub async fn fetch_me(state: &AppState, cookie_header: Option<&str>) -> Option<M
 /// error-handling table from issue #15 without leaking raw JSON to the
 /// browser. Transport failures (apps/api unreachable) surface as
 /// `Err(String)` — callers render a generic "service unavailable" state.
+///
+/// `forwarded_for` is the proxy chain to relay, built by
+/// `crate::client_ip::forwarded_for` from the incoming request. Only the
+/// login page passes one today, because `POST /auth/login` is the one
+/// route apps/api keys anything on the client address (#178); the other
+/// callers pass `None` and their requests are unchanged. The neighbouring
+/// `api_request_auth` relays `Cookie` the same way.
 pub async fn api_post_json(
     state: &AppState,
     path: &str,
     body: impl Serialize,
+    forwarded_for: Option<&str>,
 ) -> Result<ApiResponse, String> {
-    let resp = state
+    let mut req = state
         .http
         .post(format!("{}{}", state.api_internal_base_url, path))
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+        .json(&body);
+    if let Some(chain) = forwarded_for {
+        req = req.header(crate::client_ip::FORWARDED_FOR, chain);
+    }
+    let resp = req.send().await.map_err(|e| e.to_string())?;
 
     let status = resp.status();
     let set_cookie = resp

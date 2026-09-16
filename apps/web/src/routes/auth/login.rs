@@ -1,9 +1,10 @@
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use leptos::prelude::*;
 use manage_our_home_shared::dto::auth::LoginRequest;
+use std::net::SocketAddr;
 
 use crate::app::{password_field, shell, Width};
 use crate::layout::RedirectIfAuthenticated;
@@ -51,8 +52,25 @@ pub async fn get(
 pub async fn post(
     _redirect: RedirectIfAuthenticated,
     State(state): State<AppState>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    request_headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
+    // apps/api locks repeated failures per (client address, email) and has
+    // no other way to learn that address: this call reaches it from inside
+    // the Docker network (#178). `Option` because a server started without
+    // `into_make_service_with_connect_info` has no peer to report — then
+    // nothing is forwarded, which apps/api reads as "unknown client"
+    // rather than as someone else's address.
+    let forwarded = peer.map(|ConnectInfo(peer)| {
+        crate::client_ip::forwarded_for(
+            request_headers
+                .get(crate::client_ip::FORWARDED_FOR)
+                .and_then(|v| v.to_str().ok()),
+            peer.ip(),
+        )
+    });
+
     let result = api_post_json(
         &state,
         "/auth/login",
@@ -60,6 +78,7 @@ pub async fn post(
             email: form.email.clone(),
             password: form.password.clone(),
         },
+        forwarded.as_deref(),
     )
     .await;
 
@@ -80,6 +99,18 @@ pub async fn post(
         Ok(resp) if resp.status == reqwest::StatusCode::UNAUTHORIZED => Html(page(
             &form.email,
             Some("Email ou mot de passe incorrect."),
+            &state.api_public_base_url,
+        ))
+        .into_response(),
+        // Too many failures from this address on this account (#178). Said
+        // plainly rather than as "une erreur est survenue": the person who
+        // meets this is usually someone who mistyped their own password,
+        // and telling them to wait is the only way they can act on it. It
+        // reveals nothing — the lock answers the same whether or not the
+        // account exists.
+        Ok(resp) if resp.status == reqwest::StatusCode::TOO_MANY_REQUESTS => Html(page(
+            &form.email,
+            Some("Trop de tentatives de connexion. Merci de réessayer dans quelques minutes."),
             &state.api_public_base_url,
         ))
         .into_response(),

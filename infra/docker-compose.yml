@@ -99,6 +99,22 @@ services:
       # Overridable (SECURE_COOKIES=false in .env) for local http://localhost
       # testing, where Secure cookies can be dropped by the browser.
       SECURE_COOKIES: ${SECURE_COOKIES:-true}
+      # Whose `X-Forwarded-For` the API believes (#178). Only `caddy` and
+      # `web` can reach `api` here — it publishes no port — and Docker's
+      # default address pools hand this network a subnet out of
+      # 172.16.0.0/12 first, which is the default below. Set it in .env to
+      # the network's exact subnet (`docker network inspect`) if that is not
+      # where it landed — Docker falls back to 192.168.0.0/16 once the 172
+      # pools are used up — or if this host's own LAN overlaps the block.
+      # An address in this list is one whose claim about who the client is
+      # gets taken at face value, so a range wider than the infrastructure
+      # lets whoever is inside it pick an address and dodge (or aim) the
+      # login lock; a range that misses the proxies makes every browser one
+      # client, and the lock one lock for the whole household. The same
+      # collapse happens, with no error, when Caddy's published port goes
+      # through docker-proxy and every browser arrives from the gateway —
+      # see apps/api/README.md, "When Caddy cannot see the browser's address".
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-127.0.0.0/8,::1/128,172.16.0.0/12}
       SMTP_HOST: ${SMTP_HOST}
       SMTP_USERNAME: ${SMTP_USERNAME}
       SMTP_PASSWORD: ${SMTP_PASSWORD}

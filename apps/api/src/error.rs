@@ -21,6 +21,13 @@ pub enum AppError {
     Gone,
     #[error("bad request: {0}")]
     BadRequest(String),
+    /// Refused by a rate limit before doing the work — today only the
+    /// per-(address, email) login lock of #178. Carries no detail on
+    /// purpose: the same 429 answers a known email and an unknown one,
+    /// because a lock whose shape depends on whether the account exists
+    /// would reopen the enumeration oracle it was added to close.
+    #[error("too many requests")]
+    TooManyRequests,
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
     #[error(transparent)]
@@ -41,6 +48,10 @@ impl IntoResponse for AppError {
             AppError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".to_string()),
             AppError::Gone => (StatusCode::GONE, "gone".to_string()),
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, m.clone()),
+            AppError::TooManyRequests => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "too_many_attempts".to_string(),
+            ),
             AppError::Internal(e) => {
                 tracing::error!(error = ?e, "internal error");
                 (
