@@ -199,32 +199,30 @@ pub async fn login(
     timing.total = started.elapsed();
     timing.emit(timing::outcome_label(&result));
 
-    // The branch goes into a cumulative counter and, at most once a minute,
-    // into one aggregate line (#178 bis). It is deliberately absent from
-    // the per-request line above: "this address has an account here" written
+    // The branch goes into a cumulative counter and, at most once a minute
+    // and never for fewer than `timing::MIN_BATCH` new logins, into one
+    // aggregate line (#178 bis). It is deliberately absent from the
+    // per-request line above: "this address has an account here" written
     // once per attempt does not close the enumeration oracle, it hands it to
     // everyone who can read the journal.
     state.login_branches.record(branch);
-    if state.login_branches.due(Instant::now()) {
-        state.login_branches.totals().emit();
+    if let Some(totals) = state.login_branches.take_due(Instant::now()) {
+        totals.emit();
     }
     result
 }
 
-/// Records the failure and refuses, in the one generic way all four
-/// refusals share. The 401 carries no detail, and the counter it feeds is
-/// keyed on the (address, email) pair whatever the reason was — so an
-/// attacker learns nothing from *which* refusal they got, and burns the
-/// same budget either way.
+/// Refuses in the one generic way all four refusals share. The 401 carries
+/// no detail, and the attempt was already counted against the (address,
+/// email) pair when it was admitted, whatever the reason turns out to be —
+/// so an attacker learns nothing from *which* refusal they got, and burns
+/// the same budget either way.
 fn refused(
-    state: &AppState,
-    key: &(std::net::IpAddr, String),
     branch: LoginBranch,
 ) -> (
     LoginBranch,
     AppResult<(StatusCode, Json<serde_json::Value>)>,
 ) {
-    state.login_throttle.record_failure(key, Instant::now());
     (branch, Err(AppError::Unauthorized))
 }
 
@@ -240,11 +238,14 @@ async fn login_inner(
 ) {
     let key = throttle::key(client_ip, &body.email);
 
-    // **Before** the lookup and before argon2, never after. The decoy hash
-    // below makes every invalid attempt cost a full argon2id; a lock
-    // consulted afterwards would let an attacker spend that CPU first and
-    // only then be told to stop (#178).
-    if let throttle::Decision::Locked { .. } = state.login_throttle.check(&key, Instant::now()) {
+    // **Before** the lookup and before argon2, never after — and counted in
+    // the same step. The decoy hash below makes every invalid attempt cost
+    // a full argon2id; a lock consulted afterwards would let an attacker
+    // spend that CPU first, and a count recorded only once the outcome is
+    // known would let a burst of concurrent requests all pass the check
+    // before the first one finished hashing (#178). A success clears the
+    // pair below.
+    if let throttle::Decision::Locked { .. } = state.login_throttle.admit(&key, Instant::now()) {
         return (LoginBranch::Throttled, Err(AppError::TooManyRequests));
     }
 
@@ -284,21 +285,21 @@ async fn login_inner(
     };
 
     let Some(user) = user else {
-        return refused(state, &key, LoginBranch::UnknownEmail);
+        return refused(LoginBranch::UnknownEmail);
     };
     if stored_hash.is_none() {
         // Verified against the decoy, so `verified` is false here whatever
         // was submitted; the branch is kept separate for the counter only.
-        return refused(state, &key, LoginBranch::NoPassword);
+        return refused(LoginBranch::NoPassword);
     }
     if !verified {
-        return refused(state, &key, LoginBranch::WrongPassword);
+        return refused(LoginBranch::WrongPassword);
     }
     // A password is only usable once its owning email has been verified —
     // covers both fresh registrations and password added to a
     // previously Google-only account (AC #7).
     if !user.email_verified {
-        return refused(state, &key, LoginBranch::Unverified);
+        return refused(LoginBranch::Unverified);
     }
 
     let at = Instant::now();

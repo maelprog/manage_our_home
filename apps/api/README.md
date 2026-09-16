@@ -264,8 +264,8 @@ not getting slower here.
 an unverified address is exactly what the enumeration oracle leaked; a log
 line saying so per request would hand it to whoever reads the journal. The
 split is published instead as a cumulative aggregate on the same target, at
-most once a minute, with seven counts and nothing that identifies an
-attempt:
+most once a minute and only once at least 20 new logins have happened since
+the previous line, with seven counts and nothing that identifies an attempt:
 
 ```
 DEBUG login_timing: login branches ok=41 unknown_email=3 no_password=0
@@ -278,12 +278,23 @@ refusal counters should move while the per-request `verify_us` of
 
 ## Login lock and client addresses (#178)
 
-`POST /auth/login` locks a **(client address, email)** pair for 15 minutes
-after 10 failures within 15 minutes, and answers `429 {"error":
-"too_many_attempts"}` while locked. The pair, never the email alone: a lock
-per account would let anyone who knows a household member's address lock
-them out. A success clears the pair. The lock is checked before any work, so
-a locked request costs no argon2id. Constants are in `src/auth/throttle.rs`.
+`POST /auth/login` admits at most 10 attempts per **(client address, email)**
+pair within 15 minutes, then locks the pair for 15 minutes and answers `429
+{"error": "too_many_attempts"}`. The pair, never the email alone: a lock per
+account would let anyone who knows a household member's address lock them
+out. Constants are in `src/auth/throttle.rs`.
+
+An attempt is **counted when it is admitted**, in the same step as the lock
+check and before any work; a success then clears the pair. So a locked
+request costs no argon2id, and a burst of concurrent requests on one pair
+gets 10 hashes, not one per request (counting refusals only once known let
+40 concurrent attempts through as 40 × 401). An attempt that ends in a 500
+counts too.
+
+The table holds at most 10 000 pairs. When it is full of live pairs a new
+one **evicts** an old one — the unlocked pair with the oldest window first,
+a locked one only if nothing else is left — rather than going uncounted:
+a full table must not switch the lock off.
 
 The counter is **in this process's memory**, which is correct only because
 `infra/docker-compose.yml` runs one `api`. **If `api` ever runs as more than
@@ -308,3 +319,38 @@ apps/web relays the chain on its internal call and appends the address it
 saw (`apps/web/src/client_ip.rs`). Caddy replaces any `X-Forwarded-For` a
 browser sends with the address it saw (checked against `caddy:2`, see
 `infra/Caddyfile`).
+
+### When Caddy cannot see the browser's address
+
+Everything above assumes the address Caddy accepts the connection from *is*
+the browser's. With Compose's `ports: "80:80"` that holds only when Docker
+forwards the port with NAT rules that keep the source address. It does
+**not** hold when the connection goes through `docker-proxy`, Docker's
+userland proxy, which reconnects to the container from the network's
+gateway: every browser then reaches Caddy as the same `172.x.0.1`. That is
+the case, among others, for
+
+- an IPv6 client on a host whose Compose network is IPv4-only;
+- Docker Desktop (macOS, Windows), where the port goes through its VM proxy;
+- rootless Docker, whose port driver hides the source by default;
+- a daemon started with `"userland-proxy": true` where the NAT rules do not
+  apply (loopback traffic, for instance).
+
+There is no error: the gateway sits inside `172.16.0.0/12`, so every hop is
+trusted and every client resolves to the gateway. The key becomes **(one
+address, email)** — the email alone in practice — and ten wrong passwords
+from anyone lock that account for everyone for 15 minutes. That is the
+denial of service the pair exists to prevent.
+
+To check a deployment, sign in from two machines and read Caddy's access log
+(`docker compose logs caddy`, field `remote_ip`): two different addresses
+means the chain works; the same `172.x.0.1` twice means it does not. The fix
+is on the deployment side, never by trusting a wider range:
+
+- give Caddy the host's network (`network_mode: host`, then reach `web` and
+  `api` through published loopback ports), so it sees real sources;
+- or keep the IPv4 NAT path — IPv4-only listener, or IPv6 enabled on the
+  Compose network — and `"userland-proxy": false` where that is supported;
+- or, if another proxy or load balancer terminates connections in front of
+  Caddy, add its address to Caddy's `trusted_proxies` so the address it
+  forwards is kept.

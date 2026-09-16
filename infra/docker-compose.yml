@@ -110,7 +110,10 @@ services:
       # gets taken at face value, so a range wider than the infrastructure
       # lets whoever is inside it pick an address and dodge (or aim) the
       # login lock; a range that misses the proxies makes every browser one
-      # client, and the lock one lock for the whole household.
+      # client, and the lock one lock for the whole household. The same
+      # collapse happens, with no error, when Caddy's published port goes
+      # through docker-proxy and every browser arrives from the gateway —
+      # see apps/api/README.md, "When Caddy cannot see the browser's address".
       TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-127.0.0.0/8,::1/128,172.16.0.0/12}
       SMTP_HOST: ${SMTP_HOST}
       SMTP_USERNAME: ${SMTP_USERNAME}

@@ -1021,3 +1021,81 @@ async fn a_successful_login_clears_the_failures_before_it(db: PgPool) {
         assert_status(&response, StatusCode::UNAUTHORIZED);
     }
 }
+
+/// A burst on one pair gets exactly [`MAX_FAILURES`] argon2id runs, however
+/// many requests arrive at once. Counting only once a refusal was known let
+/// every request of a concurrent burst read "not locked" before the first
+/// one finished hashing: 40 at once came back as 40 × 401 and 0 × 429.
+#[sqlx::test]
+async fn a_concurrent_burst_on_one_pair_is_bounded_by_the_threshold(db: PgPool) {
+    let router = router_trusting_10_0_0_0_8(db.clone());
+    let burst = 40;
+
+    let responses = futures::future::join_all((0..burst).map(|_| {
+        login_from(
+            &router,
+            "10.0.0.2:40000",
+            Some("192.168.1.42"),
+            "nobody@example.test",
+            "wrong-password1",
+        )
+    }))
+    .await;
+
+    let unauthorized = responses
+        .iter()
+        .filter(|r| r.status() == StatusCode::UNAUTHORIZED)
+        .count();
+    let locked = responses
+        .iter()
+        .filter(|r| r.status() == StatusCode::TOO_MANY_REQUESTS)
+        .count();
+    let max = manage_our_home::auth::throttle::MAX_FAILURES as usize;
+    assert_eq!(unauthorized, max, "hashes paid by the burst");
+    assert_eq!(locked, burst - max);
+}
+
+/// The lock is consulted before argon2id, not after: a locked attempt
+/// answers without paying for a hash. If the check moved behind
+/// `verify_password`, the 429 would cost what a 401 costs.
+///
+/// Compared against a refused attempt measured in the same test, with a
+/// loose factor, because this is wall time on a shared runner: on the
+/// debug profile a hash is a couple of hundred milliseconds and a locked
+/// answer a few.
+#[sqlx::test]
+async fn a_locked_attempt_answers_without_hashing(db: PgPool) {
+    let router = router_trusting_10_0_0_0_8(db.clone());
+    let proxy = "10.0.0.2:40000";
+
+    let mut refused = std::time::Duration::MAX;
+    for _ in 0..manage_our_home::auth::throttle::MAX_FAILURES {
+        let started = std::time::Instant::now();
+        let response = login_from(
+            &router,
+            proxy,
+            Some("192.168.1.42"),
+            "nobody@example.test",
+            "wrong-password1",
+        )
+        .await;
+        refused = refused.min(started.elapsed());
+        assert_status(&response, StatusCode::UNAUTHORIZED);
+    }
+
+    let started = std::time::Instant::now();
+    let locked = login_from(
+        &router,
+        proxy,
+        Some("192.168.1.42"),
+        "nobody@example.test",
+        "wrong-password1",
+    )
+    .await;
+    let locked_elapsed = started.elapsed();
+    assert_status(&locked, StatusCode::TOO_MANY_REQUESTS);
+    assert!(
+        locked_elapsed * 4 < refused,
+        "a locked attempt took {locked_elapsed:?}, the fastest refusal {refused:?}"
+    );
+}

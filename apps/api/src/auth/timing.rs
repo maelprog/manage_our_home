@@ -267,14 +267,17 @@ impl BranchTotals {
 #[derive(Debug)]
 pub struct BranchCounters {
     counts: [AtomicU64; 7],
-    next_emit: Mutex<Instant>,
+    schedule: Mutex<Schedule>,
 }
 
 impl BranchCounters {
     pub fn new(now: Instant) -> Self {
         Self {
             counts: Default::default(),
-            next_emit: Mutex::new(now + AGGREGATE_INTERVAL),
+            schedule: Mutex::new(Schedule {
+                next_emit: now + AGGREGATE_INTERVAL,
+                published_logins: 0,
+            }),
         }
     }
 
@@ -290,17 +293,45 @@ impl BranchCounters {
         totals
     }
 
-    /// True at most once per [`AGGREGATE_INTERVAL`], and only for the
-    /// caller that got there first: the deadline moves on the way out, so
-    /// concurrent logins produce one line between them, not one each.
-    pub fn due(&self, now: Instant) -> bool {
-        let mut next = self.next_emit.lock().unwrap_or_else(|e| e.into_inner());
-        if now < *next {
-            return false;
+    /// The totals to publish now, if a line is due: at most once per
+    /// [`AGGREGATE_INTERVAL`], only once at least [`MIN_BATCH`] logins have
+    /// happened since the previous line, and only for the caller that got
+    /// there first — the deadline and the watermark move under the same
+    /// lock, so concurrent logins produce one line between them.
+    pub fn take_due(&self, now: Instant) -> Option<BranchTotals> {
+        let mut schedule = self.schedule.lock().unwrap_or_else(|e| e.into_inner());
+        if now < schedule.next_emit {
+            return None;
         }
-        *next = now + AGGREGATE_INTERVAL;
-        true
+        let totals = self.totals();
+        let logins: u64 = totals.0.iter().sum();
+        if logins < schedule.published_logins + MIN_BATCH {
+            // Deadline kept: the line goes out as soon as the batch fills.
+            return None;
+        }
+        schedule.next_emit = now + AGGREGATE_INTERVAL;
+        schedule.published_logins = logins;
+        Some(totals)
     }
+}
+
+/// Fewest new logins a published line must cover.
+///
+/// The counts are cumulative, so the difference between two lines is the
+/// branches taken by the logins in between. With one login in between, that
+/// difference names its branch — "unknown email" or "Google-only" — which is
+/// the per-request fact #178 bis keeps out of the journal. Requiring a batch
+/// means a passive reader of the journal can only ever see branches mixed
+/// over at least this many logins. It does not stop someone who *also* sends
+/// the other logins of the batch with emails they know to be unknown: they
+/// can still isolate one foreign login. That residual is stated in the PR;
+/// the aggregate is `debug`-level and off unless an operator enables it.
+pub const MIN_BATCH: u64 = 20;
+
+#[derive(Debug)]
+struct Schedule {
+    next_emit: Instant,
+    published_logins: u64,
 }
 
 impl Default for BranchCounters {
@@ -482,18 +513,62 @@ mod tests {
         assert_eq!(labels.len(), before);
     }
 
+    fn record_n(counters: &BranchCounters, branch: LoginBranch, n: u64) {
+        for _ in 0..n {
+            counters.record(branch);
+        }
+    }
+
     #[test]
     fn the_aggregate_is_due_once_per_interval_and_not_before() {
         let start = Instant::now();
         let counters = BranchCounters::new(start);
+        record_n(&counters, LoginBranch::Ok, MIN_BATCH);
 
-        assert!(!counters.due(start));
-        assert!(!counters.due(start + AGGREGATE_INTERVAL - Duration::from_millis(1)));
-        assert!(counters.due(start + AGGREGATE_INTERVAL));
+        assert!(counters.take_due(start).is_none());
+        assert!(counters
+            .take_due(start + AGGREGATE_INTERVAL - Duration::from_millis(1))
+            .is_none());
+        assert!(counters.take_due(start + AGGREGATE_INTERVAL).is_some());
         // The deadline moved: the next login in the same second does not
         // get a second line.
-        assert!(!counters.due(start + AGGREGATE_INTERVAL));
-        assert!(counters.due(start + AGGREGATE_INTERVAL * 2));
+        record_n(&counters, LoginBranch::Ok, MIN_BATCH);
+        assert!(counters.take_due(start + AGGREGATE_INTERVAL).is_none());
+        assert!(counters.take_due(start + AGGREGATE_INTERVAL * 2).is_some());
+    }
+
+    #[test]
+    fn a_quiet_interval_publishes_nothing_until_a_batch_has_accumulated() {
+        // Cumulative counts read twice around a single login say which
+        // branch that login took. At low traffic that is one request
+        // isolated, so a line is only published once it covers at least
+        // `MIN_BATCH` logins the previous line did not.
+        let start = Instant::now();
+        let counters = BranchCounters::new(start);
+        let later = start + AGGREGATE_INTERVAL * 3;
+
+        counters.record(LoginBranch::UnknownEmail);
+        assert!(counters.take_due(later).is_none());
+
+        record_n(&counters, LoginBranch::Ok, MIN_BATCH - 1);
+        let published = counters.take_due(later).expect("a full batch");
+        assert_eq!(published.get(LoginBranch::UnknownEmail), 1);
+        assert_eq!(published.get(LoginBranch::Ok), MIN_BATCH - 1);
+    }
+
+    #[test]
+    fn consecutive_lines_are_always_a_batch_apart() {
+        let start = Instant::now();
+        let counters = BranchCounters::new(start);
+        record_n(&counters, LoginBranch::Ok, MIN_BATCH);
+        assert!(counters.take_due(start + AGGREGATE_INTERVAL).is_some());
+
+        counters.record(LoginBranch::NoPassword);
+        assert!(counters.take_due(start + AGGREGATE_INTERVAL * 5).is_none());
+        record_n(&counters, LoginBranch::Ok, MIN_BATCH - 2);
+        assert!(counters.take_due(start + AGGREGATE_INTERVAL * 5).is_none());
+        counters.record(LoginBranch::Ok);
+        assert!(counters.take_due(start + AGGREGATE_INTERVAL * 5).is_some());
     }
 
     #[test]
