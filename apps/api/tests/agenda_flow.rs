@@ -818,11 +818,13 @@ async fn an_all_day_series_until_the_day_before_is_refused_on_write(db: PgPool) 
 }
 
 /// #165: an all-day series has two readers — `list_events`, and the reminders
-/// (`refill_notifications`) — and write has to refuse what either refuses.
-/// The reproduction from the issue: `FREQ=WEEKLY\nEXDATE:…` on an all-day
-/// event was a 201, then `POST /reminders` on it a 500. Every such rule is a
-/// 400 now, on create and on update, all-day or not, so the reminders never
-/// meet one written through the API.
+/// (`refill_notifications`) — and at #165 they did not unroll it the same
+/// way, so write had to refuse what either refused. Since #169 both go
+/// through `recurrence::expand_series`. The reproduction from the issue:
+/// `FREQ=WEEKLY\nEXDATE:…` on an all-day event was a 201, then
+/// `POST /reminders` on it a 500. Every such rule is a 400 now, on create
+/// and on update, all-day or not, so the reminders never meet one written
+/// through the API.
 #[sqlx::test]
 async fn a_rule_the_reminders_cannot_unroll_is_refused_on_write(db: PgPool) {
     let router = test_router(db.clone());
