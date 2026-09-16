@@ -72,8 +72,9 @@ fn flow_cookie(name: &'static str, value: String, secure: bool) -> Cookie<'stati
 
 /// AC #3: redirects to Google's consent screen with a fresh CSRF `state`
 /// and PKCE challenge; the `state` and the PKCE verifier are stashed in
-/// short-lived HttpOnly cookies so `callback` can verify the one and
-/// present the other.
+/// HttpOnly session cookies (no `Max-Age`: they last until `callback`
+/// clears them or the browser session ends) so `callback` can verify the
+/// one and present the other.
 pub async fn start(
     State(state): State<AppState>,
     cookies: Cookies,
@@ -122,8 +123,10 @@ async fn fetch_google_userinfo(access_token: &str) -> anyhow::Result<GoogleUserI
 
 /// AC #3, #8: validates the CSRF `state`, exchanges the code with the PKCE
 /// verifier `start` stashed (refusing outright when it is missing), fetches
-/// the verified Google profile, and either creates a new account or links
-/// to the caller's existing session. The refresh token (if any) is stored
+/// the verified Google profile, then signs in the account already bound to
+/// that Google identity — or, failing that, binds the identity to the
+/// account with the same email, creating the account if there is none. No
+/// existing session is read. The refresh token (if any) is stored
 /// encrypted via `pgcrypto` and is never written to `tracing` logs.
 pub async fn callback(
     State(state): State<AppState>,

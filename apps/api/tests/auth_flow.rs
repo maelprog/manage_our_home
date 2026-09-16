@@ -1179,8 +1179,9 @@ fn assert_cleared(response: &axum::response::Response, name: &str) {
 
 /// #193: a callback whose `state` checks out but whose PKCE verifier cookie
 /// is gone is refused before any code exchange — never retried without
-/// PKCE. (An attempted exchange would answer 500 here: the test client's
-/// token endpoint is unreachable from the suite.)
+/// PKCE. (An attempted exchange would answer 500, not 401: the test client
+/// posts a dummy client id to Google's real token endpoint, and `callback`
+/// maps any exchange failure to 500.)
 #[sqlx::test]
 async fn google_callback_without_the_pkce_verifier_is_refused_before_exchange(db: PgPool) {
     let router = test_router(db);
@@ -1218,4 +1219,59 @@ async fn google_callback_with_a_verifier_but_a_mismatched_state_is_refused(db: P
     assert_status(&response, StatusCode::UNAUTHORIZED);
     assert_cleared(&response, "google_oauth_state");
     assert_cleared(&response, "google_oauth_pkce_verifier");
+}
+
+/// #193: the verifier `start` stashed is what `callback` sends with the
+/// code. The token endpoint is a local listener recording the exchange's
+/// form body, so the assertion is on the request itself, not on a flag.
+/// The response status is not asserted: after the exchange, `callback`
+/// queries Google's live userinfo endpoint with the fake access token.
+#[sqlx::test]
+async fn google_callback_sends_the_stored_pkce_verifier_with_the_code(db: PgPool) {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    let recorded: Arc<Mutex<Option<HashMap<String, String>>>> = Arc::default();
+    let token_endpoint = axum::Router::new().route(
+        "/token",
+        axum::routing::post({
+            let recorded = recorded.clone();
+            move |axum::extract::Form(form): axum::extract::Form<HashMap<String, String>>| async move {
+                *recorded.lock().unwrap() = Some(form);
+                axum::Json(serde_json::json!({
+                    "access_token": "local-access-token",
+                    "token_type": "bearer",
+                }))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let token_url = format!("http://{}/token", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, token_endpoint).await.unwrap() });
+
+    let mut state = common::test_state(db);
+    state.google_oauth = state
+        .google_oauth
+        .set_token_uri(oauth2::TokenUrl::new(token_url).unwrap());
+    let router = manage_our_home::build_router(state);
+
+    let verifier = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG";
+    call(
+        &router,
+        Method::GET,
+        "/auth/google/callback?code=the-code&state=s",
+        Some(&format!(
+            "google_oauth_state=s; google_oauth_pkce_verifier={verifier}"
+        )),
+        None,
+    )
+    .await;
+
+    let form = recorded
+        .lock()
+        .unwrap()
+        .take()
+        .expect("callback never reached the token endpoint");
+    assert_eq!(form.get("code").map(String::as_str), Some("the-code"));
+    assert_eq!(form.get("code_verifier").map(String::as_str), Some(verifier));
 }
