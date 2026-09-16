@@ -210,6 +210,29 @@ const ALLOWED_MIME_TYPES: &[&str] = &["image/png", "image/jpeg", "image/webp", "
 
 pub const MAX_ATTACHMENT_SIZE_BYTES: usize = 20 * 1024 * 1024;
 
+/// Framing margin added on top of `MAX_ATTACHMENT_SIZE_BYTES` to size the
+/// upload route's request body limit. A multipart body carries the boundary
+/// delimiters, the part's `Content-Disposition`/`Content-Type` headers and
+/// the filename around the file bytes, so a body limit set to the cap itself
+/// would refuse a file of exactly the cap. 64 KiB is far more than a
+/// single-field body needs, and small enough that it raises nothing: the
+/// authority on attachment size stays the handler's own check.
+pub const UPLOAD_FRAMING_MARGIN_BYTES: usize = 64 * 1024;
+
+/// Request body limit for the attachment upload route. axum's
+/// `DefaultBodyLimit` is 2 MiB unless a route says otherwise, and it bounds
+/// the body the `Multipart` extractor hands over: reading a field past that
+/// many bytes fails, so every attachment over 2 MiB died there while
+/// `MAX_ATTACHMENT_SIZE_BYTES` announced 20 MiB — and, `upload_attachment`
+/// mapping every `MultipartError` to one code, the answer was
+/// `invalid_multipart` (400) rather than the cap's `file_too_large` (#190).
+/// Set on the route in `lib.rs`.
+///
+/// Deliberately above the cap rather than equal to it, so an oversized upload
+/// is answered by the handler — which knows it is a size problem — and the
+/// limit only ever stops a body whose framing is itself absurd.
+pub const MAX_UPLOAD_BODY_BYTES: usize = MAX_ATTACHMENT_SIZE_BYTES + UPLOAD_FRAMING_MARGIN_BYTES;
+
 /// Sniffs the real MIME type from file content and rejects anything outside
 /// the allow-list, regardless of what the client claims.
 pub fn sniff_and_validate_mime(bytes: &[u8]) -> Option<&'static str> {

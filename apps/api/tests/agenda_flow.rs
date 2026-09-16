@@ -6,6 +6,7 @@ use common::{
     assert_status, call, call_upload, json_body, real_minio_from_env, set_cookie, test_router,
     test_router_with_storage,
 };
+use manage_our_home::storage::MAX_ATTACHMENT_SIZE_BYTES;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -2093,5 +2094,131 @@ async fn a_successful_upload_stores_the_object_and_commits_the_row(db: PgPool) {
             .await
             .is_ok(),
         "the committed row must point at an object that is actually there"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Upload body limit (#190)
+// ---------------------------------------------------------------------------
+
+/// A payload of `size` bytes that `infer` sniffs as a PNG: the magic header
+/// followed by padding. Only the first bytes are ever looked at, so the
+/// padding is what makes the size, not the image.
+fn png_of_size(size: usize) -> Vec<u8> {
+    let mut bytes = vec![0u8; size];
+    bytes[..PNG_BYTES.len()].copy_from_slice(PNG_BYTES);
+    bytes
+}
+
+/// `MAX_ATTACHMENT_SIZE_BYTES` announces 20 MiB, but axum's `DefaultBodyLimit`
+/// caps request bodies at 2 MiB unless the route says otherwise — so anything
+/// past 2 MiB died while the handler read the multipart fields, and the
+/// constant was never reached. Not with a 413 either: `upload_attachment`
+/// maps every `MultipartError` to `invalid_multipart` (400), so the answer
+/// named neither the size nor the limit. Past the cap the refusal must come
+/// from the handler's own check, with `file_too_large`, which is only
+/// possible if the whole body got through.
+///
+/// No storage needed: the size check precedes the MIME sniff and the upload.
+#[sqlx::test]
+async fn an_upload_over_the_cap_is_refused_by_the_handler_not_the_body_limit(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "upload-cap@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let event_id = create_event(&router, &owner_cookie, &group_id).await;
+
+    let upload = call_upload(
+        &router,
+        &format!("/groups/{group_id}/events/{event_id}/attachments"),
+        &owner_cookie,
+        "trop-gros.png",
+        &png_of_size(MAX_ATTACHMENT_SIZE_BYTES + 1),
+    )
+    .await;
+
+    assert_status(&upload, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json_body(upload).await["error"], "file_too_large");
+}
+
+/// The body limit is raised, not removed. Paired with the test above, this
+/// pins the limit somewhere between `MAX_ATTACHMENT_SIZE_BYTES + 1` — which
+/// must reach the handler and get `file_too_large` — and a megabyte past the
+/// cap, which must not.
+///
+/// The refusal surfaces as `invalid_multipart` (400): the limit is enforced
+/// while the field is read, and the handler maps every `MultipartError` to
+/// that one code — a mapping left unchanged here. It is the backstop nobody
+/// reaches: an honest client is stopped by the handler's own 422 first, and
+/// only framing far beyond the margin lands here.
+#[sqlx::test]
+async fn a_body_past_the_framing_margin_never_reaches_the_handler(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "upload-limit@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let event_id = create_event(&router, &owner_cookie, &group_id).await;
+
+    let upload = call_upload(
+        &router,
+        &format!("/groups/{group_id}/events/{event_id}/attachments"),
+        &owner_cookie,
+        "bien-trop-gros.png",
+        &png_of_size(MAX_ATTACHMENT_SIZE_BYTES + 1024 * 1024),
+    )
+    .await;
+
+    assert_status(&upload, StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(upload).await["error"], "invalid_multipart");
+}
+
+/// The other half: an attachment of exactly the announced 20 MiB is stored
+/// and committed. The test above only shows where the refusal comes from —
+/// it would still pass if every upload past 2 MiB were refused a little
+/// later.
+///
+/// Needs a real MinIO; skipped otherwise (see `real_minio_from_env`).
+#[sqlx::test]
+async fn an_attachment_of_exactly_the_cap_is_stored(db: PgPool) {
+    let Some((s3, bucket)) = real_minio_from_env() else {
+        eprintln!(
+            "skipping an_attachment_of_exactly_the_cap_is_stored: \
+             no MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY/BUCKET in the environment"
+        );
+        return;
+    };
+    let router = test_router_with_storage(
+        db.clone(),
+        manage_our_home::storage::Storage::new(s3.clone(), bucket.clone()),
+    );
+    let owner_cookie =
+        register_verify_login(&router, &db, "upload-20mo@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let event_id = create_event(&router, &owner_cookie, &group_id).await;
+
+    let upload = call_upload(
+        &router,
+        &format!("/groups/{group_id}/events/{event_id}/attachments"),
+        &owner_cookie,
+        "scan.png",
+        &png_of_size(MAX_ATTACHMENT_SIZE_BYTES),
+    )
+    .await;
+
+    assert_status(&upload, StatusCode::CREATED);
+    assert_eq!(
+        json_body(upload).await["size_bytes"],
+        MAX_ATTACHMENT_SIZE_BYTES as i64
+    );
+
+    let storage_key = attachment_storage_key(&db, &group_id, &event_id).await;
+    assert!(
+        s3.head_object()
+            .bucket(&bucket)
+            .key(&storage_key)
+            .send()
+            .await
+            .is_ok(),
+        "a 20 MiB attachment must reach the bucket like any other"
     );
 }
