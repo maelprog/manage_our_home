@@ -310,15 +310,17 @@ the pair it was attacking (measured against the previous version: 9 000
 attempts admitted on one pair for 1 000 new emails).
 
 The table holds at most 10 000 pairs, so a full table spans at least 200
-addresses. When it is full of live pairs, a new pair **evicts** one from an
-address holding the most pairs — its unlocked pair with the oldest window,
-a locked one only if that address has nothing else — rather than going
+addresses. When it is full of live pairs, a new pair **evicts** one from the
+addresses holding the most pairs — among all their pairs taken together, the
+unlocked one with the oldest window; a locked one, soonest to expire, only
+if none of those addresses holds an unlocked pair — rather than going
 uncounted. A pair can only be evicted once no address holds more pairs than
 its own: for an address holding `k` pairs that takes the table spread over
 at least `10 000 / k` addresses (10 000 for an address holding one).
 
-Each eviction resets up to 9 attempts on the evicted pair, and **it can be
-repeated**: an attacker who controls enough addresses to keep the table full
+Each eviction resets up to 10 attempts on the evicted pair, its lock
+included — a locked pair can be evicted, and then admits ten fresh attempts —
+and **it can be repeated**: an attacker who controls enough addresses to keep the table full
 replays it as often as they like within one window, and nothing bounds the
 total. The review of #178 measured 27 000 attempts admitted on one pair for
 3 000 cycles in one window (figure from the review, not reproduced here).
@@ -379,7 +381,9 @@ from anyone lock that account for everyone for 15 minutes — the denial of
 service the pair exists to prevent. It gets worse with the per-address
 share: 50 wrong logins on 50 made-up emails from anywhere use up the share
 of the one address everybody appears to have, and every *new* email is
-refused with a 429 until those pairs go stale.
+refused with a 429 until those pairs go stale. The attacker can keep it that
+way indefinitely: one attempt on each of the 50 pairs right after they go
+stale re-arms them, about 50 requests every 15 minutes.
 
 To check a deployment, open the site in a browser from another machine
 (not from the Docker host itself), then within a minute or two, while the

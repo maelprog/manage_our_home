@@ -187,9 +187,10 @@ impl Table {
     /// letting the newcomer through uncounted.
     ///
     /// Stale entries go first. If the table is still full of live pairs,
-    /// one is evicted **from an address holding the most pairs** — the
-    /// unlocked one whose window started earliest, a locked one only if
-    /// that address has nothing else, soonest-to-expire first. A pair can
+    /// one is evicted **from the addresses holding the most pairs**: among
+    /// all the pairs of those addresses taken together, the unlocked one
+    /// whose window started earliest; a locked one, soonest-to-expire
+    /// first, only if none of those addresses holds an unlocked pair. A pair can
     /// therefore only be evicted once no address holds more pairs than its
     /// own: for a pair whose address holds `k` pairs, that takes the table
     /// spread over at least `MAX_TRACKED / k` addresses — 200 at the very
@@ -197,7 +198,9 @@ impl Table {
     /// a handful, cannot evict anyone else's pair.
     ///
     /// **An eviction is not a one-off.** Each one resets up to
-    /// [`MAX_FAILURES`] − 1 attempts on the evicted pair, and an attacker
+    /// [`MAX_FAILURES`] attempts on the evicted pair, its lock included: a
+    /// locked pair can be evicted, and then admits ten fresh attempts. An
+    /// attacker
     /// who controls enough addresses to keep the table full can replay it
     /// as often as they like within one window: nothing here bounds the
     /// total. The review of #178 measured 27 000 attempts admitted on one
