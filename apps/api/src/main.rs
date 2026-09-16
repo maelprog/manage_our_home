@@ -24,8 +24,8 @@ async fn main() -> anyhow::Result<()> {
     .await?;
 
     let database_url = env::var("DATABASE_URL")?;
-    // Both runtime pools bound idle-in-transaction time server-side
-    // (`db::pool_options`, issue #188).
+    // Both runtime pools drop a connection that comes back with a
+    // transaction still open on the server (`db::pool_options`, issue #188).
     let db = manage_our_home::db::pool_options()
         .max_connections(20)
         .connect(&database_url)

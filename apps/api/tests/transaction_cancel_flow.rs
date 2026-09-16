@@ -191,24 +191,104 @@ async fn cancelled_db_begin_leaves_no_open_transaction(
     assert_cancel_never_leaks(&pool, &connect_opts, || manage_our_home::db::begin(&pool)).await;
 }
 
-/// The safety net: a connection left idle inside a transaction, whatever
-/// the path that left it there, is ended by the server instead of holding
-/// its locks for as long as the process lives.
+/// A runtime pool, one connection, no ping on acquire.
+async fn single_runtime_connection_pool(connect_opts: PgConnectOptions) -> PgPool {
+    manage_our_home::db::pool_options()
+        .max_connections(1)
+        .min_connections(0)
+        .test_before_acquire(false)
+        .connect_with(connect_opts)
+        .await
+        .unwrap()
+}
+
+async fn backend_state(observer: &mut PgConnection, pid: i32) -> Option<String> {
+    sqlx::query_scalar("SELECT state FROM pg_stat_activity WHERE pid = $1")
+        .bind(pid)
+        .fetch_optional(&mut *observer)
+        .await
+        .unwrap()
+        .flatten()
+}
+
+async fn pool_backend_pid(pool: &PgPool) -> i32 {
+    let mut conn = pool.acquire().await.unwrap();
+    sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap()
+}
+
+/// The safety net, which has to hold even if the leak is reopened: a
+/// connection that comes back to the pool inside a transaction is ended
+/// there and then, so the server rolls the transaction back and releases
+/// its locks.
+///
+/// The leak is reopened on purpose here — this is `pool.begin()`, the
+/// pre-#188 path, not `db::begin` — so the bound is measured on a live
+/// leak rather than assumed.
 #[sqlx::test]
-async fn runtime_pool_bounds_idle_in_transaction(
+async fn a_connection_returned_inside_a_transaction_is_ended(
     _pool_opts: PgPoolOptions,
     connect_opts: PgConnectOptions,
 ) {
-    let pool = manage_our_home::db::pool_options()
-        .max_connections(1)
-        .connect_with(connect_opts)
-        .await
-        .unwrap();
-    let setting: String = sqlx::query_scalar(
-        "SELECT setting FROM pg_settings WHERE name = 'idle_in_transaction_session_timeout'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(setting, "60000", "milliseconds");
+    let pool = single_runtime_connection_pool(connect_opts.clone()).await;
+    let mut observer = PgConnection::connect_with(&connect_opts).await.unwrap();
+
+    let leaked_pid = pool_backend_pid(&pool).await;
+    wait_until_idle(&pool).await;
+
+    {
+        let mut fut = pin!(pool.begin());
+        let step = std::future::poll_fn(|cx| Poll::Ready(fut.as_mut().poll(cx))).await;
+        assert!(step.is_pending(), "the `BEGIN` completed before the cut");
+    }
+
+    // The leaked backend must be gone, not merely idle: nothing else in the
+    // process is going to end that transaction.
+    for i in 0.. {
+        match backend_state(&mut observer, leaked_pid).await {
+            None => break,
+            Some(state) => {
+                assert!(
+                    i < 250,
+                    "backend {leaked_pid} still alive ({state}) five seconds after the leak"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }
+    }
+
+    // And the pool still hands out a working connection.
+    let fresh_pid = pool_backend_pid(&pool).await;
+    assert_ne!(fresh_pid, leaked_pid);
+    assert_ne!(
+        backend_state(&mut observer, fresh_pid).await.as_deref(),
+        Some("idle in transaction")
+    );
+}
+
+/// The counterpart: the check must not churn healthy connections. Plain
+/// queries, committed transactions and rolled-back ones all keep the same
+/// backend.
+#[sqlx::test]
+async fn runtime_pool_keeps_connections_that_come_back_clean(
+    _pool_opts: PgPoolOptions,
+    connect_opts: PgConnectOptions,
+) {
+    let pool = single_runtime_connection_pool(connect_opts).await;
+    let pid = pool_backend_pid(&pool).await;
+
+    sqlx::query("SELECT 1").execute(&pool).await.unwrap();
+    assert_eq!(pool_backend_pid(&pool).await, pid, "after a plain query");
+
+    let mut tx = manage_our_home::db::begin(&pool).await.unwrap();
+    sqlx::query("SELECT 1").execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(pool_backend_pid(&pool).await, pid, "after a commit");
+
+    let mut tx = manage_our_home::db::begin(&pool).await.unwrap();
+    sqlx::query("SELECT 1").execute(&mut *tx).await.unwrap();
+    drop(tx);
+    assert_eq!(pool_backend_pid(&pool).await, pid, "after a rollback");
 }

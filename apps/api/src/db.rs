@@ -3,21 +3,21 @@
 //! connections. Issue #188.
 
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{Executor, PgPool, Postgres, Transaction};
+use sqlx::{PgPool, Postgres, Row, Transaction};
+use tracing::Instrument;
 
-/// Server-side bound on how long a connection may sit idle inside an open
-/// transaction before Postgres terminates it (`idle_in_transaction_session_timeout`).
+/// Asks the server whether it still holds a transaction block open on this
+/// connection. Sent with the simple query protocol (`raw_sql`), which is
+/// what makes the answer exact: outside a transaction block Postgres opens
+/// an implicit one for this very statement and gives it this statement's
+/// own start timestamp, so the two timestamps are equal by construction.
+/// Inside a block they differ by at least the round trip that opened it.
 ///
-/// A safety net, not the fix: [`begin`] closes the one leak path known
-/// today. If another one ever appears, a leaked transaction holds its locks
-/// for this long instead of for as long as the process lives.
-///
-/// Sized above the longest legitimate idle gap inside a transaction:
-/// `agenda::attachments::upload_attachment` opens its transaction before
-/// reading the multipart body (capped by axum's default 2 MB body limit)
-/// and keeps it open across `put_object`. A transaction idle past this
-/// bound loses its connection and the request fails.
-const IDLE_IN_TRANSACTION_TIMEOUT: &str = "SET idle_in_transaction_session_timeout = '60s'";
+/// sqlx's own view (`transaction_depth`) cannot answer this: the leak
+/// [`begin`] guards against is precisely the case where the server and
+/// sqlx disagree, and `PgConnection::in_transaction`, which reads the
+/// server's answer, is private to the crate.
+const LEFT_IN_TRANSACTION: &str = "SELECT transaction_timestamp() <> statement_timestamp()";
 
 /// Opens a transaction on `pool`, and leaves no transaction open on the
 /// server if the caller is cancelled while waiting.
@@ -38,9 +38,15 @@ const IDLE_IN_TRANSACTION_TIMEOUT: &str = "SET idle_in_transaction_session_timeo
 /// still completes, and the `Transaction` it produces is dropped with its
 /// depth already counted: sqlx queues the `ROLLBACK`, and the release ping
 /// sends it before the connection is reused.
+///
+/// Note the two costs of running the `BEGIN` elsewhere: a caller that is
+/// dropped keeps its place in the pool's acquire queue until the task is
+/// done (bounded by the pool's acquire timeout), and the task carries the
+/// caller's tracing span explicitly rather than by being its child.
 pub async fn begin(pool: &PgPool) -> Result<Transaction<'static, Postgres>, sqlx::Error> {
     let pool = pool.clone();
-    match tokio::spawn(async move { pool.begin().await }).await {
+    let task = tokio::spawn(async move { pool.begin().await }.in_current_span());
+    match task.await {
         Ok(result) => result,
         Err(join_error) if join_error.is_panic() => {
             std::panic::resume_unwind(join_error.into_panic())
@@ -51,12 +57,31 @@ pub async fn begin(pool: &PgPool) -> Result<Transaction<'static, Postgres>, sqlx
 }
 
 /// Pool options for the runtime pools (`DATABASE_URL`, `ADMIN_DATABASE_URL`).
-/// Every connection they open carries [`IDLE_IN_TRANSACTION_TIMEOUT`].
+///
+/// A connection that comes back to the pool with a transaction still open
+/// on the server is closed instead of being reused, which ends that
+/// transaction and releases its locks. This is the bound on any leak
+/// [`begin`] does not cover: without it, such a connection is handed out
+/// again for autocommit queries, each of which runs *inside* the leaked
+/// transaction, so the leak lives on — for as long as the connection keeps
+/// being reused, no matter what `idle_in_transaction_session_timeout` is
+/// set to, since every query resets that idle counter.
+///
+/// The check is one extra round trip per release, next to the ping sqlx
+/// already does there.
 pub fn pool_options() -> PgPoolOptions {
-    PgPoolOptions::new().after_connect(|conn, _meta| {
+    PgPoolOptions::new().after_release(|conn, _meta| {
         Box::pin(async move {
-            conn.execute(IDLE_IN_TRANSACTION_TIMEOUT).await?;
-            Ok(())
+            let left_in_transaction: bool = sqlx::raw_sql(LEFT_IN_TRANSACTION)
+                .fetch_one(&mut *conn)
+                .await?
+                .try_get(0)?;
+            if left_in_transaction {
+                tracing::warn!(
+                    "connection returned to the pool inside an open transaction: closing it"
+                );
+            }
+            Ok(!left_in_transaction)
         })
     })
 }
