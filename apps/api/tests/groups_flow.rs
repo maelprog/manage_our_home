@@ -210,6 +210,113 @@ async fn list_groups_is_scoped_to_caller(db: PgPool) {
     assert_eq!(json_body(bob_list).await, serde_json::json!([]));
 }
 
+/// A pool connected as a fresh `NOSUPERUSER NOBYPASSRLS` login role with
+/// the grants apps/api/README.md prescribes for `DATABASE_URL`. The
+/// `#[sqlx::test]` pool is the harness role, which bypasses RLS: a handler
+/// driven through it cannot tell a policy that filters correctly from one
+/// that filters nothing, or everything (issue #113).
+async fn prescribed_role_pool(db: &PgPool) -> (String, PgPool) {
+    let role = format!("app_flow_role_{}", Uuid::new_v4().simple());
+    for statement in [
+        format!("CREATE ROLE {role} LOGIN PASSWORD 'flow-test-password' NOSUPERUSER NOBYPASSRLS"),
+        format!("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {role}"),
+        format!("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {role}"),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(db)
+            .await
+            .unwrap();
+    }
+    let options = (*db.connect_options())
+        .clone()
+        .username(&role)
+        .password("flow-test-password");
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect_with(options)
+        .await
+        .unwrap();
+    (role, pool)
+}
+
+async fn drop_prescribed_role(db: &PgPool, pool: PgPool, role: &str) {
+    pool.close().await;
+    for statement in [format!("DROP OWNED BY {role}"), format!("DROP ROLE {role}")] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(db)
+            .await
+            .unwrap();
+    }
+}
+
+/// Issue #113: under the role the README prescribes, `POST /groups` failed
+/// (the `groups` policy rejected the new row) and `GET /groups` answered
+/// `[]` to the owner of a group. Both must work there, the caller must
+/// still see nobody else's groups, and the per-user group cap must still
+/// count the caller's memberships.
+#[sqlx::test]
+async fn groups_work_under_the_prescribed_role(db: PgPool) {
+    let (role, app_db) = prescribed_role_pool(&db).await;
+    let router = test_router(app_db.clone());
+    let owner = register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let outsider =
+        register_verify_login(&router, &db, "outsider@example.test", "outsider-password1").await;
+
+    let create = call(
+        &router,
+        Method::POST,
+        "/groups",
+        Some(&owner),
+        Some(serde_json::json!({"name": "Foyer"})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let group_id = json_body(create).await["id"].as_str().unwrap().to_string();
+
+    let list = call(&router, Method::GET, "/groups", Some(&owner), None).await;
+    assert_status(&list, StatusCode::OK);
+    let list = json_body(list).await;
+    let arr = list.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "the owner must see their group: {list}");
+    assert_eq!(arr[0]["group_id"], group_id.as_str());
+    assert_eq!(arr[0]["name"], "Foyer");
+    assert_eq!(arr[0]["role"], "owner");
+    assert!(arr[0]["created_at"].is_string());
+
+    let outsider_list = call(&router, Method::GET, "/groups", Some(&outsider), None).await;
+    assert_status(&outsider_list, StatusCode::OK);
+    assert_eq!(json_body(outsider_list).await, serde_json::json!([]));
+
+    // The cap (MAX_GROUPS_PER_USER = 10) counts the caller's memberships;
+    // a count that RLS reads back as 0 would let the eleventh through.
+    for n in 2..=10 {
+        let res = call(
+            &router,
+            Method::POST,
+            "/groups",
+            Some(&owner),
+            Some(serde_json::json!({"name": format!("Foyer {n}")})),
+        )
+        .await;
+        assert_status(&res, StatusCode::CREATED);
+    }
+    let eleventh = call(
+        &router,
+        Method::POST,
+        "/groups",
+        Some(&owner),
+        Some(serde_json::json!({"name": "Foyer 11"})),
+    )
+    .await;
+    assert_status(&eleventh, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let list = call(&router, Method::GET, "/groups", Some(&owner), None).await;
+    assert_eq!(json_body(list).await.as_array().unwrap().len(), 10);
+
+    drop(router);
+    drop_prescribed_role(&db, app_db, &role).await;
+}
+
 /// PATCH /groups/:id renames as admin/owner, is forbidden for a standard
 /// member, and rejects an empty name with 422.
 #[sqlx::test]

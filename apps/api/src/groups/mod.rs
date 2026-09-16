@@ -33,11 +33,19 @@ pub async fn create_group(
     auth: AuthUser,
     Json(body): Json<CreateGroupRequest>,
 ) -> AppResult<impl IntoResponse> {
+    // The id is chosen here rather than by the column default so the
+    // transaction can be scoped to the family it creates: under a role that
+    // does not bypass RLS, `groups` and `group_members` only accept a new
+    // row for the family in `app.family_id` (issue #113). The same scope
+    // lets the cap below count the caller's memberships in every family
+    // (`group_members_self_read`, 0014) instead of reading back 0.
+    let group_id = Uuid::new_v4();
+    let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let count = sqlx::query_scalar!(
         "SELECT count(*) FROM group_members WHERE user_id = $1",
         auth.user_id
     )
-    .fetch_one(&state.db)
+    .fetch_one(&mut *tx)
     .await?
     .unwrap_or(0);
 
@@ -45,13 +53,13 @@ pub async fn create_group(
         return Err(AppError::Unprocessable("too_many_groups".into()));
     }
 
-    let mut tx = crate::db::begin(&state.db).await?;
     let group = sqlx::query!(
         r#"
-        INSERT INTO groups (name, created_by)
-        VALUES ($1, $2)
+        INSERT INTO groups (id, name, created_by)
+        VALUES ($1, $2, $3)
         RETURNING id, name
         "#,
+        group_id,
         body.name,
         auth.user_id,
     )
@@ -80,44 +88,48 @@ pub async fn create_group(
     ))
 }
 
-/// Lists every group the caller belongs to, with the caller's role in each.
-/// `groups` is visible under the membership-based RLS fallback (only
-/// `app.user_id` set, see `user_scoped_tx`), so cross-user isolation is
-/// enforced at the DB layer — another user's groups can never appear. The
-/// per-group role is read under `scoped_tx` because `group_members` requires
-/// `app.family_id` (same reason the RGPD export path loops per group).
-/// Bounded by MAX_GROUPS_PER_USER (10), so the per-group query is cheap.
+/// Lists every group the caller belongs to, with the caller's role in each,
+/// in one statement.
+///
+/// The membership filter is written in the query, not left to RLS. Under the
+/// role apps/api/README.md prescribes, the policies of 0014 apply the same
+/// filter a second time (`app.user_id` alone makes the caller's membership
+/// rows and groups readable). But a role that bypasses RLS — the superuser
+/// the `e2e` job and infra/docker-compose.yml connect as — sees every row
+/// of both tables. The previous shape read every visible group, then opened
+/// one transaction per group to find the caller's role: there it cost a
+/// few round trips per group *in the database*, on every authenticated page
+/// of apps/web (issue #113).
 pub async fn list_groups(
     State(state): State<AppState>,
     auth: AuthUser,
 ) -> AppResult<impl IntoResponse> {
-    let mut group_tx = user_scoped_tx(&state.db, auth.user_id).await?;
-    let groups = sqlx::query!("SELECT id, name, created_at FROM groups ORDER BY created_at")
-        .fetch_all(&mut *group_tx)
-        .await?;
-    group_tx.commit().await?;
+    let mut tx = user_scoped_tx(&state.db, auth.user_id).await?;
+    let groups = sqlx::query!(
+        r#"
+        SELECT g.id, g.name, g.created_at, gm.role as "role: String"
+        FROM group_members gm
+        JOIN groups g ON g.id = gm.group_id
+        WHERE gm.user_id = $1
+        ORDER BY g.created_at
+        "#,
+        auth.user_id
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
 
-    let mut out = Vec::with_capacity(groups.len());
-    for group in &groups {
-        let mut tx = scoped_tx(&state.db, group.id, auth.user_id).await?;
-        let membership = sqlx::query!(
-            r#"SELECT role as "role: String" FROM group_members WHERE group_id = $1 AND user_id = $2"#,
-            group.id,
-            auth.user_id
-        )
-        .fetch_optional(&mut *tx)
-        .await?;
-        tx.commit().await?;
-
-        if let Some(m) = membership {
-            out.push(json!({
+    let out: Vec<_> = groups
+        .iter()
+        .map(|group| {
+            json!({
                 "group_id": group.id,
                 "name": group.name,
-                "role": m.role,
+                "role": group.role,
                 "created_at": group.created_at,
-            }));
-        }
-    }
+            })
+        })
+        .collect();
 
     Ok(Json(out))
 }
