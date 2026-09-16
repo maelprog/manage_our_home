@@ -79,7 +79,7 @@ pub async fn register(
 
     let password_hash = hash_password(&body.password).map_err(AppError::Internal)?;
 
-    let mut tx = state.db.begin().await?;
+    let mut tx = crate::db::begin(&state.db).await?;
     let user = sqlx::query!(
         r#"
         INSERT INTO users (email, password_hash, display_name, email_verified)
@@ -134,7 +134,7 @@ pub async fn verify_email(
     State(state): State<AppState>,
     Query(query): Query<VerifyEmailQuery>,
 ) -> AppResult<impl IntoResponse> {
-    let mut tx = state.db.begin().await?;
+    let mut tx = crate::db::begin(&state.db).await?;
     let row = sqlx::query!(
         r#"
         SELECT user_id, expires_at, consumed_at
@@ -379,7 +379,7 @@ pub async fn reset_password(
     State(state): State<AppState>,
     Json(body): Json<ResetPasswordRequest>,
 ) -> AppResult<impl IntoResponse> {
-    let mut tx = state.db.begin().await?;
+    let mut tx = crate::db::begin(&state.db).await?;
     let row = sqlx::query!(
         r#"
         SELECT user_id, expires_at, consumed_at
@@ -478,7 +478,7 @@ pub async fn set_password(
     validate_password(&body.new_password).map_err(unprocessable)?;
     let password_hash = hash_password(&body.new_password).map_err(AppError::Internal)?;
 
-    let mut tx = state.db.begin().await?;
+    let mut tx = crate::db::begin(&state.db).await?;
     sqlx::query!(
         "UPDATE users SET password_hash = $1, email_verified = false WHERE id = $2",
         password_hash,
@@ -567,7 +567,7 @@ pub async fn delete_account(
         })));
     }
 
-    let mut tx = state.db.begin().await?;
+    let mut tx = crate::db::begin(&state.db).await?;
     sqlx::query!(
         "UPDATE users SET deletion_requested_at = now() WHERE id = $1",
         auth.user_id
@@ -592,7 +592,7 @@ pub async fn cancel_delete_account(
     State(state): State<AppState>,
     auth: AuthUser,
 ) -> AppResult<impl IntoResponse> {
-    let mut tx = state.db.begin().await?;
+    let mut tx = crate::db::begin(&state.db).await?;
     let updated = sqlx::query!(
         r#"
         UPDATE users

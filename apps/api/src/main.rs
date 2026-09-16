@@ -4,7 +4,6 @@ use manage_our_home::email::EmailSender;
 use manage_our_home::{build_router, jobs, AppState};
 use oauth2::basic::BasicClient;
 use oauth2::{AuthUrl, ClientId, ClientSecret, RedirectUrl, TokenUrl};
-use sqlx::postgres::PgPoolOptions;
 use std::env;
 
 #[tokio::main]
@@ -25,7 +24,9 @@ async fn main() -> anyhow::Result<()> {
     .await?;
 
     let database_url = env::var("DATABASE_URL")?;
-    let db = PgPoolOptions::new()
+    // Both runtime pools drop a connection that comes back with a
+    // transaction still open on the server (`db::pool_options`, issue #188).
+    let db = manage_our_home::db::pool_options()
         .max_connections(20)
         .connect(&database_url)
         .await?;
@@ -44,7 +45,7 @@ async fn main() -> anyhow::Result<()> {
     // #8). See apps/api/README.md for the role-setup snippet.
     let admin_database_url =
         env::var("ADMIN_DATABASE_URL").unwrap_or_else(|_| database_url.clone());
-    let admin_db = PgPoolOptions::new()
+    let admin_db = manage_our_home::db::pool_options()
         .max_connections(5)
         .connect(&admin_database_url)
         .await?;

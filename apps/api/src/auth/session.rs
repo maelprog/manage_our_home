@@ -172,7 +172,7 @@ pub async fn scoped_tx<'a>(
     family_id: Uuid,
     user_id: Uuid,
 ) -> Result<Transaction<'a, Postgres>, sqlx::Error> {
-    let mut tx = pool.begin().await?;
+    let mut tx = crate::db::begin(pool).await?;
     sqlx::query("SELECT set_config('app.family_id', $1, true)")
         .bind(family_id.to_string())
         .execute(&mut *tx)
@@ -191,7 +191,7 @@ pub async fn user_scoped_tx<'a>(
     pool: &'a PgPool,
     user_id: Uuid,
 ) -> Result<Transaction<'a, Postgres>, sqlx::Error> {
-    let mut tx = pool.begin().await?;
+    let mut tx = crate::db::begin(pool).await?;
     sqlx::query("SELECT set_config('app.user_id', $1, true)")
         .bind(user_id.to_string())
         .execute(&mut *tx)
@@ -206,7 +206,7 @@ pub async fn token_scoped_tx<'a>(
     pool: &'a PgPool,
     token: Uuid,
 ) -> Result<Transaction<'a, Postgres>, sqlx::Error> {
-    let mut tx = pool.begin().await?;
+    let mut tx = crate::db::begin(pool).await?;
     sqlx::query("SELECT set_config('app.invitation_token', $1, true)")
         .bind(token.to_string())
         .execute(&mut *tx)
