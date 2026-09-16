@@ -20,6 +20,7 @@ pub mod stocks;
 pub mod storage;
 pub mod user_admin;
 
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{delete, get, post};
 use axum::Router;
 use oauth2::{basic::BasicClient, EndpointNotSet, EndpointSet};
@@ -142,7 +143,12 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/groups/:id/events/:event_id/attachments",
-            post(agenda::attachments::upload_attachment).get(agenda::attachments::list_attachments),
+            // The body limit is raised on the upload method only, and
+            // `MethodRouter::layer` applies to the methods registered before
+            // it — hence `.get(...)` after, which needs no body at all.
+            post(agenda::attachments::upload_attachment)
+                .layer(DefaultBodyLimit::max(storage::MAX_UPLOAD_BODY_BYTES))
+                .get(agenda::attachments::list_attachments),
         )
         .route(
             "/groups/:id/events/:event_id/attachments/:attachment_id/download",
