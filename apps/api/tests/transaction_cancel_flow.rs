@@ -256,7 +256,9 @@ async fn gated_relay(upstream: &PgConnectOptions) -> (PgConnectOptions, ReplyGat
         "the relay only speaks TCP, and DATABASE_URL points at a Unix socket"
     );
     // A (host, port) pair rather than "host:port", which an IPv6 literal
-    // would break; the brackets a URL puts around one are dropped.
+    // would break; the brackets a URL puts around one are dropped. Not
+    // reachable with sqlx-core 0.9: `#[sqlx::test]` fails to connect to a
+    // bracketed IPv6 host before this test runs.
     let host = upstream.get_host();
     let host = host
         .strip_prefix('[')
@@ -354,7 +356,8 @@ async fn a_connection_returned_inside_a_transaction_is_ended(
         }
     }
     // The future is gone with the reply still in the relay: let it through
-    // to the pool's release ping, as it would have arrived without the cut.
+    // to the pool's `after_release` query, as it would have arrived without
+    // the cut.
     gate.release();
 
     // The leaked backend must be gone, not merely idle: nothing else in the
