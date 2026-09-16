@@ -248,11 +248,21 @@ impl ReplyGate {
 /// Starts a relay to `upstream`'s server and returns options that connect
 /// through it, with the gate open.
 async fn gated_relay(upstream: &PgConnectOptions) -> (PgConnectOptions, ReplyGate) {
+    // sqlx also goes through a Unix socket when the host is a path
+    // (`postgres:///db` defaults it to `/var/run/postgresql`), not only
+    // when `socket` is set.
     assert!(
-        upstream.get_socket().is_none(),
+        upstream.get_socket().is_none() && !upstream.get_host().starts_with('/'),
         "the relay only speaks TCP, and DATABASE_URL points at a Unix socket"
     );
-    let target = format!("{}:{}", upstream.get_host(), upstream.get_port());
+    // A (host, port) pair rather than "host:port", which an IPv6 literal
+    // would break; the brackets a URL puts around one are dropped.
+    let host = upstream.get_host();
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    let target = (host.to_owned(), upstream.get_port());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let (open, gate) = watch::channel(true);
