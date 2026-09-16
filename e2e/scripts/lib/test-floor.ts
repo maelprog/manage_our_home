@@ -26,11 +26,11 @@
 //     `import test from "node:test";` donnent `tests 2 / pass 2 / fail 0`,
 //     exit 0, le rapporteur `spec` affichant « ✔ lib/dates.test.ts ». Sur
 //     cette famille-là, compter les tests passés ou en échec ne vaut pas
-//     mieux que compter les fichiers ; la couvrir demanderait un compte des `test(...)`
-//     réellement enregistrés, hors du périmètre de #123. Attention à la
-//     nuance : vidé jusqu'à une coquille `describe(...)`, le fichier est
-//     rouge (voir ci-dessus) ; c'est le fichier qui n'enregistre plus rien du
-//     tout qui passe ;
+//     mieux que compter les fichiers ; la couvrir demanderait un compte des
+//     `test(...)` réellement enregistrés, hors du périmètre de #123.
+//     Attention à la nuance : vidé jusqu'à une coquille `describe(...)`, le
+//     fichier est rouge (voir ci-dessus) ; c'est le fichier qui n'enregistre
+//     plus rien du tout qui passe ;
 //   - la suite qui rétrécit : trois fichiers qui tombent à un seul, ou vingt
 //     tests qui tombent à un, restent verts. Attraper ça demanderait un seuil
 //     à maintenir à chaque test ajouté — #123 dit que « au moins 1 » suffit.
@@ -63,7 +63,7 @@
 // ---------------------------------------------------------------------------
 
 /**
- * Seuil du plancher : « au moins un test a tourné ».
+ * Seuil du plancher : « au moins un test passé ou en échec ».
  *
  * #123 dit explicitement que ce seuil suffit — il attrape le glob qui ne
  * matche plus, sans rien à maintenir à chaque test ajouté ; le relever
@@ -142,9 +142,9 @@ export function parseTapSummary(report: string): TapSummary | null {
  *     les compteurs ne distinguent pas les deux ;
  *   - un `todo` l'exécute s'il en a un, mais son issue n'entre ni dans `pass`
  *     ni dans `fail` : un corps qui lève sort `not ok … # TODO`, exit 0 ;
- *   - un annulé peut ne jamais démarrer ; annulé par timeout, son corps a
- *     démarré et peut aller jusqu'au bout — node cesse de l'attendre sans
- *     l'interrompre.
+ *   - un annulé peut ne jamais démarrer (hook `before` en échec) ; annulé
+ *     par timeout, son corps a démarré et peut aller jusqu'au bout — node
+ *     cesse de l'attendre sans l'interrompre.
  * Aucun des trois n'entre dans `pass` ni dans `fail`, donc aucun ne tient le
  * plancher. Le diagnostic, lui, doit les distinguer (voir `diagnose`).
  */
@@ -293,12 +293,12 @@ export function floorViolation(report: string, minimum: number): string | null {
  *     l'affichage précédent, qui invoquait trois familles tout en n'affichant
  *     que `skipped`. Et chacun dit ce qu'il sait du corps (#186) : le
  *     message affirmait « aucun n'a exécuté son corps » sur une suite `todo`,
- *     dont Node 24 exécute bien les corps.
+ *     dont Node 24 exécute bien les corps quand ils en ont.
  *
  * Une quatrième, qui n'existe qu'au-dessus du seuil 1 (#152) : `tests > 0`
  * avec des tests passés ou en échec, mais moins que le seuil. `diagnose`
- * affirmait « aucun n'a exécuté … la couverture est nulle » sans regarder `pass` /
- * `fail`, et contredisait la ligne qu'il suit. Inatteignable tant que
+ * affirmait « aucun n'a exécuté … la couverture est nulle » sans regarder
+ * `pass` / `fail`, et contredisait la ligne qu'il suit. Inatteignable tant que
  * `MINIMUM_TESTS` vaut 1, mais `minimum` est un paramètre de `floorViolation`.
  */
 function diagnose(summary: TapSummary): string {
@@ -344,10 +344,13 @@ function diagnose(summary: TapSummary): string {
     counted + summary.skipped + summary.cancelled + summary.todo;
   if (outcomes > summary.tests) {
     // Sur les rapports mesurés, `tests` vaut la somme des cinq issues. Plus
-    // d'issues que de tests, node ne le produit pas : écrire « dont »
-    // présenterait comme un sous-ensemble ce qui n'en est pas un. On dit
-    // l'incohérence et on renvoie aux chiffres. (Le cas inverse, moins
-    // d'issues que de tests, tombe dans la formule générique plus bas.)
+    // d'issues que de tests, aucun rapport mesuré ne le montre : écrire
+    // « dont » présenterait comme un sous-ensemble ce qui n'en est pas un. On dit
+    // l'incohérence et on renvoie aux chiffres. Le cas inverse, moins
+    // d'issues que de tests, n'est pas signalé : les branches suivantes
+    // nomment les compteurs non nuls comme d'habitude, et la formule
+    // générique ne sort que si pass, fail, skipped, cancelled et todo valent
+    // tous 0.
     return (
       `  Compteurs incohérents : ${outcomes} issue(s) (pass, fail, skipped, ` +
       `cancelled, todo)\n  pour ${summary.tests} test(s) trouvé(s). Relire ` +

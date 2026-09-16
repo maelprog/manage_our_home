@@ -419,12 +419,14 @@ test("floorViolation n'invente pas de cause quand tout est passé sous un seuil 
   assert.doesNotMatch(message, /glob/i);
 });
 
-// Un todo EXÉCUTE son corps en Node 24 (#186) : `test.todo("x", () => {…})`
-// tourne, et un corps qui lève sort `not ok … # TODO` sans compter en `fail`
-// (mesuré en Node 24.20.0). Un sauté ne tourne pas s'il est déclaré
-// `test.skip(...)`, mais tourne si `t.skip()` est appelé dans son corps. Un
-// annulé peut ne jamais démarrer ; annulé par timeout, son corps a démarré et
-// peut aller jusqu'au bout, node cessant seulement de l'attendre (mesuré).
+// Un todo EXÉCUTE son corps en Node 24 s'il en a un (#186) :
+// `test.todo("x", () => {…})` tourne, et un corps qui lève sort
+// `not ok … # TODO` sans compter en `fail`, exit 0 (mesuré en Node 24.20.0).
+// Un sauté ne tourne pas s'il est déclaré `test.skip(...)`, mais tourne si
+// `t.skip()` est appelé dans son corps. Un annulé peut ne jamais démarrer
+// (hook `before` en échec : `cancelledByParent`, corps non lancé) ; annulé par
+// timeout, son corps a démarré et peut aller jusqu'au bout, node cessant
+// seulement de l'attendre (mesuré).
 // Le plancher ne compte aucun des trois — seuls pass et fail portent un
 // résultat —, mais le diagnostic ne doit pas affirmer sur un corps ce que les
 // compteurs ne disent pas.
@@ -438,7 +440,7 @@ test("floorViolation n'affirme pas qu'une suite todo n'a exécuté aucun corps (
   assert.match(message, /2 todo \(corps exécuté/);
 });
 
-test("floorViolation distingue les todo exécutés des sautés et des annulés (#186)", () => {
+test("floorViolation distingue les todo des sautés et des annulés (#186)", () => {
   const tap = `1..3
 # tests 3
 # suites 0
@@ -452,15 +454,18 @@ test("floorViolation distingue les todo exécutés des sautés et des annulés (
   assert.ok(message);
   assert.match(message, /1 sauté\(s\) \(corps non lancé, sauf t\.skip\(\)/);
   assert.match(message, /1 todo \(corps exécuté/);
-  assert.match(message, /1 annulé\(s\) \(corps peut-être lancé, jusqu'au bout ou non\)/);
+  assert.match(
+    message,
+    /1 annulé\(s\) \(corps peut-être lancé, jusqu'au bout ou non\)/,
+  );
   assert.doesNotMatch(message, /n'a exécuté/);
 });
 
 // Ce que rend `node --test --test-reporter=tap` (Node 24.20.0) sur un fichier
-// dont le premier test, `{ timeout: 50 }`, attend 300 ms puis écrit une trace,
-// et dont le second attend 500 ms. La trace de fin est écrite (mesuré) : le
-// corps annulé est allé jusqu'au bout. Copié d'une exécution, lignes YAML
-// retirées.
+// dont le premier test, `{ timeout: 50 }`, écrit une trace, attend 300 ms et
+// en écrit une seconde, et dont le second attend 500 ms. Les deux traces sont
+// écrites (mesuré) : le corps annulé est allé jusqu'au bout. Copié d'une
+// exécution, blocs YAML et ligne `# duration_ms` retirés.
 const TAP_TIMEOUT = `TAP version 13
 # Subtest: timeout
 not ok 1 - timeout
@@ -483,14 +488,17 @@ test("floorViolation n'affirme pas qu'un annulé a été interrompu (#186)", () 
   assert.ok(message, "1 passé < 2 exigés");
   assert.doesNotMatch(message, /interrompu/);
   assert.doesNotMatch(message, /jamais lancé\)/);
-  assert.match(message, /1 annulé\(s\) \(corps peut-être lancé, jusqu'au bout ou non\)/);
+  assert.match(
+    message,
+    /1 annulé\(s\) \(corps peut-être lancé, jusqu'au bout ou non\)/,
+  );
 });
 
 // Ce que rend `node --test --test-reporter=tap` (Node 24.20.0) sur un fichier
 // dont un test appelle `t.skip()` DANS son corps — le corps a tourné (mesuré)
 // — et dont un autre est déclaré `test.skip(...)`, qui ne tourne pas.
 // Les deux sortent `ok # SKIP` et comptent en `skipped`. Copié d'une
-// exécution, lignes YAML retirées.
+// exécution, blocs YAML et ligne `# duration_ms` retirés.
 const TAP_SKIP_DANS_LE_CORPS = `TAP version 13
 # Subtest: skip-dans-corps
 ok 1 - skip-dans-corps # SKIP
@@ -517,8 +525,9 @@ test("floorViolation n'affirme pas qu'un sauté n'a pas exécuté son corps (#18
 });
 
 test("floorViolation distingue aussi les todo sous un seuil > 1 (#186)", () => {
-  // La branche de #152 hérite du même comptage : deux passés, trois todo
-  // dont le corps a tourné, cinq exigés. « dont 2 exécuté(s) » y serait faux.
+  // La branche de #152 hérite du même comptage : deux passés, trois todo,
+  // cinq exigés. Les todo ont pu exécuter leur corps : « 2 exécuté(s) »
+  // n'est pas le bon nombre.
   const tap = `1..5
 # tests 5
 # suites 0
@@ -535,8 +544,9 @@ test("floorViolation distingue aussi les todo sous un seuil > 1 (#186)", () => {
 });
 
 test("floorViolation ne présente pas des compteurs incohérents comme un sous-ensemble", () => {
-  // node ne produit pas ce TAP (plus de passés que de trouvés), mais le
-  // diagnostic ne doit pas écrire « 1 test(s) trouvé(s), dont 3 … » dessus.
+  // Aucun rapport mesuré ne montre ce TAP (plus de passés que de trouvés),
+  // mais le diagnostic ne doit pas écrire « 1 test(s) trouvé(s), dont 3 … »
+  // dessus.
   const tap = `1..1
 # tests 1
 # suites 0
@@ -552,7 +562,7 @@ test("floorViolation ne présente pas des compteurs incohérents comme un sous-e
   assert.match(message, /incohérent/);
 });
 
-test("floorViolation détecte l'incohérence quand les sautés, les annulés ou les todo débordent", () => {
+test("floorViolation signale l'incohérence si sautés, annulés ou todo débordent", () => {
   // `tests` vaut la somme des cinq issues (pass, fail, skipped, cancelled,
   // todo) sur les rapports mesurés. Ici pass + fail tient sous `tests`, mais
   // la somme non : 1 + 3 = 4 issues pour 2 tests. « 2 trouvé(s), dont 1 … »
@@ -696,14 +706,14 @@ test("le vrai package.json câble bien test:scripts sur le lanceur", () => {
 // changement reste visible dans le diff.
 // ---------------------------------------------------------------------------
 
-test("MINIMUM_TESTS vaut 1 : au moins un test doit avoir tourné", () => {
+test("MINIMUM_TESTS vaut 1 : au moins un test doit être passé ou en échec", () => {
   assert.equal(MINIMUM_TESTS, 1);
 });
 
 test("MINIMUM_TESTS rend le plancher mordant sur une porte vide", () => {
   // La propriété qui compte, formulée sans citer la valeur : quel que soit le
-  // seuil retenu, il doit refuser un rapport à zéro test exécuté. À 0,
-  // `floorViolation` serait muette sur exactement la panne de #123.
+  // seuil retenu, il doit refuser un rapport à zéro test passé ou en échec.
+  // À 0, `floorViolation` serait muette sur exactement la panne de #123.
   assert.ok(
     floorViolation(TAP_ZERO_MATCH, MINIMUM_TESTS),
     "un seuil à 0 laisserait la porte verte sur zéro test",
