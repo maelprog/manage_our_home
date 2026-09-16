@@ -172,8 +172,9 @@ remplacement) de l'isolation applicative ci-dessous.
   pas de flux cross-site requis).
 - Rate-limiting sur `/login` et `/register` dès que l'app est exposée sur
   internet (brute force, credential stuffing).
-- OAuth2 Google : validation du `state` (CSRF), tokens de refresh chiffrés
-  via `pgcrypto`, jamais stockés en clair.
+- OAuth2 Google : validation du `state` (CSRF), PKCE `S256` contre
+  l'injection de code d'autorisation (RFC 9700, #193), tokens de refresh
+  chiffrés via `pgcrypto`, jamais stockés en clair.
 
 **Données en base**
 - `pgcrypto` sur les PII sensibles (emails ; notes de messagerie si jugées

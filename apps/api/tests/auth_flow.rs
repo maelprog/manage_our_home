@@ -1099,3 +1099,182 @@ async fn a_locked_attempt_answers_without_hashing(db: PgPool) {
         "a locked attempt took {locked_elapsed:?}, the fastest refusal {refused:?}"
     );
 }
+
+/// Every `Set-Cookie` of a response, as `name=value; attributes` lines.
+fn set_cookies(response: &axum::response::Response) -> Vec<String> {
+    response
+        .headers()
+        .get_all(axum::http::header::SET_COOKIE)
+        .iter()
+        .map(|v| v.to_str().unwrap().to_string())
+        .collect()
+}
+
+fn cookie_value(set_cookies: &[String], name: &str) -> Option<String> {
+    set_cookies.iter().find_map(|line| {
+        line.split(';')
+            .next()
+            .and_then(|pair| pair.strip_prefix(&format!("{name}=")))
+            .map(str::to_string)
+    })
+}
+
+/// #193: `start` sends Google an S256 PKCE challenge and keeps the matching
+/// verifier in an HttpOnly cookie beside the CSRF `state`, never in the URL.
+#[sqlx::test]
+async fn google_start_sends_an_s256_challenge_and_keeps_the_verifier_in_a_cookie(db: PgPool) {
+    let router = test_router(db);
+
+    let response = call(&router, Method::GET, "/auth/google/start", None, None).await;
+    assert!(response.status().is_redirection());
+    let location = response
+        .headers()
+        .get(axum::http::header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let url = oauth2::url::Url::parse(&location).unwrap();
+    let param = |name: &str| {
+        url.query_pairs()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.into_owned())
+    };
+
+    let cookies = set_cookies(&response);
+    let verifier = cookie_value(&cookies, "google_oauth_pkce_verifier").expect("verifier cookie");
+    let state = cookie_value(&cookies, "google_oauth_state").expect("state cookie");
+
+    assert_eq!(param("code_challenge_method").as_deref(), Some("S256"));
+    let expected = oauth2::PkceCodeChallenge::from_code_verifier_sha256(
+        &oauth2::PkceCodeVerifier::new(verifier.clone()),
+    );
+    assert_eq!(param("code_challenge").as_deref(), Some(expected.as_str()));
+    assert_eq!(param("state").as_deref(), Some(state.as_str()));
+    assert!(
+        !location.contains(&verifier),
+        "verifier leaked into the URL"
+    );
+
+    let verifier_line = cookies
+        .iter()
+        .find(|l| l.starts_with("google_oauth_pkce_verifier="))
+        .unwrap();
+    assert!(verifier_line.contains("HttpOnly"));
+    assert!(verifier_line.contains("Path=/"));
+    assert!(verifier_line.contains("SameSite=Lax"));
+}
+
+/// Asserts `response` expires `name` for the whole site: an expiry without
+/// `start`'s `Path=/` would leave the browser's cookie in place.
+fn assert_cleared(response: &axum::response::Response, name: &str) {
+    let cookies = set_cookies(response);
+    let line = cookies
+        .iter()
+        .find(|l| l.starts_with(&format!("{name}=")))
+        .unwrap_or_else(|| panic!("{name} not cleared"));
+    assert!(line.contains("Max-Age=0"), "{line}");
+    assert!(line.contains("Path=/"), "{line}");
+}
+
+/// #193: a callback whose `state` checks out but whose PKCE verifier cookie
+/// is gone is refused before any code exchange — never retried without
+/// PKCE. (An attempted exchange would answer 500, not 401: the test client
+/// posts a dummy client id to Google's real token endpoint, and `callback`
+/// maps any exchange failure to 500.)
+#[sqlx::test]
+async fn google_callback_without_the_pkce_verifier_is_refused_before_exchange(db: PgPool) {
+    let router = test_router(db);
+
+    let response = call(
+        &router,
+        Method::GET,
+        "/auth/google/callback?code=injected-code&state=s",
+        Some("google_oauth_state=s"),
+        None,
+    )
+    .await;
+    assert_status(&response, StatusCode::UNAUTHORIZED);
+    assert_cleared(&response, "google_oauth_state");
+}
+
+/// #193: the verifier does not stand in for the CSRF check — a mismatched
+/// `state` is still refused with the verifier cookie present, and both
+/// single-use flow cookies are cleared.
+#[sqlx::test]
+async fn google_callback_with_a_verifier_but_a_mismatched_state_is_refused(db: PgPool) {
+    let router = test_router(db);
+
+    let verifier = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG";
+    let response = call(
+        &router,
+        Method::GET,
+        "/auth/google/callback?code=c&state=forged",
+        Some(&format!(
+            "google_oauth_state=s; google_oauth_pkce_verifier={verifier}"
+        )),
+        None,
+    )
+    .await;
+    assert_status(&response, StatusCode::UNAUTHORIZED);
+    assert_cleared(&response, "google_oauth_state");
+    assert_cleared(&response, "google_oauth_pkce_verifier");
+}
+
+/// #193: the verifier `start` stashed is what `callback` sends with the
+/// code. The token endpoint is a local listener recording the exchange's
+/// form body, so the assertion is on the request itself, not on a flag.
+/// The response status is not asserted: after the exchange, `callback`
+/// queries Google's live userinfo endpoint with the fake access token.
+#[sqlx::test]
+async fn google_callback_sends_the_stored_pkce_verifier_with_the_code(db: PgPool) {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    let recorded: Arc<Mutex<Option<HashMap<String, String>>>> = Arc::default();
+    let token_endpoint = axum::Router::new().route(
+        "/token",
+        axum::routing::post({
+            let recorded = recorded.clone();
+            move |axum::extract::Form(form): axum::extract::Form<HashMap<String, String>>| async move {
+                *recorded.lock().unwrap() = Some(form);
+                axum::Json(serde_json::json!({
+                    "access_token": "local-access-token",
+                    "token_type": "bearer",
+                }))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let token_url = format!("http://{}/token", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, token_endpoint).await.unwrap() });
+
+    let mut state = common::test_state(db);
+    state.google_oauth = state
+        .google_oauth
+        .set_token_uri(oauth2::TokenUrl::new(token_url).unwrap());
+    let router = manage_our_home::build_router(state);
+
+    let verifier = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG";
+    call(
+        &router,
+        Method::GET,
+        "/auth/google/callback?code=the-code&state=s",
+        Some(&format!(
+            "google_oauth_state=s; google_oauth_pkce_verifier={verifier}"
+        )),
+        None,
+    )
+    .await;
+
+    let form = recorded
+        .lock()
+        .unwrap()
+        .take()
+        .expect("callback never reached the token endpoint");
+    assert_eq!(form.get("code").map(String::as_str), Some("the-code"));
+    assert_eq!(
+        form.get("code_verifier").map(String::as_str),
+        Some(verifier)
+    );
+}
