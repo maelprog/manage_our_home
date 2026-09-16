@@ -72,14 +72,14 @@ pub const LOCKOUT: Duration = Duration::from_secs(15 * 60);
 pub const MAX_TRACKED: usize = 10_000;
 
 /// Pairs one address may hold at once — distinct emails tried from it
-/// that have neither succeeded nor gone stale. 32 is far above what a
-/// household behind one NAT address types in a quarter of an hour, and it
-/// bounds what one address can try: 32 emails, 10 attempts each, per
-/// window.
+/// that have neither succeeded nor gone stale. 50 per household address is
+/// a user decision (#178): far above what a household behind one NAT
+/// address types in a quarter of an hour, and a bound on what one address
+/// can try — 50 emails, 10 attempts each, per window.
 ///
 /// It also means a full table ([`MAX_TRACKED`]) spans at least
-/// `MAX_TRACKED / MAX_PAIRS_PER_IP` = 313 distinct addresses.
-pub const MAX_PAIRS_PER_IP: usize = 32;
+/// `MAX_TRACKED / MAX_PAIRS_PER_IP` = 200 distinct addresses.
+pub const MAX_PAIRS_PER_IP: usize = 50;
 
 /// Longest email kept in a key: RFC 5321's maximum path length. Anything
 /// longer cannot be a deliverable address, and truncating bounds the key
@@ -192,10 +192,19 @@ impl Table {
     /// that address has nothing else, soonest-to-expire first. A pair can
     /// therefore only be evicted once no address holds more pairs than its
     /// own: for a pair whose address holds `k` pairs, that takes the table
-    /// spread over at least `MAX_TRACKED / k` addresses — 313 at the very
+    /// spread over at least `MAX_TRACKED / k` addresses — 200 at the very
     /// least, 10 000 for an address holding a single pair. One address, or
-    /// a handful, cannot evict anyone else's pair; what an eviction then
-    /// resets is up to [`MAX_FAILURES`] − 1 attempts on that one pair.
+    /// a handful, cannot evict anyone else's pair.
+    ///
+    /// **An eviction is not a one-off.** Each one resets up to
+    /// [`MAX_FAILURES`] − 1 attempts on the evicted pair, and an attacker
+    /// who controls enough addresses to keep the table full can replay it
+    /// as often as they like within one window: nothing here bounds the
+    /// total. The review of #178 measured 27 000 attempts admitted on one
+    /// pair for 3 000 cycles (figure from the review, not reproduced here).
+    /// The share raises the price of every cycle — a full table of live
+    /// pairs, spread over at least 200 addresses — it does not cap the
+    /// number of cycles.
     ///
     /// Linear in the table size, and only on the path that inserts a new
     /// pair into a full table.
@@ -493,6 +502,28 @@ mod tests {
             throttle.admit(&key(ip("192.168.1.42"), "one-more@example.test"), now),
             Decision::Allow
         );
+    }
+
+    #[test]
+    fn a_household_address_may_try_fifty_emails_and_not_one_more() {
+        // The share is a user decision (#178, "50 emails par foyer"), so it
+        // is pinned in literals here rather than read back from the
+        // constant: changing it has to change this test too.
+        let throttle = LoginThrottle::new();
+        let now = t0();
+        let household = ip("192.168.1.42");
+        for i in 0..50 {
+            let k = key(household, &format!("member-{i}@example.test"));
+            assert_eq!(throttle.admit(&k, now), Decision::Allow, "email {i}");
+        }
+        assert!(matches!(
+            throttle.admit(&key(household, "member-50@example.test"), now),
+            Decision::Locked { .. }
+        ));
+        // And the per-(address, email) lock still holds inside the share.
+        let k = key(household, "member-0@example.test");
+        admit_n(&throttle, &k, MAX_FAILURES - 1, now);
+        assert!(matches!(throttle.admit(&k, now), Decision::Locked { .. }));
     }
 
     #[test]

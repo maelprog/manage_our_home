@@ -301,21 +301,29 @@ gets 10 hashes, not one per request (counting refusals only once known let
 40 concurrent attempts through as 40 × 401). An attempt that ends in a 500
 counts too.
 
-One address holds at most **32 pairs** — distinct emails tried from it that
-have neither succeeded nor gone stale. A 33rd email from that address gets
+One address holds at most **50 pairs** — distinct emails tried from it that
+have neither succeeded nor gone stale (50 per household address is a user
+decision on #178). A 51st email from that address gets
 the same 429, and only that address pays for it. Without that share, one
 address could fill the table and churn new emails to evict, and so reset,
 the pair it was attacking (measured against the previous version: 9 000
 attempts admitted on one pair for 1 000 new emails).
 
-The table holds at most 10 000 pairs, so a full table spans at least 313
+The table holds at most 10 000 pairs, so a full table spans at least 200
 addresses. When it is full of live pairs, a new pair **evicts** one from an
 address holding the most pairs — its unlocked pair with the oldest window,
 a locked one only if that address has nothing else — rather than going
 uncounted. A pair can only be evicted once no address holds more pairs than
 its own: for an address holding `k` pairs that takes the table spread over
-at least `10 000 / k` addresses (10 000 for an address holding one). An
-eviction then resets at most 9 attempts on that pair.
+at least `10 000 / k` addresses (10 000 for an address holding one).
+
+Each eviction resets up to 9 attempts on the evicted pair, and **it can be
+repeated**: an attacker who controls enough addresses to keep the table full
+replays it as often as they like within one window, and nothing bounds the
+total. The review of #178 measured 27 000 attempts admitted on one pair for
+3 000 cycles in one window (figure from the review, not reproduced here).
+The share makes every cycle cost a full table of live pairs spread over at
+least 200 addresses; it does not limit the number of cycles.
 
 The counter is **in this process's memory**, which is correct only because
 `infra/docker-compose.yml` runs one `api`. **If `api` ever runs as more than
@@ -363,11 +371,13 @@ the case, among others, for
   apply (loopback traffic, for instance).
 
 There is no error: the gateway sits inside `172.16.0.0/12`, so every hop is
-trusted and every client resolves to the gateway. The key becomes **(one
+trusted and every client resolves to the gateway. `client_ip::resolve` does
+know when it falls back to a trusted address — no untrusted hop in the
+chain — but nothing logs or acts on it today. The key becomes **(one
 address, email)** — the email alone in practice — and ten wrong passwords
 from anyone lock that account for everyone for 15 minutes — the denial of
 service the pair exists to prevent. It gets worse with the per-address
-share: 32 wrong logins on 32 made-up emails from anywhere use up the share
+share: 50 wrong logins on 50 made-up emails from anywhere use up the share
 of the one address everybody appears to have, and every *new* email is
 refused with a 429 until those pairs go stale.
 
@@ -394,7 +404,9 @@ The fix is on the deployment side, never by trusting a wider range:
 - give Caddy the host's network (`network_mode: host`, then reach `web` and
   `api` through published loopback ports), so it sees real sources;
 - or keep the IPv4 NAT path — IPv4-only listener, or IPv6 enabled on the
-  Compose network — and `"userland-proxy": false` where that is supported;
+  Compose network — and `"userland-proxy": false` where that is supported.
+  With IPv6 clients, note #198: the key uses the full /128, which a client
+  holding a /64 can rotate through at will;
 - or, if another proxy or load balancer terminates connections in front of
   Caddy, add its address to Caddy's `trusted_proxies` so the address it
   forwards is kept.
