@@ -20,6 +20,9 @@ use std::task::Poll;
 
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Connection, PgConnection, PgPool};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::watch;
 use uuid::Uuid;
 
 /// How many times the future is polled before being dropped, swept from 1 up.
@@ -219,6 +222,96 @@ async fn pool_backend_pid(pool: &PgPool) -> i32 {
         .unwrap()
 }
 
+/// A TCP relay between a pool and Postgres whose server-to-client direction
+/// can be held. While it is held the server still receives and runs what
+/// the client sends, but its replies wait in the relay.
+///
+/// This is what pins a cut point between "`BEGIN` has run on the server"
+/// and "sqlx has read its reply" (#199): with the reply held, the future
+/// cannot complete whatever the scheduler does, and the server's own state
+/// says when `BEGIN` has run. Dropping the future after a single poll
+/// instead raced that reply over loopback, and lost.
+struct ReplyGate {
+    open: watch::Sender<bool>,
+}
+
+impl ReplyGate {
+    fn hold(&self) {
+        self.open.send_replace(false);
+    }
+
+    fn release(&self) {
+        self.open.send_replace(true);
+    }
+}
+
+/// Starts a relay to `upstream`'s server and returns options that connect
+/// through it, with the gate open.
+async fn gated_relay(upstream: &PgConnectOptions) -> (PgConnectOptions, ReplyGate) {
+    assert!(
+        upstream.get_socket().is_none(),
+        "the relay only speaks TCP, and DATABASE_URL points at a Unix socket"
+    );
+    let target = format!("{}:{}", upstream.get_host(), upstream.get_port());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (open, gate) = watch::channel(true);
+
+    tokio::spawn(async move {
+        while let Ok((client, _)) = listener.accept().await {
+            let Ok(server) = TcpStream::connect(&target).await else {
+                return;
+            };
+            tokio::spawn(relay_connection(client, server, gate.clone()));
+        }
+    });
+
+    (
+        upstream.clone().host("127.0.0.1").port(port),
+        ReplyGate { open },
+    )
+}
+
+async fn relay_connection(client: TcpStream, server: TcpStream, mut gate: watch::Receiver<bool>) {
+    let (mut client_rx, mut client_tx) = client.into_split();
+    let (mut server_rx, mut server_tx) = server.into_split();
+
+    let requests = async move {
+        let _ = tokio::io::copy(&mut client_rx, &mut server_tx).await;
+        let _ = server_tx.shutdown().await;
+    };
+    let replies = async move {
+        let mut buf = vec![0u8; 8192];
+        loop {
+            let n = match server_rx.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            // Checked after the read, so a reply that arrives while the gate
+            // is held waits here rather than slipping through.
+            if gate.wait_for(|open| *open).await.is_err() {
+                break;
+            }
+            if client_tx.write_all(&buf[..n]).await.is_err() {
+                break;
+            }
+        }
+        let _ = client_tx.shutdown().await;
+    };
+    tokio::join!(requests, replies);
+}
+
+/// Waits until the server reports backend `pid` in `state`.
+async fn wait_for_backend_state(observer: &mut PgConnection, pid: i32, state: &str) {
+    for _ in 0..250 {
+        if backend_state(observer, pid).await.as_deref() == Some(state) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("backend {pid} never reached `{state}` within five seconds");
+}
+
 /// The safety net, which has to hold even if the leak is reopened: a
 /// connection that comes back to the pool inside a transaction is ended
 /// there and then, so the server rolls the transaction back and releases
@@ -226,23 +319,33 @@ async fn pool_backend_pid(pool: &PgPool) -> i32 {
 ///
 /// The leak is reopened on purpose here — this is `pool.begin()`, the
 /// pre-#188 path, not `db::begin` — so the bound is measured on a live
-/// leak rather than assumed.
+/// leak rather than assumed. The pool goes through [`gated_relay`], which
+/// holds the reply to `BEGIN` so the future is always dropped at the same
+/// point: after the server has opened the transaction, before sqlx knows.
 #[sqlx::test]
 async fn a_connection_returned_inside_a_transaction_is_ended(
     _pool_opts: PgPoolOptions,
     connect_opts: PgConnectOptions,
 ) {
-    let pool = single_runtime_connection_pool(connect_opts.clone()).await;
+    let (relayed_opts, gate) = gated_relay(&connect_opts).await;
+    let pool = single_runtime_connection_pool(relayed_opts).await;
     let mut observer = PgConnection::connect_with(&connect_opts).await.unwrap();
 
     let leaked_pid = pool_backend_pid(&pool).await;
     wait_until_idle(&pool).await;
 
+    gate.hold();
     {
         let mut fut = pin!(pool.begin());
-        let step = std::future::poll_fn(|cx| Poll::Ready(fut.as_mut().poll(cx))).await;
-        assert!(step.is_pending(), "the `BEGIN` completed before the cut");
+        tokio::select! {
+            biased;
+            _ = &mut fut => panic!("the `BEGIN` completed although its reply was held"),
+            () = wait_for_backend_state(&mut observer, leaked_pid, "idle in transaction") => {}
+        }
     }
+    // The future is gone with the reply still in the relay: let it through
+    // to the pool's release ping, as it would have arrived without the cut.
+    gate.release();
 
     // The leaked backend must be gone, not merely idle: nothing else in the
     // process is going to end that transaction.
