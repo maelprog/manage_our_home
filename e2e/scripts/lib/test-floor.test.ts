@@ -232,7 +232,7 @@ test("floorViolation mord quand tous les tests sont sautés", () => {
   const message = floorViolation(tap, 1);
   assert.ok(
     message,
-    "deux tests sautés n'exécutent rien : la porte doit être rouge",
+    "deux tests sautés n'ont aucun résultat compté : la porte doit être rouge",
   );
   // Deux tests ont été trouvés : accuser le glob enverrait sur une fausse
   // piste. Le diagnostic doit désigner les tests sautés.
@@ -287,8 +287,9 @@ test("floorViolation nomme les annulés quand c'est eux", () => {
 });
 
 test("épingle : floorViolation garde la formule générique quand aucun compteur n'explique", () => {
-  // Compteurs incohérents (un test trouvé, rien d'exécuté, rien de sauté ni
-  // annulé ni todo) : on ne peut pas nommer la cause, on ne l'invente pas.
+  // Compteurs incohérents (un test trouvé, rien de passé ni en échec, rien de
+  // sauté ni annulé ni todo) : on ne peut pas nommer la cause, on ne
+  // l'invente pas.
   //
   // Épingle de régression, PAS un cas TDD (#152) : il passe aussi sur
   // `test-floor.ts` tel que livré par la PR #127 (#123), avant le correctif
@@ -419,8 +420,10 @@ test("floorViolation n'invente pas de cause quand tout a tourné sous un seuil >
 
 // Un todo EXÉCUTE son corps en Node 24 (#186) : `test.todo("x", () => {…})`
 // tourne, et un corps qui lève sort `not ok … # TODO` sans compter en `fail`
-// (mesuré en Node 24.20.0). Un sauté ne tourne pas ; un annulé a pu commencer
-// (timeout) ou ne jamais démarrer. Le plancher ne compte aucun des trois —
+// (mesuré en Node 24.20.0). Un sauté ne tourne pas s'il est déclaré
+// `test.skip(...)`, mais tourne si `t.skip()` est appelé dans son corps ; un
+// annulé a pu commencer (timeout) ou ne jamais démarrer. Le plancher ne compte
+// aucun des trois —
 // seuls pass et fail portent un résultat —, mais le diagnostic ne doit pas
 // affirmer qu'un corps n'a pas tourné quand il a tourné.
 
@@ -445,10 +448,40 @@ test("floorViolation distingue les todo exécutés des sautés et des annulés (
 `;
   const message = floorViolation(tap, 1);
   assert.ok(message);
-  assert.match(message, /1 sauté\(s\) \(corps non exécuté\)/);
+  assert.match(message, /1 sauté\(s\) \(corps non lancé, sauf t\.skip\(\)/);
   assert.match(message, /1 todo \(corps exécuté/);
   assert.match(message, /1 annulé\(s\) \(corps interrompu ou jamais lancé\)/);
   assert.doesNotMatch(message, /n'a exécuté/);
+});
+
+// Ce que rend `node --test --test-reporter=tap` (Node 24.20.0) sur un fichier
+// dont un test appelle `t.skip()` DANS son corps — le corps a tourné (mesuré)
+// — et dont un autre est déclaré `test.skip(...)`, qui ne tourne pas.
+// Les deux sortent `ok # SKIP` et comptent en `skipped`. Copié d'une
+// exécution, lignes YAML retirées.
+const TAP_SKIP_DANS_LE_CORPS = `TAP version 13
+# Subtest: skip-dans-corps
+ok 1 - skip-dans-corps # SKIP
+# Subtest: skip-decl
+ok 2 - skip-decl # SKIP
+1..2
+# tests 2
+# suites 0
+# pass 0
+# fail 0
+# cancelled 0
+# skipped 2
+# todo 0
+`;
+
+test("floorViolation n'affirme pas qu'un sauté n'a pas exécuté son corps (#186)", () => {
+  // `t.skip()` appelé dans le corps : le corps tourne et compte en skipped.
+  // Les compteurs ne distinguent pas ce cas du `test.skip(...)` déclaré ;
+  // le diagnostic ne doit donc pas trancher.
+  const message = floorViolation(TAP_SKIP_DANS_LE_CORPS, 1);
+  assert.ok(message, "deux sautés restent sous le plancher");
+  assert.doesNotMatch(message, /corps non exécuté/);
+  assert.match(message, /2 sauté\(s\) \([^)\n]*t\.skip\(\)/);
 });
 
 test("floorViolation distingue aussi les todo sous un seuil > 1 (#186)", () => {
@@ -483,6 +516,26 @@ test("floorViolation ne présente pas des compteurs incohérents comme un sous-e
 `;
   const message = floorViolation(tap, 5);
   assert.ok(message, "3 comptés < 5 exigés");
+  assert.doesNotMatch(message, /dont/);
+  assert.match(message, /incohérent/);
+});
+
+test("floorViolation détecte l'incohérence quand sautés, annulés et todo débordent aussi", () => {
+  // `tests` vaut la somme des cinq issues (pass, fail, skipped, cancelled,
+  // todo) sur les rapports mesurés. Ici pass + fail tient sous `tests`, mais
+  // la somme non : 1 + 3 = 4 issues pour 2 tests. « 2 trouvé(s), dont 1 … »
+  // présenterait encore ça comme un sous-ensemble.
+  const tap = `1..2
+# tests 2
+# suites 0
+# pass 1
+# fail 0
+# cancelled 0
+# skipped 3
+# todo 0
+`;
+  const message = floorViolation(tap, 5);
+  assert.ok(message, "1 compté < 5 exigés");
   assert.doesNotMatch(message, /dont/);
   assert.match(message, /incohérent/);
 });
