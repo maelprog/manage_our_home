@@ -413,12 +413,20 @@ pub async fn create_invitation(
     )
     .fetch_one(&mut *tx)
     .await?;
+    // Read inside the scoped transaction: once it commits, the bare pool
+    // carries no `app.family_id`, and under a NOBYPASSRLS role the `groups`
+    // policy would hide the row after the invitation is already stored.
+    let group_name = match body.invited_email {
+        Some(_) => Some(
+            sqlx::query_scalar!("SELECT name FROM groups WHERE id = $1", group_id)
+                .fetch_one(&mut *tx)
+                .await?,
+        ),
+        None => None,
+    };
     tx.commit().await?;
 
-    if let Some(email) = &body.invited_email {
-        let group_name = sqlx::query_scalar!("SELECT name FROM groups WHERE id = $1", group_id)
-            .fetch_one(&state.db)
-            .await?;
+    if let (Some(email), Some(group_name)) = (&body.invited_email, group_name) {
         let link = format!(
             "{}/groups/invitations/{}/accept",
             state.frontend_base_url, invitation.token
