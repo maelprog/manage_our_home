@@ -315,7 +315,8 @@ the pair it was attacking (measured against the previous version: 9 000
 attempts admitted on one pair for 1 000 new emails).
 
 The table holds at most 10 000 pairs, so a full table spans at least 200
-addresses. When it is full of live pairs, a new pair **evicts** one from the
+addresses — 200 distinct /64 blocks, for IPv6 clients. When it is full of
+live pairs, a new pair **evicts** one from the
 addresses holding the most pairs — among all their pairs taken together, the
 unlocked one with the oldest window; a locked one, soonest to expire, only
 if none of those addresses holds an unlocked pair — rather than going
@@ -336,6 +337,33 @@ The counter is **in this process's memory**, which is correct only because
 `infra/docker-compose.yml` runs one `api`. **If `api` ever runs as more than
 one instance, it must move to a shared store (Redis/Valkey, not Postgres —
 a database write per failed attempt is itself an amplification).**
+
+**What counts as one address (#198).** An IPv4 address stands for itself. An
+IPv6 one is reduced to its **/64** before it is used as a key: a residential
+line is delegated a whole /64 and picks any address inside it, so the /128 on
+the wire is a handle the client renews at will — keyed on it, neither the
+lock nor the 50-pair share bounds anything. The grouping stops at /64, the
+smallest block an end site is delegated; /56 and /48 go to different
+subscribers, and grouping there would hand out the lockout as a weapon.
+`::ffff:a.b.c.d` is folded back to `a.b.c.d` first (unreachable with the
+`0.0.0.0` listener shipped here, but a `::` listener would deliver it, and
+masking those to /64 would fold all of IPv4 into a single key).
+
+This bounds the rotation, it does not end it: a subscriber delegated a /56
+holds 256 /64s and a /48 holds 65 536, each a key of its own — at least
+2 560 and 655 360 attempts per window on one email. Those are floors, not
+ceilings: eviction from a full table resets pairs and nothing bounds how
+often it is replayed (see above). Grouping wider is not the answer (those
+blocks belong to different subscribers); a cap on the number of blocks
+would have to sit above the key, and none exists today.
+
+The /64 never groups two subscribers of the global unicast space together.
+That is not an absolute over the whole address space: `64:ff9b::/96`
+(NAT64) and the deprecated `::a.b.c.d` carry an IPv4 address in their low
+bits, so every client behind such a translator would collapse onto one key.
+Neither form reaches the `0.0.0.0` listener shipped here and neither is
+canonicalised; a translator in front of a `::` listener would need the same
+treatment as `::ffff:`.
 
 The client address comes from `X-Forwarded-For`, which is only believed from
 a peer listed in **`TRUSTED_PROXY_CIDRS`** (comma-separated CIDRs or bare
@@ -414,8 +442,8 @@ The fix is on the deployment side, never by trusting a wider range:
   `api` through published loopback ports), so it sees real sources;
 - or keep the IPv4 NAT path — IPv4-only listener, or IPv6 enabled on the
   Compose network — and `"userland-proxy": false` where that is supported.
-  With IPv6 clients, note #198: the key uses the full /128, which a client
-  holding a /64 can rotate through at will;
+  IPv6 clients are keyed on their /64 (#198), so a client rotating source
+  addresses inside its own block keeps one lock and one share;
 - or, if another proxy or load balancer terminates connections in front of
   Caddy, add its address to Caddy's `trusted_proxies` so the address it
   forwards is kept.
