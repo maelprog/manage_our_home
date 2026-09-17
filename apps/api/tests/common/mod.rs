@@ -31,6 +31,7 @@ pub fn test_state(db: PgPool) -> AppState {
         admin_db: db.clone(),
         db,
         google_oauth,
+        google_userinfo_url: manage_our_home::auth::oauth_google::GOOGLE_USERINFO_URL.into(),
         email,
         public_base_url: "http://localhost:8080".into(),
         frontend_base_url: "http://localhost:5173".into(),

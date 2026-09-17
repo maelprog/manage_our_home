@@ -111,10 +111,15 @@ struct GoogleUserInfo {
     name: Option<String>,
 }
 
-async fn fetch_google_userinfo(access_token: &str) -> anyhow::Result<GoogleUserInfo> {
+/// Where `callback` reads the verified Google profile. Held in
+/// `AppState::google_userinfo_url` rather than inlined, so flow tests can
+/// point it at a local listener.
+pub const GOOGLE_USERINFO_URL: &str = "https://openidconnect.googleapis.com/v1/userinfo";
+
+async fn fetch_google_userinfo(url: &str, access_token: &str) -> anyhow::Result<GoogleUserInfo> {
     let client = reqwest::Client::new();
     let info: GoogleUserInfo = client
-        .get("https://openidconnect.googleapis.com/v1/userinfo")
+        .get(url)
         .bearer_auth(access_token)
         .send()
         .await?
@@ -127,7 +132,8 @@ async fn fetch_google_userinfo(access_token: &str) -> anyhow::Result<GoogleUserI
 /// verifier `start` stashed (refusing outright when it is missing), fetches
 /// the verified Google profile, then signs in the account already bound to
 /// that Google identity — or, failing that, binds the identity to the
-/// account with the same email, creating the account if there is none. No
+/// account with the same email, creating the account if there is none. An
+/// account deactivated by support is refused on both paths (#194). No
 /// existing session is read. The refresh token (if any) is stored
 /// encrypted via `pgcrypto` and is never written to `tracing` logs.
 pub async fn callback(
@@ -163,7 +169,7 @@ pub async fn callback(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("token exchange failed: {e}")))?;
 
     let access_token = token.access_token().secret();
-    let userinfo = fetch_google_userinfo(access_token)
+    let userinfo = fetch_google_userinfo(&state.google_userinfo_url, access_token)
         .await
         .map_err(AppError::Internal)?;
 
@@ -176,40 +182,66 @@ pub async fn callback(
     let mut tx = crate::db::begin(&state.db).await?;
 
     let existing_identity = sqlx::query!(
-        "SELECT user_id FROM oauth_identities WHERE provider = 'google' AND provider_user_id = $1",
+        r#"
+        SELECT i.user_id, u.deleted_at
+        FROM oauth_identities i
+        JOIN users u ON u.id = i.user_id
+        WHERE i.provider = 'google' AND i.provider_user_id = $1
+        "#,
         userinfo.sub
     )
     .fetch_optional(&mut *tx)
     .await?;
 
-    let user_id = if let Some(identity) = existing_identity {
-        identity.user_id
-    } else {
-        let existing_user = sqlx::query!("SELECT id FROM users WHERE email = $1", userinfo.email)
+    // The existing account this profile signs in to, if any, with its
+    // `deleted_at`, and whether the Google identity is already bound to it.
+    let (existing_account, identity_bound) = match existing_identity {
+        Some(identity) => (Some((identity.user_id, identity.deleted_at)), true),
+        None => {
+            let existing_user = sqlx::query!(
+                "SELECT id, deleted_at FROM users WHERE email = $1",
+                userinfo.email
+            )
             .fetch_optional(&mut *tx)
             .await?;
+            (existing_user.map(|u| (u.id, u.deleted_at)), false)
+        }
+    };
 
-        let user_id = match existing_user {
-            Some(u) => u.id,
-            None => {
-                let display_name = userinfo
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| userinfo.email.clone());
-                sqlx::query_scalar!(
-                    r#"
-                    INSERT INTO users (email, email_verified, display_name)
-                    VALUES ($1, true, $2)
-                    RETURNING id
-                    "#,
-                    userinfo.email,
-                    display_name,
-                )
-                .fetch_one(&mut *tx)
-                .await?
-            }
-        };
+    // #194: an account support locked (`user_admin::admin::deactivate_user`)
+    // keeps its email and its Google identity, so either lookup above still
+    // finds it. `AuthUser` would refuse the session on first use, but the
+    // lock promises the account has no live session, and the email branch
+    // would also bind a new identity to it. Refused here, once for both
+    // branches, before anything is written — with the same bare 401 as a
+    // forged state or an unverified email, so the answer says nothing more
+    // about the account than any other refusal of this endpoint.
+    if existing_account.is_some_and(|(_, deleted_at)| deleted_at.is_some()) {
+        return Err(AppError::Unauthorized);
+    }
 
+    let user_id = match existing_account {
+        Some((user_id, _)) => user_id,
+        None => {
+            let display_name = userinfo
+                .name
+                .clone()
+                .unwrap_or_else(|| userinfo.email.clone());
+            sqlx::query_scalar!(
+                r#"
+                INSERT INTO users (email, email_verified, display_name)
+                VALUES ($1, true, $2)
+                RETURNING id
+                "#,
+                userinfo.email,
+                display_name,
+            )
+            .fetch_one(&mut *tx)
+            .await?
+        }
+    };
+
+    if !identity_bound {
         if let Some(refresh_token) = &refresh_token_plain {
             sqlx::query!(
                 r#"
@@ -235,8 +267,7 @@ pub async fn callback(
             .execute(&mut *tx)
             .await?;
         }
-        user_id
-    };
+    }
 
     tx.commit().await?;
 
