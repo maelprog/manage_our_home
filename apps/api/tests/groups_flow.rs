@@ -601,6 +601,52 @@ async fn get_group_is_refused_to_a_non_member(db: PgPool) {
     assert_eq!(json_body(mine).await["name"], "Foyer");
 }
 
+/// Issue #208: under the NOBYPASSRLS role `apps/api/README.md` prescribes,
+/// creating an invitation with an e-mail answered 500 although the row was
+/// already committed: the group name for the e-mail was read on the bare
+/// pool after the commit, outside any `app.family_id` scope, so the `groups`
+/// policy hid the row. The caller must get the 201 and the token of the one
+/// invitation stored.
+#[sqlx::test]
+async fn create_invitation_with_email_succeeds_under_prescribed_role(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner = register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner, "Foyer").await;
+
+    let (role, app_db) = prescribed_role_pool(&db).await;
+    let scoped_router = test_router(app_db.clone());
+    let invite = call(
+        &scoped_router,
+        Method::POST,
+        &format!("/groups/{group_id}/invitations"),
+        Some(&owner),
+        Some(serde_json::json!({"invited_email": "member@example.test"})),
+    )
+    .await;
+    assert_status(&invite, StatusCode::CREATED);
+    let token = json_body(invite).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    drop(scoped_router);
+    drop_prescribed_role(&db, app_db, &role).await;
+
+    // Runtime query on purpose: test-only SQL without a `.sqlx` entry.
+    let mut tx = with_family_scope(&db, &group_id).await;
+    let stored: Vec<String> =
+        sqlx::query_scalar("SELECT token::text FROM invitations WHERE group_id = $1::uuid")
+            .bind(&group_id)
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+    tx.rollback().await.unwrap();
+    assert_eq!(
+        stored,
+        vec![token],
+        "exactly one invitation, the one whose token was returned"
+    );
+}
+
 /// AC #9: creating an 11th group is rejected.
 #[sqlx::test]
 async fn group_creation_capped_at_ten(db: PgPool) {
