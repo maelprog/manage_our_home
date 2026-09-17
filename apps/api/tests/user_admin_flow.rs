@@ -355,10 +355,11 @@ async fn regular_endpoints_still_enforce_family_isolation(db: PgPool) {
 
     // `messages` is scoped via the app-level `require_role` check (in
     // addition to RLS), so this exercises the same isolation boundary the
-    // Messagerie epic already proved (see `messagerie_flow.rs`); `get_group`
-    // itself relies solely on `FORCE ROW LEVEL SECURITY`, which the local
-    // test DB role (a Postgres superuser, same as CI's) always bypasses
-    // regardless of Epic #8 — not a regression this test can observe.
+    // Messagerie epic already proved (see `messagerie_flow.rs`). `get_group`
+    // used to rely solely on `FORCE ROW LEVEL SECURITY`, which the local test
+    // DB role (a Postgres superuser, same as CI's) always bypasses; it now
+    // filters on membership in the query, and
+    // `groups_flow::get_group_is_refused_to_a_non_member` covers that.
     let res = call(
         &router,
         Method::GET,
