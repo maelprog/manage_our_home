@@ -40,9 +40,10 @@ async fn main() -> anyhow::Result<()> {
         manage_our_home::dev_seed::seed_dev_users(&db).await?;
     }
 
-    // Second pool, connected as `admin_role` (`BYPASSRLS`), exclusively for
-    // the three superadmin endpoints gated behind `SuperAdminUser` (Epic
-    // #8). See apps/api/README.md for the role-setup snippet.
+    // Second pool, connected as `admin_role` (`BYPASSRLS`), for the three
+    // superadmin endpoints gated behind `SuperAdminUser` (Epic #8) and the
+    // attachment reconcile job (#215). See apps/api/README.md for the
+    // role-setup snippet.
     let admin_database_url =
         env::var("ADMIN_DATABASE_URL").unwrap_or_else(|_| database_url.clone());
     let admin_db = manage_our_home::db::pool_options()
@@ -125,6 +126,12 @@ async fn main() -> anyhow::Result<()> {
         ),
     };
 
+    // On the admin pool: `event_attachments` reads back empty without
+    // BYPASSRLS, and the pass refuses to run rather than trust that (#215).
+    tokio::spawn(jobs::attachment_reconcile::run(
+        state.admin_db.clone(),
+        state.storage.clone(),
+    ));
     tokio::spawn(jobs::account_purge::run(db.clone()));
     tokio::spawn(jobs::scheduled_notifications::run(db, email));
 

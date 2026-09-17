@@ -1,11 +1,10 @@
 //! `reconcile-attachments` — deletes attachment objects in MinIO that no
 //! `event_attachments` row points at (#58).
 //!
-//! Dry-run by default; `--apply` deletes. Filed as a script rather than a
-//! job on purpose: the size of the historic backlog and the rate of the
-//! ongoing drip are both unknown, and this is what measures them. If the
-//! numbers say it needs a schedule, `src/jobs/` already has the
-//! polling-worker shape (see `account_purge.rs`).
+//! Dry-run by default; `--apply` deletes. The API also runs this pass
+//! daily with deletion on (`src/jobs/attachment_reconcile.rs`, #215); this
+//! binary remains for measuring before deleting and for one-off scoped
+//! passes (`--prefix`).
 //!
 //! Run it against a stack:
 //!

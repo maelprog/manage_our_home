@@ -157,9 +157,19 @@ deleted before #56, and groups deleted before #59. The third is ongoing —
 delete, but two gaps survive it: a failed `tx.commit()` leaves the object
 with no row, and a client disconnect or process death drops the future so
 the transaction rolls back while the object stays. Orphans therefore keep
-accruing at a low rate. Run this dry first to measure the backlog and the
-drip; if the numbers justify a schedule, `src/jobs/` already has the
-polling-worker shape (`account_purge.rs`).
+accruing at a low rate.
+
+**The API runs this pass itself, daily, with deletion on** (#215,
+`src/jobs/attachment_reconcile.rs`): first pass at startup, then every 24h,
+default 24h window, whole bucket. An orphan has no row, so neither account
+nor group deletion ever reaches it; without the schedule a user's file
+would stay in the bucket until someone ran the binary. The job runs on the
+admin pool (`ADMIN_DATABASE_URL`): if that pool falls back to a
+`DATABASE_URL` role without `BYPASSRLS`, the guard below refuses every pass
+and the job logs `attachment reconcile job failed` at ERROR once a day,
+deleting nothing. Each pass logs its counts at INFO, and each key at INFO
+before deleting it. The binary stays for dry runs and `--prefix`-scoped
+passes.
 
 Two things it will not let you get wrong:
 

@@ -21,6 +21,7 @@ use common::{
     test_router_with_storage, test_state,
 };
 use manage_our_home::attachment_reconcile::{reconcile, Options, DEFAULT_MIN_AGE_HOURS};
+use manage_our_home::jobs::attachment_reconcile::{scheduled_options, sweep};
 use manage_our_home::storage::Storage;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -343,4 +344,83 @@ async fn a_connection_that_does_not_bypass_rls_aborts_before_listing(db: PgPool)
         .execute(&db)
         .await
         .unwrap();
+}
+
+/// The scheduled job's options, scoped to this test's group the same way
+/// as above. Everything else is `scheduled_options()` exactly as
+/// `jobs::attachment_reconcile::run` uses it: deletion on, default window.
+fn scheduled(group_id: &str) -> Options {
+    Options {
+        prefix: Some(format!("{group_id}/")),
+        ..scheduled_options()
+    }
+}
+
+/// #215: a tick of the scheduled job deletes an orphan older than the
+/// window, with no `--apply` from anyone, and leaves the live object. The
+/// clock is moved one hour past the default window instead of waiting it
+/// out.
+#[sqlx::test]
+async fn a_job_tick_deletes_an_orphan_older_than_the_window(db: PgPool) {
+    let Some((s3, bucket)) = real_minio_from_env() else {
+        eprintln!(
+            "skipping a_job_tick_deletes_an_orphan_older_than_the_window: \
+             no MinIO in the environment"
+        );
+        return;
+    };
+    let storage = Storage::new(s3.clone(), bucket.clone());
+    let router = test_router_with_storage(db.clone(), storage.clone());
+    let cookie = register_verify_login(&router, &db, "reconcile-job-a@example.test").await;
+    let fixture = two_attachments(&router, &db, &cookie).await;
+    let (orphan, live) = (&fixture.keys[0], &fixture.keys[1]);
+
+    orphan_the_object(&db, orphan).await;
+
+    let outcome = sweep(
+        &db,
+        &storage,
+        &scheduled(&fixture.group_id),
+        Utc::now() + Duration::hours(DEFAULT_MIN_AGE_HOURS + 1),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(outcome.deleted, vec![orphan.clone()]);
+    assert!(
+        !exists(&s3, &bucket, orphan).await,
+        "the job must delete the orphan, not just report it"
+    );
+    assert!(
+        exists(&s3, &bucket, live).await,
+        "the object a row still points at must survive the job"
+    );
+}
+
+/// #215: the same tick on a fresh orphan, which may be an upload still in
+/// flight, deletes nothing.
+#[sqlx::test]
+async fn a_job_tick_spares_a_fresh_orphan(db: PgPool) {
+    let Some((s3, bucket)) = real_minio_from_env() else {
+        eprintln!("skipping a_job_tick_spares_a_fresh_orphan: no MinIO in the environment");
+        return;
+    };
+    let storage = Storage::new(s3.clone(), bucket.clone());
+    let router = test_router_with_storage(db.clone(), storage.clone());
+    let cookie = register_verify_login(&router, &db, "reconcile-job-b@example.test").await;
+    let fixture = two_attachments(&router, &db, &cookie).await;
+    let orphan = &fixture.keys[0];
+
+    orphan_the_object(&db, orphan).await;
+
+    let outcome = sweep(&db, &storage, &scheduled(&fixture.group_id), Utc::now())
+        .await
+        .unwrap();
+
+    assert!(outcome.deleted.is_empty(), "{:?}", outcome.deleted);
+    assert_eq!(outcome.scan.in_flight, 1);
+    assert!(
+        exists(&s3, &bucket, orphan).await,
+        "the job must respect the age window"
+    );
 }
