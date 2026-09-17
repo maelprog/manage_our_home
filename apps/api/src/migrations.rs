@@ -19,7 +19,8 @@
 //! hit that, and the one that made it visible.
 //!
 //! And why not `ADMIN_DATABASE_URL`: that role exists for the three
-//! `/admin/*` endpoints (Epic #8). Nothing describes it as the owner of
+//! `/admin/*` endpoints (Epic #8) and the attachment reconcile job
+//! (#215). Nothing describes it as the owner of
 //! the tables, and folding DDL into the role that serves request traffic
 //! would widen a deliberately narrow exception.
 //!

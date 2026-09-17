@@ -128,6 +128,11 @@ reaches this pool — see the `SuperAdminUser` extractor, which requires a
 valid session *and* `users.is_superadmin = true`, else 403 — so `BYPASSRLS`
 here is a controlled, audited exception rather than a general bypass.
 
+The pool has exactly one other user, and it is not a request handler: the
+daily attachment reconcile job (#215, see the Ops section below), which
+needs the unscoped `event_attachments` read and deletes nothing outside
+MinIO. No other request handler touches `admin_db`.
+
 ```sql
 CREATE ROLE admin_role LOGIN PASSWORD '...' NOSUPERUSER BYPASSRLS;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO admin_role;
@@ -173,7 +178,9 @@ passes.
 
 Two things it will not let you get wrong:
 
-- **`ADMIN_DATABASE_URL` is required, with no `DATABASE_URL` fallback.**
+- **The binary requires `ADMIN_DATABASE_URL`, with no `DATABASE_URL`
+  fallback.** (The scheduled job inherits `main.rs`'s fallback for the admin
+  pool, described above; the RLS check below is what stops it there.)
   `event_attachments` is `FORCE ROW LEVEL SECURITY`, so an unscoped
   `SELECT storage_key` on a normal app connection returns **zero rows, not
   all rows** — and zero known keys means every object in the bucket
