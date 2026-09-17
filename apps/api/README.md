@@ -128,6 +128,11 @@ reaches this pool — see the `SuperAdminUser` extractor, which requires a
 valid session *and* `users.is_superadmin = true`, else 403 — so `BYPASSRLS`
 here is a controlled, audited exception rather than a general bypass.
 
+The pool has exactly one other user, and it is not a request handler: the
+daily attachment reconcile job (#215, see the Ops section below), which
+needs the unscoped `event_attachments` read and deletes nothing outside
+MinIO. No other request handler touches `admin_db`.
+
 ```sql
 CREATE ROLE admin_role LOGIN PASSWORD '...' NOSUPERUSER BYPASSRLS;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO admin_role;
@@ -157,13 +162,25 @@ deleted before #56, and groups deleted before #59. The third is ongoing —
 delete, but two gaps survive it: a failed `tx.commit()` leaves the object
 with no row, and a client disconnect or process death drops the future so
 the transaction rolls back while the object stays. Orphans therefore keep
-accruing at a low rate. Run this dry first to measure the backlog and the
-drip; if the numbers justify a schedule, `src/jobs/` already has the
-polling-worker shape (`account_purge.rs`).
+accruing at a low rate.
+
+**The API runs this pass itself, daily, with deletion on** (#215,
+`src/jobs/attachment_reconcile.rs`): first pass at startup, then every 24h,
+default 24h window, whole bucket. An orphan has no row, so neither account
+nor group deletion ever reaches it; without the schedule a user's file
+would stay in the bucket until someone ran the binary. The job runs on the
+admin pool (`ADMIN_DATABASE_URL`): if that pool falls back to a
+`DATABASE_URL` role without `BYPASSRLS`, the guard below refuses every pass
+and the job logs `attachment reconcile job failed` at ERROR once a day,
+deleting nothing. Each pass logs its counts at INFO, and each key at INFO
+before deleting it. The binary stays for dry runs and `--prefix`-scoped
+passes.
 
 Two things it will not let you get wrong:
 
-- **`ADMIN_DATABASE_URL` is required, with no `DATABASE_URL` fallback.**
+- **The binary requires `ADMIN_DATABASE_URL`, with no `DATABASE_URL`
+  fallback.** (The scheduled job inherits `main.rs`'s fallback for the admin
+  pool, described above; the RLS check below is what stops it there.)
   `event_attachments` is `FORCE ROW LEVEL SECURITY`, so an unscoped
   `SELECT storage_key` on a normal app connection returns **zero rows, not
   all rows** — and zero known keys means every object in the bucket

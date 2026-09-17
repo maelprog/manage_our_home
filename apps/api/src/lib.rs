@@ -89,10 +89,14 @@ pub struct AppState {
     /// Cumulative count of logins per ending, published as an aggregate
     /// and never per request (#178 bis).
     pub login_branches: std::sync::Arc<auth::timing::BranchCounters>,
-    /// Second pool, connected as `admin_role` (`BYPASSRLS`). Only ever
-    /// touched by handlers gated behind `SuperAdminUser` (Epic #8) — see
-    /// `src/user_admin/mod.rs` for why this is a narrow, deliberate
-    /// exception to the RLS boundary rather than a general bypass.
+    /// Second pool, connected as `admin_role` (`BYPASSRLS`). Touched by
+    /// exactly two code paths: handlers gated behind `SuperAdminUser`
+    /// (Epic #8, see `src/user_admin/mod.rs` for why this is a narrow,
+    /// deliberate exception to the RLS boundary rather than a general
+    /// bypass), and the attachment reconcile job
+    /// (`jobs::attachment_reconcile`, #215), which serves no request and
+    /// needs the unscoped `event_attachments` read. Request handlers
+    /// outside `SuperAdminUser` never use it.
     pub admin_db: PgPool,
 }
 

@@ -4,7 +4,8 @@
 //! that no `event_attachments` row points at, so nothing can clean one up.
 //! This module lists the bucket, diffs it against the table, and deletes
 //! the difference — driven by the `reconcile-attachments` binary
-//! (`src/bin/reconcile_attachments.rs`), dry-run by default.
+//! (`src/bin/reconcile_attachments.rs`), dry-run by default, and daily
+//! with deletion on by `jobs::attachment_reconcile` (#215).
 //!
 //! It is a safety net, not a fix. #62/#63 reordered
 //! `agenda::attachments::upload_attachment` to write the row before the

@@ -5,8 +5,9 @@
 #
 #   migration_role  applies the sqlx migrations at API startup and therefore
 #                   owns every table (MIGRATION_DATABASE_URL, issue #105).
-#   admin_role      serves the three superadmin endpoints (ADMIN_DATABASE_URL,
-#                   apps/api/README.md, Epic #8).
+#   admin_role      serves the three superadmin endpoints (Epic #8) and the
+#                   daily attachment reconcile job (#215) (ADMIN_DATABASE_URL,
+#                   apps/api/README.md).
 #
 # Both pools connect eagerly at startup, so both roles must exist before the
 # api service comes up.

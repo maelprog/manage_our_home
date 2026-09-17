@@ -14,7 +14,7 @@ rationale in `architecture.md` ("v2 — Déploiement multi-famille").
 | 6 | RGPD: privacy policy | missing | Blocking. Must cover what's collected, why, retention, sharing (Google OAuth). |
 | 7 | RGPD: legal basis documentation per data category | missing | Blocking (registre des traitements). |
 | 8 | Backups: Postgres + MinIO, encrypted | missing | Blocking. |
-| 9 | Backups: restore tested | missing | Blocking — must be proven before go-live, not after an incident. |
+| 9 | Backups: restore tested | missing | Blocking — must be proven before go-live, not after an incident. **Restore Postgres and MinIO to the same point.** The API deletes, once a day, every attachment object older than 24h that no `event_attachments` row points at (#215, `apps/api/src/jobs/attachment_reconcile.rs`). A Postgres dump older than the bucket leaves every attachment uploaded since the dump without a row, and the next pass after they turn 24h old deletes those files for good. Before such a restore, either restore the bucket to the same point, or keep the API from running the job (start it with `ADMIN_DATABASE_URL` on a role without `BYPASSRLS`, which makes every pass refuse, and also breaks the `/admin/*` endpoints that share that pool) until the rows are reconciled. |
 | 10 | CI: `cargo audit` | missing | Same as v1 tracker item #13, still not in `ci.yml`. |
 | 11 | CD: deploy pipeline (build → push → deploy to VPS) | missing | |
 | 12 | Monitoring: uptime check | missing | Not yet designed anywhere in `architecture.md`. |
