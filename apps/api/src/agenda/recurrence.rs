@@ -25,9 +25,10 @@ pub type OccurrenceSpan = (DateTime<Utc>, DateTime<Utc>);
 
 /// Expands `rrule` (an RFC 5545 RRULE string, without the DTSTART line —
 /// that's derived from `starts_at`) into occurrence start times that fall
-/// within `[from, to]`. Returns an error when the rule cannot be unrolled
-/// from that anchor: malformed, or invalid against it (an `UNTIL` earlier
-/// than `starts_at`, say).
+/// within `[from, to]` — a second either side included, from the time
+/// `RRuleSet::all` bounded the walk with exclusive ends. Returns an error
+/// when the rule cannot be unrolled from that anchor: malformed, or invalid
+/// against it (an `UNTIL` earlier than `starts_at`, say).
 ///
 /// `validate` runs the same construction on write, so a rule unrolls from
 /// the `starts_at` it was accepted with. That is **not** a promise that
@@ -107,8 +108,12 @@ pub fn expand_occurrences(
     to: DateTime<Utc>,
 ) -> Result<Vec<DateTime<Utc>>, rrule::RRuleError> {
     let rule = parse_rule(rrule)?;
+    // A second either side, from the time `RRuleSet::all` bounded the walk
+    // with exclusive ends. Kept as it stands: it is what this path has
+    // listed since #119, and #162 moved the walk without touching it.
+    let (after, before) = (from - Duration::seconds(1), to + Duration::seconds(1));
     if !is_second_pass_of_a_repeated_hour(starts_at) {
-        return occurrences_in(rule, starts_at, from, to);
+        return occurrences_in(rule, starts_at, after, before);
     }
     // The series is anchored on the second pass. Every occurrence that lands
     // on a repeated hour is put on the second pass too — a choice, not a
@@ -119,8 +124,8 @@ pub fn expand_occurrences(
     Ok(occurrences_in(
         rule,
         starts_at,
-        from - Duration::hours(1),
-        to + Duration::hours(1),
+        after - Duration::hours(1),
+        before + Duration::hours(1),
     )?
     .into_iter()
     .map(second_pass_of_a_repeated_hour)
@@ -195,8 +200,8 @@ fn build_paris_rule_set(
     rule.build(first_pass_of_a_repeated_hour(starts_at).with_timezone(&PARIS))
 }
 
-/// The occurrences of a series inside `[from, to]`, each instant once — see
-/// « the hour Paris skips » on `expand_occurrences`.
+/// The occurrences of a series inside `[after, before]`, both ends included,
+/// each instant once — see « the hour Paris skips » on `expand_occurrences`.
 ///
 /// **The one unroll** (#162): `rule` is walked in Europe/Paris from `anchor`,
 /// whether the series is hour-bound or all-day. The two kinds differ in what
@@ -204,6 +209,15 @@ fn build_paris_rule_set(
 /// `UNTIL` read on the day it names, see `all_day_rule_set` — and in what
 /// they make of the instants it gives back, not in how the rule is parsed or
 /// walked.
+///
+/// The window is taken as given: neither end is nudged here. An hour-bound
+/// series has always been listed over a window a second wider than the one
+/// asked for, from the time `RRuleSet::all` bounded the walk with exclusive
+/// ends, and `expand_occurrences` still hands that widened window over; an
+/// all-day series never had it, and must not get it — the dashboard asks for
+/// `<last day>T23:59:59` in Paris (`apps/web`'s `home.rs`), which is one
+/// second before the Paris midnight that opens the day after, so a second of
+/// slack there is a whole extra day on the page.
 ///
 /// `rrule` counts `COUNT` itself, copies included, so the rule is unrolled
 /// with its count lifted and the count is kept here, on distinct instants.
@@ -224,8 +238,8 @@ fn build_paris_rule_set(
 fn occurrences_in(
     rule: RRule<Unvalidated>,
     anchor: DateTime<Utc>,
-    from: DateTime<Utc>,
-    to: DateTime<Utc>,
+    after: DateTime<Utc>,
+    before: DateTime<Utc>,
 ) -> Result<Vec<DateTime<Utc>>, rrule::RRuleError> {
     let count = rule.get_count();
     let rule = match count {
@@ -234,9 +248,6 @@ fn occurrences_in(
     };
     let set = build_paris_rule_set(rule, anchor)?.limit();
 
-    // A second either side, kept from the window this walk replaced, where
-    // it made up for `RRuleSet::all`'s exclusive bounds.
-    let (after, before) = (from - Duration::seconds(1), to + Duration::seconds(1));
     let mut produced_after_a_gap = ProducedAfterAGap::default();
     let mut distinct: u32 = 0;
     let mut dates = Vec::new();
@@ -333,8 +344,10 @@ fn second_pass_of_a_repeated_hour(dt: DateTime<Utc>) -> DateTime<Utc> {
 
 /// The anchor an all-day series unrolls from: the Paris midnight opening the
 /// civil date `starts_at` falls on — the instant `normalize_all_day` stores
-/// for such a row. Paris midnight is never skipped and never repeated, so no
-/// zone can make it ambiguous.
+/// for such a row. Since 1977 Paris shifts its clocks at 02:00/03:00 local,
+/// so midnight is neither skipped nor repeated and names exactly one instant
+/// — see `paris_start_of_day`, which carries the two dates where it did not
+/// (1944-10-08, 1976-09-26) and resolves them on the pass that opens the day.
 fn all_day_anchor(starts_at: DateTime<Utc>) -> DateTime<Utc> {
     paris_start_of_day(paris_date(starts_at))
 }
@@ -413,16 +426,21 @@ fn all_day_rule_set(rrule: &str, starts_at: DateTime<Utc>) -> Result<RRuleSet, r
 /// (`occurrences_in`) — one construction for both kinds of series since
 /// #162, where until then an all-day rule was written into a
 /// `DTSTART:<..>Z\nRRULE:<rule>` text and walked in UTC on a midnight
-/// stand-in for each civil date. Neither zone can move a date here: in
-/// Paris the wall clock walked is a midnight, and midnight is the one hour
-/// Paris neither skips nor repeats. What the stand-in bought and the anchor
-/// has to buy back is `UNTIL`, which named a UTC midnight and now names a
-/// day: see `all_day_until_day`.
+/// stand-in for each civil date. Neither zone can move a date here: the
+/// Paris wall clock walked is a midnight, and Paris has shifted its clocks
+/// at 02:00/03:00 local since 1977, so it neither skips nor repeats that
+/// hour (`all_day_anchor`). What the stand-in bought and the anchor has to
+/// buy back is `UNTIL`, which named a UTC midnight and now names a day: see
+/// `all_day_until_day`.
 ///
 /// Each occurrence is then read as the Paris day it opens. `[from, to]` is
-/// compared against those instants — the ones this function returns — and
-/// `MAX_OCCURRENCES` is spent on them and on nothing else (#119, see
-/// `occurrences_in`).
+/// compared against those instants — the ones this function returns — **and
+/// strictly**: a Paris midnight one second past `to` is not an occurrence of
+/// this window. The dashboard asks for `<last day>T23:59:59` in Paris
+/// (`apps/web`'s `home.rs`), exactly one second before the midnight that
+/// opens the day after, so a second of slack here is a whole extra day on
+/// the page. `MAX_OCCURRENCES` is spent on the occurrences returned and on
+/// nothing else (#119, see `occurrences_in`).
 ///
 /// `ends_at` is read as a **span in civil days**, not as a duration: a
 /// three-day break stays three days in a month where one of them is 23 or
@@ -450,10 +468,14 @@ pub fn expand_all_day_occurrences(
         .collect())
 }
 
-/// The occurrences of a stored series inside `[from, to]` (inclusive), as
-/// `(starts_at, ends_at)` spans — the one unroll **every reader** of a
-/// series goes through: `list_events` for the agenda, `refill_notifications`
-/// for the reminders.
+/// The occurrences of a stored series inside `[from, to]`, both ends
+/// included, as `(starts_at, ends_at)` spans — the one unroll **every
+/// reader** of a series goes through: `list_events` for the agenda,
+/// `refill_notifications` for the reminders.
+///
+/// An all-day series is bounded strictly. An hour-bound one takes a second
+/// either side as well, which it has always taken — see
+/// `expand_occurrences`.
 ///
 /// Both kinds of series are unrolled by one construction and one walk in
 /// Paris wall clock (#162, `occurrences_in`). What an all-day series reads
@@ -1120,6 +1142,61 @@ mod tests {
         assert_eq!(occs.len(), 1);
         assert_eq!(occs[0].0, midnight(2026, 11, 5));
         assert_eq!(occs[0].1, midnight(2026, 11, 8));
+    }
+
+    /// The Paris days a daily all-day series is listed over `[from, to]`.
+    fn all_day_days_over(from: DateTime<Utc>, to: DateTime<Utc>) -> Vec<NaiveDate> {
+        let first = midnight(2026, 6, 1);
+        expand_all_day_occurrences("FREQ=DAILY", first, first + Duration::days(1), from, to)
+            .unwrap()
+            .into_iter()
+            .map(|(start, _)| paris_date(start))
+            .collect()
+    }
+
+    #[test]
+    fn an_all_day_window_holds_the_days_it_asks_for_and_no_other() {
+        // The dashboard's own window shape (`apps/web`'s `home.rs`): three
+        // civil days, closed at `<last day>T23:59:59` in Paris — one second
+        // before the Paris midnight that opens the fourth. A second of slack
+        // at that end is a whole extra day on the page, so the bound is
+        // strict on both ends, as it was before the two unrolls were folded
+        // into one (#162).
+        let three_days = (
+            midnight(2026, 6, 1),
+            midnight(2026, 6, 4) - Duration::seconds(1),
+        );
+        assert_eq!(
+            all_day_days_over(three_days.0, three_days.1),
+            vec![day(2026, 6, 1), day(2026, 6, 2), day(2026, 6, 3)]
+        );
+
+        // And the low end: a window opening one second after a Paris midnight
+        // does not reach back to the day that midnight opens.
+        let from = midnight(2026, 6, 2) + Duration::seconds(1);
+        assert_eq!(
+            all_day_days_over(from, midnight(2026, 6, 3)),
+            vec![day(2026, 6, 3)]
+        );
+    }
+
+    #[test]
+    fn an_hour_bound_window_keeps_the_second_it_has_always_kept() {
+        // The contrast, pinned so it cannot be changed by accident: an
+        // hour-bound series is listed over a window a second wider than the
+        // one asked for, from the time `RRuleSet::all` bounded the walk with
+        // exclusive ends. That second is harmless there — no rule steps by
+        // less than a second — and it is what this path has listed since
+        // #119.
+        let start = utc(2026, 6, 1, 9, 0);
+        let occs = expand_occurrences(
+            "FREQ=DAILY;COUNT=3",
+            start,
+            start + Duration::seconds(1),
+            start + Duration::days(1) - Duration::seconds(1),
+        )
+        .unwrap();
+        assert_eq!(occs, vec![start, start + Duration::days(1)]);
     }
 
     #[test]

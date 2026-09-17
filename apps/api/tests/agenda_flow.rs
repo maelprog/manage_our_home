@@ -352,6 +352,70 @@ async fn a_recurring_all_day_event_lands_on_its_civil_day_after_the_clocks_chang
     );
 }
 
+/// #162: the dashboard's window, end to end. `apps/web`'s `home.rs` asks for
+/// `<today>T00:00` to `<today + 2>T23:59:59` in Paris — a three-day window
+/// whose far end is one second before the Paris midnight that opens the
+/// fourth day. A daily all-day series must be listed three times over it, not
+/// four: neither `list_events` nor the dashboard's own `soonest_occurrences`
+/// filters again, so a second of slack in the unroll is a whole extra day on
+/// the page. Replayed here through `GET /events`, where the unroll actually
+/// runs.
+#[sqlx::test]
+async fn an_all_day_series_fills_the_dashboard_window_and_not_the_day_after(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "Sport",
+            // Paris is UTC+2 in June: the civil day of the 1st.
+            "starts_at": "2026-05-31T22:00:00Z",
+            "ends_at": "2026-05-31T23:00:00Z",
+            "all_day": true,
+            "rrule": "FREQ=DAILY",
+        })),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+
+    let from = Utc.with_ymd_and_hms(2026, 5, 31, 22, 0, 0).unwrap();
+    let to = Utc.with_ymd_and_hms(2026, 6, 3, 21, 59, 59).unwrap();
+    let list = call(
+        &router,
+        Method::GET,
+        &format!(
+            "/groups/{group_id}/events?from={}&to={}",
+            urlenc(&from.to_rfc3339()),
+            urlenc(&to.to_rfc3339())
+        ),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&list, StatusCode::OK);
+    let body = json_body(list).await;
+    let occurrences = body["occurrences"].as_array().unwrap();
+    let starts: Vec<DateTime<Utc>> = occurrences
+        .iter()
+        .map(|occ| instant(occ, "occurrence_starts_at"))
+        .collect();
+    assert_eq!(
+        starts,
+        vec![
+            from,
+            Utc.with_ymd_and_hms(2026, 6, 1, 22, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 6, 2, 22, 0, 0).unwrap(),
+        ],
+        "the window of three civil days does not hold exactly its three days: {body}"
+    );
+}
+
 /// #116: the same promise for an **hour-bound** recurring event, end to
 /// end. « Tous les mois à 9 h » has to keep reading 09:00 in Paris once the
 /// clocks go back, `occurrence_ends_at` included — the reproduction
