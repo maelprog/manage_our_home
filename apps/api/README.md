@@ -31,6 +31,15 @@ export DATABASE_URL=postgres://mhome:mhome@localhost:5432/postgres
 cargo test
 ```
 
+`DATABASE_URL`'s role is usually a superuser, which bypasses RLS, and by
+default the handlers under test use it too. To drive them as the
+`NOSUPERUSER NOBYPASSRLS` runtime role instead, as CI's `test-nobypassrls`
+job does (#213), create that role with the default privileges the job
+declares in `template1`, then set `FLOW_TEST_RUNTIME_ROLE` and
+`FLOW_TEST_RUNTIME_ROLE_PASSWORD`. Only the handlers' pool switches role
+(`runtime_pool` in `tests/common/mod.rs`): migrations, fixtures and
+assertions stay on `DATABASE_URL`.
+
 ## Deployment note on Row-Level Security
 
 RLS policies use `FORCE ROW LEVEL SECURITY`, but Postgres superusers (and,
