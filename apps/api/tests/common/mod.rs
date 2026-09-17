@@ -28,8 +28,8 @@ pub fn test_state(db: PgPool) -> AppState {
     let email = EmailSender::new(smtp, "noreply@example.test".parse().unwrap());
 
     AppState {
-        admin_db: db.clone(),
-        db,
+        db: runtime_pool(&db),
+        admin_db: db,
         google_oauth,
         google_userinfo_url: manage_our_home::auth::oauth_google::GOOGLE_USERINFO_URL.into(),
         email,
@@ -54,6 +54,57 @@ pub fn test_state(db: PgPool) -> AppState {
             manage_our_home::auth::timing::BranchCounters::default(),
         ),
     }
+}
+
+/// The pool the handlers serve requests from (`AppState::db`).
+///
+/// By default it is the `#[sqlx::test]` pool itself, whose role is
+/// `DATABASE_URL`'s: a superuser in CI, which bypasses RLS. A handler that
+/// reads through the bare pool, without `app.user_id` set, sees the whole
+/// database there and nothing in production (#113, #207, #208).
+///
+/// When `FLOW_TEST_RUNTIME_ROLE` is set (CI job `test-nobypassrls`, #213),
+/// the handlers reach the same throwaway database as that role instead, as
+/// apps/api/README.md prescribes for `DATABASE_URL`. The test body keeps the
+/// harness pool for its fixtures and assertions, and so does `admin_db`,
+/// whose production role bypasses RLS too. The role's table grants come from
+/// default privileges the job declares in `template1`, since every test
+/// database is created after the role.
+///
+/// Each connection checks its own role and refuses to open if it bypasses
+/// RLS, so a misconfigured job fails every request instead of passing on a
+/// superuser connection.
+fn runtime_pool(db: &PgPool) -> PgPool {
+    let Ok(role) = std::env::var("FLOW_TEST_RUNTIME_ROLE") else {
+        return db.clone();
+    };
+    let password = std::env::var("FLOW_TEST_RUNTIME_ROLE_PASSWORD")
+        .expect("FLOW_TEST_RUNTIME_ROLE is set without FLOW_TEST_RUNTIME_ROLE_PASSWORD");
+    let options = (*db.connect_options())
+        .clone()
+        .username(&role)
+        .password(&password);
+    sqlx::postgres::PgPoolOptions::new()
+        // The bounds `#[sqlx::test]` gives its own pool: this one comes on
+        // top of it, against the server's connection limit.
+        .max_connections(5)
+        .idle_timeout(Some(std::time::Duration::from_secs(1)))
+        .after_connect(|conn, _| {
+            Box::pin(async move {
+                let bypasses: bool = sqlx::query_scalar(
+                    "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user",
+                )
+                .fetch_one(&mut *conn)
+                .await?;
+                if bypasses {
+                    return Err(sqlx::Error::Configuration(
+                        "FLOW_TEST_RUNTIME_ROLE bypasses RLS".into(),
+                    ));
+                }
+                Ok(())
+            })
+        })
+        .connect_lazy_with(options)
 }
 
 /// Points at an unreachable local MinIO endpoint on purpose — most tests

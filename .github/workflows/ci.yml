@@ -103,6 +103,92 @@ jobs:
           MINIO_SECRET_KEY: ci-dummy-secret
           MINIO_BUCKET: manage-our-home
 
+  # The integration tests again, with the handlers connected as a
+  # `NOSUPERUSER NOBYPASSRLS` role that owns no table (#213). The `test` job
+  # above serves requests as `postgres`, a superuser, so RLS is never
+  # enforced there: a handler that reads through the bare pool without
+  # `app.user_id` set sees the whole database in CI and nothing in
+  # production. #99, #113, #207 and #208 were all that failure, and the CI
+  # caught none of them.
+  #
+  # Only `AppState::db` switches role (`runtime_pool` in
+  # apps/api/tests/common/mod.rs). `#[sqlx::test]` still creates each
+  # database and applies the migrations as `postgres`, the test bodies still
+  # seed and assert through that pool, and `admin_db` stays on it: in
+  # production both the migration role and the admin role bypass RLS
+  # (#105), and this job leaves them as they are.
+  #
+  # This job duplicates `test` on purpose, and only until every flow is
+  # green under the runtime role; `DATABASE_URL` then moves to that role and
+  # the superuser job goes away (step 2 of the 2026-09-17 decision).
+  test-nobypassrls:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Every test database is created from `template1` after this step, by
+      # `postgres`, which then applies the migrations: default privileges
+      # declared here are copied into each of them, and cover every table
+      # and sequence the migrations create. They are the grants
+      # apps/api/README.md prescribes for `app_role`, and nothing more. The
+      # final query fails the step if the role could bypass RLS.
+      - name: Create the NOBYPASSRLS runtime role
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d postgres <<'SQL'
+          CREATE ROLE app_role LOGIN PASSWORD 'app_role' NOSUPERUSER NOBYPASSRLS;
+          \connect template1
+          ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
+              GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_role;
+          ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
+              GRANT USAGE, SELECT ON SEQUENCES TO app_role;
+          SELECT 1 / (NOT (rolsuper OR rolbypassrls))::int
+              FROM pg_roles WHERE rolname = 'app_role';
+          SQL
+      # Same registry and pins as the `test` job, same reasons (#157).
+      - name: Start MinIO and create the attachments bucket
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=ci-dummy \
+            -e MINIO_ROOT_PASSWORD=ci-dummy-secret \
+            quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:9000/minio/health/ready && break
+            sleep 1
+          done
+          docker run --rm --network host --entrypoint /bin/sh \
+            quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z -c \
+            "mc alias set local http://localhost:9000 ci-dummy ci-dummy-secret && \
+             mc mb -p local/manage-our-home"
+      # `--test '*'`: the integration binaries under apps/api/tests only.
+      # The unit tests hold no connection to switch.
+      - run: cargo test -p manage_our_home --test '*'
+        env:
+          FLOW_TEST_RUNTIME_ROLE: app_role
+          FLOW_TEST_RUNTIME_ROLE_PASSWORD: app_role
+          MINIO_ENDPOINT: http://localhost:9000
+          MINIO_ACCESS_KEY: ci-dummy
+          MINIO_SECRET_KEY: ci-dummy-secret
+          MINIO_BUCKET: manage-our-home
+
   # Playwright E2E against a live apps/web + apps/api + Postgres + MinIO
   # stack — merge gate per docs/v1-scope.md's "Playwright policy" (every
   # front epic ships its journeys here, F1/issue #15 established it). SMTP
