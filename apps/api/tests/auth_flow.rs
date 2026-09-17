@@ -1,7 +1,10 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
-use common::{assert_status, call, json_body, set_cookie, test_router};
+use common::{
+    assert_status, call, drop_prescribed_role, json_body, prescribed_role_pool, set_cookie,
+    test_router,
+};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -499,6 +502,86 @@ async fn delete_account_blocked_while_owner_then_cancellable(db: PgPool) {
             .await
             .unwrap();
     assert!(user_row.deletion_requested_at.is_none());
+}
+
+/// Issue #207: the `owner_of_groups` guard of `POST /account/delete` read
+/// the owned groups on the bare pool, outside any RLS scope. Under the
+/// `NOSUPERUSER NOBYPASSRLS` role apps/api/README.md prescribes, that read
+/// came back empty and the owner of a group was scheduled for deletion
+/// (200) instead of being blocked (409). The test above drives the handler
+/// through the `#[sqlx::test]` pool, which bypasses RLS, so it cannot see
+/// this. Here the guard must block the owner and list the group, and must
+/// still let a caller who owns nothing through.
+#[sqlx::test]
+async fn account_deletion_guard_sees_owned_groups_under_the_prescribed_role(db: PgPool) {
+    let (role, app_db) = prescribed_role_pool(&db).await;
+    let router = test_router(app_db.clone());
+    let owner = register_verify_login(&router, &db, "gwen@example.test", "gwens-password1").await;
+    let loner = register_verify_login(&router, &db, "hugo@example.test", "hugos-password1").await;
+
+    let create_group = call(
+        &router,
+        Method::POST,
+        "/groups",
+        Some(&owner),
+        Some(serde_json::json!({"name": "Famille Gwen"})),
+    )
+    .await;
+    assert_status(&create_group, StatusCode::CREATED);
+    let group_id = json_body(create_group).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let blocked = call(
+        &router,
+        Method::POST,
+        "/account/delete",
+        Some(&owner),
+        Some(serde_json::json!({"current_password": "gwens-password1"})),
+    )
+    .await;
+    assert_status(&blocked, StatusCode::CONFLICT);
+    let body = json_body(blocked).await;
+    assert_eq!(body["error"], "owner_of_groups");
+    let listed = body["groups"].as_array().unwrap();
+    assert_eq!(listed.len(), 1, "the blocking group must be listed: {body}");
+    assert_eq!(listed[0]["id"], group_id.as_str());
+    assert_eq!(listed[0]["name"], "Famille Gwen");
+
+    // Nothing was scheduled: the 409 is a refusal, not a partial success.
+    // Runtime queries rather than `query!`: no `.sqlx` entry to add for a
+    // test-only lookup (CI builds with `SQLX_OFFLINE=true`).
+    let deletion_requested = |email: &'static str| {
+        sqlx::query_scalar::<_, Option<chrono::DateTime<chrono::Utc>>>(
+            "SELECT deletion_requested_at FROM users WHERE email = $1",
+        )
+        .bind(email)
+        .fetch_one(&db)
+    };
+    assert!(deletion_requested("gwen@example.test")
+        .await
+        .unwrap()
+        .is_none());
+
+    // The guard must still let through a caller who owns no group, while
+    // another user of the database owns one.
+    let allowed = call(
+        &router,
+        Method::POST,
+        "/account/delete",
+        Some(&loner),
+        Some(serde_json::json!({"current_password": "hugos-password1"})),
+    )
+    .await;
+    assert_status(&allowed, StatusCode::OK);
+    assert!(deletion_requested("hugo@example.test")
+        .await
+        .unwrap()
+        .is_some());
+
+    drop(router);
+    drop_prescribed_role(&db, app_db, &role).await;
 }
 
 /// AC (#27) case 1: for an unverified account, resend invalidates the
