@@ -204,8 +204,13 @@ async fn export_covers_only_the_callers_current_groups(db: PgPool) {
         .unwrap()
         .to_string();
 
-    let member_cookie =
-        register_verify_login(&router, &db, "scope-member@example.test", "member-password1").await;
+    let member_cookie = register_verify_login(
+        &router,
+        &db,
+        "scope-member@example.test",
+        "member-password1",
+    )
+    .await;
     let accept = call(
         &router,
         Method::POST,
@@ -242,7 +247,14 @@ async fn export_covers_only_the_callers_current_groups(db: PgPool) {
     let (role, app_db) = prescribed_role_pool(&db).await;
     let scoped_router = test_router(app_db.clone());
     for (label, r) in [("superuser", &router), ("prescribed role", &scoped_router)] {
-        let export = call(r, Method::GET, "/account/export", Some(&member_cookie), None).await;
+        let export = call(
+            r,
+            Method::GET,
+            "/account/export",
+            Some(&member_cookie),
+            None,
+        )
+        .await;
         assert_status(&export, StatusCode::OK);
         let doc = json_body(export).await;
 
