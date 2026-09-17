@@ -27,6 +27,13 @@
 //! address is really the client's: see `apps/api/README.md` for the
 //! deployments where every client arrives with the same address.
 //!
+//! **"Address" means the client, not the source address** (#198). In IPv6
+//! a household is handed a whole /64 and picks any of the 2^64 addresses
+//! in it, so the /128 on the socket is a handle the attacker renews at
+//! will: keyed on it, both the lock and the share below bound nothing.
+//! [`address_scope`] reduces an address to what identifies the client —
+//! its /64 in IPv6, itself in IPv4 — and [`key`] is built on that.
+//!
 //! **Each address holds at most [`MAX_PAIRS_PER_IP`] pairs.** A new email
 //! from an address already at its share is refused (a 429, like a lock)
 //! rather than counted by pushing out someone's pair. Without the share, a
@@ -48,7 +55,7 @@
 //! > service writes to its own database.
 
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -77,6 +84,9 @@ pub const MAX_TRACKED: usize = 10_000;
 /// address types in a quarter of an hour, and a bound on what one address
 /// can try — 50 emails, 10 attempts each, per window.
 ///
+/// "One address" is one [`address_scope`], so an IPv6 household spends its
+/// 50 from the whole of its /64 rather than 50 per source address it mints.
+///
 /// It also means a full table ([`MAX_TRACKED`]) spans at least
 /// `MAX_TRACKED / MAX_PAIRS_PER_IP` = 200 distinct addresses.
 pub const MAX_PAIRS_PER_IP: usize = 50;
@@ -97,10 +107,61 @@ pub enum Decision {
     Locked { retry_after: Duration },
 }
 
-/// Key for one (address, email) pair, with the email normalised so
-/// `Alice@Example.test` and `alice@example.test` cannot be used as two
-/// separate budgets against the same account.
+/// Prefix an IPv6 client is grouped on (#198). A /64 is the smallest
+/// block an end site is delegated — RFC 6177 recommends handing every
+/// subscriber at least that, and the address autoconfiguration the
+/// household's own router runs (RFC 4862) requires exactly 64 host bits.
+/// So the /64 is the subscriber; the 64 bits under it are theirs to pick.
+///
+/// Wider would be wrong in the other direction: /56 and /48 blocks are
+/// handed to *different* subscribers by the same ISP, and grouping there
+/// would let one of them lock the others out — the denial of service the
+/// (address, email) pair exists to avoid.
+///
+/// So this does not close rotation entirely. A subscriber delegated a /56
+/// still holds 256 distinct /64s and a /48 holds 65 536, and each of them
+/// is a separate key here — 2 560 and 655 360 attempts per window on one
+/// email. What it removes is the 2^64 the /128 gave away for free, and it
+/// removes it without ever grouping two subscribers together. Capping the
+/// rotation itself needs a bound above the key, which this file does not
+/// have.
+pub const IPV6_GROUP_PREFIX: u32 = 64;
+
+/// The address half of a key: the thing the throttle counts against.
+///
+/// An IPv4 address stands for itself — a client behind NAT cannot change
+/// it, and the blocks above it (a /24, say) span unrelated subscribers.
+///
+/// An IPv6 address does not: a residential line is routinely delegated a
+/// whole [`IPV6_GROUP_PREFIX`] and the source address inside it is the
+/// client's own choice, remade as often as it likes. Keyed on the /128 the
+/// socket carries, both the lock and the per-address share of pairs are
+/// bounded by nothing at all. So the host bits are dropped.
+///
+/// `::ffff:a.b.c.d` is canonicalised **before** the mask, not after: those
+/// addresses all share the `::/64` prefix, so masking first would fold the
+/// entire IPv4 internet into a single key — one client's ten wrong
+/// passwords would then lock out everyone else. It is unreachable with the
+/// `0.0.0.0` listener this API ships (an IPv4 peer arrives as plain IPv4),
+/// but a dual-stack listener on `::` would deliver it, and the two forms
+/// name the same client either way.
+pub fn address_scope(ip: IpAddr) -> IpAddr {
+    let IpAddr::V6(v6) = ip else {
+        return ip;
+    };
+    if let Some(v4) = v6.to_ipv4_mapped() {
+        return IpAddr::V4(v4);
+    }
+    let host_bits = 128 - IPV6_GROUP_PREFIX;
+    IpAddr::V6(Ipv6Addr::from((u128::from(v6) >> host_bits) << host_bits))
+}
+
+/// Key for one (address, email) pair, with the address reduced to the
+/// client it really identifies ([`address_scope`]) and the email
+/// normalised so `Alice@Example.test` and `alice@example.test` cannot be
+/// used as two separate budgets against the same account.
 pub fn key(ip: IpAddr, email: &str) -> (IpAddr, String) {
+    let ip = address_scope(ip);
     let mut email = email.trim().to_lowercase();
     let mut cut = MAX_KEY_EMAIL_LEN.min(email.len());
     while cut > 0 && !email.is_char_boundary(cut) {
@@ -478,6 +539,115 @@ mod tests {
         let (_, email) = key(ip("192.168.1.42"), &"é".repeat(1_000));
         assert!(email.len() <= MAX_KEY_EMAIL_LEN);
         assert!(email.chars().all(|c| c == 'é'));
+    }
+
+    // --- #198: what counts as "one address" ---
+
+    #[test]
+    fn an_ipv6_client_cannot_lift_its_lock_by_moving_inside_its_block() {
+        // A residential IPv6 line is handed a whole /64. Keyed on the /128
+        // the socket happens to carry, the client picks a new source
+        // address and starts from zero, as often as it likes.
+        let throttle = LoginThrottle::new();
+        let now = t0();
+        let first = key(ip("2001:db8:1:2::1"), "alice@example.test");
+        admit_n(&throttle, &first, MAX_FAILURES, now);
+        assert!(matches!(
+            throttle.admit(&first, now),
+            Decision::Locked { .. }
+        ));
+
+        for host in ["2001:db8:1:2::2", "2001:db8:1:2:ffff:ffff:ffff:ffff"] {
+            assert!(
+                matches!(
+                    throttle.admit(&key(ip(host), "alice@example.test"), now),
+                    Decision::Locked { .. }
+                ),
+                "{host} bought a fresh budget"
+            );
+        }
+    }
+
+    #[test]
+    fn a_neighbouring_ipv6_block_is_a_different_client() {
+        // The other half of the grouping: it must not reach past the /64
+        // and lock the subscriber next door, which is the denial of
+        // service the (address, email) pair exists to avoid.
+        let throttle = LoginThrottle::new();
+        let now = t0();
+        let attacker = key(ip("2001:db8:1:2::1"), "alice@example.test");
+        admit_n(&throttle, &attacker, MAX_FAILURES, now);
+        assert_eq!(
+            throttle.admit(&key(ip("2001:db8:1:3::1"), "alice@example.test"), now),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn an_ipv6_client_cannot_renew_its_share_by_moving_inside_its_block() {
+        // The share is held by the block too: 50 emails per /64, not 50
+        // per address the client is free to mint.
+        let throttle = LoginThrottle::new();
+        let now = t0();
+        for i in 0..MAX_PAIRS_PER_IP {
+            let k = key(
+                ip(&format!("2001:db8:1:2::{i:x}")),
+                &format!("{i}@example.test"),
+            );
+            assert_eq!(throttle.admit(&k, now), Decision::Allow, "email {i}");
+        }
+        let extra = key(ip("2001:db8:1:2:ffff::1"), "one-more@example.test");
+        assert!(matches!(
+            throttle.admit(&extra, now),
+            Decision::Locked { .. }
+        ));
+    }
+
+    #[test]
+    fn an_ipv4_mapped_address_is_the_same_client_as_the_plain_ipv4() {
+        assert_eq!(
+            key(ip("::ffff:192.168.1.42"), "alice@example.test"),
+            key(ip("192.168.1.42"), "alice@example.test")
+        );
+        let throttle = LoginThrottle::new();
+        let now = t0();
+        let mapped = key(ip("::ffff:192.168.1.42"), "alice@example.test");
+        admit_n(&throttle, &mapped, MAX_FAILURES, now);
+        assert!(matches!(
+            throttle.admit(&key(ip("192.168.1.42"), "alice@example.test"), now),
+            Decision::Locked { .. }
+        ));
+    }
+
+    #[test]
+    fn two_ipv4_mapped_addresses_are_still_two_clients() {
+        // The trap of masking before canonicalising: every `::ffff:a.b.c.d`
+        // shares the `::/64` prefix, so a /64 mask applied first would fold
+        // the entire IPv4 internet into one key — one household's mistyped
+        // passwords would lock every other household out.
+        let throttle = LoginThrottle::new();
+        let now = t0();
+        let attacker = key(ip("::ffff:203.0.113.9"), "alice@example.test");
+        admit_n(&throttle, &attacker, MAX_FAILURES, now);
+        assert_eq!(
+            throttle.admit(&key(ip("::ffff:192.168.1.42"), "alice@example.test"), now),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn the_scope_keeps_an_ipv4_address_whole() {
+        // No grouping on IPv4: a /24 there spans different subscribers.
+        assert_eq!(address_scope(ip("203.0.113.9")), ip("203.0.113.9"));
+    }
+
+    #[test]
+    fn the_scope_is_the_ipv6_block_and_nothing_of_the_host_part() {
+        assert_eq!(
+            address_scope(ip("2001:db8:1:2:3:4:5:6")),
+            ip("2001:db8:1:2::")
+        );
+        assert_eq!(address_scope(ip("::1")), ip("::"));
     }
 
     #[test]

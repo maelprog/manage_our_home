@@ -884,6 +884,51 @@ async fn repeated_failures_from_one_address_are_locked_out(db: PgPool) {
     assert_eq!(json_body(locked).await["error"], "too_many_attempts");
 }
 
+/// #198: an IPv6 client is delegated a whole /64, so the source address it
+/// puts on a request is its own choice. Keyed on the /128, ten wrong
+/// passwords then cost the attacker one line of a shell loop; keyed on the
+/// /64, the eleventh attempt is refused whatever address it arrives from.
+#[sqlx::test]
+async fn an_ipv6_client_cannot_lift_the_lock_by_rotating_inside_its_block(db: PgPool) {
+    let router = router_trusting_10_0_0_0_8(db.clone());
+    let proxy = "10.0.0.2:40000";
+
+    // Every attempt from a different address, all inside one /64.
+    for i in 0..manage_our_home::auth::throttle::MAX_FAILURES {
+        let response = login_from(
+            &router,
+            proxy,
+            Some(&format!("2001:db8:1:2::{i:x}")),
+            "nobody@example.test",
+            "wrong-password1",
+        )
+        .await;
+        assert_status(&response, StatusCode::UNAUTHORIZED);
+    }
+
+    let next = login_from(
+        &router,
+        proxy,
+        Some("2001:db8:1:2:ffff:ffff:ffff:ffff"),
+        "nobody@example.test",
+        "wrong-password1",
+    )
+    .await;
+    assert_status(&next, StatusCode::TOO_MANY_REQUESTS);
+
+    // And the grouping stops at the /64: the block next door is a
+    // different subscriber and keeps its own budget.
+    let neighbour = login_from(
+        &router,
+        proxy,
+        Some("2001:db8:1:3::1"),
+        "nobody@example.test",
+        "wrong-password1",
+    )
+    .await;
+    assert_status(&neighbour, StatusCode::UNAUTHORIZED);
+}
+
 /// The key is the pair, never the email alone: locking one pair must not
 /// lock the account for the rest of the household, nor the address for the
 /// rest of the accounts.
