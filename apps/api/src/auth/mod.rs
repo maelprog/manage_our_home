@@ -29,7 +29,7 @@ use crate::AppState;
 
 use self::session::{
     build_session_cookie, create_session, expired_session_cookie, revoke_all_sessions,
-    revoke_session, AuthUser, SESSION_COOKIE_NAME,
+    revoke_session, user_scoped_tx, AuthUser, SESSION_COOKIE_NAME,
 };
 use self::timing::{LoginBranch, LoginTiming};
 
@@ -621,6 +621,17 @@ pub async fn delete_account(
     // before this endpoint is called (session freshness is enforced by
     // requiring `AuthUser`, i.e. a live session).
 
+    // Read under `app.user_id`, not on the bare pool: the caller's
+    // membership rows and the groups they belong to are only visible to the
+    // policies of 0014 inside that scope. Off it, the role apps/api's
+    // README prescribes for `DATABASE_URL` (`NOSUPERUSER NOBYPASSRLS`) sees
+    // nothing, the guard finds no owned group, and a group's owner is
+    // scheduled for deletion instead of being blocked (issue #207). A role
+    // that bypasses RLS — the superuser the `e2e` job and
+    // infra/docker-compose.yml connect as — answered correctly either way,
+    // which is what hid this: the `WHERE gm.user_id` filter is the one that
+    // does the work there, and it is unchanged.
+    let mut tx = user_scoped_tx(&state.db, auth.user_id).await?;
     let owned_groups = sqlx::query_as!(
         BlockingGroup,
         r#"
@@ -631,8 +642,9 @@ pub async fn delete_account(
         "#,
         auth.user_id
     )
-    .fetch_all(&state.db)
+    .fetch_all(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     if !owned_groups.is_empty() {
         return Err(AppError::ConflictJson(json!({

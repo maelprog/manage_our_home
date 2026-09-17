@@ -3,8 +3,8 @@ mod common;
 use axum::http::{Method, StatusCode};
 use chrono::{Duration, Utc};
 use common::{
-    assert_status, call, call_upload, json_body, real_minio_from_env, set_cookie, test_router,
-    test_router_with_storage,
+    assert_status, call, call_upload, drop_prescribed_role, json_body, prescribed_role_pool,
+    real_minio_from_env, set_cookie, test_router, test_router_with_storage,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -208,45 +208,6 @@ async fn list_groups_is_scoped_to_caller(db: PgPool) {
     // Bob still sees none of Alice's groups.
     let bob_list = call(&router, Method::GET, "/groups", Some(&bob), None).await;
     assert_eq!(json_body(bob_list).await, serde_json::json!([]));
-}
-
-/// A pool connected as a fresh `NOSUPERUSER NOBYPASSRLS` login role with
-/// the grants apps/api/README.md prescribes for `DATABASE_URL`. The
-/// `#[sqlx::test]` pool is the harness role, which bypasses RLS: a handler
-/// driven through it cannot tell a policy that filters correctly from one
-/// that filters nothing, or everything (issue #113).
-async fn prescribed_role_pool(db: &PgPool) -> (String, PgPool) {
-    let role = format!("app_flow_role_{}", Uuid::new_v4().simple());
-    for statement in [
-        format!("CREATE ROLE {role} LOGIN PASSWORD 'flow-test-password' NOSUPERUSER NOBYPASSRLS"),
-        format!("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {role}"),
-        format!("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {role}"),
-    ] {
-        sqlx::query(sqlx::AssertSqlSafe(statement))
-            .execute(db)
-            .await
-            .unwrap();
-    }
-    let options = (*db.connect_options())
-        .clone()
-        .username(&role)
-        .password("flow-test-password");
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(5)
-        .connect_with(options)
-        .await
-        .unwrap();
-    (role, pool)
-}
-
-async fn drop_prescribed_role(db: &PgPool, pool: PgPool, role: &str) {
-    pool.close().await;
-    for statement in [format!("DROP OWNED BY {role}"), format!("DROP ROLE {role}")] {
-        sqlx::query(sqlx::AssertSqlSafe(statement))
-            .execute(db)
-            .await
-            .unwrap();
-    }
 }
 
 /// Issue #113: under the role the README prescribes, `POST /groups` failed
