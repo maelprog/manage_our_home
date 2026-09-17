@@ -315,7 +315,8 @@ the pair it was attacking (measured against the previous version: 9 000
 attempts admitted on one pair for 1 000 new emails).
 
 The table holds at most 10 000 pairs, so a full table spans at least 200
-addresses (200 distinct /64 blocks, for IPv6 clients). When it is full of live pairs, a new pair **evicts** one from the
+addresses — 200 distinct /64 blocks, for IPv6 clients. When it is full of
+live pairs, a new pair **evicts** one from the
 addresses holding the most pairs — among all their pairs taken together, the
 unlocked one with the oldest window; a locked one, soonest to expire, only
 if none of those addresses holds an unlocked pair — rather than going
@@ -349,10 +350,20 @@ subscribers, and grouping there would hand out the lockout as a weapon.
 masking those to /64 would fold all of IPv4 into a single key).
 
 This bounds the rotation, it does not end it: a subscriber delegated a /56
-holds 256 /64s and a /48 holds 65 536, each a key of its own — 2 560 and
-655 360 attempts per window on one email. Grouping wider is not the answer
-(those blocks belong to different subscribers); a cap on the number of
-blocks would have to sit above the key, and none exists today.
+holds 256 /64s and a /48 holds 65 536, each a key of its own — at least
+2 560 and 655 360 attempts per window on one email. Those are floors, not
+ceilings: eviction from a full table resets pairs and nothing bounds how
+often it is replayed (see above). Grouping wider is not the answer (those
+blocks belong to different subscribers); a cap on the number of blocks
+would have to sit above the key, and none exists today.
+
+The /64 never groups two subscribers of the global unicast space together.
+That is not an absolute over the whole address space: `64:ff9b::/96`
+(NAT64) and the deprecated `::a.b.c.d` carry an IPv4 address in their low
+bits, so every client behind such a translator would collapse onto one key.
+Neither form reaches the `0.0.0.0` listener shipped here and neither is
+canonicalised; a translator in front of a `::` listener would need the same
+treatment as `::ffff:`.
 
 The client address comes from `X-Forwarded-For`, which is only believed from
 a peer listed in **`TRUSTED_PROXY_CIDRS`** (comma-separated CIDRs or bare

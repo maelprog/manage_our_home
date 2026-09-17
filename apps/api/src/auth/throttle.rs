@@ -120,11 +120,21 @@ pub enum Decision {
 ///
 /// So this does not close rotation entirely. A subscriber delegated a /56
 /// still holds 256 distinct /64s and a /48 holds 65 536, and each of them
-/// is a separate key here — 2 560 and 655 360 attempts per window on one
-/// email. What it removes is the 2^64 the /128 gave away for free, and it
-/// removes it without ever grouping two subscribers together. Capping the
-/// rotation itself needs a bound above the key, which this file does not
-/// have.
+/// is a separate key here: at least 2 560 and 655 360 attempts per window
+/// on one email — a floor, not a ceiling, since eviction from a full table
+/// (`Table::make_room`) resets pairs and is itself unbounded. What this
+/// removes is the 2^64 the /128 gave away for free. Capping the rotation
+/// itself needs a bound above the key, which this file does not have.
+///
+/// It also does not group two subscribers of the *global unicast* space
+/// together, which is the property that matters here. It is not an
+/// absolute over the whole address space: `64:ff9b::/96` (NAT64) and the
+/// deprecated `::a.b.c.d` both carry an IPv4 address in their low bits, so
+/// a source in either form collapses onto one key — `64:ff9b::` or `::` —
+/// for every IPv4 client behind the translator. Neither can arrive at the
+/// `0.0.0.0` listener this API ships, and neither is canonicalised here;
+/// a deployment that puts a translator in front of a `::` listener would
+/// have to be handled like `::ffff:` below.
 pub const IPV6_GROUP_PREFIX: u32 = 64;
 
 /// The address half of a key: the thing the throttle counts against.
