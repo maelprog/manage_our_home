@@ -23,12 +23,20 @@ pub struct AttachmentResponse {
 /// MIME type (never trusting the client-supplied content type or
 /// filename extension), and rejects anything outside the allow-list or
 /// over the size cap before it ever reaches MinIO.
+///
+/// Two transactions, with the body read between them and no connection
+/// held while it arrives (#216). The client decides how long the body takes
+/// to send; a transaction opened before reading it held a pool connection
+/// for that long, and as many slow uploads as the pool has connections
+/// failed every other request on `PoolTimedOut`.
 pub async fn upload_attachment(
     State(state): State<AppState>,
     auth: AuthUser,
     Path((group_id, event_id)): Path<(Uuid, Uuid)>,
     mut multipart: Multipart,
 ) -> AppResult<impl IntoResponse> {
+    // First transaction, before the body: a non-member (403) or an unknown
+    // event (404) is answered without reading a byte of the upload.
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
 
@@ -40,6 +48,7 @@ pub async fn upload_attachment(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    tx.commit().await?;
 
     let mut filename = None;
     let mut bytes = None;
@@ -68,6 +77,23 @@ pub async fn upload_attachment(
 
     let storage_key = format!("{group_id}/{event_id}/{}", Uuid::new_v4());
 
+    // Second transaction, once the body is in hand. The event may have been
+    // deleted since the first one checked it; left to the INSERT, that
+    // surfaces as a failed foreign key (or, under the runtime role, a row
+    // refused by the `event_attachments` policy) and a 500. Checking again
+    // answers 404 instead, and `FOR KEY SHARE` keeps the answer true until
+    // commit: a concurrent event delete waits for this transaction rather
+    // than removing the row the INSERT is about to reference.
+    let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
+    sqlx::query_scalar!(
+        "SELECT id FROM events WHERE id = $1 AND group_id = $2 FOR KEY SHARE",
+        event_id,
+        group_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+
     // Row first, object second, commit last — the mirror of the delete
     // ordering settled in #54/#56 and #57/#59 (objects first there, so a
     // storage failure drops the transaction and the rows survive for a
@@ -83,10 +109,13 @@ pub async fn upload_attachment(
     // compensation and cannot half-fail, so that path is gone rather than
     // improved.
     //
-    // Cost, accepted deliberately: `put_object` now runs with the
-    // transaction open, holding a connection for the duration of the
-    // upload. Bounded by MAX_ATTACHMENT_SIZE_BYTES (checked above), same
-    // tradeoff as the batched delete in #59.
+    // Cost, accepted deliberately: `put_object` runs with the transaction
+    // open, holding a connection for the duration of the call to MinIO —
+    // server-side I/O only, the client's body having been read above.
+    // Bounded by the storage client's operation timeout
+    // (`storage::S3_OPERATION_TIMEOUT`), not by MAX_ATTACHMENT_SIZE_BYTES:
+    // a size cap says nothing about how long a stalled storage takes to
+    // answer. Same tradeoff as the batched delete in #59.
     let attachment = sqlx::query!(
         r#"
         INSERT INTO event_attachments (event_id, uploaded_by, storage_key, filename, mime_type, size_bytes)

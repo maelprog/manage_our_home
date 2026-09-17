@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use aws_credential_types::Credentials;
-use aws_sdk_s3::config::{BehaviorVersion, Region};
+use aws_sdk_s3::config::timeout::TimeoutConfig;
+use aws_sdk_s3::config::{BehaviorVersion, Config, Region};
 use aws_sdk_s3::presigning::PresigningConfig;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::{Delete, ObjectIdentifier};
@@ -23,6 +24,34 @@ pub struct Storage {
 /// section) — no public bucket, no long-lived links.
 const PRESIGNED_URL_TTL: Duration = Duration::from_secs(300);
 
+/// Upper bound on one S3 operation, retries included (#216).
+///
+/// Handlers call S3 with a transaction open — the upload's `put_object`
+/// (row first, object second, see `agenda::attachments`) and the batched
+/// deletes that precede a row delete — so each call holds a pool connection
+/// for as long as it lasts. The SDK sets no operation timeout of its own: a
+/// MinIO that accepts the connection and then stalls would hold that
+/// connection with no bound. Thirty seconds is far above a 20 MiB
+/// `put_object` on the same network, and short enough that a stalled
+/// storage cannot pin the pool for long.
+pub const S3_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Client configuration for [`Storage::from_env`].
+fn client_config(endpoint: String, credentials: Credentials, region: String) -> Config {
+    aws_sdk_s3::config::Builder::new()
+        .behavior_version(BehaviorVersion::latest())
+        .region(Region::new(region))
+        .endpoint_url(endpoint)
+        .credentials_provider(credentials)
+        .force_path_style(true)
+        .timeout_config(
+            TimeoutConfig::builder()
+                .operation_timeout(S3_OPERATION_TIMEOUT)
+                .build(),
+        )
+        .build()
+}
+
 impl Storage {
     pub fn new(client: Client, bucket: String) -> Self {
         Self { client, bucket }
@@ -36,13 +65,7 @@ impl Storage {
         let region = std::env::var("MINIO_REGION").unwrap_or_else(|_| "us-east-1".into());
 
         let credentials = Credentials::new(access_key, secret_key, None, None, "minio-static");
-        let config = aws_sdk_s3::config::Builder::new()
-            .behavior_version(BehaviorVersion::latest())
-            .region(Region::new(region))
-            .endpoint_url(endpoint)
-            .credentials_provider(credentials)
-            .force_path_style(true)
-            .build();
+        let config = client_config(endpoint, credentials, region);
 
         Ok(Self::new(Client::from_conf(config), bucket))
     }
@@ -283,6 +306,22 @@ mod tests {
         let report = delete_errors_report(&[S3Error::builder().build()])
             .expect("an error with no fields is still an error");
         assert!(report.contains('1'), "{report}");
+    }
+
+    /// See `S3_OPERATION_TIMEOUT`: without it a stalled MinIO holds a pool
+    /// connection with no bound (#216).
+    #[test]
+    fn the_production_client_bounds_every_operation() {
+        let config = client_config(
+            "http://127.0.0.1:1".into(),
+            Credentials::new("test", "test", None, None, "minio-static"),
+            "us-east-1".into(),
+        );
+
+        assert_eq!(
+            config.timeout_config().and_then(|t| t.operation_timeout()),
+            Some(S3_OPERATION_TIMEOUT),
+        );
     }
 
     /// An empty key list must not reach S3 at all: `DeleteObjects` rejects
