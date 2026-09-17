@@ -104,6 +104,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         db: db.clone(),
         google_oauth,
+        google_userinfo_url: manage_our_home::auth::oauth_google::GOOGLE_USERINFO_URL.to_string(),
         email: email.clone(),
         public_base_url,
         frontend_base_url,

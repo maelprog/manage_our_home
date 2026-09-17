@@ -1278,3 +1278,166 @@ async fn google_callback_sends_the_stored_pkce_verifier_with_the_code(db: PgPool
         Some(verifier)
     );
 }
+
+/// Stands in for Google on both legs `callback` takes after its state
+/// check: the token endpoint answers any code with an access token, the
+/// userinfo endpoint with a verified profile for `sub` and `email`. Returns
+/// a router whose state points at both.
+async fn router_with_google_stub(db: PgPool, sub: &str, email: &str) -> axum::Router {
+    let profile = serde_json::json!({
+        "sub": sub,
+        "email": email,
+        "email_verified": true,
+        "name": "Google User",
+    });
+    let google = axum::Router::new()
+        .route(
+            "/token",
+            axum::routing::post(|| async {
+                axum::Json(serde_json::json!({
+                    "access_token": "local-access-token",
+                    "token_type": "bearer",
+                }))
+            }),
+        )
+        .route(
+            "/userinfo",
+            axum::routing::get(move || {
+                let profile = profile.clone();
+                async move { axum::Json(profile) }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, google).await.unwrap() });
+
+    let mut state = common::test_state(db);
+    state.google_oauth = state
+        .google_oauth
+        .set_token_uri(oauth2::TokenUrl::new(format!("{base}/token")).unwrap());
+    state.google_userinfo_url = format!("{base}/userinfo");
+    manage_our_home::build_router(state)
+}
+
+/// A callback whose state and PKCE cookies check out, as the browser sends
+/// it on its way back from Google's consent screen.
+async fn google_callback(router: &axum::Router) -> axum::response::Response {
+    let verifier = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG";
+    call(
+        router,
+        Method::GET,
+        "/auth/google/callback?code=c&state=s",
+        Some(&format!(
+            "google_oauth_state=s; google_oauth_pkce_verifier={verifier}"
+        )),
+        None,
+    )
+    .await
+}
+
+async fn user_id_by_email(db: &PgPool, email: &str) -> Uuid {
+    sqlx::query_scalar!("SELECT id FROM users WHERE email = $1", email)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+async fn session_rows(db: &PgPool, user_id: Uuid) -> i64 {
+    sqlx::query_scalar!(
+        r#"SELECT count(*) AS "count!" FROM sessions WHERE user_id = $1"#,
+        user_id
+    )
+    .fetch_one(db)
+    .await
+    .unwrap()
+}
+
+async fn google_identity_rows(db: &PgPool, user_id: Uuid) -> i64 {
+    sqlx::query_scalar!(
+        r#"SELECT count(*) AS "count!" FROM oauth_identities WHERE user_id = $1"#,
+        user_id
+    )
+    .fetch_one(db)
+    .await
+    .unwrap()
+}
+
+/// Locks `user_id` the way support does: `POST /admin/users/:id/deactivate`
+/// from a superadmin session.
+async fn deactivate_through_support(router: &axum::Router, db: &PgPool, user_id: Uuid) {
+    let admin =
+        register_verify_login(router, db, "support-194@example.test", "support-pass-1").await;
+    sqlx::query!(
+        "UPDATE users SET is_superadmin = true WHERE email = $1",
+        "support-194@example.test"
+    )
+    .execute(db)
+    .await
+    .unwrap();
+    let res = call(
+        router,
+        Method::POST,
+        &format!("/admin/users/{user_id}/deactivate"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+}
+
+fn opens_a_session(response: &axum::response::Response) -> bool {
+    cookie_value(&set_cookies(response), "session_id").is_some_and(|v| !v.is_empty())
+}
+
+/// #194: an account support deactivated keeps its email and its Google
+/// identity, so the identity branch of `callback` still finds it. Signing
+/// in with Google again is refused and writes no `sessions` row: the lock
+/// promises the account has no live session, not merely none that works.
+/// The first sign-in, before the lock, is the control — it shows the stub
+/// carries `callback` all the way to `create_session`, so the refusal
+/// afterwards comes from the lock and not from the stub.
+#[sqlx::test]
+async fn google_callback_opens_no_session_for_an_account_deactivated_by_support(db: PgPool) {
+    let email = "locked-194@example.test";
+    let router = router_with_google_stub(db.clone(), "google-sub-194", email).await;
+    register_verify_login(&router, &db, email, "locked-pass-1").await;
+    let user_id = user_id_by_email(&db, email).await;
+
+    let before_lock = google_callback(&router).await;
+    assert!(
+        before_lock.status().is_redirection(),
+        "{}",
+        before_lock.status()
+    );
+    assert!(opens_a_session(&before_lock));
+    assert_eq!(google_identity_rows(&db, user_id).await, 1);
+
+    deactivate_through_support(&router, &db, user_id).await;
+    let sessions_at_lock = session_rows(&db, user_id).await;
+
+    let after_lock = google_callback(&router).await;
+    assert_status(&after_lock, StatusCode::UNAUTHORIZED);
+    assert!(!opens_a_session(&after_lock));
+    assert_eq!(session_rows(&db, user_id).await, sessions_at_lock);
+}
+
+/// #194: a deactivated account with no Google identity yet is reached by
+/// the email branch of `callback`. The refusal leaves nothing behind: no
+/// session, and no identity bound for a later attempt to come back in
+/// through the identity branch.
+#[sqlx::test]
+async fn google_callback_binds_no_identity_to_an_account_deactivated_by_support(db: PgPool) {
+    let email = "locked-no-google-194@example.test";
+    let router = router_with_google_stub(db.clone(), "google-sub-194-new", email).await;
+    register_verify_login(&router, &db, email, "locked-pass-1").await;
+    let user_id = user_id_by_email(&db, email).await;
+
+    deactivate_through_support(&router, &db, user_id).await;
+    let sessions_at_lock = session_rows(&db, user_id).await;
+
+    let response = google_callback(&router).await;
+    assert_status(&response, StatusCode::UNAUTHORIZED);
+    assert!(!opens_a_session(&response));
+    assert_eq!(session_rows(&db, user_id).await, sessions_at_lock);
+    assert_eq!(google_identity_rows(&db, user_id).await, 0);
+}

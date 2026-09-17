@@ -39,6 +39,12 @@ pub type GoogleOauthClient =
 pub struct AppState {
     pub db: PgPool,
     pub google_oauth: GoogleOauthClient,
+    /// Google's OpenID Connect userinfo endpoint, queried by
+    /// `auth::oauth_google::callback` after the code exchange. Always
+    /// `auth::oauth_google::GOOGLE_USERINFO_URL` in production; a field so
+    /// the callback's account resolution can be driven end to end against
+    /// a local listener, like the token endpoint already is (#194).
+    pub google_userinfo_url: String,
     pub email: EmailSender,
     /// Base URL of this API, used to build links sent in emails.
     pub public_base_url: String,
