@@ -3,8 +3,8 @@ mod common;
 use axum::http::{Method, StatusCode};
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use common::{
-    assert_status, call, call_upload, json_body, real_minio_from_env, set_cookie, test_router,
-    test_router_with_storage,
+    assert_status, call, call_upload, drop_prescribed_role, json_body, prescribed_role_pool,
+    real_minio_from_env, set_cookie, test_router, test_router_with_storage,
 };
 use manage_our_home::storage::MAX_ATTACHMENT_SIZE_BYTES;
 use sqlx::PgPool;
@@ -2223,4 +2223,190 @@ async fn an_attachment_of_exactly_the_cap_is_stored(db: PgPool) {
             .is_ok(),
         "a 20 MiB attachment must reach the bucket like any other"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Pool connections during a slow upload (#216)
+// ---------------------------------------------------------------------------
+
+/// An upload whose body arrives in two parts: the multipart preamble at
+/// once, then nothing until the test says so — a client on a bad link.
+/// `waiting_for_body` resolves once the handler has consumed the preamble
+/// and is waiting for the rest. Sending on `release` delivers the file and
+/// closes the body; dropping it cuts the body short.
+struct SlowUpload {
+    waiting_for_body: tokio::sync::oneshot::Receiver<()>,
+    release: tokio::sync::oneshot::Sender<()>,
+    response: tokio::task::JoinHandle<axum::http::Response<axum::body::Body>>,
+}
+
+fn start_slow_upload(router: &axum::Router, uri: &str, cookie: &str) -> SlowUpload {
+    use axum::body::{Body, Bytes};
+    use axum::http::{header, Request};
+    use tower::ServiceExt;
+
+    const BOUNDARY: &str = "----manageourhomeslowboundary";
+    let preamble = Bytes::from(format!(
+        "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"lent.png\"\r\n\r\n"
+    ));
+    let mut rest = PNG_BYTES.to_vec();
+    rest.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+
+    let (waiting_tx, waiting_for_body) = tokio::sync::oneshot::channel();
+    let (release, release_rx) = tokio::sync::oneshot::channel::<()>();
+
+    type Step = (
+        u8,
+        Option<tokio::sync::oneshot::Sender<()>>,
+        Option<tokio::sync::oneshot::Receiver<()>>,
+    );
+    let chunks = futures::stream::unfold(
+        (0u8, Some(waiting_tx), Some(release_rx)) as Step,
+        move |(step, waiting_tx, release_rx)| {
+            let preamble = preamble.clone();
+            let rest = Bytes::from(rest.clone());
+            async move {
+                match step {
+                    0 => Some((
+                        Ok::<_, std::io::Error>(preamble),
+                        (1, waiting_tx, release_rx),
+                    )),
+                    1 => {
+                        let _ = waiting_tx.unwrap().send(());
+                        match release_rx.unwrap().await {
+                            Ok(()) => Some((Ok(rest), (2, None, None))),
+                            Err(_) => Some((
+                                Err(std::io::Error::other("client went away")),
+                                (2, None, None),
+                            )),
+                        }
+                    }
+                    _ => None,
+                }
+            }
+        },
+    );
+
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(header::COOKIE, cookie)
+        .header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={BOUNDARY}"),
+        )
+        .body(Body::from_stream(chunks))
+        .unwrap();
+    let router = router.clone();
+    let response = tokio::spawn(async move { router.oneshot(request).await.unwrap() });
+
+    SlowUpload {
+        waiting_for_body,
+        release,
+        response,
+    }
+}
+
+/// A runtime pool of `size` connections on the test database. An acquire
+/// gives up after two seconds rather than the default thirty, so that an
+/// exhausted pool shows up as a prompt 500 instead of a slow one.
+async fn small_pool(db: &PgPool, size: u32) -> PgPool {
+    manage_our_home::db::pool_options()
+        .max_connections(size)
+        .acquire_timeout(std::time::Duration::from_secs(2))
+        .connect_with((*db.connect_options()).clone())
+        .await
+        .unwrap()
+}
+
+/// AC (#216): an upload must not hold a pool connection while its client is
+/// still sending the body. As many stalled uploads as the pool has
+/// connections used to take every one of them, `idle in transaction`, and
+/// any other request — here a plain `GET /groups` from another user —
+/// failed on `PoolTimedOut`.
+#[sqlx::test]
+async fn slow_uploads_filling_the_pool_do_not_starve_other_requests(db: PgPool) {
+    const POOL_SIZE: u32 = 3;
+    let router = test_router(small_pool(&db, POOL_SIZE).await);
+
+    let owner_cookie =
+        register_verify_login(&router, &db, "slow-owner@example.test", "owner-password1").await;
+    let reader_cookie =
+        register_verify_login(&router, &db, "slow-reader@example.test", "reader-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let event_id = create_event(&router, &owner_cookie, &group_id).await;
+
+    let uploads: Vec<SlowUpload> = (0..POOL_SIZE)
+        .map(|_| {
+            start_slow_upload(
+                &router,
+                &format!("/groups/{group_id}/events/{event_id}/attachments"),
+                &owner_cookie,
+            )
+        })
+        .collect();
+    let mut releases = Vec::new();
+    let mut responses = Vec::new();
+    for upload in uploads {
+        upload
+            .waiting_for_body
+            .await
+            .expect("every upload reaches its body");
+        releases.push(upload.release);
+        responses.push(upload.response);
+    }
+
+    let groups = call(&router, Method::GET, "/groups", Some(&reader_cookie), None).await;
+    assert_status(&groups, StatusCode::OK);
+
+    // Cut the stalled bodies short and let the handlers finish.
+    drop(releases);
+    for response in responses {
+        response.await.unwrap();
+    }
+}
+
+/// AC (#216): the event is checked before the body is read, and the
+/// attachment row is written in a second transaction once the body has
+/// arrived. An event deleted in between must answer 404, not the 500 of a
+/// failed foreign key.
+///
+/// Driven through the prescribed `NOBYPASSRLS` role: under it the INSERT is
+/// refused by the `event_attachments` policy before the foreign key is even
+/// checked, and the re-check's `FOR KEY SHARE` needs the role's grants.
+#[sqlx::test]
+async fn an_event_deleted_while_its_upload_is_in_flight_answers_not_found(db: PgPool) {
+    let (role, pool) = prescribed_role_pool(&db).await;
+    let router = test_router(pool.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "race-owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let event_id = create_event(&router, &owner_cookie, &group_id).await;
+
+    let upload = start_slow_upload(
+        &router,
+        &format!("/groups/{group_id}/events/{event_id}/attachments"),
+        &owner_cookie,
+    );
+    upload
+        .waiting_for_body
+        .await
+        .expect("the upload reaches its body");
+
+    let delete = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&delete, StatusCode::NO_CONTENT);
+
+    upload.release.send(()).unwrap();
+    let response = upload.response.await.unwrap();
+    assert_status(&response, StatusCode::NOT_FOUND);
+
+    drop(router);
+    drop_prescribed_role(&db, pool, &role).await;
 }
