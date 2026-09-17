@@ -134,16 +134,36 @@ pub async fn list_groups(
     Ok(Json(out))
 }
 
+/// Group detail: name plus the members' identities. Membership is checked
+/// here, in the query, and not left to RLS (issue #206): under a role that
+/// bypasses RLS — the superuser the `e2e` job and infra/docker-compose.yml
+/// connect as — every group is visible, and under the role
+/// apps/api/README.md prescribes the policies of 0014 still let the row
+/// through, because `scoped_tx` puts the requested group in `app.family_id`.
+/// A non-member got 200 with the group name and every member's e-mail.
+///
+/// The refusal is `NotFound`, the same answer as an id that does not exist,
+/// so it does not tell the caller which groups are real. apps/web already
+/// renders both as "Groupe introuvable" (`routes/groups/members.rs`).
 pub async fn get_group(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(group_id): Path<Uuid>,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
-    let group = sqlx::query!("SELECT id, name FROM groups WHERE id = $1", group_id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or(AppError::NotFound)?;
+    let group = sqlx::query!(
+        r#"
+        SELECT g.id, g.name
+        FROM groups g
+        JOIN group_members gm ON gm.group_id = g.id AND gm.user_id = $2
+        WHERE g.id = $1
+        "#,
+        group_id,
+        auth.user_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
 
     // Enrich members with identity (display_name + email) via a JOIN on
     // `users` (no RLS on `users`). Same-family email exposure is acceptable

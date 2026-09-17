@@ -562,6 +562,84 @@ async fn get_group_members_include_identity(db: PgPool) {
     assert_eq!(members[0]["role"], "owner");
 }
 
+/// Issue #206: `GET /groups/:id` answered a caller who is not a member of the
+/// group. The check belongs in the handler, not in RLS alone: this suite
+/// connects as a Postgres superuser, which bypasses every policy of 0014, and
+/// under the role `apps/api/README.md` prescribes `scoped_tx` sets
+/// `app.family_id` to the very group being read, so the policy lets the row
+/// through there too. A foreign group and an unknown id must answer alike, so
+/// the response never tells the caller whether the group exists.
+#[sqlx::test]
+async fn get_group_is_refused_to_a_non_member(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner = register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let outsider =
+        register_verify_login(&router, &db, "outsider@example.test", "outsider-password1").await;
+    let group_id = create_group(&router, &owner, "Foyer").await;
+
+    let foreign = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}"),
+        Some(&outsider),
+        None,
+    )
+    .await;
+    assert_status(&foreign, StatusCode::NOT_FOUND);
+    let body = json_body(foreign).await.to_string();
+    assert!(
+        !body.contains("Foyer"),
+        "the refusal must not leak the group name: {body}"
+    );
+    assert!(
+        !body.contains("owner@example.test"),
+        "the refusal must not leak a member e-mail: {body}"
+    );
+
+    let unknown = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{}", Uuid::new_v4()),
+        Some(&outsider),
+        None,
+    )
+    .await;
+    assert_status(&unknown, StatusCode::NOT_FOUND);
+    assert_eq!(
+        json_body(unknown).await.to_string(),
+        body,
+        "a foreign group and an unknown id must be indistinguishable"
+    );
+
+    // Same refusal under the prescribed NOBYPASSRLS role, where the leak was
+    // reproduced too.
+    let (role, app_db) = prescribed_role_pool(&db).await;
+    let scoped_router = test_router(app_db.clone());
+    let scoped = call(
+        &scoped_router,
+        Method::GET,
+        &format!("/groups/{group_id}"),
+        Some(&outsider),
+        None,
+    )
+    .await;
+    assert_status(&scoped, StatusCode::NOT_FOUND);
+    drop(scoped_router);
+    drop_prescribed_role(&db, app_db, &role).await;
+
+    // The member still reads their own group.
+    let mine = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_status(&mine, StatusCode::OK);
+    assert_eq!(json_body(mine).await["name"], "Foyer");
+}
+
 /// AC #9: creating an 11th group is rejected.
 #[sqlx::test]
 async fn group_creation_capped_at_ten(db: PgPool) {
