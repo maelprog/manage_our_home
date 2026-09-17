@@ -817,10 +817,75 @@ async fn an_all_day_series_until_the_day_before_is_refused_on_write(db: PgPool) 
     assert_status(&to_all_day, StatusCode::BAD_REQUEST);
 }
 
+/// The mirror `PATCH`, in the other direction. An all-day rule is checked on
+/// everything an hour-bound one is and more — it has to step by whole days
+/// (#171), and its `UNTIL` is read on the day it names, never later than the
+/// instant the rule carries (#162) — so a rule a row holds while all-day is a
+/// rule it can keep once it is hour-bound, and `{"all_day": false}` never
+/// costs it its recurrence. The claim was read off `validate` and never
+/// replayed over HTTP until here.
+#[sqlx::test]
+async fn turning_an_all_day_series_hour_bound_keeps_its_rule(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    // « Jusqu'au 2026-09-05 » on an all-day event of that very day: accepted
+    // all-day, and the `UNTIL` sits inside the Paris day the row stores
+    // (2026-09-04T22:00Z), which is where an hour-bound reading differs.
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "Anniversaire",
+            "starts_at": "2026-09-04T22:00:00Z",
+            "ends_at": "2026-09-04T23:00:00Z",
+            "all_day": true,
+            "rrule": "FREQ=DAILY;UNTIL=20260905T235959Z",
+        })),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let event_id = json_body(create).await["id"].as_str().unwrap().to_string();
+
+    let event_path = format!("/groups/{group_id}/events/{event_id}");
+    let to_hour_bound = call(
+        &router,
+        Method::PATCH,
+        &event_path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"all_day": false})),
+    )
+    .await;
+    assert_status(&to_hour_bound, StatusCode::OK);
+    let body = json_body(to_hour_bound).await;
+    assert_eq!(body["all_day"], false);
+    assert_eq!(body["rrule"], "FREQ=DAILY;UNTIL=20260905T235959Z");
+
+    // And a `PATCH` that leaves it all-day without replacing the rule is
+    // still a 200: `update_event` re-validates the merged pair, and the rule
+    // was accepted all-day in the first place.
+    let back_to_all_day = call(
+        &router,
+        Method::PATCH,
+        &event_path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"all_day": true})),
+    )
+    .await;
+    assert_status(&back_to_all_day, StatusCode::OK);
+}
+
 /// #165: an all-day series has two readers — `list_events`, and the reminders
 /// (`refill_notifications`) — and at #165 they did not unroll it the same
 /// way, so write had to refuse what either refused. Since #169 both go
-/// through `recurrence::expand_series`. The reproduction from the issue:
+/// through `recurrence::expand_series`, and since #162 through one
+/// construction. The rules below stay refused: none of them is an RRULE
+/// value, and a row holding one is still not unrolled as it is stored.
+/// The reproduction from the issue:
 /// `FREQ=WEEKLY\nEXDATE:…` on an all-day event was a 201, then
 /// `POST /reminders` on it a 500. Every such rule is a 400 now, on create
 /// and on update, all-day or not, so the reminders never meet one written
@@ -843,12 +908,12 @@ async fn a_rule_the_reminders_cannot_unroll_is_refused_on_write(db: PgPool) {
         "FREQ=WEEKLY\rEXDATE:20260927T000000Z",
         "FREQ=WEEKLY\r",
         "FREQ=WEEKLY\nRRULE:FREQ=DAILY",
-        // One line, and still read one way by `list_events` and refused by
-        // the reminders.
+        // One line, read one way by `list_events` and refused by the
+        // reminders until #169; unrolled by neither since #162.
         "FREQ=WEEKLY;BYDAY=X:MO",
-        // A `:` on one line, read two ways: all-day on a Saturday, Mondays
-        // for `list_events` and Saturdays for the reminders; hour-bound,
-        // stored as written and unrolled as `FREQ=DAILY`.
+        // A `:` on one line, read two ways at #165: all-day on a Saturday,
+        // Mondays for `list_events` and Saturdays for the reminders;
+        // hour-bound, stored as written and unrolled as `FREQ=DAILY`.
         "BYDAY=1:WKST=MO;FREQ=WEEKLY",
         "FREQ=WEEKLY;X:FREQ=DAILY",
         "RRULE:FREQ=DAILY",
