@@ -1,4 +1,4 @@
-use chrono::{DateTime, Duration, NaiveDate, NaiveTime, TimeZone, Utc};
+use chrono::{DateTime, Duration, NaiveDate, TimeZone, Utc};
 use manage_our_home_shared::validation::agenda::{paris_date, paris_start_of_day};
 use rrule::{Frequency, RRule, RRuleSet, Tz, Unvalidated};
 
@@ -25,9 +25,10 @@ pub type OccurrenceSpan = (DateTime<Utc>, DateTime<Utc>);
 
 /// Expands `rrule` (an RFC 5545 RRULE string, without the DTSTART line —
 /// that's derived from `starts_at`) into occurrence start times that fall
-/// within `[from, to]`. Returns an error when the rule cannot be unrolled
-/// from that anchor: malformed, or invalid against it (an `UNTIL` earlier
-/// than `starts_at`, say).
+/// within `[from, to]` — a second either side included, from the time
+/// `RRuleSet::all` bounded the walk with exclusive ends. Returns an error
+/// when the rule cannot be unrolled from that anchor: malformed, or invalid
+/// against it (an `UNTIL` earlier than `starts_at`, say).
 ///
 /// `validate` runs the same construction on write, so a rule unrolls from
 /// the `starts_at` it was accepted with. That is **not** a promise that
@@ -106,8 +107,13 @@ pub fn expand_occurrences(
     from: DateTime<Utc>,
     to: DateTime<Utc>,
 ) -> Result<Vec<DateTime<Utc>>, rrule::RRuleError> {
+    let rule = parse_rule(rrule)?;
+    // A second either side, from the time `RRuleSet::all` bounded the walk
+    // with exclusive ends. Kept as it stands: it is what this path has
+    // listed since #119, and #162 moved the walk without touching it.
+    let (after, before) = (from - Duration::seconds(1), to + Duration::seconds(1));
     if !is_second_pass_of_a_repeated_hour(starts_at) {
-        return paris_occurrences_in(rrule, starts_at, from, to);
+        return occurrences_in(rule, starts_at, after, before);
     }
     // The series is anchored on the second pass. Every occurrence that lands
     // on a repeated hour is put on the second pass too — a choice, not a
@@ -115,11 +121,11 @@ pub fn expand_occurrences(
     // an hour earlier. Widen by that hour before moving them, then filter on
     // the real instants, so `[from, to]` stays inclusive on both ends exactly
     // as this function promises.
-    Ok(paris_occurrences_in(
-        rrule,
+    Ok(occurrences_in(
+        rule,
         starts_at,
-        from - Duration::hours(1),
-        to + Duration::hours(1),
+        after - Duration::hours(1),
+        before + Duration::hours(1),
     )?
     .into_iter()
     .map(second_pass_of_a_repeated_hour)
@@ -128,7 +134,8 @@ pub fn expand_occurrences(
 }
 
 /// The rule set an hour-bound series unrolls from: `rrule` anchored on
-/// `starts_at` read as a Paris instant.
+/// `starts_at` read as a Paris instant. An all-day series goes through
+/// `all_day_rule_set`, which builds the same way from its own anchor.
 ///
 /// Built from the typed instant, **not** from a formatted
 /// `DTSTART;TZID=Europe/Paris:<wall clock>` line, and that is not a matter
@@ -193,33 +200,54 @@ fn build_paris_rule_set(
     rule.build(first_pass_of_a_repeated_hour(starts_at).with_timezone(&PARIS))
 }
 
-/// The occurrences of an hour-bound series inside `[from, to]`, each instant
-/// once — see « the hour Paris skips » on `expand_occurrences`.
+/// The occurrences of a series inside `[after, before]`, both ends included,
+/// each instant once — see « the hour Paris skips » on `expand_occurrences`.
+///
+/// **The one unroll** (#162): `rule` is walked in Europe/Paris from `anchor`,
+/// whether the series is hour-bound or all-day. The two kinds differ in what
+/// they hand this function — an all-day series its Paris midnight and an
+/// `UNTIL` read on the day it names, see `all_day_rule_set` — and in what
+/// they make of the instants it gives back, not in how the rule is parsed or
+/// walked.
+///
+/// The window is taken as given: neither end is nudged here. An hour-bound
+/// series has always been listed over a window a second wider than the one
+/// asked for, from the time `RRuleSet::all` bounded the walk with exclusive
+/// ends, and `expand_occurrences` still hands that widened window over; an
+/// all-day series never had it, and must not get it — the dashboard asks for
+/// `<last day>T23:59:59` in Paris (`apps/web`'s `home.rs`), which is one
+/// second before the Paris midnight that opens the day after, so a second of
+/// slack there is a whole extra day on the page.
 ///
 /// `rrule` counts `COUNT` itself, copies included, so the rule is unrolled
 /// with its count lifted and the count is kept here, on distinct instants.
 /// `validate` builds the same rule with its own `COUNT`; nothing `rrule`
 /// validates depends on the count's value, so both accept and refuse the
-/// same rules. Everything else follows what `RRuleSet::all` does on the
-/// window `occurrences_in` gives it — same bounds, same stop past `to`,
-/// same `MAX_OCCURRENCES`, same iteration limits — so a series that
-/// produces no copy unrolls exactly as it did through `occurrences_in`.
-fn paris_occurrences_in(
-    rrule: &str,
-    starts_at: DateTime<Utc>,
-    from: DateTime<Utc>,
-    to: DateTime<Utc>,
+/// same rules.
+///
+/// `MAX_OCCURRENCES` is spent on the occurrences this function **returns**,
+/// and on nothing else (#119): the unroll is walked lazily and stopped here
+/// rather than capped on a widened window. Handing `RRuleSet` a window and
+/// letting `RRuleSet::all` cap its result spent part of the budget outside
+/// the window asked for — a series with an occurrence just before `from`
+/// came back with 999 occurrences instead of 1000, the last one dropped in
+/// silence at the far end. `after`/`before` would not have carried over
+/// anyway: `rrule` 0.14 honours them in `RRuleSet::all` and ignores them in
+/// the iterator API. `limit` keeps the iteration guards `all` enables, the
+/// ones that stop a rule which walks without producing.
+fn occurrences_in(
+    rule: RRule<Unvalidated>,
+    anchor: DateTime<Utc>,
+    after: DateTime<Utc>,
+    before: DateTime<Utc>,
 ) -> Result<Vec<DateTime<Utc>>, rrule::RRuleError> {
-    let rule = parse_rule(rrule)?;
     let count = rule.get_count();
     let rule = match count {
         Some(_) => rule.count(u32::MAX),
         None => rule,
     };
-    let set = build_paris_rule_set(rule, starts_at)?.limit();
+    let set = build_paris_rule_set(rule, anchor)?.limit();
 
-    // The same one-second nudge as `occurrences_in`, for the same reason.
-    let (after, before) = (from - Duration::seconds(1), to + Duration::seconds(1));
     let mut produced_after_a_gap = ProducedAfterAGap::default();
     let mut distinct: u32 = 0;
     let mut dates = Vec::new();
@@ -314,48 +342,64 @@ fn second_pass_of_a_repeated_hour(dt: DateTime<Utc>) -> DateTime<Utc> {
     repeated_hour_passes(dt).map_or(dt, |(_, second)| second)
 }
 
-/// The `DTSTART` line for an unroll on instants, in UTC. Only the all-day
-/// stand-in uses it — see `expand_all_day_occurrences`.
-fn utc_dtstart(starts_at: DateTime<Utc>) -> String {
-    format!("DTSTART:{}", starts_at.format("%Y%m%dT%H%M%SZ"))
+/// The anchor an all-day series unrolls from: the Paris midnight opening the
+/// civil date `starts_at` falls on — the instant `normalize_all_day` stores
+/// for such a row. Since 1977 Paris shifts its clocks at 02:00/03:00 local,
+/// so midnight is neither skipped nor repeated and names exactly one instant
+/// — see `paris_start_of_day`, which carries the two dates where it did not
+/// (1944-10-08, 1976-09-26) and resolves them on the pass that opens the day.
+fn all_day_anchor(starts_at: DateTime<Utc>) -> DateTime<Utc> {
+    paris_start_of_day(paris_date(starts_at))
 }
 
-/// The rule set an all-day series unrolls from: `rrule` anchored on the
-/// UTC-midnight stand-in for the Paris date `starts_at` opens — see
-/// `expand_all_day_occurrences`. Its `DTSTART` is a UTC midnight, which no
-/// zone can make ambiguous.
+/// The day an all-day series' `UNTIL` names, as the Paris midnight opening
+/// it: an all-day occurrence is a civil date, so the bound that closes the
+/// series is one too, and the time of day the value carries is dropped.
 ///
-/// `expand_all_day_occurrences` unrolls this set and `validate` builds it
-/// for an all-day row, so the two accept and refuse the same rules (#161).
+/// RFC 5545 §3.3.10 requires `UNTIL` to have the same value type as
+/// `DTSTART`, so a DATE on an all-day row; our clients send a DATE-TIME in
+/// UTC instead (`build_rrule` writes `<date>T235959Z` for « jusqu'au
+/// <date> »). Reading that value on its date rather than refusing it is
+/// ours, not the RFC's: the RFC says what such a rule must look like, not
+/// what to make of one that does not.
+///
+/// It is also what keeps #169 closed. Compared as a bare instant against a
+/// Paris-anchored unroll, `UNTIL=20261010T235959Z` lets in the 11th: Paris
+/// midnight on the 11th is 2026-10-10T22:00Z, nearly two hours before that
+/// value. The stand-in unroll this path replaced compared UTC midnights, so
+/// the day was the only thing that ever mattered; on the day, both readings
+/// agree, and the agenda and the reminders keep listing and reminding the
+/// same days.
+fn all_day_until_day(until: DateTime<Tz>) -> DateTime<Tz> {
+    paris_start_of_day(until.date_naive()).with_timezone(&Tz::UTC)
+}
+
+/// `rule` as an all-day series unrolls it: its `UNTIL`, if it carries one in
+/// UTC, read on the day it names. A non-UTC `UNTIL` is left alone — `rrule`
+/// refuses it against a zoned `DTSTART`, on this path as on the other.
+fn all_day_rule(rule: RRule<Unvalidated>) -> RRule<Unvalidated> {
+    match rule.get_until().copied() {
+        Some(until) if until.timezone() == Tz::UTC => rule.until(all_day_until_day(until)),
+        _ => rule,
+    }
+}
+
+/// The rule and anchor an all-day series unrolls from: one construction,
+/// built once, for `expand_all_day_occurrences` to walk and `validate` to
+/// check (#161).
+fn all_day_unroll(
+    rrule: &str,
+    starts_at: DateTime<Utc>,
+) -> Result<(RRule<Unvalidated>, DateTime<Utc>), rrule::RRuleError> {
+    Ok((all_day_rule(parse_rule(rrule)?), all_day_anchor(starts_at)))
+}
+
+/// The rule set an all-day series unrolls from — `all_day_unroll` built.
 ///
 /// The rule is refused if it is not ASCII — see `ascii`.
 fn all_day_rule_set(rrule: &str, starts_at: DateTime<Utc>) -> Result<RRuleSet, rrule::RRuleError> {
-    let rrule = ascii(rrule)?;
-    let stand_in_start = paris_date(starts_at).and_time(NaiveTime::MIN).and_utc();
-    format!("{}\nRRULE:{rrule}", utc_dtstart(stand_in_start)).parse()
-}
-
-/// The occurrences of `set` from the start of the series, as UTC instants:
-/// lazily, with no window and no cap. The caller stops the walk.
-///
-/// Neither bound belongs here (#119). An all-day occurrence is a civil date,
-/// and the instant returned for it sits an hour or two *before* the
-/// UTC-midnight stand-in the unroll produces, so only the caller, once it
-/// has mapped a stand-in back to its Paris day, can tell whether the
-/// occurrence falls in the window — and only there can the cap count
-/// occurrences the caller actually returns. Handing `RRuleSet` the widened
-/// window and letting `all` cap the widened result spent part of
-/// `MAX_OCCURRENCES` outside the window asked for: a series with an
-/// occurrence on the extra day before `from` — any series that started
-/// before the window — came back with 999 occurrences instead of 1000, the
-/// last one dropped in silence at the far end.
-///
-/// `after`/`before` would not have carried over anyway: `rrule` 0.14 honours
-/// them in `RRuleSet::all` and ignores them in the iterator API. `limit`
-/// keeps the iteration guards `all` enables, the ones that stop a rule which
-/// walks without producing.
-fn occurrences_of(set: RRuleSet) -> impl Iterator<Item = DateTime<Utc>> {
-    set.limit().into_iter().map(|d| d.with_timezone(&Utc))
+    let (rule, anchor) = all_day_unroll(rrule, starts_at)?;
+    build_paris_rule_set(rule, anchor)
 }
 
 /// Expands an **all-day** event's recurrence, on civil dates rather than on
@@ -379,23 +423,26 @@ fn occurrences_of(set: RRuleSet) -> impl Iterator<Item = DateTime<Utc>> {
 /// a Saturday is a *Friday* in UTC, so `FREQ=WEEKLY;BYDAY=SA` unrolled in
 /// UTC lands on Sundays from its very first occurrence.
 ///
-/// So the rule is unrolled on a UTC-midnight stand-in for each civil date,
-/// where no offset can move a date, and each resulting date is then mapped
-/// back to the Paris day it names. `[from, to]` is compared against those
-/// Paris instants and not against the stand-ins, which sit an hour or two
-/// later, so it stays inclusive on both ends exactly as `expand_occurrences`
-/// promises. `MAX_OCCURRENCES` is spent on the occurrences this function
-/// returns, and on nothing else: the unroll is walked lazily and stopped
-/// here rather than capped on a widened window (#119, see `occurrences_of`).
+/// So the rule is unrolled in Paris, from the Paris midnight the row stores
+/// (`all_day_anchor`), by the unroll every series goes through
+/// (`occurrences_in`) — one construction for both kinds of series since
+/// #162, where until then an all-day rule was written into a
+/// `DTSTART:<..>Z\nRRULE:<rule>` text and walked in UTC on a midnight
+/// stand-in for each civil date. Neither zone can move a date here: the
+/// Paris wall clock walked is a midnight, and Paris has shifted its clocks
+/// at 02:00/03:00 local since 1977, so it neither skips nor repeats that
+/// hour (`all_day_anchor`). What the stand-in bought and the anchor has to
+/// buy back is `UNTIL`, which named a UTC midnight and now names a day: see
+/// `all_day_until_day`.
 ///
-/// The stand-in is unrolled through `utc_dtstart`, not through
-/// `expand_occurrences`, on purpose: since #116 the latter unrolls in
-/// Europe/Paris, and this path's whole construction — and the tests below
-/// that pin it — rest on a zone where no offset can move a date. Keeping it
-/// on its own `DTSTART` line makes it independent of that choice rather
-/// than quietly riding on it. Whether the two unrollings can now be folded
-/// into one is a question of structure, not of behaviour; it was left out
-/// of #116 deliberately, and #162 carries it.
+/// Each occurrence is then read as the Paris day it opens. `[from, to]` is
+/// compared against those instants — the ones this function returns — **and
+/// strictly**: a Paris midnight one second past `to` is not an occurrence of
+/// this window. The dashboard asks for `<last day>T23:59:59` in Paris
+/// (`apps/web`'s `home.rs`), exactly one second before the midnight that
+/// opens the day after, so a second of slack here is a whole extra day on
+/// the page. `MAX_OCCURRENCES` is spent on the occurrences returned and on
+/// nothing else (#119, see `occurrences_in`).
 ///
 /// `ends_at` is read as a **span in civil days**, not as a duration: a
 /// three-day break stays three days in a month where one of them is 23 or
@@ -409,35 +456,36 @@ pub fn expand_all_day_occurrences(
 ) -> Result<Vec<OccurrenceSpan>, rrule::RRuleError> {
     let first_day = paris_date(starts_at);
     let span_days = (paris_date(ends_at) - first_day).num_days().max(1);
+    let (rule, anchor) = all_day_unroll(rrule, starts_at)?;
 
-    let mut spans = Vec::new();
-    for stand_in in occurrences_of(all_day_rule_set(rrule, starts_at)?) {
-        let day = stand_in.date_naive();
-        let start = paris_start_of_day(day);
-        if start > to {
-            break;
-        }
-        if start >= from {
-            spans.push((start, paris_start_of_day(add_days(day, span_days))));
-            if spans.len() == usize::from(MAX_OCCURRENCES) {
-                break;
-            }
-        }
-    }
-    Ok(spans)
+    Ok(occurrences_in(rule, anchor, from, to)?
+        .into_iter()
+        .map(|occurrence| {
+            let day = paris_date(occurrence);
+            (
+                paris_start_of_day(day),
+                paris_start_of_day(add_days(day, span_days)),
+            )
+        })
+        .collect())
 }
 
-/// The occurrences of a stored series inside `[from, to]` (inclusive), as
-/// `(starts_at, ends_at)` spans — the one unroll **every reader** of a
-/// series goes through: `list_events` for the agenda, `refill_notifications`
-/// for the reminders.
+/// The occurrences of a stored series inside `[from, to]`, both ends
+/// included, as `(starts_at, ends_at)` spans — the one unroll **every
+/// reader** of a series goes through: `list_events` for the agenda,
+/// `refill_notifications` for the reminders.
 ///
-/// An all-day series is unrolled on civil dates, not on instants. Its stored
-/// start sits on Paris midnight — 22:00Z in summer, 23:00Z in winter — so
-/// unrolling it in UTC carries every later occurrence onto the neighbouring
-/// day as soon as the clocks change, which is #101's own symptom re-created
-/// one level up: see `expand_all_day_occurrences`. An hour-bound series
-/// keeps its duration in real time: see `expand_occurrences`.
+/// An all-day series is bounded strictly. An hour-bound one takes a second
+/// either side as well, which it has always taken — see
+/// `expand_occurrences`.
+///
+/// Both kinds of series are unrolled by one construction and one walk in
+/// Paris wall clock (#162, `occurrences_in`). What an all-day series reads
+/// differently is what a civil date needs and nothing else: it is anchored on
+/// the Paris midnight its row stores, its `UNTIL` names a day rather than an
+/// instant, and each occurrence covers whole Paris days rather than the
+/// duration of the base one — see `expand_all_day_occurrences`. An hour-bound
+/// series keeps its duration in real time: see `expand_occurrences`.
 ///
 /// One function rather than two call sites each choosing an unroll (#169).
 /// The reminders used to call `expand_occurrences` whatever the row, i.e.
@@ -447,6 +495,8 @@ pub fn expand_all_day_occurrences(
 /// `build_rrule` writes for « Jusqu'au 10/10 » — listed ten days from
 /// 1 October and reminded eleven: Paris midnight on the 11th is
 /// 2026-10-10T22:00Z, before the `UNTIL`. On civil dates the 11th is past it.
+/// That is the reading `all_day_until_day` keeps, now that an all-day series
+/// is anchored on that same Paris midnight.
 pub fn expand_series(
     rrule: &str,
     all_day: bool,
@@ -474,26 +524,25 @@ fn add_days(date: NaiveDate, n: i64) -> NaiveDate {
 /// creating/updating an event so a bad value is rejected at write time
 /// (400) instead of surfacing as a silent empty expansion later.
 ///
-/// It runs `paris_rule_set` — the construction `expand_occurrences` unrolls
-/// from, down to the anchor; the unroll only lifts `COUNT` to keep it
-/// itself, and `rrule` validates nothing on the count's value — and throws
-/// the result away. That identity is structural rather than argued: a rule
-/// accepted here with a given `starts_at` can be expanded later by
-/// `expand_occurrences` **from that same `starts_at`**. An earlier version
-/// of this PR argued instead that the two `DTSTART` forms accept the same
-/// strings; they did not, and the gap was exactly the ambiguous Paris wall
-/// clock that `paris_rule_set` now sidesteps.
+/// It builds the construction the row will be unrolled from — down to the
+/// anchor; the unroll only lifts `COUNT` to keep it itself, and `rrule`
+/// validates nothing on the count's value — and throws the result away. That
+/// identity is structural rather than argued: a rule accepted here with a
+/// given `starts_at` can be expanded later **from that same `starts_at`**.
+/// An earlier version of #116 argued instead that two `DTSTART` forms accept
+/// the same strings; they did not, and the gap was exactly the ambiguous
+/// Paris wall clock that `paris_rule_set` sidesteps.
 ///
-/// An **all-day** row (`all_day`) is checked on its own construction as
-/// well, `all_day_rule_set`, because that is what
-/// `expand_all_day_occurrences` unrolls: a UTC-midnight stand-in for its
-/// Paris date, not the Paris midnight the row stores. Checked on the stored
-/// instant, the two parted on an `UNTIL` between them (#161): an all-day
-/// event on 2026-09-05 is stored at 2026-09-04T22:00Z, and
-/// `FREQ=DAILY;UNTIL=20260904T235959Z` — what `build_rrule` writes for
-/// « Jusqu'au 2026-09-04 » — was a 201 on write, then `UntilBeforeStart`
-/// and a 500 on the whole window on read. The same identity holds: a rule
-/// accepted here unrolls from the same row.
+/// An **all-day** row (`all_day`) is checked on its own construction,
+/// `all_day_rule_set`, because that is what `expand_all_day_occurrences`
+/// unrolls: the same rule and the same walk, from the Paris midnight the row
+/// stores and with `UNTIL` read on the day it names. Checked instead on the
+/// raw instant the rule carries, the two parted on an `UNTIL` inside the
+/// first day (#161): an all-day event on 2026-09-05 is stored at
+/// 2026-09-04T22:00Z, and `FREQ=DAILY;UNTIL=20260904T235959Z` — what
+/// `build_rrule` writes for « Jusqu'au 2026-09-04 » — was a 201 on write,
+/// then `UntilBeforeStart` and a 500 on the whole window on read. The same
+/// identity holds: a rule accepted here unrolls from the same row.
 ///
 /// Neither identity says anything about a `starts_at` that changes without
 /// coming back here. A calendar re-import does exactly that: it rewrites
@@ -504,55 +553,42 @@ fn add_days(date: NaiveDate, n: i64) -> NaiveDate {
 /// not closed here but on read: `list_events` renders such a row on its
 /// own and logs why, rather than failing the window (#161).
 ///
-/// An all-day series has a **second reader**, and until #169 it did not
-/// unroll the same construction: `refill_notifications` went through
-/// `expand_occurrences`, i.e. `paris_rule_set`, from the Paris midnight the
-/// row stores. The two parse the rule differently — `all_day_rule_set`
-/// formats it into a text of several lines, `paris_rule_set` parses it as
-/// one — and they part on rules that either one alone would take. So an
-/// all-day rule is checked on both, the second from the instant
-/// `normalize_all_day` will store rather than the one the client sent
-/// (#165). Checked on `all_day_rule_set` alone, `FREQ=WEEKLY;BYDAY=X:MO`
-/// was a 201, then a 500 on `POST /reminders`.
+/// Until #162 an all-day rule was checked on **two** constructions, and had
+/// to be: the reminders read such a row through `expand_occurrences` until
+/// #169, and the two parsed the rule differently — the all-day one formatted
+/// it into a text of several lines, the hour-bound one parsed it as one — so
+/// they parted on rules that either alone would take. Checked on the all-day
+/// construction alone, `FREQ=WEEKLY;BYDAY=X:MO` was a 201, then a 500 on
+/// `POST /reminders`. Both readers went through `expand_series` from #169
+/// on, and since #162 there is one construction left: the same parse, the
+/// same walk, differing only in the anchor and in how `UNTIL` is read. The
+/// second check is gone with the second construction. It had already been
+/// measured redundant at the verification of #172 — 0 of 240 000
+/// (rule, anchor) pairs accepted by one and refused by the other, and 0 of
+/// 183 960 in a narrower run — and what it measured now follows from the
+/// shape: the all-day reading of `UNTIL` is never later than the instant the
+/// rule carries, so an all-day row this function takes is a row the
+/// hour-bound construction would take too.
 ///
-/// Both readers now unroll through `expand_series` (#169), so the reminders
-/// read an all-day row on `all_day_rule_set` too, and no reader builds
-/// `paris_rule_set` for an all-day row any more. The check on it is still
-/// here, and as far as can be seen it is **redundant** for such a row, with
-/// `rrule` 0.14: once `:` and line breaks are refused, both constructions
-/// parse the same value the same way, and the only checks that depend on
-/// the anchor are the zone of `UNTIL` (UTC, on both) and `UNTIL` not before
-/// it. The Paris midnight the row stores always precedes the UTC-midnight
-/// stand-in by an hour or two, so an `UNTIL` the stand-in takes is taken by
-/// the stored instant too. Measured, not proven: a fuzz at the verification
-/// of #172 found 0 of 240 000 (rule, anchor) pairs accepted by
-/// `all_day_rule_set` and refused by `paris_rule_set`, and a narrower one
-/// run while fixing it 0 of 183 960 (every Paris day of 2026, 7 frequencies,
-/// 6 extra parts, 12 `COUNT`/`UNTIL` forms around both anchors). Kept rather
-/// than removed because removing it was not #169's to decide — #162 is where
-/// the two constructions are weighed — and because the redundancy rests on
-/// `rrule`'s current checks, which an upgrade could change.
-///
-/// And a rule is **one value**, whichever the path: no line break, no `:`.
-/// A rule carrying a line break injected its own `EXDATE:`, `RDATE:` or
-/// `DTSTART:` lines into `all_day_rule_set`'s text; on the hour-bound path,
-/// the parser picks a property name from any line, so
+/// And a rule is **one value**: no line break, no `:`. A rule carrying a
+/// line break used to inject its own `EXDATE:`, `RDATE:` or `DTSTART:` lines
+/// into the all-day text; on the single parser left, as on the hour-bound
+/// one before it, the parser picks a property name from any line, so
 /// `FREQ=WEEKLY\nRRULE:FREQ=DAILY` was stored as written and unrolled as
-/// `FREQ=DAILY`. A `:` does the same on a single line, because the two
-/// constructions do not cut the rule at the same place: `all_day_rule_set`
-/// keeps it whole after its own `RRULE:`, `paris_rule_set` keeps only what
-/// follows its first `:`. Until #169 they were the agenda's and the
+/// `FREQ=DAILY`. A `:` did the same on a single line, because the two
+/// constructions did not cut the rule at the same place: the all-day text
+/// kept it whole after its own `RRULE:`, the hour-bound parse kept only what
+/// follows the first `:`. Until #169 they were the agenda's and the
 /// reminders' readers of an all-day row, and an all-day
 /// `BYDAY=1:WKST=MO;FREQ=WEEKLY` on a Saturday was accepted by both, then
-/// listed on Mondays and reminded on Saturdays; the
-/// hour-bound `FREQ=WEEKLY;X:FREQ=DAILY` was stored as written and unrolled
-/// every day. None of these is an RRULE value — RFC 5545 §3.3.10 gives a
-/// value no `:` and no line — and none of our clients writes one
-/// (`build_rrule`); they are refused before any parser sees them rather than
-/// left to where each parser happens to cut (#165). That refuses
-/// `RRULE:FREQ=DAILY` too, which the hour-bound path used to take as
-/// `FREQ=DAILY`: the property name is not part of the value, and the API
-/// derives that line itself.
+/// listed on Mondays and reminded on Saturdays; the hour-bound
+/// `FREQ=WEEKLY;X:FREQ=DAILY` was stored as written and unrolled every day.
+/// None of these is an RRULE value — RFC 5545 §3.3.10 gives a value no `:`
+/// and no line — and none of our clients writes one (`build_rrule`); they
+/// are refused before any parser sees them rather than left to where the
+/// parser happens to cut (#165). That refuses `RRULE:FREQ=DAILY` too, which
+/// the parser takes as `FREQ=DAILY`: the property name is not part of the
+/// value, and the API derives that line itself.
 ///
 /// And a rule is **ASCII** (#170). `rrule` 0.14 cuts a `BYDAY` entry two
 /// bytes before its end (`NWeekday::from_str`) and panics when that cut
@@ -605,21 +641,20 @@ pub fn validate(
     starts_at: DateTime<Utc>,
     all_day: bool,
 ) -> Result<(), rrule::RRuleError> {
-    if !rrule.is_ascii() || rrule.contains(['\r', '\n', ':']) {
+    if rrule.contains(['\r', '\n', ':']) {
         return Err(rrule::ParseError::InvalidParameterFormat(rrule.into()).into());
     }
+    // Both constructions refuse a non-ASCII rule before the parser sees it,
+    // through `parse_rule`.
     if all_day {
-        all_day_rule_set(rrule, starts_at)?;
-        let stored = paris_start_of_day(paris_date(starts_at));
-        paris_rule_set(rrule, stored)?;
-        if steps_by_days(&rrule.parse()?) {
-            Ok(())
-        } else {
-            Err(rrule::ParseError::InvalidParameterFormat(rrule.into()).into())
+        if !steps_by_days(&parse_rule(rrule)?) {
+            return Err(rrule::ParseError::InvalidParameterFormat(rrule.into()).into());
         }
+        all_day_rule_set(rrule, starts_at)?;
     } else {
-        paris_rule_set(rrule, starts_at).map(|_| ())
+        paris_rule_set(rrule, starts_at)?;
     }
+    Ok(())
 }
 
 /// Whether `rule` steps by whole days and names no time of day — what an
@@ -998,11 +1033,14 @@ mod tests {
     // #101, round 2. Anchoring an all-day event on Paris midnight puts its
     // stored `starts_at` on the DST cliff: 22:00Z the previous day in
     // summer, 23:00Z in winter. Written into `DTSTART:<..>Z` and unrolled
-    // in UTC — which is what this path still does, on a midnight stand-in
-    // rather than on the row's own instant — every occurrence would keep
-    // the offset of the month the series was created in and slide onto the
-    // wrong civil day once the clocks change: the exact symptom #101 is
-    // about, re-created for recurring events.
+    // in UTC, every occurrence would keep the offset of the month the series
+    // was created in and slide onto the wrong civil day once the clocks
+    // change: the exact symptom #101 is about, re-created for recurring
+    // events.
+    //
+    // The six tests below are the invariant, whatever the path underneath:
+    // the unroll went from a UTC-midnight stand-in to the Paris midnight the
+    // row stores at #162, and they are kept word for word across that move.
 
     fn day(y: i32, m: u32, d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, d).unwrap()
@@ -1108,6 +1146,61 @@ mod tests {
         assert_eq!(occs[0].1, midnight(2026, 11, 8));
     }
 
+    /// The Paris days a daily all-day series is listed over `[from, to]`.
+    fn all_day_days_over(from: DateTime<Utc>, to: DateTime<Utc>) -> Vec<NaiveDate> {
+        let first = midnight(2026, 6, 1);
+        expand_all_day_occurrences("FREQ=DAILY", first, first + Duration::days(1), from, to)
+            .unwrap()
+            .into_iter()
+            .map(|(start, _)| paris_date(start))
+            .collect()
+    }
+
+    #[test]
+    fn an_all_day_window_holds_the_days_it_asks_for_and_no_other() {
+        // The dashboard's own window shape (`apps/web`'s `home.rs`): three
+        // civil days, closed at `<last day>T23:59:59` in Paris — one second
+        // before the Paris midnight that opens the fourth. A second of slack
+        // at that end is a whole extra day on the page, so the bound is
+        // strict on both ends, as it was before the two unrolls were folded
+        // into one (#162).
+        let three_days = (
+            midnight(2026, 6, 1),
+            midnight(2026, 6, 4) - Duration::seconds(1),
+        );
+        assert_eq!(
+            all_day_days_over(three_days.0, three_days.1),
+            vec![day(2026, 6, 1), day(2026, 6, 2), day(2026, 6, 3)]
+        );
+
+        // And the low end: a window opening one second after a Paris midnight
+        // does not reach back to the day that midnight opens.
+        let from = midnight(2026, 6, 2) + Duration::seconds(1);
+        assert_eq!(
+            all_day_days_over(from, midnight(2026, 6, 3)),
+            vec![day(2026, 6, 3)]
+        );
+    }
+
+    #[test]
+    fn an_hour_bound_window_keeps_the_second_it_has_always_kept() {
+        // The contrast, pinned so it cannot be changed by accident: an
+        // hour-bound series is listed over a window a second wider than the
+        // one asked for, from the time `RRuleSet::all` bounded the walk with
+        // exclusive ends. That second is harmless there — no rule steps by
+        // less than a second — and it is what this path has listed since
+        // #119.
+        let start = utc(2026, 6, 1, 9, 0);
+        let occs = expand_occurrences(
+            "FREQ=DAILY;COUNT=3",
+            start,
+            start + Duration::seconds(1),
+            start + Duration::days(1) - Duration::seconds(1),
+        )
+        .unwrap();
+        assert_eq!(occs, vec![start, start + Duration::days(1)]);
+    }
+
     #[test]
     fn an_all_day_occurrence_landing_exactly_on_a_window_bound_is_kept() {
         let bound = midnight(2026, 11, 5);
@@ -1125,11 +1218,17 @@ mod tests {
 
     // -- validate on the all-day anchor (#161) -------------------------------
     //
-    // An all-day row is unrolled on a UTC-midnight stand-in for its Paris
-    // date, not on the Paris midnight it stores (22:00Z or 23:00Z the day
-    // before). A rule validated on the stored instant but unrolled on the
-    // stand-in was accepted on write and failed on read — a 201, then a 500
-    // on the whole window. Write has to refuse what the unroll refuses.
+    // Write has to refuse what the unroll refuses, and at #161 it did not: an
+    // all-day row was unrolled on a UTC-midnight stand-in for its Paris date
+    // while its rule was checked on the Paris midnight it stores (22:00Z or
+    // 23:00Z the day before), so a rule taken on write failed on read — a
+    // 201, then a 500 on the whole window.
+    //
+    // The stand-in is gone (#162): the row is unrolled from the Paris
+    // midnight it stores, and its `UNTIL` is read on the day it names rather
+    // than as the instant the rule carries. These tests pin the same
+    // identity against that construction — the acceptances below are
+    // unchanged, the anchor underneath them is not.
 
     #[test]
     fn an_all_day_rule_until_the_day_before_is_refused_on_write() {
@@ -1168,8 +1267,11 @@ mod tests {
 
     #[test]
     fn validate_accepts_exactly_the_all_day_rules_the_unroll_accepts() {
-        // Anchors on both offsets, and UNTILs on each side of both the stored
-        // instant and the stand-in — the two anchors part between them.
+        // Anchors on both offsets, and UNTILs on each side of the stored
+        // Paris midnight and of the UTC midnight opening the same day — the
+        // hour or two between them is where the anchor #161 fixed and the
+        // stand-in it replaced parted, and where the raw instant and the day
+        // `all_day_until_day` reads part now.
         let anchors = [midnight(2026, 9, 5), midnight(2026, 12, 5)];
         let rules = [
             "FREQ=DAILY",
@@ -1208,15 +1310,15 @@ mod tests {
     // -- a rule is one line, and every reader unrolls it (#165) --------------
     //
     // At #165 an all-day series had two readers building its rule set two
-    // ways: `list_events` wrapped the rule in `all_day_rule_set`'s text,
+    // ways: `list_events` wrapped the rule in the all-day text,
     // `refill_notifications` parsed the rule alone through
     // `expand_occurrences`, from the instant the row stores. A rule carrying
     // a line break injected its own `EXDATE:`/`RDATE:`/`DTSTART:` lines into
     // the first and was refused by the second: a 201 on write, then a 500 on
     // `POST /reminders` and an error logged by the reminders job at every
-    // pass. Since #169 both readers go through `expand_series`, i.e.
-    // `all_day_rule_set` for an all-day row; `validate` still checks both
-    // constructions (see its doc), and these tests pin that.
+    // pass. Since #169 both readers go through `expand_series`, and since
+    // #162 through one construction; the refusal stays, because none of
+    // these is an RRULE value, and these tests pin it.
 
     /// Rules that bring lines of their own — through `\n`, `\r\n`, or a bare
     /// `\r`, which `str::lines` strips on one reader and not on the other.
@@ -1255,17 +1357,17 @@ mod tests {
     }
 
     #[test]
-    fn an_all_day_rule_the_hour_bound_construction_cannot_unroll_is_refused_on_write() {
-        // One line, no break: `all_day_rule_set` reads everything after
-        // `RRULE:` and takes `X:MO` for a Monday; `expand_occurrences` finds
-        // a `:` in a line with no property name and parses `MO` alone.
-        // `expand_occurrences` was the reminders' reader of an all-day row
-        // until #169; it is still the construction `validate` checks.
+    fn an_all_day_rule_the_parser_cannot_unroll_is_refused_on_write() {
+        // One line, no break: the all-day text read everything after `RRULE:`
+        // and took `X:MO` for a Monday, where the parser finds a `:` in a
+        // line with no property name and parses `MO` alone. That text is
+        // gone (#162) and both kinds of series now go through the parser, so
+        // the rule no longer unrolls at all — on either.
         let rule = "FREQ=WEEKLY;BYDAY=X:MO";
         let stored = midnight(2026, 9, 5);
         assert!(
             expand_occurrences(rule, stored, stored, stored + Duration::days(30)).is_err(),
-            "the premise: the hour-bound construction refuses {rule}"
+            "the premise: the unroll refuses {rule}"
         );
         assert!(validate(rule, stored, true).is_err());
     }
@@ -1276,8 +1378,10 @@ mod tests {
         // all-day unroll (`listed`, what both readers use since #169) **and**
         // by the hour-bound construction from the stored instant
         // (`hour_bound`, the reminders' reader of an all-day row until #169,
-        // still checked by `validate`). It does not compare two live readers
-        // any more.
+        // and the second check `validate` made until #162). It does not
+        // compare two live readers any more, and `hour_bound` is now implied
+        // by `listed` rather than checked — see
+        // `the_hour_bound_construction_would_accept_every_all_day_rule_write_takes`.
         //
         // Checked from the instant the client sends as well as from the one
         // the row stores: `validate` runs before `normalize_all_day`.
@@ -1350,13 +1454,15 @@ mod tests {
     // -- a rule holds no `:` (#165) -------------------------------------------
     //
     // A `:` is how a content line separates a property name from its value;
-    // an RRULE value (RFC 5545 §3.3.10) never holds one. The two
-    // constructions do not agree on what to do with it: `all_day_rule_set`
-    // keeps the rule whole after its own `RRULE:`, `expand_occurrences` keeps
-    // only what follows the first `:`. At #165 they were the agenda's and the
-    // reminders' readers of an all-day row (both use the first since #169):
-    // on one line, with no break, a rule could still be read two ways, or
-    // stored as written and unrolled as something else.
+    // an RRULE value (RFC 5545 §3.3.10) never holds one. At #165 the two
+    // constructions did not agree on what to do with it — the all-day text
+    // kept the rule whole after its own `RRULE:`, the hour-bound parse kept
+    // only what follows the first `:` — and they were the agenda's and the
+    // reminders' readers of an all-day row: on one line, with no break, a
+    // rule could be read two ways. Since #169 both readers go through
+    // `expand_series`, and since #162 through one construction, so a rule
+    // holding a `:` is read one way now — but still not the way it is
+    // stored, which is why it stays refused on write.
 
     /// One-line rules carrying a `:`. Some are refused by one construction, some
     /// accepted by both and read differently, some accepted as written and
@@ -1371,10 +1477,26 @@ mod tests {
     ];
 
     #[test]
-    fn the_two_constructions_part_on_a_rule_holding_a_colon() {
-        // The premise of the refusal, measured on both examples from the
-        // verification of #166. `hour_bound` is what the reminders read for
-        // an all-day row until #169; since then they read `listed`.
+    fn a_rule_holding_a_colon_is_not_unrolled_as_it_is_stored() {
+        // The premise of the refusal, on the example from the verification of
+        // #166: the parser cuts the rule at its first `:`, takes what precedes
+        // for a property name and unrolls only the tail. A row holding
+        // `FREQ=WEEKLY;X:FREQ=DAILY` is listed — and reminded — every day.
+        let start = utc(2026, 9, 5, 9, 0);
+        let daily = expand_occurrences(
+            "FREQ=WEEKLY;X:FREQ=DAILY",
+            start,
+            start,
+            start + Duration::days(6),
+        )
+        .unwrap();
+        assert_eq!(daily.len(), 7, "{daily:?}");
+
+        // The same rule on an all-day row, now that one construction reads
+        // both (#162): `BYDAY=1:WKST=MO;FREQ=WEEKLY` on a Saturday was listed
+        // on Mondays by the all-day text and reminded on Saturdays by the
+        // hour-bound parse. Both read `MO` alone now, and land on the
+        // Saturdays the anchor gives.
         let saturday = midnight(2026, 9, 5);
         assert_eq!(paris_date(saturday).weekday(), Weekday::Sat);
         let rule = "BYDAY=1:WKST=MO;FREQ=WEEKLY";
@@ -1390,30 +1512,10 @@ mod tests {
         .into_iter()
         .map(|(start, _)| paris_date(start).weekday())
         .collect();
-        let hour_bound: Vec<Weekday> = expand_occurrences(rule, saturday, window.0, window.1)
-            .unwrap()
-            .into_iter()
-            .map(|start| paris_date(start).weekday())
-            .collect();
         assert!(
-            !listed.is_empty() && listed.iter().all(|d| *d == Weekday::Mon),
+            !listed.is_empty() && listed.iter().all(|d| *d == Weekday::Sat),
             "{listed:?}"
         );
-        assert!(
-            !hour_bound.is_empty() && hour_bound.iter().all(|d| *d == Weekday::Sat),
-            "{hour_bound:?}"
-        );
-
-        // Hour-bound: stored as written, unrolled as its tail, every day.
-        let start = utc(2026, 9, 5, 9, 0);
-        let daily = expand_occurrences(
-            "FREQ=WEEKLY;X:FREQ=DAILY",
-            start,
-            start,
-            start + Duration::days(6),
-        )
-        .unwrap();
-        assert_eq!(daily.len(), 7, "{daily:?}");
     }
 
     #[test]
@@ -1736,6 +1838,127 @@ mod tests {
                 hour_bound.len(),
                 "window of {window_days} days"
             );
+        }
+    }
+
+    // -- one unroll for both kinds of series (#162) ---------------------------
+    //
+    // Until here the two kinds of series were unrolled by two constructions:
+    // an hour-bound one through `RRule::from_str` on the rule alone, anchored
+    // on a Paris instant; an all-day one through a
+    // `DTSTART:<..>Z\nRRULE:<rule>` text, anchored on a UTC-midnight stand-in
+    // for its civil date. They cut the rule at different places — #165's
+    // whole family of defects — and a fix applied to one was not applied to
+    // the other (#171).
+    //
+    // Both now parse the rule the same way and unroll it on the same Paris
+    // wall clock. An all-day series is anchored on the Paris midnight its row
+    // stores, and only what a civil date needs is read differently: its
+    // `UNTIL` names a day, and its occurrences are whole Paris days.
+
+    /// The days each unroll gives for `rule` from the same Paris midnight, or
+    /// `None` for whichever refuses it.
+    fn both_unrolls(
+        rule: &str,
+        anchor: DateTime<Utc>,
+    ) -> (Option<Vec<NaiveDate>>, Option<Vec<NaiveDate>>) {
+        let (from, to) = (anchor, anchor + Duration::days(21));
+        let all_day =
+            expand_all_day_occurrences(rule, anchor, anchor + Duration::days(1), from, to)
+                .ok()
+                .map(|spans| spans.into_iter().map(|(s, _)| paris_date(s)).collect());
+        let hour_bound = expand_occurrences(rule, anchor, from, to)
+            .ok()
+            .map(|starts| starts.into_iter().map(paris_date).collect());
+        (all_day, hour_bound)
+    }
+
+    #[test]
+    fn both_unrolls_read_a_rule_the_same_way() {
+        // `BYDAY=1:WKST=MO;FREQ=WEEKLY` is the measured example from #166: the
+        // all-day text kept the rule whole after its own `RRULE:` and read
+        // `1:WKST=MO` as a Monday, while the hour-bound parser cut the rule at
+        // its first `:` and read `MO` alone. One listed Mondays, the other
+        // Saturdays, from a row holding one value.
+        let anchor = midnight(2026, 9, 5);
+        for rule in [
+            "FREQ=DAILY",
+            "FREQ=WEEKLY;BYDAY=SA",
+            "FREQ=MONTHLY;BYMONTHDAY=5",
+        ]
+        .iter()
+        .chain(COLON_RULES.iter())
+        .chain(MULTI_LINE_RULES.iter())
+        {
+            let (all_day, hour_bound) = both_unrolls(rule, anchor);
+            assert_eq!(all_day, hour_bound, "{rule:?} is read two ways");
+        }
+    }
+
+    #[test]
+    fn an_all_day_until_names_the_civil_day_its_own_date_gives() {
+        // The pure reading, on the value `build_rrule` writes for
+        // « jusqu'au <date> » and on the other times of day a direct API call
+        // can send: an all-day `UNTIL` names a day, and the day it names is
+        // its own date, whatever hour it carries.
+        for (h, m, s) in [(0, 0, 0), (12, 0, 0), (22, 0, 0), (23, 59, 59)] {
+            let until = utc(2026, 10, 10, h, m) + Duration::seconds(s);
+            assert_eq!(
+                all_day_until_day(until.with_timezone(&Tz::UTC)),
+                midnight(2026, 10, 10).with_timezone(&Tz::UTC),
+                "{until} does not name 2026-10-10"
+            );
+        }
+    }
+
+    #[test]
+    fn an_all_day_series_stops_on_the_day_its_until_names() {
+        // Non-regression on #169, the defect a Paris anchor brings back if
+        // `UNTIL` is compared as a bare instant: Paris midnight on the 11th is
+        // 2026-10-10T22:00Z, i.e. *before* the `UNTIL` the form writes for
+        // « jusqu'au 10/10 ». On civil dates the 11th is past it.
+        let first = midnight(2026, 10, 1);
+        let days: Vec<NaiveDate> = expand_all_day_occurrences(
+            "FREQ=DAILY;UNTIL=20261010T235959Z",
+            first,
+            first + Duration::days(1),
+            first,
+            first + Duration::days(30),
+        )
+        .unwrap()
+        .into_iter()
+        .map(|(start, _)| paris_date(start))
+        .collect();
+        assert_eq!(days.len(), 10, "{days:?}");
+        assert_eq!(days[9], day(2026, 10, 10));
+    }
+
+    #[test]
+    fn the_hour_bound_construction_would_accept_every_all_day_rule_write_takes() {
+        // `validate` no longer builds the hour-bound construction for an
+        // all-day row (#162). The two are one construction now, and the
+        // all-day reading of `UNTIL` is never later than the instant the rule
+        // carries, so the check made on top of it could only ever have been
+        // redundant. This pins that implication, where #172 measured it.
+        for rule in [
+            "FREQ=DAILY",
+            "FREQ=DAILY;UNTIL=20260904T215959Z",
+            "FREQ=DAILY;UNTIL=20260904T235959Z",
+            "FREQ=DAILY;UNTIL=20260905T000000Z",
+            "FREQ=DAILY;UNTIL=20260905T235959Z",
+            "FREQ=WEEKLY;BYDAY=SA;COUNT=3",
+            "FREQ=MONTHLY;UNTIL=20261204T235959Z",
+            "FREQ=MONTHLY;UNTIL=20261205T000000Z",
+        ] {
+            for stored in [midnight(2026, 9, 5), midnight(2026, 12, 5)] {
+                if validate(rule, stored, true).is_ok() {
+                    assert!(
+                        paris_rule_set(rule, stored).is_ok(),
+                        "{rule:?} from {stored} is taken on write and refused by the \
+                         hour-bound construction"
+                    );
+                }
+            }
         }
     }
 }

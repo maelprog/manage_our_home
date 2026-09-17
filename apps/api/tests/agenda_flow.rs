@@ -279,12 +279,15 @@ async fn an_all_day_event_is_stored_as_whole_paris_days(db: PgPool) {
 /// recurring all-day event, not just for the stored row.
 ///
 /// Anchoring the row on Paris midnight puts its `starts_at` on the DST
-/// cliff (22:00Z in summer, 23:00Z in winter). Unrolled in UTC — which is
-/// what this path still does, on a midnight stand-in — every later
+/// cliff (22:00Z in summer, 23:00Z in winter). Unrolled in UTC, every later
 /// occurrence would keep September's offset and land at 22:00Z, i.e. 23:00
 /// on the *previous* day once the clocks go back. The event then vanishes
 /// from a dashboard window that starts at Paris midnight, which is #101's
 /// own symptom one level up.
+///
+/// #101 bought that with a UTC-midnight stand-in for each civil date; #162
+/// unrolls the row in Paris from the midnight it stores instead. This test
+/// is the invariant, not the path: it is kept verbatim across that move.
 ///
 /// This is the reproduction from the review of PR #115, verbatim.
 #[sqlx::test]
@@ -349,6 +352,70 @@ async fn a_recurring_all_day_event_lands_on_its_civil_day_after_the_clocks_chang
     assert_eq!(
         instant(occ, "occurrence_ends_at"),
         Utc.with_ymd_and_hms(2026, 11, 5, 23, 0, 0).unwrap()
+    );
+}
+
+/// #162: the dashboard's window, end to end. `apps/web`'s `home.rs` asks for
+/// `<today>T00:00` to `<today + 2>T23:59:59` in Paris — a three-day window
+/// whose far end is one second before the Paris midnight that opens the
+/// fourth day. A daily all-day series must be listed three times over it, not
+/// four: neither `list_events` nor the dashboard's own `soonest_occurrences`
+/// filters again, so a second of slack in the unroll is a whole extra day on
+/// the page. Replayed here through `GET /events`, where the unroll actually
+/// runs.
+#[sqlx::test]
+async fn an_all_day_series_fills_the_dashboard_window_and_not_the_day_after(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "Sport",
+            // Paris is UTC+2 in June: the civil day of the 1st.
+            "starts_at": "2026-05-31T22:00:00Z",
+            "ends_at": "2026-05-31T23:00:00Z",
+            "all_day": true,
+            "rrule": "FREQ=DAILY",
+        })),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+
+    let from = Utc.with_ymd_and_hms(2026, 5, 31, 22, 0, 0).unwrap();
+    let to = Utc.with_ymd_and_hms(2026, 6, 3, 21, 59, 59).unwrap();
+    let list = call(
+        &router,
+        Method::GET,
+        &format!(
+            "/groups/{group_id}/events?from={}&to={}",
+            urlenc(&from.to_rfc3339()),
+            urlenc(&to.to_rfc3339())
+        ),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&list, StatusCode::OK);
+    let body = json_body(list).await;
+    let occurrences = body["occurrences"].as_array().unwrap();
+    let starts: Vec<DateTime<Utc>> = occurrences
+        .iter()
+        .map(|occ| instant(occ, "occurrence_starts_at"))
+        .collect();
+    assert_eq!(
+        starts,
+        vec![
+            from,
+            Utc.with_ymd_and_hms(2026, 6, 1, 22, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 6, 2, 22, 0, 0).unwrap(),
+        ],
+        "the window of three civil days does not hold exactly its three days: {body}"
     );
 }
 
@@ -746,11 +813,15 @@ async fn an_event_title_that_is_blank_is_refused_on_write(db: PgPool) {
     assert_eq!(json_body(untouched).await["title"], "Anniversaire");
 }
 
-/// #161: an all-day series is unrolled on a UTC-midnight stand-in for its
-/// date, so its rule has to be validated there — not on the Paris midnight
-/// the row stores, which sits two hours earlier. The reproduction from the
-/// issue: an all-day event on 2026-09-05 « jusqu'au 2026-09-04 » was a 201,
-/// then a 500 on the whole month.
+/// #161: an all-day series' rule has to be validated on the construction
+/// that unrolls it. At #161 it was not — the row was unrolled on a
+/// UTC-midnight stand-in for its date while the rule was checked on the
+/// Paris midnight the row stores, two hours earlier — and the reproduction
+/// from the issue was an all-day event on 2026-09-05 « jusqu'au 2026-09-04 »:
+/// a 201, then a 500 on the whole month.
+///
+/// Since #162 that construction is the Paris midnight itself, with `UNTIL`
+/// read on the day it names; the answers below are unchanged.
 #[sqlx::test]
 async fn an_all_day_series_until_the_day_before_is_refused_on_write(db: PgPool) {
     let router = test_router(db.clone());
@@ -817,10 +888,75 @@ async fn an_all_day_series_until_the_day_before_is_refused_on_write(db: PgPool) 
     assert_status(&to_all_day, StatusCode::BAD_REQUEST);
 }
 
+/// The mirror `PATCH`, in the other direction. An all-day rule is checked on
+/// everything an hour-bound one is and more — it has to step by whole days
+/// (#171), and its `UNTIL` is read on the day it names, never later than the
+/// instant the rule carries (#162) — so a rule a row holds while all-day is a
+/// rule it can keep once it is hour-bound, and `{"all_day": false}` never
+/// costs it its recurrence. The claim was read off `validate` and never
+/// replayed over HTTP until here.
+#[sqlx::test]
+async fn turning_an_all_day_series_hour_bound_keeps_its_rule(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    // « Jusqu'au 2026-09-05 » on an all-day event of that very day: accepted
+    // all-day, and the `UNTIL` sits inside the Paris day the row stores
+    // (2026-09-04T22:00Z), which is where an hour-bound reading differs.
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "Anniversaire",
+            "starts_at": "2026-09-04T22:00:00Z",
+            "ends_at": "2026-09-04T23:00:00Z",
+            "all_day": true,
+            "rrule": "FREQ=DAILY;UNTIL=20260905T235959Z",
+        })),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let event_id = json_body(create).await["id"].as_str().unwrap().to_string();
+
+    let event_path = format!("/groups/{group_id}/events/{event_id}");
+    let to_hour_bound = call(
+        &router,
+        Method::PATCH,
+        &event_path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"all_day": false})),
+    )
+    .await;
+    assert_status(&to_hour_bound, StatusCode::OK);
+    let body = json_body(to_hour_bound).await;
+    assert_eq!(body["all_day"], false);
+    assert_eq!(body["rrule"], "FREQ=DAILY;UNTIL=20260905T235959Z");
+
+    // And a `PATCH` that leaves it all-day without replacing the rule is
+    // still a 200: `update_event` re-validates the merged pair, and the rule
+    // was accepted all-day in the first place.
+    let back_to_all_day = call(
+        &router,
+        Method::PATCH,
+        &event_path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"all_day": true})),
+    )
+    .await;
+    assert_status(&back_to_all_day, StatusCode::OK);
+}
+
 /// #165: an all-day series has two readers — `list_events`, and the reminders
 /// (`refill_notifications`) — and at #165 they did not unroll it the same
 /// way, so write had to refuse what either refused. Since #169 both go
-/// through `recurrence::expand_series`. The reproduction from the issue:
+/// through `recurrence::expand_series`, and since #162 through one
+/// construction. The rules below stay refused: none of them is an RRULE
+/// value, and a row holding one is still not unrolled as it is stored.
+/// The reproduction from the issue:
 /// `FREQ=WEEKLY\nEXDATE:…` on an all-day event was a 201, then
 /// `POST /reminders` on it a 500. Every such rule is a 400 now, on create
 /// and on update, all-day or not, so the reminders never meet one written
@@ -843,12 +979,12 @@ async fn a_rule_the_reminders_cannot_unroll_is_refused_on_write(db: PgPool) {
         "FREQ=WEEKLY\rEXDATE:20260927T000000Z",
         "FREQ=WEEKLY\r",
         "FREQ=WEEKLY\nRRULE:FREQ=DAILY",
-        // One line, and still read one way by `list_events` and refused by
-        // the reminders.
+        // One line, read one way by `list_events` and refused by the
+        // reminders until #169; unrolled by neither since #162.
         "FREQ=WEEKLY;BYDAY=X:MO",
-        // A `:` on one line, read two ways: all-day on a Saturday, Mondays
-        // for `list_events` and Saturdays for the reminders; hour-bound,
-        // stored as written and unrolled as `FREQ=DAILY`.
+        // A `:` on one line, read two ways at #165: all-day on a Saturday,
+        // Mondays for `list_events` and Saturdays for the reminders;
+        // hour-bound, stored as written and unrolled as `FREQ=DAILY`.
         "BYDAY=1:WKST=MO;FREQ=WEEKLY",
         "FREQ=WEEKLY;X:FREQ=DAILY",
         "RRULE:FREQ=DAILY",
