@@ -356,10 +356,12 @@ fn all_day_anchor(starts_at: DateTime<Utc>) -> DateTime<Utc> {
 /// it: an all-day occurrence is a civil date, so the bound that closes the
 /// series is one too, and the time of day the value carries is dropped.
 ///
-/// RFC 5545 §3.3.10 requires `UNTIL` to be a DATE when `DTSTART` is one,
-/// which is what an all-day row is; our clients send a DATE-TIME in UTC
-/// instead (`build_rrule` writes `<date>T235959Z` for « jusqu'au <date> »),
-/// and this reads its date.
+/// RFC 5545 §3.3.10 requires `UNTIL` to have the same value type as
+/// `DTSTART`, so a DATE on an all-day row; our clients send a DATE-TIME in
+/// UTC instead (`build_rrule` writes `<date>T235959Z` for « jusqu'au
+/// <date> »). Reading that value on its date rather than refusing it is
+/// ours, not the RFC's: the RFC says what such a rule must look like, not
+/// what to make of one that does not.
 ///
 /// It is also what keeps #169 closed. Compared as a bare instant against a
 /// Paris-anchored unroll, `UNTIL=20261010T235959Z` lets in the 11th: Paris
@@ -1216,11 +1218,17 @@ mod tests {
 
     // -- validate on the all-day anchor (#161) -------------------------------
     //
-    // An all-day row is unrolled on a UTC-midnight stand-in for its Paris
-    // date, not on the Paris midnight it stores (22:00Z or 23:00Z the day
-    // before). A rule validated on the stored instant but unrolled on the
-    // stand-in was accepted on write and failed on read — a 201, then a 500
-    // on the whole window. Write has to refuse what the unroll refuses.
+    // Write has to refuse what the unroll refuses, and at #161 it did not: an
+    // all-day row was unrolled on a UTC-midnight stand-in for its Paris date
+    // while its rule was checked on the Paris midnight it stores (22:00Z or
+    // 23:00Z the day before), so a rule taken on write failed on read — a
+    // 201, then a 500 on the whole window.
+    //
+    // The stand-in is gone (#162): the row is unrolled from the Paris
+    // midnight it stores, and its `UNTIL` is read on the day it names rather
+    // than as the instant the rule carries. These tests pin the same
+    // identity against that construction — the acceptances below are
+    // unchanged, the anchor underneath them is not.
 
     #[test]
     fn an_all_day_rule_until_the_day_before_is_refused_on_write() {
@@ -1259,8 +1267,11 @@ mod tests {
 
     #[test]
     fn validate_accepts_exactly_the_all_day_rules_the_unroll_accepts() {
-        // Anchors on both offsets, and UNTILs on each side of both the stored
-        // instant and the stand-in — the two anchors part between them.
+        // Anchors on both offsets, and UNTILs on each side of the stored
+        // Paris midnight and of the UTC midnight opening the same day — the
+        // hour or two between them is where the anchor #161 fixed and the
+        // stand-in it replaced parted, and where the raw instant and the day
+        // `all_day_until_day` reads part now.
         let anchors = [midnight(2026, 9, 5), midnight(2026, 12, 5)];
         let rules = [
             "FREQ=DAILY",

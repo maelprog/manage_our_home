@@ -279,12 +279,15 @@ async fn an_all_day_event_is_stored_as_whole_paris_days(db: PgPool) {
 /// recurring all-day event, not just for the stored row.
 ///
 /// Anchoring the row on Paris midnight puts its `starts_at` on the DST
-/// cliff (22:00Z in summer, 23:00Z in winter). Unrolled in UTC — which is
-/// what this path still does, on a midnight stand-in — every later
+/// cliff (22:00Z in summer, 23:00Z in winter). Unrolled in UTC, every later
 /// occurrence would keep September's offset and land at 22:00Z, i.e. 23:00
 /// on the *previous* day once the clocks go back. The event then vanishes
 /// from a dashboard window that starts at Paris midnight, which is #101's
 /// own symptom one level up.
+///
+/// #101 bought that with a UTC-midnight stand-in for each civil date; #162
+/// unrolls the row in Paris from the midnight it stores instead. This test
+/// is the invariant, not the path: it is kept verbatim across that move.
 ///
 /// This is the reproduction from the review of PR #115, verbatim.
 #[sqlx::test]
@@ -810,11 +813,15 @@ async fn an_event_title_that_is_blank_is_refused_on_write(db: PgPool) {
     assert_eq!(json_body(untouched).await["title"], "Anniversaire");
 }
 
-/// #161: an all-day series is unrolled on a UTC-midnight stand-in for its
-/// date, so its rule has to be validated there — not on the Paris midnight
-/// the row stores, which sits two hours earlier. The reproduction from the
-/// issue: an all-day event on 2026-09-05 « jusqu'au 2026-09-04 » was a 201,
-/// then a 500 on the whole month.
+/// #161: an all-day series' rule has to be validated on the construction
+/// that unrolls it. At #161 it was not — the row was unrolled on a
+/// UTC-midnight stand-in for its date while the rule was checked on the
+/// Paris midnight the row stores, two hours earlier — and the reproduction
+/// from the issue was an all-day event on 2026-09-05 « jusqu'au 2026-09-04 »:
+/// a 201, then a 500 on the whole month.
+///
+/// Since #162 that construction is the Paris midnight itself, with `UNTIL`
+/// read on the day it names; the answers below are unchanged.
 #[sqlx::test]
 async fn an_all_day_series_until_the_day_before_is_refused_on_write(db: PgPool) {
     let router = test_router(db.clone());
