@@ -12,8 +12,8 @@ use crate::AppState;
 
 /// GET /account/export — Art. 20 (portabilité). Self-service: a user can
 /// only ever export their own data (scoped by `AuthUser`, no target-user
-/// parameter exists on this route). Every category is fetched per-group
-/// through `scoped_tx` (RLS-enforced) and additionally filtered by
+/// parameter exists on this route). Every content category is fetched
+/// per-group through `scoped_tx` (RLS-enforced) and additionally filtered by
 /// `created_by = auth.user_id` / `user_id = auth.user_id` at the SQL layer,
 /// so this is never a "dump my whole family's data" endpoint.
 pub async fn export_account(
@@ -34,14 +34,28 @@ pub async fn export_account(
         "created_at": profile.created_at,
     });
 
-    // "My groups" is visible via the `groups` table's membership-based RLS
-    // fallback with only `app.user_id` set (see `user_scoped_tx`'s doc
-    // comment) — `group_members` itself requires `app.family_id`, so role/
-    // joined_at per group is fetched in the per-group loop below instead.
+    // "My groups" are read from the caller's own `group_members` rows, with
+    // role and joined_at in the same query (issue #209, as `list_groups` since
+    // #205). The membership filter is written here and does not rest on RLS:
+    // under a role that bypasses it (the superuser of the `e2e` job and of
+    // infra/docker-compose.yml) an unfiltered `SELECT … FROM groups` returned
+    // every group of the database, and the loop below then ran once per
+    // group. Under the role apps/api/README.md prescribes, the policies of
+    // 0014 (`group_members_self_read`, `groups_membership_read`) let these
+    // rows through with only `app.user_id` set, and apply the same filter a
+    // second time. The content tables still require `app.family_id`, hence
+    // one `scoped_tx` per group below.
     let mut group_tx = user_scoped_tx(&state.db, auth.user_id).await?;
-    let groups = sqlx::query!("SELECT id, name FROM groups ORDER BY name")
-        .fetch_all(&mut *group_tx)
-        .await?;
+    let groups = sqlx::query!(
+        r#"SELECT g.id, g.name, gm.role AS "role: String", gm.joined_at
+           FROM group_members gm
+           JOIN groups g ON g.id = gm.group_id
+           WHERE gm.user_id = $1
+           ORDER BY g.name"#,
+        auth.user_id
+    )
+    .fetch_all(&mut *group_tx)
+    .await?;
     group_tx.commit().await?;
 
     let mut group_memberships: Vec<Value> = Vec::new();
@@ -55,23 +69,14 @@ pub async fn export_account(
     let mut calendar_imports: Vec<Value> = Vec::new();
 
     for group in &groups {
-        let mut tx = scoped_tx(&state.db, group.id, auth.user_id).await?;
+        group_memberships.push(json!({
+            "group_id": group.id,
+            "name": group.name,
+            "role": group.role,
+            "joined_at": group.joined_at,
+        }));
 
-        let membership = sqlx::query!(
-            "SELECT role AS \"role: String\", joined_at FROM group_members WHERE group_id = $1 AND user_id = $2",
-            group.id,
-            auth.user_id
-        )
-        .fetch_optional(&mut *tx)
-        .await?;
-        if let Some(m) = membership {
-            group_memberships.push(json!({
-                "group_id": group.id,
-                "name": group.name,
-                "role": m.role,
-                "joined_at": m.joined_at,
-            }));
-        }
+        let mut tx = scoped_tx(&state.db, group.id, auth.user_id).await?;
 
         let events = sqlx::query!(
             r#"SELECT id, group_id, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, created_at

@@ -1,7 +1,10 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
-use common::{assert_status, call, json_body, set_cookie, test_router};
+use common::{
+    assert_status, call, drop_prescribed_role, json_body, prescribed_role_pool, set_cookie,
+    test_router,
+};
 use sqlx::PgPool;
 
 async fn register_verify_login(
@@ -172,6 +175,95 @@ async fn export_never_leaks_another_members_content(db: PgPool) {
     let doc = json_body(export).await;
     assert!(doc["messages"].as_array().unwrap().is_empty());
     assert_eq!(doc["group_memberships"][0]["role"], "standard");
+}
+
+/// Issue #209: the export reads the caller's groups from their own
+/// `group_members` rows, not from every group the connection can see. A test
+/// pool connects as a superuser, which bypasses RLS: before the fix the export
+/// walked every group of the database and still returned what the caller
+/// authored in a group they had left. Under the `NOBYPASSRLS` role the README
+/// prescribes, that group was already invisible; both roles must now agree.
+#[sqlx::test]
+async fn export_covers_only_the_callers_current_groups(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "scope-owner@example.test", "owner-password1").await;
+    let left_group = create_group(&router, &owner_cookie, "Foyer Quitte").await;
+
+    let invite = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{left_group}/invitations"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_status(&invite, StatusCode::CREATED);
+    let token = json_body(invite).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let member_cookie =
+        register_verify_login(&router, &db, "scope-member@example.test", "member-password1").await;
+    let accept = call(
+        &router,
+        Method::POST,
+        &format!("/groups/invitations/{token}/accept"),
+        Some(&member_cookie),
+        None,
+    )
+    .await;
+    assert_status(&accept, StatusCode::OK);
+    let own_group = create_group(&router, &member_cookie, "Foyer Garde").await;
+
+    for (group_id, name) in [(&left_group, "Sel"), (&own_group, "Riz")] {
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/stock-items"),
+            Some(&member_cookie),
+            Some(serde_json::json!({"name": name, "quantity": 1.0, "unit": "kg"})),
+        )
+        .await;
+        assert_status(&res, StatusCode::CREATED);
+    }
+
+    let leave = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{left_group}/leave"),
+        Some(&member_cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_status(&leave, StatusCode::OK);
+
+    let (role, app_db) = prescribed_role_pool(&db).await;
+    let scoped_router = test_router(app_db.clone());
+    for (label, r) in [("superuser", &router), ("prescribed role", &scoped_router)] {
+        let export = call(r, Method::GET, "/account/export", Some(&member_cookie), None).await;
+        assert_status(&export, StatusCode::OK);
+        let doc = json_body(export).await;
+
+        let memberships: Vec<&str> = doc["group_memberships"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["group_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(memberships, [own_group.as_str()], "{label}: memberships");
+        assert_eq!(doc["group_memberships"][0]["role"], "owner", "{label}");
+        let stock_groups: Vec<&str> = doc["stock_items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["group_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(stock_groups, [own_group.as_str()], "{label}: stock items");
+    }
+    drop(scoped_router);
+    drop_prescribed_role(&db, app_db, &role).await;
 }
 
 /// Front epic F10 prerequisite: `GET /auth/me` reports `has_password` and the
