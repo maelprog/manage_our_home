@@ -86,8 +86,12 @@ export const GRID_DAYS = 42;
  *   1er : un créneau du 28 commence à plus de 8 jours de sa fin (205,75 h
  *   au plus juste avec les 40 événements par défaut, sur 2024-2032).
  * Ce n'est donc pas un miroir exact : ce qui le rend sûr est de s'en tenir au
- * mois, et un jeu qui en déborderait (veille du 1er, début du mois suivant)
- * devrait le resserrer.
+ * mois, et un jeu qui en déborderait devrait le resserrer. Les deux fenêtres
+ * ne divergent que dans l'écart lui-même : les dernières 1 ou 2 h UTC de la
+ * veille du premier jour de la grille, et celles de son dernier jour. La
+ * veille du 1er n'y tombe donc que si le 1er est un lundi (sinon elle est
+ * intérieure à la grille) ; le mois suivant n'y tombe qu'au dernier jour de
+ * la grille, entre son 5 et son 14.
  *
  * Le seed s'en sert pour compter ce qui existe déjà, la mesure pour ce qui est
  * stocké : **une seule fenêtre pour les deux**. La version précédente en avait

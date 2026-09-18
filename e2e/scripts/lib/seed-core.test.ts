@@ -200,16 +200,19 @@ test("spreadOverMonth wraps past 28 instead of leaking into the next month", () 
 // `/agenda` rend la grille du mois courant **à Paris** (`DISPLAY_TZ`,
 // apps/web/src/routes/agenda/mod.rs). Les deux fonctions ci-dessus lisaient
 // `getUTC*` sur l'instant brut : pendant les deux dernières heures UTC du
-// dernier jour d'un mois (CEST = UTC+2), Paris est déjà au mois suivant. Le
-// seed posait alors ses 40 événements dans le mois précédent pendant que la
-// mesure interrogeait la grille du suivant, vide — la panne que cette paire de
-// scripts existe précisément pour empêcher. Même faille de fuseau que celle que
-// #114 a corrigée dans les specs, restée ici parce que #114 n'a pas touché
+// dernier jour d'un mois (CEST = UTC+2 ; la dernière seulement en CET),
+// Paris est déjà au mois suivant. Le seed et la mesure retenaient alors tous
+// deux le mois UTC — le seed y posait ses 40 événements, la mesure comptait
+// sur sa grille — pendant que `/agenda` rendait la grille du mois de Paris,
+// où presque aucun de ces événements n'apparaît : la page pesée n'était pas
+// celle que le seed remplissait, la panne que cette paire de scripts existe
+// précisément pour empêcher. Même faille de fuseau que celle que #114 a
+// corrigée dans les specs, restée ici parce que #114 n'a pas touché
 // `scripts/`.
 //
 // Ce qui change est le **mois retenu**, pas l'ancrage des bords : la fenêtre
-// reste bornée à minuit UTC, avec l'écart de ~2 h à chaque bord que
-// `monthGridWindow` documente et assume.
+// reste bornée à minuit UTC, avec l'écart de 1 h (CET) ou 2 h (CEST) à chaque
+// bord que `monthGridWindow` documente et assume.
 // ---------------------------------------------------------------------------
 
 test("monthGridWindow suit le mois de Paris quand UTC est encore la veille", () => {
@@ -293,10 +296,11 @@ test("spreadOverMonth sème dans le mois de Paris, pas dans celui d'UTC", () => 
 //   changement de mois lui-même, qui est un point de la grille : attrapé ;
 // - une avance les fait diverger juste *avant* ce point : attrapée à partir
 //   d'un pas (30 min), elle passe en deçà — +5 min comme +25 min restent verts.
-// Descendre à la minute coûte ~38 s contre ~1,4 s ici (node 24, mesuré) sur
-// une porte qui tenait en 0,13 s, pour ne gagner que ces avances de moins d'un
-// pas, qu'aucune confusion de fuseau ne produit : l'écart dont il est question
-// est celui de Paris à UTC, une ou deux heures pleines.
+// Descendre à la minute porte ce test de 1,2 à 1,3 s à 37 à 40 s (Node
+// 24.20.0, 4 cœurs, cinq passes), là où le reste du fichier tient en moins de
+// 0,08 s, pour ne gagner que ces avances de moins d'un pas, qu'aucune
+// confusion de fuseau ne produit : l'écart dont il est question est celui de
+// Paris à UTC, une ou deux heures pleines.
 //
 // L'année est fixe et non « l'année courante » : les tests de ce fichier
 // doivent rendre le même verdict dans dix ans, et les règles d'heure d'été

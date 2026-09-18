@@ -63,8 +63,9 @@ const RNG_SEED = Number(process.env.SEED_RNG_SEED ?? 424242);
  *
  * L'instant est brut ; c'est `monthGridWindow` / `spreadOverMonth`
  * (`lib/seed-core.ts`) qui en tirent le mois **de Paris**. Rien ici ne doit
- * donc redériver un mois ou un jour avec `getUTC*` ou `toISOString()` : entre
- * 22 h UTC et minuit, ce ne serait pas le même que celui du reste du script.
+ * donc redériver un mois ou un jour avec `getUTC*` ou `toISOString()` : de
+ * 22 h UTC (CEST) ou 23 h UTC (CET) à minuit, ce ne serait pas le même que
+ * celui du reste du script.
  */
 const REFERENCE = process.env.SEED_REFERENCE_DATE
   ? new Date(`${process.env.SEED_REFERENCE_DATE}T12:00:00Z`)
