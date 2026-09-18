@@ -296,11 +296,11 @@ test("spreadOverMonth sème dans le mois de Paris, pas dans celui d'UTC", () => 
 //   changement de mois lui-même, qui est un point de la grille : attrapé ;
 // - une avance les fait diverger juste *avant* ce point : attrapée à partir
 //   d'un pas (30 min), elle passe en deçà — +5 min comme +25 min restent verts.
-// Descendre à la minute porte ce test de 1,2 à 1,3 s à 37 à 40 s (Node
-// 24.20.0, 4 cœurs, cinq passes), là où le reste du fichier tient en moins de
-// 0,08 s, pour ne gagner que ces avances de moins d'un pas, qu'aucune
-// confusion de fuseau ne produit : l'écart dont il est question est celui de
-// Paris à UTC, une ou deux heures pleines.
+// Descendre à la minute porte ce test de ~1,2 s à ~38 s (Node 24.20.0,
+// 4 cœurs), là où le reste du fichier tient en ~0,1 s, pour ne gagner que
+// ces avances de moins d'un pas, qu'aucune confusion de fuseau ne produit :
+// l'écart dont il est question est celui de Paris à UTC, une ou deux heures
+// pleines.
 //
 // L'année est fixe et non « l'année courante » : les tests de ce fichier
 // doivent rendre le même verdict dans dix ans, et les règles d'heure d'été

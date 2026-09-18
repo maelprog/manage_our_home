@@ -66,9 +66,9 @@ export const GRID_DAYS = 42;
  *
  * Le mois retenu est celui de `reference` **à Paris** (`DISPLAY_TZ`), pas
  * celui de l'horloge du processus : pendant les deux dernières heures UTC du
- * dernier jour d'un mois (CEST = UTC+2), Paris est déjà au mois suivant, et
- * `getUTC*` sur l'instant brut rendait alors la grille du mois précédent —
- * celle que `/agenda` ne rend pas. Même faille de fuseau que celle que #114 a
+ * dernier jour d'un mois (CEST = UTC+2 ; la dernière seulement en CET), Paris
+ * est déjà au mois suivant, et `getUTC*` sur l'instant brut rendait alors la
+ * grille du mois précédent — celle que `/agenda` ne rend pas. Même faille de fuseau que celle que #114 a
  * corrigée dans les specs ; corrigée ici par #121.
  *
  * Calquée sur `month_grid` (apps/shared/src/validation/agenda.rs) — mais en
@@ -91,7 +91,7 @@ export const GRID_DAYS = 42;
  * veille du premier jour de la grille, et celles de son dernier jour. La
  * veille du 1er n'y tombe donc que si le 1er est un lundi (sinon elle est
  * intérieure à la grille) ; le mois suivant n'y tombe qu'au dernier jour de
- * la grille, entre son 5 et son 14.
+ * la grille, qui tombe entre le 5 et le 14 de ce mois.
  *
  * Le seed s'en sert pour compter ce qui existe déjà, la mesure pour ce qui est
  * stocké : **une seule fenêtre pour les deux**. La version précédente en avait

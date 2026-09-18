@@ -104,9 +104,9 @@ function log(message: string): void {
  * `YYYY-MM-DD` d'un instant, lu à Paris — le fuseau de l'app, pas celui du
  * processus. `toISOString().slice(0, 10)` rendait ici la date UTC : correct
  * pour les créneaux de `spreadOverMonth` (07:00-19:00 UTC, jamais à cheval),
- * faux pour `REFERENCE` les deux dernières heures UTC d'une journée. Un seul
- * chemin pour les deux, plutôt qu'un helper local dont il faut à chaque appel
- * se demander s'il est dans le cas sûr.
+ * faux pour `REFERENCE` la dernière heure UTC d'une journée en CET, les deux
+ * dernières en CEST. Un seul chemin pour les deux, plutôt qu'un helper local
+ * dont il faut à chaque appel se demander s'il est dans le cas sûr.
  */
 function isoDay(d: Date): string {
   return parisDay(0, d);
