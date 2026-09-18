@@ -92,12 +92,13 @@ pub struct EventResponse {
     /// `0013_backfill_event_assignees.sql`. That window closes when the pass
     /// finishes — those events then carry their creator.
     ///
-    /// A second way was listed here until #105: the same events on a
-    /// deployment where `0013` had run and inserted nothing. Read that
-    /// file's header — migrations used to run on the runtime pool, whose
-    /// role does not bypass `FORCE ROW LEVEL SECURITY`, so the statement's
-    /// source selected zero rows, said nothing, and was recorded as applied;
-    /// those rows did survive indefinitely. No database ever got there:
+    /// A second way stayed in that list after #105 had already closed it:
+    /// the same events on a deployment where `0013` had run and inserted
+    /// nothing. Read that file's header — migrations used to run on the
+    /// runtime pool, whose role does not bypass `FORCE ROW LEVEL SECURITY`,
+    /// so the statement's source selected zero rows, the INSERT said
+    /// nothing, and the migration was recorded as applied; those rows did
+    /// survive indefinitely. No database ever got there:
     /// `0013`'s header records that none had it recorded as applied when
     /// #105 landed, and migrations now run on `MIGRATION_DATABASE_URL` under
     /// a pass that refuses to start unless its connection provably bypasses
