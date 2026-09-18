@@ -10,4 +10,4 @@ pub use body::{
     guard_request_body, request_timeout, service_unavailable, BodyGuard, BodyReadTimeout,
 };
 pub use gate::{Busy, UploadGate, UploadPermit};
-pub use limits::{BodyReadLimits, Breach};
+pub use limits::{BodyReadLimits, Breach, MAX_UPLOAD_BODY_BYTES};

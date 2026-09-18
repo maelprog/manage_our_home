@@ -256,6 +256,11 @@ pub const UPLOAD_FRAMING_MARGIN_BYTES: usize = 64 * 1024;
 /// limit only ever stops a body whose framing is itself absurd.
 pub const MAX_UPLOAD_BODY_BYTES: usize = MAX_ATTACHMENT_SIZE_BYTES + UPLOAD_FRAMING_MARGIN_BYTES;
 
+// apps/web's upload page relays to this route under the limit
+// `manage_our_home_http_guard` holds for both (#243): a cap raised here
+// without it would leave the page refusing what this route accepts.
+const _: () = assert!(MAX_UPLOAD_BODY_BYTES == manage_our_home_http_guard::MAX_UPLOAD_BODY_BYTES);
+
 /// Sniffs the real MIME type from file content and rejects anything outside
 /// the allow-list, regardless of what the client claims.
 pub fn sniff_and_validate_mime(bytes: &[u8]) -> Option<&'static str> {

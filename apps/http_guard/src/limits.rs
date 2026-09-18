@@ -40,6 +40,19 @@ impl BodyReadLimits {
     };
 }
 
+/// Request body limit of the two attachment upload routes, apps/api's
+/// `POST /groups/:id/events/:event_id/attachments` and apps/web's
+/// `POST /agenda/:id/attachments`: the 20 MiB attachment cap
+/// (`MAX_ATTACHMENT_SIZE_BYTES` in apps/api's `storage` and in
+/// apps/shared) plus 64 KiB of multipart framing, the same 21 037 056
+/// bytes as Caddy's `max_size` on those routes (infra/Caddyfile).
+///
+/// Both applications set it as the route's `DefaultBodyLimit`, which is
+/// otherwise 2 MiB: apps/web inherited that default until #243, so a 3 MB
+/// file died in its multipart read as `upload_failed` though apps/api
+/// would have taken it. One constant for both, so they cannot drift apart.
+pub const MAX_UPLOAD_BODY_BYTES: usize = 20 * 1024 * 1024 + 64 * 1024;
+
 /// Which bound a body broke. All three answer 408; the reason is for logs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Breach {
@@ -106,6 +119,14 @@ mod tests {
         assert_eq!(l.min_bytes_per_sec, 1_000);
         assert_eq!(l.grace, S(10));
         assert_eq!(l.total, S(900));
+    }
+
+    #[test]
+    fn the_upload_body_limit_is_caddys_max_size() {
+        // infra/Caddyfile `request_body { max_size 21037056 }`: 20 MiB of
+        // attachment plus 64 KiB of multipart framing.
+        assert_eq!(MAX_UPLOAD_BODY_BYTES, 21_037_056);
+        assert_eq!(MAX_UPLOAD_BODY_BYTES, 20 * 1024 * 1024 + 64 * 1024);
     }
 
     #[test]
