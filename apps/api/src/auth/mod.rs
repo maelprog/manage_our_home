@@ -308,7 +308,7 @@ async fn login_inner(
         Err(e) => return (LoginBranch::Error, Err(e.into())),
     };
     timing.session = at.elapsed();
-    set_session_cookie(&cookies, session_id, state.secure_cookies);
+    set_session_cookie(cookies, session_id, state.secure_cookies);
     state.login_throttle.record_success(&key);
 
     (
