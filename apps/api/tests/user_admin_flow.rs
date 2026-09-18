@@ -140,6 +140,151 @@ async fn unauthenticated_gets_401_on_admin_routes(db: PgPool) {
     assert_status(&res, StatusCode::UNAUTHORIZED);
 }
 
+/// The session id carried by a `session_id=<uuid>` cookie pair, as
+/// `set_cookie` returns it.
+fn session_id_of(cookie: &str) -> uuid::Uuid {
+    cookie
+        .split_once('=')
+        .map(|(_, v)| v.parse().unwrap())
+        .unwrap()
+}
+
+async fn login(router: &axum::Router, email: &str, password: &str) -> String {
+    let res = call(
+        router,
+        Method::POST,
+        "/auth/login",
+        None,
+        Some(serde_json::json!({"email": email, "password": password})),
+    )
+    .await;
+    set_cookie(&res).unwrap()
+}
+
+/// #196: the admin gate validates the session before it looks at the
+/// superadmin flag, so a request whose session is invalid gets 401 whatever
+/// the account's flag says — never 403, which would tell a caller holding a
+/// dead cookie that it names a live, non-superadmin account. Every
+/// invalidity branch of the session check is walked for both flag values:
+/// a superadmin's dead session must not get through either.
+#[sqlx::test]
+async fn invalid_session_gets_401_on_admin_routes_whatever_the_flag(db: PgPool) {
+    let router = test_router(db.clone());
+
+    let unknown = format!("session_id={}", uuid::Uuid::new_v4());
+    for cookie in ["session_id=not-a-uuid", "session_id=", unknown.as_str()] {
+        let res = call(&router, Method::GET, "/admin/groups", Some(cookie), None).await;
+        assert_status(&res, StatusCode::UNAUTHORIZED);
+    }
+
+    for (superadmin, email) in [
+        (false, "invalid-plain@example.test"),
+        (true, "invalid-super@example.test"),
+    ] {
+        let password = "invalid-password1";
+        let expected_when_valid = if superadmin {
+            StatusCode::OK
+        } else {
+            StatusCode::FORBIDDEN
+        };
+
+        // Revoked session.
+        let revoked = register_verify_login(&router, &db, email, password).await;
+        if superadmin {
+            make_superadmin(&db, email).await;
+        }
+        let res = call(&router, Method::GET, "/admin/groups", Some(&revoked), None).await;
+        assert_status(&res, expected_when_valid);
+        sqlx::query("UPDATE sessions SET revoked_at = now() WHERE id = $1")
+            .bind(session_id_of(&revoked))
+            .execute(&db)
+            .await
+            .unwrap();
+        let res = call(&router, Method::GET, "/admin/groups", Some(&revoked), None).await;
+        assert_status(&res, StatusCode::UNAUTHORIZED);
+
+        // Expired session.
+        let expired = login(&router, email, password).await;
+        let res = call(&router, Method::GET, "/admin/groups", Some(&expired), None).await;
+        assert_status(&res, expected_when_valid);
+        sqlx::query("UPDATE sessions SET expires_at = now() - interval '1 second' WHERE id = $1")
+            .bind(session_id_of(&expired))
+            .execute(&db)
+            .await
+            .unwrap();
+        let res = call(&router, Method::GET, "/admin/groups", Some(&expired), None).await;
+        assert_status(&res, StatusCode::UNAUTHORIZED);
+
+        // Deactivated account, the session row itself left untouched.
+        let orphaned = login(&router, email, password).await;
+        let res = call(&router, Method::GET, "/admin/groups", Some(&orphaned), None).await;
+        assert_status(&res, expected_when_valid);
+        sqlx::query("UPDATE users SET deleted_at = now() WHERE email = $1")
+            .bind(email)
+            .execute(&db)
+            .await
+            .unwrap();
+        let res = call(&router, Method::GET, "/admin/groups", Some(&orphaned), None).await;
+        assert_status(&res, StatusCode::UNAUTHORIZED);
+    }
+}
+
+/// #196: the admin gate's 403 and 401 carry the same bodies as every other
+/// `AppError::Forbidden` / `AppError::Unauthorized` — it adds no shape of
+/// its own.
+#[sqlx::test]
+async fn admin_gate_rejections_keep_the_shared_error_bodies(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie =
+        register_verify_login(&router, &db, "body-plain@example.test", "body-password1").await;
+
+    let res = call(&router, Method::GET, "/admin/users", Some(&cookie), None).await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+    assert_eq!(
+        json_body(res).await,
+        serde_json::json!({"error": "forbidden"})
+    );
+
+    let res = call(&router, Method::GET, "/admin/users", None, None).await;
+    assert_status(&res, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        json_body(res).await,
+        serde_json::json!({"error": "unauthorized"})
+    );
+}
+
+/// #196: an admin request is activity on the session like any other, so it
+/// refreshes `sessions.last_seen_at`. Until #196 the admin gate ran its own
+/// copy of the session check, which skipped that refresh: a superadmin
+/// working only in `/admin` kept a session that looked idle — the one an
+/// inactivity timeout (#195) would have cut first.
+#[sqlx::test]
+async fn admin_request_refreshes_last_seen_at(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie =
+        register_verify_login(&router, &db, "seen-super@example.test", "seen-password1").await;
+    make_superadmin(&db, "seen-super@example.test").await;
+    let session_id = session_id_of(&cookie);
+
+    sqlx::query("UPDATE sessions SET last_seen_at = now() - interval '1 day' WHERE id = $1")
+        .bind(session_id)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let res = call(&router, Method::GET, "/admin/groups", Some(&cookie), None).await;
+    assert_status(&res, StatusCode::OK);
+
+    let still_stale: bool = sqlx::query_scalar(
+        "SELECT last_seen_at < now() - interval '1 hour' FROM sessions WHERE id = $1",
+    )
+    .bind(session_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert!(!still_stale, "an admin request must refresh last_seen_at");
+}
+
 /// AC #2, #4, #6: a superadmin sees groups from families they are not a
 /// member of, and every successful admin action writes one `audit_log`
 /// row with the superadmin's `user_id` as actor.
