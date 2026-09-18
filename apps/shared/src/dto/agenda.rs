@@ -86,11 +86,16 @@ pub struct EventResponse {
     /// `resolve_assignees`), but they are not the only way a row enters
     /// `events`, and the database carries no constraint of its own.
     ///
-    /// The one known way this still arrives empty: events predating
-    /// `0011_event_assignees.sql`, which created the junction table empty,
-    /// on a stack part-way through the pass that applies
-    /// `0013_backfill_event_assignees.sql`. That window closes when the pass
-    /// finishes — those events then carry their creator.
+    /// The one known way this could still arrive empty holds only if one
+    /// day several API instances run against the same database: events
+    /// predating `0011_event_assignees.sql`, which created the junction
+    /// table empty, read through one instance while another is part-way
+    /// through the pass that applies `0013_backfill_event_assignees.sql`.
+    /// A single instance cannot serve it: `apps/api/src/main.rs` finishes
+    /// the migration pass before it binds its listener, and
+    /// `infra/docker-compose.yml` runs one `api`. Were it to hold, the
+    /// window would close when the pass finishes — those events then carry
+    /// their creator.
     ///
     /// A second way stayed in that list after #105 had already closed it:
     /// the same events on a deployment where `0013` had run and inserted
