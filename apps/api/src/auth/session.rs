@@ -102,7 +102,19 @@ where
     }
 }
 
-pub fn build_session_cookie(session_id: Uuid, secure: bool) -> Cookie<'static> {
+/// Logs the caller in: the jar carries the session cookie on the response.
+/// The `Cookie` itself never leaves this module (#239), so nothing outside
+/// can borrow its name to read it back.
+pub fn set_session_cookie(cookies: &Cookies, session_id: Uuid, secure: bool) {
+    cookies.add(build_session_cookie(session_id, secure));
+}
+
+/// Logs the caller out: the jar carries the removal of the session cookie.
+pub fn clear_session_cookie(cookies: &Cookies) {
+    cookies.add(expired_session_cookie());
+}
+
+fn build_session_cookie(session_id: Uuid, secure: bool) -> Cookie<'static> {
     Cookie::build((SESSION_COOKIE_NAME, session_id.to_string()))
         .http_only(true)
         .secure(secure)
@@ -112,7 +124,7 @@ pub fn build_session_cookie(session_id: Uuid, secure: bool) -> Cookie<'static> {
         .build()
 }
 
-pub fn expired_session_cookie() -> Cookie<'static> {
+fn expired_session_cookie() -> Cookie<'static> {
     let mut c = Cookie::build((SESSION_COOKIE_NAME, "")).path("/").build();
     c.make_removal();
     c
@@ -244,7 +256,12 @@ mod tests {
     /// one has a reason to name the cookie at all — building and expiring it
     /// live here too — so the check is on the constant's name and on its
     /// literal value, wherever they appear: an import, an alias or a read
-    /// all trip it.
+    /// all trip it. The value counts as a string starting with `session_id`
+    /// or as the `session_id=` pair, so parsing the `Cookie` header by hand
+    /// (`strip_prefix("session_id=")`) trips it too. Nothing public here
+    /// hands out a `Cookie` either: `set_session_cookie` and
+    /// `clear_session_cookie` write it into the jar, so its `.name()` cannot
+    /// be borrowed from outside.
     #[test]
     fn only_this_module_reads_the_session_cookie() {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -258,7 +275,9 @@ mod tests {
             .filter(|f| **f != this_file)
             .filter(|f| {
                 let code = std::fs::read_to_string(f).unwrap();
-                code.contains("SESSION_COOKIE_NAME") || code.contains("\"session_id\"")
+                code.contains("SESSION_COOKIE_NAME")
+                    || code.contains("\"session_id")
+                    || code.contains("session_id=")
             })
             .collect();
         assert!(
