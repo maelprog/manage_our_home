@@ -103,8 +103,10 @@ where
 }
 
 /// Logs the caller in: the jar carries the session cookie on the response.
-/// The `Cookie` itself never leaves this module (#239), so nothing outside
-/// can borrow its name to read it back.
+/// No function hands the `Cookie` value back to the caller (#239). The
+/// cookie still sits in the jar the caller passes in, so its name can be
+/// read back from it (`jar.list()`). That route stays open, and
+/// `only_this_module_reads_the_session_cookie` does not see it.
 pub fn set_session_cookie(cookies: &Cookies, session_id: Uuid, secure: bool) {
     cookies.add(build_session_cookie(session_id, secure));
 }
@@ -256,12 +258,15 @@ mod tests {
     /// one has a reason to name the cookie at all — building and expiring it
     /// live here too — so the check is on the constant's name and on its
     /// literal value, wherever they appear: an import, an alias or a read
-    /// all trip it. The value counts as a string starting with `session_id`
-    /// or as the `session_id=` pair, so parsing the `Cookie` header by hand
-    /// (`strip_prefix("session_id=")`) trips it too. Nothing public here
-    /// hands out a `Cookie` either: `set_session_cookie` and
-    /// `clear_session_cookie` write it into the jar, so its `.name()` cannot
-    /// be borrowed from outside.
+    /// all trip it. The value is matched as the source text `"session_id`,
+    /// the start of a string literal, or as `session_id=`. Parsing the
+    /// `Cookie` header by hand (`strip_prefix("session_id=")`) trips it too.
+    ///
+    /// This check is textual, so it catches slips, not deliberate
+    /// workarounds. It does not see a key spelled another way in the source
+    /// (`"session\x5fid"`, `concat!`, `format!`). It does not see a name
+    /// read back from a jar that `set_session_cookie` filled
+    /// (`jar.list()`). Nor does it see a cookie picked out by its value.
     #[test]
     fn only_this_module_reads_the_session_cookie() {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
