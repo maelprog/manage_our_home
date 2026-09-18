@@ -86,23 +86,33 @@ pub struct EventResponse {
     /// `resolve_assignees`), but they are not the only way a row enters
     /// `events`, and the database carries no constraint of its own.
     ///
-    /// Known ways this arrives empty:
+    /// The one known way this still arrives empty: events predating
+    /// `0011_event_assignees.sql`, which created the junction table empty,
+    /// on a stack part-way through the pass that applies
+    /// `0013_backfill_event_assignees.sql`. That window closes when the pass
+    /// finishes — those events then carry their creator.
     ///
-    /// - events predating `0011_event_assignees.sql`, which created the
-    ///   junction table empty, on a deployment where
-    ///   `0013_backfill_event_assignees.sql` inserted nothing — read that
-    ///   file's header: under the role `apps/api/README.md` prescribes for
-    ///   `DATABASE_URL` it is a silent no-op, so those rows survive
-    ///   indefinitely;
-    /// - the same events on a stack part-way through that migration.
+    /// A second way stayed in that list after #105 had already closed it:
+    /// the same events on a deployment where `0013` had run and inserted
+    /// nothing. Read that file's header — migrations used to run on the
+    /// runtime pool, whose role does not bypass `FORCE ROW LEVEL SECURITY`,
+    /// so the statement's source selected zero rows, the INSERT said
+    /// nothing, and the migration was recorded as applied; those rows did
+    /// survive indefinitely. No database ever got there:
+    /// `0013`'s header records that none had it recorded as applied when
+    /// #105 landed, and migrations now run on `MIGRATION_DATABASE_URL` under
+    /// a pass that refuses to start unless its connection provably bypasses
+    /// RLS (`apps/api/src/migrations.rs`).
     ///
     /// A third one was listed here until #106: the Google Calendar import
     /// inserted into `events` and never into `event_assignees`, which held on
     /// every deployment, before or after any backfill, and did not go away on
     /// its own. It now assigns the account that ran the sync and rewrites the
-    /// rows it wrote before (`apps/api/src/google_calendar/imports.rs`), so
-    /// the two remaining ways are both about rows older than `0011` — but
-    /// those do survive indefinitely, so this stays "possibly empty".
+    /// rows it wrote before (`apps/api/src/google_calendar/imports.rs`).
+    ///
+    /// So nothing left above outlives a finished migration pass. It is still
+    /// a list of what is *known*, not a proof, and the database carries no
+    /// constraint of its own — hence "possibly empty".
     ///
     /// Claiming an invariant here that no write path enforces was what let
     /// the dashboard render a bare "?" ring on those rows (#99). Readers must
