@@ -290,6 +290,33 @@ test.describe("Agenda — attachments", () => {
     await expect(page.getByText("Pièce jointe supprimée.")).toBeVisible();
     await expect(page.getByRole("link", { name: "photo.png" })).toHaveCount(0);
   });
+
+  // apps/web's upload page had axum's 2 MiB default body limit while
+  // apps/api and Caddy take 20 MiB: a 3 MB file came back `upload_failed`
+  // through the page, and was accepted posted straight to the API (#243).
+  test("a 3 MB file goes through the web page to the API", async ({ page }) => {
+    await registerAndLogin(page, "e2e-agbig", "Big File User");
+    await createGroup(page, "Famille Volumes");
+    const date = dayThisMonth(21);
+    await createEvent(page, {
+      title: "Événement volumineux",
+      start: `${date}T09:00`,
+      end: `${date}T10:00`,
+    });
+    await openEventDetail(page, "Événement volumineux");
+
+    // A PNG signature is all apps/api sniffs; the rest is padding.
+    const big = Buffer.alloc(3 * 1024 * 1024);
+    PNG_1X1.copy(big);
+    await page.locator('input[name="file"]').setInputFiles({
+      name: "gros.png",
+      mimeType: "image/png",
+      buffer: big,
+    });
+    await page.getByRole("button", { name: "Envoyer" }).click();
+    await expect(page.getByText("Pièce jointe ajoutée.")).toBeVisible();
+    await expect(page.getByRole("link", { name: "gros.png" })).toBeVisible();
+  });
 });
 
 // The two write forms of this epic (`/agenda/new`, `/agenda/:id/edit`) read

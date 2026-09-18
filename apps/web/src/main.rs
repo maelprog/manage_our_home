@@ -148,7 +148,12 @@ fn build_router(state: AppState) -> Router {
         )
         .route(
             "/agenda/:id/attachments",
-            post(routes::agenda::attachments::upload),
+            // The page reads the whole file before relaying it: without a
+            // limit of its own it had axum's 2 MiB default, where apps/api
+            // and Caddy take 20 MiB plus framing (#243).
+            post(routes::agenda::attachments::upload).layer(axum::extract::DefaultBodyLimit::max(
+                manage_our_home_http_guard::MAX_UPLOAD_BODY_BYTES,
+            )),
         )
         .route(
             "/agenda/:id/attachments/:aid/download",

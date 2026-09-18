@@ -114,12 +114,12 @@ pub async fn upload(
             service_unavailable_page().into_response(),
         );
     }
+    // A 408 is a body that came too slowly, not a service that is down:
+    // the same page and headers as apps/web's own 408 (#243).
     if status == reqwest::StatusCode::REQUEST_TIMEOUT {
-        return (
-            axum::http::StatusCode::REQUEST_TIMEOUT,
-            service_unavailable_page(),
-        )
-            .into_response();
+        return manage_our_home_http_guard::request_timeout(
+            crate::body_bounds::body_read_timeout_page(),
+        );
     }
     if status == reqwest::StatusCode::UNPROCESSABLE_ENTITY {
         // Distinguish the two 422 codes the backend emits.
@@ -211,17 +211,19 @@ pub async fn delete(
 /// driven through the real router against a stand-in for apps/api.
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU16, Ordering};
+    use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use axum::body::{Body, Bytes};
+    use axum::extract::DefaultBodyLimit;
     use axum::http::{header, HeaderMap, Method, Request, Response, StatusCode};
     use axum::response::IntoResponse;
     use axum::routing::{get, post};
     use axum::{Json, Router};
     use http_body_util::channel::{Channel, Sender};
     use manage_our_home_http_guard::{BodyReadLimits, UploadGate};
+    use manage_our_home_shared::validation::agenda::MAX_ATTACHMENT_SIZE_BYTES;
     use tower::ServiceExt;
     use uuid::Uuid;
 
@@ -257,8 +259,10 @@ mod tests {
 
     /// Stands in for apps/api: `/auth/me` knows whoever the `session`
     /// cookie names, every user belongs to one group, and the attachments
-    /// endpoint answers `upload_status` once it has read the body.
-    async fn fake_api(upload_status: Arc<AtomicU16>) -> String {
+    /// endpoint answers `upload_status` once it has read the body, whose
+    /// length it leaves in `received`. It reads up to apps/api's own body
+    /// limit, so what it receives is what apps/web relayed.
+    async fn fake_api(upload_status: Arc<AtomicU16>, received: Arc<AtomicUsize>) -> String {
         let app = Router::new()
             .route("/auth/me", get(me))
             .route(
@@ -273,7 +277,8 @@ mod tests {
             )
             .route(
                 "/groups/:gid/events/:eid/attachments",
-                post(move |_body: Bytes| async move {
+                post(move |body: Bytes| async move {
+                    received.store(body.len(), Ordering::SeqCst);
                     let status =
                         StatusCode::from_u16(upload_status.load(Ordering::SeqCst)).unwrap();
                     let mut resp = Response::new(Body::from("{}"));
@@ -283,7 +288,10 @@ mod tests {
                             .insert(header::RETRY_AFTER, "30".parse().unwrap());
                     }
                     resp
-                }),
+                })
+                .layer(DefaultBodyLimit::max(
+                    manage_our_home_http_guard::MAX_UPLOAD_BODY_BYTES,
+                )),
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -295,11 +303,13 @@ mod tests {
         router: Router,
         gate: Arc<UploadGate<Uuid>>,
         api_upload_status: Arc<AtomicU16>,
+        api_received: Arc<AtomicUsize>,
     }
 
     async fn web(limits: BodyReadLimits, gate: Arc<UploadGate<Uuid>>) -> Web {
         let api_upload_status = Arc::new(AtomicU16::new(201));
-        let api = fake_api(api_upload_status.clone()).await;
+        let api_received = Arc::new(AtomicUsize::new(0));
+        let api = fake_api(api_upload_status.clone(), api_received.clone()).await;
         let router = crate::build_router(AppState {
             http: reqwest::Client::new(),
             api_internal_base_url: api,
@@ -311,6 +321,7 @@ mod tests {
             router,
             gate,
             api_upload_status,
+            api_received,
         }
     }
 
@@ -330,6 +341,17 @@ mod tests {
     fn whole_upload() -> Body {
         let mut body = multipart_head().to_vec();
         body.extend_from_slice(b"\x89PNG\r\n\x1a\n not really an image");
+        body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+        Body::from(body)
+    }
+
+    /// A PNG signature padded to `size` bytes, as the one file of a
+    /// multipart body.
+    fn upload_of_size(size: usize) -> Body {
+        let mut file = b"\x89PNG\r\n\x1a\n".to_vec();
+        file.resize(size, 0);
+        let mut body = multipart_head().to_vec();
+        body.extend_from_slice(&file);
         body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
         Body::from(body)
     }
@@ -497,6 +519,60 @@ mod tests {
         let web = web(SHORT, UploadGate::new(8, 2)).await;
         web.api_upload_status.store(408, Ordering::SeqCst);
         let resp = send(&web, upload(&session(), whole_upload())).await;
-        assert_eq!(resp.status(), StatusCode::REQUEST_TIMEOUT);
+        assert_request_timeout(&resp);
+        // The page apps/web answers a body cut for its pace (#243), not the
+        // one for a service that is down.
+        let page = body_text(resp).await;
+        assert!(page.contains("Envoi interrompu"), "{page}");
+        assert!(!page.contains("indisponible"), "{page}");
+    }
+
+    async fn body_text(resp: Response<Body>) -> String {
+        let bytes = http_body_util::BodyExt::collect(resp.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    fn assert_redirected_to(resp: &Response<Body>, query: &str) {
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            resp.headers()[header::LOCATION],
+            format!("/agenda/{EVENT}?{query}")
+        );
+    }
+
+    /// axum's `DefaultBodyLimit` is 2 MiB unless a route says otherwise:
+    /// the page had no limit of its own, so a 3 MiB file died in the
+    /// multipart read as `upload_failed` while apps/api takes 20 MiB (#243).
+    #[tokio::test]
+    async fn a_file_over_two_mebibytes_is_relayed_whole() {
+        let web = web(BodyReadLimits::PRODUCTION, UploadGate::new(8, 2)).await;
+        let size = 3 * 1024 * 1024;
+        let resp = send(&web, upload(&session(), upload_of_size(size))).await;
+        assert_redirected_to(&resp, "notice=attachment_added");
+        assert!(web.api_received.load(Ordering::SeqCst) > size);
+    }
+
+    /// A file of exactly the cap fits, multipart framing included.
+    #[tokio::test]
+    async fn a_file_of_exactly_the_cap_is_relayed() {
+        let web = web(BodyReadLimits::PRODUCTION, UploadGate::new(8, 2)).await;
+        let size = usize::try_from(MAX_ATTACHMENT_SIZE_BYTES).unwrap();
+        let resp = send(&web, upload(&session(), upload_of_size(size))).await;
+        assert_redirected_to(&resp, "notice=attachment_added");
+        assert!(web.api_received.load(Ordering::SeqCst) > size);
+    }
+
+    /// One byte over the cap is answered by the page's own size check,
+    /// which knows it is a size problem, and never reaches apps/api.
+    #[tokio::test]
+    async fn a_file_one_byte_over_the_cap_is_too_large_not_a_failed_upload() {
+        let web = web(BodyReadLimits::PRODUCTION, UploadGate::new(8, 2)).await;
+        let size = usize::try_from(MAX_ATTACHMENT_SIZE_BYTES).unwrap() + 1;
+        let resp = send(&web, upload(&session(), upload_of_size(size))).await;
+        assert_redirected_to(&resp, "error=file_too_large");
+        assert_eq!(web.api_received.load(Ordering::SeqCst), 0);
     }
 }
