@@ -373,7 +373,7 @@ pub async fn trigger_calendar_import(
                         event_id = %existing.event_id,
                         group_id = %group_id,
                         calendar_import_id = %import_id,
-                        rrule = ?existing.rrule,
+                        rrule = existing.rrule.as_deref(),
                         was_all_day = existing.all_day,
                         "calendar re-import turned the event all-day, dropping a rule that steps by less than a day (#175)"
                     );
