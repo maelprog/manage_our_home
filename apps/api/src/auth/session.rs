@@ -213,3 +213,56 @@ pub async fn token_scoped_tx<'a>(
         .await?;
     Ok(tx)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                rust_sources(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// #196: `AuthUser::from_request_parts` is the only place that reads the
+    /// session cookie. Every extractor that needs a logged-in caller —
+    /// `SuperAdminUser` included — goes through it, so a change to session
+    /// validity (inactivity timeout, hashed token, MFA step) lands once. A
+    /// second copy of that check once lived in `user_admin`; this fails if
+    /// one reappears anywhere under `src/`.
+    #[test]
+    fn only_this_module_reads_the_session_cookie() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let this_file = src.join("auth").join("session.rs");
+        let mut files = Vec::new();
+        rust_sources(&src, &mut files);
+        assert!(files.contains(&this_file), "walked the wrong tree");
+
+        let readers: Vec<_> = files
+            .iter()
+            .filter(|f| **f != this_file)
+            .filter(|f| {
+                let code: String = std::fs::read_to_string(f)
+                    .unwrap()
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .collect();
+                // `.get(<key>)` whose key is the constant, under any path, or
+                // its literal value.
+                code.split(".get(").skip(1).any(|rest| {
+                    let key = rest.split(')').next().unwrap_or_default();
+                    key.ends_with("SESSION_COOKIE_NAME") || key == "\"session_id\""
+                })
+            })
+            .collect();
+        assert!(
+            readers.is_empty(),
+            "session cookie read outside auth/session.rs, go through AuthUser: {readers:?}"
+        );
+    }
+}
