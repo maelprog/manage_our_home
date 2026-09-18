@@ -100,6 +100,29 @@
 		max_size 21037056
 	}
 
+	# Any answer to a request that carries a body must reach the client when
+	# it is sent, whatever its status (#244). It is the same Go rule as
+	# `close_on_408` above, but not only for the 408: an application may
+	# answer before reading the body at all — 401 without a session, 403,
+	# 503 from the upload gate, apps/web's 303 to /login — and on a body
+	# under 256 KiB, Go's server then reads and discards the rest before the
+	# response goes out. Caddy's own 502, when an application is down, is
+	# held the same way. Measured on v2.11.4 against an upstream that
+	# answers without reading, 100 kB sent at 2 kB/s: 401, 403, 503, 303
+	# and the 502 got no answer within 20 s, where the 408 (the only one
+	# `close_on_408` matched) came in about 1 s; with this rule all of them
+	# come in about 1 s.
+	#
+	# Keyed on the request, not the status: which responses come before the
+	# body is read is the applications' business, not something to list
+	# here. The cost is one TCP connection per request with a body, where
+	# keep-alive would have reused it; GET, HEAD and OPTIONS keep it. A GET
+	# that does carry a body is not matched — only its own sender waits.
+	# Set before `reverse_proxy` runs, so its removal of the upstream's
+	# hop-by-hop headers does not reach it.
+	@has_body not method GET HEAD OPTIONS
+	header @has_body Connection close
+
 	# `X-Forwarded-For` (#178): nothing to configure here, but the behaviour
 	# is load-bearing, so it is written down. Measured against `caddy:2`
 	# (v2.11.4) with this same `handle` layout, on both paths:
