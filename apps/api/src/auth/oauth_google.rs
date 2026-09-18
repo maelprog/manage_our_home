@@ -10,7 +10,7 @@ use tower_cookies::{Cookie, Cookies};
 use crate::error::{AppError, AppResult};
 use crate::{AppState, GoogleOauthClient};
 
-use super::session::{build_session_cookie, create_session};
+use super::session::{create_session, set_session_cookie};
 
 const OAUTH_STATE_COOKIE: &str = "google_oauth_state";
 /// PKCE `code_verifier` (RFC 7636) minted by `start`, spent by `callback`.
@@ -272,7 +272,7 @@ pub async fn callback(
     tx.commit().await?;
 
     let session_id = create_session(&state.db, user_id).await?;
-    cookies.add(build_session_cookie(session_id, state.secure_cookies));
+    set_session_cookie(&cookies, session_id, state.secure_cookies);
 
     Ok(Redirect::to(&state.frontend_base_url))
 }

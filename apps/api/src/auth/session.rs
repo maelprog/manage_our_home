@@ -10,7 +10,9 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::AppState;
 
-pub const SESSION_COOKIE_NAME: &str = "session_id";
+/// Private on purpose (#239): nothing outside this module may name the
+/// cookie — see `only_this_module_reads_the_session_cookie`.
+const SESSION_COOKIE_NAME: &str = "session_id";
 pub const SESSION_TTL_DAYS: i64 = 30;
 
 #[derive(Debug, Clone)]
@@ -100,7 +102,21 @@ where
     }
 }
 
-pub fn build_session_cookie(session_id: Uuid, secure: bool) -> Cookie<'static> {
+/// Logs the caller in: the jar carries the session cookie on the response.
+/// No function hands the `Cookie` value back to the caller (#239). The
+/// cookie still sits in the jar the caller passes in, so its name can be
+/// read back from it (`jar.list()`). That route stays open, and
+/// `only_this_module_reads_the_session_cookie` does not see it.
+pub fn set_session_cookie(cookies: &Cookies, session_id: Uuid, secure: bool) {
+    cookies.add(build_session_cookie(session_id, secure));
+}
+
+/// Logs the caller out: the jar carries the removal of the session cookie.
+pub fn clear_session_cookie(cookies: &Cookies) {
+    cookies.add(expired_session_cookie());
+}
+
+fn build_session_cookie(session_id: Uuid, secure: bool) -> Cookie<'static> {
     Cookie::build((SESSION_COOKIE_NAME, session_id.to_string()))
         .http_only(true)
         .secure(secure)
@@ -110,7 +126,7 @@ pub fn build_session_cookie(session_id: Uuid, secure: bool) -> Cookie<'static> {
         .build()
 }
 
-pub fn expired_session_cookie() -> Cookie<'static> {
+fn expired_session_cookie() -> Cookie<'static> {
     let mut c = Cookie::build((SESSION_COOKIE_NAME, "")).path("/").build();
     c.make_removal();
     c
@@ -235,6 +251,22 @@ mod tests {
     /// validity (inactivity timeout, hashed token, MFA step) lands once. A
     /// second copy of that check once lived in `user_admin`; this fails if
     /// one reappears anywhere under `src/`.
+    ///
+    /// #239: matching `.get(<key>)` on the key's spelling let any alias
+    /// through (`const K: &str = SESSION_COOKIE_NAME; jar.get(K)`), as well
+    /// as any expression wrapped around the constant. No file outside this
+    /// one has a reason to name the cookie at all — building and expiring it
+    /// live here too — so the check is on the constant's name and on its
+    /// literal value, wherever they appear: an import, an alias or a read
+    /// all trip it. The value is matched as the source text `"session_id`,
+    /// the start of a string literal, or as `session_id=`. Parsing the
+    /// `Cookie` header by hand (`strip_prefix("session_id=")`) trips it too.
+    ///
+    /// This check is textual, so it catches slips, not deliberate
+    /// workarounds. It does not see a key spelled another way in the source
+    /// (`"session\x5fid"`, `concat!`, `format!`). It does not see a name
+    /// read back from a jar that `set_session_cookie` filled
+    /// (`jar.list()`). Nor does it see a cookie picked out by its value.
     #[test]
     fn only_this_module_reads_the_session_cookie() {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -247,22 +279,15 @@ mod tests {
             .iter()
             .filter(|f| **f != this_file)
             .filter(|f| {
-                let code: String = std::fs::read_to_string(f)
-                    .unwrap()
-                    .chars()
-                    .filter(|c| !c.is_whitespace())
-                    .collect();
-                // `.get(<key>)` whose key is the constant, under any path, or
-                // its literal value.
-                code.split(".get(").skip(1).any(|rest| {
-                    let key = rest.split(')').next().unwrap_or_default();
-                    key.ends_with("SESSION_COOKIE_NAME") || key == "\"session_id\""
-                })
+                let code = std::fs::read_to_string(f).unwrap();
+                code.contains("SESSION_COOKIE_NAME")
+                    || code.contains("\"session_id")
+                    || code.contains("session_id=")
             })
             .collect();
         assert!(
             readers.is_empty(),
-            "session cookie read outside auth/session.rs, go through AuthUser: {readers:?}"
+            "session cookie named outside auth/session.rs, go through AuthUser: {readers:?}"
         );
     }
 }

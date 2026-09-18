@@ -28,8 +28,8 @@ use crate::error::{AppError, AppResult};
 use crate::AppState;
 
 use self::session::{
-    build_session_cookie, create_session, expired_session_cookie, revoke_all_sessions,
-    revoke_session, user_scoped_tx, AuthUser, SESSION_COOKIE_NAME,
+    clear_session_cookie, create_session, revoke_all_sessions, revoke_session, set_session_cookie,
+    user_scoped_tx, AuthUser,
 };
 use self::timing::{LoginBranch, LoginTiming};
 
@@ -308,7 +308,7 @@ async fn login_inner(
         Err(e) => return (LoginBranch::Error, Err(e.into())),
     };
     timing.session = at.elapsed();
-    cookies.add(build_session_cookie(session_id, state.secure_cookies));
+    set_session_cookie(cookies, session_id, state.secure_cookies);
     state.login_throttle.record_success(&key);
 
     (
@@ -323,7 +323,7 @@ pub async fn logout(
     auth: AuthUser,
 ) -> AppResult<impl IntoResponse> {
     revoke_session(&state.db, auth.session_id).await?;
-    cookies.add(expired_session_cookie());
+    clear_session_cookie(&cookies);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -705,7 +705,6 @@ pub async fn cancel_delete_account(
     Ok(StatusCode::OK)
 }
 
-pub const _SESSION_COOKIE_NAME_REEXPORT: &str = SESSION_COOKIE_NAME;
 pub const _ACCOUNT_DELETION_GRACE_DAYS: i64 = ACCOUNT_DELETION_GRACE_DAYS;
 
 #[cfg(test)]
