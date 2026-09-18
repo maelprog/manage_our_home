@@ -514,8 +514,13 @@ fn import_bounds(
 /// The mirror writes `events` directly and never wrote `event_assignees` at
 /// all, so every imported event arrived with `assignee_ids = []` and
 /// degraded to "? —" in `--accent` instead of carrying a member's pastille.
-/// It was the third and only *permanent* route to an unassigned event, the
-/// other two being historical rows around migration `0013`.
+/// It was the only route to an unassigned event that held on every
+/// deployment and did not go away on its own. The others listed on
+/// `EventResponse::assignee_ids` (`apps/shared/src/dto/agenda.rs`) all
+/// concern events predating migration `0011`, around `0013`'s backfill: one
+/// closed by #105 before any database reached it, and one that would need
+/// two binaries serving the same database and closes when `0013`'s pass
+/// finishes.
 ///
 /// `user_id` is the account that ran the sync — the same one the INSERT
 /// already stores in `created_by`, so a freshly imported event ends up

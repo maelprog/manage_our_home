@@ -44,7 +44,9 @@
 -- `INSERT 0 0`, exited 0, left them unassigned, and was then recorded as
 -- applied -- so it would never have run again. The failure was silent and
 -- permanent. No CI gate caught it either: ci.yml and infra/docker-compose.yml
--- both migrate as a superuser role, where this statement does work.
+-- both migrated as a superuser role, where this statement did work. (ci.yml
+-- still migrates as `postgres`; infra/docker-compose.yml now migrates as
+-- `migration_role`, NOSUPERUSER BYPASSRLS, infra/postgres/init/01-roles.sh.)
 --
 -- What #105 changed: migrations no longer run on the runtime pool at all.
 -- They run on their own connection (`MIGRATION_DATABASE_URL`,
