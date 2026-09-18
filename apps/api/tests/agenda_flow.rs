@@ -2463,7 +2463,16 @@ async fn small_pool(db: &PgPool, size: u32) -> PgPool {
 #[sqlx::test]
 async fn slow_uploads_filling_the_pool_do_not_starve_other_requests(db: PgPool) {
     const POOL_SIZE: u32 = 3;
-    let router = test_router(small_pool(&db, POOL_SIZE).await);
+    // One account starts all the uploads, so its upload limit (#219) is
+    // raised to the pool size: what is under test here is the pool, and at
+    // the production limit of two the third upload would be turned away
+    // before it ever reached its body.
+    let mut state = common::test_state(small_pool(&db, POOL_SIZE).await);
+    state.upload_gate = manage_our_home_http_guard::UploadGate::new(
+        manage_our_home_http_guard::gate::GLOBAL_UPLOADS,
+        POOL_SIZE as usize,
+    );
+    let router = manage_our_home::build_router(state);
 
     let owner_cookie =
         register_verify_login(&router, &db, "slow-owner@example.test", "owner-password1").await;

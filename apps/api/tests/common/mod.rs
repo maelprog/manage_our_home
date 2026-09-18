@@ -53,6 +53,10 @@ pub fn test_state(db: PgPool) -> AppState {
         login_branches: std::sync::Arc::new(
             manage_our_home::auth::timing::BranchCounters::default(),
         ),
+        // Production values; the body-bound flow tests (#219) shorten them
+        // on their own state.
+        body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
+        upload_gate: manage_our_home_http_guard::UploadGate::production(),
     }
 }
 

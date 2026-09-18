@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
-use super::{agenda_cookie, event_not_found_page, family_context};
+use super::{agenda_cookie, event_not_found_page, family_context, service_unavailable_page};
 
 pub async fn upload(
     CurrentUser(me): CurrentUser,
@@ -29,6 +29,20 @@ pub async fn upload(
         return Redirect::to("/groups/new").into_response();
     };
     let detail = format!("/agenda/{event_id}");
+
+    // Before a byte of the body (#219): the file is held in memory whole,
+    // through the read and the relay below, so how many are held at once
+    // is bounded per account and per process. Released when this returns,
+    // or when the browser disconnects and the future is dropped.
+    let _upload_permit = match state.upload_gate.try_acquire(me.user_id) {
+        Ok(permit) => permit,
+        Err(busy) => {
+            tracing::info!(?busy, "upload turned away");
+            return manage_our_home_http_guard::service_unavailable(
+                service_unavailable_page().into_response(),
+            );
+        }
+    };
 
     // Pull the single `file` field out of the multipart body.
     let mut filename: Option<String> = None;
@@ -91,6 +105,21 @@ pub async fn upload(
     }
     if status == reqwest::StatusCode::NOT_FOUND {
         return event_not_found_page().into_response();
+    }
+    // apps/api has its own upload gate and its own body bounds (#219), and
+    // its gate is also filled by calls reaching `/api/*` directly: its 503
+    // or 408 is passed on as such, not folded into a failed upload.
+    if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+        return manage_our_home_http_guard::service_unavailable(
+            service_unavailable_page().into_response(),
+        );
+    }
+    if status == reqwest::StatusCode::REQUEST_TIMEOUT {
+        return (
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            service_unavailable_page(),
+        )
+            .into_response();
     }
     if status == reqwest::StatusCode::UNPROCESSABLE_ENTITY {
         // Distinguish the two 422 codes the backend emits.
@@ -176,4 +205,298 @@ pub async fn delete(
         Ok(_) | Err(_) => format!("{detail}?error=unavailable"),
     };
     Redirect::to(&target).into_response()
+}
+
+/// The upload page under the body bounds and the upload gate (#219),
+/// driven through the real router against a stand-in for apps/api.
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU16, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use axum::body::{Body, Bytes};
+    use axum::http::{header, HeaderMap, Method, Request, Response, StatusCode};
+    use axum::response::IntoResponse;
+    use axum::routing::{get, post};
+    use axum::{Json, Router};
+    use http_body_util::channel::{Channel, Sender};
+    use manage_our_home_http_guard::{BodyReadLimits, UploadGate};
+    use tower::ServiceExt;
+    use uuid::Uuid;
+
+    use crate::state::AppState;
+
+    const BOUNDARY: &str = "----manageourhomewebboundary";
+    const EVENT: &str = "00000000-0000-0000-0000-0000000000e1";
+
+    const SHORT: BodyReadLimits = BodyReadLimits {
+        idle: Duration::from_millis(400),
+        min_bytes_per_sec: 1_000,
+        grace: Duration::from_millis(300),
+        total: Duration::from_secs(3),
+    };
+
+    async fn me(headers: HeaderMap) -> Response<Body> {
+        let user = headers
+            .get(header::COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|c| c.strip_prefix("session="))
+            .and_then(|id| id.parse::<Uuid>().ok());
+        match user {
+            Some(id) => Json(serde_json::json!({
+                "user_id": id,
+                "email": "membre@example.test",
+                "display_name": "Membre",
+                "email_verified": true,
+            }))
+            .into_response(),
+            None => StatusCode::UNAUTHORIZED.into_response(),
+        }
+    }
+
+    /// Stands in for apps/api: `/auth/me` knows whoever the `session`
+    /// cookie names, every user belongs to one group, and the attachments
+    /// endpoint answers `upload_status` once it has read the body.
+    async fn fake_api(upload_status: Arc<AtomicU16>) -> String {
+        let app = Router::new()
+            .route("/auth/me", get(me))
+            .route(
+                "/groups",
+                get(|| async {
+                    Json(serde_json::json!([{
+                        "group_id": Uuid::nil(),
+                        "name": "Foyer",
+                        "role": "owner",
+                    }]))
+                }),
+            )
+            .route(
+                "/groups/:gid/events/:eid/attachments",
+                post(move |_body: Bytes| async move {
+                    let status =
+                        StatusCode::from_u16(upload_status.load(Ordering::SeqCst)).unwrap();
+                    let mut resp = Response::new(Body::from("{}"));
+                    *resp.status_mut() = status;
+                    if status == StatusCode::SERVICE_UNAVAILABLE {
+                        resp.headers_mut()
+                            .insert(header::RETRY_AFTER, "30".parse().unwrap());
+                    }
+                    resp
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    struct Web {
+        router: Router,
+        gate: Arc<UploadGate<Uuid>>,
+        api_upload_status: Arc<AtomicU16>,
+    }
+
+    async fn web(limits: BodyReadLimits, gate: Arc<UploadGate<Uuid>>) -> Web {
+        let api_upload_status = Arc::new(AtomicU16::new(201));
+        let api = fake_api(api_upload_status.clone()).await;
+        let router = crate::build_router(AppState {
+            http: reqwest::Client::new(),
+            api_internal_base_url: api,
+            api_public_base_url: "/api".into(),
+            body_read_limits: limits,
+            upload_gate: gate.clone(),
+        });
+        Web {
+            router,
+            gate,
+            api_upload_status,
+        }
+    }
+
+    /// A session cookie naming a user no other call has named.
+    fn session() -> String {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = Uuid::from_u128(u128::from(NEXT.fetch_add(1, Ordering::SeqCst)));
+        format!("session={id}")
+    }
+
+    fn multipart_head() -> Bytes {
+        Bytes::from(format!(
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"scan.png\"\r\n\r\n"
+        ))
+    }
+
+    fn whole_upload() -> Body {
+        let mut body = multipart_head().to_vec();
+        body.extend_from_slice(b"\x89PNG\r\n\x1a\n not really an image");
+        body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+        Body::from(body)
+    }
+
+    fn upload(cookie: &str, body: Body) -> Request<Body> {
+        Request::builder()
+            .method(Method::POST)
+            .uri(format!("/agenda/{EVENT}/attachments"))
+            .header(header::COOKIE, cookie)
+            .header(
+                header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={BOUNDARY}"),
+            )
+            .body(body)
+            .unwrap()
+    }
+
+    /// Bounded, so a body the router fails to cut fails the test instead
+    /// of hanging it.
+    async fn send(web: &Web, request: Request<Body>) -> Response<Body> {
+        tokio::time::timeout(Duration::from_secs(10), web.router.clone().oneshot(request))
+            .await
+            .expect("no answer within 10 s")
+            .unwrap()
+    }
+
+    /// A body fed by hand, with its first chunk already sent.
+    async fn fed(first: Bytes) -> (Sender<Bytes>, Body) {
+        let (mut tx, rx) = Channel::<Bytes>::new(16);
+        tx.send_data(first).await.unwrap();
+        (tx, Body::new(rx))
+    }
+
+    fn drip(mut tx: Sender<Bytes>, chunk: &'static [u8], every: Duration) {
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(every).await;
+                if tx.send_data(Bytes::from_static(chunk)).await.is_err() {
+                    return;
+                }
+            }
+        });
+    }
+
+    async fn wait_for_in_flight(gate: &UploadGate<Uuid>, n: usize) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while gate.in_flight() != n {
+            assert!(
+                Instant::now() < deadline,
+                "expected {n} uploads in flight, still {}",
+                gate.in_flight()
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// An upload whose body never finishes, once it holds its permit.
+    async fn hold_upload(
+        web: &Web,
+        cookie: &str,
+    ) -> (Sender<Bytes>, tokio::task::JoinHandle<Response<Body>>) {
+        let before = web.gate.in_flight();
+        let (tx, body) = fed(multipart_head()).await;
+        let request = upload(cookie, body);
+        let router = web.router.clone();
+        let task = tokio::spawn(async move { router.oneshot(request).await.unwrap() });
+        wait_for_in_flight(&web.gate, before + 1).await;
+        (tx, task)
+    }
+
+    fn assert_request_timeout(resp: &Response<Body>) {
+        assert_eq!(resp.status(), StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(resp.headers()[header::CONNECTION], "close");
+    }
+
+    #[tokio::test]
+    async fn an_upload_dripped_under_the_minimum_rate_is_answered_408() {
+        let web = web(SHORT, UploadGate::new(8, 2)).await;
+        let (tx, body) = fed(multipart_head()).await;
+        // 10 bytes every 50 ms: 200 B/s, never 400 ms of silence.
+        drip(tx, b"0123456789", Duration::from_millis(50));
+
+        let started = Instant::now();
+        let resp = send(&web, upload(&session(), body)).await;
+        assert_request_timeout(&resp);
+        assert!(started.elapsed() < SHORT.total);
+        assert_eq!(web.gate.in_flight(), 0, "the permit must be back");
+    }
+
+    /// Every route, not only the upload: a login form dripped is cut too,
+    /// where `Form`'s own rejection would have said 400.
+    #[tokio::test]
+    async fn a_form_dripped_is_answered_408() {
+        let web = web(SHORT, UploadGate::new(8, 2)).await;
+        let (tx, body) = fed(Bytes::from_static(b"email=a%40example.test&password=")).await;
+        drip(tx, b"x", Duration::from_millis(50));
+
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/login")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(body)
+            .unwrap();
+        assert_request_timeout(&send(&web, request).await);
+    }
+
+    #[tokio::test]
+    async fn an_upload_at_a_normal_pace_is_relayed() {
+        let web = web(SHORT, UploadGate::new(8, 2)).await;
+        let resp = send(&web, upload(&session(), whole_upload())).await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            resp.headers()[header::LOCATION],
+            format!("/agenda/{EVENT}?notice=attachment_added")
+        );
+        assert_eq!(web.gate.in_flight(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_third_upload_from_one_account_is_turned_away_and_others_are_not() {
+        let web = web(BodyReadLimits::PRODUCTION, UploadGate::new(8, 2)).await;
+        let a = session();
+        let _first = hold_upload(&web, &a).await;
+        let _second = hold_upload(&web, &a).await;
+
+        let third = send(&web, upload(&a, whole_upload())).await;
+        assert_eq!(third.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(third.headers()[header::RETRY_AFTER], "30");
+
+        let other = send(&web, upload(&session(), whole_upload())).await;
+        assert_eq!(other.status(), StatusCode::SEE_OTHER);
+    }
+
+    #[tokio::test]
+    async fn the_upload_past_the_process_pool_is_turned_away_until_a_client_disconnects() {
+        let web = web(BodyReadLimits::PRODUCTION, UploadGate::new(2, 2)).await;
+        let (_a_tx, a_task) = hold_upload(&web, &session()).await;
+        let _b = hold_upload(&web, &session()).await;
+
+        let refused = send(&web, upload(&session(), whole_upload())).await;
+        assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(refused.headers()[header::RETRY_AFTER], "30");
+
+        // The browser behind the first upload goes away: hyper drops the
+        // request's future, and the permit with it.
+        a_task.abort();
+        let _ = a_task.await;
+        wait_for_in_flight(&web.gate, 1).await;
+
+        let admitted = send(&web, upload(&session(), whole_upload())).await;
+        assert_eq!(admitted.status(), StatusCode::SEE_OTHER);
+    }
+
+    #[tokio::test]
+    async fn a_503_from_the_api_is_relayed_as_a_503() {
+        let web = web(SHORT, UploadGate::new(8, 2)).await;
+        web.api_upload_status.store(503, Ordering::SeqCst);
+        let resp = send(&web, upload(&session(), whole_upload())).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(resp.headers()[header::RETRY_AFTER], "30");
+    }
+
+    #[tokio::test]
+    async fn a_408_from_the_api_is_relayed_as_a_408() {
+        let web = web(SHORT, UploadGate::new(8, 2)).await;
+        web.api_upload_status.store(408, Ordering::SeqCst);
+        let resp = send(&web, upload(&session(), whole_upload())).await;
+        assert_eq!(resp.status(), StatusCode::REQUEST_TIMEOUT);
+    }
 }

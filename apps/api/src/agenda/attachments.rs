@@ -29,6 +29,12 @@ pub struct AttachmentResponse {
 /// to send; a transaction opened before reading it held a pool connection
 /// for that long, and as many slow uploads as the pool has connections
 /// failed every other request on `PoolTimedOut`.
+///
+/// Between the two, and still before the body, an upload permit (#219):
+/// the body is held in memory whole, so how many uploads read at once is
+/// bounded per account and per process, and one over either bound is
+/// answered 503 without a byte read. How long the body may take is bounded
+/// on every route by the middleware in `build_router`.
 pub async fn upload_attachment(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -49,6 +55,16 @@ pub async fn upload_attachment(
     .await?
     .ok_or(AppError::NotFound)?;
     tx.commit().await?;
+
+    // Held until this function returns or its future is dropped — the
+    // client disconnecting mid-body drops it too.
+    let _upload_permit = state
+        .upload_gate
+        .try_acquire(auth.user_id)
+        .map_err(|busy| {
+            tracing::info!(?busy, "upload turned away");
+            AppError::UploadsBusy
+        })?;
 
     let mut filename = None;
     let mut bytes = None;
