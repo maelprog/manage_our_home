@@ -979,6 +979,132 @@ async fn a_sync_does_not_overwrite_an_assignment_made_locally(db: PgPool) {
     assert_eq!(assignees, vec![member_id]);
 }
 
+/// `ICS_BODY` once Google has edited the event: same UID, a later
+/// `LAST-MODIFIED`, a new title. The moved timestamp is what sends the next
+/// sync down the UPDATE arm rather than `skipped`.
+const ICS_BODY_EDITED_UPSTREAM: &str = "\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:flow-test-1@google.com
+DTSTAMP:20260201T090000Z
+DTSTART:20260601T140000Z
+DTEND:20260601T150000Z
+SUMMARY:Family dinner at grandma's
+LOCATION:Home
+LAST-MODIFIED:20260201T090000Z
+END:VEVENT
+END:VCALENDAR
+";
+
+/// AC (#148): the same guarantee, on the arm that can actually break it. The
+/// test above resyncs an *unchanged* feed, so it goes through `skipped`,
+/// which never calls `ensure_assignee` on an assigned row. The UPDATE arm
+/// calls it unconditionally, on a row that may already carry a local
+/// assignment — so only a feed whose `LAST-MODIFIED` moved checks that the
+/// write fills an empty assignment and never appends the importer next to
+/// the member the family chose.
+#[sqlx::test]
+async fn an_upstream_edit_does_not_add_the_importer_to_a_local_assignment(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "cal-keepupd1@example.test", "owner-password1").await;
+    let member_cookie = register_verify_login(
+        &router,
+        &db,
+        "cal-keepupd2@example.test",
+        "member-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    let invite = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/invitations"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    let token = json_body(invite).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let accept = call(
+        &router,
+        Method::POST,
+        &format!("/groups/invitations/{token}/accept"),
+        Some(&member_cookie),
+        None,
+    )
+    .await;
+    assert!(accept.status().is_success());
+
+    let feed_url = spawn_changing_ics_server(&[ICS_BODY, ICS_BODY_EDITED_UPSTREAM]).await;
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/calendar-imports"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"label": "Foyer calendar", "feed_url": feed_url})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let import_id = json_body(create).await["id"].as_str().unwrap().to_string();
+    let import_path = format!("/groups/{group_id}/calendar-imports/{import_id}/import");
+
+    let first = call(
+        &router,
+        Method::POST,
+        &import_path,
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&first, StatusCode::OK);
+    assert_eq!(json_body(first).await["imported"], 1);
+
+    // The family hands the imported event to the other member.
+    let member_id = user_id_of(&db, "cal-keepupd2@example.test").await;
+    let event_id: Uuid = sqlx::query_scalar("SELECT id FROM events")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    let patch = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({ "assignee_ids": [member_id] })),
+    )
+    .await;
+    assert_status(&patch, StatusCode::OK);
+
+    let second = call(
+        &router,
+        Method::POST,
+        &import_path,
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&second, StatusCode::OK);
+    let second_body = json_body(second).await;
+    assert_eq!(second_body["updated"], 1);
+    assert_eq!(second_body["skipped"], 0);
+
+    // The upstream edit landed: this went through the UPDATE arm...
+    let title: String = sqlx::query_scalar("SELECT title FROM events WHERE id = $1")
+        .bind(event_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(title, "Family dinner at grandma's");
+    // ...and the local assignment came out of it untouched.
+    let (_, _, _, assignees) = stored_event(&db).await;
+    assert_eq!(assignees, vec![member_id]);
+}
+
 /// AC: only an admin/owner may delete a calendar-import connection.
 #[sqlx::test]
 async fn only_admin_or_owner_can_delete_calendar_import(db: PgPool) {
