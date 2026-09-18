@@ -10,7 +10,9 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::AppState;
 
-pub const SESSION_COOKIE_NAME: &str = "session_id";
+/// Private on purpose (#239): nothing outside this module may name the
+/// cookie — see `only_this_module_reads_the_session_cookie`.
+const SESSION_COOKIE_NAME: &str = "session_id";
 pub const SESSION_TTL_DAYS: i64 = 30;
 
 #[derive(Debug, Clone)]
@@ -235,6 +237,14 @@ mod tests {
     /// validity (inactivity timeout, hashed token, MFA step) lands once. A
     /// second copy of that check once lived in `user_admin`; this fails if
     /// one reappears anywhere under `src/`.
+    ///
+    /// #239: matching `.get(<key>)` on the key's spelling let any alias
+    /// through (`const K: &str = SESSION_COOKIE_NAME; jar.get(K)`), as well
+    /// as any expression wrapped around the constant. No file outside this
+    /// one has a reason to name the cookie at all — building and expiring it
+    /// live here too — so the check is on the constant's name and on its
+    /// literal value, wherever they appear: an import, an alias or a read
+    /// all trip it.
     #[test]
     fn only_this_module_reads_the_session_cookie() {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -247,22 +257,13 @@ mod tests {
             .iter()
             .filter(|f| **f != this_file)
             .filter(|f| {
-                let code: String = std::fs::read_to_string(f)
-                    .unwrap()
-                    .chars()
-                    .filter(|c| !c.is_whitespace())
-                    .collect();
-                // `.get(<key>)` whose key is the constant, under any path, or
-                // its literal value.
-                code.split(".get(").skip(1).any(|rest| {
-                    let key = rest.split(')').next().unwrap_or_default();
-                    key.ends_with("SESSION_COOKIE_NAME") || key == "\"session_id\""
-                })
+                let code = std::fs::read_to_string(f).unwrap();
+                code.contains("SESSION_COOKIE_NAME") || code.contains("\"session_id\"")
             })
             .collect();
         assert!(
             readers.is_empty(),
-            "session cookie read outside auth/session.rs, go through AuthUser: {readers:?}"
+            "session cookie named outside auth/session.rs, go through AuthUser: {readers:?}"
         );
     }
 }

@@ -29,7 +29,7 @@ use crate::AppState;
 
 use self::session::{
     build_session_cookie, create_session, expired_session_cookie, revoke_all_sessions,
-    revoke_session, user_scoped_tx, AuthUser, SESSION_COOKIE_NAME,
+    revoke_session, user_scoped_tx, AuthUser,
 };
 use self::timing::{LoginBranch, LoginTiming};
 
@@ -705,7 +705,6 @@ pub async fn cancel_delete_account(
     Ok(StatusCode::OK)
 }
 
-pub const _SESSION_COOKIE_NAME_REEXPORT: &str = SESSION_COOKIE_NAME;
 pub const _ACCOUNT_DELETION_GRACE_DAYS: i64 = ACCOUNT_DELETION_GRACE_DAYS;
 
 #[cfg(test)]
