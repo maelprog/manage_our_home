@@ -559,8 +559,15 @@ async fn ensure_assignee(
 /// a feed's `LAST-MODIFIED` hasn't moved, the sync counts the row `skipped`
 /// and never touches it, so a row written wrong stays wrong until Google
 /// happens to edit that event. The arbitration on #106 put the catch-up
-/// here rather than in a backfill migration, which keeps #105's constraint
-/// ("no migration may depend on its DML while that is unsettled") intact.
+/// here rather than in a backfill migration: #105 — whether a migration's
+/// DML can see its own source at all — was open at the time, so nothing new
+/// was allowed to depend on it. #105 is settled since, and not by relaxing
+/// anything: migrations run on their own connection
+/// (`MIGRATION_DATABASE_URL`) as an owner role carrying `BYPASSRLS`, and the
+/// pass refuses to start unless that connection provably bypasses RLS
+/// (`apps/api/src/migrations.rs`). That constraint no longer binds anyone;
+/// the catch-up stays here on #106's own arbitration, on the path that
+/// already visits these rows.
 ///
 /// The bounds test is `normalize_all_day`'s own fixed point: it is
 /// idempotent, so a conforming row compares equal and is left alone. A row
