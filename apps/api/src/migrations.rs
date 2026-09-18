@@ -222,9 +222,10 @@ pub fn summarize_row_counts(per_statement: &[u64]) -> RowCountSummary {
 ///
 /// Row counts come from the wire, one per `CommandComplete`, so what is
 /// counted is the top-level statement and nothing it delegates to. DML
-/// buried in PL/pgSQL is invisible, but not uniformly as a zero — the
-/// three shapes report three different things, all of them about
-/// something other than the rows written:
+/// buried in PL/pgSQL is invisible, but not uniformly as a zero. The
+/// shapes below are the ones `tests/migration_rowcount_flow.rs` asserts,
+/// one test each, so they are not rediscovered; they illustrate the rule
+/// above rather than enumerate the ways it bites:
 ///
 /// - a `DO` block reports `0`, however many rows it wrote;
 /// - a function called through `SELECT` reports the `SELECT`'s own row
@@ -232,11 +233,17 @@ pub fn summarize_row_counts(per_statement: &[u64]) -> RowCountSummary {
 /// - a trigger's writes are folded into the statement that fired it, and
 ///   never reported on their own.
 ///
-/// So a migration that buries its backfill in PL/pgSQL is as silent as
-/// before, and the second and third shapes are worse than silent: they
-/// print a number that looks like an answer. Each of the three is
-/// asserted in `tests/migration_rowcount_flow.rs` rather than left to be
-/// rediscovered.
+/// Others follow from the same rule and are not covered by a test here:
+/// a `PROCEDURE` invoked by `CALL` reports the `CALL` tag, hence `0`,
+/// whatever it inserted. And the trap is not confined to PL/pgSQL — a
+/// data-modifying CTE, `WITH ins AS (INSERT ... RETURNING ...) SELECT
+/// ...`, reports the outer `SELECT`'s own count, hence `1` where three
+/// rows were inserted.
+///
+/// So a migration whose writes are not in a top-level statement is as
+/// silent as before, and worse than silent whenever the command tag
+/// carries a count of its own: it prints a number that looks like an
+/// answer.
 pub struct LoggingMigrate<'c>(pub &'c mut sqlx::PgConnection);
 
 /// Runs a migration's SQL, then records it, on one connection.
