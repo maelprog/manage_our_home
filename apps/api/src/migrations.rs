@@ -220,12 +220,23 @@ pub fn summarize_row_counts(per_statement: &[u64]) -> RowCountSummary {
 ///
 /// ## What it does not see
 ///
-/// Row counts come from the wire, one per `CommandComplete`. DML inside
-/// a `DO` block, a function or a trigger is a single statement to the
-/// protocol and reports zero however many rows it changed. A migration
-/// that buries its backfill in PL/pgSQL is as silent as before — see
-/// `tests/migration_rowcount_flow.rs`, which asserts that limit rather
-/// than leaving it to be rediscovered.
+/// Row counts come from the wire, one per `CommandComplete`, so what is
+/// counted is the top-level statement and nothing it delegates to. DML
+/// buried in PL/pgSQL is invisible, but not uniformly as a zero — the
+/// three shapes report three different things, all of them about
+/// something other than the rows written:
+///
+/// - a `DO` block reports `0`, however many rows it wrote;
+/// - a function called through `SELECT` reports the `SELECT`'s own row
+///   count (`1` for a scalar call), not the function's writes;
+/// - a trigger's writes are folded into the statement that fired it, and
+///   never reported on their own.
+///
+/// So a migration that buries its backfill in PL/pgSQL is as silent as
+/// before, and the second and third shapes are worse than silent: they
+/// print a number that looks like an answer. Each of the three is
+/// asserted in `tests/migration_rowcount_flow.rs` rather than left to be
+/// rediscovered.
 pub struct LoggingMigrate<'c>(pub &'c mut sqlx::PgConnection);
 
 /// Runs a migration's SQL, then records it, on one connection.

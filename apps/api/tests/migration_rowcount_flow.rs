@@ -11,6 +11,14 @@
 //!    migration is never recorded without its effects nor applied without
 //!    its record. Getting that wrong replays a migration. Everything else
 //!    in this file is secondary to it.
+//!
+//!    Only one test here actually pins it —
+//!    `the_sql_is_undone_when_the_bookkeeping_fails`. The obvious test,
+//!    "a migration whose SQL fails leaves nothing behind", does *not*:
+//!    Postgres wraps a multi-statement simple query in an implicit
+//!    transaction of its own, so that case stays green with the explicit
+//!    transaction removed. It takes a failure on the *bookkeeping* side,
+//!    after the SQL has succeeded, to tell the two apart.
 //! 2. **The counts themselves.** One count per `CommandComplete`, in
 //!    execution order — which is what separates a backfill that matched
 //!    nothing from the `CREATE TABLE` next to it.
@@ -50,13 +58,59 @@ async fn table_exists(db: &PgPool, name: &str) -> bool {
         .unwrap()
 }
 
-/// The load-bearing one: a migration that fails partway leaves **no**
-/// trace — neither its effects nor its `_sqlx_migrations` row.
+/// The load-bearing one: when the SQL succeeds and the **bookkeeping**
+/// fails, the SQL is undone too.
 ///
-/// If the row survived a rolled-back migration, the pass would record
-/// work that never happened and never retry it. If the effects survived
-/// without the row, the next pass would replay them. Either way it is
-/// sqlx#1966, and either way it is silent.
+/// This is the shape that tells an explicit transaction from Postgres's
+/// own. The bookkeeping is made to fail by re-recording a version already
+/// in the table — `version BIGINT PRIMARY KEY` in the schema sqlx creates
+/// — so the `INSERT` is reached, and rejected, with the migration's DDL
+/// already executed. Under sqlx#1966 (the two in separate transactions,
+/// or none at all) the `CREATE TABLE` survives its own record: the next
+/// pass replays a migration whose effects are already there. Here it must
+/// be gone.
+#[sqlx::test]
+async fn the_sql_is_undone_when_the_bookkeeping_fails(db: PgPool) {
+    let mut conn = db.acquire().await.unwrap();
+    let mut wrapped = LoggingMigrate(&mut conn);
+    wrapped.ensure_migrations_table(TABLE).await.unwrap();
+
+    let first = migration(42, "first", "CREATE TABLE mig154_first (id int);", false);
+    wrapped.apply(TABLE, &first).await.unwrap();
+
+    // Same version, different SQL: the SQL runs, then the bookkeeping row
+    // collides with the one above.
+    let clashing = migration(42, "again", "CREATE TABLE mig154_orphan (id int);", false);
+    let err = wrapped
+        .apply(TABLE, &clashing)
+        .await
+        .expect_err("a duplicate bookkeeping row must fail the migration");
+    assert!(
+        err.to_string().contains("duplicate key"),
+        "the failure must come from the bookkeeping insert: {err}"
+    );
+    drop(conn);
+
+    assert!(
+        !table_exists(&db, "mig154_orphan").await,
+        "the migration's SQL must be rolled back with its bookkeeping — otherwise \
+         its effects outlive the record that would stop it being replayed (sqlx#1966)"
+    );
+    assert_eq!(
+        recorded_versions(&db).await,
+        vec![42],
+        "and the first record must be untouched"
+    );
+}
+
+/// The obvious companion, kept for what it does say and no more: a
+/// migration whose own SQL fails leaves neither effects nor a record.
+///
+/// It is **not** a guard on the explicit transaction. Postgres already
+/// wraps a multi-statement simple query in an implicit transaction, so
+/// the `CREATE TABLE` below is undone whoever opened the transaction, and
+/// the bookkeeping `INSERT` is never reached at all. The test above is
+/// the one that discriminates.
 #[sqlx::test]
 async fn a_failed_migration_records_nothing_and_changes_nothing(db: PgPool) {
     let mut conn = db.acquire().await.unwrap();
@@ -195,12 +249,10 @@ async fn every_statement_reports_its_own_row_count(db: PgPool) {
     );
 }
 
-/// The limit, asserted rather than claimed: DML inside a `DO` block, a
-/// function or a trigger is one statement to the protocol, and its row
-/// count never reaches us. A migration that hides its backfill in
-/// PL/pgSQL is as silent after this change as before it.
+/// The limit, asserted rather than claimed, case 1 of 3: a `DO` block is
+/// one statement to the protocol and reports `0` whatever it wrote.
 #[sqlx::test]
-async fn dml_inside_plpgsql_is_invisible_to_the_wrapper(db: PgPool) {
+async fn dml_inside_a_do_block_reports_zero(db: PgPool) {
     let mut conn = db.acquire().await.unwrap();
     let mut wrapped = LoggingMigrate(&mut conn);
     wrapped.ensure_migrations_table(TABLE).await.unwrap();
@@ -226,6 +278,103 @@ async fn dml_inside_plpgsql_is_invisible_to_the_wrapper(db: PgPool) {
         .await
         .unwrap();
     assert_eq!(rows, 2, "the rows really were inserted");
+}
+
+/// Case 2 of 3, and the one that makes "reports zero" the wrong summary:
+/// a function called through `SELECT` reports the row count of the
+/// `SELECT` — one row, the function's return value — not the two rows it
+/// wrote.
+///
+/// The number is not zero, it is simply about something else. That is
+/// worse than a zero for a reader, because it looks like an answer.
+#[sqlx::test]
+async fn dml_inside_a_function_reports_the_calling_select(db: PgPool) {
+    let mut conn = db.acquire().await.unwrap();
+    let mut wrapped = LoggingMigrate(&mut conn);
+    wrapped.ensure_migrations_table(TABLE).await.unwrap();
+
+    let buried = migration(
+        1,
+        "backfill in a function",
+        "CREATE TABLE mig154_fn (tag text); \
+         CREATE FUNCTION mig154_fill() RETURNS void LANGUAGE sql AS \
+         $$ INSERT INTO mig154_fn (tag) VALUES ('a'), ('b'); $$; \
+         SELECT mig154_fill();",
+        false,
+    );
+    let (_, summary) = wrapped.apply_logging(TABLE, &buried).await.unwrap();
+
+    assert_eq!(
+        summary.per_statement, "[0, 0, 1]",
+        "the SELECT's own single row, not the function's two inserts"
+    );
+    drop(conn);
+
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM mig154_fn")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(rows, 2);
+}
+
+/// Case 3 of 3: a trigger's writes are counted against the statement that
+/// fired it, not reported on their own. Two rows inserted here, three
+/// written elsewhere by the trigger, and the log says `2`.
+#[sqlx::test]
+async fn dml_inside_a_trigger_is_counted_as_the_firing_statement(db: PgPool) {
+    let mut conn = db.acquire().await.unwrap();
+    let mut wrapped = LoggingMigrate(&mut conn);
+    wrapped.ensure_migrations_table(TABLE).await.unwrap();
+
+    let buried = migration(
+        1,
+        "backfill in a trigger",
+        "CREATE TABLE mig154_src (tag text); \
+         CREATE TABLE mig154_shadow (tag text); \
+         CREATE FUNCTION mig154_shadow_fn() RETURNS trigger LANGUAGE plpgsql AS \
+         $$ BEGIN INSERT INTO mig154_shadow (tag) VALUES (NEW.tag), (NEW.tag), (NEW.tag); \
+         RETURN NEW; END $$; \
+         CREATE TRIGGER mig154_trg AFTER INSERT ON mig154_src \
+         FOR EACH ROW EXECUTE FUNCTION mig154_shadow_fn(); \
+         INSERT INTO mig154_src (tag) VALUES ('a');",
+        false,
+    );
+    let (_, summary) = wrapped.apply_logging(TABLE, &buried).await.unwrap();
+
+    assert_eq!(
+        summary.per_statement, "[0, 0, 0, 0, 1]",
+        "the insert's own row; the trigger's three are not reported"
+    );
+    drop(conn);
+
+    let shadowed: i64 = sqlx::query_scalar("SELECT count(*) FROM mig154_shadow")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(shadowed, 3, "the trigger really wrote three rows");
+}
+
+/// `Migrate::skip` is delegated, not left to the trait's default — which
+/// is `Err(SkipNotSupported)`. `Migrator::skip()` is the only caller, and
+/// nothing else in this crate exercises it, so without this test the
+/// delegation could be dropped and the suite would not notice.
+///
+/// Its contract is the other half of `apply`: record the migration
+/// *without* running its SQL. The SQL below would fail if it ran.
+#[sqlx::test]
+async fn skip_records_a_migration_without_running_its_sql(db: PgPool) {
+    let mut conn = db.acquire().await.unwrap();
+    let mut wrapped = LoggingMigrate(&mut conn);
+    wrapped.ensure_migrations_table(TABLE).await.unwrap();
+
+    let never_run = migration(5, "skipped", "SELECT 1 / 0;", false);
+    wrapped
+        .skip(TABLE, &never_run)
+        .await
+        .expect("skip must be forwarded to the connection, not left to the default");
+    drop(conn);
+
+    assert_eq!(recorded_versions(&db).await, vec![5]);
 }
 
 /// End to end, over the repository's own migrations and the rows sqlx
