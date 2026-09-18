@@ -237,8 +237,11 @@ pub fn summarize_row_counts(per_statement: &[u64]) -> RowCountSummary {
 /// a `PROCEDURE` invoked by `CALL` reports the `CALL` tag, hence `0`,
 /// whatever it inserted. And the trap is not confined to PL/pgSQL — a
 /// data-modifying CTE, `WITH ins AS (INSERT ... RETURNING ...) SELECT
-/// ...`, reports the outer `SELECT`'s own count, hence `1` where three
-/// rows were inserted.
+/// ...`, reports the outer `SELECT`'s own count, and it is the elided
+/// `SELECT` that decides that number, not the `INSERT`: `SELECT
+/// count(*) FROM ins` reports `1` however many rows were written, while
+/// `SELECT * FROM ins` reports one per written row — the count of the
+/// writes, arrived at by coincidence rather than by measuring them.
 ///
 /// So a migration whose writes are not in a top-level statement is as
 /// silent as before, and worse than silent whenever the command tag
