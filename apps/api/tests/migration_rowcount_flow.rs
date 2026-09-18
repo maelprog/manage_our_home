@@ -387,11 +387,19 @@ async fn skip_records_a_migration_without_running_its_sql(db: PgPool) {
 /// `VersionMismatch`, not as a subtle drift noticed months later.
 #[sqlx::test]
 async fn the_repository_migrations_replay_through_the_wrapper_as_a_no_op(db: PgPool) {
+    // Tied to the migrator rather than to a literal: a hard-coded count
+    // would have to be bumped by every migration added to the repository,
+    // and a `> 0` floor would still pass against a database carrying one
+    // single migration, which is not what this test claims to replay.
+    let expected = i64::try_from(sqlx::migrate!("./migrations").iter().count()).unwrap();
     let before: i64 = sqlx::query_scalar("SELECT count(*) FROM _sqlx_migrations")
         .fetch_one(&db)
         .await
         .unwrap();
-    assert!(before > 0, "the harness database must already be migrated");
+    assert_eq!(
+        before, expected,
+        "the harness database must carry every migration of the repository before the replay"
+    );
 
     let mut conn = db.acquire().await.unwrap();
     let mut wrapped = LoggingMigrate(&mut conn);
