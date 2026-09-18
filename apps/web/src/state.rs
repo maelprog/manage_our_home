@@ -32,6 +32,14 @@ pub struct AppState {
     /// cookie set by apps/api's callback is sent on subsequent apps/web
     /// requests without any CORS configuration.
     pub api_public_base_url: String,
+    /// How long a client may take to send a request body, on every route
+    /// (#219). `BodyReadLimits::PRODUCTION` outside tests.
+    pub body_read_limits: manage_our_home_http_guard::BodyReadLimits,
+    /// Uploads this process holds in memory at once, per account and in
+    /// all (#219). Taken by `routes::agenda::attachments::upload` before it
+    /// reads the browser's body, and held until the relay to apps/api is
+    /// answered: the bytes are in memory for all of it.
+    pub upload_gate: std::sync::Arc<manage_our_home_http_guard::UploadGate<uuid::Uuid>>,
 }
 
 /// Calls `GET /auth/me` on apps/api, forwarding the incoming request's

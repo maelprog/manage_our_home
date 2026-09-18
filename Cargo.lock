@@ -1775,6 +1775,7 @@ dependencies = [
  "http 1.4.2",
  "http-body 1.0.1",
  "pin-project-lite",
+ "tokio",
 ]
 
 [[package]]
@@ -2358,6 +2359,7 @@ dependencies = [
  "infer",
  "ipnet",
  "lettre",
+ "manage_our_home_http_guard",
  "manage_our_home_shared",
  "oauth2",
  "rand 0.8.6",
@@ -2375,6 +2377,19 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "manage_our_home_http_guard"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "http-body 1.0.1",
+ "http-body-util",
+ "tokio",
+ "tower 0.5.3",
+ "tracing",
 ]
 
 [[package]]
@@ -2399,6 +2414,7 @@ dependencies = [
  "flate2",
  "http-body-util",
  "leptos",
+ "manage_our_home_http_guard",
  "manage_our_home_shared",
  "reqwest",
  "serde",

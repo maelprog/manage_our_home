@@ -1,5 +1,6 @@
 mod app;
 mod assets;
+mod body_bounds;
 mod client_ip;
 // The DESIGN.md journal guard (#95). Test-only: it embeds the document
 // and its lock file, neither of which belongs in the shipped binary.
@@ -30,9 +31,35 @@ async fn main() {
         http: reqwest::Client::new(),
         api_internal_base_url,
         api_public_base_url,
+        body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
+        upload_gate: manage_our_home_http_guard::UploadGate::production(),
     };
 
-    let app = Router::new()
+    let app = build_router(state);
+
+    tracing::info!(%bind_addr, "starting manage_our_home_web");
+    let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
+    // `into_make_service_with_connect_info` is what puts the peer address in
+    // each request's extensions. `/login` appends it to the `X-Forwarded-For`
+    // it relays to apps/api, which is the only way apps/api can tell one
+    // browser from another behind this SSR layer (#178).
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .unwrap();
+}
+
+/// Every route of apps/web, with its state. A function of its own so the
+/// tests can drive the real router, middleware included.
+fn build_router(state: AppState) -> Router {
+    let body_guard = manage_our_home_http_guard::BodyGuard {
+        limits: state.body_read_limits,
+        render: body_bounds::body_read_timeout_page,
+    };
+
+    Router::new()
         // The self-hosted fonts (#67). Merged first because it is the one
         // group of routes that needs no session and no state.
         .merge(assets::router())
@@ -246,18 +273,11 @@ async fn main() {
             "/groups/:id/settings/delete",
             post(routes::groups::settings::delete),
         )
-        .with_state(state);
-
-    tracing::info!(%bind_addr, "starting manage_our_home_web");
-    let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
-    // `into_make_service_with_connect_info` is what puts the peer address in
-    // each request's extensions. `/login` appends it to the `X-Forwarded-For`
-    // it relays to apps/api, which is the only way apps/api can tell one
-    // browser from another behind this SSR layer (#178).
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .await
-    .unwrap();
+        // Every route (#219): a form can be dripped as slowly as an upload.
+        // It sits outside the routes so no handler sees an unguarded body.
+        .layer(axum::middleware::from_fn_with_state(
+            body_guard,
+            manage_our_home_http_guard::guard_request_body,
+        ))
+        .with_state(state)
 }

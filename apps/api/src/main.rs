@@ -124,6 +124,8 @@ async fn main() -> anyhow::Result<()> {
         login_branches: std::sync::Arc::new(
             manage_our_home::auth::timing::BranchCounters::default(),
         ),
+        body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
+        upload_gate: manage_our_home_http_guard::UploadGate::production(),
     };
 
     // On the admin pool: `event_attachments` reads back empty without

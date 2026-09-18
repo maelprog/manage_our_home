@@ -28,6 +28,10 @@ pub enum AppError {
     /// would reopen the enumeration oracle it was added to close.
     #[error("too many requests")]
     TooManyRequests,
+    /// An upload turned away by `AppState::upload_gate` (#219): answered
+    /// 503 with `Retry-After`, at once, without reading the body.
+    #[error("uploads busy")]
+    UploadsBusy,
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
     #[error(transparent)]
@@ -39,10 +43,15 @@ impl IntoResponse for AppError {
         if let AppError::ConflictJson(body) = &self {
             return (StatusCode::CONFLICT, Json(body.clone())).into_response();
         }
+        if let AppError::UploadsBusy = &self {
+            return manage_our_home_http_guard::service_unavailable(
+                Json(json!({ "error": "uploads_busy" })).into_response(),
+            );
+        }
         let (status, message) = match &self {
             AppError::NotFound => (StatusCode::NOT_FOUND, "not_found".to_string()),
             AppError::Conflict(m) => (StatusCode::CONFLICT, m.clone()),
-            AppError::ConflictJson(_) => unreachable!(),
+            AppError::ConflictJson(_) | AppError::UploadsBusy => unreachable!(),
             AppError::Unprocessable(m) => (StatusCode::UNPROCESSABLE_ENTITY, m.clone()),
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
             AppError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".to_string()),

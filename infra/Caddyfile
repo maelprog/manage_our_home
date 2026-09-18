@@ -5,6 +5,55 @@
 # configuration needed. Public/internet exposure is still deferred past
 # v1 (local/VPN only, docs/notes-issue-1-qa.md #7) — swap `:80` for the
 # real domain once that changes, which also turns on automatic TLS.
+
+# How long a client may take to send a request (#219). apps/web and
+# apps/api bound every request body themselves — 30 s of silence, 1 kB/s
+# on average after 10 s, 15 min in all, answered 408 with
+# `Connection: close` (`manage_our_home_http_guard`). This is the backstop
+# behind them, not the bound itself.
+#
+# - `read_body` is Go's `ReadTimeout`: one deadline for the whole request,
+#   headers included, from the first byte — a total, not an inactivity
+#   bound. At 16 min it sits one minute above the applications' 15, so a
+#   slow body is answered by the application's 408. When Caddy's own
+#   deadline goes first the answer is not one to rely on: measured on
+#   v2.11.4 with it at 5 s and an upstream that waits for the whole body,
+#   the client got a 504 on the first run, then an empty
+#   `200 OK` with `Connection: close` on every run after it.
+# - It does not reach the Messagerie WebSocket: once `reverse_proxy` has
+#   switched a connection to WebSocket, the connection stays up past
+#   `read_body` (measured the same way: a socket held 12 s kept both
+#   directions working).
+# - `read_header` 10 s: headers are small, and a client trickling them
+#   holds a connection before any application has seen the request.
+# - `idle` 5 min is Caddy's default, written next to the other two so the
+#   three connection bounds read in one place.
+{
+	servers {
+		timeouts {
+			read_header 10s
+			read_body 16m
+			idle 5m
+		}
+	}
+}
+
+# An application's 408 must reach the client when it is sent, not when
+# the client has finished sending. Go's server, answering a request whose
+# body is not fully read and is under 256 KiB, first reads and discards
+# the rest of it — unless the response says `Connection: close`. The
+# application sets that header, but it is hop-by-hop, so `reverse_proxy`
+# drops it on the way out; without putting it back, a body dripped at
+# 1 byte/s through this proxy got no answer at all within 20 s, where the
+# application alone answered 408 at 10 s (measured on v2.11.4).
+(close_on_408) {
+	@body_timeout status 408
+	handle_response @body_timeout {
+		header Connection close
+		copy_response
+	}
+}
+
 :80 {
 	# apps/web inlined its stylesheet into every response until #89, and
 	# `encode` is what made that hold: the same ~27 kB of CSS travelled with
@@ -37,6 +86,20 @@
 	# excluded from `encode` — see the PR for #83 for the full reasoning.
 	encode zstd gzip
 
+	# The two upload routes (#219), refused at this hop once the body passes
+	# what apps/api's route accepts: `storage::MAX_UPLOAD_BODY_BYTES`,
+	# 20 MiB of attachment plus 64 KiB of multipart framing = 21 037 056
+	# bytes. A body over it is answered 413 here instead of travelling to an
+	# application that would refuse it. Every other route keeps the
+	# applications' own 2 MiB default. `*` stands for one path segment.
+	@upload {
+		method POST
+		path /agenda/*/attachments /api/groups/*/events/*/attachments
+	}
+	request_body @upload {
+		max_size 21037056
+	}
+
 	# `X-Forwarded-For` (#178): nothing to configure here, but the behaviour
 	# is load-bearing, so it is written down. Measured against `caddy:2`
 	# (v2.11.4) with this same `handle` layout, on both paths:
@@ -58,9 +121,13 @@
 	# outer proxy appended.
 	handle /api/* {
 		uri strip_prefix /api
-		reverse_proxy api:8080
+		reverse_proxy api:8080 {
+			import close_on_408
+		}
 	}
 	handle {
-		reverse_proxy web:3000
+		reverse_proxy web:3000 {
+			import close_on_408
+		}
 	}
 }

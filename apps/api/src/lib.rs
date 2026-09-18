@@ -98,6 +98,22 @@ pub struct AppState {
     /// needs the unscoped `event_attachments` read. Request handlers
     /// outside `SuperAdminUser` never use it.
     pub admin_db: PgPool,
+    /// How long a client may take to send a request body, on every route
+    /// (#219). `BodyReadLimits::PRODUCTION` in production; flow tests
+    /// shorten it so a slow body is cut in a second rather than in ten.
+    pub body_read_limits: manage_our_home_http_guard::BodyReadLimits,
+    /// Uploads this process holds in memory at once, per account and in
+    /// all (#219). Taken by `agenda::attachments::upload_attachment` before
+    /// it reads the body.
+    pub upload_gate: std::sync::Arc<manage_our_home_http_guard::UploadGate<uuid::Uuid>>,
+}
+
+/// Body of the 408 a too-slow request body gets (#219), in the API's usual
+/// `{"error": ...}` shape. Status and `Connection: close` are set by the
+/// middleware.
+fn body_read_timeout_response() -> axum::response::Response {
+    use axum::response::IntoResponse;
+    axum::Json(serde_json::json!({ "error": "request_timeout" })).into_response()
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -106,6 +122,14 @@ pub fn build_router(state: AppState) -> Router {
     // request would make that one request the odd one out on a stopwatch —
     // the exact signal #178 exists to remove.
     let _ = crypto::decoy_hash();
+
+    // Every route, not only the uploads: a JSON body can be dripped as
+    // slowly as a multipart one. It spares the Messagerie WebSocket, whose
+    // upgrade has no body to time (see `manage_our_home_http_guard::body`).
+    let body_guard = manage_our_home_http_guard::BodyGuard {
+        limits: state.body_read_limits,
+        render: body_read_timeout_response,
+    };
 
     Router::new()
         .route("/auth/register", post(auth::register))
@@ -290,5 +314,9 @@ pub fn build_router(state: AppState) -> Router {
             post(user_admin::admin::deactivate_user),
         )
         .layer(CookieManagerLayer::new())
+        .layer(axum::middleware::from_fn_with_state(
+            body_guard,
+            manage_our_home_http_guard::guard_request_body,
+        ))
         .with_state(state)
 }

@@ -1,0 +1,27 @@
+[package]
+name = "manage_our_home_http_guard"
+version = "0.1.0"
+edition = "2021"
+
+# How long a client may take to send a request body, and how many uploads
+# may sit in memory at once (#219). apps/api and apps/web both need exactly
+# this, and apps/shared cannot carry it: that crate stays free of axum and
+# tokio so it compiles to wasm32.
+[lib]
+name = "manage_our_home_http_guard"
+path = "src/lib.rs"
+
+[dependencies]
+# 0.7, not the newer 0.8: the middleware and the body it wraps are axum
+# types handed straight to apps/api's and apps/web's routers, which are on
+# 0.7 — a second axum would not interoperate.
+axum = { version = "0.7", default-features = false }
+tokio = { version = "1", features = ["time", "sync"] }
+http-body = "1.0.1"
+bytes = "1.12.0"
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["time", "sync", "macros", "rt", "test-util"] }
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
