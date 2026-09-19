@@ -72,10 +72,14 @@ impl Storage {
 
     /// Uploads bytes at `key`, validated by the caller beforehand (MIME
     /// sniffed from content, not extension; size checked before this call).
+    ///
+    /// `Bytes` rather than `Vec<u8>`: the SDK takes it over as is, and the
+    /// caller hands over the buffer it read the upload into instead of a
+    /// copy of it (#249).
     pub async fn put_object(
         &self,
         key: &str,
-        body: Vec<u8>,
+        body: bytes::Bytes,
         content_type: &str,
     ) -> anyhow::Result<()> {
         self.client

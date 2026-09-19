@@ -79,6 +79,17 @@ pub fn test_state(db: PgPool) -> AppState {
 /// RLS, so a misconfigured job fails every request instead of passing on a
 /// superuser connection.
 fn runtime_pool(db: &PgPool) -> PgPool {
+    runtime_pool_sized(db, 5)
+}
+
+/// [`runtime_pool`] with room for `max_connections` under the runtime role,
+/// for a test that holds more transactions open at once than the default
+/// five (`attachment_upload_memory_flow`, #249). Without the role, `db`
+/// itself, whose own bound applies.
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (see note on test_state above).
+#[allow(dead_code)]
+pub fn runtime_pool_sized(db: &PgPool, max_connections: u32) -> PgPool {
     let Ok(role) = std::env::var("FLOW_TEST_RUNTIME_ROLE") else {
         return db.clone();
     };
@@ -91,7 +102,7 @@ fn runtime_pool(db: &PgPool) -> PgPool {
     sqlx::postgres::PgPoolOptions::new()
         // The bounds `#[sqlx::test]` gives its own pool: this one comes on
         // top of it, against the server's connection limit.
-        .max_connections(5)
+        .max_connections(max_connections)
         .idle_timeout(Some(std::time::Duration::from_secs(1)))
         .after_connect(|conn, _| {
             Box::pin(async move {
