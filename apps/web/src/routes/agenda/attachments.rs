@@ -646,27 +646,32 @@ mod tests {
         assert_eq!(web.api_received.load(Ordering::SeqCst), 0);
     }
 
-    /// Heap bytes live on the current thread, and their high-water mark.
-    /// Counted per thread because the test binary runs tests side by side:
-    /// a `#[tokio::test]` runs on one thread, and so does everything it
-    /// spawns — the handler, reqwest's connection, the stand-in apps/api.
+    /// Heap bytes live on the threads of one runtime, and their high-water
+    /// mark. Only threads that ask to be counted are: the test binary runs
+    /// tests side by side, and only the runtime standing in for apps/web's
+    /// process enrols its threads. Counted across them, not per thread,
+    /// because production runs a multi-threaded runtime (`#[tokio::main]`
+    /// in `src/main.rs`), whose workers pass tasks and buffers between
+    /// them (#250).
     mod heap {
         use std::alloc::{GlobalAlloc, Layout, System};
         use std::cell::Cell;
+        use std::sync::atomic::{AtomicIsize, Ordering};
 
         struct Counting;
 
+        static LIVE: AtomicIsize = AtomicIsize::new(0);
+        static PEAK: AtomicIsize = AtomicIsize::new(0);
+
         thread_local! {
-            static LIVE: Cell<isize> = const { Cell::new(0) };
-            static PEAK: Cell<isize> = const { Cell::new(0) };
+            static COUNTED: Cell<bool> = const { Cell::new(false) };
         }
 
         fn add(delta: isize) {
-            let _ = LIVE.try_with(|live| {
-                let now = live.get() + delta;
-                live.set(now);
-                let _ = PEAK.try_with(|peak| peak.set(peak.get().max(now)));
-            });
+            if COUNTED.try_with(Cell::get).unwrap_or(false) {
+                let now = LIVE.fetch_add(delta, Ordering::Relaxed) + delta;
+                PEAK.fetch_max(now, Ordering::Relaxed);
+            }
         }
 
         fn size(n: usize) -> isize {
@@ -707,16 +712,21 @@ mod tests {
         #[global_allocator]
         static COUNTING: Counting = Counting;
 
+        /// From now on, what this thread allocates and frees is counted.
+        pub fn count_this_thread() {
+            COUNTED.with(|counted| counted.set(true));
+        }
+
         /// Starts a new high-water mark from what is live now, and
         /// returns it.
         pub fn start() -> isize {
-            let live = LIVE.with(Cell::get);
-            PEAK.with(|peak| peak.set(live));
+            let live = LIVE.load(Ordering::Relaxed);
+            PEAK.store(live, Ordering::Relaxed);
             live
         }
 
         pub fn peak() -> isize {
-            PEAK.with(Cell::get)
+            PEAK.load(Ordering::Relaxed)
         }
     }
 
@@ -756,37 +766,90 @@ mod tests {
         format!("http://{addr}")
     }
 
-    /// `whole` as a browser's connection delivers it: in 16 KiB chunks,
-    /// each a view of `whole` rather than a copy of it.
-    fn in_chunks(whole: Bytes) -> Body {
-        let (mut tx, rx) = Channel::<Bytes>::new(4);
-        tokio::spawn(async move {
-            let mut at = 0;
-            while at < whole.len() {
-                let end = (at + 16 * 1024).min(whole.len());
-                if tx.send_data(whole.slice(at..end)).await.is_err() {
-                    return;
-                }
-                at = end;
-            }
-        });
-        Body::new(rx)
+    /// Posts `whole` to apps/web over a real connection, as a browser's
+    /// would arrive: in 16 KiB writes, each a view of `whole` rather than a
+    /// copy of it. Returns the status code and the `Location` header.
+    async fn post_as_a_browser(addr: std::net::SocketAddr, whole: Bytes) -> (u16, String) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut socket = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let head = format!(
+            "POST /agenda/{EVENT}/attachments HTTP/1.1\r\nHost: web\r\nCookie: {}\r\n\
+             Content-Type: multipart/form-data; boundary={BOUNDARY}\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n",
+            session(),
+            whole.len()
+        );
+        socket.write_all(head.as_bytes()).await.unwrap();
+        for chunk in whole.chunks(16 * 1024) {
+            socket.write_all(chunk).await.unwrap();
+        }
+        let mut answer = Vec::new();
+        socket.read_to_end(&mut answer).await.unwrap();
+        let answer = String::from_utf8_lossy(&answer).to_string();
+        let status = answer
+            .strip_prefix("HTTP/1.1 ")
+            .and_then(|rest| rest.get(..3))
+            .and_then(|code| code.parse().ok())
+            .unwrap_or_else(|| panic!("no status line in {answer:?}"));
+        let location = answer
+            .lines()
+            .find_map(|line| line.strip_prefix("location: "))
+            .unwrap_or_default()
+            .to_string();
+        (status, location)
     }
 
     /// What the gate's arithmetic assumes (#246): a full pool of uploads,
     /// each of a file at the cap, costs apps/web one copy of each body —
     /// not a copy while reading plus a second one to relay it, nor the
     /// slack of a buffer grown by doubling.
-    #[tokio::test]
-    async fn a_full_pool_of_uploads_at_the_cap_holds_one_copy_of_each() {
+    ///
+    /// Measured as production runs (#250): apps/web on a multi-threaded
+    /// runtime of its own, of the size `#[tokio::main]` gives it, serving
+    /// real connections, so the buffers it reads each socket through count
+    /// too. The browsers and the stand-in apps/api run on a second runtime
+    /// whose threads are not counted: in production they are other
+    /// processes.
+    #[test]
+    fn a_full_pool_of_uploads_at_the_cap_holds_one_copy_of_each() {
         let pool = manage_our_home_http_guard::gate::GLOBAL_UPLOADS;
-        let router = crate::build_router(AppState {
-            http: reqwest::Client::new(),
-            api_internal_base_url: holding_api(pool).await,
-            api_public_base_url: "/api".into(),
-            body_read_limits: BodyReadLimits::PRODUCTION,
-            upload_gate: UploadGate::new(pool, 2),
-        });
+        let outside = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let web = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .on_thread_start(heap::count_this_thread)
+            .build()
+            .unwrap();
+
+        let api = outside.block_on(holding_api(pool));
+        // Built on one of the counted threads, like everything apps/web
+        // allocates: what a counted thread frees must have been counted
+        // when it was allocated.
+        let addr = web
+            .block_on(web.spawn(async move {
+                let router = crate::build_router(AppState {
+                    http: reqwest::Client::new(),
+                    api_internal_base_url: api,
+                    api_public_base_url: "/api".into(),
+                    body_read_limits: BodyReadLimits::PRODUCTION,
+                    upload_gate: UploadGate::new(pool, 2),
+                });
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                tokio::spawn(async move {
+                    axum::serve(
+                        listener,
+                        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                    )
+                    .await
+                    .unwrap()
+                });
+                addr
+            }))
+            .unwrap();
 
         let size = usize::try_from(MAX_ATTACHMENT_SIZE_BYTES).unwrap();
         let mut whole = multipart_head().to_vec();
@@ -796,38 +859,57 @@ mod tests {
         let whole = Bytes::from(whole);
 
         let baseline = heap::start();
-        let mut uploads = tokio::task::JoinSet::new();
-        for _ in 0..pool {
-            let mut request = upload(&session(), in_chunks(whole.clone()));
-            request
-                .headers_mut()
-                .insert(header::CONTENT_LENGTH, whole.len().into());
-            let router = router.clone();
-            uploads.spawn(async move { router.oneshot(request).await.unwrap() });
-        }
-        let answered = tokio::time::timeout(Duration::from_secs(60), async {
-            let mut answered = Vec::new();
-            while let Some(resp) = uploads.join_next().await {
-                answered.push(resp.unwrap());
+        let answered = outside.block_on(async {
+            let mut uploads = tokio::task::JoinSet::new();
+            for _ in 0..pool {
+                uploads.spawn(post_as_a_browser(addr, whole.clone()));
             }
-            answered
-        })
-        .await
-        .expect("the uploads did not all complete within 60 s");
+            tokio::time::timeout(Duration::from_secs(60), async {
+                let mut answered = Vec::new();
+                while let Some(answer) = uploads.join_next().await {
+                    answered.push(answer.unwrap());
+                }
+                answered
+            })
+            .await
+            .expect("the uploads did not all complete within 60 s")
+        });
         let held = usize::try_from(heap::peak() - baseline).unwrap();
 
-        for resp in &answered {
-            assert_redirected_to(resp, "notice=attachment_added");
+        for (status, location) in &answered {
+            assert_eq!(*status, 303);
+            assert_eq!(
+                *location,
+                format!("/agenda/{EVENT}?notice=attachment_added")
+            );
         }
         let mib = |n: usize| n as f64 / (1024.0 * 1024.0);
+        let body = manage_our_home_http_guard::MAX_UPLOAD_BODY_BYTES;
         println!(
-            "{pool} uploads of {size} bytes: peak {:.1} MiB over the baseline",
+            "{pool} uploads of {size} bytes on {} workers: peak {:.1} MiB over the baseline, \
+             {:.2} MiB per upload over its body",
+            web.metrics().num_workers(),
+            mib(held),
+            mib(held.saturating_sub(pool * whole.len())) / pool as f64
+        );
+        // Every body is held at once, so a count below that missed the
+        // threads apps/web ran on: a budget would pass on nothing.
+        assert!(
+            held >= pool * whole.len(),
+            "{:.1} MiB held: the bodies themselves were not counted",
             mib(held)
         );
-        // One body each, plus 1 MiB each for the buffers the relay passes
-        // through on both connections (about 0.6 MiB each when #246 was
-        // fixed). One copy too many is 20 MiB each, a doubled buffer 12.
-        let budget = pool * (manage_our_home_http_guard::MAX_UPLOAD_BODY_BYTES + 1024 * 1024);
+        // One body each, plus 1.5 MiB each for the buffers it passes
+        // through in apps/web: mostly two buffers of about half a MiB
+        // each, most likely the connection's read buffer, which hyper
+        // grows as reads fill it, and multer's parse buffer, which grows
+        // while the socket is read faster than it is parsed. When #250 was
+        // fixed, a full pool peaked at 168.4 to 170.3 MiB against this
+        // 172.5, about 1.1 to 1.3 MiB per upload: the peak depends on the
+        // size of the client's writes (the 16 KiB writes here gave the
+        // lowest), not on the worker count. A doubled buffer costs 12 MiB
+        // more per upload, a second copy 20.
+        let budget = pool * (body + 1024 * 1024 + 512 * 1024);
         assert!(
             held <= budget,
             "{:.1} MiB held, budget {:.1} MiB",

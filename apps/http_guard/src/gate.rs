@@ -23,9 +23,14 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 /// plus framing) that is about 160 MiB at worst, on a 4 GB host — if each
 /// upload holds one copy of its body. Both apps do, and each has a test
 /// `a_full_pool_of_uploads_at_the_cap_holds_one_copy_of_each` that measures
-/// a full pool at the cap: apps/web's (#246), and apps/api's (#249), which
-/// found about 0.6 MiB per upload on top of the body, most of it the
-/// connection's read buffer.
+/// a full pool at the cap, on a multi-threaded runtime over real
+/// connections as production runs: apps/web's (#246, #250), which found
+/// about 1.1 to 1.3 MiB per upload on top of the body, depending on how
+/// the client writes it, most of it two buffers of about half a MiB each,
+/// most likely the connection's read buffer and multer's parse buffer;
+/// and apps/api's (#249), which found about 0.6 MiB, most of it the
+/// connection's read buffer. So about 169 to 170 MiB for a full pool in
+/// apps/web.
 pub const GLOBAL_UPLOADS: usize = 8;
 
 /// Uploads one account may have in flight at once.

@@ -2,9 +2,9 @@
 //!
 //! One test, alone in its binary: the allocator below counts every heap
 //! byte of the process, which only measures the uploads while nothing else
-//! runs beside them. Counting per thread, as apps/web's test of the same
-//! bound does, would miss what a multi-threaded runtime moves between its
-//! workers — and production runs one (`#[tokio::main]` in `src/main.rs`).
+//! runs beside them. Counting per thread would miss what a multi-threaded
+//! runtime moves between its workers — and production runs one
+//! (`#[tokio::main]` in `src/main.rs`).
 
 mod common;
 
