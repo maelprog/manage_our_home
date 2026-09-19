@@ -345,8 +345,13 @@ pub const RELEASE_PLACEHOLDER_SUFFIX: &str = "— à renseigner avant la mise en
 /// deliberately one until the public launch — but to pin the exact set, so no
 /// new one slips in unnoticed and so filling a real value has to go through the
 /// test that lists them.
+///
+/// Brackets are scanned flat, not nested: in `[a [b — <suffix>]` the label comes
+/// out as `a [b`, because the scan pairs the first `[` with the next `]`. No
+/// shipped document nests them, and a wrong label still trips the pinning test
+/// rather than passing silently.
 pub fn release_placeholders(md: &str) -> Vec<String> {
-    let flat = md.split_whitespace().collect::<Vec<_>>().join(" ");
+    let flat = flatten(md);
     let mut out = Vec::new();
     let mut rest = flat.as_str();
     // `[` and `]` are ASCII, so every index below lands on a char boundary.
@@ -361,14 +366,24 @@ pub fn release_placeholders(md: &str) -> Vec<String> {
     out
 }
 
-/// Top-level directories of this repository: a token starting with one of them
-/// is a path, whatever it ends in.
-const REPO_DIRECTORIES: [&str; 6] = [
+/// Collapses every run of whitespace to one space. The RGPD documents are
+/// hard-wrapped at 76 columns, so a sentence — or a placeholder — spans lines in
+/// the source and no substring search over the raw text would find it.
+fn flatten(md: &str) -> String {
+    md.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Top-level directories of this repository (`git ls-tree -d origin/main`, plus
+/// the dot-directories it lists): a token starting with one of them is a path,
+/// whatever it ends in. Nested directories are deliberately absent — they are
+/// reached through their parent (`apps/api/migrations/…` starts with `apps/`).
+const REPO_DIRECTORIES: [&str; 7] = [
     "apps/",
     "docs/",
     "e2e/",
     "infra/",
-    "migrations/",
+    ".claude/",
+    ".githooks/",
     ".github/",
 ];
 
@@ -394,8 +409,12 @@ const TOKEN_TAIL: [char; 13] = [
 /// `docs/privacy-policy.md` used to look for `docs/` alone, so a cross-reference
 /// written `architecture.md` went unnoticed (#131).
 ///
-/// Endpoints (`POST /account/delete`) and absolute URLs are not paths and are
-/// left alone.
+/// An endpoint (`POST /account/delete`) has neither shape and is left alone.
+/// An **absolute URL is not exempt**: `https://example.org/rapport.json` ends in
+/// a source extension and is reported. The bias is deliberate — the caller is a
+/// test on a document that has no reason to link a `.json`, `.rs` or `.md` at
+/// all, and a guard that waved URLs through would wave through a link to this
+/// repository's own files on a forge.
 pub fn repo_path_references(md: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for raw in md.split_whitespace() {
@@ -678,7 +697,7 @@ mod tests {
     }
 
     #[test]
-    fn repo_path_references_leaves_endpoints_and_urls_alone() {
+    fn repo_path_references_leaves_endpoints_and_plain_urls_alone() {
         assert!(repo_path_references(
             "Demandez la suppression via `POST /account/delete` (Art. 17), ou écrivez à la \
              [CNIL](https://www.cnil.fr/fr/adresser-une-plainte)."
@@ -686,13 +705,40 @@ mod tests {
         .is_empty());
     }
 
+    #[test]
+    fn repo_path_references_does_not_exempt_a_url_ending_in_a_source_extension() {
+        // Not an oversight: the caller is a guard on a document that has no
+        // business linking a `.json`/`.rs`/`.md` anywhere, including on a forge.
+        assert_eq!(
+            repo_path_references("Voir https://example.org/rapport.json"),
+            vec!["https://example.org/rapport.json".to_string()]
+        );
+    }
+
     // -- the shipped documents -----------------------------------------------
 
-    /// `docs/registre-traitements.md` and `docs/architecture.md` name the same
-    /// controller as the policy. Pinned together so filling one and forgetting
-    /// the others can't happen silently (#131).
+    /// The values the RGPD documents still leave to fill, in reading order.
+    /// Single source of truth for the two tests below: the day the controller's
+    /// name and address are filled in for the public launch, this list empties,
+    /// and every assertion built on it has to be looked at.
+    fn pending_release_values() -> Vec<String> {
+        vec![
+            "nom du responsable de traitement".to_string(),
+            "adresse de contact".to_string(),
+        ]
+    }
+
+    /// `docs/registre-traitements.md` carries the same placeholders as the
+    /// policy, and `docs/architecture.md` announces that they exist without
+    /// carrying any of its own. The three are pinned as **one** state, so
+    /// filling one document and leaving another stale can't happen silently
+    /// (#131) — `docs/v2-deployment.md` #16 sends the future author here.
     #[test]
     fn the_internal_rgpd_documents_carry_the_same_placeholders() {
+        let policy = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/privacy-policy.md"
+        ));
         let registre = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../docs/registre-traitements.md"
@@ -701,15 +747,25 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../docs/architecture.md"
         ));
+        let pending = pending_release_values();
+        assert_eq!(release_placeholders(policy), pending);
+        assert_eq!(release_placeholders(registre), pending);
+        // architecture.md points at the placeholders, it holds none: a third one
+        // added there would otherwise never be filled.
+        assert_eq!(release_placeholders(architecture), Vec::<String>::new());
+        // …and it must stop announcing them the day the two documents above are
+        // filled, which is the day `pending` empties.
         assert_eq!(
-            release_placeholders(registre),
-            vec![
-                "nom du responsable de traitement".to_string(),
-                "adresse de contact".to_string(),
-            ]
+            flatten(architecture).contains(RELEASE_PLACEHOLDER_SUFFIX),
+            !pending.is_empty(),
+            "architecture.md and the two RGPD documents disagree on whether the \
+             controller's identity is still to be filled"
         );
-        assert!(architecture.contains(RELEASE_PLACEHOLDER_SUFFIX));
-        for (name, md) in [("registre", registre), ("architecture", architecture)] {
+        for (name, md) in [
+            ("the policy", policy),
+            ("the registre", registre),
+            ("architecture.md", architecture),
+        ] {
             assert!(
                 !md.contains("placeholder_name"),
                 "{name} still names the controller `placeholder_name`"
@@ -748,14 +804,8 @@ mod tests {
         );
         // #131: the controller's identity and contact address are deliberately
         // still placeholders, and exactly these two. Filling them in for the
-        // public launch has to come through this list.
-        assert_eq!(
-            release_placeholders(md),
-            vec![
-                "nom du responsable de traitement".to_string(),
-                "adresse de contact".to_string(),
-            ]
-        );
+        // public launch has to come through `pending_release_values`.
+        assert_eq!(release_placeholders(md), pending_release_values());
         assert!(!md.contains("placeholder_name"));
         // Both placeholders survive the renderer as readable text rather than
         // being swallowed as a link label.

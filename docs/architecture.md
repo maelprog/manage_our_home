@@ -216,11 +216,13 @@ remplacement) de l'isolation applicative ci-dessous.
    légale (ToS) tant que ce n'est pas justifié.
 3. **Responsable RGPD (data controller) : le porteur du projet, personne
    physique et contributeur unique.** Son nom et son adresse de contact
-   restent des placeholders `[… — à renseigner avant la mise en ligne]` dans
-   `docs/privacy-policy.md` (servi aux utilisateurs par `GET /privacy-policy`)
-   et `docs/registre-traitements.md` ; ils seront renseignés au moment de
-   l'ouverture publique — voir `docs/v2-deployment.md` #16. Il porte
-   l'ensemble des rôles nécessaires au déploiement :
+   restent à renseigner : `docs/privacy-policy.md` (servi aux utilisateurs par
+   `GET /privacy-policy`) et `docs/registre-traitements.md` portent à leur
+   place, entre crochets, un libellé suivi de « — à renseigner avant la mise
+   en ligne ». Ils seront renseignés au moment de l'ouverture publique, et
+   cette phrase disparaîtra avec eux — procédure et forme exacte dans
+   `docs/v2-deployment.md` #16. Il porte l'ensemble des rôles nécessaires au
+   déploiement :
    - **Data controller / responsable de traitement** — responsable du
      registre des traitements, de la politique de confidentialité, et des
      décisions sur la base légale de chaque catégorie de données.
