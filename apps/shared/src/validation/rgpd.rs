@@ -560,6 +560,14 @@ mod tests {
         assert!(html.contains("<li>"));
         assert!(html.contains("<strong>Droit à l'effacement (Art. 17)</strong>"));
         assert!(html.contains("<code>GET /account/export</code>"));
+        // Art. 13 mentions (#133): the six rights, not four, and the right to
+        // lodge a complaint with the CNIL as a working link.
+        assert!(html.contains("<strong>Droit d'opposition (Art. 21)</strong>"));
+        assert!(html.contains("<strong>Droit à la limitation (Art. 18)</strong>"));
+        assert!(html.contains("<a href=\"https://www.cnil.fr/fr/adresser-une-plainte\">"));
+        // The reader of `/privacy-policy` cannot open a repository path: the
+        // document must stand on its own.
+        assert!(!md.contains("docs/"), "the policy points at a repo file");
         // No raw markdown markers survive into the output.
         assert!(!html.contains("**"));
         assert!(!html.contains(" | "));

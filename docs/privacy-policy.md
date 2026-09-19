@@ -5,8 +5,7 @@ Dernière mise à jour : 2026-09-19.
 ## Qui est responsable de vos données ?
 
 Manage Our Home est un projet auto-hébergé, développé et exploité par
-`placeholder_name`, qui porte l'ensemble des rôles RGPD nécessaires
-(voir `docs/architecture.md`, "Questions résolues" #3) :
+`placeholder_name`, qui porte l'ensemble des rôles RGPD nécessaires :
 
 - **Responsable de traitement (data controller)** : responsable du registre
   des traitements, de la présente politique, et de la base légale de chaque
@@ -21,9 +20,10 @@ Manage Our Home est un projet auto-hébergé, développé et exploité par
 
 ## Quelles données sont collectées, et pourquoi
 
-Voir `docs/registre-traitements.md` pour le détail complet par catégorie de
-donnée (base légale, finalité, durée de conservation, destinataires). En
-résumé :
+Le tableau ci-dessous donne, pour chaque catégorie de données, ce qui est
+collecté et la base légale du traitement. La durée de conservation de
+chaque catégorie est détaillée plus bas, dans « Combien de temps vos
+données sont-elles conservées ? ».
 
 | Catégorie | Exemples | Base légale |
 |---|---|---|
@@ -59,9 +59,8 @@ possibles sont :
   arrière-plan.
 - **Fournisseur d'envoi d'email transactionnel** (vérification d'email,
   réinitialisation de mot de passe, invitation à un groupe, rappel
-  d'événement) : un relais SMTP basé en UE
-  (voir `docs/architecture.md`), sous-traitant documenté au registre des
-  traitements.
+  d'événement) : un relais SMTP basé dans l'Union européenne, sous-traitant
+  du responsable de traitement, inscrit à son registre des traitements.
 
 Aucune autre donnée ne quitte le serveur applicatif. Les suggestions de
 recettes sont calculées sur le serveur par des règles fixes (ingrédients en
@@ -70,16 +69,78 @@ n'est appelé, ni sur le serveur ni chez un tiers.
 
 ## Combien de temps vos données sont-elles conservées ?
 
-- **Compte actif** : tant que le compte existe.
+Le serveur n'efface rien à date fixe en dehors des cas indiqués
+ci-dessous : quand une ligne dit qu'une donnée « reste », aucune
+suppression automatique n'est en place aujourd'hui.
+
+- **Compte** (email, mot de passe haché, nom affiché, appartenance aux
+  groupes et rôle) : tant que le compte existe, puis 30 jours de grâce
+  après une demande de suppression, à l'issue desquels le compte est
+  anonymisé (voir ci-dessous).
+- **Sessions de connexion** : une session vaut 30 jours. Sa trace (dates
+  de création, de dernière activité, d'expiration et de révocation) reste
+  après l'expiration ou la déconnexion, jusqu'à l'anonymisation du compte.
+- **Connexion avec Google** : l'identifiant, l'email et le nom de votre
+  profil Google et le jeton de rafraîchissement sont conservés jusqu'à
+  l'anonymisation du compte, qui les supprime.
+- **Vérification d'email et réinitialisation du mot de passe** : un jeton
+  est valable 24 heures et ne sert qu'une fois. Sa trace (jeton, compte
+  concerné, dates) reste ensuite en base sans limite de durée, y compris
+  après l'anonymisation du compte.
+- **Invitations** : un lien d'invitation est valable 7 jours et ne sert
+  qu'une fois. L'invitation, adresse email de la personne invitée comprise,
+  reste ensuite jusqu'à la suppression du groupe.
+- **Protection de la connexion** : gardée en mémoire du serveur, jamais en
+  base, et perdue à chaque redémarrage du serveur. Une connexion réussie
+  efface aussitôt les tentatives du même couple (adresse, email). Sinon,
+  les tentatives cessent de compter au bout de 15 minutes (ou à la fin d'un
+  blocage de 15 minutes), mais rien ne les efface à heure fixe : elles ne
+  sont retirées de la mémoire qu'à l'arrivée d'une tentative avec un autre
+  email depuis la même adresse, quand le serveur suit déjà 10 000 couples,
+  ou au redémarrage. Sans nouvelle tentative, elles restent donc en mémoire
+  jusqu'au redémarrage du serveur.
+- **Agenda, stocks, recettes, liste de courses, budget, messagerie** : tant
+  que le contenu n'est pas supprimé, et au plus tant que le groupe existe —
+  la suppression d'un groupe supprime son contenu. Quand le compte de son
+  auteur est anonymisé, le contenu reste dans le groupe sans être rattaché
+  à son identité. Le fichier d'une pièce jointe que le serveur a reçu sans
+  pouvoir l'enregistrer est supprimé par un balayage quotidien moins de
+  48 heures après son dépôt, tant que le serveur tourne et que ce balayage
+  est activé dans sa configuration.
+- **Rappels d'événements** : jusqu'à la suppression du rappel ou de
+  l'événement ; l'historique des envois (heure, statut, tentatives) part
+  avec eux.
+- **Assignations d'événements** : tant que l'événement existe et que
+  l'assignation n'est pas retirée ; elle reste après votre départ du groupe
+  et après l'anonymisation de votre compte.
+- **Date de dernière lecture de la messagerie** : tant que le groupe
+  existe ; elle reste après votre départ du groupe et après
+  l'anonymisation de votre compte.
+- **Import calendrier** : l'URL du flux et les événements importés restent
+  jusqu'à la suppression de l'import par un administrateur ou le
+  propriétaire du groupe, ou jusqu'à la suppression du groupe. Les
+  événements importés restent après la suppression de l'import, sauf si
+  leur suppression est demandée en même temps. L'anonymisation d'un compte
+  ne supprime ni l'import ni ses événements.
+- **Logs d'audit** : sans limite de durée, le journal n'est jamais purgé.
+- **Export de vos données** : généré à la demande et renvoyé directement,
+  il n'est pas conservé sur le serveur.
+
+### Suppression de votre compte
+
 - **Suppression de compte (droit à l'effacement, Art. 17)** : demandez la
   suppression via `POST /account/delete`. Un délai de grâce de 30 jours
   s'applique (annulable via `POST /account/delete/cancel`), après quoi un
   job de purge anonymise définitivement votre compte (identifiants de
-  connexion supprimés, ligne `users` anonymisée). Le contenu que vous avez
-  créé au sein d'un groupe familial (messages, événements, etc.) reste
-  visible pour les autres membres de ce groupe, mais n'est plus rattaché à
-  votre identité — comportement documenté et intentionnel, cohérent avec le
-  fonctionnement d'un espace familial partagé.
+  connexion et sessions supprimés, email et nom remplacés). Le contenu que
+  vous avez créé au sein d'un groupe familial (messages, événements, etc.)
+  reste visible pour les autres membres de ce groupe, mais n'est plus
+  rattaché à votre identité — comportement documenté et intentionnel,
+  cohérent avec le fonctionnement d'un espace familial partagé.
+- L'anonymisation ne supprime pas les traces de jetons de vérification et
+  de réinitialisation, les invitations que vous avez émises, votre date de
+  dernière lecture de la messagerie ni vos assignations d'événements :
+  elles restent rattachées au compte anonymisé.
 - Un compte ne peut pas être supprimé tant qu'il est seul propriétaire
   d'un groupe : transférez la propriété (ou supprimez le groupe) au
   préalable.
@@ -88,9 +149,34 @@ n'est appelé, ni sur le serveur ni chez un tiers.
 
 - **Droit d'accès et de portabilité (Art. 15/20)** : `GET /account/export`
   retourne l'intégralité des données que vous avez créées, au format JSON.
-- **Droit à l'effacement (Art. 17)** : voir ci-dessus.
+- **Droit à l'effacement (Art. 17)** : voir « Suppression de votre
+  compte » ci-dessus.
 - **Droit de rectification** : modifiable directement depuis les paramètres
   du compte / du contenu concerné.
+- **Droit à la limitation (Art. 18)** : vous pouvez demander que vos
+  données soient conservées sans être utilisées, notamment le temps de
+  vérifier leur exactitude ou le bien-fondé d'une opposition, ou plutôt que
+  d'être effacées. Aucun écran ne le propose : adressez la demande au
+  responsable de traitement.
+- **Droit d'opposition (Art. 21)** : vous pouvez vous opposer, pour des
+  raisons tenant à votre situation particulière, aux traitements fondés sur
+  l'intérêt légitime (invitations, protection de la connexion, logs
+  d'audit). Le traitement cesse, sauf motifs légitimes et impérieux qui
+  prévalent sur vos intérêts, ou nécessité pour la constatation,
+  l'exercice ou la défense de droits en justice. Adressez la demande au
+  responsable de traitement.
+- **Retrait du consentement (Art. 7)** : l'import calendrier repose sur le
+  consentement de la personne qui fournit l'URL du flux. Un administrateur
+  ou le propriétaire du groupe peut supprimer l'import à tout moment ; le
+  retrait ne remet pas en cause les imports déjà faits.
+- **Directives après le décès** (art. 85 de la loi Informatique et
+  Libertés) : vous pouvez définir des directives sur la conservation,
+  l'effacement et la communication de vos données après votre décès, et
+  les adresser au responsable de traitement.
+- **Réclamation auprès de la CNIL (Art. 77)** : si vous estimez que le
+  traitement de vos données ne respecte pas la réglementation, vous pouvez
+  adresser une réclamation à la Commission nationale de l'informatique et
+  des libertés : [cnil.fr/fr/adresser-une-plainte](https://www.cnil.fr/fr/adresser-une-plainte).
 - **Contact** : pour toute question ou exercice de droit non couvert par les
   endpoints en libre-service ci-dessus, contactez le responsable de
   traitement (voir en-tête de ce document).
@@ -98,7 +184,7 @@ n'est appelé, ni sur le serveur ni chez un tiers.
 ## Sécurité
 
 Les données sensibles (contenu des messages, jetons OAuth, URL de flux
-calendrier) sont chiffrées au repos (`pgcrypto`), en plus du chiffrement au
-niveau disque. L'isolation entre familles est appliquée au niveau base de
-données (Row-Level Security), pas seulement au niveau applicatif. Voir
-`docs/architecture.md` pour le détail des mesures techniques (Art. 32).
+calendrier) sont chiffrées dans la base de données (`pgcrypto`) ; les mots
+de passe n'y sont conservés que hachés. L'isolation entre familles est
+appliquée au niveau base de données (Row-Level Security), pas seulement au
+niveau applicatif.
