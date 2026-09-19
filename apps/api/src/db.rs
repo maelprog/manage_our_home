@@ -45,9 +45,9 @@ const LEFT_IN_TRANSACTION: &str = "SELECT transaction_timestamp() <> statement_t
 /// caller's tracing span explicitly rather than by being its child.
 ///
 /// The crate's `clippy.toml` refuses a direct `begin` anywhere else (#191).
-#[allow(clippy::disallowed_methods)]
 pub async fn begin(pool: &PgPool) -> Result<Transaction<'static, Postgres>, sqlx::Error> {
     let pool = pool.clone();
+    #[allow(clippy::disallowed_methods)]
     let task = tokio::spawn(async move { pool.begin().await }.in_current_span());
     match task.await {
         Ok(result) => result,

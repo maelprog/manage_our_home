@@ -12,4 +12,7 @@ disallowed-methods = [
     { path = "sqlx::Acquire::begin", reason = "use `db::begin`: a direct `BEGIN` cancelled mid-flight leaves a transaction open on a pooled connection (#188)" },
     { path = "sqlx::Connection::begin", reason = "use `db::begin`: a direct `BEGIN` cancelled mid-flight leaves a transaction open on a pooled connection (#188)" },
     { path = "sqlx::Connection::begin_with", reason = "use `db::begin`: a direct `BEGIN` cancelled mid-flight leaves a transaction open on a pooled connection (#188)" },
+    # `#[doc(hidden)]` but public: what `Pool::begin` and `Connection::begin`
+    # call underneath.
+    { path = "sqlx::Transaction::begin", reason = "use `db::begin`: a direct `BEGIN` cancelled mid-flight leaves a transaction open on a pooled connection (#188)" },
 ]
