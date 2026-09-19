@@ -4,6 +4,11 @@
 # their own directory.
 services:
   postgres:
+    # Deliberately left on the major series, not pinned to a patch release
+    # (#160): 16 is the contract the migrations are played against and the
+    # series the ci.yml jobs use, and PostgreSQL minor releases are fixes,
+    # often security ones, that a patch pin would force us to chase by hand.
+    # Changing series goes through e2e/scripts/lib/image-pins.ts.
     image: postgres:16
     restart: unless-stopped
     environment:
@@ -57,14 +62,17 @@ services:
   # verification/reset/invitation emails land in the web UI at
   # http://localhost:8025 instead of going through a real relay.
   mailpit:
-    image: axllent/mailpit:latest
+    # Pinned rather than `latest` (#160), like every image here except
+    # postgres and caddy: e2e/scripts/lib/image-pins.ts enforces it.
+    image: axllent/mailpit:v1.31.2
     profiles: ["dev"]
     restart: unless-stopped
     ports:
       - "8025:8025"
 
+  # Pinned rather than `latest` (#160), see mailpit above.
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.34.2
     restart: unless-stopped
     volumes:
       - ollama_data:/root/.ollama
@@ -145,6 +153,10 @@ services:
       API_PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}/api
       WEB_BIND_ADDR: 0.0.0.0:3000
 
+  # Deliberately left on the major series (#160): Caddy is the
+  # Internet-facing frontend (TLS, headers), and picking up its fixes without
+  # a manual bump outweighs patch-level reproducibility. Changing series goes
+  # through e2e/scripts/lib/image-pins.ts.
   caddy:
     image: caddy:2
     restart: unless-stopped

@@ -151,3 +151,81 @@ export function minioPinViolations(files: ReadonlyArray<SourceFile>): string[] {
 
   return violations;
 }
+
+// ---------------------------------------------------------------------------
+// Tags des autres images du compose (#160).
+//
+// Le garde-fou ci-dessus ne voit que MinIO. `infra/docker-compose.yml`
+// laissait `axllent/mailpit` et `ollama/ollama` sur `latest` : la même
+// fragilité, sur les postes de développement plutôt qu'en CI (le compose ne
+// tourne pas en CI). Chaque ligne `image:` du compose doit donc porter une
+// version complète (`1.2.3`, `v1.2.3`, suffixe toléré) ou un horodatage
+// `RELEASE.*` MinIO, avec ou sans digest.
+//
+// Deux exceptions, exactes et voulues, sur leur série majeure :
+//   - `postgres:16` : une série majeure est le contrat de compatibilité sur
+//     lequel les migrations sont jouées, c'est aussi la série des jobs de
+//     `ci.yml`, et les versions mineures de PostgreSQL sont des correctifs,
+//     souvent de sécurité, qu'un pin au patch près obligerait à suivre à la
+//     main ;
+//   - `caddy:2` : c'est le frontal exposé à Internet (TLS, en-têtes) ; y
+//     recevoir les correctifs sans bump manuel pèse plus que la
+//     reproductibilité au patch près.
+// Changer de série (`postgres:17`) passe par cette table, pas par un simple
+// diff du compose.
+//
+// Limites : lecture textuelle des lignes `image:` (pas un parseur YAML) ; une
+// image passée dans une variable (`image: ${X}`) est refusée comme non
+// épinglée, ce qui est le comportement voulu. Le fichier `ci.yml` n'est pas
+// couvert ici : hors MinIO, il n'y référence que `postgres:16`.
+
+const MAJOR_SERIES_ALLOWED: ReadonlyArray<string> = ["postgres:16", "caddy:2"];
+
+const FULL_VERSION = /^v?\d+\.\d+\.\d+(?:[-+.][\w.-]+)?$/;
+
+// `image: <référence>`, guillemets simples ou doubles tolérés.
+const IMAGE_LINE = /^\s*image:\s*["']?([^\s"'#]+)/;
+
+/**
+ * Rend la liste des violations (vide si la porte est tenue) pour les lignes
+ * `image:` d'un fichier compose. Un fichier sans aucune ligne `image:` est
+ * lui-même une violation.
+ */
+export function composeTagViolations(file: SourceFile): string[] {
+  const violations: string[] = [];
+  let seen = 0;
+
+  file.text.split("\n").forEach((line, index) => {
+    if (line.trimStart().startsWith("#")) return;
+    const m = line.match(IMAGE_LINE);
+    if (!m) return;
+    seen += 1;
+    const raw = m[1];
+    const ref = raw.split("@")[0];
+    const lastSlash = ref.lastIndexOf("/");
+    const colon = ref.indexOf(":", lastSlash + 1);
+    const tag = colon === -1 ? undefined : ref.slice(colon + 1);
+    const ok =
+      tag !== undefined &&
+      (FULL_VERSION.test(tag) ||
+        PINNED_TAG.test(tag) ||
+        MAJOR_SERIES_ALLOWED.includes(ref));
+    if (!ok) {
+      violations.push(
+        `${file.path}:${index + 1} : \`${raw}\` — tag non épinglé ` +
+          `(${tag === undefined ? "aucun tag" : `« ${tag} »`}). Attendu : une ` +
+          "version complète (1.2.3) ou, par exception, " +
+          `${MAJOR_SERIES_ALLOWED.join(" / ")}. Un tag flottant laisse ` +
+          "l'image bouger sous une pile existante sans rien signaler.",
+      );
+    }
+  });
+
+  if (seen === 0) {
+    violations.push(
+      `${file.path} : aucune ligne \`image:\` trouvée. Le garde-fou ne peut ` +
+        "rien prouver sur des images qu'il ne voit pas.",
+    );
+  }
+  return violations;
+}

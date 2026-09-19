@@ -4,7 +4,11 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { minioPinViolations, type SourceFile } from "./image-pins.ts";
+import {
+  composeTagViolations,
+  minioPinViolations,
+  type SourceFile,
+} from "./image-pins.ts";
 
 // ---------------------------------------------------------------------------
 // Garde-fou des images MinIO (#159).
@@ -173,4 +177,99 @@ test("refuse le vrai docker-compose.yml repassé en latest", () => {
   assert.notEqual(mutated, compose.text);
   const violations = minioPinViolations([ci, { ...compose, text: mutated }]);
   assert.ok(violations.length >= 1);
+});
+
+// ---------------------------------------------------------------------------
+// Tags des autres images du compose (#160).
+//
+// Le garde-fou ci-dessus ne voit que minio/minio et minio/mc. Les autres
+// images de `infra/docker-compose.yml` portaient la même fragilité : `mailpit`
+// et `ollama` sur `latest`. Ces cas-ci exigent de chaque `image:` du compose
+// une version complète, sauf `postgres:16` et `caddy:2`, laissés sur leur
+// série majeure par choix (motif dans `image-pins.ts`).
+// ---------------------------------------------------------------------------
+
+const COMPOSE_TAGS_OK =
+  "services:\n" +
+  "  postgres:\n    image: postgres:16\n" +
+  `  minio:\n    image: quay.io/minio/minio:${SERVER}\n` +
+  "  mailpit:\n    image: axllent/mailpit:v1.31.2\n" +
+  "  ollama:\n    image: ollama/ollama:0.34.2\n" +
+  "  api:\n    build:\n      context: ..\n" +
+  "  caddy:\n    image: caddy:2\n";
+
+function composeFile(text: string): SourceFile {
+  return { path: COMPOSE_PATH, text };
+}
+
+test("le vrai docker-compose.yml n'a aucune image sur un tag flottant", () => {
+  assert.deepEqual(composeTagViolations(realFiles()[1]), []);
+});
+
+test("un compose conforme passe : versions complètes, RELEASE MinIO, postgres:16 et caddy:2", () => {
+  assert.deepEqual(composeTagViolations(composeFile(COMPOSE_TAGS_OK)), []);
+});
+
+test("refuse une image sur latest, avec le fichier et la ligne", () => {
+  const text = COMPOSE_TAGS_OK.replace(
+    "axllent/mailpit:v1.31.2",
+    "axllent/mailpit:latest",
+  );
+  const violations = composeTagViolations(composeFile(text));
+  assert.equal(violations.length, 1);
+  assert.match(violations[0], /docker-compose\.yml:7 /);
+  assert.match(violations[0], /axllent\/mailpit:latest/);
+});
+
+test("refuse une image sans tag (latest implicite)", () => {
+  const text = COMPOSE_TAGS_OK.replace("ollama/ollama:0.34.2", "ollama/ollama");
+  const violations = composeTagViolations(composeFile(text));
+  assert.equal(violations.length, 1);
+  assert.match(violations[0], /ollama\/ollama/);
+});
+
+test("refuse une série majeure hors de postgres:16 et caddy:2", () => {
+  const text = COMPOSE_TAGS_OK.replace(
+    "axllent/mailpit:v1.31.2",
+    "axllent/mailpit:v1",
+  );
+  assert.equal(composeTagViolations(composeFile(text)).length, 1);
+});
+
+test("refuse pour postgres ou caddy une autre série que celle retenue", () => {
+  // postgres:16 est aussi la série des jobs de la CI : changer de série se
+  // fait ici, en connaissance de cause, pas au détour d'un diff du compose.
+  const text = COMPOSE_TAGS_OK.replace("postgres:16", "postgres:17").replace(
+    "caddy:2",
+    "caddy:latest",
+  );
+  assert.equal(composeTagViolations(composeFile(text)).length, 2);
+});
+
+test("accepte un digest derrière une version complète et ignore les commentaires", () => {
+  const digest = "@sha256:" + "a".repeat(64);
+  const text =
+    "# image: ollama/ollama:latest\n" +
+    COMPOSE_TAGS_OK.replace(
+      "ollama/ollama:0.34.2",
+      `ollama/ollama:0.34.2${digest}`,
+    );
+  assert.deepEqual(composeTagViolations(composeFile(text)), []);
+});
+
+test("refuse un compose où aucune image n'est trouvée", () => {
+  // Plancher : sans lui, sortir les images des lignes `image:` rendrait la
+  // porte verte sur zéro référence.
+  const text = "services:\n  api:\n    build: ..\n";
+  assert.equal(composeTagViolations(composeFile(text)).length, 1);
+});
+
+test("refuse le vrai docker-compose.yml avec mailpit repassé en latest", () => {
+  const real = realFiles()[1];
+  const mutated = real.text.replace(
+    /axllent\/mailpit:\S+/,
+    "axllent/mailpit:latest",
+  );
+  assert.notEqual(mutated, real.text);
+  assert.equal(composeTagViolations({ ...real, text: mutated }).length, 1);
 });
