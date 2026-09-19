@@ -325,6 +325,180 @@ mod tests {
         assert!(!last_seen_needs_refresh(now, later));
     }
 
+    /// `src` with its comments — doc comments included — blanked out, so a
+    /// comment explaining what not to write does not trip a textual check
+    /// (#240). String, raw-string and char literals are copied as they are:
+    /// a `//` inside one opens no comment, and a quote inside a char literal
+    /// opens no string. A lifetime (`'a`) is not a char literal.
+    fn code_only(src: &str) -> String {
+        let c: Vec<char> = src.chars().collect();
+        let starts = |k: usize| k == 0 || !(c[k - 1].is_alphanumeric() || c[k - 1] == '_');
+        let mut out = String::with_capacity(src.len());
+        let mut i = 0;
+        while i < c.len() {
+            let at = |k: usize| c.get(k).copied();
+            match c[i] {
+                '/' if at(i + 1) == Some('/') => {
+                    while i < c.len() && c[i] != '\n' {
+                        i += 1;
+                    }
+                }
+                '/' if at(i + 1) == Some('*') => {
+                    let mut depth = 0;
+                    while i < c.len() {
+                        if c[i] == '/' && at(i + 1) == Some('*') {
+                            depth += 1;
+                            i += 2;
+                        } else if c[i] == '*' && at(i + 1) == Some('/') {
+                            depth -= 1;
+                            i += 2;
+                            if depth == 0 {
+                                break;
+                            }
+                        } else {
+                            i += 1;
+                        }
+                    }
+                    out.push(' ');
+                }
+                '"' => {
+                    let start = i;
+                    i += 1;
+                    while i < c.len() && c[i] != '"' {
+                        i += if c[i] == '\\' { 2 } else { 1 };
+                    }
+                    i = (i + 1).min(c.len());
+                    out.extend(&c[start..i]);
+                }
+                // `r"…"`, `r#"…"#`, `br"…"`: an `r` that starts a token.
+                'r' if starts(i) || (c[i - 1] == 'b' && starts(i - 1)) => {
+                    let mut j = i + 1;
+                    while at(j) == Some('#') {
+                        j += 1;
+                    }
+                    if at(j) != Some('"') {
+                        out.push('r');
+                        i += 1;
+                        continue;
+                    }
+                    let hashes = j - i - 1;
+                    let start = i;
+                    i = j + 1;
+                    while i < c.len()
+                        && !(c[i] == '"' && (1..=hashes).all(|h| at(i + h) == Some('#')))
+                    {
+                        i += 1;
+                    }
+                    i = (i + 1 + hashes).min(c.len());
+                    out.extend(&c[start..i]);
+                }
+                '\'' => {
+                    let start = i;
+                    if at(i + 1) == Some('\\') {
+                        i += 3;
+                        while i < c.len() && c[i] != '\'' {
+                            i += 1;
+                        }
+                        i = (i + 1).min(c.len());
+                    } else if at(i + 2) == Some('\'') {
+                        i += 3;
+                    } else {
+                        i += 1;
+                    }
+                    out.extend(&c[start..i]);
+                }
+                ch => {
+                    out.push(ch);
+                    i += 1;
+                }
+            }
+        }
+        out
+    }
+
+    fn names_the_session_cookie(src: &str) -> bool {
+        let code = code_only(src);
+        code.contains("SESSION_COOKIE_NAME")
+            || code.contains("\"session_id")
+            || code.contains("session_id=")
+    }
+
+    #[test]
+    fn line_and_doc_comments_are_dropped() {
+        for src in [
+            "let a = 1; // jar.get(SESSION_COOKIE_NAME)\nlet b = 2;",
+            "/// Never `.get(SESSION_COOKIE_NAME)` here.\nfn f() {}",
+            "//! Reads \"session_id\" nowhere.\nfn f() {}",
+            "// strip_prefix(\"session_id=\")\nfn f() {}",
+        ] {
+            let code = code_only(src);
+            assert!(!names_the_session_cookie(src), "{src:?} -> {code:?}");
+            assert!(code.contains("fn f() {}") || code.contains("let b = 2;"));
+        }
+    }
+
+    #[test]
+    fn block_comments_are_dropped_nested_ones_included() {
+        let src = "let a = /* x /* SESSION_COOKIE_NAME */ \"session_id */ 1;\n/** session_id= */ fn f() {}";
+        let code = code_only(src);
+        assert!(!names_the_session_cookie(src), "{code:?}");
+        assert!(code.contains("let a =") && code.contains(" 1;") && code.contains("fn f() {}"));
+    }
+
+    #[test]
+    fn code_is_still_seen_after_stripping() {
+        for src in [
+            "let k = SESSION_COOKIE_NAME;",
+            "jar.get(\"session_id\")",
+            "h.strip_prefix(\"session_id=\")",
+        ] {
+            assert!(names_the_session_cookie(src), "{src:?}");
+        }
+    }
+
+    /// A `//` or `/*` inside a literal does not open a comment, so the code
+    /// that follows it on the line is still read.
+    #[test]
+    fn comment_markers_inside_literals_are_not_comments() {
+        for src in [
+            "let u = \"http://x\"; let k = SESSION_COOKIE_NAME;",
+            "let u = \"a /* b\"; let k = SESSION_COOKIE_NAME; // */",
+            "let u = \"a\\\"// b\"; let k = SESSION_COOKIE_NAME;",
+            "let u = \"a\\\\\"; let k = SESSION_COOKIE_NAME; // \"",
+            "let u = r#\"a \" // b\"#; let k = SESSION_COOKIE_NAME;",
+            "let u = br\"//\"; let k = SESSION_COOKIE_NAME;",
+            "let c = '/'; let d = '/'; let k = SESSION_COOKIE_NAME;",
+        ] {
+            assert!(
+                names_the_session_cookie(src),
+                "{src:?} -> {:?}",
+                code_only(src)
+            );
+        }
+    }
+
+    /// A quote in a char literal does not open a string, and a lifetime is
+    /// not a char literal: the comment after either is still dropped.
+    #[test]
+    fn char_literals_and_lifetimes_do_not_hide_a_comment() {
+        for src in [
+            "let q = '\"'; // SESSION_COOKIE_NAME",
+            "let q = b'\"'; // SESSION_COOKIE_NAME",
+            "let q = '\\''; let r = '\"'; // SESSION_COOKIE_NAME",
+            "let q = '\\u{22}'; // \"session_id",
+            "fn f<'a>(x: &'a str) -> &'a str { x } // SESSION_COOKIE_NAME \"",
+        ] {
+            assert!(
+                !names_the_session_cookie(src),
+                "{src:?} -> {:?}",
+                code_only(src)
+            );
+        }
+        assert!(names_the_session_cookie(
+            "fn f<'a>(x: &'a str) -> &'a str { SESSION_COOKIE_NAME }"
+        ));
+    }
+
     fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
@@ -353,6 +527,10 @@ mod tests {
     /// the start of a string literal, or as `session_id=`. Parsing the
     /// `Cookie` header by hand (`strip_prefix("session_id=")`) trips it too.
     ///
+    /// #240: comments are left out of the search (`code_only`), so a doc
+    /// comment explaining why not to read the cookie does not trip it.
+    /// String literals are kept: that is where the value lives.
+    ///
     /// This check is textual, so it catches slips, not deliberate
     /// workarounds. It does not see a key spelled another way in the source
     /// (`"session\x5fid"`, `concat!`, `format!`). It does not see a name
@@ -369,12 +547,7 @@ mod tests {
         let readers: Vec<_> = files
             .iter()
             .filter(|f| **f != this_file)
-            .filter(|f| {
-                let code = std::fs::read_to_string(f).unwrap();
-                code.contains("SESSION_COOKIE_NAME")
-                    || code.contains("\"session_id")
-                    || code.contains("session_id=")
-            })
+            .filter(|f| names_the_session_cookie(&std::fs::read_to_string(f).unwrap()))
             .collect();
         assert!(
             readers.is_empty(),
