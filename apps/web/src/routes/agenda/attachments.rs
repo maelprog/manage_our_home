@@ -44,21 +44,30 @@ pub async fn upload(
         }
     };
 
-    // Pull the single `file` field out of the multipart body.
+    // Pull the single `file` field out of the multipart body, into one
+    // buffer sized before the first chunk (#246): `Field::bytes` grows its
+    // buffer by doubling, which leaves a file at the 20 MiB cap in a
+    // 32 MiB allocation.
     let mut filename: Option<String> = None;
-    let mut bytes: Option<Vec<u8>> = None;
+    let mut bytes: Option<axum::body::Bytes> = None;
     loop {
         match multipart.next_field().await {
-            Ok(Some(field)) => {
+            Ok(Some(mut field)) => {
                 if field.name() == Some("file") {
                     filename = field.file_name().map(|s| s.to_string());
-                    match field.bytes().await {
-                        Ok(b) => bytes = Some(b.to_vec()),
-                        Err(_) => {
-                            return Redirect::to(&format!("{detail}?error=upload_failed"))
-                                .into_response()
+                    let mut file = Vec::with_capacity(file_buffer_capacity(&headers));
+                    loop {
+                        match field.chunk().await {
+                            Ok(Some(chunk)) => file.extend_from_slice(&chunk),
+                            Ok(None) => break,
+                            Err(_) => {
+                                return Redirect::to(&format!("{detail}?error=upload_failed"))
+                                    .into_response()
+                            }
                         }
                     }
+                    // Takes the `Vec` over, no copy.
+                    bytes = Some(axum::body::Bytes::from(file));
                 }
             }
             Ok(None) => break,
@@ -85,7 +94,9 @@ pub async fn upload(
 
     // Forward to apps/api as a fresh multipart request (backend re-sniffs).
     let cookie = agenda_cookie(&headers);
-    let part = reqwest::multipart::Part::bytes(bytes).file_name(filename);
+    // The buffer itself goes out, not a copy of it (#246).
+    let len = bytes.len() as u64;
+    let part = reqwest::multipart::Part::stream_with_length(bytes, len).file_name(filename);
     let form = reqwest::multipart::Form::new().part("file", part);
     let mut req = state.http.post(format!(
         "{}/groups/{}/events/{}/attachments",
@@ -132,6 +143,24 @@ pub async fn upload(
         return Redirect::to(&format!("{detail}?error={mapped}")).into_response();
     }
     Redirect::to(&format!("{detail}?error=upload_failed")).into_response()
+}
+
+/// How much room to make for the file before reading it (#246).
+///
+/// The declared body, which the file is part of, and never more than the
+/// route's body limit: a client declaring a gigabyte and sending ten bytes
+/// gets a buffer of the limit, not of its claim. Without a usable
+/// `Content-Length`, the limit itself — one buffer of it is what the
+/// upload gate budgets for each upload anyway.
+fn file_buffer_capacity(headers: &HeaderMap) -> usize {
+    let limit = manage_our_home_http_guard::MAX_UPLOAD_BODY_BYTES;
+    headers
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .map_or(limit, |declared| {
+            usize::try_from(declared).map_or(limit, |declared| declared.min(limit))
+        })
 }
 
 pub async fn download(
@@ -228,6 +257,47 @@ mod tests {
     use uuid::Uuid;
 
     use crate::state::AppState;
+
+    fn with_content_length(value: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_LENGTH, value.parse().unwrap());
+        headers
+    }
+
+    #[test]
+    fn the_file_buffer_is_sized_from_the_declared_body() {
+        assert_eq!(
+            super::file_buffer_capacity(&with_content_length("4096")),
+            4096
+        );
+    }
+
+    #[test]
+    fn a_declared_body_past_the_limit_gets_no_more_than_the_limit() {
+        let limit = manage_our_home_http_guard::MAX_UPLOAD_BODY_BYTES;
+        for declared in [limit + 1, 10 * limit] {
+            assert_eq!(
+                super::file_buffer_capacity(&with_content_length(&declared.to_string())),
+                limit
+            );
+        }
+        assert_eq!(
+            super::file_buffer_capacity(&with_content_length("18446744073709551616")),
+            limit
+        );
+    }
+
+    /// No length, or one that is not a number: the body limit is the only
+    /// bound known, and one buffer of it is what the gate counts anyway.
+    #[test]
+    fn an_undeclared_or_unreadable_length_gets_the_limit() {
+        let limit = manage_our_home_http_guard::MAX_UPLOAD_BODY_BYTES;
+        assert_eq!(super::file_buffer_capacity(&HeaderMap::new()), limit);
+        assert_eq!(
+            super::file_buffer_capacity(&with_content_length("beaucoup")),
+            limit
+        );
+    }
 
     const BOUNDARY: &str = "----manageourhomewebboundary";
     const EVENT: &str = "00000000-0000-0000-0000-0000000000e1";
@@ -574,5 +644,195 @@ mod tests {
         let resp = send(&web, upload(&session(), upload_of_size(size))).await;
         assert_redirected_to(&resp, "error=file_too_large");
         assert_eq!(web.api_received.load(Ordering::SeqCst), 0);
+    }
+
+    /// Heap bytes live on the current thread, and their high-water mark.
+    /// Counted per thread because the test binary runs tests side by side:
+    /// a `#[tokio::test]` runs on one thread, and so does everything it
+    /// spawns — the handler, reqwest's connection, the stand-in apps/api.
+    mod heap {
+        use std::alloc::{GlobalAlloc, Layout, System};
+        use std::cell::Cell;
+
+        struct Counting;
+
+        thread_local! {
+            static LIVE: Cell<isize> = const { Cell::new(0) };
+            static PEAK: Cell<isize> = const { Cell::new(0) };
+        }
+
+        fn add(delta: isize) {
+            let _ = LIVE.try_with(|live| {
+                let now = live.get() + delta;
+                live.set(now);
+                let _ = PEAK.try_with(|peak| peak.set(peak.get().max(now)));
+            });
+        }
+
+        fn size(n: usize) -> isize {
+            isize::try_from(n).unwrap_or(isize::MAX)
+        }
+
+        unsafe impl GlobalAlloc for Counting {
+            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+                let ptr = System.alloc(layout);
+                if !ptr.is_null() {
+                    add(size(layout.size()));
+                }
+                ptr
+            }
+
+            unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+                let ptr = System.alloc_zeroed(layout);
+                if !ptr.is_null() {
+                    add(size(layout.size()));
+                }
+                ptr
+            }
+
+            unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+                System.dealloc(ptr, layout);
+                add(-size(layout.size()));
+            }
+
+            unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+                let moved = System.realloc(ptr, layout, new_size);
+                if !moved.is_null() {
+                    add(size(new_size) - size(layout.size()));
+                }
+                moved
+            }
+        }
+
+        #[global_allocator]
+        static COUNTING: Counting = Counting;
+
+        /// Starts a new high-water mark from what is live now, and
+        /// returns it.
+        pub fn start() -> isize {
+            let live = LIVE.with(Cell::get);
+            PEAK.with(|peak| peak.set(live));
+            live
+        }
+
+        pub fn peak() -> isize {
+            PEAK.with(Cell::get)
+        }
+    }
+
+    /// A stand-in apps/api that reads no body until `holders` uploads have
+    /// reached it: until then, every one of them is held whole by apps/web.
+    async fn holding_api(holders: usize) -> String {
+        let barrier = Arc::new(tokio::sync::Barrier::new(holders));
+        let app = Router::new()
+            .route("/auth/me", get(me))
+            .route(
+                "/groups",
+                get(|| async {
+                    Json(serde_json::json!([{
+                        "group_id": Uuid::nil(),
+                        "name": "Foyer",
+                        "role": "owner",
+                    }]))
+                }),
+            )
+            .route(
+                "/groups/:gid/events/:eid/attachments",
+                post(move |body: Body| async move {
+                    barrier.wait().await;
+                    // Read and drop, chunk by chunk: what this side keeps
+                    // is not what is being measured.
+                    let mut body = body;
+                    while let Some(frame) = http_body_util::BodyExt::frame(&mut body).await {
+                        frame.unwrap();
+                    }
+                    StatusCode::CREATED
+                })
+                .layer(DefaultBodyLimit::disable()),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    /// `whole` as a browser's connection delivers it: in 16 KiB chunks,
+    /// each a view of `whole` rather than a copy of it.
+    fn in_chunks(whole: Bytes) -> Body {
+        let (mut tx, rx) = Channel::<Bytes>::new(4);
+        tokio::spawn(async move {
+            let mut at = 0;
+            while at < whole.len() {
+                let end = (at + 16 * 1024).min(whole.len());
+                if tx.send_data(whole.slice(at..end)).await.is_err() {
+                    return;
+                }
+                at = end;
+            }
+        });
+        Body::new(rx)
+    }
+
+    /// What the gate's arithmetic assumes (#246): a full pool of uploads,
+    /// each of a file at the cap, costs apps/web one copy of each body —
+    /// not a copy while reading plus a second one to relay it, nor the
+    /// slack of a buffer grown by doubling.
+    #[tokio::test]
+    async fn a_full_pool_of_uploads_at_the_cap_holds_one_copy_of_each() {
+        let pool = manage_our_home_http_guard::gate::GLOBAL_UPLOADS;
+        let router = crate::build_router(AppState {
+            http: reqwest::Client::new(),
+            api_internal_base_url: holding_api(pool).await,
+            api_public_base_url: "/api".into(),
+            body_read_limits: BodyReadLimits::PRODUCTION,
+            upload_gate: UploadGate::new(pool, 2),
+        });
+
+        let size = usize::try_from(MAX_ATTACHMENT_SIZE_BYTES).unwrap();
+        let mut whole = multipart_head().to_vec();
+        whole.extend(b"\x89PNG\r\n\x1a\n");
+        whole.resize(whole.len() + size - 8, 0);
+        whole.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+        let whole = Bytes::from(whole);
+
+        let baseline = heap::start();
+        let mut uploads = tokio::task::JoinSet::new();
+        for _ in 0..pool {
+            let mut request = upload(&session(), in_chunks(whole.clone()));
+            request
+                .headers_mut()
+                .insert(header::CONTENT_LENGTH, whole.len().into());
+            let router = router.clone();
+            uploads.spawn(async move { router.oneshot(request).await.unwrap() });
+        }
+        let answered = tokio::time::timeout(Duration::from_secs(60), async {
+            let mut answered = Vec::new();
+            while let Some(resp) = uploads.join_next().await {
+                answered.push(resp.unwrap());
+            }
+            answered
+        })
+        .await
+        .expect("the uploads did not all complete within 60 s");
+        let held = usize::try_from(heap::peak() - baseline).unwrap();
+
+        for resp in &answered {
+            assert_redirected_to(resp, "notice=attachment_added");
+        }
+        let mib = |n: usize| n as f64 / (1024.0 * 1024.0);
+        println!(
+            "{pool} uploads of {size} bytes: peak {:.1} MiB over the baseline",
+            mib(held)
+        );
+        // One body each, plus 1 MiB each for the buffers the relay passes
+        // through on both connections (about 0.6 MiB each when #246 was
+        // fixed). One copy too many is 20 MiB each, a doubled buffer 12.
+        let budget = pool * (manage_our_home_http_guard::MAX_UPLOAD_BODY_BYTES + 1024 * 1024);
+        assert!(
+            held <= budget,
+            "{:.1} MiB held, budget {:.1} MiB",
+            mib(held),
+            mib(budget)
+        );
     }
 }
