@@ -14,6 +14,10 @@
 //   - un tag qui n'est pas un horodatage `RELEASE.AAAA-MM-JJTHH-MM-SSZ` :
 //     `latest`, pas de tag, une série nue (`RELEASE`, `RELEASE.2025-09-07`),
 //     une variable (`${MINIO_TAG}`) ;
+//   - un horodatage suivi d'une variante (`.fips`, `-cpuv1`, `.hotfix.*`) :
+//     le tag est épinglé, mais ce n'est pas la release publiée ; l'accepter
+//     se décide ici, avec son propre message plutôt que « tag flottant » ;
+//   - un digest mal formé (`@sha256:zz`), au lieu de l'ignorer ;
 //   - deux tags différents pour la MÊME image, entre fichiers ou entre deux
 //     jobs d'un même fichier ;
 //   - un fichier fourni où l'une des deux images n'est plus trouvée : sans ce
@@ -50,14 +54,22 @@ const REGISTRY = "quay.io";
 // Un tag de release MinIO complet, à la seconde près.
 const PINNED_TAG = /^RELEASE\.\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z$/;
 
+// Le même horodatage, suivi d'un suffixe de variante (capturé).
+const VARIANT_TAG = /^RELEASE\.\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(.+)$/;
+
+// Un digest d'image bien formé.
+const DIGEST = /^@sha256:[0-9a-f]{64}$/;
+
 // Une référence `[registre/…/]minio/(minio|mc)[:tag][@sha256:…]`.
 //   - le lookbehind empêche de démarrer au milieu d'un chemin
 //     (`…/minio/minio` est pris depuis le début de son préfixe) ;
 //   - le lookahead après le nom écarte `minio/minio-extra`, et une URL comme
 //     `http://localhost:9000/minio/health/ready` ne nomme aucune des deux ;
-//   - le tag s'arrête aux blancs, guillemets, antislash et `@`.
+//   - le tag s'arrête aux blancs, guillemets, antislash et `@` ; ce qui suit
+//     `@` est pris tel quel et validé ensuite par `DIGEST`, pour qu'un digest
+//     mal formé soit refusé plutôt qu'ignoré.
 const REFERENCE =
-  /(?<![\w.\/:@$-])((?:[\w.-]+(?::\d+)?\/)*)(minio\/(?:minio|mc))(?![\w.\/-])(?::([^\s"'`\\@]*))?(@sha256:[0-9a-f]{64})?/g;
+  /(?<![\w.\/:@$-])((?:[\w.-]+(?::\d+)?\/)*)(minio\/(?:minio|mc))(?![\w.\/-])(?::([^\s"'`\\@]*))?(@[^\s"'`\\]*)?/g;
 
 type Occurrence = {
   where: string;
@@ -116,7 +128,15 @@ export function minioPinViolations(files: ReadonlyArray<SourceFile>): string[] {
           "Docker Hub ne sert plus minio/* anonymement (#157).",
       );
     }
-    if (o.tag === undefined || !PINNED_TAG.test(o.tag)) {
+    const variant = o.tag?.match(VARIANT_TAG);
+    if (variant) {
+      violations.push(
+        `${o.where} : \`${o.raw}\` — horodatage suivi du suffixe ` +
+          `« ${variant[1]} » (variante ou correctif de la release). ` +
+          "Seul l'horodatage nu RELEASE.AAAA-MM-JJTHH-MM-SSZ est accepté ; " +
+          "une variante s'ajoute au garde-fou en connaissance de cause.",
+      );
+    } else if (o.tag === undefined || !PINNED_TAG.test(o.tag)) {
       violations.push(
         `${o.where} : \`${o.raw}\` — tag non épinglé ` +
           `(${o.tag === undefined ? "aucun tag" : `« ${o.tag} »`}). ` +
@@ -124,15 +144,27 @@ export function minioPinViolations(files: ReadonlyArray<SourceFile>): string[] {
           "l'image bouger sous la CI sans rien signaler.",
       );
     }
+    if (o.digest !== "" && !DIGEST.test(o.digest)) {
+      violations.push(
+        `${o.where} : \`${o.raw}\` — digest mal formé « ${o.digest} ». ` +
+          "Attendu : @sha256: suivi de 64 caractères hexadécimaux.",
+      );
+    }
   }
 
   // Divergence : par image, sur les seules références dont le tag est épinglé
-  // (une référence `latest` a déjà sa propre violation, ne pas la compter
-  // deux fois). minio/minio et minio/mc sont comparés chacun de leur côté.
+  // et dont le digest, s'il y en a un, est bien formé (une référence `latest`
+  // ou un digest mal formé a déjà sa propre violation, ne pas la compter deux
+  // fois). minio/minio et minio/mc sont comparés chacun de leur côté.
   for (const image of MINIO_IMAGES) {
     const byPin = new Map<string, string[]>();
     for (const o of all) {
-      if (o.image !== image || o.tag === undefined || !PINNED_TAG.test(o.tag)) {
+      if (
+        o.image !== image ||
+        o.tag === undefined ||
+        !PINNED_TAG.test(o.tag) ||
+        (o.digest !== "" && !DIGEST.test(o.digest))
+      ) {
         continue;
       }
       const pin = o.tag + o.digest;
@@ -160,7 +192,18 @@ export function minioPinViolations(files: ReadonlyArray<SourceFile>): string[] {
 // fragilité, sur les postes de développement plutôt qu'en CI (le compose ne
 // tourne pas en CI). Chaque ligne `image:` du compose doit donc porter une
 // version complète (`1.2.3`, `v1.2.3`, suffixe toléré) ou un horodatage
-// `RELEASE.*` MinIO, avec ou sans digest.
+// `RELEASE.*` MinIO, avec ou sans digest, ou un digest seul
+// (`image@sha256:…`), le seul pin qu'un registre ne peut pas republier (#262).
+//
+// Version complète de PostgreSQL : deux composantes (`16.4`, suffixe toléré,
+// `16.4-bookworm`), car depuis PostgreSQL 10 la deuxième est déjà le
+// correctif. Pour les autres images, `x.y` reste une série et est refusé.
+// Seul le nom exact `postgres` est reconnu : `library/postgres:16.4` ou un
+// registre explicite sont refusés, bruyamment.
+//
+// Un digest mal formé est refusé ; un digest bien formé ne rachète pas un tag
+// flottant écrit devant lui (`latest@sha256:…`) : le tag est ce qu'on lit
+// dans un diff.
 //
 // Deux exceptions, exactes et voulues, sur leur série majeure :
 //   - `postgres:16` : une série majeure est le contrat de compatibilité sur
@@ -183,7 +226,12 @@ const MAJOR_SERIES_ALLOWED: ReadonlyArray<string> = ["postgres:16", "caddy:2"];
 
 const FULL_VERSION = /^v?\d+\.\d+\.\d+(?:[-+.][\w.-]+)?$/;
 
-// `image: <référence>`, guillemets simples ou doubles tolérés.
+// Images dont la version complète n'a que deux composantes.
+const TWO_COMPONENT_IMAGES: ReadonlyArray<string> = ["postgres"];
+const TWO_COMPONENT_VERSION = /^\d+\.\d+(?:-[\w.-]+)?$/;
+
+// `image: <référence>`, guillemets simples ou doubles tolérés. L'ancre
+// `^\s*image:` écarte d'elle-même les lignes de commentaire.
 const IMAGE_LINE = /^\s*image:\s*["']?([^\s"'#]+)/;
 
 /**
@@ -196,25 +244,41 @@ export function composeTagViolations(file: SourceFile): string[] {
   let seen = 0;
 
   file.text.split("\n").forEach((line, index) => {
-    if (line.trimStart().startsWith("#")) return;
     const m = line.match(IMAGE_LINE);
     if (!m) return;
     seen += 1;
     const raw = m[1];
-    const ref = raw.split("@")[0];
+    const at = raw.indexOf("@");
+    const ref = at === -1 ? raw : raw.slice(0, at);
+    const digest = at === -1 ? "" : raw.slice(at);
     const lastSlash = ref.lastIndexOf("/");
     const colon = ref.indexOf(":", lastSlash + 1);
+    const name = colon === -1 ? ref : ref.slice(0, colon);
     const tag = colon === -1 ? undefined : ref.slice(colon + 1);
+
+    if (digest !== "" && !DIGEST.test(digest)) {
+      violations.push(
+        `${file.path}:${index + 1} : \`${raw}\` — digest mal formé ` +
+          `« ${digest} ». Attendu : @sha256: suivi de 64 caractères ` +
+          "hexadécimaux.",
+      );
+      return;
+    }
+
     const ok =
-      tag !== undefined &&
-      (FULL_VERSION.test(tag) ||
-        PINNED_TAG.test(tag) ||
-        MAJOR_SERIES_ALLOWED.includes(ref));
+      tag === undefined
+        ? digest !== ""
+        : FULL_VERSION.test(tag) ||
+          PINNED_TAG.test(tag) ||
+          (TWO_COMPONENT_IMAGES.includes(name) &&
+            TWO_COMPONENT_VERSION.test(tag)) ||
+          MAJOR_SERIES_ALLOWED.includes(ref);
     if (!ok) {
       violations.push(
         `${file.path}:${index + 1} : \`${raw}\` — tag non épinglé ` +
           `(${tag === undefined ? "aucun tag" : `« ${tag} »`}). Attendu : une ` +
-          "version complète (1.2.3) ou, par exception, " +
+          "version complète (1.2.3 ; 16.4 pour postgres), un digest " +
+          "(@sha256:…) ou, par exception, " +
           `${MAJOR_SERIES_ALLOWED.join(" / ")}. Un tag flottant laisse ` +
           "l'image bouger sous une pile existante sans rien signaler.",
       );
