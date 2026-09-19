@@ -351,6 +351,68 @@ test("accepte un digest derrière une version complète et ignore les commentair
   assert.deepEqual(composeTagViolations(composeFile(text)), []);
 });
 
+test("accepte la version complète de PostgreSQL, en deux composantes", () => {
+  // Depuis PostgreSQL 10, `16.4` est une version complète : resserrer le pin
+  // `postgres:16` ne doit pas obliger à modifier le garde-fou (#262).
+  for (const pin of ["postgres:16.4", "postgres:16.4-bookworm"]) {
+    const text = COMPOSE_TAGS_OK.replace("postgres:16", pin);
+    assert.deepEqual(composeTagViolations(composeFile(text)), [], pin);
+  }
+});
+
+test("refuse un tag en deux composantes hors PostgreSQL", () => {
+  // Pour les autres images, `x.y` est une série qui reçoit encore des
+  // correctifs : ce n'est pas une version complète.
+  for (const [from, to] of [
+    ["axllent/mailpit:v1.31.2", "axllent/mailpit:v1.31"],
+    ["ollama/ollama:0.34.2", "ollama/ollama:0.34"],
+    ["caddy:2", "caddy:2.8"],
+  ]) {
+    const text = COMPOSE_TAGS_OK.replace(from, to);
+    const violations = composeTagViolations(composeFile(text));
+    assert.equal(violations.length, 1, `${to} : ${violations.join(" | ")}`);
+    assert.ok(violations[0].includes(to));
+  }
+});
+
+test("refuse pour PostgreSQL une série majeure suffixée ou flottante", () => {
+  for (const pin of ["postgres:16-bookworm", "postgres:latest", "postgres:16.4.x"]) {
+    const text = COMPOSE_TAGS_OK.replace("postgres:16", pin);
+    assert.equal(composeTagViolations(composeFile(text)).length, 1, pin);
+  }
+});
+
+test("accepte un pin par digest seul", () => {
+  const digest = "@sha256:" + "0123456789abcdef".repeat(4);
+  const text = COMPOSE_TAGS_OK.replace("postgres:16", `postgres${digest}`)
+    .replace("axllent/mailpit:v1.31.2", `axllent/mailpit${digest}`);
+  assert.deepEqual(composeTagViolations(composeFile(text)), []);
+});
+
+test("refuse un digest mal formé, seul ou derrière une version complète", () => {
+  for (const [from, to] of [
+    ["postgres:16", "postgres@sha256:zz"],
+    ["postgres:16", "postgres@sha256:" + "a".repeat(63)],
+    ["ollama/ollama:0.34.2", "ollama/ollama:0.34.2@sha256:zz"],
+  ]) {
+    const text = COMPOSE_TAGS_OK.replace(from, to);
+    const violations = composeTagViolations(composeFile(text));
+    assert.equal(violations.length, 1, `${to} : ${violations.join(" | ")}`);
+    assert.match(violations[0], /digest/);
+  }
+});
+
+test("un digest ne rachète pas un tag flottant écrit devant lui", () => {
+  // Le tag est ce qu'on lit dans un diff : `latest@sha256:…` affiche
+  // « latest » quel que soit le digest.
+  const digest = "@sha256:" + "a".repeat(64);
+  const text = COMPOSE_TAGS_OK.replace(
+    "axllent/mailpit:v1.31.2",
+    `axllent/mailpit:latest${digest}`,
+  );
+  assert.equal(composeTagViolations(composeFile(text)).length, 1);
+});
+
 test("refuse un compose où aucune image n'est trouvée", () => {
   // Plancher : sans lui, sortir les images des lignes `image:` rendrait la
   // porte verte sur zéro référence.

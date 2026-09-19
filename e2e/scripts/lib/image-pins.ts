@@ -192,7 +192,18 @@ export function minioPinViolations(files: ReadonlyArray<SourceFile>): string[] {
 // fragilité, sur les postes de développement plutôt qu'en CI (le compose ne
 // tourne pas en CI). Chaque ligne `image:` du compose doit donc porter une
 // version complète (`1.2.3`, `v1.2.3`, suffixe toléré) ou un horodatage
-// `RELEASE.*` MinIO, avec ou sans digest.
+// `RELEASE.*` MinIO, avec ou sans digest, ou un digest seul
+// (`image@sha256:…`), le seul pin qu'un registre ne peut pas republier (#262).
+//
+// Version complète de PostgreSQL : deux composantes (`16.4`, suffixe toléré,
+// `16.4-bookworm`), car depuis PostgreSQL 10 la deuxième est déjà le
+// correctif. Pour les autres images, `x.y` reste une série et est refusé.
+// Seul le nom exact `postgres` est reconnu : `library/postgres:16.4` ou un
+// registre explicite sont refusés, bruyamment.
+//
+// Un digest mal formé est refusé ; un digest bien formé ne rachète pas un tag
+// flottant écrit devant lui (`latest@sha256:…`) : le tag est ce qu'on lit
+// dans un diff.
 //
 // Deux exceptions, exactes et voulues, sur leur série majeure :
 //   - `postgres:16` : une série majeure est le contrat de compatibilité sur
@@ -215,7 +226,12 @@ const MAJOR_SERIES_ALLOWED: ReadonlyArray<string> = ["postgres:16", "caddy:2"];
 
 const FULL_VERSION = /^v?\d+\.\d+\.\d+(?:[-+.][\w.-]+)?$/;
 
-// `image: <référence>`, guillemets simples ou doubles tolérés.
+// Images dont la version complète n'a que deux composantes.
+const TWO_COMPONENT_IMAGES: ReadonlyArray<string> = ["postgres"];
+const TWO_COMPONENT_VERSION = /^\d+\.\d+(?:-[\w.-]+)?$/;
+
+// `image: <référence>`, guillemets simples ou doubles tolérés. L'ancre
+// `^\s*image:` écarte d'elle-même les lignes de commentaire.
 const IMAGE_LINE = /^\s*image:\s*["']?([^\s"'#]+)/;
 
 /**
@@ -228,25 +244,41 @@ export function composeTagViolations(file: SourceFile): string[] {
   let seen = 0;
 
   file.text.split("\n").forEach((line, index) => {
-    if (line.trimStart().startsWith("#")) return;
     const m = line.match(IMAGE_LINE);
     if (!m) return;
     seen += 1;
     const raw = m[1];
-    const ref = raw.split("@")[0];
+    const at = raw.indexOf("@");
+    const ref = at === -1 ? raw : raw.slice(0, at);
+    const digest = at === -1 ? "" : raw.slice(at);
     const lastSlash = ref.lastIndexOf("/");
     const colon = ref.indexOf(":", lastSlash + 1);
+    const name = colon === -1 ? ref : ref.slice(0, colon);
     const tag = colon === -1 ? undefined : ref.slice(colon + 1);
+
+    if (digest !== "" && !DIGEST.test(digest)) {
+      violations.push(
+        `${file.path}:${index + 1} : \`${raw}\` — digest mal formé ` +
+          `« ${digest} ». Attendu : @sha256: suivi de 64 caractères ` +
+          "hexadécimaux.",
+      );
+      return;
+    }
+
     const ok =
-      tag !== undefined &&
-      (FULL_VERSION.test(tag) ||
-        PINNED_TAG.test(tag) ||
-        MAJOR_SERIES_ALLOWED.includes(ref));
+      tag === undefined
+        ? digest !== ""
+        : FULL_VERSION.test(tag) ||
+          PINNED_TAG.test(tag) ||
+          (TWO_COMPONENT_IMAGES.includes(name) &&
+            TWO_COMPONENT_VERSION.test(tag)) ||
+          MAJOR_SERIES_ALLOWED.includes(ref);
     if (!ok) {
       violations.push(
         `${file.path}:${index + 1} : \`${raw}\` — tag non épinglé ` +
           `(${tag === undefined ? "aucun tag" : `« ${tag} »`}). Attendu : une ` +
-          "version complète (1.2.3) ou, par exception, " +
+          "version complète (1.2.3 ; 16.4 pour postgres), un digest " +
+          "(@sha256:…) ou, par exception, " +
           `${MAJOR_SERIES_ALLOWED.join(" / ")}. Un tag flottant laisse ` +
           "l'image bouger sous une pile existante sans rien signaler.",
       );
