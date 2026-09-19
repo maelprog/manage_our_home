@@ -1,7 +1,7 @@
 use axum::async_trait;
 use axum::extract::{FromRef, FromRequestParts};
 use axum::http::request::Parts;
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use cookie::{Cookie, SameSite};
 use sqlx::{PgPool, Postgres, Transaction};
 use tower_cookies::Cookies;
@@ -13,7 +13,30 @@ use crate::AppState;
 /// Private on purpose (#239): nothing outside this module may name the
 /// cookie — see `only_this_module_reads_the_session_cookie`.
 const SESSION_COOKIE_NAME: &str = "session_id";
+/// Absolute lifetime of a session, fixed at creation in `expires_at` and in
+/// the cookie's `max_age`, however much the session is used.
 pub const SESSION_TTL_DAYS: i64 = 30;
+/// Inactivity timeout (#195): a session left unused for longer than this is
+/// refused, even within its absolute lifetime. The row is left as it is, not
+/// revoked: `revoked_at` keeps meaning a logout or a password change, and
+/// `last_seen_at` already dates the end of the session.
+pub const SESSION_IDLE_TIMEOUT_DAYS: i64 = 7;
+/// `last_seen_at` is only rewritten once it is older than this, so an active
+/// session costs one `UPDATE` per interval instead of one per request. The
+/// price is precision: a session can be refused up to this long before
+/// `SESSION_IDLE_TIMEOUT_DAYS` of actual inactivity.
+const LAST_SEEN_REFRESH_MINUTES: i64 = 60;
+
+/// Whether a session last used at `last_seen_at` has been idle too long.
+/// Like `expires_at`, the bound itself is still valid.
+fn is_idle(now: DateTime<Utc>, last_seen_at: DateTime<Utc>) -> bool {
+    last_seen_at + Duration::days(SESSION_IDLE_TIMEOUT_DAYS) < now
+}
+
+/// Whether this request should rewrite `last_seen_at`.
+fn last_seen_needs_refresh(now: DateTime<Utc>, last_seen_at: DateTime<Utc>) -> bool {
+    last_seen_at + Duration::minutes(LAST_SEEN_REFRESH_MINUTES) < now
+}
 
 #[derive(Debug, Clone)]
 pub struct AuthUser {
@@ -62,7 +85,7 @@ where
 
         let row = sqlx::query!(
             r#"
-            SELECT s.id as session_id, s.expires_at, s.revoked_at,
+            SELECT s.id as session_id, s.expires_at, s.revoked_at, s.last_seen_at,
                    u.id as user_id, u.email, u.display_name, u.email_verified,
                    u.is_superadmin, u.deleted_at, u.deletion_requested_at,
                    (u.password_hash IS NOT NULL) as "has_password!"
@@ -77,17 +100,24 @@ where
         .map_err(AppError::from)?
         .ok_or(AppError::Unauthorized)?;
 
-        if row.revoked_at.is_some() || row.expires_at < Utc::now() || row.deleted_at.is_some() {
+        let now = Utc::now();
+        if row.revoked_at.is_some()
+            || row.expires_at < now
+            || is_idle(now, row.last_seen_at)
+            || row.deleted_at.is_some()
+        {
             return Err(AppError::Unauthorized);
         }
 
-        sqlx::query!(
-            "UPDATE sessions SET last_seen_at = now() WHERE id = $1",
-            session_id
-        )
-        .execute(&app_state.db)
-        .await
-        .ok();
+        if last_seen_needs_refresh(now, row.last_seen_at) {
+            sqlx::query!(
+                "UPDATE sessions SET last_seen_at = now() WHERE id = $1",
+                session_id
+            )
+            .execute(&app_state.db)
+            .await
+            .ok();
+        }
 
         Ok(AuthUser {
             user_id: row.user_id,
@@ -232,7 +262,68 @@ pub async fn token_scoped_tx<'a>(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::path::{Path, PathBuf};
+
+    fn at(s: &str) -> DateTime<Utc> {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn a_session_used_within_the_idle_timeout_is_not_idle() {
+        let now = at("2026-09-19T12:00:00Z");
+        assert!(!is_idle(now, now));
+        assert!(!is_idle(now, at("2026-09-13T12:00:00Z")));
+        assert!(!is_idle(now, at("2026-09-12T12:00:01Z")));
+    }
+
+    #[test]
+    fn a_session_idle_for_exactly_the_timeout_is_still_valid() {
+        assert!(!is_idle(
+            at("2026-09-19T12:00:00Z"),
+            at("2026-09-12T12:00:00Z")
+        ));
+    }
+
+    #[test]
+    fn a_session_idle_past_the_timeout_is_idle() {
+        let now = at("2026-09-19T12:00:00Z");
+        assert!(is_idle(now, at("2026-09-12T11:59:59Z")));
+        assert!(is_idle(now, at("2026-08-20T12:00:00Z")));
+    }
+
+    /// The durations arbitrated for #195 (2026-09-19), which the privacy
+    /// policy and the register state: changing one means updating both.
+    #[test]
+    fn the_idle_timeout_is_seven_days_within_thirty() {
+        assert_eq!(SESSION_IDLE_TIMEOUT_DAYS, 7);
+        assert_eq!(SESSION_TTL_DAYS, 30);
+    }
+
+    #[test]
+    fn last_seen_is_not_rewritten_within_the_refresh_interval() {
+        let now = at("2026-09-19T12:00:00Z");
+        assert!(!last_seen_needs_refresh(now, now));
+        assert!(!last_seen_needs_refresh(now, at("2026-09-19T11:30:00Z")));
+        assert!(!last_seen_needs_refresh(now, at("2026-09-19T11:00:00Z")));
+    }
+
+    #[test]
+    fn last_seen_is_rewritten_past_the_refresh_interval() {
+        let now = at("2026-09-19T12:00:00Z");
+        assert!(last_seen_needs_refresh(now, at("2026-09-19T10:59:59Z")));
+        assert!(last_seen_needs_refresh(now, at("2026-09-18T12:00:00Z")));
+    }
+
+    /// A `last_seen_at` ahead of the api's clock (the database's `now()`
+    /// set it) neither refuses the session nor gets rewritten.
+    #[test]
+    fn a_last_seen_in_the_future_is_neither_idle_nor_stale() {
+        let now = at("2026-09-19T12:00:00Z");
+        let later = at("2026-09-19T12:05:00Z");
+        assert!(!is_idle(now, later));
+        assert!(!last_seen_needs_refresh(now, later));
+    }
 
     fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap() {

@@ -215,6 +215,18 @@ async fn invalid_session_gets_401_on_admin_routes_whatever_the_flag(db: PgPool) 
         let res = call(&router, Method::GET, "/admin/groups", Some(&expired), None).await;
         assert_status(&res, StatusCode::UNAUTHORIZED);
 
+        // Idle session (#195), well within its absolute lifetime.
+        let idle = login(&router, email, password).await;
+        let res = call(&router, Method::GET, "/admin/groups", Some(&idle), None).await;
+        assert_status(&res, expected_when_valid);
+        sqlx::query("UPDATE sessions SET last_seen_at = now() - interval '8 days' WHERE id = $1")
+            .bind(session_id_of(&idle))
+            .execute(&db)
+            .await
+            .unwrap();
+        let res = call(&router, Method::GET, "/admin/groups", Some(&idle), None).await;
+        assert_status(&res, StatusCode::UNAUTHORIZED);
+
         // Deactivated account, the session row itself left untouched.
         let orphaned = login(&router, email, password).await;
         let res = call(&router, Method::GET, "/admin/groups", Some(&orphaned), None).await;

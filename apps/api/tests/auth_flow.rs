@@ -71,6 +71,97 @@ async fn me_returns_identity_when_authed_and_401_otherwise(db: PgPool) {
     assert!(me["user_id"].is_string());
 }
 
+fn session_id_of(cookie: &str) -> Uuid {
+    cookie
+        .split_once('=')
+        .map(|(_, v)| v.parse().unwrap())
+        .unwrap()
+}
+
+async fn set_last_seen_ago(db: &PgPool, session_id: Uuid, ago: &str) {
+    sqlx::query("UPDATE sessions SET last_seen_at = now() - $2::interval WHERE id = $1")
+        .bind(session_id)
+        .bind(ago)
+        .execute(db)
+        .await
+        .unwrap();
+}
+
+async fn last_seen_older_than(db: &PgPool, session_id: Uuid, ago: &str) -> bool {
+    sqlx::query_scalar("SELECT last_seen_at < now() - $2::interval FROM sessions WHERE id = $1")
+        .bind(session_id)
+        .bind(ago)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+/// #195: a session unused for more than 7 days is refused, although its
+/// absolute 30-day lifetime has not run out. The row is not revoked: the
+/// refusal leaves `revoked_at` and `last_seen_at` as they were.
+#[sqlx::test]
+async fn a_session_idle_for_more_than_seven_days_is_refused(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "idle@example.test", "idle-password1").await;
+    let session_id = session_id_of(&cookie);
+
+    set_last_seen_ago(&db, session_id, "7 days 1 minute").await;
+    let res = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
+    assert_status(&res, StatusCode::UNAUTHORIZED);
+    assert_eq!(json_body(res).await["error"], "unauthorized");
+
+    let (revoked, still_idle): (bool, bool) = sqlx::query_as(
+        "SELECT revoked_at IS NOT NULL, last_seen_at < now() - interval '7 days'
+         FROM sessions WHERE id = $1",
+    )
+    .bind(session_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert!(!revoked, "an idle session expires, it is not revoked");
+    assert!(still_idle, "a refused request must not revive the session");
+
+    // A later request is refused too: the refusal did not reset the clock.
+    let res = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
+    assert_status(&res, StatusCode::UNAUTHORIZED);
+}
+
+/// #195: a session used within the last 7 days is accepted, and the request
+/// pushes its inactivity deadline back by refreshing `last_seen_at`.
+#[sqlx::test]
+async fn a_session_used_within_seven_days_is_accepted_and_refreshed(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie =
+        register_verify_login(&router, &db, "active@example.test", "active-password1").await;
+    let session_id = session_id_of(&cookie);
+
+    set_last_seen_ago(&db, session_id, "6 days 23 hours").await;
+    let res = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
+    assert_status(&res, StatusCode::OK);
+    assert!(
+        !last_seen_older_than(&db, session_id, "1 minute").await,
+        "an accepted request must refresh a stale last_seen_at"
+    );
+}
+
+/// #195: `last_seen_at` is rewritten at most once an hour, not on every
+/// request — a request within the hour leaves it as it was.
+#[sqlx::test]
+async fn last_seen_at_is_not_rewritten_within_the_hour(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie =
+        register_verify_login(&router, &db, "hourly@example.test", "hourly-password1").await;
+    let session_id = session_id_of(&cookie);
+
+    set_last_seen_ago(&db, session_id, "50 minutes").await;
+    let res = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
+    assert_status(&res, StatusCode::OK);
+    assert!(
+        last_seen_older_than(&db, session_id, "49 minutes").await,
+        "a request within the hour must not rewrite last_seen_at"
+    );
+}
+
 /// AC #6: register rejects invalid input with the exact 422 codes, and a
 /// valid registration is unaffected.
 #[sqlx::test]
