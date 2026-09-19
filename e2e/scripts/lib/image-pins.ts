@@ -14,6 +14,10 @@
 //   - un tag qui n'est pas un horodatage `RELEASE.AAAA-MM-JJTHH-MM-SSZ` :
 //     `latest`, pas de tag, une série nue (`RELEASE`, `RELEASE.2025-09-07`),
 //     une variable (`${MINIO_TAG}`) ;
+//   - un horodatage suivi d'une variante (`.fips`, `-cpuv1`, `.hotfix.*`) :
+//     le tag est épinglé, mais ce n'est pas la release publiée ; l'accepter
+//     se décide ici, avec son propre message plutôt que « tag flottant » ;
+//   - un digest mal formé (`@sha256:zz`), au lieu de l'ignorer ;
 //   - deux tags différents pour la MÊME image, entre fichiers ou entre deux
 //     jobs d'un même fichier ;
 //   - un fichier fourni où l'une des deux images n'est plus trouvée : sans ce
@@ -50,14 +54,22 @@ const REGISTRY = "quay.io";
 // Un tag de release MinIO complet, à la seconde près.
 const PINNED_TAG = /^RELEASE\.\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z$/;
 
+// Le même horodatage, suivi d'un suffixe de variante (capturé).
+const VARIANT_TAG = /^RELEASE\.\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(.+)$/;
+
+// Un digest d'image bien formé.
+const DIGEST = /^@sha256:[0-9a-f]{64}$/;
+
 // Une référence `[registre/…/]minio/(minio|mc)[:tag][@sha256:…]`.
 //   - le lookbehind empêche de démarrer au milieu d'un chemin
 //     (`…/minio/minio` est pris depuis le début de son préfixe) ;
 //   - le lookahead après le nom écarte `minio/minio-extra`, et une URL comme
 //     `http://localhost:9000/minio/health/ready` ne nomme aucune des deux ;
-//   - le tag s'arrête aux blancs, guillemets, antislash et `@`.
+//   - le tag s'arrête aux blancs, guillemets, antislash et `@` ; ce qui suit
+//     `@` est pris tel quel et validé ensuite par `DIGEST`, pour qu'un digest
+//     mal formé soit refusé plutôt qu'ignoré.
 const REFERENCE =
-  /(?<![\w.\/:@$-])((?:[\w.-]+(?::\d+)?\/)*)(minio\/(?:minio|mc))(?![\w.\/-])(?::([^\s"'`\\@]*))?(@sha256:[0-9a-f]{64})?/g;
+  /(?<![\w.\/:@$-])((?:[\w.-]+(?::\d+)?\/)*)(minio\/(?:minio|mc))(?![\w.\/-])(?::([^\s"'`\\@]*))?(@[^\s"'`\\]*)?/g;
 
 type Occurrence = {
   where: string;
@@ -116,7 +128,15 @@ export function minioPinViolations(files: ReadonlyArray<SourceFile>): string[] {
           "Docker Hub ne sert plus minio/* anonymement (#157).",
       );
     }
-    if (o.tag === undefined || !PINNED_TAG.test(o.tag)) {
+    const variant = o.tag?.match(VARIANT_TAG);
+    if (variant) {
+      violations.push(
+        `${o.where} : \`${o.raw}\` — horodatage suivi du suffixe ` +
+          `« ${variant[1]} » (variante ou correctif de la release). ` +
+          "Seul l'horodatage nu RELEASE.AAAA-MM-JJTHH-MM-SSZ est accepté ; " +
+          "une variante s'ajoute au garde-fou en connaissance de cause.",
+      );
+    } else if (o.tag === undefined || !PINNED_TAG.test(o.tag)) {
       violations.push(
         `${o.where} : \`${o.raw}\` — tag non épinglé ` +
           `(${o.tag === undefined ? "aucun tag" : `« ${o.tag} »`}). ` +
@@ -124,15 +144,27 @@ export function minioPinViolations(files: ReadonlyArray<SourceFile>): string[] {
           "l'image bouger sous la CI sans rien signaler.",
       );
     }
+    if (o.digest !== "" && !DIGEST.test(o.digest)) {
+      violations.push(
+        `${o.where} : \`${o.raw}\` — digest mal formé « ${o.digest} ». ` +
+          "Attendu : @sha256: suivi de 64 caractères hexadécimaux.",
+      );
+    }
   }
 
   // Divergence : par image, sur les seules références dont le tag est épinglé
-  // (une référence `latest` a déjà sa propre violation, ne pas la compter
-  // deux fois). minio/minio et minio/mc sont comparés chacun de leur côté.
+  // et dont le digest, s'il y en a un, est bien formé (une référence `latest`
+  // ou un digest mal formé a déjà sa propre violation, ne pas la compter deux
+  // fois). minio/minio et minio/mc sont comparés chacun de leur côté.
   for (const image of MINIO_IMAGES) {
     const byPin = new Map<string, string[]>();
     for (const o of all) {
-      if (o.image !== image || o.tag === undefined || !PINNED_TAG.test(o.tag)) {
+      if (
+        o.image !== image ||
+        o.tag === undefined ||
+        !PINNED_TAG.test(o.tag) ||
+        (o.digest !== "" && !DIGEST.test(o.digest))
+      ) {
         continue;
       }
       const pin = o.tag + o.digest;

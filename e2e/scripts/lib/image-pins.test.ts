@@ -90,6 +90,73 @@ test("refuse un autre registre, même miroir", () => {
   assert.equal(minioPinViolations(files(ci, COMPOSE_OK)).length, 1);
 });
 
+test("exige le registre quay.io exact : ni sous-domaine, ni suffixe, ni préfixe, ni port", () => {
+  // Un test « miroir » sur `mirror.gcr.io` laissait passer un contrôle en
+  // `endsWith("quay.io")` ou `includes("quay.io")` (#260) : ces registres-ci
+  // contiennent tous la chaîne `quay.io`.
+  for (const registry of [
+    "mirror.quay.io",
+    "evilquay.io",
+    "quay.io.evil.example",
+    "quay.io:5000",
+  ]) {
+    const ci = CI_OK.replace(
+      `quay.io/minio/mc:${CLIENT}`,
+      `${registry}/minio/mc:${CLIENT}`,
+    );
+    const violations = minioPinViolations(files(ci, COMPOSE_OK));
+    assert.equal(violations.length, 1, `${registry} : ${violations.join(" | ")}`);
+    assert.ok(
+      violations[0].includes(`pas de ${registry}.`),
+      `${registry} doit être nommé comme registre refusé : ${violations[0]}`,
+    );
+  }
+});
+
+test("refuse un horodatage suivi d'une variante (.fips, -cpuv1, .hotfix.*)", () => {
+  // Le motif est ancré en fin : un horodatage exact suivi d'un suffixe n'est
+  // pas l'horodatage nu (#260).
+  for (const suffix of [".fips", "-cpuv1", ".hotfix.7b3a2e1f"]) {
+    const bad = `quay.io/minio/minio:${SERVER}${suffix}`;
+    const compose = COMPOSE_OK.replace(`quay.io/minio/minio:${SERVER}`, bad);
+    const violations = minioPinViolations(files(CI_OK, compose));
+    assert.equal(violations.length, 1, `${bad} : ${violations.join(" | ")}`);
+    // Le tag est épinglé : le dire « flottant » serait faux.
+    assert.doesNotMatch(violations[0], /flottant/);
+    assert.ok(
+      violations[0].includes(`« ${suffix} »`),
+      `${bad} doit nommer son suffixe : ${violations[0]}`,
+    );
+  }
+});
+
+test("refuse un digest mal formé au lieu de l'ignorer", () => {
+  for (const digest of ["@sha256:zz", "@sha256:" + "a".repeat(63), "@md5:abc"]) {
+    const compose = COMPOSE_OK.replace(
+      `quay.io/minio/minio:${SERVER}`,
+      `quay.io/minio/minio:${SERVER}${digest}`,
+    );
+    const violations = minioPinViolations(files(CI_OK, compose));
+    assert.equal(violations.length, 1, `${digest} : ${violations.join(" | ")}`);
+    assert.match(violations[0], /digest/);
+    assert.ok(violations[0].includes(digest));
+  }
+});
+
+test("accepte une référence épinglée entre guillemets", () => {
+  // Le tag s'arrête aux guillemets : sinon `"…Z"` serait lu comme un tag
+  // non horodaté.
+  const ci = CI_OK.replace(
+    `quay.io/minio/minio:${SERVER}`,
+    `"quay.io/minio/minio:${SERVER}"`,
+  );
+  const compose = COMPOSE_OK.replace(
+    `quay.io/minio/minio:${SERVER}`,
+    `'quay.io/minio/minio:${SERVER}'`,
+  );
+  assert.deepEqual(minioPinViolations(files(ci, compose)), []);
+});
+
 test("refuse latest, l'absence de tag et les tags non horodatés", () => {
   for (const bad of [
     "quay.io/minio/minio:latest",
@@ -125,6 +192,31 @@ test("refuse une divergence de tag entre ci.yml et docker-compose.yml", () => {
   assert.ok(violations[0].includes(SERVER) && violations[0].includes(other));
 });
 
+test("refuse deux digests différents derrière le même tag", () => {
+  // Le digest compte dans la comparaison : c'est lui, pas le tag, qui fixe
+  // le contenu de l'image (#260).
+  const a = "@sha256:" + "a".repeat(64);
+  const b = "@sha256:" + "b".repeat(64);
+  const ci = CI_OK.replace(
+    `quay.io/minio/minio:${SERVER}`,
+    `quay.io/minio/minio:${SERVER}${a}`,
+  );
+  const compose = COMPOSE_OK.replace(
+    `quay.io/minio/minio:${SERVER}`,
+    `quay.io/minio/minio:${SERVER}${b}`,
+  );
+  const violations = minioPinViolations(files(ci, compose));
+  assert.equal(violations.length, 1);
+  assert.match(violations[0], /divergent/);
+  assert.ok(violations[0].includes(a) && violations[0].includes(b));
+
+  const same = COMPOSE_OK.replace(
+    `quay.io/minio/minio:${SERVER}`,
+    `quay.io/minio/minio:${SERVER}${a}`,
+  );
+  assert.deepEqual(minioPinViolations(files(ci, same)), []);
+});
+
 test("refuse une divergence entre deux jobs du même fichier", () => {
   const other = "RELEASE.2025-10-15T17-29-55Z";
   const ci = CI_OK + CI_OK.replace(`minio/mc:${CLIENT}`, `minio/mc:${other}`);
@@ -154,7 +246,9 @@ test("ne confond pas une URL MinIO ni une image voisine avec minio/minio", () =>
   const ci =
     CI_OK +
     "          curl -sf http://localhost:9000/minio/health/ready\n" +
-    "          docker run example.org/minio/minio-extra:latest\n";
+    "          docker run example.org/minio/minio-extra:latest\n" +
+    // Un chemin qui prolonge `minio/minio` nomme une autre image.
+    "          docker run example.org/minio/minio/sidecar:latest\n";
   assert.deepEqual(minioPinViolations(files(ci, COMPOSE_OK)), []);
 });
 
