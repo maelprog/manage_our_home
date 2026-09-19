@@ -43,8 +43,11 @@ const LEFT_IN_TRANSACTION: &str = "SELECT transaction_timestamp() <> statement_t
 /// dropped keeps its place in the pool's acquire queue until the task is
 /// done (bounded by the pool's acquire timeout), and the task carries the
 /// caller's tracing span explicitly rather than by being its child.
+///
+/// The crate's `clippy.toml` refuses a direct `begin` anywhere else (#191).
 pub async fn begin(pool: &PgPool) -> Result<Transaction<'static, Postgres>, sqlx::Error> {
     let pool = pool.clone();
+    #[allow(clippy::disallowed_methods)]
     let task = tokio::spawn(async move { pool.begin().await }.in_current_span());
     match task.await {
         Ok(result) => result,

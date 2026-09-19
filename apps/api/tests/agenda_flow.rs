@@ -1952,6 +1952,7 @@ async fn with_family_scope<'a>(
     db: &PgPool,
     group_id: &str,
 ) -> sqlx::Transaction<'a, sqlx::Postgres> {
+    #[allow(clippy::disallowed_methods)]
     let mut tx = db.begin().await.unwrap();
     sqlx::query("SELECT set_config('app.family_id', $1, true)")
         .bind(group_id)

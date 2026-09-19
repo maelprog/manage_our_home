@@ -26,6 +26,7 @@ async fn restricted_role_tx(db: &PgPool) -> (String, sqlx::Transaction<'_, sqlx:
     .await
     .unwrap();
 
+    #[allow(clippy::disallowed_methods)]
     let mut tx = db.begin().await.unwrap();
     sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
         .execute(&mut *tx)
@@ -266,6 +267,7 @@ async fn events_isolated_without_scoping(db: PgPool) {
     .await
     .unwrap();
 
+    #[allow(clippy::disallowed_methods)]
     let mut tx = db.begin().await.unwrap();
     sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
         .execute(&mut *tx)
@@ -353,6 +355,7 @@ async fn stock_items_isolated_without_scoping(db: PgPool) {
     .await
     .unwrap();
 
+    #[allow(clippy::disallowed_methods)]
     let mut tx = db.begin().await.unwrap();
     sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
         .execute(&mut *tx)
@@ -440,6 +443,7 @@ async fn recipes_isolated_without_scoping(db: PgPool) {
     .await
     .unwrap();
 
+    #[allow(clippy::disallowed_methods)]
     let mut tx = db.begin().await.unwrap();
     sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
         .execute(&mut *tx)
@@ -528,6 +532,7 @@ async fn grocery_items_isolated_without_scoping(db: PgPool) {
     .await
     .unwrap();
 
+    #[allow(clippy::disallowed_methods)]
     let mut tx = db.begin().await.unwrap();
     sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
         .execute(&mut *tx)
@@ -616,6 +621,7 @@ async fn messages_isolated_without_scoping(db: PgPool) {
     .await
     .unwrap();
 
+    #[allow(clippy::disallowed_methods)]
     let mut tx = db.begin().await.unwrap();
     sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
         .execute(&mut *tx)
@@ -703,6 +709,7 @@ async fn budget_entries_isolated_without_scoping(db: PgPool) {
     .await
     .unwrap();
 
+    #[allow(clippy::disallowed_methods)]
     let mut tx = db.begin().await.unwrap();
     sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
         .execute(&mut *tx)
@@ -805,6 +812,7 @@ async fn event_assignees_isolated_without_scoping(db: PgPool) {
     .await
     .unwrap();
 
+    #[allow(clippy::disallowed_methods)]
     let mut tx = db.begin().await.unwrap();
     sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
         .execute(&mut *tx)
@@ -894,6 +902,7 @@ async fn message_read_state_isolated_without_scoping(db: PgPool) {
     .await
     .unwrap();
 
+    #[allow(clippy::disallowed_methods)]
     let mut tx = db.begin().await.unwrap();
     sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
         .execute(&mut *tx)

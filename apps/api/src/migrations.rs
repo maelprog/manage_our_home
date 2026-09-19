@@ -311,6 +311,9 @@ impl LoggingMigrate<'_> {
         let per_statement = if migration.no_tx {
             execute_and_count(self.0, table_name, migration).await?
         } else {
+            // A boot-time pass on its own one-connection pool: no client
+            // hang-up can cancel it, so `db::begin` has nothing to add.
+            #[allow(clippy::disallowed_methods)]
             let mut tx = self.0.begin().await?;
             let counts = execute_and_count(&mut tx, table_name, migration).await?;
             tx.commit().await?;

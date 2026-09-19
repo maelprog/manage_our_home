@@ -1,0 +1,18 @@
+# Transactions in this crate are opened by `db::begin` (#188), whose
+# `BEGIN` survives the caller being cancelled. Opening one directly can hand
+# a connection back to the pool with a transaction still open on the
+# server; see `db::begin` for how. The helper itself, the migration pass
+# and the tests, none of which a client hang-up can cancel, opt out call by
+# call with `#[allow(clippy::disallowed_methods)]` (#191).
+disallowed-methods = [
+    { path = "sqlx::Pool::begin", reason = "use `db::begin`: a direct `BEGIN` cancelled mid-flight leaves a transaction open on a pooled connection (#188)" },
+    { path = "sqlx::Pool::try_begin", reason = "use `db::begin`: a direct `BEGIN` cancelled mid-flight leaves a transaction open on a pooled connection (#188)" },
+    { path = "sqlx::Pool::begin_with", reason = "use `db::begin`: a direct `BEGIN` cancelled mid-flight leaves a transaction open on a pooled connection (#188)" },
+    { path = "sqlx::Pool::try_begin_with", reason = "use `db::begin`: a direct `BEGIN` cancelled mid-flight leaves a transaction open on a pooled connection (#188)" },
+    { path = "sqlx::Acquire::begin", reason = "use `db::begin`: a direct `BEGIN` cancelled mid-flight leaves a transaction open on a pooled connection (#188)" },
+    { path = "sqlx::Connection::begin", reason = "use `db::begin`: a direct `BEGIN` cancelled mid-flight leaves a transaction open on a pooled connection (#188)" },
+    { path = "sqlx::Connection::begin_with", reason = "use `db::begin`: a direct `BEGIN` cancelled mid-flight leaves a transaction open on a pooled connection (#188)" },
+    # `#[doc(hidden)]` but public: what `Pool::begin` and `Connection::begin`
+    # call underneath.
+    { path = "sqlx::Transaction::begin", reason = "use `db::begin`: a direct `BEGIN` cancelled mid-flight leaves a transaction open on a pooled connection (#188)" },
+]
