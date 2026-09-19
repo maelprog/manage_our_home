@@ -1,4 +1,5 @@
 use axum::extract::{Multipart, Path, State};
+use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
 use serde::Serialize;
@@ -7,7 +8,9 @@ use uuid::Uuid;
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::groups::require_role;
-use crate::storage::{sniff_and_validate_mime, Storage, MAX_ATTACHMENT_SIZE_BYTES};
+use crate::storage::{
+    sniff_and_validate_mime, Storage, MAX_ATTACHMENT_SIZE_BYTES, MAX_UPLOAD_BODY_BYTES,
+};
 use crate::AppState;
 
 #[derive(Serialize)]
@@ -39,6 +42,7 @@ pub async fn upload_attachment(
     State(state): State<AppState>,
     auth: AuthUser,
     Path((group_id, event_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
     mut multipart: Multipart,
 ) -> AppResult<impl IntoResponse> {
     // First transaction, before the body: a non-member (403) or an unknown
@@ -66,22 +70,34 @@ pub async fn upload_attachment(
             AppError::UploadsBusy
         })?;
 
+    // The file goes into one buffer sized before the first chunk (#249):
+    // `Field::bytes` grows its buffer by doubling, which leaves a file at
+    // the 20 MiB cap in a 32 MiB allocation.
     let mut filename = None;
     let mut bytes = None;
-    while let Some(field) = multipart
+    while let Some(mut field) = multipart
         .next_field()
         .await
         .map_err(|_| AppError::BadRequest("invalid_multipart".into()))?
     {
         if field.name() == Some("file") {
             filename = field.file_name().map(|s| s.to_string());
-            let data = field
-                .bytes()
+            let mut file = Vec::with_capacity(file_buffer_capacity(&headers));
+            while let Some(chunk) = field
+                .chunk()
                 .await
-                .map_err(|_| AppError::BadRequest("invalid_multipart".into()))?;
-            bytes = Some(data);
+                .map_err(|_| AppError::BadRequest("invalid_multipart".into()))?
+            {
+                file.extend_from_slice(&chunk);
+            }
+            // Takes the `Vec` over, no copy.
+            bytes = Some(bytes::Bytes::from(file));
         }
     }
+    // The multipart reader keeps a buffer of what it read, about 0.5 MiB
+    // for a file at the cap: freed here rather than once the object is
+    // written (#249).
+    drop(multipart);
     let filename = filename.ok_or(AppError::BadRequest("missing_file".into()))?;
     let bytes = bytes.ok_or(AppError::BadRequest("missing_file".into()))?;
 
@@ -148,9 +164,11 @@ pub async fn upload_attachment(
     .fetch_one(&mut *tx)
     .await?;
 
+    // The buffer itself goes to the storage, not a copy of it (#249).
+    let size_bytes = bytes.len() as i64;
     state
         .storage
-        .put_object(&storage_key, bytes.to_vec(), mime_type)
+        .put_object(&storage_key, bytes, mime_type)
         .await
         .map_err(AppError::Internal)?;
 
@@ -169,7 +187,7 @@ pub async fn upload_attachment(
             event_id,
             filename,
             mime_type: mime_type.to_string(),
-            size_bytes: bytes.len() as i64,
+            size_bytes,
         }),
     ))
 }
@@ -301,4 +319,73 @@ pub(crate) async fn delete_objects(storage: &Storage, keys: &[String]) -> AppRes
         .delete_objects(keys)
         .await
         .map_err(AppError::Internal)
+}
+
+/// How much room to make for the file before reading it (#249).
+///
+/// The declared body, which the file is part of, and never more than the
+/// route's body limit: a client declaring a gigabyte and sending ten bytes
+/// gets a buffer of the limit, not of its claim. Without a usable
+/// `Content-Length`, the limit itself — one buffer of it is what the
+/// upload gate budgets for each upload anyway.
+fn file_buffer_capacity(headers: &HeaderMap) -> usize {
+    headers
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .map_or(MAX_UPLOAD_BODY_BYTES, |declared| {
+            usize::try_from(declared).map_or(MAX_UPLOAD_BODY_BYTES, |declared| {
+                declared.min(MAX_UPLOAD_BODY_BYTES)
+            })
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{header, HeaderMap};
+
+    use crate::storage::MAX_UPLOAD_BODY_BYTES;
+
+    fn with_content_length(value: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_LENGTH, value.parse().unwrap());
+        headers
+    }
+
+    #[test]
+    fn the_file_buffer_is_sized_from_the_declared_body() {
+        assert_eq!(
+            super::file_buffer_capacity(&with_content_length("4096")),
+            4096
+        );
+    }
+
+    #[test]
+    fn a_declared_body_past_the_limit_gets_no_more_than_the_limit() {
+        for declared in [MAX_UPLOAD_BODY_BYTES + 1, 10 * MAX_UPLOAD_BODY_BYTES] {
+            assert_eq!(
+                super::file_buffer_capacity(&with_content_length(&declared.to_string())),
+                MAX_UPLOAD_BODY_BYTES
+            );
+        }
+        assert_eq!(
+            super::file_buffer_capacity(&with_content_length("18446744073709551616")),
+            MAX_UPLOAD_BODY_BYTES
+        );
+    }
+
+    /// No length, or one that is not a number: the body limit is the only
+    /// bound known, and one buffer of it is what the upload gate counts for
+    /// each upload anyway.
+    #[test]
+    fn an_undeclared_or_unreadable_length_gets_the_limit() {
+        assert_eq!(
+            super::file_buffer_capacity(&HeaderMap::new()),
+            MAX_UPLOAD_BODY_BYTES
+        );
+        assert_eq!(
+            super::file_buffer_capacity(&with_content_length("beaucoup")),
+            MAX_UPLOAD_BODY_BYTES
+        );
+    }
 }
