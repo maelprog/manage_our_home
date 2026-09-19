@@ -20,7 +20,10 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// Uploads one process holds at once. At `MAX_UPLOAD_BODY_BYTES` (20 MiB
-/// plus framing) that is about 160 MiB at worst, on a 4 GB host.
+/// plus framing) that is about 160 MiB at worst, on a 4 GB host — if each
+/// upload holds one copy of its body. apps/web does, and its test
+/// `a_full_pool_of_uploads_at_the_cap_holds_one_copy_of_each` measures a
+/// full pool at the cap (#246). apps/api is not measured.
 pub const GLOBAL_UPLOADS: usize = 8;
 
 /// Uploads one account may have in flight at once.
