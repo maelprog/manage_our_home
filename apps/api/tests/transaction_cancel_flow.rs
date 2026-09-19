@@ -348,6 +348,7 @@ async fn a_connection_returned_inside_a_transaction_is_ended(
 
     gate.hold();
     {
+        #[allow(clippy::disallowed_methods)]
         let mut fut = pin!(pool.begin());
         tokio::select! {
             biased;

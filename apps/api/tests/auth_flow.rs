@@ -977,6 +977,7 @@ async fn the_three_login_regimes_answer_alike_and_take_comparable_time(db: PgPoo
     // Regime (b): Google-only — a row with no password hash at all. The
     // oauth identity goes in the same transaction because `users` refuses
     // a row with no auth method at all (deferred trigger, migration 0001).
+    #[allow(clippy::disallowed_methods)]
     let mut tx = db.begin().await.unwrap();
     let google_only = sqlx::query_scalar!(
         "INSERT INTO users (email, password_hash, display_name, email_verified) VALUES ($1, NULL, 'Google Only', true) RETURNING id",

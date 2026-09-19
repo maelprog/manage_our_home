@@ -81,6 +81,7 @@ async fn tx_as_role<'a>(
     .unwrap();
     set_owner(db, &role).await;
 
+    #[allow(clippy::disallowed_methods)]
     let mut tx = db.begin().await.unwrap();
     sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
         .execute(&mut *tx)

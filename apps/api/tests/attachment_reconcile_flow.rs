@@ -312,6 +312,7 @@ async fn a_connection_that_does_not_bypass_rls_aborts_before_listing(db: PgPool)
     .await
     .unwrap();
 
+    #[allow(clippy::disallowed_methods)]
     let mut tx = db.begin().await.unwrap();
     sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
         .execute(&mut *tx)
