@@ -77,7 +77,9 @@
 	#
 	# BREACH: the only secret this application ever puts in a compressible
 	# body is the password-reset token, reflected into a hidden input by
-	# apps/web/src/routes/auth/reset_password.rs. The attack needs a second,
+	# apps/web/src/routes/auth/reset_password.rs when it re-renders the form
+	# after a refused POST (since #142 the landing GET carries no token: it
+	# rides in the link's fragment, read client-side). The attack needs a second,
 	# attacker-chosen string in that same response to compress against; that
 	# page has none (its one variable is the token, and it must parse as a
 	# UUID), and the token is single-use and expires after 24 h

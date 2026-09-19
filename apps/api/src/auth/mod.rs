@@ -327,6 +327,15 @@ pub async fn logout(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// The link mailed by `forgot_password`. The token rides in the fragment,
+/// never the query string (#142): a browser does not send the fragment to
+/// the server, so it stays out of every access log along the way and out of
+/// any `Referer`. apps/web's `/reset-password` page moves it into the POST
+/// body with a few lines of inline script.
+fn password_reset_link(frontend_base_url: &str, token: Uuid) -> String {
+    format!("{frontend_base_url}/reset-password#token={token}")
+}
+
 /// AC #4: identical response whether or not the account exists, to avoid
 /// leaking which emails are registered (anti-enumeration).
 pub async fn forgot_password(
@@ -356,7 +365,7 @@ pub async fn forgot_password(
         // Lands on apps/web's /reset-password form (which POSTs the new
         // password to this API's /auth/password/reset), not on the API
         // endpoint itself (POST-only — a GET there would 405).
-        let link = format!("{}/reset-password?token={token}", state.frontend_base_url);
+        let link = password_reset_link(&state.frontend_base_url, token);
         if let Err(e) = state
             .email
             .send(
@@ -710,6 +719,23 @@ pub const _ACCOUNT_DELETION_GRACE_DAYS: i64 = ACCOUNT_DELETION_GRACE_DAYS;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn password_reset_link_carries_the_token_in_the_fragment() {
+        let token = Uuid::parse_str("5f0c7a3e-2b1d-4c8e-9a6f-0d3b2e1c4a5b").unwrap();
+        assert_eq!(
+            password_reset_link("https://maison.example", token),
+            "https://maison.example/reset-password#token=5f0c7a3e-2b1d-4c8e-9a6f-0d3b2e1c4a5b"
+        );
+    }
+
+    #[test]
+    fn password_reset_link_has_no_query_string() {
+        let link = password_reset_link("http://localhost:3000", Uuid::new_v4());
+        let before_fragment = link.split('#').next().unwrap();
+        assert!(!before_fragment.contains('?'), "{link}");
+        assert_eq!(before_fragment, "http://localhost:3000/reset-password");
+    }
 
     /// `me`'s only logic is reshaping an already-extracted `AuthUser` into
     /// `MeResponse` — the 401 path is entirely the `AuthUser` extractor's
