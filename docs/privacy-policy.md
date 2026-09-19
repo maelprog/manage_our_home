@@ -77,7 +77,8 @@ suppression automatique n'est en place aujourd'hui.
   groupes et rôle) : tant que le compte existe, puis 30 jours de grâce
   après une demande de suppression, à l'issue desquels le compte est
   anonymisé (voir ci-dessous).
-- **Sessions de connexion** : une session vaut 30 jours. Sa trace (dates
+- **Sessions de connexion** : une session vaut 30 jours au plus, et prend
+  fin plus tôt si elle reste 7 jours sans activité. Sa trace (dates
   de création, de dernière activité, d'expiration et de révocation) reste
   après l'expiration ou la déconnexion, jusqu'à l'anonymisation du compte.
 - **Connexion avec Google** : l'identifiant, l'email et le nom de votre
