@@ -100,6 +100,42 @@
 		max_size 21037056
 	}
 
+	# Any answer to a request that carries a body must reach the client when
+	# it is sent, whatever its status (#244). It is the same Go rule as
+	# `close_on_408` above, but not only for the 408: an application may
+	# answer before reading the body at all — 401 without a session, 403,
+	# 503 from the upload gate, apps/web's 303 to /login — and on a body
+	# under 256 KiB, Go's server then reads and discards the rest before the
+	# response goes out. Caddy's own 502, when an application is down, is
+	# held the same way. Measured on v2.11.4 over HTTP/1.1, against an
+	# upstream that answers without reading, with a raw-socket client
+	# sending 100 kB at 2 kB/s: 401, 403, 503, 303 and the 502 got no
+	# answer within 20 s, where the 408 (the only one `close_on_408`
+	# matched) came after the first 100 bytes, within 0.06 s; with this
+	# rule all of them do.
+	#
+	# Keyed on the request, not the status: which responses come before the
+	# body is read is the applications' business, not something to list
+	# here. The cost is one TCP connection per HTTP/1.1 request with a
+	# body, where keep-alive would have reused it; GET, HEAD and OPTIONS
+	# keep it. A GET that does carry a body is not matched — only its own
+	# sender waits.
+	#
+	# HTTP/1.1 only. HTTP/2 does not hold these answers (same upstream, the
+	# 401 came back long before the body was all sent), and there Go turns
+	# `Connection: close` into a GOAWAY: every POST would end the one
+	# multiplexed connection the page's other requests share (measured:
+	# without `protocol http/1.1`, curl got a GOAWAY after each POST over
+	# h2 and reconnected; with it, it reuses the connection).
+	#
+	# Set before `reverse_proxy` runs, so its removal of the upstream's
+	# hop-by-hop headers does not reach it.
+	@has_body {
+		not method GET HEAD OPTIONS
+		protocol http/1.1
+	}
+	header @has_body Connection close
+
 	# `X-Forwarded-For` (#178): nothing to configure here, but the behaviour
 	# is load-bearing, so it is written down. Measured against `caddy:2`
 	# (v2.11.4) with this same `handle` layout, on both paths:
