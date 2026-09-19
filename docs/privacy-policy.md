@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-07-08 (Epic #12).
+Dernière mise à jour : 2026-09-19.
 
 ## Qui est responsable de vos données ?
 
@@ -28,12 +28,17 @@ résumé :
 | Catégorie | Exemples | Base légale |
 |---|---|---|
 | Compte | email, mot de passe (haché), nom affiché | Exécution du contrat (fournir le service) |
-| Agenda | événements, tâches, pièces jointes | Exécution du contrat |
+| Connexion avec Google | identifiant de votre compte Google, email et nom de votre profil Google, jeton de rafraîchissement délivré par Google (chiffré) | Exécution du contrat (vous choisissez ce mode de connexion) |
+| Vérification d'email et réinitialisation du mot de passe | jetons à usage unique, valables 24 h, envoyés par email | Exécution du contrat |
+| Protection de la connexion | adresse IP (en IPv6, réduite à son préfixe /64) et email saisi à chaque tentative de connexion par mot de passe, gardés en mémoire du serveur seulement, jamais en base | Intérêt légitime (limiter les essais de mot de passe) |
+| Invitations | adresse email de la personne invitée (si le membre qui invite la saisit), lien d'invitation valable 7 jours | Intérêt légitime (permettre à un membre d'inviter un proche dans son groupe) |
+| Agenda | événements, tâches, pièces jointes, membres assignés à un événement | Exécution du contrat |
+| Rappels d'événements | délai choisi avant l'événement ; l'email de rappel porte le titre et la date de l'événement | Exécution du contrat |
 | Stocks / recettes / liste de courses | articles, recettes, ingrédients | Exécution du contrat |
 | Budget | dépenses saisies manuellement | Exécution du contrat |
-| Messagerie | messages du fil familial (chiffrés au repos) | Exécution du contrat |
+| Messagerie | messages du fil familial (chiffrés au repos), date de votre dernière lecture du fil | Exécution du contrat |
 | Import calendrier Google | URL de flux iCal (chiffrée), événements importés | Consentement explicite (vous fournissez volontairement l'URL) |
-| Logs d'audit | actions sensibles (connexion, suppression, export) | Intérêt légitime (sécurité, traçabilité) |
+| Logs d'audit | actions sensibles : export, demande, annulation et exécution de la suppression d'un compte, suppression d'un groupe, transfert de propriété, changement de rôle, actions d'administration (les connexions ne sont pas journalisées) | Intérêt légitime (sécurité, traçabilité) |
 
 ## Avec qui vos données sont-elles partagées ?
 
@@ -41,18 +46,27 @@ Aucun tiers commercial. Le service est self-hosted : aucune donnée n'est
 vendue ni partagée à des fins publicitaires. Les seuls flux sortants
 possibles sont :
 
-- **Google** (import calendrier) : uniquement si vous configurez
-  volontairement un import via une URL de flux iCal privée que vous
-  fournissez vous-même — aucun accès n'est initié sans cette action
-  explicite de votre part.
+- **Google** (connexion) : uniquement si vous choisissez « Se connecter
+  avec Google ». Votre navigateur passe alors par Google, puis le serveur
+  échange auprès de Google le code d'autorisation obtenu et lit votre
+  profil (identifiant, email, nom). Google sait donc que vous vous
+  connectez à ce service.
+- **Hébergeur du flux calendrier** (import calendrier, en pratique Google
+  Agenda) : uniquement si un administrateur ou le propriétaire du groupe
+  configure un import avec une URL de flux iCal privée fournie
+  volontairement. Le serveur télécharge le flux à cette URL chaque fois
+  qu'un membre du groupe lance un import ; aucun import ne tourne en
+  arrière-plan.
 - **Fournisseur d'envoi d'email transactionnel** (vérification d'email,
-  réinitialisation de mot de passe) : un relais SMTP basé en UE
+  réinitialisation de mot de passe, invitation à un groupe, rappel
+  d'événement) : un relais SMTP basé en UE
   (voir `docs/architecture.md`), sous-traitant documenté au registre des
   traitements.
 
-Aucune autre donnée ne quitte le serveur applicatif (les modèles IA de
-suggestion de recettes / OCR sont exécutés localement via Ollama, jamais
-envoyés à un tiers).
+Aucune autre donnée ne quitte le serveur applicatif. Les suggestions de
+recettes sont calculées sur le serveur par des règles fixes (ingrédients en
+stock, repas récents, saison) : aucun modèle d'intelligence artificielle
+n'est appelé, ni sur le serveur ni chez un tiers.
 
 ## Combien de temps vos données sont-elles conservées ?
 
