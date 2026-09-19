@@ -6,9 +6,12 @@ et la table des routes de `apps/api/src/lib.rs`. Un registre des
 traitements est requis dès qu'un traitement de données personnelles est
 effectué, y compris à petite échelle — voir `docs/architecture.md` §10.
 
-**Responsable de traitement** : `placeholder_name` (voir
+**Responsable de traitement** : le porteur du projet, personne physique —
+[nom du responsable de traitement — à renseigner avant la mise en ligne],
+joignable à [adresse de contact — à renseigner avant la mise en ligne] (voir
 `docs/architecture.md`, "Questions résolues" #3, et
-`docs/privacy-policy.md`).
+`docs/privacy-policy.md`). Ces deux valeurs sont des placeholders jusqu'à
+l'ouverture publique : voir `docs/v2-deployment.md` #16.
 
 **Sous-traitants (destinataires)** :
 - Aucun tiers commercial pour le stockage/traitement du contenu applicatif
