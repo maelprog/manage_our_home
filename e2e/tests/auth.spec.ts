@@ -97,7 +97,13 @@ test.describe("Auth — forgot → reset → login with new password", () => {
     await expect(page.getByText("Si ce compte existe, un email a été envoyé.")).toBeVisible();
 
     const resetToken = await fetchPasswordResetToken(email);
-    await page.goto(`/reset-password?token=${resetToken}`);
+    // The emailed link carries the token in the fragment (#142): the
+    // browser never sends it, so it stays out of the request line, and the
+    // page scrubs it from the address bar once it has read it.
+    const landing = page.waitForRequest((req) => req.url().includes("/reset-password"));
+    await page.goto(`/reset-password#token=${resetToken}`);
+    expect((await landing).url()).not.toContain(resetToken);
+    await expect(page).toHaveURL(/\/reset-password$/);
     await page.getByLabel("Nouveau mot de passe").fill(newPassword);
     await page.getByRole("button", { name: "Réinitialiser" }).click();
     await expect(page.getByText("Mot de passe mis à jour")).toBeVisible();
@@ -107,6 +113,14 @@ test.describe("Auth — forgot → reset → login with new password", () => {
     await page.getByRole("textbox", { name: "Mot de passe" }).fill(newPassword);
     await page.getByRole("button", { name: "Se connecter" }).click();
     await expect(page).toHaveURL("/");
+  });
+
+  test("a link without a token in its fragment shows the invalid-link notice", async ({
+    page,
+  }) => {
+    await page.goto("/reset-password");
+    await expect(page.getByText("Ce lien de réinitialisation n'existe pas.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Réinitialiser" })).toHaveCount(0);
   });
 });
 
