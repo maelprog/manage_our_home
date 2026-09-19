@@ -900,12 +900,15 @@ mod tests {
             mib(held)
         );
         // One body each, plus 1.5 MiB each for the buffers it passes
-        // through in apps/web: the connection's read buffer, which hyper
-        // grows to about 400 KiB, and multer's parse buffer, which grows as
-        // much while the socket is read faster than it parses. When #250
-        // was fixed, a full pool peaked at 168.4 to 169.2 MiB against this
-        // 172.5, about 1.1 MiB per upload, whatever the worker count. A
-        // doubled buffer costs 12 MiB more per upload, a second copy 20.
+        // through in apps/web: mostly two buffers of about half a MiB
+        // each, most likely the connection's read buffer, which hyper
+        // grows as reads fill it, and multer's parse buffer, which grows
+        // while the socket is read faster than it is parsed. When #250 was
+        // fixed, a full pool peaked at 168.4 to 170.3 MiB against this
+        // 172.5, about 1.1 to 1.3 MiB per upload: the peak depends on the
+        // size of the client's writes (the 16 KiB writes here gave the
+        // lowest), not on the worker count. A doubled buffer costs 12 MiB
+        // more per upload, a second copy 20.
         let budget = pool * (body + 1024 * 1024 + 512 * 1024);
         assert!(
             held <= budget,
