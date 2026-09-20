@@ -450,10 +450,18 @@ pub const EMAIL_FIELD_MAX_CHARS: usize = 80;
 /// address, a newline in either would let the sender close the paragraph and
 /// open a section of their own — `-- Ce que vous pouvez faire --`, a
 /// controller of their choosing, a contact address they own. That is a
-/// forgery the reader has no way to spot, so every whitespace run (newlines
-/// included) collapses to a single space, non-whitespace control characters
-/// are dropped, and the result is cut at [`EMAIL_FIELD_MAX_CHARS`] with an
-/// ellipsis marking the cut.
+/// forgery the reader has no way to spot, so the value is flattened, stripped
+/// and bounded before it is interpolated.
+///
+/// In that order, which is worth stating because it shows through: whitespace
+/// runs (newlines included) collapse to one space and the ends are trimmed
+/// **first**, then the control characters that are left are dropped, then the
+/// result is cut at [`EMAIL_FIELD_MAX_CHARS`] with an ellipsis marking the
+/// cut. A control character sitting between or before words is therefore
+/// dropped after the space around it has been counted: `"a \u{7} b"` comes out
+/// as `"a  b"` and `"\u{7} Alice"` as `" Alice"`. That is cosmetic, and it is
+/// the only thing the order costs — no line break, and nothing past the
+/// bound, survives either way, which is the whole guarantee.
 pub fn sanitize_email_line(value: &str) -> String {
     let flat: String = value
         .split_whitespace()
@@ -1107,9 +1115,11 @@ mod tests {
 
     #[test]
     fn invitation_email_carries_the_controller_identity_and_contact() {
-        // Art. 14(1)(a)(b). Both are still `[… — à renseigner avant la mise en
-        // ligne]`, and they are exactly the two the RGPD documents carry: the
-        // day those are filled, this body is filled with them (#131).
+        // Art. 14(1)(a): the controller's identity *and* contact details —
+        // 14(1)(b) is the data protection officer, which this service has no
+        // reason to appoint. Both are still `[… — à renseigner avant la mise
+        // en ligne]`, and they are exactly the two the RGPD documents carry:
+        // the day those are filled, this body is filled with them (#131).
         let body = invitation_sample();
         assert_eq!(release_placeholders(&body), pending_release_values());
     }
