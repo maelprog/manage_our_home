@@ -2399,6 +2399,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "serde",
+ "unicode-properties",
  "uuid",
 ]
 

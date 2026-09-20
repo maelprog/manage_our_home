@@ -8,6 +8,7 @@
 
 use chrono::{DateTime, Duration, Utc};
 use chrono_tz::Europe::Paris;
+use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 
 /// Mirror of `apps/api/src/jobs/account_purge.rs::PURGE_GRACE_DAYS` (and of
 /// `apps/api/src/auth/mod.rs::ACCOUNT_DELETION_GRACE_DAYS`): how long a deletion
@@ -453,22 +454,39 @@ pub const EMAIL_FIELD_MAX_CHARS: usize = 80;
 /// forgery the reader has no way to spot, so the value is flattened, stripped
 /// and bounded before it is interpolated.
 ///
-/// In that order, which is worth stating because it shows through: whitespace
-/// runs (newlines included) collapse to one space and the ends are trimmed
-/// **first**, then the control characters that are left are dropped, then the
-/// result is cut at [`EMAIL_FIELD_MAX_CHARS`] with an ellipsis marking the
-/// cut. A control character sitting between or before words is therefore
+/// The characters dropped are the two Unicode categories the reader cannot
+/// see: **Cc** (control) and **Cf** (format). Cf was missed at first (#269),
+/// because `char::is_control()` answers for Cc alone — so `U+202E`
+/// RIGHT-TO-LEFT OVERRIDE and `U+200B` ZERO WIDTH SPACE went through
+/// untouched. Neither opens a line, so the guarantee above was never at
+/// stake; what they do is make the rendered line disagree with the bytes —
+/// an override reverses the rest of the line in the reader's client, a zero
+/// width space splits a word or an address in two leaving no mark. A name
+/// containing a `U+200D` ZERO WIDTH JOINER loses the joiner, so an emoji
+/// sequence held together by one is shown as its separate glyphs: the
+/// deliberate price of not keeping an invisible character we cannot vouch
+/// for. Nothing else is touched — accents, non-Latin scripts and the
+/// variation selectors that pick an emoji's presentation (`U+FE0F` is Mn,
+/// not Cf) all survive.
+///
+/// The order is worth stating because it shows through: whitespace runs
+/// (newlines included) collapse to one space and the ends are trimmed
+/// **first**, then the invisible characters that are left are dropped, then
+/// the result is cut at [`EMAIL_FIELD_MAX_CHARS`] with an ellipsis marking the
+/// cut. An invisible character sitting between or before words is therefore
 /// dropped after the space around it has been counted: `"a \u{7} b"` comes out
 /// as `"a  b"` and `"\u{7} Alice"` as `" Alice"`. That is cosmetic, and it is
 /// the only thing the order costs — no line break, and nothing past the
-/// bound, survives either way, which is the whole guarantee.
+/// bound, survives either way, which is the whole guarantee. The bound is
+/// measured *after* the drop, so padding a name with invisible characters
+/// neither pushes its visible tail past the cut nor earns it an ellipsis.
 pub fn sanitize_email_line(value: &str) -> String {
     let flat: String = value
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .chars()
-        .filter(|c| !c.is_control())
+        .filter(|c| !is_invisible(*c))
         .collect();
     if flat.chars().count() <= EMAIL_FIELD_MAX_CHARS {
         return flat;
@@ -476,6 +494,13 @@ pub fn sanitize_email_line(value: &str) -> String {
     let mut cut: String = flat.chars().take(EMAIL_FIELD_MAX_CHARS).collect();
     cut.push('…');
     cut
+}
+
+/// A character that renders as nothing, or as a change to how its neighbours
+/// render: Unicode category Cc (which is all `char::is_control()` answers
+/// for) or Cf. See [`sanitize_email_line`] for why the second half matters.
+fn is_invisible(c: char) -> bool {
+    c.is_control() || c.general_category() == GeneralCategory::Format
 }
 
 /// Body of the group-invitation email — the one place a person who has no
@@ -1207,6 +1232,105 @@ mod tests {
         // A name exactly at the bound is left alone.
         let exact = "é".repeat(EMAIL_FIELD_MAX_CHARS);
         assert_eq!(sanitize_email_line(&exact), exact);
+    }
+
+    #[test]
+    fn a_sanitized_email_field_drops_invisible_formatting_characters() {
+        // `char::is_control()` only covers the Cc category, so the whole Cf
+        // category used to travel intact into the body (#269). None of these
+        // opens a line, so the one-line guarantee held either way — what they
+        // do is lie about what the reader sees: a RIGHT-TO-LEFT OVERRIDE
+        // reverses the rest of the line in the reader's client, and a ZERO
+        // WIDTH SPACE cuts a word (an address, a name) in two without leaving
+        // a mark. Both were reproduced on the shipped sanitizer.
+        assert_eq!(sanitize_email_line("Alice\u{202e}Martin"), "AliceMartin");
+        assert_eq!(sanitize_email_line("ali\u{200b}ce"), "alice");
+        // The rest of the category, each one invisible and each one reachable
+        // through a display name or a group name.
+        for invisible in [
+            '\u{00ad}',  // SOFT HYPHEN
+            '\u{061c}',  // ARABIC LETTER MARK
+            '\u{200b}',  // ZERO WIDTH SPACE
+            '\u{200c}',  // ZERO WIDTH NON-JOINER
+            '\u{200d}',  // ZERO WIDTH JOINER
+            '\u{200e}',  // LEFT-TO-RIGHT MARK
+            '\u{200f}',  // RIGHT-TO-LEFT MARK
+            '\u{202a}',  // LEFT-TO-RIGHT EMBEDDING
+            '\u{202b}',  // RIGHT-TO-LEFT EMBEDDING
+            '\u{202c}',  // POP DIRECTIONAL FORMATTING
+            '\u{202d}',  // LEFT-TO-RIGHT OVERRIDE
+            '\u{202e}',  // RIGHT-TO-LEFT OVERRIDE
+            '\u{2060}',  // WORD JOINER
+            '\u{2066}',  // LEFT-TO-RIGHT ISOLATE
+            '\u{2067}',  // RIGHT-TO-LEFT ISOLATE
+            '\u{2068}',  // FIRST STRONG ISOLATE
+            '\u{2069}',  // POP DIRECTIONAL ISOLATE
+            '\u{feff}',  // ZERO WIDTH NO-BREAK SPACE (BOM)
+            '\u{e0041}', // TAG LATIN CAPITAL LETTER A
+        ] {
+            assert_eq!(
+                sanitize_email_line(&format!("ab{invisible}cd")),
+                "abcd",
+                "U+{:04X} survived the sanitizer",
+                invisible as u32
+            );
+        }
+    }
+
+    #[test]
+    fn a_sanitized_email_field_keeps_the_names_people_actually_have() {
+        // The filter drops two Unicode categories, not "anything unusual": a
+        // name written with accents, in a non-Latin script, or carrying an
+        // emoji with its variation selector (U+FE0F is Mn, not Cf) must come
+        // out untouched, or the sanitizer turns into a script test.
+        for name in [
+            "Zoé Lefèvre-Ngô",
+            "Đặng Thị Hồng",
+            "Ελένη Παπαδοπούλου",
+            "Алексей Иванов",
+            "田中 陽子",
+            "نور الهدى",
+            "Maison ❤\u{fe0f}",
+        ] {
+            assert_eq!(sanitize_email_line(name), name);
+        }
+    }
+
+    #[test]
+    fn invisible_characters_are_dropped_before_the_bound_is_measured() {
+        // The bound is measured on what is left, so padding a name with
+        // invisible characters cannot push its visible tail past the cut —
+        // nor make a name that fits look over-long and gain an ellipsis.
+        let padded: String = "é"
+            .repeat(EMAIL_FIELD_MAX_CHARS)
+            .chars()
+            .flat_map(|c| [c, '\u{200b}'])
+            .collect();
+        assert_eq!(
+            sanitize_email_line(&padded),
+            "é".repeat(EMAIL_FIELD_MAX_CHARS)
+        );
+    }
+
+    #[test]
+    fn invitation_email_carries_no_invisible_formatting_from_its_two_fields() {
+        // End of the road for #269: whatever a member types as their display
+        // name or their group name, the body that leaves the service's own
+        // `From` holds no character the reader cannot see.
+        let body = invitation_email_body(
+            "Famille\u{202e}Dupont",
+            "Al\u{200b}ice\u{200d}Martin",
+            INVITE_LINK,
+            POLICY_URL,
+        );
+        assert!(
+            !body
+                .chars()
+                .any(|c| c == '\u{202e}' || c == '\u{200b}' || c == '\u{200d}'),
+            "an invisible formatting character reached the email body: {body:?}"
+        );
+        assert!(body.contains("FamilleDupont"), "{body}");
+        assert!(body.contains("AliceMartin"), "{body}");
     }
 
     #[test]
