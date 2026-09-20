@@ -64,8 +64,22 @@ impl EmailSender {
         format!("Cliquez sur ce lien pour réinitialiser votre mot de passe (valide 24h) : {link}")
     }
 
-    pub fn invitation_body(link: &str, group_name: &str) -> String {
-        format!("Vous avez été invité(e) à rejoindre le groupe « {group_name} » : {link}")
+    /// Unlike the two above, this one reaches somebody who has no account and
+    /// never asked for anything: art. 14 RGPD, and the notice it requires,
+    /// live in `manage_our_home_shared::validation::rgpd` next to the RGPD
+    /// documents' placeholders, which the body reuses (#134).
+    pub fn invitation_body(
+        link: &str,
+        group_name: &str,
+        inviter_display_name: &str,
+        privacy_policy_url: &str,
+    ) -> String {
+        manage_our_home_shared::validation::rgpd::invitation_email_body(
+            group_name,
+            inviter_display_name,
+            link,
+            privacy_policy_url,
+        )
     }
 }
 

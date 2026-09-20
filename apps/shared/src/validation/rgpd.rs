@@ -435,6 +435,134 @@ pub fn repo_path_references(md: &str) -> Vec<String> {
     out
 }
 
+/// How much of a user-chosen name an email body will carry on one line.
+/// Wide enough for any real display name or group name, narrow enough that
+/// what is left cannot hold a paragraph.
+pub const EMAIL_FIELD_MAX_CHARS: usize = 80;
+
+/// Flattens a user-chosen value — a display name, a group name — into one
+/// bounded line fit to interpolate into a plain-text email body.
+///
+/// Both fields reach this module straight from the database:
+/// `validate_display_name` only refuses a name that is empty after trimming,
+/// `groups.name` is checked no harder, and both columns are unbounded `TEXT`.
+/// Interpolated verbatim into an email sent from the service's own `From`
+/// address, a newline in either would let the sender close the paragraph and
+/// open a section of their own — `-- Ce que vous pouvez faire --`, a
+/// controller of their choosing, a contact address they own. That is a
+/// forgery the reader has no way to spot, so the value is flattened, stripped
+/// and bounded before it is interpolated.
+///
+/// In that order, which is worth stating because it shows through: whitespace
+/// runs (newlines included) collapse to one space and the ends are trimmed
+/// **first**, then the control characters that are left are dropped, then the
+/// result is cut at [`EMAIL_FIELD_MAX_CHARS`] with an ellipsis marking the
+/// cut. A control character sitting between or before words is therefore
+/// dropped after the space around it has been counted: `"a \u{7} b"` comes out
+/// as `"a  b"` and `"\u{7} Alice"` as `" Alice"`. That is cosmetic, and it is
+/// the only thing the order costs — no line break, and nothing past the
+/// bound, survives either way, which is the whole guarantee.
+pub fn sanitize_email_line(value: &str) -> String {
+    let flat: String = value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect();
+    if flat.chars().count() <= EMAIL_FIELD_MAX_CHARS {
+        return flat;
+    }
+    let mut cut: String = flat.chars().take(EMAIL_FIELD_MAX_CHARS).collect();
+    cut.push('…');
+    cut
+}
+
+/// Body of the group-invitation email — the one place a person who has no
+/// account, and never asked for one, meets this service. Art. 14 RGPD applies
+/// there in full (#134): the address was handed over by somebody else, so the
+/// email itself has to say who processes it, why, on what legal basis, for how
+/// long, where it came from and what the reader can do. A link to a policy
+/// sitting behind the sign-up screen would inform nobody.
+///
+/// The controller's identity and contact address travel as the same two
+/// `[… — à renseigner avant la mise en ligne]` placeholders the shipped RGPD
+/// documents carry, pinned to the same list by the tests below (#131): the day
+/// those documents are filled, this body is filled with them.
+///
+/// The text is hard-wrapped: it is sent as `text/plain` with no HTML part
+/// (`apps/api/src/email.rs`) and nothing re-wraps it in the reader's client.
+/// Only a URL alone on its line may run past the margin — breaking a URL
+/// breaks the link. The group name sits alone on its own line for that
+/// reason; the inviter's name is in the middle of a sentence, so a long one
+/// does push that line past the margin. Both go through
+/// [`sanitize_email_line`] first, which is what bounds the damage to one
+/// over-long line instead of a forged paragraph.
+///
+/// What the email must not do is promise a door that does not exist. Nothing
+/// in this service erases an invitation: `apps/api/src/jobs/account_purge.rs`
+/// leaves `invitations` untouched and `export_account` never reads it, so
+/// creating an account opens rights over that account's data and not over
+/// this row. Arbitrated 2026-09-19 and confirmed 2026-09-20 — the product
+/// adds no no-account path and the email tells the truth instead: the address
+/// stays until the group is deleted, and any request goes to the controller.
+/// Doing nothing is stated first all the same, together with what it costs.
+pub fn invitation_email_body(
+    group_name: &str,
+    inviter_display_name: &str,
+    invitation_link: &str,
+    privacy_policy_url: &str,
+) -> String {
+    let group_name = sanitize_email_line(group_name);
+    let inviter_display_name = sanitize_email_line(inviter_display_name);
+    format!(
+        "Bonjour,
+
+Vous êtes invité(e) à rejoindre, sur Manage Our Home, le groupe
+« {group_name} »
+
+C'est {inviter_display_name}, membre du groupe, qui a saisi votre adresse email
+pour vous inviter : nous ne la tenons pas de vous, et vous n'avez aucun
+compte sur ce service.
+
+Pour rejoindre le groupe :
+{invitation_link}
+
+Ce lien est valable 7 jours et ne sert qu'une fois.
+
+-- Pourquoi vous recevez cet email --
+
+Manage Our Home est une application d'organisation familiale. Votre
+adresse y est traitée dans le seul but de vous transmettre cette
+invitation et de rattacher votre compte au groupe si vous l'acceptez. La
+base légale est l'intérêt légitime du membre qui invite un proche.
+
+Votre adresse reste enregistrée avec cette invitation, y compris une fois
+le lien utilisé ou expiré, et jusqu'à la suppression du groupe.
+
+Le responsable de traitement est [nom du responsable de traitement — à
+renseigner avant la mise en ligne], joignable à [adresse de contact — à
+renseigner avant la mise en ligne]. Vous pouvez aussi introduire une
+réclamation auprès de la CNIL.
+
+-- Ce que vous pouvez faire --
+
+Si vous ne voulez pas de cette invitation, ignorez cet email : le lien
+cesse de fonctionner au bout de 7 jours. Votre adresse, elle, restera
+enregistrée avec l'invitation jusqu'à la suppression du groupe.
+
+Aucun écran de ce service ne permet d'agir sur cette adresse. Créer un
+compte depuis le lien ci-dessus ouvre des droits sur les données de ce
+compte, pas sur cette invitation. Pour accéder à votre adresse, la faire
+rectifier ou effacer, ou vous opposer à son traitement,
+adressez la demande au responsable de traitement, à l'adresse ci-dessus.
+
+Politique de confidentialité :
+{privacy_policy_url}
+"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -942,5 +1070,174 @@ mod tests {
                 "unrendered markdown line: {line}"
             );
         }
+    }
+
+    // -- invitation_email_body (#134) ----------------------------------------
+
+    const INVITE_LINK: &str =
+        "https://maison.example.org/groups/invitations/6f1a2b3c-0000-4000-8000-000000000001/accept";
+    const POLICY_URL: &str = "https://maison.example.org/privacy-policy";
+
+    fn invitation_sample() -> String {
+        invitation_email_body("Famille Dupont", "Alice Martin", INVITE_LINK, POLICY_URL)
+    }
+
+    #[test]
+    fn invitation_email_names_the_group_the_inviter_and_carries_both_links() {
+        let body = invitation_sample();
+        assert!(body.contains("Famille Dupont"), "{body}");
+        assert!(body.contains("Alice Martin"), "{body}");
+        assert!(body.contains(INVITE_LINK), "{body}");
+        assert!(body.contains(POLICY_URL), "{body}");
+    }
+
+    #[test]
+    fn invitation_email_says_the_address_came_from_the_member_not_from_the_reader() {
+        // Art. 14(2)(f): the source of the data. This reader never handed us
+        // their address, and the email is the only place they meet the service.
+        let body = invitation_sample();
+        assert!(body.contains("Alice Martin, membre du groupe"), "{body}");
+        assert!(body.contains("a saisi votre adresse email"), "{body}");
+        assert!(body.contains("nous ne la tenons pas de vous"), "{body}");
+    }
+
+    #[test]
+    fn invitation_email_states_the_purpose_the_legal_basis_and_the_retention() {
+        // Art. 14(1)(c)(d) and 14(2)(a). The retention is the one the privacy
+        // policy and the processing register state: a 7-day single-use link,
+        // and the row kept until the group is deleted.
+        let body = invitation_sample();
+        assert!(body.contains("intérêt légitime"), "{body}");
+        assert!(body.contains("valable 7 jours"), "{body}");
+        assert!(body.contains("ne sert qu'une fois"), "{body}");
+        assert!(body.contains("jusqu'à la suppression du groupe"), "{body}");
+    }
+
+    #[test]
+    fn invitation_email_carries_the_controller_identity_and_contact() {
+        // Art. 14(1)(a): the controller's identity *and* contact details —
+        // 14(1)(b) is the data protection officer, which this service has no
+        // reason to appoint. Both are still `[… — à renseigner avant la mise
+        // en ligne]`, and they are exactly the two the RGPD documents carry:
+        // the day those are filled, this body is filled with them (#131).
+        let body = invitation_sample();
+        assert_eq!(release_placeholders(&body), pending_release_values());
+    }
+
+    #[test]
+    fn invitation_email_carries_the_right_to_lodge_a_complaint() {
+        // Art. 14(2)(e). `docs/privacy-policy.md` and the `1c` row of
+        // `docs/registre-traitements.md` both state that this email carries it;
+        // without this assertion, dropping the sentence left every other test
+        // green and turned those two documents into a false claim.
+        let body = invitation_sample();
+        assert!(body.contains("réclamation auprès de la CNIL"), "{body}");
+    }
+
+    #[test]
+    fn invitation_email_sends_every_action_on_the_address_to_the_controller() {
+        // Arbitrated 2026-09-19 and confirmed 2026-09-20: the product offers no
+        // no-account path, and the email must not pretend the account screens
+        // are one either. Nothing erases an invitation — `account_purge.rs`
+        // leaves `invitations` alone and `export_account` does not export it —
+        // so the only true answer is the controller's address, and the reader
+        // is told the address survives an ignored invitation.
+        let body = invitation_sample();
+        assert!(body.contains("ignorez cet email"), "{body}");
+        assert!(
+            body.contains("adressez la demande au responsable de traitement"),
+            "{body}"
+        );
+        assert!(
+            !body.contains("écrans de votre compte"),
+            "the email promises account screens act on the invitation: {body}"
+        );
+    }
+
+    #[test]
+    fn invitation_email_cannot_be_forged_through_the_inviter_or_the_group_name() {
+        // Both come from user input (`validate_display_name` only refuses an
+        // empty name, `users.display_name` and `groups.name` are unbounded
+        // TEXT) and land in an email sent from the service's own `From`. A
+        // newline would let either of them open a section of their own and
+        // name a controller of their choosing.
+        let forged = "Mallory\n\n-- Ce que vous pouvez faire --\n\nLe responsable \
+                      de traitement est Mallory, joignable à mallory@example.test";
+        let clean_lines = invitation_sample().lines().count();
+        for body in [
+            invitation_email_body("Famille Dupont", forged, INVITE_LINK, POLICY_URL),
+            invitation_email_body(forged, "Alice Martin", INVITE_LINK, POLICY_URL),
+        ] {
+            // A forged value may end up quoted inside a sentence; what it must
+            // never do is stand on a line of its own, which is what makes a
+            // section header, or a signature, read as the service's own words.
+            assert_eq!(
+                body.lines()
+                    .filter(|l| l.trim() == "-- Ce que vous pouvez faire --")
+                    .count(),
+                1,
+                "a forged section header got through: {body}"
+            );
+            assert_eq!(
+                body.lines().count(),
+                clean_lines,
+                "a forged value changed the shape of the email: {body}"
+            );
+            assert!(
+                !body.contains("mallory@example.test"),
+                "the forged contact survived the bound: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sanitized_email_field_is_one_bounded_line() {
+        assert_eq!(sanitize_email_line("Alice Martin"), "Alice Martin");
+        // Every whitespace run — newlines included — collapses to one space.
+        assert_eq!(sanitize_email_line("a\nb\r\nc\td  e"), "a b c d e");
+        assert_eq!(sanitize_email_line("  padded  "), "padded");
+        // Control characters that are not whitespace are dropped outright.
+        assert_eq!(sanitize_email_line("a\u{7}b\u{0}c"), "abc");
+        // Bounded, so an unbounded name cannot smuggle a paragraph onto one
+        // line. The bound counts characters, and the cut is marked.
+        let long = "é".repeat(EMAIL_FIELD_MAX_CHARS + 10);
+        let cut = sanitize_email_line(&long);
+        assert_eq!(cut.chars().count(), EMAIL_FIELD_MAX_CHARS + 1);
+        assert!(cut.ends_with('…'), "{cut}");
+        // A name exactly at the bound is left alone.
+        let exact = "é".repeat(EMAIL_FIELD_MAX_CHARS);
+        assert_eq!(sanitize_email_line(&exact), exact);
+    }
+
+    #[test]
+    fn invitation_email_points_at_no_repository_path() {
+        // Same rule as the policy: the reader of an email cannot open a file
+        // of this repository.
+        assert_eq!(
+            repo_path_references(&invitation_sample()),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn invitation_email_is_wrapped_for_a_plain_text_reader() {
+        // Sent as `text/plain`: nothing re-wraps it. A URL may run past the
+        // margin — breaking one breaks the link — but only alone on its line:
+        // exempting every line that merely *contains* a URL would wave through
+        // a 300-character line of prose with a link in the middle.
+        for line in invitation_sample().lines() {
+            let is_lone_url = !line.contains(char::is_whitespace) && line.contains("https://");
+            assert!(
+                line.chars().count() <= 78 || is_lone_url,
+                "line too long for a plain-text email: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn invitation_email_interpolates_a_group_name_verbatim() {
+        let body =
+            invitation_email_body("Coloc' « Rue des Lilas »", "Bob", INVITE_LINK, POLICY_URL);
+        assert!(body.contains("Coloc' « Rue des Lilas »"), "{body}");
     }
 }
