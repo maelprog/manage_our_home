@@ -21,7 +21,41 @@ rationale in `architecture.md` ("v2 — Déploiement multi-famille").
 | 13 | Monitoring: centralized/queryable logs | missing | |
 | 14 | Rate-limiting on `/login`, `/register` | missing | Called out in `architecture.md` security section as "once exposed to internet" — that condition is now met. |
 | 15 | Secrets via sops in production | missing | Scaffolding exists conceptually in `architecture.md`; not yet wired to a real deployment. |
+| 16 | RGPD: nom et adresse de contact du responsable de traitement | missing | **À remplacer avant la mise en ligne** — bloquant (#131). Art. 13(1)(a) exige l'identité *et* les coordonnées du responsable. Le porteur du projet (personne physique) fournit son nom et une adresse relevée par une personne — pas un `noreply@` — au moment de l'ouverture publique. Voir la procédure ci-dessous. |
 
 **Immediate next step:** none of the above are done yet. Given the ~1 week
 horizon, items 4-9 (RGPD + backups) and 14 (rate-limiting) are the hard
 blockers for a responsible first deployment; 1-2 and 10-13 support them.
+
+## Item #16 — remplacer les placeholders du responsable de traitement
+
+`docs/privacy-policy.md` est compilé dans le binaire de `apps/api`
+(`include_str!`) et servi tel quel sur `GET /privacy-policy`, page publique
+liée depuis les pieds de page de connexion et d'inscription. Deux valeurs y
+sont encore des placeholders, sous la forme
+`[<quoi> — à renseigner avant la mise en ligne]` :
+
+- `nom du responsable de traitement`
+- `adresse de contact`
+
+Les mêmes deux placeholders figurent dans `docs/registre-traitements.md`, et
+`docs/architecture.md` ("Questions résolues" #3) y renvoie.
+
+Au moment de l'ouverture publique :
+
+1. Remplacer les deux placeholders dans `docs/privacy-policy.md` et
+   `docs/registre-traitements.md`, et retirer le renvoi de
+   `docs/architecture.md` #3.
+2. Reporter la même identité dans les mentions légales une fois qu'elles
+   existent (issue « ni mentions légales ni CGU »).
+3. Rafraîchir la date de dernière mise à jour en tête des deux documents.
+4. Mettre à jour les deux tests de `apps/shared/src/validation/rgpd.rs` qui
+   épinglent ces valeurs, car tant qu'ils ne le sont pas la suite reste rouge
+   — c'est le rappel mécanique, pas seulement écrit :
+   - `pending_release_values` est leur source unique : la vider reflète le
+     pas 1, et `the_internal_rgpd_documents_carry_the_same_placeholders`
+     exige alors que `docs/architecture.md` ait bien perdu son annonce ;
+   - `renders_the_real_privacy_policy_without_leftover_markup` porte en plus
+     deux attentes littérales à retirer à la main : les `html.contains(…)`
+     posés sur `[nom du responsable de traitement` et sur
+     `[adresse de contact`.
