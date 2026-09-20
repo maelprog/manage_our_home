@@ -202,13 +202,15 @@ légale, combien de temps elle est conservée, un lien vers la présente
 politique et le droit de saisir la CNIL.
 
 Ignorer cet email suffit à ne pas rejoindre le groupe : le lien cesse de
-fonctionner au bout de 7 jours. L'invitation, votre adresse comprise, reste
-enregistrée jusqu'à la suppression du groupe. Pour accéder à vos données,
-les corriger, les exporter ou les effacer, créez votre compte depuis le
-lien reçu : ces droits s'exercent ensuite depuis les écrans de votre
-compte. Aucun écran ne les ouvre sans compte ; pour toute autre demande, y
-compris vous opposer au traitement de votre adresse, écrivez au responsable
-de traitement.
+fonctionner au bout de 7 jours. Votre adresse, elle, reste enregistrée avec
+l'invitation jusqu'à la suppression du groupe.
+
+Aucun écran de ce service ne permet d'agir sur cette adresse. Créer un
+compte depuis le lien reçu ouvre des droits sur les données de ce compte,
+pas sur l'invitation : la suppression d'un compte ne retire pas l'adresse
+d'une invitation, et l'export de compte ne la contient pas. Pour accéder à
+votre adresse, la faire rectifier ou effacer, ou vous opposer à son
+traitement, adressez la demande au responsable de traitement.
 
 ## Sécurité
 
