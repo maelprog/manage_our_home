@@ -49,7 +49,13 @@ Au moment de l'ouverture publique :
 2. Reporter la même identité dans les mentions légales une fois qu'elles
    existent (issue « ni mentions légales ni CGU »).
 3. Rafraîchir la date de dernière mise à jour en tête des deux documents.
-4. Mettre à jour `release_placeholders` et ses attentes dans
-   `apps/shared/src/validation/rgpd.rs` : le test y épingle la liste exacte
-   des placeholders restants, donc la suite reste rouge tant que le pas 1
-   n'est pas reflété — c'est le rappel mécanique, pas seulement écrit.
+4. Mettre à jour les deux tests de `apps/shared/src/validation/rgpd.rs` qui
+   épinglent ces valeurs, car tant qu'ils ne le sont pas la suite reste rouge
+   — c'est le rappel mécanique, pas seulement écrit :
+   - `pending_release_values` est leur source unique : la vider reflète le
+     pas 1, et `the_internal_rgpd_documents_carry_the_same_placeholders`
+     exige alors que `docs/architecture.md` ait bien perdu son annonce ;
+   - `renders_the_real_privacy_policy_without_leftover_markup` porte en plus
+     deux attentes littérales à retirer à la main : les `html.contains(…)`
+     posés sur `[nom du responsable de traitement` et sur
+     `[adresse de contact`.
