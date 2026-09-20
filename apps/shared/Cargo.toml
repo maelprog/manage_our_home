@@ -22,3 +22,16 @@ chrono = { version = "0.4", default-features = false, features = ["serde", "std"
 # converts the UTC instant itself, so the DST logic is unit-tested here rather
 # than duplicated per page. Tz data only — no clock access, wasm-clean.
 chrono-tz = "0.10"
+# `validation::rgpd::sanitize_email_line` has to drop every invisible character
+# before a display name or a group name is interpolated into the invitation
+# email. `char::is_control()` is the Cc category and nothing else, so the Cf
+# category — RIGHT-TO-LEFT OVERRIDE, ZERO WIDTH SPACE, the bidi isolates — used
+# to travel through intact (#269). The standard library exposes no
+# general-category query, and hand-writing the ~20 Cf ranges would freeze the
+# table on the day it was typed. This is the unicode-rs table (Unicode 17.0.0),
+# `no_std` with no dependencies of its own — wasm-clean like the rest of this
+# list — and already in `Cargo.lock`, pulled in by sqlx's `stringprep`. Only
+# the category table is selected; the emoji one is left out.
+unicode-properties = { version = "0.1", default-features = false, features = [
+    "general-category",
+] }
