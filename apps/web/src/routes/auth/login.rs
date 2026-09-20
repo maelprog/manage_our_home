@@ -37,6 +37,8 @@ fn page(email: &str, error: Option<&str>, api_public_base_url: &str) -> String {
             <a href="/register">"Créer un compte"</a>
             <a href="/forgot-password">"Mot de passe oublié ?"</a>
             <a href="/privacy-policy">"Politique de confidentialité"</a>
+            <a href="/terms-of-service">"Conditions générales d'utilisation"</a>
+            <a href="/legal-notice">"Mentions légales"</a>
         </div>
     };
     shell(Width::Form, "Connexion", &body.to_html())

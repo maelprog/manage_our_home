@@ -334,3 +334,33 @@ async fn export_requires_auth_and_privacy_policy_is_public(db: PgPool) {
     let policy = call(&router, Method::GET, "/privacy-policy", None, None).await;
     assert_status(&policy, StatusCode::OK);
 }
+
+/// The legal notice (LCEN art. 6-III) and the CGU are public documents, served
+/// exactly like the privacy policy: no session, `text/markdown`, non-empty
+/// (#132). A visitor must be able to read what they are agreeing to *before*
+/// registering, so a session requirement creeping onto these routes has to
+/// turn a test red.
+#[sqlx::test]
+async fn the_legal_notice_and_the_terms_are_public_markdown(db: PgPool) {
+    let router = test_router(db.clone());
+
+    for path in ["/legal-notice", "/terms-of-service"] {
+        let response = call(&router, Method::GET, path, None, None).await;
+        assert_status(&response, StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/markdown; charset=utf-8"),
+            "{path} is not served as markdown"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(
+            body.starts_with(b"# "),
+            "{path} does not serve the document verbatim"
+        );
+    }
+}

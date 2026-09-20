@@ -90,6 +90,44 @@ test.describe("RGPD — privacy policy (public)", () => {
   });
 });
 
+test.describe("Documents légaux publics (#132)", () => {
+  // The legal notice (LCEN art. 6-III) and the CGU are served on the same
+  // plumbing as the privacy policy: public route, markdown from docs/ rendered
+  // by apps/web. Registering accepts the CGU, so both have to be reachable from
+  // the register footer without a session.
+  const documents = [
+    {
+      link: "Mentions légales",
+      url: /\/legal-notice$/,
+      heading: /Mentions légales/,
+      section: "Hébergeur",
+    },
+    {
+      link: "Conditions générales d'utilisation",
+      url: /\/terms-of-service$/,
+      heading: /Conditions générales d'utilisation/,
+      section: "Vos contenus",
+    },
+  ];
+
+  for (const doc of documents) {
+    test(`${doc.link} : joignable sans session depuis les pieds de page`, async ({ page }) => {
+      await page.goto("/login");
+      await page.getByRole("link", { name: doc.link }).click();
+      await expect(page).toHaveURL(doc.url);
+      await expect(page.getByRole("heading", { name: doc.heading })).toBeVisible();
+      await expect(page.getByRole("heading", { name: doc.section })).toBeVisible();
+      await expect(page.locator("article.prose")).not.toContainText("**");
+      // An anonymous visitor gets a way back into the app.
+      await expect(page.getByRole("link", { name: /Retour à la connexion/ })).toBeVisible();
+
+      await page.goto("/register");
+      await page.getByRole("link", { name: doc.link }).click();
+      await expect(page).toHaveURL(doc.url);
+    });
+  }
+});
+
 test.describe("RGPD — account hub gate", () => {
   test("an unauthenticated visitor is redirected to /login on every account route", async ({
     page,

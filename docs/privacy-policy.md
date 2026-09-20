@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-09-19.
+Dernière mise à jour : 2026-09-20.
 
 ## Qui est responsable de vos données ?
 
@@ -144,7 +144,9 @@ suppression automatique n'est en place aujourd'hui.
   vous avez créé au sein d'un groupe familial (messages, événements, etc.)
   reste visible pour les autres membres de ce groupe, mais n'est plus
   rattaché à votre identité — comportement documenté et intentionnel,
-  cohérent avec le fonctionnement d'un espace familial partagé.
+  cohérent avec le fonctionnement d'un espace familial partagé. C'est un
+  engagement contractuel autant qu'une description : il figure aussi dans
+  les [conditions générales d'utilisation](/terms-of-service).
 - L'anonymisation ne supprime pas les traces de jetons de vérification et
   de réinitialisation, les invitations que vous avez émises, votre date de
   dernière lecture de la messagerie ni vos assignations d'événements :

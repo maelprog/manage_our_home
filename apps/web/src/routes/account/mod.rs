@@ -1,8 +1,9 @@
 //! RGPD self-service screens (front epic F10, issue #25): the account hub
 //! (`/account`), the data-export download (`/account/export`, Art. 20
 //! portability) and the account-deletion flow (`/account/delete`, Art. 17
-//! erasure) — plus, outside this module because it must stay reachable without a
-//! session, the public privacy policy (`crate::routes::privacy`).
+//! erasure) — plus, outside this module because they must stay reachable without
+//! a session, the public legal documents (`crate::routes::privacy` and
+//! `crate::routes::legal`).
 //!
 //! Same SSR pattern as the other epics: plain `<form method=post>`, PRG with
 //! `?notice=`/`?error=` codes, per-page error tables mapping the exact status
@@ -114,7 +115,9 @@ fn error_html(error: Option<&str>) -> String {
 
 /// `GET /account` — the RGPD hub: who you are, the export entry point, the
 /// deletion entry point (replaced by the pending panel once a request is in
-/// flight), and the link to the privacy policy.
+/// flight), and the links to the three public legal documents — the only place
+/// a signed-in member reaches them, the login and register footers being behind
+/// them (#132).
 pub async fn get(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
@@ -147,7 +150,9 @@ pub async fn get(
 <a class="btn secondary" href="/account/export">Exporter mes données</a>
 </section>
 {deletion_section}
-<p class="links"><a href="/privacy-policy">Politique de confidentialité</a></p>"#,
+<p class="links"><a href="/privacy-policy">Politique de confidentialité</a>
+<a href="/terms-of-service">Conditions générales d'utilisation</a>
+<a href="/legal-notice">Mentions légales</a></p>"#,
         name = html_escape(&me.display_name),
         email = html_escape(&me.email),
         notice = notice_html(query.notice.as_deref()),

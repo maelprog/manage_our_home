@@ -52,8 +52,12 @@ fn page(
             <a href="/login">"J'ai déjà un compte"</a>
             // RGPD (front epic F10): the policy must be readable *before*
             // creating an account, so it is linked from the unauthenticated
-            // pages and served without a session.
+            // pages and served without a session. Same for the CGU and the
+            // legal notice since #132 — creating an account accepts the CGU,
+            // which makes reading them beforehand the whole point.
             <a href="/privacy-policy">"Politique de confidentialité"</a>
+            <a href="/terms-of-service">"Conditions générales d'utilisation"</a>
+            <a href="/legal-notice">"Mentions légales"</a>
         </div>
     };
     shell(Width::Form, "Créer un compte", &body.to_html())

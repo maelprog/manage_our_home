@@ -163,13 +163,14 @@ pub struct ApiRawResponse {
     pub body: Vec<u8>,
 }
 
-/// GETs a path on apps/api without parsing the body — the two RGPD reads
-/// (front epic F10) are not JSON-object responses `apps/web` inspects:
-/// `GET /account/export` is a document relayed byte-for-byte to the browser as a
-/// download (parsing then re-serializing it would risk reshaping the user's own
-/// data on the way out), and `GET /privacy-policy` is `text/markdown`. Forwards
-/// the incoming `Cookie` header when given one (export is session-scoped; the
-/// privacy policy is public).
+/// GETs a path on apps/api without parsing the body — its callers' reads are
+/// not JSON-object responses `apps/web` inspects: `GET /account/export` (front
+/// epic F10) is a document relayed byte-for-byte to the browser as a download
+/// (parsing then re-serializing it would risk reshaping the user's own data on
+/// the way out), and the three public legal documents — `/privacy-policy`,
+/// `/legal-notice` and `/terms-of-service` — are `text/markdown`. Forwards the
+/// incoming `Cookie` header when given one (export is session-scoped; the legal
+/// documents are public).
 pub async fn api_get_raw(
     state: &AppState,
     path: &str,

@@ -148,6 +148,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/account/delete/cancel", post(auth::cancel_delete_account))
         .route("/account/export", get(rgpd::export_account))
         .route("/privacy-policy", get(rgpd::privacy_policy))
+        .route("/legal-notice", get(rgpd::legal_notice))
+        .route("/terms-of-service", get(rgpd::terms_of_service))
         .route(
             "/groups",
             post(groups::create_group).get(groups::list_groups),
