@@ -416,27 +416,42 @@ pub async fn create_invitation(
     // Read inside the scoped transaction: once it commits, the bare pool
     // carries no `app.family_id`, and under a NOBYPASSRLS role the `groups`
     // policy would hide the row after the invitation is already stored.
-    let group_name = match body.invited_email {
-        Some(_) => Some(
+    // The inviter's display name goes out with the group's: art. 14 RGPD
+    // makes the source of the address part of the notice, and the source is
+    // this member (#134). `users` carries no RLS policy, so the same scope
+    // reads it.
+    let notice = match body.invited_email {
+        Some(_) => Some((
             sqlx::query_scalar!("SELECT name FROM groups WHERE id = $1", group_id)
                 .fetch_one(&mut *tx)
                 .await?,
-        ),
+            sqlx::query_scalar!("SELECT display_name FROM users WHERE id = $1", auth.user_id)
+                .fetch_one(&mut *tx)
+                .await?,
+        )),
         None => None,
     };
     tx.commit().await?;
 
-    if let (Some(email), Some(group_name)) = (&body.invited_email, group_name) {
+    if let (Some(email), Some((group_name, inviter_display_name))) = (&body.invited_email, notice) {
         let link = format!(
             "{}/groups/invitations/{}/accept",
             state.frontend_base_url, invitation.token
         );
+        // Absolute: the reader has no session, and no browser tab open on
+        // this service, to resolve a relative path against.
+        let privacy_policy_url = format!("{}/privacy-policy", state.frontend_base_url);
         if let Err(e) = state
             .email
             .send(
                 email,
                 "Invitation à rejoindre un groupe",
-                crate::email::EmailSender::invitation_body(&link, &group_name),
+                crate::email::EmailSender::invitation_body(
+                    &link,
+                    &group_name,
+                    &inviter_display_name,
+                    &privacy_policy_url,
+                ),
             )
             .await
         {

@@ -435,6 +435,83 @@ pub fn repo_path_references(md: &str) -> Vec<String> {
     out
 }
 
+/// Body of the group-invitation email — the one place a person who has no
+/// account, and never asked for one, meets this service. Art. 14 RGPD applies
+/// there in full (#134): the address was handed over by somebody else, so the
+/// email itself has to say who processes it, why, on what legal basis, for how
+/// long, where it came from and what the reader can do. A link to a policy
+/// sitting behind the sign-up screen would inform nobody.
+///
+/// The controller's identity and contact address travel as the same two
+/// `[… — à renseigner avant la mise en ligne]` placeholders the shipped RGPD
+/// documents carry, pinned to the same list by the tests below (#131): the day
+/// those documents are filled, this body is filled with them.
+///
+/// The text is hard-wrapped: it is sent as `text/plain` with no HTML part
+/// (`apps/api/src/email.rs`) and nothing re-wraps it in the reader's client.
+/// Only the two URLs may run past the margin — breaking a URL breaks the link.
+/// The group name and the inviter's display name sit at the end of their line
+/// for the same reason: a long one lengthens one line instead of wrecking the
+/// paragraph.
+///
+/// What the email deliberately does not offer is a way to act on the address
+/// without an account. Arbitrated 2026-09-19: the product sends the reader to
+/// account creation, and the controller's address above is the only other
+/// door. Doing nothing is stated first all the same — it is the option that
+/// costs the reader nothing, and the link dies on its own.
+pub fn invitation_email_body(
+    group_name: &str,
+    inviter_display_name: &str,
+    invitation_link: &str,
+    privacy_policy_url: &str,
+) -> String {
+    format!(
+        "Bonjour,
+
+Vous êtes invité(e) à rejoindre, sur Manage Our Home, le groupe
+« {group_name} »
+
+C'est {inviter_display_name}, membre du groupe, qui a saisi votre adresse email
+pour vous inviter : nous ne la tenons pas de vous, et vous n'avez aucun
+compte sur ce service.
+
+Pour rejoindre le groupe :
+{invitation_link}
+
+Ce lien est valable 7 jours et ne sert qu'une fois.
+
+-- Pourquoi vous recevez cet email --
+
+Manage Our Home est une application d'organisation familiale. Votre
+adresse y est traitée dans le seul but de vous transmettre cette
+invitation et de rattacher votre compte au groupe si vous l'acceptez. La
+base légale est l'intérêt légitime du membre qui invite un proche.
+
+Votre adresse reste enregistrée avec cette invitation, y compris une fois
+le lien utilisé ou expiré, et jusqu'à la suppression du groupe.
+
+Le responsable de traitement est [nom du responsable de traitement — à
+renseigner avant la mise en ligne], joignable à [adresse de contact — à
+renseigner avant la mise en ligne]. Vous pouvez aussi introduire une
+réclamation auprès de la CNIL.
+
+-- Ce que vous pouvez faire --
+
+Si vous ne voulez pas de cette invitation, ignorez cet email : le lien
+cesse de fonctionner au bout de 7 jours.
+
+Pour accéder à vos données, les corriger, les exporter ou les effacer,
+créez votre compte depuis le lien ci-dessus : ces droits s'exercent
+ensuite depuis les écrans de votre compte. Pour toute autre demande, y
+compris vous opposer au traitement de votre adresse, écrivez au
+responsable de traitement à l'adresse ci-dessus.
+
+Politique de confidentialité :
+{privacy_policy_url}
+"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -942,5 +1019,95 @@ mod tests {
                 "unrendered markdown line: {line}"
             );
         }
+    }
+
+    // -- invitation_email_body (#134) ----------------------------------------
+
+    const INVITE_LINK: &str =
+        "https://maison.example.org/groups/invitations/6f1a2b3c-0000-4000-8000-000000000001/accept";
+    const POLICY_URL: &str = "https://maison.example.org/privacy-policy";
+
+    fn invitation_sample() -> String {
+        invitation_email_body("Famille Dupont", "Alice Martin", INVITE_LINK, POLICY_URL)
+    }
+
+    #[test]
+    fn invitation_email_names_the_group_the_inviter_and_carries_both_links() {
+        let body = invitation_sample();
+        assert!(body.contains("Famille Dupont"), "{body}");
+        assert!(body.contains("Alice Martin"), "{body}");
+        assert!(body.contains(INVITE_LINK), "{body}");
+        assert!(body.contains(POLICY_URL), "{body}");
+    }
+
+    #[test]
+    fn invitation_email_says_the_address_came_from_the_member_not_from_the_reader() {
+        // Art. 14(2)(f): the source of the data. This reader never handed us
+        // their address, and the email is the only place they meet the service.
+        let body = invitation_sample();
+        assert!(body.contains("Alice Martin, membre du groupe"), "{body}");
+        assert!(body.contains("a saisi votre adresse email"), "{body}");
+        assert!(body.contains("nous ne la tenons pas de vous"), "{body}");
+    }
+
+    #[test]
+    fn invitation_email_states_the_purpose_the_legal_basis_and_the_retention() {
+        // Art. 14(1)(c)(d) and 14(2)(a). The retention is the one the privacy
+        // policy and the processing register state: a 7-day single-use link,
+        // and the row kept until the group is deleted.
+        let body = invitation_sample();
+        assert!(body.contains("intérêt légitime"), "{body}");
+        assert!(body.contains("valable 7 jours"), "{body}");
+        assert!(body.contains("ne sert qu'une fois"), "{body}");
+        assert!(body.contains("jusqu'à la suppression du groupe"), "{body}");
+    }
+
+    #[test]
+    fn invitation_email_carries_the_controller_identity_and_contact() {
+        // Art. 14(1)(a)(b). Both are still `[… — à renseigner avant la mise en
+        // ligne]`, and they are exactly the two the RGPD documents carry: the
+        // day those are filled, this body is filled with them (#131).
+        let body = invitation_sample();
+        assert_eq!(release_placeholders(&body), pending_release_values());
+    }
+
+    #[test]
+    fn invitation_email_routes_every_action_on_the_address_through_the_account() {
+        // Arbitrated 2026-09-19: an invited person who wants to act on their
+        // address is sent to account creation; the product offers no
+        // no-account opposition path. Doing nothing must be stated as an
+        // option, since it is the one that costs the reader nothing.
+        let body = invitation_sample();
+        assert!(body.contains("ignorez cet email"), "{body}");
+        assert!(body.contains("créez votre compte"), "{body}");
+    }
+
+    #[test]
+    fn invitation_email_points_at_no_repository_path() {
+        // Same rule as the policy: the reader of an email cannot open a file
+        // of this repository.
+        assert_eq!(
+            repo_path_references(&invitation_sample()),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn invitation_email_is_wrapped_for_a_plain_text_reader() {
+        // Sent as `text/plain`: nothing re-wraps it. Only the two URLs, which
+        // must not be broken, may run long.
+        for line in invitation_sample().lines() {
+            assert!(
+                line.chars().count() <= 78 || line.contains("https://"),
+                "line too long for a plain-text email: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn invitation_email_interpolates_a_group_name_verbatim() {
+        let body =
+            invitation_email_body("Coloc' « Rue des Lilas »", "Bob", INVITE_LINK, POLICY_URL);
+        assert!(body.contains("Coloc' « Rue des Lilas »"), "{body}");
     }
 }

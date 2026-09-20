@@ -38,7 +38,7 @@ données sont-elles conservées ? ».
 | Connexion avec Google | identifiant de votre compte Google, email et nom de votre profil Google, jeton de rafraîchissement délivré par Google (chiffré) | Exécution du contrat (vous choisissez ce mode de connexion) |
 | Vérification d'email et réinitialisation du mot de passe | jetons à usage unique, valables 24 h, envoyés par email | Exécution du contrat |
 | Protection de la connexion | adresse IP (en IPv6, réduite à son préfixe /64) et email saisi à chaque tentative de connexion par mot de passe, gardés en mémoire du serveur seulement, jamais en base | Intérêt légitime (limiter les essais de mot de passe) |
-| Invitations | adresse email de la personne invitée (si le membre qui invite la saisit), lien d'invitation valable 7 jours | Intérêt légitime (permettre à un membre d'inviter un proche dans son groupe) |
+| Invitations | adresse email de la personne invitée (si le membre qui invite la saisit), lien d'invitation valable 7 jours ; l'email envoyé nomme le groupe et le membre qui invite | Intérêt légitime (permettre à un membre d'inviter un proche dans son groupe) |
 | Agenda | événements, tâches, pièces jointes, membres assignés à un événement | Exécution du contrat |
 | Rappels d'événements | délai choisi avant l'événement ; l'email de rappel porte le titre et la date de l'événement | Exécution du contrat |
 | Stocks / recettes / liste de courses | articles, recettes, ingrédients | Exécution du contrat |
@@ -190,6 +190,25 @@ suppression automatique n'est en place aujourd'hui.
 - **Contact** : pour toute question ou exercice de droit non couvert par les
   endpoints en libre-service ci-dessus, écrivez au responsable de traitement
   à l'adresse donnée en en-tête de ce document (« Pour le joindre »).
+
+## Si vous avez reçu une invitation sans avoir de compte
+
+Un membre d'un groupe peut saisir votre adresse email pour vous inviter.
+Vos données ne sont alors pas collectées auprès de vous : l'email
+d'invitation porte donc lui-même l'information exigée par l'article 14 du
+RGPD — qui est responsable du traitement et comment le joindre, quel membre
+a communiqué votre adresse, pourquoi elle est traitée, sur quelle base
+légale, combien de temps elle est conservée, un lien vers la présente
+politique et le droit de saisir la CNIL.
+
+Ignorer cet email suffit à ne pas rejoindre le groupe : le lien cesse de
+fonctionner au bout de 7 jours. L'invitation, votre adresse comprise, reste
+enregistrée jusqu'à la suppression du groupe. Pour accéder à vos données,
+les corriger, les exporter ou les effacer, créez votre compte depuis le
+lien reçu : ces droits s'exercent ensuite depuis les écrans de votre
+compte. Aucun écran ne les ouvre sans compte ; pour toute autre demande, y
+compris vous opposer au traitement de votre adresse, écrivez au responsable
+de traitement.
 
 ## Sécurité
 
