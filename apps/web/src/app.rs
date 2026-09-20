@@ -47,10 +47,9 @@ impl Width {
     }
 }
 
-/// A page with no navigation: the authentication screens, the public
-/// privacy policy served to a signed-out visitor, and the short error
-/// pages a route renders when it has no family context to build a header
-/// from.
+/// A page with no navigation: the authentication screens, the public legal
+/// documents served to a signed-out visitor, and the short error pages a route
+/// renders when it has no family context to build a header from.
 ///
 /// The width comes first so that adding it to the 73 existing call sites was
 /// a mechanical edit rather than 73 chances to move a comma.
@@ -828,9 +827,15 @@ mod tests {
 
     #[test]
     fn a_page_outside_the_nav_lights_nothing() {
-        // `/privacy-policy` and the account screens are reachable from the
-        // header but are not nav tabs.
-        for path in ["/privacy-policy", "/account", "/account/export"] {
+        // The three public legal documents and the account screens are
+        // reachable from the header but are not nav tabs.
+        for path in [
+            "/privacy-policy",
+            "/legal-notice",
+            "/terms-of-service",
+            "/account",
+            "/account/export",
+        ] {
             for href in ["/", "/agenda", "/groups", "/admin/users"] {
                 assert!(!nav_link_is_current(href, path), "{href} on {path}");
             }

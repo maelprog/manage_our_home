@@ -219,10 +219,16 @@ remplacement) de l'isolation applicative ci-dessous.
    restent à renseigner : `docs/privacy-policy.md` (servi aux utilisateurs par
    `GET /privacy-policy`) et `docs/registre-traitements.md` portent à leur
    place, entre crochets, un libellé suivi de « — à renseigner avant la mise
-   en ligne ». Ils seront renseignés au moment de l'ouverture publique, et
-   cette phrase disparaîtra avec eux — procédure et forme exacte dans
-   `docs/v2-deployment.md` #16. Il porte l'ensemble des rôles nécessaires au
-   déploiement :
+   en ligne ». La même personne est l'éditeur au sens de la LCEN, et
+   `docs/legal-notice.md` (servi par `GET /legal-notice`, #132) porte de la
+   même façon son nom, son adresse postale, le directeur de la publication et
+   l'hébergeur — ce dernier n'étant pas encore choisi (auto-hébergement, puis
+   éventuellement un VPS). Les CGU (`docs/terms-of-service.md`, servies par
+   `GET /terms-of-service`) n'en portent aucun : elles renvoient aux mentions
+   légales. Tous seront renseignés au moment de l'ouverture publique, et cette
+   phrase disparaîtra avec eux — procédure et forme exacte dans
+   `docs/v2-deployment.md` #16 et #17. Il porte l'ensemble des rôles
+   nécessaires au déploiement :
    - **Data controller / responsable de traitement** — responsable du
      registre des traitements, de la politique de confidentialité, et des
      décisions sur la base légale de chaque catégorie de données.

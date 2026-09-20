@@ -88,10 +88,13 @@ fn build_router(state: AppState) -> Router {
             get(routes::auth::reset_password::get).post(routes::auth::reset_password::post),
         )
         // RGPD self-service (front epic F10): the account hub, the export
-        // download, and the grace-period deletion flow. `/privacy-policy` is the
-        // one page here that needs no session — it must be readable before
-        // registering (linked from the login/register footers).
+        // download, and the grace-period deletion flow. The three public legal
+        // documents need no session — they must be readable before registering,
+        // and the CGU are what registering accepts (linked from the login and
+        // register footers).
         .route("/privacy-policy", get(routes::privacy::get))
+        .route("/legal-notice", get(routes::legal::legal_notice))
+        .route("/terms-of-service", get(routes::legal::terms_of_service))
         .route("/account", get(routes::account::get))
         .route("/account/export", get(routes::account::export::get))
         .route(

@@ -778,6 +778,122 @@ mod tests {
         }
     }
 
+    /// The values `docs/legal-notice.md` still leaves to fill (#132). A list of
+    /// its own, not `pending_release_values`: LCEN art. 6-III asks the legal
+    /// notice for things the privacy policy never had to carry — a postal
+    /// address, a publication director, a host — and the host is not chosen yet
+    /// (self-hosting, a VPS later; arbitrated 2026-09-19). The contact address
+    /// is deliberately worded the same in both documents: it is the same
+    /// address, and it is filled once.
+    fn pending_legal_notice_values() -> Vec<String> {
+        vec![
+            "nom de l'éditeur".to_string(),
+            "adresse postale de l'éditeur".to_string(),
+            "adresse de contact".to_string(),
+            "nom du directeur de la publication".to_string(),
+            "nom et adresse de l'hébergeur".to_string(),
+        ]
+    }
+
+    #[test]
+    fn the_public_legal_documents_carry_only_the_placeholders_pinned_here() {
+        let notice = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/legal-notice.md"
+        ));
+        let terms = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/terms-of-service.md"
+        ));
+        let policy = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/privacy-policy.md"
+        ));
+        assert_eq!(release_placeholders(notice), pending_legal_notice_values());
+        // The CGU name nobody: they send the reader to the legal notice for the
+        // publisher's identity, so there is exactly one place to fill.
+        assert_eq!(release_placeholders(terms), Vec::<String>::new());
+        // Publisher and controller are the same physical person, so the two
+        // documents empty on the same day; filling one and forgetting the other
+        // is the failure this pins.
+        assert_eq!(
+            release_placeholders(notice).is_empty(),
+            release_placeholders(policy).is_empty(),
+            "the legal notice and the privacy policy disagree on whether the \
+             publisher/controller is still to be filled"
+        );
+    }
+
+    #[test]
+    fn renders_the_real_legal_notice_without_leftover_markup() {
+        let md = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/legal-notice.md"
+        ));
+        let html = render_markdown(md);
+        assert!(html.starts_with("<h1>Mentions légales"));
+        // The three identities LCEN art. 6-III makes mandatory.
+        assert!(html.contains("<h2>Éditeur du service</h2>"));
+        assert!(html.contains("<h2>Directeur de la publication</h2>"));
+        assert!(html.contains("<h2>Hébergeur</h2>"));
+        // Same rule as the policy: the reader of a public page cannot open a
+        // repository path, so the document has to stand on its own.
+        assert_eq!(
+            repo_path_references(md),
+            Vec::<String>::new(),
+            "the legal notice points at repo files"
+        );
+        // Every placeholder survives the renderer as readable text rather than
+        // being swallowed as a link label.
+        for pending in pending_legal_notice_values() {
+            assert!(
+                html.contains(&format!("[{pending}")),
+                "`{pending}` is not readable in the rendered legal notice"
+            );
+        }
+        assert_no_raw_markdown(&html);
+    }
+
+    #[test]
+    fn renders_the_real_terms_without_leftover_markup() {
+        let md = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/terms-of-service.md"
+        ));
+        let html = render_markdown(md);
+        assert!(html.starts_with("<h1>Conditions générales d'utilisation"));
+        assert!(html.contains("<h2>Vos contenus</h2>"));
+        assert!(html.contains("<h2>Fermeture de votre compte</h2>"));
+        // #132: the CGU are the contractual vehicle for the arbitrage that a
+        // member's content outlives the deletion of their account. Until now
+        // only the privacy policy carried it, and a policy is not a contract.
+        assert!(
+            html.contains("reste dans le groupe"),
+            "the CGU do not state that content outlives the account"
+        );
+        assert_eq!(
+            repo_path_references(md),
+            Vec::<String>::new(),
+            "the CGU point at repo files"
+        );
+        assert_no_raw_markdown(&html);
+    }
+
+    /// No markdown marker survived into the output: a shipped document has to
+    /// stay inside the subset `render_markdown` supports, or the page shows it
+    /// raw.
+    fn assert_no_raw_markdown(html: &str) {
+        assert!(!html.contains("**"));
+        assert!(!html.contains(" | "));
+        assert!(!html.contains("|---"));
+        for line in html.lines() {
+            assert!(
+                !line.starts_with("- ") && !line.starts_with('#'),
+                "unrendered markdown line: {line}"
+            );
+        }
+    }
+
     #[test]
     fn renders_the_real_privacy_policy_without_leftover_markup() {
         // Regression guard: the shipped document must stay inside the subset

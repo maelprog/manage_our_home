@@ -6,6 +6,7 @@ pub mod budget;
 pub mod grocery_list;
 pub mod groups;
 pub mod home;
+pub mod legal;
 pub mod messagerie;
 pub mod privacy;
 pub mod recipes;
