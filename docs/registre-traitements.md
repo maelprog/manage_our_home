@@ -1,7 +1,7 @@
 # Registre des traitements — Manage Our Home
 
 Registre tenu au titre de l'article 30 du RGPD. Dernière mise à jour :
-2026-09-19, relu contre les migrations `apps/api/migrations/0001` à `0014`
+2026-09-21, relu contre les migrations `apps/api/migrations/0001` à `0014`
 et la table des routes de `apps/api/src/lib.rs`. Un registre des
 traitements est requis dès qu'un traitement de données personnelles est
 effectué, y compris à petite échelle — voir `docs/architecture.md` §10.
@@ -20,10 +20,22 @@ l'ouverture publique : voir `docs/v2-deployment.md` #16.
   `infra/docker-compose.yml` ne reçoit aucune donnée : aucun code de
   `apps/` ne l'appelle, et les suggestions de recettes sont un tri par
   règles (`apps/api/src/recipes/suggestions.rs`).
-- Fournisseur SMTP transactionnel basé UE (Brevo ou Mailjet) — emails de
-  vérification d'adresse, de réinitialisation de mot de passe, d'invitation
-  à un groupe et de rappel d'événement ; DPA à documenter au moment du
-  choix définitif du fournisseur (`docs/architecture.md`).
+- **Mailjet** (Mailjet SAS, groupe Sinch), relais SMTP transactionnel —
+  les quatre seuls emails que le service envoie : vérification d'adresse,
+  réinitialisation de mot de passe, invitation à un groupe et rappel
+  d'événement. Reçoit l'adresse du destinataire, l'objet et le corps de
+  chacun (l'objet d'un rappel recopie le titre de l'événement ; le corps
+  d'une invitation nomme le groupe et le membre qui invite). Retenu le
+  2026-09-19 parmi les deux candidats étudiés (Brevo, Mailjet) pour son
+  hébergement dans l'Union européenne, ses certifications ISO 27001 et
+  SOC 2 et un périmètre contractuel limité à l'envoi transactionnel
+  (`docs/architecture.md`). Le fournisseur publie un accord de
+  sous-traitance (DPA, art. 28) intégré à son cadre contractuel, à
+  accepter depuis le compte d'envoi. **Ce DPA n'est pas encore signé** :
+  aucun compte d'envoi n'est ouvert et aucune donnée personnelle n'a
+  encore été transmise. Le signer, et relever la liste des sous-traitants
+  ultérieurs qui y est annexée, sont bloquants avant la mise en ligne
+  (`docs/v2-deployment.md` #18).
 - Google, pour deux flux distincts, chacun déclenché seulement par
   l'utilisateur :
   - la **connexion avec Google** (`/auth/google/start`,
@@ -38,17 +50,37 @@ données (Row-Level Security, `FORCE ROW LEVEL SECURITY` sur chaque table
 tenant-scoped), TLS en transit, `cargo audit` en CI, logs d'audit sur les
 actions sensibles (`audit_log`).
 
+## Transferts hors de l'Union européenne
+
+Les flux sortants sont ceux nommés ci-dessus, et aucun autre. Le mécanisme
+de transfert (art. 44-49) est donné destinataire par destinataire ; là où il
+n'y a pas de transfert, il n'y a pas de mécanisme à invoquer.
+
+| Destinataire | Ce qui sort | Localisation | Mécanisme (art. 44-49) |
+|---|---|---|---|
+| Mailjet (relais SMTP) | adresse du destinataire, objet et corps de l'email | Union européenne : le fournisseur déclare stocker les données « dans des centres sécurisés situés exclusivement dans l'Union européenne » et y conserver ses sauvegardes chiffrées | **Aucun transfert hors UE**, donc aucun mécanisme à invoquer. À reconfirmer sur la liste des sous-traitants ultérieurs annexée au DPA au moment de la signature : un sous-traitant ultérieur hors UE rouvrirait la question |
+| Google (connexion avec Google) | la demande d'autorisation, l'échange du code par le serveur, la lecture du profil (`sub`, email, nom) | Google Ireland Limited pour les utilisateurs de l'UE, sur une infrastructure mondiale dont une partie est aux États-Unis | Décision d'adéquation de la Commission européenne du 10 juillet 2023 (EU-US Data Privacy Framework) : Google LLC déclare publiquement adhérer aux principes du cadre, pour elle-même et ses filiales américaines détenues à 100 %, et cite les clauses contractuelles types comme mécanisme alternatif. Certification à revérifier sur la liste officielle du cadre avant la mise en ligne, puis à chaque revue du registre |
+| Hébergeur du flux iCal (Google en pratique) | l'URL de flux fournie et la requête du serveur vers cette URL | celle de l'hébergeur du flux : le code accepte toute URL `http`/`https` et ne la contraint pas à l'UE | Le mécanisme ci-dessus tant que le flux est hébergé par Google ; pour une autre URL, la localisation dépend de ce que le membre a collé, et c'est à rappeler à qui configure un import |
+| Postgres, MinIO, Ollama | rien : ils tournent sur le serveur du responsable de traitement | serveur exploité par le responsable de traitement | Sans objet : pas de tiers, pas de transfert |
+
+**Ce que cette section ne garantit pas.** La localisation du relais est une
+garantie d'exploitation, pas une propriété du code : l'hôte vient de la
+variable d'environnement `SMTP_HOST` (`apps/api/src/main.rs`), que rien ne
+contraint à pointer sur Mailjet ni sur l'UE. Le contrôle correspondant est
+porté par `docs/v2-deployment.md` #18, à faire avant la première mise en
+ligne.
+
 ## Catégories de traitement (une par epic)
 
 | # | Épic | Données traitées | Finalité | Base légale | Durée de conservation | Destinataires |
 |---|---|---|---|---|---|---|
 | 1 | Auth + Groupes | email, mot de passe (haché argon2), nom affiché, appartenance aux groupes et rôle, sessions (création, dernière activité, expiration, révocation) | Authentification, gestion de compte, isolation familiale | Exécution du contrat | Compte actif + 30j de grâce après demande de suppression, puis anonymisation définitive ; une session vaut 30 jours au plus et prend fin après 7 jours sans activité, sa ligne reste après expiration ou déconnexion et n'est supprimée qu'à la purge du compte | Aucun tiers |
 | 1a | Connexion avec Google | identifiant Google (`sub`), email et nom du profil Google (le nom sert de nom affiché si le compte est créé à cette occasion), jeton de rafraîchissement chiffré via `pgcrypto` quand Google en délivre un — aucun code ne le relit aujourd'hui (`oauth_identities`) | Authentification par un fournisseur d'identité, au choix de l'utilisateur | Exécution du contrat | Jusqu'à la purge du compte, qui supprime la ligne `oauth_identities` | Google (fournisseur d'identité : reçoit la demande d'autorisation, échange le code, sert le profil) |
-| 1b | Jetons de vérification d'email et de réinitialisation du mot de passe | jeton, compte concerné, dates de création, d'expiration et de consommation (`email_verification_tokens`, `password_reset_tokens`) | Prouver la possession de l'adresse ; réinitialiser un mot de passe oublié | Exécution du contrat | Valables 24 h, à usage unique ; la ligne reste après consommation ou expiration, sans limite de durée — aucune purge n'existe (#138) | Relais SMTP (le lien porteur du jeton part par email) |
-| 1c | Invitations à un groupe | adresse email de la personne invitée, facultative (une invitation peut n'être qu'un lien) et stockée en clair, jeton, auteur, dates, membre qui l'a acceptée (`invitations`) | Faire entrer une personne dans un groupe ; la personne invitée est un tiers qui n'a pas encore de compte | Intérêt légitime (du membre qui invite un proche) | Valable 7 jours, à usage unique ; la ligne, adresse comprise, reste après acceptation ou expiration jusqu'à la suppression du groupe — aucune purge n'existe (#138) | Relais SMTP (si une adresse est saisie : email portant le nom du groupe, le nom affiché du membre qui invite, le lien, et la notice d'information de l'art. 14 — identité et contact du responsable, finalité, base légale, durée de conservation, source de l'adresse, lien vers la politique, droit de réclamation ; #134) |
+| 1b | Jetons de vérification d'email et de réinitialisation du mot de passe | jeton, compte concerné, dates de création, d'expiration et de consommation (`email_verification_tokens`, `password_reset_tokens`) | Prouver la possession de l'adresse ; réinitialiser un mot de passe oublié | Exécution du contrat | Valables 24 h, à usage unique ; la ligne reste après consommation ou expiration, sans limite de durée — aucune purge n'existe (#138) | Mailjet (le lien porteur du jeton part par email) |
+| 1c | Invitations à un groupe | adresse email de la personne invitée, facultative (une invitation peut n'être qu'un lien) et stockée en clair, jeton, auteur, dates, membre qui l'a acceptée (`invitations`) | Faire entrer une personne dans un groupe ; la personne invitée est un tiers qui n'a pas encore de compte | Intérêt légitime (du membre qui invite un proche) | Valable 7 jours, à usage unique ; la ligne, adresse comprise, reste après acceptation ou expiration jusqu'à la suppression du groupe — aucune purge n'existe (#138) | Mailjet (si une adresse est saisie : email portant le nom du groupe, le nom affiché du membre qui invite, le lien, et la notice d'information de l'art. 14 — identité et contact du responsable, finalité, base légale, durée de conservation, source de l'adresse, lien vers la politique, droit de réclamation ; #134) |
 | 1d | Protection de la connexion | adresse IP du client (en IPv6, réduite à son /64) et email saisi, à chaque tentative de connexion par mot de passe (`apps/api/src/auth/throttle.rs`) | Limiter les essais de mot de passe par couple (adresse, email) | Intérêt légitime (sécurité du service) | En mémoire du processus `api` seulement, jamais en base ; perdu au redémarrage, oublié dès une connexion réussie ; une entrée cesse de compter 15 min après sa première tentative (ou à la fin du blocage de 15 min) mais n'est retirée qu'à la prochaine tentative d'un autre email depuis la même adresse, quand la table atteint `MAX_TRACKED` (10 000 couples) ou au redémarrage — sans trafic, elle reste jusqu'au redémarrage | Aucun tiers |
 | 2 | Agenda | événements, tâches et membre ayant coché une tâche, pièces jointes (photos/documents) | Planification familiale | Exécution du contrat | Tant que l'événement/le compte existe ; supprimé avec le groupe ou anonymisé (`created_by`) à la purge du compte auteur ; un fichier de pièce jointe orphelin (sans ligne en base) est supprimé par un balayage quotidien moins de 48 h après son écriture (fenêtre de 24 h + intervalle de 24 h) tant que l'API tourne, et à condition que `ADMIN_DATABASE_URL` désigne un rôle `BYPASSRLS` — sinon le balayage refuse de tourner et l'orphelin reste | Aucun tiers |
-| 2a | Rappels d'événements par email | délai avant l'événement (`event_reminders`) ; file d'envoi par occurrence : heure d'envoi, statut, tentatives, dernière erreur de transport (`scheduled_notifications`) ; l'email porte le titre et la date de l'événement | Prévenir avant un événement | Exécution du contrat | Un rappel vit jusqu'à sa suppression ou celle de l'événement ; les lignes de la file restent après envoi (statut `sent` ou `failed`) et partent avec le rappel ou l'événement | Relais SMTP ; l'email part à l'adresse du **créateur de l'événement**, quel que soit le membre qui a posé le rappel (`apps/api/src/jobs/scheduled_notifications.rs`) |
+| 2a | Rappels d'événements par email | délai avant l'événement (`event_reminders`) ; file d'envoi par occurrence : heure d'envoi, statut, tentatives, dernière erreur de transport (`scheduled_notifications`) ; l'email porte le titre et la date de l'événement | Prévenir avant un événement | Exécution du contrat | Un rappel vit jusqu'à sa suppression ou celle de l'événement ; les lignes de la file restent après envoi (statut `sent` ou `failed`) et partent avec le rappel ou l'événement | Mailjet ; l'email part à l'adresse du **créateur de l'événement**, quel que soit le membre qui a posé le rappel (`apps/api/src/jobs/scheduled_notifications.rs`) |
 | 2b | Assignations d'événements | événement, membre assigné, date (`event_assignees`) ; posées par un membre, par défaut le créateur de l'événement, et pour un événement importé le membre qui a lancé l'import | Indiquer pour qui est un événement | Exécution du contrat | Tant que l'événement existe et que l'assignation n'est pas retirée ; elle survit au départ du groupe et à la purge du compte (le compte est anonymisé, pas supprimé) | Membres du groupe |
 | 3 | Stocks | articles du garde-manger/frigo, quantités, seuils | Gestion de l'inventaire familial | Exécution du contrat | Idem #2 | Aucun tiers |
 | 4 | Recettes | recettes, ingrédients, historique des repas | Suggestions de repas (algorithme local, pas d'IA tierce) | Exécution du contrat | Idem #2 | Aucun tiers |

@@ -23,6 +23,7 @@ rationale in `architecture.md` ("v2 — Déploiement multi-famille").
 | 15 | Secrets via sops in production | missing | Scaffolding exists conceptually in `architecture.md`; not yet wired to a real deployment. |
 | 16 | RGPD: nom et adresse de contact du responsable de traitement | missing | **À remplacer avant la mise en ligne** — bloquant (#131). Art. 13(1)(a) exige l'identité *et* les coordonnées du responsable. Le porteur du projet (personne physique) fournit son nom et une adresse relevée par une personne — pas un `noreply@` — au moment de l'ouverture publique. Voir la procédure ci-dessous. |
 | 17 | LCEN: éditeur, directeur de la publication et hébergeur des mentions légales | missing | **À remplacer avant la mise en ligne** — bloquant (#132). Les mentions légales existent et sont servies (`docs/legal-notice.md`, `GET /legal-notice`), mais cinq valeurs y sont encore des placeholders. L'hébergeur dépend de l'item #1 : auto-hébergement (l'éditeur est alors son propre hébergeur) ou VPS. Voir la procédure ci-dessous. |
+| 18 | RGPD: DPA du sous-traitant SMTP et envoi pointé sur l'UE | missing | **À faire avant la mise en ligne** — bloquant (#136). Le fournisseur est arrêté (Mailjet), mais l'accord de sous-traitance de l'art. 28 n'est pas signé et rien dans le code ne contraint `SMTP_HOST`. Voir la procédure ci-dessous. |
 
 **Immediate next step:** none of the above are done yet. Given the ~1 week
 horizon, items 4-9 (RGPD + backups) and 14 (rate-limiting) are the hard
@@ -106,3 +107,34 @@ Au moment de l'ouverture publique :
      d'oublier l'autre ;
    - `renders_the_real_legal_notice_without_leftover_markup` boucle sur
      `pending_legal_notice_values` et n'a donc rien à retirer à la main.
+
+## Item #18 — signer le DPA du relais SMTP et pointer l'envoi sur l'UE
+
+Le fournisseur est arrêté depuis l'arbitrage du 2026-09-19 : **Mailjet**
+(Mailjet SAS, groupe Sinch), nommé dans `docs/registre-traitements.md`,
+`docs/privacy-policy.md` et `docs/architecture.md`. Deux choses restent, et
+aucune n'est dans le code.
+
+`docs/privacy-policy.md` annonce au lecteur que le sous-traitant est lié par
+l'accord de l'art. 28 et qu'aucune donnée ne part hors UE pour ce flux. Les
+deux pas ci-dessous sont ce qui rend cette phrase vraie le jour de la mise en
+ligne ; tant qu'ils ne sont pas faits, aucune donnée personnelle ne doit
+partir par ce relais.
+
+1. **Signer le DPA** depuis le compte d'envoi, à son ouverture — le
+   fournisseur l'intègre à son cadre contractuel. Relever à cette occasion la
+   liste des sous-traitants ultérieurs qui y est annexée : si l'un d'eux est
+   hors UE, la ligne « aucun transfert hors UE » du registre et de la
+   politique ne tient plus telle quelle, et il faut soit nommer le mécanisme
+   de transfert, soit changer de fournisseur.
+2. **Pointer la configuration de production sur l'UE** : `SMTP_HOST` est lu
+   de l'environnement par `apps/api/src/main.rs`, sans contrainte. Poser
+   l'hôte d'envoi du fournisseur, avec `SMTP_FROM` sur un domaine dont les
+   enregistrements SPF/DKIM/DMARC sont en place. Le jour où le relais
+   self-hosted de `docs/architecture.md` (« Transactional email (long-term) »)
+   le remplace, c'est cet item qu'il faut rouvrir : le sous-traitant
+   disparaît du registre, et la ligne de transfert avec lui.
+
+Ni l'un ni l'autre ne laisse de trace dans le dépôt : aucun test ne devient
+rouge s'ils sont oubliés. C'est pourquoi ils sont ici plutôt que dans un
+commentaire de code.
