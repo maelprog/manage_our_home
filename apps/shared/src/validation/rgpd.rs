@@ -876,10 +876,33 @@ mod tests {
     // -- the shipped documents -----------------------------------------------
 
     /// The values the RGPD documents still leave to fill, in reading order.
-    /// Single source of truth for the two tests below: the day the controller's
-    /// name and address are filled in for the public launch, this list empties,
-    /// and every assertion built on it has to be looked at.
+    /// Single source of truth for the two tests below: the day the last of them
+    /// is filled in for the public launch, this list empties, and every
+    /// assertion built on it has to be looked at.
+    ///
+    /// Two of them are the controller's identity (#131), filled by
+    /// `docs/v2-deployment.md` #16. The last three are the subprocessor
+    /// questions #136 left open on purpose: what contract actually binds the
+    /// email subprocessor, and which transfer mechanism — if any — covers it
+    /// and Google. Neither the policy nor the registre asserts an answer, and
+    /// `docs/v2-deployment.md` #18 is what closes them. They sit here because
+    /// the documents have to keep saying the same thing: a value filled in one
+    /// and forgotten in the other turns this suite red.
     fn pending_release_values() -> Vec<String> {
+        let mut values = pending_controller_values();
+        values.extend([
+            "cadre contractuel du sous-traitant email".to_string(),
+            "transferts hors UE du sous-traitant email".to_string(),
+            "transferts hors UE de Google".to_string(),
+        ]);
+        values
+    }
+
+    /// The controller's identity alone, in reading order: the two values the
+    /// invitation email carries (art. 14(1)(a)) and the ones
+    /// `docs/v2-deployment.md` #16 fills. The email says nothing about
+    /// subprocessors, so it must not be pinned to the three values #18 owns.
+    fn pending_controller_values() -> Vec<String> {
         vec![
             "nom du responsable de traitement".to_string(),
             "adresse de contact".to_string(),
@@ -1143,10 +1166,12 @@ mod tests {
         // Art. 14(1)(a): the controller's identity *and* contact details —
         // 14(1)(b) is the data protection officer, which this service has no
         // reason to appoint. Both are still `[… — à renseigner avant la mise
-        // en ligne]`, and they are exactly the two the RGPD documents carry:
-        // the day those are filled, this body is filled with them (#131).
+        // en ligne]`, and they are exactly the two the RGPD documents carry
+        // for the controller: the day those are filled, this body is filled
+        // with them (#131). The three subprocessor placeholders the documents
+        // also carry (#136) have no place in an invitation email.
         let body = invitation_sample();
-        assert_eq!(release_placeholders(&body), pending_release_values());
+        assert_eq!(release_placeholders(&body), pending_controller_values());
     }
 
     #[test]

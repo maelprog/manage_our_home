@@ -71,8 +71,9 @@ possibles sont :
   corps de chacun : l'objet d'un rappel reprend le titre de l'événement, et
   le corps d'une invitation nomme le groupe et le membre qui invite. C'est un
   sous-traitant du responsable de traitement, inscrit à son registre des
-  traitements et lié à lui par l'accord de sous-traitance prévu à l'article
-  28 du RGPD, accepté à l'ouverture du compte d'envoi.
+  traitements. Le cadre contractuel qui les lie au titre de l'article 28 du
+  RGPD sera indiqué ici avant l'ouverture du service : [cadre contractuel du
+  sous-traitant email — à renseigner avant la mise en ligne].
 
 Aucune autre donnée ne quitte le serveur applicatif. Les suggestions de
 recettes sont calculées sur le serveur par des règles fixes (ingrédients en
@@ -81,19 +82,25 @@ n'est appelé, ni sur le serveur ni chez un tiers.
 
 ## Vos données quittent-elles l'Union européenne ?
 
-- **Les emails : non.** Mailjet déclare stocker les données de ses clients
-  dans des centres situés exclusivement dans l'Union européenne, sauvegardes
-  comprises. Aucun transfert hors de l'Union européenne n'est prévu pour
-  l'envoi des emails de ce service.
-- **Google : oui, et voici sur quoi ce transfert repose.** La connexion avec
-  Google (si vous la choisissez) et l'import calendrier (si un import est
-  configuré dans votre groupe) font dialoguer votre navigateur ou le serveur
-  avec Google, dont l'infrastructure est mondiale et donc pour partie située
-  aux États-Unis. Ce transfert s'appuie sur la décision d'adéquation adoptée
-  par la Commission européenne le 10 juillet 2023, dite « EU-US Data Privacy
-  Framework » : Google LLC déclare publiquement adhérer aux principes de ce
-  cadre. Si vous ne vous connectez pas avec Google et qu'aucun import
-  calendrier n'est configuré dans votre groupe, rien ne part vers Google.
+Ce service n'est pas encore ouvert au public, et cette page n'affirmera pas
+plus que ce qui est établi. Voici où en est chacun des trois cas.
+
+- **Les emails** partent par Mailjet, dont le stockage des données des
+  clients européens est situé dans l'Union européenne (centres en Allemagne
+  et en Belgique). Cela ne suffit pas à conclure : le groupe auquel Mailjet
+  appartient recourt aussi à des prestataires établis hors de l'Union
+  européenne, notamment pour son support. Le détail des transferts et, s'il y
+  en a, le mécanisme qui les encadre (articles 44 à 49 du RGPD) seront
+  indiqués ici avant l'ouverture du service : [transferts hors UE du
+  sous-traitant email — à renseigner avant la mise en ligne].
+- **Google** reçoit des données dans deux cas seulement : si vous choisissez
+  la connexion avec Google, et si un import calendrier est configuré dans
+  votre groupe. Son infrastructure est mondiale, donc pour partie hors de
+  l'Union européenne. Le mécanisme qui encadre ce transfert sera indiqué ici
+  avant l'ouverture du service : [transferts hors UE de Google — à renseigner
+  avant la mise en ligne]. Si vous ne vous connectez pas avec Google et
+  qu'aucun import calendrier n'est configuré dans votre groupe, rien ne part
+  vers Google.
 - **Le reste ne quitte pas le serveur du service** : vos messages, votre
   agenda, vos listes, votre budget et vos pièces jointes n'y sont partagés
   avec aucun tiers. L'hébergeur de ce serveur est nommé dans les

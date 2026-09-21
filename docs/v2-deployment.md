@@ -23,7 +23,7 @@ rationale in `architecture.md` ("v2 — Déploiement multi-famille").
 | 15 | Secrets via sops in production | missing | Scaffolding exists conceptually in `architecture.md`; not yet wired to a real deployment. |
 | 16 | RGPD: nom et adresse de contact du responsable de traitement | missing | **À remplacer avant la mise en ligne** — bloquant (#131). Art. 13(1)(a) exige l'identité *et* les coordonnées du responsable. Le porteur du projet (personne physique) fournit son nom et une adresse relevée par une personne — pas un `noreply@` — au moment de l'ouverture publique. Voir la procédure ci-dessous. |
 | 17 | LCEN: éditeur, directeur de la publication et hébergeur des mentions légales | missing | **À remplacer avant la mise en ligne** — bloquant (#132). Les mentions légales existent et sont servies (`docs/legal-notice.md`, `GET /legal-notice`), mais cinq valeurs y sont encore des placeholders. L'hébergeur dépend de l'item #1 : auto-hébergement (l'éditeur est alors son propre hébergeur) ou VPS. Voir la procédure ci-dessous. |
-| 18 | RGPD: DPA du sous-traitant SMTP et envoi pointé sur l'UE | missing | **À faire avant la mise en ligne** — bloquant (#136). Le fournisseur est arrêté (Mailjet), mais l'accord de sous-traitance de l'art. 28 n'est pas signé et rien dans le code ne contraint `SMTP_HOST`. Voir la procédure ci-dessous. |
+| 18 | RGPD: cadre contractuel du sous-traitant email et transferts hors UE | missing | **À faire avant la mise en ligne** — bloquant (#136). Le fournisseur est arrêté (Mailjet), mais ni le cadre contractuel opposable ni les transferts hors UE — pour lui comme pour Google — ne sont établis : trois placeholders les portent dans la politique et le registre. Rien dans le code ne contraint `SMTP_HOST`. Voir la procédure ci-dessous. |
 
 **Immediate next step:** none of the above are done yet. Given the ~1 week
 horizon, items 4-9 (RGPD + backups) and 14 (rate-limiting) are the hard
@@ -33,15 +33,19 @@ blockers for a responsible first deployment; 1-2 and 10-13 support them.
 
 `docs/privacy-policy.md` est compilé dans le binaire de `apps/api`
 (`include_str!`) et servi tel quel sur `GET /privacy-policy`, page publique
-liée depuis les pieds de page de connexion et d'inscription. Deux valeurs y
-sont encore des placeholders, sous la forme
-`[<quoi> — à renseigner avant la mise en ligne]` :
+liée depuis les pieds de page de connexion et d'inscription. Cinq valeurs y
+sont des placeholders, sous la forme
+`[<quoi> — à renseigner avant la mise en ligne]`. Deux relèvent de cet item :
 
 - `nom du responsable de traitement`
 - `adresse de contact`
 
-Les mêmes deux placeholders figurent dans `docs/registre-traitements.md`, et
-`docs/architecture.md` ("Questions résolues" #3) y renvoie.
+Les trois autres (`cadre contractuel du sous-traitant email`,
+`transferts hors UE du sous-traitant email`, `transferts hors UE de Google`)
+relèvent de l'item #18 ci-dessous. Les cinq figurent à l'identique, et dans le
+même ordre de lecture, dans `docs/registre-traitements.md` — c'est ce que la
+suite de tests épingle. `docs/architecture.md` ("Questions résolues" #3)
+renvoie aux deux premiers.
 
 Au moment de l'ouverture publique :
 
@@ -55,9 +59,11 @@ Au moment de l'ouverture publique :
 4. Mettre à jour les deux tests de `apps/shared/src/validation/rgpd.rs` qui
    épinglent ces valeurs, car tant qu'ils ne le sont pas la suite reste rouge
    — c'est le rappel mécanique, pas seulement écrit :
-   - `pending_release_values` est leur source unique : la vider reflète le
-     pas 1, et `the_internal_rgpd_documents_carry_the_same_placeholders`
-     exige alors que `docs/architecture.md` ait bien perdu son annonce ;
+   - `pending_release_values` est leur source unique, et elle porte les cinq
+     placeholders, ceux de l'item #18 compris : en retirer deux au pas 1 ne
+     la vide donc pas, et `the_internal_rgpd_documents_carry_the_same_placeholders`
+     n'exige que `docs/architecture.md` ait perdu son annonce que le jour où
+     les deux items sont faits et où la liste est vide ;
    - `renders_the_real_privacy_policy_without_leftover_markup` porte en plus
      deux attentes littérales à retirer à la main : les `html.contains(…)`
      posés sur `[nom du responsable de traitement` et sur
@@ -108,33 +114,57 @@ Au moment de l'ouverture publique :
    - `renders_the_real_legal_notice_without_leftover_markup` boucle sur
      `pending_legal_notice_values` et n'a donc rien à retirer à la main.
 
-## Item #18 — signer le DPA du relais SMTP et pointer l'envoi sur l'UE
+## Item #18 — établir le cadre contractuel du sous-traitant email et les transferts
 
 Le fournisseur est arrêté depuis l'arbitrage du 2026-09-19 : **Mailjet**
 (Mailjet SAS, groupe Sinch), nommé dans `docs/registre-traitements.md`,
-`docs/privacy-policy.md` et `docs/architecture.md`. Deux choses restent, et
-aucune n'est dans le code.
+`docs/privacy-policy.md`, `docs/architecture.md` et `README.md`. Ce qui n'est
+pas arrêté, ce sont les deux choses qu'aucun de ces documents n'affirme : le
+cadre contractuel opposable et les transferts hors UE. Trois placeholders les
+portent, à remplir ensemble, dans la politique **et** dans le registre (même
+libellé, même ordre de lecture) :
 
-`docs/privacy-policy.md` annonce au lecteur que le sous-traitant est lié par
-l'accord de l'art. 28 et qu'aucune donnée ne part hors UE pour ce flux. Les
-deux pas ci-dessous sont ce qui rend cette phrase vraie le jour de la mise en
-ligne ; tant qu'ils ne sont pas faits, aucune donnée personnelle ne doit
-partir par ce relais.
+- `cadre contractuel du sous-traitant email`
+- `transferts hors UE du sous-traitant email`
+- `transferts hors UE de Google`
 
-1. **Signer le DPA** depuis le compte d'envoi, à son ouverture — le
-   fournisseur l'intègre à son cadre contractuel. Relever à cette occasion la
-   liste des sous-traitants ultérieurs qui y est annexée : si l'un d'eux est
-   hors UE, la ligne « aucun transfert hors UE » du registre et de la
-   politique ne tient plus telle quelle, et il faut soit nommer le mécanisme
-   de transfert, soit changer de fournisseur.
-2. **Pointer la configuration de production sur l'UE** : `SMTP_HOST` est lu
-   de l'environnement par `apps/api/src/main.rs`, sans contrainte. Poser
-   l'hôte d'envoi du fournisseur, avec `SMTP_FROM` sur un domaine dont les
-   enregistrements SPF/DKIM/DMARC sont en place. Le jour où le relais
-   self-hosted de `docs/architecture.md` (« Transactional email (long-term) »)
-   le remplace, c'est cet item qu'il faut rouvrir : le sous-traitant
-   disparaît du registre, et la ligne de transfert avec lui.
+Au moment de l'ouverture publique :
 
-Ni l'un ni l'autre ne laisse de trace dans le dépôt : aucun test ne devient
-rouge s'ils sont oubliés. C'est pourquoi ils sont ici plutôt que dans un
-commentaire de code.
+1. **Arrêter le cadre contractuel.** Le DPA du groupe s'impose par
+   l'acceptation des conditions, il n'y a pas de signature séparée à obtenir :
+   ce qu'il faut établir, c'est quelle version est opposable, à quelle date
+   elle l'est devenue et pour quel compte d'envoi. C'est cela qui remplace le
+   premier placeholder.
+2. **Relever la liste des sous-traitants ultérieurs**, publiée à une URL
+   publique (`sinch.com/legal/data-protection-agreement-sub-processors/`) et
+   non annexée au contrat. Au 2026-09-21 elle donne le stockage du flux email
+   chez Google Cloud France SARL, centres en Allemagne et en Belgique, pour
+   les clients européens — mais elle nomme aussi des entités hors UE pour le
+   support, et le DPA réserve des transferts intra-groupe à l'échelle
+   mondiale. La question à trancher est donc : quels transferts ont
+   effectivement lieu pour l'envoi transactionnel, et sous quel mécanisme
+   (art. 44-49) ? La réponse remplace le deuxième placeholder ; si elle est
+   « aucun transfert », l'écrire, mais seulement une fois établie.
+3. **Faire le même travail pour Google** (connexion et flux iCal) et remplir
+   le troisième placeholder. La liste officielle du cadre de confidentialité
+   des données n'était pas consultable le 2026-09-21 (site en erreur) : la
+   déclaration de Google, qui porte la réserve « sauf exclusion explicite »,
+   ne suffit pas à nommer un mécanisme.
+4. **Pointer la configuration de production sur le fournisseur retenu** :
+   `SMTP_HOST` est lu de l'environnement par `apps/api/src/main.rs`, sans
+   contrainte. Poser l'hôte d'envoi du fournisseur, avec `SMTP_FROM` sur un
+   domaine dont les enregistrements SPF/DKIM/DMARC sont en place.
+5. Rafraîchir la date de dernière mise à jour en tête des deux documents, et
+   retirer les trois entrées correspondantes de `pending_release_values` dans
+   `apps/shared/src/validation/rgpd.rs` — la suite reste rouge tant que la
+   liste et les documents ne disent pas la même chose.
+
+Le jour où le relais self-hosted de `docs/architecture.md` (« Transactional
+email (long-term) ») remplace le fournisseur, c'est cet item qu'il faut
+rouvrir : le sous-traitant disparaît du registre, et la ligne de transfert
+avec lui.
+
+Rien de tout cela ne laisse de trace dans le dépôt tant que les placeholders
+restent en place : aucun test ne dira si la configuration de production pointe
+ailleurs que là où le registre le croit. C'est pourquoi le pas 4 est ici plutôt
+que dans un commentaire de code.

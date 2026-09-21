@@ -29,13 +29,16 @@ l'ouverture publique : voir `docs/v2-deployment.md` #16.
   2026-09-19 parmi les deux candidats étudiés (Brevo, Mailjet) pour son
   hébergement dans l'Union européenne, ses certifications ISO 27001 et
   SOC 2 et un périmètre contractuel limité à l'envoi transactionnel
-  (`docs/architecture.md`). Le fournisseur publie un accord de
-  sous-traitance (DPA, art. 28) intégré à son cadre contractuel, à
-  accepter depuis le compte d'envoi. **Ce DPA n'est pas encore signé** :
-  aucun compte d'envoi n'est ouvert et aucune donnée personnelle n'a
-  encore été transmise. Le signer, et relever la liste des sous-traitants
-  ultérieurs qui y est annexée, sont bloquants avant la mise en ligne
-  (`docs/v2-deployment.md` #18).
+  (`docs/architecture.md`). Le fournisseur porte un accord de traitement
+  des données (DPA, art. 28) dans son cadre contractuel : il s'impose par
+  l'acceptation des conditions, sans signature séparée, et la liste de ses
+  sous-traitants ultérieurs est publiée à une URL publique plutôt
+  qu'annexée au contrat. Le cadre exactement opposable, et la date à
+  laquelle il l'est devenu, restent à établir :
+  [cadre contractuel du sous-traitant email — à renseigner avant la mise
+  en ligne]. À ce jour aucun compte d'envoi n'est ouvert et aucune donnée
+  personnelle ne lui a été transmise ; l'établir est bloquant avant la
+  mise en ligne (`docs/v2-deployment.md` #18).
 - Google, pour deux flux distincts, chacun déclenché seulement par
   l'utilisateur :
   - la **connexion avec Google** (`/auth/google/start`,
@@ -52,16 +55,19 @@ actions sensibles (`audit_log`).
 
 ## Transferts hors de l'Union européenne
 
-Les flux sortants sont ceux nommés ci-dessus, et aucun autre. Le mécanisme
-de transfert (art. 44-49) est donné destinataire par destinataire ; là où il
-n'y a pas de transfert, il n'y a pas de mécanisme à invoquer.
+Les flux sortants sont ceux nommés ci-dessus, et aucun autre. Le mécanisme de
+transfert (art. 44-49) se juge destinataire par destinataire, et **aucun n'est
+arrêté à ce jour** : le service n'est pas ouvert, aucun compte d'envoi n'est
+créé, et la dernière colonne porte donc un placeholder plutôt qu'une
+affirmation. Ce qui est vérifié est écrit tel quel, avec sa source et sa date ;
+le reste attend la mise en ligne (`docs/v2-deployment.md` #18).
 
-| Destinataire | Ce qui sort | Localisation | Mécanisme (art. 44-49) |
+| Destinataire | Ce qui sort | Ce qui est vérifié | Mécanisme (art. 44-49) |
 |---|---|---|---|
-| Mailjet (relais SMTP) | adresse du destinataire, objet et corps de l'email | Union européenne : le fournisseur déclare stocker les données « dans des centres sécurisés situés exclusivement dans l'Union européenne » et y conserver ses sauvegardes chiffrées | **Aucun transfert hors UE**, donc aucun mécanisme à invoquer. À reconfirmer sur la liste des sous-traitants ultérieurs annexée au DPA au moment de la signature : un sous-traitant ultérieur hors UE rouvrirait la question |
-| Google (connexion avec Google) | la demande d'autorisation, l'échange du code par le serveur, la lecture du profil (`sub`, email, nom) | Google Ireland Limited pour les utilisateurs de l'UE, sur une infrastructure mondiale dont une partie est aux États-Unis | Décision d'adéquation de la Commission européenne du 10 juillet 2023 (EU-US Data Privacy Framework) : Google LLC déclare publiquement adhérer aux principes du cadre, pour elle-même et ses filiales américaines détenues à 100 %, et cite les clauses contractuelles types comme mécanisme alternatif. Certification à revérifier sur la liste officielle du cadre avant la mise en ligne, puis à chaque revue du registre |
-| Hébergeur du flux iCal (Google en pratique) | l'URL de flux fournie et la requête du serveur vers cette URL | celle de l'hébergeur du flux : le code accepte toute URL `http`/`https` et ne la contraint pas à l'UE | Le mécanisme ci-dessus tant que le flux est hébergé par Google ; pour une autre URL, la localisation dépend de ce que le membre a collé, et c'est à rappeler à qui configure un import |
-| Postgres, MinIO, Ollama | rien : ils tournent sur le serveur du responsable de traitement | serveur exploité par le responsable de traitement | Sans objet : pas de tiers, pas de transfert |
+| Mailjet (relais SMTP) | adresse du destinataire, objet et corps de l'email | Le stockage du flux email est dans l'UE : la liste des sous-traitants ultérieurs publiée par le groupe (`sinch.com/legal/data-protection-agreement-sub-processors/`, consultée le 2026-09-21) donne Google Cloud France SARL, centres en Allemagne et en Belgique, pour les clients européens. **Cela ne suffit pas à conclure** : la même liste nomme des entités établies hors UE pour des fonctions de support (Atlassian Corporation, San Francisco — suivi des tickets et gestion d'incidents), et le DPA du groupe réserve des transferts intra-groupe à l'échelle mondiale | [transferts hors UE du sous-traitant email — à renseigner avant la mise en ligne] |
+| Google (connexion avec Google) | la demande d'autorisation, l'échange du code par le serveur, la lecture du profil (`sub`, email, nom) | Google Ireland Limited pour les utilisateurs de l'UE, sur une infrastructure mondiale dont une partie est aux États-Unis. Google déclare que « Google LLC, y compris ses filiales américaines détenues à 100 % (sauf exclusion explicite) » adhère aux principes du cadre de confidentialité des données — la réserve laisse ouverte l'entité qui traite effectivement, et la liste officielle du cadre n'a pas pu être consultée le 2026-09-21, le site répondant en erreur. Rien n'est donc vérifié ici au-delà de la déclaration | [transferts hors UE de Google — à renseigner avant la mise en ligne] |
+| Hébergeur du flux iCal (Google en pratique) | l'URL de flux fournie et la requête du serveur vers cette URL | Le code accepte toute URL `http`/`https` et ne la contraint pas à l'UE : la localisation dépend de ce que le membre a collé | Celui de la ligne Google ci-dessus tant que le flux est hébergé par Google ; à rappeler à qui configure un import dans le cas contraire |
+| Postgres, MinIO, Ollama | rien : ils tournent sur le serveur du responsable de traitement | Aucun code de `apps/` n'appelle un tiers pour ces trois services | Sans objet : pas de tiers, pas de transfert |
 
 **Ce que cette section ne garantit pas.** La localisation du relais est une
 garantie d'exploitation, pas une propriété du code : l'hôte vient de la
