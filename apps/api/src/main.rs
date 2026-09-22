@@ -135,6 +135,9 @@ async fn main() -> anyhow::Result<()> {
         state.storage.clone(),
     ));
     tokio::spawn(jobs::account_purge::run(db.clone()));
+    // On the admin pool too: `invitations` is under a forced RLS policy,
+    // and the pass refuses to run without BYPASSRLS (#138).
+    tokio::spawn(jobs::retention_purge::run(state.admin_db.clone()));
     tokio::spawn(jobs::scheduled_notifications::run(db, email));
 
     let app = build_router(state);

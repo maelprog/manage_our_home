@@ -33,8 +33,11 @@ use self::session::{
 };
 use self::timing::{LoginBranch, LoginTiming};
 
-const EMAIL_VERIFICATION_TTL_HOURS: i64 = 24;
-const PASSWORD_RESET_TTL_HOURS: i64 = 24;
+pub const EMAIL_VERIFICATION_TTL_HOURS: i64 = 24;
+/// One hour (#138, controller's decision of 2026-09-19): the token is
+/// also deleted at use, and the retention purge takes an unused one as soon
+/// as it has expired.
+pub const PASSWORD_RESET_TTL_HOURS: i64 = 1;
 const ACCOUNT_DELETION_GRACE_DAYS: i64 = 30;
 
 /// Maps a validation error code (`&'static str`) to a 422 carrying that
@@ -489,8 +492,11 @@ pub async fn reset_password(
     validate_password(&body.new_password).map_err(unprocessable)?;
     let password_hash = hash_password(&body.new_password).map_err(AppError::Internal)?;
 
+    // Deleted at use rather than marked consumed (#138): a used token is
+    // worth nothing, so nothing of it is kept. A second use finds no row
+    // and answers 404, like a token that never existed.
     sqlx::query!(
-        "UPDATE password_reset_tokens SET consumed_at = now() WHERE token = $1",
+        "DELETE FROM password_reset_tokens WHERE token = $1",
         body.token
     )
     .execute(&mut *tx)

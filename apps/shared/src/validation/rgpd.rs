@@ -562,8 +562,8 @@ adresse y est traitée dans le seul but de vous transmettre cette
 invitation et de rattacher votre compte au groupe si vous l'acceptez. La
 base légale est l'intérêt légitime du membre qui invite un proche.
 
-Votre adresse reste enregistrée avec cette invitation, y compris une fois
-le lien utilisé ou expiré, et jusqu'à la suppression du groupe.
+Votre adresse est enregistrée avec cette invitation, puis effacée :
+dès que le lien est utilisé, ou au plus tard 30 jours après cet envoi.
 
 Le responsable de traitement est [nom du responsable de traitement — à
 renseigner avant la mise en ligne], joignable à [adresse de contact — à
@@ -573,8 +573,9 @@ réclamation auprès de la CNIL.
 -- Ce que vous pouvez faire --
 
 Si vous ne voulez pas de cette invitation, ignorez cet email : le lien
-cesse de fonctionner au bout de 7 jours. Votre adresse, elle, restera
-enregistrée avec l'invitation jusqu'à la suppression du groupe.
+cesse de fonctionner au bout de 7 jours. Votre adresse, elle, reste
+enregistrée avec l'invitation jusqu'à 30 jours après cet envoi, puis est
+effacée.
 
 Aucun écran de ce service ne permet d'agir sur cette adresse. Créer un
 compte depuis le lien ci-dessus ouvre des droits sur les données de ce
@@ -1174,12 +1175,15 @@ mod tests {
     fn invitation_email_states_the_purpose_the_legal_basis_and_the_retention() {
         // Art. 14(1)(c)(d) and 14(2)(a). The retention is the one the privacy
         // policy and the processing register state: a 7-day single-use link,
-        // and the row kept until the group is deleted.
+        // the row deleted when the link is used, and otherwise 30 days after
+        // it was sent (#138).
         let body = invitation_sample();
         assert!(body.contains("intérêt légitime"), "{body}");
         assert!(body.contains("valable 7 jours"), "{body}");
         assert!(body.contains("ne sert qu'une fois"), "{body}");
-        assert!(body.contains("jusqu'à la suppression du groupe"), "{body}");
+        assert!(body.contains("dès que le lien est utilisé"), "{body}");
+        assert!(body.contains("30 jours après cet envoi"), "{body}");
+        assert!(!body.contains("suppression du groupe"), "{body}");
     }
 
     #[test]
@@ -1209,10 +1213,11 @@ mod tests {
     fn invitation_email_sends_every_action_on_the_address_to_the_controller() {
         // Arbitrated 2026-09-19 and confirmed 2026-09-20: the product offers no
         // no-account path, and the email must not pretend the account screens
-        // are one either. Nothing erases an invitation — `account_purge.rs`
-        // leaves `invitations` alone and `export_account` does not export it —
-        // so the only true answer is the controller's address, and the reader
-        // is told the address survives an ignored invitation.
+        // are one either. Nothing the reader can do erases an invitation —
+        // `account_purge.rs` leaves `invitations` alone, `export_account` does
+        // not export it, and only the retention purge removes it, 30 days on
+        // (#138) — so the only true answer is the controller's address, and
+        // the reader is told the address survives an ignored invitation.
         let body = invitation_sample();
         assert!(body.contains("ignorez cet email"), "{body}");
         assert!(

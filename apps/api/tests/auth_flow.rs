@@ -473,6 +473,24 @@ async fn forgot_password_is_anti_enumeration_and_reset_revokes_sessions(db: PgPo
     .await;
     assert_status(&reset, StatusCode::OK);
 
+    // #138: the token is deleted at use, so a second use finds nothing.
+    let left: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM password_reset_tokens WHERE token = $1")
+            .bind(reset_token)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(left, 0);
+    let reuse = call(
+        &router,
+        Method::POST,
+        "/auth/password/reset",
+        None,
+        Some(serde_json::json!({"token": reset_token, "new_password": "another-password-2"})),
+    )
+    .await;
+    assert_status(&reuse, StatusCode::NOT_FOUND);
+
     let logout_attempt = call(&router, Method::POST, "/auth/logout", Some(&cookie), None).await;
     assert_status(&logout_attempt, StatusCode::UNAUTHORIZED);
 }

@@ -130,9 +130,10 @@ pub async fn post(
             "Lien expiré",
             "Ce lien de réinitialisation a déjà été utilisé ou a expiré.",
         )),
+        // A used token is deleted (#138): a second use lands here, not on 410.
         Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => Html(invalid_link_page(
             "Lien invalide",
-            "Ce lien de réinitialisation n'existe pas.",
+            "Ce lien de réinitialisation n'existe pas ou a déjà été utilisé.",
         )),
         _ => Html(form_page(
             Some(&form.token),
