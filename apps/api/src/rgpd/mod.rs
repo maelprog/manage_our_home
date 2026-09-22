@@ -21,7 +21,7 @@ pub async fn export_account(
     auth: AuthUser,
 ) -> AppResult<impl IntoResponse> {
     let profile = sqlx::query!(
-        "SELECT id, email, email_verified, display_name, created_at FROM users WHERE id = $1",
+        "SELECT id, email, email_verified, display_name, created_at, age_declared_at FROM users WHERE id = $1",
         auth.user_id
     )
     .fetch_one(&state.db)
@@ -32,6 +32,11 @@ pub async fn export_account(
         "email_verified": profile.email_verified,
         "display_name": profile.display_name,
         "created_at": profile.created_at,
+        // #137: the art. 8 GDPR age declaration is data held about the person,
+        // so art. 15 puts it in their export like the rest of the profile.
+        // `null` for an account that never made one (Google sign-in, or an
+        // account older than the declaration).
+        "age_declared_at": profile.age_declared_at,
     });
 
     // "My groups" are read from the caller's own `group_members` rows, with

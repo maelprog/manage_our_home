@@ -1,6 +1,6 @@
 # Conditions générales d'utilisation — Manage Our Home
 
-Dernière mise à jour : 2026-09-20.
+Dernière mise à jour : 2026-09-22.
 
 ## Objet
 
@@ -26,6 +26,26 @@ données avant la fermeture.
 
 Aucune fonctionnalité n'est payante, aucune publicité n'est diffusée, et
 aucune donnée n'est revendue.
+
+## Âge minimal
+
+Le service est réservé aux personnes âgées d'au moins **15 ans**. C'est le
+seuil que la loi française retient pour qu'un mineur consente seul au
+traitement de ses données personnelles ; en deçà, l'accord du titulaire de
+l'autorité parentale serait nécessaire, et le service n'offre aucun moyen de
+le recueillir. Les moins de 15 ans ne sont donc pas acceptés, sans exception.
+
+À l'ouverture d'un compte, vous déclarez avoir 15 ans ou plus. Aucune date de
+naissance n'est demandée : seule la déclaration est conservée, avec sa date.
+Un compte dont l'éditeur apprend qu'il a été ouvert par une personne plus
+jeune est fermé et ses données supprimées ; le titulaire de l'autorité
+parentale peut le signaler à l'adresse donnée dans les [mentions
+légales](/legal-notice).
+
+Cela n'empêche pas d'organiser le foyer autour d'enfants plus jeunes : depuis
+le compte d'un membre qui a l'âge requis, un événement, une tâche ou une
+course peut parfaitement les concerner et les nommer. Ce que ces conditions
+interdisent, c'est d'ouvrir un compte au nom d'un enfant de moins de 15 ans.
 
 ## Votre compte
 

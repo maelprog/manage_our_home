@@ -14,6 +14,7 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("E2E User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
+    await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
 
     await expect(page).toHaveURL(/\/register\/check-email$/);
@@ -44,6 +45,7 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("Bad Login User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
+    await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
     const token = await fetchVerificationToken(email);
     await page.goto(`/verify-email?token=${token}`);
@@ -62,6 +64,7 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("Dup User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill("password-one");
+    await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
     await expect(page).toHaveURL(/\/register\/check-email$/);
 
@@ -69,9 +72,36 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("Dup User 2");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill("password-two");
+    await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
 
     await expect(page.getByText("Un compte existe déjà avec cet email.")).toBeVisible();
+  });
+
+  // #137: art. 8 GDPR — the service is not open under 15, and the form says so
+  // instead of creating the account and sorting it out later.
+  test("registering without the age declaration is refused", async ({ page }) => {
+    const email = uniqueEmail("e2e-no-age");
+    await page.goto("/register");
+    await page.getByLabel("Email").fill(email);
+    await page.getByLabel("Nom affiché").fill("No Age User");
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill("e2e-password-3");
+    await page.getByRole("button", { name: "Créer mon compte" }).click();
+
+    await expect(page).toHaveURL(/\/register$/);
+    await expect(
+      page.getByText("Le service n'est pas ouvert aux moins de 15 ans"),
+    ).toBeVisible();
+
+    // And the form comes back usable: the email and the display name are still
+    // there, the password never is (it is not echoed back into the page), and
+    // ticking the box registers the account.
+    await expect(page.getByLabel("Email")).toHaveValue(email);
+    await expect(page.getByLabel("Nom affiché")).toHaveValue("No Age User");
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill("e2e-password-3");
+    await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
+    await page.getByRole("button", { name: "Créer mon compte" }).click();
+    await expect(page).toHaveURL(/\/register\/check-email$/);
   });
 });
 
@@ -85,6 +115,7 @@ test.describe("Auth — forgot → reset → login with new password", () => {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("Reset User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill(oldPassword);
+    await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
     const verifyToken = await fetchVerificationToken(email);
     await page.goto(`/verify-email?token=${verifyToken}`);
@@ -142,6 +173,7 @@ test.describe("Auth-gate redirects", () => {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("Redirect User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
+    await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
     const token = await fetchVerificationToken(email);
     await page.goto(`/verify-email?token=${token}`);

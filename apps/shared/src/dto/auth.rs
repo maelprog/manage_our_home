@@ -13,6 +13,13 @@ pub struct RegisterRequest {
     pub email: String,
     pub password: String,
     pub display_name: String,
+    /// The art. 8 GDPR age declaration (#137): `true` when the person declared
+    /// being at least `validation::auth::MINIMUM_AGE_YEARS` old. A body that
+    /// omits the field declares nothing, which `register` answers with a 422
+    /// `age_declaration_required` rather than a deserialization error — the
+    /// refusal then says which rule was broken.
+    #[serde(default)]
+    pub declares_minimum_age: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
