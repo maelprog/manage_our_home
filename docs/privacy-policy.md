@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-09-21.
+Dernière mise à jour : 2026-09-22.
 
 ## Qui est responsable de vos données ?
 
@@ -35,6 +35,7 @@ données sont-elles conservées ? ».
 | Catégorie | Exemples | Base légale |
 |---|---|---|
 | Compte | email, mot de passe (haché), nom affiché | Exécution du contrat (fournir le service) |
+| Âge | la déclaration d'avoir 15 ans ou plus, faite à l'inscription, et sa date — aucune date de naissance n'est demandée ni conservée | Exécution du contrat (les conditions générales réservent le service aux 15 ans et plus) |
 | Connexion avec Google | identifiant de votre compte Google, email et nom de votre profil Google, jeton de rafraîchissement délivré par Google (chiffré) | Exécution du contrat (vous choisissez ce mode de connexion) |
 | Vérification d'email et réinitialisation du mot de passe | jetons à usage unique, valables 24 h, envoyés par email | Exécution du contrat |
 | Protection de la connexion | adresse IP (en IPv6, réduite à son préfixe /64) et email saisi à chaque tentative de connexion par mot de passe, gardés en mémoire du serveur seulement, jamais en base | Intérêt légitime (limiter les essais de mot de passe) |
@@ -46,6 +47,27 @@ données sont-elles conservées ? ».
 | Messagerie | messages du fil familial (chiffrés au repos), date de votre dernière lecture du fil | Exécution du contrat |
 | Import calendrier Google | URL de flux iCal (chiffrée), événements importés | Consentement explicite (vous fournissez volontairement l'URL) |
 | Logs d'audit | actions sensibles : export, demande, annulation et exécution de la suppression d'un compte, suppression d'un groupe, transfert de propriété, changement de rôle, actions d'administration (les connexions ne sont pas journalisées) | Intérêt légitime (sécurité, traçabilité) |
+
+## Le service et les mineurs
+
+Le service n'est pas ouvert aux moins de 15 ans. C'est le seuil retenu par la
+loi française pour qu'un mineur consente seul au traitement de ses données
+(art. 8 du RGPD) ; en deçà, il faudrait recueillir l'accord du titulaire de
+l'autorité parentale, et le service ne propose pas ce chemin. L'inscription
+demande donc de déclarer avoir 15 ans ou plus, et les [conditions générales
+d'utilisation](/terms-of-service) en font une condition d'accès.
+
+Cette déclaration n'est pas vérifiée — aucune pièce d'identité, aucune date
+de naissance : ce serait collecter bien plus de données que la vérification
+n'en justifie. Si l'éditeur apprend qu'un compte a été ouvert par une
+personne plus jeune, il le ferme et supprime ses données. Le titulaire de
+l'autorité parentale peut le signaler à l'adresse de contact indiquée
+ci-dessus.
+
+Rien n'empêche en revanche un membre du foyer d'organiser, depuis son propre
+compte, la vie d'enfants plus jeunes : ce sont alors ses données à lui qui
+sont traitées, et le contenu qu'il dépose relève de sa responsabilité comme
+tout autre contenu.
 
 ## Avec qui vos données sont-elles partagées ?
 
@@ -116,6 +138,9 @@ suppression automatique n'est en place aujourd'hui.
   groupes et rôle) : tant que le compte existe, puis 30 jours de grâce
   après une demande de suppression, à l'issue desquels le compte est
   anonymisé (voir ci-dessous).
+- **Déclaration d'âge** : la déclaration et sa date restent tant que le
+  compte existe. Elle ne contient pas de date de naissance : une fois le
+  compte anonymisé, il ne subsiste qu'une date rattachée à aucune identité.
 - **Sessions de connexion** : une session vaut 30 jours au plus, et prend
   fin plus tôt si elle reste 7 jours sans activité. Sa trace (dates
   de création, de dernière activité, d'expiration et de révocation) reste

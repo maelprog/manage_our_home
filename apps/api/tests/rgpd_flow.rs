@@ -18,7 +18,7 @@ async fn register_verify_login(
         Method::POST,
         "/auth/register",
         None,
-        Some(serde_json::json!({"email": email, "password": password, "display_name": email})),
+        Some(serde_json::json!({"email": email, "password": password, "display_name": email, "declares_minimum_age": true})),
     )
     .await;
     let token = sqlx::query_scalar!(

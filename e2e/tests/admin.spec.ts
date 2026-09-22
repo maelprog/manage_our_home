@@ -22,6 +22,7 @@ async function registerAndLogin(page: Page, prefix: string, displayName: string)
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Nom affiché").fill(displayName);
   await page.getByRole("textbox", { name: "Mot de passe" }).fill(PASSWORD);
+  await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
   await page.getByRole("button", { name: "Créer mon compte" }).click();
   await expect(page).toHaveURL(/\/register\/check-email$/);
   const token = await fetchVerificationToken(email);

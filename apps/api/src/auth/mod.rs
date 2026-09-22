@@ -19,7 +19,7 @@ use manage_our_home_shared::dto::auth::{
 };
 
 use manage_our_home_shared::validation::auth::{
-    validate_display_name, validate_email, validate_password,
+    validate_age_declaration, validate_display_name, validate_email, validate_password,
 };
 
 use crate::client_ip::ClientIp;
@@ -64,6 +64,11 @@ pub async fn me(auth: AuthUser) -> Json<MeResponse> {
 /// sends a verification email. Returns a generic 409 on duplicate email
 /// so the response never reveals whether the existing account uses a
 /// password, Google, or both.
+///
+/// #137: the account is also refused (422 `age_declaration_required`) unless
+/// the request carries the art. 8 GDPR age declaration. The declaration is
+/// checked last of the four, so a request that gets several things wrong
+/// still reports the field errors the form can point at first.
 pub async fn register(
     State(state): State<AppState>,
     Json(body): Json<RegisterRequest>,
@@ -71,6 +76,7 @@ pub async fn register(
     validate_email(&body.email).map_err(unprocessable)?;
     validate_password(&body.password).map_err(unprocessable)?;
     validate_display_name(&body.display_name).map_err(unprocessable)?;
+    validate_age_declaration(body.declares_minimum_age).map_err(unprocessable)?;
 
     let existing = sqlx::query_scalar!("SELECT id FROM users WHERE email = $1", body.email)
         .fetch_optional(&state.db)
@@ -84,8 +90,8 @@ pub async fn register(
     let mut tx = crate::db::begin(&state.db).await?;
     let user = sqlx::query!(
         r#"
-        INSERT INTO users (email, password_hash, display_name, email_verified)
-        VALUES ($1, $2, $3, false)
+        INSERT INTO users (email, password_hash, display_name, email_verified, age_declared_at)
+        VALUES ($1, $2, $3, false, now())
         RETURNING id
         "#,
         body.email,

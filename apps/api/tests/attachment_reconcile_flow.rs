@@ -35,7 +35,8 @@ async fn register_verify_login(router: &axum::Router, db: &PgPool, email: &str) 
         "/auth/register",
         None,
         Some(serde_json::json!({
-            "email": email, "password": "owner-password1", "display_name": email
+            "email": email, "password": "owner-password1", "display_name": email,
+            "declares_minimum_age": true
         })),
     )
     .await;

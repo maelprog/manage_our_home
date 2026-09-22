@@ -1047,6 +1047,21 @@ mod tests {
             html.contains("reste dans le groupe"),
             "the CGU do not state that content outlives the account"
         );
+        // #137: the CGU are also where the art. 8 GDPR age condition is
+        // contractual. The threshold is read from the constant the API
+        // enforces, so raising one and forgetting the other turns this red
+        // instead of leaving the contract promising a rule nothing applies.
+        assert!(
+            html.contains("<h2>Âge minimal</h2>"),
+            "the CGU have no minimum-age clause"
+        );
+        assert!(
+            html.contains(&format!(
+                "au moins <strong>{} ans</strong>",
+                crate::validation::auth::MINIMUM_AGE_YEARS
+            )),
+            "the CGU state a minimum age the registration does not enforce"
+        );
         assert_eq!(
             repo_path_references(md),
             Vec::<String>::new(),
@@ -1091,6 +1106,12 @@ mod tests {
         assert!(html.contains("<strong>Droit d'opposition (Art. 21)</strong>"));
         assert!(html.contains("<strong>Droit à la limitation (Art. 18)</strong>"));
         assert!(html.contains("<a href=\"https://www.cnil.fr/fr/adresser-une-plainte\">"));
+        // #137, art. 8 GDPR: the policy says where the service stands on
+        // minors — the audit's constat n° 8 was that no document did.
+        assert!(
+            html.contains("<h2>Le service et les mineurs</h2>"),
+            "the policy says nothing about minors"
+        );
         // The reader of `/privacy-policy` cannot open a repository path: the
         // document must stand on its own. Checked over every path shape, not
         // just `docs/` — a bare `architecture.md` is as unreachable (#131).

@@ -20,7 +20,7 @@ async fn register_verify_login(
         "/auth/register",
         None,
         Some(
-            serde_json::json!({"email": email, "password": password, "display_name": "Test User"}),
+            serde_json::json!({"email": email, "password": password, "display_name": "Test User", "declares_minimum_age": true}),
         ),
     )
     .await;
@@ -173,7 +173,7 @@ async fn register_validates_input(db: PgPool) {
         Method::POST,
         "/auth/register",
         None,
-        Some(serde_json::json!({"email": "v@example.test", "password": "short", "display_name": "V"})),
+        Some(serde_json::json!({"email": "v@example.test", "password": "short", "display_name": "V", "declares_minimum_age": true})),
     )
     .await;
     assert_status(&short_pw, StatusCode::UNPROCESSABLE_ENTITY);
@@ -184,7 +184,7 @@ async fn register_validates_input(db: PgPool) {
         Method::POST,
         "/auth/register",
         None,
-        Some(serde_json::json!({"email": "not-an-email", "password": "long-enough-1", "display_name": "V"})),
+        Some(serde_json::json!({"email": "not-an-email", "password": "long-enough-1", "display_name": "V", "declares_minimum_age": true})),
     )
     .await;
     assert_status(&bad_email, StatusCode::UNPROCESSABLE_ENTITY);
@@ -195,7 +195,7 @@ async fn register_validates_input(db: PgPool) {
         Method::POST,
         "/auth/register",
         None,
-        Some(serde_json::json!({"email": "v@example.test", "password": "long-enough-1", "display_name": "   "})),
+        Some(serde_json::json!({"email": "v@example.test", "password": "long-enough-1", "display_name": "   ", "declares_minimum_age": true})),
     )
     .await;
     assert_status(&empty_name, StatusCode::UNPROCESSABLE_ENTITY);
@@ -209,10 +209,64 @@ async fn register_validates_input(db: PgPool) {
         Method::POST,
         "/auth/register",
         None,
-        Some(serde_json::json!({"email": "v@example.test", "password": "long-enough-1", "display_name": "Valid"})),
+        Some(serde_json::json!({"email": "v@example.test", "password": "long-enough-1", "display_name": "Valid", "declares_minimum_age": true})),
     )
     .await;
     assert_status(&ok, StatusCode::CREATED);
+}
+
+/// #137, art. 8 GDPR: the service is not open under 15, so a registration
+/// that does not carry the age declaration is refused — and one that does
+/// leaves the declaration on file, dated. A body that simply omits the field
+/// declares nothing: it gets the same 422 code as an explicit `false`, not a
+/// deserialization error, so a caller is told which rule it broke.
+#[sqlx::test]
+async fn register_requires_the_age_declaration_and_records_it(db: PgPool) {
+    let router = test_router(db.clone());
+
+    for body in [
+        serde_json::json!({"email": "young@example.test", "password": "long-enough-1", "display_name": "Young", "declares_minimum_age": false}),
+        serde_json::json!({"email": "young@example.test", "password": "long-enough-1", "display_name": "Young"}),
+    ] {
+        let refused = call(&router, Method::POST, "/auth/register", None, Some(body)).await;
+        assert_status(&refused, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            json_body(refused).await["error"],
+            "age_declaration_required"
+        );
+    }
+
+    let none_created =
+        sqlx::query_scalar!("SELECT count(*) FROM users WHERE email = 'young@example.test'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        none_created,
+        Some(0),
+        "a refused registration created a user"
+    );
+
+    let created = call(
+        &router,
+        Method::POST,
+        "/auth/register",
+        None,
+        Some(serde_json::json!({"email": "old-enough@example.test", "password": "long-enough-1", "display_name": "Old Enough", "declares_minimum_age": true})),
+    )
+    .await;
+    assert_status(&created, StatusCode::CREATED);
+
+    let declared_at = sqlx::query_scalar!(
+        "SELECT age_declared_at FROM users WHERE email = 'old-enough@example.test'"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert!(
+        declared_at.is_some(),
+        "the age declaration was not recorded on the account"
+    );
 }
 
 /// AC #6: the authenticated change-password endpoint rejects a too-short new
@@ -249,6 +303,7 @@ async fn register_then_duplicate_email_conflicts(db: PgPool) {
             "email": "alice@example.test",
             "password": "correct horse battery staple",
             "display_name": "Alice",
+            "declares_minimum_age": true
         })),
     )
     .await;
@@ -263,6 +318,7 @@ async fn register_then_duplicate_email_conflicts(db: PgPool) {
             "email": "alice@example.test",
             "password": "another password",
             "display_name": "Alice 2",
+            "declares_minimum_age": true
         })),
     )
     .await;
@@ -290,6 +346,7 @@ async fn verify_email_unlocks_login(db: PgPool) {
             "email": "bob@example.test",
             "password": "hunter2hunter2",
             "display_name": "Bob",
+            "declares_minimum_age": true
         })),
     )
     .await;
@@ -352,6 +409,7 @@ async fn forgot_password_is_anti_enumeration_and_reset_revokes_sessions(db: PgPo
             "email": "carol@example.test",
             "password": "initial-password",
             "display_name": "Carol",
+            "declares_minimum_age": true
         })),
     )
     .await;
@@ -429,7 +487,7 @@ async fn change_password_keeps_current_session_revokes_others(db: PgPool) {
         Method::POST,
         "/auth/register",
         None,
-        Some(serde_json::json!({"email": "dave@example.test", "password": "old-password-1", "display_name": "Dave"})),
+        Some(serde_json::json!({"email": "dave@example.test", "password": "old-password-1", "display_name": "Dave", "declares_minimum_age": true})),
     )
     .await;
     let token = sqlx::query_scalar!(
@@ -504,7 +562,7 @@ async fn delete_account_blocked_while_owner_then_cancellable(db: PgPool) {
         Method::POST,
         "/auth/register",
         None,
-        Some(serde_json::json!({"email": "erin@example.test", "password": "erins-password1", "display_name": "Erin"})),
+        Some(serde_json::json!({"email": "erin@example.test", "password": "erins-password1", "display_name": "Erin", "declares_minimum_age": true})),
     )
     .await;
     let token = sqlx::query_scalar!(
@@ -692,6 +750,7 @@ async fn resend_verification_invalidates_old_token_and_new_one_works(db: PgPool)
             "email": "fred@example.test",
             "password": "initial-password",
             "display_name": "Fred",
+            "declares_minimum_age": true
         })),
     )
     .await;
@@ -790,6 +849,7 @@ async fn resend_verification_noops_for_unknown_and_verified(db: PgPool) {
             "email": "grace@example.test",
             "password": "initial-password",
             "display_name": "Grace",
+            "declares_minimum_age": true
         })),
     )
     .await;
@@ -850,6 +910,7 @@ async fn resend_verification_cooldown_is_silent_noop(db: PgPool) {
             "email": "heidi@example.test",
             "password": "initial-password",
             "display_name": "Heidi",
+            "declares_minimum_age": true
         })),
     )
     .await;

@@ -17,7 +17,7 @@ async fn full_journey_register_to_ownership_transfer_to_deletion(db: PgPool) {
         Method::POST,
         "/auth/register",
         None,
-        Some(serde_json::json!({"email": "founder@example.test", "password": "founder-password1", "display_name": "Founder"})),
+        Some(serde_json::json!({"email": "founder@example.test", "password": "founder-password1", "display_name": "Founder", "declares_minimum_age": true})),
     )
     .await;
     assert_status(&register, StatusCode::CREATED);
@@ -81,7 +81,7 @@ async fn full_journey_register_to_ownership_transfer_to_deletion(db: PgPool) {
         Method::POST,
         "/auth/register",
         None,
-        Some(serde_json::json!({"email": "successor@example.test", "password": "successor-password1", "display_name": "Successor"})),
+        Some(serde_json::json!({"email": "successor@example.test", "password": "successor-password1", "display_name": "Successor", "declares_minimum_age": true})),
     )
     .await;
     let successor_verify_token = sqlx::query_scalar!(
@@ -177,7 +177,7 @@ async fn sensitive_actions_are_audited(db: PgPool) {
         Method::POST,
         "/auth/register",
         None,
-        Some(serde_json::json!({"email": "auditor@example.test", "password": "auditor-password1", "display_name": "Auditor"})),
+        Some(serde_json::json!({"email": "auditor@example.test", "password": "auditor-password1", "display_name": "Auditor", "declares_minimum_age": true})),
     )
     .await;
     let token = sqlx::query_scalar!(
@@ -209,7 +209,7 @@ async fn sensitive_actions_are_audited(db: PgPool) {
         Method::POST,
         "/auth/register",
         None,
-        Some(serde_json::json!({"email": "member2@example.test", "password": "member2-password1", "display_name": "Member2"})),
+        Some(serde_json::json!({"email": "member2@example.test", "password": "member2-password1", "display_name": "Member2", "declares_minimum_age": true})),
     )
     .await;
     let token2 = sqlx::query_scalar!(

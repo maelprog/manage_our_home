@@ -83,6 +83,31 @@ pub fn validate_display_name(display_name: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Minimum age (years) to open an account, declared at registration. 15 is the
+/// French threshold of art. 8 GDPR as transposed by art. 45 of the loi
+/// Informatique et Libertés: below it, a processing based on consent needs the
+/// holder of parental authority. The service takes the simple route the
+/// arbitrage settled on — under-15s are not accepted at all, so there is no
+/// parental-consent path to build and nothing to ask a parent for. The same
+/// number is written in the CGU (`docs/terms-of-service.md`), and a test in
+/// `validation::rgpd` pins the two together so they cannot drift.
+pub const MINIMUM_AGE_YEARS: u32 = 15;
+
+/// `age_declaration_required` unless the person declared being at least
+/// `MINIMUM_AGE_YEARS` old.
+///
+/// The declaration is a plain yes/no: no birth date is asked for and none is
+/// stored. Collecting a date to derive a single boolean would be more personal
+/// data than the check needs, which art. 5.1.c GDPR (minimisation) forbids —
+/// and a declared date is no more verifiable than a ticked box. What is kept
+/// is that the declaration was made, and when (`users.age_declared_at`).
+pub fn validate_age_declaration(declares_minimum_age: bool) -> Result<(), &'static str> {
+    if !declares_minimum_age {
+        return Err("age_declaration_required");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,5 +241,20 @@ mod tests {
     fn non_empty_display_name_is_accepted() {
         assert_eq!(validate_display_name("Alice"), Ok(()));
         assert_eq!(validate_display_name("  Bob  "), Ok(()));
+    }
+
+    // -- validate_age_declaration -----------------------------------------
+
+    #[test]
+    fn registering_without_declaring_the_minimum_age_is_rejected() {
+        assert_eq!(
+            validate_age_declaration(false),
+            Err("age_declaration_required")
+        );
+    }
+
+    #[test]
+    fn a_declared_minimum_age_is_accepted() {
+        assert_eq!(validate_age_declaration(true), Ok(()));
     }
 }

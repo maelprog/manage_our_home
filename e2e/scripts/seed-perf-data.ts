@@ -152,7 +152,13 @@ async function fetchVerificationToken(email: string): Promise<string> {
 async function signIn(who: { email: string; displayName: string }): Promise<HttpSession> {
   const session = new HttpSession(API_BASE_URL);
   const registered = await session.raw("POST", "/auth/register", {
-    body: { email: who.email, password: PASSWORD, display_name: who.displayName },
+    body: {
+      email: who.email,
+      password: PASSWORD,
+      display_name: who.displayName,
+      // #137: registration refuses a body without the art. 8 GDPR age declaration.
+      declares_minimum_age: true,
+    },
     expect: [201, 409],
   });
 
