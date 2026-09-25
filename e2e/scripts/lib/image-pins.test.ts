@@ -13,7 +13,7 @@ import {
 } from "./image-pins.ts";
 
 // ---------------------------------------------------------------------------
-// Garde-fou des images MinIO (#159, réécrit par #138).
+// Garde-fou des images MinIO (#159, réécrit par #138, compose basculé par #274).
 //
 // #158 avait basculé les références MinIO de `ci.yml` et
 // `infra/docker-compose.yml` vers `quay.io` sur des tags `RELEASE.*`. Le
@@ -21,10 +21,10 @@ import {
 // (quay.io 401, Docker Hub 401, ghcr.io 403) et les trois jobs à MinIO sont
 // morts en exit 125. `ci.yml` tire désormais le miroir
 // `docker.io/bitnamilegacy/minio` + `minio-client`, épinglé par tag ET
-// digest ; le compose reste sur les références amont tant que la migration
-// de la pile livrée (chemin de données `/data` → `/bitnami/minio/data`) n'est
-// pas arbitrée. Les deux fichiers ne bougent donc plus ensemble, et la porte
-// applique une politique par fichier.
+// digest. `infra/docker-compose.yml`, resté un temps sur les références amont
+// (et donc sur une pile qui ne démarrait plus), tire le même miroir depuis
+// #274 : la porte applique toujours une politique par fichier, mais les deux
+// politiques sont désormais celle du miroir, et un même pin partout.
 // ---------------------------------------------------------------------------
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -59,8 +59,8 @@ const CI_OK =
   `          docker run -d --name minio ${CI_SERVER}\n` +
   `          docker run --rm ${CI_CLIENT} -c "mc mb local/b"\n`;
 const COMPOSE_OK =
-  `  minio:\n    image: quay.io/minio/minio:${UP_SERVER}\n` +
-  `  minio-init:\n    image: quay.io/minio/mc:${UP_CLIENT}\n`;
+  `  minio:\n    image: ${CI_SERVER}\n` +
+  `  minio-init:\n    image: ${CI_CLIENT}\n`;
 
 test("les vrais ci.yml et docker-compose.yml passent le garde-fou", () => {
   assert.deepEqual(minioPinViolations(realFiles()), []);
@@ -69,10 +69,9 @@ test("les vrais ci.yml et docker-compose.yml passent le garde-fou", () => {
 test("des fichiers conformes passent, avec des pins serveur et client distincts", () => {
   // L'erreur que le garde-fou ne doit PAS commettre : le serveur et le client
   // publient sur des horloges de release distinctes, côté miroir Bitnami
-  // (2025.7.23 vs 2025.7.21) comme côté amont — exiger un pin unique pour les
-  // deux rendrait la porte impossible à tenir.
+  // (2025.7.23 vs 2025.7.21) — exiger un pin unique pour les deux rendrait
+  // la porte impossible à tenir.
   assert.notEqual(SERVER, CLIENT);
-  assert.notEqual(UP_SERVER, UP_CLIENT);
   assert.deepEqual(minioPinViolations(files(CI_OK, COMPOSE_OK)), []);
 });
 
@@ -123,7 +122,10 @@ test("refuse une référence sans registre (Docker Hub implicite)", () => {
   assert.equal(violations.length, 1, violations.join(" | "));
   assert.match(violations[0], /registre implicite/);
 
-  const compose = COMPOSE_OK.replace(`quay.io/minio/mc:${UP_CLIENT}`, `minio/mc:${UP_CLIENT}`);
+  const compose = COMPOSE_OK.replace(
+    "docker.io/bitnamilegacy/minio-client:",
+    "bitnamilegacy/minio-client:",
+  );
   const v2 = minioPinViolations(files(CI_OK, compose));
   assert.equal(v2.length, 1, v2.join(" | "));
   assert.match(v2[0], /docker-compose\.yml:4/);
@@ -166,33 +168,49 @@ test("exige dans ci.yml le pin par digest, que le tag seul ne remplace pas", () 
   }
 });
 
-test("le compose accepte un tag amont épinglé sans digest", () => {
-  // Politique par fichier : le digest est exigé sur le miroir, pas sur les
-  // références amont du compose, qui n'ont pas changé.
-  assert.deepEqual(minioPinViolations(files(CI_OK, COMPOSE_OK)), []);
-});
-
-test("refuse dans le compose un horodatage suivi d'une variante (.fips, -cpuv1, .hotfix.*)", () => {
-  for (const suffix of [".fips", "-cpuv1", ".hotfix.7b3a2e1f"]) {
-    const bad = `quay.io/minio/minio:${UP_SERVER}${suffix}`;
-    const compose = COMPOSE_OK.replace(`quay.io/minio/minio:${UP_SERVER}`, bad);
+test("exige aussi dans le compose le pin par digest", () => {
+  // Le compose tire le même miroir que la CI (#274) : même exigence.
+  for (const drop of [SERVER_DIGEST, CLIENT_DIGEST]) {
+    const compose = COMPOSE_OK.replace(drop, "");
     const violations = minioPinViolations(files(CI_OK, compose));
-    assert.equal(violations.length, 1, `${bad} : ${violations.join(" | ")}`);
-    // Le tag est épinglé : le dire « flottant » serait faux.
-    assert.doesNotMatch(violations[0], /flottant/);
     assert.ok(
-      violations[0].includes(`« ${suffix} »`),
-      `${bad} doit nommer son suffixe : ${violations[0]}`,
+      violations.some((v) => /docker-compose\.yml:\d+ .*digest manquant/.test(v)),
+      `${drop} : ${violations.join(" | ")}`,
     );
   }
 });
 
+test("refuse dans le compose un retour aux images minio/* amont", () => {
+  // La pile livrée ne démarrait plus sur quay.io (401 anonyme, #274) : y
+  // revenir doit être rouge ici, pas au premier `docker compose up`.
+  for (const [from, to] of [
+    [CI_SERVER, `quay.io/minio/minio:${UP_SERVER}`],
+    [CI_CLIENT, `quay.io/minio/mc:${UP_CLIENT}`],
+  ]) {
+    const compose = COMPOSE_OK.replace(from, to);
+    const violations = minioPinViolations(files(CI_OK, compose));
+    assert.ok(
+      violations.some((v) => /docker-compose\.yml:\d+ .*anonym/.test(v)),
+      `${to} : ${violations.join(" | ")}`,
+    );
+  }
+});
+
+test("refuse un compose épinglé autrement que la CI", () => {
+  // La CI teste le serveur que la pile livrée fait tourner : un pin qui
+  // diverge entre les deux fichiers ferait tester autre chose.
+  const other = "2025.7.23-debian-12-r4";
+  const compose = COMPOSE_OK.replace(`minio:${SERVER}`, `minio:${other}`);
+  const violations = minioPinViolations(files(CI_OK, compose));
+  assert.equal(violations.length, 1, violations.join(" | "));
+  assert.match(violations[0], /divergent/);
+  assert.match(violations[0], /ci\.yml/);
+  assert.match(violations[0], /docker-compose\.yml/);
+});
+
 test("refuse un digest mal formé au lieu de l'ignorer, dans les deux fichiers", () => {
   for (const digest of ["@sha256:zz", "@sha256:" + "a".repeat(63), "@md5:abc"]) {
-    const compose = COMPOSE_OK.replace(
-      `quay.io/minio/minio:${UP_SERVER}`,
-      `quay.io/minio/minio:${UP_SERVER}${digest}`,
-    );
+    const compose = COMPOSE_OK.replace(SERVER_DIGEST, digest);
     const v1 = minioPinViolations(files(CI_OK, compose));
     assert.equal(v1.length, 1, `${digest} : ${v1.join(" | ")}`);
     assert.match(v1[0], /mal formé/);
@@ -209,10 +227,7 @@ test("accepte une référence épinglée entre guillemets", () => {
   // Le tag s'arrête aux guillemets : sinon `"…r5"` serait lu comme un tag
   // non conforme.
   const ci = CI_OK.replace(CI_SERVER, `"${CI_SERVER}"`);
-  const compose = COMPOSE_OK.replace(
-    `quay.io/minio/minio:${UP_SERVER}`,
-    `'quay.io/minio/minio:${UP_SERVER}'`,
-  );
+  const compose = COMPOSE_OK.replace(CI_SERVER, `'${CI_SERVER}'`);
   assert.deepEqual(minioPinViolations(files(ci, compose)), []);
 });
 
@@ -234,7 +249,9 @@ test("refuse une divergence de pin entre deux jobs du même fichier", () => {
 });
 
 test("refuse une divergence de pin entre deux services du compose", () => {
-  const compose = COMPOSE_OK + `  minio-other:\n    image: quay.io/minio/minio:RELEASE.2025-10-15T17-29-55Z\n`;
+  const compose =
+    COMPOSE_OK +
+    `  minio-other:\n    image: docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r4${SERVER_DIGEST}\n`;
   const violations = minioPinViolations(files(CI_OK, compose));
   assert.equal(violations.length, 1, violations.join(" | "));
   assert.match(violations[0], /divergent/);
@@ -249,10 +266,10 @@ test("refuse un fichier où une image attendue n'est plus trouvée", () => {
   assert.match(v1[0], /minio-client/);
   assert.match(v1[0], /ci\.yml/);
 
-  const compose = `  minio:\n    image: quay.io/minio/minio:${UP_SERVER}\n`;
+  const compose = `  minio:\n    image: ${CI_SERVER}\n`;
   const v2 = minioPinViolations(files(CI_OK, compose));
   assert.equal(v2.length, 1, v2.join(" | "));
-  assert.match(v2[0], /minio\/mc/);
+  assert.match(v2[0], /minio-client/);
   assert.match(v2[0], /docker-compose\.yml/);
 });
 
@@ -327,10 +344,46 @@ test("refuse le vrai ci.yml privé de son digest", () => {
 
 test("refuse le vrai docker-compose.yml repassé en latest", () => {
   const [ci, compose] = realFiles();
-  const mutated = compose.text.replace(/quay\.io\/minio\/mc:\S+/, "quay.io/minio/mc:latest");
+  const mutated = compose.text.replace(
+    /docker\.io\/bitnamilegacy\/minio-client:\S+/,
+    "docker.io/bitnamilegacy/minio-client:latest",
+  );
   assert.notEqual(mutated, compose.text);
   const violations = minioPinViolations([ci, { ...compose, text: mutated }]);
-  assert.ok(violations.length >= 1);
+  assert.ok(violations.some((v) => /épingl/.test(v)), violations.join(" | "));
+});
+
+test("refuse le vrai docker-compose.yml ramené aux images amont de quay.io", () => {
+  // Le mode de panne de #274 : la pile livrée restée sur quay.io, que plus
+  // personne ne tire anonymement.
+  const [ci, compose] = realFiles();
+  const mutated = compose.text.replace(
+    /docker\.io\/bitnamilegacy\/minio:\S+/,
+    `quay.io/minio/minio:${UP_SERVER}`,
+  );
+  assert.notEqual(mutated, compose.text);
+  const violations = minioPinViolations([ci, { ...compose, text: mutated }]);
+  assert.ok(
+    violations.some((v) => /docker-compose\.yml:\d+ .*anonym/.test(v)),
+    violations.join(" | "),
+  );
+});
+
+test("le vrai docker-compose.yml garde le volume MinIO là où l'image Bitnami écrit", () => {
+  // L'image Bitnami ignore `/data` : elle écrit sous `/bitnami/minio/data`.
+  // Un volume nommé resté monté sur `/data` serait vide aux yeux du serveur,
+  // qui écrirait dans un volume anonyme perdu au prochain `docker compose
+  // down` — les pièces jointes existantes disparaîtraient sans erreur (#274).
+  // Et elle doit démarrer en root : le volume d'une pile créée avec l'image
+  // amont appartient à root, que l'utilisateur 1001 ne peut pas écrire ; en
+  // root, l'entrypoint Bitnami rend le volume à son utilisateur de service
+  // puis abandonne ses privilèges.
+  const compose = realFiles()[1].text;
+  const service = compose.match(/\n  minio:\n([\s\S]*?)\n\n/);
+  assert.ok(service, "service minio introuvable dans le compose");
+  assert.match(service[1], /^\s+- minio_data:\/bitnami\/minio\/data$/m);
+  assert.doesNotMatch(service[1], /:\/data\b/);
+  assert.match(service[1], /^\s+user: "0"$/m);
 });
 
 // ---------------------------------------------------------------------------
