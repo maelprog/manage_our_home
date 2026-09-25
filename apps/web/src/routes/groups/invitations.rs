@@ -35,7 +35,7 @@ fn invalid_page() -> Html<String> {
 fn gone_page() -> Html<String> {
     let body = view! {
         <h1>"Invitation expirée"</h1>
-        <p>"Cette invitation a déjà été utilisée ou a expiré (elles sont valables 7 jours et à usage unique). Demandez-en une nouvelle à un membre du groupe."</p>
+        <p>"Cette invitation a expiré (elles sont valables 7 jours). Demandez-en une nouvelle à un membre du groupe."</p>
         <a class="btn secondary" href="/groups">"Retour à mes groupes"</a>
     };
     Html(shell(Width::Form, "Invitation expirée", &body.to_html()))

@@ -256,10 +256,29 @@ test("refuse un fichier où une image attendue n'est plus trouvée", () => {
   assert.match(v2[0], /docker-compose\.yml/);
 });
 
+test("refuse un appel qui omet l'un des deux fichiers couverts", () => {
+  // La porte n'est tenue que si les deux fichiers sont lus. Appelée sur le
+  // seul `ci.yml`, elle ne sait rien du compose : rendre « aucune violation »
+  // serait affirmer un fichier conforme sans l'avoir ouvert.
+  const cases = [
+    { given: { path: CI_PATH, text: CI_OK }, missing: COMPOSE_PATH },
+    { given: { path: COMPOSE_PATH, text: COMPOSE_OK }, missing: CI_PATH },
+  ];
+  for (const { given, missing } of cases) {
+    const violations = minioPinViolations([given]);
+    assert.equal(violations.length, 1, violations.join(" | "));
+    assert.ok(violations[0].includes(missing), violations[0]);
+    assert.match(violations[0], /non fourni/);
+  }
+  // Appelée sur rien, elle refuse les deux.
+  assert.equal(minioPinViolations([]).length, 2);
+});
+
 test("refuse un fichier dont la politique d'image est inconnue", () => {
   // La politique est attachée au chemin : un fichier qu'on croirait couvert
   // et qui ne l'est pas doit le dire, pas passer en vert sur rien.
   const violations = minioPinViolations([
+    ...files(CI_OK, COMPOSE_OK),
     { path: "infra/docker-compose.prod.yml", text: CI_OK },
   ]);
   assert.equal(violations.length, 1, violations.join(" | "));

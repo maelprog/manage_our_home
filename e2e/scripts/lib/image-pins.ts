@@ -196,11 +196,22 @@ function occurrences(file: SourceFile, policy: Policy): Occurrence[] {
 /**
  * Rend la liste des violations (vide si la porte est tenue). Chaque fichier
  * fourni est jugé sur la politique attachée à son chemin, et doit référencer
- * toutes les images que celle-ci attend.
+ * toutes les images que celle-ci attend. **Tous** les fichiers couverts
+ * doivent être fournis : appelée sur un seul, la porte ne sait rien de
+ * l'autre, et un vert vaudrait affirmation sans lecture.
  */
 export function minioPinViolations(files: ReadonlyArray<SourceFile>): string[] {
   const violations: string[] = [];
   const sound: Occurrence[] = [];
+
+  for (const path of POLICIES.keys()) {
+    if (!files.some((f) => f.path === path)) {
+      violations.push(
+        `${path} : fichier couvert non fourni à la porte. Les deux fichiers ` +
+          "se lisent ensemble : sur un seul, rien n'est prouvé de l'autre.",
+      );
+    }
+  }
 
   for (const file of files) {
     const policy = POLICIES.get(file.path);

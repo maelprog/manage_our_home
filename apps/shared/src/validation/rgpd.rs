@@ -535,14 +535,16 @@ fn is_invisible(c: char) -> bool {
 ///
 /// What does erase the row is the retention purge
 /// (`apps/api/src/jobs/retention_purge.rs`, #138): at acceptance, and
-/// otherwise 30 days after the invitation was created. That pass runs **once
-/// an hour**, so the 30th day is when the row becomes purgeable, not a
-/// deadline met to the second — the notice says "dans l'heure qui suit"
-/// rather than "au plus tard 30 jours", which the pass would overrun on
-/// every invitation and miss entirely while the API is down. It is the same
-/// bound `docs/privacy-policy.md` and `docs/registre-traitements.md` publish.
-/// Deleting the group takes the row earlier; the notice states the longest
-/// the address can stay, so an earlier deletion breaks no promise.
+/// otherwise 30 days after the invitation was created. That pass runs once an
+/// hour **and only while the API is up**, so the 30th day is when the row
+/// becomes purgeable and no bound can be promised at all: an outage defers
+/// the deletion for as long as it lasts. The notice therefore states the
+/// frequency and what an interruption does to it, and states no deadline —
+/// not "au plus tard 30 jours", which the hourly pass overruns on every
+/// invitation, and not a flat hour either, which an outage overruns just as
+/// surely. `docs/privacy-policy.md` and `docs/registre-traitements.md` carry
+/// that same reserve. Deleting the group takes the row earlier, which breaks
+/// no promise: nothing here promises the address stays.
 pub fn invitation_email_body(
     group_name: &str,
     inviter_display_name: &str,
@@ -575,8 +577,9 @@ base légale est l'intérêt légitime du membre qui invite un proche.
 
 Votre adresse est enregistrée avec cette invitation, puis effacée :
 dès que le lien est utilisé, sinon 30 jours après cet envoi. Cet
-effacement est fait par un passage automatique qui a lieu toutes les
-heures : il intervient donc dans l'heure qui suit.
+effacement est fait par un passage automatique qui a lieu
+toutes les heures ; si le service est interrompu, il a lieu à son
+redémarrage.
 
 Le responsable de traitement est [nom du responsable de traitement — à
 renseigner avant la mise en ligne], joignable à [adresse de contact — à
@@ -588,7 +591,7 @@ réclamation auprès de la CNIL.
 Si vous ne voulez pas de cette invitation, ignorez cet email : le lien
 cesse de fonctionner au bout de 7 jours. Votre adresse, elle, reste
 enregistrée avec l'invitation pendant 30 jours après cet envoi, puis est
-effacée dans l'heure qui suit.
+effacée par ce passage automatique.
 
 Aucun écran de ce service ne permet d'agir sur cette adresse. Créer un
 compte depuis le lien ci-dessus ouvre des droits sur les données de ce
@@ -1198,11 +1201,20 @@ mod tests {
         assert!(body.contains("30 jours après cet envoi"), "{body}");
         assert!(!body.contains("suppression du groupe"), "{body}");
         // The deletion is a pass that runs once an hour
-        // (`retention_purge::PURGE_INTERVAL`), so the 30th day is when the
-        // row becomes purgeable, not a deadline the service meets to the
-        // second: the notice must not state a bound the purge can overrun.
-        assert!(body.contains("dans l'heure qui suit"), "{body}");
-        assert!(!body.contains("au plus tard 30 jours"), "{body}");
+        // (`retention_purge::PURGE_INTERVAL`) and only while the API is up, so
+        // the 30th day is when the row becomes purgeable and nothing here is a
+        // deadline: the notice states the frequency *and* what a service
+        // outage does to it, and states no upper bound at all — neither
+        // "au plus tard 30 jours" nor an unconditional hour. The processing
+        // register carries the same reserve (`docs/registre-traitements.md`).
+        assert!(body.contains("toutes les heures"), "{body}");
+        assert!(body.contains("interrompu"), "{body}");
+        for cap in ["au plus tard", "dans l'heure qui suit"] {
+            assert!(
+                !body.contains(cap),
+                "borne inconditionnelle « {cap} » : {body}"
+            );
+        }
     }
 
     #[test]

@@ -134,6 +134,14 @@ Le serveur n'efface rien à date fixe en dehors des cas indiqués
 ci-dessous : quand une ligne dit qu'une donnée « reste », aucune
 suppression automatique n'est en place aujourd'hui.
 
+Les suppressions automatiques décrites ci-dessous sont l'œuvre d'un passage
+de purge qui a lieu **toutes les heures, et seulement quand le service
+fonctionne**. Une donnée arrivée au terme de sa durée est donc supprimée au
+premier passage qui suit : dans l'heure lorsque le service tourne, et après
+son redémarrage s'il a été interrompu. Les durées ci-dessous sont des durées
+de conservation, pas des délais de suppression garantis : nous ne promettons
+pas un délai que l'indisponibilité du service dépasserait.
+
 - **Compte** (email, mot de passe haché, nom affiché, appartenance aux
   groupes et rôle) : tant que le compte existe, puis 30 jours de grâce
   après une demande de suppression, à l'issue desquels le compte est
@@ -144,22 +152,22 @@ suppression automatique n'est en place aujourd'hui.
 - **Sessions de connexion** : une session vaut 30 jours au plus, et prend
   fin plus tôt si elle reste 7 jours sans activité. Sa trace (dates
   de création, de dernière activité, d'expiration et de révocation) est
-  supprimée dans l'heure qui suit la fin de la session : expiration,
-  inactivité, déconnexion, changement de mot de passe ou désactivation du
-  compte.
+  supprimée au premier passage de purge qui suit la fin de la session :
+  expiration, inactivité, déconnexion, changement de mot de passe ou
+  désactivation du compte.
 - **Connexion avec Google** : l'identifiant, l'email et le nom de votre
   profil Google et le jeton de rafraîchissement sont conservés jusqu'à
   l'anonymisation du compte, qui les supprime.
 - **Vérification d'email et réinitialisation du mot de passe** : un jeton
   de vérification est valable 24 heures, un jeton de réinitialisation
   1 heure, et chacun ne sert qu'une fois. Un jeton de réinitialisation est
-  supprimé dès qu'il sert. Sinon, un jeton est supprimé au plus tard une
-  heure après avoir atteint sa durée de conservation : 48 heures après sa
-  création pour la vérification, 1 heure pour la réinitialisation.
+  supprimé dès qu'il sert. Sinon, un jeton est supprimé au premier passage
+  de purge qui suit sa durée de conservation : 48 heures après sa création
+  pour la vérification, 1 heure pour la réinitialisation.
 - **Invitations** : un lien d'invitation est valable 7 jours et ne sert
   qu'une fois. L'invitation, adresse email de la personne invitée comprise,
-  est supprimée dès qu'elle est acceptée ; sinon, 30 jours après sa
-  création (au plus tard une heure après), ou plus tôt si le groupe est
+  est supprimée dès qu'elle est acceptée ; sinon, au premier passage de
+  purge qui suit les 30 jours de sa création, ou plus tôt si le groupe est
   supprimé.
 - **Protection de la connexion** : gardée en mémoire du serveur, jamais en
   base, et perdue à chaque redémarrage du serveur. Une connexion réussie
@@ -194,8 +202,8 @@ suppression automatique n'est en place aujourd'hui.
   leur suppression est demandée en même temps. L'anonymisation d'un compte
   ne supprime ni l'import ni ses événements.
 - **Logs d'audit** : 6 mois glissants, durée recommandée par la CNIL pour
-  les journaux ; une entrée plus ancienne est supprimée au plus tard une
-  heure après cette échéance.
+  les journaux ; une entrée plus ancienne est supprimée au premier passage
+  de purge qui suit cette échéance.
 - **Export de vos données** : généré à la demande et renvoyé directement,
   il n'est pas conservé sur le serveur.
 
@@ -269,9 +277,10 @@ politique et le droit de saisir la CNIL.
 
 Ignorer cet email suffit à ne pas rejoindre le groupe : le lien cesse de
 fonctionner au bout de 7 jours. Votre adresse, elle, reste enregistrée avec
-l'invitation pendant 30 jours après son envoi, puis est effacée dans l'heure
-qui suit (le passage de suppression a lieu toutes les heures). Elle l'est
-aussitôt si le lien est utilisé.
+l'invitation pendant 30 jours après son envoi, puis est effacée au premier
+passage de purge qui suit (ces passages ont lieu toutes les heures quand le
+service fonctionne, et reprennent à son redémarrage). Elle l'est aussitôt si
+le lien est utilisé.
 
 Aucun écran de ce service ne permet d'agir sur cette adresse. Créer un
 compte depuis le lien reçu ouvre des droits sur les données de ce compte,
