@@ -61,7 +61,7 @@ impl EmailSender {
     }
 
     pub fn password_reset_body(link: &str) -> String {
-        format!("Cliquez sur ce lien pour réinitialiser votre mot de passe (valide 24h) : {link}")
+        format!("Cliquez sur ce lien pour réinitialiser votre mot de passe (valide 1 h) : {link}")
     }
 
     /// Unlike the two above, this one reaches somebody who has no account and

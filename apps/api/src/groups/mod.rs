@@ -13,7 +13,7 @@ use crate::error::{AppError, AppResult};
 use crate::AppState;
 
 const MAX_GROUPS_PER_USER: i64 = 10;
-const INVITATION_TTL_DAYS: i64 = 7;
+pub const INVITATION_TTL_DAYS: i64 = 7;
 
 #[derive(Deserialize)]
 pub struct CreateGroupRequest {
@@ -465,8 +465,9 @@ pub async fn create_invitation(
     ))
 }
 
-/// AC #14: single-use, 7-day expiry. Re-use after `consumed_at` is set
-/// returns 410 Gone.
+/// AC #14: single-use, 7-day expiry. Accepting deletes the invitation, so
+/// re-use returns 404 (#138); 410 Gone is left for an expired one, and for
+/// a row consumed before the deletion existed.
 pub async fn accept_invitation(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -500,13 +501,12 @@ pub async fn accept_invitation(
         return Err(AppError::Gone);
     }
 
-    sqlx::query!(
-        "UPDATE invitations SET consumed_at = now(), consumed_by = $1 WHERE token = $2",
-        auth.user_id,
-        token
-    )
-    .execute(&mut *tx)
-    .await?;
+    // Deleted at acceptance rather than marked consumed (#138): the row
+    // carries the invited address, which has no use once the person is a
+    // member. A second use finds no row and answers 404.
+    sqlx::query!("DELETE FROM invitations WHERE token = $1", token)
+        .execute(&mut *tx)
+        .await?;
 
     sqlx::query!(
         r#"

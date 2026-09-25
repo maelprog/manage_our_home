@@ -92,7 +92,14 @@ async fn full_group_lifecycle(db: PgPool) {
     .await;
     assert_status(&accept, StatusCode::OK);
 
-    // AC #14: re-using the same invitation token is rejected as Gone.
+    // #138: accepting deletes the invitation, and the invited address with
+    // it, so re-using the token finds nothing (AC #14 single use).
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM invitations WHERE token::text = $1")
+        .bind(&invite_token)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
     let reuse = call(
         &router,
         Method::POST,
@@ -101,7 +108,7 @@ async fn full_group_lifecycle(db: PgPool) {
         None,
     )
     .await;
-    assert_status(&reuse, StatusCode::GONE);
+    assert_status(&reuse, StatusCode::NOT_FOUND);
 
     let member_id: Uuid =
         sqlx::query_scalar!("SELECT id FROM users WHERE email = 'member@example.test'")

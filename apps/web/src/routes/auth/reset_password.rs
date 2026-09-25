@@ -126,13 +126,16 @@ pub async fn post(
                 &body.to_html(),
             ))
         }
+        // 410 no longer covers a used token: using one deletes it (#138), so
+        // the only way here is an expiry — one hour after the email was sent.
         Ok(resp) if resp.status == reqwest::StatusCode::GONE => Html(invalid_link_page(
             "Lien expiré",
-            "Ce lien de réinitialisation a déjà été utilisé ou a expiré.",
+            "Ce lien de réinitialisation a expiré. Un lien n'est valable qu'une heure.",
         )),
+        // A used token is deleted (#138): a second use lands here, not on 410.
         Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => Html(invalid_link_page(
             "Lien invalide",
-            "Ce lien de réinitialisation n'existe pas.",
+            "Ce lien de réinitialisation n'existe pas ou a déjà été utilisé.",
         )),
         _ => Html(form_page(
             Some(&form.token),

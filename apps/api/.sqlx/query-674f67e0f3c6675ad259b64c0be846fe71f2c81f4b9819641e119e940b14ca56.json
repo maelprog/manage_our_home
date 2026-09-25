@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        DELETE FROM sessions s\n        WHERE s.revoked_at IS NOT NULL\n           OR s.expires_at < $1\n           OR s.last_seen_at < $2\n           OR EXISTS (\n               SELECT 1 FROM users u\n               WHERE u.id = s.user_id AND u.deleted_at IS NOT NULL\n           )\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "674f67e0f3c6675ad259b64c0be846fe71f2c81f4b9819641e119e940b14ca56"
+}

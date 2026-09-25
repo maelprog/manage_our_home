@@ -5,23 +5,29 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  CI_PATH,
+  COMPOSE_PATH,
   composeTagViolations,
   minioPinViolations,
   type SourceFile,
 } from "./image-pins.ts";
 
 // ---------------------------------------------------------------------------
-// Garde-fou des images MinIO (#159).
+// Garde-fou des images MinIO (#159, réécrit par #138).
 //
-// #158 a basculé les références MinIO de `ci.yml` et `infra/docker-compose.yml`
-// vers `quay.io` sur des tags `RELEASE.*` épinglés, avec des commentaires
-// disant pourquoi. Un commentaire n'est pas une porte : ces cas-ci lisent les
-// vrais fichiers, sur le modèle de `wiringViolation` (#123).
+// #158 avait basculé les références MinIO de `ci.yml` et
+// `infra/docker-compose.yml` vers `quay.io` sur des tags `RELEASE.*`. Le
+// 2026-09-25, `minio` a fermé les pulls anonymes partout où il publie
+// (quay.io 401, Docker Hub 401, ghcr.io 403) et les trois jobs à MinIO sont
+// morts en exit 125. `ci.yml` tire désormais le miroir
+// `docker.io/bitnamilegacy/minio` + `minio-client`, épinglé par tag ET
+// digest ; le compose reste sur les références amont tant que la migration
+// de la pile livrée (chemin de données `/data` → `/bitnami/minio/data`) n'est
+// pas arbitrée. Les deux fichiers ne bougent donc plus ensemble, et la porte
+// applique une politique par fichier.
 // ---------------------------------------------------------------------------
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-const CI_PATH = ".github/workflows/ci.yml";
-const COMPOSE_PATH = "infra/docker-compose.yml";
 
 function realFiles(): SourceFile[] {
   return [CI_PATH, COMPOSE_PATH].map((path) => ({
@@ -30,8 +36,16 @@ function realFiles(): SourceFile[] {
   }));
 }
 
-const SERVER = "RELEASE.2025-09-07T16-13-09Z";
-const CLIENT = "RELEASE.2025-08-13T08-35-41Z";
+// Pins synthétiques : la forme est celle des vrais pins, les valeurs non (les
+// vrais ne sont lus que par les cas « vrais fichiers » ci-dessous).
+const SERVER = "2025.7.23-debian-12-r5";
+const CLIENT = "2025.7.21-debian-12-r3";
+const SERVER_DIGEST = "@sha256:" + "1".repeat(64);
+const CLIENT_DIGEST = "@sha256:" + "2".repeat(64);
+const CI_SERVER = `docker.io/bitnamilegacy/minio:${SERVER}${SERVER_DIGEST}`;
+const CI_CLIENT = `docker.io/bitnamilegacy/minio-client:${CLIENT}${CLIENT_DIGEST}`;
+const UP_SERVER = "RELEASE.2025-09-07T16-13-09Z";
+const UP_CLIENT = "RELEASE.2025-08-13T08-35-41Z";
 
 // Deux fichiers minimaux et conformes, que chaque cas abîme d'un seul point.
 function files(ci: string, compose: string): SourceFile[] {
@@ -42,67 +56,55 @@ function files(ci: string, compose: string): SourceFile[] {
 }
 const CI_OK =
   `        run: |\n` +
-  `          docker run -d --name minio quay.io/minio/minio:${SERVER} server /data\n` +
-  `          docker run --rm quay.io/minio/mc:${CLIENT} -c "mc mb local/b"\n`;
+  `          docker run -d --name minio ${CI_SERVER}\n` +
+  `          docker run --rm ${CI_CLIENT} -c "mc mb local/b"\n`;
 const COMPOSE_OK =
-  `  minio:\n    image: quay.io/minio/minio:${SERVER}\n` +
-  `  minio-init:\n    image: quay.io/minio/mc:${CLIENT}\n`;
+  `  minio:\n    image: quay.io/minio/minio:${UP_SERVER}\n` +
+  `  minio-init:\n    image: quay.io/minio/mc:${UP_CLIENT}\n`;
 
 test("les vrais ci.yml et docker-compose.yml passent le garde-fou", () => {
   assert.deepEqual(minioPinViolations(realFiles()), []);
 });
 
-test("des fichiers conformes passent, avec des tags serveur et client distincts", () => {
-  // L'erreur que le garde-fou ne doit PAS commettre : minio/minio et minio/mc
-  // publient sur des horloges de release distinctes, leurs tags RELEASE.*
-  // n'ont aucune valeur commune (constat de l'issue #159, non recompté ici).
+test("des fichiers conformes passent, avec des pins serveur et client distincts", () => {
+  // L'erreur que le garde-fou ne doit PAS commettre : le serveur et le client
+  // publient sur des horloges de release distinctes, côté miroir Bitnami
+  // (2025.7.23 vs 2025.7.21) comme côté amont — exiger un pin unique pour les
+  // deux rendrait la porte impossible à tenir.
   assert.notEqual(SERVER, CLIENT);
+  assert.notEqual(UP_SERVER, UP_CLIENT);
   assert.deepEqual(minioPinViolations(files(CI_OK, COMPOSE_OK)), []);
 });
 
-test("refuse un retour explicite à Docker Hub", () => {
-  const ci = CI_OK.replace(
-    `quay.io/minio/minio:${SERVER}`,
-    `docker.io/minio/minio:${SERVER}`,
-  );
-  const violations = minioPinViolations(files(ci, COMPOSE_OK));
-  assert.equal(violations.length, 1);
-  assert.match(violations[0], /docker\.io\/minio\/minio/);
-  assert.match(violations[0], /quay\.io/);
-  assert.match(violations[0], /ci\.yml:\d+/);
+test("refuse dans ci.yml un retour aux images minio/* que plus personne ne peut tirer", () => {
+  // Le mode de panne du 2026-09-25 : ce n'est pas un pull instable, c'est une
+  // autorisation refusée. Y revenir doit être rouge ici, pas en CI.
+  for (const bad of [
+    `quay.io/minio/minio:${UP_SERVER}`,
+    `docker.io/minio/mc:${UP_CLIENT}`,
+    `minio/minio:${UP_SERVER}`,
+    `ghcr.io/minio/minio:${UP_SERVER}`,
+  ]) {
+    const ci = `${CI_OK}          docker run ${bad}\n`;
+    const violations = minioPinViolations(files(ci, COMPOSE_OK));
+    assert.equal(violations.length, 1, `${bad} : ${violations.join(" | ")}`);
+    assert.match(violations[0], /anonym/);
+    assert.match(violations[0], /ci\.yml:\d+/);
+  }
 });
 
-test("refuse une référence sans registre (Docker Hub implicite)", () => {
-  const compose = COMPOSE_OK.replace(
-    `quay.io/minio/mc:${CLIENT}`,
-    `minio/mc:${CLIENT}`,
-  );
-  const violations = minioPinViolations(files(CI_OK, compose));
-  assert.equal(violations.length, 1);
-  assert.match(violations[0], /docker-compose\.yml:4/);
-});
-
-test("refuse un autre registre, même miroir", () => {
-  const ci = CI_OK.replace(
-    `quay.io/minio/mc:${CLIENT}`,
-    `mirror.gcr.io/minio/mc:${CLIENT}`,
-  );
-  assert.equal(minioPinViolations(files(ci, COMPOSE_OK)).length, 1);
-});
-
-test("exige le registre quay.io exact : ni sous-domaine, ni suffixe, ni préfixe, ni port", () => {
-  // Un test « miroir » sur `mirror.gcr.io` laissait passer un contrôle en
-  // `endsWith("quay.io")` ou `includes("quay.io")` (#260) : ces registres-ci
-  // contiennent tous la chaîne `quay.io`.
+test("refuse dans ci.yml un autre registre que docker.io, même miroir", () => {
   for (const registry of [
-    "mirror.quay.io",
-    "evilquay.io",
-    "quay.io.evil.example",
-    "quay.io:5000",
+    "quay.io",
+    "mirror.gcr.io",
+    "mirror.docker.io",
+    "docker.io.evil.example",
+    "docker.io:5000",
+    "evildocker.io",
   ]) {
     const ci = CI_OK.replace(
-      `quay.io/minio/mc:${CLIENT}`,
-      `${registry}/minio/mc:${CLIENT}`,
+      "docker.io/bitnamilegacy/minio-client",
+      `${registry}/bitnamilegacy/minio-client`,
     );
     const violations = minioPinViolations(files(ci, COMPOSE_OK));
     assert.equal(violations.length, 1, `${registry} : ${violations.join(" | ")}`);
@@ -113,12 +115,67 @@ test("exige le registre quay.io exact : ni sous-domaine, ni suffixe, ni préfixe
   }
 });
 
-test("refuse un horodatage suivi d'une variante (.fips, -cpuv1, .hotfix.*)", () => {
-  // Le motif est ancré en fin : un horodatage exact suivi d'un suffixe n'est
-  // pas l'horodatage nu (#260).
+test("refuse une référence sans registre (Docker Hub implicite)", () => {
+  // `bitnamilegacy/minio` sans registre tire bien du Hub aujourd'hui, mais
+  // rien ne le dit dans le diff : le registre s'écrit.
+  const ci = CI_OK.replace("docker.io/bitnamilegacy/minio:", "bitnamilegacy/minio:");
+  const violations = minioPinViolations(files(ci, COMPOSE_OK));
+  assert.equal(violations.length, 1, violations.join(" | "));
+  assert.match(violations[0], /registre implicite/);
+
+  const compose = COMPOSE_OK.replace(`quay.io/minio/mc:${UP_CLIENT}`, `minio/mc:${UP_CLIENT}`);
+  const v2 = minioPinViolations(files(CI_OK, compose));
+  assert.equal(v2.length, 1, v2.join(" | "));
+  assert.match(v2[0], /docker-compose\.yml:4/);
+});
+
+test("refuse dans ci.yml un tag qui n'est pas une version Bitnami complète", () => {
+  for (const bad of [
+    "latest",
+    "2025.7.23",
+    "2025.7.23-debian-12",
+    "debian-12-r5",
+    "${MINIO_TAG}",
+    "2025.7.23-debian-12-r5-hotfix",
+    "v2025.7.23-debian-12-r5",
+  ]) {
+    const ci = CI_OK.replace(`minio:${SERVER}`, `minio:${bad}`);
+    const violations = minioPinViolations(files(ci, COMPOSE_OK));
+    assert.ok(
+      violations.some((v) => /épingl/.test(v)),
+      `${bad} doit être refusé comme non épinglé, obtenu : ${violations.join(" | ")}`,
+    );
+  }
+});
+
+test("refuse dans ci.yml une image sans tag", () => {
+  const ci = CI_OK.replace(`docker.io/bitnamilegacy/minio:${SERVER}`, "docker.io/bitnamilegacy/minio");
+  const violations = minioPinViolations(files(ci, COMPOSE_OK));
+  assert.ok(violations.some((v) => /épingl/.test(v)), violations.join(" | "));
+});
+
+test("exige dans ci.yml le pin par digest, que le tag seul ne remplace pas", () => {
+  // Un miroir que personne ne maintient est exactement l'endroit où un tag
+  // peut être republié : côté CI, le digest n'est pas optionnel.
+  for (const drop of [SERVER_DIGEST, CLIENT_DIGEST]) {
+    const ci = CI_OK.replace(drop, "");
+    const violations = minioPinViolations(files(ci, COMPOSE_OK));
+    assert.equal(violations.length, 1, `${drop} : ${violations.join(" | ")}`);
+    assert.match(violations[0], /digest/);
+    assert.doesNotMatch(violations[0], /mal formé/);
+  }
+});
+
+test("le compose accepte un tag amont épinglé sans digest", () => {
+  // Politique par fichier : le digest est exigé sur le miroir, pas sur les
+  // références amont du compose, qui n'ont pas changé.
+  assert.deepEqual(minioPinViolations(files(CI_OK, COMPOSE_OK)), []);
+});
+
+test("refuse dans le compose un horodatage suivi d'une variante (.fips, -cpuv1, .hotfix.*)", () => {
   for (const suffix of [".fips", "-cpuv1", ".hotfix.7b3a2e1f"]) {
-    const bad = `quay.io/minio/minio:${SERVER}${suffix}`;
-    const compose = COMPOSE_OK.replace(`quay.io/minio/minio:${SERVER}`, bad);
+    const bad = `quay.io/minio/minio:${UP_SERVER}${suffix}`;
+    const compose = COMPOSE_OK.replace(`quay.io/minio/minio:${UP_SERVER}`, bad);
     const violations = minioPinViolations(files(CI_OK, compose));
     assert.equal(violations.length, 1, `${bad} : ${violations.join(" | ")}`);
     // Le tag est épinglé : le dire « flottant » serait faux.
@@ -130,144 +187,147 @@ test("refuse un horodatage suivi d'une variante (.fips, -cpuv1, .hotfix.*)", () 
   }
 });
 
-test("refuse un digest mal formé au lieu de l'ignorer", () => {
+test("refuse un digest mal formé au lieu de l'ignorer, dans les deux fichiers", () => {
   for (const digest of ["@sha256:zz", "@sha256:" + "a".repeat(63), "@md5:abc"]) {
     const compose = COMPOSE_OK.replace(
-      `quay.io/minio/minio:${SERVER}`,
-      `quay.io/minio/minio:${SERVER}${digest}`,
+      `quay.io/minio/minio:${UP_SERVER}`,
+      `quay.io/minio/minio:${UP_SERVER}${digest}`,
     );
-    const violations = minioPinViolations(files(CI_OK, compose));
-    assert.equal(violations.length, 1, `${digest} : ${violations.join(" | ")}`);
-    assert.match(violations[0], /digest/);
-    assert.ok(violations[0].includes(digest));
+    const v1 = minioPinViolations(files(CI_OK, compose));
+    assert.equal(v1.length, 1, `${digest} : ${v1.join(" | ")}`);
+    assert.match(v1[0], /mal formé/);
+    assert.ok(v1[0].includes(digest));
+
+    const ci = CI_OK.replace(SERVER_DIGEST, digest);
+    const v2 = minioPinViolations(files(ci, COMPOSE_OK));
+    assert.equal(v2.length, 1, `${digest} : ${v2.join(" | ")}`);
+    assert.match(v2[0], /mal formé/);
   }
 });
 
 test("accepte une référence épinglée entre guillemets", () => {
-  // Le tag s'arrête aux guillemets : sinon `"…Z"` serait lu comme un tag
-  // non horodaté.
-  const ci = CI_OK.replace(
-    `quay.io/minio/minio:${SERVER}`,
-    `"quay.io/minio/minio:${SERVER}"`,
-  );
+  // Le tag s'arrête aux guillemets : sinon `"…r5"` serait lu comme un tag
+  // non conforme.
+  const ci = CI_OK.replace(CI_SERVER, `"${CI_SERVER}"`);
   const compose = COMPOSE_OK.replace(
-    `quay.io/minio/minio:${SERVER}`,
-    `'quay.io/minio/minio:${SERVER}'`,
+    `quay.io/minio/minio:${UP_SERVER}`,
+    `'quay.io/minio/minio:${UP_SERVER}'`,
   );
   assert.deepEqual(minioPinViolations(files(ci, compose)), []);
 });
 
-test("refuse latest, l'absence de tag et les tags non horodatés", () => {
-  for (const bad of [
-    "quay.io/minio/minio:latest",
-    "quay.io/minio/minio",
-    "quay.io/minio/minio:RELEASE.2025-09-07",
-    "quay.io/minio/minio:RELEASE",
-    // Horodatage tronqué, puis préfixé : le motif doit être ancré des deux
-    // côtés, pas seulement contenir un RELEASE.* quelque part.
-    "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09",
-    "quay.io/minio/minio:latest-RELEASE.2025-09-07T16-13-09Z",
-    "quay.io/minio/minio:2025",
-    "quay.io/minio/minio:${MINIO_TAG}",
-    '"quay.io/minio/minio:latest"',
-  ]) {
-    const compose = COMPOSE_OK.replace(`quay.io/minio/minio:${SERVER}`, bad);
-    const violations = minioPinViolations(files(CI_OK, compose));
-    assert.ok(
-      violations.some((v) => /épingl/.test(v)),
-      `${bad} doit être refusé comme non épinglé, obtenu : ${violations.join(" | ")}`,
-    );
-  }
-});
-
-test("refuse une divergence de tag entre ci.yml et docker-compose.yml", () => {
-  const other = "RELEASE.2025-10-15T17-29-55Z";
-  const compose = COMPOSE_OK.replace(
-    `quay.io/minio/minio:${SERVER}`,
-    `quay.io/minio/minio:${other}`,
-  );
-  const violations = minioPinViolations(files(CI_OK, compose));
-  assert.equal(violations.length, 1);
-  assert.match(violations[0], /minio\/minio/);
-  assert.ok(violations[0].includes(SERVER) && violations[0].includes(other));
-});
-
-test("refuse deux digests différents derrière le même tag", () => {
-  // Le digest compte dans la comparaison : c'est lui, pas le tag, qui fixe
-  // le contenu de l'image (#260).
-  const a = "@sha256:" + "a".repeat(64);
-  const b = "@sha256:" + "b".repeat(64);
-  const ci = CI_OK.replace(
-    `quay.io/minio/minio:${SERVER}`,
-    `quay.io/minio/minio:${SERVER}${a}`,
-  );
-  const compose = COMPOSE_OK.replace(
-    `quay.io/minio/minio:${SERVER}`,
-    `quay.io/minio/minio:${SERVER}${b}`,
-  );
-  const violations = minioPinViolations(files(ci, compose));
-  assert.equal(violations.length, 1);
-  assert.match(violations[0], /divergent/);
-  assert.ok(violations[0].includes(a) && violations[0].includes(b));
-
-  const same = COMPOSE_OK.replace(
-    `quay.io/minio/minio:${SERVER}`,
-    `quay.io/minio/minio:${SERVER}${a}`,
-  );
-  assert.deepEqual(minioPinViolations(files(ci, same)), []);
-});
-
-test("refuse une divergence entre deux jobs du même fichier", () => {
-  const other = "RELEASE.2025-10-15T17-29-55Z";
-  const ci = CI_OK + CI_OK.replace(`minio/mc:${CLIENT}`, `minio/mc:${other}`);
+test("refuse une divergence de pin entre deux jobs du même fichier", () => {
+  // Les trois jobs de ci.yml montent la même pile : un job laissé derrière
+  // teste autre chose que les deux autres.
+  const other = "@sha256:" + "9".repeat(64);
+  const ci = CI_OK + CI_OK.replace(SERVER_DIGEST, other);
   const violations = minioPinViolations(files(ci, COMPOSE_OK));
-  assert.equal(violations.length, 1);
-  assert.match(violations[0], /minio\/mc/);
+  assert.equal(violations.length, 1, violations.join(" | "));
+  assert.match(violations[0], /divergent/);
+  assert.ok(violations[0].includes(SERVER_DIGEST) && violations[0].includes(other));
+
+  const tagOther = CI_OK + CI_OK.replace(`minio:${SERVER}`, "minio:2025.7.23-debian-12-r4");
+  assert.match(
+    minioPinViolations(files(tagOther, COMPOSE_OK)).join(" | "),
+    /divergent/,
+  );
 });
 
-test("refuse un fichier où une image MinIO n'est plus trouvée", () => {
-  // Sans ce plancher, remplacer l'image par `${MINIO_IMAGE}` ou déplacer le
-  // service rendrait le garde-fou vert sur zéro référence.
-  const compose = `  minio:\n    image: quay.io/minio/minio:${SERVER}\n`;
+test("refuse une divergence de pin entre deux services du compose", () => {
+  const compose = COMPOSE_OK + `  minio-other:\n    image: quay.io/minio/minio:RELEASE.2025-10-15T17-29-55Z\n`;
   const violations = minioPinViolations(files(CI_OK, compose));
-  assert.equal(violations.length, 1);
-  assert.match(violations[0], /minio\/mc/);
-  assert.match(violations[0], /docker-compose\.yml/);
+  assert.equal(violations.length, 1, violations.join(" | "));
+  assert.match(violations[0], /divergent/);
 });
 
-test("ignore les lignes de commentaire, qui nomment Docker Hub pour dire pourquoi", () => {
+test("refuse un fichier où une image attendue n'est plus trouvée", () => {
+  // Sans ce plancher, passer l'image dans une variable ou déplacer le service
+  // rendrait le garde-fou vert sur zéro référence.
+  const ci = `        run: |\n          docker run -d ${CI_SERVER}\n`;
+  const v1 = minioPinViolations(files(ci, COMPOSE_OK));
+  assert.equal(v1.length, 1, v1.join(" | "));
+  assert.match(v1[0], /minio-client/);
+  assert.match(v1[0], /ci\.yml/);
+
+  const compose = `  minio:\n    image: quay.io/minio/minio:${UP_SERVER}\n`;
+  const v2 = minioPinViolations(files(CI_OK, compose));
+  assert.equal(v2.length, 1, v2.join(" | "));
+  assert.match(v2[0], /minio\/mc/);
+  assert.match(v2[0], /docker-compose\.yml/);
+});
+
+test("refuse un appel qui omet l'un des deux fichiers couverts", () => {
+  // La porte n'est tenue que si les deux fichiers sont lus. Appelée sur le
+  // seul `ci.yml`, elle ne sait rien du compose : rendre « aucune violation »
+  // serait affirmer un fichier conforme sans l'avoir ouvert.
+  const cases = [
+    { given: { path: CI_PATH, text: CI_OK }, missing: COMPOSE_PATH },
+    { given: { path: COMPOSE_PATH, text: COMPOSE_OK }, missing: CI_PATH },
+  ];
+  for (const { given, missing } of cases) {
+    const violations = minioPinViolations([given]);
+    assert.equal(violations.length, 1, violations.join(" | "));
+    assert.ok(violations[0].includes(missing), violations[0]);
+    assert.match(violations[0], /non fourni/);
+  }
+  // Appelée sur rien, elle refuse les deux.
+  assert.equal(minioPinViolations([]).length, 2);
+});
+
+test("refuse un fichier dont la politique d'image est inconnue", () => {
+  // La politique est attachée au chemin : un fichier qu'on croirait couvert
+  // et qui ne l'est pas doit le dire, pas passer en vert sur rien.
+  const violations = minioPinViolations([
+    ...files(CI_OK, COMPOSE_OK),
+    { path: "infra/docker-compose.prod.yml", text: CI_OK },
+  ]);
+  assert.equal(violations.length, 1, violations.join(" | "));
+  assert.match(violations[0], /politique/);
+  assert.match(violations[0], /docker-compose\.prod\.yml/);
+});
+
+test("ignore les lignes de commentaire, qui nomment les images quittées pour dire pourquoi", () => {
   const ci =
-    "      # docker.io/minio/minio and docker.io/minio/mc stopped answering\n" +
+    "      # quay.io/minio/minio et docker.io/minio/mc ne répondent plus (401)\n" +
     CI_OK;
   assert.deepEqual(minioPinViolations(files(ci, COMPOSE_OK)), []);
 });
 
-test("ne confond pas une URL MinIO ni une image voisine avec minio/minio", () => {
+test("ne confond pas une URL MinIO ni une image voisine avec les images suivies", () => {
   const ci =
     CI_OK +
     "          curl -sf http://localhost:9000/minio/health/ready\n" +
-    "          docker run example.org/minio/minio-extra:latest\n" +
-    // Un chemin qui prolonge `minio/minio` nomme une autre image.
-    "          docker run example.org/minio/minio/sidecar:latest\n";
+    "          docker run example.org/bitnamilegacy/minio-extra:latest\n" +
+    "          docker run example.org/bitnamilegacy/minio/sidecar:latest\n";
   assert.deepEqual(minioPinViolations(files(ci, COMPOSE_OK)), []);
 });
 
-test("refuse le vrai ci.yml ramené à Docker Hub sur un seul job", () => {
+test("refuse le vrai ci.yml ramené aux images minio/* sur un seul job", () => {
   // Contrôle de mutation sur le vrai fichier : une seule occurrence modifiée,
   // les autres restent conformes.
   const [ci, compose] = realFiles();
-  const mutated = ci.text.replace("quay.io/minio/minio:", "minio/minio:");
+  const mutated = ci.text.replace(
+    /docker\.io\/bitnamilegacy\/minio:\S+/,
+    `quay.io/minio/minio:${UP_SERVER}`,
+  );
   assert.notEqual(mutated, ci.text);
   const violations = minioPinViolations([{ ...ci, text: mutated }, compose]);
-  assert.equal(violations.length, 1);
+  // Deux constats : l'image interdite, et la divergence des deux jobs restants
+  // avec rien — le pin du miroir ne bouge pas, donc seul le premier tombe ici.
+  assert.ok(violations.some((v) => /anonym/.test(v)), violations.join(" | "));
+});
+
+test("refuse le vrai ci.yml privé de son digest", () => {
+  const [ci, compose] = realFiles();
+  const mutated = ci.text.replace(/@sha256:[0-9a-f]{64}/, "");
+  assert.notEqual(mutated, ci.text);
+  const violations = minioPinViolations([{ ...ci, text: mutated }, compose]);
+  assert.ok(violations.some((v) => /digest/.test(v)), violations.join(" | "));
 });
 
 test("refuse le vrai docker-compose.yml repassé en latest", () => {
   const [ci, compose] = realFiles();
-  const mutated = compose.text.replace(
-    /quay\.io\/minio\/mc:\S+/,
-    "quay.io/minio/mc:latest",
-  );
+  const mutated = compose.text.replace(/quay\.io\/minio\/mc:\S+/, "quay.io/minio/mc:latest");
   assert.notEqual(mutated, compose.text);
   const violations = minioPinViolations([ci, { ...compose, text: mutated }]);
   assert.ok(violations.length >= 1);
@@ -286,7 +346,7 @@ test("refuse le vrai docker-compose.yml repassé en latest", () => {
 const COMPOSE_TAGS_OK =
   "services:\n" +
   "  postgres:\n    image: postgres:16\n" +
-  `  minio:\n    image: quay.io/minio/minio:${SERVER}\n` +
+  `  minio:\n    image: quay.io/minio/minio:${UP_SERVER}\n` +
   "  mailpit:\n    image: axllent/mailpit:v1.31.2\n" +
   "  ollama:\n    image: ollama/ollama:0.34.2\n" +
   "  api:\n    build:\n      context: ..\n" +

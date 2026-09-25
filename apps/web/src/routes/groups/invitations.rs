@@ -5,8 +5,9 @@
 //! confirm page (auth-gated: an anonymous visitor is bounced to /login by
 //! `CurrentUser` and can come back after logging in); POST calls the API.
 //!
-//! Error table (`accept_invitation`): 404 unknown token, 410 Gone when
-//! already consumed (single-use) or past the 7-day expiry.
+//! Error table (`accept_invitation`): 404 unknown or already accepted token
+//! (accepting deletes the invitation, #138), 410 Gone when past the 7-day
+//! expiry.
 
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
@@ -25,7 +26,7 @@ use super::cookie_of;
 fn invalid_page() -> Html<String> {
     let body = view! {
         <h1>"Invitation invalide"</h1>
-        <p>"Ce lien d'invitation n'existe pas."</p>
+        <p>"Ce lien d'invitation n'existe pas ou a déjà été utilisé."</p>
         <a class="btn secondary" href="/groups">"Retour à mes groupes"</a>
     };
     Html(shell(Width::Form, "Invitation invalide", &body.to_html()))
@@ -34,7 +35,7 @@ fn invalid_page() -> Html<String> {
 fn gone_page() -> Html<String> {
     let body = view! {
         <h1>"Invitation expirée"</h1>
-        <p>"Cette invitation a déjà été utilisée ou a expiré (elles sont valables 7 jours et à usage unique). Demandez-en une nouvelle à un membre du groupe."</p>
+        <p>"Cette invitation a expiré (elles sont valables 7 jours). Demandez-en une nouvelle à un membre du groupe."</p>
         <a class="btn secondary" href="/groups">"Retour à mes groupes"</a>
     };
     Html(shell(Width::Form, "Invitation expirée", &body.to_html()))

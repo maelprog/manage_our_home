@@ -525,13 +525,26 @@ fn is_invisible(c: char) -> bool {
 /// over-long line instead of a forged paragraph.
 ///
 /// What the email must not do is promise a door that does not exist. Nothing
-/// in this service erases an invitation: `apps/api/src/jobs/account_purge.rs`
+/// the reader can reach erases an invitation: `apps/api/src/jobs/account_purge.rs`
 /// leaves `invitations` untouched and `export_account` never reads it, so
 /// creating an account opens rights over that account's data and not over
 /// this row. Arbitrated 2026-09-19 and confirmed 2026-09-20 — the product
-/// adds no no-account path and the email tells the truth instead: the address
-/// stays until the group is deleted, and any request goes to the controller.
-/// Doing nothing is stated first all the same, together with what it costs.
+/// adds no no-account path and the email tells the truth instead: any request
+/// goes to the controller. Doing nothing is stated first all the same,
+/// together with what it costs.
+///
+/// What does erase the row is the retention purge
+/// (`apps/api/src/jobs/retention_purge.rs`, #138): at acceptance, and
+/// otherwise 30 days after the invitation was created. That pass runs once an
+/// hour **and only while the API is up**, so the 30th day is when the row
+/// becomes purgeable and no bound can be promised at all: an outage defers
+/// the deletion for as long as it lasts. The notice therefore states the
+/// frequency and what an interruption does to it, and states no deadline —
+/// not "au plus tard 30 jours", which the hourly pass overruns on every
+/// invitation, and not a flat hour either, which an outage overruns just as
+/// surely. `docs/privacy-policy.md` and `docs/registre-traitements.md` carry
+/// that same reserve. Deleting the group takes the row earlier, which breaks
+/// no promise: nothing here promises the address stays.
 pub fn invitation_email_body(
     group_name: &str,
     inviter_display_name: &str,
@@ -562,8 +575,11 @@ adresse y est traitée dans le seul but de vous transmettre cette
 invitation et de rattacher votre compte au groupe si vous l'acceptez. La
 base légale est l'intérêt légitime du membre qui invite un proche.
 
-Votre adresse reste enregistrée avec cette invitation, y compris une fois
-le lien utilisé ou expiré, et jusqu'à la suppression du groupe.
+Votre adresse est enregistrée avec cette invitation, puis effacée :
+dès que le lien est utilisé, sinon 30 jours après cet envoi. Cet
+effacement est fait par un passage automatique qui a lieu
+toutes les heures ; si le service est interrompu, il a lieu à son
+redémarrage.
 
 Le responsable de traitement est [nom du responsable de traitement — à
 renseigner avant la mise en ligne], joignable à [adresse de contact — à
@@ -573,8 +589,9 @@ réclamation auprès de la CNIL.
 -- Ce que vous pouvez faire --
 
 Si vous ne voulez pas de cette invitation, ignorez cet email : le lien
-cesse de fonctionner au bout de 7 jours. Votre adresse, elle, restera
-enregistrée avec l'invitation jusqu'à la suppression du groupe.
+cesse de fonctionner au bout de 7 jours. Votre adresse, elle, reste
+enregistrée avec l'invitation pendant 30 jours après cet envoi, puis est
+effacée par ce passage automatique.
 
 Aucun écran de ce service ne permet d'agir sur cette adresse. Créer un
 compte depuis le lien ci-dessus ouvre des droits sur les données de ce
@@ -1174,12 +1191,30 @@ mod tests {
     fn invitation_email_states_the_purpose_the_legal_basis_and_the_retention() {
         // Art. 14(1)(c)(d) and 14(2)(a). The retention is the one the privacy
         // policy and the processing register state: a 7-day single-use link,
-        // and the row kept until the group is deleted.
+        // the row deleted when the link is used, and otherwise 30 days after
+        // it was sent (#138).
         let body = invitation_sample();
         assert!(body.contains("intérêt légitime"), "{body}");
         assert!(body.contains("valable 7 jours"), "{body}");
         assert!(body.contains("ne sert qu'une fois"), "{body}");
-        assert!(body.contains("jusqu'à la suppression du groupe"), "{body}");
+        assert!(body.contains("dès que le lien est utilisé"), "{body}");
+        assert!(body.contains("30 jours après cet envoi"), "{body}");
+        assert!(!body.contains("suppression du groupe"), "{body}");
+        // The deletion is a pass that runs once an hour
+        // (`retention_purge::PURGE_INTERVAL`) and only while the API is up, so
+        // the 30th day is when the row becomes purgeable and nothing here is a
+        // deadline: the notice states the frequency *and* what a service
+        // outage does to it, and states no upper bound at all — neither
+        // "au plus tard 30 jours" nor an unconditional hour. The processing
+        // register carries the same reserve (`docs/registre-traitements.md`).
+        assert!(body.contains("toutes les heures"), "{body}");
+        assert!(body.contains("interrompu"), "{body}");
+        for cap in ["au plus tard", "dans l'heure qui suit"] {
+            assert!(
+                !body.contains(cap),
+                "borne inconditionnelle « {cap} » : {body}"
+            );
+        }
     }
 
     #[test]
@@ -1209,10 +1244,11 @@ mod tests {
     fn invitation_email_sends_every_action_on_the_address_to_the_controller() {
         // Arbitrated 2026-09-19 and confirmed 2026-09-20: the product offers no
         // no-account path, and the email must not pretend the account screens
-        // are one either. Nothing erases an invitation — `account_purge.rs`
-        // leaves `invitations` alone and `export_account` does not export it —
-        // so the only true answer is the controller's address, and the reader
-        // is told the address survives an ignored invitation.
+        // are one either. Nothing the reader can do erases an invitation —
+        // `account_purge.rs` leaves `invitations` alone, `export_account` does
+        // not export it, and only the retention purge removes it, 30 days on
+        // (#138) — so the only true answer is the controller's address, and
+        // the reader is told the address survives an ignored invitation.
         let body = invitation_sample();
         assert!(body.contains("ignorez cet email"), "{body}");
         assert!(

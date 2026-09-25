@@ -25,8 +25,17 @@ services:
 
   # Registry is quay.io, not Docker Hub: docker.io/minio/minio no longer
   # answers anonymous pulls (issue #157). The tag is pinned rather than
-  # `latest` so the server cannot move under an existing stack unnoticed;
-  # keep it in step with .github/workflows/ci.yml when bumping.
+  # `latest` so the server cannot move under an existing stack unnoticed.
+  #
+  # This reference no longer follows .github/workflows/ci.yml, which pulls
+  # the `docker.io/bitnamilegacy` mirror since #138 (`minio` closed anonymous
+  # pulls on quay.io too, and CI had to move). Copying the mirror's reference
+  # here would turn the pin guardrail red on purpose: it holds a policy per
+  # file (e2e/scripts/lib/image-pins.ts), upstream references for this stack
+  # and the mirror for CI. Moving this stack to the mirror is a separate
+  # decision — the Bitnami image keeps its data under /bitnami/minio/data,
+  # not the /data this service's volume is mounted on — and until it is
+  # taken, quay.io refuses these pulls: the stack does not come up as-is.
   minio:
     image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
     restart: unless-stopped
@@ -40,10 +49,10 @@ services:
   # One-shot: creates the bucket the api expects (MINIO_BUCKET below) —
   # MinIO doesn't auto-create buckets and neither does the api's S3 client.
   # Idempotent (--ignore-existing), exits once done.
-  # Same story as the minio service above: quay.io because Docker Hub no
-  # longer serves this repo anonymously (issue #157), and a pinned tag
-  # rather than `latest`. mc has its own release clock, so this stamp is
-  # deliberately not the server's.
+  # Same story as the minio service above, CI divergence included: quay.io
+  # because Docker Hub no longer serves this repo anonymously (issue #157),
+  # and a pinned tag rather than `latest`. mc has its own release clock, so
+  # this stamp is deliberately not the server's.
   minio-init:
     image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
     depends_on: [minio]

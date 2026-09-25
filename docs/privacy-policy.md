@@ -37,7 +37,7 @@ données sont-elles conservées ? ».
 | Compte | email, mot de passe (haché), nom affiché | Exécution du contrat (fournir le service) |
 | Âge | la déclaration d'avoir 15 ans ou plus, faite à l'inscription, et sa date — aucune date de naissance n'est demandée ni conservée | Exécution du contrat (les conditions générales réservent le service aux 15 ans et plus) |
 | Connexion avec Google | identifiant de votre compte Google, email et nom de votre profil Google, jeton de rafraîchissement délivré par Google (chiffré) | Exécution du contrat (vous choisissez ce mode de connexion) |
-| Vérification d'email et réinitialisation du mot de passe | jetons à usage unique, valables 24 h, envoyés par email | Exécution du contrat |
+| Vérification d'email et réinitialisation du mot de passe | jetons à usage unique envoyés par email, valables 24 h (vérification) ou 1 h (réinitialisation) | Exécution du contrat |
 | Protection de la connexion | adresse IP (en IPv6, réduite à son préfixe /64) et email saisi à chaque tentative de connexion par mot de passe, gardés en mémoire du serveur seulement, jamais en base | Intérêt légitime (limiter les essais de mot de passe) |
 | Invitations | adresse email de la personne invitée (si le membre qui invite la saisit), lien d'invitation valable 7 jours ; l'email envoyé nomme le groupe et le membre qui invite | Intérêt légitime (permettre à un membre d'inviter un proche dans son groupe) |
 | Agenda | événements, tâches, pièces jointes, membres assignés à un événement | Exécution du contrat |
@@ -134,6 +134,14 @@ Le serveur n'efface rien à date fixe en dehors des cas indiqués
 ci-dessous : quand une ligne dit qu'une donnée « reste », aucune
 suppression automatique n'est en place aujourd'hui.
 
+Les suppressions automatiques décrites ci-dessous sont l'œuvre d'un passage
+de purge qui a lieu **toutes les heures, et seulement quand le service
+fonctionne**. Une donnée arrivée au terme de sa durée est donc supprimée au
+premier passage qui suit : dans l'heure lorsque le service tourne, et après
+son redémarrage s'il a été interrompu. Les durées ci-dessous sont des durées
+de conservation, pas des délais de suppression garantis : nous ne promettons
+pas un délai que l'indisponibilité du service dépasserait.
+
 - **Compte** (email, mot de passe haché, nom affiché, appartenance aux
   groupes et rôle) : tant que le compte existe, puis 30 jours de grâce
   après une demande de suppression, à l'issue desquels le compte est
@@ -143,18 +151,24 @@ suppression automatique n'est en place aujourd'hui.
   compte anonymisé, il ne subsiste qu'une date rattachée à aucune identité.
 - **Sessions de connexion** : une session vaut 30 jours au plus, et prend
   fin plus tôt si elle reste 7 jours sans activité. Sa trace (dates
-  de création, de dernière activité, d'expiration et de révocation) reste
-  après l'expiration ou la déconnexion, jusqu'à l'anonymisation du compte.
+  de création, de dernière activité, d'expiration et de révocation) est
+  supprimée au premier passage de purge qui suit la fin de la session :
+  expiration, inactivité, déconnexion, changement de mot de passe ou
+  désactivation du compte.
 - **Connexion avec Google** : l'identifiant, l'email et le nom de votre
   profil Google et le jeton de rafraîchissement sont conservés jusqu'à
   l'anonymisation du compte, qui les supprime.
 - **Vérification d'email et réinitialisation du mot de passe** : un jeton
-  est valable 24 heures et ne sert qu'une fois. Sa trace (jeton, compte
-  concerné, dates) reste ensuite en base sans limite de durée, y compris
-  après l'anonymisation du compte.
+  de vérification est valable 24 heures, un jeton de réinitialisation
+  1 heure, et chacun ne sert qu'une fois. Un jeton de réinitialisation est
+  supprimé dès qu'il sert. Sinon, un jeton est supprimé au premier passage
+  de purge qui suit sa durée de conservation : 48 heures après sa création
+  pour la vérification, 1 heure pour la réinitialisation.
 - **Invitations** : un lien d'invitation est valable 7 jours et ne sert
   qu'une fois. L'invitation, adresse email de la personne invitée comprise,
-  reste ensuite jusqu'à la suppression du groupe.
+  est supprimée dès qu'elle est acceptée ; sinon, au premier passage de
+  purge qui suit les 30 jours de sa création, ou plus tôt si le groupe est
+  supprimé.
 - **Protection de la connexion** : gardée en mémoire du serveur, jamais en
   base, et perdue à chaque redémarrage du serveur. Une connexion réussie
   efface aussitôt les tentatives du même couple (adresse, email). Sinon,
@@ -187,7 +201,9 @@ suppression automatique n'est en place aujourd'hui.
   événements importés restent après la suppression de l'import, sauf si
   leur suppression est demandée en même temps. L'anonymisation d'un compte
   ne supprime ni l'import ni ses événements.
-- **Logs d'audit** : sans limite de durée, le journal n'est jamais purgé.
+- **Logs d'audit** : 6 mois glissants, durée recommandée par la CNIL pour
+  les journaux ; une entrée plus ancienne est supprimée au premier passage
+  de purge qui suit cette échéance.
 - **Export de vos données** : généré à la demande et renvoyé directement,
   il n'est pas conservé sur le serveur.
 
@@ -204,10 +220,11 @@ suppression automatique n'est en place aujourd'hui.
   cohérent avec le fonctionnement d'un espace familial partagé. C'est un
   engagement contractuel autant qu'une description : il figure aussi dans
   les [conditions générales d'utilisation](/terms-of-service).
-- L'anonymisation ne supprime pas les traces de jetons de vérification et
-  de réinitialisation, les invitations que vous avez émises, votre date de
-  dernière lecture de la messagerie ni vos assignations d'événements :
-  elles restent rattachées au compte anonymisé.
+- L'anonymisation ne supprime pas votre date de dernière lecture de la
+  messagerie ni vos assignations d'événements : elles restent rattachées
+  au compte anonymisé. Les jetons de vérification et de réinitialisation
+  et les invitations que vous avez émises restent, eux, jusqu'au terme de
+  leur propre durée de conservation, indiquée plus haut.
 - Un compte ne peut pas être supprimé tant qu'il est seul propriétaire
   d'un groupe : transférez la propriété (ou supprimez le groupe) au
   préalable.
@@ -260,7 +277,10 @@ politique et le droit de saisir la CNIL.
 
 Ignorer cet email suffit à ne pas rejoindre le groupe : le lien cesse de
 fonctionner au bout de 7 jours. Votre adresse, elle, reste enregistrée avec
-l'invitation jusqu'à la suppression du groupe.
+l'invitation pendant 30 jours après son envoi, puis est effacée au premier
+passage de purge qui suit (ces passages ont lieu toutes les heures quand le
+service fonctionne, et reprennent à son redémarrage). Elle l'est aussitôt si
+le lien est utilisé.
 
 Aucun écran de ce service ne permet d'agir sur cette adresse. Créer un
 compte depuis le lien reçu ouvre des droits sur les données de ce compte,

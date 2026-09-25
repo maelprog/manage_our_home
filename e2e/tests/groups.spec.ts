@@ -5,7 +5,7 @@ import { fetchVerificationToken } from "../lib/db";
 // introduces, happy paths plus the documented error states from
 // apps/api/src/groups/mod.rs's error table (422 too_many_groups /
 // name_required / new_owner_id_required, 409 last_member_must_delete_group,
-// 410 consumed invitation, 404 unknown invitation, 403 permission bar).
+// 404 consumed or unknown invitation, 403 permission bar).
 
 function uniqueEmail(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.test`;
@@ -118,11 +118,12 @@ test.describe("Groups — invitations", () => {
       page.locator("li", { hasText: "Invited Guest" }).locator("span.muted", { hasText: "Membre" }),
     ).toBeVisible();
 
-    // Single-use (410 Gone on re-use), even for another fresh user.
+    // Single-use, even for another fresh user: accepting deleted the
+    // invitation (#138), so re-use is a 404.
     const { page: late } = await secondUser(browser, "e2e-late", "Late Guest");
     await late.goto(invite);
     await late.getByRole("button", { name: "Rejoindre le groupe" }).click();
-    await expect(late.getByText("Invitation expirée")).toBeVisible();
+    await expect(late.getByText("Invitation invalide")).toBeVisible();
   });
 
   test("unknown invitation token shows the invalid page; garbage paste is rejected inline", async ({
