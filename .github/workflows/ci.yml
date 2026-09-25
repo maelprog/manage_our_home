@@ -74,25 +74,35 @@ jobs:
       # its objects behind, and only a real bucket can catch that). Tests
       # needing MinIO skip themselves when these vars are unset, so a bare
       # `cargo test` against Postgres alone still passes locally.
-      # Registry is quay.io, not Docker Hub: docker.io/minio/minio and
-      # docker.io/minio/mc stopped answering anonymous pulls on 2026-09-11
-      # and this step died with exit 125 on every job (issue #157). Both
-      # tags are pinned rather than `latest`, because an unpinned `latest`
-      # is exactly what let the images move under CI with nothing to
-      # signal it. The two repos publish on separate release clocks, so
-      # their RELEASE stamps do not match and are not meant to.
+      # Registry is Docker Hub's `bitnamilegacy` mirror, not quay.io: the
+      # `minio` org closed anonymous pulls everywhere it publishes — quay.io
+      # answers 401 on the pinned tag, on `latest` and on the tag list,
+      # docker.io/minio/minio 401, ghcr.io/minio/minio 403 — and on
+      # 2026-09-25 this step died with exit 125 on all three jobs, the same
+      # way #157 took CI down on 2026-09-11 (a rerun changes nothing: it is
+      # authorization, not a flaky pull). This mirror is the last freely
+      # pullable build of the real server, and the real server is the point:
+      # a fake S3 (s3mock, localstack) would stop covering what the
+      # deployment runs. Authenticating to quay.io with a MinIO account was
+      # weighed and set aside — it needs a repo secret and breaks forks.
+      # Both images are pinned by tag *and* digest, because an unmaintained
+      # mirror is exactly where a tag gets repointed with nothing to signal
+      # it. Bitnami's entrypoint starts the server itself and keeps its data
+      # under /bitnami/minio/data, so there is no `server /data` argument
+      # here; MINIO_ROOT_USER/MINIO_ROOT_PASSWORD are read the same way, and
+      # `mc` sits on PATH the same way.
       - name: Start MinIO and create the attachments bucket
         run: |
           docker run -d --name minio -p 9000:9000 \
             -e MINIO_ROOT_USER=ci-dummy \
             -e MINIO_ROOT_PASSWORD=ci-dummy-secret \
-            quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
+            docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20
           for i in $(seq 1 30); do
             curl -sf http://localhost:9000/minio/health/ready && break
             sleep 1
           done
           docker run --rm --network host --entrypoint /bin/sh \
-            quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z -c \
+            docker.io/bitnamilegacy/minio-client:2025.7.21-debian-12-r3@sha256:73bd39f7899a0cef12b8dd5df13aa93a3ed1aaa44236542442e9ac76819ac158 -c \
             "mc alias set local http://localhost:9000 ci-dummy ci-dummy-secret && \
              mc mb -p local/manage-our-home"
       - run: cargo build --workspace --all-targets
@@ -163,19 +173,20 @@ jobs:
           SELECT 1 / (NOT (rolsuper OR rolbypassrls))::int
               FROM pg_roles WHERE rolname = 'app_role';
           SQL
-      # Same registry and pins as the `test` job, same reasons (#157).
+      # Same images, pins and reasons as the `test` job (#157, and the
+      # 2026-09-25 minio lockout).
       - name: Start MinIO and create the attachments bucket
         run: |
           docker run -d --name minio -p 9000:9000 \
             -e MINIO_ROOT_USER=ci-dummy \
             -e MINIO_ROOT_PASSWORD=ci-dummy-secret \
-            quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
+            docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20
           for i in $(seq 1 30); do
             curl -sf http://localhost:9000/minio/health/ready && break
             sleep 1
           done
           docker run --rm --network host --entrypoint /bin/sh \
-            quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z -c \
+            docker.io/bitnamilegacy/minio-client:2025.7.21-debian-12-r3@sha256:73bd39f7899a0cef12b8dd5df13aa93a3ed1aaa44236542442e9ac76819ac158 -c \
             "mc alias set local http://localhost:9000 ci-dummy ci-dummy-secret && \
              mc mb -p local/manage-our-home"
       # `--test '*'`: the integration binaries under apps/api/tests only.
@@ -270,25 +281,35 @@ jobs:
       - run: npm run test:scripts
         working-directory: e2e
       - run: cargo build -p manage_our_home -p manage_our_home_web
-      # Registry is quay.io, not Docker Hub: docker.io/minio/minio and
-      # docker.io/minio/mc stopped answering anonymous pulls on 2026-09-11
-      # and this step died with exit 125 on every job (issue #157). Both
-      # tags are pinned rather than `latest`, because an unpinned `latest`
-      # is exactly what let the images move under CI with nothing to
-      # signal it. The two repos publish on separate release clocks, so
-      # their RELEASE stamps do not match and are not meant to.
+      # Registry is Docker Hub's `bitnamilegacy` mirror, not quay.io: the
+      # `minio` org closed anonymous pulls everywhere it publishes — quay.io
+      # answers 401 on the pinned tag, on `latest` and on the tag list,
+      # docker.io/minio/minio 401, ghcr.io/minio/minio 403 — and on
+      # 2026-09-25 this step died with exit 125 on all three jobs, the same
+      # way #157 took CI down on 2026-09-11 (a rerun changes nothing: it is
+      # authorization, not a flaky pull). This mirror is the last freely
+      # pullable build of the real server, and the real server is the point:
+      # a fake S3 (s3mock, localstack) would stop covering what the
+      # deployment runs. Authenticating to quay.io with a MinIO account was
+      # weighed and set aside — it needs a repo secret and breaks forks.
+      # Both images are pinned by tag *and* digest, because an unmaintained
+      # mirror is exactly where a tag gets repointed with nothing to signal
+      # it. Bitnami's entrypoint starts the server itself and keeps its data
+      # under /bitnami/minio/data, so there is no `server /data` argument
+      # here; MINIO_ROOT_USER/MINIO_ROOT_PASSWORD are read the same way, and
+      # `mc` sits on PATH the same way.
       - name: Start MinIO and create the attachments bucket
         run: |
           docker run -d --name minio -p 9000:9000 \
             -e MINIO_ROOT_USER=ci-dummy \
             -e MINIO_ROOT_PASSWORD=ci-dummy-secret \
-            quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
+            docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20
           for i in $(seq 1 30); do
             curl -sf http://localhost:9000/minio/health/ready && break
             sleep 1
           done
           docker run --rm --network host --entrypoint /bin/sh \
-            quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z -c \
+            docker.io/bitnamilegacy/minio-client:2025.7.21-debian-12-r3@sha256:73bd39f7899a0cef12b8dd5df13aa93a3ed1aaa44236542442e9ac76819ac158 -c \
             "mc alias set local http://localhost:9000 ci-dummy ci-dummy-secret && \
              mc mb -p local/manage-our-home"
       - name: Start apps/api (applies migrations on boot)
