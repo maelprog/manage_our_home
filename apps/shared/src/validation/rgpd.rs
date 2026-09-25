@@ -1248,13 +1248,15 @@ mod tests {
         "reste enregistrée avec l'invitation pendant 30 jours après cet envoi,",
     ];
 
-    /// The whole time vocabulary `time_words_outside` knows, lowercase:
-    /// units of duration and their abbreviations, periods, frequencies,
-    /// named days and instants, and words of deadline or immediacy. `hui` is
-    /// what "aujourd'hui" reads as once its elision is dropped; `dès` is
-    /// allowed only inside clause 2 of [`INVITATION_TIME_PHRASES`], so "dès
-    /// que possible" anywhere else is caught.
-    const TIME_WORDS: [&str; 66] = [
+    /// The words `time_words_outside` compares against, as exact lowercase
+    /// forms — no lemmatization: a form absent from this list is not seen.
+    /// Units of duration and their abbreviations, periods, frequencies, named
+    /// days and moments, and words of deadline, deferral or immediacy. `hui`
+    /// is what "aujourd'hui" reads as once its elision is dropped; `dès`
+    /// appears in the email only inside clause 2 of
+    /// [`INVITATION_TIME_PHRASES`], so "dès que possible" elsewhere is
+    /// reported.
+    const TIME_WORDS: [&str; 73] = [
         "s",
         "sec",
         "seconde",
@@ -1269,6 +1271,7 @@ mod tests {
         "heure",
         "heures",
         "horaire",
+        "horaires",
         "j",
         "jour",
         "jours",
@@ -1282,6 +1285,8 @@ mod tests {
         "mois",
         "trimestre",
         "trimestres",
+        "semestre",
+        "semestres",
         "an",
         "ans",
         "année",
@@ -1295,6 +1300,7 @@ mod tests {
         "lendemain",
         "hui",
         "maintenant",
+        "soir",
         "minuit",
         "midi",
         "délai",
@@ -1302,9 +1308,12 @@ mod tests {
         "échéance",
         "échéances",
         "tard",
+        "tarder",
         "tôt",
         "bientôt",
         "prochainement",
+        "incessamment",
+        "ultérieurement",
         "maximum",
         "max",
         "maxi",
@@ -1323,48 +1332,52 @@ mod tests {
         "champ",
     ];
 
-    /// Every [`TIME_WORDS`] entry `text` carries outside the `allowed`
-    /// clauses, in reading order — empty when time is only ever spoken of
-    /// through them.
+    /// The words of `text` that are entries of [`TIME_WORDS`] once the
+    /// `allowed` clauses are cut out, in reading order. An empty result means
+    /// exactly that no such word stands outside those clauses, and nothing
+    /// more: this is a scan against a closed list, not an understanding of
+    /// the sentence.
     ///
-    /// How the text is read. It is whitespace-flattened and lowercased, so a
-    /// clause hard-wrapped across lines still matches, and U+2019 and U+02BC
-    /// are turned into the ASCII apostrophe. Every `allowed` clause is then
-    /// cut out. What remains is split into words on every character that is
-    /// neither a letter nor an apostrophe — digits included, so a unit glued
-    /// to a number is read on its own wherever the digits stand: `48h`,
-    /// `J+30`, `1h30`, `18h00`, `1h30min` give `h`, `j`, `h`, `h`, `h` and
-    /// `min`. An elided word is read after its last apostrophe (`l'heure` →
-    /// `heure`, `j'ai` → `ai`, `s'il` → `il`), so the elided `j'` and `s'`
-    /// are not taken for a day or a second.
+    /// What the code does:
     ///
-    /// What it catches: every word of [`TIME_WORDS`] left once the allowed
-    /// clauses are cut out — "sous une heure au maximum", "dans l'heure qui
-    /// suit", "au plus tard", "sous 1h30", "en moins de 60 s", "au plus tôt",
-    /// "tout de suite", "sur-le-champ", "demain", "sous huitaine", "dès que
-    /// possible", and an allowed duration given a new left context or an
-    /// appended qualifier, since the clauses are anchored whole.
+    /// 1. flattens whitespace and lowercases, so a clause hard-wrapped across
+    ///    lines still matches; U+2019, U+02BC and U+02BB become the ASCII
+    ///    apostrophe;
+    /// 2. cuts out every `allowed` clause, as an exact substring;
+    /// 3. splits the rest on every character that is neither a letter
+    ///    (`char::is_alphabetic`) nor an apostrophe — spaces, punctuation,
+    ///    digits, hyphens and every other quote mark (U+2018, «, ») — so
+    ///    `48h`, `J+30`, `1h30`, `18h00` give `h`, `j`, `h`, `h`, `1h30min`
+    ///    gives `h` and `min`, `sur-le-champ` gives `sur`, `le`, `champ`;
+    /// 4. in each resulting run, keeps the last non-empty piece between
+    ///    apostrophes: `l'heure` → `heure`, `j'ai` → `ai`, `s'il` → `il`,
+    ///    `'heure'` → `heure`;
+    /// 5. keeps the pieces equal to an entry of [`TIME_WORDS`].
     ///
-    /// What it does not catch: a bound worded only with words off that list
-    /// — "sous peu", "sans attendre", "dans la foulée" pass — and an allowed
-    /// clause copied verbatim into another sentence, which stays allowed. It
-    /// is a whitelist over a finite vocabulary, not an understanding of the
-    /// sentence.
+    /// Known limits — what passes unreported:
     ///
-    /// Known false positives: `suite` and `champ` fire outside "tout de suite"
-    /// and "sur-le-champ", `dès` fires on any "dès", and `an` fires on "un
-    /// an" — a duration, so on purpose. A letter standing between digits is
-    /// read as a word too (`2s` in an identifier gives `s`). None of these
-    /// occurs in the shipped email.
+    /// - a bound worded only with words absent from [`TIME_WORDS`]: "sous
+    ///   peu", "sans attendre", "dans la foulée", "d'ici lundi", "avant le
+    ///   1er janvier", "de manière immédiate";
+    /// - an inflected form the list does not spell out;
+    /// - in a run joined by apostrophes, every piece but the last non-empty
+    ///   one: a list word glued by an apostrophe to a following word with no
+    ///   space (`heure'x`) is lost;
+    /// - an allowed clause copied verbatim anywhere else in the text.
+    ///
+    /// Known false positives: `suite` and `champ` outside "tout de suite" and
+    /// "sur-le-champ"; `dès` outside clause 2; `an` in "un an", a duration,
+    /// so on purpose; a lone letter cut out by digits or brackets — `2s`,
+    /// `donnée(s)` give `s`. None of them occurs in the shipped email.
     fn time_words_outside(text: &str, allowed: &[&str]) -> Vec<String> {
         let mut rest = flatten(text)
             .to_lowercase()
-            .replace(['\u{2019}', '\u{2bc}'], "'");
+            .replace(['\u{2019}', '\u{2bc}', '\u{2bb}'], "'");
         for phrase in allowed {
             rest = rest.replace(&phrase.to_lowercase(), " ");
         }
         rest.split(|c: char| !c.is_alphabetic() && c != '\'')
-            .map(|token| token.rsplit('\'').next().unwrap_or(token))
+            .filter_map(|token| token.rsplit('\'').find(|word| !word.is_empty()))
             .filter(|word| TIME_WORDS.contains(word))
             .map(str::to_string)
             .collect()
@@ -1465,10 +1478,22 @@ mod tests {
     }
 
     #[test]
-    fn time_words_outside_lets_a_bound_worded_off_the_list_through() {
-        // The documented limit, pinned so the doc-comment cannot drift from it.
+    fn time_words_outside_pins_its_documented_limits() {
+        // The documented limits, pinned so the doc-comment cannot drift from
+        // them: bounds worded off the list, a word hidden by an apostrophe.
         assert!(time_words_outside("effacée sans attendre", &INVITATION_TIME_PHRASES).is_empty());
         assert!(time_words_outside("effacée sous peu", &INVITATION_TIME_PHRASES).is_empty());
+        assert!(time_words_outside(
+            "d'ici lundi, avant le 1er janvier, de manière immédiate",
+            &INVITATION_TIME_PHRASES
+        )
+        .is_empty());
+        assert!(time_words_outside("une heure'x", &INVITATION_TIME_PHRASES).is_empty());
+        // And the documented false positive of a letter cut out by brackets.
+        assert_eq!(
+            time_words_outside("vos donnée(s)", &INVITATION_TIME_PHRASES),
+            vec!["s".to_string()]
+        );
     }
 
     #[test]
@@ -1523,6 +1548,42 @@ mod tests {
                 &INVITATION_TIME_PHRASES
             ),
             vec!["heure".to_string(), "heure".to_string()]
+        );
+    }
+
+    #[test]
+    fn time_words_outside_reads_a_word_closed_by_a_quote_or_an_apostrophe() {
+        // Reproduced while verifying #281: a word followed by a closing quote
+        // was read as the empty string after it, and missed.
+        assert_eq!(
+            time_words_outside(
+                "Sous \u{2018}une heure\u{2019}, sous 'une heure', dans l\u{2bb}heure.",
+                &INVITATION_TIME_PHRASES
+            ),
+            vec![
+                "heure".to_string(),
+                "heure".to_string(),
+                "heure".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn time_words_outside_catches_the_last_period_and_deferral_words() {
+        assert_eq!(
+            time_words_outside(
+                "Plages horaires, ce semestre, sans tarder, incessamment, \
+                 ultérieurement, ce soir.",
+                &INVITATION_TIME_PHRASES
+            ),
+            vec![
+                "horaires".to_string(),
+                "semestre".to_string(),
+                "tarder".to_string(),
+                "incessamment".to_string(),
+                "ultérieurement".to_string(),
+                "soir".to_string(),
+            ]
         );
     }
 
