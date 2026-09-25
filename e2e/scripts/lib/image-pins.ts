@@ -1,4 +1,5 @@
-// Garde-fou des images MinIO (#159, politique par fichier depuis #138).
+// Garde-fou des images MinIO (#159, politique par fichier depuis #138,
+// compose basculé sur le miroir par #274).
 //
 // #158 avait sorti les références MinIO de Docker Hub (qui ne servait plus
 // `minio/minio` ni `minio/mc` anonymement depuis le 2026-09-11, #157) pour
@@ -13,32 +14,31 @@
 // `docker.io/bitnamilegacy/minio-client` — le dernier build librement tirable
 // du vrai serveur, et c'est le vrai serveur qui compte : un faux S3 (s3mock,
 // localstack) cesserait de couvrir ce que le déploiement fait tourner.
-// `infra/docker-compose.yml`, lui, reste sur les références amont : y basculer
-// change le chemin des données de la pile livrée (`/data` →
-// `/bitnami/minio/data`) et se décide à part. Les deux fichiers ne bougent
-// donc plus ensemble, et ce module porte **une politique par fichier**.
+// `infra/docker-compose.yml` est resté un temps sur les références amont de
+// `quay.io`, parce qu'y basculer déplace le chemin des données de la pile
+// livrée (`/data` → `/bitnami/minio/data`) — et la pile livrée ne démarrait
+// plus. #274 l'a basculé sur le même miroir, volume remonté sans copie (motif
+// dans le compose). Le module garde **une politique par fichier** (un fichier
+// sans politique n'est pas jugé), mais les deux fichiers portent aujourd'hui
+// la même : celle du miroir.
 //
 // Ce que la porte refuse, par fichier couvert :
 //   - un registre autre que celui de la politique — un miroir, un
 //     sous-domaine, un port, ou pas de registre du tout (Hub implicite) ;
-//   - dans `ci.yml`, toute référence à `minio/minio` ou `minio/mc` : ce sont
-//     les images que plus personne ne peut tirer, y revenir doit être rouge
-//     ici et pas en CI ;
-//   - un tag qui n'est pas celui attendu par la politique — version Bitnami
-//     complète (`AAAA.M.J-debian-N-rN`) côté miroir, horodatage
-//     `RELEASE.AAAA-MM-JJTHH-MM-SSZ` côté amont : `latest`, pas de tag, une
-//     série nue, une variable (`${MINIO_TAG}`) ;
-//   - côté amont, un horodatage suivi d'une variante (`.fips`, `-cpuv1`,
-//     `.hotfix.*`) : le tag est épinglé, mais ce n'est pas la release
-//     publiée ; l'accepter se décide ici, avec son propre message plutôt que
-//     « tag flottant » ;
-//   - côté miroir, l'absence de digest : un miroir que personne ne maintient
-//     est exactement l'endroit où un tag se fait republier, donc le pin par
-//     digest y est exigé (il reste optionnel sur les références amont, où il
-//     ne l'était pas non plus avant) ;
+//   - toute référence à `minio/minio` ou `minio/mc` : ce sont les images que
+//     plus personne ne peut tirer, y revenir doit être rouge ici et pas en CI
+//     ni au premier `docker compose up` ;
+//   - un tag qui n'est pas une version Bitnami complète
+//     (`AAAA.M.J-debian-N-rN`) : `latest`, pas de tag, une série nue, une
+//     variable (`${MINIO_TAG}`) ;
+//   - l'absence de digest : un miroir que personne ne maintient est
+//     exactement l'endroit où un tag se fait republier, donc le pin par
+//     digest y est exigé ;
 //   - un digest mal formé (`@sha256:zz`), au lieu de l'ignorer ;
-//   - deux pins différents pour la MÊME image (les trois jobs de `ci.yml`
-//     montent la même pile ; un job laissé derrière teste autre chose) ;
+//   - deux pins différents pour la MÊME image, dans un fichier ou d'un
+//     fichier à l'autre (les trois jobs de `ci.yml` montent la même pile, et
+//     c'est la pile que le compose fait tourner : un pin laissé derrière
+//     teste autre chose) ;
 //   - un fichier fourni où l'une des images attendues n'est plus trouvée :
 //     sans ce plancher, passer l'image dans une variable rendrait la porte
 //     verte sur zéro référence ;
@@ -46,9 +46,9 @@
 //     qu'elle ne couvre pas ce fichier au lieu de le déclarer conforme.
 //
 // Ce qu'il accepte exprès : des pins différents entre le serveur et le client.
-// Les deux dépôts publient sur des horloges de release distinctes, côté
-// miroir (2025.7.23 vs 2025.7.21) comme côté amont (constat de #159) : exiger
-// un pin unique pour les deux rendrait la porte impossible à tenir.
+// Les deux dépôts publient sur des horloges de release distinctes (2025.7.23
+// vs 2025.7.21 sur le miroir, même constat en amont dans #159) : exiger un pin
+// unique pour les deux rendrait la porte impossible à tenir.
 //
 // Limites, dites pour ce qu'elles sont :
 //   - les lignes dont le premier caractère non blanc est `#` sont ignorées
@@ -69,11 +69,9 @@ export type SourceFile = { path: string; text: string };
 export const CI_PATH = ".github/workflows/ci.yml";
 export const COMPOSE_PATH = "infra/docker-compose.yml";
 
-// Un tag de release MinIO amont, à la seconde près.
+// Un tag de release MinIO amont, à la seconde près (lu par la porte des
+// tags du compose, plus bas).
 const PINNED_TAG = /^RELEASE\.\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z$/;
-
-// Le même horodatage, suivi d'un suffixe de variante (capturé).
-const VARIANT_TAG = /^RELEASE\.\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(.+)$/;
 
 // Une version Bitnami complète : `2025.7.23-debian-12-r5`.
 const BITNAMI_TAG = /^\d{4}\.\d{1,2}\.\d{1,2}-debian-\d+-r\d+$/;
@@ -93,8 +91,6 @@ type Policy = {
   tagExpected: string;
   /** Le pin par digest est-il exigé ? */
   digestRequired: boolean;
-  /** Détection d'une variante derrière un tag épinglé (amont seulement). */
-  variant?: RegExp;
   /** Pourquoi ce registre, en une phrase, pour le message. */
   registryWhy: string;
 };
@@ -111,20 +107,9 @@ const MIRROR: Policy = {
     "minio/* n'est plus tirable anonymement nulle part.",
 };
 
-const UPSTREAM: Policy = {
-  registry: "quay.io",
-  images: ["minio/minio", "minio/mc"],
-  forbidden: [],
-  tag: PINNED_TAG,
-  tagExpected: "un horodatage RELEASE.AAAA-MM-JJTHH-MM-SSZ",
-  digestRequired: false,
-  variant: VARIANT_TAG,
-  registryWhy: "Docker Hub ne sert plus minio/* anonymement (#157).",
-};
-
 const POLICIES: ReadonlyMap<string, Policy> = new Map([
   [CI_PATH, MIRROR],
-  [COMPOSE_PATH, UPSTREAM],
+  [COMPOSE_PATH, MIRROR],
 ]);
 
 /** Les images suivies par fichier couvert, pour les appelants. */
@@ -259,16 +244,7 @@ export function minioPinViolations(files: ReadonlyArray<SourceFile>): string[] {
         unsound = true;
       }
 
-      const variant = policy.variant && o.tag?.match(policy.variant);
-      if (variant) {
-        violations.push(
-          `${o.where} : \`${o.raw}\` — horodatage suivi du suffixe ` +
-            `« ${variant[1]} » (variante ou correctif de la release). ` +
-            `Attendu : ${policy.tagExpected}, nu ; une variante s'ajoute au ` +
-            "garde-fou en connaissance de cause.",
-        );
-        unsound = true;
-      } else if (o.tag === undefined || !policy.tag.test(o.tag)) {
+      if (o.tag === undefined || !policy.tag.test(o.tag)) {
         violations.push(
           `${o.where} : \`${o.raw}\` — tag non épinglé ` +
             `(${o.tag === undefined ? "aucun tag" : `« ${o.tag} »`}). ` +
@@ -302,8 +278,8 @@ export function minioPinViolations(files: ReadonlyArray<SourceFile>): string[] {
 
   // Divergence : par image, sur les seules références saines (une référence
   // `latest` ou un digest mal formé a déjà sa propre violation, ne pas la
-  // compter deux fois). Le serveur et le client sont comparés chacun de leur
-  // côté, et les images du miroir ne croisent pas celles de l'amont.
+  // compter deux fois), tous fichiers confondus. Le serveur et le client
+  // sont comparés chacun de leur côté.
   const images = new Set(sound.map((o) => o.image));
   for (const image of images) {
     const byPin = new Map<string, string[]>();

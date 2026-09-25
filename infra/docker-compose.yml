@@ -23,38 +23,54 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init:/docker-entrypoint-initdb.d:ro
 
-  # Registry is quay.io, not Docker Hub: docker.io/minio/minio no longer
-  # answers anonymous pulls (issue #157). The tag is pinned rather than
-  # `latest` so the server cannot move under an existing stack unnoticed.
+  # Registry is Docker Hub's `bitnamilegacy` mirror, with the same pin and
+  # digest as .github/workflows/ci.yml (e2e/scripts/lib/image-pins.ts holds
+  # both files to one pin): the `minio` org closed anonymous pulls everywhere
+  # it publishes (quay.io and docker.io/minio/* 401, ghcr.io 403, 2026-09-25)
+  # and this stack stopped coming up (#274). The digest is required because
+  # an unmaintained mirror is where a tag gets repointed with nothing to
+  # signal it.
   #
-  # This reference no longer follows .github/workflows/ci.yml, which pulls
-  # the `docker.io/bitnamilegacy` mirror since #138 (`minio` closed anonymous
-  # pulls on quay.io too, and CI had to move). Copying the mirror's reference
-  # here would turn the pin guardrail red on purpose: it holds a policy per
-  # file (e2e/scripts/lib/image-pins.ts), upstream references for this stack
-  # and the mirror for CI. Moving this stack to the mirror is a separate
-  # decision — the Bitnami image keeps its data under /bitnami/minio/data,
-  # not the /data this service's volume is mounted on — and until it is
-  # taken, quay.io refuses these pulls: the stack does not come up as-is.
+  # Data path. Bitnami's entrypoint starts the server itself on
+  # /bitnami/minio/data and ignores /data, so there is no `server /data`
+  # command any more and the volume is mounted there instead. It is the SAME
+  # named volume (`minio_data`): an existing stack keeps its buckets and
+  # objects, nothing is copied, the tree MinIO wrote under /data is simply
+  # seen at the new path. Mounting it back on /data would not fail — the
+  # server would start on an empty anonymous volume and every existing
+  # attachment would look gone.
+  #
+  # `user: "0"`. The upstream image ran as root, so an existing volume
+  # belongs to root, and the Bitnami image's default user (1001) cannot
+  # write to it: the server dies during setup (`.root_user: Permission
+  # denied`). Started as root, Bitnami's entrypoint chowns the data
+  # directory to its own service user on every start, then runs the server
+  # as that user, not as root. The server build (2025-07-23) is older than
+  # the upstream one that wrote existing volumes (2025-09-07): reading such
+  # a volume back was checked when this switch was made, on a small bucket;
+  # back the volume up before the first start on this image all the same.
+  #
+  # Bitnami also leaves `.root_user` and `.root_password` (mode 600) in the
+  # volume: the credentials below, in clear, next to the data — which
+  # whoever can read the volume can read anyway.
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    image: docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20
     restart: unless-stopped
-    command: server /data --console-address ":9001"
+    user: "0"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     volumes:
-      - minio_data:/data
+      - minio_data:/bitnami/minio/data
 
   # One-shot: creates the bucket the api expects (MINIO_BUCKET below) —
   # MinIO doesn't auto-create buckets and neither does the api's S3 client.
   # Idempotent (--ignore-existing), exits once done.
-  # Same story as the minio service above, CI divergence included: quay.io
-  # because Docker Hub no longer serves this repo anonymously (issue #157),
-  # and a pinned tag rather than `latest`. mc has its own release clock, so
-  # this stamp is deliberately not the server's.
+  # Same mirror as the minio service above, and the same pin as ci.yml; mc
+  # has its own release clock, so this version is deliberately not the
+  # server's. The entrypoint below replaces Bitnami's, as in ci.yml.
   minio-init:
-    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+    image: docker.io/bitnamilegacy/minio-client:2025.7.21-debian-12-r3@sha256:73bd39f7899a0cef12b8dd5df13aa93a3ed1aaa44236542442e9ac76819ac158
     depends_on: [minio]
     restart: "no"
     environment:

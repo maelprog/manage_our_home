@@ -304,6 +304,30 @@ privileges granted `FOR ROLE mom` to `admin_role` carry over, since Postgres
 stores them against the role's OID. `admin_role` itself is untouched, so
 `ADMIN_DATABASE_URL` needs no change.
 
+### Upgrading a stack created with the `quay.io/minio` images (#274)
+
+MinIO stopped serving its images anonymously, so the `minio` and `minio-init`
+services now pull Docker Hub's `bitnamilegacy` mirror (reasons and pins in
+`infra/docker-compose.yml`). That image keeps its data under
+`/bitnami/minio/data` instead of `/data`. The compose file mounts the **same**
+`minio_data` volume at the new path, so an existing stack keeps its buckets
+and attachments with nothing to copy: pull and restart.
+
+```sh
+cd infra
+docker compose pull minio minio-init
+docker compose up -d
+```
+
+The server's first start on the new image does two things to the volume:
+it hands it over to the image's service user (the volume was owned by root,
+which is why the service starts as `user: "0"` before dropping privileges),
+and it writes `.root_user` and `.root_password` next to the data. The mirror's
+server build (2025-07-23) is older than the upstream one (2025-09-07) that
+wrote your volume; reading a volume written by the upstream image back was
+checked on a small bucket, not on a large one, so back the volume up before
+the first start.
+
 ---
 
 ## Running the pieces by hand (local dev)
