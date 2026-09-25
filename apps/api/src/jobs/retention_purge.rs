@@ -12,6 +12,7 @@
 
 use std::time::Duration as StdDuration;
 
+use anyhow::Context;
 use chrono::{DateTime, Duration, Months, Utc};
 use sqlx::PgPool;
 use tokio::time::{interval, MissedTickBehavior};
@@ -112,7 +113,15 @@ pub async fn run(pool: PgPool) {
 /// tests can move the clock instead of waiting months.
 pub async fn purge(pool: &PgPool, cutoffs: RetentionCutoffs) -> anyhow::Result<PurgeCounts> {
     let mut tx = crate::db::begin(pool).await?;
-    ensure_bypasses_rls(&mut tx).await?;
+    // The guard is shared with the attachment reconcile pass, whose own
+    // message speaks of the bucket: say what is at stake here, so the
+    // hourly ERROR line names the right hazard.
+    ensure_bypasses_rls(&mut tx).await.context(
+        "retention purge refusing to run: `invitations` is FORCE ROW LEVEL SECURITY, so on a \
+         role that does not bypass it the DELETE matches no row and the pass would report \
+         having erased addresses it left in place. Point ADMIN_DATABASE_URL at the BYPASSRLS \
+         admin_role (see apps/api/README.md).",
+    )?;
 
     let audit_log = sqlx::query!(
         "DELETE FROM audit_log WHERE occurred_at < $1",

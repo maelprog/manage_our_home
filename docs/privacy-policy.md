@@ -269,7 +269,8 @@ politique et le droit de saisir la CNIL.
 
 Ignorer cet email suffit à ne pas rejoindre le groupe : le lien cesse de
 fonctionner au bout de 7 jours. Votre adresse, elle, reste enregistrée avec
-l'invitation jusqu'à 30 jours après son envoi, puis est effacée. Elle l'est
+l'invitation pendant 30 jours après son envoi, puis est effacée dans l'heure
+qui suit (le passage de suppression a lieu toutes les heures). Elle l'est
 aussitôt si le lien est utilisé.
 
 Aucun écran de ce service ne permet d'agir sur cette adresse. Créer un

@@ -137,10 +137,25 @@ reaches this pool — see the `SuperAdminUser` extractor, which requires a
 valid session *and* `users.is_superadmin = true`, else 403 — so `BYPASSRLS`
 here is a controlled, audited exception rather than a general bypass.
 
-The pool has exactly one other user, and it is not a request handler: the
-daily attachment reconcile job (#215, see the Ops section below), which
-needs the unscoped `event_attachments` read and deletes nothing outside
-MinIO. No other request handler touches `admin_db`.
+Two other things run on this pool, and neither is a request handler:
+
+- the **daily attachment reconcile** pass (#215, see the Ops section below),
+  which needs the unscoped `event_attachments` read and deletes nothing in
+  Postgres — only MinIO objects;
+- the **hourly retention purge** (#138, `src/jobs/retention_purge.rs`),
+  which `DELETE`s rows, across every family, from `audit_log`,
+  `email_verification_tokens`, `password_reset_tokens`, `invitations` and
+  `sessions`. It is the only unscoped writer of Postgres rows on this pool.
+  Of those five tables only `invitations` is RLS'd at all, and it is `FORCE
+  ROW LEVEL SECURITY`: with no `app.family_id` set, its `DELETE` on the
+  runtime role matches **no row** and the pass would report a clean sweep
+  having erased none of the invited third parties' addresses it exists to
+  erase. So it calls the same `ensure_bypasses_rls` guard as the reconcile
+  pass — `rolsuper OR rolbypassrls` on its own connection — and aborts the
+  whole pass otherwise, the four unguarded tables included, logging
+  `retention purge job failed` at ERROR once an hour and deleting nothing.
+
+No request handler other than the three `/admin/*` ones touches `admin_db`.
 
 ```sql
 CREATE ROLE admin_role LOGIN PASSWORD '...' NOSUPERUSER BYPASSRLS;

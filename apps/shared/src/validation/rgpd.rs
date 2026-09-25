@@ -525,13 +525,24 @@ fn is_invisible(c: char) -> bool {
 /// over-long line instead of a forged paragraph.
 ///
 /// What the email must not do is promise a door that does not exist. Nothing
-/// in this service erases an invitation: `apps/api/src/jobs/account_purge.rs`
+/// the reader can reach erases an invitation: `apps/api/src/jobs/account_purge.rs`
 /// leaves `invitations` untouched and `export_account` never reads it, so
 /// creating an account opens rights over that account's data and not over
 /// this row. Arbitrated 2026-09-19 and confirmed 2026-09-20 — the product
-/// adds no no-account path and the email tells the truth instead: the address
-/// stays until the group is deleted, and any request goes to the controller.
-/// Doing nothing is stated first all the same, together with what it costs.
+/// adds no no-account path and the email tells the truth instead: any request
+/// goes to the controller. Doing nothing is stated first all the same,
+/// together with what it costs.
+///
+/// What does erase the row is the retention purge
+/// (`apps/api/src/jobs/retention_purge.rs`, #138): at acceptance, and
+/// otherwise 30 days after the invitation was created. That pass runs **once
+/// an hour**, so the 30th day is when the row becomes purgeable, not a
+/// deadline met to the second — the notice says "dans l'heure qui suit"
+/// rather than "au plus tard 30 jours", which the pass would overrun on
+/// every invitation and miss entirely while the API is down. It is the same
+/// bound `docs/privacy-policy.md` and `docs/registre-traitements.md` publish.
+/// Deleting the group takes the row earlier; the notice states the longest
+/// the address can stay, so an earlier deletion breaks no promise.
 pub fn invitation_email_body(
     group_name: &str,
     inviter_display_name: &str,
@@ -563,7 +574,9 @@ invitation et de rattacher votre compte au groupe si vous l'acceptez. La
 base légale est l'intérêt légitime du membre qui invite un proche.
 
 Votre adresse est enregistrée avec cette invitation, puis effacée :
-dès que le lien est utilisé, ou au plus tard 30 jours après cet envoi.
+dès que le lien est utilisé, sinon 30 jours après cet envoi. Cet
+effacement est fait par un passage automatique qui a lieu toutes les
+heures : il intervient donc dans l'heure qui suit.
 
 Le responsable de traitement est [nom du responsable de traitement — à
 renseigner avant la mise en ligne], joignable à [adresse de contact — à
@@ -574,8 +587,8 @@ réclamation auprès de la CNIL.
 
 Si vous ne voulez pas de cette invitation, ignorez cet email : le lien
 cesse de fonctionner au bout de 7 jours. Votre adresse, elle, reste
-enregistrée avec l'invitation jusqu'à 30 jours après cet envoi, puis est
-effacée.
+enregistrée avec l'invitation pendant 30 jours après cet envoi, puis est
+effacée dans l'heure qui suit.
 
 Aucun écran de ce service ne permet d'agir sur cette adresse. Créer un
 compte depuis le lien ci-dessus ouvre des droits sur les données de ce
@@ -1184,6 +1197,12 @@ mod tests {
         assert!(body.contains("dès que le lien est utilisé"), "{body}");
         assert!(body.contains("30 jours après cet envoi"), "{body}");
         assert!(!body.contains("suppression du groupe"), "{body}");
+        // The deletion is a pass that runs once an hour
+        // (`retention_purge::PURGE_INTERVAL`), so the 30th day is when the
+        // row becomes purgeable, not a deadline the service meets to the
+        // second: the notice must not state a bound the purge can overrun.
+        assert!(body.contains("dans l'heure qui suit"), "{body}");
+        assert!(!body.contains("au plus tard 30 jours"), "{body}");
     }
 
     #[test]
