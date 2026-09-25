@@ -1225,12 +1225,19 @@ mod tests {
         );
     }
 
-    /// The only phrasings through which the invitation email may speak of
-    /// time: the link's lifetime (twice) and the purge's trigger and
-    /// frequency. Each is anchored on its whole clause, left context and
-    /// closing punctuation included, so the duration cannot be reused with a
-    /// new left context ("sinon au plus 30 jours après cet envoi") or a
-    /// qualifier appended ("… après cet envoi au plus tard"). Compared after
+    /// The only clauses through which the invitation email may speak of
+    /// time, in the order the email carries them:
+    ///
+    /// 1. the link's lifetime and single use;
+    /// 2. when the address is erased: at use, otherwise 30 days after sending;
+    /// 3. the purge's frequency, hourly;
+    /// 4. the link's lifetime again, for the reader who ignores the email;
+    /// 5. the retention period again, in that same paragraph.
+    ///
+    /// Each is anchored on its whole clause, left context and closing
+    /// punctuation included, so a duration cannot be reused with a new left
+    /// context ("sinon au plus 30 jours après cet envoi") or given an appended
+    /// qualifier ("… après cet envoi au plus tard"). Compared after
     /// whitespace flattening and lowercasing, as `time_words_outside` does.
     /// Adding one here is a deliberate act, reviewed as such.
     const INVITATION_TIME_PHRASES: [&str; 5] = [
@@ -1241,17 +1248,18 @@ mod tests {
         "reste enregistrée avec l'invitation pendant 30 jours après cet envoi,",
     ];
 
-    /// The time vocabulary `time_words_outside` knows: words that carry a
-    /// unit of duration, an instant, a frequency, or a bound or an immediacy
-    /// on one. Lowercase; a token is compared after its leading digits are
-    /// dropped, so `48h` counts as `h` and `J+30` as `j`. This list is the
-    /// whole of what the guard sees — see `time_words_outside` for what it
-    /// leaves out.
-    const TIME_WORDS: [&str; 52] = [
+    /// The whole time vocabulary `time_words_outside` knows, lowercase:
+    /// units of duration and their abbreviations, periods, frequencies,
+    /// named days and instants, and words of deadline or immediacy. `hui` is
+    /// what "aujourd'hui" reads as once its elision is dropped; `dès` is
+    /// allowed only inside clause 2 of [`INVITATION_TIME_PHRASES`], so "dès
+    /// que possible" anywhere else is caught.
+    const TIME_WORDS: [&str; 66] = [
         "s",
         "sec",
         "seconde",
         "secondes",
+        "mn",
         "min",
         "minute",
         "minutes",
@@ -1266,9 +1274,14 @@ mod tests {
         "jours",
         "journée",
         "journées",
+        "sem",
         "semaine",
         "semaines",
+        "huitaine",
+        "quinzaine",
         "mois",
+        "trimestre",
+        "trimestres",
         "an",
         "ans",
         "année",
@@ -1278,14 +1291,20 @@ mod tests {
         "hebdomadaire",
         "mensuel",
         "mensuelle",
+        "demain",
         "lendemain",
+        "hui",
+        "maintenant",
         "minuit",
         "midi",
         "délai",
         "délais",
+        "échéance",
+        "échéances",
         "tard",
         "tôt",
         "bientôt",
+        "prochainement",
         "maximum",
         "max",
         "maxi",
@@ -1295,6 +1314,8 @@ mod tests {
         "promptement",
         "immédiatement",
         "aussitôt",
+        "sitôt",
+        "dès",
         "instantanément",
         "instant",
         "instants",
@@ -1303,37 +1324,47 @@ mod tests {
     ];
 
     /// Every [`TIME_WORDS`] entry `text` carries outside the `allowed`
-    /// phrasings, in reading order — empty when time is only ever spoken of
+    /// clauses, in reading order — empty when time is only ever spoken of
     /// through them.
     ///
-    /// It is a whitelist over a finite vocabulary, not an understanding of
-    /// the sentence. What it catches: any occurrence of a [`TIME_WORDS`]
-    /// entry that is not inside one of the `allowed` clauses — "sous une
-    /// heure au maximum", "dans l'heure qui suit", "au plus tard", "sous 48h",
-    /// "en moins de 60 s", "au plus tôt", "tout de suite", "sur-le-champ", and
-    /// an allowed duration given a new left context or a qualifier, since the
-    /// clauses are anchored whole. What it does not catch: a bound worded
-    /// only with words off that list — "sous peu", "sans attendre", "dans la
-    /// foulée" pass — and an allowed clause copied verbatim into another
-    /// sentence, which stays allowed.
+    /// How the text is read. It is whitespace-flattened and lowercased, so a
+    /// clause hard-wrapped across lines still matches, and U+2019 and U+02BC
+    /// are turned into the ASCII apostrophe. Every `allowed` clause is then
+    /// cut out. What remains is split into words on every character that is
+    /// neither a letter nor an apostrophe — digits included, so a unit glued
+    /// to a number is read on its own wherever the digits stand: `48h`,
+    /// `J+30`, `1h30`, `18h00`, `1h30min` give `h`, `j`, `h`, `h`, `h` and
+    /// `min`. An elided word is read after its last apostrophe (`l'heure` →
+    /// `heure`, `j'ai` → `ai`, `s'il` → `il`), so the elided `j'` and `s'`
+    /// are not taken for a day or a second.
+    ///
+    /// What it catches: every word of [`TIME_WORDS`] left once the allowed
+    /// clauses are cut out — "sous une heure au maximum", "dans l'heure qui
+    /// suit", "au plus tard", "sous 1h30", "en moins de 60 s", "au plus tôt",
+    /// "tout de suite", "sur-le-champ", "demain", "sous huitaine", "dès que
+    /// possible", and an allowed duration given a new left context or an
+    /// appended qualifier, since the clauses are anchored whole.
+    ///
+    /// What it does not catch: a bound worded only with words off that list
+    /// — "sous peu", "sans attendre", "dans la foulée" pass — and an allowed
+    /// clause copied verbatim into another sentence, which stays allowed. It
+    /// is a whitelist over a finite vocabulary, not an understanding of the
+    /// sentence.
     ///
     /// Known false positives: `suite` and `champ` fire outside "tout de suite"
-    /// and "sur-le-champ", and `an` fires on "un an" — which is a duration, so
-    /// on purpose. None of them occurs in the shipped email.
-    ///
-    /// The text is whitespace-flattened and lowercased first, so a clause
-    /// hard-wrapped across lines still matches. Tokens split on anything that
-    /// is neither alphanumeric nor an apostrophe; an elided word is read after
-    /// its last apostrophe (`l'heure` → `heure`, `j'ai` → `ai`, `s'il` → `il`),
-    /// so the elided `j'` and `s'` are not taken for a day or a second.
+    /// and "sur-le-champ", `dès` fires on any "dès", and `an` fires on "un
+    /// an" — a duration, so on purpose. A letter standing between digits is
+    /// read as a word too (`2s` in an identifier gives `s`). None of these
+    /// occurs in the shipped email.
     fn time_words_outside(text: &str, allowed: &[&str]) -> Vec<String> {
-        let mut rest = flatten(text).to_lowercase().replace('\u{2019}', "'");
+        let mut rest = flatten(text)
+            .to_lowercase()
+            .replace(['\u{2019}', '\u{2bc}'], "'");
         for phrase in allowed {
             rest = rest.replace(&phrase.to_lowercase(), " ");
         }
-        rest.split(|c: char| !c.is_alphanumeric() && c != '\'')
+        rest.split(|c: char| !c.is_alphabetic() && c != '\'')
             .map(|token| token.rsplit('\'').next().unwrap_or(token))
-            .map(|word| word.trim_start_matches(|c: char| c.is_ascii_digit()))
             .filter(|word| TIME_WORDS.contains(word))
             .map(str::to_string)
             .collect()
@@ -1382,18 +1413,54 @@ mod tests {
                 "Effacée : dès que le lien est utilisé, sinon 30 jours après cet envoi au plus tard.",
                 &INVITATION_TIME_PHRASES
             ),
-            vec!["jours".to_string(), "tard".to_string()]
+            vec!["dès".to_string(), "jours".to_string(), "tard".to_string()]
         );
     }
 
     #[test]
-    fn time_words_outside_catches_units_glued_to_digits_and_is_case_blind() {
+    fn time_words_outside_reads_a_unit_glued_to_digits_on_any_side_and_is_case_blind() {
+        // "1h30" and "18h00" carry digits after the unit too, "1h30min" on
+        // both sides of one (#281 review).
         assert_eq!(
             time_words_outside(
-                "Sous 48h, ou à J+30. Délai garanti.",
+                "Sous 48h, ou à J+30, sous 1h30, avant 18h00, en 1h30min. Délai garanti.",
                 &INVITATION_TIME_PHRASES
             ),
-            vec!["h".to_string(), "j".to_string(), "délai".to_string()]
+            vec![
+                "h".to_string(),
+                "j".to_string(),
+                "h".to_string(),
+                "h".to_string(),
+                "h".to_string(),
+                "min".to_string(),
+                "délai".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn time_words_outside_catches_deadlines_worded_as_dates_or_periods() {
+        assert_eq!(
+            time_words_outside(
+                "Demain, prochainement, à l'échéance, sous huitaine, sous quinzaine, ce \
+                 trimestre, en 5 mn, sous 2 sem, sitôt reçu, dès que possible, aujourd'hui, \
+                 maintenant.",
+                &INVITATION_TIME_PHRASES
+            ),
+            vec![
+                "demain".to_string(),
+                "prochainement".to_string(),
+                "échéance".to_string(),
+                "huitaine".to_string(),
+                "quinzaine".to_string(),
+                "trimestre".to_string(),
+                "mn".to_string(),
+                "sem".to_string(),
+                "sitôt".to_string(),
+                "dès".to_string(),
+                "hui".to_string(),
+                "maintenant".to_string(),
+            ]
         );
     }
 
@@ -1407,20 +1474,21 @@ mod tests {
     #[test]
     fn time_words_outside_does_not_let_an_allowed_duration_take_a_new_left_context() {
         // Reproduced while verifying #281: with the bare "30 jours après cet
-        // envoi" allowed, both sentences below left the guard green.
+        // envoi" allowed, both sentences below left the guard green. `dès`
+        // is reported too: once the clause is broken, nothing allows it.
         assert_eq!(
             time_words_outside(
                 "Effacée : dès que le lien est utilisé, sinon au plus 30 jours après cet envoi.",
                 &INVITATION_TIME_PHRASES
             ),
-            vec!["jours".to_string()]
+            vec!["dès".to_string(), "jours".to_string()]
         );
         assert_eq!(
             time_words_outside(
                 "Effacée : dès que le lien est utilisé, sinon dans les 30 jours après cet envoi.",
                 &INVITATION_TIME_PHRASES
             ),
-            vec!["jours".to_string()]
+            vec!["dès".to_string(), "jours".to_string()]
         );
     }
 
@@ -1447,13 +1515,14 @@ mod tests {
 
     #[test]
     fn time_words_outside_reads_an_elided_word_as_the_word_after_the_apostrophe() {
-        // "j'ai" and "s'il" are not a day and a second; "l'heure" is an hour.
+        // "j'ai" and "s'il" are not a day and a second; "l'heure" is an hour,
+        // whichever of U+0027, U+2019 or U+02BC writes the apostrophe.
         assert_eq!(
             time_words_outside(
-                "J'ai reçu, s\u{2019}il le faut, dans l'heure.",
+                "J'ai reçu, s\u{2019}il le faut, dans l'heure ou dans l\u{2bc}heure.",
                 &INVITATION_TIME_PHRASES
             ),
-            vec!["heure".to_string()]
+            vec!["heure".to_string(), "heure".to_string()]
         );
     }
 
