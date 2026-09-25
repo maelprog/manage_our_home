@@ -1239,12 +1239,46 @@ mod tests {
     /// lowercase; a token is compared after its leading digits are dropped, so
     /// `48h` counts as `h` and `J+30` as `j`.
     const TIME_WORDS: [&str; 40] = [
-        "min", "minute", "minutes", "h", "heure", "heures", "horaire", "j", "jour",
-        "jours", "journée", "journées", "semaine", "semaines", "mois", "an", "ans",
-        "année", "années", "quotidien", "quotidienne", "hebdomadaire", "mensuel",
-        "mensuelle", "lendemain", "minuit", "midi", "délai", "délais", "tard",
-        "maximum", "max", "maxi", "plafond", "vite", "rapidement", "promptement",
-        "immédiatement", "aussitôt", "instantanément",
+        "min",
+        "minute",
+        "minutes",
+        "h",
+        "heure",
+        "heures",
+        "horaire",
+        "j",
+        "jour",
+        "jours",
+        "journée",
+        "journées",
+        "semaine",
+        "semaines",
+        "mois",
+        "an",
+        "ans",
+        "année",
+        "années",
+        "quotidien",
+        "quotidienne",
+        "hebdomadaire",
+        "mensuel",
+        "mensuelle",
+        "lendemain",
+        "minuit",
+        "midi",
+        "délai",
+        "délais",
+        "tard",
+        "maximum",
+        "max",
+        "maxi",
+        "plafond",
+        "vite",
+        "rapidement",
+        "promptement",
+        "immédiatement",
+        "aussitôt",
+        "instantanément",
     ];
 
     /// Every [`TIME_WORDS`] entry `text` carries outside the `allowed`
@@ -1324,7 +1358,10 @@ mod tests {
     #[test]
     fn time_words_outside_catches_units_glued_to_digits_and_is_case_blind() {
         assert_eq!(
-            time_words_outside("Sous 48h, ou à J+30. Délai garanti.", &INVITATION_TIME_PHRASES),
+            time_words_outside(
+                "Sous 48h, ou à J+30. Délai garanti.",
+                &INVITATION_TIME_PHRASES
+            ),
             vec!["h".to_string(), "j".to_string(), "délai".to_string()]
         );
     }
