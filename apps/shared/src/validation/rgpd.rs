@@ -1201,20 +1201,138 @@ mod tests {
         assert!(body.contains("30 jours après cet envoi"), "{body}");
         assert!(!body.contains("suppression du groupe"), "{body}");
         // The deletion is a pass that runs once an hour
-        // (`retention_purge::PURGE_INTERVAL`) and only while the API is up, so
-        // the 30th day is when the row becomes purgeable and nothing here is a
-        // deadline: the notice states the frequency *and* what a service
-        // outage does to it, and states no upper bound at all — neither
-        // "au plus tard 30 jours" nor an unconditional hour. The processing
-        // register carries the same reserve (`docs/registre-traitements.md`).
+        // (`retention_purge::PURGE_INTERVAL`) and only while the API is up:
+        // the notice states the frequency *and* what a service outage does to
+        // it. That it states no deadline on top is the next test's job.
         assert!(body.contains("toutes les heures"), "{body}");
         assert!(body.contains("interrompu"), "{body}");
-        for cap in ["au plus tard", "dans l'heure qui suit"] {
-            assert!(
-                !body.contains(cap),
-                "borne inconditionnelle « {cap} » : {body}"
-            );
+    }
+
+    #[test]
+    fn invitation_email_speaks_of_time_only_through_its_sanctioned_phrasings() {
+        // The purge pass runs hourly and only while the API is up, so the 30th
+        // day is when the row becomes purgeable and no bound on the deletion
+        // holds — "au plus tard 30 jours" and a flat hour both got written
+        // and had to be taken out again (#273). What this pins is narrower
+        // than "no bound at all" and says so: see `time_words_outside`. The
+        // processing register carries the same reserve
+        // (`docs/registre-traitements.md`), unguarded by this test.
+        let body = invitation_sample();
+        assert_eq!(
+            time_words_outside(&body, &INVITATION_TIME_PHRASES),
+            Vec::<String>::new(),
+            "{body}"
+        );
+    }
+
+    /// The only phrasings through which the invitation email may speak of
+    /// time: the link's lifetime (twice) and the purge's frequency and
+    /// trigger. Adding one here is a deliberate act, reviewed as such.
+    const INVITATION_TIME_PHRASES: [&str; 4] = [
+        "valable 7 jours",
+        "au bout de 7 jours",
+        "30 jours après cet envoi",
+        "toutes les heures",
+    ];
+
+    /// Words that carry a duration, an instant, or a bound on one. Closed list,
+    /// lowercase; a token is compared after its leading digits are dropped, so
+    /// `48h` counts as `h` and `J+30` as `j`.
+    const TIME_WORDS: [&str; 40] = [
+        "min", "minute", "minutes", "h", "heure", "heures", "horaire", "j", "jour",
+        "jours", "journée", "journées", "semaine", "semaines", "mois", "an", "ans",
+        "année", "années", "quotidien", "quotidienne", "hebdomadaire", "mensuel",
+        "mensuelle", "lendemain", "minuit", "midi", "délai", "délais", "tard",
+        "maximum", "max", "maxi", "plafond", "vite", "rapidement", "promptement",
+        "immédiatement", "aussitôt", "instantanément",
+    ];
+
+    /// Every [`TIME_WORDS`] entry `text` carries outside the `allowed`
+    /// phrasings, in reading order — empty when time is only ever spoken of
+    /// through them.
+    ///
+    /// It is a whitelist over a closed vocabulary, not an understanding of the
+    /// sentence. It catches any bound worded with one of those words: "sous
+    /// une heure au maximum", "dans l'heure qui suit", "au plus tard", "d'ici
+    /// 30 jours", "sous 48h", "30 jours après cet envoi au plus tard". It does
+    /// not catch a bound worded entirely outside that list, such as "sous
+    /// peu" or "sans attendre", nor does it judge an allowed phrasing reused
+    /// in a new sentence: "au bout de 7 jours" stays allowed wherever it
+    /// stands.
+    ///
+    /// The text is whitespace-flattened and lowercased first, so a phrasing
+    /// hard-wrapped across lines still matches; tokens split on anything that
+    /// is not alphanumeric, apostrophes included (`l'heure` → `l`, `heure`).
+    fn time_words_outside(text: &str, allowed: &[&str]) -> Vec<String> {
+        let mut rest = flatten(text).to_lowercase();
+        for phrase in allowed {
+            rest = rest.replace(&phrase.to_lowercase(), " ");
         }
+        rest.split(|c: char| !c.is_alphanumeric())
+            .map(|token| token.trim_start_matches(|c: char| c.is_ascii_digit()))
+            .filter(|word| TIME_WORDS.contains(word))
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn time_words_outside_accepts_the_sanctioned_phrasings_even_hard_wrapped() {
+        assert!(time_words_outside(
+            "Ce lien est valable 7 jours. Effacée 30 jours\napr\u{e8}s cet envoi, par un \
+             passage qui a lieu toutes\nles heures.",
+            &INVITATION_TIME_PHRASES
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn time_words_outside_catches_the_bound_that_slipped_past_the_two_literals() {
+        // Reproduced while verifying #273: the former guard forbade two
+        // literals and this sentence left it green.
+        assert_eq!(
+            time_words_outside(
+                "Effacée toutes les heures, sous une heure au maximum.",
+                &INVITATION_TIME_PHRASES
+            ),
+            vec!["heure".to_string(), "maximum".to_string()]
+        );
+    }
+
+    #[test]
+    fn time_words_outside_catches_the_two_bounds_already_taken_out_once() {
+        assert_eq!(
+            time_words_outside("au plus tard 30 jours", &INVITATION_TIME_PHRASES),
+            vec!["tard".to_string(), "jours".to_string()]
+        );
+        assert_eq!(
+            time_words_outside("dans l'heure qui suit", &INVITATION_TIME_PHRASES),
+            vec!["heure".to_string()]
+        );
+    }
+
+    #[test]
+    fn time_words_outside_catches_a_bound_appended_to_an_allowed_phrasing() {
+        assert_eq!(
+            time_words_outside(
+                "30 jours après cet envoi au plus tard",
+                &INVITATION_TIME_PHRASES
+            ),
+            vec!["tard".to_string()]
+        );
+    }
+
+    #[test]
+    fn time_words_outside_catches_units_glued_to_digits_and_is_case_blind() {
+        assert_eq!(
+            time_words_outside("Sous 48h, ou à J+30. Délai garanti.", &INVITATION_TIME_PHRASES),
+            vec!["h".to_string(), "j".to_string(), "délai".to_string()]
+        );
+    }
+
+    #[test]
+    fn time_words_outside_lets_a_bound_worded_off_the_list_through() {
+        // The documented limit, pinned so the doc-comment cannot drift from it.
+        assert!(time_words_outside("effacée sans attendre", &INVITATION_TIME_PHRASES).is_empty());
     }
 
     #[test]
