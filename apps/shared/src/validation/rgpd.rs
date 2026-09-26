@@ -1237,12 +1237,17 @@ mod tests {
     /// Each entry is a whole sentence of the email, from its first word to
     /// its full stop, compared after whitespace flattening and lowercasing as
     /// `time_words_outside` does. Every one of them carries a word of
-    /// [`TIME_WORDS`], so any change inside one — a word inserted, removed or
-    /// replaced anywhere between its first word and its full stop — breaks
-    /// the exact match, and that sentence's own time words are then
-    /// reported. Text added before a sentence's first word or after its full
-    /// stop leaves the sentence matched and is scanned on its own. Adding an
-    /// entry here is a deliberate act, reviewed as such.
+    /// [`TIME_WORDS`], so any change inside one other than whitespace or case
+    /// — a word inserted, removed or replaced anywhere between its first word
+    /// and its full stop — breaks the exact match, and whichever of its time
+    /// words remain are then reported. A change that deletes every one of
+    /// them leaves nothing to report here: "valable 7 jours", "30 jours après
+    /// cet envoi" and "toutes les heures" are asserted present by
+    /// `invitation_email_states_the_purpose_the_legal_basis_and_the_retention`,
+    /// "au bout de 7 jours" by no test.
+    /// Text added before a sentence's first word or after its full stop
+    /// leaves the sentence matched and is scanned on its own. Adding an entry
+    /// here is a deliberate act, reviewed as such.
     const INVITATION_TIME_PHRASES: [&str; 5] = [
         "ce lien est valable 7 jours et ne sert qu'une fois.",
         "votre adresse est enregistrée avec cette invitation, puis effacée : \
