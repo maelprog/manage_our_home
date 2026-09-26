@@ -1225,27 +1225,34 @@ mod tests {
         );
     }
 
-    /// The only clauses through which the invitation email may speak of
+    /// The only sentences through which the invitation email may speak of
     /// time, in the order the email carries them:
     ///
     /// 1. the link's lifetime and single use;
     /// 2. when the address is erased: at use, otherwise 30 days after sending;
-    /// 3. the purge's frequency, hourly;
+    /// 3. the purge's frequency, hourly, and what an outage does to it;
     /// 4. the link's lifetime again, for the reader who ignores the email;
     /// 5. the retention period again, in that same paragraph.
     ///
-    /// Each is anchored on its whole clause, left context and closing
-    /// punctuation included, so a duration cannot be reused with a new left
-    /// context ("sinon au plus 30 jours après cet envoi") or given an appended
-    /// qualifier ("… après cet envoi au plus tard"). Compared after
-    /// whitespace flattening and lowercasing, as `time_words_outside` does.
-    /// Adding one here is a deliberate act, reviewed as such.
+    /// Each entry is a whole sentence of the email, from its first word to
+    /// its full stop, compared after whitespace flattening and lowercasing as
+    /// `time_words_outside` does. Every one of them carries a word of
+    /// [`TIME_WORDS`], so any change inside one — a word inserted, removed or
+    /// replaced anywhere between its first word and its full stop — breaks
+    /// the exact match, and that sentence's own time words are then
+    /// reported. Text added before a sentence's first word or after its full
+    /// stop leaves the sentence matched and is scanned on its own. Adding an
+    /// entry here is a deliberate act, reviewed as such.
     const INVITATION_TIME_PHRASES: [&str; 5] = [
         "ce lien est valable 7 jours et ne sert qu'une fois.",
-        "dès que le lien est utilisé, sinon 30 jours après cet envoi.",
-        "un passage automatique qui a lieu toutes les heures ;",
-        "le lien cesse de fonctionner au bout de 7 jours.",
-        "reste enregistrée avec l'invitation pendant 30 jours après cet envoi,",
+        "votre adresse est enregistrée avec cette invitation, puis effacée : \
+         dès que le lien est utilisé, sinon 30 jours après cet envoi.",
+        "cet effacement est fait par un passage automatique qui a lieu toutes \
+         les heures ; si le service est interrompu, il a lieu à son redémarrage.",
+        "si vous ne voulez pas de cette invitation, ignorez cet email : le lien \
+         cesse de fonctionner au bout de 7 jours.",
+        "votre adresse, elle, reste enregistrée avec l'invitation pendant 30 \
+         jours après cet envoi, puis est effacée par ce passage automatique.",
     ];
 
     /// The words `time_words_outside` compares against, as exact lowercase
@@ -1253,7 +1260,7 @@ mod tests {
     /// Units of duration and their abbreviations, periods, frequencies, named
     /// days and moments, and words of deadline, deferral or immediacy. `hui`
     /// is what "aujourd'hui" reads as once its elision is dropped; `dès`
-    /// appears in the email only inside clause 2 of
+    /// appears in the email only inside sentence 2 of
     /// [`INVITATION_TIME_PHRASES`], so "dès que possible" elsewhere is
     /// reported.
     const TIME_WORDS: [&str; 73] = [
@@ -1333,17 +1340,17 @@ mod tests {
     ];
 
     /// The words of `text` that are entries of [`TIME_WORDS`] once the
-    /// `allowed` clauses are cut out, in reading order. An empty result means
-    /// exactly that no such word stands outside those clauses, and nothing
+    /// `allowed` sentences are cut out, in reading order. An empty result means
+    /// exactly that no such word stands outside those sentences, and nothing
     /// more: this is a scan against a closed list, not an understanding of
     /// the sentence.
     ///
     /// What the code does:
     ///
-    /// 1. flattens whitespace and lowercases, so a clause hard-wrapped across
-    ///    lines still matches; U+2019, U+02BC and U+02BB become the ASCII
+    /// 1. flattens whitespace and lowercases, so a sentence hard-wrapped
+    ///    across lines still matches; U+2019, U+02BC and U+02BB become the ASCII
     ///    apostrophe;
-    /// 2. cuts out every `allowed` clause, as an exact substring;
+    /// 2. cuts out every `allowed` sentence, as an exact substring;
     /// 3. splits the rest on every character that is neither a letter
     ///    (`char::is_alphabetic`) nor an apostrophe — spaces, punctuation,
     ///    digits, hyphens and every other quote mark (U+2018, «, ») — so
@@ -1359,15 +1366,26 @@ mod tests {
     /// - a bound worded only with words absent from [`TIME_WORDS`]: "sous
     ///   peu", "sans attendre", "dans la foulée", "d'ici lundi", "avant le
     ///   1er janvier", "de manière immédiate";
+    /// - such a bound added before an allowed sentence's first word or after
+    ///   its full stop ("Au plus, ce lien est valable 7 jours…"): the
+    ///   sentence still matches, and the addition carries no list word;
     /// - an inflected form the list does not spell out;
     /// - in a run joined by apostrophes, every piece but the last non-empty
     ///   one: a list word glued by an apostrophe to a following word with no
     ///   space (`heure'x`) is lost;
-    /// - an allowed clause copied verbatim anywhere else in the text.
+    /// - an allowed sentence copied verbatim anywhere else in the text;
+    /// - encoding: the text is not Unicode-normalized, so a list word written
+    ///   with decomposed accents (NFD `de\u{301}lai`), cut by an invisible
+    ///   character (U+00AD soft hyphen, U+200D zero-width joiner), elided
+    ///   with an apostrophe-like letter other than U+2019, U+02BC and U+02BB
+    ///   (U+02BD, U+02B9 are letters, so `l\u{2bd}heure` stays one word), or
+    ///   spelled with a look-alike letter from another script (Cyrillic `е`
+    ///   in `hеure`) is not seen.
     ///
     /// Known false positives: `suite` and `champ` outside "tout de suite" and
-    /// "sur-le-champ"; `dès` outside clause 2; `an` in "un an", a duration,
-    /// so on purpose; a lone letter cut out by digits or brackets — `2s`,
+    /// "sur-le-champ"; `dès` outside sentence 2; `an` in "un an", a duration,
+    /// so on purpose; `sec` as "dry", `min` as the short of "minimum", `midi`
+    /// as the region; a lone letter cut out by digits or brackets — `2s`,
     /// `donnée(s)` give `s`. None of them occurs in the shipped email.
     fn time_words_outside(text: &str, allowed: &[&str]) -> Vec<String> {
         let mut rest = flatten(text)
@@ -1386,9 +1404,11 @@ mod tests {
     #[test]
     fn time_words_outside_accepts_the_sanctioned_phrasings_even_hard_wrapped() {
         assert!(time_words_outside(
-            "Ce lien est valable 7 jours et ne sert\nqu'une fois. Effacée : dès que le \
-             lien est utilisé, sinon 30 jours\naprès cet envoi. Par un passage \
-             automatique qui a lieu toutes\nles heures ; si le service est interrompu.",
+            "Ce lien est valable 7 jours et ne sert\nqu'une fois. Votre adresse est \
+             enregistrée avec cette invitation, puis effacée :\ndès que le lien est \
+             utilisé, sinon 30 jours après cet envoi. Cet\neffacement est fait par un \
+             passage automatique qui a lieu\ntoutes les heures ; si le service est \
+             interrompu, il a lieu à son\nredémarrage.",
             &INVITATION_TIME_PHRASES
         )
         .is_empty());
@@ -1399,10 +1419,7 @@ mod tests {
         // Reproduced while verifying #273: the former guard forbade two
         // literals and this sentence left it green.
         assert_eq!(
-            time_words_outside(
-                "Un passage automatique qui a lieu toutes les heures ; sous une heure au maximum.",
-                &INVITATION_TIME_PHRASES
-            ),
+            time_words_outside("Sous une heure au maximum.", &INVITATION_TIME_PHRASES),
             vec!["heure".to_string(), "maximum".to_string()]
         );
     }
@@ -1489,10 +1506,32 @@ mod tests {
         )
         .is_empty());
         assert!(time_words_outside("une heure'x", &INVITATION_TIME_PHRASES).is_empty());
-        // And the documented false positive of a letter cut out by brackets.
+        assert!(time_words_outside(
+            "Au plus, ce lien est valable 7 jours et ne sert qu'une fois.",
+            &INVITATION_TIME_PHRASES
+        )
+        .is_empty());
+        // Encoding bypasses, declared and left to a follow-up issue: NFD
+        // accents, soft hyphen, zero-width joiner, U+02BD, Cyrillic `е`.
+        for bypass in [
+            "sans de\u{301}lai",
+            "une heu\u{ad}re",
+            "une heu\u{200d}re",
+            "dans l\u{2bd}heure",
+            "une h\u{435}ure",
+        ] {
+            assert!(
+                time_words_outside(bypass, &INVITATION_TIME_PHRASES).is_empty(),
+                "{bypass}"
+            );
+        }
+        // And documented false positives.
         assert_eq!(
-            time_words_outside("vos donnée(s)", &INVITATION_TIME_PHRASES),
-            vec!["s".to_string()]
+            time_words_outside(
+                "vos donnée(s), un temps sec, 3 min",
+                &INVITATION_TIME_PHRASES
+            ),
+            vec!["s".to_string(), "sec".to_string(), "min".to_string()]
         );
     }
 
@@ -1500,7 +1539,7 @@ mod tests {
     fn time_words_outside_does_not_let_an_allowed_duration_take_a_new_left_context() {
         // Reproduced while verifying #281: with the bare "30 jours après cet
         // envoi" allowed, both sentences below left the guard green. `dès`
-        // is reported too: once the clause is broken, nothing allows it.
+        // is reported too: once the sentence is broken, nothing allows it.
         assert_eq!(
             time_words_outside(
                 "Effacée : dès que le lien est utilisé, sinon au plus 30 jours après cet envoi.",
@@ -1548,6 +1587,27 @@ mod tests {
                 &INVITATION_TIME_PHRASES
             ),
             vec!["heure".to_string(), "heure".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_qualifier_inserted_inside_an_allowed_sentence_breaks_it() {
+        // Reproduced while verifying #281: with sentence 5 anchored only up to
+        // its comma, this mutation of the shipped email left every test green.
+        let body = invitation_sample().replacen("envoi, puis est", "envoi,\nau plus, puis est", 1);
+        assert_eq!(
+            time_words_outside(&body, &INVITATION_TIME_PHRASES),
+            vec!["jours".to_string()]
+        );
+        // Same for sentence 3, which used to stop at its semicolon.
+        let body = invitation_sample().replacen(
+            "toutes les heures ; si",
+            "toutes les heures ; au plus, si",
+            1,
+        );
+        assert_eq!(
+            time_words_outside(&body, &INVITATION_TIME_PHRASES),
+            vec!["heures".to_string()]
         );
     }
 
