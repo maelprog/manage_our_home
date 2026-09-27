@@ -128,15 +128,19 @@ le responsable de traitement le 2026-09-19 :
 | `invitations` | invitation créée il y a plus de 30 jours (une invitation acceptée l'est déjà à l'acceptation) |
 | `sessions` | session révoquée, expirée, inactive depuis plus de 7 jours, ou d'un compte désactivé |
 
-Une ligne vit donc une heure de plus que sa durée **tant que l'API tourne** :
-la passe ne tourne pas sans elle, et une interruption diffère d'autant les
-suppressions, qui reprennent au premier passage après le redémarrage. Aucun
-plafond de suppression n'est donc promis, ni ici ni dans les documents
-publics (`docs/privacy-policy.md`, notice de l'art. 14) : ce qui est publié,
-c'est la durée de conservation et la fréquence de la passe. La passe tourne
-sur `ADMIN_DATABASE_URL` : `invitations` est sous une politique RLS forcée,
-et sans `BYPASSRLS` elle refuse de tourner (erreur journalisée à chaque
-heure) plutôt que de ne rien supprimer en se disant réussie.
+Une ligne vit jusqu'à une heure de plus que sa durée **tant que la passe
+tourne**, et la passe ne tourne qu'à deux conditions : l'API est démarrée,
+et `ADMIN_DATABASE_URL` (à défaut, `DATABASE_URL`) désigne un rôle
+`BYPASSRLS`. `invitations` est sous une politique RLS forcée : sur un autre
+rôle, la passe refuse de tourner (erreur journalisée à chaque heure) plutôt
+que de ne rien supprimer en se disant réussie. Une interruption de l'API
+diffère les suppressions jusqu'au premier passage après le redémarrage ; un
+rôle sans `BYPASSRLS` — le recours que `docs/v2-deployment.md` (item 9)
+indique avant une restauration — les suspend, API debout, jusqu'à ce que la
+configuration soit rétablie. Aucune de ces deux situations n'a de durée
+bornée : aucun plafond de suppression n'est donc promis, ni ici ni dans les
+documents publics (`docs/privacy-policy.md`, notice de l'art. 14). Ce qui
+est publié, c'est la durée de conservation et la fréquence de la passe.
 
 Le contenu créé par l'utilisateur au sein des groupes (événements, messages,
 etc.) n'est **pas** supprimé — il reste attribué à l'utilisateur anonymisé,

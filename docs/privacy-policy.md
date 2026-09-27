@@ -136,11 +136,15 @@ suppression automatique n'est en place aujourd'hui.
 
 Les suppressions automatiques décrites ci-dessous sont l'œuvre d'un passage
 de purge qui a lieu **toutes les heures, et seulement quand le service
-fonctionne**. Une donnée arrivée au terme de sa durée est donc supprimée au
-premier passage qui suit : dans l'heure lorsque le service tourne, et après
-son redémarrage s'il a été interrompu. Les durées ci-dessous sont des durées
-de conservation, pas des délais de suppression garantis : nous ne promettons
-pas un délai que l'indisponibilité du service dépasserait.
+fonctionne et que sa configuration permet ce passage**. Une donnée arrivée
+au terme de sa durée est donc supprimée au premier passage qui suit : dans
+l'heure lorsque ces deux conditions sont réunies, après le redémarrage du
+service s'il a été interrompu, et après le rétablissement de sa
+configuration si elle a suspendu la purge — le service peut alors
+fonctionner sans que rien ne soit supprimé. Les durées ci-dessous sont des
+durées de conservation, pas des délais de suppression garantis : nous ne
+promettons pas un délai que l'indisponibilité du service ou la suspension
+de la purge dépasserait.
 
 - **Compte** (email, mot de passe haché, nom affiché, appartenance aux
   groupes et rôle) : tant que le compte existe, puis 30 jours de grâce
@@ -279,8 +283,9 @@ Ignorer cet email suffit à ne pas rejoindre le groupe : le lien cesse de
 fonctionner au bout de 7 jours. Votre adresse, elle, reste enregistrée avec
 l'invitation pendant 30 jours après son envoi, puis est effacée au premier
 passage de purge qui suit (ces passages ont lieu toutes les heures quand le
-service fonctionne, et reprennent à son redémarrage). Elle l'est aussitôt si
-le lien est utilisé.
+service fonctionne et que sa configuration les permet, et reprennent à son
+redémarrage ou au rétablissement de cette configuration). Elle l'est
+aussitôt si le lien est utilisé.
 
 Aucun écran de ce service ne permet d'agir sur cette adresse. Créer un
 compte depuis le lien reçu ouvre des droits sur les données de ce compte,
