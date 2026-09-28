@@ -145,15 +145,18 @@ Two other things run on this pool, and neither is a request handler:
 - the **hourly retention purge** (#138, `src/jobs/retention_purge.rs`),
   which `DELETE`s rows, across every family, from `audit_log`,
   `email_verification_tokens`, `password_reset_tokens`, `invitations` and
-  `sessions`. It is the only unscoped writer of Postgres rows on this pool.
-  Of those five tables only `invitations` is RLS'd at all, and it is `FORCE
-  ROW LEVEL SECURITY`: with no `app.family_id` set, its `DELETE` on the
-  runtime role matches **no row** and the pass would report a clean sweep
-  having erased none of the invited third parties' addresses it exists to
-  erase. So it calls the same `ensure_bypasses_rls` guard as the reconcile
-  pass — `rolsuper OR rolbypassrls` on its own connection — and aborts the
-  whole pass otherwise, the four unguarded tables included, logging
-  `retention purge job failed` at ERROR once an hour and deleting nothing.
+  `sessions`. It is the only code on this pool that deletes Postgres rows —
+  not the only one that writes them: the three `/admin/*` handlers each
+  `INSERT` into `audit_log`, and `deactivate_user` also `UPDATE`s `users`
+  and `sessions`. Of the five purged tables only `invitations` is RLS'd at
+  all, and it is `FORCE ROW LEVEL SECURITY`: with no `app.family_id` set,
+  its `DELETE` on the runtime role matches **no row** and the pass would
+  report a clean sweep having erased none of the invited third parties'
+  addresses it exists to erase. So it calls the same `ensure_bypasses_rls`
+  guard as the reconcile pass — `rolsuper OR rolbypassrls` on its own
+  connection — and aborts the whole pass otherwise, the four unguarded
+  tables included, logging `retention purge job failed` at ERROR once an
+  hour and deleting nothing.
 
 No request handler other than the three `/admin/*` ones touches `admin_db`.
 
