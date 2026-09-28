@@ -134,7 +134,10 @@ async fn main() -> anyhow::Result<()> {
         state.admin_db.clone(),
         state.storage.clone(),
     ));
-    tokio::spawn(jobs::account_purge::run(db.clone()));
+    // On the admin pool: five of the tables the purge deletes from are
+    // under forced RLS policies, and the pass refuses to run without
+    // BYPASSRLS (#139).
+    tokio::spawn(jobs::account_purge::run(state.admin_db.clone()));
     // On the admin pool too: `invitations` is under a forced RLS policy,
     // and the pass refuses to run without BYPASSRLS (#138).
     tokio::spawn(jobs::retention_purge::run(state.admin_db.clone()));

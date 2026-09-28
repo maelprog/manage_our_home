@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-09-22.
+Dernière mise à jour : 2026-09-28.
 
 ## Qui est responsable de vos données ?
 
@@ -149,10 +149,11 @@ de la purge dépasserait.
 - **Compte** (email, mot de passe haché, nom affiché, appartenance aux
   groupes et rôle) : tant que le compte existe, puis 30 jours de grâce
   après une demande de suppression, à l'issue desquels le compte est
-  anonymisé (voir ci-dessous).
+  purgé : l'email et le nom sont remplacés, le mot de passe haché est
+  effacé, et l'appartenance aux groupes et le rôle sont supprimés (voir
+  ci-dessous).
 - **Déclaration d'âge** : la déclaration et sa date restent tant que le
-  compte existe. Elle ne contient pas de date de naissance : une fois le
-  compte anonymisé, il ne subsiste qu'une date rattachée à aucune identité.
+  compte existe, et sont effacées à la purge du compte.
 - **Sessions de connexion** : une session vaut 30 jours au plus, et prend
   fin plus tôt si elle reste 7 jours sans activité. Sa trace (dates
   de création, de dernière activité, d'expiration et de révocation) est
@@ -167,12 +168,13 @@ de la purge dépasserait.
   1 heure, et chacun ne sert qu'une fois. Un jeton de réinitialisation est
   supprimé dès qu'il sert. Sinon, un jeton est supprimé au premier passage
   de purge qui suit sa durée de conservation : 48 heures après sa création
-  pour la vérification, 1 heure pour la réinitialisation.
+  pour la vérification, 1 heure pour la réinitialisation — ou à la purge du
+  compte, si elle vient avant.
 - **Invitations** : un lien d'invitation est valable 7 jours et ne sert
   qu'une fois. L'invitation, adresse email de la personne invitée comprise,
   est supprimée dès qu'elle est acceptée ; sinon, au premier passage de
   purge qui suit les 30 jours de sa création, ou plus tôt si le groupe est
-  supprimé.
+  supprimé ou si le compte du membre qui l'a envoyée est purgé.
 - **Protection de la connexion** : gardée en mémoire du serveur, jamais en
   base, et perdue à chaque redémarrage du serveur. Une connexion réussie
   efface aussitôt les tentatives du même couple (adresse, email). Sinon,
@@ -194,20 +196,23 @@ de la purge dépasserait.
   l'événement ; l'historique des envois (heure, statut, tentatives) part
   avec eux.
 - **Assignations d'événements** : tant que l'événement existe et que
-  l'assignation n'est pas retirée ; elle reste après votre départ du groupe
-  et après l'anonymisation de votre compte.
+  l'assignation n'est pas retirée ; elle reste après votre départ du groupe,
+  et est supprimée à la purge de votre compte.
 - **Date de dernière lecture de la messagerie** : tant que le groupe
-  existe ; elle reste après votre départ du groupe et après
-  l'anonymisation de votre compte.
+  existe ; elle reste après votre départ du groupe, et est supprimée à la
+  purge de votre compte.
 - **Import calendrier** : l'URL du flux et les événements importés restent
   jusqu'à la suppression de l'import par un administrateur ou le
   propriétaire du groupe, ou jusqu'à la suppression du groupe. Les
   événements importés restent après la suppression de l'import, sauf si
-  leur suppression est demandée en même temps. L'anonymisation d'un compte
-  ne supprime ni l'import ni ses événements.
+  leur suppression est demandée en même temps. La purge du compte du
+  membre qui a configuré l'import supprime l'import, URL du flux comprise ;
+  les événements importés restent dans le groupe.
 - **Logs d'audit** : 6 mois glissants, durée recommandée par la CNIL pour
   les journaux ; une entrée plus ancienne est supprimée au premier passage
-  de purge qui suit cette échéance.
+  de purge qui suit cette échéance. La purge de votre compte supprime
+  aussitôt les entrées de vos propres actions, et en écrit une seule, sans
+  auteur, qui date la purge.
 - **Export de vos données** : généré à la demande et renvoyé directement,
   il n'est pas conservé sur le serveur.
 
@@ -215,23 +220,36 @@ de la purge dépasserait.
 
 - **Suppression de compte (droit à l'effacement, Art. 17)** : demandez la
   suppression via `POST /account/delete`. Un délai de grâce de 30 jours
-  s'applique (annulable via `POST /account/delete/cancel`), après quoi un
-  job de purge anonymise définitivement votre compte (identifiants de
-  connexion et sessions supprimés, email et nom remplacés). Le contenu que
-  vous avez créé au sein d'un groupe familial (messages, événements, etc.)
-  reste visible pour les autres membres de ce groupe, mais n'est plus
-  rattaché à votre identité — comportement documenté et intentionnel,
-  cohérent avec le fonctionnement d'un espace familial partagé. C'est un
-  engagement contractuel autant qu'une description : il figure aussi dans
-  les [conditions générales d'utilisation](/terms-of-service).
-- L'anonymisation ne supprime pas votre date de dernière lecture de la
-  messagerie ni vos assignations d'événements : elles restent rattachées
-  au compte anonymisé. Les jetons de vérification et de réinitialisation
-  et les invitations que vous avez émises restent, eux, jusqu'au terme de
-  leur propre durée de conservation, indiquée plus haut.
-- Un compte ne peut pas être supprimé tant qu'il est seul propriétaire
-  d'un groupe : transférez la propriété (ou supprimez le groupe) au
-  préalable.
+  s'applique (annulable via `POST /account/delete/cancel`), après quoi
+  votre compte est purgé au premier passage de purge qui suit.
+- **Ce que la purge supprime** : vos identifiants de connexion (mot de
+  passe haché, connexion avec Google), vos sessions, vos jetons de
+  vérification et de réinitialisation, votre appartenance aux groupes et
+  votre rôle, votre date de dernière lecture de la messagerie, vos
+  assignations d'événements, les entrées des logs d'audit dont vous êtes
+  l'auteur, les invitations que vous avez envoyées (adresses des personnes
+  invitées comprises) et les imports calendrier que vous avez configurés
+  (URL du flux comprise). Votre email et votre nom sont remplacés, votre
+  déclaration d'âge est effacée : il ne reste de votre compte qu'un
+  identifiant technique rattaché à aucune identité.
+- **Ce qu'elle laisse en place** : le contenu que vous avez créé au sein
+  d'un groupe familial — événements et pièces jointes, tâches cochées,
+  messages, stocks, recettes et historique des repas, liste de courses,
+  budget, et les groupes que vous avez créés — reste visible pour les
+  autres membres de ce groupe, mais n'est plus rattaché à votre identité.
+  C'est un choix intentionnel, cohérent avec le fonctionnement d'un espace
+  familial partagé, et un engagement contractuel autant qu'une
+  description : il figure aussi dans les [conditions générales
+  d'utilisation](/terms-of-service).
+- **Quand elle a lieu** : la purge passe toutes les heures, aux mêmes
+  conditions que les suppressions automatiques décrites plus haut — quand
+  le service fonctionne et que sa configuration permet ce passage. Elle a
+  donc lieu au premier passage qui suit la fin du délai de grâce, pas à
+  une date garantie.
+- Un compte ne peut pas être supprimé tant qu'il est propriétaire d'un
+  groupe : transférez la propriété (ou supprimez le groupe) au préalable.
+  Si vous devenez propriétaire d'un groupe pendant le délai de grâce, la
+  purge attend que la propriété soit transférée ou le groupe supprimé.
 
 ## Vos droits
 

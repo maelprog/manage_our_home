@@ -137,7 +137,7 @@ reaches this pool — see the `SuperAdminUser` extractor, which requires a
 valid session *and* `users.is_superadmin = true`, else 403 — so `BYPASSRLS`
 here is a controlled, audited exception rather than a general bypass.
 
-Two other things run on this pool, and neither is a request handler:
+Three other things run on this pool, and none is a request handler:
 
 - the **daily attachment reconcile** pass (#215, see the Ops section below),
   which needs the unscoped `event_attachments` read and deletes nothing in
@@ -145,8 +145,9 @@ Two other things run on this pool, and neither is a request handler:
 - the **hourly retention purge** (#138, `src/jobs/retention_purge.rs`),
   which `DELETE`s rows, across every family, from `audit_log`,
   `email_verification_tokens`, `password_reset_tokens`, `invitations` and
-  `sessions`. It is the only code on this pool that deletes Postgres rows —
-  not the only one that writes them: the three `/admin/*` handlers each
+  `sessions`. It and the account purge below are the only code on this
+  pool that deletes Postgres rows — not the only code that writes them:
+  the three `/admin/*` handlers each
   `INSERT` into `audit_log`, and `deactivate_user` also `UPDATE`s `users`
   and `sessions`. Of the five purged tables only `invitations` is RLS'd at
   all, and it is `FORCE ROW LEVEL SECURITY`: with no `app.family_id` set,
@@ -156,7 +157,15 @@ Two other things run on this pool, and neither is a request handler:
   guard as the reconcile pass — `rolsuper OR rolbypassrls` on its own
   connection — and aborts the whole pass otherwise, the four unguarded
   tables included, logging `retention purge job failed` at ERROR once an
-  hour and deleting nothing.
+  hour and deleting nothing;
+- the **hourly account purge** (#139, `src/jobs/account_purge.rs`), which,
+  for each account past its 30-day grace period, deletes its personal rows
+  (`group_members`, `message_read_state`, `event_assignees`, `sessions`,
+  tokens, OAuth identities, its own `audit_log` entries, the `invitations`
+  and `calendar_imports` it created) and anonymises its `users` row. Five of
+  those tables are `FORCE ROW LEVEL SECURITY`; the pass calls the same
+  `ensure_bypasses_rls` guard and, on a role that does not bypass RLS,
+  logs `account purge job failed` at ERROR once an hour and purges no one.
 
 No request handler other than the three `/admin/*` ones touches `admin_db`.
 

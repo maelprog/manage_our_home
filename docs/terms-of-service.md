@@ -1,6 +1,6 @@
 # Conditions générales d'utilisation — Manage Our Home
 
-Dernière mise à jour : 2026-09-22.
+Dernière mise à jour : 2026-09-28.
 
 ## Objet
 
@@ -88,7 +88,12 @@ disposer, et à ne rien déposer d'illicite.
 votre compte.** C'est un choix assumé, et il est écrit ici parce qu'il vous
 engage : quand votre compte est anonymisé, ce que vous avez créé reste dans
 le groupe, à la disposition de ses autres membres, mais n'est plus rattaché
-à votre identité. Un agenda familial amputé de la moitié de ses rendez-vous,
+à votre identité. Ce contenu, ce sont les événements et leurs pièces
+jointes, les tâches cochées, les messages, les stocks, les recettes et
+l'historique des repas, la liste de courses, le budget, et les groupes que
+vous avez créés. Le reste de ce qui vous concerne est supprimé, y compris
+vos appartenances aux groupes, les invitations que vous avez envoyées et
+les imports calendrier que vous avez configurés. Un agenda familial amputé de la moitié de ses rendez-vous,
 ou un fil de discussion troué, ne rendrait service à personne. Si vous
 souhaitez que certains de vos contenus disparaissent, supprimez-les
 vous-même avant de demander la suppression de votre compte.
@@ -101,8 +106,10 @@ lequel la demande reste annulable ; à son terme, le compte est anonymisé. La
 [politique de confidentialité](/privacy-policy) détaille ce qui est alors
 effacé et ce qui subsiste.
 
-Un compte ne peut pas être supprimé tant qu'il est seul propriétaire d'un
-groupe : transférez la propriété, ou supprimez le groupe, au préalable.
+Un compte ne peut pas être supprimé tant qu'il est propriétaire d'un
+groupe : transférez la propriété, ou supprimez le groupe, au préalable. Si
+vous devenez propriétaire d'un groupe pendant le délai de grâce, la
+suppression attend que la propriété soit transférée ou le groupe supprimé.
 
 L'éditeur peut suspendre ou fermer un compte qui enfreint les présentes
 conditions, ou dont l'usage met en danger le service ou ses autres

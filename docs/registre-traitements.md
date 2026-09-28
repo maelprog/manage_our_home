@@ -1,7 +1,7 @@
 # Registre des traitements — Manage Our Home
 
 Registre tenu au titre de l'article 30 du RGPD. Dernière mise à jour :
-2026-09-22, relu contre les migrations `apps/api/migrations/0001` à `0015`
+2026-09-28, relu contre les migrations `apps/api/migrations/0001` à `0016`
 et la table des routes de `apps/api/src/lib.rs`. Un registre des
 traitements est requis dès qu'un traitement de données personnelles est
 effectué, y compris à petite échelle — voir `docs/architecture.md` §10.
@@ -80,39 +80,69 @@ ligne.
 
 | # | Épic | Données traitées | Finalité | Base légale | Durée de conservation | Destinataires |
 |---|---|---|---|---|---|---|
-| 1 | Auth + Groupes | email, mot de passe (haché argon2), nom affiché, déclaration d'avoir au moins 15 ans et sa date (`users.age_declared_at` ; aucune date de naissance — art. 8 RGPD, #137), appartenance aux groupes et rôle, sessions (création, dernière activité, expiration, révocation) | Authentification, gestion de compte, isolation familiale | Exécution du contrat | Compte actif + 30j de grâce après demande de suppression, puis anonymisation définitive — la déclaration d'âge survit à l'anonymisation, réduite à une date rattachée à aucune identité ; une session vaut 30 jours au plus et prend fin après 7 jours sans activité ; sa ligne est supprimée par la purge de conservation horaire (`apps/api/src/jobs/retention_purge.rs`, #138) dès que la session a pris fin — révocation (déconnexion, changement de mot de passe), `expires_at` dépassé, ou `last_seen_at` plus vieux que 7 jours, le même critère que l'extracteur de session (`last_seen_at` n'est réécrit qu'une fois par heure) — ou que le compte est désactivé, et au plus tard à la purge du compte | Aucun tiers |
+| 1 | Auth + Groupes | email, mot de passe (haché argon2), nom affiché, déclaration d'avoir au moins 15 ans et sa date (`users.age_declared_at` ; aucune date de naissance — art. 8 RGPD, #137), appartenance aux groupes et rôle, sessions (création, dernière activité, expiration, révocation) | Authentification, gestion de compte, isolation familiale | Exécution du contrat | Compte actif + 30j de grâce après demande de suppression, puis purge du compte (voir « Droit à l'effacement » ci-dessous) : la ligne `users` est anonymisée, déclaration d'âge effacée comprise, et l'appartenance aux groupes et le rôle sont supprimés ; une session vaut 30 jours au plus et prend fin après 7 jours sans activité ; sa ligne est supprimée par la purge de conservation horaire (`apps/api/src/jobs/retention_purge.rs`, #138) dès que la session a pris fin — révocation (déconnexion, changement de mot de passe), `expires_at` dépassé, ou `last_seen_at` plus vieux que 7 jours, le même critère que l'extracteur de session (`last_seen_at` n'est réécrit qu'une fois par heure) — ou que le compte est désactivé, et au plus tard à la purge du compte | Aucun tiers |
 | 1a | Connexion avec Google | identifiant Google (`sub`), email et nom du profil Google (le nom sert de nom affiché si le compte est créé à cette occasion), jeton de rafraîchissement chiffré via `pgcrypto` quand Google en délivre un — aucun code ne le relit aujourd'hui (`oauth_identities`) | Authentification par un fournisseur d'identité, au choix de l'utilisateur | Exécution du contrat | Jusqu'à la purge du compte, qui supprime la ligne `oauth_identities` | Google (fournisseur d'identité : reçoit la demande d'autorisation, échange le code, sert le profil) |
-| 1b | Jetons de vérification d'email et de réinitialisation du mot de passe | jeton, compte concerné, dates de création, d'expiration et de consommation (`email_verification_tokens`, `password_reset_tokens`) | Prouver la possession de l'adresse ; réinitialiser un mot de passe oublié | Exécution du contrat | Valables 24 h (vérification) et 1 h (réinitialisation), à usage unique ; un jeton de réinitialisation est supprimé à l'usage ; la purge de conservation horaire (#138) supprime un jeton de vérification 48 h après sa création, consommé ou non, et un jeton de réinitialisation inutilisé 1 h après | Mailjet (le lien porteur du jeton part par email) |
-| 1c | Invitations à un groupe | adresse email de la personne invitée, facultative (une invitation peut n'être qu'un lien) et stockée en clair, jeton, auteur, dates (`invitations`) ; la colonne `consumed_by`, qui nommait le membre ayant accepté, n'est plus jamais renseignée depuis #138 — l'acceptation supprime la ligne | Faire entrer une personne dans un groupe ; la personne invitée est un tiers qui n'a pas encore de compte | Intérêt légitime (du membre qui invite un proche) | Valable 7 jours, à usage unique ; la ligne, adresse comprise, est supprimée à l'acceptation, sinon par la purge de conservation horaire 30 jours après sa création (#138), ou avec le groupe s'il est supprimé avant | Mailjet (si une adresse est saisie : email portant le nom du groupe, le nom affiché du membre qui invite, le lien, et la notice d'information de l'art. 14 — identité et contact du responsable, finalité, base légale, durée de conservation, source de l'adresse, lien vers la politique, droit de réclamation ; #134) |
+| 1b | Jetons de vérification d'email et de réinitialisation du mot de passe | jeton, compte concerné, dates de création, d'expiration et de consommation (`email_verification_tokens`, `password_reset_tokens`) | Prouver la possession de l'adresse ; réinitialiser un mot de passe oublié | Exécution du contrat | Valables 24 h (vérification) et 1 h (réinitialisation), à usage unique ; un jeton de réinitialisation est supprimé à l'usage ; la purge de conservation horaire (#138) supprime un jeton de vérification 48 h après sa création, consommé ou non, et un jeton de réinitialisation inutilisé 1 h après ; la purge du compte supprime ceux qui restent | Mailjet (le lien porteur du jeton part par email) |
+| 1c | Invitations à un groupe | adresse email de la personne invitée, facultative (une invitation peut n'être qu'un lien) et stockée en clair, jeton, auteur, dates (`invitations`) ; la colonne `consumed_by`, qui nommait le membre ayant accepté, n'est plus jamais renseignée depuis #138 — l'acceptation supprime la ligne | Faire entrer une personne dans un groupe ; la personne invitée est un tiers qui n'a pas encore de compte | Intérêt légitime (du membre qui invite un proche) | Valable 7 jours, à usage unique ; la ligne, adresse comprise, est supprimée à l'acceptation, sinon par la purge de conservation horaire 30 jours après sa création (#138), ou avant, avec le groupe s'il est supprimé ou à la purge du compte du membre qui l'a émise (#139) | Mailjet (si une adresse est saisie : email portant le nom du groupe, le nom affiché du membre qui invite, le lien, et la notice d'information de l'art. 14 — identité et contact du responsable, finalité, base légale, durée de conservation, source de l'adresse, lien vers la politique, droit de réclamation ; #134) |
 | 1d | Protection de la connexion | adresse IP du client (en IPv6, réduite à son /64) et email saisi, à chaque tentative de connexion par mot de passe (`apps/api/src/auth/throttle.rs`) | Limiter les essais de mot de passe par couple (adresse, email) | Intérêt légitime (sécurité du service) | En mémoire du processus `api` seulement, jamais en base ; perdu au redémarrage, oublié dès une connexion réussie ; une entrée cesse de compter 15 min après sa première tentative (ou à la fin du blocage de 15 min) mais n'est retirée qu'à la prochaine tentative d'un autre email depuis la même adresse, quand la table atteint `MAX_TRACKED` (10 000 couples) ou au redémarrage — sans trafic, elle reste jusqu'au redémarrage | Aucun tiers |
 | 2 | Agenda | événements, tâches et membre ayant coché une tâche, pièces jointes (photos/documents) | Planification familiale | Exécution du contrat | Tant que l'événement/le compte existe ; supprimé avec le groupe ou anonymisé (`created_by`) à la purge du compte auteur ; un fichier de pièce jointe orphelin (sans ligne en base) est supprimé par un balayage quotidien moins de 48 h après son écriture (fenêtre de 24 h + intervalle de 24 h) tant que l'API tourne, et à condition que `ADMIN_DATABASE_URL` désigne un rôle `BYPASSRLS` — sinon le balayage refuse de tourner et l'orphelin reste | Aucun tiers |
 | 2a | Rappels d'événements par email | délai avant l'événement (`event_reminders`) ; file d'envoi par occurrence : heure d'envoi, statut, tentatives, dernière erreur de transport (`scheduled_notifications`) ; l'email porte le titre et la date de l'événement | Prévenir avant un événement | Exécution du contrat | Un rappel vit jusqu'à sa suppression ou celle de l'événement ; les lignes de la file restent après envoi (statut `sent` ou `failed`) et partent avec le rappel ou l'événement | Mailjet ; l'email part à l'adresse du **créateur de l'événement**, quel que soit le membre qui a posé le rappel (`apps/api/src/jobs/scheduled_notifications.rs`) |
-| 2b | Assignations d'événements | événement, membre assigné, date (`event_assignees`) ; posées par un membre, par défaut le créateur de l'événement, et pour un événement importé le membre qui a lancé l'import | Indiquer pour qui est un événement | Exécution du contrat | Tant que l'événement existe et que l'assignation n'est pas retirée ; elle survit au départ du groupe et à la purge du compte (le compte est anonymisé, pas supprimé) | Membres du groupe |
+| 2b | Assignations d'événements | événement, membre assigné, date (`event_assignees`) ; posées par un membre, par défaut le créateur de l'événement, et pour un événement importé le membre qui a lancé l'import | Indiquer pour qui est un événement | Exécution du contrat | Tant que l'événement existe et que l'assignation n'est pas retirée ; elle survit au départ du groupe, pas à la purge du compte, qui la supprime (#139) | Membres du groupe |
 | 3 | Stocks | articles du garde-manger/frigo, quantités, seuils | Gestion de l'inventaire familial | Exécution du contrat | Idem #2 | Aucun tiers |
 | 4 | Recettes | recettes, ingrédients, historique des repas | Suggestions de repas (algorithme local, pas d'IA tierce) | Exécution du contrat | Idem #2 | Aucun tiers |
 | 5 | Liste de courses | articles à acheter, source (manuel/recette/stock bas) | Liste de courses partagée | Exécution du contrat | Idem #2 | Aucun tiers |
 | 6 | Budget | dépenses saisies manuellement (montant, nom, date) | Suivi du budget alimentaire familial | Exécution du contrat | Idem #2 | Aucun tiers |
 | 7 | Messagerie | contenu des messages (chiffré au repos via `pgcrypto`) | Communication au sein du groupe familial | Exécution du contrat | Idem #2 | Aucun tiers |
-| 7a | État de lecture de la messagerie | un horodatage par (groupe, membre), avancé quand le membre ouvre la messagerie (`message_read_state`) | Compter les messages non lus de ce membre | Exécution du contrat | Tant que le groupe existe ; survit au départ du groupe et à la purge du compte (le compte est anonymisé, pas supprimé) | Aucun tiers |
+| 7a | État de lecture de la messagerie | un horodatage par (groupe, membre), avancé quand le membre ouvre la messagerie (`message_read_state`) | Compter les messages non lus de ce membre | Exécution du contrat | Tant que le groupe existe ; survit au départ du groupe, pas à la purge du compte, qui la supprime (#139) | Aucun tiers |
 | 8 | User admin (superadmin) | liste des groupes/utilisateurs à l'échelle globale, action de désactivation | Support technique/maintenance de la plateforme | Intérêt légitime (exploitation du service) | Durée de vie du compte concerné | Aucun tiers |
-| 9 | Import calendrier Google | URL de flux iCal privée (chiffrée), libellé, date du dernier import, événements importés et leur identifiant externe | Miroir en lecture seule d'un agenda Google externe | Consentement explicite (l'utilisateur fournit volontairement l'URL) | Jusqu'à la suppression de l'import par un administrateur ou le propriétaire du groupe, ou du groupe ; les événements importés restent après la suppression de l'import sauf si leur suppression est demandée avec lui ; la purge du compte ne supprime ni l'import ni ses événements | Hébergeur du flux (Google en pratique ; le code accepte toute URL `http`/`https`), interrogé par le serveur à chaque import lancé par un membre — aucune synchronisation en arrière-plan |
-| — | Logs d'audit (transverse) | horodatage, acteur, action, cible, métadonnées (identifiants et compteurs) ; actions journalisées : export, demande et annulation de suppression de compte, purge, suppression de groupe, transfert de propriété, changement de rôle, consultation des listes et désactivation d'un compte par le superadmin — les connexions ne le sont pas | Traçabilité de sécurité, obligations RGPD (preuve des actions d'export/suppression) | Intérêt légitime | 6 mois glissants (recommandation de la CNIL pour les journaux, délibération n° 2021-122), appliqués par la purge de conservation horaire (#138). Le minimum d'un an du décret n° 2021-1362 a été écarté : il vise les hébergeurs et les services de communication au public, pas une application familiale portée par une personne physique — arbitrage du responsable de traitement du 2026-09-19, à revoir si le service change de nature | Aucun tiers |
+| 9 | Import calendrier Google | URL de flux iCal privée (chiffrée), libellé, date du dernier import, événements importés et leur identifiant externe | Miroir en lecture seule d'un agenda Google externe | Consentement explicite (l'utilisateur fournit volontairement l'URL) | Jusqu'à la suppression de l'import par un administrateur ou le propriétaire du groupe, ou du groupe ; les événements importés restent après la suppression de l'import sauf si leur suppression est demandée avec lui ; la purge du compte du membre qui a configuré l'import supprime l'import, URL de flux comprise, et laisse ses événements dans le groupe (#139) | Hébergeur du flux (Google en pratique ; le code accepte toute URL `http`/`https`), interrogé par le serveur à chaque import lancé par un membre — aucune synchronisation en arrière-plan |
+| — | Logs d'audit (transverse) | horodatage, acteur, action, cible, métadonnées (identifiants et compteurs) ; actions journalisées : export, demande et annulation de suppression de compte, purge, suppression de groupe, transfert de propriété, changement de rôle, consultation des listes et désactivation d'un compte par le superadmin — les connexions ne le sont pas | Traçabilité de sécurité, obligations RGPD (preuve des actions d'export/suppression) | Intérêt légitime | 6 mois glissants (recommandation de la CNIL pour les journaux, délibération n° 2021-122), appliqués par la purge de conservation horaire (#138) ; la purge d'un compte supprime aussitôt les entrées dont il est l'acteur, et n'en laisse qu'une, sans acteur, qui date la purge (#139). Le minimum d'un an du décret n° 2021-1362 a été écarté : il vise les hébergeurs et les services de communication au public, pas une application familiale portée par une personne physique — arbitrage du responsable de traitement du 2026-09-19, à revoir si le service change de nature | Aucun tiers |
 | 12 | RGPD (export/suppression) | export à la demande (Art. 20), demande/annulation de suppression (Art. 17) | Exercice des droits RGPD | Obligation légale | L'export n'est pas persisté côté serveur (généré à la demande, retourné directement) | Aucun tiers |
 
 ## Droit à l'effacement — modalités de purge
 
 Décrit en détail dans `docs/privacy-policy.md` et implémenté par
 `apps/api/src/jobs/account_purge.rs` : à l'expiration du délai de grâce de
-30 jours suivant `POST /account/delete`, le job de purge :
-1. Supprime les identités OAuth et toutes les sessions de l'utilisateur.
-2. Anonymise la ligne `users` (email/nom remplacés, `deleted_at` renseigné).
-3. Écrit une entrée `audit_log` pour la purge.
+30 jours suivant `POST /account/delete`, le job de purge, en une
+transaction par compte :
 
-Le job ne supprime ni l'état de lecture de la messagerie, ni les
-assignations d'événements : ces lignes restent rattachées à l'utilisateur
-anonymisé (#139). Les jetons de vérification et de réinitialisation et les
-invitations émises ne sont pas supprimés par ce job, mais par la purge de
-conservation ci-dessous, au terme de leur propre durée.
+1. Supprime les lignes que le schéma rattache au compte par
+   `ON DELETE CASCADE` — la ligne `users` n'étant qu'anonymisée, aucune
+   cascade ne se déclenche d'elle-même : identités OAuth
+   (`oauth_identities`), sessions, jetons de vérification et de
+   réinitialisation, appartenance aux groupes et rôle (`group_members`),
+   état de lecture de la messagerie (`message_read_state`), assignations
+   d'événements (`event_assignees`).
+2. Supprime la part personnelle des autres tables : les entrées
+   `audit_log` dont le compte est l'acteur, les invitations qu'il a
+   émises (adresses de tiers comprises) et les imports calendrier qu'il a
+   configurés (`calendar_imports`, URL de flux comprise — un porteur
+   d'accès à un agenda externe ; les événements importés restent).
+3. Anonymise la ligne `users` : email et nom remplacés, mot de passe
+   haché et date de déclaration d'âge effacés, `deleted_at` renseigné.
+4. Écrit une entrée `audit_log` pour la purge, sans acteur.
+
+Arbitrage du responsable de traitement du 2026-09-19 (#139) : est
+supprimé tout ce qui n'est pas du contenu partagé avec le groupe. Le
+contenu partagé reste, rattaché à la ligne anonymisée : événements, pièces
+jointes et leurs fichiers, tâches cochées
+(`event_occurrence_completions`), messages, stocks, recettes, historique
+des repas, liste de courses, budget, et les groupes créés par le compte.
+Cette conservation est portée par les conditions générales
+(`docs/terms-of-service.md`, « Vos contenus »). Les entrées `audit_log`
+d'un autre acteur qui désignent le compte (changement de rôle, transfert
+de propriété, action du superadmin) restent jusqu'au terme de leurs
+6 mois : elles ne désignent plus qu'un identifiant anonymisé.
+
+Le job tourne une fois par heure, dès le démarrage de l'API, aux mêmes
+conditions que la purge de conservation ci-dessous : cinq des tables qu'il
+vide (`group_members`, `message_read_state`, `event_assignees`,
+`invitations`, `calendar_imports`) sont sous une politique RLS forcée, et
+sur un rôle sans `BYPASSRLS` il refuse de tourner plutôt que de marquer un
+compte purgé en laissant ces lignes en place. Un compte devenu
+propriétaire d'un groupe pendant son délai de grâce (en en créant un, ou
+parce qu'on lui en a transféré la propriété) n'est pas purgé : sa purge attend, passe après passe, que
+la propriété soit transférée ou le groupe supprimé.
 
 ## Durées de conservation — purge horaire
 
@@ -146,6 +176,7 @@ Le contenu créé par l'utilisateur au sein des groupes (événements, messages,
 etc.) n'est **pas** supprimé — il reste attribué à l'utilisateur anonymisé,
 un choix documenté (le contenu appartient fonctionnellement au groupe
 familial partagé, pas uniquement à son auteur). Un utilisateur ne peut pas
-demander sa suppression tant qu'il est seul propriétaire d'un groupe ayant
-d'autres membres (transfert de propriété ou suppression du groupe requis au
-préalable) — appliqué dans `apps/api/src/auth/mod.rs::delete_account`.
+demander sa suppression tant qu'il est propriétaire d'un groupe, que ce
+groupe ait ou non d'autres membres (transfert de propriété ou suppression
+du groupe requis au préalable) — appliqué dans
+`apps/api/src/auth/mod.rs::delete_account`.
