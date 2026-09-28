@@ -103,7 +103,7 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("{}: {e}", manage_our_home::client_ip::TRUSTED_PROXIES_VAR))?;
 
     let state = AppState {
-        db: db.clone(),
+        db,
         google_oauth,
         google_userinfo_url: manage_our_home::auth::oauth_google::GOOGLE_USERINFO_URL.to_string(),
         email: email.clone(),
@@ -146,7 +146,13 @@ async fn main() -> anyhow::Result<()> {
     // On the admin pool too: `invitations` is under a forced RLS policy,
     // and the pass refuses to run without BYPASSRLS (#138).
     tokio::spawn(jobs::retention_purge::run(state.admin_db.clone()));
-    tokio::spawn(jobs::scheduled_notifications::run(db, email));
+    // On the admin pool: `scheduled_notifications` and `events` are under
+    // forced RLS policies, and the passes refuse to run without BYPASSRLS
+    // (#293).
+    tokio::spawn(jobs::scheduled_notifications::run(
+        state.admin_db.clone(),
+        email,
+    ));
 
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;

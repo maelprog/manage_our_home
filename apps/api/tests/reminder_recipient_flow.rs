@@ -7,7 +7,14 @@
 //! written to. Their due reminders are retired instead of left pending, so
 //! a reactivation does not bring back a backlog of stale reminders and a
 //! purged creator's are not read again on every pass.
+//!
+//! The pass reads `scheduled_notifications` and `events` across every
+//! family, both under forced RLS: it runs on the `BYPASSRLS` admin pool,
+//! and refuses any other role rather than find nothing due (#293).
 
+mod common;
+
+use common::{drop_prescribed_role, prescribed_role_pool};
 use manage_our_home::jobs::account_purge::purge_account;
 use manage_our_home::jobs::scheduled_notifications::send_due_notifications;
 use sqlx::PgPool;
@@ -194,4 +201,84 @@ async fn a_purged_creator_gets_no_reminder(db: PgPool) {
     );
     assert_eq!(notification(&db, theirs).await, ("failed".into(), 0));
     assert_eq!(notification(&db, mine).await, ("sent".into(), 0));
+}
+
+/// On the runtime role (`NOSUPERUSER NOBYPASSRLS`), forced RLS hides every
+/// due notification from the pass: it would find nothing, send nothing and
+/// report success. It refuses instead, and leaves the queue as it was
+/// (#293).
+#[sqlx::test]
+async fn the_pass_refuses_a_role_that_does_not_bypass_rls(db: PgPool) {
+    let active = insert_user(&db, "active@example.test").await;
+    let group = insert_group(&db, active).await;
+    let due = due_reminder(&db, group, active, "Dîner").await;
+    let (role, app_db) = prescribed_role_pool(&db).await;
+
+    let sent = Mutex::new(Vec::<String>::new());
+    let record = |to: String, _subject: String, _body: String| {
+        sent.lock().unwrap().push(to);
+        async { Ok::<(), anyhow::Error>(()) }
+    };
+    let result = send_due_notifications(&app_db, &record).await;
+    drop_prescribed_role(&db, app_db, &role).await;
+
+    assert!(result.is_err(), "{result:?}");
+    assert!(sent.into_inner().unwrap().is_empty());
+    assert_eq!(notification(&db, due).await, ("pending".into(), 0));
+    // The same queue, on the harness role, which bypasses RLS: the
+    // reminder was there to send.
+    assert_eq!(pass(&db).await.len(), 1);
+}
+
+/// A creator deactivated while the pass is sending is not written to: its
+/// account is read again right before its own reminder goes, not once for
+/// the whole pass. Its reminder is retired without an attempt.
+#[sqlx::test]
+async fn a_creator_deactivated_during_the_pass_gets_no_reminder(db: PgPool) {
+    let first = insert_user(&db, "first@example.test").await;
+    let group = insert_group(&db, first).await;
+    let second = insert_user(&db, "second@example.test").await;
+    let firsts = due_reminder(&db, group, first, "Dîner").await;
+    let seconds = due_reminder(&db, group, second, "Piscine").await;
+
+    // Whichever creator is sent to first, the other is deactivated before
+    // the pass reaches its reminder.
+    let sent = Mutex::new(Vec::<String>::new());
+    let record = |to: String, _subject: String, _body: String| {
+        let other = if to == "first@example.test" {
+            second
+        } else {
+            first
+        };
+        sent.lock().unwrap().push(to);
+        let db = db.clone();
+        async move {
+            sqlx::query("UPDATE users SET deactivated_at = now() WHERE id = $1")
+                .bind(other)
+                .execute(&db)
+                .await?;
+            Ok::<(), anyhow::Error>(())
+        }
+    };
+    send_due_notifications(&db, &record).await.unwrap();
+    let sent = sent.into_inner().unwrap();
+
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    let (gone, kept) = if sent[0] == "first@example.test" {
+        (seconds, firsts)
+    } else {
+        (firsts, seconds)
+    };
+    assert_eq!(notification(&db, kept).await, ("sent".into(), 0));
+    assert_eq!(notification(&db, gone).await, ("failed".into(), 0));
+    let last_error: Option<String> =
+        sqlx::query_scalar("SELECT last_error FROM scheduled_notifications WHERE id = $1")
+            .bind(gone)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        last_error.as_deref(),
+        Some("recipient account deactivated or purged")
+    );
 }
