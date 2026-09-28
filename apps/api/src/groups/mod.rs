@@ -466,8 +466,7 @@ pub async fn create_invitation(
 }
 
 /// AC #14: single-use, 7-day expiry. Accepting deletes the invitation, so
-/// re-use returns 404 (#138); 410 Gone is left for an expired one, and for
-/// a row consumed before the deletion existed.
+/// re-use returns 404 (#138); 410 Gone is left for an expired one.
 pub async fn accept_invitation(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -483,7 +482,7 @@ pub async fn accept_invitation(
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let invitation = sqlx::query!(
         r#"
-        SELECT id, expires_at, consumed_at
+        SELECT id, expires_at
         FROM invitations
         WHERE token = $1
         FOR UPDATE
@@ -494,9 +493,6 @@ pub async fn accept_invitation(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    if invitation.consumed_at.is_some() {
-        return Err(AppError::Gone);
-    }
     if invitation.expires_at < Utc::now() {
         return Err(AppError::Gone);
     }

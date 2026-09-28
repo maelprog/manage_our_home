@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, expires_at, consumed_at\n        FROM invitations\n        WHERE token = $1\n        FOR UPDATE\n        ",
+  "query": "\n        SELECT id, expires_at\n        FROM invitations\n        WHERE token = $1\n        FOR UPDATE\n        ",
   "describe": {
     "columns": [
       {
@@ -24,17 +24,6 @@
             "name": "expires_at"
           }
         }
-      },
-      {
-        "ordinal": 2,
-        "name": "consumed_at",
-        "type_info": "Timestamptz",
-        "origin": {
-          "Table": {
-            "table": "invitations",
-            "name": "consumed_at"
-          }
-        }
       }
     ],
     "parameters": {
@@ -44,9 +33,8 @@
     },
     "nullable": [
       false,
-      false,
-      true
+      false
     ]
   },
-  "hash": "9a8f7b7b1f4385db837a26966c0b09717ae9895884b807440487ab24e25f25c8"
+  "hash": "f9d1df8185a92253788606eafba2a26775ae59f7c32ab455ec584a48ec744c1e"
 }

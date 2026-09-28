@@ -1740,3 +1740,52 @@ async fn google_callback_binds_no_identity_to_an_account_deactivated_by_support(
     assert_eq!(session_rows(&db, user_id).await, sessions_at_lock);
     assert_eq!(google_identity_rows(&db, user_id).await, 0);
 }
+
+/// #279: with the token deleted at use, expiry is the only thing left that
+/// answers 410 on a reset. The expired token is left in place (the hourly
+/// purge owns it) and the password is not changed.
+#[sqlx::test]
+async fn expired_reset_token_answers_gone(db: PgPool) {
+    let router = test_router(db.clone());
+    register_verify_login(&router, &db, "gina@example.test", "initial-password").await;
+    let user_id: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind("gina@example.test")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    let token: Uuid = sqlx::query_scalar(
+        "INSERT INTO password_reset_tokens (user_id, expires_at) \
+         VALUES ($1, now() - interval '1 minute') RETURNING token",
+    )
+    .bind(user_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+
+    let reset = call(
+        &router,
+        Method::POST,
+        "/auth/password/reset",
+        None,
+        Some(serde_json::json!({"token": token, "new_password": "brand-new-password"})),
+    )
+    .await;
+    assert_status(&reset, StatusCode::GONE);
+
+    let left: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM password_reset_tokens WHERE token = $1")
+            .bind(token)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(left, 1);
+    let old_login = call(
+        &router,
+        Method::POST,
+        "/auth/login",
+        None,
+        Some(serde_json::json!({"email": "gina@example.test", "password": "initial-password"})),
+    )
+    .await;
+    assert_status(&old_login, StatusCode::OK);
+}

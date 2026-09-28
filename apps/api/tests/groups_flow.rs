@@ -1033,3 +1033,72 @@ async fn deleting_a_group_with_no_attachments_still_succeeds(db: PgPool) {
     .await;
     assert_status(&get, StatusCode::NOT_FOUND);
 }
+
+/// #279: with the invitation deleted at acceptance, expiry is the only
+/// thing left that answers 410. The expired invitation is left in place
+/// (the purge owns it) and no membership is created.
+#[sqlx::test]
+async fn expired_invitation_answers_gone(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let member_cookie =
+        register_verify_login(&router, &db, "member@example.test", "member-password1").await;
+
+    let create = call(
+        &router,
+        Method::POST,
+        "/groups",
+        Some(&owner_cookie),
+        Some(serde_json::json!({"name": "Foyer"})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let group_id = json_body(create).await["id"].as_str().unwrap().to_string();
+
+    let invite = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/invitations"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"invited_email": "member@example.test"})),
+    )
+    .await;
+    assert_status(&invite, StatusCode::CREATED);
+    let invite_token = json_body(invite).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    sqlx::query(
+        "UPDATE invitations SET expires_at = now() - interval '1 minute' WHERE token::text = $1",
+    )
+    .bind(&invite_token)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let accept = call(
+        &router,
+        Method::POST,
+        &format!("/groups/invitations/{invite_token}/accept"),
+        Some(&member_cookie),
+        None,
+    )
+    .await;
+    assert_status(&accept, StatusCode::GONE);
+
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM invitations WHERE token::text = $1")
+        .bind(&invite_token)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(left, 1);
+    let members: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM group_members m JOIN users u ON u.id = m.user_id \
+         WHERE u.email = 'member@example.test'",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(members, 0);
+}
