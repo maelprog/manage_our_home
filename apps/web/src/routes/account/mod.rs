@@ -73,7 +73,7 @@ pub(crate) fn pending_deletion_panel(me: &MeResponse) -> String {
     format!(
         r#"<section class="notice error">
 <h2>Suppression de compte programmée</h2>
-<p>Demandée le {requested}. Sauf annulation, vos identifiants seront supprimés et votre compte anonymisé le <strong>{deadline}</strong> (délai de grâce de {days} jours).</p>
+<p>Demandée le {requested}. Sauf annulation, vos identifiants, vos appartenances aux familles et vos autres données personnelles seront supprimés et votre compte anonymisé le <strong>{deadline}</strong> (délai de grâce de {days} jours).</p>
 <p>Votre compte reste utilisable normalement jusque-là, et cette demande est annulable à tout moment.</p>
 <form method="post" action="/account/delete/cancel">
 <button type="submit" class="secondary">Annuler la demande de suppression</button>

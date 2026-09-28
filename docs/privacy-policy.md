@@ -254,8 +254,11 @@ de la purge dépasserait.
   groupe : transférez la propriété (ou supprimez le groupe) au préalable.
   Si vous devenez propriétaire d'un groupe pendant le délai de grâce, la
   purge transfère la propriété du groupe à son administrateur le plus
-  ancien, à défaut à son membre le plus ancien ; si vous en étiez le seul
-  membre, le groupe et son contenu restent, sans membre.
+  ancien, à défaut à son membre le plus ancien, en écartant les comptes
+  désactivés et ceux dont la suppression est elle-même demandée. Si aucun
+  membre ne remplit ces conditions, le groupe reste sans propriétaire,
+  avec son contenu et les membres écartés ; si vous en étiez le seul
+  membre, il reste sans membre.
 
 ## Vos droits
 

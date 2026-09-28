@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT user_id, role::text = 'admin' AS \"is_admin!\", joined_at\n               FROM group_members WHERE group_id = $1 FOR UPDATE",
+  "query": "SELECT gm.user_id, gm.role::text = 'admin' AS \"is_admin!\", gm.joined_at,\n                      (u.deleted_at IS NULL AND u.deletion_requested_at IS NULL)\n                          AS \"eligible!\"\n               FROM group_members gm JOIN users u ON u.id = gm.user_id\n               WHERE gm.group_id = $1 FOR UPDATE OF gm",
   "describe": {
     "columns": [
       {
@@ -30,6 +30,12 @@
             "name": "joined_at"
           }
         }
+      },
+      {
+        "ordinal": 3,
+        "name": "eligible!",
+        "type_info": "Bool",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -40,8 +46,9 @@
     "nullable": [
       false,
       null,
-      false
+      false,
+      null
     ]
   },
-  "hash": "e2ac5416a50a55cb2e46c1b03a73f8760937f6548b8f17ff9232037ef522c82a"
+  "hash": "92094886265d79b5098b0d75bb2d33c80e46b63138fd21e955093fd71be7d4dd"
 }

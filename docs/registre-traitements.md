@@ -146,8 +146,12 @@ Un compte peut devenir propriétaire d'un groupe pendant son délai de grâce
 transfère alors la propriété, dans la même transaction, à l'administrateur
 le plus ancien du groupe, à défaut à son membre le plus ancien
 (`joined_at`), et l'inscrit au journal (`ownership_transferred`, sans
-acteur). Un groupe dont le compte était le seul membre reste, avec son
-contenu, sans membre — arbitrage du responsable de traitement du
+acteur). Un membre désactivé par le support (`deleted_at`) ou dont la
+suppression est demandée (`deletion_requested_at`) n'hérite pas. Sans
+membre éligible, le groupe reste sans propriétaire : les membres écartés
+gardent leur appartenance, que la purge de leur propre compte supprimera
+le cas échéant. Un groupe dont le compte était le seul membre reste, avec
+son contenu, sans membre — arbitrage du responsable de traitement du
 2026-09-28.
 
 Un compte purgé ne peut plus se connecter par aucune voie : la connexion

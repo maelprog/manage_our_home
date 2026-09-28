@@ -390,6 +390,71 @@ async fn without_an_admin_the_longest_standing_member_inherits(db: PgPool) {
     );
 }
 
+async fn deactivate(db: &PgPool, user: Uuid) {
+    sqlx::query("UPDATE users SET deleted_at = now() WHERE id = $1")
+        .bind(user)
+        .execute(db)
+        .await
+        .unwrap();
+}
+
+/// An admin support deactivated, and an admin whose own deletion is
+/// pending (still in its grace period), are passed over: the next
+/// eligible admin inherits, ahead of an older standard member.
+#[sqlx::test]
+async fn a_deactivated_admin_or_one_awaiting_purge_does_not_inherit(db: PgPool) {
+    let owning = insert_user(&db, "owning@example.test", Some(31)).await;
+    let disabled = insert_user(&db, "disabled@example.test", None).await;
+    let pending = insert_user(&db, "pending@example.test", Some(5)).await;
+    let elder = insert_user(&db, "elder@example.test", None).await;
+    let heir = insert_user(&db, "heir@example.test", None).await;
+    deactivate(&db, disabled).await;
+    let group = insert_group(&db, "Famille", owning).await;
+    add_member_joined(&db, group, disabled, "admin", 90).await;
+    add_member_joined(&db, group, pending, "admin", 80).await;
+    add_member_joined(&db, group, elder, "standard", 70).await;
+    add_member_joined(&db, group, heir, "admin", 10).await;
+
+    purge_due_accounts(&db).await.unwrap();
+
+    assert_eq!(
+        members(&db, group).await,
+        sorted(vec![
+            (disabled, "admin".into()),
+            (pending, "admin".into()),
+            (elder, "standard".into()),
+            (heir, "owner".into()),
+        ])
+    );
+}
+
+/// With no eligible member left, nobody inherits. A deactivated account
+/// keeps its membership (the purge only removes the purged account's own
+/// rows), and the group is left without an owner; an account purged in the
+/// same pass leaves too, so a group made only of accounts being purged ends
+/// with no member at all.
+#[sqlx::test]
+async fn with_no_eligible_member_nobody_inherits(db: PgPool) {
+    let owning = insert_user(&db, "owning@example.test", Some(31)).await;
+    let disabled = insert_user(&db, "disabled@example.test", None).await;
+    deactivate(&db, disabled).await;
+    let group = insert_group(&db, "Famille", owning).await;
+    add_member_joined(&db, group, disabled, "admin", 90).await;
+
+    let owning_too = insert_user(&db, "owning-too@example.test", Some(31)).await;
+    let leaving = insert_user(&db, "leaving@example.test", Some(40)).await;
+    let emptied = insert_group(&db, "Départ", owning_too).await;
+    add_member_joined(&db, emptied, leaving, "admin", 90).await;
+
+    purge_due_accounts(&db).await.unwrap();
+
+    assert!(user_row(&db, owning).await.deleted_at.is_some());
+    assert_eq!(members(&db, group).await, vec![(disabled, "admin".into())]);
+    assert!(user_row(&db, owning_too).await.deleted_at.is_some());
+    assert!(user_row(&db, leaving).await.deleted_at.is_some());
+    assert_eq!(members(&db, emptied).await, vec![]);
+}
+
 /// A group whose only member is purged stays, with its content, and no
 /// member — like the rest of the content shared under it.
 #[sqlx::test]

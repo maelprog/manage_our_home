@@ -91,8 +91,10 @@ async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<()> {
     // `delete_account` refuses an owner, but an account can still become
     // one during its grace period — by creating a group, or by being handed
     // one. Its membership goes like any other; a group it owned passes to
-    // the member `successor` picks, and a group it was alone in stays with
-    // no member, like the rest of the content shared under it.
+    // the member `successor` picks, and a group with no eligible member
+    // left gets no owner: the members that remain (deactivated, or awaiting
+    // their own purge) keep their rows, and a group it was alone in stays
+    // with no member, like the rest of the content shared under it.
     let memberships = sqlx::query!(
         r#"DELETE FROM group_members WHERE user_id = $1
            RETURNING group_id, role::text AS "role!""#,
@@ -102,8 +104,11 @@ async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<()> {
     .await?;
     for owned in memberships.iter().filter(|m| m.role == "owner") {
         let remaining: Vec<RemainingMember> = sqlx::query!(
-            r#"SELECT user_id, role::text = 'admin' AS "is_admin!", joined_at
-               FROM group_members WHERE group_id = $1 FOR UPDATE"#,
+            r#"SELECT gm.user_id, gm.role::text = 'admin' AS "is_admin!", gm.joined_at,
+                      (u.deleted_at IS NULL AND u.deletion_requested_at IS NULL)
+                          AS "eligible!"
+               FROM group_members gm JOIN users u ON u.id = gm.user_id
+               WHERE gm.group_id = $1 FOR UPDATE OF gm"#,
             owned.group_id
         )
         .fetch_all(&mut *tx)
@@ -113,6 +118,7 @@ async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<()> {
             user_id: r.user_id,
             is_admin: r.is_admin,
             joined_at: r.joined_at,
+            eligible: r.eligible,
         })
         .collect();
         let Some(new_owner_id) = successor(&remaining) else {
@@ -209,15 +215,20 @@ pub struct RemainingMember {
     pub user_id: Uuid,
     pub is_admin: bool,
     pub joined_at: DateTime<Utc>,
+    /// False for an account support deactivated (`deleted_at`) or one
+    /// itself awaiting purge (`deletion_requested_at`): neither can hold a
+    /// group it would only lose again.
+    pub eligible: bool,
 }
 
-/// The member who inherits a purged owner's group: the longest-standing
-/// admin, otherwise the longest-standing member; `None` when nobody is
-/// left. Equal `joined_at` falls back to `user_id`, so the choice never
+/// The member who inherits a purged owner's group: among the eligible
+/// members, the longest-standing admin, otherwise the longest-standing
+/// member; `None` when no eligible member is left. Equal `joined_at` falls back to `user_id`, so the choice never
 /// depends on the order the rows come back in.
 pub fn successor(remaining: &[RemainingMember]) -> Option<Uuid> {
     remaining
         .iter()
+        .filter(|m| m.eligible)
         .min_by_key(|m| (!m.is_admin, m.joined_at, m.user_id))
         .map(|m| m.user_id)
 }
@@ -232,7 +243,42 @@ mod tests {
             user_id: Uuid::from_u128(id),
             is_admin,
             joined_at: Utc.with_ymd_and_hms(2026, 1, day, 12, 0, 0).unwrap(),
+            eligible: true,
         }
+    }
+
+    fn ineligible(id: u128, is_admin: bool, day: u32) -> RemainingMember {
+        RemainingMember {
+            eligible: false,
+            ..member(id, is_admin, day)
+        }
+    }
+
+    #[test]
+    fn an_ineligible_admin_is_passed_over_for_the_next_admin() {
+        let remaining = [
+            ineligible(1, true, 1),
+            member(2, true, 4),
+            member(3, false, 2),
+        ];
+        assert_eq!(successor(&remaining), Some(Uuid::from_u128(2)));
+    }
+
+    #[test]
+    fn with_every_admin_ineligible_the_longest_standing_eligible_member_inherits() {
+        let remaining = [
+            ineligible(1, true, 1),
+            ineligible(2, false, 2),
+            member(3, false, 5),
+            member(4, false, 3),
+        ];
+        assert_eq!(successor(&remaining), Some(Uuid::from_u128(4)));
+    }
+
+    #[test]
+    fn a_group_left_with_only_ineligible_members_has_no_successor() {
+        let remaining = [ineligible(1, true, 1), ineligible(2, false, 2)];
+        assert_eq!(successor(&remaining), None);
     }
 
     #[test]
