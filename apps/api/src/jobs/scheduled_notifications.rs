@@ -1,12 +1,10 @@
 use std::time::Duration as StdDuration;
 
-use anyhow::Context;
 use sqlx::PgPool;
 use tokio::time::interval;
 use uuid::Uuid;
 
 use crate::agenda::reminders::{refill_notifications, EventTimes};
-use crate::attachment_reconcile::ensure_bypasses_rls;
 use crate::email::EmailSender;
 
 const SEND_POLL_INTERVAL_SECS: u64 = 60;
@@ -162,18 +160,29 @@ where
     Ok(())
 }
 
-/// Refuses a pool whose role does not bypass RLS, naming the pass and the
-/// hazard, like the other workers on the admin pool (#215, #139, #138).
+/// Refuses a pool whose role does not bypass RLS, like the other workers
+/// on the admin pool (#215, #139, #138). The check is the one
+/// `attachment_reconcile::ensure_bypasses_rls` makes, but not its message:
+/// that one names `event_attachments` and the bucket, which would send
+/// whoever reads this pass's ERROR line to the wrong hazard.
 async fn ensure_admin_pool(pool: &PgPool, pass: &str) -> anyhow::Result<()> {
-    let mut conn = pool.acquire().await?;
-    ensure_bypasses_rls(&mut conn).await.with_context(|| {
-        format!(
-            "scheduled notifications refusing to run ({pass}): `scheduled_notifications` \
-             and `events` are FORCE ROW LEVEL SECURITY, so on a role that does not bypass \
-             it no reminder is ever found due and none is sent. Point ADMIN_DATABASE_URL at \
-             the BYPASSRLS admin_role (see apps/api/README.md)."
-        )
-    })
+    let bypasses = sqlx::query_scalar!(
+        "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user"
+    )
+    .fetch_optional(pool)
+    .await?
+    .flatten()
+    .unwrap_or(false);
+
+    if !bypasses {
+        anyhow::bail!(
+            "scheduled notifications refusing to run ({pass}): the database connection does \
+             not bypass RLS, and `scheduled_notifications` and `events` are FORCE ROW LEVEL \
+             SECURITY, so no reminder would ever be found due and none would be sent. Point \
+             ADMIN_DATABASE_URL at the BYPASSRLS admin_role (see apps/api/README.md)."
+        );
+    }
+    Ok(())
 }
 
 async fn mark_recipient_gone(pool: &PgPool, id: Uuid) -> anyhow::Result<()> {

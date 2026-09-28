@@ -222,7 +222,10 @@ async fn the_pass_refuses_a_role_that_does_not_bypass_rls(db: PgPool) {
     let result = send_due_notifications(&app_db, &record).await;
     drop_prescribed_role(&db, app_db, &role).await;
 
-    assert!(result.is_err(), "{result:?}");
+    // The whole chain names this pass's tables, not another guard's.
+    let error = format!("{:#}", result.expect_err("the pass must refuse"));
+    assert!(error.contains("scheduled_notifications"), "{error}");
+    assert!(!error.contains("event_attachments"), "{error}");
     assert!(sent.into_inner().unwrap().is_empty());
     assert_eq!(notification(&db, due).await, ("pending".into(), 0));
     // The same queue, on the harness role, which bypasses RLS: the
