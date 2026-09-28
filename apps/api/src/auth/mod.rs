@@ -474,7 +474,7 @@ pub async fn reset_password(
     let mut tx = crate::db::begin(&state.db).await?;
     let row = sqlx::query!(
         r#"
-        SELECT user_id, expires_at, consumed_at
+        SELECT user_id, expires_at
         FROM password_reset_tokens
         WHERE token = $1
         FOR UPDATE
@@ -485,7 +485,7 @@ pub async fn reset_password(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    if row.consumed_at.is_some() || row.expires_at < Utc::now() {
+    if row.expires_at < Utc::now() {
         return Err(AppError::Gone);
     }
 

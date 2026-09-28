@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT user_id, expires_at, consumed_at\n        FROM password_reset_tokens\n        WHERE token = $1\n        FOR UPDATE\n        ",
+  "query": "\n        SELECT user_id, expires_at\n        FROM password_reset_tokens\n        WHERE token = $1\n        FOR UPDATE\n        ",
   "describe": {
     "columns": [
       {
@@ -24,17 +24,6 @@
             "name": "expires_at"
           }
         }
-      },
-      {
-        "ordinal": 2,
-        "name": "consumed_at",
-        "type_info": "Timestamptz",
-        "origin": {
-          "Table": {
-            "table": "password_reset_tokens",
-            "name": "consumed_at"
-          }
-        }
       }
     ],
     "parameters": {
@@ -44,9 +33,8 @@
     },
     "nullable": [
       false,
-      false,
-      true
+      false
     ]
   },
-  "hash": "6877c61f0c83579df4df471afd641850a9275492f1592c4d6681d69418d54e09"
+  "hash": "43fb8aa1310f499277313e9659e52fabfc2d1f340dafde96afaf3de961ba0f01"
 }
