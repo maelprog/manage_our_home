@@ -211,8 +211,9 @@ de la purge dépasserait.
 - **Logs d'audit** : 6 mois glissants, durée recommandée par la CNIL pour
   les journaux ; une entrée plus ancienne est supprimée au premier passage
   de purge qui suit cette échéance. La purge de votre compte supprime
-  aussitôt les entrées de vos propres actions, et en écrit une seule, sans
-  auteur, qui date la purge.
+  aussitôt les entrées de vos propres actions ; celles qui concernent
+  votre compte sans être de votre fait restent jusqu'à ce terme (voir
+  « Suppression de votre compte » ci-dessous).
 - **Export de vos données** : généré à la demande et renvoyé directement,
   il n'est pas conservé sur le serveur.
 
@@ -244,14 +245,18 @@ de la purge dépasserait.
   C'est un choix intentionnel, cohérent avec le fonctionnement d'un espace
   familial partagé, et un engagement contractuel autant qu'une
   description : il figure aussi dans les [conditions générales
-  d'utilisation](/terms-of-service). Subsistent aussi, un temps, les
-  entrées des logs d'audit où un autre membre ou l'administrateur du
-  service a agi sur votre compte (changement de rôle, transfert de
-  propriété, désactivation), jusqu'au premier passage de purge qui suit
-  leurs 6 mois, et une invitation qu'un membre aurait envoyée à votre
-  adresse, jusqu'à son acceptation, à la suppression du groupe ou au
-  premier passage de purge qui suit les 30 jours de son envoi (voir
-  « Invitations » plus haut).
+  d'utilisation](/terms-of-service).
+- **Ce qui subsiste un temps** : les entrées des logs d'audit qui
+  concernent votre compte sans être de votre fait — celle qui date la
+  purge, celles des transferts de propriété de vos groupes qu'elle opère,
+  celles où un autre membre ou l'administrateur du service a agi sur
+  votre compte (changement de rôle, transfert de propriété, désactivation)
+  et celles d'un transfert qui vous a désigné comme successeur à la purge
+  d'un autre compte — jusqu'au premier passage de purge qui suit leurs
+  6 mois ; elles ne désignent plus qu'un identifiant technique. Et une
+  invitation qu'un membre aurait envoyée à votre adresse, jusqu'à son
+  acceptation, à la suppression du groupe ou au premier passage de purge
+  qui suit les 30 jours de son envoi (voir « Invitations » plus haut).
 - **Quand elle a lieu** : la purge passe toutes les heures, aux mêmes
   conditions que les suppressions automatiques décrites plus haut — quand
   le service fonctionne et que sa configuration permet ce passage. Elle a

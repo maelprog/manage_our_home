@@ -85,8 +85,35 @@ pub async fn purge_due_accounts(pool: &PgPool) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<()> {
+/// Purges one account, in one transaction — if it is still due when its
+/// turn comes. `purge_due_accounts` reads the due accounts before purging
+/// them one by one, so an account may have cancelled its request
+/// (`cancel_delete_account`) or been deactivated by support in between:
+/// the `users` row is locked and the condition read again here, and an
+/// account no longer due is left untouched, without an error. The lock
+/// also makes a concurrent cancellation wait for this transaction, or this
+/// transaction wait for it.
+pub async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<()> {
     let mut tx = crate::db::begin(pool).await?;
+
+    let still_due = sqlx::query_scalar!(
+        r#"
+        SELECT id FROM users
+        WHERE id = $1
+          AND deletion_requested_at IS NOT NULL
+          AND deletion_requested_at < now() - ($2 || ' days')::interval
+          AND deleted_at IS NULL
+        FOR UPDATE
+        "#,
+        user_id,
+        PURGE_GRACE_DAYS.to_string()
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    if still_due.is_none() {
+        tx.rollback().await?;
+        return Ok(());
+    }
 
     // `delete_account` refuses an owner, but an account can still become
     // one during its grace period — by creating a group, or by being handed

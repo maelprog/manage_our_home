@@ -96,7 +96,7 @@ ligne.
 | 7a | État de lecture de la messagerie | un horodatage par (groupe, membre), avancé quand le membre ouvre la messagerie (`message_read_state`) | Compter les messages non lus de ce membre | Exécution du contrat | Tant que le groupe existe ; survit au départ du groupe, pas à la purge du compte, qui la supprime (#139) | Aucun tiers |
 | 8 | User admin (superadmin) | liste des groupes/utilisateurs à l'échelle globale, action de désactivation | Support technique/maintenance de la plateforme | Intérêt légitime (exploitation du service) | Durée de vie du compte concerné | Aucun tiers |
 | 9 | Import calendrier Google | URL de flux iCal privée (chiffrée), libellé, date du dernier import, événements importés et leur identifiant externe | Miroir en lecture seule d'un agenda Google externe | Consentement explicite (l'utilisateur fournit volontairement l'URL) | Jusqu'à la suppression de l'import par un administrateur ou le propriétaire du groupe, ou du groupe ; les événements importés restent après la suppression de l'import sauf si leur suppression est demandée avec lui ; la purge du compte du membre qui a configuré l'import supprime l'import, URL de flux comprise, et laisse ses événements dans le groupe (#139) | Hébergeur du flux (Google en pratique ; le code accepte toute URL `http`/`https`), interrogé par le serveur à chaque import lancé par un membre — aucune synchronisation en arrière-plan |
-| — | Logs d'audit (transverse) | horodatage, acteur, action, cible, métadonnées (identifiants et compteurs) ; actions journalisées : export, demande et annulation de suppression de compte, purge, suppression de groupe, transfert de propriété, changement de rôle, consultation des listes et désactivation d'un compte par le superadmin — les connexions ne le sont pas | Traçabilité de sécurité, obligations RGPD (preuve des actions d'export/suppression) | Intérêt légitime | 6 mois glissants (recommandation de la CNIL pour les journaux, délibération n° 2021-122), appliqués par la purge de conservation horaire (#138) ; la purge d'un compte supprime aussitôt les entrées dont il est l'acteur, et n'en laisse qu'une, sans acteur, qui date la purge (#139). Le minimum d'un an du décret n° 2021-1362 a été écarté : il vise les hébergeurs et les services de communication au public, pas une application familiale portée par une personne physique — arbitrage du responsable de traitement du 2026-09-19, à revoir si le service change de nature | Aucun tiers |
+| — | Logs d'audit (transverse) | horodatage, acteur, action, cible, métadonnées (identifiants et compteurs) ; actions journalisées : export, demande et annulation de suppression de compte, purge, suppression de groupe, transfert de propriété, changement de rôle, consultation des listes et désactivation d'un compte par le superadmin — les connexions ne le sont pas | Traçabilité de sécurité, obligations RGPD (preuve des actions d'export/suppression) | Intérêt légitime | 6 mois glissants (recommandation de la CNIL pour les journaux, délibération n° 2021-122), appliqués par la purge de conservation horaire (#138) ; la purge d'un compte supprime aussitôt les entrées dont il est l'acteur ; restent, pour la même durée, celles qui le concernent sans être de son fait (voir « Droit à l'effacement » ci-dessous) (#139). Le minimum d'un an du décret n° 2021-1362 a été écarté : il vise les hébergeurs et les services de communication au public, pas une application familiale portée par une personne physique — arbitrage du responsable de traitement du 2026-09-19, à revoir si le service change de nature | Aucun tiers |
 | 12 | RGPD (export/suppression) | export à la demande (Art. 20), demande/annulation de suppression (Art. 17) | Exercice des droits RGPD | Obligation légale | L'export n'est pas persisté côté serveur (généré à la demande, retourné directement) | Aucun tiers |
 
 ## Droit à l'effacement — modalités de purge
@@ -120,7 +120,9 @@ transaction par compte :
    d'accès à un agenda externe ; les événements importés restent).
 3. Anonymise la ligne `users` : email et nom remplacés, mot de passe
    haché et date de déclaration d'âge effacés, `deleted_at` renseigné.
-4. Écrit une entrée `audit_log` pour la purge, sans acteur.
+4. Écrit, sans acteur, une entrée `audit_log` `account_purged` qui
+   date la purge, et une entrée `ownership_transferred` par groupe dont
+   il transfère la propriété.
 
 Arbitrage du responsable de traitement du 2026-09-19 (#139) : est
 supprimé tout ce qui n'est pas du contenu partagé avec le groupe. Le
@@ -129,10 +131,16 @@ jointes et leurs fichiers, tâches cochées
 (`event_occurrence_completions`), messages, stocks, recettes, historique
 des repas, liste de courses, budget, et les groupes créés par le compte.
 Cette conservation est portée par les conditions générales
-(`docs/terms-of-service.md`, « Vos contenus »). Les entrées `audit_log`
-d'un autre acteur qui désignent le compte (changement de rôle, transfert
-de propriété, action du superadmin) restent jusqu'au terme de leurs
-6 mois : elles ne désignent plus qu'un identifiant anonymisé.
+(`docs/terms-of-service.md`, « Vos contenus »). Restent aussi, jusqu'au
+terme de leurs 6 mois, les entrées `audit_log` qui concernent le compte
+sans être de son fait : `account_purged` et les `ownership_transferred`
+écrites par sa purge, celles d'un autre acteur qui le désignent
+(changement de rôle, transfert de propriété, action du superadmin), et
+les `ownership_transferred` qui le désignent comme successeur à la purge
+d'un autre compte. Elles ne désignent plus qu'un identifiant anonymisé.
+Reste enfin une invitation adressée à l'adresse du compte, jusqu'à son
+acceptation, la suppression du groupe ou le terme de ses 30 jours
+(ligne 1c).
 
 Le job tourne une fois par heure, dès le démarrage de l'API, aux mêmes
 conditions que la purge de conservation ci-dessous : cinq des tables qu'il

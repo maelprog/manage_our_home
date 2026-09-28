@@ -11,7 +11,7 @@ mod common;
 
 use chrono::Utc;
 use common::{drop_prescribed_role, prescribed_role_pool};
-use manage_our_home::jobs::account_purge::purge_due_accounts;
+use manage_our_home::jobs::account_purge::{purge_account, purge_due_accounts};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -503,6 +503,45 @@ async fn an_admin_awaiting_deletion_inherits_and_stays_owner_once_it_cancels(db:
         members(&db, group).await,
         sorted(vec![(admin, "owner".into()), (member, "standard".into())])
     );
+}
+
+/// The pass reads the due accounts before purging each one in its own
+/// transaction: an account that cancels its request in between, or that
+/// support deactivates in between, is left alone — memberships, rows and
+/// identity intact — and the call is not an error.
+#[sqlx::test]
+async fn an_account_no_longer_due_when_its_turn_comes_is_left_alone(db: PgPool) {
+    let owner = insert_user(&db, "owner@example.test", None).await;
+    let group = insert_group(&db, "Famille", owner).await;
+    let event = insert_event(&db, group, owner).await;
+    let cancelled = insert_user(&db, "cancelled@example.test", Some(31)).await;
+    let deactivated = insert_user(&db, "deactivated@example.test", Some(31)).await;
+    for (user, tag) in [(cancelled, "cancelled"), (deactivated, "deactivated")] {
+        add_member(&db, group, user, "standard").await;
+        seed_personal_rows(&db, group, event, user, tag).await;
+    }
+    // Selected as due, then: one cancels, the other is deactivated.
+    sqlx::query("UPDATE users SET deletion_requested_at = NULL WHERE id = $1")
+        .bind(cancelled)
+        .execute(&db)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE users SET deleted_at = now() WHERE id = $1")
+        .bind(deactivated)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    purge_account(&db, cancelled).await.unwrap();
+    purge_account(&db, deactivated).await.unwrap();
+
+    for user in [cancelled, deactivated] {
+        assert_eq!(personal_rows(&db, user).await, all(1));
+        let row = user_row(&db, user).await;
+        assert_ne!(row.display_name, "Utilisateur supprimé");
+        assert!(row.age_declared_at.is_some());
+    }
+    assert_eq!(user_row(&db, cancelled).await.deleted_at, None);
 }
 
 /// A group whose only member is purged stays, with its content, and no

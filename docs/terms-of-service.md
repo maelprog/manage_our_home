@@ -93,17 +93,18 @@ jointes, les tâches cochées, les messages, les stocks, les recettes et
 l'historique des repas, la liste de courses, le budget, et les groupes que
 vous avez créés. Sont en revanche supprimés, notamment, vos appartenances
 aux groupes, les invitations que vous avez envoyées et les imports
-calendrier que vous avez configurés. Deux traces vous concernant subsistent
-un temps : les entrées du journal d'audit où un autre membre ou
-l'administrateur du service a agi sur votre compte, jusqu'au premier
-passage de purge qui suit leurs 6 mois, et une invitation qu'un membre
-aurait envoyée à votre adresse, jusqu'à son acceptation, à la suppression
-du groupe ou au premier passage de purge qui suit les 30 jours de son
-envoi ; la [politique de confidentialité](/privacy-policy) en donne le
-détail. Un agenda familial amputé de la moitié de ses rendez-vous, ou un
-fil de discussion troué, ne rendrait service à personne. Si vous souhaitez
-que certains de vos contenus disparaissent, supprimez-les vous-même avant
-de demander la suppression de votre compte.
+calendrier que vous avez configurés. Subsistent un temps les entrées du
+journal d'audit qui concernent votre compte sans être de votre fait (celle
+qui date la suppression, les transferts de propriété, les actions d'un
+autre membre ou de l'éditeur sur votre compte), jusqu'au premier passage de
+purge qui suit leurs 6 mois, et une invitation qu'un membre aurait envoyée
+à votre adresse, jusqu'à son acceptation, à la suppression du groupe ou au
+premier passage de purge qui suit les 30 jours de son envoi ; la [politique
+de confidentialité](/privacy-policy) en donne le détail. Un agenda familial
+amputé de la moitié de ses rendez-vous, ou un fil de discussion troué, ne
+rendrait service à personne. Si vous souhaitez que certains de vos contenus
+disparaissent, supprimez-les vous-même avant de demander la suppression de
+votre compte.
 
 ## Fermeture de votre compte
 
