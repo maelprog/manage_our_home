@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE scheduled_notifications sn\n        SET status = 'failed', last_error = $1\n        FROM events e, users u\n        WHERE e.id = sn.event_id AND u.id = e.created_by\n          AND sn.status = 'pending' AND sn.fire_at <= now()\n          AND (u.deactivated_at IS NOT NULL OR u.deleted_at IS NOT NULL)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f585ff9953ebf32a1f5f1cdd869705a4566970ce89e5c11f7dfa23c63c35a898"
+}

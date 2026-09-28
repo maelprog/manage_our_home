@@ -10,6 +10,9 @@ use crate::email::EmailSender;
 const SEND_POLL_INTERVAL_SECS: u64 = 60;
 const REFILL_POLL_INTERVAL_SECS: u64 = 3600;
 const MAX_SEND_ATTEMPTS: i32 = 5;
+/// `last_error` of a notification retired because its recipient's account
+/// is deactivated or purged.
+const RECIPIENT_GONE: &str = "recipient account deactivated or purged";
 
 /// Persisted job-queue worker (architecture.md correction #4): reminders
 /// must survive restarts/deploys, so this polls `scheduled_notifications`
@@ -33,7 +36,11 @@ pub async fn run(pool: PgPool, email: EmailSender) {
     let mut ticker = interval(StdDuration::from_secs(SEND_POLL_INTERVAL_SECS));
     loop {
         ticker.tick().await;
-        if let Err(e) = send_due_notifications(&pool, &email).await {
+        let send = |to: String, subject: String, body: String| {
+            let email = email.clone();
+            async move { email.send(&to, &subject, body).await }
+        };
+        if let Err(e) = send_due_notifications(&pool, send).await {
             tracing::error!(error = ?e, "scheduled_notifications send failed");
         }
     }
@@ -81,7 +88,35 @@ async fn refill_recurring_reminders(pool: &PgPool) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn send_due_notifications(pool: &PgPool, email: &EmailSender) -> anyhow::Result<()> {
+/// One pass: every due, pending notification is sent through `send(to,
+/// subject, body)` to the event's creator, then marked sent, or failed
+/// once `MAX_SEND_ATTEMPTS` sends were refused.
+///
+/// A creator support deactivated (`deactivated_at`) or purged
+/// (`deleted_at`, its address rewritten to `deleted-<id>@deleted.invalid`)
+/// is never written to (#291): its due notifications are marked failed
+/// without an attempt, so a reactivation does not send them late and a
+/// purged creator's are not read again on every pass. Those not yet due
+/// stay pending, and go if the account is reactivated by then.
+pub async fn send_due_notifications<F, Fut>(pool: &PgPool, send: F) -> anyhow::Result<()>
+where
+    F: Fn(String, String, String) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    sqlx::query!(
+        r#"
+        UPDATE scheduled_notifications sn
+        SET status = 'failed', last_error = $1
+        FROM events e, users u
+        WHERE e.id = sn.event_id AND u.id = e.created_by
+          AND sn.status = 'pending' AND sn.fire_at <= now()
+          AND (u.deactivated_at IS NOT NULL OR u.deleted_at IS NOT NULL)
+        "#,
+        RECIPIENT_GONE,
+    )
+    .execute(pool)
+    .await?;
+
     let due = sqlx::query!(
         r#"
         SELECT sn.id, sn.occurrence_at, sn.attempts, e.title, u.email
@@ -89,6 +124,7 @@ pub async fn send_due_notifications(pool: &PgPool, email: &EmailSender) -> anyho
         JOIN events e ON e.id = sn.event_id
         JOIN users u ON u.id = e.created_by
         WHERE sn.status = 'pending' AND sn.fire_at <= now()
+          AND u.deactivated_at IS NULL AND u.deleted_at IS NULL
         "#
     )
     .fetch_all(pool)
@@ -102,7 +138,7 @@ pub async fn send_due_notifications(pool: &PgPool, email: &EmailSender) -> anyho
             row.occurrence_at.format("%d/%m/%Y %H:%M")
         );
 
-        match email.send(&row.email, &subject, body).await {
+        match send(row.email, subject, body).await {
             Ok(()) => mark_sent(pool, row.id).await?,
             Err(e) => mark_failed(pool, row.id, row.attempts, &e.to_string()).await?,
         }
