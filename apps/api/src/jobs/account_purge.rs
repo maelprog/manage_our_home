@@ -91,10 +91,9 @@ async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<()> {
     // `delete_account` refuses an owner, but an account can still become
     // one during its grace period — by creating a group, or by being handed
     // one. Its membership goes like any other; a group it owned passes to
-    // the member `successor` picks, and a group with no eligible member
-    // left gets no owner: the members that remain (deactivated, or awaiting
-    // their own purge) keep their rows, and a group it was alone in stays
-    // with no member, like the rest of the content shared under it.
+    // the member `successor` picks. A group with only deactivated members
+    // left gets no owner (they keep their rows), and a group it was alone
+    // in stays with no member, like the rest of the content shared under it.
     let memberships = sqlx::query!(
         r#"DELETE FROM group_members WHERE user_id = $1
            RETURNING group_id, role::text AS "role!""#,
@@ -105,8 +104,8 @@ async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<()> {
     for owned in memberships.iter().filter(|m| m.role == "owner") {
         let remaining: Vec<RemainingMember> = sqlx::query!(
             r#"SELECT gm.user_id, gm.role::text = 'admin' AS "is_admin!", gm.joined_at,
-                      (u.deleted_at IS NULL AND u.deletion_requested_at IS NULL)
-                          AS "eligible!"
+                      u.deleted_at IS NOT NULL AS "deactivated!",
+                      u.deletion_requested_at IS NOT NULL AS "pending_deletion!"
                FROM group_members gm JOIN users u ON u.id = gm.user_id
                WHERE gm.group_id = $1 FOR UPDATE OF gm"#,
             owned.group_id
@@ -118,7 +117,8 @@ async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<()> {
             user_id: r.user_id,
             is_admin: r.is_admin,
             joined_at: r.joined_at,
-            eligible: r.eligible,
+            deactivated: r.deactivated,
+            pending_deletion: r.pending_deletion,
         })
         .collect();
         let Some(new_owner_id) = successor(&remaining) else {
@@ -215,21 +215,25 @@ pub struct RemainingMember {
     pub user_id: Uuid,
     pub is_admin: bool,
     pub joined_at: DateTime<Utc>,
-    /// False for an account support deactivated (`deleted_at`) or one
-    /// itself awaiting purge (`deletion_requested_at`): neither can hold a
-    /// group it would only lose again.
-    pub eligible: bool,
+    /// Deactivated by support (`deleted_at`): never inherits.
+    pub deactivated: bool,
+    /// Awaiting its own purge (`deletion_requested_at`). It can still
+    /// cancel the request, so it inherits — but only after every active
+    /// member.
+    pub pending_deletion: bool,
 }
 
-/// The member who inherits a purged owner's group: among the eligible
-/// members, the longest-standing admin, otherwise the longest-standing
-/// member; `None` when no eligible member is left. Equal `joined_at` falls back to `user_id`, so the choice never
-/// depends on the order the rows come back in.
+/// The member who inherits a purged owner's group, in this order: active
+/// admins, active members, admins awaiting deletion, members awaiting
+/// deletion — the longest-standing first within each, equal `joined_at`
+/// falling back to `user_id` so the choice never depends on the order the
+/// rows come back in. An account support deactivated never inherits;
+/// `None` when nobody else is left.
 pub fn successor(remaining: &[RemainingMember]) -> Option<Uuid> {
     remaining
         .iter()
-        .filter(|m| m.eligible)
-        .min_by_key(|m| (!m.is_admin, m.joined_at, m.user_id))
+        .filter(|m| !m.deactivated)
+        .min_by_key(|m| (m.pending_deletion, !m.is_admin, m.joined_at, m.user_id))
         .map(|m| m.user_id)
 }
 
@@ -243,15 +247,47 @@ mod tests {
             user_id: Uuid::from_u128(id),
             is_admin,
             joined_at: Utc.with_ymd_and_hms(2026, 1, day, 12, 0, 0).unwrap(),
-            eligible: true,
+            deactivated: false,
+            pending_deletion: false,
         }
     }
 
     fn ineligible(id: u128, is_admin: bool, day: u32) -> RemainingMember {
         RemainingMember {
-            eligible: false,
+            deactivated: true,
             ..member(id, is_admin, day)
         }
+    }
+
+    fn pending(id: u128, is_admin: bool, day: u32) -> RemainingMember {
+        RemainingMember {
+            pending_deletion: true,
+            ..member(id, is_admin, day)
+        }
+    }
+
+    /// Order: active admins, active members, then admins awaiting
+    /// deletion, then members awaiting deletion.
+    #[test]
+    fn an_active_member_inherits_ahead_of_an_older_admin_awaiting_deletion() {
+        let remaining = [pending(1, true, 1), member(2, false, 5)];
+        assert_eq!(successor(&remaining), Some(Uuid::from_u128(2)));
+    }
+
+    #[test]
+    fn with_only_accounts_awaiting_deletion_the_admin_inherits_first() {
+        let remaining = [
+            pending(1, false, 1),
+            pending(2, true, 5),
+            ineligible(3, true, 1),
+        ];
+        assert_eq!(successor(&remaining), Some(Uuid::from_u128(2)));
+    }
+
+    #[test]
+    fn with_only_members_awaiting_deletion_the_longest_standing_inherits() {
+        let remaining = [pending(1, false, 4), pending(2, false, 2)];
+        assert_eq!(successor(&remaining), Some(Uuid::from_u128(2)));
     }
 
     #[test]

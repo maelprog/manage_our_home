@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT gm.user_id, gm.role::text = 'admin' AS \"is_admin!\", gm.joined_at,\n                      (u.deleted_at IS NULL AND u.deletion_requested_at IS NULL)\n                          AS \"eligible!\"\n               FROM group_members gm JOIN users u ON u.id = gm.user_id\n               WHERE gm.group_id = $1 FOR UPDATE OF gm",
+  "query": "SELECT gm.user_id, gm.role::text = 'admin' AS \"is_admin!\", gm.joined_at,\n                      u.deleted_at IS NOT NULL AS \"deactivated!\",\n                      u.deletion_requested_at IS NOT NULL AS \"pending_deletion!\"\n               FROM group_members gm JOIN users u ON u.id = gm.user_id\n               WHERE gm.group_id = $1 FOR UPDATE OF gm",
   "describe": {
     "columns": [
       {
@@ -33,7 +33,13 @@
       },
       {
         "ordinal": 3,
-        "name": "eligible!",
+        "name": "deactivated!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "pending_deletion!",
         "type_info": "Bool",
         "origin": "Expression"
       }
@@ -47,8 +53,9 @@
       false,
       null,
       false,
+      null,
       null
     ]
   },
-  "hash": "92094886265d79b5098b0d75bb2d33c80e46b63138fd21e955093fd71be7d4dd"
+  "hash": "497133a34a95c17f333895c7d600da051df47847d554b849cbba8967f8a6ddb0"
 }

@@ -398,11 +398,11 @@ async fn deactivate(db: &PgPool, user: Uuid) {
         .unwrap();
 }
 
-/// An admin support deactivated, and an admin whose own deletion is
-/// pending (still in its grace period), are passed over: the next
-/// eligible admin inherits, ahead of an older standard member.
+/// An admin support deactivated never inherits, and an admin whose own
+/// deletion is pending comes after every active member: here the active
+/// admin inherits, ahead of both and of an older standard member.
 #[sqlx::test]
-async fn a_deactivated_admin_or_one_awaiting_purge_does_not_inherit(db: PgPool) {
+async fn an_active_admin_inherits_ahead_of_deactivated_and_pending_admins(db: PgPool) {
     let owning = insert_user(&db, "owning@example.test", Some(31)).await;
     let disabled = insert_user(&db, "disabled@example.test", None).await;
     let pending = insert_user(&db, "pending@example.test", Some(5)).await;
@@ -428,11 +428,10 @@ async fn a_deactivated_admin_or_one_awaiting_purge_does_not_inherit(db: PgPool) 
     );
 }
 
-/// With no eligible member left, nobody inherits. A deactivated account
-/// keeps its membership (the purge only removes the purged account's own
-/// rows), and the group is left without an owner; an account purged in the
-/// same pass leaves too, so a group made only of accounts being purged ends
-/// with no member at all.
+/// With only deactivated members left, nobody inherits. A deactivated
+/// account keeps its membership (the purge only removes the purged
+/// account's own rows), and the group is left without an owner. A group
+/// made only of accounts purged in the same pass ends with no member.
 #[sqlx::test]
 async fn with_no_eligible_member_nobody_inherits(db: PgPool) {
     let owning = insert_user(&db, "owning@example.test", Some(31)).await;
@@ -453,6 +452,57 @@ async fn with_no_eligible_member_nobody_inherits(db: PgPool) {
     assert!(user_row(&db, owning_too).await.deleted_at.is_some());
     assert!(user_row(&db, leaving).await.deleted_at.is_some());
     assert_eq!(members(&db, emptied).await, vec![]);
+}
+
+/// The only admin awaiting its own deletion — it can still cancel it —
+/// inherits ahead of a member also awaiting deletion, even an older one;
+/// after cancelling, it is a live owner.
+#[sqlx::test]
+async fn an_admin_awaiting_deletion_inherits_and_stays_owner_once_it_cancels(db: PgPool) {
+    let owning = insert_user(&db, "owning@example.test", Some(31)).await;
+    let admin = insert_user(&db, "admin@example.test", Some(5)).await;
+    let member = insert_user(&db, "member@example.test", Some(5)).await;
+    let group = insert_group(&db, "Famille", owning).await;
+    add_member_joined(&db, group, member, "standard", 90).await;
+    add_member_joined(&db, group, admin, "admin", 30).await;
+
+    purge_due_accounts(&db).await.unwrap();
+
+    assert_eq!(
+        members(&db, group).await,
+        sorted(vec![(admin, "owner".into()), (member, "standard".into())])
+    );
+
+    // The admin cancels its request through the real endpoint.
+    let session: Uuid = sqlx::query_scalar(
+        "INSERT INTO sessions (user_id, expires_at) VALUES ($1, now() + interval '1 day')
+         RETURNING id",
+    )
+    .bind(admin)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let router = common::test_router(db.clone());
+    let cancel = common::call(
+        &router,
+        axum::http::Method::POST,
+        "/account/delete/cancel",
+        Some(&format!("session_id={session}")),
+        None,
+    )
+    .await;
+    assert!(cancel.status().is_success(), "{}", cancel.status());
+    let pending: bool =
+        sqlx::query_scalar("SELECT deletion_requested_at IS NOT NULL FROM users WHERE id = $1")
+            .bind(admin)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert!(!pending);
+    assert_eq!(
+        members(&db, group).await,
+        sorted(vec![(admin, "owner".into()), (member, "standard".into())])
+    );
 }
 
 /// A group whose only member is purged stays, with its content, and no

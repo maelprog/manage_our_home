@@ -143,14 +143,15 @@ compte purgé en laissant ces lignes en place.
 
 Un compte peut devenir propriétaire d'un groupe pendant son délai de grâce
 (en en créant un, ou parce qu'on lui en a transféré la propriété). La purge
-transfère alors la propriété, dans la même transaction, à l'administrateur
-le plus ancien du groupe, à défaut à son membre le plus ancien
-(`joined_at`), et l'inscrit au journal (`ownership_transferred`, sans
-acteur). Un membre désactivé par le support (`deleted_at`) ou dont la
-suppression est demandée (`deletion_requested_at`) n'hérite pas. Sans
-membre éligible, le groupe reste sans propriétaire : les membres écartés
-gardent leur appartenance, que la purge de leur propre compte supprimera
-le cas échéant. Un groupe dont le compte était le seul membre reste, avec
+transfère alors la propriété, dans la même transaction, et l'inscrit au
+journal (`ownership_transferred`, sans acteur). Ordre de succession, le
+plus ancien d'abord dans chaque rang (`joined_at`, puis `user_id`) :
+administrateurs actifs, membres actifs, administrateurs dont la
+suppression est demandée (`deletion_requested_at` — ils peuvent encore
+l'annuler), membres dont la suppression est demandée. Un membre désactivé
+par le support (`deleted_at`) n'hérite jamais : s'il ne reste que de tels
+membres, le groupe reste sans propriétaire et ils gardent leur
+appartenance. Un groupe dont le compte était le seul membre reste, avec
 son contenu, sans membre — arbitrage du responsable de traitement du
 2026-09-28.
 

@@ -91,13 +91,19 @@ le groupe, à la disposition de ses autres membres, mais n'est plus rattaché
 à votre identité. Ce contenu, ce sont les événements et leurs pièces
 jointes, les tâches cochées, les messages, les stocks, les recettes et
 l'historique des repas, la liste de courses, le budget, et les groupes que
-vous avez créés. Le reste de ce qui vous concerne est supprimé, y compris
-vos appartenances aux groupes, les invitations que vous avez envoyées et
-les imports calendrier que vous avez configurés. Un agenda familial amputé
-de la moitié de ses rendez-vous, ou un fil de discussion troué, ne rendrait
-service à personne. Si vous souhaitez que certains de vos contenus
-disparaissent, supprimez-les vous-même avant de demander la suppression de
-votre compte.
+vous avez créés. Sont en revanche supprimés, notamment, vos appartenances
+aux groupes, les invitations que vous avez envoyées et les imports
+calendrier que vous avez configurés. Deux traces vous concernant subsistent
+un temps : les entrées du journal d'audit où un autre membre ou
+l'administrateur du service a agi sur votre compte, jusqu'au premier
+passage de purge qui suit leurs 6 mois, et une invitation qu'un membre
+aurait envoyée à votre adresse, jusqu'à son acceptation, à la suppression
+du groupe ou au premier passage de purge qui suit les 30 jours de son
+envoi ; la [politique de confidentialité](/privacy-policy) en donne le
+détail. Un agenda familial amputé de la moitié de ses rendez-vous, ou un
+fil de discussion troué, ne rendrait service à personne. Si vous souhaitez
+que certains de vos contenus disparaissent, supprimez-les vous-même avant
+de demander la suppression de votre compte.
 
 ## Fermeture de votre compte
 
@@ -110,11 +116,13 @@ effacé et ce qui subsiste.
 Un compte ne peut pas être supprimé tant qu'il est propriétaire d'un
 groupe : transférez la propriété, ou supprimez le groupe, au préalable. Si
 vous devenez propriétaire d'un groupe pendant le délai de grâce, la
-propriété passe, à la suppression, à l'administrateur le plus ancien du
-groupe, à défaut à son membre le plus ancien, en écartant les comptes
-désactivés et ceux dont la suppression est elle-même demandée. Sans membre
-qui remplisse ces conditions, le groupe reste sans propriétaire ; un groupe
-dont vous étiez le seul membre reste, avec son contenu, sans membre.
+propriété passe, à la suppression, dans cet ordre : à l'administrateur le
+plus ancien, à défaut au membre le plus ancien, puis, si tous les autres
+membres ont eux-mêmes demandé leur suppression, à l'administrateur puis au
+membre le plus ancien parmi eux. Un compte désactivé par l'éditeur n'en
+hérite jamais : s'il ne reste que de tels comptes, le groupe reste sans
+propriétaire. Un groupe dont vous étiez le seul membre reste, avec son
+contenu, sans membre.
 
 L'éditeur peut suspendre ou fermer un compte qui enfreint les présentes
 conditions, ou dont l'usage met en danger le service ou ses autres

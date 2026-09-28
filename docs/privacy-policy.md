@@ -244,7 +244,14 @@ de la purge dépasserait.
   C'est un choix intentionnel, cohérent avec le fonctionnement d'un espace
   familial partagé, et un engagement contractuel autant qu'une
   description : il figure aussi dans les [conditions générales
-  d'utilisation](/terms-of-service).
+  d'utilisation](/terms-of-service). Subsistent aussi, un temps, les
+  entrées des logs d'audit où un autre membre ou l'administrateur du
+  service a agi sur votre compte (changement de rôle, transfert de
+  propriété, désactivation), jusqu'au premier passage de purge qui suit
+  leurs 6 mois, et une invitation qu'un membre aurait envoyée à votre
+  adresse, jusqu'à son acceptation, à la suppression du groupe ou au
+  premier passage de purge qui suit les 30 jours de son envoi (voir
+  « Invitations » plus haut).
 - **Quand elle a lieu** : la purge passe toutes les heures, aux mêmes
   conditions que les suppressions automatiques décrites plus haut — quand
   le service fonctionne et que sa configuration permet ce passage. Elle a
@@ -253,12 +260,14 @@ de la purge dépasserait.
 - Un compte ne peut pas être supprimé tant qu'il est propriétaire d'un
   groupe : transférez la propriété (ou supprimez le groupe) au préalable.
   Si vous devenez propriétaire d'un groupe pendant le délai de grâce, la
-  purge transfère la propriété du groupe à son administrateur le plus
-  ancien, à défaut à son membre le plus ancien, en écartant les comptes
-  désactivés et ceux dont la suppression est elle-même demandée. Si aucun
-  membre ne remplit ces conditions, le groupe reste sans propriétaire,
-  avec son contenu et les membres écartés ; si vous en étiez le seul
-  membre, il reste sans membre.
+  purge transfère la propriété du groupe, dans cet ordre : à son
+  administrateur le plus ancien, à défaut à son membre le plus ancien,
+  puis, si tous les autres membres ont eux-mêmes demandé leur
+  suppression, à l'administrateur puis au membre le plus ancien parmi eux.
+  Un compte désactivé par l'administrateur du service n'en hérite jamais :
+  s'il ne reste que de tels comptes, le groupe reste sans propriétaire.
+  Si vous en étiez le seul membre, il reste, avec son contenu, sans
+  membre.
 
 ## Vos droits
 
