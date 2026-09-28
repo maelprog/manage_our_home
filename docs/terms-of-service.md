@@ -109,7 +109,9 @@ effacé et ce qui subsiste.
 Un compte ne peut pas être supprimé tant qu'il est propriétaire d'un
 groupe : transférez la propriété, ou supprimez le groupe, au préalable. Si
 vous devenez propriétaire d'un groupe pendant le délai de grâce, la
-suppression attend que la propriété soit transférée ou le groupe supprimé.
+propriété passe, à la suppression, à l'administrateur le plus ancien du
+groupe, à défaut à son membre le plus ancien ; un groupe dont vous étiez le
+seul membre reste, avec son contenu, sans membre.
 
 L'éditeur peut suspendre ou fermer un compte qui enfreint les présentes
 conditions, ou dont l'usage met en danger le service ou ses autres

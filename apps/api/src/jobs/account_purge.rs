@@ -24,6 +24,7 @@
 use std::time::Duration as StdDuration;
 
 use anyhow::Context;
+use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::PgPool;
 use tokio::time::{interval, MissedTickBehavior};
@@ -87,25 +88,53 @@ pub async fn purge_due_accounts(pool: &PgPool) -> anyhow::Result<()> {
 async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<()> {
     let mut tx = crate::db::begin(pool).await?;
 
-    // First, so that the owner check reads the rows it deletes, under
-    // their lock. `delete_account` refuses an owner, but an account can
-    // still become one during its grace period — by creating a group, or
-    // by being handed one. Dropping that membership would leave the group
-    // without an owner, so the account waits — rolled back, retried next
-    // pass — until ownership moves on or the group is deleted.
-    let roles = sqlx::query_scalar!(
-        r#"DELETE FROM group_members WHERE user_id = $1 RETURNING role::text AS "role!""#,
+    // `delete_account` refuses an owner, but an account can still become
+    // one during its grace period — by creating a group, or by being handed
+    // one. Its membership goes like any other; a group it owned passes to
+    // the member `successor` picks, and a group it was alone in stays with
+    // no member, like the rest of the content shared under it.
+    let memberships = sqlx::query!(
+        r#"DELETE FROM group_members WHERE user_id = $1
+           RETURNING group_id, role::text AS "role!""#,
         user_id
     )
     .fetch_all(&mut *tx)
     .await?;
-    if roles.iter().any(|role| role == "owner") {
-        tx.rollback().await?;
-        tracing::warn!(
-            %user_id,
-            "account purge deferred: the account owns a group; ownership must be transferred first"
-        );
-        return Ok(());
+    for owned in memberships.iter().filter(|m| m.role == "owner") {
+        let remaining: Vec<RemainingMember> = sqlx::query!(
+            r#"SELECT user_id, role::text = 'admin' AS "is_admin!", joined_at
+               FROM group_members WHERE group_id = $1 FOR UPDATE"#,
+            owned.group_id
+        )
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .map(|r| RemainingMember {
+            user_id: r.user_id,
+            is_admin: r.is_admin,
+            joined_at: r.joined_at,
+        })
+        .collect();
+        let Some(new_owner_id) = successor(&remaining) else {
+            continue;
+        };
+        sqlx::query!(
+            "UPDATE group_members SET role = 'owner' WHERE group_id = $1 AND user_id = $2",
+            owned.group_id,
+            new_owner_id
+        )
+        .execute(&mut *tx)
+        .await?;
+        // `transfer_ownership`'s entry, with no actor: the purge made it.
+        crate::audit::record(
+            &mut tx,
+            None,
+            "ownership_transferred",
+            "group",
+            &owned.group_id.to_string(),
+            json!({ "new_owner_id": new_owner_id, "reason": "account_purged" }),
+        )
+        .await?;
     }
 
     sqlx::query!("DELETE FROM oauth_identities WHERE user_id = $1", user_id)
@@ -172,4 +201,71 @@ async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<()> {
     .await?;
     tx.commit().await?;
     Ok(())
+}
+
+/// A remaining member of a group whose owner is being purged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemainingMember {
+    pub user_id: Uuid,
+    pub is_admin: bool,
+    pub joined_at: DateTime<Utc>,
+}
+
+/// The member who inherits a purged owner's group: the longest-standing
+/// admin, otherwise the longest-standing member; `None` when nobody is
+/// left. Equal `joined_at` falls back to `user_id`, so the choice never
+/// depends on the order the rows come back in.
+pub fn successor(remaining: &[RemainingMember]) -> Option<Uuid> {
+    remaining
+        .iter()
+        .min_by_key(|m| (!m.is_admin, m.joined_at, m.user_id))
+        .map(|m| m.user_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn member(id: u128, is_admin: bool, day: u32) -> RemainingMember {
+        RemainingMember {
+            user_id: Uuid::from_u128(id),
+            is_admin,
+            joined_at: Utc.with_ymd_and_hms(2026, 1, day, 12, 0, 0).unwrap(),
+        }
+    }
+
+    #[test]
+    fn the_longest_standing_admin_inherits_even_behind_older_members() {
+        let remaining = [
+            member(1, false, 1),
+            member(2, true, 5),
+            member(3, true, 3),
+            member(4, false, 2),
+        ];
+        assert_eq!(successor(&remaining), Some(Uuid::from_u128(3)));
+    }
+
+    #[test]
+    fn without_an_admin_the_longest_standing_member_inherits() {
+        let remaining = [
+            member(1, false, 4),
+            member(2, false, 2),
+            member(3, false, 9),
+        ];
+        assert_eq!(successor(&remaining), Some(Uuid::from_u128(2)));
+    }
+
+    #[test]
+    fn a_group_left_with_no_member_has_no_successor() {
+        assert_eq!(successor(&[]), None);
+    }
+
+    #[test]
+    fn a_tie_on_joined_at_is_broken_by_user_id_whatever_the_row_order() {
+        let a = [member(7, true, 3), member(5, true, 3)];
+        let b = [member(5, true, 3), member(7, true, 3)];
+        assert_eq!(successor(&a), Some(Uuid::from_u128(5)));
+        assert_eq!(successor(&b), Some(Uuid::from_u128(5)));
+    }
 }

@@ -139,10 +139,25 @@ conditions que la purge de conservation ci-dessous : cinq des tables qu'il
 vide (`group_members`, `message_read_state`, `event_assignees`,
 `invitations`, `calendar_imports`) sont sous une politique RLS forcée, et
 sur un rôle sans `BYPASSRLS` il refuse de tourner plutôt que de marquer un
-compte purgé en laissant ces lignes en place. Un compte devenu
-propriétaire d'un groupe pendant son délai de grâce (en en créant un, ou
-parce qu'on lui en a transféré la propriété) n'est pas purgé : sa purge attend, passe après passe, que
-la propriété soit transférée ou le groupe supprimé.
+compte purgé en laissant ces lignes en place.
+
+Un compte peut devenir propriétaire d'un groupe pendant son délai de grâce
+(en en créant un, ou parce qu'on lui en a transféré la propriété). La purge
+transfère alors la propriété, dans la même transaction, à l'administrateur
+le plus ancien du groupe, à défaut à son membre le plus ancien
+(`joined_at`), et l'inscrit au journal (`ownership_transferred`, sans
+acteur). Un groupe dont le compte était le seul membre reste, avec son
+contenu, sans membre — arbitrage du responsable de traitement du
+2026-09-28.
+
+Un compte purgé ne peut plus se connecter par aucune voie : la connexion
+par mot de passe et l'extracteur de session refusent une ligne
+`deleted_at` ; ses sessions, son identité Google et ses jetons sont
+supprimés ; la vérification d'email et la réinitialisation du mot de passe
+refusent un jeton d'un compte `deleted_at` (utile pour un compte désactivé
+par le support, dont les jetons subsistent jusqu'à la purge de
+conservation) ; la connexion avec Google ne retrouve ni l'identité ni
+l'email, et crée un compte nouveau, distinct.
 
 ## Durées de conservation — purge horaire
 

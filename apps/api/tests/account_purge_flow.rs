@@ -299,24 +299,117 @@ async fn an_account_still_in_its_grace_period_is_left_alone(db: PgPool) {
     assert_eq!(user_row(&db, pending).await.deleted_at, None);
 }
 
+async fn add_member_joined(db: &PgPool, group: Uuid, user: Uuid, role: &str, days_ago: i32) {
+    sqlx::query(
+        "INSERT INTO group_members (group_id, user_id, role, joined_at)
+         VALUES ($1, $2, $3::group_role, now() - make_interval(days => $4))",
+    )
+    .bind(group)
+    .bind(user)
+    .bind(role)
+    .bind(days_ago)
+    .execute(db)
+    .await
+    .unwrap();
+}
+
+/// `(user_id, role)` of every member of `group`, ordered by user id.
+async fn members(db: &PgPool, group: Uuid) -> Vec<(Uuid, String)> {
+    sqlx::query_as(
+        "SELECT user_id, role::text FROM group_members WHERE group_id = $1 ORDER BY user_id",
+    )
+    .bind(group)
+    .fetch_all(db)
+    .await
+    .unwrap()
+}
+
+fn sorted(mut v: Vec<(Uuid, String)>) -> Vec<(Uuid, String)> {
+    v.sort();
+    v
+}
+
 /// `delete_account` refuses an owner, but an account can still become one
-/// during its grace period, by creating a group or being handed one. Removing its membership then would
-/// leave the group with no owner: the purge waits instead, and the other
-/// accounts due in the same pass are purged regardless.
+/// during its grace period, by creating a group or being handed one. The
+/// purge hands the group to its longest-standing admin — here the admin who
+/// joined after an older standard member — and purges the account.
 #[sqlx::test]
-async fn an_account_that_owns_a_group_is_not_purged_and_does_not_block_the_others(db: PgPool) {
+async fn a_purged_owner_hands_the_group_to_its_longest_standing_admin(db: PgPool) {
     let owning = insert_user(&db, "owning@example.test", Some(31)).await;
-    let leaving = insert_user(&db, "leaving@example.test", Some(31)).await;
+    let elder = insert_user(&db, "elder@example.test", None).await;
+    let admin_old = insert_user(&db, "admin-old@example.test", None).await;
+    let admin_new = insert_user(&db, "admin-new@example.test", None).await;
     let group = insert_group(&db, "Famille", owning).await;
-    add_member(&db, group, leaving, "standard").await;
+    add_member_joined(&db, group, elder, "standard", 90).await;
+    add_member_joined(&db, group, admin_old, "admin", 60).await;
+    add_member_joined(&db, group, admin_new, "admin", 30).await;
     let event = insert_event(&db, group, owning).await;
     seed_personal_rows(&db, group, event, owning, "owning").await;
 
     purge_due_accounts(&db).await.unwrap();
 
-    assert_eq!(personal_rows(&db, owning).await, all(1));
-    assert_eq!(user_row(&db, owning).await.deleted_at, None);
-    assert!(user_row(&db, leaving).await.deleted_at.is_some());
+    assert_eq!(personal_rows(&db, owning).await, all(0));
+    assert!(user_row(&db, owning).await.deleted_at.is_some());
+    assert_eq!(
+        members(&db, group).await,
+        sorted(vec![
+            (elder, "standard".into()),
+            (admin_old, "owner".into()),
+            (admin_new, "admin".into()),
+        ])
+    );
+    let transfers: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log
+         WHERE action = 'ownership_transferred' AND target_id = $1
+           AND actor_user_id IS NULL AND metadata->>'new_owner_id' = $2",
+    )
+    .bind(group.to_string())
+    .bind(admin_old.to_string())
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(transfers, 1);
+}
+
+/// With no admin left, the longest-standing member inherits.
+#[sqlx::test]
+async fn without_an_admin_the_longest_standing_member_inherits(db: PgPool) {
+    let owning = insert_user(&db, "owning@example.test", Some(31)).await;
+    let recent = insert_user(&db, "recent@example.test", None).await;
+    let elder = insert_user(&db, "elder@example.test", None).await;
+    let group = insert_group(&db, "Famille", owning).await;
+    add_member_joined(&db, group, recent, "standard", 10).await;
+    add_member_joined(&db, group, elder, "standard", 40).await;
+
+    purge_due_accounts(&db).await.unwrap();
+
+    assert!(user_row(&db, owning).await.deleted_at.is_some());
+    assert_eq!(
+        members(&db, group).await,
+        sorted(vec![(recent, "standard".into()), (elder, "owner".into())])
+    );
+}
+
+/// A group whose only member is purged stays, with its content, and no
+/// member — like the rest of the content shared under it.
+#[sqlx::test]
+async fn a_sole_member_group_stays_without_members(db: PgPool) {
+    let owning = insert_user(&db, "owning@example.test", Some(31)).await;
+    let group = insert_group(&db, "Solo", owning).await;
+    let event = insert_event(&db, group, owning).await;
+
+    purge_due_accounts(&db).await.unwrap();
+
+    assert!(user_row(&db, owning).await.deleted_at.is_some());
+    assert_eq!(members(&db, group).await, vec![]);
+    let kept: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM events e JOIN groups g ON g.id = e.group_id WHERE e.id = $1",
+    )
+    .bind(event)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(kept, 1);
 }
 
 /// `group_members`, `message_read_state`, `event_assignees`, `invitations`

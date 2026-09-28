@@ -229,7 +229,11 @@ de la purge dépasserait.
   assignations d'événements, les entrées des logs d'audit dont vous êtes
   l'auteur, les invitations que vous avez envoyées (adresses des personnes
   invitées comprises) et les imports calendrier que vous avez configurés
-  (URL du flux comprise). Votre email et votre nom sont remplacés, votre
+  (URL du flux comprise). Aucun moyen de connexion ne subsiste : ni mot de
+  passe, ni connexion avec Google, ni session, et un jeton de vérification
+  ou de réinitialisation qui viserait encore le compte est refusé. Se
+  connecter ensuite avec le même compte Google crée un nouveau compte, sans
+  lien avec l'ancien. Votre email et votre nom sont remplacés, votre
   déclaration d'âge est effacée : il ne reste de votre compte qu'un
   identifiant technique rattaché à aucune identité.
 - **Ce qu'elle laisse en place** : le contenu que vous avez créé au sein
@@ -249,7 +253,9 @@ de la purge dépasserait.
 - Un compte ne peut pas être supprimé tant qu'il est propriétaire d'un
   groupe : transférez la propriété (ou supprimez le groupe) au préalable.
   Si vous devenez propriétaire d'un groupe pendant le délai de grâce, la
-  purge attend que la propriété soit transférée ou le groupe supprimé.
+  purge transfère la propriété du groupe à son administrateur le plus
+  ancien, à défaut à son membre le plus ancien ; si vous en étiez le seul
+  membre, le groupe et son contenu restent, sans membre.
 
 ## Vos droits
 
