@@ -146,12 +146,16 @@ pub async fn verify_email(
     Query(query): Query<VerifyEmailQuery>,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = crate::db::begin(&state.db).await?;
+    // A token of a deactivated or purged account (`deleted_at`) answers
+    // like an unknown one (#139): support deactivation keeps the tokens
+    // until the retention purge takes them.
     let row = sqlx::query!(
         r#"
-        SELECT user_id, expires_at, consumed_at
-        FROM email_verification_tokens
-        WHERE token = $1
-        FOR UPDATE
+        SELECT t.user_id, t.expires_at, t.consumed_at
+        FROM email_verification_tokens t
+        JOIN users u ON u.id = t.user_id
+        WHERE t.token = $1 AND u.deleted_at IS NULL
+        FOR UPDATE OF t
         "#,
         query.token
     )
@@ -472,12 +476,15 @@ pub async fn reset_password(
     Json(body): Json<ResetPasswordRequest>,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = crate::db::begin(&state.db).await?;
+    // A token of a deactivated or purged account (`deleted_at`) answers
+    // like an unknown one, and never gives that row a password (#139).
     let row = sqlx::query!(
         r#"
-        SELECT user_id, expires_at
-        FROM password_reset_tokens
-        WHERE token = $1
-        FOR UPDATE
+        SELECT t.user_id, t.expires_at
+        FROM password_reset_tokens t
+        JOIN users u ON u.id = t.user_id
+        WHERE t.token = $1 AND u.deleted_at IS NULL
+        FOR UPDATE OF t
         "#,
         body.token
     )

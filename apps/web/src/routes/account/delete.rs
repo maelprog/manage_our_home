@@ -114,7 +114,7 @@ fn page(me: &MeResponse, error: Option<&str>, blocked: &[BlockingGroup]) -> Stri
     format!(
         r#"<p><a href="/account">← Retour à mon compte</a></p>
 <h1>Supprimer mon compte</h1>
-<p>La suppression est <strong>programmée</strong>, pas immédiate : votre compte reste utilisable pendant un délai de grâce de {days} jours, pendant lequel vous pouvez annuler la demande. Passé ce délai, vos identifiants de connexion sont supprimés et votre compte est anonymisé.</p>
+<p>La suppression est <strong>programmée</strong>, pas immédiate : votre compte reste utilisable pendant un délai de grâce de {days} jours, pendant lequel vous pouvez annuler la demande. Passé ce délai, vos identifiants de connexion, vos appartenances aux familles et vos autres données personnelles sont supprimés, et votre compte est anonymisé. Si vous êtes alors propriétaire d'une famille, la propriété passe à son administrateur le plus ancien, à défaut à son membre le plus ancien — en commençant par ceux qui n'ont pas eux-mêmes demandé leur suppression.</p>
 <p class="muted">Le contenu que vous avez créé dans une famille (messages, événements, dépenses…) reste visible par les autres membres de cette famille, mais n'est plus rattaché à votre identité — c'est le fonctionnement documenté d'un espace partagé. Pour en récupérer une copie avant la suppression, <a href="/account/export">exportez vos données</a>.</p>
 {action}"#,
         days = GRACE_PERIOD_DAYS,

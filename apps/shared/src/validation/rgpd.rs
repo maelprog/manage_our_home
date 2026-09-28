@@ -526,9 +526,10 @@ fn is_invisible(c: char) -> bool {
 ///
 /// What the email must not do is promise a door that does not exist. Nothing
 /// the reader can reach erases an invitation: `apps/api/src/jobs/account_purge.rs`
-/// leaves `invitations` untouched and `export_account` never reads it, so
-/// creating an account opens rights over that account's data and not over
-/// this row. Arbitrated 2026-09-19 and confirmed 2026-09-20 — the product
+/// deletes the invitations an account *sent*, never one addressed to it
+/// (the row is keyed on its sender, not on the invited address), and
+/// `export_account` never reads it, so creating an account opens rights over
+/// that account's data and not over this row. Arbitrated 2026-09-19 and confirmed 2026-09-20 — the product
 /// adds no no-account path and the email tells the truth instead: any request
 /// goes to the controller. Doing nothing is stated first all the same,
 /// together with what it costs.
@@ -1691,8 +1692,9 @@ mod tests {
         // Arbitrated 2026-09-19 and confirmed 2026-09-20: the product offers no
         // no-account path, and the email must not pretend the account screens
         // are one either. Nothing the reader can do erases an invitation —
-        // `account_purge.rs` leaves `invitations` alone, `export_account` does
-        // not export it, and only the retention purge removes it, 30 days on
+        // `account_purge.rs` deletes only the invitations an account sent
+        // (#139), not one addressed to it, `export_account` does not export
+        // it, and otherwise the retention purge removes it, 30 days on
         // (#138) — so the only true answer is the controller's address, and
         // the reader is told the address survives an ignored invitation.
         let body = invitation_sample();

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT user_id, expires_at\n        FROM password_reset_tokens\n        WHERE token = $1\n        FOR UPDATE\n        ",
+  "query": "\n        SELECT t.user_id, t.expires_at\n        FROM password_reset_tokens t\n        JOIN users u ON u.id = t.user_id\n        WHERE t.token = $1 AND u.deleted_at IS NULL\n        FOR UPDATE OF t\n        ",
   "describe": {
     "columns": [
       {
@@ -36,5 +36,5 @@
       false
     ]
   },
-  "hash": "43fb8aa1310f499277313e9659e52fabfc2d1f340dafde96afaf3de961ba0f01"
+  "hash": "be2b0dd4f216d3ed92a9dd68e34888e1cc35906d81e757d91848baaa31cd2163"
 }
