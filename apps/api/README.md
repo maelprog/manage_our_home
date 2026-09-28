@@ -147,9 +147,9 @@ Three other things run on this pool, and none is a request handler:
   `email_verification_tokens`, `password_reset_tokens`, `invitations` and
   `sessions`. It and the account purge below are the only code on this
   pool that deletes Postgres rows — not the only code that writes them:
-  the three `/admin/*` handlers each
-  `INSERT` into `audit_log`, and `deactivate_user` also `UPDATE`s `users`
-  and `sessions`. Of the five purged tables only `invitations` is RLS'd at
+  the four `/admin/*` handlers each
+  `INSERT` into `audit_log`, `deactivate_user` also `UPDATE`s `users`
+  and `sessions`, and `reactivate_user` `users` (#256). Of the five purged tables only `invitations` is RLS'd at
   all, and it is `FORCE ROW LEVEL SECURITY`: with no `app.family_id` set,
   its `DELETE` on the runtime role matches **no row** and the pass would
   report a clean sweep having erased none of the invited third parties'
@@ -159,15 +159,19 @@ Three other things run on this pool, and none is a request handler:
   tables included, logging `retention purge job failed` at ERROR once an
   hour and deleting nothing;
 - the **hourly account purge** (#139, `src/jobs/account_purge.rs`), which,
-  for each account past its 30-day grace period, deletes its personal rows
+  for each account past its 30-day grace period, or deactivated by the
+  superadmin for 2 years (#256), deletes its personal rows
   (`group_members`, `message_read_state`, `event_assignees`, `sessions`,
   tokens, OAuth identities, its own `audit_log` entries, the `invitations`
   and `calendar_imports` it created) and anonymises its `users` row. Five of
   those tables are `FORCE ROW LEVEL SECURITY`; the pass calls the same
   `ensure_bypasses_rls` guard and, on a role that does not bypass RLS,
   logs `account purge job failed` at ERROR once an hour and purges no one.
+  Before purging, each pass emails the holders of accounts deactivated for
+  2 years less 30 days (`deactivation_notice_sent_at`); that half reads
+  and stamps `users` only, which is not RLS'd, and runs on any role.
 
-No request handler other than the three `/admin/*` ones touches `admin_db`.
+No request handler other than the four `/admin/*` ones touches `admin_db`.
 
 ```sql
 CREATE ROLE admin_role LOGIN PASSWORD '...' NOSUPERUSER BYPASSRLS;

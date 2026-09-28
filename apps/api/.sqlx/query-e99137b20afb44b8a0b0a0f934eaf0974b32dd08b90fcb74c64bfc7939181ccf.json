@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id FROM users\n        WHERE deletion_requested_at IS NOT NULL\n          AND deletion_requested_at < now() - ($1 || ' days')::interval\n          AND deleted_at IS NULL\n        ",
+  "query": "\n        SELECT id FROM users\n        WHERE deactivated_at IS NOT NULL\n          AND deactivation_notice_sent_at IS NULL\n          AND deleted_at IS NULL\n        ",
   "describe": {
     "columns": [
       {
@@ -16,13 +16,11 @@
       }
     ],
     "parameters": {
-      "Left": [
-        "Text"
-      ]
+      "Left": []
     },
     "nullable": [
       false
     ]
   },
-  "hash": "dd5b4790e111a05f07d734a816ca4eeb18f8d00d3f1ddb453a5b77e708b62702"
+  "hash": "e99137b20afb44b8a0b0a0f934eaf0974b32dd08b90fcb74c64bfc7939181ccf"
 }

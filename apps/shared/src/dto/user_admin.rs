@@ -29,7 +29,8 @@ pub struct AdminGroupsResponse {
 }
 
 /// One row of `GET /admin/users` — an account for support look-up. `deleted_at`
-/// is set by a superadmin `deactivate` or a completed self-service deletion;
+/// is set by the account purge, and only by it; `deactivated_at` by a
+/// superadmin `deactivate`, cleared by `reactivate` (#256);
 /// `deletion_requested_at` marks a pending grace-period deletion request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminUserResponse {
@@ -38,6 +39,7 @@ pub struct AdminUserResponse {
     pub email_verified: bool,
     pub created_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
+    pub deactivated_at: Option<DateTime<Utc>>,
     pub deletion_requested_at: Option<DateTime<Utc>>,
 }
 

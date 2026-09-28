@@ -1,8 +1,10 @@
 //! `/admin/users` — a read-only table of every account (id/email/verified/
-//! created/status), each linking to `/admin/users/:id`, the detail + deactivate
-//! screen. `deactivate` is the immediate support action (revokes every session
-//! and sets `deleted_at`), distinct from the self-service grace-period deletion
-//! (F10) — the copy keeps them apart. The backend has no single-user GET, so the
+//! created/status), each linking to `/admin/users/:id`, the detail +
+//! deactivate/reactivate screen. `deactivate` is the immediate support action
+//! (revokes every session and sets `deactivated_at`; the purge takes the
+//! account 2 years later unless `reactivate` gives it back first, #256),
+//! distinct from the self-service grace-period deletion (F10) — the copy keeps
+//! them apart. The backend has no single-user GET, so the
 //! detail page finds its user in the same `/admin/users` list the table renders
 //! (mirrors how Messagerie derives one message from the paginated list). See
 //! `docs/front-epic-9-user-admin.md`.
@@ -18,8 +20,9 @@ use crate::layout::CurrentSuperAdmin;
 use crate::state::{api_request_auth, AppState};
 
 use super::{
-    admin_cookie, admin_header, can_deactivate, forbidden_page, format_admin_datetime,
-    format_admin_datetime_opt, service_unavailable_page, user_not_found_page, user_status_label,
+    admin_cookie, admin_header, can_deactivate, can_reactivate, forbidden_page,
+    format_admin_datetime, format_admin_datetime_opt, service_unavailable_page,
+    user_not_found_page, user_status_label,
 };
 
 #[derive(serde::Deserialize)]
@@ -31,6 +34,7 @@ pub struct ListQuery {
 fn notice_html(notice: Option<&str>) -> String {
     let text = match notice {
         Some("user_deactivated") => "Compte désactivé : toutes les sessions ont été révoquées.",
+        Some("user_reactivated") => "Compte réactivé : son titulaire peut de nouveau se connecter.",
         _ => return String::new(),
     };
     format!(r#"<p class="notice success">{}</p>"#, html_escape(text))
@@ -66,6 +70,7 @@ fn user_row(user: &AdminUserResponse) -> String {
         created = html_escape(&format_admin_datetime(user.created_at)),
         status = html_escape(user_status_label(
             user.deleted_at,
+            user.deactivated_at,
             user.deletion_requested_at
         )),
         id = user.id,
@@ -118,7 +123,7 @@ pub async fn get(
 
     let body = format!(
         r#"<h1>Administration — Utilisateurs</h1>
-<p class="muted">Tous les comptes, tous foyers confondus. Vue de support en lecture seule (hors désactivation).</p>
+<p class="muted">Tous les comptes, tous foyers confondus. Vue de support en lecture seule (hors désactivation et réactivation).</p>
 <nav class="actions"><a href="/admin/groups">Familles</a><a href="/admin/users">Utilisateurs</a></nav>
 {notice}{error}
 {table}"#,
@@ -152,23 +157,40 @@ pub async fn detail(
         return user_not_found_page().into_response();
     };
 
-    let status = user_status_label(user.deleted_at, user.deletion_requested_at);
+    let status = user_status_label(
+        user.deleted_at,
+        user.deactivated_at,
+        user.deletion_requested_at,
+    );
 
-    // The confirm form renders only while the account is still active; once
-    // deactivated, the backend 404s a second attempt, so we show a note instead.
-    let action = if can_deactivate(user.deleted_at) {
+    // Each form renders only when the backend would accept it (#256): the
+    // deactivate one for an active account, the reactivate one for a
+    // deactivated account the purge has not taken yet. A purged account
+    // gets a note instead.
+    let action = if can_deactivate(user.deleted_at, user.deactivated_at) {
         format!(
             r#"<section class="card">
 <h2>Désactiver ce compte</h2>
-<p class="muted">Action immédiate de support : révoque toutes les sessions actives et marque le compte comme supprimé. À distinguer de la suppression de compte en libre-service (avec délai de grâce) demandée par l'utilisateur.</p>
-<form method="post" action="/admin/users/{id}/deactivate" onsubmit="return confirm('Désactiver définitivement ce compte ? Toutes les sessions seront révoquées.');">
+<p class="muted">Action immédiate de support : révoque toutes les sessions actives et bloque la connexion. Rien n'est effacé ; le compte peut être réactivé, et sans réactivation il est purgé au bout de 2 ans, son titulaire prévenu par email 30 jours avant. À distinguer de la suppression de compte en libre-service (avec délai de grâce) demandée par l'utilisateur.</p>
+<form method="post" action="/admin/users/{id}/deactivate" onsubmit="return confirm('Désactiver ce compte ? Toutes les sessions seront révoquées.');">
 <button type="submit" class="danger">Désactiver le compte</button>
 </form>
 </section>"#,
             id = user.id,
         )
+    } else if can_reactivate(user.deleted_at, user.deactivated_at) {
+        format!(
+            r#"<section class="card">
+<h2>Réactiver ce compte</h2>
+<p class="muted">Le compte est désactivé. Le réactiver rouvre la connexion (les sessions révoquées le restent) et annule la purge prévue au bout de 2 ans.</p>
+<form method="post" action="/admin/users/{id}/reactivate">
+<button type="submit">Réactiver le compte</button>
+</form>
+</section>"#,
+            id = user.id,
+        )
     } else {
-        r#"<p class="muted">Ce compte est déjà désactivé — aucune action possible.</p>"#.to_string()
+        r#"<p class="muted">Ce compte a été purgé — aucune action possible.</p>"#.to_string()
     };
 
     let body = format!(
@@ -180,7 +202,8 @@ pub async fn detail(
 <dt>Inscrit le</dt><dd>{created}</dd>
 <dt>Statut</dt><dd>{status}</dd>
 <dt>Suppression demandée le</dt><dd>{requested}</dd>
-<dt>Désactivé le</dt><dd>{deleted}</dd>
+<dt>Désactivé le</dt><dd>{deactivated}</dd>
+<dt>Purgé le</dt><dd>{deleted}</dd>
 </dl>
 {action}"#,
         email = html_escape(&user.email),
@@ -189,6 +212,7 @@ pub async fn detail(
         created = html_escape(&format_admin_datetime(user.created_at)),
         status = html_escape(status),
         requested = html_escape(&format_admin_datetime_opt(user.deletion_requested_at)),
+        deactivated = html_escape(&format_admin_datetime_opt(user.deactivated_at)),
         deleted = html_escape(&format_admin_datetime_opt(user.deleted_at)),
     );
     Html(shell_with_header(
@@ -202,28 +226,51 @@ pub async fn detail(
 
 /// `POST /admin/users/:id/deactivate` — relays to
 /// `POST /admin/users/:id/deactivate` on apps/api (revokes sessions + sets
-/// `deleted_at` + audit row, all server-side). 204 → PRG to the list with a
-/// success banner; 404 → not-found page (unknown or already deactivated); 403 →
-/// forbidden (unreachable once gated; defensive); any other status → the list
-/// with a service-unavailable banner; a transport error → the service page.
+/// `deactivated_at` + audit row, all server-side). 204 → PRG to the list with
+/// a success banner; 404 → not-found page (unknown, already deactivated or
+/// purged); 403 → forbidden (unreachable once gated; defensive); any other
+/// status → the list with a service-unavailable banner; a transport error →
+/// the service page.
 pub async fn deactivate(
     CurrentSuperAdmin(_me): CurrentSuperAdmin,
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(user_id): Path<Uuid>,
 ) -> Response {
-    let cookie = admin_cookie(&headers);
+    relay_action(&state, &headers, user_id, "deactivate", "user_deactivated").await
+}
+
+/// `POST /admin/users/:id/reactivate` — relays to the same apps/api route
+/// (clears `deactivated_at` + audit row, #256), with the same status mapping
+/// as [`deactivate`]; a 404 there means unknown, not deactivated, or purged.
+pub async fn reactivate(
+    CurrentSuperAdmin(_me): CurrentSuperAdmin,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(user_id): Path<Uuid>,
+) -> Response {
+    relay_action(&state, &headers, user_id, "reactivate", "user_reactivated").await
+}
+
+async fn relay_action(
+    state: &AppState,
+    headers: &HeaderMap,
+    user_id: Uuid,
+    action: &str,
+    notice: &str,
+) -> Response {
+    let cookie = admin_cookie(headers);
     match api_request_auth(
-        &state,
+        state,
         reqwest::Method::POST,
-        &format!("/admin/users/{user_id}/deactivate"),
+        &format!("/admin/users/{user_id}/{action}"),
         cookie.as_deref(),
         None,
     )
     .await
     {
         Ok(resp) if resp.status == reqwest::StatusCode::NO_CONTENT => {
-            Redirect::to("/admin/users?notice=user_deactivated").into_response()
+            Redirect::to(&format!("/admin/users?notice={notice}")).into_response()
         }
         Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
             user_not_found_page().into_response()

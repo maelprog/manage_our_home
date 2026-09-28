@@ -28,7 +28,8 @@ use crate::state::AppState;
 // Re-export the pure, TDD'd helpers from `apps/shared` so the submodules import
 // them from the local module like the other epics do.
 pub(crate) use manage_our_home_shared::validation::user_admin::{
-    can_deactivate, format_admin_datetime, format_admin_datetime_opt, user_status_label,
+    can_deactivate, can_reactivate, format_admin_datetime, format_admin_datetime_opt,
+    user_status_label,
 };
 
 /// The caller's session cookie, forwarded to the authenticated `/admin/*` API

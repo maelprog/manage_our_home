@@ -21,9 +21,9 @@ l'ouverture publique : voir `docs/v2-deployment.md` #16.
   `apps/` ne l'appelle, et les suggestions de recettes sont un tri par
   règles (`apps/api/src/recipes/suggestions.rs`).
 - **Mailjet** (Mailjet SAS, groupe Sinch), relais SMTP transactionnel —
-  les quatre seuls emails que le service envoie : vérification d'adresse,
-  réinitialisation de mot de passe, invitation à un groupe et rappel
-  d'événement. Reçoit l'adresse du destinataire, l'objet et le corps de
+  les cinq seuls emails que le service envoie : vérification d'adresse,
+  réinitialisation de mot de passe, invitation à un groupe, rappel
+  d'événement et avertissement avant la purge d'un compte désactivé (#256). Reçoit l'adresse du destinataire, l'objet et le corps de
   chacun (l'objet d'un rappel recopie le titre de l'événement ; le corps
   d'une invitation nomme le groupe et le membre qui invite). Retenu le
   2026-09-19 parmi les deux candidats étudiés (Brevo, Mailjet) pour son
@@ -80,7 +80,7 @@ ligne.
 
 | # | Épic | Données traitées | Finalité | Base légale | Durée de conservation | Destinataires |
 |---|---|---|---|---|---|---|
-| 1 | Auth + Groupes | email, mot de passe (haché argon2), nom affiché, déclaration d'avoir au moins 15 ans et sa date (`users.age_declared_at` ; aucune date de naissance — art. 8 RGPD, #137), appartenance aux groupes et rôle, sessions (création, dernière activité, expiration, révocation) | Authentification, gestion de compte, isolation familiale | Exécution du contrat | Compte actif + 30j de grâce après demande de suppression, puis purge du compte (voir « Droit à l'effacement » ci-dessous) : la ligne `users` est anonymisée, déclaration d'âge effacée comprise, et l'appartenance aux groupes et le rôle sont supprimés ; une session vaut 30 jours au plus et prend fin après 7 jours sans activité ; sa ligne est supprimée par la purge de conservation horaire (`apps/api/src/jobs/retention_purge.rs`, #138) dès que la session a pris fin — révocation (déconnexion, changement de mot de passe), `expires_at` dépassé, ou `last_seen_at` plus vieux que 7 jours, le même critère que l'extracteur de session (`last_seen_at` n'est réécrit qu'une fois par heure) — ou que le compte est désactivé, et au plus tard à la purge du compte | Aucun tiers |
+| 1 | Auth + Groupes | email, mot de passe (haché argon2), nom affiché, déclaration d'avoir au moins 15 ans et sa date (`users.age_declared_at` ; aucune date de naissance — art. 8 RGPD, #137), appartenance aux groupes et rôle, sessions (création, dernière activité, expiration, révocation) | Authentification, gestion de compte, isolation familiale | Exécution du contrat | Compte actif + 30j de grâce après demande de suppression, puis purge du compte (voir « Droit à l'effacement » ci-dessous) : la ligne `users` est anonymisée, déclaration d'âge effacée comprise, et l'appartenance aux groupes et le rôle sont supprimés ; une session vaut 30 jours au plus et prend fin après 7 jours sans activité ; sa ligne est supprimée par la purge de conservation horaire (`apps/api/src/jobs/retention_purge.rs`, #138) dès que la session a pris fin — révocation (déconnexion, changement de mot de passe), `expires_at` dépassé, ou `last_seen_at` plus vieux que 7 jours, le même critère que l'extracteur de session (`last_seen_at` n'est réécrit qu'une fois par heure) — ou que le compte est désactivé, et au plus tard à la purge du compte. Un compte désactivé par le superadmin est purgé après 2 ans de désactivation (voir ligne 8) ; un compte dont la suppression a été demandée l'est au terme de ses 30 jours de grâce, désactivé ou non (#139) | Aucun tiers |
 | 1a | Connexion avec Google | identifiant Google (`sub`), email et nom du profil Google (le nom sert de nom affiché si le compte est créé à cette occasion), jeton de rafraîchissement chiffré via `pgcrypto` quand Google en délivre un — aucun code ne le relit aujourd'hui (`oauth_identities`) | Authentification par un fournisseur d'identité, au choix de l'utilisateur | Exécution du contrat | Jusqu'à la purge du compte, qui supprime la ligne `oauth_identities` | Google (fournisseur d'identité : reçoit la demande d'autorisation, échange le code, sert le profil) |
 | 1b | Jetons de vérification d'email et de réinitialisation du mot de passe | jeton, compte concerné, dates de création, d'expiration et de consommation (`email_verification_tokens`, `password_reset_tokens`) | Prouver la possession de l'adresse ; réinitialiser un mot de passe oublié | Exécution du contrat | Valables 24 h (vérification) et 1 h (réinitialisation), à usage unique ; un jeton de réinitialisation est supprimé à l'usage ; la purge de conservation horaire (#138) supprime un jeton de vérification 48 h après sa création, consommé ou non, et un jeton de réinitialisation inutilisé 1 h après ; la purge du compte supprime ceux qui restent | Mailjet (le lien porteur du jeton part par email) |
 | 1c | Invitations à un groupe | adresse email de la personne invitée, facultative (une invitation peut n'être qu'un lien) et stockée en clair, jeton, auteur, dates (`invitations`) ; la colonne `consumed_by`, qui nommait le membre ayant accepté, n'est plus jamais renseignée depuis #138 — l'acceptation supprime la ligne | Faire entrer une personne dans un groupe ; la personne invitée est un tiers qui n'a pas encore de compte | Intérêt légitime (du membre qui invite un proche) | Valable 7 jours, à usage unique ; la ligne, adresse comprise, est supprimée à l'acceptation, sinon par la purge de conservation horaire 30 jours après sa création (#138), ou avant, avec le groupe s'il est supprimé ou à la purge du compte du membre qui l'a émise (#139) | Mailjet (si une adresse est saisie : email portant le nom du groupe, le nom affiché du membre qui invite, le lien, et la notice d'information de l'art. 14 — identité et contact du responsable, finalité, base légale, durée de conservation, source de l'adresse, lien vers la politique, droit de réclamation ; #134) |
@@ -94,17 +94,18 @@ ligne.
 | 6 | Budget | dépenses saisies manuellement (montant, nom, date) | Suivi du budget alimentaire familial | Exécution du contrat | Idem #2 | Aucun tiers |
 | 7 | Messagerie | contenu des messages (chiffré au repos via `pgcrypto`) | Communication au sein du groupe familial | Exécution du contrat | Idem #2 | Aucun tiers |
 | 7a | État de lecture de la messagerie | un horodatage par (groupe, membre), avancé quand le membre ouvre la messagerie (`message_read_state`) | Compter les messages non lus de ce membre | Exécution du contrat | Tant que le groupe existe ; survit au départ du groupe, pas à la purge du compte, qui la supprime (#139) | Aucun tiers |
-| 8 | User admin (superadmin) | liste des groupes/utilisateurs à l'échelle globale, action de désactivation | Support technique/maintenance de la plateforme | Intérêt légitime (exploitation du service) | Durée de vie du compte concerné | Aucun tiers |
+| 8 | User admin (superadmin) | liste des groupes/utilisateurs à l'échelle globale ; désactivation et réactivation d'un compte, date de désactivation (`users.deactivated_at`) et date de l'email d'avertissement (`users.deactivation_notice_sent_at`) | Support technique/maintenance de la plateforme | Intérêt légitime (exploitation du service) | La désactivation n'efface rien et dure jusqu'à la réactivation, qui efface les deux dates. Sans réactivation, le compte est purgé (voir « Droit à l'effacement » ci-dessous) après 2 ans de désactivation — durée recommandée par la CNIL pour un compte inactif, arbitrage du responsable de traitement du 2026-09-28 (#256) ; son titulaire est averti une fois par email 30 jours avant, et la purge n'a jamais lieu moins de 30 jours après cet email ; s'il n'a pas pu partir, elle a lieu au plus tôt 2 ans et 30 jours après la désactivation | Mailjet (l'email d'avertissement : adresse du compte, dates de désactivation et de purge, identité et contact du responsable) |
 | 9 | Import calendrier Google | URL de flux iCal privée (chiffrée), libellé, date du dernier import, événements importés et leur identifiant externe | Miroir en lecture seule d'un agenda Google externe | Consentement explicite (l'utilisateur fournit volontairement l'URL) | Jusqu'à la suppression de l'import par un administrateur ou le propriétaire du groupe, ou du groupe ; les événements importés restent après la suppression de l'import sauf si leur suppression est demandée avec lui ; la purge du compte du membre qui a configuré l'import supprime l'import, URL de flux comprise, et laisse ses événements dans le groupe (#139) | Hébergeur du flux (Google en pratique ; le code accepte toute URL `http`/`https`), interrogé par le serveur à chaque import lancé par un membre — aucune synchronisation en arrière-plan |
-| — | Logs d'audit (transverse) | horodatage, acteur, action, cible, métadonnées (identifiants et compteurs) ; actions journalisées : export, demande et annulation de suppression de compte, purge, suppression de groupe, transfert de propriété, changement de rôle, consultation des listes et désactivation d'un compte par le superadmin — les connexions ne le sont pas | Traçabilité de sécurité, obligations RGPD (preuve des actions d'export/suppression) | Intérêt légitime | 6 mois glissants (recommandation de la CNIL pour les journaux, délibération n° 2021-122), appliqués par la purge de conservation horaire (#138) ; la purge d'un compte supprime aussitôt les entrées dont il est l'acteur ; restent, pour la même durée, celles qui le concernent sans être de son fait (voir « Droit à l'effacement » ci-dessous) (#139). Le minimum d'un an du décret n° 2021-1362 a été écarté : il vise les hébergeurs et les services de communication au public, pas une application familiale portée par une personne physique — arbitrage du responsable de traitement du 2026-09-19, à revoir si le service change de nature | Aucun tiers |
+| — | Logs d'audit (transverse) | horodatage, acteur, action, cible, métadonnées (identifiants et compteurs) ; actions journalisées : export, demande et annulation de suppression de compte, purge, suppression de groupe, transfert de propriété, changement de rôle, consultation des listes, désactivation et réactivation d'un compte par le superadmin — les connexions ne le sont pas | Traçabilité de sécurité, obligations RGPD (preuve des actions d'export/suppression) | Intérêt légitime | 6 mois glissants (recommandation de la CNIL pour les journaux, délibération n° 2021-122), appliqués par la purge de conservation horaire (#138) ; la purge d'un compte supprime aussitôt les entrées dont il est l'acteur ; restent, pour la même durée, celles qui le concernent sans être de son fait (voir « Droit à l'effacement » ci-dessous) (#139). Le minimum d'un an du décret n° 2021-1362 a été écarté : il vise les hébergeurs et les services de communication au public, pas une application familiale portée par une personne physique — arbitrage du responsable de traitement du 2026-09-19, à revoir si le service change de nature | Aucun tiers |
 | 12 | RGPD (export/suppression) | export à la demande (Art. 20), demande/annulation de suppression (Art. 17) | Exercice des droits RGPD | Obligation légale | L'export n'est pas persisté côté serveur (généré à la demande, retourné directement) | Aucun tiers |
 
 ## Droit à l'effacement — modalités de purge
 
 Décrit en détail dans `docs/privacy-policy.md` et implémenté par
 `apps/api/src/jobs/account_purge.rs` : à l'expiration du délai de grâce de
-30 jours suivant `POST /account/delete`, le job de purge, en une
-transaction par compte :
+30 jours suivant `POST /account/delete` — que le compte ait été désactivé
+depuis ou non (#139) — ou après 2 ans de désactivation par le superadmin
+(ligne 8, #256), le job de purge, en une transaction par compte :
 
 1. Supprime les lignes que le schéma rattache au compte par
    `ON DELETE CASCADE` — la ligne `users` n'étant qu'anonymisée, aucune
@@ -157,7 +158,7 @@ plus ancien d'abord dans chaque rang (`joined_at`, puis `user_id`) :
 administrateurs actifs, membres actifs, administrateurs dont la
 suppression est demandée (`deletion_requested_at` — ils peuvent encore
 l'annuler), membres dont la suppression est demandée. Un membre désactivé
-par le support (`deleted_at`) n'hérite jamais : s'il ne reste que de tels
+par le support (`deactivated_at`) n'hérite jamais : s'il ne reste que de tels
 membres, le groupe reste sans propriétaire et ils gardent leur
 appartenance. Un groupe dont le compte était le seul membre reste, avec
 son contenu, sans membre — arbitrage du responsable de traitement du
@@ -167,10 +168,18 @@ Un compte purgé ne peut plus se connecter par aucune voie : la connexion
 par mot de passe et l'extracteur de session refusent une ligne
 `deleted_at` ; ses sessions, son identité Google et ses jetons sont
 supprimés ; la vérification d'email et la réinitialisation du mot de passe
-refusent un jeton d'un compte `deleted_at` (utile pour un compte désactivé
-par le support, dont les jetons subsistent jusqu'à la purge de
-conservation) ; la connexion avec Google ne retrouve ni l'identité ni
-l'email, et crée un compte nouveau, distinct.
+refusent un jeton d'un compte `deleted_at` ; la connexion avec Google ne
+retrouve ni l'identité ni l'email, et crée un compte nouveau, distinct.
+
+Un compte désactivé par le support (`deactivated_at`) est refusé par les
+mêmes voies, avec la même réponse qu'un identifiant inconnu : la
+connexion par mot de passe, l'extracteur de session, la vérification
+d'email et la réinitialisation du mot de passe (ses jetons subsistent
+jusqu'à la purge de conservation), et la connexion avec Google, qui le
+retrouve et refuse sans rien écrire (#194). La réactivation par le
+superadmin (`POST /admin/users/:id/reactivate`, inscrite au journal
+`admin.user.reactivate`) lui rend la connexion ; les sessions révoquées
+à la désactivation le restent.
 
 ## Durées de conservation — purge horaire
 

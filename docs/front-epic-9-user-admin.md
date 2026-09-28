@@ -43,16 +43,21 @@ its user in the same list the table renders — exactly how Messagerie (F8)
 derives one message from the paginated list when there is no single-message GET.
 An id that isn't in the list → the "Utilisateur introuvable" page.
 
-### Deactivate is immediate and terminal — kept distinct from self-service deletion
+### Deactivate is immediate and reversible — kept distinct from self-service deletion
 
 `POST /admin/users/:id/deactivate` is a support action: it revokes every active
-session and sets `deleted_at` **now**, atomically with the audit-log write. It is
+session and sets `deactivated_at` **now**, atomically with the audit-log write.
+Nothing is anonymised: `POST /admin/users/:id/reactivate` gives the account
+back, and without it the account purge takes it after 2 years, its holder
+warned by email 30 days before (#256). `deleted_at` is the purge's mark only. It is
 deliberately **not** the self-service account deletion (F10), which is a
 grace-period flow keyed on `deletion_requested_at`. The copy keeps them apart
 ("Action immédiate de support… À distinguer de la suppression de compte en
 libre-service"), and the confirm form only renders while the account is still
-active — the backend guards with `AND deleted_at IS NULL` and 404s a second
-attempt, so `can_deactivate` (pure, TDD'd) hides the button once it is gone. A
+active — the backend guards with `AND deactivated_at IS NULL AND deleted_at IS
+NULL` and 404s a second attempt, so `can_deactivate` (pure, TDD'd) hides the
+button once it is gone; `can_reactivate` shows the reactivate form in its place
+until the purge takes the account. A
 native `confirm()` guards the click (progressive enhancement — with JS off the
 form still posts; the confirmation is a convenience, not a security control,
 since the backend is the authority).
@@ -78,7 +83,8 @@ set manually via SQL, matching the backend's stance).
 | GET | `/admin/groups` | `admin::groups::get` | Read-only table of every family (id/name/created/member count) across all tenants | `GET /admin/groups` |
 | GET | `/admin/users` | `admin::users::get` | Read-only table of every account (email/verified/created/status), each linking to the detail | `GET /admin/users` |
 | GET | `/admin/users/:id` | `admin::users::detail` | One account's detail + the deactivate confirm form (when still active) | `GET /admin/users` (found in the list) |
-| POST | `/admin/users/:id/deactivate` | `admin::users::deactivate` | Immediate deactivate (revoke sessions + set `deleted_at`) | `POST /admin/users/:id/deactivate` |
+| POST | `/admin/users/:id/deactivate` | `admin::users::deactivate` | Immediate deactivate (revoke sessions + set `deactivated_at`) | `POST /admin/users/:id/deactivate` |
+| POST | `/admin/users/:id/reactivate` | `admin::users::reactivate` | Reactivate (clear `deactivated_at`, #256) | `POST /admin/users/:id/reactivate` |
 
 Every route is gated by `CurrentSuperAdmin`: no session → `/login`;
 authenticated non-superadmin → `/`. The `Admin` nav link (→ `/admin/users`) sits
@@ -111,7 +117,7 @@ row is the exact `(status, code)` → French UI state.
 
 | Status | Code | UI |
 |---|---|---|
-| 200 | — | user detail; deactivate form when `deleted_at` is null, else "déjà désactivé" note |
+| 200 | — | user detail; deactivate form for an active account, reactivate form for a deactivated one, "a été purgé" note for a purged one |
 | — | id not in the list | "Utilisateur introuvable" page |
 | — | transport error | service-unavailable page |
 
@@ -120,7 +126,17 @@ row is the exact `(status, code)` → French UI state.
 | Status | Code | UI |
 |---|---|---|
 | 204 | — | PRG → `/admin/users?notice=user_deactivated` |
-| 404 | `not_found` | "Utilisateur introuvable" page (unknown or already deactivated) |
+| 404 | `not_found` | "Utilisateur introuvable" page (unknown, already deactivated or purged) |
+| 403 | `forbidden` | forbidden page (unreachable once gated; defensive) |
+| — | other status | PRG → `/admin/users?error=unavailable` |
+| — | transport error | service-unavailable page |
+
+### `POST /admin/users/:id/reactivate` — `reactivate_user` (#256)
+
+| Status | Code | UI |
+|---|---|---|
+| 204 | — | PRG → `/admin/users?notice=user_reactivated` |
+| 404 | `not_found` | "Utilisateur introuvable" page (unknown, not deactivated or purged) |
 | 403 | `forbidden` | forbidden page (unreachable once gated; defensive) |
 | — | other status | PRG → `/admin/users?error=unavailable` |
 | — | transport error | service-unavailable page |
@@ -145,9 +161,10 @@ stays the authority: a forged call from a non-superadmin session is still 403'd.
 3. From a user's detail page a superadmin deactivates the account: a success
    banner, the target's existing session stops working (their next page → 
    `/login`), and the row now reads `Désactivé`.
-4. Deactivation is terminal: revisiting the detail of an already-deactivated
-   account shows no deactivate button, and an unknown user id → "Utilisateur
-   introuvable".
+4. Revisiting the detail of a deactivated account shows no deactivate button
+   but a reactivate one; reactivating brings a success banner, the row reads
+   `Actif` again and the holder can log in (#256). An unknown user id →
+   "Utilisateur introuvable".
 5. An authenticated **non**-superadmin sees no `Admin` link and is redirected to
    `/` on any `/admin/*` route; an unauthenticated visitor is redirected to
    `/login`.

@@ -1,21 +1,10 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, email, email_verified, created_at, deleted_at, deletion_requested_at\n        FROM users\n        ORDER BY created_at\n        ",
+  "query": "\n            SELECT email, deletion_requested_at, deactivated_at,\n                   deactivation_notice_sent_at, deleted_at, now() AS \"now!\"\n            FROM users WHERE id = $1 FOR UPDATE\n            ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "id",
-        "type_info": "Uuid",
-        "origin": {
-          "Table": {
-            "table": "users",
-            "name": "id"
-          }
-        }
-      },
-      {
-        "ordinal": 1,
         "name": "email",
         "type_info": "Text",
         "origin": {
@@ -26,24 +15,35 @@
         }
       },
       {
-        "ordinal": 2,
-        "name": "email_verified",
-        "type_info": "Bool",
+        "ordinal": 1,
+        "name": "deletion_requested_at",
+        "type_info": "Timestamptz",
         "origin": {
           "Table": {
             "table": "users",
-            "name": "email_verified"
+            "name": "deletion_requested_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "deactivated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "deactivated_at"
           }
         }
       },
       {
         "ordinal": 3,
-        "name": "created_at",
+        "name": "deactivation_notice_sent_at",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
             "table": "users",
-            "name": "created_at"
+            "name": "deactivation_notice_sent_at"
           }
         }
       },
@@ -60,27 +60,24 @@
       },
       {
         "ordinal": 5,
-        "name": "deletion_requested_at",
+        "name": "now!",
         "type_info": "Timestamptz",
-        "origin": {
-          "Table": {
-            "table": "users",
-            "name": "deletion_requested_at"
-          }
-        }
+        "origin": "Expression"
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Uuid"
+      ]
     },
     "nullable": [
       false,
-      false,
-      false,
-      false,
       true,
-      true
+      true,
+      true,
+      true,
+      null
     ]
   },
-  "hash": "262c6685ba1208d0be94b09687a66ccce93cda50eec3f3ed3c1064005ac075d6"
+  "hash": "8e76d1cbe87a11bf09348c32a233dcdefc57b5c8698a2456e3fe2bd1de1c47be"
 }

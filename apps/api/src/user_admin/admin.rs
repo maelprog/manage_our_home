@@ -26,6 +26,7 @@ pub struct AdminUserResponse {
     pub email_verified: bool,
     pub created_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
+    pub deactivated_at: Option<DateTime<Utc>>,
     pub deletion_requested_at: Option<DateTime<Utc>>,
 }
 
@@ -89,7 +90,8 @@ pub async fn list_users(
     let rows = sqlx::query_as!(
         AdminUserResponse,
         r#"
-        SELECT id, email, email_verified, created_at, deleted_at, deletion_requested_at
+        SELECT id, email, email_verified, created_at, deleted_at, deactivated_at,
+               deletion_requested_at
         FROM users
         ORDER BY created_at
         "#
@@ -114,9 +116,12 @@ pub async fn list_users(
 
 /// AC #3: an immediate support action, distinct from the self-service
 /// `account/delete` flow (which sets `deletion_requested_at` with a grace
-/// period, see the Auth epic) — sets `deleted_at` directly and revokes
-/// every active session in the same transaction as the audit-log write,
-/// so a compromised/abusive account is locked out atomically.
+/// period, see the Auth epic) — sets `deactivated_at` and revokes every
+/// active session in the same transaction as the audit-log write, so a
+/// compromised/abusive account is locked out atomically. Nothing is
+/// anonymised: the account purge takes it 2 years later, unless
+/// [`reactivate_user`] gives it back first (#256). An account already
+/// deactivated, or purged, is a 404.
 pub async fn deactivate_user(
     State(state): State<AppState>,
     actor: SuperAdminUser,
@@ -125,7 +130,8 @@ pub async fn deactivate_user(
     let mut tx = crate::db::begin(&state.admin_db).await?;
 
     let updated = sqlx::query!(
-        "UPDATE users SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL",
+        r#"UPDATE users SET deactivated_at = now(), deactivation_notice_sent_at = NULL
+           WHERE id = $1 AND deactivated_at IS NULL AND deleted_at IS NULL"#,
         target_user_id
     )
     .execute(&mut *tx)
@@ -145,6 +151,44 @@ pub async fn deactivate_user(
         &mut tx,
         Some(actor.user_id),
         "admin.user.deactivate",
+        "user",
+        &target_user_id.to_string(),
+        json!({}),
+    )
+    .await?;
+
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Gives back an account [`deactivate_user`] locked (#256): clears
+/// `deactivated_at`, and with it the warning of the coming purge, so a
+/// later deactivation starts a new 2 years. The sessions revoked at
+/// deactivation stay revoked — the holder logs in again. An account that
+/// is not deactivated, or already purged (nothing is left to give back),
+/// is a 404. Traced in `audit_log` like the deactivation.
+pub async fn reactivate_user(
+    State(state): State<AppState>,
+    actor: SuperAdminUser,
+    Path(target_user_id): Path<Uuid>,
+) -> AppResult<impl IntoResponse> {
+    let mut tx = crate::db::begin(&state.admin_db).await?;
+
+    let updated = sqlx::query!(
+        r#"UPDATE users SET deactivated_at = NULL, deactivation_notice_sent_at = NULL
+           WHERE id = $1 AND deactivated_at IS NOT NULL AND deleted_at IS NULL"#,
+        target_user_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    if updated.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+
+    audit::record(
+        &mut tx,
+        Some(actor.user_id),
+        "admin.user.reactivate",
         "user",
         &target_user_id.to_string(),
         json!({}),

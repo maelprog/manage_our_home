@@ -136,8 +136,13 @@ async fn main() -> anyhow::Result<()> {
     ));
     // On the admin pool: five of the tables the purge deletes from are
     // under forced RLS policies, and the pass refuses to run without
-    // BYPASSRLS (#139).
-    tokio::spawn(jobs::account_purge::run(state.admin_db.clone()));
+    // BYPASSRLS (#139). It also warns the holders of deactivated accounts
+    // before their purge (#256), hence the mailer.
+    tokio::spawn(jobs::account_purge::run(
+        state.admin_db.clone(),
+        state.email.clone(),
+        format!("{}/privacy-policy", state.frontend_base_url),
+    ));
     // On the admin pool too: `invitations` is under a forced RLS policy,
     // and the pass refuses to run without BYPASSRLS (#138).
     tokio::spawn(jobs::retention_purge::run(state.admin_db.clone()));

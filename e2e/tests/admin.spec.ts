@@ -4,7 +4,8 @@ import { fetchVerificationToken, makeSuperadmin } from "../lib/db";
 // Front epic F9 — User admin (issue #24): the superadmin support screens.
 // Read-only look-up of every family (/admin/groups) and every account
 // (/admin/users) across all tenants — the one gated exception to the RLS
-// boundary — plus the immediate `deactivate` action on a user. The whole
+// boundary — plus the immediate `deactivate` action on a user and its
+// `reactivate` counterpart (#256). The whole
 // /admin tree is gated: the nav link and the pages render only for a
 // superadmin; an authenticated non-superadmin is bounced to `/`. See
 // docs/front-epic-9-user-admin.md.
@@ -124,7 +125,7 @@ test.describe("User admin — support look-up", () => {
 });
 
 test.describe("User admin — deactivate", () => {
-  test("deactivating a user revokes their session and is terminal", async ({ browser }) => {
+  test("deactivating a user revokes their session until a reactivation", async ({ browser }) => {
     // A target user with a live session.
     const targetCtx = await browser.newContext();
     const target = await targetCtx.newPage();
@@ -154,10 +155,21 @@ test.describe("User admin — deactivate", () => {
     await target.goto("/");
     await expect(target).toHaveURL(/\/login$/);
 
-    // The action is terminal: the detail page offers no deactivate button and
-    // the backend would 404 a second attempt.
+    // A deactivated account offers no second deactivation (the backend would
+    // 404 it), only its reactivation (#256).
     await page.locator("tr", { hasText: targetEmail }).getByRole("link", { name: "Détails" }).click();
-    await expect(page.getByText("déjà désactivé", { exact: false })).toBeVisible();
     await expect(page.getByRole("button", { name: "Désactiver le compte" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Réactiver le compte" }).click();
+
+    await expect(page).toHaveURL("/admin/users?notice=user_reactivated");
+    await expect(page.getByText("Compte réactivé", { exact: false })).toBeVisible();
+    await expect(page.locator("tr", { hasText: targetEmail })).toContainText("Actif");
+
+    // The revoked session stays revoked; the holder logs in again.
+    await target.goto("/login");
+    await target.getByLabel("Email").fill(targetEmail);
+    await target.getByRole("textbox", { name: "Mot de passe" }).fill(PASSWORD);
+    await target.getByRole("button", { name: "Se connecter" }).click();
+    await expect(target).toHaveURL("/");
   });
 });

@@ -40,6 +40,7 @@ données sont-elles conservées ? ».
 | Vérification d'email et réinitialisation du mot de passe | jetons à usage unique envoyés par email, valables 24 h (vérification) ou 1 h (réinitialisation) | Exécution du contrat |
 | Protection de la connexion | adresse IP (en IPv6, réduite à son préfixe /64) et email saisi à chaque tentative de connexion par mot de passe, gardés en mémoire du serveur seulement, jamais en base | Intérêt légitime (limiter les essais de mot de passe) |
 | Invitations | adresse email de la personne invitée (si le membre qui invite la saisit), lien d'invitation valable 7 jours ; l'email envoyé nomme le groupe et le membre qui invite | Intérêt légitime (permettre à un membre d'inviter un proche dans son groupe) |
+| Désactivation d'un compte | date à laquelle l'administrateur du service a désactivé le compte, date de l'email qui prévient de sa suppression | Intérêt légitime (exploitation et sécurité du service) |
 | Agenda | événements, tâches, pièces jointes, membres assignés à un événement | Exécution du contrat |
 | Rappels d'événements | délai choisi avant l'événement ; l'email de rappel porte le titre et la date de l'événement | Exécution du contrat |
 | Stocks / recettes / liste de courses | articles, recettes, ingrédients | Exécution du contrat |
@@ -88,8 +89,9 @@ possibles sont :
   arrière-plan.
 - **Mailjet** (Mailjet SAS, groupe Sinch), le service qui achemine les
   emails du site : vérification d'adresse, réinitialisation de mot de passe,
-  invitation à un groupe et rappel d'événement — les quatre seuls emails que
-  ce service envoie. Mailjet reçoit l'adresse du destinataire, l'objet et le
+  invitation à un groupe, rappel d'événement et avertissement avant la
+  suppression d'un compte désactivé — les cinq seuls emails que ce service
+  envoie. Mailjet reçoit l'adresse du destinataire, l'objet et le
   corps de chacun : l'objet d'un rappel reprend le titre de l'événement, et
   le corps d'une invitation nomme le groupe et le membre qui invite. C'est un
   sous-traitant du responsable de traitement, inscrit à son registre des
@@ -152,6 +154,16 @@ de la purge dépasserait.
   purgé : l'email et le nom sont remplacés, le mot de passe haché est
   effacé, et l'appartenance aux groupes et le rôle sont supprimés (voir
   ci-dessous).
+- **Compte désactivé par l'administrateur du service** : la désactivation
+  révoque les sessions et bloque la connexion, sans rien effacer ;
+  l'administrateur peut réactiver le compte. Un compte qui reste désactivé
+  2 ans — la durée que recommande la CNIL pour un compte inactif — est
+  purgé comme ci-dessous. Son titulaire en est prévenu une fois, par email
+  à l'adresse du compte, 30 jours avant ; la purge n'a jamais lieu moins
+  de 30 jours après cet email, et, s'il n'a pas pu partir, pas avant 2 ans
+  et 30 jours de désactivation. Un compte dont la suppression avait été
+  demandée avant sa désactivation est purgé au terme de ses 30 jours de
+  grâce, comme tout autre.
 - **Déclaration d'âge** : la déclaration et sa date restent tant que le
   compte existe, et sont effacées à la purge du compte.
 - **Sessions de connexion** : une session vaut 30 jours au plus, et prend

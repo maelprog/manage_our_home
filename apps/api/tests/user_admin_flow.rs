@@ -231,7 +231,7 @@ async fn invalid_session_gets_401_on_admin_routes_whatever_the_flag(db: PgPool) 
         let orphaned = login(&router, email, password).await;
         let res = call(&router, Method::GET, "/admin/groups", Some(&orphaned), None).await;
         assert_status(&res, expected_when_valid);
-        sqlx::query("UPDATE users SET deleted_at = now() WHERE email = $1")
+        sqlx::query("UPDATE users SET deactivated_at = now() WHERE email = $1")
             .bind(email)
             .execute(&db)
             .await
@@ -390,9 +390,10 @@ async fn superadmin_sees_groups_across_families_and_is_audited(db: PgPool) {
 }
 
 /// AC #3, #4: deactivating a user revokes all active sessions (the old
-/// cookie stops working) and sets `deleted_at`, with an audit_log row.
+/// cookie stops working) and sets `deactivated_at` — not `deleted_at`, the
+/// purge's mark (#256) — with an audit_log row.
 #[sqlx::test]
-async fn deactivate_revokes_sessions_and_sets_deleted_at(db: PgPool) {
+async fn deactivate_revokes_sessions_and_sets_deactivated_at(db: PgPool) {
     let router = test_router(db.clone());
     let target_cookie =
         register_verify_login(&router, &db, "target-user@example.test", "target-password1").await;
@@ -441,12 +442,26 @@ async fn deactivate_revokes_sessions_and_sets_deleted_at(db: PgPool) {
     .await;
     assert_status(&post_check, StatusCode::UNAUTHORIZED);
 
-    let deleted_at: Option<chrono::DateTime<chrono::Utc>> =
-        sqlx::query_scalar!("SELECT deleted_at FROM users WHERE id = $1", target_id)
-            .fetch_one(&db)
-            .await
-            .unwrap();
-    assert!(deleted_at.is_some());
+    let (deactivated, purged): (bool, bool) = sqlx::query_as(
+        "SELECT deactivated_at IS NOT NULL, deleted_at IS NOT NULL FROM users WHERE id = $1",
+    )
+    .bind(target_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert!(deactivated);
+    assert!(!purged);
+
+    // Nor can the account open a new one.
+    let relogin = call(
+        &router,
+        Method::POST,
+        "/auth/login",
+        None,
+        Some(serde_json::json!({"email": "target-user@example.test", "password": "target-password1"})),
+    )
+    .await;
+    assert_status(&relogin, StatusCode::UNAUTHORIZED);
 
     let superadmin_id: uuid::Uuid = sqlx::query_scalar!(
         "SELECT id FROM users WHERE email = $1",
@@ -484,6 +499,127 @@ async fn deactivate_unknown_user_returns_404(db: PgPool) {
     )
     .await;
     assert_status(&res, StatusCode::NOT_FOUND);
+}
+
+async fn admin_post(
+    router: &axum::Router,
+    cookie: &str,
+    user: uuid::Uuid,
+    action: &str,
+) -> StatusCode {
+    call(
+        router,
+        Method::POST,
+        &format!("/admin/users/{user}/{action}"),
+        Some(cookie),
+        None,
+    )
+    .await
+    .status()
+}
+
+/// #256: the superadmin gives a deactivated account back. Login works
+/// again, the purge clock and its warning are cleared, and the action is
+/// in `audit_log`. A second reactivation, or one of an account never
+/// deactivated, 404s.
+#[sqlx::test]
+async fn reactivate_gives_the_account_back_and_is_audited(db: PgPool) {
+    let router = test_router(db.clone());
+    register_verify_login(&router, &db, "back@example.test", "back-password1").await;
+    let superadmin_cookie =
+        register_verify_login(&router, &db, "superadmin4@example.test", "super-password1").await;
+    make_superadmin(&db, "superadmin4@example.test").await;
+    let target: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind("back@example.test")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        admin_post(&router, &superadmin_cookie, target, "reactivate").await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        admin_post(&router, &superadmin_cookie, target, "deactivate").await,
+        StatusCode::NO_CONTENT
+    );
+    // A warning already sent, as the purge job would have stamped it.
+    sqlx::query("UPDATE users SET deactivation_notice_sent_at = now() WHERE id = $1")
+        .bind(target)
+        .execute(&db)
+        .await
+        .unwrap();
+    let login_body =
+        serde_json::json!({"email": "back@example.test", "password": "back-password1"});
+    let refused = call(
+        &router,
+        Method::POST,
+        "/auth/login",
+        None,
+        Some(login_body.clone()),
+    )
+    .await;
+    assert_status(&refused, StatusCode::UNAUTHORIZED);
+
+    assert_eq!(
+        admin_post(&router, &superadmin_cookie, target, "reactivate").await,
+        StatusCode::NO_CONTENT
+    );
+
+    let (deactivated, noticed): (bool, bool) = sqlx::query_as(
+        "SELECT deactivated_at IS NOT NULL, deactivation_notice_sent_at IS NOT NULL
+         FROM users WHERE id = $1",
+    )
+    .bind(target)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert!(!deactivated);
+    assert!(!noticed);
+    let back = call(&router, Method::POST, "/auth/login", None, Some(login_body)).await;
+    assert_status(&back, StatusCode::OK);
+
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log a JOIN users u ON u.id = a.actor_user_id
+         WHERE u.email = 'superadmin4@example.test'
+           AND a.action = 'admin.user.reactivate' AND a.target_id = $1",
+    )
+    .bind(target.to_string())
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(audited, 1);
+
+    assert_eq!(
+        admin_post(&router, &superadmin_cookie, target, "reactivate").await,
+        StatusCode::NOT_FOUND
+    );
+}
+
+/// #256: a purged account can be neither deactivated nor reactivated —
+/// the purge leaves nothing to lock or to give back.
+#[sqlx::test]
+async fn a_purged_account_is_404_to_both_admin_actions(db: PgPool) {
+    let router = test_router(db.clone());
+    let superadmin_cookie =
+        register_verify_login(&router, &db, "superadmin5@example.test", "super-password1").await;
+    make_superadmin(&db, "superadmin5@example.test").await;
+    let purged: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO users (email, display_name, deleted_at, deactivated_at)
+         VALUES ('deleted-x@deleted.invalid', 'Utilisateur supprimé', now(), now() - interval '3 years')
+         RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+
+    for action in ["deactivate", "reactivate"] {
+        assert_eq!(
+            admin_post(&router, &superadmin_cookie, purged, action).await,
+            StatusCode::NOT_FOUND,
+            "{action}"
+        );
+    }
 }
 
 /// Regression check on existing RLS: a non-superadmin member of family A

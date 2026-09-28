@@ -146,15 +146,15 @@ pub async fn verify_email(
     Query(query): Query<VerifyEmailQuery>,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = crate::db::begin(&state.db).await?;
-    // A token of a deactivated or purged account (`deleted_at`) answers
-    // like an unknown one (#139): support deactivation keeps the tokens
-    // until the retention purge takes them.
+    // A token of a deactivated (`deactivated_at`) or purged (`deleted_at`)
+    // account answers like an unknown one (#139, #256): support
+    // deactivation keeps the tokens until the retention purge takes them.
     let row = sqlx::query!(
         r#"
         SELECT t.user_id, t.expires_at, t.consumed_at
         FROM email_verification_tokens t
         JOIN users u ON u.id = t.user_id
-        WHERE t.token = $1 AND u.deleted_at IS NULL
+        WHERE t.token = $1 AND u.deleted_at IS NULL AND u.deactivated_at IS NULL
         FOR UPDATE OF t
         "#,
         query.token
@@ -264,7 +264,7 @@ async fn login_inner(
 
     let at = Instant::now();
     let user = sqlx::query!(
-        "SELECT id, password_hash, email_verified FROM users WHERE email = $1 AND deleted_at IS NULL",
+        "SELECT id, password_hash, email_verified FROM users WHERE email = $1 AND deleted_at IS NULL AND deactivated_at IS NULL",
         body.email
     )
     .fetch_optional(&state.db)
@@ -356,7 +356,7 @@ pub async fn forgot_password(
     Json(body): Json<ForgotPasswordRequest>,
 ) -> AppResult<impl IntoResponse> {
     if let Some(user) = sqlx::query!(
-        "SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL",
+        "SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL AND deactivated_at IS NULL",
         body.email
     )
     .fetch_optional(&state.db)
@@ -410,7 +410,8 @@ pub async fn resend_verification(
     Json(body): Json<ResendVerificationRequest>,
 ) -> AppResult<impl IntoResponse> {
     let Some(user) = sqlx::query!(
-        "SELECT id FROM users WHERE email = $1 AND email_verified = false AND deleted_at IS NULL",
+        "SELECT id FROM users WHERE email = $1 AND email_verified = false AND deleted_at IS NULL
+           AND deactivated_at IS NULL",
         body.email
     )
     .fetch_optional(&state.db)
@@ -476,14 +477,15 @@ pub async fn reset_password(
     Json(body): Json<ResetPasswordRequest>,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = crate::db::begin(&state.db).await?;
-    // A token of a deactivated or purged account (`deleted_at`) answers
-    // like an unknown one, and never gives that row a password (#139).
+    // A token of a deactivated (`deactivated_at`) or purged (`deleted_at`)
+    // account answers like an unknown one, and never gives that row a
+    // password (#139, #256).
     let row = sqlx::query!(
         r#"
         SELECT t.user_id, t.expires_at
         FROM password_reset_tokens t
         JOIN users u ON u.id = t.user_id
-        WHERE t.token = $1 AND u.deleted_at IS NULL
+        WHERE t.token = $1 AND u.deleted_at IS NULL AND u.deactivated_at IS NULL
         FOR UPDATE OF t
         "#,
         body.token
@@ -711,7 +713,8 @@ pub async fn cancel_delete_account(
         r#"
         UPDATE users
         SET deletion_requested_at = NULL
-        WHERE id = $1 AND deletion_requested_at IS NOT NULL AND deleted_at IS NULL
+        WHERE id = $1 AND deletion_requested_at IS NOT NULL
+          AND deleted_at IS NULL AND deactivated_at IS NULL
         "#,
         auth.user_id
     )

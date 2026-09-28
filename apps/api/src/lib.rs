@@ -315,6 +315,10 @@ pub fn build_router(state: AppState) -> Router {
             "/admin/users/:id/deactivate",
             post(user_admin::admin::deactivate_user),
         )
+        .route(
+            "/admin/users/:id/reactivate",
+            post(user_admin::admin::reactivate_user),
+        )
         .layer(CookieManagerLayer::new())
         .layer(axum::middleware::from_fn_with_state(
             body_guard,

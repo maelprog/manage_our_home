@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, password_hash, email_verified FROM users WHERE email = $1 AND deleted_at IS NULL",
+  "query": "SELECT id, password_hash, email_verified FROM users WHERE email = $1 AND deleted_at IS NULL AND deactivated_at IS NULL",
   "describe": {
     "columns": [
       {
@@ -48,5 +48,5 @@
       false
     ]
   },
-  "hash": "20db70c7f68c6c871b06eaac9baae65e70c9be6dab1d6f638fdd21849a70b7f2"
+  "hash": "bd700b4fe13925f71caa3d28b18b4487c5db4ff2fa6d98121393412e769ee6bb"
 }
