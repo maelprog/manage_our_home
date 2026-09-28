@@ -183,7 +183,7 @@ pub async fn callback(
 
     let existing_identity = sqlx::query!(
         r#"
-        SELECT i.user_id, u.deleted_at
+        SELECT i.user_id, u.deleted_at IS NOT NULL OR u.deactivated_at IS NOT NULL AS "locked!"
         FROM oauth_identities i
         JOIN users u ON u.id = i.user_id
         WHERE i.provider = 'google' AND i.provider_user_id = $1
@@ -193,18 +193,20 @@ pub async fn callback(
     .fetch_optional(&mut *tx)
     .await?;
 
-    // The existing account this profile signs in to, if any, with its
-    // `deleted_at`, and whether the Google identity is already bound to it.
+    // The existing account this profile signs in to, if any, with
+    // whether it is deactivated or purged, and whether the Google identity
+    // is already bound to it.
     let (existing_account, identity_bound) = match existing_identity {
-        Some(identity) => (Some((identity.user_id, identity.deleted_at)), true),
+        Some(identity) => (Some((identity.user_id, identity.locked)), true),
         None => {
             let existing_user = sqlx::query!(
-                "SELECT id, deleted_at FROM users WHERE email = $1",
+                r#"SELECT id, deleted_at IS NOT NULL OR deactivated_at IS NOT NULL AS "locked!"
+                   FROM users WHERE email = $1"#,
                 userinfo.email
             )
             .fetch_optional(&mut *tx)
             .await?;
-            (existing_user.map(|u| (u.id, u.deleted_at)), false)
+            (existing_user.map(|u| (u.id, u.locked)), false)
         }
     };
 
@@ -216,7 +218,7 @@ pub async fn callback(
     // branches, before anything is written — with the same bare 401 as a
     // forged state or an unverified email, so the answer says nothing more
     // about the account than any other refusal of this endpoint.
-    if existing_account.is_some_and(|(_, deleted_at)| deleted_at.is_some()) {
+    if existing_account.is_some_and(|(_, locked)| locked) {
         return Err(AppError::Unauthorized);
     }
 

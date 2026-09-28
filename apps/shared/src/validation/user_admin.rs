@@ -8,16 +8,18 @@
 //!   the hard boolean gate that decides whether the `/admin` nav + route tree
 //!   render at all. The backend's `SuperAdminUser` extractor stays the
 //!   authority; this only keeps `apps/web` from showing a door it would 403.
-//! - `user_status_label` turns the `deleted_at` / `deletion_requested_at` pair
-//!   from `GET /admin/users` into one French status, deactivated taking
-//!   precedence (it is terminal — a deactivated account is already gone).
-//! - `can_deactivate` mirrors the backend's `WHERE ... AND deleted_at IS NULL`
-//!   guard on `POST /admin/users/:id/deactivate`: only a not-yet-deactivated
-//!   account can be deactivated (a second attempt 404s), so the confirm button
-//!   is hidden for one that already is.
+//! - `user_status_label` turns the `deleted_at` / `deactivated_at` /
+//!   `deletion_requested_at` triple from `GET /admin/users` into one French
+//!   status, the purge taking precedence (it is final), then the
+//!   deactivation (#256).
+//! - `can_deactivate` / `can_reactivate` mirror the backend's guards on
+//!   `POST /admin/users/:id/deactivate` and `/reactivate`: only an active
+//!   account can be deactivated, only a deactivated, not yet purged one
+//!   reactivated (anything else 404s), so each button shows only when it
+//!   can succeed.
 //! - `format_admin_datetime` renders a UTC instant in **Europe/Paris**, the
 //!   fixed v1 display timezone (F3's convention), and `_opt` renders a `—` for
-//!   the nullable columns (`deleted_at`, `deletion_requested_at`).
+//!   the nullable columns.
 
 use chrono::{DateTime, Utc};
 use chrono_tz::Europe::Paris;
@@ -30,16 +32,18 @@ pub fn can_view_admin(is_superadmin: bool) -> bool {
     is_superadmin
 }
 
-/// French status for a user row from `GET /admin/users`, derived from the two
-/// nullable timestamps. Deactivation wins over a pending self-service deletion
-/// request: `deactivate` sets `deleted_at` immediately and revokes every
-/// session, so once it is set the account is gone regardless of any earlier
-/// `deletion_requested_at`.
+/// French status for a user row from `GET /admin/users`, derived from its
+/// three nullable timestamps. The purge (`deleted_at`) is final and wins over
+/// everything; a deactivation wins over a pending self-service deletion
+/// request, which the account can no longer cancel (#256).
 pub fn user_status_label(
     deleted_at: Option<DateTime<Utc>>,
+    deactivated_at: Option<DateTime<Utc>>,
     deletion_requested_at: Option<DateTime<Utc>>,
 ) -> &'static str {
     if deleted_at.is_some() {
+        "Purgé"
+    } else if deactivated_at.is_some() {
         "Désactivé"
     } else if deletion_requested_at.is_some() {
         "Suppression demandée"
@@ -48,12 +52,25 @@ pub fn user_status_label(
     }
 }
 
-/// Mirror of the backend's `UPDATE users SET deleted_at = now() WHERE id = $1
-/// AND deleted_at IS NULL` guard: an already-deactivated account cannot be
-/// deactivated again (the endpoint 404s). Used to hide the confirm button for
-/// one that already is — the backend stays the authority.
-pub fn can_deactivate(deleted_at: Option<DateTime<Utc>>) -> bool {
-    deleted_at.is_none()
+/// Mirror of the backend's `WHERE ... AND deactivated_at IS NULL AND
+/// deleted_at IS NULL` guard on `POST /admin/users/:id/deactivate` (404
+/// otherwise). Used to hide the confirm button — the backend stays the
+/// authority.
+pub fn can_deactivate(
+    deleted_at: Option<DateTime<Utc>>,
+    deactivated_at: Option<DateTime<Utc>>,
+) -> bool {
+    deleted_at.is_none() && deactivated_at.is_none()
+}
+
+/// Mirror of the backend's `WHERE ... AND deactivated_at IS NOT NULL AND
+/// deleted_at IS NULL` guard on `POST /admin/users/:id/reactivate` (#256):
+/// a purged account has nothing left to give back.
+pub fn can_reactivate(
+    deleted_at: Option<DateTime<Utc>>,
+    deactivated_at: Option<DateTime<Utc>>,
+) -> bool {
+    deleted_at.is_none() && deactivated_at.is_some()
 }
 
 /// Formats a UTC instant in Europe/Paris (`24/07/2026 à 14:05`), the fixed v1
@@ -100,21 +117,21 @@ mod tests {
 
     #[test]
     fn active_user_has_no_timestamps() {
-        assert_eq!(user_status_label(None, None), "Actif");
+        assert_eq!(user_status_label(None, None, None), "Actif");
     }
 
     #[test]
     fn deletion_requested_shows_when_only_that_timestamp_is_set() {
         assert_eq!(
-            user_status_label(None, Some(at(2026, 7, 24, 12, 0))),
+            user_status_label(None, None, Some(at(2026, 7, 24, 12, 0))),
             "Suppression demandée"
         );
     }
 
     #[test]
-    fn deactivated_shows_when_deleted_at_is_set() {
+    fn deactivated_shows_when_deactivated_at_is_set() {
         assert_eq!(
-            user_status_label(Some(at(2026, 7, 24, 12, 0)), None),
+            user_status_label(None, Some(at(2026, 7, 24, 12, 0)), None),
             "Désactivé"
         );
     }
@@ -122,23 +139,57 @@ mod tests {
     #[test]
     fn deactivation_takes_precedence_over_a_pending_deletion_request() {
         // A user who requested deletion and was then deactivated by support
-        // reads as Désactivé — the terminal state.
+        // reads as Désactivé: it can no longer cancel its request.
         assert_eq!(
-            user_status_label(Some(at(2026, 7, 24, 13, 0)), Some(at(2026, 7, 20, 9, 0))),
+            user_status_label(
+                None,
+                Some(at(2026, 7, 24, 13, 0)),
+                Some(at(2026, 7, 20, 9, 0))
+            ),
             "Désactivé"
         );
     }
 
-    // -- can_deactivate ------------------------------------------------------
+    #[test]
+    fn a_purged_account_reads_as_purged_whatever_came_before() {
+        // #256: `deleted_at` means the purge anonymised the row, nothing else.
+        assert_eq!(
+            user_status_label(
+                Some(at(2028, 7, 24, 13, 0)),
+                Some(at(2026, 7, 24, 13, 0)),
+                Some(at(2026, 7, 20, 9, 0))
+            ),
+            "Purgé"
+        );
+        assert_eq!(
+            user_status_label(Some(at(2026, 8, 24, 13, 0)), None, None),
+            "Purgé"
+        );
+    }
+
+    // -- can_deactivate / can_reactivate -------------------------------------
 
     #[test]
-    fn an_active_user_can_be_deactivated() {
-        assert!(can_deactivate(None));
+    fn an_active_user_can_be_deactivated_not_reactivated() {
+        assert!(can_deactivate(None, None));
+        assert!(!can_reactivate(None, None));
     }
 
     #[test]
-    fn an_already_deactivated_user_cannot_be_deactivated_again() {
-        assert!(!can_deactivate(Some(at(2026, 7, 24, 12, 0))));
+    fn a_deactivated_user_can_be_reactivated_not_deactivated_again() {
+        let on = Some(at(2026, 7, 24, 12, 0));
+        assert!(!can_deactivate(None, on));
+        assert!(can_reactivate(None, on));
+    }
+
+    #[test]
+    fn a_purged_account_can_be_neither_deactivated_nor_reactivated() {
+        let purged = Some(at(2028, 7, 24, 12, 0));
+        let on = Some(at(2026, 7, 24, 12, 0));
+        assert!(!can_deactivate(purged, None));
+        assert!(!can_reactivate(purged, None));
+        assert!(!can_deactivate(purged, on));
+        assert!(!can_reactivate(purged, on));
     }
 
     // -- format_admin_datetime ----------------------------------------------

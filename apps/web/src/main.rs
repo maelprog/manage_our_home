@@ -240,6 +240,10 @@ fn build_router(state: AppState) -> Router {
             "/admin/users/:id/deactivate",
             post(routes::admin::users::deactivate),
         )
+        .route(
+            "/admin/users/:id/reactivate",
+            post(routes::admin::users::reactivate),
+        )
         .route("/groups", get(routes::groups::list::get))
         .route("/groups/join", post(routes::groups::list::join))
         .route("/groups/switch", post(routes::groups::switch))

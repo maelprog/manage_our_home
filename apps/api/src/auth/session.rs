@@ -87,7 +87,7 @@ where
             r#"
             SELECT s.id as session_id, s.expires_at, s.revoked_at, s.last_seen_at,
                    u.id as user_id, u.email, u.display_name, u.email_verified,
-                   u.is_superadmin, u.deleted_at, u.deletion_requested_at,
+                   u.is_superadmin, u.deleted_at, u.deactivated_at, u.deletion_requested_at,
                    (u.password_hash IS NOT NULL) as "has_password!"
             FROM sessions s
             JOIN users u ON u.id = s.user_id
@@ -105,6 +105,7 @@ where
             || row.expires_at < now
             || is_idle(now, row.last_seen_at)
             || row.deleted_at.is_some()
+            || row.deactivated_at.is_some()
         {
             return Err(AppError::Unauthorized);
         }

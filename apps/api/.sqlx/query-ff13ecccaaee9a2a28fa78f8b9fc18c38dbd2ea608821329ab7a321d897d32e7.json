@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT t.user_id, t.expires_at, t.consumed_at\n        FROM email_verification_tokens t\n        JOIN users u ON u.id = t.user_id\n        WHERE t.token = $1 AND u.deleted_at IS NULL\n        FOR UPDATE OF t\n        ",
+  "query": "\n        SELECT t.user_id, t.expires_at, t.consumed_at\n        FROM email_verification_tokens t\n        JOIN users u ON u.id = t.user_id\n        WHERE t.token = $1 AND u.deleted_at IS NULL AND u.deactivated_at IS NULL\n        FOR UPDATE OF t\n        ",
   "describe": {
     "columns": [
       {
@@ -48,5 +48,5 @@
       true
     ]
   },
-  "hash": "81b9ce65c39196cded6bbaef1a5bd38d24c4ebf7d560ff30c5fa97fdf0f0cecc"
+  "hash": "ff13ecccaaee9a2a28fa78f8b9fc18c38dbd2ea608821329ab7a321d897d32e7"
 }

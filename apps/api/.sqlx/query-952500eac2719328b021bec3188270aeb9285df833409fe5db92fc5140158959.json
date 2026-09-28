@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, deleted_at FROM users WHERE email = $1",
+  "query": "SELECT id, deleted_at IS NOT NULL OR deactivated_at IS NOT NULL AS \"locked!\"\n                   FROM users WHERE email = $1",
   "describe": {
     "columns": [
       {
@@ -16,14 +16,9 @@
       },
       {
         "ordinal": 1,
-        "name": "deleted_at",
-        "type_info": "Timestamptz",
-        "origin": {
-          "Table": {
-            "table": "users",
-            "name": "deleted_at"
-          }
-        }
+        "name": "locked!",
+        "type_info": "Bool",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -33,8 +28,8 @@
     },
     "nullable": [
       false,
-      true
+      null
     ]
   },
-  "hash": "18469ddecf7d7e2ad72b166619d0d61b7e4735acae31d234a75261a0a2e3bb6b"
+  "hash": "952500eac2719328b021bec3188270aeb9285df833409fe5db92fc5140158959"
 }

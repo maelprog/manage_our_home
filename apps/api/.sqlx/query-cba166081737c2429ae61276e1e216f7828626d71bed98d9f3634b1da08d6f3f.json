@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL",
+  "query": "\n        SELECT id FROM users\n        WHERE (deletion_requested_at IS NOT NULL OR deactivated_at IS NOT NULL)\n          AND deleted_at IS NULL\n        ",
   "describe": {
     "columns": [
       {
@@ -16,13 +16,11 @@
       }
     ],
     "parameters": {
-      "Left": [
-        "Text"
-      ]
+      "Left": []
     },
     "nullable": [
       false
     ]
   },
-  "hash": "e5c6cc27eb6d55a4bd5d050935af0e49270325d55830f49128f326fc110f4b73"
+  "hash": "cba166081737c2429ae61276e1e216f7828626d71bed98d9f3634b1da08d6f3f"
 }

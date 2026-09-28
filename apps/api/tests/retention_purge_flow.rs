@@ -14,14 +14,14 @@ use manage_our_home::jobs::retention_purge::{purge, PurgeCounts, RetentionCutoff
 use sqlx::PgPool;
 use uuid::Uuid;
 
-async fn insert_user(db: &PgPool, email: &str, deleted: bool) -> Uuid {
+async fn insert_user(db: &PgPool, email: &str, deactivated: bool) -> Uuid {
     sqlx::query_scalar(
-        "INSERT INTO users (email, password_hash, display_name, deleted_at)
+        "INSERT INTO users (email, password_hash, display_name, deactivated_at)
          VALUES ($1, 'not-a-real-hash', $1, CASE WHEN $2 THEN now() END)
          RETURNING id",
     )
     .bind(email)
-    .bind(deleted)
+    .bind(deactivated)
     .fetch_one(db)
     .await
     .unwrap()

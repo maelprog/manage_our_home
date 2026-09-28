@@ -4,7 +4,7 @@
 //! row, its id and its `deleted_at` stay: each route that opens a session
 //! or writes a credential has to refuse it on its own. One test per route,
 //! each against an account taken through the real deletion request and the
-//! real purge job. A support-deactivated account (`deleted_at` set, email,
+//! real purge job. A support-deactivated account (`deactivated_at` set, email,
 //! password and tokens kept) is the case where a token still exists, so the
 //! two token routes are also tried against one.
 
@@ -347,7 +347,7 @@ async fn an_invitation_cannot_be_accepted_with_the_old_session(db: PgPool) {
     assert_eq!(count(&db, memberships, purged.id).await, 0);
 }
 
-/// Support deactivation sets `deleted_at` and keeps the tokens, which the
+/// Support deactivation sets `deactivated_at` and keeps the tokens, which the
 /// hourly retention purge only takes later: here a token genuinely exists
 /// for an account that must stay locked out.
 #[sqlx::test]
@@ -358,7 +358,7 @@ async fn the_token_routes_refuse_a_deactivated_account_too(db: PgPool) {
     let id = user_id(&db, email).await;
     let reset_token = insert_token(&db, "password_reset_tokens", id).await;
     let verify_token = insert_token(&db, "email_verification_tokens", id).await;
-    sqlx::query("UPDATE users SET deleted_at = now(), email_verified = false WHERE id = $1")
+    sqlx::query("UPDATE users SET deactivated_at = now(), email_verified = false WHERE id = $1")
         .bind(id)
         .execute(&db)
         .await

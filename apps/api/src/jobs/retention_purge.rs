@@ -170,7 +170,8 @@ pub async fn purge(pool: &PgPool, cutoffs: RetentionCutoffs) -> anyhow::Result<P
            OR s.last_seen_at < $2
            OR EXISTS (
                SELECT 1 FROM users u
-               WHERE u.id = s.user_id AND u.deleted_at IS NOT NULL
+               WHERE u.id = s.user_id
+                 AND (u.deleted_at IS NOT NULL OR u.deactivated_at IS NOT NULL)
            )
         "#,
         cutoffs.now,

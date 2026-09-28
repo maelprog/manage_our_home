@@ -611,6 +611,61 @@ Politique de confidentialité :
     )
 }
 
+/// Body of the email warning the holder of an account the superadmin
+/// deactivated that the account will be purged (#256): sent once, 30 days
+/// before the 2 years of deactivation are up
+/// (`apps/api/src/jobs/account_purge.rs`). `purge_at` is the day it becomes
+/// purgeable; like every date the policy states, it is when the hourly purge
+/// may take the account, not a guaranteed hour.
+///
+/// No screen reaches a deactivated account — it is refused at login with the
+/// generic message, and the reactivation request form is #289 — so the
+/// request goes to the controller, named by the same two placeholders as the
+/// invitation email.
+pub fn deactivation_notice_email_body(
+    deactivated_at: DateTime<Utc>,
+    purge_at: DateTime<Utc>,
+    privacy_policy_url: &str,
+) -> String {
+    let deactivated_on = format_rgpd_date(deactivated_at);
+    let purge_on = format_rgpd_date(purge_at);
+    format!(
+        "Bonjour,
+
+Votre compte Manage Our Home a été désactivé par l'administrateur du
+service le {deactivated_on}. Il est conservé tel quel depuis, sans que
+personne puisse s'y connecter.
+
+Un compte qui reste désactivé 2 ans est supprimé. Sauf réactivation
+d'ici là, le vôtre le sera à partir du {purge_on}, au premier passage de
+la purge automatique qui suit cette date (elle passe toutes les heures
+quand le service fonctionne et que sa configuration le permet).
+
+-- Ce que la suppression efface --
+
+Votre adresse email et votre nom sont remplacés, votre mot de passe
+et votre connexion avec Google sont effacés, et vous êtes retiré(e) de
+vos groupes. Les contenus partagés avec vos groupes (événements,
+messages, recettes, listes...) restent, rattachés à un compte anonyme,
+comme le prévoient les conditions générales.
+
+-- Ce que vous pouvez faire --
+
+Pour demander la réactivation de votre compte, ou exercer vos droits
+sur vos données, écrivez au responsable de traitement, [nom du
+responsable de traitement — à renseigner avant la mise en ligne],
+à [adresse de contact — à renseigner avant la mise en ligne]. Vous
+pouvez aussi introduire une réclamation auprès de la CNIL.
+
+Si vous ne faites rien, le compte sera supprimé comme indiqué
+ci-dessus, et cet email est le seul que vous recevrez à ce sujet.
+
+Politique de confidentialité :
+{privacy_policy_url}
+"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1893,5 +1948,77 @@ mod tests {
         let body =
             invitation_email_body("Coloc' « Rue des Lilas »", "Bob", INVITE_LINK, POLICY_URL);
         assert!(body.contains("Coloc' « Rue des Lilas »"), "{body}");
+    }
+
+    // -- deactivation_notice_email_body (#256) -------------------------------
+
+    fn notice_sample() -> String {
+        // Deactivated on 10/03/2026 in Paris; purgeable from 10/03/2028.
+        deactivation_notice_email_body(at(2026, 3, 10, 9, 0), at(2028, 3, 10, 9, 0), POLICY_URL)
+    }
+
+    #[test]
+    fn deactivation_notice_dates_the_deactivation_and_the_purge() {
+        let body = notice_sample();
+        assert!(body.contains("10/03/2026"), "{body}");
+        assert!(body.contains("10/03/2028"), "{body}");
+    }
+
+    #[test]
+    fn deactivation_notice_dates_the_purge_on_the_paris_calendar_day() {
+        // 23:30 UTC on 9 March is already 10 March in Paris.
+        let body = deactivation_notice_email_body(
+            at(2026, 3, 10, 9, 0),
+            at(2028, 3, 9, 23, 30),
+            POLICY_URL,
+        );
+        assert!(body.contains("10/03/2028"), "{body}");
+    }
+
+    #[test]
+    fn deactivation_notice_says_what_the_purge_erases_and_what_stays() {
+        let body = notice_sample();
+        for words in [
+            "adresse email",
+            "nom",
+            "mot de passe",
+            "groupes",
+            "contenus",
+        ] {
+            assert!(body.contains(words), "missing {words:?}: {body}");
+        }
+    }
+
+    #[test]
+    fn deactivation_notice_sends_a_reactivation_request_to_the_controller() {
+        // No screen reaches a deactivated account (#289 will add one): the
+        // request goes to the controller, whose identity and contact are the
+        // same two placeholders as the RGPD documents' (#131).
+        let body = notice_sample();
+        assert!(body.contains("réactivation"), "{body}");
+        assert_eq!(release_placeholders(&body), pending_controller_values());
+    }
+
+    #[test]
+    fn deactivation_notice_carries_the_right_to_lodge_a_complaint_and_the_policy() {
+        let body = notice_sample();
+        assert!(body.contains("réclamation auprès de la CNIL"), "{body}");
+        assert!(body.contains(POLICY_URL), "{body}");
+    }
+
+    #[test]
+    fn deactivation_notice_points_at_no_repository_path() {
+        assert_eq!(repo_path_references(&notice_sample()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn deactivation_notice_is_wrapped_for_a_plain_text_reader() {
+        for line in notice_sample().lines() {
+            let is_lone_url = !line.contains(char::is_whitespace) && line.contains("https://");
+            assert!(
+                line.chars().count() <= 78 || is_lone_url,
+                "line too long for a plain-text email: {line}"
+            );
+        }
     }
 }

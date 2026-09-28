@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id FROM users\n        WHERE id = $1\n          AND deletion_requested_at IS NOT NULL\n          AND deletion_requested_at < now() - ($2 || ' days')::interval\n          AND deleted_at IS NULL\n        FOR UPDATE\n        ",
+  "query": "SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL AND deactivated_at IS NULL",
   "describe": {
     "columns": [
       {
@@ -17,7 +17,6 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid",
         "Text"
       ]
     },
@@ -25,5 +24,5 @@
       false
     ]
   },
-  "hash": "a9f253dcc41eabfb4e05da57800f4babd6adfa4e39a59ff46572555597746209"
+  "hash": "125d6af18f1e0cdf66549f40059c936defe96650b1d0b313d9ef509c98596011"
 }
