@@ -536,13 +536,16 @@ fn is_invisible(c: char) -> bool {
 /// What does erase the row is the retention purge
 /// (`apps/api/src/jobs/retention_purge.rs`, #138): at acceptance, and
 /// otherwise 30 days after the invitation was created. That pass runs once an
-/// hour **and only while the API is up**, so the 30th day is when the row
-/// becomes purgeable and no bound can be promised at all: an outage defers
-/// the deletion for as long as it lasts. The notice therefore states the
-/// frequency and what an interruption does to it, and states no deadline —
-/// not "au plus tard 30 jours", which the hourly pass overruns on every
-/// invitation, and not a flat hour either, which an outage overruns just as
-/// surely. `docs/privacy-policy.md` and `docs/registre-traitements.md` carry
+/// hour **and only while the API is up with a role that bypasses RLS**: it
+/// runs on `ADMIN_DATABASE_URL`, falling back to `DATABASE_URL`, and refuses
+/// a role without `BYPASSRLS` — which the service survives, staying up while
+/// nothing is erased (#276, #284). So the 30th day is when the row becomes
+/// purgeable and no bound can be promised at all: an outage, or such a
+/// configuration, defers the deletion for as long as it lasts. The notice
+/// therefore states the frequency and what either of them does to it, and
+/// states no deadline — not "au plus tard 30 jours", which the hourly pass
+/// overruns on every invitation, and not a flat hour either, which an outage
+/// overruns just as surely. `docs/privacy-policy.md` and `docs/registre-traitements.md` carry
 /// that same reserve. Deleting the group takes the row earlier, which breaks
 /// no promise: nothing here promises the address stays.
 pub fn invitation_email_body(
@@ -578,8 +581,10 @@ base légale est l'intérêt légitime du membre qui invite un proche.
 Votre adresse est enregistrée avec cette invitation, puis effacée :
 dès que le lien est utilisé, sinon 30 jours après cet envoi. Cet
 effacement est fait par un passage automatique qui a lieu
-toutes les heures ; si le service est interrompu, il a lieu à son
-redémarrage.
+toutes les heures quand le service fonctionne et que sa
+configuration le permet ; si le service est interrompu, ou si sa
+configuration suspend ce passage, il a lieu à son redémarrage ou au
+rétablissement de cette configuration.
 
 Le responsable de traitement est [nom du responsable de traitement — à
 renseigner avant la mise en ligne], joignable à [adresse de contact — à
@@ -1201,16 +1206,20 @@ mod tests {
         assert!(body.contains("30 jours après cet envoi"), "{body}");
         assert!(!body.contains("suppression du groupe"), "{body}");
         // The deletion is a pass that runs once an hour
-        // (`retention_purge::PURGE_INTERVAL`) and only while the API is up:
-        // the notice states the frequency *and* what a service outage does to
-        // it. That it states no deadline on top is the next test's job.
+        // (`retention_purge::PURGE_INTERVAL`), and only while the API is up
+        // *and* its database role bypasses RLS (#276, #284): the notice states
+        // the frequency *and* both ways the pass stops — a service outage,
+        // and a configuration that suspends it while the service stays up.
+        // That it states no deadline on top is the next test's job.
         assert!(body.contains("toutes les heures"), "{body}");
         assert!(body.contains("interrompu"), "{body}");
+        assert!(body.contains("configuration suspend ce passage"), "{body}");
     }
 
     #[test]
     fn invitation_email_speaks_of_time_only_through_its_sanctioned_phrasings() {
-        // The purge pass runs hourly and only while the API is up, so the 30th
+        // The purge pass runs hourly and only while the API is up with a role
+        // that bypasses RLS, so the 30th
         // day is when the row becomes purgeable and no bound on the deletion
         // holds — "au plus tard 30 jours" and a flat hour both got written
         // and had to be taken out again (#273). What this pins is narrower
@@ -1230,7 +1239,8 @@ mod tests {
     ///
     /// 1. the link's lifetime and single use;
     /// 2. when the address is erased: at use, otherwise 30 days after sending;
-    /// 3. the purge's frequency, hourly, and what an outage does to it;
+    /// 3. the purge's frequency, hourly, and what an outage or a
+    ///    configuration that suspends it does to it;
     /// 4. the link's lifetime again, for the reader who ignores the email;
     /// 5. the retention period again, in that same paragraph.
     ///
@@ -1253,7 +1263,10 @@ mod tests {
         "votre adresse est enregistrée avec cette invitation, puis effacée : \
          dès que le lien est utilisé, sinon 30 jours après cet envoi.",
         "cet effacement est fait par un passage automatique qui a lieu toutes \
-         les heures ; si le service est interrompu, il a lieu à son redémarrage.",
+         les heures quand le service fonctionne et que sa configuration le \
+         permet ; si le service est interrompu, ou si sa configuration suspend \
+         ce passage, il a lieu à son redémarrage ou au rétablissement de cette \
+         configuration.",
         "si vous ne voulez pas de cette invitation, ignorez cet email : le lien \
          cesse de fonctionner au bout de 7 jours.",
         "votre adresse, elle, reste enregistrée avec l'invitation pendant 30 \
@@ -1412,8 +1425,10 @@ mod tests {
             "Ce lien est valable 7 jours et ne sert\nqu'une fois. Votre adresse est \
              enregistrée avec cette invitation, puis effacée :\ndès que le lien est \
              utilisé, sinon 30 jours après cet envoi. Cet\neffacement est fait par un \
-             passage automatique qui a lieu\ntoutes les heures ; si le service est \
-             interrompu, il a lieu à son\nredémarrage.",
+             passage automatique qui a lieu\ntoutes les heures quand le service \
+             fonctionne et que sa\nconfiguration le permet ; si le service est \
+             interrompu, ou si sa\nconfiguration suspend ce passage, il a lieu à \
+             son redémarrage ou au\nrétablissement de cette configuration.",
             &INVITATION_TIME_PHRASES
         )
         .is_empty());
@@ -1605,11 +1620,7 @@ mod tests {
             vec!["jours".to_string()]
         );
         // Same for sentence 3, which used to stop at its semicolon.
-        let body = invitation_sample().replacen(
-            "toutes les heures ; si",
-            "toutes les heures ; au plus, si",
-            1,
-        );
+        let body = invitation_sample().replacen("le permet ; si", "le permet ; au plus, si", 1);
         assert_eq!(
             time_words_outside(&body, &INVITATION_TIME_PHRASES),
             vec!["heures".to_string()]
