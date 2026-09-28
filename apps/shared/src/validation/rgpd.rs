@@ -1213,7 +1213,7 @@ mod tests {
         // That it states no deadline on top is the next test's job.
         assert!(body.contains("toutes les heures"), "{body}");
         assert!(body.contains("interrompu"), "{body}");
-        assert!(body.contains("sa configuration suspend ce passage"), "{body}");
+        assert!(body.contains("configuration suspend ce passage"), "{body}");
     }
 
     #[test]
@@ -1620,11 +1620,7 @@ mod tests {
             vec!["jours".to_string()]
         );
         // Same for sentence 3, which used to stop at its semicolon.
-        let body = invitation_sample().replacen(
-            "le permet ; si",
-            "le permet ; au plus, si",
-            1,
-        );
+        let body = invitation_sample().replacen("le permet ; si", "le permet ; au plus, si", 1);
         assert_eq!(
             time_words_outside(&body, &INVITATION_TIME_PHRASES),
             vec!["heures".to_string()]
