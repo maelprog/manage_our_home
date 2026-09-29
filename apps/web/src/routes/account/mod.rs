@@ -147,7 +147,7 @@ pub async fn get(
 {notice}{error}
 <section class="card">
 <h2>Exporter mes données</h2>
-<p class="muted">Droit d'accès et de portabilité (Art. 15/20) : téléchargez au format JSON tout ce que vous avez créé.</p>
+<p class="muted">Droit d'accès et de portabilité (Art. 15/20) : téléchargez au format JSON tout ce que le service conserve qui vous concerne.</p>
 <a class="btn secondary" href="/account/export">Exporter mes données</a>
 </section>
 {deletion_section}

@@ -124,6 +124,20 @@ process.
 first boot of the postgres volume, and `docker-compose.yml` passes
 `MIGRATION_DATABASE_URL` to the api service.
 
+### `account_export_group_ids()` (#140) — one question across families
+
+`GET /account/export` must reach what the caller wrote in a group they have
+left: leaving deletes the membership, not the content. `app_role` cannot
+tell which groups hold such rows, since every family-scoped policy needs
+`app.family_id` first. `0019_account_export_groups.sql` answers that one
+question with a `SECURITY DEFINER` function owned by `migration_role`, whose
+`BYPASSRLS` is what lets it look: it returns group ids only, for the user
+of `app.user_id` only, with a pinned `search_path`. The content itself is
+then read group by group through `scoped_tx`, under the ordinary policies.
+It relies on the owner bypassing RLS — a `migration_role` without
+`BYPASSRLS` (which `migrations::apply` refuses anyway) would make it answer
+nothing, and the export would silently fall back to current groups.
+
 ### Epic #8 — `admin_role` (superadmin endpoints)
 
 The three `/admin/*` endpoints (`src/user_admin/`) are a deliberate, narrow

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, email, email_verified, display_name, created_at, age_declared_at FROM users WHERE id = $1",
+  "query": "SELECT r.id, r.event_id, r.offset_minutes, r.channel, r.created_at\n               FROM event_reminders r JOIN events e ON e.id = r.event_id\n               WHERE e.group_id = $1 AND e.created_by = $2 ORDER BY r.created_at",
   "describe": {
     "columns": [
       {
@@ -9,41 +9,41 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "users",
+            "table": "event_reminders",
             "name": "id"
           }
         }
       },
       {
         "ordinal": 1,
-        "name": "email",
-        "type_info": "Text",
+        "name": "event_id",
+        "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "users",
-            "name": "email"
+            "table": "event_reminders",
+            "name": "event_id"
           }
         }
       },
       {
         "ordinal": 2,
-        "name": "email_verified",
-        "type_info": "Bool",
+        "name": "offset_minutes",
+        "type_info": "Int4",
         "origin": {
           "Table": {
-            "table": "users",
-            "name": "email_verified"
+            "table": "event_reminders",
+            "name": "offset_minutes"
           }
         }
       },
       {
         "ordinal": 3,
-        "name": "display_name",
+        "name": "channel",
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "users",
-            "name": "display_name"
+            "table": "event_reminders",
+            "name": "channel"
           }
         }
       },
@@ -53,25 +53,15 @@
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
-            "table": "users",
+            "table": "event_reminders",
             "name": "created_at"
-          }
-        }
-      },
-      {
-        "ordinal": 5,
-        "name": "age_declared_at",
-        "type_info": "Timestamptz",
-        "origin": {
-          "Table": {
-            "table": "users",
-            "name": "age_declared_at"
           }
         }
       }
     ],
     "parameters": {
       "Left": [
+        "Uuid",
         "Uuid"
       ]
     },
@@ -80,9 +70,8 @@
       false,
       false,
       false,
-      false,
-      true
+      false
     ]
   },
-  "hash": "c3a4bd74cd61a7257742c5bc72d14a7ae22b0d7a733144b6dca0aab6ea9d9ace"
+  "hash": "cd1f73df8bbcf13e019e56ce158082683ec3ba0a870b8b74eebf1f01013e1e3e"
 }

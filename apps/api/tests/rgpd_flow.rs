@@ -60,6 +60,38 @@ async fn create_group(router: &axum::Router, cookie: &str, name: &str) -> String
     json_body(res).await["id"].as_str().unwrap().to_string()
 }
 
+/// The owner invites, the member accepts: returns the invitation token.
+async fn join_group(
+    router: &axum::Router,
+    owner_cookie: &str,
+    member_cookie: &str,
+    group_id: &str,
+) -> String {
+    let invite = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/invitations"),
+        Some(owner_cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_status(&invite, StatusCode::CREATED);
+    let token = json_body(invite).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let accept = call(
+        router,
+        Method::POST,
+        &format!("/groups/invitations/{token}/accept"),
+        Some(member_cookie),
+        None,
+    )
+    .await;
+    assert_status(&accept, StatusCode::OK);
+    token
+}
+
 /// AC: `GET /account/export` returns every category of data the requesting
 /// user authored, in the requesting user's own group — and the raw
 /// `audit_log` gains an `account_data_exported` entry (architecture.md's
@@ -177,33 +209,20 @@ async fn export_never_leaks_another_members_content(db: PgPool) {
     assert_eq!(doc["group_memberships"][0]["role"], "standard");
 }
 
-/// Issue #209: the export reads the caller's groups from their own
-/// `group_members` rows, not from every group the connection can see. A test
-/// pool connects as a superuser, which bypasses RLS: before the fix the export
-/// walked every group of the database and still returned what the caller
-/// authored in a group they had left. Under the `NOBYPASSRLS` role the README
-/// prescribes, that group was already invisible; both roles must now agree.
+/// Issue #209, then #140. The export reads the caller's memberships from
+/// their own `group_members` rows, not from every group the connection can
+/// see — a test pool connects as a superuser, which bypasses RLS. But
+/// leaving a group deletes that row and nothing else: what the caller wrote
+/// there is still held, so it is still theirs to export (#140). It comes out
+/// under `former_groups`, never as a membership, and never with another
+/// member's content. The superuser and the `NOBYPASSRLS` role the README
+/// prescribes must agree.
 #[sqlx::test]
-async fn export_covers_only_the_callers_current_groups(db: PgPool) {
+async fn export_covers_the_groups_the_caller_left(db: PgPool) {
     let router = test_router(db.clone());
     let owner_cookie =
         register_verify_login(&router, &db, "scope-owner@example.test", "owner-password1").await;
     let left_group = create_group(&router, &owner_cookie, "Foyer Quitte").await;
-
-    let invite = call(
-        &router,
-        Method::POST,
-        &format!("/groups/{left_group}/invitations"),
-        Some(&owner_cookie),
-        Some(serde_json::json!({})),
-    )
-    .await;
-    assert_status(&invite, StatusCode::CREATED);
-    let token = json_body(invite).await["token"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
     let member_cookie = register_verify_login(
         &router,
         &db,
@@ -211,28 +230,33 @@ async fn export_covers_only_the_callers_current_groups(db: PgPool) {
         "member-password1",
     )
     .await;
-    let accept = call(
-        &router,
-        Method::POST,
-        &format!("/groups/invitations/{token}/accept"),
-        Some(&member_cookie),
-        None,
-    )
-    .await;
-    assert_status(&accept, StatusCode::OK);
+    join_group(&router, &owner_cookie, &member_cookie, &left_group).await;
     let own_group = create_group(&router, &member_cookie, "Foyer Garde").await;
 
-    for (group_id, name) in [(&left_group, "Sel"), (&own_group, "Riz")] {
+    for (group_id, name, cookie) in [
+        (&left_group, "Sel", &member_cookie),
+        (&own_group, "Riz", &member_cookie),
+        (&left_group, "Poivre", &owner_cookie),
+    ] {
         let res = call(
             &router,
             Method::POST,
             &format!("/groups/{group_id}/stock-items"),
-            Some(&member_cookie),
+            Some(cookie),
             Some(serde_json::json!({"name": name, "quantity": 1.0, "unit": "kg"})),
         )
         .await;
         assert_status(&res, StatusCode::CREATED);
     }
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{left_group}/messages"),
+        Some(&member_cookie),
+        Some(serde_json::json!({"content": "Écrit avant de partir"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
 
     let leave = call(
         &router,
@@ -266,16 +290,255 @@ async fn export_covers_only_the_callers_current_groups(db: PgPool) {
             .collect();
         assert_eq!(memberships, [own_group.as_str()], "{label}: memberships");
         assert_eq!(doc["group_memberships"][0]["role"], "owner", "{label}");
-        let stock_groups: Vec<&str> = doc["stock_items"]
+        assert_eq!(
+            doc["former_groups"],
+            serde_json::json!([
+                {"group_id": left_group, "name": "Foyer Quitte", "created_by_me": false}
+            ]),
+            "{label}: former groups"
+        );
+        let stocks: Vec<(&str, &str)> = doc["stock_items"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|s| s["group_id"].as_str().unwrap())
+            .map(|s| (s["group_id"].as_str().unwrap(), s["name"].as_str().unwrap()))
             .collect();
-        assert_eq!(stock_groups, [own_group.as_str()], "{label}: stock items");
+        assert_eq!(
+            stocks,
+            [(own_group.as_str(), "Riz"), (left_group.as_str(), "Sel")],
+            "{label}: stock items — the caller's own, in both groups"
+        );
+        assert_eq!(
+            doc["messages"][0]["content"], "Écrit avant de partir",
+            "{label}"
+        );
+        assert_eq!(
+            doc["messages"][0]["group_id"],
+            left_group.as_str(),
+            "{label}"
+        );
     }
     drop(scoped_router);
     drop_prescribed_role(&db, app_db, &role).await;
+}
+
+/// Issue #140: art. 15 covers everything held that concerns the person, not
+/// only what they typed. An event someone else assigned them to, a role
+/// someone else gave them, their reminders, attachments, completions, read
+/// marker, sessions, invitations, email checks — each has its own category.
+/// Bearer secrets stay out: the session id (it is the cookie), the
+/// invitation token, the storage key.
+#[sqlx::test]
+async fn export_covers_what_concerns_the_caller_beyond_what_they_wrote(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "art15-owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer Acces").await;
+    let member_cookie = register_verify_login(
+        &router,
+        &db,
+        "art15-member@example.test",
+        "member-password1",
+    )
+    .await;
+    let token = join_group(&router, &owner_cookie, &member_cookie, &group_id).await;
+    let member_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM users WHERE email = 'art15-member@example.test'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+
+    let role = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/members/{member_id}/role"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"role": "admin"})),
+    )
+    .await;
+    assert_status(&role, StatusCode::OK);
+
+    let create_event = |cookie: String, title: &'static str, assignees: Option<uuid::Uuid>| {
+        let router = router.clone();
+        let group_id = group_id.clone();
+        async move {
+            let mut body = serde_json::json!({
+                "title": title,
+                "starts_at": "2026-10-01T10:00:00Z",
+                "ends_at": "2026-10-01T11:00:00Z",
+                "is_task": true,
+            });
+            if let Some(a) = assignees {
+                body["assignee_ids"] = serde_json::json!([a]);
+            }
+            let res = call(
+                &router,
+                Method::POST,
+                &format!("/groups/{group_id}/events"),
+                Some(&cookie),
+                Some(body),
+            )
+            .await;
+            assert_status(&res, StatusCode::CREATED);
+            json_body(res).await["id"].as_str().unwrap().to_string()
+        }
+    };
+    let owners_event =
+        create_event(owner_cookie.clone(), "Rendez-vous confie", Some(member_id)).await;
+    let members_event = create_event(member_cookie.clone(), "Tache du membre", None).await;
+
+    let reminder = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/events/{members_event}/reminders"),
+        Some(&member_cookie),
+        Some(serde_json::json!({"offset_minutes": 30})),
+    )
+    .await;
+    assert_status(&reminder, StatusCode::CREATED);
+
+    // No route to drive for these three without real bytes or a rendered
+    // page: the rows are written as the handlers would write them.
+    for statement in [
+        format!(
+            "INSERT INTO event_attachments (event_id, uploaded_by, storage_key, filename, mime_type, size_bytes)
+             VALUES ('{members_event}', '{member_id}', 'attachments/export-140-key', 'facture.pdf', 'application/pdf', 1234)"
+        ),
+        format!(
+            "INSERT INTO event_occurrence_completions (event_id, occurrence_at, completed_by)
+             VALUES ('{owners_event}', '2026-10-01T10:00:00Z', '{member_id}')"
+        ),
+        format!(
+            "INSERT INTO message_read_state (group_id, user_id) VALUES ('{group_id}', '{member_id}')"
+        ),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+
+    let (role, app_db) = prescribed_role_pool(&db).await;
+    let scoped_router = test_router(app_db.clone());
+    for (label, r) in [("superuser", &router), ("prescribed role", &scoped_router)] {
+        let export = call(
+            r,
+            Method::GET,
+            "/account/export",
+            Some(&member_cookie),
+            None,
+        )
+        .await;
+        assert_status(&export, StatusCode::OK);
+        let doc = json_body(export).await;
+        let text = doc.to_string();
+
+        let titles = |key: &str| -> Vec<String> {
+            doc[key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| e["title"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(titles("agenda_events"), ["Tache du membre"], "{label}");
+        let mut assigned = titles("event_assignments");
+        assigned.sort();
+        assert_eq!(
+            assigned,
+            ["Rendez-vous confie", "Tache du membre"],
+            "{label}: assigned by someone else, and by default to oneself"
+        );
+
+        assert_eq!(doc["event_reminders"][0]["offset_minutes"], 30, "{label}");
+        assert_eq!(
+            doc["event_reminders"][0]["event_id"],
+            members_event.as_str()
+        );
+
+        let attachment = &doc["event_attachments"][0];
+        assert_eq!(attachment["filename"], "facture.pdf", "{label}");
+        assert_eq!(attachment["mime_type"], "application/pdf", "{label}");
+        assert_eq!(attachment["size_bytes"], 1234, "{label}");
+        let url = attachment["download_url"].as_str().unwrap();
+        assert!(
+            url.contains("X-Amz-Signature="),
+            "{label}: presigned: {url}"
+        );
+        assert!(
+            url.contains("X-Amz-Expires=300"),
+            "{label}: short-lived: {url}"
+        );
+        assert!(attachment.get("storage_key").is_none(), "{label}");
+
+        assert_eq!(
+            doc["event_completions"][0]["event_id"],
+            owners_event.as_str()
+        );
+        assert_eq!(doc["message_read_state"][0]["group_id"], group_id.as_str());
+        assert!(doc["invitations_sent"].as_array().unwrap().is_empty());
+        assert!(!text.contains(&token), "{label}: invitation token exported");
+
+        let sessions = doc["sessions"].as_array().unwrap();
+        assert!(!sessions.is_empty(), "{label}");
+        let session_id = member_cookie
+            .split(';')
+            .next()
+            .unwrap()
+            .split('=')
+            .nth(1)
+            .unwrap();
+        assert!(!text.contains(session_id), "{label}: session id exported");
+
+        assert!(!doc["email_verifications"][0]["consumed_at"].is_null());
+        assert!(doc["oauth_identities"].as_array().unwrap().is_empty());
+        assert_eq!(doc["profile"]["has_password"], true, "{label}");
+
+        let role_change = doc["audit_log"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["action"] == "role_change")
+            .expect("the role someone else gave the caller");
+        assert_eq!(role_change["by_me"], false, "{label}");
+        assert_eq!(role_change["metadata"]["new_role"], "admin", "{label}");
+        assert!(role_change.get("actor_user_id").is_none(), "{label}");
+    }
+    drop(scoped_router);
+    drop_prescribed_role(&db, app_db, &role).await;
+
+    // The owner's side: a pending invitation they sent, without its token.
+    // (The accepted one is gone: accepting deletes it.)
+    let pending = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/invitations"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"invited_email": "art15-invitee@example.test"})),
+    )
+    .await;
+    assert_status(&pending, StatusCode::CREATED);
+    let pending_token = json_body(pending).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let export = call(
+        &router,
+        Method::GET,
+        "/account/export",
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    let doc = json_body(export).await;
+    assert_eq!(doc["invitations_sent"][0]["group_id"], group_id.as_str());
+    assert_eq!(
+        doc["invitations_sent"][0]["invited_email"],
+        "art15-invitee@example.test"
+    );
+    assert_eq!(doc["invitations_sent"].as_array().unwrap().len(), 1);
+    assert!(!doc.to_string().contains(&pending_token));
+    assert!(doc["event_attachments"].as_array().unwrap().is_empty());
 }
 
 /// Front epic F10 prerequisite: `GET /auth/me` reports `has_password` and the
