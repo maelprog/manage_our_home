@@ -71,6 +71,10 @@ fn error_html(error: Option<&str>) -> String {
 /// always-present `Cocher`/`Décocher` button is the no-JS path and the E2E
 /// target. The hidden `checked` field carries the *target* (toggled) state.
 ///
+/// Inline `onchange` of a row's checkbox. A named constant because
+/// infra/Caddyfile's CSP allows it by hash (`csp.rs`).
+pub(crate) const SUBMIT_ON_CHANGE: &str = "this.form.submit()";
+
 /// Once an item is checked (bought), the row also shows the Budget
 /// price-on-checkout form (F7): an inline amount field posting to
 /// `POST /grocery-list/:id/price`. Any member may set a price, and the backend
@@ -118,7 +122,7 @@ fn item_row(item: &GroceryItemResponse, can_edit: bool) -> String {
         r#"<li class="list-row">
 <form method="post" action="/grocery-list/{id}/check" class="actions">
 <input type="hidden" name="checked" value="{next}"/>
-<input type="checkbox"{checked_attr} onchange="this.form.submit()" aria-label="{name_attr}"/>
+<input type="checkbox"{checked_attr} onchange="{SUBMIT_ON_CHANGE}" aria-label="{name_attr}"/>
 <span{name_class}><strong>{name}</strong>{qty_html}{badge_html}</span>
 <button type="submit" class="secondary">{toggle_label}</button>
 </form>

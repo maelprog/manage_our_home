@@ -153,8 +153,34 @@ real deployment, generate the same variable set with random secrets instead:
 
 ```sh
 cd infra
-./generate-env.sh
+./generate-env.sh maison.example.org
 ```
+
+The argument is the public domain name, and it is what switches the stack
+to HTTPS (#141). It becomes `SITE_ADDRESS`, the site address of
+`infra/Caddyfile`, and `PUBLIC_BASE_URL` becomes `https://<domain>`. A domain
+name there turns on Caddy's automatic HTTPS: Caddy obtains a certificate
+for it and renews it on its own, keeps it in the `caddy_data` volume, and
+answers port 80 with a redirect to 443. Before the first
+`docker compose up`:
+
+- the name must resolve (DNS `A`/`AAAA` record) to the host running the
+  stack;
+- ports 80 and 443 of that host must be reachable from the Internet — the
+  certificate authority checks the name over them.
+
+Without `SITE_ADDRESS`, Caddy falls back to `:80`: plain HTTP, the local
+stack of `.env.example`. It must never be exposed as is — passwords would
+travel in clear — and it does not even work for a real deployment, since
+the session cookie is `Secure` unless `SECURE_COOKIES=false`.
+
+The same Caddyfile sets the security headers on every response of both
+applications: `Content-Security-Policy`, `Strict-Transport-Security`,
+`X-Content-Type-Options`, `X-Frame-Options` and `Referrer-Policy`. The
+policy allows the few inline scripts of `apps/web` by the hash of their
+text; changing one of them means updating its hash in the Caddyfile, and
+`cargo test -p manage_our_home_web csp` fails until that is done, printing
+the hashes to use.
 
 It fills `POSTGRES_PASSWORD`, `ADMIN_ROLE_PASSWORD`, the three
 `*_ENCRYPTION_KEY` values and `MINIO_ROOT_PASSWORD` with `openssl rand`
@@ -169,7 +195,6 @@ What it cannot invent, you have to fill in yourself:
   container restarting in a loop. This is the one value that blocks boot.
 - **`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`** — only for Google sign-in
   and calendar import. Empty values boot fine; just those two flows fail.
-- **`PUBLIC_BASE_URL`** — the public origin, no trailing slash.
 
 <details>
 <summary>Writing the <code>.env</code> by hand instead</summary>
@@ -186,7 +211,8 @@ What it cannot invent, you have to fill in yourself:
 | `CALENDAR_FEED_ENCRYPTION_KEY` | yes | `openssl rand -base64 32` |
 | `SMTP_HOST`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM` | yes | Mail relay. `SMTP_FROM` must parse as a mailbox. |
 | `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | yes | Object-storage credentials; also used as the API's S3 access/secret key. |
-| `PUBLIC_BASE_URL` | no — defaults to `http://localhost` | Public origin, no trailing slash. |
+| `SITE_ADDRESS` | no — defaults to `:80` | Caddy's site address: the public domain name, which turns on automatic HTTPS. Unset means plain HTTP, local testing only. |
+| `PUBLIC_BASE_URL` | no — defaults to `http://localhost` | Public origin, no trailing slash: `https://<SITE_ADDRESS>` once that is set. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | no | Google sign-in and calendar import. |
 | `SECURE_COOKIES` | no — defaults to `true` | Set `false` for plain-http local testing. |
 | `COMPOSE_PROFILES` | no | `dev` starts the Mailpit mail catcher. |

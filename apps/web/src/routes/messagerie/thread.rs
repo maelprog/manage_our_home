@@ -180,38 +180,37 @@ fn message_row(
 /// `data-message-id` rather than swapped in wholesale, so another member's
 /// message no longer collapses the disclosure and discards the typed text.
 ///
-/// `ws_url` is either absolute (`ws://…`/`wss://…`) or a relative path
-/// (`/api/…`, the production default) that the script prefixes with
-/// `location.host` and the page's scheme.
-fn live_script(ws_url: &str) -> String {
-    // The URL is a server-produced string with no user input; embed as a JSON
-    // string literal so any stray quote can't break out of the script.
-    let ws_url_js = serde_json::to_string(ws_url).unwrap();
-    format!(
-        r#"<script>
-(function() {{
+/// The socket URL is read from `#thread`'s `data-ws-url` (`page`,
+/// `rerender_with_edit_error`): either absolute (`ws://…`/`wss://…`) or a
+/// relative path (`/api/…`, the production default) that the script
+/// prefixes with `location.host` and the page's scheme. It sits in the
+/// markup rather than in the script so that the script is one fixed string,
+/// which infra/Caddyfile's CSP allows by hash (`csp.rs`); `LIVE_SCRIPT` is
+/// the element's text, without its tags.
+pub(crate) const LIVE_SCRIPT: &str = r#"
+(function() {
   if (!("WebSocket" in window)) return;
   var thread = document.getElementById("thread");
   if (!thread || thread.getAttribute("data-live") !== "true") return;
   var status = document.getElementById("live-status");
-  var raw = {ws_url_js};
+  var raw = thread.getAttribute("data-ws-url") || "";
   var url = raw;
-  if (raw.charAt(0) === "/") {{
+  if (raw.charAt(0) === "/") {
     url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + raw;
-  }}
+  }
 
   var attempts = 0, socket = null, coalesce = null, stopped = false, pendingSync = false;
 
-  function setStatus(text) {{ if (status) status.textContent = text; }}
+  function setStatus(text) { if (status) status.textContent = text; }
 
   // The row whose inline edit form is open, if any: the form lives in a native
   // <details> inside the row (see message_row). Its textarea holds text the
   // user typed, which no server render can reproduce — so that row must
   // survive a refresh it didn't ask for (another member posting, a reconnect).
-  function editingRow() {{
+  function editingRow() {
     var open = thread.querySelector("details[open]");
     return open ? open.closest("li[data-message-id]") : null;
-  }}
+  }
 
   // "Has this row's render moved?", asked of the row being edited. Its live
   // <details> is open and its textarea holds unsaved text, so the raw
@@ -219,12 +218,12 @@ fn live_script(ws_url: &str) -> String {
   // compare with the disclosure dropped instead. Everything the server can
   // change (author, time, the (modifié) marker, the content, the delete
   // control) sits outside it.
-  function rowSignature(row) {{
+  function rowSignature(row) {
     var copy = row.cloneNode(true);
     var forms = copy.querySelectorAll("details");
     for (var j = 0; j < forms.length; j++) forms[j].parentNode.removeChild(forms[j]);
     return copy.outerHTML;
-  }}
+  }
 
   // Applies a freshly fetched #thread. With no edit open that is the plain
   // whole-subtree swap. While one is open the fresh rows are reconciled into
@@ -232,125 +231,127 @@ fn live_script(ws_url: &str) -> String {
   // messages still land, the row being edited is left untouched, and its own
   // update — if the fresh render even has one — is replayed once the
   // disclosure closes (pendingSync).
-  function applyFresh(fresh) {{
+  function applyFresh(fresh) {
     var editing = editingRow();
-    if (!editing) {{ thread.innerHTML = fresh.innerHTML; pendingSync = false; return; }}
+    if (!editing) { thread.innerHTML = fresh.innerHTML; pendingSync = false; return; }
 
     var list = thread.querySelector("ul");
     var freshList = fresh.querySelector("ul");
     // No row list on either side (empty thread): nothing to reconcile against,
     // so hold the swap back entirely rather than dropping the edit.
-    if (!list || !freshList) {{ pendingSync = true; return; }}
+    if (!list || !freshList) { pendingSync = true; return; }
 
     var editId = editing.getAttribute("data-message-id");
     var freshRows = freshList.querySelectorAll("li[data-message-id]");
     var live = thread.querySelectorAll("li[data-message-id]");
-    var byId = {{}}, i, id, node;
+    var byId = {}, i, id, node;
     for (i = 0; i < live.length; i++) byId[live[i].getAttribute("data-message-id")] = live[i];
 
-    var seen = {{}}, prev = null;
-    for (i = 0; i < freshRows.length; i++) {{
+    var seen = {}, prev = null;
+    for (i = 0; i < freshRows.length; i++) {
       id = freshRows[i].getAttribute("data-message-id");
       node = byId[id];
-      if (id === editId) {{
+      if (id === editId) {
         // This row's real render is owed once editing ends — but only if it
         // actually differs (issue #50). The frame that matters most, another
         // member posting, leaves the edited row untouched, and a replay there
         // is a whole fetch + parse that applies nothing.
         if (node && rowSignature(node) !== rowSignature(freshRows[i])) pendingSync = true;
-      }} else if (!node) {{
+      } else if (!node) {
         node = document.importNode(freshRows[i], true);
-      }} else if (node.outerHTML !== freshRows[i].outerHTML) {{
+      } else if (node.outerHTML !== freshRows[i].outerHTML) {
         var replacement = document.importNode(freshRows[i], true);
         list.replaceChild(replacement, node);
         node = replacement;
-      }}
+      }
       if (!node) continue;
       seen[id] = true;
       var ref = prev ? prev.nextSibling : list.firstChild;
       if (ref !== node) list.insertBefore(node, ref); // no-op when already in place
       prev = node;
-    }}
-    for (i = 0; i < live.length; i++) {{
+    }
+    for (i = 0; i < live.length; i++) {
       id = live[i].getAttribute("data-message-id");
       if (!seen[id] && live[i].parentNode) live[i].parentNode.removeChild(live[i]);
-    }}
+    }
     // The edited message was deleted by someone else: nothing left to preserve,
     // so take the full render (older-link and empty state included) after all.
-    if (!editingRow()) {{ thread.innerHTML = fresh.innerHTML; pendingSync = false; }}
-  }}
+    if (!editingRow()) { thread.innerHTML = fresh.innerHTML; pendingSync = false; }
+  }
 
   // <details>'s toggle event doesn't bubble, so catch it on the way down.
   // Closing the last open editor replays whatever refresh we held back.
-  thread.addEventListener("toggle", function() {{
-    if (pendingSync && !editingRow()) {{ pendingSync = false; scheduleRerender(); }}
-  }}, true);
+  thread.addEventListener("toggle", function() {
+    if (pendingSync && !editingRow()) { pendingSync = false; scheduleRerender(); }
+  }, true);
 
   // The authoritative probe on any close/error: re-fetch the current page.
   // If the session is gone the fetch lands on /login; if membership is gone
   // the re-rendered #thread carries a different (or no) data-group-id. Either
   // way we stop for good — this is what resolves the API's <=30s membership
   // revalidation window (see apps/api/src/messagerie/ws.rs) into UI state.
-  function refresh(then) {{
-    fetch(location.href, {{ headers: {{ "X-Requested-With": "fetch" }} }})
-      .then(function(r) {{
-        if (r.redirected && /\/login(\?|$)/.test(r.url)) {{ accessLost(); return; }}
-        return r.text().then(function(html) {{
+  function refresh(then) {
+    fetch(location.href, { headers: { "X-Requested-With": "fetch" } })
+      .then(function(r) {
+        if (r.redirected && /\/login(\?|$)/.test(r.url)) { accessLost(); return; }
+        return r.text().then(function(html) {
           var doc = new DOMParser().parseFromString(html, "text/html");
           var fresh = doc.getElementById("thread");
-          if (!fresh || fresh.getAttribute("data-group-id") !== thread.getAttribute("data-group-id")) {{
+          if (!fresh || fresh.getAttribute("data-group-id") !== thread.getAttribute("data-group-id")) {
             accessLost(); return;
-          }}
+          }
           applyFresh(fresh);
           if (then) then();
-        }});
-      }})
-      .catch(function() {{ if (then) then(); }}); // transient: let backoff retry
-  }}
+        });
+      })
+      .catch(function() { if (then) then(); }); // transient: let backoff retry
+  }
 
-  function accessLost() {{
+  function accessLost() {
     stopped = true;
-    if (socket) {{ try {{ socket.close(); }} catch (e) {{}} }}
+    if (socket) { try { socket.close(); } catch (e) {} }
     setStatus("Vous n'avez plus accès à cette conversation.");
     var a = document.createElement("a");
     a.href = location.href; a.textContent = " Recharger"; a.className = "btn secondary";
     if (status) status.appendChild(a);
-  }}
+  }
 
-  function scheduleRerender() {{
+  function scheduleRerender() {
     if (coalesce) return;
-    coalesce = setTimeout(function() {{ coalesce = null; refresh(null); }}, 120);
-  }}
+    coalesce = setTimeout(function() { coalesce = null; refresh(null); }, 120);
+  }
 
-  function connect() {{
+  function connect() {
     if (stopped) return;
-    try {{ socket = new WebSocket(url); }} catch (e) {{ scheduleReconnect(); return; }}
-    socket.onopen = function() {{ attempts = 0; setStatus(""); }};
-    socket.onmessage = function() {{ scheduleRerender(); }}; // payload never parsed
-    socket.onclose = function() {{
+    try { socket = new WebSocket(url); } catch (e) { scheduleReconnect(); return; }
+    socket.onopen = function() { attempts = 0; setStatus(""); };
+    socket.onmessage = function() { scheduleRerender(); }; // payload never parsed
+    socket.onclose = function() {
       if (stopped) return;
       // Probe access first; only reconnect if we still belong here.
       refresh(scheduleReconnect);
-    }};
-    socket.onerror = function() {{ try {{ socket.close(); }} catch (e) {{}} }};
-  }}
+    };
+    socket.onerror = function() { try { socket.close(); } catch (e) {} };
+  }
 
-  function scheduleReconnect() {{
+  function scheduleReconnect() {
     if (stopped) return;
     attempts++;
-    if (attempts > 5) {{
+    if (attempts > 5) {
       setStatus("Connexion temps réel interrompue. Rechargez la page pour réactiver les mises à jour en direct.");
       return;
-    }}
+    }
     var delay = Math.min(1000 * Math.pow(2, attempts - 1), 30000);
     setTimeout(connect, delay);
-  }}
+  }
 
-  window.addEventListener("pagehide", function() {{ stopped = true; if (socket) {{ try {{ socket.close(); }} catch (e) {{}} }} }});
+  window.addEventListener("pagehide", function() { stopped = true; if (socket) { try { socket.close(); } catch (e) {} } });
   connect();
-}})();
-</script>"#,
-    )
+})();
+"#;
+
+fn live_script() -> String {
+    format!("<script>{LIVE_SCRIPT}</script>")
 }
 
 /// Renders the full `/messagerie` page. `messages` arrive newest-first from the
@@ -428,11 +429,7 @@ fn page(
         ""
     };
 
-    let script = if live {
-        live_script(&message_ws_url(&fam.api_public_base_url, fam.gid))
-    } else {
-        String::new()
-    };
+    let script = if live { live_script() } else { String::new() };
 
     let body = format!(
         r#"<h1>Messagerie</h1>
@@ -440,7 +437,7 @@ fn page(
 {notice}
 {live_status}
 {back_link}
-<div id="thread" data-group-id="{gid}" data-live="{live}">
+<div id="thread" data-group-id="{gid}" data-live="{live}" data-ws-url="{ws_url}">
 {list_html}
 </div>
 {composer}
@@ -448,6 +445,7 @@ fn page(
         notice = notice_html(query.notice.as_deref()),
         gid = fam.gid,
         live = live,
+        ws_url = html_escape(&message_ws_url(&fam.api_public_base_url, fam.gid)),
     );
     shell_with_header(Width::Full, "Messagerie", &fam.header, &body)
 }
@@ -797,7 +795,7 @@ async fn rerender_with_edit_error(
         r#"<h1>Messagerie</h1>
 <p class="muted">La conversation de la famille. Un seul fil, partagé par tous les membres.</p>
 <p id="live-status" class="muted live-status" aria-live="polite"></p>
-<div id="thread" data-group-id="{gid}" data-live="true">
+<div id="thread" data-group-id="{gid}" data-live="true" data-ws-url="{ws_url}">
 <ul class="list">{rows}</ul>
 </div>
 <form method="post" action="/messagerie" class="composer">
@@ -806,7 +804,8 @@ async fn rerender_with_edit_error(
 </form>
 {script}"#,
         gid = fam.gid,
-        script = live_script(&message_ws_url(&fam.api_public_base_url, fam.gid)),
+        ws_url = html_escape(&message_ws_url(&fam.api_public_base_url, fam.gid)),
+        script = live_script(),
     );
     Html(shell_with_header(
         Width::Full,
@@ -1135,7 +1134,7 @@ mod tests {
     /// must now sit inside `applyFresh`, behind its "is someone editing?" guard.
     #[test]
     fn live_script_routes_every_swap_through_the_edit_aware_apply() {
-        let js = live_script("/api/groups/x/messages/ws");
+        let js = live_script();
         let apply_at = js
             .find("function applyFresh")
             .expect("refresh() must delegate the swap to applyFresh");
@@ -1153,7 +1152,7 @@ mod tests {
     /// and a refresh held back during an edit is replayed when it closes.
     #[test]
     fn live_script_detects_the_open_inline_editor_and_replays_after_it_closes() {
-        let js = live_script("/api/groups/x/messages/ws");
+        let js = live_script();
         assert!(js.contains("details[open]"));
         assert!(message_row(&sample("Bonjour"), &[], true, true).contains("<details"));
         // <details>'s toggle event doesn't bubble — the listener has to capture.
@@ -1168,7 +1167,7 @@ mod tests {
     /// with nothing to apply.
     #[test]
     fn live_script_owes_the_replay_only_when_the_edited_row_changed() {
-        let js = live_script("/api/groups/x/messages/ws");
+        let js = live_script();
         let at = js
             .find("if (id === editId) {")
             .expect("the reconcile still has to special-case the row being edited");
@@ -1195,7 +1194,7 @@ mod tests {
     /// (author, time, `(modifié)`, content) sits outside the disclosure.
     #[test]
     fn the_edited_row_comparison_ignores_the_disclosure_subtree() {
-        let js = live_script("/api/groups/x/messages/ws");
+        let js = live_script();
         let at = js
             .find("function rowSignature(row) {")
             .expect("the edited-row comparison needs a details-free signature");

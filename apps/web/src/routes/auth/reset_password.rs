@@ -24,7 +24,10 @@ pub struct ResetPasswordForm {
 /// a page with neither a fragment nor a token swaps the form for the
 /// invalid-link notice. `remove()` rather than `hidden`, because
 /// `form { display: flex }` in the sheet outranks the `hidden` attribute.
-const FRAGMENT_SCRIPT: &str = r#"<script>
+///
+/// The element's text only, without the tags: infra/Caddyfile's CSP allows
+/// it by the hash of exactly this string (`csp.rs`).
+pub(crate) const FRAGMENT_SCRIPT: &str = r#"
 (function () {
   var field = document.getElementById("reset-token");
   if (!field) return;
@@ -36,7 +39,7 @@ const FRAGMENT_SCRIPT: &str = r#"<script>
     document.getElementById("reset-missing").hidden = false;
   }
 })();
-</script>"#;
+"#;
 
 fn invalid_link_page(title: &str, message: &str) -> String {
     let title_owned = title.to_string();
@@ -75,7 +78,7 @@ fn form_page(token: Option<&str>, error: Option<&str>) -> String {
         </form>
     };
     let mut html = body.to_html();
-    html.push_str(FRAGMENT_SCRIPT);
+    html.push_str(&format!("<script>{FRAGMENT_SCRIPT}</script>"));
     shell(Width::Form, "Réinitialiser le mot de passe", &html)
 }
 

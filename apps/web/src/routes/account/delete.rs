@@ -35,6 +35,11 @@ use super::{
     GRACE_PERIOD_DAYS,
 };
 
+/// Inline `onsubmit` of the deletion form. A named constant because
+/// infra/Caddyfile's CSP allows it by hash (`csp.rs`).
+pub(crate) const CONFIRM_ACCOUNT_DELETE: &str =
+    "return confirm('Demander la suppression de votre compte ?');";
+
 #[derive(serde::Deserialize)]
 pub struct DeleteForm {
     #[serde(default)]
@@ -86,7 +91,7 @@ fn request_form(me: &MeResponse, error: Option<&str>) -> String {
 
     format!(
         r#"{error_html}
-<form method="post" action="/account/delete" onsubmit="return confirm('Demander la suppression de votre compte ?');">
+<form method="post" action="/account/delete" onsubmit="{CONFIRM_ACCOUNT_DELETE}">
 {password}
 <label class="field inline">
 <input type="checkbox" name="consent" value="1"/>

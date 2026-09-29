@@ -260,6 +260,10 @@ pub fn app_header(
     )
 }
 
+/// Inline `onclick` of `password_field`'s show/hide toggle. A named
+/// constant because infra/Caddyfile's CSP allows it by hash (`csp.rs`).
+pub(crate) const PW_TOGGLE: &str = "var i=this.parentNode.querySelector('input');var s=i.type==='password';i.type=s?'text':'password';this.setAttribute('aria-label',s?'Masquer le mot de passe':'Afficher le mot de passe');this.classList.toggle('shown',s)";
+
 /// Password `<label>` block shared by login/register/reset-password
 /// (embed via `<div inner_html=...></div>` like `app_header`).
 /// The show/hide toggle is progressive enhancement: with JS disabled the
@@ -285,7 +289,7 @@ pub fn password_field(label: &str, name: &str, autocomplete: &str, with_rules: b
 {label}
 <div class="pw-wrap">
 <input type="password" name="{name}" autocomplete="{autocomplete}" required{rules_attr} />
-<button type="button" class="pw-toggle" aria-label="Afficher le mot de passe" onclick="var i=this.parentNode.querySelector('input');var s=i.type==='password';i.type=s?'text':'password';this.setAttribute('aria-label',s?'Masquer le mot de passe':'Afficher le mot de passe');this.classList.toggle('shown',s)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></button>
+<button type="button" class="pw-toggle" aria-label="Afficher le mot de passe" onclick="{PW_TOGGLE}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></button>
 </div>
 {hint}
 </label>"#,
