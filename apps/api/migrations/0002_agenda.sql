@@ -112,6 +112,9 @@ CREATE POLICY scheduled_notifications_isolation ON scheduled_notifications
               AND e.group_id::text = current_setting('app.family_id', true)
         )
     );
--- The worker runs as the migration-owning role (bypasses RLS by design,
--- same trust boundary as jobs/account_purge.rs) since it must see pending
--- notifications across every family, not just one request's scope.
+-- The worker (jobs/scheduled_notifications.rs) runs on the admin pool
+-- (`admin_db`, ADMIN_DATABASE_URL: `admin_role`, BYPASSRLS), not on the
+-- runtime role and not as the migration-owning role, since it must see
+-- pending notifications across every family, not just one request's
+-- scope; each of its passes refuses a role that does not bypass RLS
+-- (#293). Same trust boundary as jobs/account_purge.rs.
