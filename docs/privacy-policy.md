@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-09-28.
+Dernière mise à jour : 2026-09-29.
 
 ## Qui est responsable de vos données ?
 
@@ -173,7 +173,8 @@ de la purge dépasserait.
   nouvelle, mais elle ne suspend plus rien ; et si l'email
   d'avertissement était déjà parti, un nouvel email part une fois
   l'échéance à 30 jours ou moins, et la purge n'a pas lieu moins de 30
-  jours après lui. La date du refus est effacée à la réactivation, à une
+  jours après lui. Dans tous les cas, elle n'a pas lieu moins de 30 jours
+  après le refus, que cet email parte ou non. La date du refus est effacée à la réactivation, à une
   nouvelle désactivation et à la purge. Un compte dont la suppression avait été demandée
   avant sa désactivation est purgé au terme de ses 30 jours de grâce,
   comme tout autre, demande de réactivation en attente ou non.

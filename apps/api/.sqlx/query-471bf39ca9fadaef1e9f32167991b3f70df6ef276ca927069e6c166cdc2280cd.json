@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT deletion_requested_at, deactivated_at, deactivation_notice_sent_at,\n               deleted_at, now() AS \"now!\",\n               EXISTS (SELECT 1 FROM account_reactivation_requests r\n                       WHERE r.user_id = users.id) AS \"reactivation_requested!\",\n                   reactivation_refused_at IS NOT NULL AS \"reactivation_refused!\"\n        FROM users WHERE id = $1 FOR UPDATE\n        ",
+  "query": "\n        SELECT deletion_requested_at, deactivated_at, deactivation_notice_sent_at,\n               deleted_at, now() AS \"now!\",\n               EXISTS (SELECT 1 FROM account_reactivation_requests r\n                       WHERE r.user_id = users.id) AS \"reactivation_requested!\",\n                   reactivation_refused_at\n        FROM users WHERE id = $1 FOR UPDATE\n        ",
   "describe": {
     "columns": [
       {
@@ -61,9 +61,14 @@
       },
       {
         "ordinal": 6,
-        "name": "reactivation_refused!",
-        "type_info": "Bool",
-        "origin": "Expression"
+        "name": "reactivation_refused_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "reactivation_refused_at"
+          }
+        }
       }
     ],
     "parameters": {
@@ -78,8 +83,8 @@
       true,
       null,
       null,
-      null
+      true
     ]
   },
-  "hash": "720dd667862605b7cbbfedd7af9084014da09a0014646f0c6d25c51e0b8c094c"
+  "hash": "471bf39ca9fadaef1e9f32167991b3f70df6ef276ca927069e6c166cdc2280cd"
 }

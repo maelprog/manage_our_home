@@ -107,7 +107,7 @@ where
                    deactivation_notice_sent_at, deleted_at, now() AS "now!",
                    EXISTS (SELECT 1 FROM account_reactivation_requests r
                            WHERE r.user_id = users.id) AS "reactivation_requested!",
-                   reactivation_refused_at IS NOT NULL AS "reactivation_refused!"
+                   reactivation_refused_at
             FROM users WHERE id = $1 FOR UPDATE
             "#,
             user_id
@@ -123,7 +123,7 @@ where
             deactivation_notice_sent_at: row.deactivation_notice_sent_at,
             deleted_at: row.deleted_at,
             reactivation_requested: row.reactivation_requested,
-            reactivation_refused: row.reactivation_refused,
+            reactivation_refused_at: row.reactivation_refused_at,
         };
         let (true, Some(deactivated_at)) =
             (deactivation_notice_due(row.now, &clock), row.deactivated_at)
@@ -133,7 +133,7 @@ where
         };
         let body = manage_our_home_shared::validation::rgpd::deactivation_notice_email_body(
             deactivated_at,
-            deactivation_purge_at(deactivated_at, Some(row.now)),
+            deactivation_purge_at(deactivated_at, Some(row.now), row.reactivation_refused_at),
             privacy_policy_url,
         );
         if let Err(e) = send(row.email, DEACTIVATION_NOTICE_SUBJECT.to_string(), body).await {
@@ -204,7 +204,7 @@ pub async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<()> {
                deleted_at, now() AS "now!",
                EXISTS (SELECT 1 FROM account_reactivation_requests r
                        WHERE r.user_id = users.id) AS "reactivation_requested!",
-                   reactivation_refused_at IS NOT NULL AS "reactivation_refused!"
+                   reactivation_refused_at
         FROM users WHERE id = $1 FOR UPDATE
         "#,
         user_id
@@ -220,7 +220,7 @@ pub async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<()> {
                 deactivation_notice_sent_at: r.deactivation_notice_sent_at,
                 deleted_at: r.deleted_at,
                 reactivation_requested: r.reactivation_requested,
-                reactivation_refused: r.reactivation_refused,
+                reactivation_refused_at: r.reactivation_refused_at,
             },
         )
     });
@@ -376,10 +376,11 @@ pub struct PurgeClock {
     /// A reactivation request from the holder awaits the superadmin's
     /// decision (`account_reactivation_requests`, #289).
     pub reactivation_requested: bool,
-    /// The superadmin has refused a reactivation request since the account
-    /// was deactivated (`users.reactivation_refused_at`, #289): a later
-    /// request no longer suspends anything.
-    pub reactivation_refused: bool,
+    /// When the superadmin last refused a reactivation request since the
+    /// account was deactivated (`users.reactivation_refused_at`, #289): a
+    /// later request no longer suspends anything, and the purge waits 30
+    /// days after it (#296).
+    pub reactivation_refused_at: Option<DateTime<Utc>>,
 }
 
 /// When an account deactivated at `deactivated_at` becomes purgeable: 2
@@ -389,15 +390,26 @@ pub struct PurgeClock {
 /// a purge already due. A notice never sent caps the wait at the 2 years
 /// plus those 30 days, so an address that bounces for good does not keep
 /// the account forever.
+///
+/// Nor is it ever less than 30 days after the superadmin last refused a
+/// reactivation request (`refused_at`, #296). The refusal clears the
+/// warning; once that cap has passed, the purge would otherwise be due at
+/// once — the new warning failing, or the refusal landing between a pass's
+/// warnings and its purge, and the holder never warned since.
 pub fn deactivation_purge_at(
     deactivated_at: DateTime<Utc>,
     notice_sent_at: Option<DateTime<Utc>>,
+    refused_at: Option<DateTime<Utc>>,
 ) -> DateTime<Utc> {
     let retention_end = deactivation_retention_end(deactivated_at);
     let notice = Duration::days(DEACTIVATION_NOTICE_DAYS);
-    match notice_sent_at {
+    let after_notice = match notice_sent_at {
         Some(sent_at) => retention_end.max(sent_at + notice),
         None => retention_end + notice,
+    };
+    match refused_at {
+        Some(refused_at) => after_notice.max(refused_at + notice),
+        None => after_notice,
     }
 }
 
@@ -423,9 +435,13 @@ pub fn purge_due(now: DateTime<Utc>, clock: &PurgeClock) -> bool {
         .deletion_requested_at
         .is_some_and(|at| now > at + Duration::days(PURGE_GRACE_DAYS));
     let deactivated = !suspended(clock)
-        && clock
-            .deactivated_at
-            .is_some_and(|at| now >= deactivation_purge_at(at, clock.deactivation_notice_sent_at));
+        && clock.deactivated_at.is_some_and(|at| {
+            now >= deactivation_purge_at(
+                at,
+                clock.deactivation_notice_sent_at,
+                clock.reactivation_refused_at,
+            )
+        });
     requested || deactivated
 }
 
@@ -434,7 +450,7 @@ pub fn purge_due(now: DateTime<Utc>, clock: &PurgeClock) -> bool {
 /// deactivation — after a refusal the holder may ask again, but the
 /// deadline runs (arbitrage of 2026-09-29, #289).
 fn suspended(clock: &PurgeClock) -> bool {
-    clock.reactivation_requested && !clock.reactivation_refused
+    clock.reactivation_requested && clock.reactivation_refused_at.is_none()
 }
 
 /// Whether the holder of a deactivated account is due its warning: from 30
@@ -523,7 +539,7 @@ mod tests {
             deactivation_notice_sent_at: None,
             deleted_at: None,
             reactivation_requested: false,
-            reactivation_refused: false,
+            reactivation_refused_at: None,
         }
     }
 
@@ -540,7 +556,7 @@ mod tests {
     #[test]
     fn a_deactivated_account_warned_on_time_is_purgeable_two_calendar_years_after() {
         assert_eq!(
-            deactivation_purge_at(at(2026, 3, 10), Some(at(2028, 2, 9))),
+            deactivation_purge_at(at(2026, 3, 10), Some(at(2028, 2, 9)), None),
             at(2028, 3, 10)
         );
     }
@@ -548,7 +564,7 @@ mod tests {
     #[test]
     fn two_years_after_the_29th_of_february_is_the_28th() {
         assert_eq!(
-            deactivation_purge_at(at(2028, 2, 29), Some(at(2030, 1, 1))),
+            deactivation_purge_at(at(2028, 2, 29), Some(at(2030, 1, 1)), None),
             at(2030, 2, 28)
         );
     }
@@ -556,14 +572,17 @@ mod tests {
     #[test]
     fn a_late_notice_pushes_the_purge_to_30_days_after_it() {
         assert_eq!(
-            deactivation_purge_at(at(2026, 3, 10), Some(at(2028, 3, 1))),
+            deactivation_purge_at(at(2026, 3, 10), Some(at(2028, 3, 1)), None),
             at(2028, 3, 31)
         );
     }
 
     #[test]
     fn a_notice_never_sent_caps_the_wait_at_two_years_and_30_days() {
-        assert_eq!(deactivation_purge_at(at(2026, 3, 10), None), at(2028, 4, 9));
+        assert_eq!(
+            deactivation_purge_at(at(2026, 3, 10), None, None),
+            at(2028, 4, 9)
+        );
     }
 
     // -- purge_due ------------------------------------------------------------
@@ -699,9 +718,9 @@ mod tests {
         assert!(purge_due(at(2026, 10, 2), &c));
     }
 
-    fn refused(c: PurgeClock) -> PurgeClock {
+    fn refused(on: DateTime<Utc>, c: PurgeClock) -> PurgeClock {
         PurgeClock {
-            reactivation_refused: true,
+            reactivation_refused_at: Some(on),
             ..c
         }
     }
@@ -710,23 +729,57 @@ mod tests {
     /// but the deadline runs — an overdue account is purged.
     #[test]
     fn a_new_request_after_a_refusal_does_not_suspend_the_purge() {
-        let c = requested(refused(deactivated(at(2026, 3, 10), Some(at(2028, 2, 9)))));
+        let c = requested(refused(
+            at(2027, 1, 1),
+            deactivated(at(2026, 3, 10), Some(at(2028, 2, 9))),
+        ));
         assert!(!purge_due(at(2028, 3, 9), &c));
         assert!(purge_due(at(2028, 3, 10), &c));
     }
 
     #[test]
     fn a_new_request_after_a_refusal_does_not_hold_back_the_notice() {
-        let c = requested(refused(deactivated(at(2026, 3, 10), None)));
+        let c = requested(refused(at(2027, 1, 1), deactivated(at(2026, 3, 10), None)));
         assert!(deactivation_notice_due(at(2028, 2, 9), &c));
     }
 
     /// A refusal on its own changes nothing to the dates #256 set.
     #[test]
     fn a_refusal_without_a_new_request_leaves_the_two_year_purge_as_is() {
-        let c = refused(deactivated(at(2026, 3, 10), Some(at(2028, 2, 9))));
+        let c = refused(
+            at(2027, 1, 1),
+            deactivated(at(2026, 3, 10), Some(at(2028, 2, 9))),
+        );
         assert!(!purge_due(at(2028, 3, 9), &c));
         assert!(purge_due(at(2028, 3, 10), &c));
+    }
+
+    /// #296: a refusal clears the warning. Once the 2 years are up, the
+    /// purge would otherwise be due at once when the new warning fails to
+    /// go out, or when the refusal lands between a pass's warnings and its
+    /// purge — the holder never warned.
+    #[test]
+    fn a_late_refusal_puts_the_purge_30_days_after_it() {
+        assert_eq!(
+            deactivation_purge_at(at(2026, 3, 10), None, Some(at(2028, 6, 1))),
+            at(2028, 7, 1)
+        );
+    }
+
+    #[test]
+    fn a_refusal_long_before_the_warning_leaves_the_purge_date_as_is() {
+        assert_eq!(
+            deactivation_purge_at(at(2026, 3, 10), Some(at(2028, 2, 9)), Some(at(2027, 1, 1))),
+            at(2028, 3, 10)
+        );
+    }
+
+    #[test]
+    fn a_late_refusal_whose_new_warning_never_went_is_not_purged_for_30_days() {
+        let c = refused(at(2028, 6, 1), deactivated(at(2026, 3, 10), None));
+        assert!(!purge_due(at(2028, 6, 1), &c));
+        assert!(!purge_due(at(2028, 6, 30), &c));
+        assert!(purge_due(at(2028, 7, 1), &c));
     }
 
     #[test]

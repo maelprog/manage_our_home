@@ -690,12 +690,13 @@ mod tests {
         }
     }
 
-    /// #196: `AuthUser::from_request_parts` is the only place that reads the
-    /// session cookie. Every extractor that needs a logged-in caller —
-    /// `SuperAdminUser` included — goes through it, so a change to session
-    /// validity (inactivity timeout, hashed token, MFA step) lands once. A
-    /// second copy of that check once lived in `user_admin`; this fails if
-    /// one reappears anywhere under `src/`.
+    /// #196: `load_session` is the only place that reads the session cookie.
+    /// Every extractor that needs a caller — `AuthUser`, `AnySession`,
+    /// `DeactivatedSession`, and `SuperAdminUser` through `AuthUser` — goes
+    /// through it, so a change to session validity (inactivity timeout,
+    /// hashed token, MFA step) lands once. A second copy of that check once
+    /// lived in `user_admin`; this fails if one reappears anywhere under
+    /// `src/`.
     ///
     /// #239: matching `.get(<key>)` on the key's spelling let any alias
     /// through (`const K: &str = SESSION_COOKIE_NAME; jar.get(K)`), as well
