@@ -71,3 +71,8 @@ http-body-util = { version = "0.1", features = ["channel"] }
 # in the shipped binary compresses anything (Caddy's `encode` does that,
 # see infra/Caddyfile), so this must not reach the release graph.
 flate2 = "1"
+# The CSP guard (#141, src/csp.rs) writes each inline script's hash the way
+# the policy spells it: SHA-256 (sha2, above) in standard base64. 0.22 is the
+# newest release and already in Cargo.lock through the workspace's other
+# crates, so this adds no crate for `cargo audit` to look at.
+base64 = "0.22"

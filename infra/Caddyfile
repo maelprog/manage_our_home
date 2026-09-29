@@ -2,9 +2,17 @@
 # docs/architecture.md's Deployment section, Front epic #1 / GH issue
 # #15): required so the HttpOnly/SameSite=Lax session cookie is sent
 # automatically on browser calls to either service, with no CORS
-# configuration needed. Public/internet exposure is still deferred past
-# v1 (local/VPN only, docs/notes-issue-1-qa.md #7) — swap `:80` for the
-# real domain once that changes, which also turns on automatic TLS.
+# configuration needed.
+#
+# The site address comes from `SITE_ADDRESS` (infra/.env, passed through by
+# docker-compose.yml) — #141. A domain name there (`maison.example.org`)
+# turns on Caddy's automatic HTTPS: a certificate is obtained and renewed
+# for it (kept in the `caddy_data` volume), port 80 only redirects to 443,
+# and every request, credentials included, travels over TLS. That needs
+# the name to resolve to this host and ports 80 and 443 to reach it from
+# the Internet. Unset, it falls back to `:80`, plain HTTP on any host name:
+# the local stack of infra/.env.example, never a public deployment — the
+# README's "Running it for real" has the manoeuvre.
 
 # How long a client may take to send a request (#219). apps/web and
 # apps/api bound every request body themselves — 30 s of silence, 1 kB/s
@@ -54,7 +62,48 @@
 	}
 }
 
-:80 {
+{$SITE_ADDRESS::80} {
+	# Security headers (#141), on every response of both applications —
+	# set here once rather than in each of them.
+	#
+	# Content-Security-Policy. Nothing the pages load comes from elsewhere
+	# (stylesheet and fonts are served by apps/web under /assets, DESIGN.md),
+	# so `default-src 'self'` covers images, fonts and `fetch`/WebSocket
+	# (the Messagerie's socket is same-origin, under /api).
+	# - `script-src` allows no file and no inline script at all, except the
+	#   few apps/web still writes inline, each by the SHA-256 of its exact
+	#   text; `'unsafe-hashes'` extends that to event-handler attributes
+	#   (`onclick="…"`). Which string each hash stands for, and the test that
+	#   fails when one changes without the other, are in
+	#   apps/web/src/csp.rs — run `cargo test -p manage_our_home_web csp`
+	#   after touching any inline script: its failure prints the list to
+	#   paste here.
+	# - `style-src 'self'` keeps `<style>` elements out; `style-src-attr
+	#   'unsafe-inline'` lets the handful of `style="…"` attributes in the
+	#   routes through (an avatar's colour, a column's alignment). A browser
+	#   that predates `style-src-attr` falls back on `style-src` and drops
+	#   those attributes: cosmetic, nothing stops working.
+	# - `frame-ancestors 'none'` (and `X-Frame-Options DENY` for browsers
+	#   older than it): no page of the application can be framed.
+	# - `form-action 'self'`, `base-uri 'none'`, `object-src 'none'`: an
+	#   injected `<form>`, `<base>` or plugin cannot send anything elsewhere.
+	#
+	# Strict-Transport-Security: a browser that once reached the site over
+	# HTTPS refuses plain HTTP to it for a year. Browsers ignore it on a
+	# plain-HTTP response, so the `:80` local stack is unaffected. No
+	# `includeSubDomains`: the domain's other hosts are not this file's.
+	#
+	# Referrer-Policy no-referrer: no URL of the application ever leaves in a
+	# `Referer` — `/verify-email?token=…` carries its token in the query
+	# string.
+	header {
+		Content-Security-Policy "default-src 'self'; script-src 'unsafe-hashes' 'sha256-3y+tCmWcFp9x2K4uMZvV/ZEud2bfDnOltGdCBSw3YkI=' 'sha256-dGJiRXhRBoKzoa7jUS7f1mjmtnyDDbXHuZ7qw0wIL1w=' 'sha256-osjxnKEPL/pQJbFk1dKsF7PYFmTyMWGmVSiL9inhxJY=' 'sha256-6K7iZlEt9YCNTQ56Gu2hbVcZJoAdQ55xrHvDQ2o6dFU=' 'sha256-lYsQxrqqhY6skx46GFkuY7qu8trJVbJOMW/RoP6fdZs=' 'sha256-VrtvwbP0BSW5sTTEz0v9sve897Z4TyyoPUrKKRQxcM8=' 'sha256-B22SHpa71PIueUIDWDfK878EgjoNVDy8Sge3DFo1X3I=' 'sha256-bI+eIkmZUe+KpE09YEvnyjC4sQyD69AeTeeFkPEf0pk='; style-src 'self'; style-src-attr 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+	}
+
 	# apps/web inlined its stylesheet into every response until #89, and
 	# `encode` is what made that hold: the same ~27 kB of CSS travelled with
 	# every page and uncompressed it alone overflowed the ~14 kB first

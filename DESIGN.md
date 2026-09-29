@@ -621,15 +621,18 @@ l'inlining, c'est cette liste qu'il faudra réfuter.
    prose — et c'est elle qui a cédé. La prose est aujourd'hui payée une fois
    par déploiement, et le garde-fou construit pour rendre cet arbitrage
    impossible à trancher en douce n'a plus rien à empêcher.
-4. **Conflit avec une CSP stricte.** Il n'y en a pas aujourd'hui. Le jour où on
-   en veut une, un `<style>` inline imposait `unsafe-inline`, ou un nonce/hash
-   à générer par réponse. Une feuille externe est le cas trivial — c'est
-   désormais le nôtre. (Le `<script>` inline de `messagerie/thread.rs` reste,
-   lui, un obstacle. #72 l'a laissé en place et a corrigé le constat qui
-   l'accompagnait : il n'est **pas** émis inconditionnellement — voir
-   [Le budget](#le-budget) ci-dessous. Le sortir vers `/assets` sous son
-   empreinte est la bascule de #89 rejouée sur un second actif, donc une
-   issue à part.)
+4. **Conflit avec une CSP stricte.** Un `<style>` inline imposait
+   `unsafe-inline`, ou un nonce/hash à générer par réponse. Une feuille
+   externe est le cas trivial — c'est désormais le nôtre, et depuis #141
+   `infra/Caddyfile` pose la CSP : `style-src 'self'`, aucun `<style>`
+   admis. (Le `<script>` inline de `messagerie/thread.rs` reste, avec les
+   autres scripts et gestionnaires inline, autorisé **par l'empreinte de son
+   texte** : une politique posée par Caddy est statique, donc sans nonce.
+   `apps/web/src/csp.rs` tient ces empreintes et le texte ensemble. #72 l'a
+   laissé en place et a corrigé le constat qui l'accompagnait : il n'est
+   **pas** émis inconditionnellement — voir [Le budget](#le-budget)
+   ci-dessous. Le sortir vers `/assets` sous son empreinte est la bascule de
+   #89 rejouée sur un second actif, donc une issue à part.)
 
 ### Le budget
 

@@ -186,6 +186,11 @@ services:
     image: caddy:2
     restart: unless-stopped
     depends_on: [api, web]
+    environment:
+      # The Caddyfile's site address (#141): the public domain name, which
+      # turns on automatic HTTPS; unset or empty, `:80` in plain HTTP for
+      # the local stack. See the README's "Running it for real".
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
     ports:
       - "80:80"
       - "443:443"

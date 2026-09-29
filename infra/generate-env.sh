@@ -3,7 +3,22 @@
 # variable set docker-compose.yml consumes. For local testing, prefer
 # `cp .env.example .env` (fixed throwaway values).
 
+#
+# Usage: ./generate-env.sh <domain>     e.g. ./generate-env.sh maison.example.org
+#
+# The domain is the public name the stack is served at (#141). It becomes
+# Caddy's site address, which turns on automatic HTTPS, and the https://
+# origin the applications build their links from. Without HTTPS the
+# Secure session cookie is refused and nobody can sign in, so there is no
+# plain-HTTP variant of this file.
+
 set -euo pipefail
+
+DOMAIN="${1:-}"
+if [[ -z "$DOMAIN" || "$DOMAIN" =~ [/:[:space:]] ]]; then
+    echo "usage: $0 <domain>   (a bare host name, e.g. maison.example.org)" >&2
+    exit 1
+fi
 
 # Output file
 ENV_FILE=".env"
@@ -24,8 +39,12 @@ cat > "$ENV_FILE" <<EOF
 # Application
 ########################################
 
+# Caddy's site address: a domain name turns on automatic HTTPS. It must
+# resolve to this host, with ports 80 and 443 reachable from the Internet.
+SITE_ADDRESS=$DOMAIN
+
 # Public origin the stack is reached at (Caddy). No trailing slash.
-PUBLIC_BASE_URL=http://localhost
+PUBLIC_BASE_URL=https://$DOMAIN
 
 # Defaults to true when unset; set to false only for local http testing.
 #SECURE_COOKIES=false
