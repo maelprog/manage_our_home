@@ -542,6 +542,19 @@ async fn backdate(db: &PgPool, user: Uuid, deactivated: &str, notice_days_ago: O
     .unwrap();
 }
 
+/// Sets how long ago the superadmin refused `user`'s reactivation request.
+async fn backdate_refusal(db: &PgPool, user: Uuid, days_ago: i32) {
+    sqlx::query(
+        "UPDATE users SET reactivation_refused_at = now() - make_interval(days => $2)
+         WHERE id = $1",
+    )
+    .bind(user)
+    .bind(days_ago)
+    .execute(db)
+    .await
+    .unwrap();
+}
+
 async fn purged(db: &PgPool, user: Uuid) -> bool {
     count(
         db,
@@ -608,6 +621,7 @@ async fn a_pending_request_suspends_the_two_year_purge_and_its_warning(db: PgPoo
     assert!(!purged(&db, overdue).await, "30 days after the new warning");
 
     backdate(&db, overdue, "2 years 31 days", Some(30)).await;
+    backdate_refusal(&db, overdue, 30).await;
     purge_due_accounts(&db).await.unwrap();
     assert!(purged(&db, overdue).await);
     assert!(!purged(&db, warnable).await);
@@ -770,8 +784,10 @@ async fn after_a_refusal_a_new_request_does_not_hold_back_an_overdue_purge(db: P
         vec!["holder@example.test".to_string()]
     );
 
-    // Overdue and warned 31 days ago: purged, pending request and all.
+    // Overdue, refused 32 days ago and warned 31 days ago: purged, pending
+    // request and all.
     backdate(&db, holder, "2 years 1 day", Some(31)).await;
+    backdate_refusal(&db, holder, 32).await;
     purge_due_accounts(&db).await.unwrap();
     assert!(purged(&db, holder).await);
     assert_eq!(
@@ -825,4 +841,104 @@ async fn reactivating_forgets_the_refusal_for_the_next_deactivation(db: PgPool) 
     backdate(&db, holder, "2 years 1 day", Some(31)).await;
     purge_due_accounts(&db).await.unwrap();
     assert!(!purged(&db, holder).await);
+}
+
+/// A deactivated account with a pending first request, 2 years and 60 days
+/// after its deactivation, warned before it asked: well past the date #256
+/// set, which the request suspended.
+async fn overdue_with_a_pending_request(
+    router: &axum::Router,
+    db: &PgPool,
+    admin: &str,
+    email: &str,
+) -> Uuid {
+    let holder = register_verify(router, db, email).await;
+    deactivate(router, admin, holder).await;
+    let restricted = login_cookie(router, email).await;
+    assert_eq!(
+        request(router, &restricted, None).await,
+        StatusCode::CREATED
+    );
+    backdate(db, holder, "2 years 60 days", Some(90)).await;
+    holder
+}
+
+async fn refuse(router: &axum::Router, admin: &str, user: Uuid) {
+    assert_eq!(
+        admin_post(
+            router,
+            admin,
+            &format!("/admin/users/{user}/reactivation-request/refuse")
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+}
+
+/// #296: the refusal clears the warning. If the new one fails to go out,
+/// the purge still waits 30 days after the refusal — the holder is never
+/// purged without being warned since.
+#[sqlx::test]
+async fn a_late_refusal_whose_new_warning_fails_is_not_purged_for_30_days(db: PgPool) {
+    let router = test_router(db.clone());
+    let admin = superadmin(&router, &db, "admin@example.test").await;
+    let holder = overdue_with_a_pending_request(&router, &db, &admin, "holder@example.test").await;
+    refuse(&router, &admin, holder).await;
+
+    let tried = std::sync::Mutex::new(0);
+    let failing = |_: String, _: String, _: String| {
+        *tried.lock().unwrap() += 1;
+        async { Err::<(), anyhow::Error>(anyhow::anyhow!("relay refused")) }
+    };
+    send_deactivation_notices(&db, "https://example.test/privacy-policy", &failing)
+        .await
+        .unwrap();
+    purge_due_accounts(&db).await.unwrap();
+    assert_eq!(*tried.lock().unwrap(), 1);
+    assert!(!purged(&db, holder).await);
+
+    backdate_refusal(&db, holder, 29).await;
+    purge_due_accounts(&db).await.unwrap();
+    assert!(!purged(&db, holder).await, "29 days after the refusal");
+
+    backdate_refusal(&db, holder, 30).await;
+    purge_due_accounts(&db).await.unwrap();
+    assert!(purged(&db, holder).await, "30 days after the refusal");
+}
+
+/// #296: a refusal that lands between a pass's warnings and its purge
+/// leaves no warning sent since, and nothing is purged in that pass.
+#[sqlx::test]
+async fn a_refusal_between_the_warnings_and_the_purge_purges_nothing(db: PgPool) {
+    let router = test_router(db.clone());
+    let admin = superadmin(&router, &db, "admin@example.test").await;
+    let holder = overdue_with_a_pending_request(&router, &db, &admin, "holder@example.test").await;
+
+    let sent = std::sync::Mutex::new(Vec::<String>::new());
+    let record = |to: String, _: String, _: String| {
+        sent.lock().unwrap().push(to);
+        async { Ok::<(), anyhow::Error>(()) }
+    };
+    send_deactivation_notices(&db, "https://example.test/privacy-policy", &record)
+        .await
+        .unwrap();
+    refuse(&router, &admin, holder).await;
+    purge_due_accounts(&db).await.unwrap();
+    assert!(sent.lock().unwrap().is_empty());
+    assert!(!purged(&db, holder).await);
+}
+
+/// A deactivation starts with no refusal on record, whatever the row
+/// held — the only way a stale `reactivation_refused_at` could cost a
+/// first request its suspension of the purge.
+#[sqlx::test]
+async fn a_deactivation_clears_any_recorded_refusal(db: PgPool) {
+    let router = test_router(db.clone());
+    let admin = superadmin(&router, &db, "admin@example.test").await;
+    let holder = register_verify(&router, &db, "holder@example.test").await;
+    backdate_refusal(&db, holder, 1).await;
+    deactivate(&router, &admin, holder).await;
+    let refused =
+        "SELECT count(*) FROM users WHERE id = $1 AND reactivation_refused_at IS NOT NULL";
+    assert_eq!(count(&db, refused, holder).await, 0);
 }

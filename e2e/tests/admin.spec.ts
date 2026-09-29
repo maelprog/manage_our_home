@@ -126,8 +126,9 @@ test.describe("User admin — support look-up", () => {
 
 test.describe("User admin — deactivate", () => {
   test("deactivating a user revokes their session until a reactivation", async ({ browser }) => {
-    // Two browsers and five password logins (#289): more than the default
-    // 30 s budget allows on a loaded runner.
+    // Two browsers and five password logins (#289). The tripled budget is a
+    // margin, not a measured need: no run of this test has been traced
+    // past the default 30 s.
     test.slow();
     // A target user with a live session.
     const targetCtx = await browser.newContext();

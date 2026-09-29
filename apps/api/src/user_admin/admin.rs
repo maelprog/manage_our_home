@@ -233,9 +233,11 @@ pub async fn reactivate_user(
 /// holder may ask again, but a later request suspends nothing (arbitrage of
 /// 2026-09-29). The warning email is cleared so that, if it had already gone
 /// out, the holder is warned afresh once the purge is 30 days away or less,
-/// and the purge still comes at least 30 days after that warning
-/// (`jobs::account_purge`). No pending request, or an account reactivated
-/// or purged since, is a 404. Traced in `audit_log`.
+/// and the purge still comes at least 30 days after that warning — and at
+/// least 30 days after this refusal, whether the warning goes out or not
+/// (#296, `jobs::account_purge`). Each refusal does so anew. No pending
+/// request, or an account reactivated or purged since, is a 404. Traced in
+/// `audit_log`.
 pub async fn refuse_reactivation(
     State(state): State<AppState>,
     actor: SuperAdminUser,
