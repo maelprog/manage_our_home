@@ -47,6 +47,9 @@ pub struct AdminUserResponse {
     pub reactivation_requested_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub reactivation_message: Option<String>,
+    /// When a request was last refused since the deactivation (#289).
+    #[serde(default)]
+    pub reactivation_refused_at: Option<DateTime<Utc>>,
 }
 
 /// `GET /admin/users` response envelope.

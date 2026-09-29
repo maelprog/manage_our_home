@@ -176,6 +176,16 @@ test.describe("User admin — deactivate", () => {
     await expect(target.getByText("attend la décision de l'administrateur")).toBeVisible();
     await expect(target.getByRole("button", { name: "Demander la réactivation" })).toHaveCount(0);
 
+    // The holder logs out from that page, then back in to it.
+    await target.getByRole("button", { name: "Se déconnecter" }).click();
+    await expect(target).toHaveURL(/\/login$/);
+    await target.goto("/groups");
+    await expect(target).toHaveURL(/\/login$/);
+    await target.getByLabel("Email").fill(targetEmail);
+    await target.getByRole("textbox", { name: "Mot de passe" }).fill(PASSWORD);
+    await target.getByRole("button", { name: "Se connecter" }).click();
+    await expect(target).toHaveURL("/account/deactivated");
+
     // The superadmin sees the pending request, with its note. A deactivated
     // account offers no second deactivation (the backend would 404 it), only
     // its reactivation (#256), which grants the request.

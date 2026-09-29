@@ -23,8 +23,8 @@ use crate::state::{api_request_auth, AppState};
 
 use super::{
     admin_cookie, admin_header, can_deactivate, can_reactivate, can_refuse_reactivation,
-    forbidden_page, format_admin_datetime, format_admin_datetime_opt, service_unavailable_page,
-    user_not_found_page, user_status_label,
+    forbidden_page, format_admin_datetime, format_admin_datetime_opt, purge_outlook,
+    service_unavailable_page, user_not_found_page, user_status_label, PurgeOutlook,
 };
 
 #[derive(serde::Deserialize)]
@@ -208,7 +208,7 @@ pub async fn detail(
         format!(
             r#"<section class="card">
 <h2>Demande de réactivation</h2>
-<p>Le titulaire a demandé la réactivation de son compte le {requested}. Tant que la demande est en attente, la purge au bout de 2 ans de désactivation est suspendue.</p>
+<p>Le titulaire a demandé la réactivation de son compte le {requested}. {purge}</p>
 {message}
 <div class="actions">
 <form method="post" action="/admin/users/{id}/reactivate">
@@ -220,6 +220,23 @@ pub async fn detail(
 </div>
 </section>"#,
             requested = html_escape(&format_admin_datetime_opt(user.reactivation_requested_at)),
+            purge = html_escape(
+                match purge_outlook(
+                    user.deletion_requested_at,
+                    user.reactivation_requested_at,
+                    user.reactivation_refused_at,
+                ) {
+                    PurgeOutlook::DeletionRequested { .. } => {
+                        "Sa suppression, demandée avant, a lieu 30 jours après sa demande : la demande de réactivation ne la suspend pas."
+                    }
+                    PurgeOutlook::Suspended => {
+                        "Tant que la demande est en attente, la purge au bout de 2 ans de désactivation est suspendue."
+                    }
+                    PurgeOutlook::Runs { .. } => {
+                        "Une demande a déjà été refusée depuis la désactivation : celle-ci ne suspend pas la purge au bout de 2 ans."
+                    }
+                }
+            ),
             id = user.id,
         )
     } else if can_reactivate(user.deleted_at, user.deactivated_at) {
@@ -247,6 +264,7 @@ pub async fn detail(
 <dt>Statut</dt><dd>{status}</dd>
 <dt>Suppression demandée le</dt><dd>{requested}</dd>
 <dt>Désactivé le</dt><dd>{deactivated}</dd>
+<dt>Réactivation refusée le</dt><dd>{refused}</dd>
 <dt>Purgé le</dt><dd>{deleted}</dd>
 </dl>
 {action}"#,
@@ -257,6 +275,7 @@ pub async fn detail(
         status = html_escape(&status),
         requested = html_escape(&format_admin_datetime_opt(user.deletion_requested_at)),
         deactivated = html_escape(&format_admin_datetime_opt(user.deactivated_at)),
+        refused = html_escape(&format_admin_datetime_opt(user.reactivation_refused_at)),
         deleted = html_escape(&format_admin_datetime_opt(user.deleted_at)),
     );
     Html(shell_with_header(

@@ -112,6 +112,14 @@ pub struct DeactivatedAccountResponse {
     /// When the pending reactivation request was made; `None` if there is
     /// none (never made, or decided since).
     pub reactivation_requested_at: Option<DateTime<Utc>>,
+    /// When a request was last refused since the deactivation: a new one
+    /// then suspends nothing.
+    #[serde(default)]
+    pub reactivation_refused_at: Option<DateTime<Utc>>,
+    /// The holder's own deletion request, if any: the account then goes 30
+    /// days after it, whatever else.
+    #[serde(default)]
+    pub deletion_requested_at: Option<DateTime<Utc>>,
 }
 
 /// Body of `POST /account/deactivated/reactivation-request` (#289). The

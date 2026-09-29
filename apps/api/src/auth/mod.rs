@@ -30,7 +30,7 @@ use crate::AppState;
 
 use self::session::{
     clear_session_cookie, create_restricted_session, create_session, revoke_all_sessions,
-    revoke_session, set_session_cookie, user_scoped_tx, AuthUser,
+    revoke_session, set_session_cookie, user_scoped_tx, AnySession, AuthUser,
 };
 use self::timing::{LoginBranch, LoginTiming};
 
@@ -341,12 +341,14 @@ async fn login_inner(
     )
 }
 
+/// Ends the caller's session, full or restricted (#289): the one route a
+/// restricted session shares with a full one.
 pub async fn logout(
     State(state): State<AppState>,
     cookies: Cookies,
-    auth: AuthUser,
+    session: AnySession,
 ) -> AppResult<impl IntoResponse> {
-    revoke_session(&state.db, auth.session_id).await?;
+    revoke_session(&state.db, session.session_id).await?;
     clear_session_cookie(&cookies);
     Ok(StatusCode::NO_CONTENT)
 }

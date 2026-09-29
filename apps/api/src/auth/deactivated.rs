@@ -1,14 +1,14 @@
-//! The deactivated-account routes (#289): the only ones a restricted
-//! session — opened by a correct login on an account the superadmin
-//! deactivated (#256) — may call. Each extracts [`DeactivatedSession`];
-//! every other route extracts `AuthUser`, which answers such a session with
-//! 403 `account_deactivated`.
+//! The deactivated-account routes (#289): with `POST /auth/logout`, the only
+//! ones a restricted session — opened by a correct login on an account the
+//! superadmin deactivated (#256) — may call. Each extracts
+//! [`DeactivatedSession`]; logout takes any live session, and every other
+//! route extracts `AuthUser`, which answers such a session with 403
+//! `account_deactivated`.
 
 use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
 use serde_json::json;
-use tower_cookies::Cookies;
 
 use manage_our_home_shared::dto::auth::{DeactivatedAccountResponse, ReactivationRequestBody};
 use manage_our_home_shared::validation::user_admin::validate_reactivation_message;
@@ -16,17 +16,20 @@ use manage_our_home_shared::validation::user_admin::validate_reactivation_messag
 use crate::error::{AppError, AppResult};
 use crate::AppState;
 
-use super::session::{clear_session_cookie, revoke_session, DeactivatedSession};
+use super::session::DeactivatedSession;
 
-/// `GET /account/deactivated`: when the account was deactivated, and
-/// whether a reactivation request is pending.
+/// `GET /account/deactivated`: when the account was deactivated, whether a
+/// reactivation request is pending or was refused since, and whether the
+/// holder had asked for the deletion — what the page needs to say when the
+/// account will be purged.
 pub async fn status(
     State(state): State<AppState>,
     session: DeactivatedSession,
 ) -> AppResult<Json<DeactivatedAccountResponse>> {
     let row = sqlx::query!(
         r#"
-        SELECT u.deactivated_at AS "deactivated_at!", r.requested_at AS "requested_at?"
+        SELECT u.deactivated_at AS "deactivated_at!", r.requested_at AS "requested_at?",
+               u.deletion_requested_at, u.reactivation_refused_at
         FROM users u
         LEFT JOIN account_reactivation_requests r ON r.user_id = u.id
         WHERE u.id = $1 AND u.deactivated_at IS NOT NULL AND u.deleted_at IS NULL
@@ -40,6 +43,8 @@ pub async fn status(
     Ok(Json(DeactivatedAccountResponse {
         deactivated_at: row.deactivated_at,
         reactivation_requested_at: row.requested_at,
+        reactivation_refused_at: row.reactivation_refused_at,
+        deletion_requested_at: row.deletion_requested_at,
     }))
 }
 
@@ -47,7 +52,8 @@ pub async fn status(
 /// request, with an optional note, for the superadmin to decide on. One
 /// pending request at a time (409 `reactivation_already_requested`). While
 /// it is pending, the purge 2 years after the deactivation is suspended
-/// (`jobs::account_purge::purge_due`). Written to `audit_log`.
+/// (`jobs::account_purge::purge_due`) — unless a request was already refused
+/// since the deactivation. Written to `audit_log`.
 ///
 /// The `users` row is locked first, as the purge and the superadmin's
 /// actions lock it: a request can land neither on an account being purged
@@ -96,16 +102,4 @@ pub async fn request_reactivation(
     tx.commit().await?;
 
     Ok(StatusCode::CREATED)
-}
-
-/// `POST /account/deactivated/logout`: `POST /auth/logout`'s counterpart,
-/// which only takes a full session.
-pub async fn logout(
-    State(state): State<AppState>,
-    cookies: Cookies,
-    session: DeactivatedSession,
-) -> AppResult<impl IntoResponse> {
-    revoke_session(&state.db, session.session_id).await?;
-    clear_session_cookie(&cookies);
-    Ok(StatusCode::NO_CONTENT)
 }

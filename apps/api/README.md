@@ -166,8 +166,8 @@ Four other things run on this pool, and none is a request handler:
   hour and deleting nothing;
 - the **hourly account purge** (#139, `src/jobs/account_purge.rs`), which,
   for each account past its 30-day grace period, or deactivated by the
-  superadmin for 2 years with no reactivation request pending (#256,
-  #289), deletes its personal rows
+  superadmin for 2 years with no first reactivation request pending
+  (#256, #289), deletes its personal rows
   (`group_members`, `message_read_state`, `event_assignees`, `sessions`,
   `account_reactivation_requests`,
   tokens, OAuth identities, its own `audit_log` entries, the `invitations`

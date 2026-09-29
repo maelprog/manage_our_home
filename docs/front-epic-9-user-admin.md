@@ -72,8 +72,11 @@ characters at most. The request shows in the account's status
 included, with two answers: `Réactiver le compte` grants it, `Refuser la
 demande` (`POST /admin/users/:id/reactivation-request/refuse`) turns it
 down and leaves the account deactivated. `can_refuse_reactivation` (pure,
-TDD'd) mirrors the backend guard. While the request is pending, the purge
-2 years after the deactivation is suspended.
+TDD'd) mirrors the backend guard. While a first request since the
+deactivation is pending, the purge 2 years after the deactivation is
+suspended; after a refusal the holder may ask again, but the deadline runs
+(arbitrage of 2026-09-29). `purge_outlook` (pure, TDD'd) words the case on
+both the holder's page and the detail screen.
 
 ### Read-only otherwise, and no audit-log viewer
 

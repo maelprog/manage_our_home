@@ -164,8 +164,8 @@ async fn an_unverified_deactivated_account_gets_no_session(db: PgPool) {
     assert!(sessions(&db, holder).await.is_empty());
 }
 
-/// A restricted session opens the deactivated-account routes and nothing
-/// else: every other route — the superadmin's included, for a superadmin's
+/// A restricted session opens the deactivated-account routes (and logout,
+/// below) and nothing else: every other route — the superadmin's included, for a superadmin's
 /// own deactivated account — answers 403 `account_deactivated`. A full
 /// session, or none, gets a 401 on the deactivated-account routes.
 #[sqlx::test]
@@ -192,7 +192,6 @@ async fn a_restricted_session_opens_only_the_deactivated_account_routes(db: PgPo
 
     let refused: Vec<(Method, String, Option<serde_json::Value>)> = vec![
         (Method::GET, "/auth/me".into(), None),
-        (Method::POST, "/auth/logout".into(), None),
         (Method::GET, "/groups".into(), None),
         (Method::POST, "/groups".into(), Some(json!({"name": "X"}))),
         (Method::GET, format!("/groups/{group}"), None),
@@ -252,7 +251,6 @@ async fn a_restricted_session_opens_only_the_deactivated_account_routes(db: PgPo
         for (method, path) in [
             (Method::GET, "/account/deactivated"),
             (Method::POST, "/account/deactivated/reactivation-request"),
-            (Method::POST, "/account/deactivated/logout"),
         ] {
             let res = call(&router, method.clone(), path, cookie, Some(json!({}))).await;
             assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{method} {path}");
@@ -394,6 +392,15 @@ async fn the_superadmin_sees_and_refuses_a_request(db: PgPool) {
     .unwrap();
     assert!(deactivated);
     assert!(!noticed, "a refusal clears the warning so a fresh one goes");
+    let page = call(
+        &router,
+        Method::GET,
+        "/account/deactivated",
+        Some(&restricted),
+        None,
+    )
+    .await;
+    assert!(json_body(page).await["reactivation_refused_at"].is_string());
     assert_eq!(
         count(
             &db,
@@ -482,6 +489,8 @@ async fn reactivating_grants_the_pending_request(db: PgPool) {
     assert_eq!(sessions(&db, holder).await, vec![false]);
 }
 
+/// `POST /auth/logout` takes a restricted session like a full one: the
+/// session is revoked and the cookie cleared.
 #[sqlx::test]
 async fn logging_out_ends_the_restricted_session(db: PgPool) {
     let router = test_router(db.clone());
@@ -493,12 +502,19 @@ async fn logging_out_ends_the_restricted_session(db: PgPool) {
     let out = call(
         &router,
         Method::POST,
-        "/account/deactivated/logout",
+        "/auth/logout",
         Some(&restricted),
         None,
     )
     .await;
     assert_status(&out, StatusCode::NO_CONTENT);
+    let cleared = out
+        .headers()
+        .get_all(axum::http::header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|c| c.starts_with("session_id=;") || c.starts_with("session_id=\"\";"));
+    assert!(cleared, "{:?}", out.headers());
     let page = call(
         &router,
         Method::GET,
@@ -709,4 +725,104 @@ async fn no_reset_or_verification_token_is_issued_to_a_deactivated_account(db: P
     assert_eq!(count(&db, fresh, holder).await, 0);
     assert_eq!(count(&db, reset, control).await, 1);
     assert_eq!(count(&db, fresh, control).await, 1);
+}
+
+/// Arbitrage of 2026-09-29: after a refusal the holder may ask again, but
+/// the deadline runs. An overdue account whose second request is pending
+/// gets its warning and is purged.
+#[sqlx::test]
+async fn after_a_refusal_a_new_request_does_not_hold_back_an_overdue_purge(db: PgPool) {
+    let router = test_router(db.clone());
+    let admin = superadmin(&router, &db, "admin@example.test").await;
+    let holder = register_verify(&router, &db, "holder@example.test").await;
+    deactivate(&router, &admin, holder).await;
+    let restricted = login_cookie(&router, "holder@example.test").await;
+    assert_eq!(
+        request(&router, &restricted, None).await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        admin_post(
+            &router,
+            &admin,
+            &format!("/admin/users/{holder}/reactivation-request/refuse")
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        request(&router, &restricted, Some("Encore")).await,
+        StatusCode::CREATED
+    );
+
+    // In its last 29 days: the warning goes despite the pending request.
+    backdate(&db, holder, "2 years -29 days", None).await;
+    let sent = std::sync::Mutex::new(Vec::<String>::new());
+    let record = |to: String, _: String, _: String| {
+        sent.lock().unwrap().push(to);
+        async { Ok::<(), anyhow::Error>(()) }
+    };
+    send_deactivation_notices(&db, "https://example.test/privacy-policy", &record)
+        .await
+        .unwrap();
+    assert_eq!(
+        sent.lock().unwrap().clone(),
+        vec!["holder@example.test".to_string()]
+    );
+
+    // Overdue and warned 31 days ago: purged, pending request and all.
+    backdate(&db, holder, "2 years 1 day", Some(31)).await;
+    purge_due_accounts(&db).await.unwrap();
+    assert!(purged(&db, holder).await);
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM account_reactivation_requests WHERE user_id = $1",
+            holder
+        )
+        .await,
+        0
+    );
+}
+
+/// A new deactivation starts afresh: the refusal of the previous period
+/// no longer counts, and a first request suspends the purge again.
+#[sqlx::test]
+async fn reactivating_forgets_the_refusal_for_the_next_deactivation(db: PgPool) {
+    let router = test_router(db.clone());
+    let admin = superadmin(&router, &db, "admin@example.test").await;
+    let holder = register_verify(&router, &db, "holder@example.test").await;
+    deactivate(&router, &admin, holder).await;
+    let restricted = login_cookie(&router, "holder@example.test").await;
+    assert_eq!(
+        request(&router, &restricted, None).await,
+        StatusCode::CREATED
+    );
+    let base = format!("/admin/users/{holder}");
+    assert_eq!(
+        admin_post(
+            &router,
+            &admin,
+            &format!("{base}/reactivation-request/refuse")
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        admin_post(&router, &admin, &format!("{base}/reactivate")).await,
+        StatusCode::NO_CONTENT
+    );
+    let refused =
+        "SELECT count(*) FROM users WHERE id = $1 AND reactivation_refused_at IS NOT NULL";
+    assert_eq!(count(&db, refused, holder).await, 0);
+
+    deactivate(&router, &admin, holder).await;
+    let restricted = login_cookie(&router, "holder@example.test").await;
+    assert_eq!(
+        request(&router, &restricted, None).await,
+        StatusCode::CREATED
+    );
+    backdate(&db, holder, "2 years 1 day", Some(31)).await;
+    purge_due_accounts(&db).await.unwrap();
+    assert!(!purged(&db, holder).await);
 }

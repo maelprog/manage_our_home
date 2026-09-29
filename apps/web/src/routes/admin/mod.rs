@@ -31,7 +31,7 @@ use crate::state::AppState;
 // them from the local module like the other epics do.
 pub(crate) use manage_our_home_shared::validation::user_admin::{
     can_deactivate, can_reactivate, can_refuse_reactivation, format_admin_datetime,
-    format_admin_datetime_opt, user_status_label,
+    format_admin_datetime_opt, purge_outlook, user_status_label, PurgeOutlook,
 };
 
 /// The caller's session cookie, forwarded to the authenticated `/admin/*` API

@@ -641,7 +641,8 @@ Un compte qui reste désactivé 2 ans est supprimé. Sauf réactivation
 d'ici là, le vôtre le sera à partir du {purge_on}, au premier passage de
 la purge automatique qui suit cette date (elle passe toutes les heures
 quand le service fonctionne et que sa configuration le permet). Une
-demande de réactivation en attente suspend cette suppression.
+demande de réactivation suspend cette suppression tant qu'elle est en
+attente, sauf si une demande a déjà été refusée depuis la désactivation.
 
 -- Ce que la suppression efface --
 
@@ -1996,13 +1997,16 @@ mod tests {
     #[test]
     fn deactivation_notice_sends_the_reactivation_request_through_a_login() {
         // #289: the right credentials open the page that carries the
-        // request form, and a pending request suspends the purge. The
+        // request form, and a pending request suspends the purge — unless
+        // one was already refused since the deactivation, the case in which
+        // a second warning can go out (arbitrage of 2026-09-29). The
         // controller, named by the same two placeholders as the RGPD
         // documents' (#131), stays the contact for the other rights.
         let body = notice_sample();
         assert!(body.contains("demander sa réactivation"), "{body}");
         assert!(body.contains("connectez-vous"), "{body}");
         assert!(body.contains("suspend"), "{body}");
+        assert!(body.contains("déjà été refusée"), "{body}");
         assert!(
             !body.contains("sans que\npersonne puisse s'y connecter"),
             "{body}"

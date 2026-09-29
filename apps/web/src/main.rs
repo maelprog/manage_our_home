@@ -118,10 +118,6 @@ fn build_router(state: AppState) -> Router {
             "/account/deactivated/reactivation-request",
             post(routes::account::deactivated::request),
         )
-        .route(
-            "/account/deactivated/logout",
-            post(routes::account::deactivated::logout),
-        )
         .route("/agenda", get(routes::agenda::calendar::get))
         .route(
             "/agenda/new",

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT u.id, u.email, u.email_verified, u.created_at, u.deleted_at, u.deactivated_at,\n               u.deletion_requested_at, r.requested_at AS \"reactivation_requested_at?\",\n               r.message AS reactivation_message\n        FROM users u\n        LEFT JOIN account_reactivation_requests r ON r.user_id = u.id\n        ORDER BY u.created_at\n        ",
+  "query": "\n        SELECT u.id, u.email, u.email_verified, u.created_at, u.deleted_at, u.deactivated_at,\n               u.deletion_requested_at, r.requested_at AS \"reactivation_requested_at?\",\n               r.message AS reactivation_message, u.reactivation_refused_at\n        FROM users u\n        LEFT JOIN account_reactivation_requests r ON r.user_id = u.id\n        ORDER BY u.created_at\n        ",
   "describe": {
     "columns": [
       {
@@ -101,6 +101,17 @@
             "name": "message"
           }
         }
+      },
+      {
+        "ordinal": 9,
+        "name": "reactivation_refused_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "reactivation_refused_at"
+          }
+        }
       }
     ],
     "parameters": {
@@ -115,8 +126,9 @@
       true,
       true,
       false,
+      true,
       true
     ]
   },
-  "hash": "2ef44cd996cbf60d0cdb84c60177437654e5196684949bd52d411920fe9d4571"
+  "hash": "6314b8010aaf383a860372b696e6699d542ea9cb090e9ce5f3d4da2dbe7b9ea6"
 }

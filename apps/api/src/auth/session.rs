@@ -199,10 +199,35 @@ where
     }
 }
 
+/// Any live session, full or restricted — what logging out needs, and
+/// nothing else (#289): the holder of a deactivated account logs out
+/// through the same `POST /auth/logout` as everyone.
+#[derive(Debug, Clone)]
+pub struct AnySession {
+    pub session_id: Uuid,
+}
+
+#[async_trait]
+impl<S> FromRequestParts<S> for AnySession
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let session = load_session(parts, state).await?;
+        Ok(AnySession {
+            session_id: session.session_id,
+        })
+    }
+}
+
 /// The restricted session a correct login on a deactivated account opens
 /// (#289), and nothing else: a full session, or a restricted one whose
 /// account has since been reactivated or purged, is a 401. Guards only the
-/// deactivated-account routes (`auth::deactivated`).
+/// deactivated-account routes (`auth::deactivated`); logging out takes
+/// [`AnySession`].
 #[derive(Debug, Clone)]
 pub struct DeactivatedSession {
     pub user_id: Uuid,

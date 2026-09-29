@@ -8,8 +8,10 @@
 //!
 //! The page says what the deactivation means, and offers the holder one
 //! reactivation request at a time, with an optional note, for the superadmin
-//! to decide on (`/admin/users/:id`). No app header: none of its links would
-//! open.
+//! to decide on (`/admin/users/:id`), and says when the account will be
+//! purged. No app header: none of its links would open; the logout button
+//! posts to `/logout`, which apps/api's logout takes from a restricted
+//! session too.
 
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
@@ -17,7 +19,8 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use manage_our_home_shared::dto::auth::{DeactivatedAccountResponse, ReactivationRequestBody};
 use manage_our_home_shared::validation::user_admin::{
-    format_admin_datetime, validate_reactivation_message, MAX_REACTIVATION_MESSAGE_CHARS,
+    format_admin_datetime, purge_outlook, validate_reactivation_message, PurgeOutlook,
+    MAX_REACTIVATION_MESSAGE_CHARS,
 };
 
 use crate::app::{html_escape, shell, Width};
@@ -65,13 +68,42 @@ fn error_html(error: Option<&str>) -> String {
     format!(r#"<p class="notice error">{}</p>"#, html_escape(text))
 }
 
+/// When the account will be purged, in the holder's words: the purge rule
+/// (`jobs::account_purge::purge_due`) as [`purge_outlook`] mirrors it.
+fn purge_note(status: &DeactivatedAccountResponse) -> String {
+    const TWO_YEARS: &str = "Sans réactivation, votre compte sera supprimé au bout de 2 ans de désactivation. Un email vous en prévient à l'adresse du compte, et la suppression n'a jamais lieu moins de 30 jours après cet email.";
+    match purge_outlook(
+        status.deletion_requested_at,
+        status.reactivation_requested_at,
+        status.reactivation_refused_at,
+    ) {
+        PurgeOutlook::DeletionRequested { from } => format!(
+            "Vous avez demandé la suppression de votre compte : il sera supprimé à partir du {}, sans autre email. Tant qu'il est désactivé, cette demande ne peut pas être annulée, et une demande de réactivation ne suspend pas la suppression.",
+            format_admin_datetime(from)
+        ),
+        PurgeOutlook::Suspended => format!(
+            "{TWO_YEARS} Votre demande de réactivation en attente suspend cette échéance."
+        ),
+        PurgeOutlook::Runs {
+            after_refusal: false,
+        } => format!(
+            "{TWO_YEARS} Une demande de réactivation suspend cette échéance tant qu'elle est en attente."
+        ),
+        PurgeOutlook::Runs {
+            after_refusal: true,
+        } => format!(
+            "{TWO_YEARS} Une demande de réactivation a déjà été refusée : vous pouvez en faire une nouvelle, mais elle ne suspend plus cette échéance."
+        ),
+    }
+}
+
 fn page(status: &DeactivatedAccountResponse, notice: Option<&str>, error: Option<&str>) -> String {
     let deactivated_on = html_escape(&format_admin_datetime(status.deactivated_at));
     let request = match status.reactivation_requested_at {
         Some(at) => format!(
             r#"<section class="card">
 <h2>Demande de réactivation</h2>
-<p>Votre demande du {on} attend la décision de l'administrateur du service. Tant qu'elle est en attente, la suppression prévue de votre compte est suspendue.</p>
+<p>Votre demande du {on} attend la décision de l'administrateur du service.</p>
 </section>"#,
             on = html_escape(&format_admin_datetime(at)),
         ),
@@ -93,15 +125,16 @@ fn page(status: &DeactivatedAccountResponse, notice: Option<&str>, error: Option
         r#"<h1>{title}</h1>
 {notice}{error}
 <p>Votre compte a été désactivé par l'administrateur du service le {deactivated_on}. Tant qu'il l'est, aucune page de l'application ne vous est ouverte ; rien n'a été effacé.</p>
-<p class="muted">Sans réactivation, votre compte sera supprimé au bout de 2 ans de désactivation, et vous en serez prévenu par email 30 jours avant. Une demande de réactivation en attente suspend cette échéance.</p>
+<p class="muted">{purge}</p>
 {request}
-<form method="post" action="/account/deactivated/logout">
+<form method="post" action="/logout">
 <button type="submit" class="secondary">Se déconnecter</button>
 </form>
 <div class="links">
 <a href="/privacy-policy">Politique de confidentialité</a>
 </div>"#,
         title = TITLE,
+        purge = html_escape(&purge_note(status)),
         notice = notice_html(notice),
         error = error_html(error),
     )
@@ -184,24 +217,4 @@ pub async fn request(
         Ok(_) => Redirect::to("/account/deactivated?error=unavailable").into_response(),
         Err(_) => service_unavailable_page().into_response(),
     }
-}
-
-/// `POST /account/deactivated/logout` — relays to apps/api's logout for a
-/// restricted session and forwards its cookie removal, like `/logout` does
-/// for a full one.
-pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let mut req = state.http.post(format!(
-        "{}/account/deactivated/logout",
-        state.api_internal_base_url
-    ));
-    if let Some(cookie) = account_cookie(&headers) {
-        req = req.header("cookie", cookie);
-    }
-    let mut response_headers = HeaderMap::new();
-    if let Ok(resp) = req.send().await {
-        if let Some(set_cookie) = resp.headers().get(axum::http::header::SET_COOKIE) {
-            response_headers.insert(axum::http::header::SET_COOKIE, set_cookie.clone());
-        }
-    }
-    (response_headers, Redirect::to("/login")).into_response()
 }
