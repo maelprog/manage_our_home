@@ -4,7 +4,9 @@
 //! (revokes every session and sets `deactivated_at`; the purge takes the
 //! account 2 years later unless `reactivate` gives it back first, #256),
 //! distinct from the self-service grace-period deletion (F10) — the copy keeps
-//! them apart. The backend has no single-user GET, so the
+//! them apart. A holder's pending reactivation request (#289) shows in the
+//! status and on the detail screen, with its note, where it is granted by
+//! `reactivate` or turned down by `refuse_reactivation`. The backend has no single-user GET, so the
 //! detail page finds its user in the same `/admin/users` list the table renders
 //! (mirrors how Messagerie derives one message from the paginated list). See
 //! `docs/front-epic-9-user-admin.md`.
@@ -20,8 +22,8 @@ use crate::layout::CurrentSuperAdmin;
 use crate::state::{api_request_auth, AppState};
 
 use super::{
-    admin_cookie, admin_header, can_deactivate, can_reactivate, forbidden_page,
-    format_admin_datetime, format_admin_datetime_opt, service_unavailable_page,
+    admin_cookie, admin_header, can_deactivate, can_reactivate, can_refuse_reactivation,
+    forbidden_page, format_admin_datetime, format_admin_datetime_opt, service_unavailable_page,
     user_not_found_page, user_status_label,
 };
 
@@ -35,6 +37,9 @@ fn notice_html(notice: Option<&str>) -> String {
     let text = match notice {
         Some("user_deactivated") => "Compte désactivé : toutes les sessions ont été révoquées.",
         Some("user_reactivated") => "Compte réactivé : son titulaire peut de nouveau se connecter.",
+        Some("reactivation_refused") => {
+            "Demande de réactivation refusée : le compte reste désactivé."
+        }
         _ => return String::new(),
     };
     format!(r#"<p class="notice success">{}</p>"#, html_escape(text))
@@ -56,6 +61,25 @@ fn verified_label(verified: bool) -> &'static str {
     }
 }
 
+/// The status cell and line: [`user_status_label`], plus the pending
+/// reactivation request when there is one (#289).
+fn status_text(user: &AdminUserResponse) -> String {
+    let label = user_status_label(
+        user.deleted_at,
+        user.deactivated_at,
+        user.deletion_requested_at,
+    );
+    if can_refuse_reactivation(
+        user.deleted_at,
+        user.deactivated_at,
+        user.reactivation_requested_at,
+    ) {
+        format!("{label} — réactivation demandée")
+    } else {
+        label.to_string()
+    }
+}
+
 fn user_row(user: &AdminUserResponse) -> String {
     format!(
         r#"<tr>
@@ -68,11 +92,7 @@ fn user_row(user: &AdminUserResponse) -> String {
         email = html_escape(&user.email),
         verified = verified_label(user.email_verified),
         created = html_escape(&format_admin_datetime(user.created_at)),
-        status = html_escape(user_status_label(
-            user.deleted_at,
-            user.deactivated_at,
-            user.deletion_requested_at
-        )),
+        status = html_escape(&status_text(user)),
         id = user.id,
     )
 }
@@ -157,11 +177,7 @@ pub async fn detail(
         return user_not_found_page().into_response();
     };
 
-    let status = user_status_label(
-        user.deleted_at,
-        user.deactivated_at,
-        user.deletion_requested_at,
-    );
+    let status = status_text(&user);
 
     // Each form renders only when the backend would accept it (#256): the
     // deactivate one for an active account, the reactivate one for a
@@ -171,11 +187,39 @@ pub async fn detail(
         format!(
             r#"<section class="card">
 <h2>Désactiver ce compte</h2>
-<p class="muted">Action immédiate de support : révoque toutes les sessions actives et bloque la connexion. Rien n'est effacé ; le compte peut être réactivé, et sans réactivation il est purgé au bout de 2 ans, son titulaire prévenu par email 30 jours avant. À distinguer de la suppression de compte en libre-service (avec délai de grâce) demandée par l'utilisateur.</p>
+<p class="muted">Action immédiate de support : révoque toutes les sessions actives ; son titulaire ne peut plus ouvrir qu'une page d'où demander la réactivation. Rien n'est effacé ; le compte peut être réactivé, et sans réactivation il est purgé au bout de 2 ans, son titulaire prévenu par email 30 jours avant. À distinguer de la suppression de compte en libre-service (avec délai de grâce) demandée par l'utilisateur.</p>
 <form method="post" action="/admin/users/{id}/deactivate" onsubmit="return confirm('Désactiver ce compte ? Toutes les sessions seront révoquées.');">
 <button type="submit" class="danger">Désactiver le compte</button>
 </form>
 </section>"#,
+            id = user.id,
+        )
+    } else if can_refuse_reactivation(
+        user.deleted_at,
+        user.deactivated_at,
+        user.reactivation_requested_at,
+    ) {
+        // #289: the holder asked. Reactivating grants the request; refusing
+        // leaves the account deactivated and lets the purge clock run again.
+        let message = match user.reactivation_message.as_deref() {
+            Some(m) => format!(r#"<p class="multiline">{}</p>"#, html_escape(m)),
+            None => r#"<p class="muted">Aucun message.</p>"#.to_string(),
+        };
+        format!(
+            r#"<section class="card">
+<h2>Demande de réactivation</h2>
+<p>Le titulaire a demandé la réactivation de son compte le {requested}. Tant que la demande est en attente, la purge au bout de 2 ans de désactivation est suspendue.</p>
+{message}
+<div class="actions">
+<form method="post" action="/admin/users/{id}/reactivate">
+<button type="submit">Réactiver le compte</button>
+</form>
+<form method="post" action="/admin/users/{id}/reactivation-request/refuse" onsubmit="return confirm('Refuser cette demande ? Le compte reste désactivé.');">
+<button type="submit" class="danger">Refuser la demande</button>
+</form>
+</div>
+</section>"#,
+            requested = html_escape(&format_admin_datetime_opt(user.reactivation_requested_at)),
             id = user.id,
         )
     } else if can_reactivate(user.deleted_at, user.deactivated_at) {
@@ -210,7 +254,7 @@ pub async fn detail(
         id = html_escape(&user.id.to_string()),
         verified = verified_label(user.email_verified),
         created = html_escape(&format_admin_datetime(user.created_at)),
-        status = html_escape(status),
+        status = html_escape(&status),
         requested = html_escape(&format_admin_datetime_opt(user.deletion_requested_at)),
         deactivated = html_escape(&format_admin_datetime_opt(user.deactivated_at)),
         deleted = html_escape(&format_admin_datetime_opt(user.deleted_at)),
@@ -241,8 +285,9 @@ pub async fn deactivate(
 }
 
 /// `POST /admin/users/:id/reactivate` — relays to the same apps/api route
-/// (clears `deactivated_at` + audit row, #256), with the same status mapping
-/// as [`deactivate`]; a 404 there means unknown, not deactivated, or purged.
+/// (clears `deactivated_at`, grants a pending request + audit row, #256,
+/// #289), with the same status mapping as [`deactivate`]; a 404 there means
+/// unknown, not deactivated, or purged.
 pub async fn reactivate(
     CurrentSuperAdmin(_me): CurrentSuperAdmin,
     State(state): State<AppState>,
@@ -250,6 +295,26 @@ pub async fn reactivate(
     Path(user_id): Path<Uuid>,
 ) -> Response {
     relay_action(&state, &headers, user_id, "reactivate", "user_reactivated").await
+}
+
+/// `POST /admin/users/:id/reactivation-request/refuse` — relays to the same
+/// apps/api route (deletes the pending request + audit row, #289), with the
+/// same status mapping as [`deactivate`]; a 404 there means no pending
+/// request, or an account reactivated or purged since.
+pub async fn refuse_reactivation(
+    CurrentSuperAdmin(_me): CurrentSuperAdmin,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(user_id): Path<Uuid>,
+) -> Response {
+    relay_action(
+        &state,
+        &headers,
+        user_id,
+        "reactivation-request/refuse",
+        "reactivation_refused",
+    )
+    .await
 }
 
 async fn relay_action(

@@ -145,11 +145,15 @@ Four other things run on this pool, and none is a request handler:
 - the **hourly retention purge** (#138, `src/jobs/retention_purge.rs`),
   which `DELETE`s rows, across every family, from `audit_log`,
   `email_verification_tokens`, `password_reset_tokens`, `invitations` and
-  `sessions`. It and the account purge below are the only code on this
-  pool that deletes Postgres rows — not the only code that writes them:
-  the four `/admin/*` handlers each
+  `sessions`. It, the account purge below and two superadmin handlers are
+  the only code on this pool that deletes Postgres rows — not the only
+  code that writes them:
+  the five `/admin/*` handlers each
   `INSERT` into `audit_log`, `deactivate_user` also `UPDATE`s `users`
-  and `sessions`, and `reactivate_user` `users` (#256); the reminder
+  and `sessions`, `reactivate_user` `users` and `sessions` and deletes
+  the account's pending `account_reactivation_requests` row (#256, #289),
+  and `refuse_reactivation` deletes that row and `UPDATE`s `users`
+  (#289); the reminder
   worker below `UPDATE`s `scheduled_notifications` and `INSERT`s into it
   (#293). Of the five purged tables only `invitations` is RLS'd at
   all, and it is `FORCE ROW LEVEL SECURITY`: with no `app.family_id` set,
@@ -162,8 +166,10 @@ Four other things run on this pool, and none is a request handler:
   hour and deleting nothing;
 - the **hourly account purge** (#139, `src/jobs/account_purge.rs`), which,
   for each account past its 30-day grace period, or deactivated by the
-  superadmin for 2 years (#256), deletes its personal rows
+  superadmin for 2 years with no reactivation request pending (#256,
+  #289), deletes its personal rows
   (`group_members`, `message_read_state`, `event_assignees`, `sessions`,
+  `account_reactivation_requests`,
   tokens, OAuth identities, its own `audit_log` entries, the `invitations`
   and `calendar_imports` it created) and anonymises its `users` row. Five of
   those tables are `FORCE ROW LEVEL SECURITY`; the pass calls the same

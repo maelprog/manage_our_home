@@ -1,3 +1,4 @@
+pub mod deactivated;
 pub mod oauth_google;
 pub mod session;
 pub mod throttle;
@@ -28,8 +29,8 @@ use crate::error::{AppError, AppResult};
 use crate::AppState;
 
 use self::session::{
-    clear_session_cookie, create_session, revoke_all_sessions, revoke_session, set_session_cookie,
-    user_scoped_tx, AuthUser,
+    clear_session_cookie, create_restricted_session, create_session, revoke_all_sessions,
+    revoke_session, set_session_cookie, user_scoped_tx, AuthUser,
 };
 use self::timing::{LoginBranch, LoginTiming};
 
@@ -263,8 +264,11 @@ async fn login_inner(
     }
 
     let at = Instant::now();
+    // A deactivated account (#256) goes through the same checks as any
+    // other, so a wrong password on it gets the same refusal (#289).
     let user = sqlx::query!(
-        "SELECT id, password_hash, email_verified FROM users WHERE email = $1 AND deleted_at IS NULL AND deactivated_at IS NULL",
+        r#"SELECT id, password_hash, email_verified, deactivated_at IS NOT NULL AS "deactivated!"
+           FROM users WHERE email = $1 AND deleted_at IS NULL"#,
         body.email
     )
     .fetch_optional(&state.db)
@@ -315,8 +319,15 @@ async fn login_inner(
         return refused(LoginBranch::Unverified);
     }
 
+    // #289: the right credentials on a deactivated account open a
+    // restricted session, good for the deactivated-account page only.
     let at = Instant::now();
-    let session_id = match create_session(&state.db, user.id).await {
+    let session = if user.deactivated {
+        create_restricted_session(&state.db, user.id).await
+    } else {
+        create_session(&state.db, user.id).await
+    };
+    let session_id = match session {
         Ok(session_id) => session_id,
         Err(e) => return (LoginBranch::Error, Err(e.into())),
     };

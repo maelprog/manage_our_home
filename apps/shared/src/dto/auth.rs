@@ -103,3 +103,21 @@ pub struct MeResponse {
 pub struct ErrorResponse {
     pub error: String,
 }
+
+/// Response of `GET /account/deactivated` (#289), the one read a restricted
+/// session — opened by a correct login on a deactivated account — may make.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeactivatedAccountResponse {
+    pub deactivated_at: DateTime<Utc>,
+    /// When the pending reactivation request was made; `None` if there is
+    /// none (never made, or decided since).
+    pub reactivation_requested_at: Option<DateTime<Utc>>,
+}
+
+/// Body of `POST /account/deactivated/reactivation-request` (#289). The
+/// note is optional (`validation::user_admin::validate_reactivation_message`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReactivationRequestBody {
+    #[serde(default)]
+    pub message: Option<String>,
+}

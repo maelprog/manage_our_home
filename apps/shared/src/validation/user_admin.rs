@@ -73,6 +73,36 @@ pub fn can_reactivate(
     deleted_at.is_none() && deactivated_at.is_some()
 }
 
+/// Longest note the holder of a deactivated account may attach to its
+/// reactivation request (#289), in characters.
+pub const MAX_REACTIVATION_MESSAGE_CHARS: usize = 1000;
+
+/// Checks the optional note of a reactivation request (#289): surrounding
+/// whitespace is dropped, a blank note is no note, and a note longer than
+/// [`MAX_REACTIVATION_MESSAGE_CHARS`] is refused with
+/// `reactivation_message_too_long`.
+pub fn validate_reactivation_message(message: &str) -> Result<Option<String>, &'static str> {
+    let message = message.trim();
+    if message.is_empty() {
+        Ok(None)
+    } else if message.chars().count() > MAX_REACTIVATION_MESSAGE_CHARS {
+        Err("reactivation_message_too_long")
+    } else {
+        Ok(Some(message.to_string()))
+    }
+}
+
+/// Mirror of the backend's guard on
+/// `POST /admin/users/:id/reactivation-request/refuse` (#289): a pending
+/// request, on an account still deactivated and not purged.
+pub fn can_refuse_reactivation(
+    deleted_at: Option<DateTime<Utc>>,
+    deactivated_at: Option<DateTime<Utc>>,
+    reactivation_requested_at: Option<DateTime<Utc>>,
+) -> bool {
+    can_reactivate(deleted_at, deactivated_at) && reactivation_requested_at.is_some()
+}
+
 /// Formats a UTC instant in Europe/Paris (`24/07/2026 à 14:05`), the fixed v1
 /// display timezone (F3's `DISPLAY_TZ`), so DST handling lives in one tested
 /// place — same convention as `validation::messagerie::format_message_time`.
@@ -190,6 +220,71 @@ mod tests {
         assert!(!can_reactivate(purged, None));
         assert!(!can_deactivate(purged, on));
         assert!(!can_reactivate(purged, on));
+    }
+
+    // -- can_refuse_reactivation (#289) --------------------------------------
+
+    #[test]
+    fn a_pending_request_on_a_deactivated_account_can_be_refused() {
+        let on = Some(at(2026, 7, 24, 12, 0));
+        let asked = Some(at(2026, 8, 1, 9, 0));
+        assert!(can_refuse_reactivation(None, on, asked));
+    }
+
+    #[test]
+    fn without_a_pending_request_there_is_nothing_to_refuse() {
+        let on = Some(at(2026, 7, 24, 12, 0));
+        assert!(!can_refuse_reactivation(None, on, None));
+        assert!(!can_refuse_reactivation(None, None, None));
+    }
+
+    #[test]
+    fn a_request_left_on_an_active_or_purged_account_cannot_be_refused() {
+        let on = Some(at(2026, 7, 24, 12, 0));
+        let asked = Some(at(2026, 8, 1, 9, 0));
+        let purged = Some(at(2028, 7, 24, 12, 0));
+        assert!(!can_refuse_reactivation(None, None, asked));
+        assert!(!can_refuse_reactivation(purged, on, asked));
+    }
+
+    // -- validate_reactivation_message (#289) --------------------------------
+
+    #[test]
+    fn a_blank_message_is_no_message() {
+        assert_eq!(validate_reactivation_message(""), Ok(None));
+        assert_eq!(validate_reactivation_message("  \n\t "), Ok(None));
+    }
+
+    #[test]
+    fn a_message_is_kept_without_its_surrounding_whitespace() {
+        assert_eq!(
+            validate_reactivation_message("  Je souhaite revenir.\n"),
+            Ok(Some("Je souhaite revenir.".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_message_at_the_limit_is_accepted_counted_in_characters() {
+        let at_limit = "é".repeat(MAX_REACTIVATION_MESSAGE_CHARS);
+        assert_eq!(
+            validate_reactivation_message(&at_limit),
+            Ok(Some(at_limit.clone()))
+        );
+    }
+
+    #[test]
+    fn a_message_past_the_limit_is_refused() {
+        let past = "a".repeat(MAX_REACTIVATION_MESSAGE_CHARS + 1);
+        assert_eq!(
+            validate_reactivation_message(&past),
+            Err("reactivation_message_too_long")
+        );
+    }
+
+    #[test]
+    fn the_limit_is_measured_after_trimming() {
+        let padded = format!("  {}  ", "a".repeat(MAX_REACTIVATION_MESSAGE_CHARS));
+        assert!(validate_reactivation_message(&padded).is_ok());
     }
 
     // -- format_admin_datetime ----------------------------------------------

@@ -62,6 +62,19 @@ native `confirm()` guards the click (progressive enhancement — with JS off the
 form still posts; the confirmation is a convenience, not a security control,
 since the backend is the authority).
 
+### The holder's reactivation request (#289)
+
+A correct login on a deactivated account opens a restricted session, good
+for `/account/deactivated` only (`routes::account::deactivated`), where the
+holder can ask for the reactivation, with an optional note of 1000
+characters at most. The request shows in the account's status
+(`Désactivé — réactivation demandée`) and on its detail page, note
+included, with two answers: `Réactiver le compte` grants it, `Refuser la
+demande` (`POST /admin/users/:id/reactivation-request/refuse`) turns it
+down and leaves the account deactivated. `can_refuse_reactivation` (pure,
+TDD'd) mirrors the backend guard. While the request is pending, the purge
+2 years after the deactivation is suspended.
+
 ### Read-only otherwise, and no audit-log viewer
 
 `/admin/groups` and `/admin/users` are pure look-up tables — no mutation, so no
@@ -84,7 +97,8 @@ set manually via SQL, matching the backend's stance).
 | GET | `/admin/users` | `admin::users::get` | Read-only table of every account (email/verified/created/status), each linking to the detail | `GET /admin/users` |
 | GET | `/admin/users/:id` | `admin::users::detail` | One account's detail + the deactivate confirm form (when still active) | `GET /admin/users` (found in the list) |
 | POST | `/admin/users/:id/deactivate` | `admin::users::deactivate` | Immediate deactivate (revoke sessions + set `deactivated_at`) | `POST /admin/users/:id/deactivate` |
-| POST | `/admin/users/:id/reactivate` | `admin::users::reactivate` | Reactivate (clear `deactivated_at`, #256) | `POST /admin/users/:id/reactivate` |
+| POST | `/admin/users/:id/reactivate` | `admin::users::reactivate` | Reactivate (clear `deactivated_at`, #256), granting a pending request (#289) | `POST /admin/users/:id/reactivate` |
+| POST | `/admin/users/:id/reactivation-request/refuse` | `admin::users::refuse_reactivation` | Turn down the holder's pending reactivation request (#289) | `POST /admin/users/:id/reactivation-request/refuse` |
 
 Every route is gated by `CurrentSuperAdmin`: no session → `/login`;
 authenticated non-superadmin → `/`. The `Admin` nav link (→ `/admin/users`) sits
@@ -117,7 +131,7 @@ row is the exact `(status, code)` → French UI state.
 
 | Status | Code | UI |
 |---|---|---|
-| 200 | — | user detail; deactivate form for an active account, reactivate form for a deactivated one, "a été purgé" note for a purged one |
+| 200 | — | user detail; deactivate form for an active account, reactivate form for a deactivated one — with the pending request, its note and the refuse form when the holder asked (#289) —, "a été purgé" note for a purged one |
 | — | id not in the list | "Utilisateur introuvable" page |
 | — | transport error | service-unavailable page |
 
@@ -137,6 +151,16 @@ row is the exact `(status, code)` → French UI state.
 |---|---|---|
 | 204 | — | PRG → `/admin/users?notice=user_reactivated` |
 | 404 | `not_found` | "Utilisateur introuvable" page (unknown, not deactivated or purged) |
+| 403 | `forbidden` | forbidden page (unreachable once gated; defensive) |
+| — | other status | PRG → `/admin/users?error=unavailable` |
+| — | transport error | service-unavailable page |
+
+### `POST /admin/users/:id/reactivation-request/refuse` — `refuse_reactivation` (#289)
+
+| Status | Code | UI |
+|---|---|---|
+| 204 | — | PRG → `/admin/users?notice=reactivation_refused` |
+| 404 | `not_found` | "Utilisateur introuvable" page (no pending request, or the account was reactivated or purged since) |
 | 403 | `forbidden` | forbidden page (unreachable once gated; defensive) |
 | — | other status | PRG → `/admin/users?error=unavailable` |
 | — | transport error | service-unavailable page |
@@ -165,6 +189,11 @@ stays the authority: a forged call from a non-superadmin session is still 403'd.
    but a reactivate one; reactivating brings a success banner, the row reads
    `Actif` again and the holder can log in (#256). An unknown user id →
    "Utilisateur introuvable".
+4b. Before that, the holder's right password lands on `/account/deactivated`
+   (a wrong one gets the login page's generic message), every other page
+   sends them back there, and they can ask for the reactivation once; the
+   superadmin sees `réactivation demandée` on the row and the note on the
+   detail page (#289).
 5. An authenticated **non**-superadmin sees no `Admin` link and is redirected to
    `/` on any `/admin/*` route; an unauthenticated visitor is redirected to
    `/login`.

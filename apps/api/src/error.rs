@@ -17,6 +17,11 @@ pub enum AppError {
     Unauthorized,
     #[error("forbidden")]
     Forbidden,
+    /// A restricted session (#289) on a route only a full session opens:
+    /// 403 `account_deactivated`. Only a caller who logged in with the
+    /// account's credentials holds such a session.
+    #[error("account deactivated")]
+    AccountDeactivated,
     #[error("gone")]
     Gone,
     #[error("bad request: {0}")]
@@ -55,6 +60,9 @@ impl IntoResponse for AppError {
             AppError::Unprocessable(m) => (StatusCode::UNPROCESSABLE_ENTITY, m.clone()),
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
             AppError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".to_string()),
+            AppError::AccountDeactivated => {
+                (StatusCode::FORBIDDEN, "account_deactivated".to_string())
+            }
             AppError::Gone => (StatusCode::GONE, "gone".to_string()),
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, m.clone()),
             AppError::TooManyRequests => (

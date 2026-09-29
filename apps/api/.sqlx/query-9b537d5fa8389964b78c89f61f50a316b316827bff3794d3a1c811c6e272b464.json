@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT deletion_requested_at, deactivated_at, deactivation_notice_sent_at,\n               deleted_at, now() AS \"now!\"\n        FROM users WHERE id = $1 FOR UPDATE\n        ",
+  "query": "\n        SELECT deletion_requested_at, deactivated_at, deactivation_notice_sent_at,\n               deleted_at, now() AS \"now!\",\n               EXISTS (SELECT 1 FROM account_reactivation_requests r\n                       WHERE r.user_id = users.id) AS \"reactivation_requested!\"\n        FROM users WHERE id = $1 FOR UPDATE\n        ",
   "describe": {
     "columns": [
       {
@@ -52,6 +52,12 @@
         "name": "now!",
         "type_info": "Timestamptz",
         "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "reactivation_requested!",
+        "type_info": "Bool",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -64,8 +70,9 @@
       true,
       true,
       true,
+      null,
       null
     ]
   },
-  "hash": "4103f69ff2d02c80fdf519a4b41a2be9d819d9cd0be1d03b0d2d14b5a1615620"
+  "hash": "9b537d5fa8389964b78c89f61f50a316b316827bff3794d3a1c811c6e272b464"
 }

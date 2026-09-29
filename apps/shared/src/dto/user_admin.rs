@@ -41,6 +41,12 @@ pub struct AdminUserResponse {
     pub deleted_at: Option<DateTime<Utc>>,
     pub deactivated_at: Option<DateTime<Utc>>,
     pub deletion_requested_at: Option<DateTime<Utc>>,
+    /// The holder's pending reactivation request and its optional note
+    /// (#289); `None` when there is none.
+    #[serde(default)]
+    pub reactivation_requested_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub reactivation_message: Option<String>,
 }
 
 /// `GET /admin/users` response envelope.

@@ -1688,15 +1688,32 @@ fn opens_a_session(response: &axum::response::Response) -> bool {
     cookie_value(&set_cookies(response), "session_id").is_some_and(|v| !v.is_empty())
 }
 
-/// #194: an account support deactivated keeps its email and its Google
-/// identity, so the identity branch of `callback` still finds it. Signing
-/// in with Google again is refused and writes no `sessions` row: the lock
-/// promises the account has no live session, not merely none that works.
+/// The `restricted` flag of every session row of `user_id`, oldest first.
+async fn session_restrictions(db: &PgPool, user_id: Uuid) -> Vec<bool> {
+    sqlx::query_scalar("SELECT restricted FROM sessions WHERE user_id = $1 ORDER BY created_at")
+        .bind(user_id)
+        .fetch_all(db)
+        .await
+        .unwrap()
+}
+
+/// The `session_id=...` pair a response sets, ready to send back.
+fn session_cookie_of(response: &axum::response::Response) -> String {
+    let value = cookie_value(&set_cookies(response), "session_id").expect("a session cookie");
+    format!("session_id={value}")
+}
+
+/// #194, #289: an account support deactivated keeps its email and its
+/// Google identity, so the identity branch of `callback` still finds it.
+/// Signing in with Google again opens a restricted session — the one a
+/// correct password opens — and no full session: the app answers it 403
+/// `account_deactivated`, and only the deactivated-account page opens.
 /// The first sign-in, before the lock, is the control — it shows the stub
-/// carries `callback` all the way to `create_session`, so the refusal
-/// afterwards comes from the lock and not from the stub.
+/// carries `callback` all the way to `create_session`.
 #[sqlx::test]
-async fn google_callback_opens_no_session_for_an_account_deactivated_by_support(db: PgPool) {
+async fn google_callback_opens_only_a_restricted_session_for_an_account_deactivated_by_support(
+    db: PgPool,
+) {
     let email = "locked-194@example.test";
     let router = router_with_google_stub(db.clone(), "google-sub-194", email).await;
     register_verify_login(&router, &db, email, "locked-pass-1").await;
@@ -1715,15 +1732,34 @@ async fn google_callback_opens_no_session_for_an_account_deactivated_by_support(
     let sessions_at_lock = session_rows(&db, user_id).await;
 
     let after_lock = google_callback(&router).await;
-    assert_status(&after_lock, StatusCode::UNAUTHORIZED);
-    assert!(!opens_a_session(&after_lock));
-    assert_eq!(session_rows(&db, user_id).await, sessions_at_lock);
+    assert!(
+        after_lock.status().is_redirection(),
+        "{}",
+        after_lock.status()
+    );
+    assert!(opens_a_session(&after_lock));
+    assert_eq!(session_rows(&db, user_id).await, sessions_at_lock + 1);
+    assert_eq!(session_restrictions(&db, user_id).await.last(), Some(&true));
+    let cookie = session_cookie_of(&after_lock);
+    let me = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
+    assert_status(&me, StatusCode::FORBIDDEN);
+    assert_eq!(json_body(me).await["error"], "account_deactivated");
+    let page = call(
+        &router,
+        Method::GET,
+        "/account/deactivated",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_status(&page, StatusCode::OK);
+    assert_eq!(google_identity_rows(&db, user_id).await, 1);
 }
 
-/// #194: a deactivated account with no Google identity yet is reached by
-/// the email branch of `callback`. The refusal leaves nothing behind: no
-/// session, and no identity bound for a later attempt to come back in
-/// through the identity branch.
+/// #194, #289: a deactivated account with no Google identity yet is
+/// reached by the email branch of `callback`. The verified profile opens a
+/// restricted session, but nothing is written to the account: no identity
+/// is bound, so a later attempt still comes through the email branch.
 #[sqlx::test]
 async fn google_callback_binds_no_identity_to_an_account_deactivated_by_support(db: PgPool) {
     let email = "locked-no-google-194@example.test";
@@ -1735,10 +1771,13 @@ async fn google_callback_binds_no_identity_to_an_account_deactivated_by_support(
     let sessions_at_lock = session_rows(&db, user_id).await;
 
     let response = google_callback(&router).await;
-    assert_status(&response, StatusCode::UNAUTHORIZED);
-    assert!(!opens_a_session(&response));
-    assert_eq!(session_rows(&db, user_id).await, sessions_at_lock);
+    assert!(response.status().is_redirection(), "{}", response.status());
+    assert_eq!(session_rows(&db, user_id).await, sessions_at_lock + 1);
+    assert_eq!(session_restrictions(&db, user_id).await.last(), Some(&true));
     assert_eq!(google_identity_rows(&db, user_id).await, 0);
+    let cookie = session_cookie_of(&response);
+    let groups = call(&router, Method::GET, "/groups", Some(&cookie), None).await;
+    assert_status(&groups, StatusCode::FORBIDDEN);
 }
 
 /// #279: with the token deleted at use, expiry is the only thing left that

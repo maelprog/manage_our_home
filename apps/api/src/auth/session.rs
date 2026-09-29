@@ -38,6 +38,26 @@ fn last_seen_needs_refresh(now: DateTime<Utc>, last_seen_at: DateTime<Utc>) -> b
     last_seen_at + Duration::minutes(LAST_SEEN_REFRESH_MINUTES) < now
 }
 
+/// What a session opens (#289), from the session's `restricted` flag and
+/// the account's `deactivated_at` / `deleted_at`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionAccess {
+    /// Every route `AuthUser` guards.
+    Full,
+    /// Only the routes `DeactivatedSession` guards.
+    Deactivated,
+    /// Nothing: 401.
+    Refused,
+}
+
+fn session_access(restricted: bool, deactivated: bool, deleted: bool) -> SessionAccess {
+    match (deleted, restricted, deactivated) {
+        (false, false, false) => SessionAccess::Full,
+        (false, true, true) => SessionAccess::Deactivated,
+        _ => SessionAccess::Refused,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AuthUser {
     pub user_id: Uuid,
@@ -65,6 +85,94 @@ pub struct AuthUser {
     pub deletion_requested_at: Option<chrono::DateTime<Utc>>,
 }
 
+/// The session the request's cookie names, with the account it belongs to,
+/// once the checks every session shares have passed: known, not revoked,
+/// within its absolute lifetime, not idle. `last_seen_at` is refreshed
+/// here. What the session then opens is [`session_access`]'s to say.
+struct LoadedSession {
+    session_id: Uuid,
+    user_id: Uuid,
+    email: String,
+    display_name: String,
+    email_verified: bool,
+    is_superadmin: bool,
+    has_password: bool,
+    deletion_requested_at: Option<DateTime<Utc>>,
+    access: SessionAccess,
+}
+
+async fn load_session<S>(parts: &mut Parts, state: &S) -> Result<LoadedSession, AppError>
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    let app_state = AppState::from_ref(state);
+    let cookies = Cookies::from_request_parts(parts, state)
+        .await
+        .map_err(|_| AppError::Unauthorized)?;
+    let cookie = cookies
+        .get(SESSION_COOKIE_NAME)
+        .ok_or(AppError::Unauthorized)?;
+    let session_id: Uuid = cookie.value().parse().map_err(|_| AppError::Unauthorized)?;
+
+    let row = sqlx::query!(
+        r#"
+        SELECT s.id as session_id, s.expires_at, s.revoked_at, s.last_seen_at, s.restricted,
+               u.id as user_id, u.email, u.display_name, u.email_verified,
+               u.is_superadmin, u.deleted_at, u.deactivated_at, u.deletion_requested_at,
+               (u.password_hash IS NOT NULL) as "has_password!"
+        FROM sessions s
+        JOIN users u ON u.id = s.user_id
+        WHERE s.id = $1
+        "#,
+        session_id
+    )
+    .fetch_optional(&app_state.db)
+    .await
+    .map_err(AppError::from)?
+    .ok_or(AppError::Unauthorized)?;
+
+    let now = Utc::now();
+    if row.revoked_at.is_some() || row.expires_at < now || is_idle(now, row.last_seen_at) {
+        return Err(AppError::Unauthorized);
+    }
+    let access = session_access(
+        row.restricted,
+        row.deactivated_at.is_some(),
+        row.deleted_at.is_some(),
+    );
+    if access == SessionAccess::Refused {
+        return Err(AppError::Unauthorized);
+    }
+
+    if last_seen_needs_refresh(now, row.last_seen_at) {
+        sqlx::query!(
+            "UPDATE sessions SET last_seen_at = now() WHERE id = $1",
+            session_id
+        )
+        .execute(&app_state.db)
+        .await
+        .ok();
+    }
+
+    Ok(LoadedSession {
+        session_id: row.session_id,
+        user_id: row.user_id,
+        email: row.email,
+        display_name: row.display_name,
+        email_verified: row.email_verified,
+        is_superadmin: row.is_superadmin,
+        has_password: row.has_password,
+        deletion_requested_at: row.deletion_requested_at,
+        access,
+    })
+}
+
+/// A full session of an active account. A restricted session (#289) is
+/// refused with 403 `account_deactivated` — its holder proved the
+/// credentials, so the answer tells them nothing they do not know, and
+/// `apps/web` sends them to the deactivated-account page on it. Every
+/// other refusal is the bare 401.
 #[async_trait]
 impl<S> FromRequestParts<S> for AuthUser
 where
@@ -74,61 +182,49 @@ where
     type Rejection = AppError;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let app_state = AppState::from_ref(state);
-        let cookies = Cookies::from_request_parts(parts, state)
-            .await
-            .map_err(|_| AppError::Unauthorized)?;
-        let cookie = cookies
-            .get(SESSION_COOKIE_NAME)
-            .ok_or(AppError::Unauthorized)?;
-        let session_id: Uuid = cookie.value().parse().map_err(|_| AppError::Unauthorized)?;
+        let session = load_session(parts, state).await?;
+        if session.access != SessionAccess::Full {
+            return Err(AppError::AccountDeactivated);
+        }
+        Ok(AuthUser {
+            user_id: session.user_id,
+            session_id: session.session_id,
+            email: session.email,
+            display_name: session.display_name,
+            email_verified: session.email_verified,
+            is_superadmin: session.is_superadmin,
+            has_password: session.has_password,
+            deletion_requested_at: session.deletion_requested_at,
+        })
+    }
+}
 
-        let row = sqlx::query!(
-            r#"
-            SELECT s.id as session_id, s.expires_at, s.revoked_at, s.last_seen_at,
-                   u.id as user_id, u.email, u.display_name, u.email_verified,
-                   u.is_superadmin, u.deleted_at, u.deactivated_at, u.deletion_requested_at,
-                   (u.password_hash IS NOT NULL) as "has_password!"
-            FROM sessions s
-            JOIN users u ON u.id = s.user_id
-            WHERE s.id = $1
-            "#,
-            session_id
-        )
-        .fetch_optional(&app_state.db)
-        .await
-        .map_err(AppError::from)?
-        .ok_or(AppError::Unauthorized)?;
+/// The restricted session a correct login on a deactivated account opens
+/// (#289), and nothing else: a full session, or a restricted one whose
+/// account has since been reactivated or purged, is a 401. Guards only the
+/// deactivated-account routes (`auth::deactivated`).
+#[derive(Debug, Clone)]
+pub struct DeactivatedSession {
+    pub user_id: Uuid,
+    pub session_id: Uuid,
+}
 
-        let now = Utc::now();
-        if row.revoked_at.is_some()
-            || row.expires_at < now
-            || is_idle(now, row.last_seen_at)
-            || row.deleted_at.is_some()
-            || row.deactivated_at.is_some()
-        {
+#[async_trait]
+impl<S> FromRequestParts<S> for DeactivatedSession
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let session = load_session(parts, state).await?;
+        if session.access != SessionAccess::Deactivated {
             return Err(AppError::Unauthorized);
         }
-
-        if last_seen_needs_refresh(now, row.last_seen_at) {
-            sqlx::query!(
-                "UPDATE sessions SET last_seen_at = now() WHERE id = $1",
-                session_id
-            )
-            .execute(&app_state.db)
-            .await
-            .ok();
-        }
-
-        Ok(AuthUser {
-            user_id: row.user_id,
-            session_id: row.session_id,
-            email: row.email,
-            display_name: row.display_name,
-            email_verified: row.email_verified,
-            is_superadmin: row.is_superadmin,
-            has_password: row.has_password,
-            deletion_requested_at: row.deletion_requested_at,
+        Ok(DeactivatedSession {
+            user_id: session.user_id,
+            session_id: session.session_id,
         })
     }
 }
@@ -164,15 +260,31 @@ fn expired_session_cookie() -> Cookie<'static> {
 }
 
 pub async fn create_session(pool: &PgPool, user_id: Uuid) -> Result<Uuid, sqlx::Error> {
+    insert_session(pool, user_id, false).await
+}
+
+/// The session a correct login on a deactivated account opens (#289): same
+/// lifetime and cookie as any other, but only [`DeactivatedSession`]
+/// accepts it.
+pub async fn create_restricted_session(pool: &PgPool, user_id: Uuid) -> Result<Uuid, sqlx::Error> {
+    insert_session(pool, user_id, true).await
+}
+
+async fn insert_session(
+    pool: &PgPool,
+    user_id: Uuid,
+    restricted: bool,
+) -> Result<Uuid, sqlx::Error> {
     let expires_at = Utc::now() + Duration::days(SESSION_TTL_DAYS);
     let rec = sqlx::query!(
         r#"
-        INSERT INTO sessions (user_id, expires_at)
-        VALUES ($1, $2)
+        INSERT INTO sessions (user_id, expires_at, restricted)
+        VALUES ($1, $2, $3)
         RETURNING id
         "#,
         user_id,
-        expires_at
+        expires_at,
+        restricted
     )
     .fetch_one(pool)
     .await?;
@@ -268,6 +380,48 @@ mod tests {
 
     fn at(s: &str) -> DateTime<Utc> {
         s.parse().unwrap()
+    }
+
+    // -- session_access (#289) -------------------------------------------
+
+    #[test]
+    fn a_full_session_of_an_active_account_opens_everything() {
+        assert_eq!(session_access(false, false, false), SessionAccess::Full);
+    }
+
+    #[test]
+    fn a_restricted_session_of_a_deactivated_account_opens_only_its_page() {
+        assert_eq!(
+            session_access(true, true, false),
+            SessionAccess::Deactivated
+        );
+    }
+
+    /// Deactivation revokes every session it finds; one that survived
+    /// (the row left untouched) still opens nothing.
+    #[test]
+    fn a_full_session_of_a_deactivated_account_is_refused() {
+        assert_eq!(session_access(false, true, false), SessionAccess::Refused);
+    }
+
+    /// Once the superadmin reactivates the account, the restricted session
+    /// does not turn into a full one: the holder logs in again.
+    #[test]
+    fn a_restricted_session_of_a_reactivated_account_is_refused() {
+        assert_eq!(session_access(true, false, false), SessionAccess::Refused);
+    }
+
+    #[test]
+    fn no_session_of_a_purged_account_opens_anything() {
+        for (restricted, deactivated) in
+            [(false, false), (true, true), (false, true), (true, false)]
+        {
+            assert_eq!(
+                session_access(restricted, deactivated, true),
+                SessionAccess::Refused,
+                "restricted={restricted} deactivated={deactivated}"
+            );
+        }
     }
 
     #[test]

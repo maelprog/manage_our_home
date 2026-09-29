@@ -618,10 +618,10 @@ Politique de confidentialité :
 /// purgeable; like every date the policy states, it is when the hourly purge
 /// may take the account, not a guaranteed hour.
 ///
-/// No screen reaches a deactivated account — it is refused at login with the
-/// generic message, and the reactivation request form is #289 — so the
-/// request goes to the controller, named by the same two placeholders as the
-/// invitation email.
+/// The right credentials on a deactivated account open the page that carries
+/// the reactivation request form (#289), so the email sends the holder there;
+/// the controller, named by the same two placeholders as the invitation
+/// email, stays the contact for the other rights.
 pub fn deactivation_notice_email_body(
     deactivated_at: DateTime<Utc>,
     purge_at: DateTime<Utc>,
@@ -633,13 +633,15 @@ pub fn deactivation_notice_email_body(
         "Bonjour,
 
 Votre compte Manage Our Home a été désactivé par l'administrateur du
-service le {deactivated_on}. Il est conservé tel quel depuis, sans que
-personne puisse s'y connecter.
+service le {deactivated_on}. Il est conservé tel quel depuis ; une
+connexion avec vos identifiants n'ouvre qu'une page, d'où vous pouvez
+demander sa réactivation.
 
 Un compte qui reste désactivé 2 ans est supprimé. Sauf réactivation
 d'ici là, le vôtre le sera à partir du {purge_on}, au premier passage de
 la purge automatique qui suit cette date (elle passe toutes les heures
-quand le service fonctionne et que sa configuration le permet).
+quand le service fonctionne et que sa configuration le permet). Une
+demande de réactivation en attente suspend cette suppression.
 
 -- Ce que la suppression efface --
 
@@ -651,11 +653,13 @@ comme le prévoient les conditions générales.
 
 -- Ce que vous pouvez faire --
 
-Pour demander la réactivation de votre compte, ou exercer vos droits
-sur vos données, écrivez au responsable de traitement, [nom du
-responsable de traitement — à renseigner avant la mise en ligne],
-à [adresse de contact — à renseigner avant la mise en ligne]. Vous
-pouvez aussi introduire une réclamation auprès de la CNIL.
+Pour demander sa réactivation, connectez-vous au service avec vos
+identifiants habituels : la page qui s'ouvre porte le formulaire de
+demande. Pour exercer vos droits sur vos données, écrivez au
+responsable de traitement, [nom du responsable de traitement — à
+renseigner avant la mise en ligne], à [adresse de contact — à
+renseigner avant la mise en ligne]. Vous pouvez aussi introduire une
+réclamation auprès de la CNIL.
 
 Si vous ne faites rien, le compte sera supprimé comme indiqué
 ci-dessus, et cet email est le seul que vous recevrez à ce sujet.
@@ -1990,12 +1994,19 @@ mod tests {
     }
 
     #[test]
-    fn deactivation_notice_sends_a_reactivation_request_to_the_controller() {
-        // No screen reaches a deactivated account (#289 will add one): the
-        // request goes to the controller, whose identity and contact are the
-        // same two placeholders as the RGPD documents' (#131).
+    fn deactivation_notice_sends_the_reactivation_request_through_a_login() {
+        // #289: the right credentials open the page that carries the
+        // request form, and a pending request suspends the purge. The
+        // controller, named by the same two placeholders as the RGPD
+        // documents' (#131), stays the contact for the other rights.
         let body = notice_sample();
-        assert!(body.contains("réactivation"), "{body}");
+        assert!(body.contains("demander sa réactivation"), "{body}");
+        assert!(body.contains("connectez-vous"), "{body}");
+        assert!(body.contains("suspend"), "{body}");
+        assert!(
+            !body.contains("sans que\npersonne puisse s'y connecter"),
+            "{body}"
+        );
         assert_eq!(release_placeholders(&body), pending_controller_values());
     }
 
