@@ -97,8 +97,20 @@ jobs:
             -e MINIO_ROOT_USER=ci-dummy \
             -e MINIO_ROOT_PASSWORD=ci-dummy-secret \
             docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20
+          # Bitnami's entrypoint first runs a setup instance of the server,
+          # which answers ready within a second, then stops it and starts the
+          # final one about 5 s later (#298): a readiness probe alone lets `mc`
+          # land in that restart. Wait for the line that closes the setup, so
+          # the probe below only ever sees the final instance. Either wait
+          # running out fails the step instead of falling through.
+          for i in $(seq 1 60); do
+            docker logs minio 2>&1 | grep -q 'MinIO setup finished' && break
+            [ "$i" = 60 ] && { docker logs minio; exit 1; }
+            sleep 1
+          done
           for i in $(seq 1 30); do
             curl -sf http://localhost:9000/minio/health/ready && break
+            [ "$i" = 30 ] && { docker logs minio; exit 1; }
             sleep 1
           done
           docker run --rm --network host --entrypoint /bin/sh \
@@ -181,8 +193,20 @@ jobs:
             -e MINIO_ROOT_USER=ci-dummy \
             -e MINIO_ROOT_PASSWORD=ci-dummy-secret \
             docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20
+          # Bitnami's entrypoint first runs a setup instance of the server,
+          # which answers ready within a second, then stops it and starts the
+          # final one about 5 s later (#298): a readiness probe alone lets `mc`
+          # land in that restart. Wait for the line that closes the setup, so
+          # the probe below only ever sees the final instance. Either wait
+          # running out fails the step instead of falling through.
+          for i in $(seq 1 60); do
+            docker logs minio 2>&1 | grep -q 'MinIO setup finished' && break
+            [ "$i" = 60 ] && { docker logs minio; exit 1; }
+            sleep 1
+          done
           for i in $(seq 1 30); do
             curl -sf http://localhost:9000/minio/health/ready && break
+            [ "$i" = 30 ] && { docker logs minio; exit 1; }
             sleep 1
           done
           docker run --rm --network host --entrypoint /bin/sh \
@@ -304,8 +328,20 @@ jobs:
             -e MINIO_ROOT_USER=ci-dummy \
             -e MINIO_ROOT_PASSWORD=ci-dummy-secret \
             docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20
+          # Bitnami's entrypoint first runs a setup instance of the server,
+          # which answers ready within a second, then stops it and starts the
+          # final one about 5 s later (#298): a readiness probe alone lets `mc`
+          # land in that restart. Wait for the line that closes the setup, so
+          # the probe below only ever sees the final instance. Either wait
+          # running out fails the step instead of falling through.
+          for i in $(seq 1 60); do
+            docker logs minio 2>&1 | grep -q 'MinIO setup finished' && break
+            [ "$i" = 60 ] && { docker logs minio; exit 1; }
+            sleep 1
+          done
           for i in $(seq 1 30); do
             curl -sf http://localhost:9000/minio/health/ready && break
+            [ "$i" = 30 ] && { docker logs minio; exit 1; }
             sleep 1
           done
           docker run --rm --network host --entrypoint /bin/sh \
