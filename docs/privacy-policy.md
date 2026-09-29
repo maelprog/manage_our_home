@@ -40,7 +40,7 @@ données sont-elles conservées ? ».
 | Vérification d'email et réinitialisation du mot de passe | jetons à usage unique envoyés par email, valables 24 h (vérification) ou 1 h (réinitialisation) | Exécution du contrat |
 | Protection de la connexion | adresse IP (en IPv6, réduite à son préfixe /64) et email saisi à chaque tentative de connexion par mot de passe, gardés en mémoire du serveur seulement, jamais en base | Intérêt légitime (limiter les essais de mot de passe) |
 | Invitations | adresse email de la personne invitée (si le membre qui invite la saisit), lien d'invitation valable 7 jours ; l'email envoyé nomme le groupe et le membre qui invite | Intérêt légitime (permettre à un membre d'inviter un proche dans son groupe) |
-| Désactivation d'un compte | date à laquelle l'administrateur du service a désactivé le compte, date de l'email qui prévient de sa suppression | Intérêt légitime (exploitation et sécurité du service) |
+| Désactivation d'un compte | date à laquelle l'administrateur du service a désactivé le compte, date de l'email qui prévient de sa suppression ; si vous demandez la réactivation, la date de votre demande et le message facultatif que vous y joignez, et la date d'un refus | Intérêt légitime (exploitation et sécurité du service) |
 | Agenda | événements, tâches, pièces jointes, membres assignés à un événement | Exécution du contrat |
 | Rappels d'événements | délai choisi avant l'événement ; l'email de rappel porte le titre et la date de l'événement | Exécution du contrat |
 | Stocks / recettes / liste de courses | articles, recettes, ingrédients | Exécution du contrat |
@@ -155,15 +155,28 @@ de la purge dépasserait.
   effacé, et l'appartenance aux groupes et le rôle sont supprimés (voir
   ci-dessous).
 - **Compte désactivé par l'administrateur du service** : la désactivation
-  révoque les sessions et bloque la connexion, sans rien effacer ;
-  l'administrateur peut réactiver le compte. Un compte qui reste désactivé
+  révoque les sessions, sans rien effacer ; l'administrateur peut
+  réactiver le compte. Une connexion avec les bons identifiants n'ouvre
+  plus qu'une page, qui explique la désactivation et permet d'en demander
+  la réactivation — une demande en attente à la fois, avec un message
+  facultatif ; avec de mauvais identifiants, le message d'erreur est le
+  même que pour tout autre compte. La demande est conservée jusqu'à la
+  décision de l'administrateur, réactivation ou refus, qui la supprime, ou
+  jusqu'à la purge du compte. Un compte qui reste désactivé
   2 ans — la durée que recommande la CNIL pour un compte inactif — est
-  purgé comme ci-dessous. Son titulaire en est prévenu une fois, par email
+  purgé comme ci-dessous. Son titulaire en est prévenu par email
   à l'adresse du compte, 30 jours avant ; la purge n'a jamais lieu moins
   de 30 jours après cet email, et, s'il n'a pas pu partir, pas avant 2 ans
-  et 30 jours de désactivation. Un compte dont la suppression avait été
-  demandée avant sa désactivation est purgé au terme de ses 30 jours de
-  grâce, comme tout autre.
+  et 30 jours de désactivation. Une demande de réactivation en attente
+  suspend cette échéance et l'email qui la précède, si c'est la première
+  depuis la désactivation. Après un refus, vous pouvez en faire une
+  nouvelle, mais elle ne suspend plus rien ; et si l'email
+  d'avertissement était déjà parti, un nouvel email part une fois
+  l'échéance à 30 jours ou moins, et la purge n'a pas lieu moins de 30
+  jours après lui. La date du refus est effacée à la réactivation, à une
+  nouvelle désactivation et à la purge. Un compte dont la suppression avait été demandée
+  avant sa désactivation est purgé au terme de ses 30 jours de grâce,
+  comme tout autre, demande de réactivation en attente ou non.
 - **Déclaration d'âge** : la déclaration et sa date restent tant que le
   compte existe, et sont effacées à la purge du compte.
 - **Sessions de connexion** : une session vaut 30 jours au plus, et prend
@@ -171,7 +184,9 @@ de la purge dépasserait.
   de création, de dernière activité, d'expiration et de révocation) est
   supprimée au premier passage de purge qui suit la fin de la session :
   expiration, inactivité, déconnexion, changement de mot de passe ou
-  désactivation du compte.
+  désactivation du compte. La session qu'ouvre ensuite la connexion à un
+  compte désactivé, limitée à la page de demande de réactivation, prend
+  aussi fin à la réactivation du compte.
 - **Connexion avec Google** : l'identifiant, l'email et le nom de votre
   profil Google et le jeton de rafraîchissement sont conservés jusqu'à
   l'anonymisation du compte, qui les supprime.
@@ -262,7 +277,8 @@ de la purge dépasserait.
   concernent votre compte sans être de votre fait — celle qui date la
   purge, celles des transferts de propriété de vos groupes qu'elle opère,
   celles où un autre membre ou l'administrateur du service a agi sur
-  votre compte (changement de rôle, transfert de propriété, désactivation)
+  votre compte (changement de rôle, transfert de propriété, désactivation,
+  réactivation, refus d'une demande de réactivation)
   et celles d'un transfert qui vous a désigné comme successeur à la purge
   d'un autre compte — jusqu'au premier passage de purge qui suit leurs
   6 mois ; elles ne désignent plus qu'un identifiant technique. Et une

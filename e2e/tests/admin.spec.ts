@@ -126,6 +126,9 @@ test.describe("User admin — support look-up", () => {
 
 test.describe("User admin — deactivate", () => {
   test("deactivating a user revokes their session until a reactivation", async ({ browser }) => {
+    // Two browsers and five password logins (#289): more than the default
+    // 30 s budget allows on a loaded runner.
+    test.slow();
     // A target user with a live session.
     const targetCtx = await browser.newContext();
     const target = await targetCtx.newPage();
@@ -155,9 +158,46 @@ test.describe("User admin — deactivate", () => {
     await target.goto("/");
     await expect(target).toHaveURL(/\/login$/);
 
-    // A deactivated account offers no second deactivation (the backend would
-    // 404 it), only its reactivation (#256).
+    // #289: a wrong password on the deactivated account gets the generic
+    // message; the right one lands on the deactivated-account page, and
+    // every other page sends the holder back there.
+    await target.getByLabel("Email").fill(targetEmail);
+    await target.getByRole("textbox", { name: "Mot de passe" }).fill("not-the-password-1");
+    await target.getByRole("button", { name: "Se connecter" }).click();
+    await expect(target.getByText("Email ou mot de passe incorrect.")).toBeVisible();
+    await target.getByRole("textbox", { name: "Mot de passe" }).fill(PASSWORD);
+    await target.getByRole("button", { name: "Se connecter" }).click();
+    await expect(target).toHaveURL("/account/deactivated");
+    await expect(target.getByRole("heading", { name: "Compte désactivé" })).toBeVisible();
+    await target.goto("/groups");
+    await expect(target).toHaveURL("/account/deactivated");
+
+    // The holder asks for the reactivation, once.
+    await target.getByLabel("Message pour l'administrateur (facultatif)").fill("Je souhaite revenir.");
+    await target.getByRole("button", { name: "Demander la réactivation" }).click();
+    await expect(target).toHaveURL("/account/deactivated?notice=reactivation_requested");
+    await expect(target.getByText("attend la décision de l'administrateur")).toBeVisible();
+    await expect(target.getByRole("button", { name: "Demander la réactivation" })).toHaveCount(0);
+
+    // The holder logs out from that page, then back in to it.
+    await target.getByRole("button", { name: "Se déconnecter" }).click();
+    await expect(target).toHaveURL(/\/login$/);
+    await target.goto("/groups");
+    await expect(target).toHaveURL(/\/login$/);
+    await target.getByLabel("Email").fill(targetEmail);
+    await target.getByRole("textbox", { name: "Mot de passe" }).fill(PASSWORD);
+    await target.getByRole("button", { name: "Se connecter" }).click();
+    await expect(target).toHaveURL("/account/deactivated");
+
+    // The superadmin sees the pending request, with its note. A deactivated
+    // account offers no second deactivation (the backend would 404 it), only
+    // its reactivation (#256), which grants the request.
+    await page.goto("/admin/users");
+    await expect(page.locator("tr", { hasText: targetEmail })).toContainText("réactivation demandée");
     await page.locator("tr", { hasText: targetEmail }).getByRole("link", { name: "Détails" }).click();
+    await expect(page.getByRole("heading", { name: "Demande de réactivation" })).toBeVisible();
+    await expect(page.getByText("Je souhaite revenir.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Refuser la demande" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Désactiver le compte" })).toHaveCount(0);
     await page.getByRole("button", { name: "Réactiver le compte" }).click();
 
@@ -165,7 +205,10 @@ test.describe("User admin — deactivate", () => {
     await expect(page.getByText("Compte réactivé", { exact: false })).toBeVisible();
     await expect(page.locator("tr", { hasText: targetEmail })).toContainText("Actif");
 
-    // The revoked session stays revoked; the holder logs in again.
+    // The restricted session ends with the reactivation; the holder logs in
+    // again.
+    await target.goto("/account/deactivated");
+    await expect(target).toHaveURL(/\/login$/);
     await target.goto("/login");
     await target.getByLabel("Email").fill(targetEmail);
     await target.getByRole("textbox", { name: "Mot de passe" }).fill(PASSWORD);

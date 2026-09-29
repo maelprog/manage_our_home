@@ -1,6 +1,8 @@
 //! Superadmin support screens (front epic F9, issue #24): read-only look-up of
 //! every family (`/admin/groups`) and every account (`/admin/users`), plus the
-//! immediate `deactivate` support action on a user (`/admin/users/:id`). Same
+//! immediate `deactivate` support action on a user (`/admin/users/:id`), its
+//! `reactivate` counterpart and the holder's reactivation requests (#256,
+//! #289). Same
 //! SSR pattern as the family-scoped epics — plain `<form method=post>`, PRG with
 //! `?notice=`/`?error=` codes, per-page error tables mapping
 //! `apps/api/src/user_admin/`'s exact status codes to French copy. Full spec in
@@ -28,8 +30,8 @@ use crate::state::AppState;
 // Re-export the pure, TDD'd helpers from `apps/shared` so the submodules import
 // them from the local module like the other epics do.
 pub(crate) use manage_our_home_shared::validation::user_admin::{
-    can_deactivate, can_reactivate, format_admin_datetime, format_admin_datetime_opt,
-    user_status_label,
+    can_deactivate, can_reactivate, can_refuse_reactivation, format_admin_datetime,
+    format_admin_datetime_opt, purge_outlook, user_status_label, PurgeOutlook,
 };
 
 /// The caller's session cookie, forwarded to the authenticated `/admin/*` API

@@ -452,7 +452,8 @@ async fn deactivate_revokes_sessions_and_sets_deactivated_at(db: PgPool) {
     assert!(deactivated);
     assert!(!purged);
 
-    // Nor can the account open a new one.
+    // Nor can the account open a new full one: the right password opens a
+    // restricted session (#289), which the app refuses.
     let relogin = call(
         &router,
         Method::POST,
@@ -461,7 +462,18 @@ async fn deactivate_revokes_sessions_and_sets_deactivated_at(db: PgPool) {
         Some(serde_json::json!({"email": "target-user@example.test", "password": "target-password1"})),
     )
     .await;
-    assert_status(&relogin, StatusCode::UNAUTHORIZED);
+    assert_status(&relogin, StatusCode::OK);
+    let restricted = set_cookie(&relogin).unwrap();
+    let refused = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}"),
+        Some(&restricted),
+        None,
+    )
+    .await;
+    assert_status(&refused, StatusCode::FORBIDDEN);
+    assert_eq!(json_body(refused).await["error"], "account_deactivated");
 
     let superadmin_id: uuid::Uuid = sqlx::query_scalar!(
         "SELECT id FROM users WHERE email = $1",
@@ -551,7 +563,8 @@ async fn reactivate_gives_the_account_back_and_is_audited(db: PgPool) {
         .unwrap();
     let login_body =
         serde_json::json!({"email": "back@example.test", "password": "back-password1"});
-    let refused = call(
+    // The right password opens only a restricted session (#289).
+    let restricted = call(
         &router,
         Method::POST,
         "/auth/login",
@@ -559,12 +572,30 @@ async fn reactivate_gives_the_account_back_and_is_audited(db: PgPool) {
         Some(login_body.clone()),
     )
     .await;
-    assert_status(&refused, StatusCode::UNAUTHORIZED);
+    assert_status(&restricted, StatusCode::OK);
+    let restricted = set_cookie(&restricted).unwrap();
+    let me = call(&router, Method::GET, "/auth/me", Some(&restricted), None).await;
+    assert_status(&me, StatusCode::FORBIDDEN);
 
     assert_eq!(
         admin_post(&router, &superadmin_cookie, target, "reactivate").await,
         StatusCode::NO_CONTENT
     );
+
+    // The restricted session does not become a full one: it is revoked,
+    // and opens neither the app nor the deactivated-account page.
+    for path in ["/auth/me", "/account/deactivated"] {
+        let res = call(&router, Method::GET, path, Some(&restricted), None).await;
+        assert_status(&res, StatusCode::UNAUTHORIZED);
+    }
+    let live_restricted: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM sessions WHERE user_id = $1 AND restricted AND revoked_at IS NULL",
+    )
+    .bind(target)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(live_restricted, 0);
 
     let (deactivated, noticed): (bool, bool) = sqlx::query_as(
         "SELECT deactivated_at IS NOT NULL, deactivation_notice_sent_at IS NOT NULL
@@ -580,9 +611,10 @@ async fn reactivate_gives_the_account_back_and_is_audited(db: PgPool) {
     assert_status(&back, StatusCode::OK);
 
     let audited: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM audit_log a JOIN users u ON u.id = a.actor_user_id
+        r#"SELECT count(*) FROM audit_log a JOIN users u ON u.id = a.actor_user_id
          WHERE u.email = 'superadmin4@example.test'
-           AND a.action = 'admin.user.reactivate' AND a.target_id = $1",
+           AND a.action = 'admin.user.reactivate' AND a.target_id = $1
+           AND a.metadata = '{"reactivation_request": false}'::jsonb"#,
     )
     .bind(target.to_string())
     .fetch_one(&db)

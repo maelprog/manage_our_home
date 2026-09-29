@@ -14,7 +14,8 @@
 //! - deleted — the tables the schema already meant to delete with the
 //!   account (`ON DELETE CASCADE`): `oauth_identities`, `sessions`,
 //!   `email_verification_tokens`, `password_reset_tokens`,
-//!   `group_members`, `message_read_state`, `event_assignees`; and the
+//!   `group_members`, `message_read_state`, `event_assignees`,
+//!   `account_reactivation_requests` (#289); and the
 //!   personal rows among the others: the account's own `audit_log`
 //!   entries, the `invitations` it sent (with the third-party addresses
 //!   they hold) and its `calendar_imports` (with their `feed_url`, a
@@ -103,7 +104,10 @@ where
         let Some(row) = sqlx::query!(
             r#"
             SELECT email, deletion_requested_at, deactivated_at,
-                   deactivation_notice_sent_at, deleted_at, now() AS "now!"
+                   deactivation_notice_sent_at, deleted_at, now() AS "now!",
+                   EXISTS (SELECT 1 FROM account_reactivation_requests r
+                           WHERE r.user_id = users.id) AS "reactivation_requested!",
+                   reactivation_refused_at IS NOT NULL AS "reactivation_refused!"
             FROM users WHERE id = $1 FOR UPDATE
             "#,
             user_id
@@ -118,6 +122,8 @@ where
             deactivated_at: row.deactivated_at,
             deactivation_notice_sent_at: row.deactivation_notice_sent_at,
             deleted_at: row.deleted_at,
+            reactivation_requested: row.reactivation_requested,
+            reactivation_refused: row.reactivation_refused,
         };
         let (true, Some(deactivated_at)) =
             (deactivation_notice_due(row.now, &clock), row.deactivated_at)
@@ -195,7 +201,10 @@ pub async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<()> {
     let row = sqlx::query!(
         r#"
         SELECT deletion_requested_at, deactivated_at, deactivation_notice_sent_at,
-               deleted_at, now() AS "now!"
+               deleted_at, now() AS "now!",
+               EXISTS (SELECT 1 FROM account_reactivation_requests r
+                       WHERE r.user_id = users.id) AS "reactivation_requested!",
+                   reactivation_refused_at IS NOT NULL AS "reactivation_refused!"
         FROM users WHERE id = $1 FOR UPDATE
         "#,
         user_id
@@ -210,6 +219,8 @@ pub async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<()> {
                 deactivated_at: r.deactivated_at,
                 deactivation_notice_sent_at: r.deactivation_notice_sent_at,
                 deleted_at: r.deleted_at,
+                reactivation_requested: r.reactivation_requested,
+                reactivation_refused: r.reactivation_refused,
             },
         )
     });
@@ -297,6 +308,12 @@ pub async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<()> {
     sqlx::query!("DELETE FROM event_assignees WHERE user_id = $1", user_id)
         .execute(&mut *tx)
         .await?;
+    sqlx::query!(
+        "DELETE FROM account_reactivation_requests WHERE user_id = $1",
+        user_id
+    )
+    .execute(&mut *tx)
+    .await?;
     sqlx::query!("DELETE FROM audit_log WHERE actor_user_id = $1", user_id)
         .execute(&mut *tx)
         .await?;
@@ -319,6 +336,7 @@ pub async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<()> {
             password_hash = NULL,
             display_name = 'Utilisateur supprimé',
             age_declared_at = NULL,
+            reactivation_refused_at = NULL,
             deleted_at = now()
         WHERE id = $1
         "#,
@@ -355,6 +373,13 @@ pub struct PurgeClock {
     pub deactivated_at: Option<DateTime<Utc>>,
     pub deactivation_notice_sent_at: Option<DateTime<Utc>>,
     pub deleted_at: Option<DateTime<Utc>>,
+    /// A reactivation request from the holder awaits the superadmin's
+    /// decision (`account_reactivation_requests`, #289).
+    pub reactivation_requested: bool,
+    /// The superadmin has refused a reactivation request since the account
+    /// was deactivated (`users.reactivation_refused_at`, #289): a later
+    /// request no longer suspends anything.
+    pub reactivation_refused: bool,
 }
 
 /// When an account deactivated at `deactivated_at` becomes purgeable: 2
@@ -386,7 +411,10 @@ fn deactivation_retention_end(deactivated_at: DateTime<Utc>) -> DateTime<Utc> {
 
 /// Whether the purge takes this account now: 30 days after a deletion
 /// request, whether or not support deactivated the account since (#139),
-/// or once [`deactivation_purge_at`] has passed. A purged row never is.
+/// or once [`deactivation_purge_at`] has passed — unless the holder's
+/// first reactivation request since the deactivation awaits the
+/// superadmin's decision, which suspends that second date, and only it
+/// (#289). A purged row never is.
 pub fn purge_due(now: DateTime<Utc>, clock: &PurgeClock) -> bool {
     if clock.deleted_at.is_some() {
         return false;
@@ -394,20 +422,31 @@ pub fn purge_due(now: DateTime<Utc>, clock: &PurgeClock) -> bool {
     let requested = clock
         .deletion_requested_at
         .is_some_and(|at| now > at + Duration::days(PURGE_GRACE_DAYS));
-    let deactivated = clock
-        .deactivated_at
-        .is_some_and(|at| now >= deactivation_purge_at(at, clock.deactivation_notice_sent_at));
+    let deactivated = !suspended(clock)
+        && clock
+            .deactivated_at
+            .is_some_and(|at| now >= deactivation_purge_at(at, clock.deactivation_notice_sent_at));
     requested || deactivated
+}
+
+/// Whether a pending reactivation request holds back the purge 2 years
+/// after the deactivation and its warning: only the first one since the
+/// deactivation — after a refusal the holder may ask again, but the
+/// deadline runs (arbitrage of 2026-09-29, #289).
+fn suspended(clock: &PurgeClock) -> bool {
+    clock.reactivation_requested && !clock.reactivation_refused
 }
 
 /// Whether the holder of a deactivated account is due its warning: from 30
 /// days before the 2 years are up, once. An account whose deletion was
 /// requested is purged 30 days after its request, long before, and is
-/// warned of nothing.
+/// warned of nothing; nor is one whose purge a pending reactivation
+/// request suspends (#289).
 pub fn deactivation_notice_due(now: DateTime<Utc>, clock: &PurgeClock) -> bool {
     if clock.deleted_at.is_some()
         || clock.deletion_requested_at.is_some()
         || clock.deactivation_notice_sent_at.is_some()
+        || suspended(clock)
     {
         return false;
     }
@@ -483,6 +522,8 @@ mod tests {
             deactivated_at: None,
             deactivation_notice_sent_at: None,
             deleted_at: None,
+            reactivation_requested: false,
+            reactivation_refused: false,
         }
     }
 
@@ -620,6 +661,82 @@ mod tests {
             ..deactivated(at(2026, 3, 10), None)
         };
         assert!(!deactivation_notice_due(at(2028, 2, 20), &c));
+    }
+
+    // -- a pending reactivation request (#289) --------------------------------
+
+    fn requested(c: PurgeClock) -> PurgeClock {
+        PurgeClock {
+            reactivation_requested: true,
+            ..c
+        }
+    }
+
+    #[test]
+    fn a_pending_reactivation_request_suspends_the_two_year_purge() {
+        let c = requested(deactivated(at(2026, 3, 10), Some(at(2028, 2, 9))));
+        assert!(!purge_due(at(2028, 3, 10), &c));
+        assert!(!purge_due(at(2040, 1, 1), &c));
+    }
+
+    /// Once the request is decided (its row deleted), the date #256 set
+    /// applies again, unchanged.
+    #[test]
+    fn the_two_year_purge_resumes_once_the_request_is_decided() {
+        let c = deactivated(at(2026, 3, 10), Some(at(2028, 2, 9)));
+        assert!(!purge_due(at(2028, 3, 10), &requested(c)));
+        assert!(purge_due(at(2028, 3, 10), &c));
+    }
+
+    /// Only the purge #256 set is suspended: a deletion the holder asked
+    /// for still goes through at 30 days (#139).
+    #[test]
+    fn a_pending_reactivation_request_does_not_hold_back_a_requested_deletion() {
+        let c = requested(PurgeClock {
+            deletion_requested_at: Some(at(2026, 9, 1)),
+            ..deactivated(at(2026, 9, 5), None)
+        });
+        assert!(purge_due(at(2026, 10, 2), &c));
+    }
+
+    fn refused(c: PurgeClock) -> PurgeClock {
+        PurgeClock {
+            reactivation_refused: true,
+            ..c
+        }
+    }
+
+    /// Arbitrage of 2026-09-29: after a refusal the holder may ask again,
+    /// but the deadline runs — an overdue account is purged.
+    #[test]
+    fn a_new_request_after_a_refusal_does_not_suspend_the_purge() {
+        let c = requested(refused(deactivated(at(2026, 3, 10), Some(at(2028, 2, 9)))));
+        assert!(!purge_due(at(2028, 3, 9), &c));
+        assert!(purge_due(at(2028, 3, 10), &c));
+    }
+
+    #[test]
+    fn a_new_request_after_a_refusal_does_not_hold_back_the_notice() {
+        let c = requested(refused(deactivated(at(2026, 3, 10), None)));
+        assert!(deactivation_notice_due(at(2028, 2, 9), &c));
+    }
+
+    /// A refusal on its own changes nothing to the dates #256 set.
+    #[test]
+    fn a_refusal_without_a_new_request_leaves_the_two_year_purge_as_is() {
+        let c = refused(deactivated(at(2026, 3, 10), Some(at(2028, 2, 9))));
+        assert!(!purge_due(at(2028, 3, 9), &c));
+        assert!(purge_due(at(2028, 3, 10), &c));
+    }
+
+    #[test]
+    fn no_notice_is_sent_while_a_reactivation_request_is_pending() {
+        let c = requested(deactivated(at(2026, 3, 10), None));
+        assert!(!deactivation_notice_due(at(2028, 2, 9), &c));
+        assert!(deactivation_notice_due(
+            at(2028, 2, 9),
+            &deactivated(at(2026, 3, 10), None)
+        ));
     }
 
     /// Order: active admins, active members, then admins awaiting

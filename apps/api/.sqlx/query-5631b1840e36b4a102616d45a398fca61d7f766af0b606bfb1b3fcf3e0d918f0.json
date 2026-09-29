@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE users\n        SET email = 'deleted-' || id || '@deleted.invalid',\n            password_hash = NULL,\n            display_name = 'Utilisateur supprimé',\n            age_declared_at = NULL,\n            reactivation_refused_at = NULL,\n            deleted_at = now()\n        WHERE id = $1\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5631b1840e36b4a102616d45a398fca61d7f766af0b606bfb1b3fcf3e0d918f0"
+}

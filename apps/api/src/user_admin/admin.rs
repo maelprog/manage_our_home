@@ -28,6 +28,11 @@ pub struct AdminUserResponse {
     pub deleted_at: Option<DateTime<Utc>>,
     pub deactivated_at: Option<DateTime<Utc>>,
     pub deletion_requested_at: Option<DateTime<Utc>>,
+    /// The holder's pending reactivation request, if any (#289).
+    pub reactivation_requested_at: Option<DateTime<Utc>>,
+    pub reactivation_message: Option<String>,
+    /// When a request was last refused since the deactivation (#289).
+    pub reactivation_refused_at: Option<DateTime<Utc>>,
 }
 
 /// AC #2/#6: lists every group across every family, including ones the
@@ -90,10 +95,12 @@ pub async fn list_users(
     let rows = sqlx::query_as!(
         AdminUserResponse,
         r#"
-        SELECT id, email, email_verified, created_at, deleted_at, deactivated_at,
-               deletion_requested_at
-        FROM users
-        ORDER BY created_at
+        SELECT u.id, u.email, u.email_verified, u.created_at, u.deleted_at, u.deactivated_at,
+               u.deletion_requested_at, r.requested_at AS "reactivation_requested_at?",
+               r.message AS reactivation_message, u.reactivation_refused_at
+        FROM users u
+        LEFT JOIN account_reactivation_requests r ON r.user_id = u.id
+        ORDER BY u.created_at
         "#
     )
     .fetch_all(&state.admin_db)
@@ -130,7 +137,8 @@ pub async fn deactivate_user(
     let mut tx = crate::db::begin(&state.admin_db).await?;
 
     let updated = sqlx::query!(
-        r#"UPDATE users SET deactivated_at = now(), deactivation_notice_sent_at = NULL
+        r#"UPDATE users SET deactivated_at = now(), deactivation_notice_sent_at = NULL,
+                            reactivation_refused_at = NULL
            WHERE id = $1 AND deactivated_at IS NULL AND deleted_at IS NULL"#,
         target_user_id
     )
@@ -164,9 +172,11 @@ pub async fn deactivate_user(
 /// Gives back an account [`deactivate_user`] locked (#256): clears
 /// `deactivated_at`, and with it the warning of the coming purge, so a
 /// later deactivation starts a new 2 years. The sessions revoked at
-/// deactivation stay revoked — the holder logs in again. An account that
-/// is not deactivated, or already purged (nothing is left to give back),
-/// is a 404. Traced in `audit_log` like the deactivation.
+/// deactivation stay revoked, and so are the restricted sessions opened
+/// since (#289) — the holder logs in again. A pending reactivation request
+/// is granted by it and deleted. An account that is not deactivated, or
+/// already purged (nothing is left to give back), is a 404. Traced in
+/// `audit_log` like the deactivation, saying whether it answered a request.
 pub async fn reactivate_user(
     State(state): State<AppState>,
     actor: SuperAdminUser,
@@ -175,7 +185,8 @@ pub async fn reactivate_user(
     let mut tx = crate::db::begin(&state.admin_db).await?;
 
     let updated = sqlx::query!(
-        r#"UPDATE users SET deactivated_at = NULL, deactivation_notice_sent_at = NULL
+        r#"UPDATE users SET deactivated_at = NULL, deactivation_notice_sent_at = NULL,
+                            reactivation_refused_at = NULL
            WHERE id = $1 AND deactivated_at IS NOT NULL AND deleted_at IS NULL"#,
         target_user_id
     )
@@ -185,10 +196,78 @@ pub async fn reactivate_user(
         return Err(AppError::NotFound);
     }
 
+    let answered = sqlx::query!(
+        "DELETE FROM account_reactivation_requests WHERE user_id = $1",
+        target_user_id
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected()
+        > 0;
+    sqlx::query!(
+        "UPDATE sessions SET revoked_at = now()
+         WHERE user_id = $1 AND restricted AND revoked_at IS NULL",
+        target_user_id
+    )
+    .execute(&mut *tx)
+    .await?;
+
     audit::record(
         &mut tx,
         Some(actor.user_id),
         "admin.user.reactivate",
+        "user",
+        &target_user_id.to_string(),
+        json!({ "reactivation_request": answered }),
+    )
+    .await?;
+
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Turns down the pending reactivation request of a deactivated account
+/// (#289): the request is deleted and the account stays deactivated. The
+/// purge 2 years after the deactivation, suspended while a first request
+/// was pending, applies again, and `reactivation_refused_at` is stamped: the
+/// holder may ask again, but a later request suspends nothing (arbitrage of
+/// 2026-09-29). The warning email is cleared so that, if it had already gone
+/// out, the holder is warned afresh once the purge is 30 days away or less,
+/// and the purge still comes at least 30 days after that warning
+/// (`jobs::account_purge`). No pending request, or an account reactivated
+/// or purged since, is a 404. Traced in `audit_log`.
+pub async fn refuse_reactivation(
+    State(state): State<AppState>,
+    actor: SuperAdminUser,
+    Path(target_user_id): Path<Uuid>,
+) -> AppResult<impl IntoResponse> {
+    let mut tx = crate::db::begin(&state.admin_db).await?;
+
+    let refused = sqlx::query!(
+        r#"DELETE FROM account_reactivation_requests r
+           USING users u
+           WHERE r.user_id = $1 AND u.id = r.user_id
+             AND u.deactivated_at IS NOT NULL AND u.deleted_at IS NULL"#,
+        target_user_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    if refused.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+
+    sqlx::query!(
+        "UPDATE users SET deactivation_notice_sent_at = NULL, reactivation_refused_at = now()
+         WHERE id = $1",
+        target_user_id
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    audit::record(
+        &mut tx,
+        Some(actor.user_id),
+        "admin.user.reactivation_refuse",
         "user",
         &target_user_id.to_string(),
         json!({}),

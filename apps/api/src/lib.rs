@@ -147,6 +147,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/account/delete", post(auth::delete_account))
         .route("/account/delete/cancel", post(auth::cancel_delete_account))
         .route("/account/export", get(rgpd::export_account))
+        // With `/auth/logout`, the only routes a restricted session opens
+        // (#289).
+        .route("/account/deactivated", get(auth::deactivated::status))
+        .route(
+            "/account/deactivated/reactivation-request",
+            post(auth::deactivated::request_reactivation),
+        )
         .route("/privacy-policy", get(rgpd::privacy_policy))
         .route("/legal-notice", get(rgpd::legal_notice))
         .route("/terms-of-service", get(rgpd::terms_of_service))
@@ -318,6 +325,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/admin/users/:id/reactivate",
             post(user_admin::admin::reactivate_user),
+        )
+        .route(
+            "/admin/users/:id/reactivation-request/refuse",
+            post(user_admin::admin::refuse_reactivation),
         )
         .layer(CookieManagerLayer::new())
         .layer(axum::middleware::from_fn_with_state(

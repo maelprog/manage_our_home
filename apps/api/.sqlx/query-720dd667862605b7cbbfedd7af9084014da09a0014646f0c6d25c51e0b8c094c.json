@@ -1,0 +1,85 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT deletion_requested_at, deactivated_at, deactivation_notice_sent_at,\n               deleted_at, now() AS \"now!\",\n               EXISTS (SELECT 1 FROM account_reactivation_requests r\n                       WHERE r.user_id = users.id) AS \"reactivation_requested!\",\n                   reactivation_refused_at IS NOT NULL AS \"reactivation_refused!\"\n        FROM users WHERE id = $1 FOR UPDATE\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "deletion_requested_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "deletion_requested_at"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "deactivated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "deactivated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "deactivation_notice_sent_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "deactivation_notice_sent_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "deleted_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "deleted_at"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "now!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "reactivation_requested!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "reactivation_refused!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "720dd667862605b7cbbfedd7af9084014da09a0014646f0c6d25c51e0b8c094c"
+}

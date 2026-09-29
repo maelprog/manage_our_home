@@ -73,6 +73,74 @@ pub fn can_reactivate(
     deleted_at.is_none() && deactivated_at.is_some()
 }
 
+/// Longest note the holder of a deactivated account may attach to its
+/// reactivation request (#289), in characters.
+pub const MAX_REACTIVATION_MESSAGE_CHARS: usize = 1000;
+
+/// Checks the optional note of a reactivation request (#289): surrounding
+/// whitespace is dropped, a blank note is no note, and a note longer than
+/// [`MAX_REACTIVATION_MESSAGE_CHARS`] is refused with
+/// `reactivation_message_too_long`.
+pub fn validate_reactivation_message(message: &str) -> Result<Option<String>, &'static str> {
+    let message = message.trim();
+    if message.is_empty() {
+        Ok(None)
+    } else if message.chars().count() > MAX_REACTIVATION_MESSAGE_CHARS {
+        Err("reactivation_message_too_long")
+    } else {
+        Ok(Some(message.to_string()))
+    }
+}
+
+/// Mirror of the backend's guard on
+/// `POST /admin/users/:id/reactivation-request/refuse` (#289): a pending
+/// request, on an account still deactivated and not purged.
+pub fn can_refuse_reactivation(
+    deleted_at: Option<DateTime<Utc>>,
+    deactivated_at: Option<DateTime<Utc>>,
+    reactivation_requested_at: Option<DateTime<Utc>>,
+) -> bool {
+    can_reactivate(deleted_at, deactivated_at) && reactivation_requested_at.is_some()
+}
+
+/// What becomes of a deactivated account's purge (#289), as its holder's
+/// page and the superadmin's detail screen tell it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PurgeOutlook {
+    /// The holder asked for the deletion: the account goes from `from`, 30
+    /// days after the request, with no warning email, reactivation request
+    /// or not.
+    DeletionRequested { from: DateTime<Utc> },
+    /// A pending request, the first since the deactivation: the purge 2
+    /// years after the deactivation is suspended.
+    Suspended,
+    /// The purge 2 years after the deactivation runs, its holder warned by
+    /// email 30 days before. `after_refusal`: a request was refused since
+    /// the deactivation, so a new one suspends nothing (arbitrage of
+    /// 2026-09-29).
+    Runs { after_refusal: bool },
+}
+
+/// Mirror of `apps/api/src/jobs/account_purge.rs::purge_due` for a
+/// deactivated account, not yet purged.
+pub fn purge_outlook(
+    deletion_requested_at: Option<DateTime<Utc>>,
+    reactivation_requested_at: Option<DateTime<Utc>>,
+    reactivation_refused_at: Option<DateTime<Utc>>,
+) -> PurgeOutlook {
+    if let Some(asked) = deletion_requested_at {
+        return PurgeOutlook::DeletionRequested {
+            from: asked + chrono::Duration::days(crate::validation::rgpd::GRACE_PERIOD_DAYS),
+        };
+    }
+    match (reactivation_requested_at, reactivation_refused_at) {
+        (Some(_), None) => PurgeOutlook::Suspended,
+        (_, refused) => PurgeOutlook::Runs {
+            after_refusal: refused.is_some(),
+        },
+    }
+}
+
 /// Formats a UTC instant in Europe/Paris (`24/07/2026 à 14:05`), the fixed v1
 /// display timezone (F3's `DISPLAY_TZ`), so DST handling lives in one tested
 /// place — same convention as `validation::messagerie::format_message_time`.
@@ -190,6 +258,120 @@ mod tests {
         assert!(!can_reactivate(purged, None));
         assert!(!can_deactivate(purged, on));
         assert!(!can_reactivate(purged, on));
+    }
+
+    // -- can_refuse_reactivation (#289) --------------------------------------
+
+    #[test]
+    fn a_pending_request_on_a_deactivated_account_can_be_refused() {
+        let on = Some(at(2026, 7, 24, 12, 0));
+        let asked = Some(at(2026, 8, 1, 9, 0));
+        assert!(can_refuse_reactivation(None, on, asked));
+    }
+
+    #[test]
+    fn without_a_pending_request_there_is_nothing_to_refuse() {
+        let on = Some(at(2026, 7, 24, 12, 0));
+        assert!(!can_refuse_reactivation(None, on, None));
+        assert!(!can_refuse_reactivation(None, None, None));
+    }
+
+    #[test]
+    fn a_request_left_on_an_active_or_purged_account_cannot_be_refused() {
+        let on = Some(at(2026, 7, 24, 12, 0));
+        let asked = Some(at(2026, 8, 1, 9, 0));
+        let purged = Some(at(2028, 7, 24, 12, 0));
+        assert!(!can_refuse_reactivation(None, None, asked));
+        assert!(!can_refuse_reactivation(purged, on, asked));
+    }
+
+    // -- purge_outlook (#289) -------------------------------------------------
+
+    #[test]
+    fn without_any_request_the_two_year_purge_runs() {
+        assert_eq!(
+            purge_outlook(None, None, None),
+            PurgeOutlook::Runs {
+                after_refusal: false
+            }
+        );
+    }
+
+    #[test]
+    fn a_first_pending_request_suspends_the_purge() {
+        assert_eq!(
+            purge_outlook(None, Some(at(2026, 8, 1, 9, 0)), None),
+            PurgeOutlook::Suspended
+        );
+    }
+
+    #[test]
+    fn after_a_refusal_the_purge_runs_request_or_not() {
+        let refused = Some(at(2026, 8, 2, 9, 0));
+        for request in [None, Some(at(2026, 8, 3, 9, 0))] {
+            assert_eq!(
+                purge_outlook(None, request, refused),
+                PurgeOutlook::Runs {
+                    after_refusal: true
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn a_requested_deletion_goes_30_days_after_the_request_whatever_else() {
+        let asked = at(2026, 8, 1, 9, 0);
+        let from = at(2026, 8, 31, 9, 0);
+        for (request, refused) in [
+            (None, None),
+            (Some(at(2026, 8, 3, 9, 0)), None),
+            (Some(at(2026, 8, 3, 9, 0)), Some(at(2026, 8, 2, 9, 0))),
+        ] {
+            assert_eq!(
+                purge_outlook(Some(asked), request, refused),
+                PurgeOutlook::DeletionRequested { from }
+            );
+        }
+    }
+
+    // -- validate_reactivation_message (#289) --------------------------------
+
+    #[test]
+    fn a_blank_message_is_no_message() {
+        assert_eq!(validate_reactivation_message(""), Ok(None));
+        assert_eq!(validate_reactivation_message("  \n\t "), Ok(None));
+    }
+
+    #[test]
+    fn a_message_is_kept_without_its_surrounding_whitespace() {
+        assert_eq!(
+            validate_reactivation_message("  Je souhaite revenir.\n"),
+            Ok(Some("Je souhaite revenir.".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_message_at_the_limit_is_accepted_counted_in_characters() {
+        let at_limit = "é".repeat(MAX_REACTIVATION_MESSAGE_CHARS);
+        assert_eq!(
+            validate_reactivation_message(&at_limit),
+            Ok(Some(at_limit.clone()))
+        );
+    }
+
+    #[test]
+    fn a_message_past_the_limit_is_refused() {
+        let past = "a".repeat(MAX_REACTIVATION_MESSAGE_CHARS + 1);
+        assert_eq!(
+            validate_reactivation_message(&past),
+            Err("reactivation_message_too_long")
+        );
+    }
+
+    #[test]
+    fn the_limit_is_measured_after_trimming() {
+        let padded = format!("  {}  ", "a".repeat(MAX_REACTIVATION_MESSAGE_CHARS));
+        assert!(validate_reactivation_message(&padded).is_ok());
     }
 
     // -- format_admin_datetime ----------------------------------------------

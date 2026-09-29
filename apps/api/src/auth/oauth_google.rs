@@ -10,7 +10,7 @@ use tower_cookies::{Cookie, Cookies};
 use crate::error::{AppError, AppResult};
 use crate::{AppState, GoogleOauthClient};
 
-use super::session::{create_session, set_session_cookie};
+use super::session::{create_restricted_session, create_session, set_session_cookie};
 
 const OAUTH_STATE_COOKIE: &str = "google_oauth_state";
 /// PKCE `code_verifier` (RFC 7636) minted by `start`, spent by `callback`.
@@ -103,6 +103,13 @@ pub struct CallbackQuery {
     state: String,
 }
 
+/// An account `callback` found for the Google profile.
+struct Existing {
+    user_id: uuid::Uuid,
+    purged: bool,
+    deactivated: bool,
+}
+
 #[derive(Deserialize)]
 struct GoogleUserInfo {
     sub: String,
@@ -133,7 +140,8 @@ async fn fetch_google_userinfo(url: &str, access_token: &str) -> anyhow::Result<
 /// the verified Google profile, then signs in the account already bound to
 /// that Google identity — or, failing that, binds the identity to the
 /// account with the same email, creating the account if there is none. An
-/// account deactivated by support is refused on both paths (#194). No
+/// account deactivated by support gets a restricted session on both paths,
+/// and nothing written to it (#194, #289); a purged one is refused. No
 /// existing session is read. The refresh token (if any) is stored
 /// encrypted via `pgcrypto` and is never written to `tracing` logs.
 pub async fn callback(
@@ -183,7 +191,8 @@ pub async fn callback(
 
     let existing_identity = sqlx::query!(
         r#"
-        SELECT i.user_id, u.deleted_at IS NOT NULL OR u.deactivated_at IS NOT NULL AS "locked!"
+        SELECT i.user_id, u.deleted_at IS NOT NULL AS "purged!",
+               u.deactivated_at IS NOT NULL AS "deactivated!"
         FROM oauth_identities i
         JOIN users u ON u.id = i.user_id
         WHERE i.provider = 'google' AND i.provider_user_id = $1
@@ -193,37 +202,56 @@ pub async fn callback(
     .fetch_optional(&mut *tx)
     .await?;
 
-    // The existing account this profile signs in to, if any, with
-    // whether it is deactivated or purged, and whether the Google identity
-    // is already bound to it.
+    // The existing account this profile signs in to, if any, with its
+    // state, and whether the Google identity is already bound to it.
     let (existing_account, identity_bound) = match existing_identity {
-        Some(identity) => (Some((identity.user_id, identity.locked)), true),
+        Some(identity) => (
+            Some(Existing {
+                user_id: identity.user_id,
+                purged: identity.purged,
+                deactivated: identity.deactivated,
+            }),
+            true,
+        ),
         None => {
             let existing_user = sqlx::query!(
-                r#"SELECT id, deleted_at IS NOT NULL OR deactivated_at IS NOT NULL AS "locked!"
+                r#"SELECT id, deleted_at IS NOT NULL AS "purged!",
+                          deactivated_at IS NOT NULL AS "deactivated!"
                    FROM users WHERE email = $1"#,
                 userinfo.email
             )
             .fetch_optional(&mut *tx)
             .await?;
-            (existing_user.map(|u| (u.id, u.locked)), false)
+            (
+                existing_user.map(|u| Existing {
+                    user_id: u.id,
+                    purged: u.purged,
+                    deactivated: u.deactivated,
+                }),
+                false,
+            )
         }
     };
 
-    // #194: an account support locked (`user_admin::admin::deactivate_user`)
-    // keeps its email and its Google identity, so either lookup above still
-    // finds it. `AuthUser` would refuse the session on first use, but the
-    // lock promises the account has no live session, and the email branch
-    // would also bind a new identity to it. Refused here, once for both
-    // branches, before anything is written — with the same bare 401 as a
-    // forged state or an unverified email, so the answer says nothing more
-    // about the account than any other refusal of this endpoint.
-    if existing_account.is_some_and(|(_, locked)| locked) {
+    // A purged row keeps its id: refused with the same bare 401 as a forged
+    // state or an unverified email (#139, #194).
+    if existing_account.as_ref().is_some_and(|a| a.purged) {
         return Err(AppError::Unauthorized);
     }
 
+    // #289: a verified Google profile of a deactivated account is the right
+    // credential, so it opens the restricted session a correct password
+    // would — and nothing else. #194 still holds: nothing is written to
+    // the account, no identity is bound to it, and no full session opens.
+    if let Some(account) = existing_account.as_ref().filter(|a| a.deactivated) {
+        tx.rollback().await?;
+        let session_id = create_restricted_session(&state.db, account.user_id).await?;
+        set_session_cookie(&cookies, session_id, state.secure_cookies);
+        return Ok(Redirect::to(&state.frontend_base_url));
+    }
+
     let user_id = match existing_account {
-        Some((user_id, _)) => user_id,
+        Some(account) => account.user_id,
         None => {
             let display_name = userinfo
                 .name

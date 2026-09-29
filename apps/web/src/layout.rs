@@ -12,7 +12,11 @@ use axum::http::request::Parts;
 use axum::response::{IntoResponse, Redirect, Response};
 use manage_our_home_shared::dto::auth::MeResponse;
 
-use crate::state::{fetch_me, AppState};
+use crate::state::{fetch_me, fetch_session, AppState, Session};
+
+/// Where a restricted session (#289) is sent from every page that wants a
+/// full one: the only page it opens.
+pub const DEACTIVATED_PAGE: &str = "/account/deactivated";
 
 fn cookie_header(parts: &Parts) -> Option<String> {
     parts
@@ -24,7 +28,8 @@ fn cookie_header(parts: &Parts) -> Option<String> {
 
 /// Extracts the authenticated user or redirects to `/login`. Use on every
 /// handler for a route that requires a session (AC #3: "an unauthenticated
-/// visitor hitting any non-auth route is redirected to /login").
+/// visitor hitting any non-auth route is redirected to /login"). A
+/// restricted session (#289) is sent to [`DEACTIVATED_PAGE`] instead.
 pub struct CurrentUser(pub MeResponse);
 
 #[axum::async_trait]
@@ -38,15 +43,16 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let app_state = AppState::from_ref(state);
         let cookie = cookie_header(parts);
-        match fetch_me(&app_state, cookie.as_deref()).await {
-            Some(me) => Ok(CurrentUser(me)),
-            None => Err(Redirect::to("/login").into_response()),
+        match fetch_session(&app_state, cookie.as_deref()).await {
+            Session::Active(me) => Ok(CurrentUser(me)),
+            Session::Deactivated => Err(Redirect::to(DEACTIVATED_PAGE).into_response()),
+            Session::None => Err(Redirect::to("/login").into_response()),
         }
     }
 }
 
 /// Same lookup as `CurrentUser` but never rejects — `None` means
-/// unauthenticated. Used by pages that render differently depending on
+/// unauthenticated, a restricted session (#289) included. Used by pages that render differently depending on
 /// auth state without hard-requiring a session.
 pub struct CurrentUserOpt(pub Option<MeResponse>);
 
@@ -87,17 +93,19 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let app_state = AppState::from_ref(state);
         let cookie = cookie_header(parts);
-        match fetch_me(&app_state, cookie.as_deref()).await {
-            Some(me) if me.is_superadmin => Ok(CurrentSuperAdmin(me)),
-            Some(_) => Err(Redirect::to("/").into_response()),
-            None => Err(Redirect::to("/login").into_response()),
+        match fetch_session(&app_state, cookie.as_deref()).await {
+            Session::Active(me) if me.is_superadmin => Ok(CurrentSuperAdmin(me)),
+            Session::Active(_) => Err(Redirect::to("/").into_response()),
+            Session::Deactivated => Err(Redirect::to(DEACTIVATED_PAGE).into_response()),
+            Session::None => Err(Redirect::to("/login").into_response()),
         }
     }
 }
 
 /// Extracted at the top of `/login` and `/register` handlers: redirects
-/// an already-authenticated visitor to `/` (AC #3, second half), otherwise
-/// lets the handler render the form as normal.
+/// an already-authenticated visitor to `/` (AC #3, second half) — or, with
+/// a restricted session (#289), to [`DEACTIVATED_PAGE`], where they can log
+/// out — otherwise lets the handler render the form as normal.
 pub struct RedirectIfAuthenticated;
 
 #[axum::async_trait]
@@ -111,10 +119,10 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let app_state = AppState::from_ref(state);
         let cookie = cookie_header(parts);
-        if fetch_me(&app_state, cookie.as_deref()).await.is_some() {
-            Err(Redirect::to("/").into_response())
-        } else {
-            Ok(RedirectIfAuthenticated)
+        match fetch_session(&app_state, cookie.as_deref()).await {
+            Session::Active(_) => Err(Redirect::to("/").into_response()),
+            Session::Deactivated => Err(Redirect::to(DEACTIVATED_PAGE).into_response()),
+            Session::None => Ok(RedirectIfAuthenticated),
         }
     }
 }

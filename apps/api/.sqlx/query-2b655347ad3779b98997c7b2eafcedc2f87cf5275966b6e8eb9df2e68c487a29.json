@@ -1,10 +1,32 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT deletion_requested_at, deactivated_at, deactivation_notice_sent_at,\n               deleted_at, now() AS \"now!\"\n        FROM users WHERE id = $1 FOR UPDATE\n        ",
+  "query": "\n        SELECT u.deactivated_at AS \"deactivated_at!\", r.requested_at AS \"requested_at?\",\n               u.deletion_requested_at, u.reactivation_refused_at\n        FROM users u\n        LEFT JOIN account_reactivation_requests r ON r.user_id = u.id\n        WHERE u.id = $1 AND u.deactivated_at IS NOT NULL AND u.deleted_at IS NULL\n        ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
+        "name": "deactivated_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "deactivated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "requested_at?",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "account_reactivation_requests",
+            "name": "requested_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
         "name": "deletion_requested_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -15,43 +37,15 @@
         }
       },
       {
-        "ordinal": 1,
-        "name": "deactivated_at",
-        "type_info": "Timestamptz",
-        "origin": {
-          "Table": {
-            "table": "users",
-            "name": "deactivated_at"
-          }
-        }
-      },
-      {
-        "ordinal": 2,
-        "name": "deactivation_notice_sent_at",
-        "type_info": "Timestamptz",
-        "origin": {
-          "Table": {
-            "table": "users",
-            "name": "deactivation_notice_sent_at"
-          }
-        }
-      },
-      {
         "ordinal": 3,
-        "name": "deleted_at",
+        "name": "reactivation_refused_at",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
             "table": "users",
-            "name": "deleted_at"
+            "name": "reactivation_refused_at"
           }
         }
-      },
-      {
-        "ordinal": 4,
-        "name": "now!",
-        "type_info": "Timestamptz",
-        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -63,9 +57,8 @@
       true,
       true,
       true,
-      true,
-      null
+      true
     ]
   },
-  "hash": "4103f69ff2d02c80fdf519a4b41a2be9d819d9cd0be1d03b0d2d14b5a1615620"
+  "hash": "2b655347ad3779b98997c7b2eafcedc2f87cf5275966b6e8eb9df2e68c487a29"
 }

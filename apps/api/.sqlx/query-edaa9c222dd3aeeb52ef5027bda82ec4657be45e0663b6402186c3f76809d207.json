@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO account_reactivation_requests (user_id, message)\n           VALUES ($1, $2)\n           ON CONFLICT (user_id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "edaa9c222dd3aeeb52ef5027bda82ec4657be45e0663b6402186c3f76809d207"
+}

@@ -42,22 +42,63 @@ pub struct AppState {
     pub upload_gate: std::sync::Arc<manage_our_home_http_guard::UploadGate<uuid::Uuid>>,
 }
 
+/// What the incoming request's session is, as `GET /auth/me` answers it.
+pub enum Session {
+    /// A full session.
+    Active(MeResponse),
+    /// A restricted session (#289): the account is deactivated, and only
+    /// the `/account/deactivated` page is open to it. apps/api answers
+    /// `/auth/me` with 403 `account_deactivated`.
+    Deactivated,
+    /// No session, an invalid one, or apps/api unreachable.
+    None,
+}
+
+/// Whether a refused `GET /auth/me` — its status and the `error` code of
+/// its body — names a restricted session (#289) rather than no session.
+fn is_deactivated_answer(status: reqwest::StatusCode, error: Option<&str>) -> bool {
+    status == reqwest::StatusCode::FORBIDDEN && error == Some("account_deactivated")
+}
+
 /// Calls `GET /auth/me` on apps/api, forwarding the incoming request's
-/// `Cookie` header so the session (if any) is recognized. `None` covers
-/// both "no session" (401) and any transport error talking to apps/api —
-/// callers treat both as "not authenticated" for redirect purposes.
-pub async fn fetch_me(state: &AppState, cookie_header: Option<&str>) -> Option<MeResponse> {
+/// `Cookie` header so the session (if any) is recognized.
+pub async fn fetch_session(state: &AppState, cookie_header: Option<&str>) -> Session {
     let mut req = state
         .http
         .get(format!("{}/auth/me", state.api_internal_base_url));
     if let Some(cookie) = cookie_header {
         req = req.header("cookie", cookie);
     }
-    let resp = req.send().await.ok()?;
-    if !resp.status().is_success() {
-        return None;
+    let Ok(resp) = req.send().await else {
+        return Session::None;
+    };
+    let status = resp.status();
+    if status.is_success() {
+        return match resp.json::<MeResponse>().await {
+            Ok(me) => Session::Active(me),
+            Err(_) => Session::None,
+        };
     }
-    resp.json::<MeResponse>().await.ok()
+    let error = resp
+        .json::<serde_json::Value>()
+        .await
+        .ok()
+        .and_then(|b| b.get("error").and_then(|e| e.as_str()).map(str::to_string));
+    if is_deactivated_answer(status, error.as_deref()) {
+        Session::Deactivated
+    } else {
+        Session::None
+    }
+}
+
+/// [`fetch_session`] for callers that only want a full session: `None`
+/// covers no session, a restricted one, and any transport error talking to
+/// apps/api — callers treat all three as "not authenticated".
+pub async fn fetch_me(state: &AppState, cookie_header: Option<&str>) -> Option<MeResponse> {
+    match fetch_session(state, cookie_header).await {
+        Session::Active(me) => Some(me),
+        Session::Deactivated | Session::None => None,
+    }
 }
 
 /// POSTs a JSON body to apps/api over the internal network, returning the
@@ -207,4 +248,36 @@ pub async fn api_get(state: &AppState, path_and_query: &str) -> Result<ApiRespon
         set_cookie: None,
         body,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::StatusCode;
+
+    #[test]
+    fn a_403_account_deactivated_is_a_restricted_session() {
+        assert!(is_deactivated_answer(
+            StatusCode::FORBIDDEN,
+            Some("account_deactivated")
+        ));
+    }
+
+    #[test]
+    fn a_401_is_no_session_whatever_its_body() {
+        assert!(!is_deactivated_answer(StatusCode::UNAUTHORIZED, None));
+        assert!(!is_deactivated_answer(
+            StatusCode::UNAUTHORIZED,
+            Some("account_deactivated")
+        ));
+    }
+
+    #[test]
+    fn another_403_is_no_session() {
+        assert!(!is_deactivated_answer(
+            StatusCode::FORBIDDEN,
+            Some("forbidden")
+        ));
+        assert!(!is_deactivated_answer(StatusCode::FORBIDDEN, None));
+    }
 }

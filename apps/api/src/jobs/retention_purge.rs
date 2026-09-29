@@ -159,9 +159,12 @@ pub async fn purge(pool: &PgPool, cutoffs: RetentionCutoffs) -> anyhow::Result<P
     // out or revoked, past its absolute lifetime, idle past the timeout —
     // its end dated by least(expires_at, last_seen_at + idle timeout), the
     // same stored `last_seen_at` the extractor reads (a refused session is
-    // never refreshed again, so that end never moves) — or belonging to a
-    // deactivated account, whose sessions a Google callback could still
-    // open before #194 was fixed.
+    // never refreshed again, so that end never moves) — or refused for good
+    // by the account's state (`session::session_access`): any session of a
+    // purged account, a full session of a deactivated one (a Google
+    // callback could still open one before #194 was fixed), and a
+    // restricted session (#289) of an account no longer deactivated. The
+    // restricted session of a deactivated account is the one kept.
     let sessions = sqlx::query!(
         r#"
         DELETE FROM sessions s
@@ -171,7 +174,8 @@ pub async fn purge(pool: &PgPool, cutoffs: RetentionCutoffs) -> anyhow::Result<P
            OR EXISTS (
                SELECT 1 FROM users u
                WHERE u.id = s.user_id
-                 AND (u.deleted_at IS NOT NULL OR u.deactivated_at IS NOT NULL)
+                 AND (u.deleted_at IS NOT NULL
+                      OR (u.deactivated_at IS NOT NULL) <> s.restricted)
            )
         "#,
         cutoffs.now,

@@ -109,6 +109,15 @@ fn build_router(state: AppState) -> Router {
             "/account/delete/cancel",
             post(routes::account::delete::cancel),
         )
+        // The one page a restricted session opens (#289).
+        .route(
+            "/account/deactivated",
+            get(routes::account::deactivated::get),
+        )
+        .route(
+            "/account/deactivated/reactivation-request",
+            post(routes::account::deactivated::request),
+        )
         .route("/agenda", get(routes::agenda::calendar::get))
         .route(
             "/agenda/new",
@@ -243,6 +252,10 @@ fn build_router(state: AppState) -> Router {
         .route(
             "/admin/users/:id/reactivate",
             post(routes::admin::users::reactivate),
+        )
+        .route(
+            "/admin/users/:id/reactivation-request/refuse",
+            post(routes::admin::users::refuse_reactivation),
         )
         .route("/groups", get(routes::groups::list::get))
         .route("/groups/join", post(routes::groups::list::join))
