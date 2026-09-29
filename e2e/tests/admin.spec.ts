@@ -126,6 +126,9 @@ test.describe("User admin — support look-up", () => {
 
 test.describe("User admin — deactivate", () => {
   test("deactivating a user revokes their session until a reactivation", async ({ browser }) => {
+    // Two browsers and five password logins (#289): more than the default
+    // 30 s budget allows on a loaded runner.
+    test.slow();
     // A target user with a live session.
     const targetCtx = await browser.newContext();
     const target = await targetCtx.newPage();
