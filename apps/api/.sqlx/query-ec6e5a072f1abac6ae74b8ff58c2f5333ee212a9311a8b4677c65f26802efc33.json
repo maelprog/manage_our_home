@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT g.id, g.name, gm.role AS \"role: String\", gm.joined_at\n           FROM group_members gm\n           JOIN groups g ON g.id = gm.group_id\n           WHERE gm.user_id = $1\n           ORDER BY g.name",
+  "query": "SELECT g.id, g.name, gm.role AS \"role: String\", gm.joined_at,\n                  (g.created_by = $1) AS \"created_by_me!\"\n           FROM group_members gm\n           JOIN groups g ON g.id = gm.group_id\n           WHERE gm.user_id = $1\n           ORDER BY g.name",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,12 @@
             "name": "joined_at"
           }
         }
+      },
+      {
+        "ordinal": 4,
+        "name": "created_by_me!",
+        "type_info": "Bool",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -68,8 +74,9 @@
       false,
       false,
       false,
-      false
+      false,
+      null
     ]
   },
-  "hash": "1a0b198a0fda0ce389b4ec4d15e86e970f56541f968bb0146d43c872f295f2f0"
+  "hash": "ec6e5a072f1abac6ae74b8ff58c2f5333ee212a9311a8b4677c65f26802efc33"
 }

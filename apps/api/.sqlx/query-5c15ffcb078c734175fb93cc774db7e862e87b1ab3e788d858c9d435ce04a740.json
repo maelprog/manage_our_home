@@ -1,0 +1,89 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT ri.recipe_id, ri.name, ri.quantity, ri.unit, ri.is_optional, ri.seasonal_months\n               FROM recipe_ingredients ri JOIN recipes r ON r.id = ri.recipe_id\n               WHERE r.group_id = $1 AND r.created_by = $2\n               ORDER BY ri.recipe_id, ri.name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "recipe_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "recipe_ingredients",
+            "name": "recipe_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "recipe_ingredients",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "quantity",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "recipe_ingredients",
+            "name": "quantity"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "unit",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "recipe_ingredients",
+            "name": "unit"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "is_optional",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "recipe_ingredients",
+            "name": "is_optional"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "seasonal_months",
+        "type_info": "Int4Array",
+        "origin": {
+          "Table": {
+            "table": "recipe_ingredients",
+            "name": "seasonal_months"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "5c15ffcb078c734175fb93cc774db7e862e87b1ab3e788d858c9d435ce04a740"
+}

@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT c.event_id, c.occurrence_at, c.completed_at\n               FROM event_occurrence_completions c JOIN events e ON e.id = c.event_id\n               WHERE e.group_id = $1 AND c.completed_by = $2 ORDER BY c.completed_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "event_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "event_occurrence_completions",
+            "name": "event_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "occurrence_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "event_occurrence_completions",
+            "name": "occurrence_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "completed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "event_occurrence_completions",
+            "name": "completed_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "b38eab378093c5953134fff2e66f63c2e144691bb39defdb9f4c601d9c05120d"
+}
