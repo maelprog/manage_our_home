@@ -294,6 +294,12 @@ pub async fn prescribed_role_pool(db: &PgPool) -> (String, PgPool) {
         format!("CREATE ROLE {role} LOGIN PASSWORD 'flow-test-password' NOSUPERUSER NOBYPASSRLS"),
         format!("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {role}"),
         format!("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {role}"),
+        // 0019 (#140): the export's two cross-family functions are not
+        // executable by PUBLIC, and this role is created after the migration.
+        format!(
+            "GRANT EXECUTE ON FUNCTION account_export_group_ids(), \
+             account_export_received_invitations() TO {role}"
+        ),
     ] {
         sqlx::query(sqlx::AssertSqlSafe(statement))
             .execute(db)

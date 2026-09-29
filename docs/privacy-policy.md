@@ -306,17 +306,18 @@ de la purge dépasserait.
 
 - **Droit d'accès et de portabilité (Art. 15/20)** : `GET /account/export`
   retourne, au format JSON, l'intégralité des données qui vous concernent :
-  votre profil ; le contenu que vous avez créé dans chaque groupe, y compris
-  un groupe que vous avez quitté ou dont vous avez été retiré, tant que ce
-  contenu y est conservé ; les événements qui vous sont assignés, y compris
-  par un autre membre ; les rappels de vos événements et
-  les envois qu'ils ont programmés ; vos pièces jointes ; les occurrences de
-  tâches que vous avez cochées ; votre marqueur de lecture de la
-  messagerie ; les invitations en attente que vous avez émises ; vos
-  sessions ; votre identité Google liée ; vos vérifications d'adresse et
-  réinitialisations de mot de passe ; les entrées du journal d'audit de vos
-  propres actions et de celles qui visent votre compte, sans l'identité de
-  leur auteur. Les pièces jointes y figurent par leurs métadonnées (nom,
+  votre profil ; le contenu que vous avez créé dans chaque groupe (les
+  recettes avec leurs ingrédients), y compris un groupe que vous avez
+  quitté ou dont vous avez été retiré, tant que ce contenu y est conservé ;
+  les événements qui vous sont assignés, y compris par un autre membre ;
+  les rappels de vos événements et les envois qu'ils ont programmés ; vos
+  pièces jointes ; les occurrences de tâches que vous avez cochées ; votre
+  marqueur de lecture de la messagerie ; les invitations en attente que
+  vous avez émises, et celles qu'un membre a adressées à votre adresse
+  email (groupe, expéditeur, dates) ; vos sessions ; votre identité Google
+  liée ; vos vérifications d'adresse et réinitialisations de mot de passe ;
+  les entrées du journal d'audit de vos propres actions et de celles qui
+  visent votre compte, sans l'identité de leur auteur. Les pièces jointes y figurent par leurs métadonnées (nom,
   type, taille, date) et un lien de téléchargement valable 5 minutes :
   relancez l'export pour en obtenir un nouveau. N'y figurent ni le contenu
   créé par les autres membres, ni les secrets d'accès (identifiant de
@@ -372,12 +373,13 @@ service fonctionne et que sa configuration les permet, et reprennent à son
 redémarrage ou au rétablissement de cette configuration). Elle l'est
 aussitôt si le lien est utilisé.
 
-Aucun écran de ce service ne permet d'agir sur cette adresse. Créer un
-compte depuis le lien reçu ouvre des droits sur les données de ce compte,
-pas sur l'invitation : la suppression d'un compte ne retire pas l'adresse
-d'une invitation, et l'export de compte ne la contient pas. Pour accéder à
-votre adresse, la faire rectifier ou effacer, ou vous opposer à son
-traitement, adressez la demande au responsable de traitement.
+Aucun écran de ce service ne permet d'agir sur cette adresse. Si vous
+ouvrez un compte avec cette même adresse, l'export de ce compte contient
+les invitations qui lui restent adressées (une invitation acceptée est
+supprimée) ; mais la suppression du compte ne retire pas l'adresse d'une
+invitation. Pour accéder à votre adresse sans compte, la faire rectifier ou
+effacer, ou vous opposer à son traitement, adressez la demande au
+responsable de traitement.
 
 ## Sécurité
 

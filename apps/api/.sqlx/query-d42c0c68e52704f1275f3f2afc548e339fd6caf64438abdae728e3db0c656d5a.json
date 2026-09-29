@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, email, email_verified, display_name, created_at, age_declared_at,\n                  deletion_requested_at, (password_hash IS NOT NULL) AS \"has_password!\"\n           FROM users WHERE id = $1",
+  "query": "SELECT id, email, email_verified, display_name, created_at, age_declared_at,\n                  deletion_requested_at, is_superadmin,\n                  (password_hash IS NOT NULL) AS \"has_password!\"\n           FROM users WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -82,6 +82,17 @@
       },
       {
         "ordinal": 7,
+        "name": "is_superadmin",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "is_superadmin"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
         "name": "has_password!",
         "type_info": "Bool",
         "origin": "Expression"
@@ -100,8 +111,9 @@
       false,
       true,
       true,
+      false,
       null
     ]
   },
-  "hash": "a1e1a5bedd1cfa7f69e7c4023352d8e1334f530f07f202db50413f0cc9c6d834"
+  "hash": "d42c0c68e52704f1275f3f2afc548e339fd6caf64438abdae728e3db0c656d5a"
 }

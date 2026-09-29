@@ -59,3 +59,76 @@ $$;
 
 COMMENT ON FUNCTION account_export_group_ids() IS
     'Ids of the groups holding a row that names the user of app.user_id, current member or not (issue #140). Read by GET /account/export only; returns no content.';
+
+-- Invitations received. An invitation addressed to the person's email by a
+-- member of a group they do not belong to is data about them (art. 15), yet
+-- it names them by address, not by id, and sits under the `invitations`
+-- policy, which needs the group or the token. This second function returns
+-- those invitations themselves and nothing else of the group: which group
+-- (id and name) and who sent it — both already in the invitation email
+-- (art. 14 information) — and when. Not the token: it is the link, and
+-- still a key to the group while pending. Accepting an invitation deletes
+-- it, so what remains is pending or expired and not yet purged.
+--
+-- Matched case-insensitively: an inviter typing `Alice@…` addresses the same
+-- mailbox as the account's `alice@…`.
+
+CREATE FUNCTION account_export_received_invitations()
+RETURNS TABLE (
+    id UUID,
+    group_id UUID,
+    group_name TEXT,
+    invited_by TEXT,
+    invited_email TEXT,
+    created_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ
+)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+    SELECT i.id, i.group_id, g.name, inviter.display_name, i.invited_email,
+           i.created_at, i.expires_at
+    FROM invitations i
+    JOIN groups g ON g.id = i.group_id
+    JOIN users inviter ON inviter.id = i.created_by
+    JOIN users me
+      ON me.id = NULLIF(current_setting('app.user_id', true), '')::uuid
+    WHERE i.invited_email IS NOT NULL
+      AND lower(i.invited_email) = lower(me.email)
+    ORDER BY i.created_at
+$$;
+
+COMMENT ON FUNCTION account_export_received_invitations() IS
+    'Invitations addressed to the email of the user of app.user_id, without their token (issue #140). Read by GET /account/export only.';
+
+-- Who may call them. A function is executable by PUBLIC by default; these
+-- two look across families, so they are not. They go to the role that
+-- serves requests under RLS: whatever its name (`app_role` in
+-- apps/api/README.md, another in a given deployment), it is the one that
+-- can read the family tables without bypassing RLS. A superuser or
+-- `BYPASSRLS` role needs no grant, and gets none. A runtime role created
+-- after this migration gets them from the `GRANT EXECUTE` line the README
+-- prescribes with its table grants.
+REVOKE EXECUTE ON FUNCTION account_export_group_ids() FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION account_export_received_invitations() FROM PUBLIC;
+
+DO $$
+DECLARE
+    runtime_role NAME;
+BEGIN
+    FOR runtime_role IN
+        SELECT rolname FROM pg_roles
+        WHERE NOT rolsuper
+          AND NOT rolbypassrls
+          AND rolname !~ '^pg_'
+          AND has_table_privilege(oid, 'public.events', 'SELECT')
+    LOOP
+        EXECUTE format(
+            'GRANT EXECUTE ON FUNCTION account_export_group_ids(), account_export_received_invitations() TO %I',
+            runtime_role
+        );
+    END LOOP;
+END
+$$;

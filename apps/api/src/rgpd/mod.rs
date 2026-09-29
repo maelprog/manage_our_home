@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::audit;
 use crate::auth::session::{scoped_tx, user_scoped_tx, AuthUser};
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use crate::AppState;
 
 /// GET /account/export — Art. 15 (accès) and Art. 20 (portabilité).
@@ -34,7 +34,8 @@ pub async fn export_account(
 ) -> AppResult<impl IntoResponse> {
     let profile = sqlx::query!(
         r#"SELECT id, email, email_verified, display_name, created_at, age_declared_at,
-                  deletion_requested_at, (password_hash IS NOT NULL) AS "has_password!"
+                  deletion_requested_at, is_superadmin,
+                  (password_hash IS NOT NULL) AS "has_password!"
            FROM users WHERE id = $1"#,
         auth.user_id
     )
@@ -54,6 +55,7 @@ pub async fn export_account(
         // Whether a password is set, never its hash.
         "has_password": profile.has_password,
         "deletion_requested_at": profile.deletion_requested_at,
+        "is_superadmin": profile.is_superadmin,
     });
 
     // "My groups" are read from the caller's own `group_members` rows, with
@@ -89,12 +91,36 @@ pub async fn export_account(
     )
     .fetch_all(&mut *group_tx)
     .await?;
+    // Invitations addressed to the caller's email, from any group — members
+    // or not. Read through `account_export_received_invitations()` (0019):
+    // the invitation itself, without its token, and nothing else of the
+    // group.
+    let received = sqlx::query!(
+        r#"SELECT id AS "id!", group_id AS "group_id!", group_name AS "group_name!",
+                  invited_by AS "invited_by!", invited_email AS "invited_email!",
+                  created_at AS "created_at!", expires_at AS "expires_at!"
+           FROM account_export_received_invitations()"#
+    )
+    .fetch_all(&mut *group_tx)
+    .await?;
     group_tx.commit().await?;
 
     let member_of: Vec<Uuid> = memberships.iter().map(|m| m.id).collect();
     let scope = export::export_scope(&member_of, &holding_my_rows);
 
-    let mut c = export::ExportCategories::default();
+    let mut c = export::ExportCategories {
+        invitations_received: received
+            .into_iter()
+            .map(|i| {
+                json!({
+                    "id": i.id, "group_id": i.group_id, "group_name": i.group_name,
+                    "invited_by": i.invited_by, "invited_email": i.invited_email,
+                    "created_at": i.created_at, "expires_at": i.expires_at,
+                })
+            })
+            .collect(),
+        ..Default::default()
+    };
     for m in &memberships {
         c.group_memberships.push(json!({
             "group_id": m.id,
@@ -271,12 +297,40 @@ pub async fn export_account(
         )
         .fetch_all(&mut *tx)
         .await?;
-        c.recipes.extend(recipe_rows.into_iter().map(|r| {
-            json!({
-                "id": r.id, "group_id": r.group_id, "name": r.name,
-                "instructions": r.instructions, "created_at": r.created_at,
+        // A recipe is its ingredients as much as its method: they go with it.
+        let ingredient_rows = sqlx::query!(
+            r#"SELECT ri.recipe_id, ri.name, ri.quantity, ri.unit, ri.is_optional, ri.seasonal_months
+               FROM recipe_ingredients ri JOIN recipes r ON r.id = ri.recipe_id
+               WHERE r.group_id = $1 AND r.created_by = $2
+               ORDER BY ri.recipe_id, ri.name"#,
+            group_id,
+            auth.user_id
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        let recipes_json = recipe_rows
+            .into_iter()
+            .map(|r| {
+                json!({
+                    "id": r.id, "group_id": r.group_id, "name": r.name,
+                    "instructions": r.instructions, "created_at": r.created_at,
+                })
             })
-        }));
+            .collect();
+        let ingredients = ingredient_rows
+            .into_iter()
+            .map(|i| {
+                (
+                    i.recipe_id,
+                    json!({
+                        "name": i.name, "quantity": i.quantity, "unit": i.unit,
+                        "is_optional": i.is_optional, "seasonal_months": i.seasonal_months,
+                    }),
+                )
+            })
+            .collect();
+        c.recipes
+            .extend(export::nest_ingredients(recipes_json, ingredients));
 
         let meals = sqlx::query!(
             r#"SELECT id, group_id, recipe_id, eaten_on, created_at
@@ -396,14 +450,15 @@ pub async fn export_account(
 
     // The bytes are not inlined: a presigned GET, valid for
     // `storage::PRESIGNED_URL_TTL`, like the one the agenda hands out.
-    for (storage_key, mut attachment) in attachments {
-        let url = state
-            .storage
-            .presigned_get_url(&storage_key)
-            .await
-            .map_err(AppError::Internal)?;
-        attachment["download_url"] = json!(url);
-        c.event_attachments.push(attachment);
+    // One that cannot be signed keeps its metadata, with a `null` link,
+    // rather than failing the whole export.
+    for (storage_key, attachment) in attachments {
+        let url = state.storage.presigned_get_url(&storage_key).await;
+        if let Err(error) = &url {
+            tracing::warn!(%error, "export: attachment link not signed");
+        }
+        c.event_attachments
+            .push(export::with_download_url(attachment, url));
     }
 
     // Account-level tables, not family-scoped and not under RLS.

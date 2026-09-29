@@ -53,6 +53,12 @@ normal app connection (`DATABASE_URL`):
 CREATE ROLE app_role LOGIN PASSWORD '...' NOSUPERUSER NOBYPASSRLS;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_role;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_role;
+-- The account export's two cross-family functions (0019, #140) are not
+-- executable by PUBLIC. 0019 grants them to every role that already reads
+-- the family tables without bypassing RLS when it runs; a role created
+-- after it needs this line.
+GRANT EXECUTE ON FUNCTION account_export_group_ids(),
+    account_export_received_invitations() TO app_role;
 ```
 
 `app_role` no longer owns the tables (see `migration_role` below), so the
@@ -124,19 +130,27 @@ process.
 first boot of the postgres volume, and `docker-compose.yml` passes
 `MIGRATION_DATABASE_URL` to the api service.
 
-### `account_export_group_ids()` (#140) — one question across families
+### The account export's two functions (#140) — narrow questions across families
 
 `GET /account/export` must reach what the caller wrote in a group they have
-left: leaving deletes the membership, not the content. `app_role` cannot
-tell which groups hold such rows, since every family-scoped policy needs
-`app.family_id` first. `0019_account_export_groups.sql` answers that one
-question with a `SECURITY DEFINER` function owned by `migration_role`, whose
-`BYPASSRLS` is what lets it look: it returns group ids only, for the user
-of `app.user_id` only, with a pinned `search_path`. The content itself is
-then read group by group through `scoped_tx`, under the ordinary policies.
-It relies on the owner bypassing RLS — a `migration_role` without
-`BYPASSRLS` (which `migrations::apply` refuses anyway) would make it answer
-nothing, and the export would silently fall back to current groups.
+left (leaving deletes the membership, not the content), and the invitations
+other members addressed to their email. `app_role` can see neither: every
+family-scoped policy needs `app.family_id` first. `0019_account_export_groups.sql`
+answers these two questions with `SECURITY DEFINER` functions owned by
+`migration_role`, whose `BYPASSRLS` is what lets them look, both with a
+pinned `search_path` and both answering for the user of `app.user_id` only:
+
+- `account_export_group_ids()` returns group ids only. The content itself is
+  then read group by group through `scoped_tx`, under the ordinary policies.
+- `account_export_received_invitations()` returns the invitations addressed
+  to the account's email — group id and name, sender's display name, dates —
+  without their token, and nothing else of the group.
+
+Neither is executable by `PUBLIC`: see the `GRANT EXECUTE` line in the
+`app_role` snippet above. They rely on the owner bypassing RLS — a
+`migration_role` without `BYPASSRLS` (which `migrations::apply` refuses
+anyway) would make them answer nothing, and the export would silently fall
+back to current groups and drop received invitations.
 
 ### Epic #8 — `admin_role` (superadmin endpoints)
 

@@ -34,6 +34,7 @@ pub struct ExportCategories {
     pub message_read_state: Vec<Value>,
     pub calendar_imports: Vec<Value>,
     pub invitations_sent: Vec<Value>,
+    pub invitations_received: Vec<Value>,
     pub sessions: Vec<Value>,
     pub oauth_identities: Vec<Value>,
     pub email_verifications: Vec<Value>,
@@ -64,6 +65,7 @@ pub fn build_export(profile: Value, categories: ExportCategories) -> Value {
         "message_read_state": categories.message_read_state,
         "calendar_imports": categories.calendar_imports,
         "invitations_sent": categories.invitations_sent,
+        "invitations_received": categories.invitations_received,
         "sessions": categories.sessions,
         "oauth_identities": categories.oauth_identities,
         "email_verifications": categories.email_verifications,
@@ -98,6 +100,35 @@ pub fn export_scope(member_of: &[Uuid], holding_my_rows: &[Uuid]) -> Vec<GroupSc
     scope
 }
 
+/// An attachment's entry: its metadata, plus `download_url` — the presigned
+/// link, or `null` when it could not be signed. One attachment that cannot
+/// be signed must not cost the person the rest of their export.
+pub fn with_download_url<E>(mut attachment: Value, url: Result<String, E>) -> Value {
+    attachment["download_url"] = match url {
+        Ok(url) => Value::String(url),
+        Err(_) => Value::Null,
+    };
+    attachment
+}
+
+/// Each recipe with its ingredients under `ingredients` (an empty list for a
+/// recipe that has none). `ingredients` pairs a recipe id with the
+/// ingredient's JSON, in the order to keep; a recipe is matched on its `id`.
+pub fn nest_ingredients(recipes: Vec<Value>, ingredients: Vec<(Uuid, Value)>) -> Vec<Value> {
+    recipes
+        .into_iter()
+        .map(|mut recipe| {
+            let own: Vec<Value> = ingredients
+                .iter()
+                .filter(|(recipe_id, _)| recipe["id"] == json!(recipe_id))
+                .map(|(_, ingredient)| ingredient.clone())
+                .collect();
+            recipe["ingredients"] = Value::Array(own);
+            recipe
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,6 +156,7 @@ mod tests {
                 message_read_state: vec![json!({"id": "mr"})],
                 calendar_imports: vec![json!({"id": "ci"})],
                 invitations_sent: vec![json!({"id": "is"})],
+                invitations_received: vec![json!({"id": "ir"})],
                 sessions: vec![json!({"id": "se"})],
                 oauth_identities: vec![json!({"id": "oi"})],
                 email_verifications: vec![json!({"id": "ev2"})],
@@ -152,6 +184,7 @@ mod tests {
             ("message_read_state", "mr"),
             ("calendar_imports", "ci"),
             ("invitations_sent", "is"),
+            ("invitations_received", "ir"),
             ("sessions", "se"),
             ("oauth_identities", "oi"),
             ("email_verifications", "ev2"),
@@ -160,15 +193,15 @@ mod tests {
         ] {
             assert_eq!(doc[key][0]["id"], id, "{key}");
         }
-        // The profile and the 22 categories, nothing else.
-        assert_eq!(doc.as_object().unwrap().len(), 23);
+        // The profile and the 23 categories, nothing else.
+        assert_eq!(doc.as_object().unwrap().len(), 24);
     }
 
     #[test]
     fn build_export_keeps_every_key_when_empty() {
         let doc = build_export(json!({"id": "u1"}), ExportCategories::default());
         let object = doc.as_object().unwrap();
-        assert_eq!(object.len(), 23);
+        assert_eq!(object.len(), 24);
         for (key, value) in object {
             if key != "profile" {
                 assert_eq!(value.as_array().map(Vec::len), Some(0), "{key}");
@@ -217,6 +250,65 @@ mod tests {
     fn export_scope_lists_each_group_once() {
         let scope = export_scope(&[id(1), id(1)], &[id(2), id(2), id(1)]);
         assert_eq!(scope, [member(1), former(2),]);
+    }
+
+    #[test]
+    fn with_download_url_adds_the_signed_link() {
+        let entry = with_download_url::<()>(
+            json!({"id": "a1", "filename": "f.pdf"}),
+            Ok("https://s3/f?X-Amz-Signature=x".to_string()),
+        );
+        assert_eq!(entry["download_url"], "https://s3/f?X-Amz-Signature=x");
+        assert_eq!(entry["filename"], "f.pdf");
+    }
+
+    #[test]
+    fn with_download_url_keeps_the_metadata_when_signing_fails() {
+        let entry = with_download_url(json!({"id": "a1", "filename": "f.pdf"}), Err("no signer"));
+        assert!(entry["download_url"].is_null());
+        assert!(entry.as_object().unwrap().contains_key("download_url"));
+        assert_eq!(entry["filename"], "f.pdf");
+        assert_eq!(entry["id"], "a1");
+    }
+
+    #[test]
+    fn nest_ingredients_puts_each_ingredient_under_its_recipe_in_order() {
+        let recipes = vec![
+            json!({"id": id(1).to_string(), "name": "Crepes"}),
+            json!({"id": id(2).to_string(), "name": "Soupe"}),
+        ];
+        let nested = nest_ingredients(
+            recipes,
+            vec![
+                (id(2), json!({"name": "Poireau"})),
+                (id(1), json!({"name": "Farine"})),
+                (id(1), json!({"name": "Lait"})),
+            ],
+        );
+        assert_eq!(
+            nested[0]["ingredients"],
+            json!([{"name": "Farine"}, {"name": "Lait"}])
+        );
+        assert_eq!(nested[1]["ingredients"], json!([{"name": "Poireau"}]));
+        assert_eq!(nested[0]["name"], "Crepes");
+    }
+
+    #[test]
+    fn nest_ingredients_gives_an_empty_list_to_a_recipe_without_any() {
+        let nested = nest_ingredients(vec![json!({"id": id(1).to_string()})], vec![]);
+        assert_eq!(nested[0]["ingredients"], json!([]));
+    }
+
+    #[test]
+    fn nest_ingredients_drops_nothing_and_invents_nothing() {
+        // An ingredient whose recipe is not in the list has nowhere to go:
+        // the handler only ever passes ingredients of the recipes it passes.
+        let nested = nest_ingredients(
+            vec![json!({"id": id(1).to_string()})],
+            vec![(id(9), json!({"name": "Orphelin"}))],
+        );
+        assert_eq!(nested.len(), 1);
+        assert_eq!(nested[0]["ingredients"], json!([]));
     }
 
     #[test]

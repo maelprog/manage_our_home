@@ -493,6 +493,7 @@ async fn export_covers_what_concerns_the_caller_beyond_what_they_wrote(db: PgPoo
         assert!(!doc["email_verifications"][0]["consumed_at"].is_null());
         assert!(doc["oauth_identities"].as_array().unwrap().is_empty());
         assert_eq!(doc["profile"]["has_password"], true, "{label}");
+        assert_eq!(doc["profile"]["is_superadmin"], false, "{label}");
 
         let role_change = doc["audit_log"]
             .as_array()
@@ -625,5 +626,331 @@ async fn the_legal_notice_and_the_terms_are_public_markdown(db: PgPool) {
             body.starts_with(b"# "),
             "{path} does not serve the document verbatim"
         );
+    }
+}
+
+/// Issue #140: a recipe is exported with its ingredients, nested under it.
+#[sqlx::test]
+async fn export_nests_the_ingredients_under_their_recipe(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie =
+        register_verify_login(&router, &db, "recipe-owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &cookie, "Foyer Cuisine").await;
+    for (name, ingredients) in [
+        (
+            "Crepes",
+            serde_json::json!([
+                {"name": "Lait", "quantity": 0.5, "unit": "l"},
+                {"name": "Farine", "quantity": 250.0, "unit": "g", "seasonal_months": [1, 2]},
+                {"name": "Sucre", "is_optional": true},
+            ]),
+        ),
+        ("Eau", serde_json::json!([])),
+    ] {
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/recipes"),
+            Some(&cookie),
+            Some(serde_json::json!({"name": name, "ingredients": ingredients})),
+        )
+        .await;
+        assert_status(&res, StatusCode::CREATED);
+    }
+
+    let export = call(&router, Method::GET, "/account/export", Some(&cookie), None).await;
+    assert_status(&export, StatusCode::OK);
+    let doc = json_body(export).await;
+    let recipes = doc["recipes"].as_array().unwrap();
+    let crepes = recipes.iter().find(|r| r["name"] == "Crepes").unwrap();
+    assert_eq!(
+        crepes["ingredients"],
+        serde_json::json!([
+            {"name": "Farine", "quantity": 250.0, "unit": "g", "is_optional": false, "seasonal_months": [1, 2]},
+            {"name": "Lait", "quantity": 0.5, "unit": "l", "is_optional": false, "seasonal_months": null},
+            {"name": "Sucre", "quantity": null, "unit": null, "is_optional": true, "seasonal_months": null},
+        ])
+    );
+    let eau = recipes.iter().find(|r| r["name"] == "Eau").unwrap();
+    assert_eq!(eau["ingredients"], serde_json::json!([]));
+
+    let held: i64 = sqlx::query_scalar("SELECT count(*) FROM recipe_ingredients")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    let exported: usize = recipes
+        .iter()
+        .map(|r| r["ingredients"].as_array().unwrap().len())
+        .sum();
+    assert_eq!(exported as i64, held, "every ingredient held is exported");
+}
+
+/// Issue #140: an invitation another member sent to the caller's address is
+/// data about them, even from a group they never joined. It comes out with
+/// its group and its sender, as the invitation email states them — not its
+/// token, not the group as a former membership, nothing else of the group.
+#[sqlx::test]
+async fn export_lists_the_invitations_addressed_to_the_caller(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "inviter@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer Invitant").await;
+    let invitee_cookie =
+        register_verify_login(&router, &db, "invitee@example.test", "member-password1").await;
+
+    let mut tokens = Vec::new();
+    for email in ["Invitee@Example.test", "someone-else@example.test"] {
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/invitations"),
+            Some(&owner_cookie),
+            Some(serde_json::json!({"invited_email": email})),
+        )
+        .await;
+        assert_status(&res, StatusCode::CREATED);
+        tokens.push(json_body(res).await["token"].as_str().unwrap().to_string());
+    }
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/stock-items"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"name": "Contenu du groupe", "quantity": 1.0, "unit": "kg"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+
+    let (role, app_db) = prescribed_role_pool(&db).await;
+    let scoped_router = test_router(app_db.clone());
+    for (label, r) in [("superuser", &router), ("prescribed role", &scoped_router)] {
+        let export = call(
+            r,
+            Method::GET,
+            "/account/export",
+            Some(&invitee_cookie),
+            None,
+        )
+        .await;
+        assert_status(&export, StatusCode::OK);
+        let doc = json_body(export).await;
+        let received = doc["invitations_received"].as_array().unwrap();
+        assert_eq!(received.len(), 1, "{label}: only the one to my address");
+        assert_eq!(received[0]["group_id"], group_id.as_str(), "{label}");
+        assert_eq!(received[0]["group_name"], "Foyer Invitant", "{label}");
+        assert_eq!(received[0]["invited_by"], "inviter@example.test", "{label}");
+        assert_eq!(
+            received[0]["invited_email"], "Invitee@Example.test",
+            "{label}"
+        );
+        assert!(received[0].get("token").is_none(), "{label}");
+
+        let text = doc.to_string();
+        for token in &tokens {
+            assert!(!text.contains(token.as_str()), "{label}: token exported");
+        }
+        assert!(
+            !text.contains("Contenu du groupe"),
+            "{label}: group content"
+        );
+        assert!(
+            !text.contains("someone-else"),
+            "{label}: another invitation"
+        );
+        assert!(
+            doc["former_groups"].as_array().unwrap().is_empty(),
+            "{label}"
+        );
+        assert!(
+            doc["group_memberships"].as_array().unwrap().is_empty(),
+            "{label}"
+        );
+    }
+    drop(scoped_router);
+    drop_prescribed_role(&db, app_db, &role).await;
+}
+
+/// A credentials provider that always fails, as a storage whose secret
+/// cannot be loaded would. (A client with no provider at all does not fail:
+/// it hands out an unsigned URL.)
+#[derive(Debug)]
+struct NoCredentials;
+
+impl aws_credential_types::provider::ProvideCredentials for NoCredentials {
+    fn provide_credentials<'a>(
+        &'a self,
+    ) -> aws_credential_types::provider::future::ProvideCredentials<'a>
+    where
+        Self: 'a,
+    {
+        aws_credential_types::provider::future::ProvideCredentials::ready(Err(
+            aws_credential_types::provider::error::CredentialsError::not_loaded("test: none"),
+        ))
+    }
+}
+
+/// Issue #140: an attachment whose link cannot be signed keeps its metadata,
+/// with a `null` link, and does not take the rest of the export down.
+#[sqlx::test]
+async fn an_attachment_that_cannot_be_signed_keeps_its_metadata(db: PgPool) {
+    let unsigned = aws_sdk_s3::Client::from_conf(
+        aws_sdk_s3::config::Builder::new()
+            .behavior_version(aws_sdk_s3::config::BehaviorVersion::latest())
+            .region(aws_sdk_s3::config::Region::new("us-east-1"))
+            .endpoint_url("http://127.0.0.1:1")
+            .credentials_provider(NoCredentials)
+            .force_path_style(true)
+            .build(),
+    );
+    let router = common::test_router_with_storage(
+        db.clone(),
+        manage_our_home::storage::Storage::new(unsigned, "manage-our-home".into()),
+    );
+    let cookie =
+        register_verify_login(&router, &db, "unsigned@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &cookie, "Foyer Sans Signature").await;
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(&cookie),
+        Some(serde_json::json!({
+            "title": "Avec piece jointe",
+            "starts_at": "2026-10-01T10:00:00Z",
+            "ends_at": "2026-10-01T11:00:00Z",
+        })),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let event_id = json_body(res).await["id"].as_str().unwrap().to_string();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO event_attachments (event_id, uploaded_by, storage_key, filename, mime_type, size_bytes)
+         SELECT '{event_id}', id, 'attachments/unsigned-140', 'scan.png', 'image/png', 42
+         FROM users WHERE email = 'unsigned@example.test'"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let export = call(&router, Method::GET, "/account/export", Some(&cookie), None).await;
+    assert_status(&export, StatusCode::OK);
+    let doc = json_body(export).await;
+    let attachment = &doc["event_attachments"][0];
+    assert_eq!(attachment["filename"], "scan.png");
+    assert_eq!(attachment["size_bytes"], 42);
+    assert!(attachment["download_url"].is_null(), "{attachment}");
+    assert_eq!(doc["agenda_events"][0]["title"], "Avec piece jointe");
+}
+
+/// Issue #140: every table of the schema is accounted for — exported under a
+/// key of the document, or left out for a stated reason. A table added
+/// without deciding which fails here.
+#[sqlx::test]
+async fn export_accounts_for_every_table(db: PgPool) {
+    const EXPORTED: &[(&str, &str)] = &[
+        ("users", "profile"),
+        ("groups", "group_memberships / former_groups"),
+        ("group_members", "group_memberships"),
+        ("events", "agenda_events / event_assignments"),
+        ("event_assignees", "event_assignments"),
+        ("event_reminders", "event_reminders"),
+        ("scheduled_notifications", "reminder_notifications"),
+        ("event_attachments", "event_attachments"),
+        ("event_occurrence_completions", "event_completions"),
+        ("stock_items", "stock_items"),
+        ("recipes", "recipes"),
+        ("recipe_ingredients", "recipes"),
+        ("meal_history", "meal_history"),
+        ("grocery_items", "grocery_items"),
+        ("budget_entries", "budget_entries"),
+        ("messages", "messages"),
+        ("message_read_state", "message_read_state"),
+        ("calendar_imports", "calendar_imports"),
+        ("invitations", "invitations_sent / invitations_received"),
+        ("sessions", "sessions"),
+        ("oauth_identities", "oauth_identities"),
+        ("email_verification_tokens", "email_verifications"),
+        ("password_reset_tokens", "password_resets"),
+        ("audit_log", "audit_log"),
+    ];
+    const LEFT_OUT: &[(&str, &str)] = &[
+        (
+            "account_reactivation_requests",
+            "exists only while the account is deactivated, when AuthUser refuses the export",
+        ),
+        (
+            "calendar_import_events",
+            "sync bookkeeping (feed UID -> event); the events are exported themselves",
+        ),
+        ("_sqlx_migrations", "schema history, no personal data"),
+    ];
+
+    let mut tables: Vec<String> = sqlx::query_scalar(
+        "SELECT table_name::text FROM information_schema.tables
+         WHERE table_schema = 'public' AND table_type = 'BASE TABLE'",
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    tables.sort();
+    let mut accounted: Vec<String> = EXPORTED
+        .iter()
+        .chain(LEFT_OUT)
+        .map(|(t, _)| t.to_string())
+        .collect();
+    accounted.sort();
+    assert_eq!(tables, accounted);
+
+    // And each key named above is really in the document.
+    let router = test_router(db.clone());
+    let cookie =
+        register_verify_login(&router, &db, "tables@example.test", "owner-password1").await;
+    let export = call(&router, Method::GET, "/account/export", Some(&cookie), None).await;
+    let doc = json_body(export).await;
+    for (table, keys) in EXPORTED {
+        for key in keys.split(" / ") {
+            assert!(doc.get(key).is_some(), "{table}: no `{key}` in the export");
+        }
+    }
+}
+
+/// Issue #140: the two functions of 0019 look across families, so PUBLIC
+/// cannot run them; a role holding only table grants is refused.
+#[sqlx::test]
+async fn the_export_functions_are_not_executable_by_public(db: PgPool) {
+    let role = format!("no_exec_{}", uuid::Uuid::new_v4().simple());
+    for statement in [
+        format!("CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"),
+        format!("GRANT SELECT ON ALL TABLES IN SCHEMA public TO {role}"),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+    for function in [
+        "account_export_group_ids()",
+        "account_export_received_invitations()",
+    ] {
+        let mut tx = manage_our_home::db::begin(&db).await.unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let err = sqlx::query(sqlx::AssertSqlSafe(format!("SELECT * FROM {function}")))
+            .execute(&mut *tx)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("permission denied"),
+            "{function}: {err}"
+        );
+        tx.rollback().await.unwrap();
+    }
+    for statement in [format!("DROP OWNED BY {role}"), format!("DROP ROLE {role}")] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&db)
+            .await
+            .unwrap();
     }
 }
