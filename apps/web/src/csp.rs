@@ -62,15 +62,22 @@ fn csp_hash(js: &str) -> String {
 }
 
 /// The value of the Caddyfile's `Content-Security-Policy` header: the
-/// double-quoted string on the (uncommented) line that names it.
+/// double-quoted string on the (uncommented) line whose field name is
+/// exactly that — inside a `header { … }` block or as `header <name> "…"`.
+/// `Content-Security-Policy-Report-Only` does not count: it blocks nothing.
 fn caddy_csp(caddyfile: &str) -> Option<&str> {
+    const NAME: &str = "Content-Security-Policy";
     caddyfile
         .lines()
-        .filter(|l| !l.trim_start().starts_with('#'))
+        .map(str::trim_start)
+        .filter(|l| !l.starts_with('#'))
         .find_map(|l| {
-            let rest = &l[l.find("Content-Security-Policy")? + "Content-Security-Policy".len()..];
-            let open = rest.find('"')?;
-            let value = &rest[open + 1..];
+            let rest = l.strip_prefix("header").map_or(l, str::trim_start);
+            let rest = rest.strip_prefix(NAME)?;
+            if !rest.starts_with(char::is_whitespace) {
+                return None;
+            }
+            let value = rest.trim_start().strip_prefix('"')?;
             Some(&value[..value.find('"')?])
         })
 }
@@ -102,7 +109,9 @@ fn interpolated(s: &str, end: &str) -> Result<String, String> {
         && name
             .chars()
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-        && inner[close + 1..].starts_with(end);
+        && inner[close + 1..]
+            .get(..end.len())
+            .is_some_and(|after| after.eq_ignore_ascii_case(end));
     if well_formed {
         Ok(name.to_string())
     } else {
@@ -119,9 +128,18 @@ fn production_code(source: &str) -> &str {
     tests.map_or(source, |(at, _)| &source[..at])
 }
 
-/// Every inline event handler (` on<event>="…"`) and `<script` in one
-/// source file's production code (`production_code`), comment lines left
-/// out.
+/// Every inline event handler (`on<event>="…"` or `='…'`, after whitespace
+/// or at the start of a line) and `<script` in one source file's production
+/// code (`production_code`), comment lines left out. Names are matched
+/// case-insensitively, as HTML reads them.
+///
+/// What it does **not** see — a textual scan, not an HTML parser: an
+/// unquoted handler (`onclick=f()`), spaces around the `=`, and markup
+/// assembled from pieces (`"on" + "click"`, a `<script` split across two
+/// literals, or Leptos `view!` attributes, which SSR does not emit as
+/// handlers anyway). None of those appear in `src/` today; one that did
+/// would run nowhere behind Caddy, and show up as a broken page, not as a
+/// hole in the policy.
 fn inline_scripts(source: &str) -> Vec<Inline> {
     let production = production_code(source);
     let mut found = Vec::new();
@@ -129,18 +147,28 @@ fn inline_scripts(source: &str) -> Vec<Inline> {
         if line.trim_start().starts_with("//") {
             continue;
         }
-        for (at, _) in line.match_indices("=\"") {
-            let before = &line[..at];
+        // Same byte offsets as `line`: ASCII lowering keeps every length.
+        let lower = line.to_ascii_lowercase();
+        for (at, _) in lower.match_indices('=') {
+            let Some(quote) = lower[at + 1..]
+                .chars()
+                .next()
+                .filter(|c| *c == '"' || *c == '\'')
+            else {
+                continue;
+            };
+            let before = &lower[..at];
             let word_start = before
                 .rfind(|c: char| !c.is_ascii_lowercase())
                 .map_or(0, |i| i + 1);
             let word = &before[word_start..];
-            let after_space = word_start > 0 && before[..word_start].ends_with(char::is_whitespace);
-            if word.len() > 2 && word.starts_with("on") && after_space {
-                found.push(Inline::Handler(interpolated(&line[at + 2..], "\"")));
+            let delimited = word_start == 0 || before[..word_start].ends_with(char::is_whitespace);
+            if word.len() > 2 && word.starts_with("on") && delimited {
+                let end = quote.to_string();
+                found.push(Inline::Handler(interpolated(&line[at + 2..], &end)));
             }
         }
-        for (at, _) in line.match_indices("<script") {
+        for (at, _) in lower.match_indices("<script") {
             let rest = &line[at + "<script".len()..];
             found.push(Inline::Script(match rest.strip_prefix('>') {
                 Some(body) => interpolated(body, "</script>"),
@@ -233,6 +261,45 @@ mod tests { const X: &str = r#"<b onclick="x()">"#; }
             Inline::Script(Err(" src=x></script>\";".into())),
         ]
     );
+}
+
+/// The forms HTML accepts beyond the house style: an attribute at the start
+/// of a line, single quotes, and upper-case names (HTML names are
+/// case-insensitive, so `<SCRIPT>` and `ONCLICK` run all the same).
+#[test]
+fn inline_scripts_finds_the_other_spellings_html_accepts() {
+    let src = r##"let a = r#"<button
+onclick="alert(1)">"#;
+let b = r#"<button onclick='alert(2)'>"#;
+let c = r#"<b ONCLICK="{PW_TOGGLE}">"#;
+let d = "<SCRIPT>{LIVE}</SCRIPT>";
+let e = "<Script>alert(3)</Script>";
+let f = r#"<i onchange='{SUBMIT}'>"#;
+"##;
+    assert_eq!(
+        inline_scripts(src),
+        vec![
+            Inline::Handler(Err("alert(1)\">\"#;".into())),
+            Inline::Handler(Err("alert(2)'>\"#;".into())),
+            Inline::Handler(Ok("PW_TOGGLE".into())),
+            Inline::Script(Ok("LIVE".into())),
+            Inline::Script(Err("alert(3)</Script>\";".into())),
+            Inline::Handler(Ok("SUBMIT".into())),
+        ]
+    );
+}
+
+#[test]
+fn caddy_csp_reads_the_enforced_header_only() {
+    // Report-only reports and blocks nothing: it must not satisfy the guard.
+    let report_only = "\theader {\n\
+                       \t\tContent-Security-Policy-Report-Only \"default-src 'self'\"\n\
+                       \t}\n";
+    assert_eq!(caddy_csp(report_only), None);
+    let one_line = "\theader Content-Security-Policy \"default-src 'none'\"\n";
+    assert_eq!(caddy_csp(one_line), Some("default-src 'none'"));
+    let other = "\theader X-Content-Security-Policy \"default-src 'none'\"\n";
+    assert_eq!(caddy_csp(other), None);
 }
 
 #[test]
