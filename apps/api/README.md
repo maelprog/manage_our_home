@@ -137,7 +137,7 @@ reaches this pool — see the `SuperAdminUser` extractor, which requires a
 valid session *and* `users.is_superadmin = true`, else 403 — so `BYPASSRLS`
 here is a controlled, audited exception rather than a general bypass.
 
-Three other things run on this pool, and none is a request handler:
+Four other things run on this pool, and none is a request handler:
 
 - the **daily attachment reconcile** pass (#215, see the Ops section below),
   which needs the unscoped `event_attachments` read and deletes nothing in
@@ -149,7 +149,9 @@ Three other things run on this pool, and none is a request handler:
   pool that deletes Postgres rows — not the only code that writes them:
   the four `/admin/*` handlers each
   `INSERT` into `audit_log`, `deactivate_user` also `UPDATE`s `users`
-  and `sessions`, and `reactivate_user` `users` (#256). Of the five purged tables only `invitations` is RLS'd at
+  and `sessions`, and `reactivate_user` `users` (#256); the reminder
+  worker below `UPDATE`s `scheduled_notifications` and `INSERT`s into it
+  (#293). Of the five purged tables only `invitations` is RLS'd at
   all, and it is `FORCE ROW LEVEL SECURITY`: with no `app.family_id` set,
   its `DELETE` on the runtime role matches **no row** and the pass would
   report a clean sweep having erased none of the invited third parties'
@@ -169,7 +171,20 @@ Three other things run on this pool, and none is a request handler:
   logs `account purge job failed` at ERROR once an hour and purges no one.
   Before purging, each pass emails the holders of accounts deactivated for
   2 years less 30 days (`deactivation_notice_sent_at`); that half reads
-  and stamps `users` only, which is not RLS'd, and runs on any role.
+  and stamps `users` only, which is not RLS'd, and runs on any role;
+- the **event reminder worker** (#293, `src/jobs/scheduled_notifications.rs`),
+  which every minute reads the due `scheduled_notifications` of every
+  family, emails each event's creator, and `UPDATE`s each row's status
+  (`sent`, `failed`, or its attempt count); and every hour reads the
+  reminders of every recurring event from `event_reminders` and `events`
+  and `INSERT`s the occurrences newly in range into
+  `scheduled_notifications`. Both `scheduled_notifications` and `events`
+  are `FORCE ROW LEVEL SECURITY` and the worker sets no `app.family_id`:
+  on the runtime role it would find no reminder due and send none. Each
+  pass checks `rolsuper OR rolbypassrls` on its connection and, otherwise,
+  logs `scheduled_notifications send failed` (every minute) or
+  `scheduled_notifications refill failed` (every hour) at ERROR and does
+  nothing.
 
 No request handler other than the four `/admin/*` ones touches `admin_db`.
 
