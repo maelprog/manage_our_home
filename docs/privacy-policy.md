@@ -312,17 +312,19 @@ de la purge dépasserait.
   les événements qui vous sont assignés, y compris par un autre membre ;
   les rappels de vos événements et les envois qu'ils ont programmés ; vos
   pièces jointes ; les occurrences de tâches que vous avez cochées ; votre
-  marqueur de lecture de la messagerie ; les invitations en attente que
-  vous avez émises, et celles qu'un membre a adressées à votre adresse
-  email (groupe, expéditeur, dates) ; vos sessions ; votre identité Google
-  liée ; vos vérifications d'adresse et réinitialisations de mot de passe ;
-  les entrées du journal d'audit de vos propres actions et de celles qui
-  visent votre compte, sans l'identité de leur auteur. Les pièces jointes y figurent par leurs métadonnées (nom,
-  type, taille, date) et un lien de téléchargement valable 5 minutes :
-  relancez l'export pour en obtenir un nouveau. N'y figurent ni le contenu
-  créé par les autres membres, ni les secrets d'accès (identifiant de
-  session, jeton d'invitation ou de vérification, jeton Google, URL de flux
-  calendrier).
+  marqueur de lecture de la messagerie ; les invitations que vous avez
+  émises et celles qu'un membre a adressées à votre adresse email (groupe,
+  expéditeur, dates), tant qu'elles sont conservées — en attente, ou
+  expirées et pas encore effacées (une invitation acceptée est supprimée,
+  les autres le sont 30 jours après leur envoi) ; vos sessions ; votre
+  identité Google liée ; vos vérifications d'adresse et réinitialisations
+  de mot de passe ; les entrées du journal d'audit de vos propres actions
+  et de celles qui visent votre compte, sans l'identité de leur auteur. Les
+  pièces jointes y figurent par leurs métadonnées (nom, type, taille, date)
+  et un lien de téléchargement valable 5 minutes : relancez l'export pour
+  en obtenir un nouveau. N'y figurent ni le contenu créé par les autres
+  membres, ni les secrets d'accès (identifiant de session, jeton
+  d'invitation ou de vérification, jeton Google, URL de flux calendrier).
 - **Droit à l'effacement (Art. 17)** : voir « Suppression de votre
   compte » ci-dessus.
 - **Droit de rectification** : modifiable directement depuis les paramètres

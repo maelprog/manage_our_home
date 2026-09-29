@@ -425,9 +425,10 @@ pub async fn export_account(
                 })
             }));
 
-        // Pending ones only: accepting an invitation deletes it
-        // (`groups::accept_invitation`), the membership's `joined_at` is what
-        // remains of it. The token is the link itself: left out, like every
+        // Every one still held — pending, or expired and not yet purged
+        // (`jobs::retention_purge`, 30 days). Accepting an invitation deletes
+        // it (`groups::accept_invitation`); the membership's `joined_at` is
+        // what remains of it. The token is the link itself: left out, like every
         // bearer secret here.
         let sent = sqlx::query!(
             r#"SELECT id, invited_email, created_at, expires_at, consumed_at

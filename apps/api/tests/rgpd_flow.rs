@@ -689,6 +689,8 @@ async fn export_nests_the_ingredients_under_their_recipe(db: PgPool) {
 /// data about them, even from a group they never joined. It comes out with
 /// its group and its sender, as the invitation email states them — not its
 /// token, not the group as a former membership, nothing else of the group.
+/// Addresses compare exactly, as registration and login compare them: other
+/// capitals are another address.
 #[sqlx::test]
 async fn export_lists_the_invitations_addressed_to_the_caller(db: PgPool) {
     let router = test_router(db.clone());
@@ -699,7 +701,11 @@ async fn export_lists_the_invitations_addressed_to_the_caller(db: PgPool) {
         register_verify_login(&router, &db, "invitee@example.test", "member-password1").await;
 
     let mut tokens = Vec::new();
-    for email in ["Invitee@Example.test", "someone-else@example.test"] {
+    for email in [
+        "invitee@example.test",
+        "Invitee@Example.test",
+        "someone-else@example.test",
+    ] {
         let res = call(
             &router,
             Method::POST,
@@ -740,7 +746,7 @@ async fn export_lists_the_invitations_addressed_to_the_caller(db: PgPool) {
         assert_eq!(received[0]["group_name"], "Foyer Invitant", "{label}");
         assert_eq!(received[0]["invited_by"], "inviter@example.test", "{label}");
         assert_eq!(
-            received[0]["invited_email"], "Invitee@Example.test",
+            received[0]["invited_email"], "invitee@example.test",
             "{label}"
         );
         assert!(received[0].get("token").is_none(), "{label}");
@@ -756,6 +762,10 @@ async fn export_lists_the_invitations_addressed_to_the_caller(db: PgPool) {
         assert!(
             !text.contains("someone-else"),
             "{label}: another invitation"
+        );
+        assert!(
+            !text.contains("Invitee@Example.test"),
+            "{label}: other capitals"
         );
         assert!(
             doc["former_groups"].as_array().unwrap().is_empty(),
@@ -953,4 +963,70 @@ async fn the_export_functions_are_not_executable_by_public(db: PgPool) {
             .await
             .unwrap();
     }
+}
+
+/// Issue #140: the two functions of 0019 run with their owner's rights, so
+/// they must not resolve a name to an object the caller created. A caller
+/// may create TEMP objects, and `pg_temp` is searched first unless the
+/// function's `search_path` names it last. Here the runtime role shadows
+/// `users` with a TEMP VIEW that gives every account the address of an
+/// invitation sent to someone with no account at all: the function must
+/// keep reading the real `users` and return nothing.
+#[sqlx::test]
+async fn a_temp_object_of_the_caller_cannot_shadow_the_export_functions_tables(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "shadow-owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer Ombre").await;
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/invitations"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"invited_email": "no-account@example.test"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let caller_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM users WHERE email = 'shadow-owner@example.test'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+
+    let (role, app_db) = prescribed_role_pool(&db).await;
+    let mut conn = app_db.acquire().await.unwrap();
+    sqlx::query(
+        "CREATE TEMP VIEW users AS
+         SELECT id, 'no-account@example.test'::text AS email, display_name FROM public.users",
+    )
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    sqlx::query("SELECT set_config('app.user_id', $1, false)")
+        .bind(caller_id.to_string())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    // The view is live for this session: unqualified, `users` is the fake.
+    let shadowed: String = sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
+        .bind(caller_id)
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+    assert_eq!(shadowed, "no-account@example.test");
+
+    let leaked: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM account_export_received_invitations()")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+    assert_eq!(leaked, 0, "an invitation to another address came out");
+    let groups: Vec<uuid::Uuid> = sqlx::query_scalar("SELECT * FROM account_export_group_ids()")
+        .fetch_all(&mut *conn)
+        .await
+        .unwrap();
+    assert_eq!(groups, [uuid::Uuid::parse_str(&group_id).unwrap()]);
+
+    drop(conn);
+    drop_prescribed_role(&db, app_db, &role).await;
 }

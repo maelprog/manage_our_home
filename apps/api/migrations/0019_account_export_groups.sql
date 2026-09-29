@@ -19,8 +19,11 @@
 --
 -- `SECURITY DEFINER` runs it as its owner, the migration role, which
 -- carries `BYPASSRLS` (apps/api/README.md) — the only way to look across
--- families for a role that does not. `search_path` is pinned so the
--- caller cannot substitute tables of their own. The caller is read from
+-- families for a role that does not. `search_path` is pinned, `pg_temp`
+-- last: Postgres searches the session's temporary schema *first* unless the
+-- path names it, and any role may create a TEMP table or view, so without
+-- that last entry a caller could shadow `users` or `groups` with an object
+-- of their own and have it read with the owner's rights. The caller is read from
 -- the setting rather than taken as an argument, so it answers only for the
 -- user the request is scoped to, like every policy it stands in for.
 --
@@ -32,7 +35,7 @@ CREATE FUNCTION account_export_group_ids() RETURNS SETOF UUID
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog, public, pg_temp
 AS $$
     WITH me AS (
         SELECT NULLIF(current_setting('app.user_id', true), '')::uuid AS id
@@ -70,8 +73,11 @@ COMMENT ON FUNCTION account_export_group_ids() IS
 -- still a key to the group while pending. Accepting an invitation deletes
 -- it, so what remains is pending or expired and not yet purged.
 --
--- Matched case-insensitively: an inviter typing `Alice@…` addresses the same
--- mailbox as the account's `alice@…`.
+-- Matched exactly, as everywhere else an address is compared: registration
+-- refuses a duplicate on `email = $1` and login looks the account up the
+-- same way (`auth::register`, `auth::login`), with no case folding. An
+-- invitation typed with other capitals names, for this service, another
+-- address.
 
 CREATE FUNCTION account_export_received_invitations()
 RETURNS TABLE (
@@ -86,7 +92,7 @@ RETURNS TABLE (
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog, public, pg_temp
 AS $$
     SELECT i.id, i.group_id, g.name, inviter.display_name, i.invited_email,
            i.created_at, i.expires_at
@@ -96,7 +102,7 @@ AS $$
     JOIN users me
       ON me.id = NULLIF(current_setting('app.user_id', true), '')::uuid
     WHERE i.invited_email IS NOT NULL
-      AND lower(i.invited_email) = lower(me.email)
+      AND i.invited_email = me.email
     ORDER BY i.created_at
 $$;
 
@@ -105,12 +111,18 @@ COMMENT ON FUNCTION account_export_received_invitations() IS
 
 -- Who may call them. A function is executable by PUBLIC by default; these
 -- two look across families, so they are not. They go to the role that
--- serves requests under RLS: whatever its name (`app_role` in
--- apps/api/README.md, another in a given deployment), it is the one that
--- can read the family tables without bypassing RLS. A superuser or
--- `BYPASSRLS` role needs no grant, and gets none. A runtime role created
--- after this migration gets them from the `GRANT EXECUTE` line the README
--- prescribes with its table grants.
+-- serves requests under RLS, whatever its name (`app_role` in
+-- apps/api/README.md, another in a given deployment), recognised by what
+-- the README grants it: it reads *and writes* the family tables (`SELECT`
+-- and `INSERT` on `events`, granted to it by name) without bypassing RLS.
+-- Excluded:
+--   * superusers and `BYPASSRLS` roles — they need no grant;
+--   * members of `pg_read_all_data` / `pg_write_all_data` — a read-only or
+--     reporting role holds `SELECT` through them without being the API;
+--   * roles whose privilege only comes through PUBLIC or another role —
+--     `has_table_privilege` would count those; the ACL entry below does not.
+-- A runtime role created after this migration gets them from the
+-- `GRANT EXECUTE` line the README prescribes with its table grants.
 REVOKE EXECUTE ON FUNCTION account_export_group_ids() FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION account_export_received_invitations() FROM PUBLIC;
 
@@ -119,11 +131,26 @@ DECLARE
     runtime_role NAME;
 BEGIN
     FOR runtime_role IN
-        SELECT rolname FROM pg_roles
-        WHERE NOT rolsuper
-          AND NOT rolbypassrls
-          AND rolname !~ '^pg_'
-          AND has_table_privilege(oid, 'public.events', 'SELECT')
+        SELECT r.rolname FROM pg_roles r
+        WHERE NOT r.rolsuper
+          AND NOT r.rolbypassrls
+          AND r.rolname !~ '^pg_'
+          AND NOT pg_has_role(r.oid, 'pg_read_all_data', 'MEMBER')
+          AND NOT pg_has_role(r.oid, 'pg_write_all_data', 'MEMBER')
+          AND EXISTS (
+              SELECT 1
+              FROM pg_class c, aclexplode(c.relacl) acl
+              WHERE c.oid = 'public.events'::regclass
+                AND acl.grantee = r.oid
+                AND acl.privilege_type = 'SELECT'
+          )
+          AND EXISTS (
+              SELECT 1
+              FROM pg_class c, aclexplode(c.relacl) acl
+              WHERE c.oid = 'public.events'::regclass
+                AND acl.grantee = r.oid
+                AND acl.privilege_type = 'INSERT'
+          )
     LOOP
         EXECUTE format(
             'GRANT EXECUTE ON FUNCTION account_export_group_ids(), account_export_received_invitations() TO %I',
