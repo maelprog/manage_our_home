@@ -142,7 +142,7 @@ pub async fn get(
         let rows = users.iter().map(user_row).collect::<String>();
         format!(
             r#"<div class="table-wrap"><table>
-<thead><tr><th>Email</th><th>Email vérifié</th><th>Inscrit le</th><th>Statut</th><th></th></tr></thead>
+<thead><tr><th scope="col">Email</th><th scope="col">Email vérifié</th><th scope="col">Inscrit le</th><th scope="col">Statut</th><th scope="col"></th></tr></thead>
 <tbody>{rows}</tbody>
 </table></div>"#
         )

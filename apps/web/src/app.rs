@@ -1905,6 +1905,67 @@ mod tests {
     }
 
     #[test]
+    fn a_table_caption_is_named_to_assistive_tech_but_out_of_sight() {
+        // #145: the agenda grid names its month in a `<caption>`, which the
+        // `<h1>` above it already shows. Out of the flow — a caption box
+        // would push the grid down by one line — and clipped rather than
+        // `display: none`, which would take the name out of the
+        // accessibility tree too.
+        let (rule, _) = block_after(&css(), "caption", 0);
+        assert!(rule.contains("position: absolute"), "{rule}");
+        let (clipped, _) = block_after(&css(), "caption, .skip-link:not(:focus)", 0);
+        assert!(clipped.contains("clip-path: inset(50%)"), "{clipped}");
+        for forbidden in ["display: none", "visibility: hidden"] {
+            assert!(!rule.contains(forbidden), "{rule}");
+        }
+    }
+
+    /// Every header-cell opening tag in the routes, `<thead>` excluded.
+    /// The needle is assembled, like `inline_styles`': this file is one of
+    /// the sources scanned, and comment lines are skipped for the same
+    /// reason.
+    fn header_cells(src: &str) -> Vec<String> {
+        let needle = format!("<t{}", 'h');
+        let mut out = Vec::new();
+        for line in src.lines().filter(|l| !l.trim_start().starts_with("//")) {
+            let mut rest = line;
+            while let Some(at) = rest.find(&needle) {
+                rest = &rest[at + needle.len()..];
+                if rest.starts_with([' ', '>']) {
+                    let end = rest.find('>').map_or(rest.len(), |i| i + 1);
+                    out.push(format!("{needle}{}", &rest[..end]));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn every_header_cell_says_what_it_heads() {
+        // #145: browsers infer the direction of a `<th>` on a table with a
+        // single header row, and stop guessing right the day a row header
+        // appears. `scope` makes it explicit on every table the routes build.
+        let unscoped: Vec<(String, String)> = rust_sources()
+            .iter()
+            .flat_map(|(path, body)| {
+                header_cells(body)
+                    .into_iter()
+                    .filter(|th| !th.contains("scope="))
+                    .map(move |th| (path.clone(), th))
+            })
+            .collect();
+        assert!(
+            unscoped.is_empty(),
+            "header cells without scope: {unscoped:#?}"
+        );
+        let seen: usize = rust_sources()
+            .iter()
+            .map(|(_, b)| header_cells(b).len())
+            .sum();
+        assert!(seen > 0, "the scan found no header cell at all");
+    }
+
+    #[test]
     fn the_sidebar_appears_at_the_breakpoint_the_design_system_names() {
         // 861px is DESIGN.md → Layout's threshold, and `--w-sidebar` its
         // width. Below it the same links are a bottom bar; there is one DOM

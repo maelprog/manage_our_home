@@ -64,7 +64,7 @@ pub async fn get(
         let rows = groups.iter().map(group_row).collect::<String>();
         format!(
             r#"<div class="table-wrap"><table>
-<thead><tr><th>Identifiant</th><th>Nom</th><th>Créée le</th><th style="text-align:right;">Membres</th></tr></thead>
+<thead><tr><th scope="col">Identifiant</th><th scope="col">Nom</th><th scope="col">Créée le</th><th scope="col" style="text-align:right;">Membres</th></tr></thead>
 <tbody>{rows}</tbody>
 </table></div>"#
         )
