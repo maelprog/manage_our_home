@@ -1911,25 +1911,51 @@ mod tests {
         // would push the grid down by one line — and clipped rather than
         // `display: none`, which would take the name out of the
         // accessibility tree too.
+        // What counts is the value the cascade ends on: the *last*
+        // declaration among every block aimed at `caption`, so a later rule
+        // resetting it is read (source order only — specificity is not
+        // weighed, which errs towards reading the reset).
         let rules = blocks_for(&css(), "caption");
-        assert!(
-            rules.iter().any(|r| r.contains("position: absolute")),
+        let last = |prop: &str| last_value(&rules, prop);
+        assert_eq!(last("position").as_deref(), Some("absolute"), "{rules:#?}");
+        assert_eq!(
+            last("clip-path").as_deref(),
+            Some("inset(50%)"),
             "{rules:#?}"
         );
-        assert!(
-            rules.iter().any(|r| r.contains("clip-path: inset(50%)")),
-            "{rules:#?}"
+        assert_ne!(last("display").as_deref(), Some("none"), "{rules:#?}");
+        assert_ne!(last("visibility").as_deref(), Some("hidden"), "{rules:#?}");
+    }
+
+    /// The value of the last `prop` declaration across `blocks`, in order.
+    fn last_value(blocks: &[String], prop: &str) -> Option<String> {
+        blocks
+            .iter()
+            .flat_map(|b| b.split(';'))
+            .filter_map(|decl| decl.split_once(':'))
+            .filter(|(name, _)| name.trim() == prop)
+            .map(|(_, value)| value.trim().to_string())
+            .next_back()
+    }
+
+    #[test]
+    fn last_value_reads_the_declaration_the_cascade_ends_on() {
+        let blocks = [
+            " position: absolute; clip-path: inset(50%); ".to_string(),
+            " color: red; ".to_string(),
+            " position: static; ".to_string(),
+        ];
+        assert_eq!(last_value(&blocks, "position").as_deref(), Some("static"));
+        assert_eq!(
+            last_value(&blocks, "clip-path").as_deref(),
+            Some("inset(50%)")
         );
-        for rule in &rules {
-            for forbidden in ["display: none", "visibility: hidden"] {
-                assert!(!rule.contains(forbidden), "{rule}");
-            }
-        }
+        assert_eq!(last_value(&blocks, "display"), None);
     }
 
     /// The body of every block whose selector mentions `selector`, in
-    /// order — not just the first, so a later rule cannot undo what the
-    /// test reads in an earlier one.
+    /// source order. Reading them all is what lets the caller take the
+    /// last value of a property rather than the first.
     fn blocks_for(css: &str, selector: &str) -> Vec<String> {
         let mut out = Vec::new();
         let mut from = 0;
@@ -1950,9 +1976,19 @@ mod tests {
     /// Whether a header-cell tag carries a real `scope` attribute, not an
     /// attribute that merely ends in `scope` (`data-scope`).
     fn has_scope(tag: &str) -> bool {
-        // Quoted values dropped first, so `title="scope=col"` is not read
-        // as an attribute; then an attribute is a whitespace-led token.
-        let unquoted: String = tag.split('"').step_by(2).collect::<Vec<_>>().join("\"\"");
+        // Quoted values — double or single — dropped first, so
+        // `title='a scope=b'` is not read as an attribute; then an attribute
+        // is a whitespace-led token, its name compared case-insensitively.
+        let mut unquoted = String::new();
+        let mut quote = None;
+        for c in tag.chars() {
+            match quote {
+                Some(q) if c == q => quote = None,
+                Some(_) => {}
+                None if c == '"' || c == '\'' => quote = Some(c),
+                None => unquoted.push(c.to_ascii_lowercase()),
+            }
+        }
         unquoted
             .split_whitespace()
             .skip(1)
@@ -1967,6 +2003,8 @@ mod tests {
         assert_eq!(cells.len(), 1, "{cells:?}");
         assert!(has_scope(&cells[0]), "{cells:?}");
         assert!(header_cells(&format!("{open}ead>")).is_empty());
+        // HTML tag names are case-insensitive.
+        assert_eq!(header_cells("<TH>Nom</TH>").len(), 1);
     }
 
     #[test]
@@ -1975,13 +2013,17 @@ mod tests {
         assert!(has_scope(&format!(r#"{open} scope="col">"#)));
         assert!(!has_scope(&format!(r#"{open} data-scope="x">"#)));
         assert!(!has_scope(&format!(r#"{open} title="scope=col">"#)));
+        assert!(!has_scope(&format!(r#"{open} title='a scope=b'>"#)));
+        assert!(has_scope(&format!(r#"{open} SCOPE="col">"#)));
+        assert!(has_scope(&format!(r#"{open} title='x' scope='col'>"#)));
     }
 
     /// Every header-cell opening tag in the routes, `<thead>` excluded.
     /// The needle is assembled, like `inline_styles`': this file is one of
     /// the sources scanned, and comment lines are skipped for the same
     /// reason. The kept lines are scanned as one text, so a tag broken
-    /// across lines (`<th` then its attributes below) is still one tag.
+    /// across lines (`<th` then its attributes below) is still one tag, and
+    /// case-insensitively, like HTML reads tag names.
     fn header_cells(src: &str) -> Vec<String> {
         let needle = format!("<t{}", 'h');
         let code: Vec<&str> = src
@@ -1989,16 +2031,27 @@ mod tests {
             .filter(|l| !l.trim_start().starts_with("//"))
             .collect();
         let code = code.join("\n");
+        // ASCII lowercasing keeps every byte offset, so positions found in
+        // `lower` slice `code` as they are.
+        let lower = code.to_ascii_lowercase();
         let mut out = Vec::new();
-        let mut rest = code.as_str();
-        while let Some(at) = rest.find(&needle) {
-            rest = &rest[at + needle.len()..];
+        let mut from = 0;
+        while let Some(at) = lower[from..].find(&needle) {
+            let start = from + at;
+            from = start + needle.len();
+            let rest = &code[from..];
             if rest.is_empty() || rest.starts_with(|c: char| c == '>' || c.is_whitespace()) {
                 let end = rest.find('>').map_or(rest.len(), |i| i + 1);
-                out.push(format!("{needle}{}", &rest[..end]));
+                out.push(code[start..from + end].to_string());
             }
         }
         out
+    }
+
+    /// A source without its `#[cfg(test)]` tail: the markup the routes
+    /// serve, not the literals their tests assert on.
+    fn served_part(src: &str) -> &str {
+        src.find("#[cfg(test)]").map_or(src, |at| &src[..at])
     }
 
     #[test]
@@ -2006,24 +2059,45 @@ mod tests {
         // #145: browsers infer the direction of a `<th>` on a table with a
         // single header row, and stop guessing right the day a row header
         // appears. `scope` makes it explicit on every table the routes build.
-        let unscoped: Vec<(String, String)> = rust_sources()
-            .iter()
-            .flat_map(|(path, body)| {
-                header_cells(body)
-                    .into_iter()
-                    .filter(|th| !has_scope(th))
-                    .map(move |th| (path.clone(), th))
+        let found: Vec<(String, Vec<String>)> = rust_sources()
+            .into_iter()
+            .map(|(path, body)| {
+                let cells = header_cells(served_part(&body));
+                (path, cells)
             })
+            .filter(|(_, cells)| !cells.is_empty())
+            .collect();
+        let unscoped: Vec<(&String, &String)> = found
+            .iter()
+            .flat_map(|(path, cells)| cells.iter().map(move |th| (path, th)))
+            .filter(|(_, th)| !has_scope(th))
             .collect();
         assert!(
             unscoped.is_empty(),
             "header cells without scope: {unscoped:#?}"
         );
-        let seen: usize = rust_sources()
+        // Coverage, not just "found something": the header cells the routes
+        // serve today, file by file (the agenda's seven weekdays are one
+        // `<th>` in a loop). A new table changes this list on purpose; a
+        // table the scan stops seeing changes it by accident.
+        let counts: Vec<(&str, usize)> = found
             .iter()
-            .map(|(_, b)| header_cells(b).len())
-            .sum();
-        assert!(seen > 0, "the scan found no header cell at all");
+            .map(|(path, cells)| {
+                let file = path.rsplit_once("/src/").map_or(path.as_str(), |(_, f)| f);
+                (file, cells.len())
+            })
+            .collect();
+        let mut counts = counts;
+        counts.sort();
+        assert_eq!(
+            counts,
+            [
+                ("routes/admin/groups.rs", 4),
+                ("routes/admin/users.rs", 5),
+                ("routes/agenda/calendar.rs", 1),
+                ("routes/agenda/imports.rs", 4),
+            ],
+        );
     }
 
     #[test]
