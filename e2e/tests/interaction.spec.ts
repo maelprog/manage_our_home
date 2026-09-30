@@ -213,7 +213,10 @@ test.describe("Interaction states (#69)", () => {
       });
     expect(await onTop(), "the skip link shows before anyone asked for it").toBe(false);
 
-    await page.locator("body").click({ position: { x: 1, y: 1 } });
+    // No click on the page first, unlike the walks above: a click sets
+    // where the next Tab starts from, and a click anywhere in the sidebar
+    // would start it past the link. A fresh page load is what a keyboard
+    // user arrives on.
     await page.keyboard.press("Tab");
     await expect(skip).toBeFocused();
     expect(await onTop(), "the focused skip link stays out of sight").toBe(true);
