@@ -377,6 +377,7 @@ aucune n'introduit de valeur hors des échelles :
 | `.actions > details[open]` | une disclosure ouverte prend la largeur de sa ligne (#72), ce que le `min-width: 16rem` inline du champ d'édition demandait à sa place |
 | `.app`, `.content`, `.w-form`, `.w-read`, `.tabs` | la coque responsive de #70 : la grille sidebar + contenu, la colonne de contenu et ses deux largeurs bornées, la barre d'onglets qui devient la sidebar |
 | `.skip-link` | le lien d'évitement (#144, WCAG 2.4.1) : premier élément de `<body>` sur les deux coques, vers `<main id="main">`. Rogné par `clip-path` tant qu'il n'a pas le focus — ni `display: none` ni `visibility`, qui le sortiraient de l'ordre de tabulation — puis posé au-dessus de la sidebar collante avec l'anneau de focus des liens |
+| `caption` | le nom d'un tableau pour les technologies d'assistance (#145) — élément, pas classe : aujourd'hui le mois de la grille de l'agenda, que le `<h1>` voisin montre déjà. Partage les deux règles de `.skip-link` : hors du flux et rogné, jamais `display: none` |
 
 Le résiduel de `style="…"` assumé après #68 : une couleur de membre calculée
 (`.avatar`), la largeur d'un champ de prix, l'alignement d'une colonne
