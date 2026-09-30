@@ -1911,30 +1911,91 @@ mod tests {
         // would push the grid down by one line — and clipped rather than
         // `display: none`, which would take the name out of the
         // accessibility tree too.
-        let (rule, _) = block_after(&css(), "caption", 0);
-        assert!(rule.contains("position: absolute"), "{rule}");
-        let (clipped, _) = block_after(&css(), "caption, .skip-link:not(:focus)", 0);
-        assert!(clipped.contains("clip-path: inset(50%)"), "{clipped}");
-        for forbidden in ["display: none", "visibility: hidden"] {
-            assert!(!rule.contains(forbidden), "{rule}");
+        let rules = blocks_for(&css(), "caption");
+        assert!(
+            rules.iter().any(|r| r.contains("position: absolute")),
+            "{rules:#?}"
+        );
+        assert!(
+            rules.iter().any(|r| r.contains("clip-path: inset(50%)")),
+            "{rules:#?}"
+        );
+        for rule in &rules {
+            for forbidden in ["display: none", "visibility: hidden"] {
+                assert!(!rule.contains(forbidden), "{rule}");
+            }
         }
+    }
+
+    /// The body of every block whose selector mentions `selector`, in
+    /// order — not just the first, so a later rule cannot undo what the
+    /// test reads in an earlier one.
+    fn blocks_for(css: &str, selector: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut from = 0;
+        while css[from..].contains(selector) {
+            let (block, next) = block_after(css, selector, from);
+            out.push(block);
+            from = next.min(css.len());
+        }
+        out
+    }
+
+    #[test]
+    fn blocks_for_reads_every_block_naming_the_selector() {
+        let css = "caption { a: 1; } .x { b: 2; } main caption { c: 3; }";
+        assert_eq!(blocks_for(css, "caption"), [" a: 1; ", " c: 3; "]);
+    }
+
+    /// Whether a header-cell tag carries a real `scope` attribute, not an
+    /// attribute that merely ends in `scope` (`data-scope`).
+    fn has_scope(tag: &str) -> bool {
+        // Quoted values dropped first, so `title="scope=col"` is not read
+        // as an attribute; then an attribute is a whitespace-led token.
+        let unquoted: String = tag.split('"').step_by(2).collect::<Vec<_>>().join("\"\"");
+        unquoted
+            .split_whitespace()
+            .skip(1)
+            .any(|attr| attr.starts_with("scope="))
+    }
+
+    #[test]
+    fn a_header_cell_split_across_lines_is_still_a_header_cell() {
+        let open = format!("<t{}", 'h');
+        assert_eq!(header_cells(&format!("{open}\n>Nom</th>")).len(), 1);
+        let cells = header_cells(&format!("{open}\n    scope=\"col\"\n>Nom</th>"));
+        assert_eq!(cells.len(), 1, "{cells:?}");
+        assert!(has_scope(&cells[0]), "{cells:?}");
+        assert!(header_cells(&format!("{open}ead>")).is_empty());
+    }
+
+    #[test]
+    fn only_a_scope_attribute_counts_as_one() {
+        let open = format!("<t{}", 'h');
+        assert!(has_scope(&format!(r#"{open} scope="col">"#)));
+        assert!(!has_scope(&format!(r#"{open} data-scope="x">"#)));
+        assert!(!has_scope(&format!(r#"{open} title="scope=col">"#)));
     }
 
     /// Every header-cell opening tag in the routes, `<thead>` excluded.
     /// The needle is assembled, like `inline_styles`': this file is one of
     /// the sources scanned, and comment lines are skipped for the same
-    /// reason.
+    /// reason. The kept lines are scanned as one text, so a tag broken
+    /// across lines (`<th` then its attributes below) is still one tag.
     fn header_cells(src: &str) -> Vec<String> {
         let needle = format!("<t{}", 'h');
+        let code: Vec<&str> = src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect();
+        let code = code.join("\n");
         let mut out = Vec::new();
-        for line in src.lines().filter(|l| !l.trim_start().starts_with("//")) {
-            let mut rest = line;
-            while let Some(at) = rest.find(&needle) {
-                rest = &rest[at + needle.len()..];
-                if rest.starts_with([' ', '>']) {
-                    let end = rest.find('>').map_or(rest.len(), |i| i + 1);
-                    out.push(format!("{needle}{}", &rest[..end]));
-                }
+        let mut rest = code.as_str();
+        while let Some(at) = rest.find(&needle) {
+            rest = &rest[at + needle.len()..];
+            if rest.is_empty() || rest.starts_with(|c: char| c == '>' || c.is_whitespace()) {
+                let end = rest.find('>').map_or(rest.len(), |i| i + 1);
+                out.push(format!("{needle}{}", &rest[..end]));
             }
         }
         out
@@ -1950,7 +2011,7 @@ mod tests {
             .flat_map(|(path, body)| {
                 header_cells(body)
                     .into_iter()
-                    .filter(|th| !th.contains("scope="))
+                    .filter(|th| !has_scope(th))
                     .map(move |th| (path.clone(), th))
             })
             .collect();

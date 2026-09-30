@@ -551,10 +551,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
    nav again each time. Clipped rather than `display: none`, which would take
    it out of the tab order too; the first Tab brings it back, over the
    sticky sidebar — hence the z-index — and the `a` focus ring above.
-   A table's `<caption>` (#145: the agenda grid's month, which the `<h1>`
-   above it already shows) rides the same two rules: out of the flow so it
-   does not push the table down, clipped and never focusable, so it is only
-   ever read. Padding and ground are clipped away with it. */
+   `caption` (#145, the agenda's month, already its `<h1>`) shares both. */
 caption, .skip-link { position: absolute; z-index: 1; padding: var(--s2x); background: var(--surface); }
 caption, .skip-link:not(:focus) { clip-path: inset(50%); }
 /* The main navigation, out of `.muted` — it is not secondary content, it is
