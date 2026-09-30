@@ -546,6 +546,13 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
+/* The skip link (#144, WCAG 2.4.1), first in `<body>` on every page: every
+   navigation is a full reload, so without it the keyboard walks the whole
+   nav again each time. Clipped rather than `display: none`, which would take
+   it out of the tab order too; the first Tab brings it back, over the
+   sticky sidebar — hence the z-index — and the `a` focus ring above. */
+.skip-link { position: absolute; z-index: 1; padding: var(--s2x); background: var(--surface); }
+.skip-link:not(:focus) { clip-path: inset(50%); }
 /* The main navigation, out of `.muted` — it is not secondary content, it is
    what the content hangs off. The current page is named for assistive tech
    with `aria-current="page"`, and that attribute is the styling hook: the
