@@ -196,6 +196,44 @@ test.describe("Interaction states (#69)", () => {
     await page.emulateMedia({ colorScheme: "light" });
   });
 
+  test("the first Tab offers to skip the navigation, and taking it does (#144)", async ({ page }) => {
+    // WCAG 2.4.1. Every navigation is a full reload, so without this the
+    // keyboard walks every tab of the navigation again on every page.
+    await page.goto("/agenda");
+    const skip = page.getByRole("link", { name: "Aller au contenu" });
+    // "Visible" to a hit test, not to Playwright's `toBeVisible`: the link is
+    // clipped, not removed, so its box is the same size either way. What
+    // changes is whether anything of it is left to land on — which also says
+    // it is painted over the sticky sidebar and not under it.
+    const onTop = () =>
+      skip.evaluate((node) => {
+        const box = node.getBoundingClientRect();
+        const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+        return hit === node || node.contains(hit);
+      });
+    expect(await onTop(), "the skip link shows before anyone asked for it").toBe(false);
+
+    // No click on the page first, unlike the walks above: a click sets
+    // where the next Tab starts from, and a click anywhere in the sidebar
+    // would start it past the link. A fresh page load is what a keyboard
+    // user arrives on.
+    await page.keyboard.press("Tab");
+    await expect(skip).toBeFocused();
+    expect(await onTop(), "the focused skip link stays out of sight").toBe(true);
+
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(/#main$/);
+    await page.keyboard.press("Tab");
+    const landed = await page.evaluate(() => {
+      const node = document.activeElement;
+      return { inMain: !!node?.closest("main"), inHeader: !!node?.closest("header") };
+    });
+    expect(landed, "the Tab after the skip link should land in the content").toEqual({
+      inMain: true,
+      inHeader: false,
+    });
+  });
+
   test("the focus ring is drawn in the theme's own accent", async ({ page }) => {
     const ringOf = async (colorScheme: "light" | "dark") => {
       await page.emulateMedia({ colorScheme });

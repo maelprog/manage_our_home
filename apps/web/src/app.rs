@@ -57,7 +57,7 @@ pub fn shell(width: Width, title: &str, body_html: &str) -> String {
     document(
         title,
         &format!(
-            r#"<main class="content{width}">
+            r#"<main id="main" class="content{width}">
 {body_html}
 </main>"#,
             width = width.class(),
@@ -79,7 +79,7 @@ pub fn shell_with_header(width: Width, title: &str, header_html: &str, body_html
         &format!(
             r#"<div class="app">
 {header_html}
-<main class="content{width}">
+<main id="main" class="content{width}">
 {body_html}
 </main>
 </div>"#,
@@ -102,7 +102,7 @@ pub fn shell_with_header(width: Width, title: &str, header_html: &str, body_html
 /// and for the budget that still bounds the sheet.
 fn document(title: &str, body: &str) -> String {
     format!(
-        r#"<!DOCTYPE html>
+        r##"<!DOCTYPE html>
 <html lang="fr">
 <head>
 <meta charset="utf-8"/>
@@ -111,9 +111,10 @@ fn document(title: &str, body: &str) -> String {
 <link rel="stylesheet" href="{css}"/>
 </head>
 <body>
+<a class="skip-link" href="#main">Aller au contenu</a>
 {body}
 </body>
-</html>"#,
+</html>"##,
         title = html_escape(title),
         css = crate::assets::stylesheet_href(),
         body = body,
@@ -1830,9 +1831,9 @@ mod tests {
     #[test]
     fn the_page_wears_the_width_it_asked_for() {
         for (width, expected) in [
-            (Width::Form, r#"<main class="content w-form">"#),
-            (Width::Read, r#"<main class="content w-read">"#),
-            (Width::Full, r#"<main class="content">"#),
+            (Width::Form, r#"<main id="main" class="content w-form">"#),
+            (Width::Read, r#"<main id="main" class="content w-read">"#),
+            (Width::Full, r#"<main id="main" class="content">"#),
         ] {
             let html = shell(width, "Titre", "<h1>x</h1>");
             assert!(html.contains(expected), "{width:?}: {html}");
@@ -1855,6 +1856,52 @@ mod tests {
         let bare = shell(Width::Form, "Connexion", "<h1>x</h1>");
         assert!(!bare.contains("<header"), "{bare}");
         assert!(!bare.contains(r#"class="app""#), "{bare}");
+    }
+
+    #[test]
+    fn every_page_opens_on_a_link_that_skips_to_the_content() {
+        // WCAG 2.4.1 (#144): each navigation is a full reload, so without a
+        // skip link a keyboard or screen-reader user walks the whole
+        // navigation again on every page. The link is the first thing in
+        // `<body>`, ahead of the header, and its target is the `<main>` of
+        // both shells.
+        let pages = [
+            shell_with_header(Width::Full, "Titre", "<header>nav</header>", "<h1>x</h1>"),
+            shell(Width::Form, "Connexion", "<h1>x</h1>"),
+        ];
+        for html in pages {
+            let body = html.find("<body>").expect("a body") + "<body>".len();
+            let first = html[body..].trim_start();
+            assert!(
+                first.starts_with(r##"<a class="skip-link" href="#main">Aller au contenu</a>"##),
+                "the skip link must open the body: {html}"
+            );
+            let link = html.find(r##"href="#main""##).expect("a skip link");
+            let main = html
+                .find(r#"<main id="main""#)
+                .expect("a main the link targets");
+            assert!(link < main, "{html}");
+            if let Some(header) = html.find("<header") {
+                assert!(
+                    link < header,
+                    "the skip link must precede the navigation: {html}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_skip_link_is_out_of_sight_until_it_takes_focus() {
+        // Hidden with `clip-path`, not `display: none` nor `visibility`:
+        // either of those would drop it from the tab order and from the
+        // accessibility tree, which is the one place it must stay.
+        let (hidden, _) = block_after(&css(), ".skip-link:not(:focus)", 0);
+        assert!(hidden.contains("clip-path: inset(50%)"), "{hidden}");
+        let (rule, _) = block_after(&css(), ".skip-link {", 0);
+        for forbidden in ["display: none", "visibility: hidden"] {
+            assert!(!rule.contains(forbidden), "{rule}");
+            assert!(!hidden.contains(forbidden), "{hidden}");
+        }
     }
 
     #[test]
