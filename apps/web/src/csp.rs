@@ -120,7 +120,7 @@ fn interpolated(s: &str, end: &str) -> Result<String, String> {
 }
 
 /// What precedes a file's first inline `#[cfg(test)] mod … {` block.
-fn production_code(source: &str) -> &str {
+pub(crate) fn production_code(source: &str) -> &str {
     let tests = source.match_indices("#[cfg(test)]").find(|(at, attr)| {
         let item = source[at + attr.len()..].trim_start();
         item.starts_with("mod ") && item.lines().next().is_some_and(|l| l.contains('{'))

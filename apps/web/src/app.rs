@@ -1905,6 +1905,310 @@ mod tests {
     }
 
     #[test]
+    fn a_table_caption_is_named_to_assistive_tech_but_out_of_sight() {
+        // #145: the agenda grid names its month in a `<caption>`, which the
+        // `<h1>` above it already shows. Out of the flow — a caption box
+        // would push the grid down by one line — and clipped rather than
+        // `display: none`, which would take the name out of the
+        // accessibility tree too.
+        //
+        // Every block whose selector names `caption` is held to the masking
+        // values, whatever its place in the sheet or its specificity: no
+        // cascade is computed here, so none may disagree. What this does not
+        // see is a selector that reaches the caption without naming it
+        // (`table.cal > *`, `*`).
+        let rules = blocks_for(&css(), "caption");
+        assert!(
+            rules.iter().any(|r| r.contains("position: absolute")),
+            "{rules:#?}"
+        );
+        assert!(
+            rules.iter().any(|r| r.contains("clip-path: inset(50%)")),
+            "{rules:#?}"
+        );
+        let unmasking = masking_violations(&rules);
+        assert!(unmasking.is_empty(), "{unmasking:#?}");
+    }
+
+    /// The declarations in `blocks` that would bring a caption back into
+    /// sight or out of the accessibility tree: a `position` other than
+    /// `absolute`, a `clip-path` other than `inset(50%)`, `display: none`,
+    /// a `visibility` of `hidden` or `collapse`. Names and values are
+    /// compared lowercased, blanks and `!important` removed: none of those
+    /// change what the declaration sets.
+    fn masking_violations(blocks: &[String]) -> Vec<String> {
+        blocks
+            .iter()
+            .flat_map(|b| b.split(';'))
+            .filter_map(|decl| decl.split_once(':'))
+            .map(|(name, value)| {
+                let name = name.trim().to_ascii_lowercase();
+                let value: String = value
+                    .to_ascii_lowercase()
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .collect();
+                let value = value
+                    .strip_suffix("!important")
+                    .map_or(value.clone(), str::to_string);
+                (name, value)
+            })
+            .filter(|(name, value)| match name.as_str() {
+                "position" => value != "absolute",
+                "clip-path" => value != "inset(50%)",
+                "display" => value == "none",
+                "visibility" => value == "hidden" || value == "collapse",
+                _ => false,
+            })
+            .map(|(name, value)| format!("{name}: {value}"))
+            .collect()
+    }
+
+    #[test]
+    fn any_caption_block_that_unmasks_is_a_violation() {
+        let blocks = [
+            " position: static; clip-path: none; color: red; ".to_string(),
+            " position: absolute; clip-path: inset(50%); ".to_string(),
+            " display: none; ".to_string(),
+            " visibility: hidden; display: block; ".to_string(),
+        ];
+        assert_eq!(
+            masking_violations(&blocks),
+            [
+                "position: static",
+                "clip-path: none",
+                "display: none",
+                "visibility: hidden",
+            ]
+        );
+        // `!important`, blanks and case change nothing about what is set.
+        let blocks = [
+            " display: none !important; ".to_string(),
+            " POSITION: Static; ".to_string(),
+            " visibility: collapse; ".to_string(),
+            " position: absolute !important; clip-path: inset(50%)!important; ".to_string(),
+        ];
+        assert_eq!(
+            masking_violations(&blocks),
+            ["display: none", "position: static", "visibility: collapse"]
+        );
+    }
+
+    /// The body of every block whose selector mentions `selector`, in
+    /// source order. Reading them all is what lets the caller take the
+    /// last value of a property rather than the first.
+    fn blocks_for(css: &str, selector: &str) -> Vec<String> {
+        let word = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+        let mut out = Vec::new();
+        let mut from = 0;
+        while let Some(at) = css[from..].find(selector).map(|i| from + i) {
+            let end = at + selector.len();
+            let whole = !css[..at].ends_with(word) && !css[end..].starts_with(word);
+            if whole {
+                let (block, next) = block_after(css, selector, at);
+                out.push(block);
+                from = next.min(css.len());
+            } else {
+                from = end;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn blocks_for_reads_every_block_naming_the_selector() {
+        let css = "caption { a: 1; } .x { b: 2; } main caption { c: 3; }";
+        assert_eq!(blocks_for(css, "caption"), [" a: 1; ", " c: 3; "]);
+        // A whole selector word, not a substring of another element's name.
+        let css = "figcaption { a: 1; } caption { b: 2; }";
+        assert_eq!(blocks_for(css, "caption"), [" b: 2; "]);
+    }
+
+    /// Whether a header-cell tag carries a real, non-empty `scope`
+    /// attribute — not one that merely ends in `scope` (`data-scope`), nor
+    /// `scope=` inside another attribute's quoted value.
+    fn has_scope(tag: &str) -> bool {
+        tag_attributes(tag)
+            .iter()
+            .any(|(name, value)| name.eq_ignore_ascii_case("scope") && !value.trim().is_empty())
+    }
+
+    /// `(name, value)` for each attribute of an opening tag, values
+    /// unquoted (double, single or bare). A textual reading, enough for
+    /// the literals this crate writes; not an HTML parser.
+    fn tag_attributes(tag: &str) -> Vec<(String, String)> {
+        let body = tag.trim_end_matches('>');
+        // Past the tag name.
+        let mut rest = body.trim_start_matches('<');
+        rest = rest.trim_start_matches(|c: char| !c.is_whitespace());
+        let mut out = Vec::new();
+        loop {
+            rest = rest.trim_start();
+            if rest.is_empty() {
+                break;
+            }
+            let name_end = rest
+                .find(|c: char| c == '=' || c.is_whitespace())
+                .unwrap_or(rest.len());
+            let name = rest[..name_end].to_string();
+            rest = rest[name_end..].trim_start();
+            let value = match rest.strip_prefix('=') {
+                None => String::new(),
+                Some(after) => {
+                    let after = after.trim_start();
+                    match after.chars().next() {
+                        Some(q @ ('"' | '\'')) => {
+                            let inner = &after[1..];
+                            let close = inner.find(q).unwrap_or(inner.len());
+                            rest = inner.get(close + 1..).unwrap_or("");
+                            inner[..close].to_string()
+                        }
+                        _ => {
+                            let end = after.find(char::is_whitespace).unwrap_or(after.len());
+                            rest = &after[end..];
+                            after[..end].to_string()
+                        }
+                    }
+                }
+            };
+            out.push((name, value));
+        }
+        out
+    }
+
+    #[test]
+    fn a_header_cell_split_across_lines_is_still_a_header_cell() {
+        let open = format!("<t{}", 'h');
+        assert_eq!(header_cells(&format!("{open}\n>Nom</th>")).len(), 1);
+        let cells = header_cells(&format!("{open}\n    scope=\"col\"\n>Nom</th>"));
+        assert_eq!(cells.len(), 1, "{cells:?}");
+        assert!(has_scope(&cells[0]), "{cells:?}");
+        assert!(header_cells(&format!("{open}ead>")).is_empty());
+        // HTML tag names are case-insensitive.
+        assert_eq!(header_cells("<TH>Nom</TH>").len(), 1);
+    }
+
+    #[test]
+    fn only_a_scope_attribute_counts_as_one() {
+        let open = format!("<t{}", 'h');
+        assert!(has_scope(&format!(r#"{open} scope="col">"#)));
+        assert!(!has_scope(&format!(r#"{open} data-scope="x">"#)));
+        assert!(!has_scope(&format!(r#"{open} title="scope=col">"#)));
+        assert!(!has_scope(&format!(r#"{open} title='a scope=b'>"#)));
+        assert!(has_scope(&format!(r#"{open} SCOPE="col">"#)));
+        assert!(has_scope(&format!(r#"{open} title='x' scope='col'>"#)));
+        // An empty value states nothing.
+        assert!(!has_scope(&format!(r#"{open} scope="">"#)));
+        assert!(!has_scope(&format!(r#"{open} scope=''>"#)));
+    }
+
+    /// Every header-cell opening tag in the routes, `<thead>` excluded.
+    /// The needle is assembled, like `inline_styles`': this file is one of
+    /// the sources scanned, and comment lines are skipped for the same
+    /// reason. The kept lines are scanned as one text, so a tag broken
+    /// across lines (`<th` then its attributes below) is still one tag, and
+    /// case-insensitively, like HTML reads tag names.
+    fn header_cells(src: &str) -> Vec<String> {
+        let needle = format!("<t{}", 'h');
+        let code: Vec<&str> = src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect();
+        let code = code.join("\n");
+        // ASCII lowercasing keeps every byte offset, so positions found in
+        // `lower` slice `code` as they are.
+        let lower = code.to_ascii_lowercase();
+        let mut out = Vec::new();
+        let mut from = 0;
+        while let Some(at) = lower[from..].find(&needle) {
+            let start = from + at;
+            from = start + needle.len();
+            let rest = &code[from..];
+            if rest.is_empty() || rest.starts_with(|c: char| c == '>' || c.is_whitespace()) {
+                let end = rest.find('>').map_or(rest.len(), |i| i + 1);
+                out.push(code[start..from + end].to_string());
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn every_header_cell_says_what_it_heads() {
+        // #145: browsers infer the direction of a `<th>` on a table with a
+        // single header row, and stop guessing right the day a row header
+        // appears. `scope` makes it explicit on every table built in the
+        // Rust sources of apps/web *and* apps/shared — the latter renders
+        // the legal documents' Markdown tables (`render_markdown`), which
+        // /privacy-policy serves. Markup reaching a page from anywhere else
+        // is not scanned.
+        let found: Vec<(String, Vec<String>)> = markup_sources()
+            .into_iter()
+            .map(|(path, body)| {
+                let cells = header_cells(crate::csp::production_code(&body));
+                (path, cells)
+            })
+            .filter(|(_, cells)| !cells.is_empty())
+            .collect();
+        let unscoped: Vec<(&String, &String)> = found
+            .iter()
+            .flat_map(|(path, cells)| cells.iter().map(move |th| (path, th)))
+            .filter(|(_, th)| !has_scope(th))
+            .collect();
+        assert!(
+            unscoped.is_empty(),
+            "header cells without scope: {unscoped:#?}"
+        );
+        // Coverage, not just "found something": the header cells served
+        // today, file by file (the agenda's seven weekdays are one `<th>` in
+        // a loop, a Markdown table's columns one in a map). A new table
+        // changes this list on purpose; a table the scan stops seeing
+        // changes it by accident.
+        let mut counts: Vec<(&str, usize)> = found
+            .iter()
+            .map(|(path, cells)| (path.as_str(), cells.len()))
+            .collect();
+        counts.sort();
+        assert_eq!(
+            counts,
+            [
+                ("shared/src/validation/rgpd.rs", 1),
+                ("web/src/routes/admin/groups.rs", 4),
+                ("web/src/routes/admin/users.rs", 5),
+                ("web/src/routes/agenda/calendar.rs", 1),
+                ("web/src/routes/agenda/imports.rs", 4),
+            ],
+        );
+    }
+
+    /// `(path under apps/, contents)` for every `.rs` file of apps/web/src
+    /// and apps/shared/src — the two crates whose code writes HTML.
+    fn markup_sources() -> Vec<(String, String)> {
+        let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("apps/web has a parent")
+            .to_path_buf();
+        let mut out = Vec::new();
+        let mut stack = vec![apps.join("web/src"), apps.join("shared/src")];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("readable source dir") {
+                let path = entry.expect("readable dir entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let body = std::fs::read_to_string(&path).expect("readable source file");
+                    let rel = path.strip_prefix(&apps).expect("under apps/");
+                    out.push((rel.display().to_string(), body));
+                }
+            }
+        }
+        assert!(
+            out.iter().any(|(p, _)| p.starts_with("shared/")),
+            "found no apps/shared source to scan"
+        );
+        out
+    }
+
+    #[test]
     fn the_sidebar_appears_at_the_breakpoint_the_design_system_names() {
         // 861px is DESIGN.md → Layout's threshold, and `--w-sidebar` its
         // width. Below it the same links are a bottom bar; there is one DOM

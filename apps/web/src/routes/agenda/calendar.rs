@@ -186,8 +186,11 @@ pub async fn get(
     } else {
         (Some(focus.month()), Some(MONTH_CHIP_CAP))
     };
-    let grid_html = render_grid(&days, &by_day, focus_month, today, cap);
-    let nav_html = render_nav(is_week, focus);
+    // The page's `<h1>` and the grid's `<caption>` (#145) say the same
+    // thing, so they are computed once.
+    let title = view_title(is_week, focus);
+    let grid_html = render_grid(&days, &by_day, focus_month, today, cap, &title);
+    let nav_html = render_nav(is_week, focus, &title);
     let notice_html = query
         .notice
         .as_deref()
@@ -209,18 +212,24 @@ pub async fn get(
     .into_response()
 }
 
+/// What the view is called: "juillet 2026" for a month, "Semaine du 13
+/// juillet" for a week. Unescaped — each caller escapes it where it lands.
+fn view_title(is_week: bool, focus: NaiveDate) -> String {
+    let month = FR_MONTHS[(focus.month() - 1) as usize];
+    if is_week {
+        format!("Semaine du {} {month}", focus.day())
+    } else {
+        format!("{month} {}", focus.year())
+    }
+}
+
 /// Prev/next/today navigation, the month/week toggle, and the "new event"
 /// button.
-fn render_nav(is_week: bool, focus: NaiveDate) -> String {
-    let (prev, next, title) = if is_week {
+fn render_nav(is_week: bool, focus: NaiveDate, title: &str) -> String {
+    let (prev, next) = if is_week {
         (
             focus - chrono::Duration::days(7),
             focus + chrono::Duration::days(7),
-            format!(
-                "Semaine du {} {}",
-                focus.day(),
-                FR_MONTHS[(focus.month() - 1) as usize]
-            ),
         )
     } else {
         let (py, pm) = if focus.month() == 1 {
@@ -236,11 +245,6 @@ fn render_nav(is_week: bool, focus: NaiveDate) -> String {
         (
             NaiveDate::from_ymd_opt(py, pm, 1).unwrap(),
             NaiveDate::from_ymd_opt(ny, nm, 1).unwrap(),
-            format!(
-                "{} {}",
-                FR_MONTHS[(focus.month() - 1) as usize],
-                focus.year()
-            ),
         )
     };
     let view_q = if is_week { "week" } else { "month" };
@@ -258,7 +262,7 @@ fn render_nav(is_week: bool, focus: NaiveDate) -> String {
 <a class="btn" href="/agenda/new">Nouvel événement</a>
 </span>
 </div>"#,
-        title = html_escape(&title),
+        title = html_escape(title),
         view_q = view_q,
         prev = prev,
         next = next,
@@ -289,10 +293,11 @@ fn render_grid(
     focus_month: Option<u32>,
     today: NaiveDate,
     cap: Option<usize>,
+    caption: &str,
 ) -> String {
     let headers: String = FR_WEEKDAYS
         .iter()
-        .map(|d| format!(r#"<th>{d}</th>"#))
+        .map(|d| format!(r#"<th scope="col">{d}</th>"#))
         .collect();
 
     let mut rows = String::new();
@@ -318,7 +323,13 @@ fn render_grid(
         }
         rows.push_str("</tr>");
     }
-    format!(r#"<table class="cal"><thead><tr>{headers}</tr></thead><tbody>{rows}</tbody></table>"#,)
+    // The caption (#145) names the table itself — the `<h1>` above it is a
+    // neighbour, which table navigation does not announce. The sheet keeps
+    // it out of sight, since that heading already shows it.
+    format!(
+        r#"<table class="cal"><caption>{caption}</caption><thead><tr>{headers}</tr></thead><tbody>{rows}</tbody></table>"#,
+        caption = html_escape(caption),
+    )
 }
 
 /// How a day's occurrences split between `(listed, counted)`: the chips the
@@ -533,12 +544,12 @@ mod tests {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> =
             [(day(15), occs.iter().collect())].into_iter().collect();
         let week: Vec<NaiveDate> = (13..=19).map(day).collect();
-        let html = render_grid(&week, &by_day, None, day(1), None);
+        let html = render_grid(&week, &by_day, None, day(1), None, "Semaine du 13 juillet");
         assert!(html.starts_with(r#"<table class="cal">"#), "{html}");
         // Seven weekday headers, and seven cells in one row: a day with
         // nothing on it still renders its cell, because that is what makes
         // the thing a grid. Dropping it is the phone reading's job.
-        assert_eq!(html.matches("<th>").count(), 7, "{html}");
+        assert_eq!(html.matches(r#"<th scope="col">"#).count(), 7, "{html}");
         assert_eq!(html.matches("<tr>").count(), 2, "{html}");
         assert_eq!(html.matches(r#"class="cal-cell"#).count(), 7, "{html}");
         assert!(html.contains(r#"class="chip"#), "{html}");
@@ -553,7 +564,7 @@ mod tests {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         // 2026-07-27 (Monday) .. 2026-08-02: four July days, three August.
         let week: Vec<NaiveDate> = week_days(day(29));
-        let html = render_grid(&week, &by_day, None, day(29), None);
+        let html = render_grid(&week, &by_day, None, day(29), None, "Semaine du 27 juillet");
         assert_eq!(html.matches("cal-day outside").count(), 0, "{html}");
     }
 
@@ -561,10 +572,54 @@ mod tests {
     fn the_month_grid_marks_today_and_the_days_of_the_neighbouring_months() {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         let days: Vec<NaiveDate> = month_grid(2026, 7);
-        let html = render_grid(&days, &by_day, Some(7), day(15), None);
+        let html = render_grid(&days, &by_day, Some(7), day(15), None, "juillet 2026");
         assert_eq!(html.matches("cal-cell current").count(), 1, "{html}");
         // July 2026 starts on a Wednesday: two June days lead the grid, and
         // the six weeks run into August.
         assert!(html.matches("cal-day outside").count() >= 2, "{html}");
+    }
+
+    // -- what the grid is called (#145) ----------------------------------
+
+    #[test]
+    fn the_grid_carries_its_own_name_in_a_caption() {
+        // The month used to live only in the `<h1>` above the table: a
+        // screen reader entering the table by table navigation heard seven
+        // weekdays and no month. The caption is the table's own name.
+        let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
+        let days: Vec<NaiveDate> = month_grid(2026, 7);
+        let html = render_grid(&days, &by_day, Some(7), day(15), None, "juillet 2026");
+        assert!(
+            html.starts_with(r#"<table class="cal"><caption>juillet 2026</caption><thead>"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn the_caption_is_escaped_like_the_heading() {
+        let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
+        let week: Vec<NaiveDate> = (13..=19).map(day).collect();
+        let html = render_grid(&week, &by_day, None, day(1), None, "<b>");
+        assert!(html.contains("<caption>&lt;b&gt;</caption>"), "{html}");
+    }
+
+    #[test]
+    fn every_weekday_header_heads_a_column() {
+        let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
+        let week: Vec<NaiveDate> = (13..=19).map(day).collect();
+        let html = render_grid(&week, &by_day, None, day(1), None, "x");
+        // Every `<th` but the one opening `<thead>` is a weekday header.
+        assert_eq!(html.matches("<th").count(), 7 + 1, "{html}");
+        assert_eq!(html.matches(r#"<th scope="col">"#).count(), 7, "{html}");
+    }
+
+    #[test]
+    fn the_month_view_is_named_by_month_and_year() {
+        assert_eq!(view_title(false, day(15)), "juillet 2026");
+    }
+
+    #[test]
+    fn the_week_view_is_named_by_its_first_day() {
+        assert_eq!(view_title(true, day(13)), "Semaine du 13 juillet");
     }
 }

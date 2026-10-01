@@ -294,10 +294,10 @@ fn table(
     format!(
         r#"<table>
 <thead><tr>
-<th>Agenda</th>
-<th>Dernier import</th>
-<th>Ajouté par</th>
-<th>Actions</th>
+<th scope="col">Agenda</th>
+<th scope="col">Dernier import</th>
+<th scope="col">Ajouté par</th>
+<th scope="col">Actions</th>
 </tr></thead>
 <tbody>{rows}</tbody></table>"#
     )

@@ -53,7 +53,16 @@ fn page(
         <form method="post" action="/register">
             <label>
                 "Email"
-                <input type="email" name="email" required=true value=email.to_string() />
+                // #145: the message below joins the field's name by sitting
+                // in its label; `aria-invalid` carries the *state*, and is
+                // absent rather than "false" when there is nothing wrong.
+                <input
+                    type="email"
+                    name="email"
+                    required=true
+                    value=email.to_string()
+                    aria-invalid=field_error.map(|_| "true")
+                />
                 {field_error.map(|e| view! { <span class="field-error">{e.to_string()}</span> })}
             </label>
             <label>
@@ -199,4 +208,39 @@ pub async fn check_email() -> impl IntoResponse {
         </div>
     };
     Html(shell(Width::Form, "Vérifiez votre email", &body.to_html()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `<input …>` tag carrying `name="{name}"` in the rendered page.
+    fn input_named<'a>(html: &'a str, name: &str) -> &'a str {
+        let at = html
+            .find(&format!(r#"name="{name}""#))
+            .unwrap_or_else(|| panic!("no input named {name}: {html}"));
+        let open = html[..at]
+            .rfind("<input")
+            .expect("attribute outside an input");
+        let close = at + html[at..].find('>').expect("unterminated input");
+        &html[open..=close]
+    }
+
+    #[test]
+    fn a_field_in_error_says_so_in_its_state() {
+        // #145: the message already reaches the field's accessible name,
+        // since it sits inside its `<label>`; the state did not follow.
+        let html = page("x", "", false, Some("Adresse email invalide."), None, "");
+        let email = input_named(&html, "email");
+        assert!(email.contains(r#"aria-invalid="true""#), "{email}");
+    }
+
+    #[test]
+    fn a_field_without_error_claims_no_invalid_state() {
+        let html = page("", "", false, None, None, "");
+        assert!(!html.contains("aria-invalid"), "{html}");
+        // A banner error is about the form, not about the email field.
+        let html = page("a@b.c", "", false, None, Some("Nom vide."), "");
+        assert!(!html.contains("aria-invalid"), "{html}");
+    }
 }

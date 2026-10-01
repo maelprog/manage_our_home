@@ -550,9 +550,10 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
    navigation is a full reload, so without it the keyboard walks the whole
    nav again each time. Clipped rather than `display: none`, which would take
    it out of the tab order too; the first Tab brings it back, over the
-   sticky sidebar — hence the z-index — and the `a` focus ring above. */
-.skip-link { position: absolute; z-index: 1; padding: var(--s2x); background: var(--surface); }
-.skip-link:not(:focus) { clip-path: inset(50%); }
+   sticky sidebar — hence the z-index — and the `a` focus ring above.
+   `caption` (#145, the agenda's month, already its `<h1>`) shares both. */
+caption, .skip-link { position: absolute; z-index: 1; padding: var(--s2x); background: var(--surface); }
+caption, .skip-link:not(:focus) { clip-path: inset(50%); }
 /* The main navigation, out of `.muted` — it is not secondary content, it is
    what the content hangs off. The current page is named for assistive tech
    with `aria-current="page"`, and that attribute is the styling hook: the

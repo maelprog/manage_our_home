@@ -202,7 +202,7 @@ fn flush(block: &mut Block, out: &mut Vec<String>) {
         Block::Table { header, rows } => {
             let head: String = header
                 .iter()
-                .map(|c| format!("<th>{}</th>", inline(c)))
+                .map(|c| format!("<th scope=\"col\">{}</th>", inline(c)))
                 .collect();
             let body: String = rows
                 .iter()
@@ -835,7 +835,7 @@ mod tests {
     fn renders_a_table_with_a_header_row() {
         assert_eq!(
             render_markdown("| Catégorie | Base |\n|---|---|\n| Compte | Contrat |\n"),
-            "<div class=\"table-wrap\"><table>\n<thead><tr><th>Catégorie</th><th>Base</th></tr></thead>\n<tbody>\n<tr><td>Compte</td><td>Contrat</td></tr>\n</tbody>\n</table></div>"
+            "<div class=\"table-wrap\"><table>\n<thead><tr><th scope=\"col\">Catégorie</th><th scope=\"col\">Base</th></tr></thead>\n<tbody>\n<tr><td>Compte</td><td>Contrat</td></tr>\n</tbody>\n</table></div>"
         );
     }
 
