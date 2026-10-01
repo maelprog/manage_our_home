@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT platform, endpoint, created_at, last_success_at, consecutive_failures\n           FROM push_subscriptions WHERE user_id = $1 ORDER BY created_at",
+  "query": "SELECT platform, endpoint, created_at, last_seen_at, last_success_at,\n                  consecutive_failures, failing_since\n           FROM push_subscriptions WHERE user_id = $1 ORDER BY created_at",
   "describe": {
     "columns": [
       {
@@ -38,6 +38,17 @@
       },
       {
         "ordinal": 3,
+        "name": "last_seen_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "push_subscriptions",
+            "name": "last_seen_at"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
         "name": "last_success_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -48,13 +59,24 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "consecutive_failures",
         "type_info": "Int4",
         "origin": {
           "Table": {
             "table": "push_subscriptions",
             "name": "consecutive_failures"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "failing_since",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "push_subscriptions",
+            "name": "failing_since"
           }
         }
       }
@@ -68,9 +90,11 @@
       false,
       false,
       false,
+      false,
       true,
-      false
+      false,
+      true
     ]
   },
-  "hash": "eb33b430220682a20432e2764746819364076a4387356e4b83e23df8133c8123"
+  "hash": "34221421f8d9b54dba6716b2b97d312813bb55ad3d526a9f7039a2cf96ccb8b0"
 }

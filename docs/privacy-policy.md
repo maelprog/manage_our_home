@@ -42,7 +42,7 @@ données sont-elles conservées ? ».
 | Invitations | adresse email de la personne invitée (si le membre qui invite la saisit), lien d'invitation valable 7 jours ; l'email envoyé nomme le groupe et le membre qui invite | Intérêt légitime (permettre à un membre d'inviter un proche dans son groupe) |
 | Désactivation d'un compte | date à laquelle l'administrateur du service a désactivé le compte, date de l'email qui prévient de sa suppression ; si vous demandez la réactivation, la date de votre demande et le message facultatif que vous y joignez, et la date d'un refus | Intérêt légitime (exploitation et sécurité du service) |
 | Agenda | événements, tâches, pièces jointes, membres assignés à un événement | Exécution du contrat |
-| Rappels d'événements | délai choisi avant l'événement ; la façon dont vos rappels vous parviennent (notification, email ou les deux) ; pour chaque appareil où vous activez les notifications, l'adresse d'abonnement que le service de notification de votre navigateur lui attribue et ses dates d'abonnement et de dernier envoi réussi, et le nombre d'envois échoués d'affilée (50 appareils au plus par compte). L'email de rappel porte le titre et la date de l'événement ; la notification n'affiche que « Rappel d'un événement à venir » | Exécution du contrat |
+| Rappels d'événements | délai choisi avant l'événement ; la façon dont vos rappels vous parviennent (notification, email ou les deux) ; pour chaque appareil où vous activez les notifications, l'adresse d'abonnement que le service de notification de votre navigateur lui attribue et ses dates d'abonnement, de dernier renouvellement et de dernier envoi réussi, et le nombre et la date de début de ses envois échoués d'affilée (50 appareils au plus par compte). L'email de rappel porte le titre et la date de l'événement ; la notification n'affiche que « Rappel d'un événement à venir » | Exécution du contrat |
 | Stocks / recettes / liste de courses | articles, recettes, ingrédients | Exécution du contrat |
 | Budget | dépenses saisies manuellement | Exécution du contrat |
 | Messagerie | messages du fil familial (chiffrés au repos), date de votre dernière lecture du fil | Exécution du contrat |
@@ -256,10 +256,12 @@ de la purge dépasserait.
   avec eux.
 - **Appareils abonnés aux notifications** : jusqu'à ce que le service de
   notification du navigateur signale l'abonnement expiré ou retiré (il est
-  alors supprimé au premier rappel qui l'essaie), qu'il échoue 20 fois
+  alors supprimé au premier rappel qui l'essaie), que chaque envoi y
+  échoue pendant au moins 7 jours, à raison d'au moins 20 échecs
   d'affilée, que vous désabonniez vos appareils depuis « Notifications de
   rappel », ou à la purge de votre compte. Un compte garde 50 appareils au
-  plus : le 51e remplace le plus ancien.
+  plus : le 51e remplace celui qui a servi le moins récemment (dernier
+  abonnement renouvelé ou dernier envoi réussi).
 - **Assignations d'événements** : tant que l'événement existe et que
   l'assignation n'est pas retirée ; elle reste après votre départ du groupe,
   et est supprimée à la purge de votre compte.

@@ -582,6 +582,14 @@ but unusable (not 32 bytes, not a valid scalar, a subject that is not a
 `mailto:`/`https:` URI), the API refuses to start.
 
 **Keep the key.** Each browser subscription is bound to the public key it
-was made with: a new key makes every stored subscription useless, and the
-push services answer the old ones with errors until members subscribe
-again.
+was made with. After a new key, the push services refuse every push to the
+devices subscribed before it (401/403), which the worker counts as
+failures: those devices get no reminder, and their members see no warning,
+since the devices are still on record. Each device recovers when its member
+next opens a page carrying the notification block with the permission
+granted — the page sees the subscription was made with another key, drops
+it and subscribes again — or is forgotten once it has failed 20 times in a
+row over 7 days (`notifications::push::MAX_CONSECUTIVE_FAILURES`,
+`MIN_FAILING_DAYS`), after which the « no device » warning shows. A browser
+that does not expose a subscription's key keeps the old subscription and
+only recovers the second way.

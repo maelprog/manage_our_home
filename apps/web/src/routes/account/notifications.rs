@@ -151,12 +151,30 @@ pub(crate) const PUSH_SCRIPT: &str = r#"
     for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
     return out;
   }
+  // Whether `sub` was made with this server's current key. After a key
+  // rotation the browser still holds the old subscription, which every
+  // push service now refuses. A browser that does not expose the key
+  // (`options` missing) is trusted, so as not to resubscribe on each visit.
+  function sameKey(sub) {
+    if (!sub.options || !("applicationServerKey" in sub.options)) return true;
+    var held = sub.options.applicationServerKey;
+    if (!held) return false;
+    var a = new Uint8Array(held), b = bytes(key);
+    if (a.length !== b.length) return false;
+    for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
   function subscribe() {
     return navigator.serviceWorker.register("/sw.js")
       .then(function () { return navigator.serviceWorker.ready; })
       .then(function (reg) {
         return reg.pushManager.getSubscription().then(function (sub) {
-          return sub || reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: bytes(key) });
+          if (sub && sameKey(sub)) return sub;
+          // Made with another key: drop it, then subscribe again.
+          var dropped = sub ? sub.unsubscribe() : Promise.resolve();
+          return dropped.then(function () {
+            return reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: bytes(key) });
+          });
         });
       })
       .then(function (sub) {
@@ -634,6 +652,43 @@ mod tests {
             "{denied_block}"
         );
         assert_eq!(callback.matches(r#"hide("push-enable")"#).count(), 1);
+    }
+
+    #[test]
+    fn a_subscription_made_with_another_key_is_replaced_not_reposted() {
+        // After a VAPID key rotation the browser still holds a subscription
+        // bound to the old key: the push services refuse every push to it.
+        // The script must compare that key with the page's, drop the old
+        // subscription and make a new one — never post the old endpoint.
+        // A textual check — the script is never run here.
+        let subscribe = PUSH_SCRIPT
+            .split("function subscribe()")
+            .nth(1)
+            .and_then(|rest| rest.split("\n  }\n").next())
+            .expect("the script subscribes");
+        assert!(
+            subscribe.contains("applicationServerKey"),
+            "the stored subscription's key is not read: {subscribe}"
+        );
+        let compare = PUSH_SCRIPT
+            .split("function sameKey(")
+            .nth(1)
+            .expect("a key comparison exists");
+        assert!(compare.contains("sub.options"), "{compare}");
+        assert!(compare.contains("bytes(key)"), "{compare}");
+        let reuse = subscribe
+            .find("sameKey(sub)")
+            .expect("the key decides reuse");
+        let unsubscribe = subscribe
+            .find(".unsubscribe()")
+            .expect("a stale subscription is dropped");
+        let resubscribe = subscribe
+            .rfind("pushManager.subscribe(")
+            .expect("a new one is made");
+        assert!(
+            reuse < unsubscribe && unsubscribe < resubscribe,
+            "{subscribe}"
+        );
     }
 
     #[test]

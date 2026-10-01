@@ -15,7 +15,9 @@ use common::{assert_status, call, json_body, set_cookie, test_router, test_state
 use manage_our_home::jobs::scheduled_notifications::{
     send_due_notifications, NO_PUSH_SUBSCRIPTION, REMINDER_SUBJECT,
 };
-use manage_our_home::notifications::push::{PushOutcome, MAX_CONSECUTIVE_FAILURES};
+use manage_our_home::notifications::push::{
+    PushOutcome, MAX_CONSECUTIVE_FAILURES, MIN_FAILING_DAYS,
+};
 use sqlx::PgPool;
 use std::sync::Mutex;
 use uuid::Uuid;
@@ -191,7 +193,7 @@ async fn device_count(db: &PgPool) -> i64 {
 /// Controller's decision of 2026-10-01: 50 devices per account; the 51st
 /// replaces the oldest.
 #[sqlx::test]
-async fn an_account_keeps_fifty_devices_and_the_51st_replaces_the_oldest(db: PgPool) {
+async fn an_account_keeps_fifty_devices_and_the_51st_replaces_the_least_recently_used(db: PgPool) {
     let router = test_router(db.clone());
     let cookie = register_verify_login(&router, &db, "cap@example.test").await;
     for i in 0..50 {
@@ -202,13 +204,46 @@ async fn an_account_keeps_fifty_devices_and_the_51st_replaces_the_oldest(db: PgP
         );
     }
     assert_eq!(settings(&router, &cookie).await["push_subscriptions"], 50);
+    let set = |sql: &'static str, i: i32| {
+        let db = db.clone();
+        async move {
+            sqlx::query(sql)
+                .bind(format!("{FCM}-{i}"))
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+    };
     sqlx::query(
-        "UPDATE push_subscriptions SET created_at = now() - interval '1 day' WHERE endpoint = $1",
+        "UPDATE push_subscriptions
+         SET created_at = now() - interval '1 day', last_seen_at = now() - interval '1 hour'",
     )
-    .bind(format!("{FCM}-17"))
     .execute(&db)
     .await
     .unwrap();
+    // Subscribed first of all, but registered again just now: in use.
+    set(
+        "UPDATE push_subscriptions SET created_at = now() - interval '30 days' WHERE endpoint = $1",
+        17,
+    )
+    .await;
+    assert_eq!(
+        subscribe(&router, &cookie, &format!("{FCM}-17")).await,
+        StatusCode::CREATED
+    );
+    // Not registered for weeks, but delivered to just now: in use.
+    set(
+        "UPDATE push_subscriptions
+         SET last_seen_at = now() - interval '20 days', last_success_at = now() WHERE endpoint = $1",
+        5,
+    )
+    .await;
+    // Neither seen nor delivered to for ten days: the one to replace.
+    set(
+        "UPDATE push_subscriptions SET last_seen_at = now() - interval '10 days' WHERE endpoint = $1",
+        30,
+    )
+    .await;
 
     assert_eq!(
         subscribe(&router, &cookie, &format!("{FCM}-50")).await,
@@ -216,13 +251,71 @@ async fn an_account_keeps_fifty_devices_and_the_51st_replaces_the_oldest(db: PgP
     );
 
     assert_eq!(settings(&router, &cookie).await["push_subscriptions"], 50);
-    let oldest_left: i64 =
+    let left = |i: i32| {
+        let db = db.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM push_subscriptions WHERE endpoint = $1",
+            )
+            .bind(format!("{FCM}-{i}"))
+            .fetch_one(&db)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(
+        left(30).await,
+        0,
+        "the least recently used device is replaced"
+    );
+    assert_eq!(left(17).await, 1, "registered again: kept");
+    assert_eq!(left(5).await, 1, "delivered to: kept");
+    assert_eq!(left(50).await, 1);
+}
+
+/// A subscription that waited for another one of the same account (the
+/// `users` row lock) is stamped when it is written, not when its
+/// transaction began: it is the newest device, never the one replaced.
+#[sqlx::test]
+async fn a_subscription_that_waited_for_the_lock_is_not_taken_for_the_oldest(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "wait@example.test").await;
+    for i in 0..50 {
+        let endpoint = format!("{FCM}-w{i}");
+        assert_eq!(
+            subscribe(&router, &cookie, &endpoint).await,
+            StatusCode::CREATED
+        );
+    }
+
+    // Hold the account's row, as a concurrent subscription would.
+    let mut holder = manage_our_home::db::begin(&db).await.unwrap();
+    sqlx::query("SELECT id FROM users WHERE email = 'wait@example.test' FOR UPDATE")
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    let waiting = {
+        let router = router.clone();
+        let cookie = cookie.clone();
+        tokio::spawn(async move { subscribe(&router, &cookie, &format!("{FCM}-late")).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // While it waits, every other device is used after its transaction began.
+    sqlx::query("UPDATE push_subscriptions SET last_seen_at = clock_timestamp()")
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    holder.commit().await.unwrap();
+
+    assert_eq!(waiting.await.unwrap(), StatusCode::CREATED);
+    assert_eq!(device_count(&db).await, 50);
+    let late: i64 =
         sqlx::query_scalar("SELECT count(*) FROM push_subscriptions WHERE endpoint = $1")
-            .bind(format!("{FCM}-17"))
+            .bind(format!("{FCM}-late"))
             .fetch_one(&db)
             .await
             .unwrap();
-    assert_eq!(oldest_left, 0, "the oldest device is the one replaced");
+    assert_eq!(late, 1, "the device just subscribed was replaced at once");
 }
 
 /// The ceiling holds when the subscriptions arrive all at once.
@@ -568,14 +661,31 @@ async fn a_device_failing_in_a_row_is_forgotten_at_the_ceiling(db: PgPool) {
     let member = insert_user(&db, "flaky@example.test", "push").await;
     let dead = format!("{FCM}-dead");
     let flaky = format!("{FCM}-flaky");
-    add_device(&db, member, &dead).await;
-    add_device(&db, member, &flaky).await;
-    sqlx::query("UPDATE push_subscriptions SET consecutive_failures = $2 WHERE endpoint = $1")
-        .bind(&dead)
-        .bind(MAX_CONSECUTIVE_FAILURES - 1)
-        .execute(&db)
-        .await
-        .unwrap();
+    // Many failures, but all of them in the last minutes: an outage.
+    let burst = format!("{FCM}-burst");
+    for endpoint in [&dead, &flaky, &burst] {
+        add_device(&db, member, endpoint).await;
+    }
+    let failing_for = |endpoint: &str, failures: i32, days: i32| {
+        let db = db.clone();
+        let endpoint = endpoint.to_string();
+        async move {
+            sqlx::query(
+                "UPDATE push_subscriptions
+                 SET consecutive_failures = $2,
+                     failing_since = now() - make_interval(days => $3) - interval '1 minute'
+                 WHERE endpoint = $1",
+            )
+            .bind(endpoint)
+            .bind(failures)
+            .bind(days)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+    };
+    failing_for(&dead, MAX_CONSECUTIVE_FAILURES - 1, MIN_FAILING_DAYS as i32).await;
+    failing_for(&burst, 60, 0).await;
     due_reminder(&db, member).await;
 
     let failing = |_: &str| PushOutcome::Failed("push service unreachable".into());
@@ -583,7 +693,12 @@ async fn a_device_failing_in_a_row_is_forgotten_at_the_ceiling(db: PgPool) {
     assert_eq!(
         failures(&db, &dead).await,
         None,
-        "the dead device is forgotten"
+        "the device failing for a week is forgotten"
+    );
+    assert_eq!(
+        failures(&db, &burst).await,
+        Some(61),
+        "an outage forgets nothing"
     );
     assert_eq!(failures(&db, &flaky).await, Some(1));
 
@@ -650,5 +765,7 @@ async fn the_export_carries_the_channel_and_the_devices(db: PgPool) {
     assert_eq!(devices[0]["endpoint"], FCM);
     assert_eq!(devices[0]["platform"], "web");
     assert_eq!(devices[0]["consecutive_failures"], 0);
+    assert!(devices[0]["last_seen_at"].is_string());
+    assert!(devices[0]["failing_since"].is_null());
     assert!(devices[0]["created_at"].is_string());
 }

@@ -64,16 +64,19 @@ pub async fn update_settings(
 ///
 /// An endpoint already registered — this device, subscribed under another
 /// account that signed in on it before — moves to the caller: a device
-/// receives the reminders of whoever subscribed on it last. The same
-/// device registered again by the same account (the page does it on every
-/// view once the permission is granted) keeps its dates.
+/// receives the reminders of whoever subscribed on it last, with a fresh
+/// record. The same device registered again by the same account (the page
+/// does it on every view once the permission is granted) keeps its record
+/// and only has `last_seen_at` moved.
 ///
 /// An account keeps [`MAX_DEVICES_PER_ACCOUNT`] devices: the one beyond
-/// replaces the oldest (by `created_at`). The caller's `users` row is
-/// locked for the transaction, so concurrent subscriptions of one account
-/// are counted one after the other and the ceiling holds; `created_at` is
-/// the wall clock at the insert (`clock_timestamp()`), not the
-/// transaction's start, so the one that waited is not taken for the oldest.
+/// replaces the device least recently in use — registered (`last_seen_at`)
+/// or delivered to (`last_success_at`), whichever is later. The caller's
+/// `users` row is locked for the transaction, so concurrent subscriptions
+/// of one account are counted one after the other and the ceiling holds;
+/// the dates written are the wall clock at the write (`clock_timestamp()`),
+/// not the transaction's start, so a subscription that waited for the lock
+/// is not taken for the least recent.
 pub async fn subscribe(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -92,12 +95,19 @@ pub async fn subscribe(
     .fetch_one(&mut *tx)
     .await?;
     sqlx::query!(
-        r#"INSERT INTO push_subscriptions (user_id, endpoint, created_at)
-           VALUES ($1, $2, clock_timestamp())
-           ON CONFLICT (endpoint) DO UPDATE
-           SET user_id = EXCLUDED.user_id, created_at = EXCLUDED.created_at, last_success_at = NULL,
-               consecutive_failures = 0
-           WHERE push_subscriptions.user_id <> EXCLUDED.user_id"#,
+        r#"INSERT INTO push_subscriptions (user_id, endpoint, created_at, last_seen_at)
+           VALUES ($1, $2, clock_timestamp(), clock_timestamp())
+           ON CONFLICT (endpoint) DO UPDATE SET
+               last_seen_at = EXCLUDED.last_seen_at,
+               user_id = EXCLUDED.user_id,
+               created_at = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id
+                   THEN push_subscriptions.created_at ELSE EXCLUDED.created_at END,
+               last_success_at = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id
+                   THEN push_subscriptions.last_success_at END,
+               consecutive_failures = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id
+                   THEN push_subscriptions.consecutive_failures ELSE 0 END,
+               failing_since = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id
+                   THEN push_subscriptions.failing_since END"#,
         auth.user_id,
         endpoint.as_str()
     )
@@ -106,7 +116,7 @@ pub async fn subscribe(
     sqlx::query!(
         r#"DELETE FROM push_subscriptions WHERE id IN (
                SELECT id FROM push_subscriptions WHERE user_id = $1
-               ORDER BY created_at DESC, id DESC OFFSET $2)"#,
+               ORDER BY GREATEST(last_seen_at, last_success_at) DESC, id DESC OFFSET $2)"#,
         auth.user_id,
         MAX_DEVICES_PER_ACCOUNT
     )

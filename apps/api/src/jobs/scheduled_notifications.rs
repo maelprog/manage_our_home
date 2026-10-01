@@ -198,7 +198,7 @@ where
         let mut pushed = Vec::new();
         if channel.includes_push() {
             let devices = sqlx::query!(
-                r#"SELECT id, endpoint, consecutive_failures FROM push_subscriptions
+                r#"SELECT id, endpoint, consecutive_failures, failing_since FROM push_subscriptions
                    WHERE user_id = $1 ORDER BY created_at"#,
                 row.created_by,
             )
@@ -208,21 +208,30 @@ where
             for device in devices {
                 let outcome = send_push(device.endpoint, ttl).await;
                 let delivered = outcome == push::PushOutcome::Delivered;
-                match push::failures_after(&outcome, device.consecutive_failures) {
-                    // Gone, or failing once too often in a row.
-                    None => {
+                match push::device_after(
+                    &outcome,
+                    device.consecutive_failures,
+                    device.failing_since,
+                    Utc::now(),
+                ) {
+                    // Gone, or failing past both bounds.
+                    push::DeviceAfter::Forget => {
                         sqlx::query!("DELETE FROM push_subscriptions WHERE id = $1", device.id)
                             .execute(pool)
                             .await?;
                     }
-                    Some(failures) => {
+                    push::DeviceAfter::Keep {
+                        consecutive_failures,
+                        failing_since,
+                    } => {
                         sqlx::query!(
                             r#"UPDATE push_subscriptions
-                               SET consecutive_failures = $2,
-                                   last_success_at = CASE WHEN $3 THEN now() ELSE last_success_at END
+                               SET consecutive_failures = $2, failing_since = $3,
+                                   last_success_at = CASE WHEN $4 THEN now() ELSE last_success_at END
                                WHERE id = $1"#,
                             device.id,
-                            failures,
+                            consecutive_failures,
+                            failing_since,
                             delivered
                         )
                         .execute(pool)

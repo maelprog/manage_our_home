@@ -122,27 +122,66 @@ pub fn classify(status: u16) -> PushOutcome {
     }
 }
 
-/// Consecutive failed pushes after which a device is forgotten, even though
-/// its push service never answered 404 or 410 — an endpoint on a host that
-/// no longer resolves, a service that keeps refusing it. A reminder is
-/// attempted 5 times (`scheduled_notifications::MAX_SEND_ATTEMPTS`), so 20
-/// means at least four reminders in a row lost on every attempt, with no
-/// success in between: longer than a push service's outage is likely to
-/// overlap a household's reminders. A device forgotten wrongly costs little:
-/// the member gets the « no device » warning, and the page registers the
-/// device again on its next visit, the permission being still granted.
+/// A device whose push service never answers 404 or 410 but keeps failing
+/// (an endpoint on a host that no longer resolves, a service that refuses
+/// it for good) is forgotten once **both** hold, with no delivery in
+/// between: at least [`MAX_CONSECUTIVE_FAILURES`] failed pushes in a row,
+/// and the first of them at least [`MIN_FAILING_DAYS`] days old.
+///
+/// The count alone would not do: several reminders falling due in the same
+/// pass, each attempted 5 times a minute apart, reach 20 failures within a
+/// five-minute outage. The duration is what tells a dead endpoint from an
+/// outage: a push service down for a week on end is not a case to plan for.
+/// The count keeps a device that was pushed only once or twice that week
+/// from going on so little evidence. A device forgotten wrongly costs
+/// little: the member gets the « no device » warning, and the page
+/// registers the device again on its next visit, the permission being
+/// still granted.
 pub const MAX_CONSECUTIVE_FAILURES: i32 = 20;
 
-/// A device's consecutive-failure count once `outcome` is known, or `None`
-/// when the device is to be forgotten: gone (404/410), or failing for the
-/// [`MAX_CONSECUTIVE_FAILURES`]th time in a row. A delivery resets it.
-pub fn failures_after(outcome: &PushOutcome, consecutive_failures: i32) -> Option<i32> {
+/// See [`MAX_CONSECUTIVE_FAILURES`].
+pub const MIN_FAILING_DAYS: i64 = 7;
+
+/// What becomes of a device once `outcome` is known.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceAfter {
+    /// Deleted: gone (404/410), or failing past both bounds.
+    Forget,
+    /// Kept, with these failure bookkeeping values: `(0, None)` after a
+    /// delivery.
+    Keep {
+        consecutive_failures: i32,
+        failing_since: Option<DateTime<Utc>>,
+    },
+}
+
+/// The device's fate after `outcome`, from its failures in a row so far and
+/// the time of the first of them (`None` when its last push went through).
+pub fn device_after(
+    outcome: &PushOutcome,
+    consecutive_failures: i32,
+    failing_since: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> DeviceAfter {
     match outcome {
-        PushOutcome::Delivered => Some(0),
-        PushOutcome::Gone => None,
+        PushOutcome::Delivered => DeviceAfter::Keep {
+            consecutive_failures: 0,
+            failing_since: None,
+        },
+        PushOutcome::Gone => DeviceAfter::Forget,
         PushOutcome::Failed(_) => {
             let failures = consecutive_failures.saturating_add(1);
-            (failures < MAX_CONSECUTIVE_FAILURES).then_some(failures)
+            let since = failing_since.unwrap_or(now);
+            if failures >= MAX_CONSECUTIVE_FAILURES
+                && now - since >= chrono::Duration::days(MIN_FAILING_DAYS)
+            {
+                DeviceAfter::Forget
+            } else {
+                DeviceAfter::Keep {
+                    consecutive_failures: failures,
+                    failing_since: Some(since),
+                }
+            }
         }
     }
 }
@@ -444,42 +483,90 @@ mod tests {
         PushOutcome::Failed("push service answered 503".into())
     }
 
+    fn now() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 10, 20, 9, 0, 0).unwrap()
+    }
+
+    fn keep(n: i32, since: Option<DateTime<Utc>>) -> DeviceAfter {
+        DeviceAfter::Keep {
+            consecutive_failures: n,
+            failing_since: since,
+        }
+    }
+
     #[test]
-    fn a_delivery_resets_the_failure_count() {
-        assert_eq!(failures_after(&PushOutcome::Delivered, 0), Some(0));
+    fn a_delivery_resets_the_failures() {
+        let long_ago = Some(now() - Duration::days(30));
         assert_eq!(
-            failures_after(&PushOutcome::Delivered, MAX_CONSECUTIVE_FAILURES - 1),
-            Some(0)
+            device_after(&PushOutcome::Delivered, 0, None, now()),
+            keep(0, None)
+        );
+        assert_eq!(
+            device_after(&PushOutcome::Delivered, 99, long_ago, now()),
+            keep(0, None)
         );
     }
 
     #[test]
-    fn a_failure_counts_one_more() {
-        assert_eq!(failures_after(&failed(), 0), Some(1));
-        assert_eq!(failures_after(&failed(), 7), Some(8));
-    }
-
-    #[test]
-    fn the_failure_that_reaches_the_ceiling_forgets_the_device() {
+    fn a_first_failure_starts_the_clock() {
         assert_eq!(
-            failures_after(&failed(), MAX_CONSECUTIVE_FAILURES - 2),
-            Some(MAX_CONSECUTIVE_FAILURES - 1)
-        );
-        assert_eq!(
-            failures_after(&failed(), MAX_CONSECUTIVE_FAILURES - 1),
-            None
-        );
-        // A count already past it (the ceiling lowered since) goes too.
-        assert_eq!(
-            failures_after(&failed(), MAX_CONSECUTIVE_FAILURES + 5),
-            None
+            device_after(&failed(), 0, None, now()),
+            keep(1, Some(now()))
         );
     }
 
     #[test]
-    fn a_gone_device_is_forgotten_whatever_its_count() {
-        assert_eq!(failures_after(&PushOutcome::Gone, 0), None);
-        assert_eq!(failures_after(&PushOutcome::Gone, 3), None);
+    fn a_later_failure_counts_one_more_and_keeps_the_start() {
+        let since = Some(now() - Duration::hours(3));
+        assert_eq!(device_after(&failed(), 7, since, now()), keep(8, since));
+    }
+
+    #[test]
+    fn many_failures_within_the_week_keep_the_device() {
+        // Several reminders due in one pass, 5 attempts each: dozens of
+        // failures inside an outage of minutes.
+        let since = Some(now() - Duration::minutes(5));
+        assert_eq!(device_after(&failed(), 99, since, now()), keep(100, since));
+        let since = Some(now() - Duration::days(MIN_FAILING_DAYS) + Duration::seconds(1));
+        assert_eq!(
+            device_after(&failed(), MAX_CONSECUTIVE_FAILURES, since, now()),
+            keep(MAX_CONSECUTIVE_FAILURES + 1, since)
+        );
+    }
+
+    #[test]
+    fn a_week_of_failures_with_too_few_of_them_keeps_the_device() {
+        let since = Some(now() - Duration::days(30));
+        assert_eq!(
+            device_after(&failed(), MAX_CONSECUTIVE_FAILURES - 2, since, now()),
+            keep(MAX_CONSECUTIVE_FAILURES - 1, since)
+        );
+    }
+
+    #[test]
+    fn enough_failures_over_a_week_forget_the_device() {
+        let since = Some(now() - Duration::days(MIN_FAILING_DAYS));
+        assert_eq!(
+            device_after(&failed(), MAX_CONSECUTIVE_FAILURES - 1, since, now()),
+            DeviceAfter::Forget
+        );
+        let since = Some(now() - Duration::days(40));
+        assert_eq!(
+            device_after(&failed(), MAX_CONSECUTIVE_FAILURES + 5, since, now()),
+            DeviceAfter::Forget
+        );
+    }
+
+    #[test]
+    fn a_gone_device_is_forgotten_whatever_its_record() {
+        assert_eq!(
+            device_after(&PushOutcome::Gone, 0, None, now()),
+            DeviceAfter::Forget
+        );
+        assert_eq!(
+            device_after(&PushOutcome::Gone, 3, Some(now()), now()),
+            DeviceAfter::Forget
+        );
     }
 
     // -- TTL ----------------------------------------------------------------
