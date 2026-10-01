@@ -924,6 +924,102 @@ async fn export_accounts_for_every_table(db: PgPool) {
     }
 }
 
+/// Issue #299: the same bookkeeping, one level down. The table-level guard
+/// above passes as soon as a table is listed, so a new column referencing
+/// `users(id)` in a table it already covers would slip through it — and
+/// through `account_export_group_ids()` (0019), which lists its columns by
+/// hand. Every such column is accounted for here: read by the export, or
+/// left out for a stated reason. A column added without deciding which
+/// fails here.
+#[sqlx::test]
+async fn export_accounts_for_every_column_referencing_users(db: PgPool) {
+    // Family-scoped columns: `account_export_group_ids()` (0019) must name
+    // each of them, or the rows a person wrote in a group they have left
+    // drop out of the export. Adding one here means adding it there, in a
+    // new migration.
+    const FAMILY_SCOPED: &[(&str, &str)] = &[
+        ("groups", "created_by"),
+        ("group_members", "user_id"),
+        ("events", "created_by"),
+        ("event_assignees", "user_id"),
+        ("event_attachments", "uploaded_by"),
+        ("event_occurrence_completions", "completed_by"),
+        ("stock_items", "created_by"),
+        ("recipes", "created_by"),
+        ("meal_history", "created_by"),
+        ("grocery_items", "created_by"),
+        ("budget_entries", "created_by"),
+        ("messages", "created_by"),
+        ("message_read_state", "user_id"),
+        ("calendar_imports", "created_by"),
+        ("invitations", "created_by"),
+    ];
+    // Account-scoped columns: read directly on the user's id, no group.
+    const ACCOUNT_SCOPED: &[(&str, &str)] = &[
+        ("sessions", "user_id"),
+        ("oauth_identities", "user_id"),
+        ("email_verification_tokens", "user_id"),
+        ("password_reset_tokens", "user_id"),
+        ("audit_log", "actor_user_id"),
+    ];
+    const LEFT_OUT: &[(&str, &str, &str)] = &[
+        (
+            "account_reactivation_requests",
+            "user_id",
+            "exists only while the account is deactivated, when AuthUser refuses the export",
+        ),
+        // The comment of 0019 says its list follows "every column that
+        // references users(id)"; this one is not in it, and need not be.
+        (
+            "invitations",
+            "consumed_by",
+            "never written: accepting an invitation deletes the row",
+        ),
+    ];
+
+    let mut columns: Vec<String> = sqlx::query_scalar(
+        "SELECT c.conrelid::regclass::text || '.' || a.attname::text
+         FROM pg_constraint c
+         CROSS JOIN LATERAL unnest(c.conkey) AS k(attnum)
+         JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+         WHERE c.contype = 'f' AND c.confrelid = 'public.users'::regclass",
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    columns.sort();
+    let mut accounted: Vec<String> = FAMILY_SCOPED
+        .iter()
+        .chain(ACCOUNT_SCOPED)
+        .copied()
+        .chain(LEFT_OUT.iter().map(|(t, c, _)| (*t, *c)))
+        .map(|(t, c)| format!("{t}.{c}"))
+        .collect();
+    accounted.sort();
+    assert_eq!(columns, accounted);
+
+    // And each family-scoped column is matched against the caller in the
+    // function itself. Its branches read `<table> <alias>` and
+    // `<alias>.<column> = me.id`; the check is on the text, so it catches a
+    // forgotten table or column name, not a column matched under another
+    // table's alias.
+    let definition: String =
+        sqlx::query_scalar("SELECT pg_get_functiondef('account_export_group_ids()'::regprocedure)")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    for (table, column) in FAMILY_SCOPED {
+        assert!(
+            definition.contains(&format!(" {table} ")),
+            "account_export_group_ids() does not read {table}"
+        );
+        assert!(
+            definition.contains(&format!(".{column} = me.id")),
+            "account_export_group_ids() does not match {table}.{column} on the caller"
+        );
+    }
+}
+
 /// Issue #140: the two functions of 0019 look across families, so PUBLIC
 /// cannot run them; a role holding only table grants is refused.
 #[sqlx::test]
