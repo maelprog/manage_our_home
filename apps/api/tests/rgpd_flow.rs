@@ -1004,9 +1004,10 @@ async fn export_accounts_for_every_column_referencing_users(db: PgPool) {
     // a column passes only if one branch does both for it, so a removed
     // branch, or one that keeps its table but compares another column,
     // fails here even when other branches join the same table or compare a
-    // column of the same name. The check reads the text: it does not prove
-    // that the branch returns the right group id, nor that no extra
-    // condition empties it.
+    // column of the same name. The check reads the text, SQL comments
+    // included: a branch commented out with `--` still satisfies it. Nor
+    // does it prove that the branch returns the right group id, or that no
+    // extra condition empties it.
     let definition: String =
         sqlx::query_scalar("SELECT pg_get_functiondef('account_export_group_ids()'::regprocedure)")
             .fetch_one(&db)
