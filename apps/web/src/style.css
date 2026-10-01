@@ -31,15 +31,13 @@
   /* Semantics. Success and warning did not exist: .notice.success borrowed
      the accent, so a confirmation looked exactly like a neutral notice, and
      there was nothing to warn with. Each -soft value is the tinted surface
-     its plain half is read on. Measured here: error 5.41:1, success 4.43:1,
-     warning 4.06:1 — the last two land just under the 4.5:1 DESIGN.md asks
-     for, which is #74's contrast pass to settle (both are already far above
-     the 2.51:1 .notice.success ships with today in dark). The values are
-     DESIGN.md's as written; retuning them is that issue's call, not this
-     one's. */
-  --success: #3f7a34;
+     its plain half is read on. Success and warning first shipped at 4.43:1
+     and 4.06:1, under AA; #74 darkened both plain halves just past 4.5:1
+     and left the tints alone. Every pair here is computed in app.rs
+     (`every_text_colour_the_sheet_paints_meets_aa_in_both_themes`). */
+  --success: #3e7733;
   --success-soft: #e6f0e2;
-  --warning: #9a6b10;
+  --warning: #8e630f;
   --warning-soft: #f7eeda;
   --error: #a8342a;
   --error-soft: #f7e5e2;
@@ -47,7 +45,7 @@
   /* Member ramp, assigned by a stable hash of the user id — GroupMember has
      no colour column and needs none. Colour is never the only carrier of the
      information (WCAG 1.4.1): it always accompanies an initial or a name. */
-  --m1: #7a5ea8; --m2: #2f7a9e; --m3: #4b8b4a; --m4: #b07a2e;
+  --m1: #7a5ea8; --m2: #2f7a9e; --m3: #457f44; --m4: #976928;
   --m5: #a8555c; --m6: #55707e; --m7: #8a6d3b; --m8: #6a6aa8;
   /* Spacing, 4px base. The names are DESIGN.md's: --s2 is the 2px half-step,
      which is why the 8px step is --s2x and not --s2. */
@@ -86,12 +84,14 @@
     --border: #38352f;
     --hover: #2e2c28;
     /* Lightened until it works as text, which is the constraining use:
-       7.03:1 on --bg, 6.29:1 on --surface, 4.88:1 on --accent-soft. Solid
+       7.03:1 on --bg, 6.29:1 on --surface, 5.16:1 on --accent-soft. Solid
        accent surfaces flip their text with --accent-fg — white on this teal
        would be 2.50:1 — hence #10201f, which reads 6.73:1 here. */
     --accent: #4fb3af;
     --accent-fg: #10201f;
-    --accent-soft: #1e3a39;
+    /* Darkened by #74 from #1e3a39, which put --muted at 4.38:1 on today's
+       cell when today falls outside the month on screen. */
+    --accent-soft: #1c3635;
     /* The hover halves lighten here rather than darken: on a dark ground it
        is the lighter surface that reads as "under the pointer". */
     --accent-hover: #6ec7c3;
@@ -179,9 +179,8 @@ h3 { font-size: var(--t-lg); margin: var(--s4) 0 var(--s1); }
   background: var(--surface);
   border-top: 1px solid var(--border);
 }
-/* --s12 is 48px, over the 44px DESIGN.md → Espacement asks for; the sidebar
-   links keep it, a pointer target being no smaller. */
-.tabs .navlink { display: flex; flex: 1 0 auto; align-items: center; justify-content: center; min-height: var(--s12); }
+/* A tab stretches to share the bar; its height is every nav link's, below. */
+.tabs .navlink { flex: 1 0 auto; justify-content: center; }
 /* The sidebar is the override and not the other way round: a `min-width` /
    `max-width` pair leaves a hole between 860 and 861 CSS pixels, which a
    zoomed viewport lands in. */
@@ -223,14 +222,18 @@ form { display: flex; flex-direction: column; gap: var(--s3); margin: 0; }
    case with no class at all; `.field` is the name DESIGN.md gives it, worn
    by a block that is not itself a label. `.inline` is the checkbox row. */
 label, .field { display: flex; flex-direction: column; gap: var(--s1); font-size: var(--t-sm); }
-.field.inline { flex-direction: row; align-items: center; gap: var(--s2x); font-weight: 400; }
+/* The row, not the 13px native box, is what a finger aims at: the label
+   toggles its checkbox, so its height is the target (#74). */
+.field.inline { flex-direction: row; align-items: center; gap: var(--s2x); font-weight: 400; min-height: var(--s12); }
 input, select, textarea {
   font-size: var(--t-base);
   /* No form control inherits the page font by default: measured in Chromium,
      a textarea rendered monospace, an input Arial, a datetime-local
      monospace — three faces in one form, none of them the body's. */
   font-family: inherit;
-  padding: var(--s2x) var(--s3);
+  /* --s3 all round, for the 44px DESIGN.md → Espacement asks of a field
+     (#74): the line box plus 8px each side came to 40px. */
+  padding: var(--s3);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--bg);
@@ -244,7 +247,11 @@ button, .btn {
      self-hosted families landed (#67), next to text set in Source Sans 3. */
   font-family: inherit;
   display: inline-block;
-  padding: var(--s2x) var(--s3);
+  /* 44px both ways (#74), with the fields above: the padding gives the
+     height, the floor gives the width to a button of one glyph — the
+     agenda's ◀ / ▶, ~38px wide on their padding alone. */
+  padding: var(--s3);
+  min-width: var(--s12);
   border-radius: var(--r-md);
   /* The border is the accent the button sits on, not the neutral --border it
      used to carry (audit §4.4): a teal button ringed in warm grey read as an
@@ -280,14 +287,16 @@ button.secondary.danger, .btn.secondary.danger {
   color: var(--error);
 }
 /* An action inside dense content: a row's controls, a disclosure summary.
-   --t-sm is the scale's size for actions. */
-button.sm, .btn.sm { font-size: var(--t-sm); padding: var(--s1) var(--s2x); }
+   --t-sm is the scale's size for actions. Smaller type, not a smaller box:
+   its own 4px padding made a 30px target, which #74 gave back. */
+button.sm, .btn.sm { font-size: var(--t-sm); }
 /* A disclosure's own trigger — the messagerie's "Modifier", which wore
    `btn secondary sm`: a <summary> rendered as a button, audit §5's component
    hijack. It opens a panel, and the native marker says so where the button
    box hid it. From the system it takes what makes it read as an action: the
-   accent, the action size, and the pointer no browser gives a <summary>. */
-summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); }
+   accent, the action size, and the pointer no browser gives a <summary>.
+   The padding is its target: one line of --t-sm is 20px tall (#74). */
+summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); padding: var(--s3) 0; }
 
 /* -- Components ----------------------------------------------------------
    The patterns the routes used to retype: 173 inline `style="…"` attributes
@@ -319,7 +328,8 @@ summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); }
    bar DESIGN.md → Layout already describes, in `--accent` because it says
    *you*. *Who* is the coloured initial beside the name, so the hue is never
    the only carrier (WCAG 1.4.1). `--accent-soft` would have read louder but
-   puts `--muted` at 4.39:1 in dark, and retuning that pair is #74's. */
+   put `--muted` at 4.38:1 in dark when this was written; #74 has since
+   darkened it for today's cell, which shows the same pair. */
 .list-row.mine { background: var(--surface); border-left: var(--s1) solid var(--accent); padding-left: var(--s2x); }
 /* A group of controls: buttons side by side, a filter form, a table's
    actions cell. */
@@ -373,9 +383,9 @@ summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); }
   color: var(--fg);
 }
 /* The one that has to be read as a problem — "Stock bas". A solid --error
-   with --accent-fg on it, which is 6.2:1 in light and 6.2:1 in dark; the
-   --warning pair DESIGN.md gives would be 4.06:1 in light, under AA, and
-   that is #74's contrast pass to settle. */
+   with --accent-fg on it, which is 6.2:1 in light and 6.2:1 in dark. It
+   took that over the --warning pair while the latter was under AA in
+   light; #74 fixed the pair and left this badge as it was. */
 .badge.warn { background: var(--error); color: var(--accent-fg); }
 /* A member's initial in their ramp colour. The hue is the only thing the
    route passes in (`app::member_colour`); it lands on `color`, not on a
@@ -383,18 +393,15 @@ summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); }
    member's coloured initial and the ramp has no companion token to flip a
    foreground over a solid one.
 
-   Contrast, measured (WCAG 2.x, sRGB) on the ground the members list
-   actually sits on, `--bg`: **--m4 is 3.55:1 and --m3 3.95:1, both under
-   the 4.5:1 this 13px 600-weight text needs**. The other six run 4.57:1 to
-   5.04:1, and on `--surface` every figure shifts about +0.2 the same way.
-   The dark theme is comfortable throughout — floor 6.01:1 on `--bg`,
-   5.37:1 on `--surface`.
-
-   Those two are the values DESIGN.md → Couleur → Couleurs par membre writes
-   down, so retuning them is #74's contrast pass and not this issue's call —
-   the same decision already recorded for `.notice.success` (4.43:1) and
-   `.notice.warning` (4.06:1). The letter is never the only carrier of the
-   information: the member's name sits next to it (WCAG 1.4.1). */
+   Contrast: --m4 and --m3 shipped at 3.55:1 and 3.95:1 on `--bg`, under
+   the 4.5:1 this 13px 600-weight text needs. #74 darkened those two just
+   past it. The avatar also paints its own `--surface` ground: on a hovered
+   `.list-row` (`--hover`) six of the eight hues fell to 4.16–4.44:1 in
+   light, and a row's hover should not cost its initial its contrast. So
+   app.rs computes all eight on `--surface`, alone and mixed as
+   `combined_member_colour` mixes them, in both themes. The letter is never
+   the only carrier of the information: the member's name sits next to it
+   (WCAG 1.4.1). */
 .avatar {
   display: inline-flex;
   align-items: center;
@@ -405,6 +412,7 @@ summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); }
   border-radius: var(--r-sm);
   font-size: var(--t-xs);
   font-weight: 600;
+  background: var(--surface);
 }
 /* An occurrence inside a calendar day. `color` is stated: the sheet has no
    `a { color }`, so a chip fell to the UA's #0000EE — 1.48:1 on --hover. */
@@ -443,18 +451,17 @@ dl { font-size: var(--t-sm); }
 dt { color: var(--muted); font-size: var(--t-xs); margin-top: var(--s2x); }
 dd { margin: var(--s2) 0 0 0; }
 .pw-wrap { position: relative; display: flex; }
-.pw-wrap input { flex: 1; padding-right: 2.6rem; }
+/* The show/hide toggle is the field's whole right end: as tall as the
+   field and the buttons' --s12 wide, where it used to be its 18px icon plus
+   a 4px padding, ~28px (#74). The field keeps its text clear of it. */
+.pw-wrap input { flex: 1; padding-right: var(--s12); }
 .pw-toggle {
   position: absolute;
-  right: 0.3rem;
-  top: 50%;
-  transform: translateY(-50%);
+  inset: 0 0 0 auto;
   background: transparent;
   border: none;
   color: var(--muted);
-  font-size: 1rem;
-  padding: 0.25rem 0.4rem;
-  cursor: pointer;
+  padding: 0;
 }
 .pw-toggle.shown { color: var(--accent); }
 .field-error { color: var(--error); font-size: var(--t-sm); }
@@ -476,7 +483,9 @@ dd { margin: var(--s2) 0 0 0; }
 .notice.success { background: var(--success-soft); color: var(--success); }
 .notice.warning { background: var(--warning-soft); color: var(--warning); }
 .links { margin-top: var(--s4); display: flex; flex-direction: column; gap: var(--s1); font-size: var(--t-sm); }
-.links a { color: var(--accent); }
+/* Each link of the column is a target of its own, not a word in a sentence:
+   one --t-sm line plus --s3 above and below is 44px (#74). */
+.links a { color: var(--accent); padding: var(--s3) 0; }
 .muted { color: var(--muted); font-size: var(--t-sm); }
 /* Text whose line breaks are the author's: a message in the thread, a
    recipe's method. Declared after the child-margin reset above, so that one
@@ -524,7 +533,9 @@ button.secondary:hover, .btn.secondary:hover { background: var(--hover); }
 button.danger:hover, .btn.danger:hover { background: var(--error-hover); border-color: var(--error-hover); }
 button.secondary.danger:hover, .btn.secondary.danger:hover { background: var(--error-soft); }
 .list-row:hover, .navlink:hover { background: var(--hover); }
-.chip:hover { background: var(--border); }
+/* `color` too: a done occurrence (`.chip.done`) is --muted, which measures
+   4.34:1 (light) and 4.38:1 (dark) on --border. Hovered, it reads --fg. */
+.chip:hover { background: var(--border); color: var(--fg); }
 /* A link that carries no box of its own answers with its underline, since it
    has one to thicken and a background would box a run of body text. */
 a:hover { text-decoration-thickness: 2px; }
@@ -557,9 +568,13 @@ caption, .skip-link:not(:focus) { clip-path: inset(50%); }
 /* The main navigation, out of `.muted` — it is not secondary content, it is
    what the content hangs off. The current page is named for assistive tech
    with `aria-current="page"`, and that attribute is the styling hook: the
-   tinted ground DESIGN.md reserves for the active tab, 4.99:1 in light and
-   4.88:1 in dark, plus the weight so colour is not the only carrier. */
-.navlink { padding: var(--s1) var(--s2x); border-radius: var(--r-sm); color: var(--fg); text-decoration: none; }
+   tinted ground DESIGN.md reserves for the active tab (its contrast is one
+   of the pairs app.rs computes), plus the weight so colour is not the only
+   carrier. */
+/* --s12 is 48px, over the 44px DESIGN.md → Espacement asks for, on every
+   nav link: the tabs, the sidebar a pointer uses, and "Mon compte" in the
+   header's actions, which was 30px until #74 moved the floor here. */
+.navlink { display: inline-flex; align-items: center; min-height: var(--s12); padding: var(--s1) var(--s2x); border-radius: var(--r-sm); color: var(--fg); text-decoration: none; }
 .navlink[aria-current="page"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 /* -- The agenda below the breakpoint (#71) --------------------------------
    Seven columns on 390px give ~50px a day, so the agenda stops being a grid:

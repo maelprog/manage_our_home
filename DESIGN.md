@@ -124,7 +124,7 @@ complet, plus une rampe catégorielle réservée à l'identification des membres
 | `--hover` | `#F2EFE9` | `#2E2C28` | fond au survol |
 | `--accent` | `#14706E` | `#4FB3AF` | actions primaires, liens, état actif |
 | `--accent-fg` | `#FFFFFF` | `#10201F` | texte sur `--accent` |
-| `--accent-soft` | `#E1F0EF` | `#1E3A39` | fonds teintés (jour courant, nav active) |
+| `--accent-soft` | `#E1F0EF` | `#1C3635` | fonds teintés (jour courant, nav active) |
 | `--accent-hover` | `#105855` | `#6EC7C3` | aplat plein survolé (#69) |
 
 Le pétrole remplace le `#2952cc` actuel : il évite le bleu SaaS générique et,
@@ -135,14 +135,15 @@ de succès.
 
 | Jeton | Clair | Sombre |
 |---|---|---|
-| `--success` / `--success-soft` | `#3F7A34` / `#E6F0E2` | `#7CB86C` / `#22301E` |
-| `--warning` / `--warning-soft` | `#9A6B10` / `#F7EEDA` | `#D9A441` / `#332813` |
+| `--success` / `--success-soft` | `#3E7733` / `#E6F0E2` | `#7CB86C` / `#22301E` |
+| `--warning` / `--warning-soft` | `#8E630F` / `#F7EEDA` | `#D9A441` / `#332813` |
 | `--error` / `--error-soft` | `#A8342A` / `#F7E5E2` | `#E88075` / `#3A211E` |
 | `--error-hover` | `#8C2A22` | `#F09A90` |
 
 Les deux moitiés `-hover` sont la couleur creusée (clair) ou éclaircie
 (sombre) de l'aplat qu'elles survolent, réglées pour que `--accent-fg` y reste
-au-dessus de AA : 8,2:1 et 8,5:1 en clair, 8,5:1 et 7,8:1 en sombre.
+au-dessus de AA dans les deux thèmes — ce que calcule le garde-fou de
+contraste décrit sous [Règles](#règles).
 
 Succès et avertissement **n'existent pas dans la feuille actuelle** :
 `.notice.success` emprunte aujourd'hui le bleu d'accent, ce qui rend une
@@ -158,8 +159,8 @@ n'a pas de champ couleur et n'en a pas besoin.
 |---|---|---|---|---|---|
 | `--m1` | `#7A5EA8` | `#A48BD0` | `--m5` | `#A8555C` | `#D08A90` |
 | `--m2` | `#2F7A9E` | `#64A8C8` | `--m6` | `#55707E` | `#8AA3B0` |
-| `--m3` | `#4B8B4A` | `#7DB77B` | `--m7` | `#8A6D3B` | `#B99B68` |
-| `--m4` | `#B07A2E` | `#D2A059` | `--m8` | `#6A6AA8` | `#9494CE` |
+| `--m3` | `#457F44` | `#7DB77B` | `--m7` | `#8A6D3B` | `#B99B68` |
+| `--m4` | `#976928` | `#D2A059` | `--m8` | `#6A6AA8` | `#9494CE` |
 
 **La couleur n'est jamais le seul porteur d'information** (WCAG 1.4.1) :
 elle accompagne toujours une initiale ou un nom.
@@ -175,7 +176,20 @@ elle accompagne toujours une initiale ou un nom.
   tout jeton peint derrière `--fg` doit être redéfini dans le bloc sombre,
   et aucun `var()` ne peut porter de repli.
 - **Contraste AA minimum** (4.5:1 texte normal, 3:1 texte large et bordures
-  porteuses de sens), vérifié dans **les deux thèmes**.
+  porteuses de sens), vérifié dans **les deux thèmes**. Depuis #74, c'est un
+  test et non une mesure à la main :
+  `every_text_colour_the_sheet_paints_meets_aa_in_both_themes`
+  (`apps/web/src/app.rs`) relit les valeurs des jetons dans la feuille,
+  calcule le rapport WCAG 2.x des paires texte / fond listées dans
+  `TEXT_PAIRS`, survols compris, et exige 4,5:1 dans les deux thèmes —
+  rampe des membres comprise, sur le fond `--surface` que l'avatar se
+  peint, seule et mélangée à deux ou trois comme `combined_member_colour`
+  la mélange. La liste est écrite à la main : quel jeton se pose sur quel
+  fond est un fait des règles, pas de `:root`, et **une paire que la liste
+  oublie n'est pas mesurée** — c'est ainsi que l'initiale d'un membre sur
+  une ligne survolée et une pastille faite survolée ont d'abord échappé au
+  test. Les deux règles dont dépendent ces paires-là (le fond de `.avatar`,
+  la couleur de `.chip:hover`) sont relues par le test lui-même.
 
 ---
 
@@ -187,7 +201,14 @@ elle accompagne toujours une initiale ou un nom.
   `--s8:32` `--s12:48` `--s16:64`.
 - **Cibles tactiles ≥ 44 px** sur tout élément interactif — boutons, liens de
   navigation, champs, bascule d'affichage du mot de passe, flèches du
-  calendrier. Le `.pw-toggle` actuel fait ~28 px.
+  calendrier. Les boutons et les champs tiennent la hauteur par leur
+  `padding: var(--s3)`, la largeur par `min-width: var(--s12)` ; les liens
+  de navigation, une ligne de case à cocher (`.field.inline`) et le
+  `.pw-toggle` — toute la hauteur du champ sur `--s12` de large — par
+  `--s12`. Ce que la règle donne au rendu est vérifié dans un navigateur
+  (`e2e/tests/touch-targets.spec.ts`, téléphone et PC), avec ses exceptions
+  écrites dans le test : le lien texte nu, la pastille du calendrier sur PC,
+  et la case sans libellé dont le formulaire porte un bouton équivalent.
 
 ---
 
@@ -430,9 +451,9 @@ ni `transition`, et `aria-current` n'apparaissait nulle part.
   (`app::nav_link_is_current`), pas sur un préfixe : `/` préfixe toute
   l'application et allumerait « Accueil » partout, et le segment garde le lien
   Admin — qui pointe vers l'un des deux écrans — allumé sur l'autre.
-  Le traitement visuel est le fond `--accent-soft` (4,99:1 en clair, 4,88:1 en
-  sombre) **plus** la graisse 600, pour que la couleur ne soit pas le seul
-  porteur d'information (WCAG 1.4.1).
+  Le traitement visuel est le fond `--accent-soft` (une des paires que
+  calcule le garde-fou de contraste) **plus** la graisse 600, pour que la
+  couleur ne soit pas le seul porteur d'information (WCAG 1.4.1).
 - **La navigation n'est pas du contenu secondaire.** Elle est sortie de
   `.muted` : taille de base et `--fg`, pas 0,875 rem en gris.
 - **`prefers-reduced-motion: reduce`** neutralise toutes les transitions, en
@@ -485,7 +506,8 @@ recopie pas ne peut pas périmer.
 
 **Ce que #95 n'a pas fait**, écrit ici plutôt que laissé à découvrir : la passe
 s'est arrêtée aux valeurs de budget, et **cinq passages chiffrés au présent,
-sans date ni attribution, restent dans ce document** — quatre lui préexistent,
+sans date ni attribution, restaient dans ce document** à son atterrissage
+— **deux depuis #74**, voir plus bas — quatre lui préexistent,
 le cinquième est de son fait. Le crible a été refait sur le fichier entier, au
 critère énoncé juste dessous, et non sur le seul chapitre budget : les cinq se
 répartissent sur quatre chapitres.
@@ -502,6 +524,13 @@ mesure : corriger le contrôle demande donc aussi de réécrire la ligne qui le
 mesure, faute de quoi elle survit à son propre correctif. Le quatrième
 n'appartient à aucune issue.
 
+**#74 a sorti les trois siens.** Les ratios des paires `-hover` et celui
+d'`--accent-soft` ne sont plus écrits : un garde-fou les calcule depuis la
+feuille (voir [Couleur → Règles](#règles)), ce qui est la première des deux
+sorties que le paragraphe suivant admet. La ligne du `.pw-toggle` dit
+désormais la règle qui lui donne sa taille, et renvoie au test qui la mesure
+au rendu. Restent le quatrième et le cinquième.
+
 **Le cinquième n'est pas une survivante : #95 l'a écrit.** La fraction à
 laquelle [Compression](#compression) dit qu'`encode` ramène la feuille brute
 sur le fil remplace deux poids de feuille que ce lot devait sortir — et a bien
@@ -510,7 +539,7 @@ appelle le cas le pire. Dit plutôt que contourné : ce lot a produit un défaut
 de l'espèce qu'il existe pour retirer. C'est donc une dette de #95, pas de ce
 qui l'a précédé, et elle n'appartient à aucune autre issue.
 
-Aucun des cinq n'est un chiffre que la commande ci-dessus imprime, donc aucun
+Aucun de ces cinq n'était un chiffre que la commande ci-dessus imprime, donc aucun
 ne se remplace par un renvoi vers elle : les sortir demande soit un garde-fou
 qui les calcule, soit l'issue à qui la valeur appartient. Ils périment
 exactement comme les autres — c'est une dette assumée, pas une exception au
@@ -1267,7 +1296,7 @@ quatre tours de vérification à #72.
 | 2026-07-29 | Plancher typographique remonté sous 861 px | 13 px est trop petit sur un téléphone consulté à bout de bras |
 | 2026-07-30 | Classes de soutien ajoutées au tableau des composants (#68) | Le tableau nommait les motifs, pas les primitives dont ils sont faits ; l'extraction des 181 styles inline en a réclamé neuf de plus, chacune remplaçant un motif recopié dans plusieurs routes |
 | 2026-07-30 | `--accent-bg` et `--chip-bg` retirés (#68) | Le premier était l'aplat provisoire du jour courant, remplacé par `--accent-soft` comme #66 l'annonçait ; le second n'existait que pour la pastille du calendrier, qui prend `--hover`. Plus aucun jeton hors de ce document |
-| 2026-07-30 | `.badge.warn` reste un `--error` plein (#68) | La paire `--warning` de ce document mesure 4,06:1 en clair, sous AA ; `--error` + `--accent-fg` tient 6,2:1 dans les deux thèmes. Le réglage des paires sémantiques appartient à #74 |
+| 2026-07-30 | `.badge.warn` reste un `--error` plein (#68) | La paire `--warning` de ce document mesure 4,06:1 en clair, sous AA ; `--error` + `--accent-fg` tient 6,2:1 dans les deux thèmes. Le réglage des paires sémantiques appartient à #74 *(Renvoi : la paire `--warning` passe AA depuis #74 — voir l'entrée du 2026-10-01)* |
 | 2026-07-30 | CSS inliné — décision datée, plus une propriété héritée (#83) | L'inlining n'avait jamais été argumenté : la contrainte n°2 décrivait ce que `shell()` fait. Il est conservé pour l'impossibilité structurelle du décalage CSS/markup (`include_str!`), pas pour la performance, et requalifié en arbitrage valable **sous condition de budget** |
 | 2026-07-30 | Budget de livraison : 14 KiB compressés par réponse, 10 KiB pour la feuille, 3 KiB pour les déclarations (#83) | 14 KiB est la fenêtre de congestion initiale, seul chiffre non arbitraire ; les deux autres s'en déduisent. Deux plafonds plutôt qu'un parce que « taille de la feuille » a deux réponses et deux remèdes : le brut compressé se corrige en sortant de l'inlining, les déclarations en supprimant une règle. Le second est calibré pour être atteint le premier, donc la pression ne tombe jamais sur les commentaires |
 | 2026-07-30 | `encode zstd gzip` dans `infra/Caddyfile` (#83) | Le seul écart réellement hors-norme n'était pas l'inlining mais l'absence totale de compression : 20 à 81 Ko de texte brut par navigation, aucune route ne tenant dans le premier aller-retour. Après, 7,9 à 10,1 Ko sur sept des huit routes de la nav, qui y tiennent |
@@ -1292,7 +1321,7 @@ quatre tours de vérification à #72.
 | 2026-08-03 | Pas de `rel=preload` sur les polices (#89) | La chaîne passe bien de `document → police` à `document → feuille → police`, mais `font-display: swap` fait que la police ne bloque jamais le texte : l'aller-retour de plus rallonge un FOUT. Un preload se paierait sur **chaque** page vue (~2 × 95 o) pour raccourcir un FOUT qui n'arrive qu'une fois par visiteur et par an (polices `immutable` depuis #67) — exactement le troc que #89 défait. À rouvrir si l'application est exposée publiquement |
 | 2026-08-03 | Seuil d'absurdité du mesureur : 2 048 → 1 024 o (#89) | Il ne mesurait plus rien : la feuille inlinée pesait à elle seule ~27 000 o, donc toute réponse passait. La réponse étant désormais le document, la plus légère des huit routes tombe à 1 430 o bruts et le seuil redevient ce qu'il prétend être — attraper une page d'erreur ou une coque vide |
 | 2026-08-05 | `.list-row.mine` se décide sur l'écriture, jamais sur `can_modify` (#72) | Un owner peut modifier le message d'un autre membre : marquer cette ligne comme sienne serait un mensonge sur qui a parlé, sur la seule page où « qui a dit ça » est l'information principale. `message_row` prend donc `mine` **et** `can_edit`, deux booléens distincts, là où un seul aurait suffi à faire compiler |
-| 2026-08-05 | Le message propre prend `--surface` + une barre `--accent`, pas `--accent-soft` (#72) | `--accent-soft` aurait crié plus fort, mais met `--muted` — la ligne d'identité de chaque message — à **4,382:1** en thème sombre, sous AA. `--muted` n'est garanti que sur `--bg` et `--surface` (voir [Couleur](#couleur)), et retoucher la paire appartient à #74. La barre de 4 px est celle que [Layout](#layout) décrit déjà pour identifier un membre sur une ligne ; elle porte ici `--accent` parce qu'elle dit *vous* et non *qui* — *qui* est l'initiale colorée à côté du nom (WCAG 1.4.1) |
+| 2026-08-05 | Le message propre prend `--surface` + une barre `--accent`, pas `--accent-soft` (#72) | `--accent-soft` aurait crié plus fort, mais met `--muted` — la ligne d'identité de chaque message — à **4,382:1** en thème sombre, sous AA. `--muted` n'est garanti que sur `--bg` et `--surface` (voir [Couleur](#couleur)), et retoucher la paire appartient à #74. La barre de 4 px est celle que [Layout](#layout) décrit déjà pour identifier un membre sur une ligne ; elle porte ici `--accent` parce qu'elle dit *vous* et non *qui* — *qui* est l'initiale colorée à côté du nom (WCAG 1.4.1) *(Renvoi : `--accent-soft` sombre est assombri par #74, `--muted` y passe AA — voir l'entrée du 2026-10-01)* |
 | 2026-08-05 | La zone de saisie ne colle qu'au-dessus de 861 px (#72) | Sous le point de bascule, la barre d'onglets fixe occupe déjà le bas du viewport : deux éléments collés l'un sur l'autre y mangeraient la moitié d'un écran de téléphone. Et le sélecteur est `.content > .composer`, descendant **direct** : la même classe habille le formulaire d'édition à l'intérieur d'une ligne de message, qui ne doit surtout pas se coller au viewport |
 | 2026-08-05 | Plafond des déclarations : **3 072 → 3 136** (#72) | Premier relèvement, sur arbitrage utilisateur, et il corrige une pathologie et non une gêne. À 3 071 contre 3 072, appendre un bloc de commentaire ordinaire de trois lignes à `style.css` mesure **3 072** — pile le plafond — et le suivant casse le build : `css_without_comments` retire le texte entre `/*` et `*/` mais garde le saut de ligne et l'indentation. Un garde-fou dont le remède est « supprimer une règle redondante » qui se déclenche sur un paragraphe contredit frontalement le message du test, son propre doc-comment (« There is no per-page-view prose tax left to protect anyone from ») et l'en-tête de `style.css` depuis #89 (« Write the comment »). Valeur dérivée, pas choisie : la paire s'inverse à `SHEET_CEILING × déclarations / feuille` = 11 264 × 3 071 / 10 926 = **3 166,0**, et 3 136 est le palier de 64 o en dessous — les 30 o abandonnés paient la bande dont le ratio a besoin (l'écart entre flate2 et le zlib système, remesuré sur la feuille d'aujourd'hui et non repris de #89, vaut 35 o sur la feuille et 13 o sur les déclarations ; les 30 o couvrent les 13 observés, et la borne recalculée au zlib — 3 189,6 — reste au-dessus de 3 136). Reste **107 o** de marge d'inversion contre 334 : relever ce plafond dépense de la marge d'inversion, et c'est le troc déclaré. `SHEET_CEILING` n'était pas touché *à cette date* — il l'a été le lendemain, voir l'entrée du 2026-08-06, ce qui remonte la marge d'inversion à 2 154,7 o. **Deux chiffres de cette entrée ont été corrigés depuis** (entrée du 2026-08-06 sur le tarif de la prose) : un bloc de commentaire coûte 73 à 125 o et non « ~135 puis 5 à 20 », et les déclarations ne plafonnent pas — ce plafond-ci ne sonne pas sur un commentaire parce que celui de la feuille sonne d'abord, pas par immunité. *(Renvoi : « 73 à 125 » est la plage de l'échantillon de dix, pas celle de la feuille — voir l'entrée du 2026-08-29.)* |
 | 2026-08-05 | Le `<script>` inline de la messagerie n'est **pas** émis inconditionnellement (#72) | Constat écrit par #83 dans **ce document** — `docs/design-audit.md` ne mentionne le `<script>` nulle part — et faux depuis l'origine : `page()` conditionne le script à `if live`, donc une fenêtre d'historique n'en reçoit aucun. Vérifié empiriquement. Corrigé ici plutôt que propagé une quatrième fois. Le script reste en place : `/messagerie` est à 8 204 o gzip contre 14 336 depuis #89, il n'est plus ce qui met la page dehors, et le sortir vers `/assets` sous son empreinte est la bascule de #89 rejouée sur un second actif — une issue, pas un passager d'une passe de design. |
@@ -1308,3 +1337,4 @@ quatre tours de vérification à #72.
 | 2026-08-30 | Le texte que citent deux entrées du 2026-08-06, restaté (#95) | Résidu constaté à la vérification de #92 et repris ici : ces entrées sont atterries, donc elles ne se corrigent plus, et le remède est une entrée nouvelle. Chacune cite une phrase que ce document a portée et que #72 a retirée en la corrigeant, si bien qu'un lecteur de `main` ne peut plus la localiser — `grep` n'en trouve qu'une occurrence, la citation elle-même. Les voici restatées, pour que la citation redevienne vérifiable : ce document a écrit que le relèvement de `SHEET_CEILING` comptait « ce que l'ancienne soustraction n'avait jamais à compter » (faux : #89 n'avait rien omis, elle n'avait pas chiffré), et il a écrit « `SHEET_CEILING` n'est plus relevable : 13 312 est dérivé de sa borne physique » (faux : 13 312 est le palier de KiB sous cette borne, pas la borne). Même famille, réglée au passage : la prose du corps renvoyait elle aussi à « le commit suivant de cette PR même », un pointeur que le squash efface ; elle renvoie désormais à l'entrée de journal du 2026-08-06 |
 | 2026-09-03 | La couleur d'un événement à plusieurs assignés se mélange dans le navigateur, pas sur le serveur (#73) | L'agenda gagne l'assignation (`event_assignees`, un ou plusieurs membres par événement) et la couleur rendue d'un événement en découle : celle du membre assigné, ou une moyenne pour plusieurs. « Moyenne par canal RGB » demandait en apparence des nombres — moyenner des octets côté serveur et écrire `style="color:#hex"`. Rejeté : `member_colour` ne rend jamais un hex, seulement un jeton (`--m1`..`--m8`), précisément parce que la valeur derrière diffère entre les thèmes clair et sombre (`:root` / `@media (prefers-color-scheme: dark)`) — moyenner des octets aurait figé le résultat sur les octets d'**un** thème, celui actif au moment du calcul, reconstituant pour ce cas précis exactement la classe de bug que `.claude/CLAUDE.md` nomme (« c'est ce motif qui a cassé le thème sombre de l'agenda sans que personne le voie ») et que l'interdiction des replis `var(--x, #hex)` existe pour fermer. `combined_member_colour` (`apps/web/src/app.rs`) mélange donc les **jetons**, pas leurs octets : un seul assigné rend `var(--mN)`, plusieurs chaînent `color-mix(in srgb, …)` un à un, chaque nouvelle couleur pesant `1/(k+1)` où `k+1` est le compte mélangé jusque-là — l'identité d'une moyenne glissante exprimée en mélanges deux-à-deux. `color-mix(in srgb, …)` mélange chaque canal linéairement : c'est l'arithmétique que « moyenne par canal RGB » demandait, exécutée par le navigateur sur des valeurs que cette fonction ne connaît jamais en nombres, et le résultat continue de suivre la déclaration claire/sombre de chaque jeton d'origine au lieu de la geler. Le résultat n'est délibérément **pas** l'un des huit jetons de la rampe pour plus d'un assigné — exception étroite au système de jetons, actée pour ce cas précis, pas un précédent pour des couleurs calculées ailleurs. Câblé sur `agenda_row` (`apps/web/src/routes/home.rs`), où l'attribut `style="color:…"` existait déjà (#68) : seul le contenu change, aucun site `style=` de plus, donc `INLINE_STYLE_CEILING` (6, sans marge depuis #72) ne bouge pas. `/agenda` (la grille mensuelle/hebdomadaire, `apps/web/src/routes/agenda/calendar.rs`) reste sans couleur par assigné dans ce lot : son propre commentaire de module documente déjà le coût que cela ajouterait (une requête membres de plus, et WCAG 1.4.1 exige le nom à côté de la teinte sur chaque puce, pas seulement dans le tableau de bord) — décision antérieure à #73, non rouverte ici faute de temps pour la traiter avec le même soin, signalée dans le corps de la PR plutôt que forcée |
 | 2026-09-28 | Le jeton de réinitialisation expire en 1 h et disparaît à l'usage (#279) | Correction de l'entrée du 2026-07-30 sur BREACH, atterrie donc gelée : elle dit la péremption vérifiée à 24 h, ce qui était exact à sa date. L'arbitrage du 2026-09-19 l'a ramenée à 1 h (`PASSWORD_RESET_TTL_HOURS`, `apps/api/src/auth/mod.rs`), appliquée par #273, qui supprime aussi le jeton à l'usage au lieu de le marquer consommé : l'usage unique tient à la suppression de la ligne, et un second usage répond 404. Le raisonnement BREACH de l'entrée corrigée n'en dépend pas — la page n'a toujours qu'une variable, le jeton |
+| 2026-10-01 | Cinq jetons changent de valeur pour tenir AA, et le contraste devient un test (#74) | Arbitrage utilisateur du 2026-10-01, qui approuve explicitement les cinq valeurs ci-dessous. Deux paires avaient été laissées à #74 par l'entrée du 2026-07-30 (`--success`, `--warning`), une par celle du 2026-08-05 (`--muted` sur `--accent-soft` en sombre) ; les teintes `--m3` et `--m4` l'étaient par le commentaire de `.avatar` dans la feuille. Mesuré ici en WCAG 2.x sur les valeurs de la feuille : en clair, `--success` sur `--success-soft` 4,43:1, `--warning` sur `--warning-soft` 4,06:1, `--m3` et `--m4` sur `--bg` 3,95:1 et 3,55:1 ; en sombre, `--muted` sur `--accent-soft` 4,38:1, paire réelle — la case du jour quand il tombe hors du mois affiché, `.cal-day.outside` dans `.current`. Le remède assombrit **la moitié texte** de chaque paire, à teinte et saturation constantes, juste au-delà de 4,5:1, sans toucher aux fonds : `--success` `#3F7A34` → `#3E7733` (4,61:1), `--warning` `#9A6B10` → `#8E630F` (4,62:1), `--m3` `#4B8B4A` → `#457F44` (4,60:1 sur `--bg`), `--m4` `#B07A2E` → `#976928` (4,61:1) ; seule exception, `--accent-soft` sombre `#1E3A39` → `#1C3635`, puisque c'est le fond qu'on ne peut pas éclaircir sous le texte (4,63:1). Deux paires de survol, trouvées à la vérification, se règlent par une déclaration et non par un jeton : l'avatar peint son propre fond `--surface` (sur une ligne survolée, `--hover`, six teintes sur huit tombaient à 4,16–4,44:1 en clair), et `.chip:hover` repasse le texte en `--fg` (une pastille faite, `--muted` sur `--border`, mesurait 4,34:1 en clair et 4,38:1 en sombre). La couleur d'un membre reste accompagnée de son nom (WCAG 1.4.1). **Le contraste est désormais un test** (`every_text_colour_the_sheet_paints_meets_aa_in_both_themes`), qui calcule ces rapports depuis la feuille pour les paires qu'il liste : les ratios écrits au présent sous [Couleur](#couleur) et [Interaction et motion](#interaction-et-motion) en sortent. `.badge.warn` garde son `--error` plein |
