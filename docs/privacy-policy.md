@@ -92,8 +92,16 @@ possibles sont :
   invitation à un groupe, rappel d'événement et avertissement avant la
   suppression d'un compte désactivé — les cinq seuls emails que ce service
   envoie. Mailjet reçoit l'adresse du destinataire, l'objet et le
-  corps de chacun : l'objet d'un rappel reprend le titre de l'événement, et
-  le corps d'une invitation nomme le groupe et le membre qui invite. C'est un
+  corps de chacun : le corps d'un rappel reprend le titre et la date de
+  l'événement, et le corps d'une invitation nomme le groupe et le membre qui
+  invite. L'objet d'un rappel, lui, ne nomme aucun événement : c'est toujours
+  « Rappel d'un événement à venir ». Un titre peut être sensible (un examen
+  médical, un rendez-vous chez un professionnel) : il ne figure donc pas
+  dans l'objet, la ligne que la liste des messages affiche en premier. Il
+  reste en revanche dans le corps, au début de sa première ligne, si bien
+  que l'aperçu que la plupart des messageries et des notifications
+  affichent sous l'objet le montre ; et Mailjet comme votre fournisseur de
+  messagerie le reçoivent avec le corps. Mailjet est un
   sous-traitant du responsable de traitement, inscrit à son registre des
   traitements. Le cadre contractuel qui les lie au titre de l'article 28 du
   RGPD sera indiqué ici avant l'ouverture du service : [cadre contractuel du

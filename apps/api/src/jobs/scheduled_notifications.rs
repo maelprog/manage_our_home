@@ -1,5 +1,7 @@
 use std::time::Duration as StdDuration;
 
+use chrono::{DateTime, Utc};
+use manage_our_home_shared::validation::rgpd::sanitize_email_line;
 use sqlx::PgPool;
 use tokio::time::interval;
 use uuid::Uuid;
@@ -144,20 +146,33 @@ where
             continue;
         };
 
-        let subject = format!("Rappel : {}", row.title);
-        let body = format!(
-            "Rappel pour « {} » prévu le {}.",
-            row.title,
-            row.occurrence_at.format("%d/%m/%Y %H:%M")
-        );
+        let body = reminder_email_body(&row.title, row.occurrence_at);
 
-        match send(to, subject, body).await {
+        match send(to, REMINDER_SUBJECT.to_owned(), body).await {
             Ok(()) => mark_sent(pool, row.id).await?,
             Err(e) => mark_failed(pool, row.id, row.attempts, &e.to_string()).await?,
         }
     }
 
     Ok(())
+}
+
+/// Subject of every reminder email. It names no event (#146): a title can
+/// be sensitive (« IRM », « rendez-vous Dr X »), and the subject is the part
+/// of an email that travels furthest and is protected least — it shows in
+/// the recipient's message list and is indexed by their mail provider. The
+/// title goes in the body only; `docs/privacy-policy.md` records the choice.
+pub const REMINDER_SUBJECT: &str = "Rappel d'un événement à venir";
+
+/// Body of a reminder email. The title is user input travelling into a
+/// `text/plain` email, so it goes through `sanitize_email_line` first: no
+/// line break, no invisible character, and a bounded length (#269).
+fn reminder_email_body(title: &str, occurrence_at: DateTime<Utc>) -> String {
+    format!(
+        "Rappel pour « {} » prévu le {}.",
+        sanitize_email_line(title),
+        occurrence_at.format("%d/%m/%Y %H:%M")
+    )
 }
 
 /// Refuses a pool whose role does not bypass RLS, like the other workers
@@ -223,4 +238,55 @@ async fn mark_failed(pool: &PgPool, id: Uuid, attempts: i32, error: &str) -> any
     .execute(pool)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn at() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 10, 3, 14, 30, 0).unwrap()
+    }
+
+    #[test]
+    fn subject_names_no_event() {
+        assert_eq!(REMINDER_SUBJECT, "Rappel d'un événement à venir");
+    }
+
+    #[test]
+    fn body_carries_title_and_date() {
+        assert_eq!(
+            reminder_email_body("Dîner", at()),
+            "Rappel pour « Dîner » prévu le 03/10/2026 14:30."
+        );
+    }
+
+    #[test]
+    fn body_title_cannot_open_a_line() {
+        let body = reminder_email_body("IRM\r\nBcc: x@example.test\n\nfaux paragraphe", at());
+        assert!(!body.contains(['\n', '\r']), "{body:?}");
+        assert_eq!(
+            body,
+            "Rappel pour « IRM Bcc: x@example.test faux paragraphe » prévu le 03/10/2026 14:30."
+        );
+    }
+
+    #[test]
+    fn body_title_loses_invisible_characters() {
+        assert_eq!(
+            reminder_email_body("Pis\u{202e}cine\u{200b}", at()),
+            "Rappel pour « Piscine » prévu le 03/10/2026 14:30."
+        );
+    }
+
+    #[test]
+    fn body_title_is_bounded() {
+        let long = "a".repeat(10_000);
+        let expected_title = format!("{}…", "a".repeat(80));
+        assert_eq!(
+            reminder_email_body(&long, at()),
+            format!("Rappel pour « {expected_title} » prévu le 03/10/2026 14:30.")
+        );
+    }
 }

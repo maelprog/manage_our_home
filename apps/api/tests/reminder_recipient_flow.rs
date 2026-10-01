@@ -16,7 +16,7 @@ mod common;
 
 use common::{drop_prescribed_role, prescribed_role_pool};
 use manage_our_home::jobs::account_purge::purge_account;
-use manage_our_home::jobs::scheduled_notifications::send_due_notifications;
+use manage_our_home::jobs::scheduled_notifications::{send_due_notifications, REMINDER_SUBJECT};
 use sqlx::PgPool;
 use std::sync::Mutex;
 use uuid::Uuid;
@@ -114,7 +114,7 @@ async fn an_active_creator_gets_its_due_reminder(db: PgPool) {
     let sent = pass(&db).await;
     assert_eq!(
         sent,
-        vec![("active@example.test".into(), "Rappel : Dîner".into())]
+        vec![("active@example.test".into(), REMINDER_SUBJECT.into())]
     );
     assert_eq!(notification(&db, due).await, ("sent".into(), 0));
     assert!(pass(&db).await.is_empty());
@@ -148,7 +148,7 @@ async fn a_deactivated_creator_gets_no_reminder(db: PgPool) {
     let sent = pass(&db).await;
     assert_eq!(
         sent,
-        vec![("active@example.test".into(), "Rappel : Dîner".into())]
+        vec![("active@example.test".into(), REMINDER_SUBJECT.into())]
     );
     assert_eq!(notification(&db, theirs).await, ("failed".into(), 0));
     assert_eq!(notification(&db, later).await, ("pending".into(), 0));
@@ -197,7 +197,7 @@ async fn a_purged_creator_gets_no_reminder(db: PgPool) {
     let sent = pass(&db).await;
     assert_eq!(
         sent,
-        vec![("active@example.test".into(), "Rappel : Dîner".into())]
+        vec![("active@example.test".into(), REMINDER_SUBJECT.into())]
     );
     assert_eq!(notification(&db, theirs).await, ("failed".into(), 0));
     assert_eq!(notification(&db, mine).await, ("sent".into(), 0));
