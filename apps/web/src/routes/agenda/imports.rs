@@ -521,7 +521,7 @@ fn delete_page(import: &CalendarImportResponse) -> String {
 <li>Par défaut, ils <strong>restent dans l'agenda</strong> de la famille : ils deviennent des événements ordinaires, que vous pouvez modifier ou supprimer un par un.</li>
 <li>Si vous cochez la case ci-dessous, ils sont <strong>supprimés en même temps</strong> que la connexion — avec, pour chacun, ses rappels, ses pièces jointes et ce qui a été coché comme fait. Cela ne se limite pas à ce qui vient de Google : c'est aussi ce que votre famille a ajouté sur ces événements depuis l'import.</li>
 </ul>
-<p><label><input type="checkbox" name="delete_events" value="true"> Supprimer aussi les événements que cet agenda a importés</label></p>
+<p><label class="field inline"><input type="checkbox" name="delete_events" value="true"> Supprimer aussi les événements que cet agenda a importés</label></p>
 </section>
 <section class="notice error">
 <p>Dans les deux cas : si vous reconnectez le même agenda plus tard, ses événements seront <strong>ré-importés en double</strong> à côté de ceux qui restent — le lien qui permettait de les reconnaître aura disparu.</p>

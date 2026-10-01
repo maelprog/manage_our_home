@@ -1308,7 +1308,7 @@ mod tests {
     const TEXT_PAIRS: &[(&str, &str, &str)] = &[
         ("--fg", "--bg", "body"),
         ("--fg", "--surface", ".card, header, inputs"),
-        ("--fg", "--border", ".badge, .chip:hover"),
+        ("--fg", "--border", ".badge, .chip:hover, .chip.done:hover"),
         ("--fg", "--hover", ".chip, a hovered row"),
         ("--fg", "--accent-soft", ".current"),
         ("--muted", "--bg", ".muted, th, dt"),
@@ -1347,9 +1347,28 @@ mod tests {
     fn every_text_colour_the_sheet_paints_meets_aa_in_both_themes() {
         // DESIGN.md → Couleur → Règles: 4.5:1 for text, in both themes. The
         // avatar's initial is 13px at weight 600, not large text, so the
-        // member ramp is held to the same 4.5:1 — on both grounds a member
-        // row sits on, alone and mixed two or three at a time the way
-        // `combined_member_colour` mixes them for a shared event.
+        // member ramp is held to the same 4.5:1 — on `--surface`, the ground
+        // the avatar paints for itself, alone and mixed two or three at a
+        // time the way `combined_member_colour` mixes them for a shared
+        // event.
+        //
+        // Two of the pairs hold only because a rule names its ground or its
+        // colour, and the list above cannot see a rule: so those two rules
+        // are read back here. Without its own ground, the initial sits on
+        // whatever the row paints — `--hover` under the pointer, where six
+        // hues measured 4.16–4.44:1 in light. Without its `color`, a hovered
+        // `.chip.done` stays `--muted` on `--border`: 4.34:1 / 4.38:1.
+        let sheet = css();
+        let (avatar, _) = block_after(&sheet, "\n.avatar {", 0);
+        assert!(
+            avatar.contains(&format!("background: {}", var_of("--surface"))),
+            "`.avatar` must paint its own --surface ground: {avatar}"
+        );
+        let (chip_hover, _) = block_after(&sheet, ".chip:hover {", 0);
+        assert!(
+            chip_hover.contains(&format!("color: {}", var_of("--fg"))),
+            "`.chip:hover` must set --fg, or `.chip.done` stays --muted: {chip_hover}"
+        );
         const AA: f64 = 4.5;
         let mut failures = Vec::new();
         for dark in [false, true] {
@@ -1370,7 +1389,7 @@ mod tests {
                 check(text.to_string(), get(text), ground, rule);
             }
             let ramp: Vec<[f64; 3]> = MEMBER_RAMP.iter().map(|t| get(t)).collect();
-            for ground in ["--bg", "--surface"] {
+            for ground in ["--surface"] {
                 for (i, a) in ramp.iter().enumerate() {
                     check(MEMBER_RAMP[i].to_string(), *a, ground, ".avatar");
                     for (j, b) in ramp.iter().enumerate().skip(i + 1) {

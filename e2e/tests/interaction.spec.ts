@@ -184,9 +184,11 @@ test.describe("Interaction states (#69)", () => {
   });
 
   test("every keyboard stop shows a focus ring, in both themes", async ({ page }) => {
-    // 8 page loads and 200 Tab presses, each polled: the full suite ran it in
-    // 29.6s against the default 30s on the stylesheet before #74, so a
-    // timeout here said nothing about focus rings.
+    // 8 page loads and 200 Tab presses, each polled. On its own this runs in
+    // well under 30s; inside a full local suite, under contention, it came
+    // to 29.6s on the stylesheet before #74 and to ~32s after it, so a
+    // timeout said nothing about focus rings. The ceiling is raised against
+    // that contention: a real slowdown would show in an isolated run first.
     test.setTimeout(60_000);
     for (const colorScheme of ["light", "dark"] as const) {
       await page.emulateMedia({ colorScheme });

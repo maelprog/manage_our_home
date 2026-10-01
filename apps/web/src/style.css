@@ -395,10 +395,13 @@ summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); padding
 
    Contrast: --m4 and --m3 shipped at 3.55:1 and 3.95:1 on `--bg`, under
    the 4.5:1 this 13px 600-weight text needs. #74 darkened those two just
-   past it; app.rs now computes all eight, on `--bg` and `--surface`, alone
-   and mixed as `combined_member_colour` mixes them, in both themes. The
-   letter is never the only carrier of the information: the member's name
-   sits next to it (WCAG 1.4.1). */
+   past it. The avatar also paints its own `--surface` ground: on a hovered
+   `.list-row` (`--hover`) six of the eight hues fell to 4.16–4.44:1 in
+   light, and a row's hover should not cost its initial its contrast. So
+   app.rs computes all eight on `--surface`, alone and mixed as
+   `combined_member_colour` mixes them, in both themes. The letter is never
+   the only carrier of the information: the member's name sits next to it
+   (WCAG 1.4.1). */
 .avatar {
   display: inline-flex;
   align-items: center;
@@ -409,6 +412,7 @@ summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); padding
   border-radius: var(--r-sm);
   font-size: var(--t-xs);
   font-weight: 600;
+  background: var(--surface);
 }
 /* An occurrence inside a calendar day. `color` is stated: the sheet has no
    `a { color }`, so a chip fell to the UA's #0000EE — 1.48:1 on --hover. */
@@ -529,7 +533,9 @@ button.secondary:hover, .btn.secondary:hover { background: var(--hover); }
 button.danger:hover, .btn.danger:hover { background: var(--error-hover); border-color: var(--error-hover); }
 button.secondary.danger:hover, .btn.secondary.danger:hover { background: var(--error-soft); }
 .list-row:hover, .navlink:hover { background: var(--hover); }
-.chip:hover { background: var(--border); }
+/* `color` too: a done occurrence (`.chip.done`) is --muted, which measures
+   4.34:1 (light) and 4.38:1 (dark) on --border. Hovered, it reads --fg. */
+.chip:hover { background: var(--border); color: var(--fg); }
 /* A link that carries no box of its own answers with its underline, since it
    has one to thicken and a background would box a run of body text. */
 a:hover { text-decoration-thickness: 2px; }
