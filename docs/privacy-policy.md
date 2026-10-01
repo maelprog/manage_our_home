@@ -96,11 +96,12 @@ possibles sont :
   l'événement, et le corps d'une invitation nomme le groupe et le membre qui
   invite. L'objet d'un rappel, lui, ne nomme aucun événement : c'est toujours
   « Rappel d'un événement à venir ». Un titre peut être sensible (un examen
-  médical, un rendez-vous chez un professionnel), et l'objet est la partie
-  d'un email qui s'affiche dans la liste des messages de votre boîte et que
-  votre fournisseur de messagerie indexe ; le titre n'est donc que dans le
-  corps, qui ne s'affiche qu'à l'ouverture du message — Mailjet et votre
-  fournisseur de messagerie le reçoivent tout de même. C'est un
+  médical, un rendez-vous chez un professionnel) : il ne figure donc pas
+  dans l'objet, la ligne que la liste des messages affiche en premier. Il
+  reste en revanche dans le corps, au début de sa première ligne, si bien
+  que l'aperçu que la plupart des messageries et des notifications
+  affichent sous l'objet le montre ; et Mailjet comme votre fournisseur de
+  messagerie le reçoivent avec le corps. Mailjet est un
   sous-traitant du responsable de traitement, inscrit à son registre des
   traitements. Le cadre contractuel qui les lie au titre de l'article 28 du
   RGPD sera indiqué ici avant l'ouverture du service : [cadre contractuel du
