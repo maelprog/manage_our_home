@@ -184,6 +184,10 @@ test.describe("Interaction states (#69)", () => {
   });
 
   test("every keyboard stop shows a focus ring, in both themes", async ({ page }) => {
+    // 8 page loads and 200 Tab presses, each polled: the full suite ran it in
+    // 29.6s against the default 30s on the stylesheet before #74, so a
+    // timeout here said nothing about focus rings.
+    test.setTimeout(60_000);
     for (const colorScheme of ["light", "dark"] as const) {
       await page.emulateMedia({ colorScheme });
       for (const path of ["/", "/agenda", "/stocks/new", "/groups"]) {
