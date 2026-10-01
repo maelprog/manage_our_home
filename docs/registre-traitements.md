@@ -24,7 +24,8 @@ l'ouverture publique : voir `docs/v2-deployment.md` #16.
   les cinq seuls emails que le service envoie : vérification d'adresse,
   réinitialisation de mot de passe, invitation à un groupe, rappel
   d'événement et avertissement avant la purge d'un compte désactivé (#256). Reçoit l'adresse du destinataire, l'objet et le corps de
-  chacun (l'objet d'un rappel recopie le titre de l'événement ; le corps
+  chacun (le corps d'un rappel recopie le titre de l'événement, son objet
+  est neutre — « Rappel d'un événement à venir » ; le corps
   d'une invitation nomme le groupe et le membre qui invite). Retenu le
   2026-09-19 parmi les deux candidats étudiés (Brevo, Mailjet) pour son
   hébergement dans l'Union européenne, ses certifications ISO 27001 et
