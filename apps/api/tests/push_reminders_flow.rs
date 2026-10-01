@@ -15,7 +15,7 @@ use common::{assert_status, call, json_body, set_cookie, test_router, test_state
 use manage_our_home::jobs::scheduled_notifications::{
     send_due_notifications, NO_PUSH_SUBSCRIPTION, REMINDER_SUBJECT,
 };
-use manage_our_home::notifications::push::PushOutcome;
+use manage_our_home::notifications::push::{PushOutcome, MAX_CONSECUTIVE_FAILURES};
 use sqlx::PgPool;
 use std::sync::Mutex;
 use uuid::Uuid;
@@ -179,6 +179,68 @@ async fn a_device_subscribes_and_all_devices_can_be_removed(db: PgPool) {
     .await;
     assert_status(&res, StatusCode::NO_CONTENT);
     assert_eq!(settings(&router, &cookie).await["push_subscriptions"], 0);
+}
+
+async fn device_count(db: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM push_subscriptions")
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+/// Controller's decision of 2026-10-01: 50 devices per account; the 51st
+/// replaces the oldest.
+#[sqlx::test]
+async fn an_account_keeps_fifty_devices_and_the_51st_replaces_the_oldest(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "cap@example.test").await;
+    for i in 0..50 {
+        let endpoint = format!("{FCM}-{i}");
+        assert_eq!(
+            subscribe(&router, &cookie, &endpoint).await,
+            StatusCode::CREATED
+        );
+    }
+    assert_eq!(settings(&router, &cookie).await["push_subscriptions"], 50);
+    sqlx::query(
+        "UPDATE push_subscriptions SET created_at = now() - interval '1 day' WHERE endpoint = $1",
+    )
+    .bind(format!("{FCM}-17"))
+    .execute(&db)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        subscribe(&router, &cookie, &format!("{FCM}-50")).await,
+        StatusCode::CREATED
+    );
+
+    assert_eq!(settings(&router, &cookie).await["push_subscriptions"], 50);
+    let oldest_left: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM push_subscriptions WHERE endpoint = $1")
+            .bind(format!("{FCM}-17"))
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(oldest_left, 0, "the oldest device is the one replaced");
+}
+
+/// The ceiling holds when the subscriptions arrive all at once.
+#[sqlx::test]
+async fn the_ceiling_holds_under_concurrent_subscriptions(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "rush@example.test").await;
+    let calls = (0..80).map(|i| {
+        let router = router.clone();
+        let cookie = cookie.clone();
+        async move { subscribe(&router, &cookie, &format!("{FCM}-rush-{i}")).await }
+    });
+    let statuses = futures::future::join_all(calls).await;
+    assert!(
+        statuses.iter().all(|s| *s == StatusCode::CREATED),
+        "{statuses:?}"
+    );
+    assert_eq!(device_count(&db).await, 50);
 }
 
 /// The page registers the device again on every view once the permission
@@ -491,6 +553,51 @@ async fn a_push_service_down_is_retried(db: PgPool) {
     assert_eq!(notification(&db, due).await.0, "sent");
 }
 
+async fn failures(db: &PgPool, endpoint: &str) -> Option<i32> {
+    sqlx::query_scalar("SELECT consecutive_failures FROM push_subscriptions WHERE endpoint = $1")
+        .bind(endpoint)
+        .fetch_optional(db)
+        .await
+        .unwrap()
+}
+
+/// A device that keeps failing without ever answering 404/410 is counted,
+/// reset by a delivery, and forgotten at the ceiling.
+#[sqlx::test]
+async fn a_device_failing_in_a_row_is_forgotten_at_the_ceiling(db: PgPool) {
+    let member = insert_user(&db, "flaky@example.test", "push").await;
+    let dead = format!("{FCM}-dead");
+    let flaky = format!("{FCM}-flaky");
+    add_device(&db, member, &dead).await;
+    add_device(&db, member, &flaky).await;
+    sqlx::query("UPDATE push_subscriptions SET consecutive_failures = $2 WHERE endpoint = $1")
+        .bind(&dead)
+        .bind(MAX_CONSECUTIVE_FAILURES - 1)
+        .execute(&db)
+        .await
+        .unwrap();
+    due_reminder(&db, member).await;
+
+    let failing = |_: &str| PushOutcome::Failed("push service unreachable".into());
+    pass(&db, failing).await;
+    assert_eq!(
+        failures(&db, &dead).await,
+        None,
+        "the dead device is forgotten"
+    );
+    assert_eq!(failures(&db, &flaky).await, Some(1));
+
+    pass(&db, failing).await;
+    assert_eq!(failures(&db, &flaky).await, Some(2));
+
+    pass(&db, |_| PushOutcome::Delivered).await;
+    assert_eq!(
+        failures(&db, &flaky).await,
+        Some(0),
+        "a delivery resets the count"
+    );
+}
+
 /// On email, the email goes and no device is pushed, subscribed or not.
 #[sqlx::test]
 async fn a_member_on_email_gets_the_email_only(db: PgPool) {
@@ -542,5 +649,6 @@ async fn the_export_carries_the_channel_and_the_devices(db: PgPool) {
     assert_eq!(devices.len(), 1);
     assert_eq!(devices[0]["endpoint"], FCM);
     assert_eq!(devices[0]["platform"], "web");
+    assert_eq!(devices[0]["consecutive_failures"], 0);
     assert!(devices[0]["created_at"].is_string());
 }

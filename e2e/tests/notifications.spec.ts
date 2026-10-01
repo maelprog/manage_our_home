@@ -9,8 +9,9 @@ import { fetchVerificationToken } from "../lib/db";
 //
 // What the browser alone knows — a permission refused on this device, no
 // Push API — is revealed by an inline script, and only once the server has
-// a VAPID key; the CI stack runs without one (notifications off), so those
-// branches are covered by apps/web's unit tests, not here.
+// a VAPID key; the CI stack runs without one (notifications off). Those
+// branches (permission denied, default, granted) are verified by hand only:
+// apps/web's unit tests check the markup they act on, not the script.
 
 function uniqueEmail(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.test`;

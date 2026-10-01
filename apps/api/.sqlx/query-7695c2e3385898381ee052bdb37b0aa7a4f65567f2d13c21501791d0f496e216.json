@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, endpoint FROM push_subscriptions WHERE user_id = $1 ORDER BY created_at",
+  "query": "SELECT id, endpoint, consecutive_failures FROM push_subscriptions\n                   WHERE user_id = $1 ORDER BY created_at",
   "describe": {
     "columns": [
       {
@@ -24,6 +24,17 @@
             "name": "endpoint"
           }
         }
+      },
+      {
+        "ordinal": 2,
+        "name": "consecutive_failures",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "push_subscriptions",
+            "name": "consecutive_failures"
+          }
+        }
       }
     ],
     "parameters": {
@@ -33,8 +44,9 @@
     },
     "nullable": [
       false,
+      false,
       false
     ]
   },
-  "hash": "fcb07b3c54dd5e43a6a9bb45ded2db6a822c71ccc0dea787d53dd1b219adc7dc"
+  "hash": "7695c2e3385898381ee052bdb37b0aa7a4f65567f2d13c21501791d0f496e216"
 }

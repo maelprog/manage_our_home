@@ -122,6 +122,31 @@ pub fn classify(status: u16) -> PushOutcome {
     }
 }
 
+/// Consecutive failed pushes after which a device is forgotten, even though
+/// its push service never answered 404 or 410 — an endpoint on a host that
+/// no longer resolves, a service that keeps refusing it. A reminder is
+/// attempted 5 times (`scheduled_notifications::MAX_SEND_ATTEMPTS`), so 20
+/// means at least four reminders in a row lost on every attempt, with no
+/// success in between: longer than a push service's outage is likely to
+/// overlap a household's reminders. A device forgotten wrongly costs little:
+/// the member gets the « no device » warning, and the page registers the
+/// device again on its next visit, the permission being still granted.
+pub const MAX_CONSECUTIVE_FAILURES: i32 = 20;
+
+/// A device's consecutive-failure count once `outcome` is known, or `None`
+/// when the device is to be forgotten: gone (404/410), or failing for the
+/// [`MAX_CONSECUTIVE_FAILURES`]th time in a row. A delivery resets it.
+pub fn failures_after(outcome: &PushOutcome, consecutive_failures: i32) -> Option<i32> {
+    match outcome {
+        PushOutcome::Delivered => Some(0),
+        PushOutcome::Gone => None,
+        PushOutcome::Failed(_) => {
+            let failures = consecutive_failures.saturating_add(1);
+            (failures < MAX_CONSECUTIVE_FAILURES).then_some(failures)
+        }
+    }
+}
+
 /// Shortest TTL asked for, in seconds.
 pub const MIN_TTL_SECS: i64 = 60;
 /// Longest TTL asked for: four weeks, what the push services keep at most.
@@ -192,7 +217,7 @@ impl Vapid {
             return Err(VapidError::BadSubject);
         }
         let public_key =
-            URL_SAFE_NO_PAD.encode(key.verifying_key().to_encoded_point(false).as_bytes());
+            URL_SAFE_NO_PAD.encode(key.verifying_key().to_sec1_point(false).as_bytes());
         Ok(Vapid {
             key,
             subject: subject.to_string(),
@@ -413,6 +438,50 @@ mod tests {
         }
     }
 
+    // -- consecutive failures -------------------------------------------------
+
+    fn failed() -> PushOutcome {
+        PushOutcome::Failed("push service answered 503".into())
+    }
+
+    #[test]
+    fn a_delivery_resets_the_failure_count() {
+        assert_eq!(failures_after(&PushOutcome::Delivered, 0), Some(0));
+        assert_eq!(
+            failures_after(&PushOutcome::Delivered, MAX_CONSECUTIVE_FAILURES - 1),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn a_failure_counts_one_more() {
+        assert_eq!(failures_after(&failed(), 0), Some(1));
+        assert_eq!(failures_after(&failed(), 7), Some(8));
+    }
+
+    #[test]
+    fn the_failure_that_reaches_the_ceiling_forgets_the_device() {
+        assert_eq!(
+            failures_after(&failed(), MAX_CONSECUTIVE_FAILURES - 2),
+            Some(MAX_CONSECUTIVE_FAILURES - 1)
+        );
+        assert_eq!(
+            failures_after(&failed(), MAX_CONSECUTIVE_FAILURES - 1),
+            None
+        );
+        // A count already past it (the ceiling lowered since) goes too.
+        assert_eq!(
+            failures_after(&failed(), MAX_CONSECUTIVE_FAILURES + 5),
+            None
+        );
+    }
+
+    #[test]
+    fn a_gone_device_is_forgotten_whatever_its_count() {
+        assert_eq!(failures_after(&PushOutcome::Gone, 0), None);
+        assert_eq!(failures_after(&PushOutcome::Gone, 3), None);
+    }
+
     // -- TTL ----------------------------------------------------------------
 
     fn at(h: u32, m: u32) -> DateTime<Utc> {
@@ -455,7 +524,7 @@ mod tests {
         let expected = SigningKey::from_slice(&URL_SAFE_NO_PAD.decode(KEY).unwrap())
             .unwrap()
             .verifying_key()
-            .to_encoded_point(false);
+            .to_sec1_point(false);
         assert_eq!(public, expected.as_bytes());
     }
 
@@ -542,5 +611,49 @@ mod tests {
         );
         assert_eq!(a["aud"], "https://web.push.apple.com");
         assert_eq!(b["aud"], "https://updates.push.services.mozilla.com");
+    }
+
+    // -- send ---------------------------------------------------------------
+
+    /// What is stored is not trusted: a row that never went through
+    /// `subscribe` (written by hand, or before the allowlist changed) must
+    /// not make the worker request it. Here the endpoint is a live local
+    /// listener that would accept the push: `send` must neither connect to
+    /// it nor report a delivery, and must report the subscription gone.
+    #[tokio::test]
+    async fn send_never_requests_an_endpoint_that_is_not_a_push_service() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let connections = Arc::new(AtomicUsize::new(0));
+        let seen = connections.clone();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                seen.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 4096];
+                let _ = socket.read(&mut buf).await;
+                let _ = socket
+                    .write_all(b"HTTP/1.1 201 Created\r\ncontent-length: 0\r\n\r\n")
+                    .await;
+            }
+        });
+
+        let outcome = send(
+            &client(),
+            &vapid(),
+            &format!("http://127.0.0.1:{port}/push"),
+            60,
+        )
+        .await;
+
+        assert_eq!(outcome, PushOutcome::Gone);
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            0,
+            "the endpoint was requested"
+        );
     }
 }

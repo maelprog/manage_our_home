@@ -566,7 +566,7 @@ pub async fn export_account(
     // a push service refuses any message to it not signed with this
     // server's VAPID key.
     let devices = sqlx::query!(
-        r#"SELECT platform, endpoint, created_at, last_success_at
+        r#"SELECT platform, endpoint, created_at, last_success_at, consecutive_failures
            FROM push_subscriptions WHERE user_id = $1 ORDER BY created_at"#,
         auth.user_id
     )
@@ -578,6 +578,7 @@ pub async fn export_account(
             json!({
                 "platform": d.platform, "endpoint": d.endpoint,
                 "created_at": d.created_at, "last_success_at": d.last_success_at,
+                "consecutive_failures": d.consecutive_failures,
             })
         })
         .collect();

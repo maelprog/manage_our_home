@@ -67,6 +67,13 @@ pub async fn update_settings(
 /// receives the reminders of whoever subscribed on it last. The same
 /// device registered again by the same account (the page does it on every
 /// view once the permission is granted) keeps its dates.
+///
+/// An account keeps [`MAX_DEVICES_PER_ACCOUNT`] devices: the one beyond
+/// replaces the oldest (by `created_at`). The caller's `users` row is
+/// locked for the transaction, so concurrent subscriptions of one account
+/// are counted one after the other and the ceiling holds; `created_at` is
+/// the wall clock at the insert (`clock_timestamp()`), not the
+/// transaction's start, so the one that waited is not taken for the oldest.
 pub async fn subscribe(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -77,18 +84,43 @@ pub async fn subscribe(
     }
     let endpoint = validate_endpoint(&body.endpoint)
         .map_err(|_| AppError::BadRequest("invalid_push_endpoint".into()))?;
+    let mut tx = crate::db::begin(&state.db).await?;
     sqlx::query!(
-        r#"INSERT INTO push_subscriptions (user_id, endpoint) VALUES ($1, $2)
+        "SELECT id FROM users WHERE id = $1 FOR UPDATE",
+        auth.user_id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    sqlx::query!(
+        r#"INSERT INTO push_subscriptions (user_id, endpoint, created_at)
+           VALUES ($1, $2, clock_timestamp())
            ON CONFLICT (endpoint) DO UPDATE
-           SET user_id = EXCLUDED.user_id, created_at = now(), last_success_at = NULL
+           SET user_id = EXCLUDED.user_id, created_at = EXCLUDED.created_at, last_success_at = NULL,
+               consecutive_failures = 0
            WHERE push_subscriptions.user_id <> EXCLUDED.user_id"#,
         auth.user_id,
         endpoint.as_str()
     )
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    sqlx::query!(
+        r#"DELETE FROM push_subscriptions WHERE id IN (
+               SELECT id FROM push_subscriptions WHERE user_id = $1
+               ORDER BY created_at DESC, id DESC OFFSET $2)"#,
+        auth.user_id,
+        MAX_DEVICES_PER_ACCOUNT
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     Ok(StatusCode::CREATED)
 }
+
+/// Devices an account keeps subscribed (controller's decision of
+/// 2026-10-01): far above a household member's phones and computers, low
+/// enough that a script cannot grow one account's rows — and the worker's
+/// pushes per reminder — without bound.
+pub const MAX_DEVICES_PER_ACCOUNT: i64 = 50;
 
 /// `DELETE /account/push-subscriptions` — forgets every device of the
 /// caller: 204. The browsers keep their side of the subscription until

@@ -124,7 +124,8 @@ pub(crate) fn push_block(settings: &NotificationSettings, always: bool) -> Strin
 ///   endpoint stored (`POST /account/notifications/subscription`), with no
 ///   prompt, and hides `#push-warning` once it is.
 /// - Never asked: reveals the button; the browser's prompt opens on its
-///   click only.
+///   click only. A prompt dismissed without an answer leaves the
+///   permission `default`, and the button stays; only a refusal hides it.
 pub(crate) const PUSH_SCRIPT: &str = r#"
 (function () {
   var box = document.getElementById("push-device");
@@ -186,8 +187,12 @@ pub(crate) const PUSH_SCRIPT: &str = r#"
       if (permission === "granted") {
         return subscribe().then(function () { show("push-enabled"); });
       }
-      hide("push-enable");
-      if (permission === "denied" && warn) show("push-blocked");
+      // Refused: final, the button could only fail. Prompt dismissed
+      // ("default"): nothing was decided, the button stays.
+      if (permission === "denied") {
+        hide("push-enable");
+        if (warn) show("push-blocked");
+      }
     }).catch(function () {
       show("push-failed");
     }).then(function () { button.disabled = false; });
@@ -602,6 +607,33 @@ mod tests {
         );
         assert!(body.contains("2 appareils"), "{body}");
         assert!(page_body(&settings("push", 1), "", "").contains("1 appareil "));
+    }
+
+    #[test]
+    fn a_dismissed_prompt_keeps_the_enable_button() {
+        // After the prompt, the button is hidden on a refusal only: in the
+        // permission callback, every `hide("push-enable")` sits inside the
+        // `denied` branch. A textual check — the script is never run here.
+        let callback = PUSH_SCRIPT
+            .split("requestPermission().then(")
+            .nth(1)
+            .and_then(|rest| rest.split(".catch(").next())
+            .expect("the click handler asks for the permission");
+        let denied = callback
+            .split(r#"if (permission === "denied") {"#)
+            .nth(1)
+            .expect("a refusal is handled");
+        let before_denied = &callback[..callback.len() - denied.len()];
+        assert!(
+            !before_denied.contains(r#"hide("push-enable")"#),
+            "{callback}"
+        );
+        let denied_block = &denied[..denied.find('}').unwrap()];
+        assert!(
+            denied_block.contains(r#"hide("push-enable")"#),
+            "{denied_block}"
+        );
+        assert_eq!(callback.matches(r#"hide("push-enable")"#).count(), 1);
     }
 
     #[test]

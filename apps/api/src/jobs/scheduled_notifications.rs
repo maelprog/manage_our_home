@@ -198,7 +198,8 @@ where
         let mut pushed = Vec::new();
         if channel.includes_push() {
             let devices = sqlx::query!(
-                "SELECT id, endpoint FROM push_subscriptions WHERE user_id = $1 ORDER BY created_at",
+                r#"SELECT id, endpoint, consecutive_failures FROM push_subscriptions
+                   WHERE user_id = $1 ORDER BY created_at"#,
                 row.created_by,
             )
             .fetch_all(pool)
@@ -206,21 +207,27 @@ where
             let ttl = push::ttl_secs(Utc::now(), row.occurrence_at);
             for device in devices {
                 let outcome = send_push(device.endpoint, ttl).await;
-                match outcome {
-                    push::PushOutcome::Delivered => {
-                        sqlx::query!(
-                            "UPDATE push_subscriptions SET last_success_at = now() WHERE id = $1",
-                            device.id
-                        )
-                        .execute(pool)
-                        .await?;
-                    }
-                    push::PushOutcome::Gone => {
+                let delivered = outcome == push::PushOutcome::Delivered;
+                match push::failures_after(&outcome, device.consecutive_failures) {
+                    // Gone, or failing once too often in a row.
+                    None => {
                         sqlx::query!("DELETE FROM push_subscriptions WHERE id = $1", device.id)
                             .execute(pool)
                             .await?;
                     }
-                    push::PushOutcome::Failed(_) => {}
+                    Some(failures) => {
+                        sqlx::query!(
+                            r#"UPDATE push_subscriptions
+                               SET consecutive_failures = $2,
+                                   last_success_at = CASE WHEN $3 THEN now() ELSE last_success_at END
+                               WHERE id = $1"#,
+                            device.id,
+                            failures,
+                            delivered
+                        )
+                        .execute(pool)
+                        .await?;
+                    }
                 }
                 pushed.push(outcome);
             }

@@ -36,16 +36,20 @@ ALTER TABLE event_reminders DROP COLUMN channel;
 --
 -- An endpoint is unique: the same device subscribed again, under another
 -- account that signed in on it, moves to that account
--- (`notifications::preferences::subscribe`). A row goes when its push
--- service answers 404 or 410 (expired, or withdrawn by the browser), when
--- the member removes their devices, and with the account
--- (`jobs::account_purge`).
+-- (`notifications::preferences::subscribe`). An account keeps 50 devices at
+-- most: the 51st replaces the oldest (controller's decision of 2026-10-01).
+-- A row goes when its push service answers 404 or 410 (expired, or
+-- withdrawn by the browser), after `consecutive_failures` reaches
+-- `notifications::push::MAX_CONSECUTIVE_FAILURES` failed pushes in a row
+-- (a delivery resets it), when the member removes their devices, and with
+-- the account (`jobs::account_purge`).
 CREATE TABLE push_subscriptions (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    platform        TEXT NOT NULL DEFAULT 'web' CHECK (platform = 'web'),
-    endpoint        TEXT NOT NULL UNIQUE,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_success_at TIMESTAMPTZ
+    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id              UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    platform             TEXT NOT NULL DEFAULT 'web' CHECK (platform = 'web'),
+    endpoint             TEXT NOT NULL UNIQUE,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_success_at      TIMESTAMPTZ,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0)
 );
 CREATE INDEX push_subscriptions_user_id_idx ON push_subscriptions (user_id);
