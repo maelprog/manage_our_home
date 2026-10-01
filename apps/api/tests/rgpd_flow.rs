@@ -999,23 +999,42 @@ async fn export_accounts_for_every_column_referencing_users(db: PgPool) {
     assert_eq!(columns, accounted);
 
     // And each family-scoped column is matched against the caller in the
-    // function itself. Its branches read `<table> <alias>` and
-    // `<alias>.<column> = me.id`; the check is on the text, so it catches a
-    // forgotten table or column name, not a column matched under another
-    // table's alias.
+    // function itself, branch by branch. Each `UNION` branch reads
+    // `FROM|JOIN <table> <alias>` and compares `<alias>.<column> = me.id`;
+    // a column passes only if one branch does both for it, so a removed
+    // branch, or one that keeps its table but compares another column,
+    // fails here even when other branches join the same table or compare a
+    // column of the same name. The check reads the text: it does not prove
+    // that the branch returns the right group id, nor that no extra
+    // condition empties it.
     let definition: String =
         sqlx::query_scalar("SELECT pg_get_functiondef('account_export_group_ids()'::regprocedure)")
             .fetch_one(&db)
             .await
             .unwrap();
+    let branches: Vec<Vec<&str>> = definition
+        .split("UNION")
+        .map(|branch| {
+            branch
+                .split_whitespace()
+                .map(|token| token.trim_end_matches(','))
+                .collect()
+        })
+        .collect();
     for (table, column) in FAMILY_SCOPED {
+        let matched = branches.iter().any(|tokens| {
+            tokens.windows(3).any(|read| {
+                matches!(read[0], "FROM" | "JOIN") && read[1] == *table && {
+                    let compared = format!("{}.{column}", read[2]);
+                    tokens
+                        .windows(3)
+                        .any(|cmp| cmp[0] == compared && cmp[1] == "=" && cmp[2] == "me.id")
+                }
+            })
+        });
         assert!(
-            definition.contains(&format!(" {table} ")),
-            "account_export_group_ids() does not read {table}"
-        );
-        assert!(
-            definition.contains(&format!(".{column} = me.id")),
-            "account_export_group_ids() does not match {table}.{column} on the caller"
+            matched,
+            "no branch of account_export_group_ids() reads {table} and matches its {column} on the caller"
         );
     }
 }

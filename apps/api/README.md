@@ -56,9 +56,10 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_role;
 -- The account export's two cross-family functions (0019, #140) are not
 -- executable by PUBLIC. When it runs, 0019 grants them to every role that
 -- holds SELECT and INSERT on `events` granted to it by name, without
--- bypassing RLS (neither superuser, nor BYPASSRLS, nor a member of
--- pg_read_all_data / pg_write_all_data); a role created after it, or
--- holding those grants only through PUBLIC or another role, needs this line.
+-- bypassing RLS (neither superuser, nor BYPASSRLS, nor a role named pg_*,
+-- nor a member of pg_read_all_data / pg_write_all_data); a role created
+-- after it, or holding those grants only through PUBLIC or another role,
+-- needs this line.
 GRANT EXECUTE ON FUNCTION account_export_group_ids(),
     account_export_received_invitations() TO app_role;
 ```
