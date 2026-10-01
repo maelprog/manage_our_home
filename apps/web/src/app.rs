@@ -1201,6 +1201,201 @@ mod tests {
         );
     }
 
+    // -- contrast, computed (#74) ----------------------------------------
+    //
+    // The guards above check that every colour token *exists* in both
+    // themes; none of them checked that a pair of tokens is *legible*. That
+    // was measured by hand, once per batch, and written down as prose: two
+    // notices, two member hues and one tinted ground shipped under AA with
+    // their ratio in a comment beside them. The ratio is now computed from
+    // the sheet's own values, for the pairs its rules actually paint.
+
+    /// The three channels of a `#rrggbb` literal, `None` for anything else.
+    fn hex_channels(value: &str) -> Option<[f64; 3]> {
+        let hex = value.trim().strip_prefix('#')?;
+        if hex.len() != 6 || !hex.is_ascii() {
+            return None;
+        }
+        let mut out = [0.0; 3];
+        for (i, channel) in out.iter_mut().enumerate() {
+            *channel = f64::from(u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()?);
+        }
+        Some(out)
+    }
+
+    /// WCAG 2.x relative luminance of sRGB channels in 0–255.
+    fn relative_luminance(rgb: [f64; 3]) -> f64 {
+        let linear = |c: f64| {
+            let c = c / 255.0;
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(rgb[0]) + 0.7152 * linear(rgb[1]) + 0.0722 * linear(rgb[2])
+    }
+
+    /// WCAG 2.x contrast ratio, from 1 (identical) to 21 (black on white).
+    fn contrast_ratio(a: [f64; 3], b: [f64; 3]) -> f64 {
+        let (la, lb) = (relative_luminance(a), relative_luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    #[test]
+    fn hex_channels_reads_six_digit_literals_only() {
+        assert_eq!(hex_channels("#14706e"), Some([20.0, 112.0, 110.0]));
+        assert_eq!(hex_channels(" #FFFFFF "), Some([255.0, 255.0, 255.0]));
+        assert_eq!(hex_channels("#fff"), None);
+        assert_eq!(hex_channels("#gggggg"), None);
+        assert_eq!(hex_channels("var(--fg)"), None);
+    }
+
+    #[test]
+    fn relative_luminance_spans_zero_to_one() {
+        assert!(relative_luminance([0.0, 0.0, 0.0]).abs() < 1e-12);
+        assert!((relative_luminance([255.0, 255.0, 255.0]) - 1.0).abs() < 1e-12);
+        // The green channel weighs most: 0.7152 of the total.
+        assert!((relative_luminance([0.0, 255.0, 0.0]) - 0.7152).abs() < 1e-12);
+    }
+
+    #[test]
+    fn contrast_ratio_matches_published_figures() {
+        let white = [255.0; 3];
+        let black = [0.0; 3];
+        assert!((contrast_ratio(black, white) - 21.0).abs() < 1e-9);
+        assert!((contrast_ratio(white, black) - 21.0).abs() < 1e-9);
+        assert!((contrast_ratio(white, white) - 1.0).abs() < 1e-9);
+        // #767676 is the lightest grey that passes AA on white (4.54:1),
+        // #777777 the first that fails (4.48:1).
+        let passes = contrast_ratio([118.0; 3], white);
+        let fails = contrast_ratio([119.0; 3], white);
+        assert!((passes - 4.54).abs() < 0.005, "{passes}");
+        assert!((fails - 4.48).abs() < 0.005, "{fails}");
+    }
+
+    /// Every literal colour token of one theme, by name: the light `:root`,
+    /// or that `:root` overlaid with the dark block's restatements.
+    fn theme_colours(dark: bool) -> std::collections::BTreeMap<String, [f64; 3]> {
+        fn colours(block: &str) -> Vec<(String, [f64; 3])> {
+            block
+                .split(';')
+                .filter_map(|decl| decl.split_once(':'))
+                .filter_map(|(name, value)| {
+                    let name = name.trim();
+                    let rgb = hex_channels(value)?;
+                    name.starts_with("--").then(|| (name.to_string(), rgb))
+                })
+                .collect()
+        }
+        let css = css();
+        let (root, after_root) = block_after(&css, ":root", 0);
+        let mut out: std::collections::BTreeMap<_, _> = colours(&root).into_iter().collect();
+        if dark {
+            let (media, _) = block_after(&css, "@media (prefers-color-scheme: dark)", after_root);
+            let (block, _) = block_after(&media, ":root", 0);
+            out.extend(colours(&block));
+        }
+        out
+    }
+
+    /// Text colour, the ground it is read on, and the rule that pairs them.
+    /// A list by hand, unlike the restated-token guard above: which token
+    /// lands on which ground is a fact about the rules, not about `:root`,
+    /// and the sheet carries no machine-readable trace of it. A pair added
+    /// to the sheet without a line here goes unmeasured — the cost of the
+    /// list, written down rather than hidden.
+    const TEXT_PAIRS: &[(&str, &str, &str)] = &[
+        ("--fg", "--bg", "body"),
+        ("--fg", "--surface", ".card, header, inputs"),
+        ("--fg", "--border", ".badge, .chip:hover"),
+        ("--fg", "--hover", ".chip, a hovered row"),
+        ("--fg", "--accent-soft", ".current"),
+        ("--muted", "--bg", ".muted, th, dt"),
+        ("--muted", "--surface", ".muted in a card, .list-row.mine"),
+        ("--muted", "--hover", "a hovered .list-row"),
+        ("--muted", "--accent-soft", "today off the month, .outside"),
+        ("--accent", "--bg", "links, summary"),
+        ("--accent", "--surface", "links in a card"),
+        ("--accent", "--accent-soft", ".navlink[aria-current]"),
+        ("--accent-fg", "--accent", "button"),
+        ("--accent-fg", "--accent-hover", "button:hover"),
+        ("--accent-fg", "--error", "button.danger, .badge.warn"),
+        ("--accent-fg", "--error-hover", "button.danger:hover"),
+        ("--error", "--bg", ".field-error, button.secondary.danger"),
+        ("--error", "--surface", ".field-error in a card"),
+        ("--error", "--error-soft", ".notice.error, .danger:hover"),
+        ("--success", "--success-soft", ".notice.success"),
+        ("--warning", "--warning-soft", ".notice.warning"),
+    ];
+
+    /// `color-mix(in srgb, …)` of equal parts, which is what
+    /// `combined_member_colour` asks the browser for: a straight average of
+    /// each channel.
+    fn srgb_mix(colours: &[[f64; 3]]) -> [f64; 3] {
+        let n = colours.len() as f64;
+        let mut out = [0.0; 3];
+        for c in colours {
+            for (o, v) in out.iter_mut().zip(c) {
+                *o += v / n;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn every_text_colour_the_sheet_paints_meets_aa_in_both_themes() {
+        // DESIGN.md → Couleur → Règles: 4.5:1 for text, in both themes. The
+        // avatar's initial is 13px at weight 600, not large text, so the
+        // member ramp is held to the same 4.5:1 — on both grounds a member
+        // row sits on, alone and mixed two or three at a time the way
+        // `combined_member_colour` mixes them for a shared event.
+        const AA: f64 = 4.5;
+        let mut failures = Vec::new();
+        for dark in [false, true] {
+            let theme = if dark { "dark" } else { "light" };
+            let colours = theme_colours(dark);
+            let get = |token: &str| {
+                *colours
+                    .get(token)
+                    .unwrap_or_else(|| panic!("`{token}` is not a #rrggbb token in {theme}"))
+            };
+            let mut check = |text: String, rgb: [f64; 3], ground: &str, rule: &str| {
+                let ratio = contrast_ratio(rgb, get(ground));
+                if ratio < AA {
+                    failures.push(format!("{theme}: {text} on {ground} = {ratio:.2} ({rule})"));
+                }
+            };
+            for (text, ground, rule) in TEXT_PAIRS {
+                check(text.to_string(), get(text), ground, rule);
+            }
+            let ramp: Vec<[f64; 3]> = MEMBER_RAMP.iter().map(|t| get(t)).collect();
+            for ground in ["--bg", "--surface"] {
+                for (i, a) in ramp.iter().enumerate() {
+                    check(MEMBER_RAMP[i].to_string(), *a, ground, ".avatar");
+                    for (j, b) in ramp.iter().enumerate().skip(i + 1) {
+                        let pair = srgb_mix(&[*a, *b]);
+                        let name = format!("mix({}, {})", MEMBER_RAMP[i], MEMBER_RAMP[j]);
+                        check(name, pair, ground, "shared event");
+                        for (k, c) in ramp.iter().enumerate().skip(j + 1) {
+                            let three = srgb_mix(&[*a, *b, *c]);
+                            let name = format!(
+                                "mix({}, {}, {})",
+                                MEMBER_RAMP[i], MEMBER_RAMP[j], MEMBER_RAMP[k]
+                            );
+                            check(name, three, ground, "shared event");
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "text under the 4.5:1 DESIGN.md asks for:\n{}",
+            failures.join("\n")
+        );
+    }
+
     // -- component classes (#68) ---------------------------------------
     //
     // The audit counted 173 inline `style="…"` attributes, the same handful
@@ -2257,15 +2452,17 @@ mod tests {
     fn a_tab_is_at_least_the_forty_four_pixels_a_finger_needs() {
         // DESIGN.md → Espacement: ≥ 44px on every interactive element. The
         // height is read back through the spacing token rather than trusted
-        // as a literal, because the token is what the rule names.
+        // as a literal, because the token is what the rule names. It sits on
+        // `.navlink` itself since #74, so the header's "Mon compte" — a nav
+        // link outside the tab bar — has it too.
         let css = css();
-        let (tab, _) = block_after(&css, ".tabs .navlink", 0);
+        let (tab, _) = block_after(&css, "\n.navlink {", 0);
         let token = tab
             .split(';')
             .filter_map(|d| d.split_once(':'))
             .find(|(name, _)| name.trim() == "min-height")
             .map(|(_, value)| value.trim().to_string())
-            .unwrap_or_else(|| panic!("`.tabs .navlink` states no min-height: {tab}"));
+            .unwrap_or_else(|| panic!("`.navlink` states no min-height: {tab}"));
         let token = token
             .trim_start_matches("var(")
             .trim_end_matches(')')
