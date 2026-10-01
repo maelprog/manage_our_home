@@ -1,16 +1,16 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT email FROM users\n            WHERE id = $1 AND deactivated_at IS NULL AND deleted_at IS NULL\n            ",
+  "query": "SELECT id FROM users WHERE id = $1 FOR UPDATE",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "email",
-        "type_info": "Text",
+        "name": "id",
+        "type_info": "Uuid",
         "origin": {
           "Table": {
             "table": "users",
-            "name": "email"
+            "name": "id"
           }
         }
       }
@@ -24,5 +24,5 @@
       false
     ]
   },
-  "hash": "892bd8cdad62049e93cd16615521e77470e92f9a41146be7b38dff47bbc6bf1e"
+  "hash": "a02948fc025de863ddadf3e2a61b998a2b0520acecb22e003c0b9fbb74314f6f"
 }

@@ -15,6 +15,7 @@ pub mod groups;
 pub mod jobs;
 pub mod messagerie;
 pub mod migrations;
+pub mod notifications;
 pub mod recipes;
 pub mod rgpd;
 pub mod stocks;
@@ -106,6 +107,11 @@ pub struct AppState {
     /// all (#219). Taken by `agenda::attachments::upload_attachment` before
     /// it reads the body.
     pub upload_gate: std::sync::Arc<manage_our_home_http_guard::UploadGate<uuid::Uuid>>,
+    /// The server's VAPID identity for reminders sent as a notification
+    /// (#306), from `VAPID_PRIVATE_KEY`/`VAPID_SUBJECT`. `None`: no key
+    /// configured, notifications are off on this server — no device can
+    /// subscribe, and members who chose them are warned they get nothing.
+    pub push: Option<std::sync::Arc<notifications::push::Vapid>>,
 }
 
 /// Body of the 408 a too-slow request body gets (#219), in the API's usual
@@ -147,6 +153,16 @@ pub fn build_router(state: AppState) -> Router {
         .route("/account/delete", post(auth::delete_account))
         .route("/account/delete/cancel", post(auth::cancel_delete_account))
         .route("/account/export", get(rgpd::export_account))
+        .route(
+            "/account/notifications",
+            get(notifications::preferences::get_settings)
+                .put(notifications::preferences::update_settings),
+        )
+        .route(
+            "/account/push-subscriptions",
+            post(notifications::preferences::subscribe)
+                .delete(notifications::preferences::unsubscribe_all),
+        )
         // With `/auth/logout`, the only routes a restricted session opens
         // (#289).
         .route("/account/deactivated", get(auth::deactivated::status))

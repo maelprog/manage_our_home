@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE push_subscriptions\n                               SET consecutive_failures = $2, failing_since = $3,\n                                   last_success_at = CASE WHEN $4 THEN now() ELSE last_success_at END\n                               WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4",
+        "Timestamptz",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bda4a76d2b8032ccc4263daecb03c0afbc0135f679e418a3bba7eaab8ca76627"
+}

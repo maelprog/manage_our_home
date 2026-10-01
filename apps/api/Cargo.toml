@@ -57,6 +57,17 @@ ipnet = "2.12.0"
 bytes = "1.12.0"
 futures = "0.3.32"
 icalendar = { version = "0.17.12", default-features = false, features = ["chrono-tz", "parser"] }
+# VAPID (RFC 8292) for the reminders sent as a notification (#306): each
+# push carries an ES256 token signed with the server's P-256 key. Pushes
+# carry no payload, so no message encryption (RFC 8291) is needed — only
+# this signature. The newest release (dependency policy): `aws-sdk-s3`'s
+# `sigv4a` feature still resolves 0.13, so the lock carries both lines of
+# the RustCrypto elliptic-curve stack until it moves up. `ecdsa` and `std`
+# only: no PEM, no PKCS#8.
+p256 = { version = "0.14", default-features = false, features = ["ecdsa", "std"] }
+# The token's parts and the public key are unpadded base64url. The newest
+# release, next to the 0.22 that axum, reqwest and the others still pull.
+base64 = "0.23"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

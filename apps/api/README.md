@@ -556,3 +556,40 @@ The fix is on the deployment side, never by trusting a wider range:
 - or, if another proxy or load balancer terminates connections in front of
   Caddy, add its address to Caddy's `trusted_proxies` so the address it
   forwards is kept.
+
+## Reminder notifications: the VAPID key (#306)
+
+Reminders go out by notification by default (Web Push). Every push is
+signed with the server's P-256 key (VAPID, RFC 8292), read at start-up:
+
+- **`VAPID_PRIVATE_KEY`** — the raw 32-byte private scalar, unpadded
+  base64url (43 characters);
+- **`VAPID_SUBJECT`** — a contact for the push services, `mailto:…` or
+  `https://…`.
+
+One way to make a key with OpenSSL alone: the scalar is the 32 bytes that
+follow the 7-byte header of the SEC1 DER encoding.
+
+```
+openssl ecparam -name prime256v1 -genkey -noout -outform DER \
+  | tail -c +8 | head -c 32 | basenc --base64url | tr -d '='
+```
+
+Unset or empty, notifications are off: `GET /account/notifications` hands
+out no public key, no device can subscribe, and members whose reminders go
+by notification get none — they are warned where they set reminders. Set
+but unusable (not 32 bytes, not a valid scalar, a subject that is not a
+`mailto:`/`https:` URI), the API refuses to start.
+
+**Keep the key.** Each browser subscription is bound to the public key it
+was made with. After a new key, the push services refuse every push to the
+devices subscribed before it (401/403), which the worker counts as
+failures: those devices get no reminder, and their members see no warning,
+since the devices are still on record. Each device recovers when its member
+next opens a page carrying the notification block with the permission
+granted — the page sees the subscription was made with another key, drops
+it and subscribes again — or is forgotten once it has failed 20 times in a
+row over 7 days (`notifications::push::MAX_CONSECUTIVE_FAILURES`,
+`MIN_FAILING_DAYS`), after which the « no device » warning shows. A browser
+that does not expose a subscription's key keeps the old subscription and
+only recovers the second way.

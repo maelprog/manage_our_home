@@ -26,6 +26,7 @@
 pub mod deactivated;
 pub mod delete;
 pub mod export;
+pub mod notifications;
 
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
@@ -145,6 +146,11 @@ pub async fn get(
 <dt>Email</dt><dd>{email}</dd>
 </dl>
 {notice}{error}
+<section class="card">
+<h2>Notifications de rappel</h2>
+<p class="muted">Recevoir les rappels de vos événements par notification, par email, ou les deux.</p>
+<a class="btn secondary" href="/account/notifications">Gérer mes notifications</a>
+</section>
 <section class="card">
 <h2>Exporter mes données</h2>
 <p class="muted">Droit d'accès et de portabilité (Art. 15/20) : téléchargez au format JSON tout ce que le service conserve qui vous concerne.</p>

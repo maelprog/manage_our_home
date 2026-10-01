@@ -129,6 +129,11 @@ services:
       OAUTH_ENCRYPTION_KEY: ${OAUTH_ENCRYPTION_KEY}
       MESSAGE_ENCRYPTION_KEY: ${MESSAGE_ENCRYPTION_KEY}
       CALENDAR_FEED_ENCRYPTION_KEY: ${CALENDAR_FEED_ENCRYPTION_KEY}
+      # Reminder notifications (#306): the VAPID key every push is signed
+      # with, and a contact for the push services. Empty turns
+      # notifications off (apps/api/README.md).
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
       # Overridable (SECURE_COOKIES=false in .env) for local http://localhost
       # testing, where Secure cookies can be dropped by the browser.
       SECURE_COOKIES: ${SECURE_COOKIES:-true}

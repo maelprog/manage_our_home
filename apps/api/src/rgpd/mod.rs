@@ -34,7 +34,7 @@ pub async fn export_account(
 ) -> AppResult<impl IntoResponse> {
     let profile = sqlx::query!(
         r#"SELECT id, email, email_verified, display_name, created_at, age_declared_at,
-                  deletion_requested_at, is_superadmin,
+                  deletion_requested_at, is_superadmin, reminder_channel,
                   (password_hash IS NOT NULL) AS "has_password!"
            FROM users WHERE id = $1"#,
         auth.user_id
@@ -56,6 +56,8 @@ pub async fn export_account(
         "has_password": profile.has_password,
         "deletion_requested_at": profile.deletion_requested_at,
         "is_superadmin": profile.is_superadmin,
+        // #306: how their reminders reach them — `push`, `email` or `both`.
+        "reminder_channel": profile.reminder_channel,
     });
 
     // "My groups" are read from the caller's own `group_members` rows, with
@@ -198,10 +200,11 @@ pub async fn export_account(
             })
         }));
 
-        // Reminders carry no author: they belong to the event, and their
-        // emails go to its creator (`jobs::scheduled_notifications`).
+        // Reminders carry no author: they belong to the event, and go to
+        // its creator (`jobs::scheduled_notifications`), on the channel of
+        // the creator's account (`profile.reminder_channel`, #306).
         let reminders = sqlx::query!(
-            r#"SELECT r.id, r.event_id, r.offset_minutes, r.channel, r.created_at
+            r#"SELECT r.id, r.event_id, r.offset_minutes, r.created_at
                FROM event_reminders r JOIN events e ON e.id = r.event_id
                WHERE e.group_id = $1 AND e.created_by = $2 ORDER BY r.created_at"#,
             group_id,
@@ -212,8 +215,7 @@ pub async fn export_account(
         c.event_reminders.extend(reminders.into_iter().map(|r| {
             json!({
                 "id": r.id, "event_id": r.event_id, "group_id": group_id,
-                "offset_minutes": r.offset_minutes, "channel": r.channel,
-                "created_at": r.created_at,
+                "offset_minutes": r.offset_minutes, "created_at": r.created_at,
             })
         }));
 
@@ -554,6 +556,31 @@ pub async fn export_account(
                 "occurred_at": a.occurred_at, "action": a.action,
                 "target_type": a.target_type, "target_id": a.target_id,
                 "metadata": a.metadata, "by_me": a.by_me,
+            })
+        })
+        .collect();
+
+    // The devices subscribed to reminder notifications (#306), endpoint
+    // included: it is the push service's address for that device, held
+    // about the person like the rest. Unlike a session id it is no key —
+    // a push service refuses any message to it not signed with this
+    // server's VAPID key.
+    let devices = sqlx::query!(
+        r#"SELECT platform, endpoint, created_at, last_seen_at, last_success_at,
+                  consecutive_failures, failing_since
+           FROM push_subscriptions WHERE user_id = $1 ORDER BY created_at"#,
+        auth.user_id
+    )
+    .fetch_all(&state.db)
+    .await?;
+    c.push_subscriptions = devices
+        .into_iter()
+        .map(|d| {
+            json!({
+                "platform": d.platform, "endpoint": d.endpoint,
+                "created_at": d.created_at, "last_success_at": d.last_success_at,
+                "last_seen_at": d.last_seen_at, "consecutive_failures": d.consecutive_failures,
+                "failing_since": d.failing_since,
             })
         })
         .collect();

@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
 use chrono::{DateTime, Utc};
@@ -8,6 +9,7 @@ use uuid::Uuid;
 
 use crate::agenda::reminders::{refill_notifications, EventTimes};
 use crate::email::EmailSender;
+use crate::notifications::{push, ReminderChannel};
 
 const SEND_POLL_INTERVAL_SECS: u64 = 60;
 const REFILL_POLL_INTERVAL_SECS: u64 = 3600;
@@ -27,7 +29,11 @@ const RECIPIENT_GONE: &str = "recipient account deactivated or purged";
 /// `pool` must be the `BYPASSRLS` admin pool (`AppState.admin_db`): both
 /// loops read across every family, from tables under forced RLS policies,
 /// and each pass refuses any other role (#293).
-pub async fn run(pool: PgPool, email: EmailSender) {
+///
+/// `push` is the server's VAPID identity, `None` when notifications are
+/// off (no `VAPID_PRIVATE_KEY`): a push is then a failure, retried and
+/// finally retired like any other.
+pub async fn run(pool: PgPool, email: EmailSender, push: Option<Arc<push::Vapid>>) {
     let pool_for_refill = pool.clone();
     tokio::spawn(async move {
         let mut ticker = interval(StdDuration::from_secs(REFILL_POLL_INTERVAL_SECS));
@@ -39,6 +45,7 @@ pub async fn run(pool: PgPool, email: EmailSender) {
         }
     });
 
+    let client = push::client();
     let mut ticker = interval(StdDuration::from_secs(SEND_POLL_INTERVAL_SECS));
     loop {
         ticker.tick().await;
@@ -46,7 +53,19 @@ pub async fn run(pool: PgPool, email: EmailSender) {
             let email = email.clone();
             async move { email.send(&to, &subject, body).await }
         };
-        if let Err(e) = send_due_notifications(&pool, send).await {
+        let send_push = |endpoint: String, ttl_secs: i64| {
+            let client = client.clone();
+            let vapid = push.clone();
+            async move {
+                match vapid {
+                    Some(vapid) => push::send(&client, &vapid, &endpoint, ttl_secs).await,
+                    None => push::PushOutcome::Failed(
+                        "notifications are not configured on this server".into(),
+                    ),
+                }
+            }
+        };
+        if let Err(e) = send_due_notifications(&pool, send, send_push).await {
             tracing::error!(error = ?e, "scheduled_notifications send failed");
         }
     }
@@ -95,9 +114,18 @@ async fn refill_recurring_reminders(pool: &PgPool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// One pass: every due, pending notification is sent through `send(to,
-/// subject, body)` to the event's creator, then marked sent, or failed
-/// once `MAX_SEND_ATTEMPTS` sends were refused.
+/// One pass: every due, pending notification goes to the event's creator
+/// on the channel their account chose (`users.reminder_channel`, #306) —
+/// by email through `send(to, subject, body)`, by notification through
+/// `send_push(endpoint, ttl_secs)` once per subscribed device — and is
+/// then settled by [`settle`]: sent, retried (failed once
+/// `MAX_SEND_ATTEMPTS` attempts were refused), or retired at once.
+///
+/// A push service answering 404 or 410 has its subscription deleted on the
+/// spot: the browser expired or withdrew it. A member who chose
+/// notifications and is left without any device gets nothing, and no
+/// email instead (#306); the application warns them where they set
+/// reminders.
 ///
 /// `pool` must be the `BYPASSRLS` admin pool (`AppState.admin_db`): the
 /// pass reads `scheduled_notifications` and `events` across every family,
@@ -113,10 +141,16 @@ async fn refill_recurring_reminders(pool: &PgPool) -> anyhow::Result<()> {
 /// stay pending, and go if the account is reactivated by then. An account
 /// deactivated after that read, while its email is being handed to the
 /// mailer, still gets that one.
-pub async fn send_due_notifications<F, Fut>(pool: &PgPool, send: F) -> anyhow::Result<()>
+pub async fn send_due_notifications<F, Fut, P, PFut>(
+    pool: &PgPool,
+    send: F,
+    send_push: P,
+) -> anyhow::Result<()>
 where
     F: Fn(String, String, String) -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<()>>,
+    P: Fn(String, i64) -> PFut,
+    PFut: std::future::Future<Output = push::PushOutcome>,
 {
     ensure_admin_pool(pool, "sending due reminders").await?;
 
@@ -132,9 +166,9 @@ where
     .await?;
 
     for row in due {
-        let Some(to) = sqlx::query_scalar!(
+        let Some(recipient) = sqlx::query!(
             r#"
-            SELECT email FROM users
+            SELECT email, reminder_channel FROM users
             WHERE id = $1 AND deactivated_at IS NULL AND deleted_at IS NULL
             "#,
             row.created_by,
@@ -142,15 +176,76 @@ where
         .fetch_optional(pool)
         .await?
         else {
-            mark_recipient_gone(pool, row.id).await?;
+            retire(pool, row.id, RECIPIENT_GONE).await?;
             continue;
         };
+        // The column's CHECK (0020) admits nothing else.
+        let channel = ReminderChannel::parse(&recipient.reminder_channel).ok_or_else(|| {
+            anyhow::anyhow!("unknown reminder_channel {:?}", recipient.reminder_channel)
+        })?;
 
-        let body = reminder_email_body(&row.title, row.occurrence_at);
+        let email = if channel.includes_email() {
+            let body = reminder_email_body(&row.title, row.occurrence_at);
+            Some(
+                send(recipient.email, REMINDER_SUBJECT.to_owned(), body)
+                    .await
+                    .map_err(|e| e.to_string()),
+            )
+        } else {
+            None
+        };
 
-        match send(to, REMINDER_SUBJECT.to_owned(), body).await {
-            Ok(()) => mark_sent(pool, row.id).await?,
-            Err(e) => mark_failed(pool, row.id, row.attempts, &e.to_string()).await?,
+        let mut pushed = Vec::new();
+        if channel.includes_push() {
+            let devices = sqlx::query!(
+                r#"SELECT id, endpoint, consecutive_failures, failing_since FROM push_subscriptions
+                   WHERE user_id = $1 ORDER BY created_at"#,
+                row.created_by,
+            )
+            .fetch_all(pool)
+            .await?;
+            let ttl = push::ttl_secs(Utc::now(), row.occurrence_at);
+            for device in devices {
+                let outcome = send_push(device.endpoint, ttl).await;
+                let delivered = outcome == push::PushOutcome::Delivered;
+                match push::device_after(
+                    &outcome,
+                    device.consecutive_failures,
+                    device.failing_since,
+                    Utc::now(),
+                ) {
+                    // Gone, or failing past both bounds.
+                    push::DeviceAfter::Forget => {
+                        sqlx::query!("DELETE FROM push_subscriptions WHERE id = $1", device.id)
+                            .execute(pool)
+                            .await?;
+                    }
+                    push::DeviceAfter::Keep {
+                        consecutive_failures,
+                        failing_since,
+                    } => {
+                        sqlx::query!(
+                            r#"UPDATE push_subscriptions
+                               SET consecutive_failures = $2, failing_since = $3,
+                                   last_success_at = CASE WHEN $4 THEN now() ELSE last_success_at END
+                               WHERE id = $1"#,
+                            device.id,
+                            consecutive_failures,
+                            failing_since,
+                            delivered
+                        )
+                        .execute(pool)
+                        .await?;
+                    }
+                }
+                pushed.push(outcome);
+            }
+        }
+
+        match settle(email, &pushed) {
+            Settlement::Sent => mark_sent(pool, row.id).await?,
+            Settlement::Retry(error) => mark_failed(pool, row.id, row.attempts, &error).await?,
+            Settlement::Retire(reason) => retire(pool, row.id, reason).await?,
         }
     }
 
@@ -200,11 +295,61 @@ async fn ensure_admin_pool(pool: &PgPool, pass: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn mark_recipient_gone(pool: &PgPool, id: Uuid) -> anyhow::Result<()> {
+/// What becomes of one due notification once its channels have answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Settlement {
+    /// At least one channel reached the member.
+    Sent,
+    /// Nothing reached them, but something may on the next pass: one
+    /// attempt is counted ([`MAX_SEND_ATTEMPTS`] in all).
+    Retry(String),
+    /// Nothing reached them and nothing will: retired at once, without an
+    /// attempt, with this reason.
+    Retire(&'static str),
+}
+
+/// `last_error` of a notification retired because its recipient chose
+/// notifications and has no device subscribed — or every one they had
+/// turned out expired. No fallback to email (#306).
+pub const NO_PUSH_SUBSCRIPTION: &str = "no active push subscription";
+
+/// Settles one notification from what each channel answered: `email` is
+/// `None` when the member's channel does not include email, and `push`
+/// holds one answer per subscribed device (empty when the channel does not
+/// include push, or when they have none).
+///
+/// Sent as soon as one channel reached the member — the other is not
+/// retried, so a member on « both » whose email went through does not get
+/// it twice. Otherwise a failure that may pass next time (an email
+/// refused, a push service down) counts an attempt; and a member left with
+/// no way to reach them (notifications only, no device, or only expired
+/// ones) has the notification retired without one.
+pub fn settle(email: Option<Result<(), String>>, push: &[push::PushOutcome]) -> Settlement {
+    let pushed = push.contains(&push::PushOutcome::Delivered);
+    if matches!(email, Some(Ok(()))) || pushed {
+        return Settlement::Sent;
+    }
+    let errors: Vec<String> = email
+        .and_then(Result::err)
+        .into_iter()
+        .chain(push.iter().filter_map(|o| match o {
+            push::PushOutcome::Failed(e) => Some(e.clone()),
+            _ => None,
+        }))
+        .collect();
+    if errors.is_empty() {
+        Settlement::Retire(NO_PUSH_SUBSCRIPTION)
+    } else {
+        Settlement::Retry(errors.join("; "))
+    }
+}
+
+/// Marks a notification failed with `reason`, without counting an attempt.
+async fn retire(pool: &PgPool, id: Uuid, reason: &str) -> anyhow::Result<()> {
     sqlx::query!(
         "UPDATE scheduled_notifications SET status = 'failed', last_error = $2 WHERE id = $1",
         id,
-        RECIPIENT_GONE,
+        reason,
     )
     .execute(pool)
     .await?;
@@ -277,6 +422,77 @@ mod tests {
         assert_eq!(
             reminder_email_body("Pis\u{202e}cine\u{200b}", at()),
             "Rappel pour « Piscine » prévu le 03/10/2026 14:30."
+        );
+    }
+
+    // -- settling a notification across its channels (#306) ----------------
+
+    use push::PushOutcome::{Delivered, Failed, Gone};
+
+    fn failed() -> push::PushOutcome {
+        Failed("push service answered 503".into())
+    }
+
+    #[test]
+    fn an_email_that_went_is_sent() {
+        assert_eq!(settle(Some(Ok(())), &[]), Settlement::Sent);
+    }
+
+    #[test]
+    fn a_refused_email_is_retried_with_its_error() {
+        assert_eq!(
+            settle(Some(Err("smtp down".into())), &[]),
+            Settlement::Retry("smtp down".into())
+        );
+    }
+
+    #[test]
+    fn one_device_reached_is_enough() {
+        assert_eq!(settle(None, &[Delivered]), Settlement::Sent);
+        assert_eq!(settle(None, &[Gone, failed(), Delivered]), Settlement::Sent);
+    }
+
+    #[test]
+    fn notifications_only_without_any_device_is_retired_without_falling_back() {
+        assert_eq!(settle(None, &[]), Settlement::Retire(NO_PUSH_SUBSCRIPTION));
+    }
+
+    #[test]
+    fn notifications_only_with_every_device_expired_is_retired() {
+        assert_eq!(
+            settle(None, &[Gone, Gone]),
+            Settlement::Retire(NO_PUSH_SUBSCRIPTION)
+        );
+    }
+
+    #[test]
+    fn a_push_service_down_is_retried_with_its_error() {
+        assert_eq!(
+            settle(None, &[Gone, failed()]),
+            Settlement::Retry("push service answered 503".into())
+        );
+    }
+
+    #[test]
+    fn both_channels_send_once_either_went() {
+        assert_eq!(settle(Some(Ok(())), &[failed()]), Settlement::Sent);
+        assert_eq!(settle(Some(Ok(())), &[]), Settlement::Sent);
+        assert_eq!(
+            settle(Some(Err("smtp down".into())), &[Delivered]),
+            Settlement::Sent
+        );
+    }
+
+    #[test]
+    fn both_channels_failing_are_retried_with_both_errors() {
+        assert_eq!(
+            settle(Some(Err("smtp down".into())), &[failed()]),
+            Settlement::Retry("smtp down; push service answered 503".into())
+        );
+        // No device on « both »: the email's failure alone is retried.
+        assert_eq!(
+            settle(Some(Err("smtp down".into())), &[Gone]),
+            Settlement::Retry("smtp down".into())
         );
     }
 

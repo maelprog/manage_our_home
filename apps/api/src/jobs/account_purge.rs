@@ -15,7 +15,7 @@
 //!   account (`ON DELETE CASCADE`): `oauth_identities`, `sessions`,
 //!   `email_verification_tokens`, `password_reset_tokens`,
 //!   `group_members`, `message_read_state`, `event_assignees`,
-//!   `account_reactivation_requests` (#289); and the
+//!   `account_reactivation_requests` (#289), `push_subscriptions` (#306); and the
 //!   personal rows among the others: the account's own `audit_log`
 //!   entries, the `invitations` it sent (with the third-party addresses
 //!   they hold) and its `calendar_imports` (with their `feed_url`, a
@@ -288,6 +288,9 @@ pub async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<()> {
         .execute(&mut *tx)
         .await?;
     sqlx::query!("DELETE FROM sessions WHERE user_id = $1", user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query!("DELETE FROM push_subscriptions WHERE user_id = $1", user_id)
         .execute(&mut *tx)
         .await?;
     sqlx::query!(

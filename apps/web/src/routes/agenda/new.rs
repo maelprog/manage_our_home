@@ -22,6 +22,7 @@ use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
+use crate::routes::account::notifications::{fetch_settings, push_block};
 use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
@@ -412,6 +413,7 @@ fn page(
     default_end: &str,
     members: &[GroupMember],
     selected_assignees: &[Uuid],
+    push: &str,
 ) -> String {
     let error_html = error
         .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
@@ -436,6 +438,7 @@ fn page(
 {assignees}
 <p class="muted">Aucune sélection = assigné à vous.</p>
 <label>Rappel {reminder}</label>
+{push}
 <button type="submit">Créer l'événement</button>
 </form>
 <div class="links"><a href="/agenda">Retour à l'agenda</a></div>"#,
@@ -465,7 +468,28 @@ pub async fn get(
     // Nobody checked yet, so the picker shows nothing selected; the actual
     // default-to-creator happens server-side (`resolve_assignees`) when the
     // form is submitted with an empty selection.
-    Html(page(&fam.header, None, false, &start, &end, &members, &[])).into_response()
+    let push = reminder_push_block(&state, cookie.as_deref()).await;
+    Html(page(
+        &fam.header,
+        None,
+        false,
+        &start,
+        &end,
+        &members,
+        &[],
+        &push,
+    ))
+    .into_response()
+}
+
+/// Under the « Rappel » field: whether a reminder set here will reach its
+/// author by notification, and the controls to make it (#306). Empty when
+/// the settings cannot be read: the form stays usable.
+pub(crate) async fn reminder_push_block(state: &AppState, cookie: Option<&str>) -> String {
+    fetch_settings(state, cookie)
+        .await
+        .map(|s| push_block(&s, false))
+        .unwrap_or_default()
 }
 
 pub async fn post(
@@ -490,6 +514,7 @@ pub async fn post(
         .flatten()
         .map(|g| g.members)
         .unwrap_or_default();
+    let push = reminder_push_block(&state, cookie.as_deref()).await;
 
     // A body that doesn't deserialize is reported as such. Swallowing the
     // error with `unwrap_or_default()` handed the caller a 200 carrying
@@ -507,6 +532,7 @@ pub async fn post(
                 &to_datetime_local(now + chrono::Duration::hours(1)),
                 &members,
                 &assignee_ids,
+                &push,
             )),
         )
             .into_response();
@@ -521,6 +547,7 @@ pub async fn post(
             &form.ends_at,
             &members,
             &assignee_ids,
+            &push,
         ))
         .into_response()
     };

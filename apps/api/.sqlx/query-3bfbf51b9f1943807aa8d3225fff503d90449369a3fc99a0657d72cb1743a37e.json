@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO push_subscriptions (user_id, endpoint, created_at, last_seen_at)\n           VALUES ($1, $2, clock_timestamp(), clock_timestamp())\n           ON CONFLICT (endpoint) DO UPDATE SET\n               last_seen_at = EXCLUDED.last_seen_at,\n               user_id = EXCLUDED.user_id,\n               created_at = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id\n                   THEN push_subscriptions.created_at ELSE EXCLUDED.created_at END,\n               last_success_at = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id\n                   THEN push_subscriptions.last_success_at END,\n               consecutive_failures = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id\n                   THEN push_subscriptions.consecutive_failures ELSE 0 END,\n               failing_since = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id\n                   THEN push_subscriptions.failing_since END",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3bfbf51b9f1943807aa8d3225fff503d90449369a3fc99a0657d72cb1743a37e"
+}

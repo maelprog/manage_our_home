@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT u.reminder_channel,\n                  (SELECT count(*) FROM push_subscriptions p WHERE p.user_id = u.id) AS \"subscriptions!\"\n           FROM users u WHERE u.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "reminder_channel",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "reminder_channel"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "subscriptions!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "7d41a79ca484d8b71b11b487c7d8dd37fcc87a08ec01e8ff074f9f4c3d2097ed"
+}

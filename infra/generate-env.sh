@@ -40,6 +40,13 @@ gen_pwd() {
     openssl rand -hex 24
 }
 
+# A P-256 private scalar, unpadded base64url: the 32 bytes after the 7-byte
+# header of the SEC1 DER key (30 77 02 01 01 04 20).
+gen_vapid_key() {
+    openssl ecparam -name prime256v1 -genkey -noout -outform DER \
+        | tail -c +8 | head -c 32 | basenc --base64url | tr -d '='
+}
+
 cat > "$ENV_FILE" <<EOF
 ########################################
 # Application
@@ -84,6 +91,15 @@ GOOGLE_CLIENT_SECRET=
 OAUTH_ENCRYPTION_KEY=$(gen_key)
 MESSAGE_ENCRYPTION_KEY=$(gen_key)
 CALENDAR_FEED_ENCRYPTION_KEY=$(gen_key)
+
+########################################
+# Reminder notifications (Web Push, #306)
+########################################
+# The VAPID key every push is signed with. Keep it: a new key voids every
+# device's subscription (apps/api/README.md).
+
+VAPID_PRIVATE_KEY=$(gen_vapid_key)
+VAPID_SUBJECT=mailto:admin@$DOMAIN
 
 ########################################
 # SMTP

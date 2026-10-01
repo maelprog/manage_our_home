@@ -78,6 +78,10 @@
 	#   apps/web/src/csp.rs — run `cargo test -p manage_our_home_web csp`
 	#   after touching any inline script: its failure prints the list to
 	#   paste here.
+	# - `worker-src 'self'`: the service worker of the reminder
+	#   notifications (#306), `/sw.js`, served by apps/web. Without it the
+	#   browser falls back on `script-src`, which allows no file, and
+	#   refuses to register it.
 	# - `style-src 'self'` keeps `<style>` elements out; `style-src-attr
 	#   'unsafe-inline'` lets the handful of `style="…"` attributes in the
 	#   routes through (an avatar's colour, a column's alignment). A browser
@@ -97,7 +101,7 @@
 	# `Referer` — `/verify-email?token=…` carries its token in the query
 	# string.
 	header {
-		Content-Security-Policy "default-src 'self'; script-src 'unsafe-hashes' 'sha256-3y+tCmWcFp9x2K4uMZvV/ZEud2bfDnOltGdCBSw3YkI=' 'sha256-dGJiRXhRBoKzoa7jUS7f1mjmtnyDDbXHuZ7qw0wIL1w=' 'sha256-osjxnKEPL/pQJbFk1dKsF7PYFmTyMWGmVSiL9inhxJY=' 'sha256-6K7iZlEt9YCNTQ56Gu2hbVcZJoAdQ55xrHvDQ2o6dFU=' 'sha256-lYsQxrqqhY6skx46GFkuY7qu8trJVbJOMW/RoP6fdZs=' 'sha256-VrtvwbP0BSW5sTTEz0v9sve897Z4TyyoPUrKKRQxcM8=' 'sha256-B22SHpa71PIueUIDWDfK878EgjoNVDy8Sge3DFo1X3I=' 'sha256-bI+eIkmZUe+KpE09YEvnyjC4sQyD69AeTeeFkPEf0pk='; style-src 'self'; style-src-attr 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+		Content-Security-Policy "default-src 'self'; script-src 'unsafe-hashes' 'sha256-3y+tCmWcFp9x2K4uMZvV/ZEud2bfDnOltGdCBSw3YkI=' 'sha256-dGJiRXhRBoKzoa7jUS7f1mjmtnyDDbXHuZ7qw0wIL1w=' 'sha256-osjxnKEPL/pQJbFk1dKsF7PYFmTyMWGmVSiL9inhxJY=' 'sha256-6K7iZlEt9YCNTQ56Gu2hbVcZJoAdQ55xrHvDQ2o6dFU=' 'sha256-lYsQxrqqhY6skx46GFkuY7qu8trJVbJOMW/RoP6fdZs=' 'sha256-VrtvwbP0BSW5sTTEz0v9sve897Z4TyyoPUrKKRQxcM8=' 'sha256-B22SHpa71PIueUIDWDfK878EgjoNVDy8Sge3DFo1X3I=' 'sha256-bI+eIkmZUe+KpE09YEvnyjC4sQyD69AeTeeFkPEf0pk=' 'sha256-4jGNHQzFD4S5xqqtcfPTHZVK7cJ1GN6nn9AzEyVr8vQ='; worker-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options nosniff
 		X-Frame-Options DENY

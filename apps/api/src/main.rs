@@ -102,6 +102,16 @@ async fn main() -> anyhow::Result<()> {
     let trusted_proxies = manage_our_home::client_ip::TrustedProxies::from_env()
         .map_err(|e| anyhow::anyhow!("{}: {e}", manage_our_home::client_ip::TRUSTED_PROXIES_VAR))?;
 
+    // Reminders sent as a notification (#306). Unset: notifications are
+    // off, and said so; set but unusable: refuse to start.
+    let push = manage_our_home::notifications::push::Vapid::from_env()?.map(std::sync::Arc::new);
+    if push.is_none() {
+        tracing::warn!(
+            "{} unset — reminders cannot be sent as notifications on this server",
+            manage_our_home::notifications::push::PRIVATE_KEY_VAR
+        );
+    }
+
     let state = AppState {
         db,
         google_oauth,
@@ -126,6 +136,7 @@ async fn main() -> anyhow::Result<()> {
         ),
         body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
         upload_gate: manage_our_home_http_guard::UploadGate::production(),
+        push,
     };
 
     // On the admin pool: `event_attachments` reads back empty without
@@ -152,6 +163,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(jobs::scheduled_notifications::run(
         state.admin_db.clone(),
         email,
+        state.push.clone(),
     ));
 
     let app = build_router(state);

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, email, email_verified, display_name, created_at, age_declared_at,\n                  deletion_requested_at, is_superadmin,\n                  (password_hash IS NOT NULL) AS \"has_password!\"\n           FROM users WHERE id = $1",
+  "query": "SELECT id, email, email_verified, display_name, created_at, age_declared_at,\n                  deletion_requested_at, is_superadmin, reminder_channel,\n                  (password_hash IS NOT NULL) AS \"has_password!\"\n           FROM users WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -93,6 +93,17 @@
       },
       {
         "ordinal": 8,
+        "name": "reminder_channel",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "reminder_channel"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
         "name": "has_password!",
         "type_info": "Bool",
         "origin": "Expression"
@@ -112,8 +123,9 @@
       true,
       true,
       false,
+      false,
       null
     ]
   },
-  "hash": "d42c0c68e52704f1275f3f2afc548e339fd6caf64438abdae728e3db0c656d5a"
+  "hash": "0d58b90a13be66b635961d7e48932b5e9430a3fc11073e9a524f0fe639dbea75"
 }
