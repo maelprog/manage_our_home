@@ -1933,18 +1933,31 @@ mod tests {
     /// The declarations in `blocks` that would bring a caption back into
     /// sight or out of the accessibility tree: a `position` other than
     /// `absolute`, a `clip-path` other than `inset(50%)`, `display: none`,
-    /// `visibility: hidden`.
+    /// a `visibility` of `hidden` or `collapse`. Names and values are
+    /// compared lowercased, blanks and `!important` removed: none of those
+    /// change what the declaration sets.
     fn masking_violations(blocks: &[String]) -> Vec<String> {
         blocks
             .iter()
             .flat_map(|b| b.split(';'))
             .filter_map(|decl| decl.split_once(':'))
-            .map(|(name, value)| (name.trim(), value.trim()))
-            .filter(|&(name, value)| match name {
+            .map(|(name, value)| {
+                let name = name.trim().to_ascii_lowercase();
+                let value: String = value
+                    .to_ascii_lowercase()
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .collect();
+                let value = value
+                    .strip_suffix("!important")
+                    .map_or(value.clone(), str::to_string);
+                (name, value)
+            })
+            .filter(|(name, value)| match name.as_str() {
                 "position" => value != "absolute",
                 "clip-path" => value != "inset(50%)",
                 "display" => value == "none",
-                "visibility" => value == "hidden",
+                "visibility" => value == "hidden" || value == "collapse",
                 _ => false,
             })
             .map(|(name, value)| format!("{name}: {value}"))
@@ -1967,6 +1980,17 @@ mod tests {
                 "display: none",
                 "visibility: hidden",
             ]
+        );
+        // `!important`, blanks and case change nothing about what is set.
+        let blocks = [
+            " display: none !important; ".to_string(),
+            " POSITION: Static; ".to_string(),
+            " visibility: collapse; ".to_string(),
+            " position: absolute !important; clip-path: inset(50%)!important; ".to_string(),
+        ];
+        assert_eq!(
+            masking_violations(&blocks),
+            ["display: none", "position: static", "visibility: collapse"]
         );
     }
 
