@@ -27,7 +27,7 @@ use crate::layout::CurrentUser;
 use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
-use super::new::reminder_select;
+use super::new::{reminder_push_block, reminder_select};
 use super::{
     agenda_cookie, can_modify, event_not_found_page, family_context, fmt_paris, forbidden_page,
     service_unavailable_page, today_paris,
@@ -217,6 +217,13 @@ pub async fn get(
     let notice = query.notice.as_deref().and_then(notice_text);
     let error = query.error.as_deref().and_then(error_text);
     let reminder = query.rid.map(|rid| (rid, query.offset.unwrap_or(0)));
+    // A reminder goes to the event's creator (#291): whether it will reach
+    // them is only the viewer's business when the viewer is the creator.
+    let push = if event.created_by == me.user_id {
+        reminder_push_block(&state, cookie.as_deref()).await
+    } else {
+        String::new()
+    };
 
     Html(page(
         &fam.header,
@@ -229,6 +236,7 @@ pub async fn get(
         notice,
         error,
         reminder,
+        &push,
     ))
     .into_response()
 }
@@ -245,6 +253,7 @@ fn page(
     notice: Option<&str>,
     error: Option<&str>,
     reminder: Option<(Uuid, i32)>,
+    push: &str,
 ) -> String {
     let id = event.id;
     let notice_html = notice
@@ -336,10 +345,11 @@ fn page(
     let reminder_select_html = reminder_select("reminder", None);
     let reminders_html = format!(
         r#"<h2>Rappels</h2>
-<p class="muted">Ajoute un rappel par email avant l'événement. La liste des rappels existants n'est pas affichable (limitation v1).</p>
+<p class="muted">Ajoute un rappel avant l'événement. Il est envoyé au créateur de l'événement, par notification ou par email selon son choix (le vôtre se règle dans <a href="/account/notifications">Notifications de rappel</a>). La liste des rappels existants n'est pas affichable (limitation v1).</p>
 {just_created}
 <form method="post" action="/agenda/{id}/reminders">
 <label>Nouveau rappel {reminder_select_html}</label>
+{push}
 <button type="submit">Ajouter le rappel</button>
 </form>"#
     );

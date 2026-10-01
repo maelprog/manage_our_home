@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO push_subscriptions (user_id, endpoint) VALUES ($1, $2)\n           ON CONFLICT (endpoint) DO UPDATE\n           SET user_id = EXCLUDED.user_id, created_at = now(), last_success_at = NULL\n           WHERE push_subscriptions.user_id <> EXCLUDED.user_id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5d9d772474fe49147b113eee49d0d20a6f7a47505f525f0d4bdf4ae31e460522"
+}

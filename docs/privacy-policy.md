@@ -42,7 +42,7 @@ données sont-elles conservées ? ».
 | Invitations | adresse email de la personne invitée (si le membre qui invite la saisit), lien d'invitation valable 7 jours ; l'email envoyé nomme le groupe et le membre qui invite | Intérêt légitime (permettre à un membre d'inviter un proche dans son groupe) |
 | Désactivation d'un compte | date à laquelle l'administrateur du service a désactivé le compte, date de l'email qui prévient de sa suppression ; si vous demandez la réactivation, la date de votre demande et le message facultatif que vous y joignez, et la date d'un refus | Intérêt légitime (exploitation et sécurité du service) |
 | Agenda | événements, tâches, pièces jointes, membres assignés à un événement | Exécution du contrat |
-| Rappels d'événements | délai choisi avant l'événement ; l'email de rappel porte le titre et la date de l'événement | Exécution du contrat |
+| Rappels d'événements | délai choisi avant l'événement ; la façon dont vos rappels vous parviennent (notification, email ou les deux) ; pour chaque appareil où vous activez les notifications, l'adresse d'abonnement que le service de notification de votre navigateur lui attribue et ses dates d'abonnement et de dernier envoi réussi. L'email de rappel porte le titre et la date de l'événement ; la notification n'affiche que « Rappel d'un événement à venir » | Exécution du contrat |
 | Stocks / recettes / liste de courses | articles, recettes, ingrédients | Exécution du contrat |
 | Budget | dépenses saisies manuellement | Exécution du contrat |
 | Messagerie | messages du fil familial (chiffrés au repos), date de votre dernière lecture du fil | Exécution du contrat |
@@ -106,6 +106,21 @@ possibles sont :
   traitements. Le cadre contractuel qui les lie au titre de l'article 28 du
   RGPD sera indiqué ici avant l'ouverture du service : [cadre contractuel du
   sous-traitant email — à renseigner avant la mise en ligne].
+- **Le service de notification de votre navigateur**, uniquement si vos
+  rappels vous parviennent par notification et que vous les avez activées
+  sur un appareil : celui de Google pour Chrome et la plupart des
+  navigateurs qui en dérivent, de Mozilla pour Firefox, d'Apple pour
+  Safari, de Microsoft pour Edge. Ce n'est pas le service qui le choisit,
+  c'est votre navigateur. À chaque rappel, le serveur lui envoie un message
+  **vide** à l'adresse d'abonnement de votre appareil : ni le titre de
+  l'événement, ni sa date, ni aucun identifiant de l'événement ou de votre
+  compte. Ce service de notification apprend donc que ce serveur a envoyé
+  un message à cet appareil, à cette heure. Votre appareil affiche alors
+  toujours le même texte, « Rappel d'un événement à venir » — rien sur
+  l'écran verrouillé ne dit de quel événement il s'agit — et le titre ne se
+  lit qu'en ouvrant l'agenda. Pas de repli : sans appareil abonné, un
+  rappel par notification n'est pas envoyé du tout, et le site vous en
+  avertit là où vous programmez vos rappels.
 
 Aucune autre donnée ne quitte le serveur applicatif. Les suggestions de
 recettes sont calculées sur le serveur par des règles fixes (ingrédients en
@@ -115,7 +130,7 @@ n'est appelé, ni sur le serveur ni chez un tiers.
 ## Vos données quittent-elles l'Union européenne ?
 
 Ce service n'est pas encore ouvert au public, et cette page n'affirmera pas
-plus que ce qui est établi. Voici où en est chacun des trois cas.
+plus que ce qui est établi. Voici où en est chacun des quatre cas.
 
 - **Les emails** partent par Mailjet, dont le stockage des données des
   clients européens est situé dans l'Union européenne (centres en Allemagne
@@ -133,6 +148,14 @@ plus que ce qui est établi. Voici où en est chacun des trois cas.
   avant la mise en ligne]. Si vous ne vous connectez pas avec Google et
   qu'aucun import calendrier n'est configuré dans votre groupe, rien ne part
   vers Google.
+- **Les notifications de rappel** passent par le service de notification
+  de votre navigateur (Google, Mozilla, Apple ou Microsoft), dont
+  l'infrastructure est pour partie hors de l'Union européenne. Ce qu'il
+  reçoit se limite à l'adresse d'abonnement de votre appareil et à l'heure
+  d'un message vide (voir plus haut). Le mécanisme qui encadre ce transfert
+  sera indiqué ici avant l'ouverture du service : [transferts hors UE des
+  services de notification — à renseigner avant la mise en ligne]. Si vos
+  rappels vous parviennent par email seulement, rien ne part vers eux.
 - **Le reste ne quitte pas le serveur du service** : vos messages, votre
   agenda, vos listes, votre budget et vos pièces jointes n'y sont partagés
   avec aucun tiers. L'hébergeur de ce serveur est nommé dans les
@@ -231,6 +254,11 @@ de la purge dépasserait.
 - **Rappels d'événements** : jusqu'à la suppression du rappel ou de
   l'événement ; l'historique des envois (heure, statut, tentatives) part
   avec eux.
+- **Appareils abonnés aux notifications** : jusqu'à ce que le service de
+  notification du navigateur signale l'abonnement expiré ou retiré (il est
+  alors supprimé au premier rappel qui l'essaie), que vous désabonniez vos
+  appareils depuis « Notifications de rappel », ou à la purge de votre
+  compte.
 - **Assignations d'événements** : tant que l'événement existe et que
   l'assignation n'est pas retirée ; elle reste après votre départ du groupe,
   et est supprimée à la purge de votre compte.
@@ -260,7 +288,8 @@ de la purge dépasserait.
   s'applique (annulable via `POST /account/delete/cancel`), après quoi
   votre compte est purgé au premier passage de purge qui suit.
 - **Ce que la purge supprime** : vos identifiants de connexion (mot de
-  passe haché, connexion avec Google), vos sessions, vos jetons de
+  passe haché, connexion avec Google), vos sessions, vos appareils abonnés
+  aux notifications, vos jetons de
   vérification et de réinitialisation, votre appartenance aux groupes et
   votre rôle, votre date de dernière lecture de la messagerie, vos
   assignations d'événements, les entrées des logs d'audit dont vous êtes
@@ -319,7 +348,9 @@ de la purge dépasserait.
   recettes avec leurs ingrédients), y compris un groupe que vous avez
   quitté ou dont vous avez été retiré, tant que ce contenu y est conservé ;
   les événements qui vous sont assignés, y compris par un autre membre ;
-  les rappels de vos événements et les envois qu'ils ont programmés ; vos
+  les rappels de vos événements et les envois qu'ils ont programmés, la
+  façon dont ils vous parviennent et vos appareils abonnés aux
+  notifications ; vos
   pièces jointes ; les occurrences de tâches que vous avez cochées ; votre
   marqueur de lecture de la messagerie ; les invitations que vous avez
   émises et celles qu'un membre a adressées à votre adresse email (groupe,

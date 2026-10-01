@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT platform, endpoint, created_at, last_success_at\n           FROM push_subscriptions WHERE user_id = $1 ORDER BY created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "platform",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "push_subscriptions",
+            "name": "platform"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "endpoint",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "push_subscriptions",
+            "name": "endpoint"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "push_subscriptions",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "last_success_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "push_subscriptions",
+            "name": "last_success_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "677e6efa1a25ffe6e536eb51f8f318ab9b2b438a646ac6736091bc2eb2882d1a"
+}

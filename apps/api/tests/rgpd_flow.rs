@@ -882,6 +882,7 @@ async fn export_accounts_for_every_table(db: PgPool) {
         ("email_verification_tokens", "email_verifications"),
         ("password_reset_tokens", "password_resets"),
         ("audit_log", "audit_log"),
+        ("push_subscriptions", "push_subscriptions"),
     ];
     const LEFT_OUT: &[(&str, &str)] = &[
         (
@@ -961,6 +962,7 @@ async fn export_accounts_for_every_column_referencing_users(db: PgPool) {
         ("email_verification_tokens", "user_id"),
         ("password_reset_tokens", "user_id"),
         ("audit_log", "actor_user_id"),
+        ("push_subscriptions", "user_id"),
     ];
     const LEFT_OUT: &[(&str, &str, &str)] = &[
         (

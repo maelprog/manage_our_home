@@ -5,6 +5,7 @@ pub mod google_calendar;
 pub mod grocery_list;
 pub mod groups;
 pub mod messagerie;
+pub mod notifications;
 pub mod recipes;
 pub mod rgpd;
 pub mod stocks;

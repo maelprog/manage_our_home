@@ -82,6 +82,8 @@ async fn seed_personal_rows(db: &PgPool, group: Uuid, event: Uuid, user: Uuid, t
          VALUES ($1, now() + interval '1 hour')",
         "INSERT INTO audit_log (actor_user_id, action, target_type, target_id)
          VALUES ($1, 'account_data_exported', 'user', $1::text)",
+        "INSERT INTO push_subscriptions (user_id, endpoint)
+         VALUES ($1, 'https://fcm.googleapis.com/fcm/send/' || $2)",
     ] {
         let query = sqlx::query(sql).bind(user);
         let query = if sql.contains("$2") {
@@ -168,6 +170,10 @@ async fn personal_rows(db: &PgPool, user: Uuid) -> Vec<(&'static str, i64)> {
             "calendar_imports",
             "SELECT count(*) FROM calendar_imports WHERE created_by = $1",
         ),
+        (
+            "push_subscriptions",
+            "SELECT count(*) FROM push_subscriptions WHERE user_id = $1",
+        ),
     ] {
         let n: i64 = sqlx::query_scalar(sql)
             .bind(user)
@@ -191,6 +197,7 @@ fn all(n: i64) -> Vec<(&'static str, i64)> {
         "audit_log",
         "invitations",
         "calendar_imports",
+        "push_subscriptions",
     ]
     .into_iter()
     .map(|t| (t, n))

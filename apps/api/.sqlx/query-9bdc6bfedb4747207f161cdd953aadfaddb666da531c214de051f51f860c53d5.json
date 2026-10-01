@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT r.id, r.event_id, r.offset_minutes, r.channel, r.created_at\n               FROM event_reminders r JOIN events e ON e.id = r.event_id\n               WHERE e.group_id = $1 AND e.created_by = $2 ORDER BY r.created_at",
+  "query": "SELECT r.id, r.event_id, r.offset_minutes, r.created_at\n               FROM event_reminders r JOIN events e ON e.id = r.event_id\n               WHERE e.group_id = $1 AND e.created_by = $2 ORDER BY r.created_at",
   "describe": {
     "columns": [
       {
@@ -38,17 +38,6 @@
       },
       {
         "ordinal": 3,
-        "name": "channel",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "event_reminders",
-            "name": "channel"
-          }
-        }
-      },
-      {
-        "ordinal": 4,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -69,9 +58,8 @@
       false,
       false,
       false,
-      false,
       false
     ]
   },
-  "hash": "cd1f73df8bbcf13e019e56ce158082683ec3ba0a870b8b74eebf1f01013e1e3e"
+  "hash": "9bdc6bfedb4747207f161cdd953aadfaddb666da531c214de051f51f860c53d5"
 }

@@ -17,14 +17,18 @@ mod common;
 use common::{drop_prescribed_role, prescribed_role_pool};
 use manage_our_home::jobs::account_purge::purge_account;
 use manage_our_home::jobs::scheduled_notifications::{send_due_notifications, REMINDER_SUBJECT};
+use manage_our_home::notifications::push::PushOutcome;
 use sqlx::PgPool;
 use std::sync::Mutex;
 use uuid::Uuid;
 
+/// An account whose reminders go by email: what this file is about is who
+/// receives them, and the email is where that shows (the channel itself is
+/// `push_reminders_flow`'s subject, #306).
 async fn insert_user(db: &PgPool, email: &str) -> Uuid {
     sqlx::query_scalar(
-        "INSERT INTO users (email, password_hash, display_name, age_declared_at)
-         VALUES ($1, 'not-a-real-hash', $1, now() - interval '1 year')
+        "INSERT INTO users (email, password_hash, display_name, age_declared_at, reminder_channel)
+         VALUES ($1, 'not-a-real-hash', $1, now() - interval '1 year', 'email')
          RETURNING id",
     )
     .bind(email)
@@ -93,6 +97,12 @@ async fn notification(db: &PgPool, id: Uuid) -> (String, i32) {
         .unwrap()
 }
 
+/// The push sender of these passes: every account here is on email, so it
+/// must never be called.
+async fn no_push(_endpoint: String, _ttl_secs: i64) -> PushOutcome {
+    panic!("no account of this file receives notifications")
+}
+
 /// One pass, recording every email instead of sending it.
 async fn pass(db: &PgPool) -> Vec<(String, String)> {
     let sent = Mutex::new(Vec::<(String, String)>::new());
@@ -100,7 +110,7 @@ async fn pass(db: &PgPool) -> Vec<(String, String)> {
         sent.lock().unwrap().push((to, subject));
         async { Ok::<(), anyhow::Error>(()) }
     };
-    send_due_notifications(db, &record).await.unwrap();
+    send_due_notifications(db, &record, no_push).await.unwrap();
     sent.into_inner().unwrap()
 }
 
@@ -219,7 +229,7 @@ async fn the_pass_refuses_a_role_that_does_not_bypass_rls(db: PgPool) {
         sent.lock().unwrap().push(to);
         async { Ok::<(), anyhow::Error>(()) }
     };
-    let result = send_due_notifications(&app_db, &record).await;
+    let result = send_due_notifications(&app_db, &record, no_push).await;
     drop_prescribed_role(&db, app_db, &role).await;
 
     // The whole chain names this pass's tables, not another guard's.
@@ -263,7 +273,7 @@ async fn a_creator_deactivated_during_the_pass_gets_no_reminder(db: PgPool) {
             Ok::<(), anyhow::Error>(())
         }
     };
-    send_due_notifications(&db, &record).await.unwrap();
+    send_due_notifications(&db, &record, no_push).await.unwrap();
     let sent = sent.into_inner().unwrap();
 
     assert_eq!(sent.len(), 1, "{sent:?}");

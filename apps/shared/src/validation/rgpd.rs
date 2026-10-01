@@ -977,6 +977,7 @@ mod tests {
             "cadre contractuel du sous-traitant email".to_string(),
             "transferts hors UE du sous-traitant email".to_string(),
             "transferts hors UE de Google".to_string(),
+            "transferts hors UE des services de notification".to_string(),
         ]);
         values
     }
@@ -984,7 +985,7 @@ mod tests {
     /// The controller's identity alone, in reading order: the two values the
     /// invitation email carries (art. 14(1)(a)) and the ones
     /// `docs/v2-deployment.md` #16 fills. The email says nothing about
-    /// subprocessors, so it must not be pinned to the three values #18 owns.
+    /// subprocessors, so it must not be pinned to the four values #18 owns.
     fn pending_controller_values() -> Vec<String> {
         vec![
             "nom du responsable de traitement".to_string(),

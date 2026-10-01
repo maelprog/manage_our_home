@@ -113,6 +113,24 @@ fn build_router(state: AppState) -> Router {
             "/account/delete/cancel",
             post(routes::account::delete::cancel),
         )
+        // Reminder channel and this device's notifications (#306), and
+        // the service worker, at the root so its scope is the whole site.
+        .route(
+            "/account/notifications",
+            get(routes::account::notifications::get).post(routes::account::notifications::post),
+        )
+        .route(
+            "/account/notifications/subscription",
+            post(routes::account::notifications::subscription),
+        )
+        .route(
+            "/account/notifications/devices/remove",
+            post(routes::account::notifications::remove_devices),
+        )
+        .route(
+            "/sw.js",
+            get(routes::account::notifications::service_worker),
+        )
         // The one page a restricted session opens (#289).
         .route(
             "/account/deactivated",

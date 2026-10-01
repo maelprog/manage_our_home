@@ -27,6 +27,7 @@ use sha2::{Digest, Sha256};
 
 use crate::app::PW_TOGGLE;
 use crate::routes::account::delete::CONFIRM_ACCOUNT_DELETE;
+use crate::routes::account::notifications::PUSH_SCRIPT;
 use crate::routes::admin::users::{CONFIRM_DEACTIVATE, CONFIRM_REFUSE_REACTIVATION};
 use crate::routes::agenda::new::ALL_DAY_TOGGLE;
 use crate::routes::auth::reset_password::FRAGMENT_SCRIPT;
@@ -49,6 +50,7 @@ const HANDLERS: &[(&str, &str)] = &[
 const SCRIPTS: &[(&str, &str)] = &[
     ("FRAGMENT_SCRIPT", FRAGMENT_SCRIPT),
     ("LIVE_SCRIPT", LIVE_SCRIPT),
+    ("PUSH_SCRIPT", PUSH_SCRIPT),
 ];
 
 /// The CSP source expression that allows exactly `js`: SHA-256 of its UTF-8
@@ -378,6 +380,16 @@ fn the_caddyfile_csp_allows_exactly_the_registered_scripts() {
     for loose in ["'unsafe-inline'", "'unsafe-eval'", "*", "data:", "'self'"] {
         assert!(!script_src.contains(&loose), "script-src allows {loose}");
     }
+}
+
+/// The reminder notifications' service worker (#306) is a script file,
+/// `/sw.js`. Without `worker-src` a browser falls back on `script-src`,
+/// which allows no file at all, and refuses to register it: no device could
+/// subscribe, and every member on notifications would get the warning.
+#[test]
+fn the_caddyfile_lets_the_service_worker_register_and_nothing_else() {
+    let policy = caddy_csp(CADDYFILE).expect("infra/Caddyfile sets a Content-Security-Policy");
+    assert_eq!(directive(policy, "worker-src"), Some(vec!["'self'"]));
 }
 
 #[test]

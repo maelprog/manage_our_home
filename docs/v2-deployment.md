@@ -23,7 +23,7 @@ rationale in `architecture.md` ("v2 — Déploiement multi-famille").
 | 15 | Secrets via sops in production | missing | Scaffolding exists conceptually in `architecture.md`; not yet wired to a real deployment. |
 | 16 | RGPD: nom et adresse de contact du responsable de traitement | missing | **À remplacer avant la mise en ligne** — bloquant (#131). Art. 13(1)(a) exige l'identité *et* les coordonnées du responsable. Le porteur du projet (personne physique) fournit son nom et une adresse relevée par une personne — pas un `noreply@` — au moment de l'ouverture publique. Voir la procédure ci-dessous. |
 | 17 | LCEN: éditeur, directeur de la publication et hébergeur des mentions légales | missing | **À remplacer avant la mise en ligne** — bloquant (#132). Les mentions légales existent et sont servies (`docs/legal-notice.md`, `GET /legal-notice`), mais cinq valeurs y sont encore des placeholders. L'hébergeur dépend de l'item #1 : auto-hébergement (l'éditeur est alors son propre hébergeur) ou VPS. Voir la procédure ci-dessous. |
-| 18 | RGPD: cadre contractuel du sous-traitant email et transferts hors UE | missing | **À faire avant la mise en ligne** — bloquant (#136). Le fournisseur est arrêté (Mailjet), mais ni le cadre contractuel opposable ni les transferts hors UE — pour lui comme pour Google — ne sont établis : trois placeholders les portent dans la politique et le registre. Rien dans le code ne contraint `SMTP_HOST`. Voir la procédure ci-dessous. |
+| 18 | RGPD: cadre contractuel du sous-traitant email et transferts hors UE | missing | **À faire avant la mise en ligne** — bloquant (#136). Le fournisseur est arrêté (Mailjet), mais ni le cadre contractuel opposable ni les transferts hors UE — pour lui comme pour Google et pour les services de notification des navigateurs (#306) — ne sont établis : quatre placeholders les portent dans la politique et le registre. Rien dans le code ne contraint `SMTP_HOST`. Voir la procédure ci-dessous. |
 
 **Immediate next step:** none of the above are done yet. Given the ~1 week
 horizon, items 4-9 (RGPD + backups) and 14 (rate-limiting) are the hard
@@ -40,9 +40,10 @@ sont des placeholders, sous la forme
 - `nom du responsable de traitement`
 - `adresse de contact`
 
-Les trois autres (`cadre contractuel du sous-traitant email`,
-`transferts hors UE du sous-traitant email`, `transferts hors UE de Google`)
-relèvent de l'item #18 ci-dessous. Les cinq figurent à l'identique, et dans le
+Les quatre autres (`cadre contractuel du sous-traitant email`,
+`transferts hors UE du sous-traitant email`, `transferts hors UE de Google`,
+`transferts hors UE des services de notification`)
+relèvent de l'item #18 ci-dessous. Les six figurent à l'identique, et dans le
 même ordre de lecture, dans `docs/registre-traitements.md` — c'est ce que la
 suite de tests épingle. `docs/architecture.md` ("Questions résolues" #3)
 renvoie aux deux premiers.
@@ -59,7 +60,7 @@ Au moment de l'ouverture publique :
 4. Mettre à jour les deux tests de `apps/shared/src/validation/rgpd.rs` qui
    épinglent ces valeurs, car tant qu'ils ne le sont pas la suite reste rouge
    — c'est le rappel mécanique, pas seulement écrit :
-   - `pending_release_values` est leur source unique, et elle porte les cinq
+   - `pending_release_values` est leur source unique, et elle porte les six
      placeholders, ceux de l'item #18 compris : en retirer deux au pas 1 ne
      la vide donc pas, et `the_internal_rgpd_documents_carry_the_same_placeholders`
      n'exige que `docs/architecture.md` ait perdu son annonce que le jour où
@@ -120,13 +121,14 @@ Le fournisseur est arrêté depuis l'arbitrage du 2026-09-19 : **Mailjet**
 (Mailjet SAS, groupe Sinch), nommé dans `docs/registre-traitements.md`,
 `docs/privacy-policy.md`, `docs/architecture.md` et `README.md`. Ce qui n'est
 pas arrêté, ce sont les deux choses qu'aucun de ces documents n'affirme : le
-cadre contractuel opposable et les transferts hors UE. Trois placeholders les
+cadre contractuel opposable et les transferts hors UE. Quatre placeholders les
 portent, à remplir ensemble, dans la politique **et** dans le registre (même
 libellé, même ordre de lecture) :
 
 - `cadre contractuel du sous-traitant email`
 - `transferts hors UE du sous-traitant email`
 - `transferts hors UE de Google`
+- `transferts hors UE des services de notification` (#306)
 
 Au moment de l'ouverture publique :
 
@@ -150,12 +152,17 @@ Au moment de l'ouverture publique :
    des données n'était pas consultable le 2026-09-21 (site en erreur) : la
    déclaration de Google, qui porte la réserve « sauf exclusion explicite »,
    ne suffit pas à nommer un mécanisme.
+   Puis pour les **services de notification des navigateurs** (Google pour
+   Chrome, Mozilla, Apple, Microsoft), qui reçoivent l'adresse d'abonnement
+   d'un appareil et l'heure d'un message vide à chaque rappel par
+   notification : le service ne les choisit pas, le navigateur du membre le
+   fait. La réponse remplace le quatrième placeholder.
 4. **Pointer la configuration de production sur le fournisseur retenu** :
    `SMTP_HOST` est lu de l'environnement par `apps/api/src/main.rs`, sans
    contrainte. Poser l'hôte d'envoi du fournisseur, avec `SMTP_FROM` sur un
    domaine dont les enregistrements SPF/DKIM/DMARC sont en place.
 5. Rafraîchir la date de dernière mise à jour en tête des deux documents, et
-   retirer les trois entrées correspondantes de `pending_release_values` dans
+   retirer les quatre entrées correspondantes de `pending_release_values` dans
    `apps/shared/src/validation/rgpd.rs` — la suite reste rouge tant que la
    liste et les documents ne disent pas la même chose.
 

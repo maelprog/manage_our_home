@@ -57,8 +57,21 @@ pub fn test_state(db: PgPool) -> AppState {
         // on their own state.
         body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
         upload_gate: manage_our_home_http_guard::UploadGate::production(),
+        // Notifications on, with a key made for the tests: a device can
+        // subscribe. Tests of a server without a key build their own state.
+        push: Some(std::sync::Arc::new(
+            manage_our_home::notifications::push::Vapid::new(
+                TEST_VAPID_PRIVATE_KEY,
+                "mailto:admin@example.test",
+            )
+            .unwrap(),
+        )),
     }
 }
+
+/// A P-256 scalar for the tests' VAPID identity (unpadded base64url).
+#[allow(dead_code)]
+pub const TEST_VAPID_PRIVATE_KEY: &str = "Yh8ZQ5n5k3t3c0mKXJ6tJd0w9p1n8uQ2xB4vV7rL0aE";
 
 /// The pool the handlers serve requests from (`AppState::db`).
 ///
