@@ -221,9 +221,12 @@ async fn an_account_keeps_fifty_devices_and_the_51st_replaces_the_least_recently
     .execute(&db)
     .await
     .unwrap();
-    // Subscribed first of all, but registered again just now: in use.
+    // Subscribed first of all and last seen 20 days ago — older than the
+    // device to replace below — but registered again just now: in use.
     set(
-        "UPDATE push_subscriptions SET created_at = now() - interval '30 days' WHERE endpoint = $1",
+        "UPDATE push_subscriptions
+         SET created_at = now() - interval '30 days', last_seen_at = now() - interval '20 days'
+         WHERE endpoint = $1",
         17,
     )
     .await;
@@ -337,7 +340,8 @@ async fn the_ceiling_holds_under_concurrent_subscriptions(db: PgPool) {
 }
 
 /// The page registers the device again on every view once the permission
-/// is granted: the same account doing so changes nothing of the row.
+/// is granted: the same account doing so moves `last_seen_at` only, and
+/// keeps the subscription date and the delivery record.
 #[sqlx::test]
 async fn the_same_device_registered_again_keeps_its_dates(db: PgPool) {
     let router = test_router(db.clone());
