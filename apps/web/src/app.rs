@@ -1911,58 +1911,82 @@ mod tests {
         // would push the grid down by one line — and clipped rather than
         // `display: none`, which would take the name out of the
         // accessibility tree too.
-        // What counts is the value the cascade ends on: the *last*
-        // declaration among every block aimed at `caption`, so a later rule
-        // resetting it is read (source order only — specificity is not
-        // weighed, which errs towards reading the reset).
+        //
+        // Every block whose selector names `caption` is held to the masking
+        // values, whatever its place in the sheet or its specificity: no
+        // cascade is computed here, so none may disagree. What this does not
+        // see is a selector that reaches the caption without naming it
+        // (`table.cal > *`, `*`).
         let rules = blocks_for(&css(), "caption");
-        let last = |prop: &str| last_value(&rules, prop);
-        assert_eq!(last("position").as_deref(), Some("absolute"), "{rules:#?}");
-        assert_eq!(
-            last("clip-path").as_deref(),
-            Some("inset(50%)"),
+        assert!(
+            rules.iter().any(|r| r.contains("position: absolute")),
             "{rules:#?}"
         );
-        assert_ne!(last("display").as_deref(), Some("none"), "{rules:#?}");
-        assert_ne!(last("visibility").as_deref(), Some("hidden"), "{rules:#?}");
+        assert!(
+            rules.iter().any(|r| r.contains("clip-path: inset(50%)")),
+            "{rules:#?}"
+        );
+        let unmasking = masking_violations(&rules);
+        assert!(unmasking.is_empty(), "{unmasking:#?}");
     }
 
-    /// The value of the last `prop` declaration across `blocks`, in order.
-    fn last_value(blocks: &[String], prop: &str) -> Option<String> {
+    /// The declarations in `blocks` that would bring a caption back into
+    /// sight or out of the accessibility tree: a `position` other than
+    /// `absolute`, a `clip-path` other than `inset(50%)`, `display: none`,
+    /// `visibility: hidden`.
+    fn masking_violations(blocks: &[String]) -> Vec<String> {
         blocks
             .iter()
             .flat_map(|b| b.split(';'))
             .filter_map(|decl| decl.split_once(':'))
-            .filter(|(name, _)| name.trim() == prop)
-            .map(|(_, value)| value.trim().to_string())
-            .next_back()
+            .map(|(name, value)| (name.trim(), value.trim()))
+            .filter(|&(name, value)| match name {
+                "position" => value != "absolute",
+                "clip-path" => value != "inset(50%)",
+                "display" => value == "none",
+                "visibility" => value == "hidden",
+                _ => false,
+            })
+            .map(|(name, value)| format!("{name}: {value}"))
+            .collect()
     }
 
     #[test]
-    fn last_value_reads_the_declaration_the_cascade_ends_on() {
+    fn any_caption_block_that_unmasks_is_a_violation() {
         let blocks = [
+            " position: static; clip-path: none; color: red; ".to_string(),
             " position: absolute; clip-path: inset(50%); ".to_string(),
-            " color: red; ".to_string(),
-            " position: static; ".to_string(),
+            " display: none; ".to_string(),
+            " visibility: hidden; display: block; ".to_string(),
         ];
-        assert_eq!(last_value(&blocks, "position").as_deref(), Some("static"));
         assert_eq!(
-            last_value(&blocks, "clip-path").as_deref(),
-            Some("inset(50%)")
+            masking_violations(&blocks),
+            [
+                "position: static",
+                "clip-path: none",
+                "display: none",
+                "visibility: hidden",
+            ]
         );
-        assert_eq!(last_value(&blocks, "display"), None);
     }
 
     /// The body of every block whose selector mentions `selector`, in
     /// source order. Reading them all is what lets the caller take the
     /// last value of a property rather than the first.
     fn blocks_for(css: &str, selector: &str) -> Vec<String> {
+        let word = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
         let mut out = Vec::new();
         let mut from = 0;
-        while css[from..].contains(selector) {
-            let (block, next) = block_after(css, selector, from);
-            out.push(block);
-            from = next.min(css.len());
+        while let Some(at) = css[from..].find(selector).map(|i| from + i) {
+            let end = at + selector.len();
+            let whole = !css[..at].ends_with(word) && !css[end..].starts_with(word);
+            if whole {
+                let (block, next) = block_after(css, selector, at);
+                out.push(block);
+                from = next.min(css.len());
+            } else {
+                from = end;
+            }
         }
         out
     }
@@ -1971,28 +1995,61 @@ mod tests {
     fn blocks_for_reads_every_block_naming_the_selector() {
         let css = "caption { a: 1; } .x { b: 2; } main caption { c: 3; }";
         assert_eq!(blocks_for(css, "caption"), [" a: 1; ", " c: 3; "]);
+        // A whole selector word, not a substring of another element's name.
+        let css = "figcaption { a: 1; } caption { b: 2; }";
+        assert_eq!(blocks_for(css, "caption"), [" b: 2; "]);
     }
 
-    /// Whether a header-cell tag carries a real `scope` attribute, not an
-    /// attribute that merely ends in `scope` (`data-scope`).
+    /// Whether a header-cell tag carries a real, non-empty `scope`
+    /// attribute — not one that merely ends in `scope` (`data-scope`), nor
+    /// `scope=` inside another attribute's quoted value.
     fn has_scope(tag: &str) -> bool {
-        // Quoted values — double or single — dropped first, so
-        // `title='a scope=b'` is not read as an attribute; then an attribute
-        // is a whitespace-led token, its name compared case-insensitively.
-        let mut unquoted = String::new();
-        let mut quote = None;
-        for c in tag.chars() {
-            match quote {
-                Some(q) if c == q => quote = None,
-                Some(_) => {}
-                None if c == '"' || c == '\'' => quote = Some(c),
-                None => unquoted.push(c.to_ascii_lowercase()),
+        tag_attributes(tag)
+            .iter()
+            .any(|(name, value)| name.eq_ignore_ascii_case("scope") && !value.trim().is_empty())
+    }
+
+    /// `(name, value)` for each attribute of an opening tag, values
+    /// unquoted (double, single or bare). A textual reading, enough for
+    /// the literals this crate writes; not an HTML parser.
+    fn tag_attributes(tag: &str) -> Vec<(String, String)> {
+        let body = tag.trim_end_matches('>');
+        // Past the tag name.
+        let mut rest = body.trim_start_matches('<');
+        rest = rest.trim_start_matches(|c: char| !c.is_whitespace());
+        let mut out = Vec::new();
+        loop {
+            rest = rest.trim_start();
+            if rest.is_empty() {
+                break;
             }
+            let name_end = rest
+                .find(|c: char| c == '=' || c.is_whitespace())
+                .unwrap_or(rest.len());
+            let name = rest[..name_end].to_string();
+            rest = rest[name_end..].trim_start();
+            let value = match rest.strip_prefix('=') {
+                None => String::new(),
+                Some(after) => {
+                    let after = after.trim_start();
+                    match after.chars().next() {
+                        Some(q @ ('"' | '\'')) => {
+                            let inner = &after[1..];
+                            let close = inner.find(q).unwrap_or(inner.len());
+                            rest = inner.get(close + 1..).unwrap_or("");
+                            inner[..close].to_string()
+                        }
+                        _ => {
+                            let end = after.find(char::is_whitespace).unwrap_or(after.len());
+                            rest = &after[end..];
+                            after[..end].to_string()
+                        }
+                    }
+                }
+            };
+            out.push((name, value));
         }
-        unquoted
-            .split_whitespace()
-            .skip(1)
-            .any(|attr| attr.starts_with("scope="))
+        out
     }
 
     #[test]
@@ -2016,6 +2073,9 @@ mod tests {
         assert!(!has_scope(&format!(r#"{open} title='a scope=b'>"#)));
         assert!(has_scope(&format!(r#"{open} SCOPE="col">"#)));
         assert!(has_scope(&format!(r#"{open} title='x' scope='col'>"#)));
+        // An empty value states nothing.
+        assert!(!has_scope(&format!(r#"{open} scope="">"#)));
+        assert!(!has_scope(&format!(r#"{open} scope=''>"#)));
     }
 
     /// Every header-cell opening tag in the routes, `<thead>` excluded.
@@ -2048,21 +2108,19 @@ mod tests {
         out
     }
 
-    /// A source without its `#[cfg(test)]` tail: the markup the routes
-    /// serve, not the literals their tests assert on.
-    fn served_part(src: &str) -> &str {
-        src.find("#[cfg(test)]").map_or(src, |at| &src[..at])
-    }
-
     #[test]
     fn every_header_cell_says_what_it_heads() {
         // #145: browsers infer the direction of a `<th>` on a table with a
         // single header row, and stop guessing right the day a row header
-        // appears. `scope` makes it explicit on every table the routes build.
-        let found: Vec<(String, Vec<String>)> = rust_sources()
+        // appears. `scope` makes it explicit on every table built in the
+        // Rust sources of apps/web *and* apps/shared — the latter renders
+        // the legal documents' Markdown tables (`render_markdown`), which
+        // /privacy-policy serves. Markup reaching a page from anywhere else
+        // is not scanned.
+        let found: Vec<(String, Vec<String>)> = markup_sources()
             .into_iter()
             .map(|(path, body)| {
-                let cells = header_cells(served_part(&body));
+                let cells = header_cells(crate::csp::production_code(&body));
                 (path, cells)
             })
             .filter(|(_, cells)| !cells.is_empty())
@@ -2076,28 +2134,54 @@ mod tests {
             unscoped.is_empty(),
             "header cells without scope: {unscoped:#?}"
         );
-        // Coverage, not just "found something": the header cells the routes
-        // serve today, file by file (the agenda's seven weekdays are one
-        // `<th>` in a loop). A new table changes this list on purpose; a
-        // table the scan stops seeing changes it by accident.
-        let counts: Vec<(&str, usize)> = found
+        // Coverage, not just "found something": the header cells served
+        // today, file by file (the agenda's seven weekdays are one `<th>` in
+        // a loop, a Markdown table's columns one in a map). A new table
+        // changes this list on purpose; a table the scan stops seeing
+        // changes it by accident.
+        let mut counts: Vec<(&str, usize)> = found
             .iter()
-            .map(|(path, cells)| {
-                let file = path.rsplit_once("/src/").map_or(path.as_str(), |(_, f)| f);
-                (file, cells.len())
-            })
+            .map(|(path, cells)| (path.as_str(), cells.len()))
             .collect();
-        let mut counts = counts;
         counts.sort();
         assert_eq!(
             counts,
             [
-                ("routes/admin/groups.rs", 4),
-                ("routes/admin/users.rs", 5),
-                ("routes/agenda/calendar.rs", 1),
-                ("routes/agenda/imports.rs", 4),
+                ("shared/src/validation/rgpd.rs", 1),
+                ("web/src/routes/admin/groups.rs", 4),
+                ("web/src/routes/admin/users.rs", 5),
+                ("web/src/routes/agenda/calendar.rs", 1),
+                ("web/src/routes/agenda/imports.rs", 4),
             ],
         );
+    }
+
+    /// `(path under apps/, contents)` for every `.rs` file of apps/web/src
+    /// and apps/shared/src — the two crates whose code writes HTML.
+    fn markup_sources() -> Vec<(String, String)> {
+        let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("apps/web has a parent")
+            .to_path_buf();
+        let mut out = Vec::new();
+        let mut stack = vec![apps.join("web/src"), apps.join("shared/src")];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("readable source dir") {
+                let path = entry.expect("readable dir entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let body = std::fs::read_to_string(&path).expect("readable source file");
+                    let rel = path.strip_prefix(&apps).expect("under apps/");
+                    out.push((rel.display().to_string(), body));
+                }
+            }
+        }
+        assert!(
+            out.iter().any(|(p, _)| p.starts_with("shared/")),
+            "found no apps/shared source to scan"
+        );
+        out
     }
 
     #[test]
