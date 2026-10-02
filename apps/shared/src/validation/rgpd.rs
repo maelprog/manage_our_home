@@ -675,6 +675,7 @@ Politique de confidentialité :
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    use unicode_normalization::UnicodeNormalization;
 
     fn at(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(y, mo, d, h, mi, 0).unwrap()
@@ -1313,10 +1314,12 @@ mod tests {
     /// — a word inserted, removed or replaced anywhere between its first word
     /// and its full stop — breaks the exact match, and whichever of its time
     /// words remain are then reported. A change that deletes every one of
-    /// them leaves nothing to report here: "valable 7 jours", "30 jours après
-    /// cet envoi" and "toutes les heures" are asserted present by
+    /// them leaves nothing to report here. Sentences 1, 2 and 3 are covered by
     /// `invitation_email_states_the_purpose_the_legal_basis_and_the_retention`,
-    /// "au bout de 7 jours" by no test.
+    /// which asserts "valable 7 jours", "30 jours après cet envoi" and "toutes
+    /// les heures" present. Sentences 4 and 5 are covered by no test: sentence
+    /// 5 carries "30 jours après cet envoi" too, but sentence 2 alone keeps
+    /// that assertion green.
     /// Text added before a sentence's first word or after its full stop
     /// leaves the sentence matched and is scanned on its own. Adding an entry
     /// here is a deliberate act, reviewed as such.
@@ -1427,19 +1430,27 @@ mod tests {
     ///
     /// What the code does:
     ///
-    /// 1. flattens whitespace and lowercases, so a sentence hard-wrapped
-    ///    across lines still matches; U+2019, U+02BC and U+02BB become the ASCII
-    ///    apostrophe;
+    /// 1. normalizes the text and each `allowed` sentence alike: NFKC, so
+    ///    decomposed accents and compatibility forms (fullwidth letters) are
+    ///    composed back; every character of category Cf dropped, so a soft
+    ///    hyphen or a zero-width joiner no longer cuts a word in two; every
+    ///    character of [`APOSTROPHE_LIKE`] turned into the ASCII apostrophe;
+    ///    whitespace flattened, so a sentence hard-wrapped across lines still
+    ///    matches; lowercase;
     /// 2. cuts out every `allowed` sentence, as an exact substring;
     /// 3. splits the rest on every character that is neither a letter
     ///    (`char::is_alphabetic`) nor an apostrophe — spaces, punctuation,
     ///    digits, hyphens and every other quote mark (U+2018, «, ») — so
     ///    `48h`, `J+30`, `1h30`, `18h00` give `h`, `j`, `h`, `h`, `1h30min`
     ///    gives `h` and `min`, `sur-le-champ` gives `sur`, `le`, `champ`;
-    /// 4. in each resulting run, keeps the last non-empty piece between
+    /// 4. reports whole any run holding a letter outside the Latin blocks
+    ///    (`is_latin`): a look-alike from another script (Cyrillic `е` in
+    ///    `hеure`) cannot be folded back, so the run is reported whether or
+    ///    not it imitates a list word;
+    /// 5. in each other run, keeps the last non-empty piece between
     ///    apostrophes: `l'heure` → `heure`, `j'ai` → `ai`, `s'il` → `il`,
     ///    `'heure'` → `heure`;
-    /// 5. keeps the pieces equal to an entry of [`TIME_WORDS`].
+    /// 6. keeps the pieces equal to an entry of [`TIME_WORDS`].
     ///
     /// Known limits — what passes unreported:
     ///
@@ -1453,32 +1464,76 @@ mod tests {
     /// - in a run joined by apostrophes, every piece but the last non-empty
     ///   one: a list word glued by an apostrophe to a following word with no
     ///   space (`heure'x`) is lost;
-    /// - an allowed sentence copied verbatim anywhere else in the text;
-    /// - encoding: the text is not Unicode-normalized, so a list word written
-    ///   with decomposed accents (NFD `de\u{301}lai`), cut by an invisible
-    ///   character (U+00AD soft hyphen, U+200D zero-width joiner), elided
-    ///   with an apostrophe-like letter other than U+2019, U+02BC and U+02BB
-    ///   (U+02BD, U+02B9 are letters, so `l\u{2bd}heure` stays one word), or
-    ///   spelled with a look-alike letter from another script (Cyrillic `е`
-    ///   in `hеure`) is not seen.
+    /// - an allowed sentence copied verbatim anywhere else in the text.
     ///
     /// Known false positives: `suite` and `champ` outside "tout de suite" and
     /// "sur-le-champ"; `dès` outside sentence 2; `an` in "un an", a duration,
     /// so on purpose; `sec` as "dry", `min` as the short of "minimum", `midi`
     /// as the region; a lone letter cut out by digits or brackets — `2s`,
-    /// `donnée(s)` give `s`. None of them occurs in the shipped email.
+    /// `donnée(s)` give `s`; any word holding a letter from another script
+    /// than Latin, a time word or not. None of them occurs in the shipped
+    /// email.
     fn time_words_outside(text: &str, allowed: &[&str]) -> Vec<String> {
-        let mut rest = flatten(text)
-            .to_lowercase()
-            .replace(['\u{2019}', '\u{2bc}', '\u{2bb}'], "'");
+        let mut rest = normalize_for_time_words(text);
         for phrase in allowed {
-            rest = rest.replace(&phrase.to_lowercase(), " ");
+            rest = rest.replace(&normalize_for_time_words(phrase), " ");
         }
         rest.split(|c: char| !c.is_alphabetic() && c != '\'')
-            .filter_map(|token| token.rsplit('\'').find(|word| !word.is_empty()))
-            .filter(|word| TIME_WORDS.contains(word))
+            .filter_map(|token| {
+                if token.chars().any(|c| c.is_alphabetic() && !is_latin(c)) {
+                    return Some(token);
+                }
+                token
+                    .rsplit('\'')
+                    .find(|word| !word.is_empty())
+                    .filter(|word| TIME_WORDS.contains(word))
+            })
             .map(str::to_string)
             .collect()
+    }
+
+    /// Step 1 of `time_words_outside`, applied to the text and to each
+    /// allowed sentence alike: NFKC, every Cf character dropped, every
+    /// apostrophe-like character turned into U+0027, whitespace flattened,
+    /// lowercase.
+    fn normalize_for_time_words(text: &str) -> String {
+        let folded: String = text
+            .nfkc()
+            .filter(|c| c.general_category() != GeneralCategory::Format)
+            .map(|c| {
+                if APOSTROPHE_LIKE.contains(&c) {
+                    '\''
+                } else {
+                    c
+                }
+            })
+            .collect();
+        flatten(&folded).to_lowercase()
+    }
+
+    /// Characters drawn as a raised comma or tick that the email could elide
+    /// with. U+2019 is punctuation and would split a word anyway; the others
+    /// are letters (modifier letters, and the Latin saltillo), so without this
+    /// `l\u{2bd}heure` stayed one word. U+2018 is left out on purpose: it
+    /// opens a quotation and splits like any other quote mark.
+    const APOSTROPHE_LIKE: [char; 12] = [
+        '\u{2019}', '\u{2b9}', '\u{2bb}', '\u{2bc}', '\u{2bd}', '\u{2be}', '\u{2bf}', '\u{2c8}',
+        '\u{2ca}', '\u{2cb}', '\u{a78b}', '\u{a78c}',
+    ];
+
+    /// Whether a letter belongs to one of the Latin blocks: Basic Latin,
+    /// Latin-1 Supplement, Latin Extended-A and -B, IPA Extensions, Latin
+    /// Extended Additional, -C, -D and -E. Run after NFKC, so fullwidth and
+    /// other compatibility forms have already been folded into these.
+    fn is_latin(c: char) -> bool {
+        matches!(
+            c,
+            '\u{41}'..='\u{2af}'
+                | '\u{1e00}'..='\u{1eff}'
+                | '\u{2c60}'..='\u{2c7f}'
+                | '\u{a720}'..='\u{a7ff}'
+                | '\u{ab30}'..='\u{ab6f}'
+        )
     }
 
     #[test]
@@ -1593,20 +1648,6 @@ mod tests {
             &INVITATION_TIME_PHRASES
         )
         .is_empty());
-        // Encoding bypasses, declared and left to a follow-up issue: NFD
-        // accents, soft hyphen, zero-width joiner, U+02BD, Cyrillic `е`.
-        for bypass in [
-            "sans de\u{301}lai",
-            "une heu\u{ad}re",
-            "une heu\u{200d}re",
-            "dans l\u{2bd}heure",
-            "une h\u{435}ure",
-        ] {
-            assert!(
-                time_words_outside(bypass, &INVITATION_TIME_PHRASES).is_empty(),
-                "{bypass}"
-            );
-        }
         // And documented false positives.
         assert_eq!(
             time_words_outside(
@@ -1615,6 +1656,51 @@ mod tests {
             ),
             vec!["s".to_string(), "sec".to_string(), "min".to_string()]
         );
+    }
+
+    #[test]
+    fn time_words_outside_sees_a_list_word_through_its_encoding() {
+        // The encoding bypasses #281 had to declare (#282): decomposed
+        // accents, an invisible character inside the word, an elision written
+        // with an apostrophe-like letter.
+        for (bypass, word) in [
+            ("sans de\u{301}lai", "délai"),
+            ("une heu\u{ad}re", "heure"),
+            ("une heu\u{200d}re", "heure"),
+            ("une heu\u{200b}re", "heure"),
+            ("dans l\u{2bd}heure", "heure"),
+            ("dans l\u{2b9}heure", "heure"),
+            ("dans l\u{a78c}heure", "heure"),
+            ("une \u{ff48}eure", "heure"),
+        ] {
+            assert_eq!(
+                time_words_outside(bypass, &INVITATION_TIME_PHRASES),
+                vec![word.to_string()],
+                "{bypass:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn time_words_outside_reports_a_word_written_outside_the_latin_script() {
+        // A look-alike letter from another script cannot be folded back to
+        // the Latin one it imitates, so the word carrying it is reported
+        // whole, list word or not (#282).
+        assert_eq!(
+            time_words_outside("une h\u{435}ure, un \u{3b1}n", &INVITATION_TIME_PHRASES),
+            vec!["h\u{435}ure".to_string(), "\u{3b1}n".to_string()]
+        );
+        assert_eq!(
+            time_words_outside("pour \u{43c}\u{438}\u{440}'heure", &INVITATION_TIME_PHRASES),
+            vec!["\u{43c}\u{438}\u{440}'heure".to_string()]
+        );
+        // Every letter of the Latin script is not a look-alike: accented,
+        // ligatured or extended, it stays a word like any other.
+        assert!(time_words_outside(
+            "Œuvre, cœur, naïve, Ærø, Łódź, Ştefan, ẞ, ɐ",
+            &INVITATION_TIME_PHRASES
+        )
+        .is_empty());
     }
 
     #[test]

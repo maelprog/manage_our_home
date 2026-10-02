@@ -2506,6 +2506,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "serde",
+ "unicode-normalization",
  "unicode-properties",
  "uuid",
 ]
