@@ -303,15 +303,16 @@ export function minioPinViolations(files: ReadonlyArray<SourceFile>): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// Tags des autres images du compose (#160).
+// Tags des lignes `image:` (#160, durci par #310).
 //
 // Le garde-fou ci-dessus ne voit que MinIO. `infra/docker-compose.yml`
 // laissait `axllent/mailpit` et `ollama/ollama` sur `latest` : la même
 // fragilité, sur les postes de développement plutôt qu'en CI (le compose ne
-// tourne pas en CI). Chaque ligne `image:` du compose doit donc porter une
-// version complète (`1.2.3`, `v1.2.3`, suffixe toléré) ou un horodatage
-// `RELEASE.*` MinIO, avec ou sans digest, ou un digest seul
-// (`image@sha256:…`), le seul pin qu'un registre ne peut pas republier (#262).
+// tourne pas en CI). Chaque ligne `image:` d'un fichier (le compose, et les
+// `services:` des jobs de `ci.yml`) doit donc porter une version complète
+// (`1.2.3`, `v1.2.3`, suffixe toléré) ou un horodatage `RELEASE.*` MinIO,
+// avec ou sans digest, ou un digest seul (`image@sha256:…`), le seul pin
+// qu'un registre ne peut pas republier (#262).
 //
 // Version complète de PostgreSQL : deux composantes (`16.4`, suffixe toléré,
 // `16.4-bookworm`), car depuis PostgreSQL 10 la deuxième est déjà le
@@ -323,24 +324,25 @@ export function minioPinViolations(files: ReadonlyArray<SourceFile>): string[] {
 // flottant écrit devant lui (`latest@sha256:…`) : le tag est ce qu'on lit
 // dans un diff.
 //
-// Deux exceptions, exactes et voulues, sur leur série majeure :
-//   - `postgres:16` : une série majeure est le contrat de compatibilité sur
-//     lequel les migrations sont jouées, c'est aussi la série des jobs de
-//     `ci.yml`, et les versions mineures de PostgreSQL sont des correctifs,
-//     souvent de sécurité, qu'un pin au patch près obligerait à suivre à la
-//     main ;
-//   - `caddy:2` : c'est le frontal exposé à Internet (TLS, en-têtes) ; y
-//     recevoir les correctifs sans bump manuel pèse plus que la
-//     reproductibilité au patch près.
-// Changer de série (`postgres:17`) passe par cette table, pas par un simple
-// diff du compose.
+// `postgres` et `caddy` (#310) : jusque-là laissés en exception sur leur
+// série majeure (`postgres:16`, `caddy:2`), dont le tag bouge sans commit —
+// build non reproductible, régression amont sans trace. Ils exigent
+// désormais **tag complet ET digest** (`postgres:16.15@sha256:…`,
+// `caddy:2.11.4@sha256:…`), ni l'un sans l'autre : le digest seul ne dit
+// plus dans un diff quelle version tourne, et c'est le tag que le robot de
+// mise à jour (`renovate.json`) compare aux nouvelles versions ; le tag seul
+// peut être republié. Les correctifs qu'apportait la série flottante
+// arrivent maintenant par les PR du robot, une par version ou republication.
+// La règle suit le dernier segment du nom : un registre explicite
+// (`docker.io/library/caddy`) ne fait pas sortir l'image de la règle.
 //
 // Limites : lecture textuelle des lignes `image:` (pas un parseur YAML) ; une
 // image passée dans une variable (`image: ${X}`) est refusée comme non
-// épinglée, ce qui est le comportement voulu. Le fichier `ci.yml` n'est pas
-// couvert ici : hors MinIO, il n'y référence que `postgres:16`.
+// épinglée, ce qui est le comportement voulu. Dans `ci.yml`, les images
+// lancées par `docker run` (MinIO) ne sont pas sur une ligne `image:` : c'est
+// le garde-fou MinIO ci-dessus qui les tient.
 
-const MAJOR_SERIES_ALLOWED: ReadonlyArray<string> = ["postgres:16", "caddy:2"];
+const DIGEST_PINNED: ReadonlyArray<string> = ["postgres", "caddy"];
 
 const FULL_VERSION = /^v?\d+\.\d+\.\d+(?:[-+.][\w.-]+)?$/;
 
@@ -352,61 +354,133 @@ const TWO_COMPONENT_VERSION = /^\d+\.\d+(?:-[\w.-]+)?$/;
 // `^\s*image:` écarte d'elle-même les lignes de commentaire.
 const IMAGE_LINE = /^\s*image:\s*["']?([^\s"'#]+)/;
 
-/**
- * Rend la liste des violations (vide si la porte est tenue) pour les lignes
- * `image:` d'un fichier compose. Un fichier sans aucune ligne `image:` est
- * lui-même une violation.
- */
-export function composeTagViolations(file: SourceFile): string[] {
-  const violations: string[] = [];
-  let seen = 0;
+type ImageLine = {
+  where: string;
+  raw: string;
+  name: string;
+  /** Dernier segment du nom : `caddy` pour `docker.io/library/caddy`. */
+  base: string;
+  tag: string | undefined;
+  digest: string;
+};
 
+function imageLines(file: SourceFile): ImageLine[] {
+  const found: ImageLine[] = [];
   file.text.split("\n").forEach((line, index) => {
     const m = line.match(IMAGE_LINE);
     if (!m) return;
-    seen += 1;
     const raw = m[1];
     const at = raw.indexOf("@");
     const ref = at === -1 ? raw : raw.slice(0, at);
-    const digest = at === -1 ? "" : raw.slice(at);
     const lastSlash = ref.lastIndexOf("/");
     const colon = ref.indexOf(":", lastSlash + 1);
     const name = colon === -1 ? ref : ref.slice(0, colon);
-    const tag = colon === -1 ? undefined : ref.slice(colon + 1);
+    found.push({
+      where: `${file.path}:${index + 1}`,
+      raw,
+      name,
+      base: name.slice(name.lastIndexOf("/") + 1),
+      tag: colon === -1 ? undefined : ref.slice(colon + 1),
+      digest: at === -1 ? "" : raw.slice(at),
+    });
+  });
+  return found;
+}
 
+/**
+ * Rend la liste des violations (vide si la porte est tenue) pour les lignes
+ * `image:` d'un fichier (compose, ou `services:` des jobs de `ci.yml`). Un
+ * fichier sans aucune ligne `image:` est lui-même une violation.
+ */
+export function composeTagViolations(file: SourceFile): string[] {
+  const violations: string[] = [];
+  const lines = imageLines(file);
+
+  for (const { where, raw, name, base, tag, digest } of lines) {
     if (digest !== "" && !DIGEST.test(digest)) {
       violations.push(
-        `${file.path}:${index + 1} : \`${raw}\` — digest mal formé ` +
-          `« ${digest} ». Attendu : @sha256: suivi de 64 caractères ` +
-          "hexadécimaux.",
+        `${where} : \`${raw}\` — digest mal formé « ${digest} ». Attendu : ` +
+          "@sha256: suivi de 64 caractères hexadécimaux.",
       );
-      return;
+      continue;
     }
 
-    const ok =
-      tag === undefined
-        ? digest !== ""
-        : FULL_VERSION.test(tag) ||
-          PINNED_TAG.test(tag) ||
-          (TWO_COMPONENT_IMAGES.includes(name) &&
-            TWO_COMPONENT_VERSION.test(tag)) ||
-          MAJOR_SERIES_ALLOWED.includes(ref);
+    const fullTag =
+      tag !== undefined &&
+      (FULL_VERSION.test(tag) ||
+        PINNED_TAG.test(tag) ||
+        (TWO_COMPONENT_IMAGES.includes(name) && TWO_COMPONENT_VERSION.test(tag)));
+
+    if (DIGEST_PINNED.includes(base)) {
+      if (!fullTag) {
+        violations.push(
+          `${where} : \`${raw}\` — tag non épinglé ` +
+            `(${tag === undefined ? "aucun tag" : `« ${tag} »`}). Attendu pour ` +
+            `${base} : une version complète (16.15 pour postgres, 2.11.4 ` +
+            "pour caddy) suivie de son digest @sha256:… (#310). Un tag de " +
+            "série bouge sans commit ; un digest nu ne dit pas quelle " +
+            "version tourne.",
+        );
+      } else if (digest === "") {
+        violations.push(
+          `${where} : \`${raw}\` — pin par digest manquant. Attendu pour ` +
+            `${base} : ${tag}@sha256: suivi de 64 caractères hexadécimaux ` +
+            "(#310) ; un tag peut être republié sous le même nom.",
+        );
+      }
+      continue;
+    }
+
+    const ok = tag === undefined ? digest !== "" : fullTag;
     if (!ok) {
       violations.push(
-        `${file.path}:${index + 1} : \`${raw}\` — tag non épinglé ` +
+        `${where} : \`${raw}\` — tag non épinglé ` +
           `(${tag === undefined ? "aucun tag" : `« ${tag} »`}). Attendu : une ` +
-          "version complète (1.2.3 ; 16.4 pour postgres), un digest " +
-          "(@sha256:…) ou, par exception, " +
-          `${MAJOR_SERIES_ALLOWED.join(" / ")}. Un tag flottant laisse ` +
-          "l'image bouger sous une pile existante sans rien signaler.",
+          "version complète (1.2.3 ; 16.4 pour postgres) ou un digest " +
+          "(@sha256:…). Un tag flottant laisse l'image bouger sous une pile " +
+          "existante sans rien signaler.",
       );
     }
-  });
+  }
 
-  if (seen === 0) {
+  if (lines.length === 0) {
     violations.push(
       `${file.path} : aucune ligne \`image:\` trouvée. Le garde-fou ne peut ` +
         "rien prouver sur des images qu'il ne voit pas.",
+    );
+  }
+  return violations;
+}
+
+/**
+ * Un même pin pour `postgres` et pour `caddy`, tous fichiers confondus
+ * (#310) : les jobs de `ci.yml` jouent les migrations sur le Postgres que le
+ * compose fait tourner, un job laissé sur l'ancien pin teste autre chose. Le
+ * robot de mise à jour bouge toutes les occurrences d'une image dans la même
+ * PR ; une PR qui n'en bouge qu'une est rouge ici. Les lignes refusées par
+ * `composeTagViolations` ne sont pas comparées (déjà signalées).
+ */
+export function pinnedImageDivergence(files: ReadonlyArray<SourceFile>): string[] {
+  const violations: string[] = [];
+  const byImage = new Map<string, Map<string, string[]>>();
+  for (const file of files) {
+    for (const line of imageLines(file)) {
+      if (!DIGEST_PINNED.includes(line.base)) continue;
+      if (line.tag === undefined || !DIGEST.test(line.digest)) continue;
+      const pins = byImage.get(line.name) ?? new Map<string, string[]>();
+      const pin = `${line.tag}${line.digest}`;
+      pins.set(pin, [...(pins.get(pin) ?? []), line.where]);
+      byImage.set(line.name, pins);
+    }
+  }
+  for (const [image, pins] of byImage) {
+    if (pins.size <= 1) continue;
+    const detail = [...pins]
+      .map(([pin, wheres]) => `  ${pin} : ${wheres.join(", ")}`)
+      .join("\n");
+    violations.push(
+      `${image} : pins divergents — une même image doit porter le même tag ` +
+        `et le même digest partout (#310).\n${detail}`,
     );
   }
   return violations;

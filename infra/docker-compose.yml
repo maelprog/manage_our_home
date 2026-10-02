@@ -4,12 +4,13 @@
 # their own directory.
 services:
   postgres:
-    # Deliberately left on the major series, not pinned to a patch release
-    # (#160): 16 is the contract the migrations are played against and the
-    # series the ci.yml jobs use, and PostgreSQL minor releases are fixes,
-    # often security ones, that a patch pin would force us to chase by hand.
-    # Changing series goes through e2e/scripts/lib/image-pins.ts.
-    image: postgres:16
+    # Full tag *and* digest (#310): a bare `postgres:16` moved under us with
+    # no commit. Same pin as the ci.yml jobs, which play the migrations
+    # against it (e2e/scripts/lib/image-pins.ts holds them together).
+    # PostgreSQL minor releases are fixes, often security ones: Renovate
+    # (renovate.json) opens a PR for each new 16.x or digest republication,
+    # and leaves the major series alone (a 16 -> 17 move needs a dump/restore).
+    image: postgres:16.15@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
     restart: unless-stopped
     environment:
       POSTGRES_DB: manage_our_home
@@ -87,8 +88,9 @@ services:
   # verification/reset/invitation emails land in the web UI at
   # http://localhost:8025 instead of going through a real relay.
   mailpit:
-    # Pinned rather than `latest` (#160), like every image here except
-    # postgres and caddy: e2e/scripts/lib/image-pins.ts enforces it.
+    # Pinned rather than `latest` (#160), like every image here (postgres and
+    # caddy by tag and digest since #310): e2e/scripts/lib/image-pins.ts
+    # enforces it.
     image: axllent/mailpit:v1.31.2
     profiles: ["dev"]
     restart: unless-stopped
@@ -183,12 +185,12 @@ services:
       API_PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}/api
       WEB_BIND_ADDR: 0.0.0.0:3000
 
-  # Deliberately left on the major series (#160): Caddy is the
-  # Internet-facing frontend (TLS, headers), and picking up its fixes without
-  # a manual bump outweighs patch-level reproducibility. Changing series goes
-  # through e2e/scripts/lib/image-pins.ts.
+  # Full tag *and* digest (#310): Caddy is the Internet-facing frontend (TLS,
+  # headers), so its fixes still have to land quickly — they now come as
+  # Renovate PRs (renovate.json), one per 2.x release or digest
+  # republication, instead of a floating `caddy:2` that moved with no commit.
   caddy:
-    image: caddy:2
+    image: caddy:2.11.4@sha256:0c994536bddb66445885237f1a5dcc1916bccea922661c76b4e9fc24061f9b52
     restart: unless-stopped
     depends_on: [api, web]
     environment:
