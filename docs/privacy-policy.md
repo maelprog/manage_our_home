@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-09-29.
+Dernière mise à jour : 2026-10-02.
 
 ## Qui est responsable de vos données ?
 
@@ -10,14 +10,16 @@ mise en ligne], qui porte l'ensemble des rôles RGPD nécessaires :
 
 - **Responsable de traitement (data controller)** : responsable du registre
   des traitements, de la présente politique, et de la base légale de chaque
-  catégorie de données.
+  catégorie de données ; en cas de violation de données, c'est lui qui la
+  constate, la qualifie, et décide de sa notification à la CNIL, dans les
+  72 heures qui suivent sa prise de connaissance.
 - **Contact vie privée / DPO de fait** : à l'échelle actuelle (déploiement
   familial/home-lab), un contact documenté suffit ; pas de DPO formel requis
   tant que le volume et la nature des traitements ne l'imposent pas
   légalement.
 - **Administrateur technique** : responsable de la sécurité applicative, des
-  migrations DB, de la rotation des secrets, et de la réponse à incident
-  (notification CNIL sous 72h en cas de violation de données).
+  migrations DB, de la rotation des secrets, et de la réponse technique à
+  incident.
 
 **Pour le joindre** : [adresse de contact — à renseigner avant la mise en
 ligne]. C'est l'adresse à laquelle adresser toute demande d'exercice de vos
@@ -433,3 +435,10 @@ calendrier) sont chiffrées dans la base de données (`pgcrypto`) ; les mots
 de passe n'y sont conservés que hachés. L'isolation entre familles est
 appliquée au niveau base de données (Row-Level Security), pas seulement au
 niveau applicatif.
+
+Si une donnée personnelle vous concernant venait à fuir sans être chiffrée,
+vous en seriez prévenu par email, à l'adresse de votre compte, même si le
+risque est jugé faible : le service s'impose ce seuil, plus bas que celui du
+RGPD, qui n'exige de prévenir les personnes qu'en cas de risque élevé.
+L'email dit ce qui s'est passé, quelles données sont en cause, ce qui a été
+fait et ce que vous pouvez faire.
