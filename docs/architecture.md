@@ -74,7 +74,9 @@ questionnaire.
     audit logging of sensitive actions (auth events, data export/deletion,
     cross-family admin actions), and a documented breach-notification
     process (CNIL notification within 72h if a breach affecting personal
-    data occurs) are treated as v1 requirements, not backlog items.
+    data occurs) are treated as v1 requirements, not backlog items. The
+    breach process is written down in `docs/procedure-violation.md`, its
+    register template in `docs/registre-violations.md` (#143).
 
 ## Revised stack
 
@@ -239,8 +241,10 @@ remplacement) de l'isolation applicative ci-dessous.
      le produit est commercialisé/déployé chez des tiers).
    - **Administrateur technique / mainteneur** — seul commiteur, donc seul
      responsable de la sécurité applicative, des migrations DB, de la
-     rotation des secrets (sops), et de la réponse à incident (notification
-     CNIL sous 72h en cas de breach).
+     rotation des secrets (sops), et de la réponse technique à incident. La
+     violation de données — constat, qualification, notification à la CNIL
+     sous 72 h, information des personnes — relève du responsable de
+     traitement seul : `docs/procedure-violation.md` (#143).
 
 Epic #1 (Auth + Groups) has landed on `main` (`apps/api/`). Next step is
 spec'ing the remaining epics one at a time via `/spec`, in the order given
