@@ -51,6 +51,19 @@ meilleurs délais », art. 33(2)), un chercheur en sécurité — et arrive à
 
    ```sql
    BEGIN;
+   -- Garde : sans BYPASSRLS, la RLS forcée d'`invitations` cache les
+   -- lignes au SELECT comme au DELETE. On s'arrête plutôt que de
+   -- « réussir » sans rien supprimer.
+   SELECT current_user, rolsuper OR rolbypassrls AS contourne_rls
+     FROM pg_roles WHERE rolname = current_user;
+   DO $$
+   BEGIN
+     IF NOT (SELECT rolsuper OR rolbypassrls FROM pg_roles
+             WHERE rolname = current_user) THEN
+       RAISE EXCEPTION 'rôle % sans BYPASSRLS : se reconnecter en migration_role',
+         current_user;
+     END IF;
+   END $$;
    SELECT
      (SELECT count(*) FROM sessions WHERE revoked_at IS NULL),
      (SELECT count(*) FROM invitations
@@ -70,11 +83,16 @@ meilleurs délais », art. 33(2)), un chercheur en sécurité — et arrive à
    ```
 
    **Le rôle compte.** `invitations` est sous une politique RLS forcée : sur
-   le rôle d'exécution de l'API (sans `BYPASSRLS`), le `DELETE` ne voit
-   aucune ligne, répond `DELETE 0` sans erreur, et les jetons survivent au
-   confinement. **Comparer chaque `UPDATE`/`DELETE` au compte du `SELECT`
-   qui le précède** ; un écart veut dire que la commande n'a pas porté, et
-   se corrige avant le `COMMIT`. Le filtre ne retire que les jetons encore
+   le rôle d'exécution de l'API (sans `BYPASSRLS`), le `SELECT` comme le
+   `DELETE` ne voient aucune ligne, le `DELETE` répond `DELETE 0` sans
+   erreur, et les jetons survivent au confinement — sans qu'aucun écart de
+   compte ne le trahisse. C'est pourquoi le bloc commence par contrôler le
+   rôle : `contourne_rls` doit valoir `true`. Sinon le `DO` lève une
+   erreur, la transaction est annulée et rien n'est touché ; se reconnecter
+   en `migration_role` et recommencer. Une fois le rôle vérifié, les
+   comptes du premier `SELECT` disent combien de jetons valables existaient
+   (à reporter au registre), et chaque `UPDATE`/`DELETE` doit toucher le
+   même nombre de lignes. Le filtre ne retire que les jetons encore
    utilisables : une invitation expirée reste, parce qu'elle figure dans
    l'export du compte dont elle porte l'adresse (art. 15,
    `account_export_received_invitations`) jusqu'à sa purge à 30 jours, et
