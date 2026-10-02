@@ -2,3 +2,9 @@ target/
 .env
 .gstack/
 .claude/settings.local.json
+# État vivant de l'orchestrateur : local, réécrit en continu, jamais versionné (#201).
+.claude/worktrees/
+.claude/issue-queue*.md
+.claude/issue-log/
+.claude/arbitrages.md
+.claude/orchestrator-history.md
