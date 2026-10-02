@@ -50,8 +50,12 @@ jobs:
   test:
     runs-on: ubuntu-latest
     services:
+      # Full tag *and* digest (#310), the same pin in all three jobs and in
+      # infra/docker-compose.yml (e2e/scripts/lib/image-pins.ts holds them
+      # together). Renovate (renovate.json) opens a PR for each new 16.x
+      # release or digest republication.
       postgres:
-        image: postgres:16
+        image: postgres:16.15@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -147,7 +151,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        image: postgres:16.15@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -248,7 +252,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        image: postgres:16.15@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres

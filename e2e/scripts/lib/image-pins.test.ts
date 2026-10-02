@@ -9,6 +9,7 @@ import {
   COMPOSE_PATH,
   composeTagViolations,
   minioPinViolations,
+  pinnedImageDivergence,
   type SourceFile,
 } from "./image-pins.ts";
 
@@ -336,7 +337,11 @@ test("refuse le vrai ci.yml ramené aux images minio/* sur un seul job", () => {
 
 test("refuse le vrai ci.yml privé de son digest", () => {
   const [ci, compose] = realFiles();
-  const mutated = ci.text.replace(/@sha256:[0-9a-f]{64}/, "");
+  // Le digest MinIO : depuis #310, ci.yml porte aussi ceux de postgres.
+  const mutated = ci.text.replace(
+    /(bitnamilegacy\/minio:\S+?)@sha256:[0-9a-f]{64}/,
+    "$1",
+  );
   assert.notEqual(mutated, ci.text);
   const violations = minioPinViolations([{ ...ci, text: mutated }, compose]);
   assert.ok(violations.some((v) => /digest/.test(v)), violations.join(" | "));
@@ -386,35 +391,57 @@ test("le vrai docker-compose.yml garde le volume MinIO là où l'image Bitnami �
   assert.match(service[1], /^\s+user: "0"$/m);
 });
 
+
 // ---------------------------------------------------------------------------
-// Tags des autres images du compose (#160).
+// Tags des lignes `image:` (#160, durci par #310).
 //
-// Le garde-fou ci-dessus ne voit que minio/minio et minio/mc. Les autres
-// images de `infra/docker-compose.yml` portaient la même fragilité : `mailpit`
-// et `ollama` sur `latest`. Ces cas-ci exigent de chaque `image:` du compose
-// une version complète, sauf `postgres:16` et `caddy:2`, laissés sur leur
-// série majeure par choix (motif dans `image-pins.ts`).
+// Le garde-fou ci-dessus ne voit que MinIO. Les autres images de
+// `infra/docker-compose.yml` portaient la même fragilité : `mailpit` et
+// `ollama` sur `latest`. Ces cas-ci exigent de chaque `image:` une version
+// complète. `postgres:16` et `caddy:2`, longtemps laissés sur leur série
+// majeure, sont depuis #310 épinglés par tag complet ET digest, dans le
+// compose comme dans les jobs de `ci.yml`, et tenus au même pin partout.
 // ---------------------------------------------------------------------------
+
+// Digests synthétiques : la forme des vrais, pas leur valeur.
+const PG_DIGEST = "@sha256:" + "3".repeat(64);
+const CADDY_DIGEST = "@sha256:" + "4".repeat(64);
+const PG = `postgres:16.15${PG_DIGEST}`;
+const CADDY = `caddy:2.11.4${CADDY_DIGEST}`;
 
 const COMPOSE_TAGS_OK =
   "services:\n" +
-  "  postgres:\n    image: postgres:16\n" +
+  `  postgres:\n    image: ${PG}\n` +
   `  minio:\n    image: quay.io/minio/minio:${UP_SERVER}\n` +
   "  mailpit:\n    image: axllent/mailpit:v1.31.2\n" +
   "  ollama:\n    image: ollama/ollama:0.34.2\n" +
   "  api:\n    build:\n      context: ..\n" +
-  "  caddy:\n    image: caddy:2\n";
+  `  caddy:\n    image: ${CADDY}\n`;
+
+// Deux jobs de CI qui montent le même Postgres que le compose.
+const CI_SERVICES_OK =
+  "jobs:\n" +
+  `  test:\n    services:\n      postgres:\n        image: ${PG}\n` +
+  `  e2e:\n    services:\n      postgres:\n        image: ${PG}\n`;
 
 function composeFile(text: string): SourceFile {
   return { path: COMPOSE_PATH, text };
+}
+function ciFile(text: string): SourceFile {
+  return { path: CI_PATH, text };
 }
 
 test("le vrai docker-compose.yml n'a aucune image sur un tag flottant", () => {
   assert.deepEqual(composeTagViolations(realFiles()[1]), []);
 });
 
-test("un compose conforme passe : versions complètes, RELEASE MinIO, postgres:16 et caddy:2", () => {
+test("les jobs du vrai ci.yml n'ont aucune image de service sur un tag flottant", () => {
+  assert.deepEqual(composeTagViolations(realFiles()[0]), []);
+});
+
+test("un compose conforme passe : versions complètes, RELEASE MinIO, postgres et caddy tag + digest", () => {
   assert.deepEqual(composeTagViolations(composeFile(COMPOSE_TAGS_OK)), []);
+  assert.deepEqual(composeTagViolations(ciFile(CI_SERVICES_OK)), []);
 });
 
 test("refuse une image sur latest, avec le fichier et la ligne", () => {
@@ -435,7 +462,7 @@ test("refuse une image sans tag (latest implicite)", () => {
   assert.match(violations[0], /ollama\/ollama/);
 });
 
-test("refuse une série majeure hors de postgres:16 et caddy:2", () => {
+test("refuse une série majeure", () => {
   const text = COMPOSE_TAGS_OK.replace(
     "axllent/mailpit:v1.31.2",
     "axllent/mailpit:v1",
@@ -443,14 +470,56 @@ test("refuse une série majeure hors de postgres:16 et caddy:2", () => {
   assert.equal(composeTagViolations(composeFile(text)).length, 1);
 });
 
-test("refuse pour postgres ou caddy une autre série que celle retenue", () => {
-  // postgres:16 est aussi la série des jobs de la CI : changer de série se
-  // fait ici, en connaissance de cause, pas au détour d'un diff du compose.
-  const text = COMPOSE_TAGS_OK.replace("postgres:16", "postgres:17").replace(
-    "caddy:2",
-    "caddy:latest",
-  );
-  assert.equal(composeTagViolations(composeFile(text)).length, 2);
+test("refuse postgres:16 et caddy:2, l'ancienne exception sur série majeure (#310)", () => {
+  // Le tag de série bouge sans commit : build non reproductible, régression
+  // amont sans trace. Plus d'exception, dans le compose comme en CI.
+  for (const [from, to] of [
+    [PG, "postgres:16"],
+    [CADDY, "caddy:2"],
+    [PG, `postgres:16${PG_DIGEST}`],
+    [CADDY, `caddy:2${CADDY_DIGEST}`],
+    [PG, "postgres:17"],
+    [CADDY, "caddy:latest"],
+  ]) {
+    const violations = composeTagViolations(
+      composeFile(COMPOSE_TAGS_OK.replace(from, to)),
+    );
+    assert.equal(violations.length, 1, `${to} : ${violations.join(" | ")}`);
+    assert.ok(violations[0].includes(to), violations[0]);
+  }
+  const ci = composeTagViolations(ciFile(CI_SERVICES_OK.replace(PG, "postgres:16")));
+  assert.equal(ci.length, 1, ci.join(" | "));
+  assert.match(ci[0], /ci\.yml:\d+ /);
+});
+
+test("exige le digest derrière la version complète de postgres et caddy (#310)", () => {
+  for (const [from, to] of [
+    [PG, "postgres:16.15"],
+    [CADDY, "caddy:2.11.4"],
+    // Le registre explicite ne fait pas sortir l'image de la règle.
+    [CADDY, "docker.io/library/caddy:2.11.4"],
+  ]) {
+    const violations = composeTagViolations(
+      composeFile(COMPOSE_TAGS_OK.replace(from, to)),
+    );
+    assert.equal(violations.length, 1, `${to} : ${violations.join(" | ")}`);
+    assert.match(violations[0], /digest/);
+    assert.doesNotMatch(violations[0], /mal formé/);
+  }
+});
+
+test("refuse pour postgres et caddy un digest seul, sans tag (#310)", () => {
+  // Le tag est ce qu'on lit dans un diff, et ce que le robot de mise à jour
+  // compare aux nouvelles versions : un digest nu ne dit ni l'un ni l'autre.
+  for (const [from, to] of [
+    [PG, `postgres${PG_DIGEST}`],
+    [CADDY, `caddy${CADDY_DIGEST}`],
+  ]) {
+    const violations = composeTagViolations(
+      composeFile(COMPOSE_TAGS_OK.replace(from, to)),
+    );
+    assert.equal(violations.length, 1, `${to} : ${violations.join(" | ")}`);
+  }
 });
 
 test("accepte un digest derrière une version complète et ignore les commentaires", () => {
@@ -465,10 +534,9 @@ test("accepte un digest derrière une version complète et ignore les commentair
 });
 
 test("accepte la version complète de PostgreSQL, en deux composantes", () => {
-  // Depuis PostgreSQL 10, `16.4` est une version complète : resserrer le pin
-  // `postgres:16` ne doit pas obliger à modifier le garde-fou (#262).
-  for (const pin of ["postgres:16.4", "postgres:16.4-bookworm"]) {
-    const text = COMPOSE_TAGS_OK.replace("postgres:16", pin);
+  // Depuis PostgreSQL 10, `16.4` est une version complète.
+  for (const pin of [`postgres:16.4${PG_DIGEST}`, `postgres:16.4-bookworm${PG_DIGEST}`]) {
+    const text = COMPOSE_TAGS_OK.replace(PG, pin);
     assert.deepEqual(composeTagViolations(composeFile(text)), [], pin);
   }
 });
@@ -479,7 +547,7 @@ test("refuse un tag en deux composantes hors PostgreSQL", () => {
   for (const [from, to] of [
     ["axllent/mailpit:v1.31.2", "axllent/mailpit:v1.31"],
     ["ollama/ollama:0.34.2", "ollama/ollama:0.34"],
-    ["caddy:2", "caddy:2.8"],
+    [CADDY, `caddy:2.11${CADDY_DIGEST}`],
   ]) {
     const text = COMPOSE_TAGS_OK.replace(from, to);
     const violations = composeTagViolations(composeFile(text));
@@ -490,22 +558,24 @@ test("refuse un tag en deux composantes hors PostgreSQL", () => {
 
 test("refuse pour PostgreSQL une série majeure suffixée ou flottante", () => {
   for (const pin of ["postgres:16-bookworm", "postgres:latest", "postgres:16.4.x"]) {
-    const text = COMPOSE_TAGS_OK.replace("postgres:16", pin);
+    const text = COMPOSE_TAGS_OK.replace(PG, `${pin}${PG_DIGEST}`);
     assert.equal(composeTagViolations(composeFile(text)).length, 1, pin);
   }
 });
 
-test("accepte un pin par digest seul", () => {
+test("accepte un pin par digest seul pour les autres images", () => {
   const digest = "@sha256:" + "0123456789abcdef".repeat(4);
-  const text = COMPOSE_TAGS_OK.replace("postgres:16", `postgres${digest}`)
-    .replace("axllent/mailpit:v1.31.2", `axllent/mailpit${digest}`);
+  const text = COMPOSE_TAGS_OK.replace(
+    "axllent/mailpit:v1.31.2",
+    `axllent/mailpit${digest}`,
+  );
   assert.deepEqual(composeTagViolations(composeFile(text)), []);
 });
 
 test("refuse un digest mal formé, seul ou derrière une version complète", () => {
   for (const [from, to] of [
-    ["postgres:16", "postgres@sha256:zz"],
-    ["postgres:16", "postgres@sha256:" + "a".repeat(63)],
+    [PG, "postgres@sha256:zz"],
+    [PG, "postgres:16.15@sha256:" + "a".repeat(63)],
     ["ollama/ollama:0.34.2", "ollama/ollama:0.34.2@sha256:zz"],
   ]) {
     const text = COMPOSE_TAGS_OK.replace(from, to);
@@ -541,4 +611,69 @@ test("refuse le vrai docker-compose.yml avec mailpit repassé en latest", () => 
   );
   assert.notEqual(mutated, real.text);
   assert.equal(composeTagViolations({ ...real, text: mutated }).length, 1);
+});
+
+test("refuse le vrai compose et le vrai ci.yml ramenés sur postgres:16 / caddy:2", () => {
+  const [ci, compose] = realFiles();
+  for (const [file, pattern, to] of [
+    [compose, /image: postgres:\S+/, "image: postgres:16"],
+    [compose, /image: caddy:\S+/, "image: caddy:2"],
+    [ci, /image: postgres:\S+/, "image: postgres:16"],
+  ] as const) {
+    const mutated = file.text.replace(pattern, to);
+    assert.notEqual(mutated, file.text);
+    const violations = composeTagViolations({ ...file, text: mutated });
+    assert.equal(violations.length, 1, `${to} : ${violations.join(" | ")}`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Un même pin Postgres / Caddy partout (#310).
+//
+// Les jobs de `ci.yml` jouent les migrations sur le Postgres que le compose
+// fait tourner : un job laissé sur l'ancien pin teste autre chose. Le robot
+// de mise à jour bouge toutes les occurrences d'une image dans la même PR ;
+// une PR qui n'en bouge qu'une doit être rouge ici.
+// ---------------------------------------------------------------------------
+
+test("les vrais ci.yml et compose portent le même pin postgres", () => {
+  assert.deepEqual(pinnedImageDivergence(realFiles()), []);
+});
+
+test("des pins identiques passent", () => {
+  assert.deepEqual(
+    pinnedImageDivergence([ciFile(CI_SERVICES_OK), composeFile(COMPOSE_TAGS_OK)]),
+    [],
+  );
+});
+
+test("refuse un job de CI sur un autre pin postgres que le compose", () => {
+  const other = `postgres:16.14${PG_DIGEST}`;
+  const ci = CI_SERVICES_OK.replace(PG, other);
+  const violations = pinnedImageDivergence([ciFile(ci), composeFile(COMPOSE_TAGS_OK)]);
+  assert.equal(violations.length, 1, violations.join(" | "));
+  assert.match(violations[0], /divergent/);
+  assert.match(violations[0], /ci\.yml:\d+/);
+  assert.match(violations[0], /docker-compose\.yml:\d+/);
+});
+
+test("refuse deux digests différents derrière le même tag postgres", () => {
+  // Une republication du tag : le digest seul a bougé, et c'est justement
+  // ce que le pin par digest doit rendre visible.
+  const ci = CI_SERVICES_OK.replace(PG, `postgres:16.15@sha256:${"5".repeat(64)}`);
+  const violations = pinnedImageDivergence([ciFile(ci), composeFile(COMPOSE_TAGS_OK)]);
+  assert.equal(violations.length, 1, violations.join(" | "));
+  assert.match(violations[0], /divergent/);
+});
+
+test("refuse le vrai ci.yml dont un seul job change de digest postgres", () => {
+  const [ci, compose] = realFiles();
+  const mutated = ci.text.replace(
+    /(postgres:[\d.]+)@sha256:[0-9a-f]{64}/,
+    `$1@sha256:${"6".repeat(64)}`,
+  );
+  assert.notEqual(mutated, ci.text);
+  const violations = pinnedImageDivergence([{ ...ci, text: mutated }, compose]);
+  assert.equal(violations.length, 1, violations.join(" | "));
+  assert.match(violations[0], /divergent/);
 });
