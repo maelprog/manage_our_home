@@ -1,0 +1,26 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "#310: only postgres and caddy, pinned by full tag and digest in infra/docker-compose.yml and in the services of .github/workflows/ci.yml (Dependabot does not read workflow services images, dependabot-core#5541). Every other dependency stays out of scope here.",
+  "enabledManagers": ["docker-compose", "github-actions"],
+  "pinDigests": true,
+  "packageRules": [
+    {
+      "description": "Off by default: actions, MinIO mirror images and anything else these managers find.",
+      "matchPackageNames": ["*"],
+      "enabled": false
+    },
+    {
+      "description": "postgres and caddy: one PR per new minor/patch or digest republication, all files at once (image-pins.ts requires one pin everywhere).",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["postgres", "caddy"],
+      "enabled": true
+    },
+    {
+      "description": "No major series change: postgres 16 -> 17 needs a dump/restore, caddy 2 -> 3 a reading of the Caddyfile.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["postgres", "caddy"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    }
+  ]
+}
