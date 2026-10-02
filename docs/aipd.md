@@ -95,17 +95,19 @@ mineurs. **Gravité : importante.**
 Security forcée sur chaque table rattachée à un groupe) ; trois colonnes
 chiffrées par `pgcrypto`, chacune avec sa clé (`messages.content`, jeton
 de rafraîchissement Google, URL de flux iCal) ; mots de passe hachés
-argon2 ; cookie de session `HttpOnly`, `Secure`, `SameSite=Lax`, session de
-30 jours au plus et close après 7 jours sans activité ; limitation des
+argon2 ; cookie de session `HttpOnly`, `Secure`, `SameSite=Lax`, préfixé
+`__Host-` derrière `SECURE_COOKIES` (#224), session de 30 jours au plus et
+close après 7 jours sans activité ; jeton de session stocké par sa seule
+empreinte SHA-256 (`sessions.token_hash`, #222) ; limitation des
 essais de mot de passe ; politique de sécurité du contenu ; `cargo audit`
 en CI ; journal d'audit des actions sensibles.
 
 **Ce qui reste exposé.**
 - Les pièces jointes et tout le texte libre hors messagerie ne sont pas
   chiffrés au repos par l'application.
-- Les jetons porteurs sont stockés en clair, et une copie de la base
-  suffit à s'en servir : l'identifiant de session (`sessions.id`, qui est
-  le cookie) donne chaque session active ; un jeton d'invitation
+- Trois jetons porteurs sont stockés en clair, et une copie de la base
+  suffit à s'en servir (celui de session ne l'est plus depuis #222) : un
+  jeton d'invitation
   (`invitations.token`, valable 7 jours) fait entrer n'importe quel compte
   dans le groupe, l'adresse invitée n'étant pas vérifiée à l'acceptation ;
   un jeton de réinitialisation (`password_reset_tokens.token`, 1 h) donne
@@ -155,10 +157,11 @@ Mesures **proposées** par cette analyse, à arbitrer :
 5. Chiffrer le volume qui porte les données de MinIO et de Postgres sur le
    serveur, ce qui couvre les pièces jointes et le texte libre en cas de vol
    du support (pas en cas d'intrusion sur le serveur en marche).
-6. Ne stocker qu'une empreinte de chacun de ces quatre jetons porteurs
-   (session, invitation, réinitialisation, vérification), pour qu'une copie
-   de la base ne suffise plus à prendre une session, un compte ou une place
-   dans un groupe.
+6. Ne stocker qu'une empreinte de chacun des trois jetons porteurs encore
+   en clair (invitation, réinitialisation, vérification), pour qu'une copie
+   de la base ne suffise plus à prendre un compte ou une place dans un
+   groupe. Le quatrième, celui de session, n'est plus stocké que par son
+   empreinte (#222) : une copie de la base ne donne plus de session.
 
 La procédure en cas de violation et le registre des violations sont posés
 par la même issue (`docs/procedure-violation.md`,

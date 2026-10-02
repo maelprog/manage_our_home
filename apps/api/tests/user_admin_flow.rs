@@ -1,7 +1,7 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
-use common::{assert_status, call, json_body, set_cookie, test_router};
+use common::{assert_status, call, json_body, session_id_of, set_cookie, test_router};
 use sqlx::PgPool;
 
 async fn register_verify_login(
@@ -140,15 +140,6 @@ async fn unauthenticated_gets_401_on_admin_routes(db: PgPool) {
     assert_status(&res, StatusCode::UNAUTHORIZED);
 }
 
-/// The session id carried by a `session_id=<uuid>` cookie pair, as
-/// `set_cookie` returns it.
-fn session_id_of(cookie: &str) -> uuid::Uuid {
-    cookie
-        .split_once('=')
-        .map(|(_, v)| v.parse().unwrap())
-        .unwrap()
-}
-
 async fn login(router: &axum::Router, email: &str, password: &str) -> String {
     let res = call(
         router,
@@ -196,7 +187,7 @@ async fn invalid_session_gets_401_on_admin_routes_whatever_the_flag(db: PgPool) 
         let res = call(&router, Method::GET, "/admin/groups", Some(&revoked), None).await;
         assert_status(&res, expected_when_valid);
         sqlx::query("UPDATE sessions SET revoked_at = now() WHERE id = $1")
-            .bind(session_id_of(&revoked))
+            .bind(session_id_of(&db, &revoked).await)
             .execute(&db)
             .await
             .unwrap();
@@ -208,7 +199,7 @@ async fn invalid_session_gets_401_on_admin_routes_whatever_the_flag(db: PgPool) 
         let res = call(&router, Method::GET, "/admin/groups", Some(&expired), None).await;
         assert_status(&res, expected_when_valid);
         sqlx::query("UPDATE sessions SET expires_at = now() - interval '1 second' WHERE id = $1")
-            .bind(session_id_of(&expired))
+            .bind(session_id_of(&db, &expired).await)
             .execute(&db)
             .await
             .unwrap();
@@ -220,7 +211,7 @@ async fn invalid_session_gets_401_on_admin_routes_whatever_the_flag(db: PgPool) 
         let res = call(&router, Method::GET, "/admin/groups", Some(&idle), None).await;
         assert_status(&res, expected_when_valid);
         sqlx::query("UPDATE sessions SET last_seen_at = now() - interval '8 days' WHERE id = $1")
-            .bind(session_id_of(&idle))
+            .bind(session_id_of(&db, &idle).await)
             .execute(&db)
             .await
             .unwrap();
@@ -276,7 +267,7 @@ async fn admin_request_refreshes_last_seen_at(db: PgPool) {
     let cookie =
         register_verify_login(&router, &db, "seen-super@example.test", "seen-password1").await;
     make_superadmin(&db, "seen-super@example.test").await;
-    let session_id = session_id_of(&cookie);
+    let session_id = session_id_of(&db, &cookie).await;
 
     sqlx::query("UPDATE sessions SET last_seen_at = now() - interval '1 day' WHERE id = $1")
         .bind(session_id)

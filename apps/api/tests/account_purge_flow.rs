@@ -75,7 +75,8 @@ async fn seed_personal_rows(db: &PgPool, group: Uuid, event: Uuid, user: Uuid, t
     for sql in [
         "INSERT INTO oauth_identities (user_id, provider, provider_user_id)
          VALUES ($1, 'google', $2)",
-        "INSERT INTO sessions (user_id, expires_at) VALUES ($1, now() + interval '1 day')",
+        "INSERT INTO sessions (user_id, expires_at, token_hash)
+         VALUES ($1, now() + interval '1 day', gen_random_bytes(32))",
         "INSERT INTO email_verification_tokens (user_id, expires_at)
          VALUES ($1, now() + interval '1 day')",
         "INSERT INTO password_reset_tokens (user_id, expires_at)
@@ -495,20 +496,13 @@ async fn an_admin_awaiting_deletion_inherits_and_stays_owner_once_it_cancels(db:
     );
 
     // The admin cancels its request through the real endpoint.
-    let session: Uuid = sqlx::query_scalar(
-        "INSERT INTO sessions (user_id, expires_at) VALUES ($1, now() + interval '1 day')
-         RETURNING id",
-    )
-    .bind(admin)
-    .fetch_one(&db)
-    .await
-    .unwrap();
+    let session = common::insert_session(&db, admin).await;
     let router = common::test_router(db.clone());
     let cancel = common::call(
         &router,
         axum::http::Method::POST,
         "/account/delete/cancel",
-        Some(&format!("session_id={session}")),
+        Some(&session),
         None,
     )
     .await;

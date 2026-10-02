@@ -2,8 +2,8 @@ mod common;
 
 use axum::http::{Method, StatusCode};
 use common::{
-    assert_status, call, drop_prescribed_role, json_body, prescribed_role_pool, set_cookie,
-    test_router,
+    assert_status, call, drop_prescribed_role, json_body, prescribed_role_pool, session_id_of,
+    set_cookie, test_router,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -71,13 +71,6 @@ async fn me_returns_identity_when_authed_and_401_otherwise(db: PgPool) {
     assert!(me["user_id"].is_string());
 }
 
-fn session_id_of(cookie: &str) -> Uuid {
-    cookie
-        .split_once('=')
-        .map(|(_, v)| v.parse().unwrap())
-        .unwrap()
-}
-
 async fn set_last_seen_ago(db: &PgPool, session_id: Uuid, ago: &str) {
     sqlx::query("UPDATE sessions SET last_seen_at = now() - $2::interval WHERE id = $1")
         .bind(session_id)
@@ -103,7 +96,7 @@ async fn last_seen_older_than(db: &PgPool, session_id: Uuid, ago: &str) -> bool 
 async fn a_session_idle_for_more_than_seven_days_is_refused(db: PgPool) {
     let router = test_router(db.clone());
     let cookie = register_verify_login(&router, &db, "idle@example.test", "idle-password1").await;
-    let session_id = session_id_of(&cookie);
+    let session_id = session_id_of(&db, &cookie).await;
 
     set_last_seen_ago(&db, session_id, "7 days 1 minute").await;
     let res = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
@@ -133,7 +126,7 @@ async fn a_session_used_within_seven_days_is_accepted_and_refreshed(db: PgPool) 
     let router = test_router(db.clone());
     let cookie =
         register_verify_login(&router, &db, "active@example.test", "active-password1").await;
-    let session_id = session_id_of(&cookie);
+    let session_id = session_id_of(&db, &cookie).await;
 
     set_last_seen_ago(&db, session_id, "6 days 23 hours").await;
     let res = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
@@ -151,7 +144,7 @@ async fn last_seen_at_is_not_rewritten_within_the_hour(db: PgPool) {
     let router = test_router(db.clone());
     let cookie =
         register_verify_login(&router, &db, "hourly@example.test", "hourly-password1").await;
-    let session_id = session_id_of(&cookie);
+    let session_id = session_id_of(&db, &cookie).await;
 
     set_last_seen_ago(&db, session_id, "50 minutes").await;
     let res = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
@@ -160,6 +153,125 @@ async fn last_seen_at_is_not_rewritten_within_the_hour(db: PgPool) {
         last_seen_older_than(&db, session_id, "49 minutes").await,
         "a request within the hour must not rewrite last_seen_at"
     );
+}
+
+/// #222: what the `sessions` table holds opens nothing. The cookie carries
+/// a token the table only keeps the SHA-256 of; a cookie made of the row's
+/// `id` (the former cookie) or of its `token_hash`, spelt as hex or as
+/// base64url, is refused. The control: the real cookie opens the session.
+#[sqlx::test]
+async fn a_cookie_made_of_what_the_sessions_table_holds_is_refused(db: PgPool) {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "hash@example.test", "hash-password1").await;
+    let res = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
+    assert_status(&res, StatusCode::OK);
+
+    let session_id = session_id_of(&db, &cookie).await;
+    let (row, token_hash): (String, Vec<u8>) =
+        sqlx::query_as("SELECT s::text, token_hash FROM sessions s WHERE id = $1")
+            .bind(session_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let (_, token) = cookie.split_once('=').unwrap();
+    assert!(!row.contains(token), "the raw token is stored: {row}");
+    assert_eq!(token_hash.len(), 32);
+
+    let hex: String = token_hash.iter().map(|b| format!("{b:02x}")).collect();
+    for forged in [
+        session_id.to_string(),
+        hex,
+        URL_SAFE_NO_PAD.encode(&token_hash),
+    ] {
+        let forged = format!("session_id={forged}");
+        let res = call(&router, Method::GET, "/auth/me", Some(&forged), None).await;
+        assert_status(&res, StatusCode::UNAUTHORIZED);
+    }
+
+    let res = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
+    assert_status(&res, StatusCode::OK);
+}
+
+/// #224: behind `SECURE_COOKIES`, the session cookie is `__Host-session_id`,
+/// `Secure`, `Path=/`, without `Domain` — what a browser requires before it
+/// accepts the prefix. The api reads it under that name only: the same
+/// token under the bare `session_id` is refused, so a cookie planted from a
+/// sibling subdomain (which cannot carry the prefix) is never read. Logging
+/// out removes it under the same name, `Secure` too, or the browser would
+/// drop the removal.
+#[sqlx::test]
+async fn behind_secure_cookies_the_session_cookie_carries_the_host_prefix(db: PgPool) {
+    let mut state = common::test_state(db.clone());
+    state.secure_cookies = true;
+    let router = manage_our_home::build_router(state);
+    call(
+        &router,
+        Method::POST,
+        "/auth/register",
+        None,
+        Some(serde_json::json!({
+            "email": "host@example.test", "password": "host-password1",
+            "display_name": "Host", "declares_minimum_age": true
+        })),
+    )
+    .await;
+    sqlx::query("UPDATE users SET email_verified = true WHERE email = $1")
+        .bind("host@example.test")
+        .execute(&db)
+        .await
+        .unwrap();
+    let login = call(
+        &router,
+        Method::POST,
+        "/auth/login",
+        None,
+        Some(serde_json::json!({"email": "host@example.test", "password": "host-password1"})),
+    )
+    .await;
+    assert_status(&login, StatusCode::OK);
+    let lines = set_cookies(&login);
+    let line = lines
+        .iter()
+        .find(|l| l.starts_with("__Host-session_id="))
+        .unwrap_or_else(|| panic!("no __Host- session cookie in {lines:?}"));
+    let attributes: Vec<String> = line
+        .split(';')
+        .skip(1)
+        .map(|a| a.trim().to_ascii_lowercase())
+        .collect();
+    assert!(attributes.iter().any(|a| a == "secure"), "{line}");
+    assert!(attributes.iter().any(|a| a == "path=/"), "{line}");
+    assert!(
+        !attributes.iter().any(|a| a.starts_with("domain")),
+        "{line}"
+    );
+
+    let token = cookie_value(&lines, "__Host-session_id").unwrap();
+    let cookie = format!("__Host-session_id={token}");
+    let res = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
+    assert_status(&res, StatusCode::OK);
+    let bare = format!("session_id={token}");
+    let res = call(&router, Method::GET, "/auth/me", Some(&bare), None).await;
+    assert_status(&res, StatusCode::UNAUTHORIZED);
+
+    let logout = call(&router, Method::POST, "/auth/logout", Some(&cookie), None).await;
+    assert_status(&logout, StatusCode::NO_CONTENT);
+    let lines = set_cookies(&logout);
+    let removal = lines
+        .iter()
+        .find(|l| l.starts_with("__Host-session_id="))
+        .unwrap_or_else(|| panic!("no __Host- removal in {lines:?}"));
+    let attributes: Vec<String> = removal
+        .split(';')
+        .skip(1)
+        .map(|a| a.trim().to_ascii_lowercase())
+        .collect();
+    assert!(attributes.iter().any(|a| a == "secure"), "{removal}");
+    assert!(attributes.iter().any(|a| a == "path=/"), "{removal}");
+    assert!(attributes.iter().any(|a| a == "max-age=0"), "{removal}");
 }
 
 /// AC #6: register rejects invalid input with the exact 422 codes, and a

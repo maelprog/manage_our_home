@@ -327,12 +327,12 @@ async fn login_inner(
     } else {
         create_session(&state.db, user.id).await
     };
-    let session_id = match session {
-        Ok(session_id) => session_id,
+    let token = match session {
+        Ok(token) => token,
         Err(e) => return (LoginBranch::Error, Err(e.into())),
     };
     timing.session = at.elapsed();
-    set_session_cookie(cookies, session_id, state.secure_cookies);
+    set_session_cookie(cookies, &token, state.secure_cookies);
     state.login_throttle.record_success(&key);
 
     (
@@ -349,7 +349,7 @@ pub async fn logout(
     session: AnySession,
 ) -> AppResult<impl IntoResponse> {
     revoke_session(&state.db, session.session_id).await?;
-    clear_session_cookie(&cookies);
+    clear_session_cookie(&cookies, state.secure_cookies);
     Ok(StatusCode::NO_CONTENT)
 }
 

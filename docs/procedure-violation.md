@@ -31,14 +31,14 @@ meilleurs délais », art. 33(2)), un chercheur en sécurité — et arrive à
    celle de l'incident ni celle de la fin de l'analyse.
 2. **Contenir.** Couper l'accès en cause avant d'en mesurer l'étendue. Les
    leviers dont le service dispose :
-   - révoquer les sessions, sur les comptes touchés ou sur tous.
-     L'identifiant de session est le cookie lui-même et il est stocké en
-     clair : **une copie de la table `sessions` suffit à se connecter** à la
-     place de chaque titulaire d'une session active, et une fuite de la base
-     impose donc de toutes les révoquer ;
-   - supprimer les jetons porteurs encore valables, stockés en clair eux
-     aussi : après une fuite de la base, **chacun est utilisable par qui
-     tient la copie**. Un jeton d'invitation (`invitations.token`, valable
+   - révoquer les sessions, sur les comptes touchés ou sur tous. La table
+     `sessions` ne garde que l'empreinte SHA-256 du jeton que porte le
+     cookie (#222) : une copie de la table ne suffit pas à se connecter.
+     La révocation reste le levier quand ce sont les cookies eux-mêmes qui
+     ont pu fuir (poste d'un membre, serveur compromis en marche) ;
+   - supprimer les jetons porteurs encore valables, stockés en clair :
+     après une fuite de la base, **chacun est utilisable par qui tient la
+     copie**. Un jeton d'invitation (`invitations.token`, valable
      7 jours) fait entrer n'importe quel compte dans le groupe, quelle que
      soit l'adresse invitée ; un jeton de réinitialisation
      (`password_reset_tokens`, 1 h) donne le compte ; un jeton de

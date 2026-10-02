@@ -679,8 +679,8 @@ async fn the_retention_purge_keeps_only_the_sessions_the_account_state_allows(db
         (active, false),
     ] {
         sqlx::query(
-            "INSERT INTO sessions (user_id, expires_at, restricted)
-             VALUES ($1, now() + interval '1 day', $2)",
+            "INSERT INTO sessions (user_id, expires_at, restricted, token_hash)
+             VALUES ($1, now() + interval '1 day', $2, gen_random_bytes(32))",
         )
         .bind(user)
         .bind(restricted)
