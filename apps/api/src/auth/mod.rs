@@ -349,7 +349,7 @@ pub async fn logout(
     session: AnySession,
 ) -> AppResult<impl IntoResponse> {
     revoke_session(&state.db, session.session_id).await?;
-    clear_session_cookie(&cookies);
+    clear_session_cookie(&cookies, state.secure_cookies);
     Ok(StatusCode::NO_CONTENT)
 }
 

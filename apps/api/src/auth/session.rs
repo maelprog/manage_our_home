@@ -16,8 +16,14 @@ use crate::error::AppError;
 use crate::AppState;
 
 /// Private on purpose (#239): nothing outside this module may name the
-/// cookie — see `only_this_module_reads_the_session_cookie`.
+/// cookie — see `only_this_module_reads_the_session_cookie`. The name a
+/// response sets and a request is read under is [`session_cookie_name`]'s.
 const SESSION_COOKIE_NAME: &str = "session_id";
+/// The same cookie under the `__Host-` prefix (#224, RFC 6265bis): a
+/// browser only accepts it `Secure`, in `Path=/` and without `Domain`, so
+/// a sibling subdomain or a plain-HTTP page on the same host cannot plant
+/// one that shadows the real session (cookie tossing, session fixation).
+const HOST_SESSION_COOKIE_NAME: &str = "__Host-session_id";
 /// Raw bytes of a session token (#222), drawn from the OS CSPRNG.
 const SESSION_TOKEN_BYTES: usize = 32;
 /// Absolute lifetime of a session, fixed at creation in `expires_at` and in
@@ -139,7 +145,7 @@ where
         .await
         .map_err(|_| AppError::Unauthorized)?;
     let cookie = cookies
-        .get(SESSION_COOKIE_NAME)
+        .get(session_cookie_name(app_state.secure_cookies))
         .ok_or(AppError::Unauthorized)?;
     let token_hash = session_token_hash(cookie.value()).ok_or(AppError::Unauthorized)?;
 
@@ -331,8 +337,20 @@ pub fn set_session_cookie(cookies: &Cookies, token: &SessionToken, secure: bool)
 }
 
 /// Logs the caller out: the jar carries the removal of the session cookie.
-pub fn clear_session_cookie(cookies: &Cookies) {
-    cookies.add(expired_session_cookie());
+pub fn clear_session_cookie(cookies: &Cookies, secure: bool) {
+    cookies.add(expired_session_cookie(secure));
+}
+
+/// The session cookie's name (#224). Behind `SECURE_COOKIES` it carries
+/// the `__Host-` prefix. Without it — local development over plain HTTP,
+/// `infra/.env.example` — a browser rejects a `__Host-` cookie that is not
+/// `Secure`, so the bare name stays, or logging in would set nothing.
+fn session_cookie_name(secure: bool) -> &'static str {
+    if secure {
+        HOST_SESSION_COOKIE_NAME
+    } else {
+        SESSION_COOKIE_NAME
+    }
 }
 
 /// A fresh session token (#222): the value the cookie carries, and the
@@ -381,7 +399,7 @@ pub fn session_token_hash(cookie_value: &str) -> Option<[u8; 32]> {
 }
 
 fn build_session_cookie(token: &SessionToken, secure: bool) -> Cookie<'static> {
-    Cookie::build((SESSION_COOKIE_NAME, token.value().to_owned()))
+    Cookie::build((session_cookie_name(secure), token.value().to_owned()))
         .http_only(true)
         .secure(secure)
         .same_site(SameSite::Lax)
@@ -390,8 +408,13 @@ fn build_session_cookie(token: &SessionToken, secure: bool) -> Cookie<'static> {
         .build()
 }
 
-fn expired_session_cookie() -> Cookie<'static> {
-    let mut c = Cookie::build((SESSION_COOKIE_NAME, "")).path("/").build();
+fn expired_session_cookie(secure: bool) -> Cookie<'static> {
+    // `Secure` too: a browser drops a `__Host-` cookie without it, the
+    // removal included, and the session cookie would stay (#224).
+    let mut c = Cookie::build((session_cookie_name(secure), ""))
+        .secure(secure)
+        .path("/")
+        .build();
     c.make_removal();
     c
 }
@@ -589,6 +612,51 @@ mod tests {
         }
     }
 
+    // -- cookie name (#224) -------------------------------------------------
+
+    #[test]
+    fn a_secure_cookie_carries_the_host_prefix() {
+        assert_eq!(session_cookie_name(true), "__Host-session_id");
+    }
+
+    /// A browser rejects a `__Host-` cookie without `Secure`: over plain
+    /// HTTP the bare name stays, or logging in would set nothing.
+    #[test]
+    fn an_insecure_cookie_keeps_the_bare_name() {
+        assert_eq!(session_cookie_name(false), "session_id");
+    }
+
+    /// What the browser checks before it accepts a `__Host-` cookie:
+    /// `Secure`, `Path=/`, no `Domain`. On the cookie that logs in and on
+    /// the one that logs out, or the removal would be dropped and the
+    /// session cookie left in place.
+    #[test]
+    fn both_secure_cookies_meet_the_host_prefix_requirements() {
+        let token = new_session_token();
+        for cookie in [
+            build_session_cookie(&token, true),
+            expired_session_cookie(true),
+        ] {
+            assert_eq!(cookie.name(), "__Host-session_id");
+            assert_eq!(cookie.secure(), Some(true));
+            assert_eq!(cookie.path(), Some("/"));
+            assert_eq!(cookie.domain(), None);
+        }
+    }
+
+    #[test]
+    fn insecure_cookies_keep_the_bare_name_and_no_secure_flag() {
+        let token = new_session_token();
+        for cookie in [
+            build_session_cookie(&token, false),
+            expired_session_cookie(false),
+        ] {
+            assert_eq!(cookie.name(), "session_id");
+            assert_ne!(cookie.secure(), Some(true));
+            assert_eq!(cookie.path(), Some("/"));
+        }
+    }
+
     /// #222: the cookie carries the token, never the hash the table keeps.
     #[test]
     fn the_session_cookie_carries_the_token() {
@@ -596,6 +664,13 @@ mod tests {
         let cookie = build_session_cookie(&token, true);
         assert_eq!(cookie.value(), token.value());
         assert_eq!(cookie.http_only(), Some(true));
+    }
+
+    #[test]
+    fn the_logout_cookie_removes_the_session_cookie() {
+        let cookie = expired_session_cookie(true);
+        assert_eq!(cookie.value(), "");
+        assert_eq!(cookie.max_age(), Some(cookie::time::Duration::ZERO));
     }
 
     // -- session_access (#289) -------------------------------------------
@@ -876,6 +951,7 @@ mod tests {
         let code = code_only(src);
         code.contains("SESSION_COOKIE_NAME")
             || code.contains("\"session_id")
+            || code.contains("\"__Host-session_id")
             || code.contains("session_id=")
     }
 
@@ -907,6 +983,8 @@ mod tests {
             "let k = SESSION_COOKIE_NAME;",
             "jar.get(\"session_id\")",
             "h.strip_prefix(\"session_id=\")",
+            "jar.get(\"__Host-session_id\")",
+            "let k = HOST_SESSION_COOKIE_NAME;",
         ] {
             assert!(names_the_session_cookie(src), "{src:?}");
         }

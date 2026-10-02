@@ -95,9 +95,9 @@ mineurs. **Gravité : importante.**
 Security forcée sur chaque table rattachée à un groupe) ; trois colonnes
 chiffrées par `pgcrypto`, chacune avec sa clé (`messages.content`, jeton
 de rafraîchissement Google, URL de flux iCal) ; mots de passe hachés
-argon2 ; cookie de session `HttpOnly`, `Secure`, `SameSite=Lax`, session de
-30 jours au plus et close après 7 jours sans activité ; jeton de session
-stocké par sa seule
+argon2 ; cookie de session `HttpOnly`, `Secure`, `SameSite=Lax`, préfixé
+`__Host-` derrière `SECURE_COOKIES` (#224), session de 30 jours au plus et
+close après 7 jours sans activité ; jeton de session stocké par sa seule
 empreinte SHA-256 (`sessions.token_hash`, #222) ; limitation des
 essais de mot de passe ; politique de sécurité du contenu ; `cargo audit`
 en CI ; journal d'audit des actions sensibles.
