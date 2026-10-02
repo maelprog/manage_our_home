@@ -58,6 +58,27 @@ fn session_access(restricted: bool, deactivated: bool, deleted: bool) -> Session
     }
 }
 
+/// What [`session_state`] needs from a `sessions` row and its account.
+struct SessionRow {
+    revoked: bool,
+    expires_at: DateTime<Utc>,
+    last_seen_at: DateTime<Utc>,
+    restricted: bool,
+    deactivated: bool,
+    deleted: bool,
+}
+
+/// The one verdict on a session (#221): the checks every session shares —
+/// not revoked, within its absolute lifetime, not idle — then what it opens.
+/// `load_session` asks it once per request, and the messagerie WebSocket
+/// again on every recheck tick, so a revocation reaches both channels.
+fn session_state(now: DateTime<Utc>, row: &SessionRow) -> SessionAccess {
+    if row.revoked || row.expires_at < now || is_idle(now, row.last_seen_at) {
+        return SessionAccess::Refused;
+    }
+    session_access(row.restricted, row.deactivated, row.deleted)
+}
+
 #[derive(Debug, Clone)]
 pub struct AuthUser {
     pub user_id: Uuid,
@@ -88,7 +109,7 @@ pub struct AuthUser {
 /// The session the request's cookie names, with the account it belongs to,
 /// once the checks every session shares have passed: known, not revoked,
 /// within its absolute lifetime, not idle. `last_seen_at` is refreshed
-/// here. What the session then opens is [`session_access`]'s to say.
+/// here. What the session then opens is [`session_state`]'s to say.
 struct LoadedSession {
     session_id: Uuid,
     user_id: Uuid,
@@ -133,13 +154,16 @@ where
     .ok_or(AppError::Unauthorized)?;
 
     let now = Utc::now();
-    if row.revoked_at.is_some() || row.expires_at < now || is_idle(now, row.last_seen_at) {
-        return Err(AppError::Unauthorized);
-    }
-    let access = session_access(
-        row.restricted,
-        row.deactivated_at.is_some(),
-        row.deleted_at.is_some(),
+    let access = session_state(
+        now,
+        &SessionRow {
+            revoked: row.revoked_at.is_some(),
+            expires_at: row.expires_at,
+            last_seen_at: row.last_seen_at,
+            restricted: row.restricted,
+            deactivated: row.deactivated_at.is_some(),
+            deleted: row.deleted_at.is_some(),
+        },
     );
     if access == SessionAccess::Refused {
         return Err(AppError::Unauthorized);
@@ -166,6 +190,42 @@ where
         deletion_requested_at: row.deletion_requested_at,
         access,
     })
+}
+
+/// Whether `session_id` still opens what [`AuthUser`] opens, read afresh
+/// (#221). For a channel authenticated once and kept open — the messagerie
+/// WebSocket — so a logout, a password change or reset, a deactivation, a
+/// purge, the expiry or the inactivity timeout closes it too. Unlike
+/// [`load_session`], it does not refresh `last_seen_at`: an open socket is
+/// not activity, or a tab left on the messagerie would keep its session
+/// alive forever. A database error counts as a refusal.
+pub async fn is_full_session(pool: &PgPool, session_id: Uuid) -> bool {
+    let row = sqlx::query!(
+        r#"
+        SELECT s.expires_at, s.revoked_at, s.last_seen_at, s.restricted,
+               u.deleted_at, u.deactivated_at
+        FROM sessions s
+        JOIN users u ON u.id = s.user_id
+        WHERE s.id = $1
+        "#,
+        session_id
+    )
+    .fetch_optional(pool)
+    .await;
+    let Ok(Some(row)) = row else {
+        return false;
+    };
+    session_state(
+        Utc::now(),
+        &SessionRow {
+            revoked: row.revoked_at.is_some(),
+            expires_at: row.expires_at,
+            last_seen_at: row.last_seen_at,
+            restricted: row.restricted,
+            deactivated: row.deactivated_at.is_some(),
+            deleted: row.deleted_at.is_some(),
+        },
+    ) == SessionAccess::Full
 }
 
 /// A full session of an active account. A restricted session (#289) is
@@ -447,6 +507,91 @@ mod tests {
                 "restricted={restricted} deactivated={deactivated}"
             );
         }
+    }
+
+    // -- session_state (#221) ---------------------------------------------
+
+    /// A live full session, the baseline the cases below each break once.
+    fn live(now: DateTime<Utc>) -> SessionRow {
+        SessionRow {
+            revoked: false,
+            expires_at: now + Duration::days(1),
+            last_seen_at: now,
+            restricted: false,
+            deactivated: false,
+            deleted: false,
+        }
+    }
+
+    #[test]
+    fn a_live_full_session_opens_everything() {
+        let now = at("2026-09-19T12:00:00Z");
+        assert_eq!(session_state(now, &live(now)), SessionAccess::Full);
+    }
+
+    /// Logout, password change and reset, and deactivation all set
+    /// `revoked_at`.
+    #[test]
+    fn a_revoked_session_is_refused() {
+        let now = at("2026-09-19T12:00:00Z");
+        let row = SessionRow {
+            revoked: true,
+            ..live(now)
+        };
+        assert_eq!(session_state(now, &row), SessionAccess::Refused);
+    }
+
+    #[test]
+    fn a_session_past_its_absolute_lifetime_is_refused() {
+        let now = at("2026-09-19T12:00:00Z");
+        let row = SessionRow {
+            expires_at: at("2026-09-19T11:59:59Z"),
+            ..live(now)
+        };
+        assert_eq!(session_state(now, &row), SessionAccess::Refused);
+        let row = SessionRow {
+            expires_at: now,
+            ..live(now)
+        };
+        assert_eq!(session_state(now, &row), SessionAccess::Full);
+    }
+
+    #[test]
+    fn an_idle_session_is_refused() {
+        let now = at("2026-09-19T12:00:00Z");
+        let row = SessionRow {
+            last_seen_at: at("2026-09-12T11:59:59Z"),
+            ..live(now)
+        };
+        assert_eq!(session_state(now, &row), SessionAccess::Refused);
+    }
+
+    #[test]
+    fn a_session_of_a_deleted_account_is_refused() {
+        let now = at("2026-09-19T12:00:00Z");
+        let row = SessionRow {
+            deleted: true,
+            ..live(now)
+        };
+        assert_eq!(session_state(now, &row), SessionAccess::Refused);
+    }
+
+    /// Liveness comes first: a revoked restricted session opens nothing,
+    /// not even the deactivated-account page.
+    #[test]
+    fn a_revoked_restricted_session_is_refused() {
+        let now = at("2026-09-19T12:00:00Z");
+        let row = SessionRow {
+            restricted: true,
+            deactivated: true,
+            ..live(now)
+        };
+        assert_eq!(session_state(now, &row), SessionAccess::Deactivated);
+        let row = SessionRow {
+            revoked: true,
+            ..row
+        };
+        assert_eq!(session_state(now, &row), SessionAccess::Refused);
     }
 
     #[test]

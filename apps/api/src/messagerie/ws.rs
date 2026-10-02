@@ -1,10 +1,10 @@
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use crate::auth::session::{scoped_tx, AuthUser};
+use crate::auth::session::{is_full_session, scoped_tx, AuthUser};
 use crate::error::AppResult;
 use crate::groups::require_role;
 use crate::AppState;
@@ -20,6 +20,18 @@ use crate::AppState;
 // The interval lives on `AppState` (`message_ws_recheck_interval`, 30s in
 // production) so the AC #7 flow test can shorten the bound instead of
 // sleeping 30s for real.
+//
+// The same tick re-reads the session (#221): authenticated once at the
+// upgrade, the socket would otherwise outlive a logout, a password change
+// or reset (which revoke the other sessions precisely to cut off a thief),
+// a deactivation, the expiry or the inactivity timeout. Same 30s bound as a
+// lost membership.
+
+/// Close code sent when the session behind the socket no longer opens the
+/// messagerie (#221), in the application range (4000-4999). A lost
+/// membership still ends the socket without a close frame; `apps/web`
+/// tells the two apart by re-fetching the page, either way.
+pub const CLOSE_SESSION_ENDED: u16 = 4401;
 
 pub async fn message_ws(
     State(state): State<AppState>,
@@ -34,7 +46,9 @@ pub async fn message_ws(
     require_role(&mut tx, group_id, auth.user_id).await?;
     tx.commit().await?;
 
-    Ok(ws.on_upgrade(move |socket| handle_socket(socket, state, group_id, auth.user_id)))
+    Ok(ws.on_upgrade(move |socket| {
+        handle_socket(socket, state, group_id, auth.user_id, auth.session_id)
+    }))
 }
 
 async fn is_still_member(state: &AppState, group_id: Uuid, user_id: Uuid) -> bool {
@@ -48,7 +62,13 @@ async fn is_still_member(state: &AppState, group_id: Uuid, user_id: Uuid) -> boo
     }
 }
 
-async fn handle_socket(mut socket: WebSocket, state: AppState, group_id: Uuid, user_id: Uuid) {
+async fn handle_socket(
+    mut socket: WebSocket,
+    state: AppState,
+    group_id: Uuid,
+    user_id: Uuid,
+    session_id: Uuid,
+) {
     let mut events = state.message_hubs.subscribe(group_id).await;
     let mut recheck = tokio::time::interval(state.message_ws_recheck_interval);
     recheck.tick().await; // first tick fires immediately; skip it
@@ -78,6 +98,15 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, group_id: Uuid, u
                 }
             }
             _ = recheck.tick() => {
+                if !is_full_session(&state.db, session_id).await {
+                    let _ = socket
+                        .send(Message::Close(Some(CloseFrame {
+                            code: CLOSE_SESSION_ENDED,
+                            reason: "session_ended".into(),
+                        })))
+                        .await;
+                    break;
+                }
                 if !is_still_member(&state, group_id, user_id).await {
                     break;
                 }

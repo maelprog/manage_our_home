@@ -887,6 +887,157 @@ async fn removed_member_ws_closes_within_recheck_bound(db: PgPool) {
     owner_ws.close(None).await.ok();
 }
 
+// -- session revocation (#221) ----------------------------------------------
+//
+// The socket authenticates once, at the upgrade. These check that the
+// recheck tick also re-reads the session, so revoking it closes the socket
+// within the same bound as a lost membership (AC #7 above).
+
+/// A router served on a local port with a 200ms recheck interval, plus a
+/// router on the same state for the HTTP calls.
+async fn serve_with_short_recheck(db: &PgPool) -> (std::net::SocketAddr, axum::Router) {
+    let mut state = test_state(db.clone());
+    state.message_ws_recheck_interval = Duration::from_millis(200);
+    let ws_router = manage_our_home::build_router(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, ws_router).await.unwrap();
+    });
+    (addr, manage_our_home::build_router(state))
+}
+
+async fn login(router: &axum::Router, email: &str, password: &str) -> String {
+    let res = call(
+        router,
+        Method::POST,
+        "/auth/login",
+        None,
+        Some(serde_json::json!({"email": email, "password": password})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    set_cookie(&res).unwrap()
+}
+
+/// Waits (bounded, 5s >> the 200ms interval) for the server to close the
+/// socket with the session-ended code.
+async fn expect_session_ended(ws_stream: &mut WsStream) {
+    let frame = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match ws_stream.next().await {
+                Some(Ok(WsMessage::Close(frame))) => return frame,
+                Some(Ok(_)) => continue, // drain any in-flight frame
+                other => panic!("socket ended without a close frame: {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("WS was not closed within the recheck bound")
+    .expect("close frame without a code");
+    assert_eq!(
+        u16::from(frame.code),
+        manage_our_home::messagerie::ws::CLOSE_SESSION_ENDED
+    );
+}
+
+/// Posts a message and checks a still-valid socket receives it.
+async fn expect_still_pushed(
+    router: &axum::Router,
+    group_id: &str,
+    cookie: &str,
+    ws_stream: &mut WsStream,
+) {
+    let create = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/messages"),
+        Some(cookie),
+        Some(serde_json::json!({"content": "still here"})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let event = next_ws_event(ws_stream).await;
+    assert_eq!(event["type"], "message.created");
+    assert_eq!(event["message"]["content"], "still here");
+}
+
+/// #221: logging out closes the socket the session opened, while another
+/// member's socket on the same group stays open.
+#[sqlx::test]
+async fn logout_closes_the_sessions_ws_within_recheck_bound(db: PgPool) {
+    let (addr, router) = serve_with_short_recheck(&db).await;
+    let owner_cookie = register_verify_login(
+        &router,
+        &db,
+        "msg-ws-logout-owner@example.test",
+        "owner-password1",
+    )
+    .await;
+    let member_cookie = register_verify_login(
+        &router,
+        &db,
+        "msg-ws-logout-member@example.test",
+        "member-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    invite_and_join(&router, &group_id, &owner_cookie, &member_cookie).await;
+
+    let mut owner_ws = connect_ws(addr, &group_id, &owner_cookie).await;
+    let mut member_ws = connect_ws(addr, &group_id, &member_cookie).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let logout = call(
+        &router,
+        Method::POST,
+        "/auth/logout",
+        Some(&member_cookie),
+        None,
+    )
+    .await;
+    assert!(logout.status().is_success(), "{}", logout.status());
+
+    expect_session_ended(&mut member_ws).await;
+    expect_still_pushed(&router, &group_id, &owner_cookie, &mut owner_ws).await;
+    owner_ws.close(None).await.ok();
+}
+
+/// #221, the scenario the issue is about: someone suspects a stolen
+/// session and changes their password from another one. The change revokes
+/// every other session, and the socket the stolen session holds closes
+/// within the bound; the socket of the session that made the change stays.
+#[sqlx::test]
+async fn password_change_closes_the_other_sessions_ws_within_recheck_bound(db: PgPool) {
+    let (addr, router) = serve_with_short_recheck(&db).await;
+    let email = "msg-ws-password-owner@example.test";
+    let own_cookie = register_verify_login(&router, &db, email, "owner-password1").await;
+    let stolen_cookie = login(&router, email, "owner-password1").await;
+    assert_ne!(own_cookie, stolen_cookie);
+    let group_id = create_group(&router, &own_cookie, "Foyer").await;
+
+    let mut own_ws = connect_ws(addr, &group_id, &own_cookie).await;
+    let mut stolen_ws = connect_ws(addr, &group_id, &stolen_cookie).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let change = call(
+        &router,
+        Method::POST,
+        "/settings/password/change",
+        Some(&own_cookie),
+        Some(serde_json::json!({
+            "current_password": "owner-password1",
+            "new_password": "owner-password2-new",
+        })),
+    )
+    .await;
+    assert_status(&change, StatusCode::OK);
+
+    expect_session_ended(&mut stolen_ws).await;
+    expect_still_pushed(&router, &group_id, &own_cookie, &mut own_ws).await;
+    own_ws.close(None).await.ok();
+}
+
 // -- read state / unread (#73, blockers found by #98's round-2 verification) --
 //
 // The dashboard's "Messages non lus" card is built entirely on
