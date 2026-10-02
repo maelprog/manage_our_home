@@ -44,8 +44,12 @@ recopie pas.
 
 **Le responsable de traitement** est une personne physique, seule à
 développer et à exploiter le service, sans délégué à la protection des
-données (non requis : ni organisme public, ni suivi à grande échelle, ni
-données sensibles comme activité de base).
+données. Il n'est pas requis (art. 37(1)) : le responsable n'est pas un
+organisme public, ses activités de base ne consistent ni en un suivi
+régulier et systématique des personnes à grande échelle, ni en un
+traitement **à grande échelle** de catégories particulières de données —
+celles qui arrivent ici le font par la bande, pas comme objet du service,
+et le service n'est pas à grande échelle (section 1).
 
 **Les supports.**
 - Un serveur exploité par le responsable : `api`, `web`, Postgres et MinIO
@@ -99,8 +103,14 @@ en CI ; journal d'audit des actions sensibles.
 **Ce qui reste exposé.**
 - Les pièces jointes et tout le texte libre hors messagerie ne sont pas
   chiffrés au repos par l'application.
-- L'identifiant de session est stocké en clair : une copie de la table
-  `sessions` donne accès à chaque session active.
+- Les jetons porteurs sont stockés en clair, et une copie de la base
+  suffit à s'en servir : l'identifiant de session (`sessions.id`, qui est
+  le cookie) donne chaque session active ; un jeton d'invitation
+  (`invitations.token`, valable 7 jours) fait entrer n'importe quel compte
+  dans le groupe, l'adresse invitée n'étant pas vérifiée à l'acceptation ;
+  un jeton de réinitialisation (`password_reset_tokens.token`, 1 h) donne
+  le compte ; un jeton de vérification (`email_verification_tokens.token`,
+  24 h) valide une adresse sans la posséder.
 - Les clés de chiffrement sont des variables d'environnement du processus
   `api` : qui prend le serveur prend les clés.
 - TLS n'est pas encore configuré pour la production
@@ -145,8 +155,10 @@ Mesures **proposées** par cette analyse, à arbitrer :
 5. Chiffrer le volume qui porte les données de MinIO et de Postgres sur le
    serveur, ce qui couvre les pièces jointes et le texte libre en cas de vol
    du support (pas en cas d'intrusion sur le serveur en marche).
-6. Ne stocker qu'une empreinte de l'identifiant de session, pour qu'une
-   copie de la base ne suffise plus à se connecter.
+6. Ne stocker qu'une empreinte de chacun de ces quatre jetons porteurs
+   (session, invitation, réinitialisation, vérification), pour qu'une copie
+   de la base ne suffise plus à prendre une session, un compte ou une place
+   dans un groupe.
 
 La procédure en cas de violation et le registre des violations sont posés
 par la même issue (`docs/procedure-violation.md`,

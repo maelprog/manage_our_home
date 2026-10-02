@@ -36,6 +36,17 @@ meilleurs délais », art. 33(2)), un chercheur en sécurité — et arrive à
      lui-même et il est stocké en clair : **une copie de la table `sessions`
      suffit à se connecter** à la place de chaque titulaire d'une session
      active, et une fuite de la base impose donc de toutes les révoquer ;
+   - supprimer les jetons porteurs encore valables, stockés en clair eux
+     aussi : après une fuite de la base, **chacun est utilisable par qui
+     tient la copie**. Un jeton d'invitation (`invitations.token`, valable
+     7 jours) fait entrer n'importe quel compte dans le groupe, quelle que
+     soit l'adresse invitée ; un jeton de réinitialisation
+     (`password_reset_tokens`, 1 h) donne le compte ; un jeton de
+     vérification (`email_verification_tokens`, 24 h) valide une adresse.
+     Vider les trois tables (`DELETE FROM invitations`, `DELETE FROM
+     password_reset_tokens`, `DELETE FROM email_verification_tokens`) : les
+     invitations sont à réémettre, les demandes de réinitialisation et de
+     vérification à refaire ;
    - renouveler les secrets exposés : `OAUTH_ENCRYPTION_KEY`,
      `MESSAGE_ENCRYPTION_KEY`, `CALENDAR_FEED_ENCRYPTION_KEY` (ce qui
      suppose de rechiffrer les colonnes concernées), les identifiants
@@ -89,6 +100,6 @@ données restées chiffrées — c'est la règle de l'art. 34 qui s'applique :
 les personnes sont prévenues si le risque est élevé.
 
 **Ce que l'arbitrage ne tranche pas** : une personne **sans compte** dont
-l'adresse figure dans une invitation (`invitations.email`). Elle relève
+l'adresse figure dans une invitation (`invitations.invited_email`). Elle relève
 aujourd'hui de l'art. 34 seul, c'est-à-dire prévenue à cette adresse si le
 risque est élevé.
