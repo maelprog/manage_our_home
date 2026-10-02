@@ -1679,6 +1679,24 @@ mod tests {
                 "{bypass:?}"
             );
         }
+        // The allowed sentences go through the same normalization, so one
+        // written with a curly apostrophe and decomposed accents still cuts
+        // out its plain twin, and the other way round.
+        assert!(time_words_outside(
+            "Ce lien est valable 7 jours et ne sert qu'une fois.",
+            &["ce lien est valable 7 jours et ne sert qu\u{2019}une fois."]
+        )
+        .is_empty());
+        assert!(time_words_outside(
+            "Ce lien est valable 7 jours et ne sert qu\u{2019}une fois.",
+            &["CE LIEN EST VALABLE 7 JOURS ET NE SERT QU'UNE FOIS."]
+        )
+        .is_empty());
+        assert!(time_words_outside(
+            "dès que le lien est utilisé",
+            &["de\u{300}s que le lien est utilise\u{301}"]
+        )
+        .is_empty());
     }
 
     #[test]
