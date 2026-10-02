@@ -20,9 +20,13 @@
 //! 2. otherwise `Sec-Fetch-Site`, when the browser sends it, decides:
 //!    `same-origin` or `none` (typed in the address bar, a bookmark) pass,
 //!    anything else — `same-site`, `cross-site` — is refused;
-//! 3. a browser too old for `Sec-Fetch-Site` still sends `Origin` on such
-//!    requests: it passes when its host is the request's own `Host`, and is
-//!    refused otherwise (`null` included);
+//! 3. without `Sec-Fetch-Site`, `Origin` decides: it passes when its host
+//!    is the request's own `Host`, and is refused otherwise (`null`
+//!    included). This is the main case of the WebSocket handshake, not a
+//!    fallback: Chromium sends no `Sec-Fetch-Site` on it, so the socket's
+//!    defence rests on `Origin`, not on Fetch Metadata. It also covers
+//!    browsers too old for Fetch Metadata, and plain http to a host other
+//!    than `localhost`;
 //! 4. a request with neither header passes. It is not a browser's, so it
 //!    is no forgery: apps/web's own calls to apps/api over the internal
 //!    network are of this kind, and so is `curl`.
