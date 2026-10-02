@@ -1432,25 +1432,27 @@ mod tests {
     ///
     /// 1. normalizes the text and each `allowed` sentence alike: NFKC, so
     ///    decomposed accents and compatibility forms (fullwidth letters) are
-    ///    composed back; every character of category Cf dropped, so a soft
-    ///    hyphen or a zero-width joiner no longer cuts a word in two; every
-    ///    mark NFKC left standing (Mn, Mc, Me) dropped too, so neither the
-    ///    combining grapheme joiner, a variation selector nor a combining
-    ///    mark with no precomposed form (`dél\u{334}ai`) cuts one; every
-    ///    character of [`APOSTROPHE_LIKE`] turned into the ASCII apostrophe;
-    ///    whitespace flattened, so a sentence hard-wrapped across lines still
-    ///    matches; lowercase;
+    ///    composed back; lowercase; every character of [`APOSTROPHE_LIKE`]
+    ///    turned into the ASCII apostrophe; whitespace flattened, so a
+    ///    sentence hard-wrapped across lines still matches. Nothing is
+    ///    dropped;
     /// 2. cuts out every `allowed` sentence, as an exact substring;
-    /// 3. splits the rest on every character that is neither a letter
-    ///    (`char::is_alphabetic`) nor an apostrophe — spaces, punctuation,
-    ///    digits, hyphens and every other quote mark (U+2018, «, ») — so
+    /// 3. splits the rest on the admitted separators only
+    ///    (`is_admitted_separator`): the space, ASCII digits and punctuation
+    ///    other than the apostrophe, `«`, `»`, `‘`, `“`, `”`, `–`, `—` — so
     ///    `48h`, `J+30`, `1h30`, `18h00` give `h`, `j`, `h`, `h`, `1h30min`
     ///    gives `h` and `min`, `sur-le-champ` gives `sur`, `le`, `champ`;
-    /// 4. reports whole any run holding a letter other than a to z, bare or
-    ///    with diacritics, `œ` and `æ` (`is_plain_latin`): a look-alike —
-    ///    Cyrillic `е` in `hеure`, but also the Latin small capital `ʜ`, the
-    ///    dotless `ı`, the IPA `ɑ` — cannot be folded back, so the run is
-    ///    reported whether or not it imitates a list word;
+    /// 4. reports whole any run holding a character that is neither an
+    ///    apostrophe nor a letter of a to z, bare or with diacritics, `œ` or
+    ///    `æ` (`is_plain_latin`). This is an allow-list: whatever step 1 did
+    ///    not fold into it — a look-alike from another script (Cyrillic `е`
+    ///    in `hеure`) or from the Latin one (small capital `ʜ`, dotless `ı`,
+    ///    IPA `ɑ`), an invisible character (Cf such as U+00AD or U+200D, a
+    ///    mark NFKC leaves standing such as U+034F, U+FE0F or U+0334, an
+    ///    unassigned code point, the braille blank U+2800), the combining dot
+    ///    lowercasing leaves on `i` from `İ`, a symbol — keeps its run
+    ///    together and has it reported, whether or not it imitates a list
+    ///    word;
     /// 5. in each other run, keeps the last non-empty piece between
     ///    apostrophes: `l'heure` → `heure`, `j'ai` → `ai`, `s'il` → `il`,
     ///    `'heure'` → `heure`;
@@ -1471,32 +1473,29 @@ mod tests {
     /// - an allowed sentence copied verbatim anywhere else in the text;
     /// - a diacritic added to a list word that composes with its letter
     ///   (`heu\u{301}re` is `heúre` once NFKC has run): another word, like
-    ///   any misspelling. Marks are dropped only when NFKC could not compose
-    ///   them, because `dès` and `des` must stay apart.
+    ///   any misspelling. A diacritic is not stripped, because `dès` and
+    ///   `des` must stay apart.
     ///
     /// Known false positives: `suite` and `champ` outside "tout de suite" and
     /// "sur-le-champ"; `dès` outside sentence 2; `an` in "un an", a duration,
     /// so on purpose; `sec` as "dry", `min` as the short of "minimum", `midi`
     /// as the region; a lone letter cut out by digits or brackets — `2s`,
-    /// `donnée(s)` give `s`; any word holding a letter refused by step 4, a
-    /// time word or not — another script, but also genuine Latin letters:
-    /// `ł`, `ø`, `ß`, the small capitals (`ᴊour`), the IPA letters. None of
+    /// `donnée(s)` give `s`; any run holding a character refused by step 4, a
+    /// time word or not — another script, but also genuine Latin letters
+    /// (`ł`, `ø`, `ß`, the small capitals as in `ᴊour`, the IPA letters) and
+    /// every symbol outside the admitted separators (`€`, `°`, `✓`). None of
     /// them occurs in the shipped email.
     fn time_words_outside(text: &str, allowed: &[&str]) -> Vec<String> {
         let mut rest = normalize_for_time_words(text);
         for phrase in allowed {
             rest = rest.replace(&normalize_for_time_words(phrase), " ");
         }
-        rest.split(|c: char| !c.is_alphabetic() && c != '\'')
-            .filter_map(|token| {
-                if token
-                    .chars()
-                    .any(|c| c.is_alphabetic() && !is_plain_latin(c))
-                {
-                    return Some(token);
+        rest.split(is_admitted_separator)
+            .filter_map(|run| {
+                if run.chars().any(|c| c != '\'' && !is_plain_latin(c)) {
+                    return Some(run);
                 }
-                token
-                    .rsplit('\'')
+                run.rsplit('\'')
                     .find(|word| !word.is_empty())
                     .filter(|word| TIME_WORDS.contains(word))
             })
@@ -1505,21 +1504,16 @@ mod tests {
     }
 
     /// Step 1 of `time_words_outside`, applied to the text and to each
-    /// allowed sentence alike: NFKC, every Cf character and every mark left
-    /// after NFKC dropped, every apostrophe-like character turned into
-    /// U+0027, whitespace flattened, lowercase.
+    /// allowed sentence alike: NFKC, lowercase, every apostrophe-like
+    /// character turned into U+0027, whitespace flattened. Nothing is
+    /// dropped: a character this does not fold is left in place for step 3
+    /// to report.
     fn normalize_for_time_words(text: &str) -> String {
         let folded: String = text
             .nfkc()
-            .filter(|c| {
-                !matches!(
-                    c.general_category(),
-                    GeneralCategory::Format
-                        | GeneralCategory::NonspacingMark
-                        | GeneralCategory::SpacingMark
-                        | GeneralCategory::EnclosingMark
-                )
-            })
+            .collect::<String>()
+            .to_lowercase()
+            .chars()
             .map(|c| {
                 if APOSTROPHE_LIKE.contains(&c) {
                     '\''
@@ -1528,14 +1522,28 @@ mod tests {
                 }
             })
             .collect();
-        flatten(&folded).to_lowercase()
+        flatten(&folded)
+    }
+
+    /// The characters that separate words: the space, ASCII digits and
+    /// ASCII punctuation except the apostrophe, and the French quotation
+    /// marks and dashes — `«`, `»`, `‘`, `“`, `”`, `–`, `—`. A closed list:
+    /// whatever is neither one of these, nor an apostrophe, nor a letter of
+    /// `is_plain_latin` stays inside its run and has the run reported.
+    fn is_admitted_separator(c: char) -> bool {
+        (c == ' ' || c.is_ascii_graphic()) && !c.is_ascii_alphabetic() && c != '\''
+            || matches!(
+                c,
+                '«' | '»' | '\u{2018}' | '\u{201c}' | '\u{201d}' | '\u{2013}' | '\u{2014}'
+            )
     }
 
     /// Characters drawn as a raised comma or tick that the email could elide
-    /// with. U+2019 is punctuation and would split a word anyway; the others
-    /// are letters (modifier letters, and the Latin saltillo), so without this
-    /// `l\u{2bd}heure` stayed one word. U+2018 is left out on purpose: it
-    /// opens a quotation and splits like any other quote mark.
+    /// with: U+2019, the modifier letters, the Latin saltillo. None of them
+    /// is admitted by step 4 of `time_words_outside`, so without this
+    /// `l\u{2bd}heure` would be reported whole instead of read as `heure`.
+    /// U+2018 is left out on purpose: it opens a quotation and is an
+    /// admitted separator.
     const APOSTROPHE_LIKE: [char; 12] = [
         '\u{2019}', '\u{2b9}', '\u{2bb}', '\u{2bc}', '\u{2bd}', '\u{2be}', '\u{2bf}', '\u{2c8}',
         '\u{2ca}', '\u{2cb}', '\u{a78b}', '\u{a78c}',
@@ -1681,30 +1689,46 @@ mod tests {
 
     #[test]
     fn time_words_outside_sees_a_list_word_through_its_encoding() {
-        // The encoding bypasses #281 had to declare (#282): decomposed
-        // accents, an invisible character inside the word, an elision written
-        // with an apostrophe-like letter.
+        // The encoding bypasses #281 had to declare (#282). Those that fold
+        // back into a list word: decomposed accents, a compatibility form, an
+        // elision written with an apostrophe-like letter.
         for (bypass, word) in [
             ("sans de\u{301}lai", "délai"),
-            ("une heu\u{ad}re", "heure"),
-            ("une heu\u{200d}re", "heure"),
-            ("une heu\u{200b}re", "heure"),
             ("dans l\u{2bd}heure", "heure"),
             ("dans l\u{2b9}heure", "heure"),
             ("dans l\u{a78c}heure", "heure"),
             ("une \u{ff48}eure", "heure"),
-            // Invisible characters that are marks, not Cf (#330 review): the
-            // combining grapheme joiner, a variation selector, a Mongolian
-            // free variation selector; and a combining mark NFKC cannot
-            // compose with the letter before it.
-            ("une heu\u{34f}re", "heure"),
-            ("une heu\u{fe0f}re", "heure"),
-            ("une heu\u{180b}re", "heure"),
-            ("sans de\u{301}l\u{334}ai", "délai"),
         ] {
             assert_eq!(
                 time_words_outside(bypass, &INVITATION_TIME_PHRASES),
                 vec![word.to_string()],
+                "{bypass:?}"
+            );
+        }
+        // Every other character is outside the admitted set and reported
+        // with the run that carries it, never dropped (#330 review): Cf,
+        // marks NFKC leaves standing, unassigned code points, the braille
+        // blank, and the combining dot lowercasing leaves after `i` from `İ`.
+        for (bypass, run) in [
+            ("une heu\u{ad}re", "heu\u{ad}re"),
+            ("une heu\u{200d}re", "heu\u{200d}re"),
+            ("une heu\u{200b}re", "heu\u{200b}re"),
+            ("une heu\u{34f}re", "heu\u{34f}re"),
+            ("une heu\u{fe0f}re", "heu\u{fe0f}re"),
+            ("une heu\u{180b}re", "heu\u{180b}re"),
+            ("sans de\u{301}l\u{334}ai", "dél\u{334}ai"),
+            ("une heu\u{2065}re", "heu\u{2065}re"),
+            ("une heu\u{fff0}re", "heu\u{fff0}re"),
+            ("une heu\u{e0080}re", "heu\u{e0080}re"),
+            ("une heu\u{2800}re", "heu\u{2800}re"),
+            ("à m\u{130}di", "mi\u{307}di"),
+            ("à M\u{130}D\u{130}", "mi\u{307}di\u{307}"),
+            ("une m\u{130}nute", "mi\u{307}nute"),
+            ("une heure\u{ad}", "heure\u{ad}"),
+        ] {
+            assert_eq!(
+                time_words_outside(bypass, &INVITATION_TIME_PHRASES),
+                vec![run.to_string()],
                 "{bypass:?}"
             );
         }
@@ -1767,6 +1791,27 @@ mod tests {
         assert_eq!(
             time_words_outside("Łódź, Straße, Ærø", &INVITATION_TIME_PHRASES),
             vec!["łódź".to_string(), "straße".to_string(), "ærø".to_string()]
+        );
+        // So is any symbol outside the admitted punctuation, alone or not.
+        assert_eq!(
+            time_words_outside("10 €, 20 °C, ok ✓", &INVITATION_TIME_PHRASES),
+            vec!["€".to_string(), "°c".to_string(), "✓".to_string()]
+        );
+        // The admitted punctuation separates words, as ASCII punctuation
+        // does.
+        assert_eq!(
+            time_words_outside(
+                "«\u{a0}heure\u{a0}» \u{2018}jour\u{2019} \u{201c}an\u{201d} mois\u{2013}an\u{2014}h",
+                &INVITATION_TIME_PHRASES
+            ),
+            vec![
+                "heure".to_string(),
+                "jour".to_string(),
+                "an".to_string(),
+                "mois".to_string(),
+                "an".to_string(),
+                "h".to_string(),
+            ]
         );
     }
 
