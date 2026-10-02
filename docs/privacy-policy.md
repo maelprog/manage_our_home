@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-10-02.
+Dernière mise à jour : 2026-10-03.
 
 ## Qui est responsable de vos données ?
 
@@ -220,7 +220,9 @@ de la purge dépasserait.
   expiration, inactivité, déconnexion, changement de mot de passe ou
   désactivation du compte. La session qu'ouvre ensuite la connexion à un
   compte désactivé, limitée à la page de demande de réactivation, prend
-  aussi fin à la réactivation du compte.
+  aussi fin à la réactivation du compte. La page « Sessions actives » de
+  votre compte liste vos sessions en cours, avec leurs seules dates, et
+  vous permet de déconnecter l'une d'elles ou toutes à la fois.
 - **Connexion avec Google** : l'identifiant, l'email et le nom de votre
   profil Google et le jeton de rafraîchissement sont conservés jusqu'à
   l'anonymisation du compte, qui les supprime.

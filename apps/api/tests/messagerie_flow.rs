@@ -1038,6 +1038,66 @@ async fn password_change_closes_the_other_sessions_ws_within_recheck_bound(db: P
     own_ws.close(None).await.ok();
 }
 
+/// #225: a session ended from the sessions list closes the socket it holds;
+/// the socket of the session that ended it stays. The revoke-all path ends
+/// both, the caller's own included.
+#[sqlx::test]
+async fn revoking_a_session_from_the_list_closes_its_ws_within_recheck_bound(db: PgPool) {
+    let (addr, router) = serve_with_short_recheck(&db).await;
+    let email = "msg-ws-sessions-owner@example.test";
+    let own_cookie = register_verify_login(&router, &db, email, "owner-password1").await;
+    let forgotten_cookie = login(&router, email, "owner-password1").await;
+    let group_id = create_group(&router, &own_cookie, "Foyer").await;
+
+    let mut own_ws = connect_ws(addr, &group_id, &own_cookie).await;
+    let mut forgotten_ws = connect_ws(addr, &group_id, &forgotten_cookie).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let res = call(
+        &router,
+        Method::GET,
+        "/auth/sessions",
+        Some(&own_cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let sessions = json_body(res).await;
+    let forgotten_id = sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["current"] == false)
+        .expect("the other session is listed")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let revoke = call(
+        &router,
+        Method::POST,
+        &format!("/auth/sessions/{forgotten_id}/revoke"),
+        Some(&own_cookie),
+        None,
+    )
+    .await;
+    assert_status(&revoke, StatusCode::NO_CONTENT);
+
+    expect_session_ended(&mut forgotten_ws).await;
+    expect_still_pushed(&router, &group_id, &own_cookie, &mut own_ws).await;
+
+    let revoke_all = call(
+        &router,
+        Method::POST,
+        "/auth/sessions/revoke-all",
+        Some(&own_cookie),
+        None,
+    )
+    .await;
+    assert_status(&revoke_all, StatusCode::NO_CONTENT);
+    expect_session_ended(&mut own_ws).await;
+}
+
 // -- read state / unread (#73, blockers found by #98's round-2 verification) --
 //
 // The dashboard's "Messages non lus" card is built entirely on

@@ -136,6 +136,16 @@ fn build_router(state: AppState) -> Router {
             "/account/notifications/devices/remove",
             post(routes::account::notifications::remove_devices),
         )
+        // The member's live sessions (#225).
+        .route("/account/sessions", get(routes::account::sessions::get))
+        .route(
+            "/account/sessions/:id/revoke",
+            post(routes::account::sessions::revoke),
+        )
+        .route(
+            "/account/sessions/revoke-all",
+            post(routes::account::sessions::revoke_all),
+        )
         .route(
             "/sw.js",
             get(routes::account::notifications::service_worker),

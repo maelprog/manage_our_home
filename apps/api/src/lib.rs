@@ -164,6 +164,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/google/start", get(auth::oauth_google::start))
         .route("/auth/google/callback", get(auth::oauth_google::callback))
         .route("/auth/logout", post(auth::logout))
+        .route("/auth/sessions", get(auth::list_sessions))
+        .route("/auth/sessions/:id/revoke", post(auth::revoke_one_session))
+        .route(
+            "/auth/sessions/revoke-all",
+            post(auth::revoke_every_session),
+        )
         .route("/auth/password/forgot", post(auth::forgot_password))
         .route("/auth/password/reset", post(auth::reset_password))
         .route("/settings/password/change", post(auth::change_password))
