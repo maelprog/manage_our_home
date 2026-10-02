@@ -122,6 +122,13 @@ fn body_read_timeout_response() -> axum::response::Response {
     axum::Json(serde_json::json!({ "error": "request_timeout" })).into_response()
 }
 
+/// Body of the 403 a cross-origin request gets (#223). Status is set by
+/// the middleware.
+fn cross_origin_response() -> axum::response::Response {
+    use axum::response::IntoResponse;
+    axum::Json(serde_json::json!({ "error": "cross_origin_request" })).into_response()
+}
+
 pub fn build_router(state: AppState) -> Router {
     // Derive the login decoy hash now rather than inside whichever login
     // happens to be first: it costs one argon2id, and paying it in a
@@ -135,6 +142,17 @@ pub fn build_router(state: AppState) -> Router {
     let body_guard = manage_our_home_http_guard::BodyGuard {
         limits: state.body_read_limits,
         render: body_read_timeout_response,
+    };
+
+    // Every unsafe method and the Messagerie WebSocket's upgrade (#223):
+    // trusted when `Origin` is the frontend's own origin — its pages open
+    // the socket, on another port in CI — and otherwise judged on
+    // `Sec-Fetch-Site`/`Origin`. apps/web's calls over the internal network
+    // carry neither header and pass. See `manage_our_home_http_guard::origin`.
+    let origin_guard = manage_our_home_http_guard::OriginGuard {
+        trusted_origin: manage_our_home_http_guard::origin_of(&state.frontend_base_url)
+            .map(Into::into),
+        render: cross_origin_response,
     };
 
     Router::new()
@@ -350,6 +368,11 @@ pub fn build_router(state: AppState) -> Router {
         .layer(axum::middleware::from_fn_with_state(
             body_guard,
             manage_our_home_http_guard::guard_request_body,
+        ))
+        // Outermost, so a forged request is refused before its body is read.
+        .layer(axum::middleware::from_fn_with_state(
+            origin_guard,
+            manage_our_home_http_guard::guard_cross_origin,
         ))
         .with_state(state)
 }

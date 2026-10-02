@@ -62,6 +62,15 @@ fn build_router(state: AppState) -> Router {
         limits: state.body_read_limits,
         render: body_bounds::body_read_timeout_page,
     };
+    // Every form post (#223), `/login` and `/register` first: they need no
+    // session, so `SameSite` cannot stop a login CSRF. No trusted origin:
+    // apps/web does not know its public URL, and needs none — a browser's
+    // own pages are `Sec-Fetch-Site: same-origin`, or, on a browser too old
+    // for it, carry an `Origin` whose host is the request's `Host`.
+    let origin_guard = manage_our_home_http_guard::OriginGuard {
+        trusted_origin: None,
+        render: body_bounds::cross_origin_page,
+    };
 
     Router::new()
         // The self-hosted fonts (#67). Merged first because it is the one
@@ -326,5 +335,147 @@ fn build_router(state: AppState) -> Router {
             body_guard,
             manage_our_home_http_guard::guard_request_body,
         ))
+        // Outermost, so a forged request is refused before its body is read.
+        .layer(axum::middleware::from_fn_with_state(
+            origin_guard,
+            manage_our_home_http_guard::guard_cross_origin,
+        ))
         .with_state(state)
+}
+
+/// The cross-origin guard on the real router (#223). The decision itself
+/// is covered by `manage_our_home_http_guard::origin`'s own tests; these
+/// check that every form post goes through it, `/login` first, and that
+/// a refused one never reaches apps/api.
+#[cfg(test)]
+mod cross_origin_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{header, Method, Request, StatusCode};
+    use axum::routing::{get, post};
+    use axum::Router;
+    use tower::ServiceExt;
+
+    use super::*;
+
+    /// An apps/api that has no session to report and accepts every login,
+    /// counting them.
+    async fn fake_api(logins: Arc<AtomicUsize>) -> String {
+        let app = Router::new()
+            .route("/auth/me", get(|| async { StatusCode::UNAUTHORIZED }))
+            .route(
+                "/auth/login",
+                post(move || async move {
+                    logins.fetch_add(1, Ordering::SeqCst);
+                    (
+                        [(header::SET_COOKIE, "session=attacker; Path=/; HttpOnly")],
+                        axum::Json(serde_json::json!({})),
+                    )
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    async fn web() -> (Router, Arc<AtomicUsize>) {
+        let logins = Arc::new(AtomicUsize::new(0));
+        let api = fake_api(logins.clone()).await;
+        let router = build_router(AppState {
+            http: reqwest::Client::new(),
+            api_internal_base_url: api,
+            api_public_base_url: "/api".into(),
+            body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
+            upload_gate: manage_our_home_http_guard::UploadGate::production(),
+        });
+        (router, logins)
+    }
+
+    fn login(headers: &[(&str, &str)]) -> Request<Body> {
+        let mut builder = Request::builder()
+            .method(Method::POST)
+            .uri("/login")
+            .header(header::HOST, "maison.test")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+        for (k, v) in headers {
+            builder = builder.header(*k, *v);
+        }
+        builder
+            .body(Body::from(
+                "email=attacker%40evil.test&password=attacker-password",
+            ))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_cross_site_login_is_refused_before_apps_api() {
+        let (router, logins) = web().await;
+        for headers in [
+            &[
+                ("sec-fetch-site", "cross-site"),
+                ("origin", "https://evil.test"),
+            ][..],
+            // A sibling subdomain: same site, another origin.
+            &[
+                ("sec-fetch-site", "same-site"),
+                ("origin", "https://other.maison.test"),
+            ][..],
+            // A browser without Fetch Metadata.
+            &[("origin", "https://evil.test")][..],
+        ] {
+            let resp = router.clone().oneshot(login(headers)).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{headers:?}");
+            assert!(resp.headers().get(header::SET_COOKIE).is_none());
+        }
+        assert_eq!(logins.load(Ordering::SeqCst), 0, "apps/api was reached");
+    }
+
+    #[tokio::test]
+    async fn a_same_origin_login_goes_through() {
+        let (router, logins) = web().await;
+        for headers in [
+            &[
+                ("sec-fetch-site", "same-origin"),
+                ("origin", "https://maison.test"),
+            ][..],
+            &[("origin", "https://maison.test")][..],
+            // Not a browser.
+            &[][..],
+        ] {
+            let resp = router.clone().oneshot(login(headers)).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::SEE_OTHER, "{headers:?}");
+            assert!(resp.headers().get(header::SET_COOKIE).is_some());
+        }
+        assert_eq!(logins.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn a_cross_site_register_is_refused() {
+        let (router, _) = web().await;
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/register")
+            .header("sec-fetch-site", "cross-site")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from("email=a%40b.test"))
+            .unwrap();
+        let resp = router.oneshot(request).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn a_cross_site_get_still_renders() {
+        // A link from another site to the login page is a navigation.
+        let (router, _) = web().await;
+        let request = Request::builder()
+            .uri("/login")
+            .header("sec-fetch-site", "cross-site")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(request).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
 }
