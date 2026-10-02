@@ -1489,7 +1489,10 @@ mod tests {
         }
         rest.split(|c: char| !c.is_alphabetic() && c != '\'')
             .filter_map(|token| {
-                if token.chars().any(|c| c.is_alphabetic() && !is_plain_latin(c)) {
+                if token
+                    .chars()
+                    .any(|c| c.is_alphabetic() && !is_plain_latin(c))
+                {
                     return Some(token);
                 }
                 token
@@ -1763,11 +1766,7 @@ mod tests {
         // because a look-alike cannot be told from a genuine letter.
         assert_eq!(
             time_words_outside("Łódź, Straße, Ærø", &INVITATION_TIME_PHRASES),
-            vec![
-                "łódź".to_string(),
-                "straße".to_string(),
-                "ærø".to_string(),
-            ]
+            vec!["łódź".to_string(), "straße".to_string(), "ærø".to_string()]
         );
     }
 
