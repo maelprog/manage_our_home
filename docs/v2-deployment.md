@@ -24,6 +24,7 @@ rationale in `architecture.md` ("v2 — Déploiement multi-famille").
 | 16 | RGPD: nom et adresse de contact du responsable de traitement | missing | **À remplacer avant la mise en ligne** — bloquant (#131). Art. 13(1)(a) exige l'identité *et* les coordonnées du responsable. Le porteur du projet (personne physique) fournit son nom et une adresse relevée par une personne — pas un `noreply@` — au moment de l'ouverture publique. Voir la procédure ci-dessous. |
 | 17 | LCEN: éditeur, directeur de la publication et hébergeur des mentions légales | missing | **À remplacer avant la mise en ligne** — bloquant (#132). Les mentions légales existent et sont servies (`docs/legal-notice.md`, `GET /legal-notice`), mais cinq valeurs y sont encore des placeholders. L'hébergeur dépend de l'item #1 : auto-hébergement (l'éditeur est alors son propre hébergeur) ou VPS. Voir la procédure ci-dessous. |
 | 18 | RGPD: cadre contractuel du sous-traitant email et transferts hors UE | missing | **À faire avant la mise en ligne** — bloquant (#136). Le fournisseur est arrêté (Mailjet), mais ni le cadre contractuel opposable ni les transferts hors UE — pour lui comme pour Google et pour les services de notification des navigateurs (#306) — ne sont établis : quatre placeholders les portent dans la politique et le registre. Rien dans le code ne contraint `SMTP_HOST`. Voir la procédure ci-dessous. |
+| 19 | RGPD: AIPD signée et registre des violations ouvert | missing | **À faire avant la mise en ligne** — bloquant (#143). L'AIPD est rédigée (`docs/aipd.md`) mais sa conclusion n'est qu'une proposition : le responsable de traitement la relit et la signe, ce qui remplit son placeholder (`conclusion de l'AIPD, date et signature`). Elle conditionne l'ouverture aux items #2, #8, #9, #12, #13, #15, #16 et #18. Le registre des violations est tenu hors du dépôt, qui est public (`docs/registre-violations.md` en fixe la forme) : l'ouvrir et en noter l'emplacement à la place du placeholder de ce fichier (`emplacement du registre des violations`). `docs/procedure-violation.md` porte le placeholder `adresse de contact`, rempli par l'item #16. Les trois sont épinglés par `the_breach_and_aipd_documents_carry_only_the_placeholders_pinned_here` (`apps/shared/src/validation/rgpd.rs`) : retirer l'attente correspondante en remplissant chacun. |
 
 **Immediate next step:** none of the above are done yet. Given the ~1 week
 horizon, items 4-9 (RGPD + backups) and 14 (rate-limiting) are the hard
@@ -46,18 +47,20 @@ Les quatre autres (`cadre contractuel du sous-traitant email`,
 relèvent de l'item #18 ci-dessous. Les six figurent à l'identique, et dans le
 même ordre de lecture, dans `docs/registre-traitements.md` — c'est ce que la
 suite de tests épingle. `docs/architecture.md` ("Questions résolues" #3)
-renvoie aux deux premiers.
+renvoie aux deux premiers. `adresse de contact` figure aussi, seule, dans
+`docs/procedure-violation.md` (#143).
 
 Au moment de l'ouverture publique :
 
 1. Remplacer les deux placeholders dans `docs/privacy-policy.md` et
-   `docs/registre-traitements.md`, et retirer le renvoi de
+   `docs/registre-traitements.md`, l'adresse de contact dans
+   `docs/procedure-violation.md`, et retirer le renvoi de
    `docs/architecture.md` #3.
 2. Reporter la même identité dans les mentions légales — elles existent
    depuis #132 : voir l'item #17 ci-dessous, qui se traite dans le même
    passage.
 3. Rafraîchir la date de dernière mise à jour en tête des deux documents.
-4. Mettre à jour les deux tests de `apps/shared/src/validation/rgpd.rs` qui
+4. Mettre à jour les tests de `apps/shared/src/validation/rgpd.rs` qui
    épinglent ces valeurs, car tant qu'ils ne le sont pas la suite reste rouge
    — c'est le rappel mécanique, pas seulement écrit :
    - `pending_release_values` est leur source unique, et elle porte les six
@@ -69,6 +72,9 @@ Au moment de l'ouverture publique :
      deux attentes littérales à retirer à la main : les `html.contains(…)`
      posés sur `[nom du responsable de traitement` et sur
      `[adresse de contact`.
+   - `the_breach_and_aipd_documents_carry_only_the_placeholders_pinned_here`
+     attend l'adresse de contact dans `docs/procedure-violation.md` et exige
+     qu'elle disparaisse le même jour que celle de la politique.
 
 ## Item #17 — remplacer les placeholders des mentions légales
 
