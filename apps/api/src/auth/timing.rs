@@ -59,9 +59,9 @@ pub struct LoginTiming {
     pub lookup: Duration,
     /// `crypto::verify_password` — argon2id, CPU-bound, no I/O.
     pub verify: Duration,
-    /// `session::create_session` — `INSERT INTO sessions ... RETURNING id`,
-    /// its commit, and its own pool checkout (same reasoning as
-    /// [`LoginTiming::lookup`]).
+    /// `session::create_session` — the token draw and its SHA-256 (#222),
+    /// `INSERT INTO sessions ...`, its commit, and its own pool checkout
+    /// (same reasoning as [`LoginTiming::lookup`]).
     pub session: Duration,
     /// The handler body, measured around everything above. It starts once
     /// axum's extractors have already run, so request-body deserialization

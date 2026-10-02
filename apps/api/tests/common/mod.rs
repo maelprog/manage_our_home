@@ -278,6 +278,41 @@ pub fn set_cookie(response: &Response<Body>) -> Option<String> {
         .map(|v| v.to_str().unwrap().split(';').next().unwrap().to_string())
 }
 
+/// The `sessions.id` behind a `name=<token>` cookie pair as [`set_cookie`]
+/// returns it. The cookie carries a token the table only keeps the hash of
+/// (#222), so the row is found the way `AuthUser` finds it.
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (see note on test_state above).
+#[allow(dead_code)]
+pub async fn session_id_of(db: &PgPool, cookie: &str) -> uuid::Uuid {
+    let (_, token) = cookie.split_once('=').expect("a name=value cookie pair");
+    let hash = manage_our_home::auth::session::session_token_hash(token).expect("a session token");
+    sqlx::query_scalar("SELECT id FROM sessions WHERE token_hash = $1")
+        .bind(&hash[..])
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+/// Opens a session for `user_id` straight in the table, without a login,
+/// and returns the `session_id=<token>` pair that names it (#222).
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (see note on test_state above).
+#[allow(dead_code)]
+pub async fn insert_session(db: &PgPool, user_id: uuid::Uuid) -> String {
+    let token = manage_our_home::auth::session::new_session_token();
+    sqlx::query(
+        "INSERT INTO sessions (user_id, expires_at, token_hash)
+         VALUES ($1, now() + interval '1 day', $2)",
+    )
+    .bind(user_id)
+    .bind(&token.hash()[..])
+    .execute(db)
+    .await
+    .unwrap();
+    format!("session_id={}", token.value())
+}
+
 // TODO: remove #[allow(dead_code)] once every integration test binary uses
 // this helper (see note on test_state above).
 #[allow(dead_code)]

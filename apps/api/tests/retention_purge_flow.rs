@@ -72,8 +72,8 @@ async fn insert_session(
     revoked: bool,
 ) -> Uuid {
     sqlx::query_scalar(
-        "INSERT INTO sessions (user_id, last_seen_at, expires_at, revoked_at)
-         VALUES ($1, $2, $3, CASE WHEN $4 THEN now() END) RETURNING id",
+        "INSERT INTO sessions (user_id, last_seen_at, expires_at, revoked_at, token_hash)
+         VALUES ($1, $2, $3, CASE WHEN $4 THEN now() END, gen_random_bytes(32)) RETURNING id",
     )
     .bind(user)
     .bind(last_seen)

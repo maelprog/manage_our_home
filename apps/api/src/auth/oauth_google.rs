@@ -245,8 +245,8 @@ pub async fn callback(
     // the account, no identity is bound to it, and no full session opens.
     if let Some(account) = existing_account.as_ref().filter(|a| a.deactivated) {
         tx.rollback().await?;
-        let session_id = create_restricted_session(&state.db, account.user_id).await?;
-        set_session_cookie(&cookies, session_id, state.secure_cookies);
+        let token = create_restricted_session(&state.db, account.user_id).await?;
+        set_session_cookie(&cookies, &token, state.secure_cookies);
         return Ok(Redirect::to(&state.frontend_base_url));
     }
 
@@ -301,8 +301,8 @@ pub async fn callback(
 
     tx.commit().await?;
 
-    let session_id = create_session(&state.db, user_id).await?;
-    set_session_cookie(&cookies, session_id, state.secure_cookies);
+    let token = create_session(&state.db, user_id).await?;
+    set_session_cookie(&cookies, &token, state.secure_cookies);
 
     Ok(Redirect::to(&state.frontend_base_url))
 }
