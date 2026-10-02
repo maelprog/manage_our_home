@@ -345,14 +345,15 @@ pub const RELEASE_PLACEHOLDER_SUFFIX: &str = "— à renseigner avant la mise en
 /// The point isn't to forbid placeholders — the controller's identity is
 /// deliberately one until the public launch. This function only reports what
 /// the document handed to it carries; it pins nothing by itself. The pinning
-/// lives in the tests below and covers exactly three documents:
-/// `docs/privacy-policy.md`, `docs/registre-traitements.md` and
-/// `docs/architecture.md` — plus, in a test of their own, the breach and AIPD
-/// documents of #143 (`docs/procedure-violation.md`,
-/// `docs/registre-violations.md`, `docs/aipd.md`). A placeholder written anywhere else in the
-/// repository — `docs/v2-deployment.md` quotes the form on purpose — turns no
-/// test red; only those three are watched, and filling a real value in one of
-/// them has to go through the list the tests share.
+/// lives in the tests below and covers eight documents, each pinned to its
+/// exact list: the internal RGPD documents (`docs/privacy-policy.md`,
+/// `docs/registre-traitements.md`, `docs/architecture.md`), the public legal
+/// documents (`docs/legal-notice.md`, `docs/terms-of-service.md`), and the
+/// breach and AIPD documents of #143 (`docs/procedure-violation.md`,
+/// `docs/registre-violations.md`, `docs/aipd.md`). A placeholder written
+/// anywhere else in the repository — `docs/v2-deployment.md` quotes the form
+/// on purpose — turns no test red; only those eight are watched, and filling a
+/// real value in one of them has to go through the list its test pins.
 ///
 /// Brackets are scanned flat, not nested: in `[a [b — <suffix>]` the label comes
 /// out as `a [b`, because the scan pairs the first `[` with the next `]`. No

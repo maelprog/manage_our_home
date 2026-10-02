@@ -31,11 +31,11 @@ meilleurs délais », art. 33(2)), un chercheur en sécurité — et arrive à
    celle de l'incident ni celle de la fin de l'analyse.
 2. **Contenir.** Couper l'accès en cause avant d'en mesurer l'étendue. Les
    leviers dont le service dispose :
-   - révoquer les sessions (`UPDATE sessions SET revoked_at = now()` sur les
-     comptes touchés, ou sur tous). L'identifiant de session est le cookie
-     lui-même et il est stocké en clair : **une copie de la table `sessions`
-     suffit à se connecter** à la place de chaque titulaire d'une session
-     active, et une fuite de la base impose donc de toutes les révoquer ;
+   - révoquer les sessions, sur les comptes touchés ou sur tous.
+     L'identifiant de session est le cookie lui-même et il est stocké en
+     clair : **une copie de la table `sessions` suffit à se connecter** à la
+     place de chaque titulaire d'une session active, et une fuite de la base
+     impose donc de toutes les révoquer ;
    - supprimer les jetons porteurs encore valables, stockés en clair eux
      aussi : après une fuite de la base, **chacun est utilisable par qui
      tient la copie**. Un jeton d'invitation (`invitations.token`, valable
@@ -43,10 +43,42 @@ meilleurs délais », art. 33(2)), un chercheur en sécurité — et arrive à
      soit l'adresse invitée ; un jeton de réinitialisation
      (`password_reset_tokens`, 1 h) donne le compte ; un jeton de
      vérification (`email_verification_tokens`, 24 h) valide une adresse.
-     Vider les trois tables (`DELETE FROM invitations`, `DELETE FROM
-     password_reset_tokens`, `DELETE FROM email_verification_tokens`) : les
-     invitations sont à réémettre, les demandes de réinitialisation et de
-     vérification à refaire ;
+     Les invitations sont ensuite à réémettre, les demandes de
+     réinitialisation et de vérification à refaire.
+
+   Les commandes, **connecté en `migration_role`**
+   (`MIGRATION_DATABASE_URL`) :
+
+   ```sql
+   BEGIN;
+   SELECT
+     (SELECT count(*) FROM sessions WHERE revoked_at IS NULL),
+     (SELECT count(*) FROM invitations
+       WHERE consumed_at IS NULL AND expires_at > now()),
+     (SELECT count(*) FROM password_reset_tokens
+       WHERE consumed_at IS NULL AND expires_at > now()),
+     (SELECT count(*) FROM email_verification_tokens
+       WHERE consumed_at IS NULL AND expires_at > now());
+   UPDATE sessions SET revoked_at = now() WHERE revoked_at IS NULL;
+   DELETE FROM invitations
+     WHERE consumed_at IS NULL AND expires_at > now();
+   DELETE FROM password_reset_tokens
+     WHERE consumed_at IS NULL AND expires_at > now();
+   DELETE FROM email_verification_tokens
+     WHERE consumed_at IS NULL AND expires_at > now();
+   COMMIT;
+   ```
+
+   **Le rôle compte.** `invitations` est sous une politique RLS forcée : sur
+   le rôle d'exécution de l'API (sans `BYPASSRLS`), le `DELETE` ne voit
+   aucune ligne, répond `DELETE 0` sans erreur, et les jetons survivent au
+   confinement. **Comparer chaque `UPDATE`/`DELETE` au compte du `SELECT`
+   qui le précède** ; un écart veut dire que la commande n'a pas porté, et
+   se corrige avant le `COMMIT`. Le filtre ne retire que les jetons encore
+   utilisables : une invitation expirée reste, parce qu'elle figure dans
+   l'export du compte dont elle porte l'adresse (art. 15,
+   `account_export_received_invitations`) jusqu'à sa purge à 30 jours, et
+   elle ne fait plus entrer personne ;
    - renouveler les secrets exposés : `OAUTH_ENCRYPTION_KEY`,
      `MESSAGE_ENCRYPTION_KEY`, `CALENDAR_FEED_ENCRYPTION_KEY` (ce qui
      suppose de rechiffrer les colonnes concernées), les identifiants
