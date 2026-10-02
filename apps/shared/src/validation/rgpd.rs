@@ -1434,6 +1434,9 @@ mod tests {
     ///    decomposed accents and compatibility forms (fullwidth letters) are
     ///    composed back; every character of category Cf dropped, so a soft
     ///    hyphen or a zero-width joiner no longer cuts a word in two; every
+    ///    mark NFKC left standing (Mn, Mc, Me) dropped too, so neither the
+    ///    combining grapheme joiner, a variation selector nor a combining
+    ///    mark with no precomposed form (`dél\u{334}ai`) cuts one; every
     ///    character of [`APOSTROPHE_LIKE`] turned into the ASCII apostrophe;
     ///    whitespace flattened, so a sentence hard-wrapped across lines still
     ///    matches; lowercase;
@@ -1443,10 +1446,11 @@ mod tests {
     ///    digits, hyphens and every other quote mark (U+2018, «, ») — so
     ///    `48h`, `J+30`, `1h30`, `18h00` give `h`, `j`, `h`, `h`, `1h30min`
     ///    gives `h` and `min`, `sur-le-champ` gives `sur`, `le`, `champ`;
-    /// 4. reports whole any run holding a letter outside the Latin blocks
-    ///    (`is_latin`): a look-alike from another script (Cyrillic `е` in
-    ///    `hеure`) cannot be folded back, so the run is reported whether or
-    ///    not it imitates a list word;
+    /// 4. reports whole any run holding a letter other than a to z, bare or
+    ///    with diacritics, `œ` and `æ` (`is_plain_latin`): a look-alike —
+    ///    Cyrillic `е` in `hеure`, but also the Latin small capital `ʜ`, the
+    ///    dotless `ı`, the IPA `ɑ` — cannot be folded back, so the run is
+    ///    reported whether or not it imitates a list word;
     /// 5. in each other run, keeps the last non-empty piece between
     ///    apostrophes: `l'heure` → `heure`, `j'ai` → `ai`, `s'il` → `il`,
     ///    `'heure'` → `heure`;
@@ -1464,15 +1468,20 @@ mod tests {
     /// - in a run joined by apostrophes, every piece but the last non-empty
     ///   one: a list word glued by an apostrophe to a following word with no
     ///   space (`heure'x`) is lost;
-    /// - an allowed sentence copied verbatim anywhere else in the text.
+    /// - an allowed sentence copied verbatim anywhere else in the text;
+    /// - a diacritic added to a list word that composes with its letter
+    ///   (`heu\u{301}re` is `heúre` once NFKC has run): another word, like
+    ///   any misspelling. Marks are dropped only when NFKC could not compose
+    ///   them, because `dès` and `des` must stay apart.
     ///
     /// Known false positives: `suite` and `champ` outside "tout de suite" and
     /// "sur-le-champ"; `dès` outside sentence 2; `an` in "un an", a duration,
     /// so on purpose; `sec` as "dry", `min` as the short of "minimum", `midi`
     /// as the region; a lone letter cut out by digits or brackets — `2s`,
-    /// `donnée(s)` give `s`; any word holding a letter from another script
-    /// than Latin, a time word or not. None of them occurs in the shipped
-    /// email.
+    /// `donnée(s)` give `s`; any word holding a letter refused by step 4, a
+    /// time word or not — another script, but also genuine Latin letters:
+    /// `ł`, `ø`, `ß`, the small capitals (`ᴊour`), the IPA letters. None of
+    /// them occurs in the shipped email.
     fn time_words_outside(text: &str, allowed: &[&str]) -> Vec<String> {
         let mut rest = normalize_for_time_words(text);
         for phrase in allowed {
@@ -1480,7 +1489,7 @@ mod tests {
         }
         rest.split(|c: char| !c.is_alphabetic() && c != '\'')
             .filter_map(|token| {
-                if token.chars().any(|c| c.is_alphabetic() && !is_latin(c)) {
+                if token.chars().any(|c| c.is_alphabetic() && !is_plain_latin(c)) {
                     return Some(token);
                 }
                 token
@@ -1493,13 +1502,21 @@ mod tests {
     }
 
     /// Step 1 of `time_words_outside`, applied to the text and to each
-    /// allowed sentence alike: NFKC, every Cf character dropped, every
-    /// apostrophe-like character turned into U+0027, whitespace flattened,
-    /// lowercase.
+    /// allowed sentence alike: NFKC, every Cf character and every mark left
+    /// after NFKC dropped, every apostrophe-like character turned into
+    /// U+0027, whitespace flattened, lowercase.
     fn normalize_for_time_words(text: &str) -> String {
         let folded: String = text
             .nfkc()
-            .filter(|c| c.general_category() != GeneralCategory::Format)
+            .filter(|c| {
+                !matches!(
+                    c.general_category(),
+                    GeneralCategory::Format
+                        | GeneralCategory::NonspacingMark
+                        | GeneralCategory::SpacingMark
+                        | GeneralCategory::EnclosingMark
+                )
+            })
             .map(|c| {
                 if APOSTROPHE_LIKE.contains(&c) {
                     '\''
@@ -1521,19 +1538,20 @@ mod tests {
         '\u{2ca}', '\u{2cb}', '\u{a78b}', '\u{a78c}',
     ];
 
-    /// Whether a letter belongs to one of the Latin blocks: Basic Latin,
-    /// Latin-1 Supplement, Latin Extended-A and -B, IPA Extensions, Latin
-    /// Extended Additional, -C, -D and -E. Run after NFKC, so fullwidth and
-    /// other compatibility forms have already been folded into these.
-    fn is_latin(c: char) -> bool {
-        matches!(
-            c,
-            '\u{41}'..='\u{2af}'
-                | '\u{1e00}'..='\u{1eff}'
-                | '\u{2c60}'..='\u{2c7f}'
-                | '\u{a720}'..='\u{a7ff}'
-                | '\u{ab30}'..='\u{ab6f}'
-        )
+    /// Whether a letter is one French is written with: a letter from a to z,
+    /// bare or carrying diacritics (its canonical decomposition starts with
+    /// an ASCII letter), or one of the ligatures `œ` and `æ`. Run after NFKC
+    /// and lowercasing, so fullwidth and other compatibility forms are
+    /// already folded. Every other letter is refused, Latin ones included:
+    /// the small capitals (`ʜ`, `ᴊ`), the dotless `ı` and the IPA `ɑ` are
+    /// Latin and still look-alikes, and `ł`, `ø`, `ß` go down with them.
+    fn is_plain_latin(c: char) -> bool {
+        c == 'œ'
+            || c == 'æ'
+            || std::iter::once(c)
+                .nfd()
+                .next()
+                .is_some_and(|base| base.is_ascii_alphabetic())
     }
 
     #[test]
@@ -1672,6 +1690,14 @@ mod tests {
             ("dans l\u{2b9}heure", "heure"),
             ("dans l\u{a78c}heure", "heure"),
             ("une \u{ff48}eure", "heure"),
+            // Invisible characters that are marks, not Cf (#330 review): the
+            // combining grapheme joiner, a variation selector, a Mongolian
+            // free variation selector; and a combining mark NFKC cannot
+            // compose with the letter before it.
+            ("une heu\u{34f}re", "heure"),
+            ("une heu\u{fe0f}re", "heure"),
+            ("une heu\u{180b}re", "heure"),
+            ("sans de\u{301}l\u{334}ai", "délai"),
         ] {
             assert_eq!(
                 time_words_outside(bypass, &INVITATION_TIME_PHRASES),
@@ -1712,13 +1738,37 @@ mod tests {
             time_words_outside("pour \u{43c}\u{438}\u{440}'heure", &INVITATION_TIME_PHRASES),
             vec!["\u{43c}\u{438}\u{440}'heure".to_string()]
         );
-        // Every letter of the Latin script is not a look-alike: accented,
-        // ligatured or extended, it stays a word like any other.
+        // Look-alikes from inside the Latin script itself: small capitals,
+        // the dotless i, the IPA alpha (#330 review).
+        assert_eq!(
+            time_words_outside(
+                "une \u{29c}eure, à m\u{131}di, un \u{251}n, un \u{1d0a}our",
+                &INVITATION_TIME_PHRASES
+            ),
+            vec![
+                "\u{29c}eure".to_string(),
+                "m\u{131}di".to_string(),
+                "\u{251}n".to_string(),
+                "\u{1d0a}our".to_string(),
+            ]
+        );
+        // A letter of a to z, with or without diacritics, and the two French
+        // ligatures stay words like any other.
         assert!(time_words_outside(
-            "Œuvre, cœur, naïve, Ærø, Łódź, Ştefan, ẞ, ɐ",
+            "Œuvre, cœur, Æsope, naïve, Ça, Ÿ, élève, à, Ştefan",
             &INVITATION_TIME_PHRASES
         )
         .is_empty());
+        // Every other Latin letter is reported too: a false positive, kept
+        // because a look-alike cannot be told from a genuine letter.
+        assert_eq!(
+            time_words_outside("Łódź, Straße, Ærø", &INVITATION_TIME_PHRASES),
+            vec![
+                "łódź".to_string(),
+                "straße".to_string(),
+                "ærø".to_string(),
+            ]
+        );
     }
 
     #[test]
