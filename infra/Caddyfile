@@ -193,7 +193,7 @@
 
 	# `X-Forwarded-For` (#178): nothing to configure here, but the behaviour
 	# is load-bearing, so it is written down. Measured against `caddy:2`
-	# (v2.11.4) with this same `handle` layout, on both paths:
+	# (v2.11.4, the version infra/docker-compose.yml now pins, #310) with this same `handle` layout, on both paths:
 	#
 	#   curl -H 'X-Forwarded-For: 8.8.8.8' http://caddy/login
 	#     -> upstream sees X-Forwarded-For: <the caller's real address>
