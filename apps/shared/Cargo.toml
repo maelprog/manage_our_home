@@ -35,3 +35,12 @@ chrono-tz = "0.10"
 unicode-properties = { version = "0.1", default-features = false, features = [
     "general-category",
 ] }
+
+[dev-dependencies]
+# The invitation email's time-vocabulary guard (`time_words_outside`, a test
+# helper in `validation::rgpd`) compares words against a closed list of exact
+# forms: without NFKC, a list word written with decomposed accents or a
+# compatibility form (`de\u{301}lai`, fullwidth letters) was not seen (#282).
+# Test-only, so it never reaches the wasm build. unicode-rs, already in
+# `Cargo.lock` through sqlx's `stringprep`.
+unicode-normalization = "0.1.25"
