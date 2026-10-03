@@ -28,8 +28,14 @@ const SESSION_COOKIE_NAME: &str = "session_id";
 const HOST_SESSION_COOKIE_NAME: &str = "__Host-session_id";
 /// Raw bytes of a session token (#222), drawn from the OS CSPRNG.
 const SESSION_TOKEN_BYTES: usize = 32;
-/// Absolute lifetime of a session, fixed at creation in `expires_at` and in
-/// the cookie's `max_age`, however much the session is used.
+/// Absolute lifetime of a session, set at creation in `expires_at` (the
+/// opening plus this, on the database's clock) and in the cookie's
+/// `max_age`. Use never pushes it back. `expires_at` can only move earlier:
+/// a superadmin session found idle for the admin routes has it brought
+/// forward when its admin access is closed (#339,
+/// `user_admin::closed_admin_expiry`), by at most 10 hours. The cookie then
+/// outlives the session, which the api refuses past `expires_at` like any
+/// other expired one.
 pub const SESSION_TTL_DAYS: i64 = 30;
 /// Inactivity timeout (#195): a session left unused for longer than this is
 /// refused, even within its absolute lifetime. The row is left as it is, not
@@ -582,14 +588,16 @@ async fn insert_session(
     restricted: bool,
 ) -> Result<SessionToken, sqlx::Error> {
     let token = new_session_token();
-    let expires_at = Utc::now() + Duration::days(SESSION_TTL_DAYS);
+    // `expires_at` on the database's clock, the one `created_at` and
+    // `last_seen_at` are read off: exactly the opening plus the lifetime,
+    // which bounds what closing the admin access takes off it (#339).
     sqlx::query!(
         r#"
         INSERT INTO sessions (user_id, expires_at, restricted, token_hash)
-        VALUES ($1, $2, $3, $4)
+        VALUES ($1, now() + make_interval(days => $2), $3, $4)
         "#,
         user_id,
-        expires_at,
+        SESSION_TTL_DAYS as i32,
         restricted,
         &token.hash()[..]
     )

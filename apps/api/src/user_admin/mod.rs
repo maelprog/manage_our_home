@@ -49,12 +49,22 @@ fn admin_access_margin() -> Duration {
 }
 
 /// The last moment the admin routes take a session (#339), read off its
-/// `expires_at`, the one date of a session that is shown nowhere. As
-/// `insert_session` writes it, that is the max age; [`closed_admin_expiry`]
-/// moves it earlier. Holding the closure there, rather than in
-/// `last_seen_at`, leaves `last_seen_at` to date the session's last
-/// activity, member routes included — what the sessions page shows and
-/// what the 7 days of #195 count from.
+/// `expires_at`. As `insert_session` writes it — the opening plus
+/// `SESSION_TTL_DAYS`, on the database's clock — that is the max age;
+/// [`closed_admin_expiry`] moves it earlier. `expires_at` keeps its meaning,
+/// the moment past which the session is refused: the RGPD export and the
+/// privacy policy's "date d'expiration" stay exact, the session does end
+/// there. Holding the closure in `expires_at` rather than in `last_seen_at`
+/// leaves `last_seen_at` to date the session's last activity, member routes
+/// included — what the sessions page shows and what the 7 days of #195
+/// count from.
+///
+/// The margin is computed from the current `SESSION_TTL_DAYS`: changing the
+/// lifetime would move the admin end of the sessions already open by the
+/// same amount. A longer lifetime would refuse them on the admin routes
+/// until a new login; a shorter one would push their admin end later, up
+/// to reopening an access already closed — the max age, counted from
+/// `created_at`, still applies.
 pub(crate) fn admin_access_end(expires_at: DateTime<Utc>) -> DateTime<Utc> {
     expires_at - admin_access_margin()
 }
