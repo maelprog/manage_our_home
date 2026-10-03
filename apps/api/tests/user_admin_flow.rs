@@ -383,11 +383,12 @@ async fn an_old_or_idle_superadmin_session_is_refused_on_admin_routes_only(db: P
     // #339: that activity still counts for the session itself.
     // `last_seen_at` dates it — the sessions page shows it, and the 7 days
     // of #195 run from it — while the admin access stays closed through
-    // `expires_at`, moved earlier by less than the 12 hours of the max age.
-    let (seen_recently, expiry_moved_within_max_age): (bool, bool) = sqlx::query_as(
+    // `expires_at`: the 2 h timeout fell 1 minute ago, so the admin access
+    // ended then, and `expires_at` lies 29 days 12 hours after that.
+    let (seen_recently, expiry_at_closure): (bool, bool) = sqlx::query_as(
         "SELECT last_seen_at > now() - interval '1 minute', \
-         expires_at < now() + interval '30 days' - interval '9 hours' \
-         AND expires_at > now() + interval '29 days' + interval '11 hours' \
+         expires_at > now() + interval '29 days 11 hours 57 minutes' \
+         AND expires_at <= now() + interval '29 days 11 hours 59 minutes' \
          FROM sessions WHERE id = $1",
     )
     .bind(session_id_of(&db, &idle).await)
@@ -399,7 +400,7 @@ async fn an_old_or_idle_superadmin_session_is_refused_on_admin_routes_only(db: P
         "member activity must refresh last_seen_at of a session idle for /admin"
     );
     assert!(
-        expiry_moved_within_max_age,
+        expiry_at_closure,
         "closing the admin access moves expires_at to where the timeout fell"
     );
     let res = call(
