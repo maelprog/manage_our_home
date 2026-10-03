@@ -28,8 +28,14 @@ const SESSION_COOKIE_NAME: &str = "session_id";
 const HOST_SESSION_COOKIE_NAME: &str = "__Host-session_id";
 /// Raw bytes of a session token (#222), drawn from the OS CSPRNG.
 const SESSION_TOKEN_BYTES: usize = 32;
-/// Absolute lifetime of a session, fixed at creation in `expires_at` and in
-/// the cookie's `max_age`, however much the session is used.
+/// Absolute lifetime of a session, set at creation in `expires_at` (the
+/// opening plus this, on the database's clock) and in the cookie's
+/// `max_age`. Use never pushes it back. `expires_at` can only move earlier:
+/// a superadmin session found idle for the admin routes has it brought
+/// forward when its admin access is closed (#339,
+/// `user_admin::closed_admin_expiry`), by at most 10 hours. The cookie then
+/// outlives the session, which the api refuses past `expires_at` like any
+/// other expired one.
 pub const SESSION_TTL_DAYS: i64 = 30;
 /// Inactivity timeout (#195): a session left unused for longer than this is
 /// refused, even within its absolute lifetime. The row is left as it is, not
@@ -51,24 +57,6 @@ fn is_idle(now: DateTime<Utc>, last_seen_at: DateTime<Utc>) -> bool {
 /// Whether this request should rewrite `last_seen_at`.
 fn last_seen_needs_refresh(now: DateTime<Utc>, last_seen_at: DateTime<Utc>) -> bool {
     last_seen_at + Duration::minutes(LAST_SEEN_REFRESH_MINUTES) < now
-}
-
-/// Whether this request rewrites `last_seen_at` (#226): past the refresh
-/// interval, unless the account is a superadmin's and the session has sat
-/// unused past the admin idle timeout. Rewriting it then — on `/auth/me`,
-/// which `apps/web` asks before every page, or on any member route — would
-/// make the session good for `/admin/*` again, and the idle cap would only
-/// ever refuse one request. Left as it is, `last_seen_at` keeps dating the
-/// last activity the admin routes counted. The price, for such a session:
-/// the member routes keep accepting it only until `SESSION_IDLE_TIMEOUT_DAYS`
-/// after that date, however much it is used meanwhile.
-fn refreshes_last_seen(
-    now: DateTime<Utc>,
-    last_seen_at: DateTime<Utc>,
-    is_superadmin: bool,
-) -> bool {
-    last_seen_needs_refresh(now, last_seen_at)
-        && !(is_superadmin && crate::user_admin::superadmin_session_is_idle(now, last_seen_at))
 }
 
 /// What a session opens (#289), from the session's `restricted` flag and
@@ -246,6 +234,9 @@ pub struct AuthUser {
     /// When the session was opened (`sessions.created_at`), for the
     /// superadmin session cap (#226, `SuperAdminUser`).
     pub session_created_at: DateTime<Utc>,
+    /// The session's `expires_at`, the admin access closed if this request
+    /// found it idle (#339), for the same cap.
+    pub session_expires_at: DateTime<Utc>,
     /// The session's `last_seen_at` as this request found it, before the
     /// refresh, for the same cap.
     pub session_last_seen_at: DateTime<Utc>,
@@ -265,6 +256,7 @@ struct LoadedSession {
     has_password: bool,
     deletion_requested_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
+    expires_at: DateTime<Utc>,
     last_seen_at: DateTime<Utc>,
     access: SessionAccess,
 }
@@ -316,10 +308,25 @@ where
         return Err(AppError::Unauthorized);
     }
 
-    if refreshes_last_seen(now, row.last_seen_at, row.is_superadmin) {
+    // A superadmin session found idle past the admin timeout has its admin
+    // access closed (#339), in the same statement as the refresh: if it
+    // fails, `last_seen_at` is left as it is too, and the next request
+    // finds the session idle again. Idle past 2 hours is always stale past
+    // the refresh interval, so the closure never goes without the refresh.
+    let closed_expiry = if row.is_superadmin {
+        crate::user_admin::closed_admin_expiry(now, row.expires_at, row.last_seen_at)
+    } else {
+        None
+    };
+    if last_seen_needs_refresh(now, row.last_seen_at) {
         sqlx::query!(
-            "UPDATE sessions SET last_seen_at = now() WHERE id = $1",
-            row.session_id
+            r#"
+            UPDATE sessions
+            SET last_seen_at = now(), expires_at = LEAST(expires_at, COALESCE($2, expires_at))
+            WHERE id = $1
+            "#,
+            row.session_id,
+            closed_expiry
         )
         .execute(&app_state.db)
         .await
@@ -336,6 +343,7 @@ where
         has_password: row.has_password,
         deletion_requested_at: row.deletion_requested_at,
         created_at: row.created_at,
+        expires_at: closed_expiry.unwrap_or(row.expires_at),
         last_seen_at: row.last_seen_at,
         access,
     })
@@ -405,6 +413,7 @@ where
             has_password: session.has_password,
             deletion_requested_at: session.deletion_requested_at,
             session_created_at: session.created_at,
+            session_expires_at: session.expires_at,
             session_last_seen_at: session.last_seen_at,
         })
     }
@@ -579,14 +588,16 @@ async fn insert_session(
     restricted: bool,
 ) -> Result<SessionToken, sqlx::Error> {
     let token = new_session_token();
-    let expires_at = Utc::now() + Duration::days(SESSION_TTL_DAYS);
+    // `expires_at` on the database's clock, the one `created_at` and
+    // `last_seen_at` are read off: exactly the opening plus the lifetime,
+    // which bounds what closing the admin access takes off it (#339).
     sqlx::query!(
         r#"
         INSERT INTO sessions (user_id, expires_at, restricted, token_hash)
-        VALUES ($1, $2, $3, $4)
+        VALUES ($1, now() + make_interval(days => $2), $3, $4)
         "#,
         user_id,
-        expires_at,
+        SESSION_TTL_DAYS as i32,
         restricted,
         &token.hash()[..]
     )
@@ -994,35 +1005,19 @@ mod tests {
         assert!(!last_seen_needs_refresh(now, later));
     }
 
-    // -- refreshes_last_seen (#226) ----------------------------------------
-
-    /// A member's session is refreshed past the interval however long it
-    /// sat unused, up to the 7 days of #195.
+    /// `load_session` closes a superadmin session's admin access in the
+    /// statement that refreshes `last_seen_at` (#339): a session idle for
+    /// the admin routes must always be due for that refresh.
     #[test]
-    fn a_member_session_is_refreshed_past_the_interval_whatever_its_idle_time() {
+    fn a_session_idle_for_the_admin_routes_is_due_for_a_refresh() {
         let now = at("2026-10-03T12:00:00Z");
-        assert!(refreshes_last_seen(now, at("2026-10-03T10:30:00Z"), false));
-        assert!(refreshes_last_seen(now, at("2026-10-01T12:00:00Z"), false));
-        assert!(!refreshes_last_seen(now, at("2026-10-03T11:30:00Z"), false));
-    }
-
-    /// Within the admin idle timeout, a superadmin's session is refreshed
-    /// like any other.
-    #[test]
-    fn a_superadmin_session_used_within_two_hours_is_refreshed() {
-        let now = at("2026-10-03T12:00:00Z");
-        assert!(refreshes_last_seen(now, at("2026-10-03T10:30:00Z"), true));
-        assert!(refreshes_last_seen(now, at("2026-10-03T10:00:00Z"), true));
-        assert!(!refreshes_last_seen(now, at("2026-10-03T11:30:00Z"), true));
-    }
-
-    /// Past it, no request refreshes it — `/auth/me` or a member route
-    /// included — or the next admin request would find it fresh again.
-    #[test]
-    fn a_superadmin_session_idle_past_two_hours_is_never_refreshed() {
-        let now = at("2026-10-03T12:00:00Z");
-        assert!(!refreshes_last_seen(now, at("2026-10-03T09:59:59Z"), true));
-        assert!(!refreshes_last_seen(now, at("2026-10-01T12:00:00Z"), true));
+        let just_idle = now
+            - Duration::hours(crate::user_admin::SUPERADMIN_IDLE_TIMEOUT_HOURS)
+            - Duration::seconds(1);
+        assert!(crate::user_admin::superadmin_session_is_idle(
+            now, just_idle
+        ));
+        assert!(last_seen_needs_refresh(now, just_idle));
     }
 
     // -- active_sessions (#225) --------------------------------------------

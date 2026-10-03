@@ -380,6 +380,29 @@ async fn an_old_or_idle_superadmin_session_is_refused_on_admin_routes_only(db: P
         let res = call(&router, Method::GET, "/admin/users", Some(&idle), None).await;
         assert_status(&res, StatusCode::UNAUTHORIZED);
     }
+    // #339: that activity still counts for the session itself.
+    // `last_seen_at` dates it — the sessions page shows it, and the 7 days
+    // of #195 run from it — while the admin access stays closed through
+    // `expires_at`: the 2 h timeout fell 1 minute ago, so the admin access
+    // ended then, and `expires_at` lies 29 days 12 hours after that.
+    let (seen_recently, expiry_at_closure): (bool, bool) = sqlx::query_as(
+        "SELECT last_seen_at > now() - interval '1 minute', \
+         expires_at > now() + interval '29 days 11 hours 57 minutes' \
+         AND expires_at <= now() + interval '29 days 11 hours 59 minutes' \
+         FROM sessions WHERE id = $1",
+    )
+    .bind(session_id_of(&db, &idle).await)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert!(
+        seen_recently,
+        "member activity must refresh last_seen_at of a session idle for /admin"
+    );
+    assert!(
+        expiry_at_closure,
+        "closing the admin access moves expires_at to where the timeout fell"
+    );
     let res = call(
         &router,
         Method::POST,
@@ -432,6 +455,57 @@ async fn an_old_member_session_still_gets_403_on_admin_routes(db: PgPool) {
     assert_status(&res, StatusCode::FORBIDDEN);
     let res = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
     assert_status(&res, StatusCode::OK);
+}
+
+/// #339: closing the admin access is a superadmin's. A member's session
+/// idle past the 2 hours of the admin timeout, within its first 12 hours,
+/// keeps the `expires_at` its opening gave it — the opening date plus the
+/// 30 days, both read off the database's clock.
+#[sqlx::test]
+async fn an_idle_member_session_keeps_its_expiry(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie =
+        register_verify_login(&router, &db, "idle-plain@example.test", "idle-password1").await;
+    let session_id = session_id_of(&db, &cookie).await;
+    let expiry_is_opening_plus_ttl = || async {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT expires_at = created_at + interval '30 days' FROM sessions WHERE id = $1",
+        )
+        .bind(session_id)
+        .fetch_one(&db)
+        .await
+        .unwrap()
+    };
+    assert!(
+        expiry_is_opening_plus_ttl().await,
+        "a session's expires_at is its opening plus 30 days"
+    );
+
+    sqlx::query(
+        "UPDATE sessions SET created_at = created_at - interval '3 hours', \
+         expires_at = expires_at - interval '3 hours', \
+         last_seen_at = now() - interval '2 hours 1 minute' WHERE id = $1",
+    )
+    .bind(session_id)
+    .execute(&db)
+    .await
+    .unwrap();
+    for path in ["/auth/me", "/groups"] {
+        let res = call(&router, Method::GET, path, Some(&cookie), None).await;
+        assert_status(&res, StatusCode::OK);
+    }
+    let seen_recently: bool = sqlx::query_scalar(
+        "SELECT last_seen_at > now() - interval '1 minute' FROM sessions WHERE id = $1",
+    )
+    .bind(session_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert!(seen_recently);
+    assert!(
+        expiry_is_opening_plus_ttl().await,
+        "a member's activity must leave expires_at where the opening set it"
+    );
 }
 
 /// AC #2, #4, #6: a superadmin sees groups from families they are not a
