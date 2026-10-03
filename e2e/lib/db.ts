@@ -80,6 +80,31 @@ export async function makeSuperadmin(email: string): Promise<void> {
 }
 
 /**
+ * Backdates every session of `email` as if opened `hours` hours ago (and
+ * last used then too), so the superadmin session cap (#226) can be met
+ * without waiting 12 hours.
+ */
+export async function ageSessions(email: string, hours: number): Promise<void> {
+  const client = new Client({ connectionString: requireDatabaseUrl() });
+  await client.connect();
+  try {
+    const { rowCount } = await client.query(
+      `UPDATE sessions s
+          SET created_at = now() - make_interval(hours => $2),
+              last_seen_at = now() - make_interval(hours => $2)
+         FROM users u
+        WHERE u.id = s.user_id AND u.email = $1`,
+      [email, hours],
+    );
+    if (rowCount === 0) {
+      throw new Error(`no session to age for ${email}`);
+    }
+  } finally {
+    await client.end();
+  }
+}
+
+/**
  * The stored bounds of the event `title` created by `email`, as Europe/Paris
  * wall-clock `YYYY-MM-DDTHH:MM` strings — the app's fixed display timezone.
  *

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT s.id as session_id, s.expires_at, s.revoked_at, s.last_seen_at, s.restricted,\n               u.id as user_id, u.email, u.display_name, u.email_verified,\n               u.is_superadmin, u.deleted_at, u.deactivated_at, u.deletion_requested_at,\n               (u.password_hash IS NOT NULL) as \"has_password!\"\n        FROM sessions s\n        JOIN users u ON u.id = s.user_id\n        WHERE s.token_hash = $1\n        ",
+  "query": "\n        SELECT s.id as session_id, s.created_at, s.expires_at, s.revoked_at, s.last_seen_at,\n               s.restricted, u.id as user_id, u.email, u.display_name, u.email_verified,\n               u.is_superadmin, u.deleted_at, u.deactivated_at, u.deletion_requested_at,\n               (u.password_hash IS NOT NULL) as \"has_password!\"\n        FROM sessions s\n        JOIN users u ON u.id = s.user_id\n        WHERE s.token_hash = $1\n        ",
   "describe": {
     "columns": [
       {
@@ -16,6 +16,17 @@
       },
       {
         "ordinal": 1,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
         "name": "expires_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -26,7 +37,7 @@
         }
       },
       {
-        "ordinal": 2,
+        "ordinal": 3,
         "name": "revoked_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -37,7 +48,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "last_seen_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -48,7 +59,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "restricted",
         "type_info": "Bool",
         "origin": {
@@ -59,7 +70,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "user_id",
         "type_info": "Uuid",
         "origin": {
@@ -70,7 +81,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "email",
         "type_info": "Text",
         "origin": {
@@ -81,7 +92,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "display_name",
         "type_info": "Text",
         "origin": {
@@ -92,7 +103,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "email_verified",
         "type_info": "Bool",
         "origin": {
@@ -103,7 +114,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "is_superadmin",
         "type_info": "Bool",
         "origin": {
@@ -114,7 +125,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "deleted_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -125,7 +136,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "deactivated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -136,7 +147,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "deletion_requested_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -147,7 +158,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "has_password!",
         "type_info": "Bool",
         "origin": "Expression"
@@ -159,6 +170,7 @@
       ]
     },
     "nullable": [
+      false,
       false,
       false,
       true,
@@ -175,5 +187,5 @@
       null
     ]
   },
-  "hash": "55d3c2aeee9db5ce93015e4303026df7511a6a82043744226208dd6ba4426302"
+  "hash": "d5253d90cbcd2c789cec630314b171e44feb2151af6a27c0dd2cf50de3acd5d0"
 }

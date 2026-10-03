@@ -54,6 +54,27 @@ pub(crate) async fn admin_header(
     header
 }
 
+/// Where an `/admin` page sends a superadmin whose session the `/admin/*` API
+/// routes refuse with a 401 (#226: opened more than 12 hours ago, or unused
+/// for more than 2). `CurrentSuperAdmin` let the request through, since
+/// `GET /auth/me` still accepts that session; logging in again is the
+/// reauthentication. The session is ended first — `/login` turns away a
+/// visitor whose session is still live — and the login page says why.
+///
+/// This happens on a GET too, which is a side effect on a safe method. It is
+/// bounded: only a session apps/api already refuses on `/admin/*` is ended,
+/// a fresh one gets its page. The most a cross-site GET can trigger this
+/// way is logging out a superadmin whose session the admin routes no longer
+/// accept, who would have to log in again to use them anyway.
+pub(crate) const REAUTH_LOGIN: &str = "/login?reauth=admin";
+
+pub(crate) async fn reauthenticate(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> axum::response::Response {
+    crate::routes::home::logout_to(state, headers, REAUTH_LOGIN).await
+}
+
 // -- shared error pages -----------------------------------------------------
 
 pub(crate) fn service_unavailable_page() -> axum::response::Html<String> {

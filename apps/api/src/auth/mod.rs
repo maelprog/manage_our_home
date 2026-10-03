@@ -836,6 +836,8 @@ mod tests {
             is_superadmin: true,
             has_password: true,
             deletion_requested_at: None,
+            session_created_at: chrono::Utc::now(),
+            session_last_seen_at: chrono::Utc::now(),
         };
         let user_id = auth.user_id;
 

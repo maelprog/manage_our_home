@@ -1,4 +1,4 @@
-use axum::extract::{ConnectInfo, State};
+use axum::extract::{ConnectInfo, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
@@ -16,11 +16,35 @@ pub struct LoginForm {
     password: String,
 }
 
-fn page(email: &str, error: Option<&str>, api_public_base_url: &str) -> String {
+/// `GET /login`'s query: `?reauth=admin` when an `/admin` page sent the
+/// visitor here (#226).
+#[derive(serde::Deserialize)]
+pub struct LoginQuery {
+    reauth: Option<String>,
+}
+
+/// The notice `?reauth=` puts above the form. Only the one value the
+/// `/admin` pages send has copy; anything else a URL carries shows nothing.
+fn reauth_notice(reason: Option<&str>) -> Option<&'static str> {
+    match reason {
+        Some("admin") => Some(
+            "Votre session d'administration a expiré : reconnectez-vous pour accéder à l'administration.",
+        ),
+        _ => None,
+    }
+}
+
+fn page(
+    email: &str,
+    error: Option<&str>,
+    notice: Option<&str>,
+    api_public_base_url: &str,
+) -> String {
     let google_start = format!("{api_public_base_url}/auth/google/start");
     let pw = password_field("Mot de passe", "password", "current-password", false);
     let body = view! {
         <h1>"Se connecter"</h1>
+        {notice.map(|n| view! { <p class="notice">{n.to_string()}</p> })}
         {error.map(|e| view! { <p class="notice error">{e.to_string()}</p> })}
         <form method="post" action="/login">
             <label>
@@ -47,8 +71,14 @@ fn page(email: &str, error: Option<&str>, api_public_base_url: &str) -> String {
 pub async fn get(
     _redirect: RedirectIfAuthenticated,
     State(state): State<AppState>,
+    Query(query): Query<LoginQuery>,
 ) -> impl IntoResponse {
-    Html(page("", None, &state.api_public_base_url))
+    Html(page(
+        "",
+        None,
+        reauth_notice(query.reauth.as_deref()),
+        &state.api_public_base_url,
+    ))
 }
 
 pub async fn post(
@@ -101,6 +131,7 @@ pub async fn post(
         Ok(resp) if resp.status == reqwest::StatusCode::UNAUTHORIZED => Html(page(
             &form.email,
             Some("Email ou mot de passe incorrect."),
+            None,
             &state.api_public_base_url,
         ))
         .into_response(),
@@ -113,20 +144,55 @@ pub async fn post(
         Ok(resp) if resp.status == reqwest::StatusCode::TOO_MANY_REQUESTS => Html(page(
             &form.email,
             Some("Trop de tentatives de connexion. Merci de réessayer dans quelques minutes."),
+            None,
             &state.api_public_base_url,
         ))
         .into_response(),
         Ok(_) => Html(page(
             &form.email,
             Some("Une erreur est survenue, merci de réessayer."),
+            None,
             &state.api_public_base_url,
         ))
         .into_response(),
         Err(_) => Html(page(
             &form.email,
             Some("Service momentanément indisponible, merci de réessayer."),
+            None,
             &state.api_public_base_url,
         ))
         .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_admin_reauth_reason_has_its_notice() {
+        let notice = reauth_notice(Some("admin")).expect("a notice for the admin reason");
+        assert!(notice.contains("administration"), "{notice}");
+        assert!(notice.contains("reconnectez-vous"), "{notice}");
+    }
+
+    /// The query string is the visitor's to write: nothing else it says
+    /// puts copy on the page.
+    #[test]
+    fn no_other_reason_has_a_notice() {
+        for reason in [None, Some(""), Some("Admin"), Some("other"), Some("<b>")] {
+            assert_eq!(reauth_notice(reason), None, "{reason:?}");
+        }
+    }
+
+    #[test]
+    fn the_login_page_shows_the_notice_it_is_given_and_none_otherwise() {
+        let with = page("", None, Some("Session expirée."), "http://api");
+        assert!(
+            with.contains(r#"<p class="notice">Session expirée.</p>"#),
+            "{with}"
+        );
+        let without = page("", None, None, "http://api");
+        assert!(!without.contains(r#"class="notice""#), "{without}");
     }
 }
