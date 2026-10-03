@@ -47,10 +47,33 @@ jobs:
       - uses: taiki-e/install-action@cargo-audit
       - run: cargo audit
 
+  # The handlers under test connect as a `NOSUPERUSER NOBYPASSRLS` role
+  # that owns no table, the role apps/api/README.md prescribes for
+  # `DATABASE_URL` (#213, #311). Served as `postgres`, a superuser, they
+  # would never meet RLS: a handler that reads through the bare pool without
+  # `app.user_id` set sees the whole database in CI and nothing in
+  # production. #99, #113, #207 and #208 were all that failure, and a
+  # superuser CI caught none of them.
+  #
+  # `DATABASE_URL` itself stays on `postgres` here, and has to: it is the
+  # harness's connection, not the API's. `#[sqlx::test]` creates each
+  # database and applies the migrations through it, the test bodies seed
+  # and assert through it, and tests/rls.rs creates roles with it. Only
+  # `AppState::db` switches role (`runtime_pool` in
+  # apps/api/tests/common/mod.rs, driven by `FLOW_TEST_RUNTIME_ROLE`), and
+  # `admin_db` stays on `postgres`: in production both the migration role
+  # and the admin role bypass RLS (#105).
+  #
+  # Until #311 the suite ran twice: here with every handler on `postgres`,
+  # and in a `test-nobypassrls` job under the role, which only ran the
+  # integration binaries. The superuser pass checked a configuration no
+  # deployment following the README runs; this job keeps everything the
+  # two ran (build of every target, unit and integration tests, MinIO)
+  # with the handlers on the role.
   test:
     runs-on: ubuntu-latest
     services:
-      # Full tag *and* digest (#310), the same pin in all three jobs and in
+      # Full tag *and* digest (#310), the same pin in both jobs and in
       # infra/docker-compose.yml (e2e/scripts/lib/image-pins.ts holds them
       # together). Renovate (renovate.json) opens a PR for each new 16.x
       # release or digest republication.
@@ -73,6 +96,29 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Every test database is created from `template1` after this step, by
+      # `postgres`, which then applies the migrations: default privileges
+      # declared here are copied into each of them, and cover every table
+      # and sequence the migrations create. They are the grants
+      # apps/api/README.md prescribes for `app_role`, and nothing more. The
+      # final query fails the step if the role could bypass RLS.
+      # Default privileges `IN SCHEMA public` cover tables and sequences in
+      # that schema only: a migration that creates another schema leaves the
+      # role without rights there, and this job goes red on it (loudly).
+      - name: Create the NOBYPASSRLS runtime role
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d postgres <<'SQL'
+          CREATE ROLE app_role LOGIN PASSWORD 'app_role' NOSUPERUSER NOBYPASSRLS;
+          \connect template1
+          ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
+              GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_role;
+          ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
+              GRANT USAGE, SELECT ON SEQUENCES TO app_role;
+          SELECT 1 / (NOT (rolsuper OR rolbypassrls))::int
+              FROM pg_roles WHERE rolname = 'app_role';
+          SQL
       # The agenda suite asserts on the actual stored objects, not just the
       # `event_attachments` rows (issue #54: deleting an event used to leave
       # its objects behind, and only a real bucket can catch that). Tests
@@ -123,103 +169,6 @@ jobs:
              mc mb -p local/manage-our-home"
       - run: cargo build --workspace --all-targets
       - run: cargo test --workspace
-        env:
-          MINIO_ENDPOINT: http://localhost:9000
-          MINIO_ACCESS_KEY: ci-dummy
-          MINIO_SECRET_KEY: ci-dummy-secret
-          MINIO_BUCKET: manage-our-home
-
-  # The integration tests again, with the handlers connected as a
-  # `NOSUPERUSER NOBYPASSRLS` role that owns no table (#213). The `test` job
-  # above serves requests as `postgres`, a superuser, so RLS is never
-  # enforced there: a handler that reads through the bare pool without
-  # `app.user_id` set sees the whole database in CI and nothing in
-  # production. #99, #113, #207 and #208 were all that failure, and the CI
-  # caught none of them.
-  #
-  # Only `AppState::db` switches role (`runtime_pool` in
-  # apps/api/tests/common/mod.rs). `#[sqlx::test]` still creates each
-  # database and applies the migrations as `postgres`, the test bodies still
-  # seed and assert through that pool, and `admin_db` stays on it: in
-  # production both the migration role and the admin role bypass RLS
-  # (#105), and this job leaves them as they are.
-  #
-  # This job duplicates `test` on purpose, and only until every flow is
-  # green under the runtime role; `DATABASE_URL` then moves to that role and
-  # the superuser job goes away (step 2 of the 2026-09-17 decision).
-  test-nobypassrls:
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16.15@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      # Every test database is created from `template1` after this step, by
-      # `postgres`, which then applies the migrations: default privileges
-      # declared here are copied into each of them, and cover every table
-      # and sequence the migrations create. They are the grants
-      # apps/api/README.md prescribes for `app_role`, and nothing more. The
-      # final query fails the step if the role could bypass RLS.
-      - name: Create the NOBYPASSRLS runtime role
-        env:
-          PGPASSWORD: postgres
-        run: |
-          psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d postgres <<'SQL'
-          CREATE ROLE app_role LOGIN PASSWORD 'app_role' NOSUPERUSER NOBYPASSRLS;
-          \connect template1
-          ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
-              GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_role;
-          ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
-              GRANT USAGE, SELECT ON SEQUENCES TO app_role;
-          SELECT 1 / (NOT (rolsuper OR rolbypassrls))::int
-              FROM pg_roles WHERE rolname = 'app_role';
-          SQL
-      # Same images, pins and reasons as the `test` job (#157, and the
-      # 2026-09-25 minio lockout).
-      - name: Start MinIO and create the attachments bucket
-        run: |
-          docker run -d --name minio -p 9000:9000 \
-            -e MINIO_ROOT_USER=ci-dummy \
-            -e MINIO_ROOT_PASSWORD=ci-dummy-secret \
-            docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20
-          # Bitnami's entrypoint first runs a setup instance of the server,
-          # which answers ready within a second, then stops it and starts the
-          # final one about 5 s later (#298): a readiness probe alone lets `mc`
-          # land in that restart. Wait for the line that closes the setup, so
-          # the probe below only ever sees the final instance. Either wait
-          # running out fails the step instead of falling through.
-          for i in $(seq 1 60); do
-            docker logs minio 2>&1 | grep -q 'MinIO setup finished' && break
-            [ "$i" = 60 ] && { docker logs minio; exit 1; }
-            sleep 1
-          done
-          for i in $(seq 1 30); do
-            curl -sf http://localhost:9000/minio/health/ready && break
-            [ "$i" = 30 ] && { docker logs minio; exit 1; }
-            sleep 1
-          done
-          docker run --rm --network host --entrypoint /bin/sh \
-            docker.io/bitnamilegacy/minio-client:2025.7.21-debian-12-r3@sha256:73bd39f7899a0cef12b8dd5df13aa93a3ed1aaa44236542442e9ac76819ac158 -c \
-            "mc alias set local http://localhost:9000 ci-dummy ci-dummy-secret && \
-             mc mb -p local/manage-our-home"
-      # `--test '*'`: the integration binaries under apps/api/tests only.
-      # The unit tests hold no connection to switch.
-      - run: cargo test -p manage_our_home --test '*'
         env:
           FLOW_TEST_RUNTIME_ROLE: app_role
           FLOW_TEST_RUNTIME_ROLE_PASSWORD: app_role
@@ -352,15 +301,46 @@ jobs:
             docker.io/bitnamilegacy/minio-client:2025.7.21-debian-12-r3@sha256:73bd39f7899a0cef12b8dd5df13aa93a3ed1aaa44236542442e9ac76819ac158 -c \
             "mc alias set local http://localhost:9000 ci-dummy ci-dummy-secret && \
              mc mb -p local/manage-our-home"
+      # The API serves requests as this role (`DATABASE_URL` below), the
+      # `NOSUPERUSER NOBYPASSRLS` role apps/api/README.md prescribes, as the
+      # `test` job does (#311). The database is still empty: the API applies
+      # the migrations as `postgres` when it starts, so the grants go through
+      # `postgres`'s default privileges, and 0019 finds the role holding
+      # them and grants it the account export's two functions. Same grants,
+      # same RLS check and same schema caveat as the `test` job.
+      - name: Create the NOBYPASSRLS runtime role
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d postgres <<'SQL'
+          CREATE ROLE app_role LOGIN PASSWORD 'app_role' NOSUPERUSER NOBYPASSRLS;
+          ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
+              GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_role;
+          ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
+              GRANT USAGE, SELECT ON SEQUENCES TO app_role;
+          SELECT 1 / (NOT (rolsuper OR rolbypassrls))::int
+              FROM pg_roles WHERE rolname = 'app_role';
+          SQL
       - name: Start apps/api (applies migrations on boot)
         run: ./target/debug/manage_our_home &
         env:
+          # The job-level `DATABASE_URL` stays on `postgres`: it is what the
+          # Playwright suite reads tokens and writes its fixtures through
+          # (e2e/lib/db.ts), across every family. The API's own runtime pool
+          # is the one that must not bypass RLS.
+          DATABASE_URL: postgres://app_role:app_role@localhost:5432/postgres
           # Required since #105, with no DATABASE_URL fallback: migrations
           # run on their own connection, as a role that bypasses RLS, and
           # the API refuses to start otherwise. The postgres service above
           # only has the superuser role, which qualifies — the point of the
           # variable here is that the value is stated, not inferred.
           MIGRATION_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+          # The superadmin endpoints and every background job (attachment
+          # reconcile, account and retention purges, scheduled
+          # notifications) run on this pool and need a role that bypasses
+          # RLS (apps/api/README.md). Unset, it would fall back to
+          # `DATABASE_URL`, now a role that does not.
+          ADMIN_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
           PUBLIC_BASE_URL: http://localhost:8080
           FRONTEND_BASE_URL: http://localhost:3000
           GOOGLE_CLIENT_ID: ci-dummy

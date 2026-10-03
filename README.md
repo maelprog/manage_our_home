@@ -182,7 +182,7 @@ text; changing one of them means updating its hash in the Caddyfile, and
 `cargo test -p manage_our_home_web csp` fails until that is done, printing
 the hashes to use.
 
-It fills `POSTGRES_PASSWORD`, `ADMIN_ROLE_PASSWORD`, the three
+It fills `POSTGRES_PASSWORD`, the three `*_ROLE_PASSWORD` values, the three
 `*_ENCRYPTION_KEY` values and `MINIO_ROOT_PASSWORD` with `openssl rand`
 output, and deliberately leaves the dev-only knobs (`COMPOSE_PROFILES`,
 `SMTP_PORT`, `SMTP_ALLOW_INSECURE`, `DEV_SEED_USERS`) out.
@@ -203,7 +203,8 @@ What it cannot invent, you have to fill in yourself:
 
 | Variable | Required | What it is |
 |----------|----------|------------|
-| `POSTGRES_PASSWORD` | yes | Password for the application role `mhome`. |
+| `POSTGRES_PASSWORD` | yes | Password for `mhome`, the bootstrap superuser. The API does not connect as it. |
+| `APP_ROLE_PASSWORD` | yes | Password for `app_role`, the `NOSUPERUSER NOBYPASSRLS` role the API serves requests as (`DATABASE_URL`), created at first Postgres boot by `postgres/init/01-roles.sh` (issue #311). |
 | `MIGRATION_ROLE_PASSWORD` | yes | Password for the `BYPASSRLS` `migration_role` created at first Postgres boot by `postgres/init/01-roles.sh`. It applies the migrations and owns the tables (see `apps/api/README.md`, issue #105); the API refuses to start without it. |
 | `ADMIN_ROLE_PASSWORD` | yes | Password for the `BYPASSRLS` `admin_role` created at first Postgres boot by `postgres/init/01-roles.sh`. |
 | `OAUTH_ENCRYPTION_KEY` | yes | `openssl rand -base64 32` |
@@ -289,6 +290,46 @@ ownership does **not** grant anything to `admin_role`, which is why the
 
 Starting from a fresh volume (`docker compose down -v`) skips all of this —
 `01-roles.sh` sets it up correctly on its own.
+
+### Upgrading a stack created before `app_role` (#311)
+
+The API used to serve requests as `mhome`, the bootstrap superuser, which
+the RLS policies never apply to. It now connects as `app_role`
+(`NOSUPERUSER NOBYPASSRLS`), which `postgres/init/01-roles.sh` creates only
+when the `postgres_data` volume is first initialized. On an existing volume
+the role is missing and the api cannot connect. Add `APP_ROLE_PASSWORD` to
+`.env` (`openssl rand -hex 24`), then create the role once, after the
+`migration_role` upgrade above if that one is still pending. The commands
+connect as `mhome`: a stack created before the `mom` → `mhome` rename must
+go through "Upgrading a stack created before the `mhome` rename" below
+first.
+
+```sh
+cd infra
+docker compose up -d postgres
+
+# The tables already exist, so the role needs grants on them, and the
+# default privileges for those migration_role creates from now on. The
+# account export's two functions (0019) were granted when that migration
+# ran, to the runtime roles that existed then: app_role needs its own
+# grant.
+docker compose exec postgres \
+  psql -U mhome -d manage_our_home -v ON_ERROR_STOP=1 -c \
+  "CREATE ROLE app_role LOGIN PASSWORD '<APP_ROLE_PASSWORD from .env>' NOSUPERUSER NOBYPASSRLS;
+   GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_role;
+   GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_role;
+   GRANT EXECUTE ON FUNCTION account_export_group_ids(),
+       account_export_received_invitations() TO app_role;
+   ALTER DEFAULT PRIVILEGES FOR ROLE migration_role IN SCHEMA public
+     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_role;
+   ALTER DEFAULT PRIVILEGES FOR ROLE migration_role IN SCHEMA public
+     GRANT USAGE, SELECT ON SEQUENCES TO app_role;"
+
+docker compose up -d
+```
+
+Nothing is copied or migrated: the data stays where it is, and only the
+role that reads it changes.
 
 ### Upgrading a stack created before the `mhome` rename
 
