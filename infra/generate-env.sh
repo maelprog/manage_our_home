@@ -65,7 +65,9 @@ PUBLIC_BASE_URL=https://$DOMAIN
 ########################################
 # PostgreSQL
 ########################################
-# DB name (manage_our_home) and app user (mhome) are fixed in docker-compose.yml.
+# DB name (manage_our_home) and bootstrap superuser (mhome) are fixed in
+# docker-compose.yml. The API does not connect as mhome: it serves requests
+# as app_role (APP_ROLE_PASSWORD below, #311).
 
 POSTGRES_PASSWORD=$(gen_pwd)
 

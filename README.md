@@ -299,7 +299,10 @@ the RLS policies never apply to. It now connects as `app_role`
 when the `postgres_data` volume is first initialized. On an existing volume
 the role is missing and the api cannot connect. Add `APP_ROLE_PASSWORD` to
 `.env` (`openssl rand -hex 24`), then create the role once, after the
-`migration_role` upgrade above if that one is still pending:
+`migration_role` upgrade above if that one is still pending. The commands
+connect as `mhome`: a stack created before the `mom` → `mhome` rename must
+go through "Upgrading a stack created before the `mhome` rename" below
+first.
 
 ```sh
 cd infra
