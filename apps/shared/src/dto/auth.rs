@@ -129,3 +129,17 @@ pub struct ReactivationRequestBody {
     #[serde(default)]
     pub message: Option<String>,
 }
+
+/// One entry of `GET /auth/sessions` (#225): a live session of the caller.
+/// Only what the table already keeps — no IP, no user-agent (arbitrated
+/// 2026-10-02, data minimization) — and never the token: `id` is the
+/// internal `sessions.id`, which opens nothing since #222, and is what
+/// `POST /auth/sessions/:id/revoke` takes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveSession {
+    pub id: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+    /// Whether this is the session the request was made with.
+    pub current: bool,
+}

@@ -12,6 +12,8 @@ use sqlx::{PgPool, Postgres, Transaction};
 use tower_cookies::Cookies;
 use uuid::Uuid;
 
+use manage_our_home_shared::dto::auth::ActiveSession;
+
 use crate::error::AppError;
 use crate::AppState;
 
@@ -90,6 +92,112 @@ fn session_state(now: DateTime<Utc>, row: &SessionRow) -> SessionAccess {
         return SessionAccess::Refused;
     }
     session_access(row.restricted, row.deactivated, row.deleted)
+}
+
+/// A `sessions` row of the caller, as `GET /auth/sessions` reads it (#225).
+pub struct ListedSession {
+    pub id: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub revoked: bool,
+    pub restricted: bool,
+}
+
+/// The caller's sessions that are still live (#225), `current` first, then
+/// the most recently used. "Live" is [`session_state`]'s verdict, the one
+/// every request gets: a revoked, expired, idle or restricted session is
+/// left out. The caller holds a full session, so its account is neither
+/// deactivated nor deleted.
+pub fn active_sessions(
+    now: DateTime<Utc>,
+    current: Uuid,
+    rows: Vec<ListedSession>,
+) -> Vec<ActiveSession> {
+    let mut live: Vec<ActiveSession> = rows
+        .into_iter()
+        .filter(|row| {
+            let state = session_state(
+                now,
+                &SessionRow {
+                    revoked: row.revoked,
+                    expires_at: row.expires_at,
+                    last_seen_at: row.last_seen_at,
+                    restricted: row.restricted,
+                    deactivated: false,
+                    deleted: false,
+                },
+            );
+            state == SessionAccess::Full
+        })
+        .map(|row| ActiveSession {
+            id: row.id,
+            created_at: row.created_at,
+            last_seen_at: row.last_seen_at,
+            current: row.id == current,
+        })
+        .collect();
+    live.sort_by(|a, b| {
+        b.current
+            .cmp(&a.current)
+            .then(b.last_seen_at.cmp(&a.last_seen_at))
+    });
+    live
+}
+
+/// The caller's live sessions (#225), read for `GET /auth/sessions`. The
+/// SQL only narrows to the caller's unrevoked rows; what counts as live is
+/// [`active_sessions`]'s to say.
+pub async fn list_active_sessions(
+    pool: &PgPool,
+    user_id: Uuid,
+    current: Uuid,
+) -> Result<Vec<ActiveSession>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"
+        SELECT id, created_at, last_seen_at, expires_at, restricted
+        FROM sessions
+        WHERE user_id = $1 AND revoked_at IS NULL
+        "#,
+        user_id
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(active_sessions(
+        Utc::now(),
+        current,
+        rows.into_iter()
+            .map(|r| ListedSession {
+                id: r.id,
+                created_at: r.created_at,
+                last_seen_at: r.last_seen_at,
+                expires_at: r.expires_at,
+                revoked: false,
+                restricted: r.restricted,
+            })
+            .collect(),
+    ))
+}
+
+/// Revokes one session of `user_id` (#225). `false` when the caller has no
+/// such unrevoked session — someone else's included, so the answer does
+/// not tell whether that id exists.
+pub async fn revoke_own_session(
+    pool: &PgPool,
+    user_id: Uuid,
+    session_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let done = sqlx::query!(
+        r#"
+        UPDATE sessions SET revoked_at = now()
+        WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL
+        "#,
+        session_id,
+        user_id
+    )
+    .execute(pool)
+    .await?;
+    Ok(done.rows_affected() == 1)
 }
 
 #[derive(Debug, Clone)]
@@ -854,6 +962,107 @@ mod tests {
         let later = at("2026-09-19T12:05:00Z");
         assert!(!is_idle(now, later));
         assert!(!last_seen_needs_refresh(now, later));
+    }
+
+    // -- active_sessions (#225) --------------------------------------------
+
+    fn listed(id: u128, now: DateTime<Utc>, last_seen_minutes_ago: i64) -> ListedSession {
+        ListedSession {
+            id: Uuid::from_u128(id),
+            created_at: now - Duration::days(2),
+            last_seen_at: now - Duration::minutes(last_seen_minutes_ago),
+            expires_at: now + Duration::days(28),
+            revoked: false,
+            restricted: false,
+        }
+    }
+
+    #[test]
+    fn the_current_session_is_listed_and_marked() {
+        let now = at("2026-10-02T12:00:00Z");
+        let listed = active_sessions(now, Uuid::from_u128(1), vec![listed(1, now, 0)]);
+        assert_eq!(
+            listed,
+            vec![ActiveSession {
+                id: Uuid::from_u128(1),
+                created_at: now - Duration::days(2),
+                last_seen_at: now,
+                current: true,
+            }]
+        );
+    }
+
+    /// Current first whatever its last use, then the most recently used.
+    #[test]
+    fn the_current_session_comes_first_then_the_most_recently_used() {
+        let now = at("2026-10-02T12:00:00Z");
+        let rows = vec![
+            listed(1, now, 300),
+            listed(2, now, 120),
+            listed(3, now, 600),
+            listed(4, now, 5),
+        ];
+        let ids: Vec<_> = active_sessions(now, Uuid::from_u128(3), rows)
+            .into_iter()
+            .map(|s| (s.id.as_u128(), s.current))
+            .collect();
+        assert_eq!(ids, vec![(3, true), (4, false), (2, false), (1, false)]);
+    }
+
+    /// What `AuthUser` would refuse is not offered for revocation: a
+    /// revoked, expired or idle session, and a restricted one (#289),
+    /// which an active account's holder cannot use anyway.
+    #[test]
+    fn a_session_no_request_would_accept_is_left_out() {
+        let now = at("2026-10-02T12:00:00Z");
+        let revoked = ListedSession {
+            revoked: true,
+            ..listed(2, now, 1)
+        };
+        let expired = ListedSession {
+            expires_at: now - Duration::seconds(1),
+            ..listed(3, now, 1)
+        };
+        let idle = ListedSession {
+            last_seen_at: now - Duration::days(7) - Duration::seconds(1),
+            ..listed(4, now, 1)
+        };
+        let restricted = ListedSession {
+            restricted: true,
+            ..listed(5, now, 1)
+        };
+        let still_live = ListedSession {
+            last_seen_at: now - Duration::days(7),
+            ..listed(6, now, 1)
+        };
+        let ids: Vec<_> = active_sessions(
+            now,
+            Uuid::from_u128(1),
+            vec![
+                listed(1, now, 0),
+                revoked,
+                expired,
+                idle,
+                restricted,
+                still_live,
+            ],
+        )
+        .into_iter()
+        .map(|s| s.id.as_u128())
+        .collect();
+        assert_eq!(ids, vec![1, 6]);
+    }
+
+    #[test]
+    fn no_session_but_the_current_one_is_marked_current() {
+        let now = at("2026-10-02T12:00:00Z");
+        let listed = active_sessions(
+            now,
+            Uuid::from_u128(9),
+            vec![listed(1, now, 0), listed(2, now, 0)],
+        );
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().all(|s| !s.current));
     }
 
     /// `src` with its comments — doc comments included — blanked out, so a

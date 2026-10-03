@@ -1940,3 +1940,201 @@ async fn expired_reset_token_answers_gone(db: PgPool) {
     .await;
     assert_status(&old_login, StatusCode::OK);
 }
+
+// -- active sessions (#225) -----------------------------------------------
+
+/// A second login on the same account, returning its session cookie.
+async fn login_again(router: &axum::Router, email: &str, password: &str) -> String {
+    let login = call(
+        router,
+        Method::POST,
+        "/auth/login",
+        None,
+        Some(serde_json::json!({"email": email, "password": password})),
+    )
+    .await;
+    assert_status(&login, StatusCode::OK);
+    set_cookie(&login).unwrap()
+}
+
+async fn sessions_of(router: &axum::Router, cookie: &str) -> Vec<serde_json::Value> {
+    let res = call(router, Method::GET, "/auth/sessions", Some(cookie), None).await;
+    assert_status(&res, StatusCode::OK);
+    json_body(res).await.as_array().unwrap().clone()
+}
+
+async fn is_logged_in(router: &axum::Router, cookie: &str) -> bool {
+    let res = call(router, Method::GET, "/auth/me", Some(cookie), None).await;
+    res.status() == StatusCode::OK
+}
+
+/// `GET /auth/sessions` lists the caller's live sessions, the current one
+/// marked and first, with their dates and internal id — never the token,
+/// and never another account's session. A revoked session drops out.
+#[sqlx::test]
+async fn sessions_lists_the_callers_live_sessions_only(db: PgPool) {
+    let router = test_router(db.clone());
+    let first =
+        register_verify_login(&router, &db, "sess-list@example.test", "list-password1").await;
+    let second = login_again(&router, "sess-list@example.test", "list-password1").await;
+    let other =
+        register_verify_login(&router, &db, "sess-other@example.test", "other-password1").await;
+    let revoked = login_again(&router, "sess-list@example.test", "list-password1").await;
+    sqlx::query("UPDATE sessions SET revoked_at = now() WHERE id = $1")
+        .bind(session_id_of(&db, &revoked).await)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let res = call(&router, Method::GET, "/auth/sessions", Some(&second), None).await;
+    assert_status(&res, StatusCode::OK);
+    let listed = json_body(res).await;
+    let raw = listed.to_string();
+    for cookie in [&first, &second, &other, &revoked] {
+        let token = cookie.split_once('=').unwrap().1;
+        assert!(!raw.contains(token), "a token leaked: {raw}");
+    }
+
+    let listed = listed.as_array().unwrap();
+    let ids: Vec<(String, bool)> = listed
+        .iter()
+        .map(|s| {
+            (
+                s["id"].as_str().unwrap().to_string(),
+                s["current"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        ids,
+        vec![
+            (session_id_of(&db, &second).await.to_string(), true),
+            (session_id_of(&db, &first).await.to_string(), false),
+        ]
+    );
+    for s in listed {
+        assert!(s["created_at"].is_string() && s["last_seen_at"].is_string());
+        assert_eq!(s.as_object().unwrap().len(), 4, "{s}");
+    }
+
+    let res = call(&router, Method::GET, "/auth/sessions", None, None).await;
+    assert_status(&res, StatusCode::UNAUTHORIZED);
+}
+
+/// `POST /auth/sessions/:id/revoke` ends that session and only that one.
+/// Another account's session is a 404 and stays alive, as is a session
+/// already revoked and an id that names nothing.
+#[sqlx::test]
+async fn revoking_one_session_ends_it_and_spares_the_rest(db: PgPool) {
+    let router = test_router(db.clone());
+    let mine = register_verify_login(&router, &db, "sess-one@example.test", "one-password1").await;
+    let forgotten = login_again(&router, "sess-one@example.test", "one-password1").await;
+    let theirs =
+        register_verify_login(&router, &db, "sess-theirs@example.test", "theirs-password1").await;
+    let forgotten_id = session_id_of(&db, &forgotten).await;
+    let theirs_id = session_id_of(&db, &theirs).await;
+
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/auth/sessions/{theirs_id}/revoke"),
+        Some(&mine),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    assert!(is_logged_in(&router, &theirs).await);
+
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/auth/sessions/{forgotten_id}/revoke"),
+        Some(&mine),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(
+        set_cookie(&res),
+        None,
+        "another session's revocation keeps this cookie"
+    );
+    assert!(!is_logged_in(&router, &forgotten).await);
+    assert!(is_logged_in(&router, &mine).await);
+    assert!(is_logged_in(&router, &theirs).await);
+    assert_eq!(sessions_of(&router, &mine).await.len(), 1);
+
+    for id in [forgotten_id, Uuid::new_v4()] {
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/auth/sessions/{id}/revoke"),
+            Some(&mine),
+            None,
+        )
+        .await;
+        assert_status(&res, StatusCode::NOT_FOUND);
+    }
+}
+
+/// Revoking the current session by its id logs the caller out, cookie
+/// cleared, as `POST /auth/logout` would.
+#[sqlx::test]
+async fn revoking_the_current_session_by_id_logs_out(db: PgPool) {
+    let router = test_router(db.clone());
+    let mine =
+        register_verify_login(&router, &db, "sess-self@example.test", "self-password1").await;
+    let id = session_id_of(&db, &mine).await;
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/auth/sessions/{id}/revoke"),
+        Some(&mine),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(set_cookie(&res), Some(cookie_name_of(&mine)));
+    assert!(!is_logged_in(&router, &mine).await);
+}
+
+/// `name=` — what [`set_cookie`] returns for the removal of `cookie`.
+fn cookie_name_of(cookie: &str) -> String {
+    format!("{}=", cookie.split_once('=').unwrap().0)
+}
+
+/// `POST /auth/sessions/revoke-all` ends every session of the caller, the
+/// current one included (arbitrated 2026-10-02), clears the cookie, and
+/// leaves other accounts alone.
+#[sqlx::test]
+async fn revoking_all_sessions_ends_the_current_one_too(db: PgPool) {
+    let router = test_router(db.clone());
+    let here = register_verify_login(&router, &db, "sess-all@example.test", "all-password1").await;
+    let elsewhere = login_again(&router, "sess-all@example.test", "all-password1").await;
+    let theirs =
+        register_verify_login(&router, &db, "sess-bystander@example.test", "by-password1").await;
+
+    let res = call(
+        &router,
+        Method::POST,
+        "/auth/sessions/revoke-all",
+        Some(&here),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(set_cookie(&res), Some(cookie_name_of(&here)));
+    assert!(!is_logged_in(&router, &here).await);
+    assert!(!is_logged_in(&router, &elsewhere).await);
+    assert!(is_logged_in(&router, &theirs).await);
+
+    let res = call(
+        &router,
+        Method::POST,
+        "/auth/sessions/revoke-all",
+        Some(&here),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::UNAUTHORIZED);
+}

@@ -4,7 +4,8 @@ use serde::Serialize;
 
 /// Outcome of a JSON call to apps/api: the status code, an optional
 /// `Set-Cookie` header value to forward to the browser (present on
-/// `login`/`reset_password` success), and the parsed JSON body (empty
+/// `login`/`reset_password` success, and on ending one's own session from
+/// `/account/sessions`), and the parsed JSON body (empty
 /// object if apps/api returned no body, e.g. `204`/`200` with nothing).
 pub struct ApiResponse {
     pub status: reqwest::StatusCode,
@@ -168,11 +169,18 @@ pub async fn api_request_auth(
     let resp = req.send().await.map_err(|e| e.to_string())?;
 
     let status = resp.status();
+    // Ending sessions from `/account/sessions` (#225) clears the caller's
+    // own cookie when its session is among them.
+    let set_cookie = resp
+        .headers()
+        .get(reqwest::header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
     let body = resp.json::<serde_json::Value>().await.unwrap_or_default();
 
     Ok(ApiResponse {
         status,
-        set_cookie: None,
+        set_cookie,
         body,
     })
 }

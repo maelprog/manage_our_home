@@ -27,6 +27,7 @@ pub mod deactivated;
 pub mod delete;
 pub mod export;
 pub mod notifications;
+pub mod sessions;
 
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
@@ -150,6 +151,11 @@ pub async fn get(
 <h2>Notifications de rappel</h2>
 <p class="muted">Recevoir les rappels de vos événements par notification, par email, ou les deux.</p>
 <a class="btn secondary" href="/account/notifications">Gérer mes notifications</a>
+</section>
+<section class="card">
+<h2>Sessions actives</h2>
+<p class="muted">Voir les appareils où vous êtes connecté, et en déconnecter un ou tous.</p>
+<a class="btn secondary" href="/account/sessions">Gérer mes sessions</a>
 </section>
 <section class="card">
 <h2>Exporter mes données</h2>
