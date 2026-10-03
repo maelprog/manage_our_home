@@ -380,6 +380,28 @@ async fn an_old_or_idle_superadmin_session_is_refused_on_admin_routes_only(db: P
         let res = call(&router, Method::GET, "/admin/users", Some(&idle), None).await;
         assert_status(&res, StatusCode::UNAUTHORIZED);
     }
+    // #339: that activity still counts for the session itself.
+    // `last_seen_at` dates it — the sessions page shows it, and the 7 days
+    // of #195 run from it — while the admin access stays closed through
+    // `expires_at`, moved earlier by less than the 12 hours of the max age.
+    let (seen_recently, expiry_moved_within_max_age): (bool, bool) = sqlx::query_as(
+        "SELECT last_seen_at > now() - interval '1 minute', \
+         expires_at < now() + interval '30 days' - interval '9 hours' \
+         AND expires_at > now() + interval '29 days' + interval '11 hours' \
+         FROM sessions WHERE id = $1",
+    )
+    .bind(session_id_of(&db, &idle).await)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert!(
+        seen_recently,
+        "member activity must refresh last_seen_at of a session idle for /admin"
+    );
+    assert!(
+        expiry_moved_within_max_age,
+        "closing the admin access moves expires_at to where the timeout fell"
+    );
     let res = call(
         &router,
         Method::POST,

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE sessions\n            SET last_seen_at = now(), expires_at = LEAST(expires_at, COALESCE($2, expires_at))\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dab8d781c86bcddd06ce2f7f807304081135c1ab3514b45456ee74720c18f950"
+}
