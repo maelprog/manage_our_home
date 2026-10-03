@@ -53,6 +53,24 @@ fn last_seen_needs_refresh(now: DateTime<Utc>, last_seen_at: DateTime<Utc>) -> b
     last_seen_at + Duration::minutes(LAST_SEEN_REFRESH_MINUTES) < now
 }
 
+/// Whether this request rewrites `last_seen_at` (#226): past the refresh
+/// interval, unless the account is a superadmin's and the session has sat
+/// unused past the admin idle timeout. Rewriting it then — on `/auth/me`,
+/// which `apps/web` asks before every page, or on any member route — would
+/// make the session good for `/admin/*` again, and the idle cap would only
+/// ever refuse one request. Left as it is, `last_seen_at` keeps dating the
+/// last activity the admin routes counted. The price, for such a session:
+/// the member routes keep accepting it only until `SESSION_IDLE_TIMEOUT_DAYS`
+/// after that date, however much it is used meanwhile.
+fn refreshes_last_seen(
+    now: DateTime<Utc>,
+    last_seen_at: DateTime<Utc>,
+    is_superadmin: bool,
+) -> bool {
+    last_seen_needs_refresh(now, last_seen_at)
+        && !(is_superadmin && crate::user_admin::superadmin_session_is_idle(now, last_seen_at))
+}
+
 /// What a session opens (#289), from the session's `restricted` flag and
 /// the account's `deactivated_at` / `deleted_at`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -298,7 +316,7 @@ where
         return Err(AppError::Unauthorized);
     }
 
-    if last_seen_needs_refresh(now, row.last_seen_at) {
+    if refreshes_last_seen(now, row.last_seen_at, row.is_superadmin) {
         sqlx::query!(
             "UPDATE sessions SET last_seen_at = now() WHERE id = $1",
             row.session_id
@@ -974,6 +992,37 @@ mod tests {
         let later = at("2026-09-19T12:05:00Z");
         assert!(!is_idle(now, later));
         assert!(!last_seen_needs_refresh(now, later));
+    }
+
+    // -- refreshes_last_seen (#226) ----------------------------------------
+
+    /// A member's session is refreshed past the interval however long it
+    /// sat unused, up to the 7 days of #195.
+    #[test]
+    fn a_member_session_is_refreshed_past_the_interval_whatever_its_idle_time() {
+        let now = at("2026-10-03T12:00:00Z");
+        assert!(refreshes_last_seen(now, at("2026-10-03T10:30:00Z"), false));
+        assert!(refreshes_last_seen(now, at("2026-10-01T12:00:00Z"), false));
+        assert!(!refreshes_last_seen(now, at("2026-10-03T11:30:00Z"), false));
+    }
+
+    /// Within the admin idle timeout, a superadmin's session is refreshed
+    /// like any other.
+    #[test]
+    fn a_superadmin_session_used_within_two_hours_is_refreshed() {
+        let now = at("2026-10-03T12:00:00Z");
+        assert!(refreshes_last_seen(now, at("2026-10-03T10:30:00Z"), true));
+        assert!(refreshes_last_seen(now, at("2026-10-03T10:00:00Z"), true));
+        assert!(!refreshes_last_seen(now, at("2026-10-03T11:30:00Z"), true));
+    }
+
+    /// Past it, no request refreshes it — `/auth/me` or a member route
+    /// included — or the next admin request would find it fresh again.
+    #[test]
+    fn a_superadmin_session_idle_past_two_hours_is_never_refreshed() {
+        let now = at("2026-10-03T12:00:00Z");
+        assert!(!refreshes_last_seen(now, at("2026-10-03T09:59:59Z"), true));
+        assert!(!refreshes_last_seen(now, at("2026-10-01T12:00:00Z"), true));
     }
 
     // -- active_sessions (#225) --------------------------------------------

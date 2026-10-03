@@ -29,7 +29,16 @@ pub const SUPERADMIN_SESSION_MAX_AGE_HOURS: i64 = 12;
 /// 7 days of #195. Read off the same `last_seen_at`, which is only
 /// rewritten once an hour: a superadmin session can be refused after a
 /// little over one hour of actual inactivity, never during constant use.
+/// Once past it, `load_session` no longer rewrites `last_seen_at`
+/// (`refreshes_last_seen`), so no later request makes the session good for
+/// the admin routes again.
 pub const SUPERADMIN_IDLE_TIMEOUT_HOURS: i64 = 2;
+
+/// Whether a session last used at `last_seen_at` has sat unused past
+/// [`SUPERADMIN_IDLE_TIMEOUT_HOURS`]. The bound itself is still valid.
+pub(crate) fn superadmin_session_is_idle(now: DateTime<Utc>, last_seen_at: DateTime<Utc>) -> bool {
+    last_seen_at + Duration::hours(SUPERADMIN_IDLE_TIMEOUT_HOURS) < now
+}
 
 /// Whether a valid session is recent enough for a superadmin action
 /// (#226): opened at most [`SUPERADMIN_SESSION_MAX_AGE_HOURS`] ago and
@@ -42,7 +51,7 @@ pub(crate) fn superadmin_session_is_fresh(
     last_seen_at: DateTime<Utc>,
 ) -> bool {
     created_at + Duration::hours(SUPERADMIN_SESSION_MAX_AGE_HOURS) >= now
-        && last_seen_at + Duration::hours(SUPERADMIN_IDLE_TIMEOUT_HOURS) >= now
+        && !superadmin_session_is_idle(now, last_seen_at)
 }
 
 /// `AuthUser` plus `users.is_superadmin = true`, else 403. Only handlers

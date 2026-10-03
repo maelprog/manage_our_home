@@ -369,8 +369,29 @@ async fn an_old_or_idle_superadmin_session_is_refused_on_admin_routes_only(db: P
     .unwrap();
     let res = call(&router, Method::GET, "/admin/groups", Some(&idle), None).await;
     assert_status(&res, StatusCode::UNAUTHORIZED);
-    let res = call(&router, Method::GET, "/auth/me", Some(&idle), None).await;
-    assert_status(&res, StatusCode::OK);
+    // No request revives it for the admin routes: neither a second admin
+    // request, nor a member request in between — `apps/web` asks
+    // `/auth/me` before every `/admin` page.
+    let res = call(&router, Method::GET, "/admin/groups", Some(&idle), None).await;
+    assert_status(&res, StatusCode::UNAUTHORIZED);
+    for path in ["/auth/me", "/groups"] {
+        let res = call(&router, Method::GET, path, Some(&idle), None).await;
+        assert_status(&res, StatusCode::OK);
+        let res = call(&router, Method::GET, "/admin/users", Some(&idle), None).await;
+        assert_status(&res, StatusCode::UNAUTHORIZED);
+    }
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/admin/users/{target_id}/deactivate"),
+        Some(&idle),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::UNAUTHORIZED);
+    // Nor does the age cap lift after member requests on the old session.
+    let res = call(&router, Method::GET, "/admin/groups", Some(&old), None).await;
+    assert_status(&res, StatusCode::UNAUTHORIZED);
 
     // Just within both bounds.
     let recent = login(&router, email, password).await;

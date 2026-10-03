@@ -60,6 +60,12 @@ pub(crate) async fn admin_header(
 /// `GET /auth/me` still accepts that session; logging in again is the
 /// reauthentication. The session is ended first — `/login` turns away a
 /// visitor whose session is still live — and the login page says why.
+///
+/// This happens on a GET too, which is a side effect on a safe method. It is
+/// bounded: only a session apps/api already refuses on `/admin/*` is ended,
+/// a fresh one gets its page. The most a cross-site GET can trigger this
+/// way is logging out a superadmin whose session the admin routes no longer
+/// accept, who would have to log in again to use them anyway.
 pub(crate) const REAUTH_LOGIN: &str = "/login?reauth=admin";
 
 pub(crate) async fn reauthenticate(

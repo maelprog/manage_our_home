@@ -148,6 +148,18 @@ test.describe("User admin — session cap (#226)", () => {
     await page.goto("/admin/groups");
     await expect(page.getByRole("heading", { name: "Administration — Familles" })).toBeVisible();
   });
+
+  test("a superadmin session unused for 3 hours is sent to log in again", async ({ browser }) => {
+    const { page, email } = await newSuperadmin(browser, "e2e-admin-idle", "Super Idle");
+    await ageSessions(email, 3);
+
+    // A member page first: it must not make the session good for /admin again.
+    await page.goto("/");
+    await expect(page.getByRole("link", { name: "Admin" })).toBeVisible();
+    await page.goto("/admin/groups");
+    await expect(page).toHaveURL(/\/login\?reauth=admin$/);
+    await expect(page.getByText("Votre session d'administration a expiré")).toBeVisible();
+  });
 });
 
 test.describe("User admin — deactivate", () => {
