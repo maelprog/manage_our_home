@@ -36,7 +36,7 @@
 //     digest y est exigé ;
 //   - un digest mal formé (`@sha256:zz`), au lieu de l'ignorer ;
 //   - deux pins différents pour la MÊME image, dans un fichier ou d'un
-//     fichier à l'autre (les trois jobs de `ci.yml` montent la même pile, et
+//     fichier à l'autre (les jobs de `ci.yml` montent la même pile, et
 //     c'est la pile que le compose fait tourner : un pin laissé derrière
 //     teste autre chose) ;
 //   - un fichier fourni où l'une des images attendues n'est plus trouvée :

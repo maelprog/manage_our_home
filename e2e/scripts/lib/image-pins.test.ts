@@ -233,8 +233,8 @@ test("accepte une référence épinglée entre guillemets", () => {
 });
 
 test("refuse une divergence de pin entre deux jobs du même fichier", () => {
-  // Les trois jobs de ci.yml montent la même pile : un job laissé derrière
-  // teste autre chose que les deux autres.
+  // Les jobs de ci.yml montent la même pile : un job laissé derrière teste
+  // autre chose que les autres.
   const other = "@sha256:" + "9".repeat(64);
   const ci = CI_OK + CI_OK.replace(SERVER_DIGEST, other);
   const violations = minioPinViolations(files(ci, COMPOSE_OK));

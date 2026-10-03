@@ -33,8 +33,8 @@ cargo test
 
 `DATABASE_URL`'s role is usually a superuser, which bypasses RLS, and by
 default the handlers under test use it too. To drive them as the
-`NOSUPERUSER NOBYPASSRLS` runtime role instead, as CI's `test-nobypassrls`
-job does (#213), create that role with the default privileges the job
+`NOSUPERUSER NOBYPASSRLS` runtime role instead, as CI's `test` job does
+(#213, #311), create that role with the default privileges the job
 declares in `template1`, then set `FLOW_TEST_RUNTIME_ROLE` and
 `FLOW_TEST_RUNTIME_ROLE_PASSWORD`. Only the handlers' pool switches role
 (`runtime_pool` in `tests/common/mod.rs`): migrations, fixtures and
@@ -129,8 +129,9 @@ before the server starts listening; it is not held for the life of the
 process.
 
 `infra/` sets this up for the shipped compose stack:
-`postgres/init/01-roles.sh` creates both `migration_role` and `admin_role` at
-first boot of the postgres volume, and `docker-compose.yml` passes
+`postgres/init/01-roles.sh` creates `app_role`, `migration_role` and
+`admin_role` at first boot of the postgres volume, and `docker-compose.yml`
+passes `DATABASE_URL` (as `app_role`, since #311) and
 `MIGRATION_DATABASE_URL` to the api service.
 
 ### The account export's two functions (#140) — narrow questions across families

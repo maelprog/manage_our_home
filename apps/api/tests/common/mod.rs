@@ -80,7 +80,7 @@ pub const TEST_VAPID_PRIVATE_KEY: &str = "Yh8ZQ5n5k3t3c0mKXJ6tJd0w9p1n8uQ2xB4vV7
 /// reads through the bare pool, without `app.user_id` set, sees the whole
 /// database there and nothing in production (#113, #207, #208).
 ///
-/// When `FLOW_TEST_RUNTIME_ROLE` is set (CI job `test-nobypassrls`, #213),
+/// When `FLOW_TEST_RUNTIME_ROLE` is set (CI job `test`, #213, #311),
 /// the handlers reach the same throwaway database as that role instead, as
 /// apps/api/README.md prescribes for `DATABASE_URL`. The test body keeps the
 /// harness pool for its fixtures and assertions, and so does `admin_db`,
