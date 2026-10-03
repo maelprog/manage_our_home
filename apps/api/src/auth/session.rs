@@ -225,6 +225,12 @@ pub struct AuthUser {
     /// like `is_superadmin`, so requesting or cancelling takes effect on the next
     /// page load.
     pub deletion_requested_at: Option<chrono::DateTime<Utc>>,
+    /// When the session was opened (`sessions.created_at`), for the
+    /// superadmin session cap (#226, `SuperAdminUser`).
+    pub session_created_at: DateTime<Utc>,
+    /// The session's `last_seen_at` as this request found it, before the
+    /// refresh, for the same cap.
+    pub session_last_seen_at: DateTime<Utc>,
 }
 
 /// The session the request's cookie names, with the account it belongs to,
@@ -240,6 +246,8 @@ struct LoadedSession {
     is_superadmin: bool,
     has_password: bool,
     deletion_requested_at: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+    last_seen_at: DateTime<Utc>,
     access: SessionAccess,
 }
 
@@ -259,8 +267,8 @@ where
 
     let row = sqlx::query!(
         r#"
-        SELECT s.id as session_id, s.expires_at, s.revoked_at, s.last_seen_at, s.restricted,
-               u.id as user_id, u.email, u.display_name, u.email_verified,
+        SELECT s.id as session_id, s.created_at, s.expires_at, s.revoked_at, s.last_seen_at,
+               s.restricted, u.id as user_id, u.email, u.display_name, u.email_verified,
                u.is_superadmin, u.deleted_at, u.deactivated_at, u.deletion_requested_at,
                (u.password_hash IS NOT NULL) as "has_password!"
         FROM sessions s
@@ -309,6 +317,8 @@ where
         is_superadmin: row.is_superadmin,
         has_password: row.has_password,
         deletion_requested_at: row.deletion_requested_at,
+        created_at: row.created_at,
+        last_seen_at: row.last_seen_at,
         access,
     })
 }
@@ -376,6 +386,8 @@ where
             is_superadmin: session.is_superadmin,
             has_password: session.has_password,
             deletion_requested_at: session.deletion_requested_at,
+            session_created_at: session.created_at,
+            session_last_seen_at: session.last_seen_at,
         })
     }
 }

@@ -578,6 +578,13 @@ pub async fn get(
 /// `/login` — matching AC #7 ("Logout clears the session cookie and
 /// redirects to /login").
 pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    logout_to(&state, &headers, "/login").await
+}
+
+/// [`logout`]'s work, landing on `to`: the `/admin` pages send a superadmin
+/// whose session the admin routes no longer accept to `/login` with a
+/// notice (#226).
+pub(crate) async fn logout_to(state: &AppState, headers: &HeaderMap, to: &str) -> Response {
     let cookie_header = headers
         .get(axum::http::header::COOKIE)
         .and_then(|v| v.to_str().ok());
@@ -596,7 +603,7 @@ pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Respon
             response_headers.insert(axum::http::header::SET_COOKIE, set_cookie.clone());
         }
     }
-    (response_headers, Redirect::to("/login")).into_response()
+    (response_headers, Redirect::to(to)).into_response()
 }
 
 /// Landing page for the post-Google-OAuth redirect. In practice

@@ -54,6 +54,21 @@ pub(crate) async fn admin_header(
     header
 }
 
+/// Where an `/admin` page sends a superadmin whose session the `/admin/*` API
+/// routes refuse with a 401 (#226: opened more than 12 hours ago, or unused
+/// for more than 2). `CurrentSuperAdmin` let the request through, since
+/// `GET /auth/me` still accepts that session; logging in again is the
+/// reauthentication. The session is ended first — `/login` turns away a
+/// visitor whose session is still live — and the login page says why.
+pub(crate) const REAUTH_LOGIN: &str = "/login?reauth=admin";
+
+pub(crate) async fn reauthenticate(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> axum::response::Response {
+    crate::routes::home::logout_to(state, headers, REAUTH_LOGIN).await
+}
+
 // -- shared error pages -----------------------------------------------------
 
 pub(crate) fn service_unavailable_page() -> axum::response::Html<String> {

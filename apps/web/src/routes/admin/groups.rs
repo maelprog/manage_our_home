@@ -12,7 +12,9 @@ use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentSuperAdmin;
 use crate::state::{api_request_auth, AppState};
 
-use super::{admin_cookie, admin_header, format_admin_datetime, service_unavailable_page};
+use super::{
+    admin_cookie, admin_header, format_admin_datetime, reauthenticate, service_unavailable_page,
+};
 
 fn group_row(group: &AdminGroupResponse) -> String {
     format!(
@@ -37,9 +39,10 @@ pub async fn get(
     let cookie = admin_cookie(&headers);
     let header = admin_header(&state, &headers, &me, "/admin/groups").await;
 
-    // A transport error takes down the page; any non-200 renders an empty table
-    // rather than leaking the JSON body (the route is already superadmin-gated,
-    // so a 403 here is unreachable — defensive).
+    // A transport error takes down the page; a 401 is a session too old for
+    // the admin routes (#226), sent to log in again; any other non-200
+    // renders an empty table rather than leaking the JSON body (the route is
+    // already superadmin-gated, so a 403 here is unreachable — defensive).
     let groups: Vec<AdminGroupResponse> = match api_request_auth(
         &state,
         reqwest::Method::GET,
@@ -53,6 +56,9 @@ pub async fn get(
             serde_json::from_value::<AdminGroupsResponse>(resp.body)
                 .map(|r| r.groups)
                 .unwrap_or_default()
+        }
+        Ok(resp) if resp.status == reqwest::StatusCode::UNAUTHORIZED => {
+            return reauthenticate(&state, &headers).await;
         }
         Ok(_) => Vec::new(),
         Err(_) => return service_unavailable_page().into_response(),

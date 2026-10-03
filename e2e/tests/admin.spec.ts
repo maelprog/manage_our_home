@@ -1,5 +1,5 @@
 import { expect, Page, test } from "@playwright/test";
-import { fetchVerificationToken, makeSuperadmin } from "../lib/db";
+import { ageSessions, fetchVerificationToken, makeSuperadmin } from "../lib/db";
 
 // Front epic F9 — User admin (issue #24): the superadmin support screens.
 // Read-only look-up of every family (/admin/groups) and every account
@@ -121,6 +121,32 @@ test.describe("User admin — support look-up", () => {
     const { page } = await newSuperadmin(browser, "e2e-admin-super404", "Super NotFound");
     await page.goto(`/admin/users/${crypto.randomUUID()}`);
     await expect(page.getByRole("heading", { name: "Utilisateur introuvable" })).toBeVisible();
+  });
+});
+
+test.describe("User admin — session cap (#226)", () => {
+  test("a superadmin session older than 12 hours is sent to log in again", async ({ browser }) => {
+    const { page, email } = await newSuperadmin(browser, "e2e-admin-capped", "Super Capped");
+    await page.goto("/admin/users");
+    await expect(page.getByRole("heading", { name: "Administration — Utilisateurs" })).toBeVisible();
+
+    await ageSessions(email, 13);
+
+    // The admin page ends the session and says why on the login page.
+    await page.goto("/admin/users");
+    await expect(page).toHaveURL(/\/login\?reauth=admin$/);
+    await expect(page.getByText("Votre session d'administration a expiré")).toBeVisible();
+    await page.goto("/");
+    await expect(page).toHaveURL(/\/login$/);
+
+    // Logging in again opens the admin pages.
+    await page.goto("/login");
+    await page.getByLabel("Email").fill(email);
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill(PASSWORD);
+    await page.getByRole("button", { name: "Se connecter" }).click();
+    await expect(page).toHaveURL("/");
+    await page.goto("/admin/groups");
+    await expect(page.getByRole("heading", { name: "Administration — Familles" })).toBeVisible();
   });
 });
 

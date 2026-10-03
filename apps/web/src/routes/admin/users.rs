@@ -24,7 +24,7 @@ use crate::state::{api_request_auth, AppState};
 use super::{
     admin_cookie, admin_header, can_deactivate, can_reactivate, can_refuse_reactivation,
     forbidden_page, format_admin_datetime, format_admin_datetime_opt, purge_outlook,
-    service_unavailable_page, user_not_found_page, user_status_label, PurgeOutlook,
+    reauthenticate, service_unavailable_page, user_not_found_page, user_status_label, PurgeOutlook,
 };
 
 /// Inline `onsubmit`s of the deactivate and refuse forms. Named constants
@@ -104,18 +104,32 @@ fn user_row(user: &AdminUserResponse) -> String {
     )
 }
 
-/// Fetches the full account list. `Ok(None)` means a transport failure (caller
-/// renders the service-unavailable page); any non-200 degrades to an empty list
+/// Why [`fetch_users`] has no list to give.
+enum FetchError {
+    /// A transport failure: the caller renders the service-unavailable page.
+    Unavailable,
+    /// A 401: the session is too old for the admin routes (#226), the caller
+    /// sends the superadmin to log in again.
+    Reauthenticate,
+}
+
+/// Fetches the full account list. Any other non-200 degrades to an empty list
 /// rather than leaking JSON (the route is already superadmin-gated).
-async fn fetch_users(state: &AppState, cookie: Option<&str>) -> Result<Vec<AdminUserResponse>, ()> {
+async fn fetch_users(
+    state: &AppState,
+    cookie: Option<&str>,
+) -> Result<Vec<AdminUserResponse>, FetchError> {
     match api_request_auth(state, reqwest::Method::GET, "/admin/users", cookie, None).await {
         Ok(resp) if resp.status == reqwest::StatusCode::OK => {
             Ok(serde_json::from_value::<AdminUsersResponse>(resp.body)
                 .map(|r| r.users)
                 .unwrap_or_default())
         }
+        Ok(resp) if resp.status == reqwest::StatusCode::UNAUTHORIZED => {
+            Err(FetchError::Reauthenticate)
+        }
         Ok(_) => Ok(Vec::new()),
-        Err(_) => Err(()),
+        Err(_) => Err(FetchError::Unavailable),
     }
 }
 
@@ -130,7 +144,8 @@ pub async fn get(
 
     let users = match fetch_users(&state, cookie.as_deref()).await {
         Ok(users) => users,
-        Err(()) => return service_unavailable_page().into_response(),
+        Err(FetchError::Unavailable) => return service_unavailable_page().into_response(),
+        Err(FetchError::Reauthenticate) => return reauthenticate(&state, &headers).await,
     };
 
     let notice = notice_html(query.notice.as_deref());
@@ -178,7 +193,8 @@ pub async fn detail(
 
     let users = match fetch_users(&state, cookie.as_deref()).await {
         Ok(users) => users,
-        Err(()) => return service_unavailable_page().into_response(),
+        Err(FetchError::Unavailable) => return service_unavailable_page().into_response(),
+        Err(FetchError::Reauthenticate) => return reauthenticate(&state, &headers).await,
     };
     let Some(user) = users.into_iter().find(|u| u.id == user_id) else {
         return user_not_found_page().into_response();
@@ -298,7 +314,8 @@ pub async fn detail(
 /// `POST /admin/users/:id/deactivate` on apps/api (revokes sessions + sets
 /// `deactivated_at` + audit row, all server-side). 204 → PRG to the list with
 /// a success banner; 404 → not-found page (unknown, already deactivated or
-/// purged); 403 → forbidden (unreachable once gated; defensive); any other
+/// purged); 403 → forbidden (unreachable once gated; defensive); 401 → a
+/// session too old for the admin routes, sent to log in again (#226); any other
 /// status → the list with a service-unavailable banner; a transport error →
 /// the service page.
 pub async fn deactivate(
@@ -368,6 +385,9 @@ async fn relay_action(
         }
         Ok(resp) if resp.status == reqwest::StatusCode::FORBIDDEN => {
             forbidden_page().into_response()
+        }
+        Ok(resp) if resp.status == reqwest::StatusCode::UNAUTHORIZED => {
+            reauthenticate(state, headers).await
         }
         Ok(_) => Redirect::to("/admin/users?error=unavailable").into_response(),
         Err(_) => service_unavailable_page().into_response(),

@@ -269,7 +269,9 @@ async fn admin_request_refreshes_last_seen_at(db: PgPool) {
     make_superadmin(&db, "seen-super@example.test").await;
     let session_id = session_id_of(&db, &cookie).await;
 
-    sqlx::query("UPDATE sessions SET last_seen_at = now() - interval '1 day' WHERE id = $1")
+    // Past the hourly refresh interval, within the 2 hours a superadmin
+    // session may stay unused on the admin routes (#226).
+    sqlx::query("UPDATE sessions SET last_seen_at = now() - interval '90 minutes' WHERE id = $1")
         .bind(session_id)
         .execute(&db)
         .await
@@ -286,6 +288,129 @@ async fn admin_request_refreshes_last_seen_at(db: PgPool) {
     .await
     .unwrap();
     assert!(!still_stale, "an admin request must refresh last_seen_at");
+}
+
+/// #226: the admin routes refuse a superadmin session opened more than
+/// 12 hours ago, or unused for more than 2 hours, with the bare 401 — while
+/// the same session keeps opening the member routes. A fresh login opens
+/// the admin routes again.
+#[sqlx::test]
+async fn an_old_or_idle_superadmin_session_is_refused_on_admin_routes_only(db: PgPool) {
+    let router = test_router(db.clone());
+    let email = "capped-super@example.test";
+    let password = "capped-password1";
+    register_verify_login(
+        &router,
+        &db,
+        "capped-target@example.test",
+        "target-password1",
+    )
+    .await;
+    let target_id: uuid::Uuid = sqlx::query_scalar!(
+        "SELECT id FROM users WHERE email = $1",
+        "capped-target@example.test"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+
+    // Opened 12 h 1 min ago, used a minute ago.
+    let old = register_verify_login(&router, &db, email, password).await;
+    make_superadmin(&db, email).await;
+    let res = call(&router, Method::GET, "/admin/users", Some(&old), None).await;
+    assert_status(&res, StatusCode::OK);
+    sqlx::query(
+        "UPDATE sessions SET created_at = now() - interval '12 hours 1 minute', \
+         last_seen_at = now() - interval '1 minute' WHERE id = $1",
+    )
+    .bind(session_id_of(&db, &old).await)
+    .execute(&db)
+    .await
+    .unwrap();
+    for path in ["/admin/groups", "/admin/users"] {
+        let res = call(&router, Method::GET, path, Some(&old), None).await;
+        assert_status(&res, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            json_body(res).await,
+            serde_json::json!({"error": "unauthorized"})
+        );
+    }
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/admin/users/{target_id}/deactivate"),
+        Some(&old),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::UNAUTHORIZED);
+    let deactivated: bool =
+        sqlx::query_scalar("SELECT deactivated_at IS NOT NULL FROM users WHERE id = $1")
+            .bind(target_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert!(!deactivated, "a refused admin request must change nothing");
+    let res = call(&router, Method::GET, "/auth/me", Some(&old), None).await;
+    assert_status(&res, StatusCode::OK);
+    let res = call(&router, Method::GET, "/groups", Some(&old), None).await;
+    assert_status(&res, StatusCode::OK);
+
+    // Opened 3 h ago, unused for 2 h 1 min: idle for an admin session,
+    // nowhere near the 7 days of #195.
+    let idle = login(&router, email, password).await;
+    sqlx::query(
+        "UPDATE sessions SET created_at = now() - interval '3 hours', \
+         last_seen_at = now() - interval '2 hours 1 minute' WHERE id = $1",
+    )
+    .bind(session_id_of(&db, &idle).await)
+    .execute(&db)
+    .await
+    .unwrap();
+    let res = call(&router, Method::GET, "/admin/groups", Some(&idle), None).await;
+    assert_status(&res, StatusCode::UNAUTHORIZED);
+    let res = call(&router, Method::GET, "/auth/me", Some(&idle), None).await;
+    assert_status(&res, StatusCode::OK);
+
+    // Just within both bounds.
+    let recent = login(&router, email, password).await;
+    sqlx::query(
+        "UPDATE sessions SET created_at = now() - interval '11 hours 59 minutes', \
+         last_seen_at = now() - interval '1 hour 59 minutes' WHERE id = $1",
+    )
+    .bind(session_id_of(&db, &recent).await)
+    .execute(&db)
+    .await
+    .unwrap();
+    let res = call(&router, Method::GET, "/admin/groups", Some(&recent), None).await;
+    assert_status(&res, StatusCode::OK);
+
+    // Logging in again is the way back in.
+    let fresh = login(&router, email, password).await;
+    let res = call(&router, Method::GET, "/admin/users", Some(&fresh), None).await;
+    assert_status(&res, StatusCode::OK);
+}
+
+/// #226: the cap is a superadmin's. A member's session of the same age
+/// still gets the 403 on the admin routes — the flag is checked first — and
+/// keeps opening everything else.
+#[sqlx::test]
+async fn an_old_member_session_still_gets_403_on_admin_routes(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie =
+        register_verify_login(&router, &db, "old-plain@example.test", "old-password1").await;
+    sqlx::query(
+        "UPDATE sessions SET created_at = now() - interval '20 days', \
+         last_seen_at = now() - interval '3 days' WHERE id = $1",
+    )
+    .bind(session_id_of(&db, &cookie).await)
+    .execute(&db)
+    .await
+    .unwrap();
+    let res = call(&router, Method::GET, "/admin/groups", Some(&cookie), None).await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+    let res = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
+    assert_status(&res, StatusCode::OK);
 }
 
 /// AC #2, #4, #6: a superadmin sees groups from families they are not a
