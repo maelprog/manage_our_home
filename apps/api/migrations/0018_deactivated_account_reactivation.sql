@@ -28,10 +28,12 @@ COMMENT ON TABLE account_reactivation_requests IS
 
 -- Controller's decision of 2026-09-29: only the first request since the
 -- deactivation suspends the purge. After a refusal the holder may ask
--- again, but the deadline runs. Cleared by a deactivation, a reactivation
--- and the purge.
+-- again, but the deadline runs. The first refusal also puts the purge 30
+-- days after it at least (issue #296); a later refusal leaves this column
+-- as it is, so that postponement happens once (decision of 2026-10-02,
+-- issue #313). Cleared by a deactivation, a reactivation and the purge.
 ALTER TABLE users
     ADD COLUMN reactivation_refused_at TIMESTAMPTZ;
 
 COMMENT ON COLUMN users.reactivation_refused_at IS
-    'When the superadmin last refused a reactivation request since the account was deactivated (issue #289). Set: a new request no longer suspends the purge.';
+    'When the superadmin first refused a reactivation request since the account was deactivated (issue #289). Set: a new request no longer suspends the purge, and the purge comes 30 days after it at least (issue #296). A later refusal does not rewrite it (issue #313).';

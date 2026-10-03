@@ -379,10 +379,10 @@ pub struct PurgeClock {
     /// A reactivation request from the holder awaits the superadmin's
     /// decision (`account_reactivation_requests`, #289).
     pub reactivation_requested: bool,
-    /// When the superadmin last refused a reactivation request since the
+    /// When the superadmin first refused a reactivation request since the
     /// account was deactivated (`users.reactivation_refused_at`, #289): a
     /// later request no longer suspends anything, and the purge waits 30
-    /// days after it (#296).
+    /// days after it (#296) — after the first refusal only (#313).
     pub reactivation_refused_at: Option<DateTime<Utc>>,
 }
 
@@ -394,8 +394,9 @@ pub struct PurgeClock {
 /// plus those 30 days, so an address that bounces for good does not keep
 /// the account forever.
 ///
-/// Nor is it ever less than 30 days after the superadmin last refused a
-/// reactivation request (`refused_at`, #296). The refusal clears the
+/// Nor is it ever less than 30 days after the superadmin first refused a
+/// reactivation request (`refused_at`, #296; a later refusal does not
+/// move it, [`record_refusal`], #313). The refusal clears the
 /// warning; once that cap has passed, the purge would otherwise be due at
 /// once — the new warning failing, or the refusal landing between a pass's
 /// warnings and its purge, and the holder never warned since.
@@ -413,6 +414,30 @@ pub fn deactivation_purge_at(
     match refused_at {
         Some(refused_at) => after_notice.max(refused_at + notice),
         None => after_notice,
+    }
+}
+
+/// The two `users` stamps a refusal of a reactivation request may rewrite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RefusalStamps {
+    pub reactivation_refused_at: Option<DateTime<Utc>>,
+    pub deactivation_notice_sent_at: Option<DateTime<Utc>>,
+}
+
+/// What a refusal at `now` leaves of `before`. Only the first refusal since
+/// the deactivation counts: it is dated, and the warning is cleared so that
+/// the holder is warned afresh — which postpones the purge once, to 30 days
+/// after that refusal or that new warning at least
+/// ([`deactivation_purge_at`]). A later refusal rewrites nothing, so it
+/// moves the purge date no further (controller's decision of 2026-10-02,
+/// #313).
+pub fn record_refusal(before: RefusalStamps, now: DateTime<Utc>) -> RefusalStamps {
+    match before.reactivation_refused_at {
+        Some(_) => before,
+        None => RefusalStamps {
+            reactivation_refused_at: Some(now),
+            deactivation_notice_sent_at: None,
+        },
     }
 }
 
@@ -783,6 +808,76 @@ mod tests {
         assert!(!purge_due(at(2028, 6, 1), &c));
         assert!(!purge_due(at(2028, 6, 30), &c));
         assert!(purge_due(at(2028, 7, 1), &c));
+    }
+
+    // -- record_refusal (#313) --------------------------------------------------
+
+    fn stamps(refused: Option<DateTime<Utc>>, notice: Option<DateTime<Utc>>) -> RefusalStamps {
+        RefusalStamps {
+            reactivation_refused_at: refused,
+            deactivation_notice_sent_at: notice,
+        }
+    }
+
+    /// The purge date of an account deactivated on 10 March 2026 with
+    /// these stamps.
+    fn purge_on(s: RefusalStamps) -> DateTime<Utc> {
+        deactivation_purge_at(
+            at(2026, 3, 10),
+            s.deactivation_notice_sent_at,
+            s.reactivation_refused_at,
+        )
+    }
+
+    /// The first refusal opens the one 30-day postponement: it is dated,
+    /// and the warning is cleared so that the holder is warned afresh.
+    #[test]
+    fn a_first_refusal_is_dated_and_clears_the_warning() {
+        assert_eq!(
+            record_refusal(stamps(None, Some(at(2028, 2, 9))), at(2028, 6, 1)),
+            stamps(Some(at(2028, 6, 1)), None)
+        );
+    }
+
+    /// A later refusal keeps the first one's date and the warning sent
+    /// since: there is one postponement, not one per refusal.
+    #[test]
+    fn a_later_refusal_rewrites_nothing() {
+        let after_first = stamps(Some(at(2028, 6, 1)), Some(at(2028, 6, 2)));
+        assert_eq!(record_refusal(after_first, at(2028, 6, 20)), after_first);
+        let unwarned = stamps(Some(at(2028, 6, 1)), None);
+        assert_eq!(record_refusal(unwarned, at(2028, 6, 20)), unwarned);
+    }
+
+    #[test]
+    fn a_second_refusal_before_the_new_warning_does_not_move_the_purge() {
+        let first = record_refusal(stamps(None, Some(at(2028, 2, 9))), at(2028, 6, 1));
+        assert_eq!(purge_on(first), at(2028, 7, 1));
+        let second = record_refusal(first, at(2028, 6, 25));
+        assert_eq!(purge_on(second), at(2028, 7, 1));
+    }
+
+    #[test]
+    fn a_second_refusal_after_the_new_warning_does_not_move_the_purge() {
+        let first = record_refusal(stamps(None, Some(at(2028, 2, 9))), at(2028, 2, 20));
+        let warned = RefusalStamps {
+            deactivation_notice_sent_at: Some(at(2028, 2, 21)),
+            ..first
+        };
+        assert_eq!(purge_on(warned), at(2028, 3, 22));
+        let second = record_refusal(warned, at(2028, 3, 15));
+        assert_eq!(purge_on(second), at(2028, 3, 22));
+    }
+
+    /// The floor #296 set still holds after any number of refusals: never
+    /// less than 30 days after the first one.
+    #[test]
+    fn the_purge_stays_30_days_after_the_first_refusal_at_least() {
+        let mut s = record_refusal(stamps(None, None), at(2028, 6, 1));
+        for day in [5, 10, 29] {
+            s = record_refusal(s, at(2028, 6, day));
+            assert_eq!(purge_on(s), at(2028, 7, 1));
+        }
     }
 
     #[test]
