@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT reactivation_refused_at, deactivation_notice_sent_at, now() AS \"now!\"\n           FROM users WHERE id = $1 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "reactivation_refused_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "reactivation_refused_at"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "deactivation_notice_sent_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "deactivation_notice_sent_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "now!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      null
+    ]
+  },
+  "hash": "fcabdf1a2f866039f3172c4e6395d56245a171c797df903058f74b7f4a79618d"
+}

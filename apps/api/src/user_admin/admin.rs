@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use crate::audit;
 use crate::error::{AppError, AppResult};
+use crate::jobs::account_purge::{record_refusal, RefusalStamps};
 use crate::user_admin::SuperAdminUser;
 use crate::AppState;
 
@@ -31,7 +32,8 @@ pub struct AdminUserResponse {
     /// The holder's pending reactivation request, if any (#289).
     pub reactivation_requested_at: Option<DateTime<Utc>>,
     pub reactivation_message: Option<String>,
-    /// When a request was last refused since the deactivation (#289).
+    /// When a request was first refused since the deactivation (#289); a
+    /// later refusal does not rewrite it (#313).
     pub reactivation_refused_at: Option<DateTime<Utc>>,
 }
 
@@ -229,15 +231,17 @@ pub async fn reactivate_user(
 /// Turns down the pending reactivation request of a deactivated account
 /// (#289): the request is deleted and the account stays deactivated. The
 /// purge 2 years after the deactivation, suspended while a first request
-/// was pending, applies again, and `reactivation_refused_at` is stamped: the
-/// holder may ask again, but a later request suspends nothing (arbitrage of
-/// 2026-09-29). The warning email is cleared so that, if it had already gone
-/// out, the holder is warned afresh once the purge is 30 days away or less,
-/// and the purge still comes at least 30 days after that warning — and at
-/// least 30 days after this refusal, whether the warning goes out or not
-/// (#296, `jobs::account_purge`). Each refusal does so anew. No pending
-/// request, or an account reactivated or purged since, is a 404. Traced in
-/// `audit_log`.
+/// was pending, applies again. The first refusal since the deactivation
+/// stamps `reactivation_refused_at`: the holder may ask again, but a later
+/// request suspends nothing (arbitrage of 2026-09-29). It also clears the
+/// warning email so that, if it had already gone out, the holder is warned
+/// afresh once the purge is 30 days away or less, and the purge still comes
+/// at least 30 days after that warning — and at least 30 days after this
+/// refusal, whether the warning goes out or not (#296). That postponement
+/// happens once: a later refusal deletes the request and rewrites nothing
+/// else, so it moves the purge date no further (#313,
+/// `jobs::account_purge::record_refusal`). No pending request, or an
+/// account reactivated or purged since, is a 404. Traced in `audit_log`.
 pub async fn refuse_reactivation(
     State(state): State<AppState>,
     actor: SuperAdminUser,
@@ -258,10 +262,28 @@ pub async fn refuse_reactivation(
         return Err(AppError::NotFound);
     }
 
-    sqlx::query!(
-        "UPDATE users SET deactivation_notice_sent_at = NULL, reactivation_refused_at = now()
-         WHERE id = $1",
+    // Locked so that the purge job's warning cannot land between the read
+    // and the write.
+    let row = sqlx::query!(
+        r#"SELECT reactivation_refused_at, deactivation_notice_sent_at, now() AS "now!"
+           FROM users WHERE id = $1 FOR UPDATE"#,
         target_user_id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    let after = record_refusal(
+        RefusalStamps {
+            reactivation_refused_at: row.reactivation_refused_at,
+            deactivation_notice_sent_at: row.deactivation_notice_sent_at,
+        },
+        row.now,
+    );
+    sqlx::query!(
+        "UPDATE users SET deactivation_notice_sent_at = $2, reactivation_refused_at = $3
+         WHERE id = $1",
+        target_user_id,
+        after.deactivation_notice_sent_at,
+        after.reactivation_refused_at
     )
     .execute(&mut *tx)
     .await?;

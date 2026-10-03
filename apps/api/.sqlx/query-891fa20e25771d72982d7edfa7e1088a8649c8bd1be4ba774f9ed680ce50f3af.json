@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users SET deactivation_notice_sent_at = $2, reactivation_refused_at = $3\n         WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "891fa20e25771d72982d7edfa7e1088a8649c8bd1be4ba774f9ed680ce50f3af"
+}

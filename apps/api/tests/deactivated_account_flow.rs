@@ -942,3 +942,70 @@ async fn a_deactivation_clears_any_recorded_refusal(db: PgPool) {
         "SELECT count(*) FROM users WHERE id = $1 AND reactivation_refused_at IS NOT NULL";
     assert_eq!(count(&db, refused, holder).await, 0);
 }
+
+/// Lets `days` go by for `user`'s deactivation, warning and refusal dates.
+async fn days_pass(db: &PgPool, user: Uuid, days: i32) {
+    sqlx::query(
+        "UPDATE users
+         SET deactivated_at = deactivated_at - make_interval(days => $2),
+             deactivation_notice_sent_at = deactivation_notice_sent_at - make_interval(days => $2),
+             reactivation_refused_at = reactivation_refused_at - make_interval(days => $2)
+         WHERE id = $1",
+    )
+    .bind(user)
+    .bind(days)
+    .execute(db)
+    .await
+    .unwrap();
+}
+
+/// #313: only the first refusal postpones the purge. A second one, 20 days
+/// later, sends no new warning and leaves the purge 30 days after the
+/// first refusal and its warning.
+#[sqlx::test]
+async fn a_second_refusal_does_not_postpone_the_purge_again(db: PgPool) {
+    let router = test_router(db.clone());
+    let admin = superadmin(&router, &db, "admin@example.test").await;
+    let holder = overdue_with_a_pending_request(&router, &db, &admin, "holder@example.test").await;
+    refuse(&router, &admin, holder).await;
+
+    let sent = std::sync::Mutex::new(Vec::<String>::new());
+    let record = |to: String, _: String, _: String| {
+        sent.lock().unwrap().push(to);
+        async { Ok::<(), anyhow::Error>(()) }
+    };
+    send_deactivation_notices(&db, "https://example.test/privacy-policy", &record)
+        .await
+        .unwrap();
+    assert_eq!(
+        sent.lock().unwrap().len(),
+        1,
+        "warned after the first refusal"
+    );
+
+    days_pass(&db, holder, 20).await;
+    let restricted = login_cookie(&router, "holder@example.test").await;
+    assert_eq!(
+        request(&router, &restricted, Some("Encore")).await,
+        StatusCode::CREATED
+    );
+    refuse(&router, &admin, holder).await;
+    let unchanged = "SELECT count(*) FROM users WHERE id = $1
+                       AND reactivation_refused_at < now() - interval '19 days'
+                       AND deactivation_notice_sent_at < now() - interval '19 days'";
+    assert_eq!(count(&db, unchanged, holder).await, 1);
+
+    send_deactivation_notices(&db, "https://example.test/privacy-policy", &record)
+        .await
+        .unwrap();
+    purge_due_accounts(&db).await.unwrap();
+    assert_eq!(sent.lock().unwrap().len(), 1, "no warning after the second");
+    assert!(
+        !purged(&db, holder).await,
+        "20 days after the first refusal"
+    );
+
+    days_pass(&db, holder, 10).await;
+    purge_due_accounts(&db).await.unwrap();
+    assert!(purged(&db, holder).await, "30 days after the first refusal");
+}
