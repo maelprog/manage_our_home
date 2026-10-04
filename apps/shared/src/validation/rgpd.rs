@@ -968,18 +968,20 @@ mod tests {
     /// assertion built on it has to be looked at.
     ///
     /// Two of them are the controller's identity (#131), filled by
-    /// `docs/v2-deployment.md` #16. The last three are the subprocessor
-    /// questions #136 left open on purpose: what contract actually binds the
-    /// email subprocessor, and which transfer mechanism — if any — covers it
-    /// and Google. Neither the policy nor the registre asserts an answer, and
-    /// `docs/v2-deployment.md` #18 is what closes them. They sit here because
+    /// `docs/v2-deployment.md` #16. The other three are the subprocessor
+    /// questions still open: what contract actually binds the email
+    /// subprocessor, and which transfer mechanism covers Google and the
+    /// browsers' push services. Neither the policy nor the registre asserts an
+    /// answer, and `docs/v2-deployment.md` #18 is what closes them. The email
+    /// relay's own transfer question is no longer one of them: Scaleway TEM
+    /// (#328) declares no processing outside the EU, and both documents say so
+    /// with a dated source instead of a placeholder. They sit here because
     /// the documents have to keep saying the same thing: a value filled in one
     /// and forgotten in the other turns this suite red.
     fn pending_release_values() -> Vec<String> {
         let mut values = pending_controller_values();
         values.extend([
             "cadre contractuel du sous-traitant email".to_string(),
-            "transferts hors UE du sous-traitant email".to_string(),
             "transferts hors UE de Google".to_string(),
             "transferts hors UE des services de notification".to_string(),
         ]);
@@ -989,7 +991,7 @@ mod tests {
     /// The controller's identity alone, in reading order: the two values the
     /// invitation email carries (art. 14(1)(a)) and the ones
     /// `docs/v2-deployment.md` #16 fills. The email says nothing about
-    /// subprocessors, so it must not be pinned to the four values #18 owns.
+    /// subprocessors, so it must not be pinned to the three values #18 owns.
     fn pending_controller_values() -> Vec<String> {
         vec![
             "nom du responsable de traitement".to_string(),

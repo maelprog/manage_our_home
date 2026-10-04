@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-10-03.
+Dernière mise à jour : 2026-10-04.
 
 ## Qui est responsable de vos données ?
 
@@ -89,11 +89,11 @@ possibles sont :
   volontairement. Le serveur télécharge le flux à cette URL chaque fois
   qu'un membre du groupe lance un import ; aucun import ne tourne en
   arrière-plan.
-- **Mailjet** (Mailjet SAS, groupe Sinch), le service qui achemine les
-  emails du site : vérification d'adresse, réinitialisation de mot de passe,
+- **Scaleway** (Scaleway SAS, Paris), dont le service d'emails
+  transactionnels achemine les emails du site : vérification d'adresse, réinitialisation de mot de passe,
   invitation à un groupe, rappel d'événement et avertissement avant la
   suppression d'un compte désactivé — les cinq seuls emails que ce service
-  envoie. Mailjet reçoit l'adresse du destinataire, l'objet et le
+  envoie. Scaleway reçoit l'adresse du destinataire, l'objet et le
   corps de chacun : le corps d'un rappel reprend le titre et la date de
   l'événement, et le corps d'une invitation nomme le groupe et le membre qui
   invite. L'objet d'un rappel, lui, ne nomme aucun événement : c'est toujours
@@ -102,8 +102,8 @@ possibles sont :
   dans l'objet, la ligne que la liste des messages affiche en premier. Il
   reste en revanche dans le corps, au début de sa première ligne, si bien
   que l'aperçu que la plupart des messageries et des notifications
-  affichent sous l'objet le montre ; et Mailjet comme votre fournisseur de
-  messagerie le reçoivent avec le corps. Mailjet est un
+  affichent sous l'objet le montre ; et Scaleway comme votre fournisseur de
+  messagerie le reçoivent avec le corps. Scaleway est un
   sous-traitant du responsable de traitement, inscrit à son registre des
   traitements. Le cadre contractuel qui les lie au titre de l'article 28 du
   RGPD sera indiqué ici avant l'ouverture du service : [cadre contractuel du
@@ -134,14 +134,11 @@ n'est appelé, ni sur le serveur ni chez un tiers.
 Ce service n'est pas encore ouvert au public, et cette page n'affirmera pas
 plus que ce qui est établi. Voici où en est chacun des quatre cas.
 
-- **Les emails** partent par Mailjet, dont le stockage des données des
-  clients européens est situé dans l'Union européenne (centres en Allemagne
-  et en Belgique). Cela ne suffit pas à conclure : le groupe auquel Mailjet
-  appartient recourt aussi à des prestataires établis hors de l'Union
-  européenne, notamment pour son support. Le détail des transferts et, s'il y
-  en a, le mécanisme qui les encadre (articles 44 à 49 du RGPD) seront
-  indiqués ici avant l'ouverture du service : [transferts hors UE du
-  sous-traitant email — à renseigner avant la mise en ligne].
+- **Les emails ne quittent pas l'Union européenne.** Ils partent par
+  Scaleway, qui déclare héberger et traiter l'ensemble des données de son
+  service d'emails transactionnels dans l'Union européenne, sans recourir à
+  un sous-traitant établi hors de l'Union pour ce service (déclaration
+  consultée le 4 octobre 2026).
 - **Google** reçoit des données dans deux cas seulement : si vous choisissez
   la connexion avec Google, et si un import calendrier est configuré dans
   votre groupe. Son infrastructure est mondiale, donc pour partie hors de

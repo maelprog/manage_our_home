@@ -3,7 +3,8 @@
 AIPD au titre de l'article 35 du RGPD, suivant la trame de la CNIL :
 contexte, principes fondamentaux, risques, validation. Rédigée le
 2026-10-02 (#143), relue contre `docs/registre-traitements.md` (mis à jour
-le 2026-09-28) et le code de `main` à cette date.
+le 2026-09-28) et le code de `main` à cette date ; sous-traitant email et
+transferts mis à jour le 2026-10-04 (Scaleway remplace Mailjet, #328).
 
 **Statut : projet.** L'analyse est rédigée ; la conclusion (dernière
 section) est une **proposition**, qui ne vaut décision qu'une fois relue et
@@ -54,8 +55,8 @@ et le service n'est pas à grande échelle (section 1).
 **Les supports.**
 - Un serveur exploité par le responsable : `api`, `web`, Postgres et MinIO
   (pièces jointes) dans la pile Docker Compose de `infra/`.
-- Mailjet, sous-traitant pour les emails transactionnels (adresse, objet,
-  corps).
+- Scaleway (Scaleway Transactional Email), sous-traitant pour les emails
+  transactionnels (adresse, objet, corps), traités dans l'UE.
 - Google, pour la connexion avec Google et, le cas échéant, l'hébergement
   d'un flux iCal importé.
 - Les services de notification des navigateurs, qui reçoivent un message
@@ -74,8 +75,8 @@ et le service n'est pas à grande échelle (section 1).
 | Droits d'accès et de portabilité | `GET /account/export` | — |
 | Effacement | `POST /account/delete`, purge à 30 jours ; le contenu partagé reste au groupe, anonymisé (CGU, « Vos contenus ») | — |
 | Rectification, opposition, limitation | Écrans de compte, ou adresse de contact | Même réserve que l'information |
-| Sous-traitance (art. 28) | Mailjet, cadre contractuel du fournisseur | Version opposable à établir (`docs/v2-deployment.md` #18) |
-| Transferts hors UE | Aucun voulu | Mécanismes à établir pour Mailjet, Google et les services de notification (#18) |
+| Sous-traitance (art. 28) | Scaleway, DPA du fournisseur accepté depuis la console | Version opposable à établir (`docs/v2-deployment.md` #18) |
+| Transferts hors UE | Aucun voulu ; aucun pour les emails (Scaleway déclare traiter le service dans l'UE, registre) | Mécanismes à établir pour Google et les services de notification (#18) |
 
 ## 4. Risques
 
