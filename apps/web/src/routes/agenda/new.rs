@@ -335,31 +335,6 @@ pub(crate) fn recurrence_picker(current: Option<&Recurrence>) -> String {
     )
 }
 
-/// Inline `onchange` of the "Journée entière" box: swaps `Début`/`Fin`
-/// between `datetime-local` and `date` in place, converting their values
-/// (#117). Progressive enhancement, like `app::password_field`'s toggle —
-/// without JS the fields keep the type they were rendered with, and
-/// `form_bounds` reads either shape.
-///
-/// Ticking: each value keeps its date, except an end sitting on midnight
-/// past the start's day, which becomes the day before — the same reading
-/// `normalize_all_day` gives an exclusive end. Unticking: the start opens
-/// its day and the end becomes the midnight after its last day, i.e. the
-/// instants the date pair stands for. For a well-ordered pair (end after
-/// start) the two directions are inverses, so ticking and unticking again
-/// never moves a bound (e.g. `08 00:00` → `07` → `08 00:00`); a one-way
-/// `slice(0, 10)` lost a day per round trip. A reversed pair can move on
-/// its first round trip before settling — it is refused on submit anyway
-/// (`form_bounds` / `validate_event_form`).
-/// Values are read before the type changes, since changing the type
-/// sanitizes a value the new type cannot hold down to "". Date arithmetic
-/// runs at UTC noon, where no offset can shift the calendar day.
-pub(crate) const ALL_DAY_TOGGLE: &str = "var f=this.form,a=this.checked,s=f.elements.starts_at,e=f.elements.ends_at;\
-function d(v,n){var t=new Date(v.slice(0,10)+'T12:00Z');t.setUTCDate(t.getUTCDate()+n);return t.toISOString().slice(0,10)}\
-[s,e].forEach(function(i){var v=i.value,x=i==e;if(a==(i.type=='date'))return;\
-if(a){i.type='date';if(v)i.value=d(v,x?(v.slice(11,16)=='00:00'?(v.slice(0,10)>s.value?-1:0):0):0)}\
-else{i.type='datetime-local';if(v)i.value=d(v,x?1:0)+'T00:00'}})";
-
 /// The "Journée entière" box and the `Début`/`Fin` fields, shared by the
 /// create and edit forms so the two cannot drift apart (#117).
 ///
@@ -370,6 +345,12 @@ else{i.type='datetime-local';if(v)i.value=d(v,x?1:0)+'T00:00'}})";
 /// `all_day_field_values`, and an error re-render passes back exactly what
 /// was submitted, JS-less shapes included. Names and labels are the same in
 /// both modes (DESIGN.md, constraint 5).
+///
+/// Ticking or unticking the box swaps the two fields in place, converting
+/// their values: `data-all-day`, acted on by `app::ENHANCE_SCRIPT`.
+/// Progressive enhancement, like `app::password_field`'s toggle — without
+/// JS the fields keep the type they were rendered with, and `form_bounds`
+/// reads either shape.
 pub(crate) fn schedule_fields(all_day: bool, starts: &str, ends: &str) -> String {
     let field = |label: &str, name: &str, value: &str| {
         let kind = if date_only(value).is_some() {
@@ -384,7 +365,7 @@ pub(crate) fn schedule_fields(all_day: bool, starts: &str, ends: &str) -> String
     };
     format!(
         r#"<label class="field inline">
-<input type="checkbox" name="all_day"{checked} onchange="{ALL_DAY_TOGGLE}"/> Journée entière</label>
+<input type="checkbox" name="all_day"{checked} data-all-day/> Journée entière</label>
 {starts}
 {ends}"#,
         checked = if all_day { " checked" } else { "" },
@@ -777,21 +758,20 @@ mod tests {
         }
     }
 
-    /// The box swaps the fields in place when JS runs. The script lives in a
-    /// double-quoted attribute, so it may carry neither a double quote nor
-    /// anything HTML would read as markup or a character reference.
+    /// The box swaps the fields in place when JS runs: `data-all-day`,
+    /// which `app::ENHANCE_SCRIPT` acts on (#325; an inline `onchange`
+    /// until then).
     #[test]
-    fn the_box_carries_an_attribute_safe_field_swap() {
+    fn the_box_asks_for_the_field_swap() {
         let html = schedule_fields(false, "", "");
         assert!(
-            html.contains(&format!(r#"onchange="{ALL_DAY_TOGGLE}""#)),
+            html.contains(r#"<input type="checkbox" name="all_day" data-all-day/>"#),
             "{html}"
         );
-        assert!(ALL_DAY_TOGGLE.contains("datetime-local"));
-        assert!(ALL_DAY_TOGGLE.contains("'date'"));
-        for forbidden in ['"', '&', '<'] {
-            assert!(!ALL_DAY_TOGGLE.contains(forbidden), "{forbidden}");
-        }
+        let script = crate::app::ENHANCE_SCRIPT;
+        assert!(script.contains(r#"hasAttribute("data-all-day")"#));
+        assert!(script.contains(r#""datetime-local""#));
+        assert!(script.contains(r#"field.type = "date""#));
     }
 
     /// Error re-renders echo raw submitted strings back into `value`.

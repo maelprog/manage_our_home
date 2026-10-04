@@ -15,16 +15,24 @@
 set -euo pipefail
 
 # A fully qualified host name and nothing else: dot-separated labels of
-# letters, digits and inner hyphens, ending in an alphabetic TLD. That keeps
-# out an option (`-h`), a wildcard (`*.example.org`, which Caddy would only
-# serve with a DNS challenge this stack does not configure), a scheme, a
-# port, a path and an IP address.
-HOST_RE='^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$'
+# letters, digits and inner hyphens, ending in a TLD that is alphabetic or
+# the ASCII form of an internationalised one (`xn--p1ai`, `.рф`; a Unicode
+# name is to be given in that punycode form throughout). That keeps out an
+# option (`-h`), a wildcard (`*.example.org`, which Caddy would only serve
+# with a DNS challenge this stack does not configure), a scheme, a port, a
+# path and an IP address.
+HOST_RE='^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+([A-Za-z]{2,63}|[Xx][Nn]--[A-Za-z0-9]([A-Za-z0-9-]{0,57}[A-Za-z0-9])?)$'
 DOMAIN="${1:-}"
 if [[ $# -ne 1 || ! "$DOMAIN" =~ $HOST_RE ]]; then
     echo "usage: $0 <domain>   (a bare host name, e.g. maison.example.org)" >&2
     exit 1
 fi
+# Host names are case-insensitive, and their canonical form — the one
+# browsers send and certificates carry — is lower case. Lowered once, here,
+# so that SITE_ADDRESS and every URL the applications build from
+# PUBLIC_BASE_URL (email links, the Google OAuth redirect URI, the
+# Messagerie socket) carry that form whatever was typed.
+DOMAIN="${DOMAIN,,}"
 
 # Output file
 ENV_FILE=".env"

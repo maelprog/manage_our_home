@@ -71,11 +71,3 @@ http-body-util = { version = "0.1", features = ["channel"] }
 # in the shipped binary compresses anything (Caddy's `encode` does that,
 # see infra/Caddyfile), so this must not reach the release graph.
 flate2 = "1"
-# The CSP guard (#141, src/csp.rs) writes each inline script's hash the way
-# the policy spells it: SHA-256 (sha2, above) in standard base64. Held at
-# 0.22 although 0.23.1 is out: axum, reqwest and the other crates that pull
-# base64 in still resolve 0.22.1, so asking for 0.23 put a second copy of the
-# crate in Cargo.lock (tried: `base64 0.22.1` and `base64 0.23.1` side by
-# side), for a test-only encoder. On 0.22 the lock gains one dependency edge
-# and no crate. Move up when those crates do.
-base64 = "0.22"

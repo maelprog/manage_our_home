@@ -27,13 +27,6 @@ use super::{
     reauthenticate, service_unavailable_page, user_not_found_page, user_status_label, PurgeOutlook,
 };
 
-/// Inline `onsubmit`s of the deactivate and refuse forms. Named constants
-/// because infra/Caddyfile's CSP allows them by hash (`csp.rs`).
-pub(crate) const CONFIRM_DEACTIVATE: &str =
-    "return confirm('Désactiver ce compte ? Toutes les sessions seront révoquées.');";
-pub(crate) const CONFIRM_REFUSE_REACTIVATION: &str =
-    "return confirm('Refuser cette demande ? Le compte reste désactivé.');";
-
 #[derive(serde::Deserialize)]
 pub struct ListQuery {
     notice: Option<String>,
@@ -211,7 +204,7 @@ pub async fn detail(
             r#"<section class="card">
 <h2>Désactiver ce compte</h2>
 <p class="muted">Action immédiate de support : révoque toutes les sessions actives ; son titulaire ne peut plus ouvrir qu'une page d'où demander la réactivation. Rien n'est effacé ; le compte peut être réactivé, et sans réactivation il est purgé au bout de 2 ans, son titulaire prévenu par email 30 jours avant. À distinguer de la suppression de compte en libre-service (avec délai de grâce) demandée par l'utilisateur.</p>
-<form method="post" action="/admin/users/{id}/deactivate" onsubmit="{CONFIRM_DEACTIVATE}">
+<form method="post" action="/admin/users/{id}/deactivate" data-confirm="Désactiver ce compte ? Toutes les sessions seront révoquées.">
 <button type="submit" class="danger">Désactiver le compte</button>
 </form>
 </section>"#,
@@ -237,7 +230,7 @@ pub async fn detail(
 <form method="post" action="/admin/users/{id}/reactivate">
 <button type="submit">Réactiver le compte</button>
 </form>
-<form method="post" action="/admin/users/{id}/reactivation-request/refuse" onsubmit="{CONFIRM_REFUSE_REACTIVATION}">
+<form method="post" action="/admin/users/{id}/reactivation-request/refuse" data-confirm="Refuser cette demande ? Le compte reste désactivé.">
 <button type="submit" class="danger">Refuser la demande</button>
 </form>
 </div>

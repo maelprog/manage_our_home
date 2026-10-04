@@ -30,6 +30,7 @@ use manage_our_home_shared::dto::notifications::{
 };
 
 use crate::app::{html_escape, shell_with_header, Width};
+use crate::assets::Script;
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -110,12 +111,12 @@ pub(crate) fn push_block(settings: &NotificationSettings, always: bool) -> Strin
 <p class="notice error" id="push-failed" hidden>L'activation a échoué, merci de réessayer.</p>
 </div>"#,
     );
-    html.push_str(&format!("<script>{PUSH_SCRIPT}</script>"));
+    html.push_str(&Script::Push.tag());
     html
 }
 
-/// The inline script behind [`push_block`]: allowed by its hash in
-/// infra/Caddyfile's CSP (`csp.rs`). Progressive enhancement — without it
+/// The script behind [`push_block`], served under `/assets`
+/// (`assets::Script::Push`, #325). Progressive enhancement — without it
 /// the server-side warning still says what matters.
 ///
 /// - No Push API: reveals `#push-unsupported` (when warnings apply).
@@ -550,7 +551,7 @@ mod tests {
         let blocked = &blocked[..blocked.find("</div>").unwrap()];
         assert!(blocked.contains("réglages"), "{blocked}");
         assert!(blocked.contains(EMAIL_CHOICE_HREF), "{blocked}");
-        assert!(html.contains(&format!("<script>{PUSH_SCRIPT}</script>")));
+        assert!(html.contains(&Script::Push.tag()));
     }
 
     #[test]
@@ -585,7 +586,7 @@ mod tests {
         assert!(html.contains(EMAIL_CHOICE_HREF), "{html}");
         assert!(!html.contains("data-vapid-key"), "{html}");
         assert!(!html.contains("push-enable-button"), "{html}");
-        assert!(!html.contains("<script>"), "{html}");
+        assert!(!html.contains("<script"), "{html}");
     }
 
     #[test]

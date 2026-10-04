@@ -656,14 +656,19 @@ l'inlining, c'est cette liste qu'il faudra réfuter.
    `unsafe-inline`, ou un nonce/hash à générer par réponse. Une feuille
    externe est le cas trivial — c'est désormais le nôtre, et depuis #141
    `infra/Caddyfile` pose la CSP : `style-src 'self'`, aucun `<style>`
-   admis. (Le `<script>` inline de `messagerie/thread.rs` reste, avec les
-   autres scripts et gestionnaires inline, autorisé **par l'empreinte de son
-   texte** : une politique posée par Caddy est statique, donc sans nonce.
-   `apps/web/src/csp.rs` tient ces empreintes et le texte ensemble. #72 l'a
-   laissé en place et a corrigé le constat qui l'accompagnait : il n'est
-   **pas** émis inconditionnellement — voir [Le budget](#le-budget)
-   ci-dessous. Le sortir vers `/assets` sous son empreinte est la bascule de
-   #89 rejouée sur un second actif, donc une issue à part.)
+   admis. Les scripts ont suivi le même chemin avec #325 : le `<script>`
+   inline de `messagerie/thread.rs` et les autres scripts et gestionnaires
+   inline, jusque-là autorisés **par l'empreinte de leur texte** (une
+   politique posée par Caddy est statique, donc sans nonce), sont servis
+   depuis le binaire sous `/assets/<nom>-<empreinte>.js`
+   (`apps/web/src/assets.rs`, `Script`), comme la feuille ; la CSP dit
+   `script-src 'self'` et n'admet plus rien d'inline. Les comportements
+   portés par des attributs (`onclick`, `onsubmit`, `onchange`) passent par
+   des attributs `data-*` lus par un script commun chargé dans le `<head>`
+   de chaque page. `apps/web/src/csp.rs` refuse tout script inline qui
+   reviendrait. #72 avait corrigé le constat qui accompagnait le script de
+   la messagerie : il n'est **pas** émis inconditionnellement — voir
+   [Le budget](#le-budget) ci-dessous.
 
 ### Le budget
 
@@ -840,8 +845,9 @@ n'est cette phrase.
 render-blocking et reste ce que la première fenêtre de congestion doit porter ;
 14 KiB reste le seul chiffre de ce document qui ne soit pas de notre fait. Ce
 qui change, c'est la réponse au dépassement : « passer la feuille sur
-`/assets` » a été consommé, il ne reste que réduire le document lui-même
-(pagination, `<script>` inline de #72). Ce seuil n'est tenu par aucun test et
+`/assets` » a été consommé, et le `<script>` inline de #72 l'a suivi sous
+`/assets` avec #325 ; il ne reste que réduire le document lui-même
+(pagination). Ce seuil n'est tenu par aucun test et
 ne peut pas l'être — il dépend du volume de données d'un foyer.
 
 **Seuil 2 — la feuille : sa dérivation tombe, le garde-fou reste.** C'est la

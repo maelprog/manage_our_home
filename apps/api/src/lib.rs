@@ -5,6 +5,7 @@ pub mod auth;
 pub mod budget;
 pub mod client_ip;
 pub mod crypto;
+pub mod csp_report;
 pub mod db;
 pub mod dev_seed;
 pub mod email;
@@ -400,5 +401,22 @@ pub fn build_router(state: AppState) -> Router {
             origin_guard,
             manage_our_home_http_guard::guard_cross_origin,
         ))
+        // Content-Security-Policy reports (#325), added after the origin
+        // guard so that it does not apply: a forged report adds at most
+        // `csp_report::MAX_VIOLATIONS_PER_REQUEST` log lines and changes
+        // nothing else — which any client can do anyway, origin guard or
+        // not, since it only judges browser headers — and how a
+        // browser's report request fills `Origin`/`Sec-Fetch-Site` is not
+        // something to bet the reports on. The body guard and a small body
+        // limit still do.
+        .route(
+            "/csp-report",
+            post(csp_report::receive)
+                .layer(DefaultBodyLimit::max(csp_report::MAX_REPORT_BODY_BYTES))
+                .layer(axum::middleware::from_fn_with_state(
+                    body_guard,
+                    manage_our_home_http_guard::guard_request_body,
+                )),
+        )
         .with_state(state)
 }

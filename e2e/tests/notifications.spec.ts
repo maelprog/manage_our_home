@@ -8,7 +8,7 @@ import { fetchVerificationToken } from "../lib/db";
 // preferences, and the way out it offers: switching to email.
 //
 // What the browser alone knows — a permission refused on this device, no
-// Push API — is revealed by an inline script, and only once the server has
+// Push API — is revealed by a script (`/assets`, #325), and only once the server has
 // a VAPID key; the CI stack runs without one (notifications off). Those
 // branches (permission denied, default, granted) are verified by hand only:
 // apps/web's unit tests check the markup they act on, not the script.

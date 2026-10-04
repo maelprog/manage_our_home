@@ -100,6 +100,11 @@ pub fn shell_with_header(width: Width, title: &str, header_html: &str, body_html
 /// See DESIGN.md → Livraison du CSS for the trade this makes (one blocking
 /// round trip on a cold cache, against ~6.6 kB of gzip on every page view)
 /// and for the budget that still bounds the sheet.
+///
+/// The `<head>` also loads `ENHANCE_SCRIPT` (#325) the same way, and
+/// without `defer`: a `data-confirm` form must not be submittable before
+/// its question is in place. It is one more blocking request on a cold
+/// cache, made alongside the sheet's, and none after that.
 fn document(title: &str, body: &str) -> String {
     format!(
         r##"<!DOCTYPE html>
@@ -109,6 +114,7 @@ fn document(title: &str, body: &str) -> String {
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>{title} — Manage our home</title>
 <link rel="stylesheet" href="{css}"/>
+{enhance}
 </head>
 <body>
 <a class="skip-link" href="#main">Aller au contenu</a>
@@ -117,6 +123,7 @@ fn document(title: &str, body: &str) -> String {
 </html>"##,
         title = html_escape(title),
         css = crate::assets::stylesheet_href(),
+        enhance = crate::assets::Script::Enhance.tag(),
         body = body,
     )
 }
@@ -261,9 +268,12 @@ pub fn app_header(
     )
 }
 
-/// Inline `onclick` of `password_field`'s show/hide toggle. A named
-/// constant because infra/Caddyfile's CSP allows it by hash (`csp.rs`).
-pub(crate) const PW_TOGGLE: &str = "var i=this.parentNode.querySelector('input');var s=i.type==='password';i.type=s?'text':'password';this.setAttribute('aria-label',s?'Masquer le mot de passe':'Afficher le mot de passe');this.classList.toggle('shown',s)";
+/// The behaviours the markup asks for through `data-*` attributes —
+/// `password_field`'s toggle, `data-confirm`, `data-submit-on-change`,
+/// `data-all-day` — loaded by every page (`document`) from
+/// `/assets` (`assets::Script::Enhance`). They were inline event handlers
+/// until #325, which infra/Caddyfile's CSP no longer runs (`csp.rs`).
+pub(crate) const ENHANCE_SCRIPT: &str = include_str!("enhance.js");
 
 /// Password `<label>` block shared by login/register/reset-password
 /// (embed via `<div inner_html=...></div>` like `app_header`).
@@ -290,7 +300,7 @@ pub fn password_field(label: &str, name: &str, autocomplete: &str, with_rules: b
 {label}
 <div class="pw-wrap">
 <input type="password" name="{name}" autocomplete="{autocomplete}" required{rules_attr} />
-<button type="button" class="pw-toggle" aria-label="Afficher le mot de passe" onclick="{PW_TOGGLE}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></button>
+<button type="button" class="pw-toggle" aria-label="Afficher le mot de passe" data-pw-toggle><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></button>
 </div>
 {hint}
 </label>"#,

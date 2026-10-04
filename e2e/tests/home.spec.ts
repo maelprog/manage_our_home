@@ -103,7 +103,7 @@ interface EventOpts {
 
 async function createEvent(page: Page, opts: EventOpts): Promise<void> {
   // An all-day event is created from a copy of the session with JS turned
-  // off. Since #117 the box's `onchange` turns both fields into dates, and
+  // off. Since #117 the box (`data-all-day`, #325) turns both fields into dates, and
   // the web layer then sends midnight → midnight itself: the API's
   // normalization (#101) would have nothing left to do, and a regression
   // there would go unseen (verification of #163). Without JS the fields

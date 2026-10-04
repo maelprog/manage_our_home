@@ -17,7 +17,7 @@
 //!   v1 display timezone F3 established.
 //! - `message_ws_url` turns the browser-facing API base URL into the push
 //!   channel's `ws://`/`wss://` URL (a relative base stays relative — the
-//!   inline script prefixes `location.host`).
+//!   live script prefixes `location.host`).
 //! - `author_name` resolves a `created_by` id against the family's members,
 //!   falling back for an author who has since left (their messages remain).
 
@@ -116,7 +116,7 @@ pub fn older_page_query(created_at: DateTime<Utc>, id: Uuid, limit: Option<i64>)
 /// The browser-facing WebSocket URL for a family's thread, derived from
 /// `API_PUBLIC_BASE_URL` (the same base the Google OAuth button links to):
 /// `http` → `ws`, `https` → `wss`, and a relative base (`/api`, the production
-/// default behind Caddy) stays relative for the inline script to prefix with
+/// default behind Caddy) stays relative for the live script to prefix with
 /// `location.host`.
 pub fn message_ws_url(api_public_base_url: &str, group_id: Uuid) -> String {
     let base = api_public_base_url.trim_end_matches('/');
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn ws_url_stays_relative_for_a_relative_base() {
         // Production default (`/api`, behind Caddy): the scheme and host are
-        // the browser's, so the inline script prefixes `location.host`.
+        // the browser's, so the live script prefixes `location.host`.
         assert_eq!(
             message_ws_url("/api", uuid(3)),
             "/api/groups/00000000-0000-0000-0000-000000000003/messages/ws"
