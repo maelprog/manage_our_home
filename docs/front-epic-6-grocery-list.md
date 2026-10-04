@@ -58,7 +58,8 @@ submit on its own. Each row is therefore a small `<form method=post>` to
 **target** (toggled) state, with:
 
 - a real `<input type=checkbox>` reflecting the current state that
-  auto-submits on change (`onchange="this.form.submit()"`) — progressive
+  auto-submits on change (`data-submit-on-change`, read by
+  `apps/web/src/enhance.js` since #325; an inline `onchange` before) — progressive
   enhancement, same PE approach as the password-visibility toggle in
   `app.rs`; and
 - an always-present submit button (`Cocher` / `Décocher`) that works with

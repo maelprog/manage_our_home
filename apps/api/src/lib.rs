@@ -402,8 +402,10 @@ pub fn build_router(state: AppState) -> Router {
             manage_our_home_http_guard::guard_cross_origin,
         ))
         // Content-Security-Policy reports (#325), added after the origin
-        // guard so that it does not apply: a forged report changes nothing
-        // but a log line, which any client can write anyway, and how a
+        // guard so that it does not apply: a forged report adds at most
+        // `csp_report::MAX_VIOLATIONS_PER_REQUEST` log lines and changes
+        // nothing else — which any client can do anyway, origin guard or
+        // not, since it only judges browser headers — and how a
         // browser's report request fills `Origin`/`Sec-Fetch-Site` is not
         // something to bet the reports on. The body guard and a small body
         // limit still do.

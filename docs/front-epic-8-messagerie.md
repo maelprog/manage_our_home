@@ -29,7 +29,7 @@ mean a second renderer (escaping, the `Modifier`/`Supprimer` permission bar,
 timestamp formatting, the "modifié" marker) written in JS and free to drift
 from the Rust one — exactly the drift `apps/shared` exists to prevent.
 
-Instead the inline script treats **every** WS frame as a bare "something
+Instead the live script (inline until #325, served under `/assets` since) treats **every** WS frame as a bare "something
 changed" signal (it never reads the payload) and re-fetches the *current URL*,
 parses the response with `DOMParser`, and swaps `#thread`'s `innerHTML` with
 the freshly server-rendered fragment. The permission bar, the escaping and the
@@ -91,7 +91,7 @@ since F1, and the same reason it works: `apps/api` is served under the same
 registrable domain as `apps/web` in production, so the `SameSite=Lax` session
 cookie rides along on the WS handshake with no CORS setup. `message_ws_url`
 (pure, unit-tested) does the scheme rewrite (`http→ws`, `https→wss`) and leaves
-a relative base (`/api`, the production default) relative, so the inline script
+a relative base (`/api`, the production default) relative, so the live script
 prefixes `location.host` and the page works identically behind Caddy and in the
 CI stack where the API is on another port.
 
@@ -198,7 +198,7 @@ escaped and rendered as plain text with newlines preserved.
 | POST | `/messagerie` | `messagerie::thread::post` | Send a message | `POST /groups/:id/messages` |
 | POST | `/messagerie/:id/edit` | `messagerie::thread::edit` | Edit a message (author/admin/owner) | `PATCH /groups/:id/messages/:message_id` |
 | POST | `/messagerie/:id/delete` | `messagerie::thread::delete` | Delete a message (author/admin/owner) | `DELETE /groups/:id/messages/:message_id` |
-| (browser) | `{API_PUBLIC_BASE_URL}/groups/:id/messages/ws` | — | Push-only live channel, opened by the inline script on the live view | `GET /groups/:id/messages/ws` |
+| (browser) | `{API_PUBLIC_BASE_URL}/groups/:id/messages/ws` | — | Push-only live channel, opened by the live script on the live view | `GET /groups/:id/messages/ws` |
 
 No active family → every route redirects to `/groups/new` (same as Budget /
 Grocery list / Stocks / Recipes). Nav link sits between `/budget` and

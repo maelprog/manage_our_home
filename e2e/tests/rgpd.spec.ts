@@ -254,7 +254,7 @@ test.describe("RGPD — account deletion", () => {
 
     // Consent ticked but no password (the account has one). The password input is
     // `required`, so the browser's native constraint blocks submission *before*
-    // the onsubmit confirm() — the form never posts, and the server-side
+    // the `data-confirm` confirm() — the form never posts, and the server-side
     // "Saisissez votre mot de passe actuel" branch is unreachable from a browser
     // by design (it stays the authority for no-JS and forged posts, and is
     // unit-tested in apps/shared as `a_password_account_must_type_its_password`).

@@ -10,7 +10,7 @@
 //!
 //! The one thing no other front epic has: a **WebSocket**. It is push-only and
 //! only an enhancement — with JS off, the thread is what the last page load
-//! rendered and a reload shows new messages. When JS is on, the inline script
+//! rendered and a reload shows new messages. When JS is on, the live script
 //! opens `GET /groups/:id/messages/ws` **against `apps/api` directly** (browser
 //! → API, via `API_PUBLIC_BASE_URL`), treats every frame as a bare "something
 //! changed" signal, and re-fetches the current URL to swap `#thread`'s HTML with
@@ -53,7 +53,7 @@ pub(crate) struct FamilyContext {
     pub user_id: Uuid,
     pub header: String,
     /// The browser-facing API base URL (`API_PUBLIC_BASE_URL`), used to build
-    /// the WebSocket URL the inline script opens — the browser can't reach the
+    /// the WebSocket URL the live script opens — the browser can't reach the
     /// internal one. See `docs/front-epic-8-messagerie.md`.
     pub api_public_base_url: String,
 }

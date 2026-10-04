@@ -36,50 +36,63 @@ const CADDYFILE: &str = include_str!("../../../infra/Caddyfile");
 /// responses it matches only. Neither does `<name>-Report-Only` for
 /// `Content-Security-Policy`, which reports and blocks nothing — the field
 /// name has to be exactly `name`.
+/// And none counts once a `-<name>` anywhere (later in the file, in the
+/// same block, under a matcher) deletes the header again.
 ///
 /// What it does **not** see — a reading of lines, not Caddy's parser: a
 /// `header` nested in a `handle`, `route` or snippet (scoped by that block,
 /// not by a matcher of its own), and a value split across lines.
 fn caddy_header<'a>(caddyfile: &'a str, name: &str) -> Option<&'a str> {
+    let mut found = None;
+    let mut deleted = false;
     // Inside a `header … {` block: whether that block carries a matcher.
     let mut block: Option<bool> = None;
     for line in caddyfile.lines().map(str::trim) {
         if line.starts_with('#') {
             continue;
         }
-        if let Some(scoped) = block {
+        let (scoped, field) = if let Some(scoped) = block {
             if line.starts_with('}') {
                 block = None;
-            } else if !scoped {
-                if let Some(value) = field_value(line, name) {
-                    return Some(value);
-                }
+                continue;
             }
-            continue;
-        }
-        let Some(rest) = line
-            .strip_prefix("header")
-            .filter(|r| r.starts_with(char::is_whitespace))
-        else {
-            continue;
-        };
-        let rest = rest.trim_start();
-        let scoped = rest.starts_with(['@', '/', '*']);
-        let rest = if scoped {
-            rest.split_once(char::is_whitespace)
-                .map_or("", |(_, r)| r.trim_start())
+            (scoped, line)
         } else {
-            rest
-        };
-        if rest.starts_with('{') {
-            block = Some(scoped);
-        } else if !scoped {
-            if let Some(value) = field_value(rest, name) {
-                return Some(value);
+            let Some(rest) = line
+                .strip_prefix("header")
+                .filter(|r| r.starts_with(char::is_whitespace))
+            else {
+                continue;
+            };
+            let rest = rest.trim_start();
+            let scoped = rest.starts_with(['@', '/', '*']);
+            let rest = if scoped {
+                rest.split_once(char::is_whitespace)
+                    .map_or("", |(_, r)| r.trim_start())
+            } else {
+                rest
+            };
+            if rest.starts_with('{') {
+                block = Some(scoped);
+                continue;
             }
+            (scoped, rest)
+        };
+        // `-<name>` removes the header from the responses it applies to,
+        // matcher or not: some response, then, goes without it.
+        deleted |= field
+            .strip_prefix('-')
+            .and_then(|f| f.strip_prefix(name))
+            .is_some_and(|after| after.is_empty() || after.starts_with(char::is_whitespace));
+        if !scoped && found.is_none() {
+            found = field_value(field, name);
         }
     }
-    None
+    if deleted {
+        None
+    } else {
+        found
+    }
 }
 
 /// The value of `<name> <value>` at the start of `line`: `"…"`, `` `…` ``
@@ -142,7 +155,10 @@ enum Inline {
 ///   `/` (`<svg/onload=`) — the separators HTML's tokenizer accepts.
 /// - `<script` not followed by whitespace and `src=`: an external script is
 ///   the one form allowed.
-/// - `javascript:` right after an `=` and an optional quote.
+/// - `javascript:` right after an `=`, an optional quote and optional
+///   spaces.
+/// - A Rust escape (`\n`, `\t`, `\r`) before a handler name counts as the
+///   whitespace it compiles to.
 ///
 /// What it does **not** see — a textual scan, not an HTML parser: spaces
 /// around a handler's `=`, markup assembled from pieces (`"on" + "click"`,
@@ -164,20 +180,31 @@ fn inline_scripts(source: &str) -> Vec<Inline> {
         let mut on_line: Vec<(usize, Inline)> = Vec::new();
         for (at, _) in lower.match_indices('=') {
             let before = &lower[..at];
-            let start = before
+            let mut start = before
                 .rfind(|c: char| !c.is_ascii_lowercase())
                 .map_or(0, |i| i + 1);
-            let delimited = before[..start]
-                .chars()
-                .next_back()
-                .is_none_or(|c| c.is_whitespace() || matches!(c, '"' | '\'' | '/'));
+            // `\n`, `\t` or `\r` in a non-raw literal: whitespace once
+            // compiled, though the scan sees a backslash and a letter.
+            let escaped = before[..start].ends_with('\\')
+                && before[start..].starts_with(['n', 't', 'r'])
+                && before[start + 1..].starts_with("on");
+            if escaped {
+                start += 1;
+            }
+            let delimited = escaped
+                || before[..start]
+                    .chars()
+                    .next_back()
+                    .is_none_or(|c| c.is_whitespace() || matches!(c, '"' | '\'' | '/'));
             if before.len() - start > 2 && before[start..].starts_with("on") && delimited {
                 on_line.push((start, Inline::Handler(excerpt(&line[start..]))));
             }
         }
         for (at, _) in lower.match_indices("javascript:") {
-            let before = lower[..at].trim_end_matches(['"', '\'']);
-            if before.trim_end().ends_with('=') {
+            // Browsers strip leading spaces from a URL: `href=" javascript:`.
+            let before =
+                lower[..at].trim_end_matches(|c: char| c.is_whitespace() || c == '"' || c == '\'');
+            if before.ends_with('=') {
                 on_line.push((at, Inline::JsUrl(excerpt(&line[at..]))));
             }
         }
@@ -264,6 +291,25 @@ fn caddy_csp_ignores_a_header_scoped_by_a_matcher() {
     assert_eq!(caddy_csp(file), Some("global"));
 }
 
+/// A `-Content-Security-Policy` anywhere — later in the file, inside the
+/// same block, or under a matcher — takes the policy off the responses it
+/// applies to: the file no longer sets one on every response.
+#[test]
+fn caddy_csp_is_none_once_a_header_deletes_it() {
+    for file in [
+        "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t}\n\theader -Content-Security-Policy\n",
+        "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t\t-Content-Security-Policy\n\t}\n",
+        "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t}\n\theader @api {\n\t\t-Content-Security-Policy\n\t}\n",
+        "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t}\n\theader /login -Content-Security-Policy\n",
+    ] {
+        assert_eq!(caddy_csp(file), None, "{file}");
+    }
+    // Deleting another header, or one whose name only starts the same, is
+    // not deleting this one.
+    let file = "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t\t-Server\n\t\t-Content-Security-Policy-Report-Only\n\t}\n";
+    assert_eq!(caddy_csp(file), Some("default-src 'self'"));
+}
+
 #[test]
 fn caddy_header_reads_bare_and_backquoted_values() {
     let file = "\theader {\n\
@@ -313,6 +359,29 @@ mod tests { const X: &str = r#"<b onclick="x()">"#; }
             Inline::Handler("onclick=\"alert(1)\">\"#;".into()),
             Inline::Script("<script>{LIVE}</script>\");".into()),
             Inline::JsUrl("javascript:alert(2)\">\"#;".into()),
+        ]
+    );
+}
+
+/// What sits between the separator and the name in the Rust source rather
+/// than in the HTML: a leading space inside a `javascript:` URL, which
+/// browsers strip, and an escape (`\n`, `\t`, `\r`) in a non-raw literal,
+/// which is whitespace once compiled.
+#[test]
+fn inline_scripts_sees_through_leading_spaces_and_rust_escapes() {
+    let src = r##"let a = r#"<a href=" javascript:x()">"#;
+let b = "<b\nonclick=\"x()\">";
+let c = "<b\tonload=x()>";
+let d = "<b\ronfocus='x()'>";
+let e = "\none = 1";
+"##;
+    assert_eq!(
+        inline_scripts(src),
+        vec![
+            Inline::JsUrl("javascript:x()\">\"#;".into()),
+            Inline::Handler("onclick=\\\"x()\\\">\";".into()),
+            Inline::Handler("onload=x()>\";".into()),
+            Inline::Handler("onfocus='x()'>\";".into()),
         ]
     );
 }

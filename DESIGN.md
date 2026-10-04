@@ -845,8 +845,9 @@ n'est cette phrase.
 render-blocking et reste ce que la première fenêtre de congestion doit porter ;
 14 KiB reste le seul chiffre de ce document qui ne soit pas de notre fait. Ce
 qui change, c'est la réponse au dépassement : « passer la feuille sur
-`/assets` » a été consommé, il ne reste que réduire le document lui-même
-(pagination, `<script>` inline de #72). Ce seuil n'est tenu par aucun test et
+`/assets` » a été consommé, et le `<script>` inline de #72 l'a suivi sous
+`/assets` avec #325 ; il ne reste que réduire le document lui-même
+(pagination). Ce seuil n'est tenu par aucun test et
 ne peut pas l'être — il dépend du volume de données d'un foyer.
 
 **Seuil 2 — la feuille : sa dérivation tombe, le garde-fou reste.** C'est la

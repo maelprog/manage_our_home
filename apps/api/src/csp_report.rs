@@ -14,11 +14,15 @@
 //!
 //! - **no IP address**, nor any other request header: the handler reads the
 //!   body and nothing else;
-//! - URLs stripped of their query, fragment and credentials
-//!   ([`redact_url`]): `/verify-email?token=…` carries a secret in its query
-//!   string, and the reset-password link one in its fragment;
-//! - every field cut to [`MAX_FIELD_CHARS`], and at most
-//!   [`MAX_VIOLATIONS_PER_REQUEST`] lines per request, under a body limit of
+//! - URLs stripped of their query, fragment and credentials, and of the
+//!   path segments that look like a token or an identifier ([`redact_url`]):
+//!   `/verify-email?token=…` carries a secret in its query string, the
+//!   reset-password link one in its fragment, the group invitation link one
+//!   in its path;
+//! - every field cut to [`MAX_FIELD_CHARS`], its control characters
+//!   replaced, so that one violation is one log line; and at most
+//!   [`MAX_VIOLATIONS_PER_REQUEST`] violations, hence lines, per request,
+//!   under a body limit of
 //!   [`MAX_REPORT_BODY_BYTES`] — the route answers anyone, so the size of
 //!   what one request can write to the log is bounded here.
 
@@ -51,10 +55,13 @@ pub struct Violation {
     pub disposition: String,
 }
 
-/// `url` without what may carry a secret: query, fragment and userinfo.
+/// `url` without what may carry a secret: query, fragment, userinfo, and
+/// every path segment that looks like a token or an identifier
+/// ([`opaque_segment`]) — the group invitation link,
+/// `/groups/invitations/<token>/accept`, carries its token in the path.
 /// A `data:` or `blob:` URL is reduced to its scheme — the rest is content.
 /// Values that are not URLs (`inline`, `eval`, `self`) pass through.
-/// Cut to [`MAX_FIELD_CHARS`] in every case.
+/// Cut to [`MAX_FIELD_CHARS`] in every case, control characters replaced.
 pub fn redact_url(url: &str) -> String {
     let url = url.trim();
     if let Some((scheme, rest)) = url.split_once(':') {
@@ -64,13 +71,40 @@ pub fn redact_url(url: &str) -> String {
     }
     let url = &url[..url.find(['?', '#']).unwrap_or(url.len())];
     let Some((scheme, rest)) = url.split_once("://") else {
-        return cut(url);
+        return cut(&redact_path(url));
     };
     let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
     let host = authority
         .rsplit_once('@')
         .map_or(authority, |(_, host)| host);
-    cut(&format!("{scheme}://{host}{path}"))
+    cut(&format!("{scheme}://{host}{}", redact_path(path)))
+}
+
+/// `path` with each [`opaque_segment`] replaced by `:redacted`.
+fn redact_path(path: &str) -> String {
+    path.split('/')
+        .map(|segment| {
+            if opaque_segment(segment) {
+                ":redacted"
+            } else {
+                segment
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// A segment that names a thing rather than a place: 16 characters or more,
+/// only letters, digits, `-` and `_`, at least one digit — an invitation
+/// token, a UUID. Route words (`reactivation-request`) have no digit, and a
+/// file name (`enhance-<digest>.js`) has a dot; both stay, they say where
+/// the violation happened.
+fn opaque_segment(segment: &str) -> bool {
+    segment.len() >= 16
+        && segment.chars().any(|c| c.is_ascii_digit())
+        && segment
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
 }
 
 /// RFC 3986's `scheme`: a letter, then letters, digits, `+`, `-` or `.`.
@@ -80,9 +114,21 @@ fn is_scheme(s: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
 }
 
-/// `s`, cut to [`MAX_FIELD_CHARS`] characters.
+/// `s`, cut to [`MAX_FIELD_CHARS`] characters, each control character
+/// (and Unicode's line and paragraph separators) replaced by `\u{FFFD}`: a
+/// field is logged inside one line, and a newline in it would start a second
+/// one, of the sender's making.
 fn cut(s: &str) -> String {
-    s.chars().take(MAX_FIELD_CHARS).collect()
+    s.chars()
+        .take(MAX_FIELD_CHARS)
+        .map(|c| {
+            if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+                '\u{FFFD}'
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 /// The violations a report body describes, legacy `report-uri` object or
@@ -198,6 +244,66 @@ mod tests {
             redact_url("https://maison.example.org/"),
             "https://maison.example.org/"
         );
+    }
+
+    /// A secret in the path: the group invitation link carries its token
+    /// there, valid for days. Any opaque segment — a token, a UUID — goes.
+    #[test]
+    fn redact_url_drops_path_segments_that_look_like_tokens_or_ids() {
+        assert_eq!(
+            redact_url(
+                "https://maison.example.org/groups/invitations/Zq3_k9XvT2mQ8pLw4rYb7nHc1sDf6gJ0aEuIoVtBy5M/accept"
+            ),
+            "https://maison.example.org/groups/invitations/:redacted/accept"
+        );
+        assert_eq!(
+            redact_url(
+                "https://maison.example.org/api/groups/5f0c7a3e-2b1d-4c8e-9a6f-0d3b2e1c4a5b/events"
+            ),
+            "https://maison.example.org/api/groups/:redacted/events"
+        );
+        // Words, short segments and file names stay: they say where it was.
+        for kept in [
+            "https://maison.example.org/admin/users/reactivation-request/refuse",
+            "https://maison.example.org/assets/enhance-0123456789abcdef.js",
+            "https://maison.example.org/agenda/2026",
+            "/groups/invitations",
+        ] {
+            assert_eq!(redact_url(kept), kept);
+        }
+        assert_eq!(
+            redact_url("/groups/invitations/Zq3k9XvT2mQ8pLw4/accept"),
+            "/groups/invitations/:redacted/accept"
+        );
+    }
+
+    /// A field is one log line's worth: no newline or other control
+    /// character may reach the log, where it would start a forged line.
+    #[test]
+    fn no_field_carries_a_control_character() {
+        let body = br#"{"csp-report": {
+            "document-uri": "https://h/x\n2026-10-04T00:00:00Z ERROR forged",
+            "effective-directive": "script-src\r\nERROR forged",
+            "blocked-uri": "inline\u001b[31m",
+            "source-file": "https://h/a.js\u0000",
+            "disposition": "enforce\u2028x"
+        }}"#;
+        let v = &violations(body)[0];
+        for field in [
+            &v.document,
+            &v.directive,
+            &v.blocked,
+            v.source.as_ref().unwrap(),
+            &v.disposition,
+        ] {
+            assert!(
+                !field
+                    .chars()
+                    .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}'),
+                "{field:?}"
+            );
+        }
+        assert!(v.document.contains("ERROR forged"), "{:?}", v.document);
     }
 
     #[test]
