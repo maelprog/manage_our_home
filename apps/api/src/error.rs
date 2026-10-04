@@ -22,6 +22,11 @@ pub enum AppError {
     /// account's credentials holds such a session.
     #[error("account deactivated")]
     AccountDeactivated,
+    /// The full session of an account with no age declaration on file
+    /// (#318) on a route that needs one: 403 `age_not_declared`. Only the
+    /// declaration itself and logging out are open to it.
+    #[error("age not declared")]
+    AgeNotDeclared,
     #[error("gone")]
     Gone,
     #[error("bad request: {0}")]
@@ -63,6 +68,7 @@ impl IntoResponse for AppError {
             AppError::AccountDeactivated => {
                 (StatusCode::FORBIDDEN, "account_deactivated".to_string())
             }
+            AppError::AgeNotDeclared => (StatusCode::FORBIDDEN, "age_not_declared".to_string()),
             AppError::Gone => (StatusCode::GONE, "gone".to_string()),
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, m.clone()),
             AppError::TooManyRequests => (

@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users SET age_declared_at = NULL WHERE email = 'legacy@example.test'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "cddee31e92acd95e0492a42eb56e41a266da9a5aba251ab44db55c5be97678cc"
+}

@@ -22,6 +22,17 @@ pub struct RegisterRequest {
     pub declares_minimum_age: bool,
 }
 
+/// Body of `POST /auth/age-declaration` (#318): the same declaration as
+/// [`RegisterRequest::declares_minimum_age`], asked after the fact of an
+/// account that has none on file — one opened through Google, or before
+/// #137. A missing field declares nothing, answered with the same 422
+/// `age_declaration_required`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgeDeclarationRequest {
+    #[serde(default)]
+    pub declares_minimum_age: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginRequest {
     pub email: String,

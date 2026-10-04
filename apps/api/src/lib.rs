@@ -161,6 +161,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/verify-email/resend", post(auth::resend_verification))
         .route("/auth/login", post(auth::login))
         .route("/auth/me", get(auth::me))
+        .route(
+            "/auth/age-declaration",
+            post(auth::age_declaration::declare),
+        )
         .route("/auth/google/start", get(auth::oauth_google::start))
         .route("/auth/google/callback", get(auth::oauth_google::callback))
         .route("/auth/logout", post(auth::logout))

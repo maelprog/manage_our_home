@@ -381,6 +381,138 @@ async fn register_requires_the_age_declaration_and_records_it(db: PgPool) {
     );
 }
 
+/// #318: an account with no age declaration on file — opened through
+/// Google, or before #137 — still logs in, but its session opens nothing
+/// until the declaration is made: every `AuthUser` route answers 403
+/// `age_not_declared`. Declaring nothing gets the registration's 422; the
+/// declaration, once made, dates the account and opens the app to the same
+/// session, and is never made twice.
+#[sqlx::test]
+async fn an_account_without_age_declaration_is_held_at_the_declaration(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "legacy@example.test", "long-enough-1").await;
+    sqlx::query!("UPDATE users SET age_declared_at = NULL WHERE email = 'legacy@example.test'")
+        .execute(&db)
+        .await
+        .unwrap();
+
+    for path in ["/auth/me", "/auth/sessions", "/groups", "/account/export"] {
+        let held = call(&router, Method::GET, path, Some(&cookie), None).await;
+        assert_status(&held, StatusCode::FORBIDDEN);
+        assert_eq!(json_body(held).await["error"], "age_not_declared", "{path}");
+    }
+
+    for body in [
+        serde_json::json!({"declares_minimum_age": false}),
+        serde_json::json!({}),
+    ] {
+        let refused = call(
+            &router,
+            Method::POST,
+            "/auth/age-declaration",
+            Some(&cookie),
+            Some(body),
+        )
+        .await;
+        assert_status(&refused, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            json_body(refused).await["error"],
+            "age_declaration_required"
+        );
+    }
+    let still_none = sqlx::query_scalar!(
+        "SELECT age_declared_at FROM users WHERE email = 'legacy@example.test'"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(still_none, None, "declaring nothing recorded a declaration");
+
+    let declared = call(
+        &router,
+        Method::POST,
+        "/auth/age-declaration",
+        Some(&cookie),
+        Some(serde_json::json!({"declares_minimum_age": true})),
+    )
+    .await;
+    assert_status(&declared, StatusCode::NO_CONTENT);
+    let declared_at = sqlx::query_scalar!(
+        "SELECT age_declared_at FROM users WHERE email = 'legacy@example.test'"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert!(declared_at.is_some(), "the declaration was not recorded");
+
+    let me = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
+    assert_status(&me, StatusCode::OK);
+
+    let again = call(
+        &router,
+        Method::POST,
+        "/auth/age-declaration",
+        Some(&cookie),
+        Some(serde_json::json!({"declares_minimum_age": true})),
+    )
+    .await;
+    assert_status(&again, StatusCode::UNAUTHORIZED);
+    let unchanged = sqlx::query_scalar!(
+        "SELECT age_declared_at FROM users WHERE email = 'legacy@example.test'"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(unchanged, declared_at, "the declaration was rewritten");
+}
+
+/// #318: the holder of an account without age declaration — one who does
+/// not declare, under 15 included — can still end the session.
+#[sqlx::test]
+async fn an_account_without_age_declaration_can_log_out(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "leaving@example.test", "long-enough-1").await;
+    sqlx::query!("UPDATE users SET age_declared_at = NULL WHERE email = 'leaving@example.test'")
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let out = call(&router, Method::POST, "/auth/logout", Some(&cookie), None).await;
+    assert_status(&out, StatusCode::NO_CONTENT);
+    let after = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
+    assert_status(&after, StatusCode::UNAUTHORIZED);
+}
+
+/// #318: the declaration route is open to nobody else — no session, or the
+/// session of an account that already declared, is a 401.
+#[sqlx::test]
+async fn the_age_declaration_needs_a_session_awaiting_it(db: PgPool) {
+    let router = test_router(db.clone());
+    let body = serde_json::json!({"declares_minimum_age": true});
+
+    let anonymous = call(
+        &router,
+        Method::POST,
+        "/auth/age-declaration",
+        None,
+        Some(body.clone()),
+    )
+    .await;
+    assert_status(&anonymous, StatusCode::UNAUTHORIZED);
+
+    let cookie =
+        register_verify_login(&router, &db, "declared@example.test", "long-enough-1").await;
+    let declared = call(
+        &router,
+        Method::POST,
+        "/auth/age-declaration",
+        Some(&cookie),
+        Some(body),
+    )
+    .await;
+    assert_status(&declared, StatusCode::UNAUTHORIZED);
+}
+
 /// AC #6: the authenticated change-password endpoint rejects a too-short new
 /// password with `password_too_short` (422), even with the correct current
 /// password.
@@ -1890,6 +2022,42 @@ async fn google_callback_binds_no_identity_to_an_account_deactivated_by_support(
     let cookie = session_cookie_of(&response);
     let groups = call(&router, Method::GET, "/groups", Some(&cookie), None).await;
     assert_status(&groups, StatusCode::FORBIDDEN);
+}
+
+/// #318: an account opened through Google never saw the registration form,
+/// so it has no age declaration on file. Its first session is held at the
+/// declaration, which then opens the app to that same session.
+#[sqlx::test]
+async fn a_google_sign_up_is_held_at_the_age_declaration(db: PgPool) {
+    let email = "google-new-318@example.test";
+    let router = router_with_google_stub(db.clone(), "google-sub-318", email).await;
+
+    let response = google_callback(&router).await;
+    assert!(response.status().is_redirection(), "{}", response.status());
+    let user_id = user_id_by_email(&db, email).await;
+    let declared_at =
+        sqlx::query_scalar!("SELECT age_declared_at FROM users WHERE id = $1", user_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(declared_at, None);
+
+    let cookie = session_cookie_of(&response);
+    let me = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
+    assert_status(&me, StatusCode::FORBIDDEN);
+    assert_eq!(json_body(me).await["error"], "age_not_declared");
+
+    let declared = call(
+        &router,
+        Method::POST,
+        "/auth/age-declaration",
+        Some(&cookie),
+        Some(serde_json::json!({"declares_minimum_age": true})),
+    )
+    .await;
+    assert_status(&declared, StatusCode::NO_CONTENT);
+    let me = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
+    assert_status(&me, StatusCode::OK);
 }
 
 /// #279: with the token deleted at use, expiry is the only thing left that

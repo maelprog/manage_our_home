@@ -51,6 +51,10 @@ pub enum Session {
     /// the `/account/deactivated` page is open to it. apps/api answers
     /// `/auth/me` with 403 `account_deactivated`.
     Deactivated,
+    /// The session of an account with no age declaration on file (#318):
+    /// only the `/account/age` page is open to it. apps/api answers
+    /// `/auth/me` with 403 `age_not_declared`.
+    AgeUndeclared,
     /// No session, an invalid one, or apps/api unreachable.
     None,
 }
@@ -59,6 +63,12 @@ pub enum Session {
 /// its body — names a restricted session (#289) rather than no session.
 fn is_deactivated_answer(status: reqwest::StatusCode, error: Option<&str>) -> bool {
     status == reqwest::StatusCode::FORBIDDEN && error == Some("account_deactivated")
+}
+
+/// Whether a refused `GET /auth/me` names the session of an account with
+/// no age declaration on file (#318) rather than no session.
+fn is_age_undeclared_answer(status: reqwest::StatusCode, error: Option<&str>) -> bool {
+    status == reqwest::StatusCode::FORBIDDEN && error == Some("age_not_declared")
 }
 
 /// Calls `GET /auth/me` on apps/api, forwarding the incoming request's
@@ -87,18 +97,21 @@ pub async fn fetch_session(state: &AppState, cookie_header: Option<&str>) -> Ses
         .and_then(|b| b.get("error").and_then(|e| e.as_str()).map(str::to_string));
     if is_deactivated_answer(status, error.as_deref()) {
         Session::Deactivated
+    } else if is_age_undeclared_answer(status, error.as_deref()) {
+        Session::AgeUndeclared
     } else {
         Session::None
     }
 }
 
 /// [`fetch_session`] for callers that only want a full session: `None`
-/// covers no session, a restricted one, and any transport error talking to
-/// apps/api — callers treat all three as "not authenticated".
+/// covers no session, a restricted one, one awaiting its age declaration
+/// (#318), and any transport error talking to apps/api — callers treat
+/// them all as "not authenticated".
 pub async fn fetch_me(state: &AppState, cookie_header: Option<&str>) -> Option<MeResponse> {
     match fetch_session(state, cookie_header).await {
         Session::Active(me) => Some(me),
-        Session::Deactivated | Session::None => None,
+        Session::Deactivated | Session::AgeUndeclared | Session::None => None,
     }
 }
 
@@ -287,5 +300,44 @@ mod tests {
             Some("forbidden")
         ));
         assert!(!is_deactivated_answer(StatusCode::FORBIDDEN, None));
+    }
+
+    // -- age declaration (#318) -------------------------------------------
+
+    #[test]
+    fn a_403_age_not_declared_awaits_the_age_declaration() {
+        assert!(is_age_undeclared_answer(
+            StatusCode::FORBIDDEN,
+            Some("age_not_declared")
+        ));
+    }
+
+    #[test]
+    fn the_two_403_sessions_are_told_apart() {
+        assert!(!is_age_undeclared_answer(
+            StatusCode::FORBIDDEN,
+            Some("account_deactivated")
+        ));
+        assert!(!is_deactivated_answer(
+            StatusCode::FORBIDDEN,
+            Some("age_not_declared")
+        ));
+    }
+
+    #[test]
+    fn no_other_answer_awaits_the_age_declaration() {
+        assert!(!is_age_undeclared_answer(
+            StatusCode::UNAUTHORIZED,
+            Some("age_not_declared")
+        ));
+        assert!(!is_age_undeclared_answer(
+            StatusCode::FORBIDDEN,
+            Some("forbidden")
+        ));
+        assert!(!is_age_undeclared_answer(StatusCode::FORBIDDEN, None));
+        assert!(!is_age_undeclared_answer(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Some("age_declaration_required")
+        ));
     }
 }

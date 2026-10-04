@@ -1,3 +1,4 @@
+pub mod age_declaration;
 pub mod deactivated;
 pub mod oauth_google;
 pub mod session;
@@ -343,8 +344,9 @@ async fn login_inner(
     )
 }
 
-/// Ends the caller's session, full or restricted (#289): the one route a
-/// restricted session shares with a full one.
+/// Ends the caller's session, full or restricted (#289), or that of an
+/// account awaiting its age declaration (#318): the one route every live
+/// session shares.
 pub async fn logout(
     State(state): State<AppState>,
     cookies: Cookies,

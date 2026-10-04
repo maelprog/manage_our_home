@@ -42,8 +42,8 @@ pub async fn seed_dev_users(db: &PgPool) -> Result<()> {
         let password_hash = crate::crypto::hash_password(DEV_PASSWORD)?;
         let id: Uuid = sqlx::query_scalar(
             r#"
-            INSERT INTO users (email, password_hash, display_name, email_verified)
-            VALUES ($1, $2, $3, true)
+            INSERT INTO users (email, password_hash, display_name, email_verified, age_declared_at)
+            VALUES ($1, $2, $3, true, now())
             RETURNING id
             "#,
         )

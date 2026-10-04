@@ -1,5 +1,9 @@
 import { expect, test } from "@playwright/test";
-import { fetchPasswordResetToken, fetchVerificationToken } from "../lib/db";
+import {
+  clearAgeDeclaration,
+  fetchPasswordResetToken,
+  fetchVerificationToken,
+} from "../lib/db";
 
 function uniqueEmail(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.test`;
@@ -102,6 +106,80 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
     await expect(page).toHaveURL(/\/register\/check-email$/);
+  });
+
+  // #318: an account with no age declaration on file — opened through Google,
+  // or before #137 — is held at the declaration page until it declares, and
+  // every page of the app sends it back there.
+  test("an account without age declaration is held at the declaration", async ({ page }) => {
+    const email = uniqueEmail("e2e-age-later");
+    const password = "e2e-password-4";
+
+    await page.goto("/register");
+    await page.getByLabel("Email").fill(email);
+    await page.getByLabel("Nom affiché").fill("Age Later User");
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
+    await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
+    await page.getByRole("button", { name: "Créer mon compte" }).click();
+    const token = await fetchVerificationToken(email);
+    await page.goto(`/verify-email?token=${token}`);
+    await clearAgeDeclaration(email);
+
+    await page.goto("/login");
+    await page.getByLabel("Email").fill(email);
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
+    await page.getByRole("button", { name: "Se connecter" }).click();
+    await expect(page).toHaveURL("/account/age");
+    await expect(page.getByRole("heading", { name: "Déclaration d'âge" })).toBeVisible();
+
+    for (const path of ["/", "/agenda", "/account", "/login"]) {
+      await page.goto(path);
+      await expect(page).toHaveURL("/account/age");
+    }
+
+    // Declaring nothing is refused with the registration's message.
+    await page.getByRole("button", { name: "Continuer" }).click();
+    await expect(page).toHaveURL("/account/age?error=age_declaration_required");
+    await expect(
+      page.getByText("Le service n'est pas ouvert aux moins de 15 ans"),
+    ).toBeVisible();
+
+    await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
+    await page.getByRole("button", { name: "Continuer" }).click();
+    await expect(page).toHaveURL("/");
+    await expect(page.getByText("Bienvenue")).toBeVisible();
+
+    // Done once: the page now sends the account on to the app.
+    await page.goto("/account/age");
+    await expect(page).toHaveURL("/");
+  });
+
+  // #318: no parental-consent path — an account that does not declare can
+  // only leave.
+  test("an account without age declaration can log out", async ({ page }) => {
+    const email = uniqueEmail("e2e-age-leave");
+    const password = "e2e-password-5";
+
+    await page.goto("/register");
+    await page.getByLabel("Email").fill(email);
+    await page.getByLabel("Nom affiché").fill("Age Leave User");
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
+    await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
+    await page.getByRole("button", { name: "Créer mon compte" }).click();
+    const token = await fetchVerificationToken(email);
+    await page.goto(`/verify-email?token=${token}`);
+    await clearAgeDeclaration(email);
+
+    await page.goto("/login");
+    await page.getByLabel("Email").fill(email);
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
+    await page.getByRole("button", { name: "Se connecter" }).click();
+    await expect(page).toHaveURL("/account/age");
+
+    await page.getByRole("button", { name: "Se déconnecter" }).click();
+    await expect(page).toHaveURL(/\/login$/);
+    await page.goto("/account/age");
+    await expect(page).toHaveURL(/\/login$/);
   });
 });
 

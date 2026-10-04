@@ -150,6 +150,12 @@ fn build_router(state: AppState) -> Router {
             "/sw.js",
             get(routes::account::notifications::service_worker),
         )
+        // The one page the session of an account without age declaration
+        // opens (#318).
+        .route(
+            "/account/age",
+            get(routes::account::age::get).post(routes::account::age::post),
+        )
         // The one page a restricted session opens (#289).
         .route(
             "/account/deactivated",

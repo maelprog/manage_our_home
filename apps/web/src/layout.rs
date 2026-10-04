@@ -18,6 +18,11 @@ use crate::state::{fetch_me, fetch_session, AppState, Session};
 /// full one: the only page it opens.
 pub const DEACTIVATED_PAGE: &str = "/account/deactivated";
 
+/// Where the session of an account with no age declaration on file (#318)
+/// is sent from every page that wants a full one: the declaration, the only
+/// page it opens.
+pub const AGE_DECLARATION_PAGE: &str = "/account/age";
+
 fn cookie_header(parts: &Parts) -> Option<String> {
     parts
         .headers
@@ -29,7 +34,8 @@ fn cookie_header(parts: &Parts) -> Option<String> {
 /// Extracts the authenticated user or redirects to `/login`. Use on every
 /// handler for a route that requires a session (AC #3: "an unauthenticated
 /// visitor hitting any non-auth route is redirected to /login"). A
-/// restricted session (#289) is sent to [`DEACTIVATED_PAGE`] instead.
+/// restricted session (#289) is sent to [`DEACTIVATED_PAGE`] instead, and
+/// one awaiting its age declaration (#318) to [`AGE_DECLARATION_PAGE`].
 pub struct CurrentUser(pub MeResponse);
 
 #[axum::async_trait]
@@ -46,13 +52,15 @@ where
         match fetch_session(&app_state, cookie.as_deref()).await {
             Session::Active(me) => Ok(CurrentUser(me)),
             Session::Deactivated => Err(Redirect::to(DEACTIVATED_PAGE).into_response()),
+            Session::AgeUndeclared => Err(Redirect::to(AGE_DECLARATION_PAGE).into_response()),
             Session::None => Err(Redirect::to("/login").into_response()),
         }
     }
 }
 
 /// Same lookup as `CurrentUser` but never rejects — `None` means
-/// unauthenticated, a restricted session (#289) included. Used by pages that render differently depending on
+/// unauthenticated, a restricted session (#289) and one awaiting its age
+/// declaration (#318) included. Used by pages that render differently depending on
 /// auth state without hard-requiring a session.
 pub struct CurrentUserOpt(pub Option<MeResponse>);
 
@@ -97,6 +105,7 @@ where
             Session::Active(me) if me.is_superadmin => Ok(CurrentSuperAdmin(me)),
             Session::Active(_) => Err(Redirect::to("/").into_response()),
             Session::Deactivated => Err(Redirect::to(DEACTIVATED_PAGE).into_response()),
+            Session::AgeUndeclared => Err(Redirect::to(AGE_DECLARATION_PAGE).into_response()),
             Session::None => Err(Redirect::to("/login").into_response()),
         }
     }
@@ -105,7 +114,8 @@ where
 /// Extracted at the top of `/login` and `/register` handlers: redirects
 /// an already-authenticated visitor to `/` (AC #3, second half) — or, with
 /// a restricted session (#289), to [`DEACTIVATED_PAGE`], where they can log
-/// out — otherwise lets the handler render the form as normal.
+/// out, or with one awaiting its age declaration (#318), to
+/// [`AGE_DECLARATION_PAGE`] — otherwise lets the handler render the form as normal.
 pub struct RedirectIfAuthenticated;
 
 #[axum::async_trait]
@@ -122,6 +132,7 @@ where
         match fetch_session(&app_state, cookie.as_deref()).await {
             Session::Active(_) => Err(Redirect::to("/").into_response()),
             Session::Deactivated => Err(Redirect::to(DEACTIVATED_PAGE).into_response()),
+            Session::AgeUndeclared => Err(Redirect::to(AGE_DECLARATION_PAGE).into_response()),
             Session::None => Ok(RedirectIfAuthenticated),
         }
     }
