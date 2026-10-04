@@ -126,14 +126,21 @@ const FINGERPRINT_LEN: usize = 16;
 /// be tested on inputs of its own — the one interesting property being
 /// that two different sheets never get the same name.
 fn stylesheet_url(css: &str) -> String {
-    let digest = Sha256::digest(css.as_bytes());
+    fingerprinted_url("style", "css", css)
+}
+
+/// `/assets/<stem>-<digest>.<ext>`, the digest taken over `content` — the
+/// naming rule of every file served out of the binary, the stylesheet's
+/// and, since #325, the scripts'.
+fn fingerprinted_url(stem: &str, ext: &str, content: &str) -> String {
+    let digest = Sha256::digest(content.as_bytes());
     let mut hex = String::with_capacity(FINGERPRINT_LEN);
     for byte in digest.iter().take(FINGERPRINT_LEN.div_ceil(2)) {
         use std::fmt::Write;
         let _ = write!(hex, "{byte:02x}");
     }
     hex.truncate(FINGERPRINT_LEN);
-    format!("/assets/style-{hex}.css")
+    format!("/assets/{stem}-{hex}.{ext}")
 }
 
 /// The URL *the* stylesheet is served under, computed once per process.
@@ -163,6 +170,90 @@ async fn serve_stylesheet() -> Response {
         .into_response()
 }
 
+/// The scripts apps/web's pages load (#325), served out of the binary under
+/// `/assets/<name>-<digest>.js` — the stylesheet's arrangement, for the
+/// same reasons: one copy at runtime, a name no two contents share, a year
+/// of `immutable`.
+///
+/// They used to be inline, allowed by infra/Caddyfile's CSP through the
+/// hash of their text (and event-handler attributes through
+/// `'unsafe-hashes'`). As files, the policy allows them as `'self'` and
+/// nothing inline at all; `csp.rs` holds the markup to that.
+///
+/// - `Enhance`: loaded by every page (`app::document`), the behaviours the
+///   markup asks for through `data-*` attributes (`app::ENHANCE_SCRIPT`).
+/// - `ResetPassword`, `MessagerieLive`, `Push`: one page each, loaded where
+///   their inline `<script>` used to sit, so they still run once the markup
+///   before them is parsed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Script {
+    Enhance,
+    ResetPassword,
+    MessagerieLive,
+    Push,
+}
+
+impl Script {
+    pub const ALL: [Script; 4] = [
+        Script::Enhance,
+        Script::ResetPassword,
+        Script::MessagerieLive,
+        Script::Push,
+    ];
+
+    fn stem(self) -> &'static str {
+        match self {
+            Script::Enhance => "enhance",
+            Script::ResetPassword => "reset-password",
+            Script::MessagerieLive => "messagerie-live",
+            Script::Push => "push",
+        }
+    }
+
+    /// What the file holds.
+    pub fn source(self) -> &'static str {
+        match self {
+            Script::Enhance => crate::app::ENHANCE_SCRIPT,
+            Script::ResetPassword => crate::routes::auth::reset_password::FRAGMENT_SCRIPT,
+            Script::MessagerieLive => crate::routes::messagerie::thread::LIVE_SCRIPT,
+            Script::Push => crate::routes::account::notifications::PUSH_SCRIPT,
+        }
+    }
+
+    /// The URL the file is served under, computed once per process.
+    pub fn href(self) -> &'static str {
+        static HREFS: LazyLock<Vec<String>> = LazyLock::new(|| {
+            Script::ALL
+                .iter()
+                .map(|s| fingerprinted_url(s.stem(), "js", s.source()))
+                .collect()
+        });
+        let at = Script::ALL
+            .iter()
+            .position(|s| *s == self)
+            .expect("Script::ALL lists every script");
+        &HREFS[at]
+    }
+
+    /// The element that loads it. No `defer`: each sits where it is meant
+    /// to run (see the variants above).
+    pub fn tag(self) -> String {
+        format!(r#"<script src="{}"></script>"#, self.href())
+    }
+}
+
+/// `GET <Script::href>` — the script, straight out of the binary.
+async fn serve_script(script: Script) -> Response {
+    (
+        [(
+            CONTENT_TYPE,
+            HeaderValue::from_static("text/javascript; charset=utf-8"),
+        )],
+        script.source(),
+    )
+        .into_response()
+}
+
 /// Resolve the directory `ServeDir` is rooted at. Split out from
 /// `router` so the fallback is testable without a filesystem.
 pub fn resolve_assets_dir(configured: Option<String>) -> PathBuf {
@@ -185,8 +276,11 @@ pub fn router_at<S>(dir: &Path) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {
-    Router::new()
-        .route(stylesheet_href(), get(serve_stylesheet))
+    let mut router = Router::new().route(stylesheet_href(), get(serve_stylesheet));
+    for script in Script::ALL {
+        router = router.route(script.href(), get(move || serve_script(script)));
+    }
+    router
         .nest_service("/assets", ServeDir::new(dir))
         .layer(axum::middleware::map_response(cache_what_was_served))
 }
@@ -425,6 +519,80 @@ mod tests {
                 get(&format!("/assets/fonts/{file}")).await.status(),
                 StatusCode::OK
             );
+        }
+    }
+
+    // -- the scripts (#325) ----------------------------------------------
+
+    #[test]
+    fn each_script_is_named_by_its_stem_and_the_digest_of_its_source() {
+        for script in Script::ALL {
+            assert_eq!(
+                script.href(),
+                fingerprinted_url(script.stem(), "js", script.source()),
+                "{script:?}"
+            );
+            assert!(script.href().starts_with("/assets/"), "{script:?}");
+        }
+        let mut hrefs: Vec<&str> = Script::ALL.iter().map(|s| s.href()).collect();
+        hrefs.sort();
+        hrefs.dedup();
+        assert_eq!(hrefs.len(), Script::ALL.len(), "two scripts share a URL");
+    }
+
+    #[test]
+    fn a_script_tag_loads_its_file_and_holds_no_code() {
+        for script in Script::ALL {
+            assert_eq!(
+                script.tag(),
+                format!(r#"<script src="{}"></script>"#, script.href())
+            );
+        }
+    }
+
+    #[test]
+    fn every_page_loads_the_enhance_script_in_its_head() {
+        // In the head and not deferred: a confirmation asked by
+        // `data-confirm` must be in place before the form can be submitted.
+        let html = crate::app::shell(crate::app::Width::Form, "Titre", "<h1>x</h1>");
+        let head = &html[..html.find("</head>").expect("a head")];
+        assert!(head.contains(&Script::Enhance.tag()), "{html}");
+    }
+
+    #[tokio::test]
+    async fn serves_each_script_out_of_the_binary_byte_for_byte() {
+        for script in Script::ALL {
+            let res = get(script.href()).await;
+            assert_eq!(res.status(), StatusCode::OK, "GET {}", script.href());
+            assert_eq!(
+                res.headers()
+                    .get(axum::http::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok()),
+                Some("text/javascript; charset=utf-8"),
+                "with `X-Content-Type-Options: nosniff` (infra/Caddyfile), a \
+                 script served as anything else does not run"
+            );
+            assert_eq!(
+                res.headers()
+                    .get(axum::http::header::CACHE_CONTROL)
+                    .and_then(|v| v.to_str().ok()),
+                Some(CACHE_FOR_A_YEAR)
+            );
+            let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+                .await
+                .expect("a body");
+            assert_eq!(body.as_ref(), script.source().as_bytes(), "{script:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn no_other_script_name_is_served() {
+        for path in [
+            "/assets/enhance.js".to_string(),
+            "/assets/enhance-0000000000000000.js".to_string(),
+            fingerprinted_url("enhance", "js", "alert(1)"),
+        ] {
+            assert_eq!(get(&path).await.status(), StatusCode::NOT_FOUND, "{path}");
         }
     }
 

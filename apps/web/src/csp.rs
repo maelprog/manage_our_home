@@ -1,87 +1,106 @@
-//! The Content-Security-Policy guard (#141). Test-only, like
+//! The Content-Security-Policy guard (#141, #325). Test-only, like
 //! `design_journal`: it embeds `infra/Caddyfile`, which the shipped binary
 //! has no use for.
 //!
 //! The policy is set by Caddy, not by this application (one `header` block
 //! covers apps/web and apps/api at once), and Caddy's configuration is
-//! static: no per-response nonce. So the few inline scripts apps/web still
-//! emits are allowed **by hash** — a `<script>` element's text, or an event
-//! handler attribute's value under `'unsafe-hashes'`. A hash names one exact
-//! string: the day someone edits one of those scripts without updating the
-//! Caddyfile, the browser silently refuses to run it, and nothing in the
-//! application's own tests notices, because they never go through Caddy.
+//! static: no per-response nonce. Until #325 the few inline scripts apps/web
+//! emitted were allowed by the hash of their text, event-handler attributes
+//! included under `'unsafe-hashes'`. Since then there are none: every script
+//! is a file served under `/assets` by `crate::assets` (`assets::Script`),
+//! named by the digest of its content like the stylesheet, and the policy
+//! allows script files from the site's own origin and nothing inline at
+//! all — `script-src 'self'`.
 //!
-//! This module is what notices. Every inline script is a named constant,
-//! referenced from the markup as `{NAME}`, and listed below; the tests hold
-//! three things together:
+//! That holds only as long as nobody writes an inline script again: behind
+//! Caddy it would silently not run, and nothing in the application's own
+//! tests would notice, because they never go through Caddy (nor does CI's
+//! e2e job). This module is what notices. Its tests hold together:
 //!
-//! - the markup: no inline handler or `<script>` in `src/` that is not one
-//!   of the listed constants, interpolated whole;
-//! - the list: every constant is still emitted somewhere;
-//! - the Caddyfile: its `script-src` carries exactly the hashes of the
-//!   listed constants — none missing (a broken page), none extra (an
-//!   allowance nobody needs any more).
+//! - the markup: no event-handler attribute, no inline `<script>` and no
+//!   `javascript:` URL in the production code of `src/`;
+//! - the scripts: every `assets::Script` is still loaded by some page;
+//! - the Caddyfile: the policy, directive by directive, set by a `header`
+//!   that applies to every response, and the endpoint it reports to.
 
-use base64::Engine;
-use sha2::{Digest, Sha256};
-
-use crate::app::PW_TOGGLE;
-use crate::routes::account::delete::CONFIRM_ACCOUNT_DELETE;
-use crate::routes::account::notifications::PUSH_SCRIPT;
-use crate::routes::admin::users::{CONFIRM_DEACTIVATE, CONFIRM_REFUSE_REACTIVATION};
-use crate::routes::agenda::new::ALL_DAY_TOGGLE;
-use crate::routes::auth::reset_password::FRAGMENT_SCRIPT;
-use crate::routes::grocery_list::list::SUBMIT_ON_CHANGE;
-use crate::routes::messagerie::thread::LIVE_SCRIPT;
+use crate::assets::Script;
 
 const CADDYFILE: &str = include_str!("../../../infra/Caddyfile");
 
-/// Values of inline event-handler attributes (`onclick="{NAME}"`…).
-const HANDLERS: &[(&str, &str)] = &[
-    ("PW_TOGGLE", PW_TOGGLE),
-    ("ALL_DAY_TOGGLE", ALL_DAY_TOGGLE),
-    ("SUBMIT_ON_CHANGE", SUBMIT_ON_CHANGE),
-    ("CONFIRM_DEACTIVATE", CONFIRM_DEACTIVATE),
-    ("CONFIRM_REFUSE_REACTIVATION", CONFIRM_REFUSE_REACTIVATION),
-    ("CONFIRM_ACCOUNT_DELETE", CONFIRM_ACCOUNT_DELETE),
-];
-
-/// Texts of inline `<script>{NAME}</script>` elements.
-const SCRIPTS: &[(&str, &str)] = &[
-    ("FRAGMENT_SCRIPT", FRAGMENT_SCRIPT),
-    ("LIVE_SCRIPT", LIVE_SCRIPT),
-    ("PUSH_SCRIPT", PUSH_SCRIPT),
-];
-
-/// The CSP source expression that allows exactly `js`: SHA-256 of its UTF-8
-/// bytes, standard base64 with padding, quoted (CSP Level 3, "hash-source").
-fn csp_hash(js: &str) -> String {
-    let digest = Sha256::digest(js.as_bytes());
-    format!(
-        "'sha256-{}'",
-        base64::engine::general_purpose::STANDARD.encode(digest)
-    )
+/// The value of the header `name` that the Caddyfile sets on **every**
+/// response: inside a `header { … }` block or as `header <name> <value>`,
+/// on an uncommented line, the value either `"…"`, `` `…` `` or a bare token.
+///
+/// A `header` that carries a matcher (`header @api { … }`,
+/// `header /login Name "…"`) does not count: it sets the header on the
+/// responses it matches only. Neither does `<name>-Report-Only` for
+/// `Content-Security-Policy`, which reports and blocks nothing — the field
+/// name has to be exactly `name`.
+///
+/// What it does **not** see — a reading of lines, not Caddy's parser: a
+/// `header` nested in a `handle`, `route` or snippet (scoped by that block,
+/// not by a matcher of its own), and a value split across lines.
+fn caddy_header<'a>(caddyfile: &'a str, name: &str) -> Option<&'a str> {
+    // Inside a `header … {` block: whether that block carries a matcher.
+    let mut block: Option<bool> = None;
+    for line in caddyfile.lines().map(str::trim) {
+        if line.starts_with('#') {
+            continue;
+        }
+        if let Some(scoped) = block {
+            if line.starts_with('}') {
+                block = None;
+            } else if !scoped {
+                if let Some(value) = field_value(line, name) {
+                    return Some(value);
+                }
+            }
+            continue;
+        }
+        let Some(rest) = line
+            .strip_prefix("header")
+            .filter(|r| r.starts_with(char::is_whitespace))
+        else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let scoped = rest.starts_with(['@', '/', '*']);
+        let rest = if scoped {
+            rest.split_once(char::is_whitespace)
+                .map_or("", |(_, r)| r.trim_start())
+        } else {
+            rest
+        };
+        if rest.starts_with('{') {
+            block = Some(scoped);
+        } else if !scoped {
+            if let Some(value) = field_value(rest, name) {
+                return Some(value);
+            }
+        }
+    }
+    None
 }
 
-/// The value of the Caddyfile's `Content-Security-Policy` header: the
-/// double-quoted string on the (uncommented) line whose field name is
-/// exactly that — inside a `header { … }` block or as `header <name> "…"`.
-/// `Content-Security-Policy-Report-Only` does not count: it blocks nothing.
+/// The value of `<name> <value>` at the start of `line`: `"…"`, `` `…` ``
+/// or the rest of the line.
+fn field_value<'a>(line: &'a str, name: &str) -> Option<&'a str> {
+    let rest = line.strip_prefix(name)?;
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let value = rest.trim();
+    for quote in ['"', '`'] {
+        if let Some(quoted) = value.strip_prefix(quote) {
+            return Some(&quoted[..quoted.find(quote)?]);
+        }
+    }
+    Some(value)
+}
+
+/// The policy `infra/Caddyfile` enforces on every response.
 fn caddy_csp(caddyfile: &str) -> Option<&str> {
-    const NAME: &str = "Content-Security-Policy";
-    caddyfile
-        .lines()
-        .map(str::trim_start)
-        .filter(|l| !l.starts_with('#'))
-        .find_map(|l| {
-            let rest = l.strip_prefix("header").map_or(l, str::trim_start);
-            let rest = rest.strip_prefix(NAME)?;
-            if !rest.starts_with(char::is_whitespace) {
-                return None;
-            }
-            let value = rest.trim_start().strip_prefix('"')?;
-            Some(&value[..value.find('"')?])
-        })
+    caddy_header(caddyfile, "Content-Security-Policy")
 }
 
 /// The source list of one directive, or `None` if the policy lacks it.
@@ -90,35 +109,6 @@ fn directive<'a>(policy: &'a str, name: &str) -> Option<Vec<&'a str>> {
         let mut words = d.split_whitespace();
         (words.next()? == name).then(|| words.collect())
     })
-}
-
-/// One inline script found in the markup: which kind, and what stands where
-/// the script text should be — `Ok(NAME)` for a `{NAME}` interpolation,
-/// `Err(raw)` for anything else.
-#[derive(Debug, PartialEq)]
-enum Inline {
-    Handler(Result<String, String>),
-    Script(Result<String, String>),
-}
-
-/// `{NAME}` followed by `end`, at the start of `s`.
-fn interpolated(s: &str, end: &str) -> Result<String, String> {
-    let raw = || s.chars().take(60).collect::<String>();
-    let inner = s.strip_prefix('{').ok_or_else(raw)?;
-    let close = inner.find('}').ok_or_else(raw)?;
-    let name = &inner[..close];
-    let well_formed = !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-        && inner[close + 1..]
-            .get(..end.len())
-            .is_some_and(|after| after.eq_ignore_ascii_case(end));
-    if well_formed {
-        Ok(name.to_string())
-    } else {
-        Err(raw())
-    }
 }
 
 /// What precedes a file's first inline `#[cfg(test)] mod … {` block.
@@ -130,53 +120,77 @@ pub(crate) fn production_code(source: &str) -> &str {
     tests.map_or(source, |(at, _)| &source[..at])
 }
 
-/// Every inline event handler (`on<event>="…"` or `='…'`, after whitespace
-/// or at the start of a line) and `<script` in one source file's production
-/// code (`production_code`), comment lines left out. Names are matched
+/// One way of running JavaScript from the markup that `script-src 'self'`
+/// refuses, with the 60 characters of source it starts.
+#[derive(Debug, PartialEq)]
+enum Inline {
+    /// `on<event>=…`.
+    Handler(String),
+    /// A `<script` element without a `src` — its text is the script.
+    Script(String),
+    /// `href="javascript:…"`, or any other attribute given such a URL.
+    JsUrl(String),
+}
+
+/// Every inline script in one source file's production code
+/// (`production_code`), comment lines left out. Names are matched
 /// case-insensitively, as HTML reads them.
 ///
-/// What it does **not** see — a textual scan, not an HTML parser: an
-/// unquoted handler (`onclick=f()`), spaces around the `=`, and markup
-/// assembled from pieces (`"on" + "click"`, a `<script` split across two
-/// literals, or Leptos `view!` attributes, which SSR does not emit as
-/// handlers anyway). None of those appear in `src/` today; one that did
-/// would run nowhere behind Caddy, and show up as a broken page, not as a
-/// hole in the policy.
+/// - Event handlers: `on<letters>=`, whatever follows the `=` (quoted or
+///   not), where the name starts the line or follows whitespace, a quote (an
+///   attribute glued to the previous one's value, `class="z"onclick=`) or a
+///   `/` (`<svg/onload=`) — the separators HTML's tokenizer accepts.
+/// - `<script` not followed by whitespace and `src=`: an external script is
+///   the one form allowed.
+/// - `javascript:` right after an `=` and an optional quote.
+///
+/// What it does **not** see — a textual scan, not an HTML parser: spaces
+/// around a handler's `=`, markup assembled from pieces (`"on" + "click"`,
+/// a `<script` split across two literals), entity-encoded URLs
+/// (`javascript&colon;`), and Leptos `view!` attributes, which SSR does not
+/// emit as handlers anyway. One that slipped through would run nowhere
+/// behind Caddy, and show up as a broken page, not as a hole in the policy.
 fn inline_scripts(source: &str) -> Vec<Inline> {
-    let production = production_code(source);
+    let excerpt = |s: &str| s.chars().take(60).collect::<String>();
     let mut found = Vec::new();
-    for line in production.lines() {
+    for line in production_code(source).lines() {
         if line.trim_start().starts_with("//") {
             continue;
         }
         // Same byte offsets as `line`: ASCII lowering keeps every length.
         let lower = line.to_ascii_lowercase();
+        // Every match is recorded at its offset, then sorted, so that the
+        // list reads in source order whatever its kinds.
+        let mut on_line: Vec<(usize, Inline)> = Vec::new();
         for (at, _) in lower.match_indices('=') {
-            let Some(quote) = lower[at + 1..]
-                .chars()
-                .next()
-                .filter(|c| *c == '"' || *c == '\'')
-            else {
-                continue;
-            };
             let before = &lower[..at];
-            let word_start = before
+            let start = before
                 .rfind(|c: char| !c.is_ascii_lowercase())
                 .map_or(0, |i| i + 1);
-            let word = &before[word_start..];
-            let delimited = word_start == 0 || before[..word_start].ends_with(char::is_whitespace);
-            if word.len() > 2 && word.starts_with("on") && delimited {
-                let end = quote.to_string();
-                found.push(Inline::Handler(interpolated(&line[at + 2..], &end)));
+            let delimited = before[..start]
+                .chars()
+                .next_back()
+                .is_none_or(|c| c.is_whitespace() || matches!(c, '"' | '\'' | '/'));
+            if before.len() - start > 2 && before[start..].starts_with("on") && delimited {
+                on_line.push((start, Inline::Handler(excerpt(&line[start..]))));
+            }
+        }
+        for (at, _) in lower.match_indices("javascript:") {
+            let before = lower[..at].trim_end_matches(['"', '\'']);
+            if before.trim_end().ends_with('=') {
+                on_line.push((at, Inline::JsUrl(excerpt(&line[at..]))));
             }
         }
         for (at, _) in lower.match_indices("<script") {
-            let rest = &line[at + "<script".len()..];
-            found.push(Inline::Script(match rest.strip_prefix('>') {
-                Some(body) => interpolated(body, "</script>"),
-                None => Err(rest.chars().take(60).collect()),
-            }));
+            let rest = &lower[at + "<script".len()..];
+            let external =
+                rest.starts_with(char::is_whitespace) && rest.trim_start().starts_with("src=");
+            if !external {
+                on_line.push((at, Inline::Script(excerpt(&line[at..]))));
+            }
         }
+        on_line.sort_by_key(|(at, _)| *at);
+        found.extend(on_line.into_iter().map(|(_, inline)| inline));
     }
     found
 }
@@ -204,91 +218,16 @@ fn sources() -> Vec<(String, String)> {
 }
 
 #[test]
-fn csp_hash_matches_a_known_answer() {
-    // `printf '%s' 'this.form.submit()' | openssl dgst -sha256 -binary | base64`
-    assert_eq!(
-        csp_hash("this.form.submit()"),
-        "'sha256-osjxnKEPL/pQJbFk1dKsF7PYFmTyMWGmVSiL9inhxJY='"
-    );
-    assert_eq!(
-        csp_hash(""),
-        "'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='"
-    );
-}
-
-#[test]
 fn caddy_csp_reads_the_quoted_value_and_skips_comments() {
     let file = "# header Content-Security-Policy \"commented\"\n\
                 \theader {\n\
-                \t\tContent-Security-Policy \"default-src 'self'; script-src 'sha256-x='\"\n\
+                \t\tContent-Security-Policy \"default-src 'self'; script-src 'self'\"\n\
                 \t}\n";
     assert_eq!(
         caddy_csp(file),
-        Some("default-src 'self'; script-src 'sha256-x='")
+        Some("default-src 'self'; script-src 'self'")
     );
     assert_eq!(caddy_csp("header X-Frame-Options DENY\n"), None);
-}
-
-#[test]
-fn directive_returns_the_named_source_list_only() {
-    let policy = "default-src 'self'; script-src 'unsafe-hashes' 'sha256-a=' ;img-src 'self'";
-    assert_eq!(
-        directive(policy, "script-src"),
-        Some(vec!["'unsafe-hashes'", "'sha256-a='"])
-    );
-    assert_eq!(directive(policy, "img-src"), Some(vec!["'self'"]));
-    assert_eq!(directive(policy, "script"), None);
-    assert_eq!(directive(policy, "style-src"), None);
-}
-
-#[test]
-fn inline_scripts_finds_handlers_and_script_elements() {
-    let src = r##"format!(r#"<input onchange="{SUBMIT}"/>"#);
-let raw = r#"<button onclick="alert(1)">"#;
-// <button onclick="commented()">
-#[cfg(test)]
-mod declared_elsewhere;
-let s = format!("<script>{LIVE}</script>");
-let t = "<script src=x></script>";
-let not_a_handler = r#"<a href="/x" data-on="x" aria-controls="y">"#;
-#[cfg(test)]
-mod tests { const X: &str = r#"<b onclick="x()">"#; }
-"##;
-    assert_eq!(
-        inline_scripts(src),
-        vec![
-            Inline::Handler(Ok("SUBMIT".into())),
-            Inline::Handler(Err("alert(1)\">\"#;".into())),
-            Inline::Script(Ok("LIVE".into())),
-            Inline::Script(Err(" src=x></script>\";".into())),
-        ]
-    );
-}
-
-/// The forms HTML accepts beyond the house style: an attribute at the start
-/// of a line, single quotes, and upper-case names (HTML names are
-/// case-insensitive, so `<SCRIPT>` and `ONCLICK` run all the same).
-#[test]
-fn inline_scripts_finds_the_other_spellings_html_accepts() {
-    let src = r##"let a = r#"<button
-onclick="alert(1)">"#;
-let b = r#"<button onclick='alert(2)'>"#;
-let c = r#"<b ONCLICK="{PW_TOGGLE}">"#;
-let d = "<SCRIPT>{LIVE}</SCRIPT>";
-let e = "<Script>alert(3)</Script>";
-let f = r#"<i onchange='{SUBMIT}'>"#;
-"##;
-    assert_eq!(
-        inline_scripts(src),
-        vec![
-            Inline::Handler(Err("alert(1)\">\"#;".into())),
-            Inline::Handler(Err("alert(2)'>\"#;".into())),
-            Inline::Handler(Ok("PW_TOGGLE".into())),
-            Inline::Script(Ok("LIVE".into())),
-            Inline::Script(Err("alert(3)</Script>\";".into())),
-            Inline::Handler(Ok("SUBMIT".into())),
-        ]
-    );
 }
 
 #[test]
@@ -304,92 +243,204 @@ fn caddy_csp_reads_the_enforced_header_only() {
     assert_eq!(caddy_csp(other), None);
 }
 
+/// A matcher scopes a `header` to the responses it matches: a policy set
+/// that way protects one path and leaves every other page without one.
 #[test]
-fn every_inline_script_in_the_markup_is_a_registered_constant() {
-    let mut used: Vec<String> = Vec::new();
-    let mut stray = Vec::new();
-    for (path, text) in sources() {
-        for found in inline_scripts(&text) {
-            match found {
-                Inline::Handler(Ok(n)) if HANDLERS.iter().any(|(k, _)| *k == n) => used.push(n),
-                Inline::Script(Ok(n)) if SCRIPTS.iter().any(|(k, _)| *k == n) => used.push(n),
-                other => stray.push(format!("{path}: {other:?}")),
-            }
-        }
+fn caddy_csp_ignores_a_header_scoped_by_a_matcher() {
+    for file in [
+        "\theader @api {\n\t\tContent-Security-Policy \"default-src 'none'\"\n\t}\n",
+        "\theader /login {\n\t\tContent-Security-Policy \"default-src 'none'\"\n\t}\n",
+        "\theader * {\n\t\tContent-Security-Policy \"default-src 'none'\"\n\t}\n",
+        "\theader @api Content-Security-Policy \"default-src 'none'\"\n",
+        "\theader /login Content-Security-Policy \"default-src 'none'\"\n",
+    ] {
+        assert_eq!(caddy_csp(file), None, "{file}");
     }
+    // The block after a scoped one is read again, and a line outside any
+    // `header` is not a header.
+    let file = "\theader @api {\n\t\tContent-Security-Policy \"scoped\"\n\t}\n\
+                \tContent-Security-Policy \"loose\"\n\
+                \theader {\n\t\tContent-Security-Policy \"global\"\n\t}\n";
+    assert_eq!(caddy_csp(file), Some("global"));
+}
+
+#[test]
+fn caddy_header_reads_bare_and_backquoted_values() {
+    let file = "\theader {\n\
+                \t\tX-Frame-Options DENY\n\
+                \t\tReporting-Endpoints `csp=\"/api/csp-report\"`\n\
+                \t}\n\
+                \theader_up Referrer-Policy origin\n";
+    assert_eq!(caddy_header(file, "X-Frame-Options"), Some("DENY"));
+    assert_eq!(
+        caddy_header(file, "Reporting-Endpoints"),
+        Some("csp=\"/api/csp-report\"")
+    );
+    assert_eq!(caddy_header(file, "Referrer-Policy"), None);
+}
+
+#[test]
+fn directive_returns_the_named_source_list_only() {
+    let policy = "default-src 'self'; script-src 'unsafe-hashes' 'sha256-a=' ;img-src 'self'";
+    assert_eq!(
+        directive(policy, "script-src"),
+        Some(vec!["'unsafe-hashes'", "'sha256-a='"])
+    );
+    assert_eq!(directive(policy, "img-src"), Some(vec!["'self'"]));
+    assert_eq!(directive(policy, "script"), None);
+    assert_eq!(directive(policy, "style-src"), None);
+}
+
+#[test]
+fn inline_scripts_finds_handlers_script_elements_and_javascript_urls() {
+    let src = r##"format!(r#"<input onchange="{SUBMIT}"/>"#);
+let raw = r#"<button onclick="alert(1)">"#;
+// <button onclick="commented()">
+#[cfg(test)]
+mod declared_elsewhere;
+let s = format!("<script>{LIVE}</script>");
+let t = format!(r#"<script src="{href}"></script>"#);
+let u = r#"<a href="javascript:alert(2)">"#;
+let not_a_handler = r#"<a href="/x" data-on="x" aria-controls="y" title="online">"#;
+let one = 1;
+#[cfg(test)]
+mod tests { const X: &str = r#"<b onclick="x()">"#; }
+"##;
+    assert_eq!(
+        inline_scripts(src),
+        vec![
+            Inline::Handler("onchange=\"{SUBMIT}\"/>\"#);".into()),
+            Inline::Handler("onclick=\"alert(1)\">\"#;".into()),
+            Inline::Script("<script>{LIVE}</script>\");".into()),
+            Inline::JsUrl("javascript:alert(2)\">\"#;".into()),
+        ]
+    );
+}
+
+/// The forms HTML accepts beyond the house style: an attribute at the start
+/// of a line, single quotes, no quotes, upper-case names (HTML names are
+/// case-insensitive, so `<SCRIPT>` and `ONCLICK` run all the same), an
+/// attribute glued to the previous one's closing quote, and `/` as the
+/// separator after the tag name.
+#[test]
+fn inline_scripts_finds_the_other_spellings_html_accepts() {
+    let src = r##"let a = r#"<button
+onclick="alert(1)">"#;
+let b = r#"<button onclick='alert(2)'>"#;
+let c = r#"<b ONCLICK=go()>"#;
+let d = "<SCRIPT>{LIVE}</SCRIPT>";
+let e = r#"<i title="z"onclick="x()">"#;
+let f = r#"<svg/onload=alert(3)>"#;
+let g = r#"<a HREF='JavaScript:void(0)'>"#;
+let h = "<script
+src=x>";
+"##;
+    assert_eq!(
+        inline_scripts(src),
+        vec![
+            Inline::Handler("onclick=\"alert(1)\">\"#;".into()),
+            Inline::Handler("onclick='alert(2)'>\"#;".into()),
+            Inline::Handler("ONCLICK=go()>\"#;".into()),
+            Inline::Script("<SCRIPT>{LIVE}</SCRIPT>\";".into()),
+            Inline::Handler("onclick=\"x()\">\"#;".into()),
+            Inline::Handler("onload=alert(3)>\"#;".into()),
+            Inline::JsUrl("JavaScript:void(0)'>\"#;".into()),
+            Inline::Script("<script".into()),
+        ]
+    );
+}
+
+#[test]
+fn no_inline_script_in_the_markup() {
+    let stray: Vec<String> = sources()
+        .iter()
+        .flat_map(|(path, text)| {
+            inline_scripts(text)
+                .into_iter()
+                .map(move |found| format!("{path}: {found:?}"))
+        })
+        .collect();
     assert!(
         stray.is_empty(),
-        "inline JS that the Caddyfile's CSP cannot allow: move it into a \
-         constant, list it in csp.rs and add its hash to infra/Caddyfile:\n{}",
+        "inline JS, which infra/Caddyfile's `script-src 'self'` refuses: \
+         move it into a script under /assets (`assets::Script`), and give the \
+         markup a data-* attribute for it to find:\n{}",
         stray.join("\n")
     );
-    for (name, _) in HANDLERS.iter().chain(SCRIPTS) {
+}
+
+/// A script nobody loads any more is still served, and still allowed by
+/// `'self'`: dead code that keeps running rights.
+#[test]
+fn every_script_is_loaded_by_some_page() {
+    let production: Vec<String> = sources()
+        .into_iter()
+        .filter(|(path, _)| !path.ends_with("/assets.rs"))
+        .map(|(_, text)| production_code(&text).to_string())
+        .collect();
+    for script in Script::ALL {
+        let name = format!("Script::{script:?}");
         assert!(
-            used.iter().any(|u| u == name),
-            "{name} is listed but no longer emitted: drop it here and its hash from infra/Caddyfile"
+            production.iter().any(|text| text.contains(&name)),
+            "{name} is served but no page loads it: drop it"
         );
     }
 }
 
 #[test]
-fn registered_scripts_are_hashed_as_the_browser_reads_them() {
-    // A handler's hash is taken over the attribute value *after* HTML
-    // decoding; with no `"` or `&` in it, that value is the constant itself.
-    for (name, js) in HANDLERS {
-        assert!(
-            !js.contains('"') && !js.contains('&'),
-            "{name} would be HTML-decoded before hashing"
-        );
-    }
-    // A `<script>` element's text runs to the first `</script`.
-    for (name, js) in SCRIPTS {
-        assert!(!js.to_ascii_lowercase().contains("</script"), "{name}");
-    }
-}
-
-#[test]
-fn the_caddyfile_csp_allows_exactly_the_registered_scripts() {
+fn the_caddyfile_allows_script_files_from_the_site_and_nothing_inline() {
     let policy = caddy_csp(CADDYFILE).expect("infra/Caddyfile sets a Content-Security-Policy");
-    let script_src = directive(policy, "script-src").expect("the policy has a script-src");
-    let mut listed: Vec<String> = script_src
-        .iter()
-        .filter(|s| s.starts_with("'sha256-"))
-        .map(|s| s.to_string())
-        .collect();
-    let mut expected: Vec<String> = HANDLERS
-        .iter()
-        .chain(SCRIPTS)
-        .map(|(_, js)| csp_hash(js))
-        .collect();
-    listed.sort();
-    expected.sort();
-    let names: Vec<String> = HANDLERS
-        .iter()
-        .chain(SCRIPTS)
-        .map(|(n, js)| format!("{n}: {}", csp_hash(js)))
-        .collect();
-    assert_eq!(
-        listed,
-        expected,
-        "script-src must list exactly these hashes:\n{}",
-        names.join("\n")
-    );
-    // Hashes of event-handler attributes only count under 'unsafe-hashes';
-    // anything looser would make the hashes pointless.
-    assert!(script_src.contains(&"'unsafe-hashes'"));
-    for loose in ["'unsafe-inline'", "'unsafe-eval'", "*", "data:", "'self'"] {
-        assert!(!script_src.contains(&loose), "script-src allows {loose}");
-    }
+    assert_eq!(directive(policy, "script-src"), Some(vec!["'self'"]));
 }
 
 /// The reminder notifications' service worker (#306) is a script file,
-/// `/sw.js`. Without `worker-src` a browser falls back on `script-src`,
-/// which allows no file at all, and refuses to register it: no device could
-/// subscribe, and every member on notifications would get the warning.
+/// `/sw.js`. Without `worker-src` a browser falls back on `script-src`;
+/// written out so that tightening `script-src` one day cannot take the
+/// worker down with it.
 #[test]
 fn the_caddyfile_lets_the_service_worker_register_and_nothing_else() {
     let policy = caddy_csp(CADDYFILE).expect("infra/Caddyfile sets a Content-Security-Policy");
     assert_eq!(directive(policy, "worker-src"), Some(vec!["'self'"]));
+}
+
+/// Styles: the sheet under /assets and no `<style>` element; the `style="…"`
+/// attributes some routes write (an avatar's colour, a column's alignment)
+/// through `style-src-attr`.
+#[test]
+fn the_caddyfile_allows_the_stylesheet_and_style_attributes_only() {
+    let policy = caddy_csp(CADDYFILE).expect("infra/Caddyfile sets a Content-Security-Policy");
+    assert_eq!(directive(policy, "style-src"), Some(vec!["'self'"]));
+    assert_eq!(
+        directive(policy, "style-src-attr"),
+        Some(vec!["'unsafe-inline'"])
+    );
+}
+
+/// `fetch` and the Messagerie's WebSocket (under /api, same origin) go
+/// through `connect-src`, which is left to fall back on `default-src
+/// 'self'`: a `connect-src` of its own is a place to widen it unseen.
+#[test]
+fn the_caddyfile_leaves_connections_to_default_src() {
+    let policy = caddy_csp(CADDYFILE).expect("infra/Caddyfile sets a Content-Security-Policy");
+    assert_eq!(directive(policy, "connect-src"), None);
+    assert_eq!(directive(policy, "default-src"), Some(vec!["'self'"]));
+}
+
+/// Violations are reported to apps/api (`csp_report.rs`), on the site's own
+/// origin: `report-to` for the browsers that implement the Reporting API,
+/// `report-uri` for the others, both to the same path.
+#[test]
+fn the_caddyfile_reports_violations_to_the_api_and_nowhere_else() {
+    let policy = caddy_csp(CADDYFILE).expect("infra/Caddyfile sets a Content-Security-Policy");
+    assert_eq!(
+        directive(policy, "report-uri"),
+        Some(vec!["/api/csp-report"])
+    );
+    assert_eq!(directive(policy, "report-to"), Some(vec!["csp"]));
+    assert_eq!(
+        caddy_header(CADDYFILE, "Reporting-Endpoints"),
+        Some("csp=\"/api/csp-report\"")
+    );
 }
 
 #[test]

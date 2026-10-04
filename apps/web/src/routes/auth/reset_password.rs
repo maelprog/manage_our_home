@@ -7,6 +7,7 @@ use manage_our_home_shared::validation::auth::validate_password;
 use uuid::Uuid;
 
 use crate::app::{password_error_message, password_field, shell, Width};
+use crate::assets::Script;
 use crate::state::{api_post_json, AppState};
 
 #[derive(serde::Deserialize)]
@@ -25,8 +26,8 @@ pub struct ResetPasswordForm {
 /// invalid-link notice. `remove()` rather than `hidden`, because
 /// `form { display: flex }` in the sheet outranks the `hidden` attribute.
 ///
-/// The element's text only, without the tags: infra/Caddyfile's CSP allows
-/// it by the hash of exactly this string (`csp.rs`).
+/// Served as a file under `/assets` (`assets::Script::ResetPassword`, #325):
+/// infra/Caddyfile's CSP runs no inline script.
 pub(crate) const FRAGMENT_SCRIPT: &str = r#"
 (function () {
   var field = document.getElementById("reset-token");
@@ -78,7 +79,7 @@ fn form_page(token: Option<&str>, error: Option<&str>) -> String {
         </form>
     };
     let mut html = body.to_html();
-    html.push_str(&format!("<script>{FRAGMENT_SCRIPT}</script>"));
+    html.push_str(&Script::ResetPassword.tag());
     shell(Width::Form, "Réinitialiser le mot de passe", &html)
 }
 
@@ -175,12 +176,14 @@ mod tests {
     }
 
     /// The script is what moves the token from the fragment into the POST
-    /// body and scrubs the fragment from the session history entry.
+    /// body and scrubs the fragment from the session history entry; the page
+    /// loads it from `/assets` (#325).
     #[test]
     fn landing_page_reads_the_fragment_and_scrubs_it() {
         let html = form_page(None, None);
-        assert!(html.contains("location.hash"), "{html}");
-        assert!(html.contains("history.replaceState"), "{html}");
+        assert!(html.contains(&Script::ResetPassword.tag()), "{html}");
+        assert!(FRAGMENT_SCRIPT.contains("location.hash"));
+        assert!(FRAGMENT_SCRIPT.contains("history.replaceState"));
         assert!(html.contains("<noscript>"), "{html}");
     }
 

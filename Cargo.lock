@@ -2517,7 +2517,6 @@ name = "manage_our_home_web"
 version = "0.1.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
  "chrono",
  "chrono-tz",
  "cookie",

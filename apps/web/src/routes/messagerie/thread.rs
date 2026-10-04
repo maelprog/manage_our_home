@@ -22,6 +22,7 @@ use manage_our_home_shared::validation::messagerie::{
 use uuid::Uuid;
 
 use crate::app::{html_escape, member_colour, member_initial, shell_with_header, Width};
+use crate::assets::Script;
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -184,9 +185,9 @@ fn message_row(
 /// `rerender_with_edit_error`): either absolute (`ws://…`/`wss://…`) or a
 /// relative path (`/api/…`, the production default) that the script
 /// prefixes with `location.host` and the page's scheme. It sits in the
-/// markup rather than in the script so that the script is one fixed string,
-/// which infra/Caddyfile's CSP allows by hash (`csp.rs`); `LIVE_SCRIPT` is
-/// the element's text, without its tags.
+/// markup rather than in the script so that the script is one fixed file,
+/// served under `/assets` (`assets::Script::MessagerieLive`, #325):
+/// infra/Caddyfile's CSP runs no inline script.
 pub(crate) const LIVE_SCRIPT: &str = r#"
 (function() {
   if (!("WebSocket" in window)) return;
@@ -351,7 +352,7 @@ pub(crate) const LIVE_SCRIPT: &str = r#"
 "#;
 
 fn live_script() -> String {
-    format!("<script>{LIVE_SCRIPT}</script>")
+    Script::MessagerieLive.tag()
 }
 
 /// Renders the full `/messagerie` page. `messages` arrive newest-first from the
@@ -1134,7 +1135,7 @@ mod tests {
     /// must now sit inside `applyFresh`, behind its "is someone editing?" guard.
     #[test]
     fn live_script_routes_every_swap_through_the_edit_aware_apply() {
-        let js = live_script();
+        let js = LIVE_SCRIPT;
         let apply_at = js
             .find("function applyFresh")
             .expect("refresh() must delegate the swap to applyFresh");
@@ -1152,7 +1153,7 @@ mod tests {
     /// and a refresh held back during an edit is replayed when it closes.
     #[test]
     fn live_script_detects_the_open_inline_editor_and_replays_after_it_closes() {
-        let js = live_script();
+        let js = LIVE_SCRIPT;
         assert!(js.contains("details[open]"));
         assert!(message_row(&sample("Bonjour"), &[], true, true).contains("<details"));
         // <details>'s toggle event doesn't bubble — the listener has to capture.
@@ -1167,7 +1168,7 @@ mod tests {
     /// with nothing to apply.
     #[test]
     fn live_script_owes_the_replay_only_when_the_edited_row_changed() {
-        let js = live_script();
+        let js = LIVE_SCRIPT;
         let at = js
             .find("if (id === editId) {")
             .expect("the reconcile still has to special-case the row being edited");
@@ -1194,7 +1195,7 @@ mod tests {
     /// (author, time, `(modifié)`, content) sits outside the disclosure.
     #[test]
     fn the_edited_row_comparison_ignores_the_disclosure_subtree() {
-        let js = live_script();
+        let js = LIVE_SCRIPT;
         let at = js
             .find("function rowSignature(row) {")
             .expect("the edited-row comparison needs a details-free signature");

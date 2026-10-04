@@ -2,8 +2,8 @@ mod app;
 mod assets;
 mod body_bounds;
 mod client_ip;
-// The CSP guard (#141). Test-only: it embeds infra/Caddyfile, which sets
-// the policy, to hold its script hashes to the inline scripts emitted here.
+// The CSP guard (#141, #325). Test-only: it embeds infra/Caddyfile, which
+// sets the policy, and holds the markup emitted here to it — no inline script.
 #[cfg(test)]
 mod csp;
 // The DESIGN.md journal guard (#95). Test-only: it embeds the document

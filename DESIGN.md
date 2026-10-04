@@ -656,14 +656,19 @@ l'inlining, c'est cette liste qu'il faudra réfuter.
    `unsafe-inline`, ou un nonce/hash à générer par réponse. Une feuille
    externe est le cas trivial — c'est désormais le nôtre, et depuis #141
    `infra/Caddyfile` pose la CSP : `style-src 'self'`, aucun `<style>`
-   admis. (Le `<script>` inline de `messagerie/thread.rs` reste, avec les
-   autres scripts et gestionnaires inline, autorisé **par l'empreinte de son
-   texte** : une politique posée par Caddy est statique, donc sans nonce.
-   `apps/web/src/csp.rs` tient ces empreintes et le texte ensemble. #72 l'a
-   laissé en place et a corrigé le constat qui l'accompagnait : il n'est
-   **pas** émis inconditionnellement — voir [Le budget](#le-budget)
-   ci-dessous. Le sortir vers `/assets` sous son empreinte est la bascule de
-   #89 rejouée sur un second actif, donc une issue à part.)
+   admis. Les scripts ont suivi le même chemin avec #325 : le `<script>`
+   inline de `messagerie/thread.rs` et les autres scripts et gestionnaires
+   inline, jusque-là autorisés **par l'empreinte de leur texte** (une
+   politique posée par Caddy est statique, donc sans nonce), sont servis
+   depuis le binaire sous `/assets/<nom>-<empreinte>.js`
+   (`apps/web/src/assets.rs`, `Script`), comme la feuille ; la CSP dit
+   `script-src 'self'` et n'admet plus rien d'inline. Les comportements
+   portés par des attributs (`onclick`, `onsubmit`, `onchange`) passent par
+   des attributs `data-*` lus par un script commun chargé dans le `<head>`
+   de chaque page. `apps/web/src/csp.rs` refuse tout script inline qui
+   reviendrait. #72 avait corrigé le constat qui accompagnait le script de
+   la messagerie : il n'est **pas** émis inconditionnellement — voir
+   [Le budget](#le-budget) ci-dessous.
 
 ### Le budget
 

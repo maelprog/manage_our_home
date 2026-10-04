@@ -177,10 +177,12 @@ the session cookie is `Secure` unless `SECURE_COOKIES=false`.
 The same Caddyfile sets the security headers on every response of both
 applications: `Content-Security-Policy`, `Strict-Transport-Security`,
 `X-Content-Type-Options`, `X-Frame-Options` and `Referrer-Policy`. The
-policy allows the few inline scripts of `apps/web` by the hash of their
-text; changing one of them means updating its hash in the Caddyfile, and
-`cargo test -p manage_our_home_web csp` fails until that is done, printing
-the hashes to use.
+policy runs script files served by the site itself and no inline script
+at all: `apps/web` serves its scripts under `/assets`, and
+`cargo test -p manage_our_home_web csp` fails if an inline handler,
+`<script>` or `javascript:` URL comes back. What the policy blocks is
+reported to `apps/api` (`POST /api/csp-report`) and logged there, without
+the reporter's IP address.
 
 It fills `POSTGRES_PASSWORD`, the three `*_ROLE_PASSWORD` values, the three
 `*_ENCRYPTION_KEY` values and `MINIO_ROOT_PASSWORD` with `openssl rand`
