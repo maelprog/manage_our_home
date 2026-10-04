@@ -7,7 +7,7 @@ rationale in `architecture.md` ("v2 — Déploiement multi-famille").
 | # | Item | Status | Notes |
 |---|---|---|---|
 | 1 | VPS provisioning | missing | Hetzner/Scaleway, 2 vCPU/4 Go class. Same Docker Compose stack as local dev. |
-| 2 | TLS via Caddy in production | scaffolded | `infra/Caddyfile` exists as a skeleton; needs a real domain + cert issuance config. |
+| 2 | TLS via Caddy in production | done | Configured since #141 (`infra/Caddyfile`, site `{$SITE_ADDRESS::80}`): `infra/generate-env.sh <domain>` puts the public domain name in `SITE_ADDRESS`, which turns on Caddy's automatic HTTPS — certificate obtained and renewed by Caddy (kept in the `caddy_data` volume), port 80 only redirecting to 443, `Strict-Transport-Security` on every response. Takes effect on the host of item #1, provided the name resolves to it and its ports 80 and 443 are reachable from the Internet (README, "Running it for real"). The `:80` fallback is the local plain-HTTP stack only. `docs/registre-traitements.md` (« Mesures de sécurité communes ») refers to this setup (#315). |
 | 3 | Superadmin role | missing | Global technical role, distinct from group owner/admin/standard. Single account (maintainer) for now — no support team to model. |
 | 4 | RGPD: data export (Art. 20) | missing | Blocking before first external deployment. |
 | 5 | RGPD: account/data deletion (Art. 17) | missing | Blocking. Depends on group-ownership transfer rules (see `notes-issue-1-qa.md`). |
@@ -26,9 +26,10 @@ rationale in `architecture.md` ("v2 — Déploiement multi-famille").
 | 18 | RGPD: cadre contractuel du sous-traitant email et transferts hors UE | missing | **À faire avant la mise en ligne** — bloquant (#136, #328). Le fournisseur est arrêté (Scaleway Transactional Email, arbitrage du 2026-10-02 qui remplace Mailjet) et ne transfère rien hors UE, relevé daté dans le registre. Restent à établir le cadre contractuel opposable (DPA accepté depuis la console Scaleway) et les transferts hors UE de Google et des services de notification des navigateurs (#306) : trois placeholders les portent dans la politique et le registre. Rien dans le code ne contraint `SMTP_HOST`. Voir la procédure ci-dessous. |
 | 19 | RGPD: AIPD signée et registre des violations ouvert | missing | **À faire avant la mise en ligne** — bloquant (#143). L'AIPD est rédigée (`docs/aipd.md`) mais sa conclusion n'est qu'une proposition : le responsable de traitement la relit et la signe, ce qui remplit son placeholder (`conclusion de l'AIPD, date et signature`). Elle conditionne l'ouverture aux items #2, #8, #9, #12, #13, #15, #16 et #18. Le registre des violations est tenu hors du dépôt, qui est public (`docs/registre-violations.md` en fixe la forme) : l'ouvrir et en noter l'emplacement à la place du placeholder de ce fichier (`emplacement du registre des violations`). `docs/procedure-violation.md` porte le placeholder `adresse de contact`, rempli par l'item #16. Les trois sont épinglés par `the_breach_and_aipd_documents_carry_only_the_placeholders_pinned_here` (`apps/shared/src/validation/rgpd.rs`) : retirer l'attente correspondante en remplissant chacun. |
 
-**Immediate next step:** none of the above are done yet. Given the ~1 week
-horizon, items 4-9 (RGPD + backups) and 14 (rate-limiting) are the hard
-blockers for a responsible first deployment; 1-2 and 10-13 support them.
+**Immediate next step:** apart from item 2, none of the above are done
+yet. Given the ~1 week horizon, items 4-9 (RGPD + backups) and 14
+(rate-limiting) are the hard blockers for a responsible first deployment;
+1-2 and 10-13 support them.
 
 ## Item #16 — remplacer les placeholders du responsable de traitement
 
