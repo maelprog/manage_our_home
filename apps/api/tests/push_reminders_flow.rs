@@ -437,6 +437,54 @@ async fn a_device_subscribed_again_by_another_account_moves_to_it(db: PgPool) {
     assert_eq!(settings(&router, &second).await["push_subscriptions"], 1);
 }
 
+/// The device's record is the first account's: when it moves, the second
+/// account starts a fresh one. Kept, the dates and failures of deliveries
+/// made to the first account would appear in the second's art. 15 export.
+#[sqlx::test]
+async fn a_device_moved_to_another_account_carries_none_of_its_history(db: PgPool) {
+    let router = test_router(db.clone());
+    let first = register_verify_login(&router, &db, "previous@example.test").await;
+    let second = register_verify_login(&router, &db, "next@example.test").await;
+    assert_eq!(subscribe(&router, &first, FCM).await, StatusCode::CREATED);
+    sqlx::query(
+        "UPDATE push_subscriptions
+         SET created_at = now() - interval '30 days',
+             last_success_at = now() - interval '3 days',
+             consecutive_failures = 2,
+             failing_since = now() - interval '2 days'",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    assert_eq!(subscribe(&router, &second, FCM).await, StatusCode::CREATED);
+
+    let res = call(&router, Method::GET, "/account/export", Some(&second), None).await;
+    assert_status(&res, StatusCode::OK);
+    let doc = json_body(res).await;
+    let devices = doc["push_subscriptions"].as_array().unwrap();
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0]["endpoint"], FCM);
+    assert!(devices[0]["last_success_at"].is_null(), "{devices:?}");
+    assert_eq!(devices[0]["consecutive_failures"], 0, "{devices:?}");
+    assert!(devices[0]["failing_since"].is_null(), "{devices:?}");
+    let created_at: DateTime<Utc> = devices[0]["created_at"]
+        .as_str()
+        .and_then(|s| s.parse().ok())
+        .expect("the export carries the subscription date as a timestamp");
+    assert!(
+        created_at > Utc::now() - chrono::Duration::days(1),
+        "subscription date of the first account kept: {created_at}"
+    );
+
+    let res = call(&router, Method::GET, "/account/export", Some(&first), None).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(
+        json_body(res).await["push_subscriptions"],
+        serde_json::json!([])
+    );
+}
+
 /// Without a VAPID key no browser can subscribe; the API says so rather
 /// than store an endpoint nothing will ever be sent to.
 #[sqlx::test]
