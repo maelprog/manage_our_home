@@ -22,7 +22,7 @@ rationale in `architecture.md` ("v2 — Déploiement multi-famille").
 | 14 | Rate-limiting on `/login`, `/register` | missing | Called out in `architecture.md` security section as "once exposed to internet" — that condition is now met. |
 | 15 | Secrets via sops in production | missing | Scaffolding exists conceptually in `architecture.md`; not yet wired to a real deployment. |
 | 16 | RGPD: nom et adresse de contact du responsable de traitement | missing | **À remplacer avant la mise en ligne** — bloquant (#131). Art. 13(1)(a) exige l'identité *et* les coordonnées du responsable. Le porteur du projet (personne physique) fournit son nom et une adresse relevée par une personne — pas un `noreply@` — au moment de l'ouverture publique. Voir la procédure ci-dessous. |
-| 17 | LCEN: éditeur, directeur de la publication et hébergeur des mentions légales | missing | **À remplacer avant la mise en ligne** — bloquant (#132). Les mentions légales existent et sont servies (`docs/legal-notice.md`, `GET /legal-notice`), mais cinq valeurs y sont encore des placeholders. L'hébergeur dépend de l'item #1 : auto-hébergement (l'éditeur est alors son propre hébergeur) ou VPS. Voir la procédure ci-dessous. |
+| 17 | LCEN: hébergeur des mentions légales et identité de l'éditeur confiée à l'hébergeur | missing | **À remplacer avant la mise en ligne** — bloquant (#132, #314). Les mentions légales existent et sont servies (`docs/legal-notice.md`, `GET /legal-notice`), mais trois valeurs y sont encore des placeholders. L'éditeur use de l'anonymat de la LCEN art. 1-1, II (arbitrage du 2026-10-04) : son identité est communiquée à l'hébergeur, pas publiée. L'hébergeur dépend de l'item #1. Voir la procédure ci-dessous. |
 | 18 | RGPD: cadre contractuel du sous-traitant email et transferts hors UE | missing | **À faire avant la mise en ligne** — bloquant (#136). Le fournisseur est arrêté (Mailjet), mais ni le cadre contractuel opposable ni les transferts hors UE — pour lui comme pour Google et pour les services de notification des navigateurs (#306) — ne sont établis : quatre placeholders les portent dans la politique et le registre. Rien dans le code ne contraint `SMTP_HOST`. Voir la procédure ci-dessous. |
 | 19 | RGPD: AIPD signée et registre des violations ouvert | missing | **À faire avant la mise en ligne** — bloquant (#143). L'AIPD est rédigée (`docs/aipd.md`) mais sa conclusion n'est qu'une proposition : le responsable de traitement la relit et la signe, ce qui remplit son placeholder (`conclusion de l'AIPD, date et signature`). Elle conditionne l'ouverture aux items #2, #8, #9, #12, #13, #15, #16 et #18. Le registre des violations est tenu hors du dépôt, qui est public (`docs/registre-violations.md` en fixe la forme) : l'ouvrir et en noter l'emplacement à la place du placeholder de ce fichier (`emplacement du registre des violations`). `docs/procedure-violation.md` porte le placeholder `adresse de contact`, rempli par l'item #16. Les trois sont épinglés par `the_breach_and_aipd_documents_carry_only_the_placeholders_pinned_here` (`apps/shared/src/validation/rgpd.rs`) : retirer l'attente correspondante en remplissant chacun. |
 
@@ -56,9 +56,10 @@ Au moment de l'ouverture publique :
    `docs/registre-traitements.md`, l'adresse de contact dans
    `docs/procedure-violation.md`, et retirer le renvoi de
    `docs/architecture.md` #3.
-2. Reporter la même identité dans les mentions légales — elles existent
-   depuis #132 : voir l'item #17 ci-dessous, qui se traite dans le même
-   passage.
+2. Reporter la même adresse de contact dans les mentions légales et
+   communiquer l'identité de l'éditeur à l'hébergeur, sans la publier
+   (anonymat LCEN art. 1-1, II) : voir l'item #17 ci-dessous, qui se traite
+   dans le même passage.
 3. Rafraîchir la date de dernière mise à jour en tête des deux documents.
 4. Mettre à jour les tests de `apps/shared/src/validation/rgpd.rs` qui
    épinglent ces valeurs, car tant qu'ils ne le sont pas la suite reste rouge
@@ -82,44 +83,65 @@ Au moment de l'ouverture publique :
 binaire de `apps/api` (`include_str!`) et servis tels quels sur
 `GET /legal-notice` et `GET /terms-of-service`, pages publiques liées depuis
 les pieds de page de connexion et d'inscription et depuis `/account`. Les CGU
-ne portent aucun placeholder — elles renvoient aux mentions légales. Cinq
-valeurs des mentions légales en sont, dans la même forme
+ne portent aucun placeholder — elles renvoient aux mentions légales.
+
+Le régime appliqué est l'anonymat de l'éditeur non professionnel (LCEN
+art. 1-1, II, ancien art. 6-III-2 ; arbitrage du 2026-10-04) : l'article
+1-1, I exige de l'éditeur personne physique ses nom, prénoms, domicile et
+numéro de téléphone, et de l'hébergeur son nom, son adresse et son numéro de
+téléphone ; le II dispense l'éditeur non professionnel de publier les siens,
+à condition de les avoir communiqués à l'hébergeur. Les mentions publiées
+ne portent donc que l'identité de l'hébergeur et l'adresse de contact. Trois
+valeurs y sont des placeholders, dans la même forme
 `[<quoi> — à renseigner avant la mise en ligne]` que l'item #16 :
 
-- `nom de l'éditeur`
-- `adresse postale de l'éditeur`
 - `adresse de contact` — la **même** que celle de l'item #16, écrite à
   l'identique pour qu'une seule valeur soit à décider
-- `nom du directeur de la publication`
 - `nom et adresse de l'hébergeur`
+- `numéro de téléphone de l'hébergeur`
+
+Les nom, prénoms, domicile et numéro de téléphone de l'éditeur ne sont
+**jamais** écrits dans le dépôt, qui est public : ils vont à l'hébergeur
+seul (pas 1 ci-dessous).
 
 L'hébergeur dépend de l'item #1 et n'est pas choisi (arbitrage du
 2026-09-19 : auto-hébergement envisagé, VPS possible ensuite). Les deux
 branches, au moment de la mise en ligne :
 
-- **auto-hébergement** : l'éditeur est son propre hébergeur ; inscrire son
-  nom et l'adresse où le serveur est exploité ;
-- **VPS** : inscrire la raison sociale, l'adresse et le moyen de contact du
-  prestataire retenu.
+- **VPS** : inscrire la raison sociale, l'adresse et le numéro de téléphone
+  du prestataire retenu ;
+- **auto-hébergement** : l'éditeur est son propre hébergeur, et l'anonymat
+  du II ne tient plus — le nom, l'adresse et le numéro de téléphone de
+  l'hébergeur à publier sont alors ceux de l'éditeur. Cette branche demande
+  un nouvel arbitrage avant la mise en ligne, et la réécriture des sections
+  « Éditeur du service » et « Directeur de la publication ».
 
 Au moment de l'ouverture publique :
 
-1. Remplacer les cinq placeholders dans `docs/legal-notice.md`, en même temps
-   que les deux de l'item #16 — le responsable de traitement et l'éditeur
-   sont la même personne physique.
-2. Retirer, dans la section « Hébergeur », le paragraphe qui explique que
+1. Communiquer à l'hébergeur retenu les nom, prénoms, domicile et numéro de
+   téléphone de l'éditeur (LCEN art. 1-1, II), par le moyen qu'il prévoit,
+   et en garder la trace hors du dépôt. Sans ce pas, l'anonymat n'est pas
+   ouvert et les mentions publiées sont incomplètes.
+2. Remplacer les trois placeholders dans `docs/legal-notice.md`, en même
+   temps que les deux de l'item #16 — le responsable de traitement et
+   l'éditeur sont la même personne physique, et l'adresse de contact est la
+   même.
+3. Retirer, dans la section « Hébergeur », le paragraphe qui explique que
    l'hébergement n'est pas arrêté.
-3. Rafraîchir la date de dernière mise à jour en tête des deux documents.
-4. Mettre à jour les tests de `apps/shared/src/validation/rgpd.rs` qui
+4. Rafraîchir la date de dernière mise à jour en tête de
+   `docs/legal-notice.md` (les CGU ne changent pas).
+5. Mettre à jour les tests de `apps/shared/src/validation/rgpd.rs` qui
    épinglent ces valeurs, faute de quoi la suite reste rouge :
    - `pending_legal_notice_values` est leur source unique ; la vider reflète
-     le pas 1 ;
+     le pas 2 ;
    - `the_public_legal_documents_carry_only_the_placeholders_pinned_here`
      exige que les mentions légales et la politique de confidentialité soient
      remplies **le même jour** — c'est ce qui empêche d'en remplir une et
      d'oublier l'autre ;
    - `renders_the_real_legal_notice_without_leftover_markup` boucle sur
-     `pending_legal_notice_values` et n'a donc rien à retirer à la main.
+     `pending_legal_notice_values` et n'a donc rien à retirer à la main ; il
+     exige aussi que le texte cite l'article 1-1 et l'anonymat, ce que la
+     branche auto-hébergement devra revoir.
 
 ## Item #18 — établir le cadre contractuel du sous-traitant email et les transferts
 

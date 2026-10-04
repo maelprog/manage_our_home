@@ -1042,20 +1042,23 @@ mod tests {
         }
     }
 
-    /// The values `docs/legal-notice.md` still leaves to fill (#132). A list of
-    /// its own, not `pending_release_values`: LCEN art. 6-III asks the legal
-    /// notice for things the privacy policy never had to carry — a postal
-    /// address, a publication director, a host — and the host is not chosen yet
-    /// (self-hosting, a VPS later; arbitrated 2026-09-19). The contact address
-    /// is deliberately worded the same in both documents: it is the same
-    /// address, and it is filled once.
+    /// The values `docs/legal-notice.md` still leaves to fill (#132, #314). A
+    /// list of its own, not `pending_release_values`: the legal notice owes the
+    /// public the host's name, address and phone number (LCEN art. 1-1, I 4°),
+    /// which the privacy policy never had to carry, and the host is not chosen
+    /// yet (self-hosting, a VPS later; arbitrated 2026-09-19).
+    ///
+    /// The publisher's own name, address and phone number are deliberately
+    /// absent: the publisher edits on a non-professional basis and keeps the
+    /// anonymity LCEN art. 1-1, II allows (arbitrated 2026-10-04), so those go to
+    /// the host, never into this public repository — `docs/v2-deployment.md`
+    /// #17 carries that step. The contact address is worded the same as in the
+    /// policy: it is the same address, and it is filled once.
     fn pending_legal_notice_values() -> Vec<String> {
         vec![
-            "nom de l'éditeur".to_string(),
-            "adresse postale de l'éditeur".to_string(),
             "adresse de contact".to_string(),
-            "nom du directeur de la publication".to_string(),
             "nom et adresse de l'hébergeur".to_string(),
+            "numéro de téléphone de l'hébergeur".to_string(),
         ]
     }
 
@@ -1137,10 +1140,28 @@ mod tests {
         ));
         let html = render_markdown(md);
         assert!(html.starts_with("<h1>Mentions légales"));
-        // The three identities LCEN art. 6-III makes mandatory.
+        // The three roles LCEN art. 1-1 names: publisher, publication director,
+        // host.
         assert!(html.contains("<h2>Éditeur du service</h2>"));
         assert!(html.contains("<h2>Directeur de la publication</h2>"));
         assert!(html.contains("<h2>Hébergeur</h2>"));
+        // #314: the regime actually applied is the non-professional anonymity
+        // of art. 1-1, II, not the full disclosure of the I. The notice has to
+        // say so, and has to tell a reader where a right-of-reply request goes
+        // when the director is not named: to the host (art. 1-1, III).
+        let flat = flatten(md);
+        assert!(
+            flat.contains("article 1-1") && flat.contains("anonymat"),
+            "the legal notice does not state the LCEN anonymity regime it applies"
+        );
+        assert!(
+            flat.contains("droit de réponse"),
+            "the legal notice does not say where a right-of-reply request goes"
+        );
+        assert!(
+            !flat.contains("6-III"),
+            "the legal notice cites LCEN art. 6-III, renumbered 1-1 in 2024"
+        );
         // Same rule as the policy: the reader of a public page cannot open a
         // repository path, so the document has to stand on its own.
         assert_eq!(

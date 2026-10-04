@@ -1,6 +1,6 @@
 # Conditions générales d'utilisation — Manage Our Home
 
-Dernière mise à jour : 2026-09-28.
+Dernière mise à jour : 2026-10-04.
 
 ## Objet
 
@@ -13,8 +13,9 @@ et ce que l'éditeur attend de vous.
 Créer un compte et utiliser le service valent acceptation des présentes
 conditions. Si vous ne les acceptez pas, n'ouvrez pas de compte.
 
-L'éditeur du service est identifié dans les [mentions
-légales](/legal-notice).
+L'éditeur du service, une personne physique qui l'édite à titre non
+professionnel, est présenté dans les [mentions légales](/legal-notice), qui
+donnent l'adresse pour le joindre.
 
 ## Le service
 
