@@ -1,3 +1,5 @@
+pub mod succession;
+
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
@@ -107,7 +109,10 @@ pub async fn list_groups(
     let mut tx = user_scoped_tx(&state.db, auth.user_id).await?;
     let groups = sqlx::query!(
         r#"
-        SELECT g.id, g.name, g.created_at, gm.role as "role: String"
+        SELECT g.id, g.name, g.created_at, gm.role as "role: String",
+               gm.ownership_inherited_at, gm.ownership_inherited_reason,
+               (gm.role = 'owner' AND gm.ownership_inherited_at IS NOT NULL
+                AND gm.ownership_notice_seen_at IS NULL) AS "ownership_notice_pending!"
         FROM group_members gm
         JOIN groups g ON g.id = gm.group_id
         WHERE gm.user_id = $1
@@ -127,6 +132,18 @@ pub async fn list_groups(
                 "name": group.name,
                 "role": group.role,
                 "created_at": group.created_at,
+                // #323: the caller became this group's owner without asking
+                // for it and has not acknowledged it yet.
+                "ownership_notice": match (
+                    group.ownership_notice_pending,
+                    group.ownership_inherited_at,
+                    &group.ownership_inherited_reason,
+                ) {
+                    (true, Some(at), Some(reason)) => {
+                        json!({ "reason": reason, "inherited_at": at })
+                    }
+                    _ => serde_json::Value::Null,
+                },
             })
         })
         .collect();
@@ -191,6 +208,31 @@ pub async fn get_group(
             "email": m.email,
         })).collect::<Vec<_>>(),
     })))
+}
+
+/// `POST /groups/:id/ownership-notice/seen` — the caller acknowledges the
+/// notice that they became this group's owner without asking for it (#323):
+/// 204, and `GET /groups` stops carrying it. Idempotent; a member with no
+/// such notice gets the same 204. A non-member gets 403, like every other
+/// action on a group it does not belong to.
+pub async fn acknowledge_ownership_notice(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(group_id): Path<Uuid>,
+) -> AppResult<impl IntoResponse> {
+    let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
+    require_role(&mut tx, group_id, auth.user_id).await?;
+    sqlx::query!(
+        r#"UPDATE group_members SET ownership_notice_seen_at = now()
+           WHERE group_id = $1 AND user_id = $2
+             AND ownership_inherited_at IS NOT NULL AND ownership_notice_seen_at IS NULL"#,
+        group_id,
+        auth.user_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]

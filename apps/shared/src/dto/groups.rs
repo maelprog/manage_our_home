@@ -6,6 +6,7 @@
 //! the fields `apps/web` consumes are declared (serde ignores extras like
 //! `created_at` on deserialize).
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -28,6 +29,18 @@ pub struct GroupSummary {
     pub group_id: Uuid,
     pub name: String,
     pub role: String,
+    /// The caller became this group's owner without asking for it and has
+    /// not acknowledged it yet (#323); `None` otherwise.
+    #[serde(default)]
+    pub ownership_notice: Option<OwnershipNotice>,
+}
+
+/// `GroupSummary::ownership_notice`: why and when the group came to the
+/// caller. `reason` is a `validation::groups::OwnershipReason` value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OwnershipNotice {
+    pub reason: String,
+    pub inherited_at: DateTime<Utc>,
 }
 
 /// One element of `GroupDetailResponse::members`.

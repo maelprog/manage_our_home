@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT gm.group_id FROM group_members gm\n           WHERE gm.user_id = $1\n             AND NOT EXISTS (SELECT 1 FROM group_members o\n                             WHERE o.group_id = gm.group_id AND o.role = 'owner')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "group_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "group_members",
+            "name": "group_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4ab92b0ced9442a057b297927184133a877823274ba5f73288ea840c4e26c008"
+}

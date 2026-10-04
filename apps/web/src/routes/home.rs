@@ -22,6 +22,7 @@ use crate::family::{active_group_id_from_headers, resolve_active_group};
 use crate::layout::CurrentUser;
 use crate::routes::account::terms::update_notice;
 use crate::routes::agenda::{fmt_paris, paris_local_to_utc, today_paris};
+use crate::routes::groups::ownership::ownership_notices;
 use crate::routes::groups::{cookie_of, header_with_groups};
 use crate::state::{api_request_auth, AppState};
 
@@ -407,7 +408,7 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Response {
-    let (fam, _groups) = family_context(&state, &headers, &me).await;
+    let (fam, groups) = family_context(&state, &headers, &me).await;
 
     let Some(fam) = fam else {
         let no_group_hint = view! {
@@ -556,7 +557,7 @@ pub async fn get(
 
     let body = format!(
         r#"<h1>Accueil</h1>
-{terms}{agenda}
+{terms}{ownership}{agenda}
 {stocks}
 {grocery}
 {budget}
@@ -564,6 +565,9 @@ pub async fn get(
         // #319: a member who accepted an earlier version of the CGU is told
         // here, first thing after logging in, until they acknowledge it.
         terms = update_notice(&me),
+        // #323: a group that came to the member without their asking, until
+        // they acknowledge it — from the same `GET /groups` the header uses.
+        ownership = ownership_notices(&groups),
         agenda = agenda_block(&occurrences, chrono::Utc::now(), &members),
         stocks = stocks_block(&low_stock),
         grocery = grocery_block(count_unchecked(&grocery_items)),

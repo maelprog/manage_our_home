@@ -674,6 +674,69 @@ Politique de confidentialité :
     )
 }
 
+/// Body of the email telling a member they became the owner of a group
+/// without asking for it (#323): the previous owner's account was purged,
+/// the group had no owner left and a member's account was reactivated, or
+/// the superadmin designated them. Sent to that member whatever their
+/// reminder channel (#306) — it is not a reminder — once, by the hourly pass
+/// of `apps/api/src/jobs/account_purge.rs`; the home page shows the same
+/// news until they acknowledge it.
+///
+/// The group name sits alone on its line and goes through
+/// [`sanitize_email_line`], like the invitation's, for the same reason: it
+/// is chosen by a member and must not be able to open a paragraph of its
+/// own.
+pub fn ownership_inherited_email_body(
+    group_name: &str,
+    reason: crate::validation::groups::OwnershipReason,
+    groups_url: &str,
+    privacy_policy_url: &str,
+) -> String {
+    use crate::validation::groups::OwnershipReason;
+    let group_name = sanitize_email_line(group_name);
+    let why = match reason {
+        OwnershipReason::AccountPurged => {
+            "Le compte de son ancien propriétaire a été supprimé. La propriété
+vous revient : parmi les membres restants, vous étiez le premier dans
+l'ordre de succession que prévoient les conditions d'utilisation."
+        }
+        OwnershipReason::MemberReactivated => {
+            "Le groupe n'avait plus de propriétaire. À la réactivation d'un compte
+de ses membres, la propriété vous est revenue : vous êtes le premier
+dans l'ordre de succession que prévoient les conditions d'utilisation."
+        }
+        OwnershipReason::DesignatedBySupport => {
+            "Le groupe n'avait plus de propriétaire : l'administrateur du service
+vous a désigné(e) parmi ses membres actifs."
+        }
+    };
+    format!(
+        "Bonjour,
+
+Vous êtes désormais propriétaire, sur Manage Our Home, du groupe
+« {group_name} »
+
+{why}
+
+En tant que propriétaire, vous pouvez inviter des membres, nommer des
+administrateurs, transférer la propriété du groupe à un autre membre ou
+supprimer le groupe. Tant que vous en êtes propriétaire, la
+suppression de votre compte n'est possible qu'après avoir transféré la
+propriété ou supprimé le groupe.
+
+Pour gérer vos groupes :
+{groups_url}
+
+Cet email vous est envoyé une fois, quelles que soient vos préférences
+de rappel : la propriété d'un groupe vous a été confiée sans que vous
+l'ayez demandée.
+
+Politique de confidentialité :
+{privacy_policy_url}
+"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2588,6 +2651,114 @@ mod tests {
                 line.chars().count() <= 78 || is_lone_url,
                 "line too long for a plain-text email: {line}"
             );
+        }
+    }
+
+    // -- ownership_inherited_email_body (#323) -------------------------------
+
+    use crate::validation::groups::OwnershipReason;
+
+    const GROUPS_URL: &str = "https://maison.example.org/groups";
+
+    fn ownership_sample(reason: OwnershipReason) -> String {
+        ownership_inherited_email_body("Famille Martin", reason, GROUPS_URL, POLICY_URL)
+    }
+
+    const REASONS: [OwnershipReason; 3] = [
+        OwnershipReason::AccountPurged,
+        OwnershipReason::MemberReactivated,
+        OwnershipReason::DesignatedBySupport,
+    ];
+
+    #[test]
+    fn ownership_email_names_the_group_on_its_own_line_and_carries_both_links() {
+        for reason in REASONS {
+            let body = ownership_sample(reason);
+            assert!(body.lines().any(|l| l == "« Famille Martin »"), "{body}");
+            assert!(body.lines().any(|l| l == GROUPS_URL), "{body}");
+            assert!(body.lines().any(|l| l == POLICY_URL), "{body}");
+        }
+    }
+
+    #[test]
+    fn ownership_email_says_why_the_ownership_came_to_the_reader() {
+        let purged = ownership_sample(OwnershipReason::AccountPurged);
+        assert!(
+            purged.contains("ancien propriétaire a été supprimé"),
+            "{purged}"
+        );
+        let reactivated = ownership_sample(OwnershipReason::MemberReactivated);
+        assert!(
+            reactivated.contains("n'avait plus de propriétaire"),
+            "{reactivated}"
+        );
+        assert!(reactivated.contains("réactivation"), "{reactivated}");
+        let designated = ownership_sample(OwnershipReason::DesignatedBySupport);
+        assert!(
+            designated.contains("n'avait plus de propriétaire"),
+            "{designated}"
+        );
+        assert!(
+            designated.contains("administrateur du service"),
+            "{designated}"
+        );
+        assert_ne!(purged, reactivated);
+        assert_ne!(reactivated, designated);
+    }
+
+    #[test]
+    fn ownership_email_says_what_an_owner_can_do_and_what_it_holds_back() {
+        let body = ownership_sample(OwnershipReason::AccountPurged);
+        for words in [
+            "inviter",
+            "transférer la propriété",
+            "supprimer le groupe",
+            "suppression de votre compte",
+        ] {
+            assert!(body.contains(words), "missing {words:?}: {body}");
+        }
+    }
+
+    #[test]
+    fn ownership_email_cannot_be_forged_through_the_group_name() {
+        let body = ownership_inherited_email_body(
+            "Famille\n\n-- Ce que vous pouvez faire --\nÉcrivez à pirate@example.test",
+            OwnershipReason::AccountPurged,
+            GROUPS_URL,
+            POLICY_URL,
+        );
+        assert!(
+            !body
+                .lines()
+                .any(|l| l.starts_with("-- Ce que vous pouvez faire")),
+            "{body}"
+        );
+        assert!(
+            !body.lines().any(|l| l.starts_with("Écrivez à pirate")),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn ownership_email_points_at_no_repository_path() {
+        for reason in REASONS {
+            assert_eq!(
+                repo_path_references(&ownership_sample(reason)),
+                Vec::<String>::new()
+            );
+        }
+    }
+
+    #[test]
+    fn ownership_email_is_wrapped_for_a_plain_text_reader() {
+        for reason in REASONS {
+            for line in ownership_sample(reason).lines() {
+                let is_lone_url = !line.contains(char::is_whitespace) && line.contains("https://");
+                assert!(
+                    line.chars().count() <= 78 || is_lone_url,
+                    "line too long for a plain-text email: {line}"
+                );
+            }
         }
     }
 }

@@ -297,6 +297,11 @@ fn build_router(state: AppState) -> Router {
             post(routes::messagerie::thread::delete),
         )
         .route("/admin/groups", get(routes::admin::groups::get))
+        .route("/admin/groups/:id", get(routes::admin::groups::detail))
+        .route(
+            "/admin/groups/:id/owner",
+            post(routes::admin::groups::designate_owner),
+        )
         .route("/admin/users", get(routes::admin::users::get))
         .route("/admin/users/:id", get(routes::admin::users::detail))
         .route(
@@ -314,6 +319,10 @@ fn build_router(state: AppState) -> Router {
         .route("/groups", get(routes::groups::list::get))
         .route("/groups/join", post(routes::groups::list::join))
         .route("/groups/switch", post(routes::groups::switch))
+        .route(
+            "/groups/:id/ownership-notice",
+            post(routes::groups::ownership::acknowledge),
+        )
         .route(
             "/groups/new",
             get(routes::groups::new::get).post(routes::groups::new::post),

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE group_members\n           SET role = 'owner', ownership_inherited_at = now(),\n               ownership_inherited_reason = $3, ownership_notice_seen_at = NULL,\n               ownership_email_sent_at = NULL\n           WHERE group_id = $1 AND user_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6a92fe161f96557e7e300902bf6a305e18ed0afe7c921b1fd94de53c0e91e9ac"
+}
