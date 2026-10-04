@@ -1158,10 +1158,30 @@ mod tests {
             flat.contains("droit de réponse"),
             "the legal notice does not say where a right-of-reply request goes"
         );
-        assert!(
-            !flat.contains("6-III"),
-            "the legal notice cites LCEN art. 6-III, renumbered 1-1 in 2024"
-        );
+        // Every article the notice cites is LCEN art. 1-1 or one of the two code
+        // pénal articles on the host's professional secrecy. Checked on the word
+        // that follows each "article"/"art.", not on one spelling of the old
+        // number: "6-III", "article 6, III" and "art. 6-IV" (the right of reply
+        // before 2024) all fail the same way. Only a following word that starts
+        // with a digit is a citation: "articles de stock" is the stocks feature.
+        let words: Vec<&str> = flat.split(' ').collect();
+        for (i, word) in words.iter().enumerate() {
+            let word = word.rsplit(['\'', '’']).next().unwrap_or(word);
+            let cited = words.get(i + 1).copied().unwrap_or("");
+            if matches!(
+                word.to_lowercase().as_str(),
+                "article" | "articles" | "art." | "art"
+            ) && cited.starts_with(|c: char| c.is_ascii_digit())
+            {
+                assert!(
+                    ["1-1", "226-13", "226-14"]
+                        .iter()
+                        .any(|ok| cited.starts_with(ok)),
+                    "the legal notice cites `{word} {cited}`: the LCEN obligations \
+                     live in its art. 1-1 since loi n° 2024-449"
+                );
+            }
+        }
         // Same rule as the policy: the reader of a public page cannot open a
         // repository path, so the document has to stand on its own.
         assert_eq!(

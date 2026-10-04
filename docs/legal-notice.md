@@ -3,9 +3,8 @@
 Dernière mise à jour : 2026-10-04.
 
 Ces mentions répondent à l'article 1-1 de la loi n° 2004-575 du 21 juin 2004
-pour la confiance dans l'économie numérique, créé par la loi n° 2024-449 du
-21 mai 2024 ; ces obligations figuraient auparavant au III de son article 6.
-Son I demande à l'éditeur
+pour la confiance dans l'économie numérique, dans sa rédaction issue de la
+loi n° 2024-449 du 21 mai 2024. Son I demande à l'éditeur
 d'un service de communication au public en ligne de rendre publics son
 identité, le nom du directeur de la publication et l'identité de son
 hébergeur. Son II permet à qui édite **à titre non professionnel** de

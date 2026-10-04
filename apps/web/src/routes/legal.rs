@@ -1,5 +1,5 @@
 //! The public legal documents: `GET /legal-notice` (mentions légales, LCEN
-//! art. 6-III) and `GET /terms-of-service` (CGU) — issue #132.
+//! art. 1-1) and `GET /terms-of-service` (CGU) — issue #132.
 //!
 //! Same three properties as `crate::routes::privacy`, and for the same
 //! reasons: no session is required (both must be readable *before* an account
