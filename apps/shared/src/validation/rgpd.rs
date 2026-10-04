@@ -1248,7 +1248,7 @@ mod tests {
                 "`{pending}` is not readable in the rendered legal notice"
             );
         }
-        assert_no_raw_markdown(&html);
+        assert_no_raw_markdown(md, &html);
     }
 
     #[test]
@@ -1304,7 +1304,7 @@ mod tests {
             Vec::<String>::new(),
             "the CGU point at repo files"
         );
-        assert_no_raw_markdown(&html);
+        assert_no_raw_markdown(md, &html);
     }
 
     /// Every age `md` states as the service's minimum, in reading order: the
@@ -1567,19 +1567,169 @@ mod tests {
         assert!(cited_article_numbers("recettes, articles de stock, dépenses").is_empty());
     }
 
+    /// The markdown markers of `md` that `render_markdown` left raw in `html`,
+    /// one entry per finding.
+    ///
+    /// Block markers are read on the source lines: the renderer joins a
+    /// paragraph's lines with a space, so a numbered list, a quote or a rule
+    /// written under a line of text is no longer at the start of anything in
+    /// the output. The line-start markers looked for there are exactly: a
+    /// heading of level 4 or deeper (or a bare `#`), `>`, a number followed by
+    /// `.` or `)`, and a line of three or more `-`, `*` or `_` (a rule, or a
+    /// setext underline in `-`). Nothing else is: a `=` setext underline,
+    /// `+ ` bullets, fenced or indented code pass unseen.
+    ///
+    /// Inline markers are read on the text the reader sees — tags dropped,
+    /// `<code>` content dropped since it is shown verbatim on purpose: `**`,
+    /// any `*`, a `_` opening or closing a word (`snake_case` is left alone),
+    /// and the pipe syntax of a table that did not render.
+    ///
+    /// The number check also fires on a wrapped line that merely starts with
+    /// one (`2024. Son I`), where CommonMark would see a list only for `1.`:
+    /// a false positive, so it fails on the safe side.
+    fn raw_markdown_markers(md: &str, html: &str) -> Vec<String> {
+        let mut found = Vec::new();
+        for line in md.lines() {
+            let t = line.trim();
+            if t.is_empty() || t.starts_with('|') {
+                continue;
+            }
+            let hashes = t.chars().take_while(|&c| c == '#').count();
+            let after_hashes = &t[hashes..];
+            if hashes > 0
+                && (after_hashes.is_empty() || after_hashes.starts_with(' '))
+                && heading(t).is_none()
+            {
+                found.push(format!("heading: {t}"));
+            } else if t.starts_with('>') {
+                found.push(format!("blockquote: {t}"));
+            } else if is_ordered_item(t) {
+                found.push(format!("numbered list: {t}"));
+            } else if is_thematic_break(t) {
+                found.push(format!("rule: {t}"));
+            }
+        }
+        for text in visible_text(html) {
+            let chars: Vec<char> = text.chars().collect();
+            let word = |i: usize| chars.get(i).is_some_and(|c| c.is_alphanumeric());
+            let stray_underscore = (0..chars.len())
+                .any(|i| chars[i] == '_' && (i == 0 || !word(i - 1) || !word(i + 1)));
+            if text.contains('*') || stray_underscore {
+                found.push(format!("emphasis: {text}"));
+            }
+            if text.contains(" | ") || text.contains("|---") {
+                found.push(format!("table: {text}"));
+            }
+        }
+        found
+    }
+
+    /// `1. `, `1) `, or the number alone on its line: an ordered-list item.
+    fn is_ordered_item(t: &str) -> bool {
+        let digits = t.chars().take_while(char::is_ascii_digit).count();
+        let rest = &t[digits..];
+        digits > 0
+            && (rest.starts_with('.') || rest.starts_with(')'))
+            && (rest.len() == 1 || rest[1..].starts_with(' '))
+    }
+
+    /// Three or more of the same `-`, `*` or `_`, spaces allowed between.
+    fn is_thematic_break(t: &str) -> bool {
+        let marks: Vec<char> = t.chars().filter(|c| !c.is_whitespace()).collect();
+        marks.len() >= 3
+            && ['-', '*', '_'].contains(&marks[0])
+            && marks.iter().all(|&c| c == marks[0])
+    }
+
+    /// Each output line's text as the reader sees it: tags dropped, and the
+    /// content of `<code>` dropped with them.
+    fn visible_text(html: &str) -> Vec<String> {
+        html.lines()
+            .map(|line| {
+                let mut text = String::new();
+                let mut rest = line;
+                while let Some(open) = rest.find('<') {
+                    text.push_str(&rest[..open]);
+                    let tail = &rest[open..];
+                    rest = if let Some(code) = tail.strip_prefix("<code>") {
+                        code.find("</code>").map_or("", |end| &code[end + 7..])
+                    } else {
+                        tail.find('>').map_or("", |end| &tail[end + 1..])
+                    };
+                }
+                text.push_str(rest);
+                text
+            })
+            .collect()
+    }
+
     /// No markdown marker survived into the output: a shipped document has to
     /// stay inside the subset `render_markdown` supports, or the page shows it
-    /// raw.
-    fn assert_no_raw_markdown(html: &str) {
-        assert!(!html.contains("**"));
-        assert!(!html.contains(" | "));
-        assert!(!html.contains("|---"));
-        for line in html.lines() {
-            assert!(
-                !line.starts_with("- ") && !line.starts_with('#'),
-                "unrendered markdown line: {line}"
-            );
-        }
+    /// raw. See [`raw_markdown_markers`] for what counts as a marker.
+    fn assert_no_raw_markdown(md: &str, html: &str) {
+        assert_eq!(
+            raw_markdown_markers(md, html),
+            Vec::<String>::new(),
+            "markdown left raw by the renderer"
+        );
+    }
+
+    /// Runs the guard on `md` as the renderer actually renders it.
+    fn raw_markers_of(md: &str) -> Vec<String> {
+        raw_markdown_markers(md, &render_markdown(md))
+    }
+
+    #[test]
+    fn raw_markdown_guard_accepts_the_supported_subset() {
+        let md = "# Titre\n\n## Section\n\n### Sous-section\n\n\
+                  Un paragraphe avec **du gras**, du `code *étoilé* et 1. numéroté`,\n\
+                  un [lien](https://example.org/a_b) et la loi du 21 mai 2024. Son I\n\
+                  vaut aussi pour les identifiants comme snake_case.\n\n\
+                  - une puce\n  qui continue\n- une autre\n\n\
+                  | A | B |\n|---|---|\n| x | y |\n";
+        assert_eq!(raw_markers_of(md), Vec::<String>::new());
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_a_numbered_list() {
+        // As its own block, and interrupting a paragraph: both flatten into
+        // `<p>` text the reader sees with its numbers inline.
+        assert!(!raw_markers_of("1. item\n2. autre\n").is_empty());
+        assert!(!raw_markers_of("Texte :\n1. item\n2. autre\n").is_empty());
+        assert!(!raw_markers_of("1) item\n").is_empty());
+        // Indented under a bullet, it is glued to that bullet's text.
+        assert!(!raw_markers_of("- puce\n  1. sous-item\n").is_empty());
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_a_blockquote() {
+        assert!(!raw_markers_of("> citation\n").is_empty());
+        assert!(!raw_markers_of("Texte\n> citation\n").is_empty());
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_single_emphasis() {
+        assert!(!raw_markers_of("Un mot *souligné* ici.\n").is_empty());
+        assert!(!raw_markers_of("Un mot _souligné_ ici.\n").is_empty());
+        assert!(!raw_markers_of("- une *puce*\n").is_empty());
+        assert!(!raw_markers_of("| A |\n|---|\n| *x* |\n").is_empty());
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_a_thematic_break() {
+        assert!(!raw_markers_of("Avant\n\n---\n\nAprès\n").is_empty());
+        // Under a paragraph line it is a setext heading, just as unsupported.
+        assert!(!raw_markers_of("Titre\n---\n").is_empty());
+        assert!(!raw_markers_of("***\n").is_empty());
+        assert!(!raw_markers_of("_ _ _\n").is_empty());
+    }
+
+    #[test]
+    fn raw_markdown_guard_still_catches_the_original_markers() {
+        // Bold left open, a deeper heading, and a heading glued to a paragraph.
+        assert!(!raw_markers_of("Du **gras non fermé.\n").is_empty());
+        assert!(!raw_markers_of("#### Trop profond\n").is_empty());
+        assert!(!raw_markers_of("Texte\n#### Collé\n").is_empty());
     }
 
     #[test]
@@ -1632,16 +1782,7 @@ mod tests {
                 "`{pending}` is not readable in the rendered policy"
             );
         }
-        // No raw markdown markers survive into the output.
-        assert!(!html.contains("**"));
-        assert!(!html.contains(" | "));
-        assert!(!html.contains("|---"));
-        for line in html.lines() {
-            assert!(
-                !line.starts_with("- ") && !line.starts_with('#'),
-                "unrendered markdown line: {line}"
-            );
-        }
+        assert_no_raw_markdown(md, &html);
     }
 
     // -- invitation_email_body (#134) ----------------------------------------
