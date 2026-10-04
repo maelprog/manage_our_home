@@ -20,7 +20,7 @@ async fn register_verify_login(
         "/auth/register",
         None,
         Some(
-            serde_json::json!({"email": email, "password": password, "display_name": "Test User", "declares_minimum_age": true}),
+            serde_json::json!({"email": email, "password": password, "display_name": "Test User", "declares_minimum_age": true, "accepts_terms": true}),
         ),
     )
     .await;
@@ -214,7 +214,7 @@ async fn behind_secure_cookies_the_session_cookie_carries_the_host_prefix(db: Pg
         None,
         Some(serde_json::json!({
             "email": "host@example.test", "password": "host-password1",
-            "display_name": "Host", "declares_minimum_age": true
+            "display_name": "Host", "declares_minimum_age": true, "accepts_terms": true
         })),
     )
     .await;
@@ -285,7 +285,7 @@ async fn register_validates_input(db: PgPool) {
         Method::POST,
         "/auth/register",
         None,
-        Some(serde_json::json!({"email": "v@example.test", "password": "short", "display_name": "V", "declares_minimum_age": true})),
+        Some(serde_json::json!({"email": "v@example.test", "password": "short", "display_name": "V", "declares_minimum_age": true, "accepts_terms": true})),
     )
     .await;
     assert_status(&short_pw, StatusCode::UNPROCESSABLE_ENTITY);
@@ -296,7 +296,7 @@ async fn register_validates_input(db: PgPool) {
         Method::POST,
         "/auth/register",
         None,
-        Some(serde_json::json!({"email": "not-an-email", "password": "long-enough-1", "display_name": "V", "declares_minimum_age": true})),
+        Some(serde_json::json!({"email": "not-an-email", "password": "long-enough-1", "display_name": "V", "declares_minimum_age": true, "accepts_terms": true})),
     )
     .await;
     assert_status(&bad_email, StatusCode::UNPROCESSABLE_ENTITY);
@@ -307,7 +307,7 @@ async fn register_validates_input(db: PgPool) {
         Method::POST,
         "/auth/register",
         None,
-        Some(serde_json::json!({"email": "v@example.test", "password": "long-enough-1", "display_name": "   ", "declares_minimum_age": true})),
+        Some(serde_json::json!({"email": "v@example.test", "password": "long-enough-1", "display_name": "   ", "declares_minimum_age": true, "accepts_terms": true})),
     )
     .await;
     assert_status(&empty_name, StatusCode::UNPROCESSABLE_ENTITY);
@@ -321,7 +321,7 @@ async fn register_validates_input(db: PgPool) {
         Method::POST,
         "/auth/register",
         None,
-        Some(serde_json::json!({"email": "v@example.test", "password": "long-enough-1", "display_name": "Valid", "declares_minimum_age": true})),
+        Some(serde_json::json!({"email": "v@example.test", "password": "long-enough-1", "display_name": "Valid", "declares_minimum_age": true, "accepts_terms": true})),
     )
     .await;
     assert_status(&ok, StatusCode::CREATED);
@@ -364,7 +364,7 @@ async fn register_requires_the_age_declaration_and_records_it(db: PgPool) {
         Method::POST,
         "/auth/register",
         None,
-        Some(serde_json::json!({"email": "old-enough@example.test", "password": "long-enough-1", "display_name": "Old Enough", "declares_minimum_age": true})),
+        Some(serde_json::json!({"email": "old-enough@example.test", "password": "long-enough-1", "display_name": "Old Enough", "declares_minimum_age": true, "accepts_terms": true})),
     )
     .await;
     assert_status(&created, StatusCode::CREATED);
@@ -513,6 +513,306 @@ async fn the_age_declaration_needs_a_session_awaiting_it(db: PgPool) {
     assert_status(&declared, StatusCode::UNAUTHORIZED);
 }
 
+/// The CGU acceptance on file for `email`: version and date (#319).
+async fn terms_on_file(
+    db: &PgPool,
+    email: &str,
+) -> (Option<String>, Option<chrono::DateTime<chrono::Utc>>) {
+    let row = sqlx::query!(
+        "SELECT terms_accepted_version, terms_accepted_at FROM users WHERE email = $1",
+        email
+    )
+    .fetch_one(db)
+    .await
+    .unwrap();
+    (row.terms_accepted_version, row.terms_accepted_at)
+}
+
+/// #319: a registration that does not accept the CGU is refused — after the
+/// age declaration, which keeps its code — and one that does records the
+/// version in force, dated. Omitting the field accepts nothing.
+#[sqlx::test]
+async fn register_requires_the_terms_acceptance_and_records_its_version(db: PgPool) {
+    let router = test_router(db.clone());
+
+    for body in [
+        serde_json::json!({"email": "no-terms@example.test", "password": "long-enough-1", "display_name": "No Terms", "declares_minimum_age": true, "accepts_terms": false}),
+        serde_json::json!({"email": "no-terms@example.test", "password": "long-enough-1", "display_name": "No Terms", "declares_minimum_age": true}),
+    ] {
+        let refused = call(&router, Method::POST, "/auth/register", None, Some(body)).await;
+        assert_status(&refused, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            json_body(refused).await["error"],
+            "terms_acceptance_required"
+        );
+    }
+    let none_created =
+        sqlx::query_scalar!("SELECT count(*) FROM users WHERE email = 'no-terms@example.test'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        none_created,
+        Some(0),
+        "a refused registration created a user"
+    );
+
+    let created = call(
+        &router,
+        Method::POST,
+        "/auth/register",
+        None,
+        Some(serde_json::json!({"email": "terms@example.test", "password": "long-enough-1", "display_name": "Terms", "declares_minimum_age": true, "accepts_terms": true})),
+    )
+    .await;
+    assert_status(&created, StatusCode::CREATED);
+    let (version, at) = terms_on_file(&db, "terms@example.test").await;
+    assert_eq!(
+        version.as_deref(),
+        Some(manage_our_home_shared::validation::auth::TERMS_VERSION)
+    );
+    assert!(at.is_some(), "the acceptance was not dated");
+}
+
+/// #319: an account with no acceptance of the CGU on file — opened through
+/// Google, or before #319 — still logs in, but its session opens nothing
+/// until it accepts: every `AuthUser` route answers 403
+/// `terms_not_accepted`. Accepting nothing gets the registration's 422; the
+/// acceptance records the version in force and opens the app to the same
+/// session, which `/auth/me` then reports.
+#[sqlx::test]
+async fn an_account_without_terms_acceptance_is_held_at_the_acceptance(db: PgPool) {
+    let router = test_router(db.clone());
+    let email = "legacy-terms@example.test";
+    let cookie = register_verify_login(&router, &db, email, "long-enough-1").await;
+    sqlx::query!(
+        "UPDATE users SET terms_accepted_version = NULL, terms_accepted_at = NULL WHERE email = $1",
+        email
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    for path in ["/auth/me", "/auth/sessions", "/groups", "/account/export"] {
+        let held = call(&router, Method::GET, path, Some(&cookie), None).await;
+        assert_status(&held, StatusCode::FORBIDDEN);
+        assert_eq!(
+            json_body(held).await["error"],
+            "terms_not_accepted",
+            "{path}"
+        );
+    }
+
+    for body in [
+        serde_json::json!({"accepts_terms": false}),
+        serde_json::json!({}),
+    ] {
+        let refused = call(
+            &router,
+            Method::POST,
+            "/auth/terms-acceptance",
+            Some(&cookie),
+            Some(body),
+        )
+        .await;
+        assert_status(&refused, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            json_body(refused).await["error"],
+            "terms_acceptance_required"
+        );
+    }
+    assert_eq!(
+        terms_on_file(&db, email).await,
+        (None, None),
+        "accepting nothing recorded an acceptance"
+    );
+
+    let accepted = call(
+        &router,
+        Method::POST,
+        "/auth/terms-acceptance",
+        Some(&cookie),
+        Some(serde_json::json!({"accepts_terms": true})),
+    )
+    .await;
+    assert_status(&accepted, StatusCode::NO_CONTENT);
+    let (version, at) = terms_on_file(&db, email).await;
+    assert_eq!(
+        version.as_deref(),
+        Some(manage_our_home_shared::validation::auth::TERMS_VERSION)
+    );
+    assert!(at.is_some(), "the acceptance was not dated");
+
+    let me = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
+    assert_status(&me, StatusCode::OK);
+    assert_eq!(
+        json_body(me).await["terms_accepted_version"],
+        manage_our_home_shared::validation::auth::TERMS_VERSION
+    );
+
+    // The holder can log out as any other.
+    let out = call(&router, Method::POST, "/auth/logout", Some(&cookie), None).await;
+    assert_status(&out, StatusCode::NO_CONTENT);
+}
+
+/// #319: the age declaration comes first. An account with neither is held
+/// at the declaration, and cannot skip it by accepting the CGU.
+#[sqlx::test]
+async fn the_age_declaration_comes_before_the_terms_acceptance(db: PgPool) {
+    let router = test_router(db.clone());
+    let email = "neither@example.test";
+    let cookie = register_verify_login(&router, &db, email, "long-enough-1").await;
+    sqlx::query!(
+        "UPDATE users SET age_declared_at = NULL, terms_accepted_version = NULL,
+                          terms_accepted_at = NULL
+         WHERE email = $1",
+        email
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let me = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
+    assert_status(&me, StatusCode::FORBIDDEN);
+    assert_eq!(json_body(me).await["error"], "age_not_declared");
+
+    let early = call(
+        &router,
+        Method::POST,
+        "/auth/terms-acceptance",
+        Some(&cookie),
+        Some(serde_json::json!({"accepts_terms": true})),
+    )
+    .await;
+    assert_status(&early, StatusCode::UNAUTHORIZED);
+    assert_eq!(terms_on_file(&db, email).await, (None, None));
+}
+
+/// #319: a member who accepted an earlier version is not held — continued
+/// use is acceptance, per the CGU — and `/auth/me` reports the version on
+/// file, from which `apps/web` tells them the CGU changed. Acknowledging
+/// records the version in force; acknowledging it again keeps the first
+/// date.
+#[sqlx::test]
+async fn a_member_on_an_earlier_version_acknowledges_the_new_one(db: PgPool) {
+    let router = test_router(db.clone());
+    let email = "earlier@example.test";
+    let cookie = register_verify_login(&router, &db, email, "long-enough-1").await;
+    sqlx::query!(
+        "UPDATE users SET terms_accepted_version = '2000-01-01',
+                          terms_accepted_at = now() - interval '1 year'
+         WHERE email = $1",
+        email
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let me = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
+    assert_status(&me, StatusCode::OK);
+    assert_eq!(json_body(me).await["terms_accepted_version"], "2000-01-01");
+    let groups = call(&router, Method::GET, "/groups", Some(&cookie), None).await;
+    assert_status(&groups, StatusCode::OK);
+
+    let refused = call(
+        &router,
+        Method::POST,
+        "/auth/terms-acceptance",
+        Some(&cookie),
+        Some(serde_json::json!({"accepts_terms": false})),
+    )
+    .await;
+    assert_status(&refused, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        terms_on_file(&db, email).await.0.as_deref(),
+        Some("2000-01-01")
+    );
+
+    let acknowledged = call(
+        &router,
+        Method::POST,
+        "/auth/terms-acceptance",
+        Some(&cookie),
+        Some(serde_json::json!({"accepts_terms": true})),
+    )
+    .await;
+    assert_status(&acknowledged, StatusCode::NO_CONTENT);
+    let (version, first_at) = terms_on_file(&db, email).await;
+    assert_eq!(
+        version.as_deref(),
+        Some(manage_our_home_shared::validation::auth::TERMS_VERSION)
+    );
+    let first_at = first_at.unwrap();
+    assert!(
+        first_at > chrono::Utc::now() - chrono::Duration::hours(1),
+        "the acknowledgement kept the earlier date"
+    );
+
+    let again = call(
+        &router,
+        Method::POST,
+        "/auth/terms-acceptance",
+        Some(&cookie),
+        Some(serde_json::json!({"accepts_terms": true})),
+    )
+    .await;
+    assert_status(&again, StatusCode::NO_CONTENT);
+    assert_eq!(
+        terms_on_file(&db, email).await.1,
+        Some(first_at),
+        "acknowledging the same version again rewrote its date"
+    );
+}
+
+/// #319: the acceptance needs a session — anonymous is a 401 — and not a
+/// restricted one: the holder of a deactivated account accepts nothing.
+#[sqlx::test]
+async fn the_terms_acceptance_needs_a_full_or_held_session(db: PgPool) {
+    let router = test_router(db.clone());
+    let anonymous = call(
+        &router,
+        Method::POST,
+        "/auth/terms-acceptance",
+        None,
+        Some(serde_json::json!({"accepts_terms": true})),
+    )
+    .await;
+    assert_status(&anonymous, StatusCode::UNAUTHORIZED);
+
+    // A correct login on a deactivated account opens a restricted session
+    // (#289), whatever the acceptance on file.
+    let email = "deactivated-terms@example.test";
+    register_verify_login(&router, &db, email, "long-enough-1").await;
+    sqlx::query!(
+        "UPDATE users SET deactivated_at = now(), terms_accepted_version = NULL,
+                          terms_accepted_at = NULL
+         WHERE email = $1",
+        email
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    let login = call(
+        &router,
+        Method::POST,
+        "/auth/login",
+        None,
+        Some(serde_json::json!({"email": email, "password": "long-enough-1"})),
+    )
+    .await;
+    let restricted = set_cookie(&login).expect("a restricted session");
+    let refused = call(
+        &router,
+        Method::POST,
+        "/auth/terms-acceptance",
+        Some(&restricted),
+        Some(serde_json::json!({"accepts_terms": true})),
+    )
+    .await;
+    assert_status(&refused, StatusCode::UNAUTHORIZED);
+    assert_eq!(terms_on_file(&db, email).await, (None, None));
+}
+
 /// AC #6: the authenticated change-password endpoint rejects a too-short new
 /// password with `password_too_short` (422), even with the correct current
 /// password.
@@ -547,7 +847,7 @@ async fn register_then_duplicate_email_conflicts(db: PgPool) {
             "email": "alice@example.test",
             "password": "correct horse battery staple",
             "display_name": "Alice",
-            "declares_minimum_age": true
+            "declares_minimum_age": true, "accepts_terms": true
         })),
     )
     .await;
@@ -562,7 +862,7 @@ async fn register_then_duplicate_email_conflicts(db: PgPool) {
             "email": "alice@example.test",
             "password": "another password",
             "display_name": "Alice 2",
-            "declares_minimum_age": true
+            "declares_minimum_age": true, "accepts_terms": true
         })),
     )
     .await;
@@ -590,7 +890,7 @@ async fn verify_email_unlocks_login(db: PgPool) {
             "email": "bob@example.test",
             "password": "hunter2hunter2",
             "display_name": "Bob",
-            "declares_minimum_age": true
+            "declares_minimum_age": true, "accepts_terms": true
         })),
     )
     .await;
@@ -653,7 +953,7 @@ async fn forgot_password_is_anti_enumeration_and_reset_revokes_sessions(db: PgPo
             "email": "carol@example.test",
             "password": "initial-password",
             "display_name": "Carol",
-            "declares_minimum_age": true
+            "declares_minimum_age": true, "accepts_terms": true
         })),
     )
     .await;
@@ -749,7 +1049,7 @@ async fn change_password_keeps_current_session_revokes_others(db: PgPool) {
         Method::POST,
         "/auth/register",
         None,
-        Some(serde_json::json!({"email": "dave@example.test", "password": "old-password-1", "display_name": "Dave", "declares_minimum_age": true})),
+        Some(serde_json::json!({"email": "dave@example.test", "password": "old-password-1", "display_name": "Dave", "declares_minimum_age": true, "accepts_terms": true})),
     )
     .await;
     let token = sqlx::query_scalar!(
@@ -824,7 +1124,7 @@ async fn delete_account_blocked_while_owner_then_cancellable(db: PgPool) {
         Method::POST,
         "/auth/register",
         None,
-        Some(serde_json::json!({"email": "erin@example.test", "password": "erins-password1", "display_name": "Erin", "declares_minimum_age": true})),
+        Some(serde_json::json!({"email": "erin@example.test", "password": "erins-password1", "display_name": "Erin", "declares_minimum_age": true, "accepts_terms": true})),
     )
     .await;
     let token = sqlx::query_scalar!(
@@ -1012,7 +1312,7 @@ async fn resend_verification_invalidates_old_token_and_new_one_works(db: PgPool)
             "email": "fred@example.test",
             "password": "initial-password",
             "display_name": "Fred",
-            "declares_minimum_age": true
+            "declares_minimum_age": true, "accepts_terms": true
         })),
     )
     .await;
@@ -1111,7 +1411,7 @@ async fn resend_verification_noops_for_unknown_and_verified(db: PgPool) {
             "email": "grace@example.test",
             "password": "initial-password",
             "display_name": "Grace",
-            "declares_minimum_age": true
+            "declares_minimum_age": true, "accepts_terms": true
         })),
     )
     .await;
@@ -1172,7 +1472,7 @@ async fn resend_verification_cooldown_is_silent_noop(db: PgPool) {
             "email": "heidi@example.test",
             "password": "initial-password",
             "display_name": "Heidi",
-            "declares_minimum_age": true
+            "declares_minimum_age": true, "accepts_terms": true
         })),
     )
     .await;
@@ -2056,6 +2356,21 @@ async fn a_google_sign_up_is_held_at_the_age_declaration(db: PgPool) {
     )
     .await;
     assert_status(&declared, StatusCode::NO_CONTENT);
+
+    // #319: nor did it accept the CGU — the same session is held at the
+    // acceptance next, which then opens the app.
+    let me = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
+    assert_status(&me, StatusCode::FORBIDDEN);
+    assert_eq!(json_body(me).await["error"], "terms_not_accepted");
+    let accepted = call(
+        &router,
+        Method::POST,
+        "/auth/terms-acceptance",
+        Some(&cookie),
+        Some(serde_json::json!({"accepts_terms": true})),
+    )
+    .await;
+    assert_status(&accepted, StatusCode::NO_CONTENT);
     let me = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
     assert_status(&me, StatusCode::OK);
 }

@@ -27,6 +27,11 @@ pub enum AppError {
     /// declaration itself and logging out are open to it.
     #[error("age not declared")]
     AgeNotDeclared,
+    /// The full session of an account with no acceptance of the CGU on file
+    /// (#319) on a route that needs one: 403 `terms_not_accepted`. Only the
+    /// acceptance itself and logging out are open to it.
+    #[error("terms not accepted")]
+    TermsNotAccepted,
     #[error("gone")]
     Gone,
     #[error("bad request: {0}")]
@@ -69,6 +74,7 @@ impl IntoResponse for AppError {
                 (StatusCode::FORBIDDEN, "account_deactivated".to_string())
             }
             AppError::AgeNotDeclared => (StatusCode::FORBIDDEN, "age_not_declared".to_string()),
+            AppError::TermsNotAccepted => (StatusCode::FORBIDDEN, "terms_not_accepted".to_string()),
             AppError::Gone => (StatusCode::GONE, "gone".to_string()),
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, m.clone()),
             AppError::TooManyRequests => (

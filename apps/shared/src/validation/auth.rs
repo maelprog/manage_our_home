@@ -108,6 +108,43 @@ pub fn validate_age_declaration(declares_minimum_age: bool) -> Result<(), &'stat
     Ok(())
 }
 
+/// The version of the CGU (`docs/terms-of-service.md`) in force, as the
+/// document states it on its `Version :` line (#319): the date, `YYYY-MM-DD`,
+/// from which that text applies. It changes only with a substantial
+/// modification — a typo fixed moves the « Dernière mise à jour » date, not
+/// this — because a new version is what members are told about. A test in
+/// `validation::rgpd` pins it to the document, so the two cannot drift.
+///
+/// What is kept per account is the version accepted and when
+/// (`users.terms_accepted_version` / `terms_accepted_at`).
+pub const TERMS_VERSION: &str = "2026-10-04";
+
+/// `terms_acceptance_required` unless the person ticked the box accepting
+/// the CGU (#319) — at registration, or on the page a session without
+/// acceptance on file is held at.
+pub fn validate_terms_acceptance(accepts_terms: bool) -> Result<(), &'static str> {
+    if !accepts_terms {
+        return Err("terms_acceptance_required");
+    }
+    Ok(())
+}
+
+/// Whether an account must be told the CGU changed (#319): it accepted a
+/// version, and not `current`. No acceptance at all is not an update to
+/// announce — that account is held at the acceptance page instead.
+pub fn terms_update_pending(accepted_version: Option<&str>, current: &str) -> bool {
+    accepted_version.is_some_and(|accepted| accepted != current)
+}
+
+/// A CGU version as the pages show it, `04/10/2026` for `2026-10-04` — the
+/// day format of `validation::rgpd::format_rgpd_date`. A version that is not
+/// a date is shown as written rather than hidden.
+pub fn format_terms_version(version: &str) -> String {
+    chrono::NaiveDate::parse_from_str(version, "%Y-%m-%d")
+        .map(|day| day.format("%d/%m/%Y").to_string())
+        .unwrap_or_else(|_| version.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,5 +293,54 @@ mod tests {
     #[test]
     fn a_declared_minimum_age_is_accepted() {
         assert_eq!(validate_age_declaration(true), Ok(()));
+    }
+
+    // -- terms acceptance (#319) ------------------------------------------
+
+    #[test]
+    fn unaccepted_terms_are_refused() {
+        assert_eq!(
+            validate_terms_acceptance(false),
+            Err("terms_acceptance_required")
+        );
+    }
+
+    #[test]
+    fn accepted_terms_pass() {
+        assert_eq!(validate_terms_acceptance(true), Ok(()));
+    }
+
+    #[test]
+    fn an_older_accepted_version_is_an_update_to_announce() {
+        assert!(terms_update_pending(Some("2026-10-04"), "2026-12-01"));
+    }
+
+    #[test]
+    fn the_current_version_accepted_announces_nothing() {
+        assert!(!terms_update_pending(Some("2026-12-01"), "2026-12-01"));
+    }
+
+    /// An account with no acceptance on file is held at the acceptance page;
+    /// the notice is for members who accepted an earlier text.
+    #[test]
+    fn no_acceptance_on_file_is_not_an_update() {
+        assert!(!terms_update_pending(None, "2026-12-01"));
+    }
+
+    #[test]
+    fn a_version_reads_as_a_french_day() {
+        assert_eq!(format_terms_version("2026-10-04"), "04/10/2026");
+    }
+
+    #[test]
+    fn a_version_that_is_not_a_date_reads_as_written() {
+        assert_eq!(format_terms_version("v2"), "v2");
+    }
+
+    /// The version in force is a date: the notice and the CGU state it as
+    /// one.
+    #[test]
+    fn the_version_in_force_is_a_date() {
+        assert!(chrono::NaiveDate::parse_from_str(TERMS_VERSION, "%Y-%m-%d").is_ok());
     }
 }

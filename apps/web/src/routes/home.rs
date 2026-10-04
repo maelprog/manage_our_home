@@ -20,6 +20,7 @@ use crate::app::{
 };
 use crate::family::{active_group_id_from_headers, resolve_active_group};
 use crate::layout::CurrentUser;
+use crate::routes::account::terms::update_notice;
 use crate::routes::agenda::{fmt_paris, paris_local_to_utc, today_paris};
 use crate::routes::groups::{cookie_of, header_with_groups};
 use crate::state::{api_request_auth, AppState};
@@ -420,7 +421,6 @@ pub async fn get(
         };
         let (_, header) = header_with_groups(&state, &headers, &me, "/").await;
         let body = view! {
-            <h1>"Bienvenue"</h1>
             <p>"Vous êtes connecté."</p>
             {no_group_hint}
         };
@@ -428,7 +428,11 @@ pub async fn get(
             Width::Read,
             "Accueil",
             &header,
-            &body.to_html(),
+            &format!(
+                "<h1>Bienvenue</h1>\n{terms}{body}",
+                terms = update_notice(&me),
+                body = body.to_html(),
+            ),
         ))
         .into_response();
     };
@@ -552,11 +556,14 @@ pub async fn get(
 
     let body = format!(
         r#"<h1>Accueil</h1>
-{agenda}
+{terms}{agenda}
 {stocks}
 {grocery}
 {budget}
 {messages}"#,
+        // #319: a member who accepted an earlier version of the CGU is told
+        // here, first thing after logging in, until they acknowledge it.
+        terms = update_notice(&me),
         agenda = agenda_block(&occurrences, chrono::Utc::now(), &members),
         stocks = stocks_block(&low_stock),
         grocery = grocery_block(count_unchecked(&grocery_items)),

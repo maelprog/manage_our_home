@@ -156,6 +156,13 @@ fn build_router(state: AppState) -> Router {
             "/account/age",
             get(routes::account::age::get).post(routes::account::age::post),
         )
+        // The one page the session of an account without acceptance of the
+        // CGU opens (#319); its POST also takes a member's acknowledgement
+        // of a new version.
+        .route(
+            "/account/terms",
+            get(routes::account::terms::get).post(routes::account::terms::post),
+        )
         // The one page a restricted session opens (#289).
         .route(
             "/account/deactivated",

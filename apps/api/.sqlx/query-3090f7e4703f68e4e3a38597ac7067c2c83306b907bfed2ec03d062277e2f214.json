@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users SET deactivated_at = now(), terms_accepted_version = NULL,\n                          terms_accepted_at = NULL\n         WHERE email = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3090f7e4703f68e4e3a38597ac7067c2c83306b907bfed2ec03d062277e2f214"
+}

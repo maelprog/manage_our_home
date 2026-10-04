@@ -2,6 +2,8 @@
 
 Dernière mise à jour : 2026-10-04.
 
+Version en vigueur : 2026-10-04.
+
 ## Objet
 
 Manage Our Home est un service en ligne qui permet aux membres d'un même
@@ -10,8 +12,11 @@ stocks, des recettes, une liste de courses et un suivi de budget. Les
 présentes conditions définissent le service, ce que vous pouvez en attendre
 et ce que l'éditeur attend de vous.
 
-Créer un compte et utiliser le service valent acceptation des présentes
-conditions. Si vous ne les acceptez pas, n'ouvrez pas de compte.
+Vous acceptez les présentes conditions en cochant la case prévue à cet
+effet à l'ouverture de votre compte ; un compte ouvert avec Google, ou avant
+que cette case existe, les accepte de la même façon à sa connexion suivante,
+avant tout accès au service. La version acceptée est conservée, avec sa
+date. Si vous ne les acceptez pas, n'ouvrez pas de compte.
 
 L'éditeur du service, une personne physique qui l'édite à titre non
 professionnel, est présenté dans les [mentions légales](/legal-notice), qui
@@ -69,12 +74,15 @@ Un compte est personnel : il ne se partage pas et ne se cède pas.
 Le service s'organise en groupes — un foyer, une famille. Le membre qui crée
 un groupe en est le propriétaire. Il peut inviter d'autres membres, nommer
 des administrateurs, transférer la propriété du groupe ou le supprimer ; un
-administrateur peut inviter, et retirer un membre ordinaire.
+administrateur peut renommer le groupe, inviter, nommer administrateur un
+membre ordinaire, et retirer un membre ordinaire.
 
 Tout ce qui est déposé dans un groupe est visible par l'ensemble de ses
 membres, et par eux seuls. Inviter quelqu'un, c'est donc lui donner accès à
 tout le contenu du groupe, y compris à ce qui y a été déposé avant son
-arrivée. Supprimer un groupe supprime son contenu.
+arrivée. Supprimer un groupe supprime son contenu. Des groupes, l'éditeur ne
+voit dans le service, pour l'assistance, que le nom, la date de création et
+le nombre de membres — jamais ce qui y est déposé.
 
 ## Vos contenus
 
@@ -167,9 +175,15 @@ permet pas d'écarter.
 
 L'éditeur peut modifier les présentes conditions, notamment pour suivre une
 évolution du service ou de la réglementation. La date de dernière mise à
-jour figure en tête de ce document. Une modification substantielle est
-annoncée aux membres avant son entrée en vigueur ; continuer à utiliser le
+jour figure en tête de ce document, avec la version en vigueur ; seule une
+modification substantielle change de version. Une modification substantielle
+est annoncée aux membres avant son entrée en vigueur ; continuer à utiliser le
 service après cette date vaut acceptation de la nouvelle version.
+
+Chaque changement de version est signalé sur la page d'accueil du service à
+tout membre qui a accepté une version antérieure, jusqu'à ce qu'il indique en
+avoir pris connaissance ; la version dont il a pris connaissance est alors
+conservée, avec sa date.
 
 ## Droit applicable et litiges
 

@@ -1220,6 +1220,22 @@ mod tests {
             )),
             "the CGU state a minimum age the registration does not enforce"
         );
+        // #319: the version an account accepts is the constant the API
+        // records, and the one the document says is in force. Bumping one
+        // without the other would record acceptances of a text nobody shows,
+        // or show a new text no member is told about.
+        let version_lines: Vec<&str> = md
+            .lines()
+            .filter(|line| line.starts_with("Version en vigueur :"))
+            .collect();
+        assert_eq!(
+            version_lines,
+            vec![format!(
+                "Version en vigueur : {}.",
+                crate::validation::auth::TERMS_VERSION
+            )],
+            "the CGU state a version the acceptance does not record"
+        );
         assert_eq!(
             repo_path_references(md),
             Vec::<String>::new(),

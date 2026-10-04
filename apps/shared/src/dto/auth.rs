@@ -20,6 +20,23 @@ pub struct RegisterRequest {
     /// refusal then says which rule was broken.
     #[serde(default)]
     pub declares_minimum_age: bool,
+    /// The acceptance of the CGU (#319): `true` when the person ticked the
+    /// box. Omitted, it accepts nothing, answered with a 422
+    /// `terms_acceptance_required`. The version recorded is the one in force,
+    /// `validation::auth::TERMS_VERSION`.
+    #[serde(default)]
+    pub accepts_terms: bool,
+}
+
+/// Body of `POST /auth/terms-acceptance` (#319): the registration's box,
+/// asked of an account with no acceptance on file — one opened through
+/// Google, or before the acceptance was recorded — and of a member
+/// acknowledging a new version. A missing field accepts nothing, answered
+/// with the same 422 `terms_acceptance_required`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TermsAcceptanceRequest {
+    #[serde(default)]
+    pub accepts_terms: bool,
 }
 
 /// Body of `POST /auth/age-declaration` (#318): the same declaration as
@@ -104,6 +121,13 @@ pub struct MeResponse {
     /// pending banner + cancel action from it instead of the request form.
     #[serde(default)]
     pub deletion_requested_at: Option<DateTime<Utc>>,
+    /// The version of the CGU the account last accepted
+    /// (`users.terms_accepted_version`, #319). A full session always has one
+    /// on file; `apps/web` compares it with `validation::auth::TERMS_VERSION`
+    /// to tell a member who accepted an earlier text that the CGU changed.
+    /// Defaults to `None`, which announces nothing.
+    #[serde(default)]
+    pub terms_accepted_version: Option<String>,
 }
 
 /// Generic `{"error": "..."}` body used by every `apps/api` error response

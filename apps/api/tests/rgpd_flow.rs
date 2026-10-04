@@ -18,7 +18,7 @@ async fn register_verify_login(
         Method::POST,
         "/auth/register",
         None,
-        Some(serde_json::json!({"email": email, "password": password, "display_name": email, "declares_minimum_age": true})),
+        Some(serde_json::json!({"email": email, "password": password, "display_name": email, "declares_minimum_age": true, "accepts_terms": true})),
     )
     .await;
     let token = sqlx::query_scalar!(
@@ -149,6 +149,24 @@ async fn export_returns_owned_data_across_categories(db: PgPool) {
         serde_json::from_value(doc["profile"]["age_declared_at"].clone())
             .expect("the export carries the age declaration as a timestamp");
     assert_eq!(exported_at, declared_at);
+    // #319: so is the acceptance of the CGU, version and instant on file.
+    let terms = sqlx::query!(
+        "SELECT terms_accepted_version, terms_accepted_at FROM users
+         WHERE email = 'export-owner@example.test'"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        doc["profile"]["terms_accepted_version"],
+        terms
+            .terms_accepted_version
+            .expect("registration records the acceptance")
+    );
+    let accepted_at: chrono::DateTime<chrono::Utc> =
+        serde_json::from_value(doc["profile"]["terms_accepted_at"].clone())
+            .expect("the export carries the acceptance as a timestamp");
+    assert_eq!(Some(accepted_at), terms.terms_accepted_at);
     assert_eq!(doc["group_memberships"][0]["name"], "Foyer Export");
     assert_eq!(doc["group_memberships"][0]["role"], "owner");
     assert_eq!(doc["stock_items"][0]["name"], "Farine");

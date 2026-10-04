@@ -339,6 +339,8 @@ pub async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<()> {
             password_hash = NULL,
             display_name = 'Utilisateur supprimé',
             age_declared_at = NULL,
+            terms_accepted_version = NULL,
+            terms_accepted_at = NULL,
             reactivation_refused_at = NULL,
             deleted_at = now()
         WHERE id = $1

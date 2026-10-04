@@ -165,6 +165,10 @@ pub fn build_router(state: AppState) -> Router {
             "/auth/age-declaration",
             post(auth::age_declaration::declare),
         )
+        .route(
+            "/auth/terms-acceptance",
+            post(auth::terms_acceptance::accept),
+        )
         .route("/auth/google/start", get(auth::oauth_google::start))
         .route("/auth/google/callback", get(auth::oauth_google::callback))
         .route("/auth/logout", post(auth::logout))

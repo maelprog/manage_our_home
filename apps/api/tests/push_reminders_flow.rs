@@ -32,7 +32,7 @@ async fn register_verify_login(router: &axum::Router, db: &PgPool, email: &str) 
         Method::POST,
         "/auth/register",
         None,
-        Some(serde_json::json!({"email": email, "password": password, "display_name": email, "declares_minimum_age": true})),
+        Some(serde_json::json!({"email": email, "password": password, "display_name": email, "declares_minimum_age": true, "accepts_terms": true})),
     )
     .await;
     let token: Uuid = sqlx::query_scalar(

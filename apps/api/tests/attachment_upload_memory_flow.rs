@@ -138,7 +138,7 @@ async fn uploader(router: &Router, db: &PgPool) -> (String, String) {
         Method::POST,
         "/auth/register",
         None,
-        Some(serde_json::json!({"email": email, "password": password, "display_name": "Mémoire", "declares_minimum_age": true})),
+        Some(serde_json::json!({"email": email, "password": password, "display_name": "Mémoire", "declares_minimum_age": true, "accepts_terms": true})),
     )
     .await;
     let token: uuid::Uuid = sqlx::query_scalar(

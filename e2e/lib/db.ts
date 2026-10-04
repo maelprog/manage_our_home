@@ -102,6 +102,51 @@ export async function clearAgeDeclaration(email: string): Promise<void> {
 }
 
 /**
+ * Clears the acceptance of the CGU of `email` (#319), leaving the account as
+ * one opened through Google, or before #319, is: no acceptance on file. Same
+ * reason as `clearAgeDeclaration`: the registration form always records one.
+ */
+export async function clearTermsAcceptance(email: string): Promise<void> {
+  const client = new Client({ connectionString: requireDatabaseUrl() });
+  await client.connect();
+  try {
+    const { rowCount } = await client.query(
+      `UPDATE users SET terms_accepted_version = NULL, terms_accepted_at = NULL
+       WHERE email = $1`,
+      [email],
+    );
+    if (rowCount === 0) {
+      throw new Error(`no user to clear the acceptance of the CGU of for ${email}`);
+    }
+  } finally {
+    await client.end();
+  }
+}
+
+/**
+ * Records `version` as the version of the CGU `email` last accepted (#319),
+ * as if the CGU had changed since: the account then gets the notice of a new
+ * version, which the suite cannot otherwise bring about without a second
+ * build.
+ */
+export async function setTermsAcceptedVersion(email: string, version: string): Promise<void> {
+  const client = new Client({ connectionString: requireDatabaseUrl() });
+  await client.connect();
+  try {
+    const { rowCount } = await client.query(
+      `UPDATE users SET terms_accepted_version = $2, terms_accepted_at = now()
+       WHERE email = $1`,
+      [email, version],
+    );
+    if (rowCount === 0) {
+      throw new Error(`no user to set the accepted version of the CGU of for ${email}`);
+    }
+  } finally {
+    await client.end();
+  }
+}
+
+/**
  * Backdates every session of `email` as if opened `hours` hours ago (and
  * last used then too), so the superadmin session cap (#226) can be met
  * without waiting 12 hours.

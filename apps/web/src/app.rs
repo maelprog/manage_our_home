@@ -879,6 +879,7 @@ mod tests {
             is_superadmin,
             has_password: true,
             deletion_requested_at: None,
+            terms_accepted_version: None,
         }
     }
 

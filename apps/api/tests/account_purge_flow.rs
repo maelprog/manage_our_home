@@ -18,12 +18,15 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 /// A user whose deletion was requested `requested_days_ago` days ago
-/// (`None`: no request), with an age declaration on file.
+/// (`None`: no request), with an age declaration and an acceptance of the
+/// CGU on file.
 async fn insert_user(db: &PgPool, email: &str, requested_days_ago: Option<i64>) -> Uuid {
     sqlx::query_scalar(
         "INSERT INTO users (email, password_hash, display_name, age_declared_at,
+                            terms_accepted_version, terms_accepted_at,
                             deletion_requested_at)
          VALUES ($1, 'not-a-real-hash', $1, now() - interval '1 year',
+                 '2026-10-04', now() - interval '1 year',
                  now() - make_interval(days => $2::int))
          RETURNING id",
     )
@@ -211,12 +214,15 @@ struct UserRow {
     display_name: String,
     password_hash: Option<String>,
     age_declared_at: Option<chrono::DateTime<Utc>>,
+    terms_accepted_version: Option<String>,
+    terms_accepted_at: Option<chrono::DateTime<Utc>>,
     deleted_at: Option<chrono::DateTime<Utc>>,
 }
 
 async fn user_row(db: &PgPool, user: Uuid) -> UserRow {
     sqlx::query_as(
-        "SELECT email, display_name, password_hash, age_declared_at, deleted_at
+        "SELECT email, display_name, password_hash, age_declared_at,
+                terms_accepted_version, terms_accepted_at, deleted_at
          FROM users WHERE id = $1",
     )
     .bind(user)
@@ -266,6 +272,9 @@ async fn the_purge_deletes_every_personal_row_and_keeps_the_shared_content(db: P
         row.age_declared_at, None,
         "the age declaration is erased too"
     );
+    // #319: and the acceptance of the CGU, version and date.
+    assert_eq!(row.terms_accepted_version, None);
+    assert_eq!(row.terms_accepted_at, None);
     assert!(row.deleted_at.is_some());
 
     // The content shared with the group stays, still pointing at the
@@ -559,6 +568,7 @@ async fn an_account_no_longer_due_when_its_turn_comes_is_left_alone(db: PgPool) 
         let row = user_row(&db, user).await;
         assert_ne!(row.display_name, "Utilisateur supprimé");
         assert!(row.age_declared_at.is_some());
+        assert!(row.terms_accepted_version.is_some());
         assert_eq!(row.deleted_at, None);
     }
 }
