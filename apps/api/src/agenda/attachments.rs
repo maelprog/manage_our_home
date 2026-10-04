@@ -81,6 +81,13 @@ pub async fn upload_attachment(
         .map_err(|_| AppError::BadRequest("invalid_multipart".into()))?
     {
         if field.name() == Some("file") {
+            // One file per upload (#326): a second `file` field is refused
+            // at its headers. Read, it took a second buffer of the declared
+            // body while the first was still held, and the memory an upload
+            // cost was no longer bounded by its size.
+            if bytes.is_some() {
+                return Err(AppError::BadRequest("multiple_files".into()));
+            }
             filename = field.file_name().map(|s| s.to_string());
             let mut file = Vec::with_capacity(file_buffer_capacity(&headers));
             while let Some(chunk) = field

@@ -2236,6 +2236,61 @@ async fn a_successful_upload_stores_the_object_and_commits_the_row(db: PgPool) {
     );
 }
 
+/// One file per upload (#326). Each `file` field was read into its own
+/// buffer of the declared body, and the previous one stayed alive until
+/// the next was read whole: two fields held two bodies, so what an upload
+/// cost was no longer bounded by its size. A second `file` field is refused
+/// at its headers, before a byte of it is read — here it never ends, so an
+/// answer at all shows it was not read — and nothing is stored.
+#[sqlx::test]
+async fn a_second_file_field_is_refused_before_it_is_read(db: PgPool) {
+    use axum::body::{Body, Bytes};
+    use axum::http::{header, Request};
+    use futures::StreamExt;
+    use tower::ServiceExt;
+
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "upload-two@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let event_id = create_event(&router, &owner_cookie, &group_id).await;
+
+    const BOUNDARY: &str = "----manageourhometwofilesboundary";
+    let field = |name: &str| {
+        format!(
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\n\r\n"
+        )
+    };
+    let mut first = field("un.png").into_bytes();
+    first.extend_from_slice(PNG_BYTES);
+    first.extend_from_slice(b"\r\n");
+    first.extend_from_slice(field("deux.png").as_bytes());
+    let chunks = futures::stream::iter([Ok::<_, std::io::Error>(Bytes::from(first))])
+        .chain(futures::stream::pending());
+
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/groups/{group_id}/events/{event_id}/attachments"))
+        .header(header::COOKIE, &owner_cookie)
+        .header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={BOUNDARY}"),
+        )
+        .body(Body::from_stream(chunks))
+        .unwrap();
+    let upload = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        router.clone().oneshot(request),
+    )
+    .await
+    .expect("the second field was waited for: no answer within 10 s")
+    .unwrap();
+
+    assert_status(&upload, StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(upload).await["error"], "multiple_files");
+    assert_eq!(attachment_count(&db, &group_id, &event_id).await, 0);
+}
+
 // ---------------------------------------------------------------------------
 // Upload body limit (#190)
 // ---------------------------------------------------------------------------

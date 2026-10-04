@@ -54,6 +54,14 @@ pub async fn upload(
         match multipart.next_field().await {
             Ok(Some(mut field)) => {
                 if field.name() == Some("file") {
+                    // The form sends one file (#326): a second `file` field
+                    // is refused at its headers. Read, it took a second
+                    // buffer of the declared body while the first was still
+                    // held.
+                    if bytes.is_some() {
+                        return Redirect::to(&format!("{detail}?error=upload_failed"))
+                            .into_response();
+                    }
                     filename = field.file_name().map(|s| s.to_string());
                     let mut file = Vec::with_capacity(file_buffer_capacity(&headers));
                     loop {
@@ -644,6 +652,26 @@ mod tests {
         let resp = send(&web, upload(&session(), upload_of_size(size))).await;
         assert_redirected_to(&resp, "error=file_too_large");
         assert_eq!(web.api_received.load(Ordering::SeqCst), 0);
+    }
+
+    /// The form sends one file. A second `file` field is refused at its
+    /// headers, before a byte of it is read (#326): reading it meant a
+    /// second buffer of the declared body, allocated while the first was
+    /// still held. The second field here never ends, so an answer at all
+    /// shows it was not read; nothing reaches apps/api.
+    #[tokio::test]
+    async fn a_second_file_field_is_refused_before_it_is_read() {
+        let web = web(BodyReadLimits::PRODUCTION, UploadGate::new(8, 2)).await;
+        let mut first = multipart_head().to_vec();
+        first.extend_from_slice(b"\x89PNG\r\n\x1a\n not really an image");
+        first.extend_from_slice(b"\r\n");
+        first.extend_from_slice(&multipart_head()[..]);
+        let (_tx, body) = fed(Bytes::from(first)).await;
+
+        let resp = send(&web, upload(&session(), body)).await;
+        assert_redirected_to(&resp, "error=upload_failed");
+        assert_eq!(web.api_received.load(Ordering::SeqCst), 0);
+        assert_eq!(web.gate.in_flight(), 0, "the permit must be back");
     }
 
     /// Heap bytes live on the threads of one runtime, and their high-water
