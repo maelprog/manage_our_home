@@ -2,6 +2,9 @@ use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
 use chrono::{DateTime, Utc};
+use futures::channel::mpsc;
+use futures::stream::{FuturesOrdered, FuturesUnordered};
+use futures::{SinkExt, StreamExt};
 use manage_our_home_shared::validation::rgpd::sanitize_email_line;
 use sqlx::PgPool;
 use tokio::time::interval;
@@ -14,6 +17,15 @@ use crate::notifications::{push, ReminderChannel};
 const SEND_POLL_INTERVAL_SECS: u64 = 60;
 const REFILL_POLL_INTERVAL_SECS: u64 = 3600;
 const MAX_SEND_ATTEMPTS: i32 = 5;
+/// How many due notifications are pushed at once (#321). Each one waits on
+/// its member's push services, up to `push::client`'s timeout per device:
+/// in a single queue, one slow service or one account full of devices held
+/// back every reminder behind it.
+pub const MAX_CONCURRENT_REMINDERS: usize = 8;
+/// How many devices of one member are pushed at once (#321). With
+/// [`MAX_CONCURRENT_REMINDERS`], a pass has at most 8 × 10 push requests in
+/// flight.
+pub const MAX_CONCURRENT_DEVICES: usize = 10;
 /// `last_error` of a notification retired because its recipient's account
 /// is deactivated or purged.
 const RECIPIENT_GONE: &str = "recipient account deactivated or purged";
@@ -140,7 +152,17 @@ async fn refill_recurring_reminders(pool: &PgPool) -> anyhow::Result<()> {
 /// a purged creator's are not read again on every pass. Those not yet due
 /// stay pending, and go if the account is reactivated by then. An account
 /// deactivated after that read, while its email is being handed to the
-/// mailer, still gets that one.
+/// mailer or its devices are being pushed, still gets that one.
+///
+/// Notifications are read and emailed one after the other, but pushed
+/// concurrently (#321): up to [`MAX_CONCURRENT_REMINDERS`] notifications
+/// at once, and up to [`MAX_CONCURRENT_DEVICES`] devices of each, every
+/// device keeping `push::client`'s own timeout. A push service that hangs
+/// holds back its own member's reminder only, and the reading of the next
+/// ones goes on meanwhile. A notification that cannot be seen through (a
+/// database read or write failing) is logged and left pending for the next
+/// pass, without stopping the others; the pass then reports how many there
+/// were.
 pub async fn send_due_notifications<F, Fut, P, PFut>(
     pool: &PgPool,
     send: F,
@@ -154,7 +176,7 @@ where
 {
     ensure_admin_pool(pool, "sending due reminders").await?;
 
-    let due = sqlx::query!(
+    let due: Vec<DueRow> = sqlx::query!(
         r#"
         SELECT sn.id, sn.occurrence_at, sn.attempts, e.title, e.created_by
         FROM scheduled_notifications sn
@@ -163,92 +185,298 @@ where
         "#
     )
     .fetch_all(pool)
-    .await?;
+    .await?
+    .into_iter()
+    .map(|r| DueRow {
+        id: r.id,
+        occurrence_at: r.occurrence_at,
+        attempts: r.attempts,
+        title: r.title,
+        created_by: r.created_by,
+    })
+    .collect();
 
+    // The reading side hands each notification over once its account was
+    // read and its email sent; the pushing side takes up to
+    // `MAX_CONCURRENT_REMINDERS` at a time. Both run in this one task, so
+    // neither waits for the other beyond the channel's bound.
+    let (handed, taken) = mpsc::channel::<Reached>(MAX_CONCURRENT_REMINDERS);
+    let (unread, unpushed) = futures::join!(
+        read_all(pool, &send, due, handed),
+        push_all(pool, &send_push, taken),
+    );
+
+    match unread + unpushed {
+        0 => Ok(()),
+        n => anyhow::bail!("{n} due reminder(s) could not be sent or settled, see above"),
+    }
+}
+
+/// Logs a notification the pass could not see through. It stays pending,
+/// and is taken again on the next pass.
+fn unsent(id: Uuid, error: &anyhow::Error) {
+    tracing::error!(error = ?error, notification_id = %id, "failed to send a due reminder");
+}
+
+/// The reading side: [`reach`] each due notification in turn, and hand the
+/// ones still to push and settle over to [`push_all`]. Returns how many
+/// failed.
+async fn read_all<F, Fut>(
+    pool: &PgPool,
+    send: &F,
+    due: Vec<DueRow>,
+    mut handed: mpsc::Sender<Reached>,
+) -> usize
+where
+    F: Fn(String, String, String) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    let mut failed = 0;
     for row in due {
-        let Some(recipient) = sqlx::query!(
-            r#"
+        let id = row.id;
+        match reach(pool, send, row).await {
+            Ok(Some(reached)) => {
+                // `push_all` takes until this side hangs up.
+                if handed.send(reached).await.is_err() {
+                    break;
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                unsent(id, &e);
+                failed += 1;
+            }
+        }
+    }
+    failed
+}
+
+/// The pushing side: [`push_and_settle`] what [`read_all`] hands over, up
+/// to [`MAX_CONCURRENT_REMINDERS`] at once. Returns how many failed.
+async fn push_all<P, PFut>(
+    pool: &PgPool,
+    send_push: &P,
+    mut taken: mpsc::Receiver<Reached>,
+) -> usize
+where
+    P: Fn(String, i64) -> PFut,
+    PFut: std::future::Future<Output = push::PushOutcome>,
+{
+    let mut in_flight = FuturesUnordered::new();
+    let mut open = true;
+    let mut failed = 0;
+    loop {
+        tokio::select! {
+            next = taken.next(), if open && in_flight.len() < MAX_CONCURRENT_REMINDERS => {
+                match next {
+                    Some(reached) => in_flight.push(push_and_settle(pool, send_push, reached)),
+                    None => open = false,
+                }
+            }
+            Some((id, settled)) = in_flight.next() => {
+                if let Err(e) = settled {
+                    unsent(id, &e);
+                    failed += 1;
+                }
+            }
+            else => break,
+        }
+    }
+    failed
+}
+
+/// A due, pending notification, as the pass reads it.
+struct DueRow {
+    id: Uuid,
+    occurrence_at: DateTime<Utc>,
+    attempts: i32,
+    title: String,
+    created_by: Uuid,
+}
+
+/// A due notification whose member was found active and emailed if their
+/// channel includes email, waiting for its pushes and its settlement.
+struct Reached {
+    id: Uuid,
+    attempts: i32,
+    created_by: Uuid,
+    occurrence_at: DateTime<Utc>,
+    push: bool,
+    email: Option<Result<(), String>>,
+}
+
+/// Reads the creator's account right before sending, retires the
+/// notification if it is gone, and sends the email if their channel
+/// includes it. `None` once retired.
+async fn reach<F, Fut>(pool: &PgPool, send: &F, row: DueRow) -> anyhow::Result<Option<Reached>>
+where
+    F: Fn(String, String, String) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    let Some(recipient) = sqlx::query!(
+        r#"
             SELECT email, reminder_channel FROM users
             WHERE id = $1 AND deactivated_at IS NULL AND deleted_at IS NULL
             "#,
-            row.created_by,
+        row.created_by,
+    )
+    .fetch_optional(pool)
+    .await?
+    else {
+        retire(pool, row.id, RECIPIENT_GONE).await?;
+        return Ok(None);
+    };
+    // The column's CHECK (0020) admits nothing else.
+    let channel = ReminderChannel::parse(&recipient.reminder_channel).ok_or_else(|| {
+        anyhow::anyhow!("unknown reminder_channel {:?}", recipient.reminder_channel)
+    })?;
+
+    let email = if channel.includes_email() {
+        let body = reminder_email_body(&row.title, row.occurrence_at);
+        Some(
+            send(recipient.email, REMINDER_SUBJECT.to_owned(), body)
+                .await
+                .map_err(|e| e.to_string()),
         )
-        .fetch_optional(pool)
-        .await?
-        else {
-            retire(pool, row.id, RECIPIENT_GONE).await?;
-            continue;
-        };
-        // The column's CHECK (0020) admits nothing else.
-        let channel = ReminderChannel::parse(&recipient.reminder_channel).ok_or_else(|| {
-            anyhow::anyhow!("unknown reminder_channel {:?}", recipient.reminder_channel)
-        })?;
+    } else {
+        None
+    };
 
-        let email = if channel.includes_email() {
-            let body = reminder_email_body(&row.title, row.occurrence_at);
-            Some(
-                send(recipient.email, REMINDER_SUBJECT.to_owned(), body)
-                    .await
-                    .map_err(|e| e.to_string()),
-            )
-        } else {
-            None
-        };
+    Ok(Some(Reached {
+        id: row.id,
+        attempts: row.attempts,
+        created_by: row.created_by,
+        occurrence_at: row.occurrence_at,
+        push: channel.includes_push(),
+        email,
+    }))
+}
 
+/// Pushes every device of the member if their channel includes push, then
+/// settles the notification. Returns its id with the outcome.
+async fn push_and_settle<P, PFut>(
+    pool: &PgPool,
+    send_push: &P,
+    reached: Reached,
+) -> (Uuid, anyhow::Result<()>)
+where
+    P: Fn(String, i64) -> PFut,
+    PFut: std::future::Future<Output = push::PushOutcome>,
+{
+    let id = reached.id;
+    let settled = async {
         let mut pushed = Vec::new();
-        if channel.includes_push() {
-            let devices = sqlx::query!(
-                r#"SELECT id, endpoint, consecutive_failures, failing_since FROM push_subscriptions
+        if reached.push {
+            pushed =
+                push_devices(pool, send_push, reached.created_by, reached.occurrence_at).await?;
+        }
+        match settle(reached.email, &pushed) {
+            Settlement::Sent => mark_sent(pool, id).await,
+            Settlement::Retry(error) => mark_failed(pool, id, reached.attempts, &error).await,
+            Settlement::Retire(reason) => retire(pool, id, reason).await,
+        }
+    };
+    (id, settled.await)
+}
+
+/// Pushes every device of `user`, up to [`MAX_CONCURRENT_DEVICES`] at
+/// once, and records each one's answer. Every device is pushed and
+/// recorded even when one fails to be; the first such error is returned
+/// once they all answered.
+async fn push_devices<P, PFut>(
+    pool: &PgPool,
+    send_push: &P,
+    user: Uuid,
+    occurrence_at: DateTime<Utc>,
+) -> anyhow::Result<Vec<push::PushOutcome>>
+where
+    P: Fn(String, i64) -> PFut,
+    PFut: std::future::Future<Output = push::PushOutcome>,
+{
+    let devices = sqlx::query!(
+        r#"SELECT id, endpoint, consecutive_failures, failing_since FROM push_subscriptions
                    WHERE user_id = $1 ORDER BY created_at"#,
-                row.created_by,
-            )
-            .fetch_all(pool)
-            .await?;
-            let ttl = push::ttl_secs(Utc::now(), row.occurrence_at);
-            for device in devices {
-                let outcome = send_push(device.endpoint, ttl).await;
-                let delivered = outcome == push::PushOutcome::Delivered;
-                match push::device_after(
-                    &outcome,
-                    device.consecutive_failures,
-                    device.failing_since,
-                    Utc::now(),
-                ) {
-                    // Gone, or failing past both bounds.
-                    push::DeviceAfter::Forget => {
-                        sqlx::query!("DELETE FROM push_subscriptions WHERE id = $1", device.id)
-                            .execute(pool)
-                            .await?;
-                    }
-                    push::DeviceAfter::Keep {
-                        consecutive_failures,
-                        failing_since,
-                    } => {
-                        sqlx::query!(
-                            r#"UPDATE push_subscriptions
+        user,
+    )
+    .fetch_all(pool)
+    .await?;
+    let ttl = push::ttl_secs(Utc::now(), occurrence_at);
+
+    let mut in_flight = FuturesOrdered::new();
+    let mut answers = Vec::with_capacity(devices.len());
+    for device in devices {
+        if in_flight.len() == MAX_CONCURRENT_DEVICES {
+            answers.extend(in_flight.next().await);
+        }
+        in_flight.push_back(push_device(
+            pool,
+            send_push,
+            device.id,
+            device.endpoint,
+            device.consecutive_failures,
+            device.failing_since,
+            ttl,
+        ));
+    }
+    while let Some(answer) = in_flight.next().await {
+        answers.push(answer);
+    }
+    answers.into_iter().collect()
+}
+
+/// Pushes one device and records its answer.
+async fn push_device<P, PFut>(
+    pool: &PgPool,
+    send_push: &P,
+    id: Uuid,
+    endpoint: String,
+    consecutive_failures: i32,
+    failing_since: Option<DateTime<Utc>>,
+    ttl_secs: i64,
+) -> anyhow::Result<push::PushOutcome>
+where
+    P: Fn(String, i64) -> PFut,
+    PFut: std::future::Future<Output = push::PushOutcome>,
+{
+    let outcome = send_push(endpoint, ttl_secs).await;
+    record_device(pool, id, &outcome, consecutive_failures, failing_since).await?;
+    Ok(outcome)
+}
+
+/// Forgets a device or records its answer, per [`push::device_after`].
+async fn record_device(
+    pool: &PgPool,
+    id: Uuid,
+    outcome: &push::PushOutcome,
+    consecutive_failures: i32,
+    failing_since: Option<DateTime<Utc>>,
+) -> anyhow::Result<()> {
+    let delivered = *outcome == push::PushOutcome::Delivered;
+    match push::device_after(outcome, consecutive_failures, failing_since, Utc::now()) {
+        // Gone, or failing past both bounds.
+        push::DeviceAfter::Forget => {
+            sqlx::query!("DELETE FROM push_subscriptions WHERE id = $1", id)
+                .execute(pool)
+                .await?;
+        }
+        push::DeviceAfter::Keep {
+            consecutive_failures,
+            failing_since,
+        } => {
+            sqlx::query!(
+                r#"UPDATE push_subscriptions
                                SET consecutive_failures = $2, failing_since = $3,
                                    last_success_at = CASE WHEN $4 THEN now() ELSE last_success_at END
                                WHERE id = $1"#,
-                            device.id,
-                            consecutive_failures,
-                            failing_since,
-                            delivered
-                        )
-                        .execute(pool)
-                        .await?;
-                    }
-                }
-                pushed.push(outcome);
-            }
-        }
-
-        match settle(email, &pushed) {
-            Settlement::Sent => mark_sent(pool, row.id).await?,
-            Settlement::Retry(error) => mark_failed(pool, row.id, row.attempts, &error).await?,
-            Settlement::Retire(reason) => retire(pool, row.id, reason).await?,
+                id,
+                consecutive_failures,
+                failing_since,
+                delivered
+            )
+            .execute(pool)
+            .await?;
         }
     }
-
     Ok(())
 }
 

@@ -13,13 +13,17 @@ use axum::http::{Method, StatusCode};
 use chrono::{DateTime, Utc};
 use common::{assert_status, call, json_body, set_cookie, test_router, test_state};
 use manage_our_home::jobs::scheduled_notifications::{
-    send_due_notifications, NO_PUSH_SUBSCRIPTION, REMINDER_SUBJECT,
+    send_due_notifications, MAX_CONCURRENT_DEVICES, MAX_CONCURRENT_REMINDERS, NO_PUSH_SUBSCRIPTION,
+    REMINDER_SUBJECT,
 };
 use manage_our_home::notifications::push::{
     PushOutcome, MAX_CONSECUTIVE_FAILURES, MIN_FAILING_DAYS,
 };
 use sqlx::PgPool;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
+use tokio::sync::Barrier;
 use uuid::Uuid;
 
 const FCM: &str = "https://fcm.googleapis.com/fcm/send/dVq3mJ8:APA91bH";
@@ -749,6 +753,133 @@ async fn a_member_on_both_gets_the_email_and_the_push(db: PgPool) {
     assert_eq!(emails.len(), 1);
     assert_eq!(pushes.len(), 1);
     assert_eq!(notification(&db, due).await, ("sent".into(), 0, None));
+}
+
+// -- pushing concurrently (#321) ------------------------------------------------
+
+/// A pass whose pushes are answered by `answer`, an async fake push
+/// service, bounded by `within`: a pass still running then fails the test
+/// instead of hanging it.
+async fn pass_within<A, AFut>(db: &PgPool, within: Duration, answer: A)
+where
+    A: Fn(String) -> AFut,
+    AFut: std::future::Future<Output = PushOutcome>,
+{
+    let send = |_to: String, _subject: String, _body: String| async { Ok::<(), anyhow::Error>(()) };
+    let send_push = |endpoint: String, _ttl: i64| answer(endpoint);
+    tokio::time::timeout(within, send_due_notifications(db, send, send_push))
+        .await
+        .expect("the pass is still waiting on a push service that never answers")
+        .unwrap();
+}
+
+/// A member's push service that does not answer holds back no one else:
+/// each account's service here answers only once the other's has been
+/// called. Taken one after the other, whichever went first would wait
+/// forever.
+#[sqlx::test]
+async fn a_slow_push_service_holds_back_no_other_members_reminder(db: PgPool) {
+    let slow = insert_user(&db, "slow@example.test", "push").await;
+    let quick = insert_user(&db, "quick@example.test", "push").await;
+    add_device(&db, slow, FCM).await;
+    add_device(&db, quick, MOZILLA).await;
+    let slows = due_reminder(&db, slow).await;
+    let quicks = due_reminder(&db, quick).await;
+
+    let both_called = Barrier::new(2);
+    pass_within(&db, Duration::from_secs(10), |_| async {
+        both_called.wait().await;
+        PushOutcome::Delivered
+    })
+    .await;
+
+    assert_eq!(notification(&db, slows).await, ("sent".into(), 0, None));
+    assert_eq!(notification(&db, quicks).await, ("sent".into(), 0, None));
+}
+
+/// The devices of one member are pushed at once too: a device whose push
+/// service hangs does not hold back the member's others.
+#[sqlx::test]
+async fn a_members_devices_are_pushed_at_once(db: PgPool) {
+    let member = insert_user(&db, "devices@example.test", "push").await;
+    for i in 0..3 {
+        add_device(&db, member, &format!("{FCM}-{i}")).await;
+    }
+    let due = due_reminder(&db, member).await;
+
+    let all_called = Barrier::new(3);
+    pass_within(&db, Duration::from_secs(10), |_| async {
+        all_called.wait().await;
+        PushOutcome::Delivered
+    })
+    .await;
+
+    assert_eq!(notification(&db, due).await, ("sent".into(), 0, None));
+    assert_eq!(devices(&db, member).await.len(), 3);
+    assert!(devices(&db, member).await.iter().all(|(_, ok)| *ok));
+}
+
+/// Counts the pushes in flight, and the most seen at once.
+#[derive(Default)]
+struct InFlight {
+    now: AtomicUsize,
+    most: AtomicUsize,
+}
+
+impl InFlight {
+    async fn push(&self) -> PushOutcome {
+        let now = self.now.fetch_add(1, Ordering::SeqCst) + 1;
+        self.most.fetch_max(now, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        self.now.fetch_sub(1, Ordering::SeqCst);
+        PushOutcome::Delivered
+    }
+}
+
+/// Concurrent, but bounded: never more reminders pushed at once than
+/// `MAX_CONCURRENT_REMINDERS`, and every one of them sent.
+#[sqlx::test]
+async fn reminders_are_pushed_at_once_up_to_a_bound(db: PgPool) {
+    let mut due = Vec::new();
+    for i in 0..3 * MAX_CONCURRENT_REMINDERS {
+        let member = insert_user(&db, &format!("bound{i}@example.test"), "push").await;
+        add_device(&db, member, &format!("{FCM}-{i}")).await;
+        due.push(due_reminder(&db, member).await);
+    }
+
+    let in_flight = InFlight::default();
+    pass_within(&db, Duration::from_secs(30), |_| in_flight.push()).await;
+
+    let most = in_flight.most.load(Ordering::SeqCst);
+    assert!(
+        (2..=MAX_CONCURRENT_REMINDERS).contains(&most),
+        "{most} pushed at once"
+    );
+    for id in due {
+        assert_eq!(notification(&db, id).await.0, "sent");
+    }
+}
+
+/// Same bound per member: never more of their devices pushed at once than
+/// `MAX_CONCURRENT_DEVICES`.
+#[sqlx::test]
+async fn a_members_devices_are_pushed_at_once_up_to_a_bound(db: PgPool) {
+    let member = insert_user(&db, "many@example.test", "push").await;
+    for i in 0..3 * MAX_CONCURRENT_DEVICES {
+        add_device(&db, member, &format!("{FCM}-{i}")).await;
+    }
+    let due = due_reminder(&db, member).await;
+
+    let in_flight = InFlight::default();
+    pass_within(&db, Duration::from_secs(30), |_| in_flight.push()).await;
+
+    let most = in_flight.most.load(Ordering::SeqCst);
+    assert!(
+        (2..=MAX_CONCURRENT_DEVICES).contains(&most),
+        "{most} pushed at once"
+    );
+    assert_eq!(notification(&db, due).await.0, "sent");
+    assert!(devices(&db, member).await.iter().all(|(_, ok)| *ok));
 }
 
 // -- RGPD -----------------------------------------------------------------------
