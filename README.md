@@ -19,7 +19,7 @@ flowchart TB
     shared["apps/shared · DTOs + validation"]
     minio["MinIO · S3 object storage"]
     google["Google · OAuth + ICS import"]
-    smtp["Mailjet · SMTP relay"]
+    smtp["Scaleway TEM · SMTP relay"]
     ollama["Ollama · self-hosted"]
 
     subgraph pg["PostgreSQL 16 · 13 migrations"]
