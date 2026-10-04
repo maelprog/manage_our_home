@@ -1573,14 +1573,20 @@ mod tests {
     /// Block markers are read on the source lines: the renderer joins a
     /// paragraph's lines with a space, so a numbered list, a quote or a rule
     /// written under a line of text is no longer at the start of anything in
-    /// the output. Every line-start syntax outside its subset (`#`–`###`,
-    /// `- `, `|`) is a finding there: a deeper heading, `>`, `1.`/`1)`, and a
-    /// `---`/`***`/`___` rule (or setext underline).
+    /// the output. The line-start markers looked for there are exactly: a
+    /// heading of level 4 or deeper (or a bare `#`), `>`, a number followed by
+    /// `.` or `)`, and a line of three or more `-`, `*` or `_` (a rule, or a
+    /// setext underline in `-`). Nothing else is: a `=` setext underline,
+    /// `+ ` bullets, fenced or indented code pass unseen.
     ///
     /// Inline markers are read on the text the reader sees — tags dropped,
     /// `<code>` content dropped since it is shown verbatim on purpose: `**`,
     /// any `*`, a `_` opening or closing a word (`snake_case` is left alone),
     /// and the pipe syntax of a table that did not render.
+    ///
+    /// The number check also fires on a wrapped line that merely starts with
+    /// one (`2024. Son I`), where CommonMark would see a list only for `1.`:
+    /// a false positive, so it fails on the safe side.
     fn raw_markdown_markers(md: &str, html: &str) -> Vec<String> {
         let mut found = Vec::new();
         for line in md.lines() {
