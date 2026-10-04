@@ -1228,6 +1228,123 @@ mod tests {
         assert_no_raw_markdown(&html);
     }
 
+    /// Every age `md` states as the service's minimum, in reading order: the
+    /// number in `N ans ou plus`, `N ans et plus`, `moins de N ans` or
+    /// `au moins N ans` — the four phrasings the RGPD documents use for the
+    /// art. 8 GDPR threshold (#137). Markdown emphasis, elisions (`d'au moins`)
+    /// and hard wraps are seen through.
+    ///
+    /// A duration is not an age: `après 2 ans`, `au plus tôt 2 ans et
+    /// 30 jours` match none of the phrasings. Blind spot, accepted because no
+    /// document writes it today and a new one would be written by hand under
+    /// review: a threshold phrased otherwise (`15 ans minimum`, `dès 15 ans`).
+    fn stated_minimum_ages(md: &str) -> Vec<u32> {
+        let words: Vec<String> = md
+            .split_whitespace()
+            .map(|w| {
+                // `d'au` reads as `au`: an elision is not part of the word.
+                let w = w.rsplit(['\'', '’']).next().unwrap_or(w);
+                w.trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_lowercase()
+            })
+            .collect();
+        let at = |i: usize| words.get(i).map(String::as_str).unwrap_or("");
+        let mut out = Vec::new();
+        for (i, word) in words.iter().enumerate() {
+            let Ok(age) = word.parse::<u32>() else {
+                continue;
+            };
+            if at(i + 1) != "ans" {
+                continue;
+            }
+            let or_more = matches!(at(i + 2), "ou" | "et") && at(i + 3) == "plus";
+            let before = |back: usize| i.checked_sub(back).map(at).unwrap_or("");
+            let under = before(2) == "moins" && before(1) == "de";
+            let at_least = before(2) == "au" && before(1) == "moins";
+            if or_more || under || at_least {
+                out.push(age);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn stated_minimum_ages_catch_each_phrasing_of_the_threshold() {
+        assert_eq!(
+            stated_minimum_ages("déclarer avoir 15 ans ou plus"),
+            vec![15]
+        );
+        assert_eq!(
+            stated_minimum_ages("(réservent le service aux 15 ans et plus)"),
+            vec![15]
+        );
+        assert_eq!(
+            stated_minimum_ages("pas ouvert aux moins de 16 ans. C'est"),
+            vec![16]
+        );
+        assert_eq!(
+            stated_minimum_ages("avoir au moins 15 ans et sa date"),
+            vec![15]
+        );
+    }
+
+    #[test]
+    fn stated_minimum_ages_see_through_emphasis_and_wraps() {
+        assert_eq!(
+            stated_minimum_ages("âgées d'au moins **15 ans**. C'est"),
+            vec![15]
+        );
+        assert_eq!(stated_minimum_ages("avoir 15\nans ou\nplus"), vec![15]);
+    }
+
+    #[test]
+    fn stated_minimum_ages_keep_every_occurrence_in_order() {
+        assert_eq!(
+            stated_minimum_ages("moins de 15 ans ; avoir 16 ans ou plus"),
+            vec![15, 16]
+        );
+    }
+
+    #[test]
+    fn stated_minimum_ages_ignore_durations() {
+        assert!(stated_minimum_ages("purgé après 2 ans de désactivation").is_empty());
+        assert!(stated_minimum_ages("au plus tôt 2 ans et 30 jours après").is_empty());
+        assert!(stated_minimum_ages("un compte qui reste désactivé 2 ans").is_empty());
+    }
+
+    /// #317: the privacy policy and the processing register state the age
+    /// threshold too, and until now only the CGU were pinned to the constant
+    /// the registration enforces. Every threshold either document states is
+    /// that constant, so raising it and forgetting one of them — or editing
+    /// one sentence of a document and not the others — turns this red.
+    #[test]
+    fn the_policy_and_the_registre_state_the_minimum_age_the_registration_enforces() {
+        let minimum = crate::validation::auth::MINIMUM_AGE_YEARS;
+        for (name, md) in [
+            (
+                "the policy",
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../docs/privacy-policy.md"
+                )),
+            ),
+            (
+                "the registre",
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../docs/registre-traitements.md"
+                )),
+            ),
+        ] {
+            let ages = stated_minimum_ages(md);
+            assert!(!ages.is_empty(), "{name} states no minimum age");
+            assert!(
+                ages.iter().all(|&age| age == minimum),
+                "{name} states the minimum ages {ages:?}, the registration enforces {minimum}"
+            );
+        }
+    }
+
     /// The only articles `docs/legal-notice.md` may cite (#314): LCEN art. 1-1,
     /// and the code pénal articles 226-13 and 226-14 on the host's
     /// professional secrecy.
@@ -1421,15 +1538,21 @@ mod tests {
             Vec::<String>::new(),
             "the policy points at repo files"
         );
-        // #131: the controller's identity and contact address are deliberately
-        // still placeholders, and exactly these two. Filling them in for the
-        // public launch has to come through `pending_release_values`.
+        // #131, #136: the controller's identity and the open subprocessor
+        // questions are deliberately still placeholders, and exactly those of
+        // `pending_release_values`. Filling them in for the public launch has
+        // to come through that list.
         assert_eq!(release_placeholders(md), pending_release_values());
         assert!(!md.contains("placeholder_name"));
-        // Both placeholders survive the renderer as readable text rather than
-        // being swallowed as a link label.
-        assert!(html.contains("[nom du responsable de traitement"));
-        assert!(html.contains("[adresse de contact"));
+        // Every placeholder — the two of #131 and the three subprocessor
+        // questions of #136 — survives the renderer as readable text rather
+        // than being swallowed as a link label.
+        for pending in pending_release_values() {
+            assert!(
+                html.contains(&format!("[{pending}")),
+                "`{pending}` is not readable in the rendered policy"
+            );
+        }
         // No raw markdown markers survive into the output.
         assert!(!html.contains("**"));
         assert!(!html.contains(" | "));

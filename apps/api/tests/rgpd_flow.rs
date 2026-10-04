@@ -135,6 +135,20 @@ async fn export_returns_owned_data_across_categories(db: PgPool) {
     let doc = json_body(export).await;
 
     assert_eq!(doc["profile"]["email"], "export-owner@example.test");
+    // #137, #317: the art. 8 GDPR age declaration is data held about the
+    // person, so art. 15 hands it back — the very instant on file, not just a
+    // non-null field.
+    let declared_at = sqlx::query_scalar::<_, Option<chrono::DateTime<chrono::Utc>>>(
+        "SELECT age_declared_at FROM users WHERE email = 'export-owner@example.test'",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap()
+    .expect("registration records the age declaration");
+    let exported_at: chrono::DateTime<chrono::Utc> =
+        serde_json::from_value(doc["profile"]["age_declared_at"].clone())
+            .expect("the export carries the age declaration as a timestamp");
+    assert_eq!(exported_at, declared_at);
     assert_eq!(doc["group_memberships"][0]["name"], "Foyer Export");
     assert_eq!(doc["group_memberships"][0]["role"], "owner");
     assert_eq!(doc["stock_items"][0]["name"], "Farine");
