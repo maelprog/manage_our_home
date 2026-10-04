@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT terms_accepted_version, terms_accepted_at FROM users\n         WHERE email = 'export-owner@example.test'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "terms_accepted_version",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "terms_accepted_version"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "terms_accepted_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "terms_accepted_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "d35d3d1bee53c2e5bae2008ccd01d81da6af95391fd1b19fe54207b74d343346"
+}

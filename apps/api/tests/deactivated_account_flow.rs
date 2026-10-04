@@ -22,7 +22,7 @@ async fn register_verify(router: &axum::Router, db: &PgPool, email: &str) -> Uui
         Method::POST,
         "/auth/register",
         None,
-        Some(json!({"email": email, "password": PASSWORD, "display_name": email, "declares_minimum_age": true})),
+        Some(json!({"email": email, "password": PASSWORD, "display_name": email, "declares_minimum_age": true, "accepts_terms": true})),
     )
     .await;
     assert_status(&res, StatusCode::CREATED);

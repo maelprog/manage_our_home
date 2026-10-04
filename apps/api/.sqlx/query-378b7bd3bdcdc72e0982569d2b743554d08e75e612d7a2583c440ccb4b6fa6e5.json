@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users SET terms_accepted_version = NULL, terms_accepted_at = NULL WHERE email = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "378b7bd3bdcdc72e0982569d2b743554d08e75e612d7a2583c440ccb4b6fa6e5"
+}

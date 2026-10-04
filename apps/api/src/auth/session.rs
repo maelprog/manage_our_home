@@ -71,6 +71,10 @@ pub enum SessionAccess {
     /// session of an active account with no age declaration on file — one
     /// opened through Google, or before the declaration existed (#137).
     AgeUndeclared,
+    /// Only the routes `TermsSession` guards (#319): the full session of an
+    /// active account, age declared, with no acceptance of the CGU on file —
+    /// one opened through Google, or before the acceptance was recorded.
+    TermsNotAccepted,
     /// Nothing: 401.
     Refused,
 }
@@ -98,22 +102,30 @@ struct SessionRow {
     deactivated: bool,
     deleted: bool,
     age_declared: bool,
+    terms_accepted: bool,
 }
 
 /// The one verdict on a session (#221): the checks every session shares —
 /// not revoked, within its absolute lifetime, not idle — then what it opens.
 /// `load_session` asks it once per request, and the messagerie WebSocket
 /// again on every recheck tick, so a revocation reaches both channels.
+///
+/// The acceptance of the CGU (#319) is asked last: only of a session that
+/// would otherwise open everything. A deactivated account keeps its page, and
+/// an account without age declaration declares first.
 fn session_state(now: DateTime<Utc>, row: &SessionRow) -> SessionAccess {
     if row.revoked || row.expires_at < now || is_idle(now, row.last_seen_at) {
         return SessionAccess::Refused;
     }
-    session_access(
+    match session_access(
         row.restricted,
         row.deactivated,
         row.deleted,
         row.age_declared,
-    )
+    ) {
+        SessionAccess::Full if !row.terms_accepted => SessionAccess::TermsNotAccepted,
+        access => access,
+    }
 }
 
 /// A `sessions` row of the caller, as `GET /auth/sessions` reads it (#225).
@@ -149,6 +161,7 @@ pub fn active_sessions(
                     deactivated: false,
                     deleted: false,
                     age_declared: true,
+                    terms_accepted: true,
                 },
             );
             state == SessionAccess::Full
@@ -248,6 +261,11 @@ pub struct AuthUser {
     /// like `is_superadmin`, so requesting or cancelling takes effect on the next
     /// page load.
     pub deletion_requested_at: Option<chrono::DateTime<Utc>>,
+    /// The version of the CGU the account last accepted
+    /// (`users.terms_accepted_version`, #319), exposed through `GET /auth/me`
+    /// so `apps/web` can tell a member the CGU changed since. Never `None`
+    /// here: a session without acceptance on file is not a full one.
+    pub terms_accepted_version: Option<String>,
     /// When the session was opened (`sessions.created_at`), for the
     /// superadmin session cap (#226, `SuperAdminUser`).
     pub session_created_at: DateTime<Utc>,
@@ -272,6 +290,7 @@ struct LoadedSession {
     is_superadmin: bool,
     has_password: bool,
     deletion_requested_at: Option<DateTime<Utc>>,
+    terms_accepted_version: Option<String>,
     created_at: DateTime<Utc>,
     expires_at: DateTime<Utc>,
     last_seen_at: DateTime<Utc>,
@@ -297,7 +316,8 @@ where
         SELECT s.id as session_id, s.created_at, s.expires_at, s.revoked_at, s.last_seen_at,
                s.restricted, u.id as user_id, u.email, u.display_name, u.email_verified,
                u.is_superadmin, u.deleted_at, u.deactivated_at, u.deletion_requested_at,
-               u.age_declared_at, (u.password_hash IS NOT NULL) as "has_password!"
+               u.age_declared_at, u.terms_accepted_version,
+               (u.password_hash IS NOT NULL) as "has_password!"
         FROM sessions s
         JOIN users u ON u.id = s.user_id
         WHERE s.token_hash = $1
@@ -320,6 +340,7 @@ where
             deactivated: row.deactivated_at.is_some(),
             deleted: row.deleted_at.is_some(),
             age_declared: row.age_declared_at.is_some(),
+            terms_accepted: row.terms_accepted_version.is_some(),
         },
     );
     if access == SessionAccess::Refused {
@@ -360,6 +381,7 @@ where
         is_superadmin: row.is_superadmin,
         has_password: row.has_password,
         deletion_requested_at: row.deletion_requested_at,
+        terms_accepted_version: row.terms_accepted_version,
         created_at: row.created_at,
         expires_at: closed_expiry.unwrap_or(row.expires_at),
         last_seen_at: row.last_seen_at,
@@ -378,7 +400,7 @@ pub async fn is_full_session(pool: &PgPool, session_id: Uuid) -> bool {
     let row = sqlx::query!(
         r#"
         SELECT s.expires_at, s.revoked_at, s.last_seen_at, s.restricted,
-               u.deleted_at, u.deactivated_at, u.age_declared_at
+               u.deleted_at, u.deactivated_at, u.age_declared_at, u.terms_accepted_version
         FROM sessions s
         JOIN users u ON u.id = s.user_id
         WHERE s.id = $1
@@ -400,6 +422,7 @@ pub async fn is_full_session(pool: &PgPool, session_id: Uuid) -> bool {
             deactivated: row.deactivated_at.is_some(),
             deleted: row.deleted_at.is_some(),
             age_declared: row.age_declared_at.is_some(),
+            terms_accepted: row.terms_accepted_version.is_some(),
         },
     ) == SessionAccess::Full
 }
@@ -410,7 +433,9 @@ pub async fn is_full_session(pool: &PgPool, session_id: Uuid) -> bool {
 /// do not know, and `apps/web` sends them to the deactivated-account page on
 /// it. A session of an account without age declaration (#318) is refused
 /// with 403 `age_not_declared`, on which `apps/web` sends its holder to the
-/// declaration page. Every other refusal is the bare 401.
+/// declaration page; one of an account without acceptance of the CGU
+/// (#319), with 403 `terms_not_accepted`, on which it sends them to the
+/// acceptance page. Every other refusal is the bare 401.
 #[async_trait]
 impl<S> FromRequestParts<S> for AuthUser
 where
@@ -424,6 +449,7 @@ where
         match session.access {
             SessionAccess::Full => {}
             SessionAccess::AgeUndeclared => return Err(AppError::AgeNotDeclared),
+            SessionAccess::TermsNotAccepted => return Err(AppError::TermsNotAccepted),
             SessionAccess::Deactivated | SessionAccess::Refused => {
                 return Err(AppError::AccountDeactivated)
             }
@@ -437,6 +463,7 @@ where
             is_superadmin: session.is_superadmin,
             has_password: session.has_password,
             deletion_requested_at: session.deletion_requested_at,
+            terms_accepted_version: session.terms_accepted_version,
             session_created_at: session.created_at,
             session_expires_at: session.expires_at,
             session_last_seen_at: session.last_seen_at,
@@ -523,6 +550,35 @@ where
         Ok(AgeUndeclaredSession {
             user_id: session.user_id,
         })
+    }
+}
+
+/// The session that may accept the CGU (#319): the full session of an
+/// account with no acceptance on file, held at the acceptance page, and a
+/// full session, whose holder acknowledges a new version. Any other session
+/// — a restricted one, one awaiting its age declaration — is a 401. Guards
+/// only `POST /auth/terms-acceptance`; logging out takes [`AnySession`].
+#[derive(Debug, Clone)]
+pub struct TermsSession {
+    pub user_id: Uuid,
+}
+
+#[async_trait]
+impl<S> FromRequestParts<S> for TermsSession
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let session = load_session(parts, state).await?;
+        match session.access {
+            SessionAccess::TermsNotAccepted | SessionAccess::Full => Ok(TermsSession {
+                user_id: session.user_id,
+            }),
+            _ => Err(AppError::Unauthorized),
+        }
     }
 }
 
@@ -989,6 +1045,86 @@ mod tests {
         }
     }
 
+    // -- acceptance of the CGU (#319) -------------------------------------
+
+    /// An account with no acceptance on file — opened through Google, or
+    /// before the acceptance was recorded — gets the acceptance page and
+    /// nothing else.
+    #[test]
+    fn a_full_session_of_an_account_without_terms_acceptance_opens_only_the_acceptance() {
+        let now = at("2026-10-04T12:00:00Z");
+        let row = SessionRow {
+            terms_accepted: false,
+            ..live(now)
+        };
+        assert_eq!(session_state(now, &row), SessionAccess::TermsNotAccepted);
+    }
+
+    /// The age declaration comes first: an account without either declares
+    /// its age, then accepts the CGU.
+    #[test]
+    fn a_missing_age_declaration_outranks_a_missing_acceptance() {
+        let now = at("2026-10-04T12:00:00Z");
+        let row = SessionRow {
+            age_declared: false,
+            terms_accepted: false,
+            ..live(now)
+        };
+        assert_eq!(session_state(now, &row), SessionAccess::AgeUndeclared);
+    }
+
+    /// Deactivation outranks the missing acceptance, as it does the missing
+    /// declaration.
+    #[test]
+    fn deactivation_outranks_a_missing_acceptance() {
+        let now = at("2026-10-04T12:00:00Z");
+        let restricted = SessionRow {
+            restricted: true,
+            deactivated: true,
+            terms_accepted: false,
+            ..live(now)
+        };
+        assert_eq!(session_state(now, &restricted), SessionAccess::Deactivated);
+        let full = SessionRow {
+            deactivated: true,
+            terms_accepted: false,
+            ..live(now)
+        };
+        assert_eq!(session_state(now, &full), SessionAccess::Refused);
+    }
+
+    /// Liveness comes first: a revoked, expired or idle session of an
+    /// account without acceptance opens nothing, not even the page. Nor does
+    /// a purged account's.
+    #[test]
+    fn a_dead_session_of_an_account_without_acceptance_is_refused() {
+        let now = at("2026-10-04T12:00:00Z");
+        let unaccepted = || SessionRow {
+            terms_accepted: false,
+            ..live(now)
+        };
+        for dead in [
+            SessionRow {
+                revoked: true,
+                ..unaccepted()
+            },
+            SessionRow {
+                expires_at: at("2026-10-04T11:59:59Z"),
+                ..unaccepted()
+            },
+            SessionRow {
+                last_seen_at: at("2026-09-27T11:59:59Z"),
+                ..unaccepted()
+            },
+            SessionRow {
+                deleted: true,
+                ..unaccepted()
+            },
+        ] {
+            assert_eq!(session_state(now, &dead), SessionAccess::Refused);
+        }
+    }
+
     // -- session_state (#221) ---------------------------------------------
 
     /// A live full session, the baseline the cases below each break once.
@@ -1001,6 +1137,7 @@ mod tests {
             deactivated: false,
             deleted: false,
             age_declared: true,
+            terms_accepted: true,
         }
     }
 

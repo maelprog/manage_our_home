@@ -38,6 +38,7 @@ données sont-elles conservées ? ».
 |---|---|---|
 | Compte | email, mot de passe (haché), nom affiché | Exécution du contrat (fournir le service) |
 | Âge | la déclaration d'avoir 15 ans ou plus, faite à l'inscription (à la première connexion pour un compte ouvert avec Google), et sa date — aucune date de naissance n'est demandée ni conservée | Exécution du contrat (les conditions générales réservent le service aux 15 ans et plus) |
+| Conditions d'utilisation | la version des conditions générales que vous avez acceptée — à l'inscription, ou à la première connexion pour un compte ouvert avec Google — ou dont vous avez indiqué avoir pris connaissance après un changement, et sa date | Exécution du contrat (garder trace des conditions qui régissent votre usage du service) |
 | Connexion avec Google | identifiant de votre compte Google, email et nom de votre profil Google, jeton de rafraîchissement délivré par Google (chiffré) | Exécution du contrat (vous choisissez ce mode de connexion) |
 | Vérification d'email et réinitialisation du mot de passe | jetons à usage unique envoyés par email, valables 24 h (vérification) ou 1 h (réinitialisation) | Exécution du contrat |
 | Protection de la connexion | adresse IP (en IPv6, réduite à son préfixe /64) et email saisi à chaque tentative de connexion par mot de passe, gardés en mémoire du serveur seulement, jamais en base | Intérêt légitime (limiter les essais de mot de passe) |
@@ -213,6 +214,9 @@ de la purge dépasserait.
   comme tout autre, demande de réactivation en attente ou non.
 - **Déclaration d'âge** : la déclaration et sa date restent tant que le
   compte existe, et sont effacées à la purge du compte.
+- **Acceptation des conditions d'utilisation** : la version acceptée et sa
+  date restent tant que le compte existe ; la prise de connaissance d'une
+  nouvelle version les remplace, et la purge du compte les efface.
 - **Sessions de connexion** : une session vaut 30 jours au plus, et prend
   fin plus tôt si elle reste 7 jours sans activité. Sa trace (dates
   de création, de dernière activité, d'expiration et de révocation) est
@@ -307,7 +311,8 @@ de la purge dépasserait.
   ou de réinitialisation qui viserait encore le compte est refusé. Se
   connecter ensuite avec le même compte Google crée un nouveau compte, sans
   lien avec l'ancien. Votre email et votre nom sont remplacés, votre
-  déclaration d'âge est effacée : il ne reste de votre compte qu'un
+  déclaration d'âge et votre acceptation des conditions d'utilisation sont
+  effacées : il ne reste de votre compte qu'un
   identifiant technique rattaché à aucune identité.
 - **Ce qu'elle laisse en place** : le contenu que vous avez créé au sein
   d'un groupe familial — événements et pièces jointes, tâches cochées,
@@ -351,7 +356,8 @@ de la purge dépasserait.
 
 - **Droit d'accès et de portabilité (Art. 15/20)** : `GET /account/export`
   retourne, au format JSON, l'intégralité des données qui vous concernent :
-  votre profil ; le contenu que vous avez créé dans chaque groupe (les
+  votre profil, déclaration d'âge et version acceptée des conditions
+  d'utilisation comprises, avec leurs dates ; le contenu que vous avez créé dans chaque groupe (les
   recettes avec leurs ingrédients), y compris un groupe que vous avez
   quitté ou dont vous avez été retiré, tant que ce contenu y est conservé ;
   les événements qui vous sont assignés, y compris par un autre membre ;

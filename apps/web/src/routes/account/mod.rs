@@ -29,6 +29,7 @@ pub mod delete;
 pub mod export;
 pub mod notifications;
 pub mod sessions;
+pub mod terms;
 
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
@@ -147,7 +148,7 @@ pub async fn get(
 <dt>Nom affiché</dt><dd>{name}</dd>
 <dt>Email</dt><dd>{email}</dd>
 </dl>
-{notice}{error}
+{notice}{error}{terms}
 <section class="card">
 <h2>Notifications de rappel</h2>
 <p class="muted">Recevoir les rappels de vos événements par notification, par email, ou les deux.</p>
@@ -171,6 +172,9 @@ pub async fn get(
         email = html_escape(&me.email),
         notice = notice_html(query.notice.as_deref()),
         error = error_html(query.error.as_deref()),
+        // #319: a new version of the CGU is announced here as on the home
+        // page, until acknowledged.
+        terms = terms::update_notice(&me),
     );
     Html(shell_with_header(Width::Read, "Mon compte", &header, &body)).into_response()
 }

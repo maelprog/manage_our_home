@@ -34,7 +34,7 @@ pub async fn export_account(
 ) -> AppResult<impl IntoResponse> {
     let profile = sqlx::query!(
         r#"SELECT id, email, email_verified, display_name, created_at, age_declared_at,
-                  deletion_requested_at, is_superadmin, reminder_channel,
+                  terms_accepted_version, terms_accepted_at, deletion_requested_at, is_superadmin, reminder_channel,
                   (password_hash IS NOT NULL) AS "has_password!"
            FROM users WHERE id = $1"#,
         auth.user_id
@@ -52,6 +52,10 @@ pub async fn export_account(
         // `null` for an account that never made one (Google sign-in, or an
         // account older than the declaration).
         "age_declared_at": profile.age_declared_at,
+        // #319: the version of the CGU last accepted, and when. `null` for
+        // an account that has accepted none yet.
+        "terms_accepted_version": profile.terms_accepted_version,
+        "terms_accepted_at": profile.terms_accepted_at,
         // Whether a password is set, never its hash.
         "has_password": profile.has_password,
         "deletion_requested_at": profile.deletion_requested_at,

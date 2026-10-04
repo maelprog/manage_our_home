@@ -1,8 +1,10 @@
 import { expect, test } from "@playwright/test";
 import {
   clearAgeDeclaration,
+  clearTermsAcceptance,
   fetchPasswordResetToken,
   fetchVerificationToken,
+  setTermsAcceptedVersion,
 } from "../lib/db";
 
 function uniqueEmail(prefix: string): string {
@@ -19,6 +21,7 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.getByLabel("Nom affiché").fill("E2E User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
+    await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
 
     await expect(page).toHaveURL(/\/register\/check-email$/);
@@ -50,6 +53,7 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.getByLabel("Nom affiché").fill("Bad Login User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
+    await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
     const token = await fetchVerificationToken(email);
     await page.goto(`/verify-email?token=${token}`);
@@ -69,6 +73,7 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.getByLabel("Nom affiché").fill("Dup User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill("password-one");
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
+    await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
     await expect(page).toHaveURL(/\/register\/check-email$/);
 
@@ -77,6 +82,7 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.getByLabel("Nom affiché").fill("Dup User 2");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill("password-two");
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
+    await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
 
     await expect(page.getByText("Un compte existe déjà avec cet email.")).toBeVisible();
@@ -104,6 +110,7 @@ test.describe("Auth — register → verify → login → logout", () => {
     await expect(page.getByLabel("Nom affiché")).toHaveValue("No Age User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill("e2e-password-3");
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
+    await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
     await expect(page).toHaveURL(/\/register\/check-email$/);
   });
@@ -120,6 +127,7 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.getByLabel("Nom affiché").fill("Age Later User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
+    await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
     const token = await fetchVerificationToken(email);
     await page.goto(`/verify-email?token=${token}`);
@@ -167,6 +175,7 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.getByLabel("Nom affiché").fill("Age Leave User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
+    await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
     const token = await fetchVerificationToken(email);
     await page.goto(`/verify-email?token=${token}`);
@@ -183,6 +192,119 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.goto("/account/age");
     await expect(page).toHaveURL(/\/login$/);
   });
+
+  // #319: registering without accepting the CGU is refused, and the form
+  // comes back with the boxes as they were left.
+  test("registering without accepting the CGU is refused", async ({ page }) => {
+    const email = uniqueEmail("e2e-no-terms");
+    await page.goto("/register");
+    await page.getByLabel("Email").fill(email);
+    await page.getByLabel("Nom affiché").fill("No Terms User");
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill("e2e-password-6");
+    await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
+    await page.getByRole("button", { name: "Créer mon compte" }).click();
+
+    await expect(page).toHaveURL(/\/register$/);
+    await expect(
+      page.getByText("Cochez la case pour accepter les conditions générales d'utilisation."),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }),
+    ).toBeChecked();
+
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill("e2e-password-6");
+    await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
+    await page.getByRole("button", { name: "Créer mon compte" }).click();
+    await expect(page).toHaveURL(/\/register\/check-email$/);
+  });
+
+  // #319: an account with no acceptance of the CGU on file — opened through
+  // Google, or before #319 — is held at the acceptance page until it accepts.
+  test("an account without acceptance of the CGU is held at the acceptance", async ({ page }) => {
+    const email = uniqueEmail("e2e-terms-later");
+    const password = "e2e-password-7";
+
+    await page.goto("/register");
+    await page.getByLabel("Email").fill(email);
+    await page.getByLabel("Nom affiché").fill("Terms Later User");
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
+    await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
+    await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
+    await page.getByRole("button", { name: "Créer mon compte" }).click();
+    const token = await fetchVerificationToken(email);
+    await page.goto(`/verify-email?token=${token}`);
+    await clearTermsAcceptance(email);
+
+    await page.goto("/login");
+    await page.getByLabel("Email").fill(email);
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
+    await page.getByRole("button", { name: "Se connecter" }).click();
+    await expect(page).toHaveURL("/account/terms");
+    await expect(
+      page.getByRole("heading", { name: "Conditions d'utilisation" }),
+    ).toBeVisible();
+
+    for (const path of ["/", "/agenda", "/account", "/login", "/account/age"]) {
+      await page.goto(path);
+      await expect(page).toHaveURL("/account/terms");
+    }
+
+    // Accepting nothing is refused.
+    await page.getByRole("button", { name: "Continuer" }).click();
+    await expect(page).toHaveURL("/account/terms?error=terms_acceptance_required");
+    await expect(page.getByText("cochez la case pour les accepter.")).toBeVisible();
+
+    await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
+    await page.getByRole("button", { name: "Continuer" }).click();
+    await expect(page).toHaveURL("/");
+    await expect(page.getByText("Bienvenue")).toBeVisible();
+
+    // Done: the page now sends the account on to the app, and no notice of a
+    // new version shows — the version in force is the one accepted.
+    await expect(page.getByText("Les conditions d'utilisation ont changé")).toHaveCount(0);
+    await page.goto("/account/terms");
+    await expect(page).toHaveURL("/");
+  });
+
+  // #319: a member who accepted an earlier version is not held — continued
+  // use is acceptance, per the CGU — but told on the home page and on
+  // /account, until they acknowledge it.
+  test("a member on an earlier version of the CGU is told until they acknowledge it", async ({ page }) => {
+    const email = uniqueEmail("e2e-terms-update");
+    const password = "e2e-password-8";
+
+    await page.goto("/register");
+    await page.getByLabel("Email").fill(email);
+    await page.getByLabel("Nom affiché").fill("Terms Update User");
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
+    await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
+    await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
+    await page.getByRole("button", { name: "Créer mon compte" }).click();
+    const token = await fetchVerificationToken(email);
+    await page.goto(`/verify-email?token=${token}`);
+    await setTermsAcceptedVersion(email, "2000-01-01");
+
+    await page.goto("/login");
+    await page.getByLabel("Email").fill(email);
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
+    await page.getByRole("button", { name: "Se connecter" }).click();
+    await expect(page).toHaveURL("/");
+    const notice = page.getByRole("heading", { name: "Les conditions d'utilisation ont changé" });
+    await expect(notice).toBeVisible();
+    await expect(page.getByRole("link", { name: "Lire la nouvelle version" })).toHaveAttribute(
+      "href",
+      "/terms-of-service",
+    );
+
+    await page.goto("/account");
+    await expect(notice).toBeVisible();
+
+    await page.getByRole("button", { name: "J'en ai pris connaissance" }).click();
+    await expect(page).toHaveURL("/");
+    await expect(notice).toHaveCount(0);
+    await page.goto("/account");
+    await expect(notice).toHaveCount(0);
+  });
 });
 
 test.describe("Auth — forgot → reset → login with new password", () => {
@@ -196,6 +318,7 @@ test.describe("Auth — forgot → reset → login with new password", () => {
     await page.getByLabel("Nom affiché").fill("Reset User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill(oldPassword);
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
+    await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
     const verifyToken = await fetchVerificationToken(email);
     await page.goto(`/verify-email?token=${verifyToken}`);
@@ -254,6 +377,7 @@ test.describe("Auth-gate redirects", () => {
     await page.getByLabel("Nom affiché").fill("Redirect User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
+    await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
     const token = await fetchVerificationToken(email);
     await page.goto(`/verify-email?token=${token}`);

@@ -56,7 +56,7 @@ fn registration(email: &str) -> serde_json::Value {
         "email": email,
         "password": "cross-origin-password1",
         "display_name": email,
-        "declares_minimum_age": true,
+        "declares_minimum_age": true, "accepts_terms": true,
     })
 }
 

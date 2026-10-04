@@ -158,6 +158,8 @@ async function signIn(who: { email: string; displayName: string }): Promise<Http
       display_name: who.displayName,
       // #137: registration refuses a body without the art. 8 GDPR age declaration.
       declares_minimum_age: true,
+      // #319: and the acceptance of the CGU.
+      accepts_terms: true,
     },
     expect: [201, 409],
   });

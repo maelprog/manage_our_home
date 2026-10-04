@@ -18,7 +18,7 @@ use manage_our_home_shared::dto::auth::AgeDeclarationRequest;
 use manage_our_home_shared::validation::auth::{validate_age_declaration, MINIMUM_AGE_YEARS};
 
 use crate::app::{html_escape, shell, Width};
-use crate::layout::{AGE_DECLARATION_PAGE, DEACTIVATED_PAGE};
+use crate::layout::{AGE_DECLARATION_PAGE, DEACTIVATED_PAGE, TERMS_ACCEPTANCE_PAGE};
 use crate::state::{api_request_auth, fetch_session, AppState, Session};
 
 use super::{account_cookie, service_unavailable_page};
@@ -92,6 +92,7 @@ pub async fn get(
         }
         Session::Active(_) => Redirect::to("/").into_response(),
         Session::Deactivated => Redirect::to(DEACTIVATED_PAGE).into_response(),
+        Session::TermsNotAccepted => Redirect::to(TERMS_ACCEPTANCE_PAGE).into_response(),
         Session::None => Redirect::to("/login").into_response(),
     }
 }

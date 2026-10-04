@@ -55,6 +55,10 @@ pub enum Session {
     /// only the `/account/age` page is open to it. apps/api answers
     /// `/auth/me` with 403 `age_not_declared`.
     AgeUndeclared,
+    /// The session of an account with no acceptance of the CGU on file
+    /// (#319), age declared: only the `/account/terms` page is open to it.
+    /// apps/api answers `/auth/me` with 403 `terms_not_accepted`.
+    TermsNotAccepted,
     /// No session, an invalid one, or apps/api unreachable.
     None,
 }
@@ -69,6 +73,12 @@ fn is_deactivated_answer(status: reqwest::StatusCode, error: Option<&str>) -> bo
 /// no age declaration on file (#318) rather than no session.
 fn is_age_undeclared_answer(status: reqwest::StatusCode, error: Option<&str>) -> bool {
     status == reqwest::StatusCode::FORBIDDEN && error == Some("age_not_declared")
+}
+
+/// Whether a refused `GET /auth/me` names the session of an account with
+/// no acceptance of the CGU on file (#319) rather than no session.
+fn is_terms_not_accepted_answer(status: reqwest::StatusCode, error: Option<&str>) -> bool {
+    status == reqwest::StatusCode::FORBIDDEN && error == Some("terms_not_accepted")
 }
 
 /// Calls `GET /auth/me` on apps/api, forwarding the incoming request's
@@ -99,6 +109,8 @@ pub async fn fetch_session(state: &AppState, cookie_header: Option<&str>) -> Ses
         Session::Deactivated
     } else if is_age_undeclared_answer(status, error.as_deref()) {
         Session::AgeUndeclared
+    } else if is_terms_not_accepted_answer(status, error.as_deref()) {
+        Session::TermsNotAccepted
     } else {
         Session::None
     }
@@ -106,12 +118,15 @@ pub async fn fetch_session(state: &AppState, cookie_header: Option<&str>) -> Ses
 
 /// [`fetch_session`] for callers that only want a full session: `None`
 /// covers no session, a restricted one, one awaiting its age declaration
-/// (#318), and any transport error talking to apps/api — callers treat
-/// them all as "not authenticated".
+/// (#318) or its acceptance of the CGU (#319), and any transport error
+/// talking to apps/api — callers treat them all as "not authenticated".
 pub async fn fetch_me(state: &AppState, cookie_header: Option<&str>) -> Option<MeResponse> {
     match fetch_session(state, cookie_header).await {
         Session::Active(me) => Some(me),
-        Session::Deactivated | Session::AgeUndeclared | Session::None => None,
+        Session::Deactivated
+        | Session::AgeUndeclared
+        | Session::TermsNotAccepted
+        | Session::None => None,
     }
 }
 
@@ -338,6 +353,47 @@ mod tests {
         assert!(!is_age_undeclared_answer(
             StatusCode::UNPROCESSABLE_ENTITY,
             Some("age_declaration_required")
+        ));
+    }
+
+    // -- acceptance of the CGU (#319) -------------------------------------
+
+    #[test]
+    fn a_403_terms_not_accepted_awaits_the_acceptance() {
+        assert!(is_terms_not_accepted_answer(
+            StatusCode::FORBIDDEN,
+            Some("terms_not_accepted")
+        ));
+    }
+
+    #[test]
+    fn the_three_403_sessions_are_told_apart() {
+        for other in ["account_deactivated", "age_not_declared"] {
+            assert!(!is_terms_not_accepted_answer(
+                StatusCode::FORBIDDEN,
+                Some(other)
+            ));
+        }
+        assert!(!is_deactivated_answer(
+            StatusCode::FORBIDDEN,
+            Some("terms_not_accepted")
+        ));
+        assert!(!is_age_undeclared_answer(
+            StatusCode::FORBIDDEN,
+            Some("terms_not_accepted")
+        ));
+    }
+
+    #[test]
+    fn no_other_answer_awaits_the_acceptance() {
+        assert!(!is_terms_not_accepted_answer(
+            StatusCode::UNAUTHORIZED,
+            Some("terms_not_accepted")
+        ));
+        assert!(!is_terms_not_accepted_answer(StatusCode::FORBIDDEN, None));
+        assert!(!is_terms_not_accepted_answer(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Some("terms_acceptance_required")
         ));
     }
 }

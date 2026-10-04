@@ -2,6 +2,7 @@ pub mod age_declaration;
 pub mod deactivated;
 pub mod oauth_google;
 pub mod session;
+pub mod terms_acceptance;
 pub mod throttle;
 pub mod timing;
 
@@ -23,6 +24,7 @@ use manage_our_home_shared::dto::auth::{
 
 use manage_our_home_shared::validation::auth::{
     validate_age_declaration, validate_display_name, validate_email, validate_password,
+    validate_terms_acceptance, TERMS_VERSION,
 };
 
 use crate::client_ip::ClientIp;
@@ -64,6 +66,7 @@ pub async fn me(auth: AuthUser) -> Json<MeResponse> {
         is_superadmin: auth.is_superadmin,
         has_password: auth.has_password,
         deletion_requested_at: auth.deletion_requested_at,
+        terms_accepted_version: auth.terms_accepted_version,
     })
 }
 
@@ -76,6 +79,10 @@ pub async fn me(auth: AuthUser) -> Json<MeResponse> {
 /// the request carries the art. 8 GDPR age declaration. The declaration is
 /// checked last of the four, so a request that gets several things wrong
 /// still reports the field errors the form can point at first.
+///
+/// #319: and unless it accepts the CGU (422 `terms_acceptance_required`),
+/// checked after the declaration; the version in force is recorded with the
+/// account, and when.
 pub async fn register(
     State(state): State<AppState>,
     Json(body): Json<RegisterRequest>,
@@ -84,6 +91,7 @@ pub async fn register(
     validate_password(&body.password).map_err(unprocessable)?;
     validate_display_name(&body.display_name).map_err(unprocessable)?;
     validate_age_declaration(body.declares_minimum_age).map_err(unprocessable)?;
+    validate_terms_acceptance(body.accepts_terms).map_err(unprocessable)?;
 
     let existing = sqlx::query_scalar!("SELECT id FROM users WHERE email = $1", body.email)
         .fetch_optional(&state.db)
@@ -97,13 +105,15 @@ pub async fn register(
     let mut tx = crate::db::begin(&state.db).await?;
     let user = sqlx::query!(
         r#"
-        INSERT INTO users (email, password_hash, display_name, email_verified, age_declared_at)
-        VALUES ($1, $2, $3, false, now())
+        INSERT INTO users (email, password_hash, display_name, email_verified, age_declared_at,
+                           terms_accepted_version, terms_accepted_at)
+        VALUES ($1, $2, $3, false, now(), $4, now())
         RETURNING id
         "#,
         body.email,
         password_hash,
         body.display_name,
+        TERMS_VERSION,
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -838,6 +848,7 @@ mod tests {
             is_superadmin: true,
             has_password: true,
             deletion_requested_at: None,
+            terms_accepted_version: Some("2026-10-04".into()),
             session_created_at: chrono::Utc::now(),
             session_expires_at: chrono::Utc::now(),
             session_last_seen_at: chrono::Utc::now(),
@@ -853,5 +864,6 @@ mod tests {
         assert!(body.is_superadmin);
         assert!(body.has_password);
         assert_eq!(body.deletion_requested_at, None);
+        assert_eq!(body.terms_accepted_version.as_deref(), Some("2026-10-04"));
     }
 }

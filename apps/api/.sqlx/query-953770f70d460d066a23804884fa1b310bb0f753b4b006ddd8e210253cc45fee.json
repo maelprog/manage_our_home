@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, email, email_verified, display_name, created_at, age_declared_at,\n                  deletion_requested_at, is_superadmin, reminder_channel,\n                  (password_hash IS NOT NULL) AS \"has_password!\"\n           FROM users WHERE id = $1",
+  "query": "SELECT id, email, email_verified, display_name, created_at, age_declared_at,\n                  terms_accepted_version, terms_accepted_at, deletion_requested_at, is_superadmin, reminder_channel,\n                  (password_hash IS NOT NULL) AS \"has_password!\"\n           FROM users WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -71,6 +71,28 @@
       },
       {
         "ordinal": 6,
+        "name": "terms_accepted_version",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "terms_accepted_version"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "terms_accepted_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "terms_accepted_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
         "name": "deletion_requested_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -81,7 +103,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 9,
         "name": "is_superadmin",
         "type_info": "Bool",
         "origin": {
@@ -92,7 +114,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 10,
         "name": "reminder_channel",
         "type_info": "Text",
         "origin": {
@@ -103,7 +125,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 11,
         "name": "has_password!",
         "type_info": "Bool",
         "origin": "Expression"
@@ -122,10 +144,12 @@
       false,
       true,
       true,
+      true,
+      true,
       false,
       false,
       null
     ]
   },
-  "hash": "0d58b90a13be66b635961d7e48932b5e9430a3fc11073e9a524f0fe639dbea75"
+  "hash": "953770f70d460d066a23804884fa1b310bb0f753b4b006ddd8e210253cc45fee"
 }
