@@ -80,6 +80,28 @@ export async function makeSuperadmin(email: string): Promise<void> {
 }
 
 /**
+ * Clears the age declaration of `email` (#318), leaving the account as one
+ * opened through Google, or before #137, is: no declaration on file. The
+ * registration form always records one, and a Google sign-in cannot be
+ * driven from the suite, so this is how the declaration page is reached.
+ */
+export async function clearAgeDeclaration(email: string): Promise<void> {
+  const client = new Client({ connectionString: requireDatabaseUrl() });
+  await client.connect();
+  try {
+    const { rowCount } = await client.query(
+      `UPDATE users SET age_declared_at = NULL WHERE email = $1`,
+      [email],
+    );
+    if (rowCount === 0) {
+      throw new Error(`no user to clear the age declaration of for ${email}`);
+    }
+  } finally {
+    await client.end();
+  }
+}
+
+/**
  * Backdates every session of `email` as if opened `hours` hours ago (and
  * last used then too), so the superadmin session cap (#226) can be met
  * without waiting 12 hours.

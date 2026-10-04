@@ -37,7 +37,7 @@ données sont-elles conservées ? ».
 | Catégorie | Exemples | Base légale |
 |---|---|---|
 | Compte | email, mot de passe (haché), nom affiché | Exécution du contrat (fournir le service) |
-| Âge | la déclaration d'avoir 15 ans ou plus, faite à l'inscription, et sa date — aucune date de naissance n'est demandée ni conservée | Exécution du contrat (les conditions générales réservent le service aux 15 ans et plus) |
+| Âge | la déclaration d'avoir 15 ans ou plus, faite à l'inscription (à la première connexion pour un compte ouvert avec Google), et sa date — aucune date de naissance n'est demandée ni conservée | Exécution du contrat (les conditions générales réservent le service aux 15 ans et plus) |
 | Connexion avec Google | identifiant de votre compte Google, email et nom de votre profil Google, jeton de rafraîchissement délivré par Google (chiffré) | Exécution du contrat (vous choisissez ce mode de connexion) |
 | Vérification d'email et réinitialisation du mot de passe | jetons à usage unique envoyés par email, valables 24 h (vérification) ou 1 h (réinitialisation) | Exécution du contrat |
 | Protection de la connexion | adresse IP (en IPv6, réduite à son préfixe /64) et email saisi à chaque tentative de connexion par mot de passe, gardés en mémoire du serveur seulement, jamais en base | Intérêt légitime (limiter les essais de mot de passe) |
@@ -57,8 +57,10 @@ Le service n'est pas ouvert aux moins de 15 ans. C'est le seuil retenu par la
 loi française pour qu'un mineur consente seul au traitement de ses données
 (art. 8 du RGPD) ; en deçà, il faudrait recueillir l'accord du titulaire de
 l'autorité parentale, et le service ne propose pas ce chemin. L'inscription
-demande donc de déclarer avoir 15 ans ou plus, et les [conditions générales
-d'utilisation](/terms-of-service) en font une condition d'accès.
+demande donc de déclarer avoir 15 ans ou plus — un compte ouvert avec Google
+fait cette déclaration à sa première connexion, avant tout accès au service —,
+et les [conditions générales d'utilisation](/terms-of-service) en font une
+condition d'accès.
 
 Cette déclaration n'est pas vérifiée — aucune pièce d'identité, aucune date
 de naissance : ce serait collecter bien plus de données que la vérification

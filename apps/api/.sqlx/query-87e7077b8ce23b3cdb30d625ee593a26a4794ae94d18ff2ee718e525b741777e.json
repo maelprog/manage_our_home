@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE users SET age_declared_at = now()\n        WHERE id = $1 AND age_declared_at IS NULL\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "87e7077b8ce23b3cdb30d625ee593a26a4794ae94d18ff2ee718e525b741777e"
+}

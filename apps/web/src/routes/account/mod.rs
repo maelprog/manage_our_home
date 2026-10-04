@@ -23,6 +23,7 @@
 //! deliberately *not* the superadmin's immediate `deactivate` action (F9) — the
 //! copy on both sides keeps them apart.
 
+pub mod age;
 pub mod deactivated;
 pub mod delete;
 pub mod export;

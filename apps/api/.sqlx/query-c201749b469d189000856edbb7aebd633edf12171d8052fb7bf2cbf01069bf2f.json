@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT s.expires_at, s.revoked_at, s.last_seen_at, s.restricted,\n               u.deleted_at, u.deactivated_at\n        FROM sessions s\n        JOIN users u ON u.id = s.user_id\n        WHERE s.id = $1\n        ",
+  "query": "\n        SELECT s.expires_at, s.revoked_at, s.last_seen_at, s.restricted,\n               u.deleted_at, u.deactivated_at, u.age_declared_at\n        FROM sessions s\n        JOIN users u ON u.id = s.user_id\n        WHERE s.id = $1\n        ",
   "describe": {
     "columns": [
       {
@@ -68,6 +68,17 @@
             "name": "deactivated_at"
           }
         }
+      },
+      {
+        "ordinal": 6,
+        "name": "age_declared_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "age_declared_at"
+          }
+        }
       }
     ],
     "parameters": {
@@ -81,8 +92,9 @@
       false,
       false,
       true,
+      true,
       true
     ]
   },
-  "hash": "22867c301291fbef86b3259a9390a45d5575facd045e64c9a4cf3e17b5600b7c"
+  "hash": "c201749b469d189000856edbb7aebd633edf12171d8052fb7bf2cbf01069bf2f"
 }

@@ -36,7 +36,9 @@ traitement de ses données personnelles ; en deçà, l'accord du titulaire de
 l'autorité parentale serait nécessaire, et le service n'offre aucun moyen de
 le recueillir. Les moins de 15 ans ne sont donc pas acceptés, sans exception.
 
-À l'ouverture d'un compte, vous déclarez avoir 15 ans ou plus. Aucune date de
+À l'ouverture d'un compte, vous déclarez avoir 15 ans ou plus ; un compte
+ouvert avec Google fait cette déclaration à sa première connexion, avant tout
+accès au service. Aucune date de
 naissance n'est demandée : seule la déclaration est conservée, avec sa date.
 Un compte dont l'éditeur apprend qu'il a été ouvert par une personne plus
 jeune est fermé et ses données supprimées ; le titulaire de l'autorité

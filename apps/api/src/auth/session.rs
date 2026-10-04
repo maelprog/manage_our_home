@@ -60,20 +60,30 @@ fn last_seen_needs_refresh(now: DateTime<Utc>, last_seen_at: DateTime<Utc>) -> b
 }
 
 /// What a session opens (#289), from the session's `restricted` flag and
-/// the account's `deactivated_at` / `deleted_at`.
+/// the account's `deactivated_at` / `deleted_at` / `age_declared_at`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionAccess {
     /// Every route `AuthUser` guards.
     Full,
     /// Only the routes `DeactivatedSession` guards.
     Deactivated,
+    /// Only the routes `AgeUndeclaredSession` guards (#318): the full
+    /// session of an active account with no age declaration on file — one
+    /// opened through Google, or before the declaration existed (#137).
+    AgeUndeclared,
     /// Nothing: 401.
     Refused,
 }
 
-fn session_access(restricted: bool, deactivated: bool, deleted: bool) -> SessionAccess {
+fn session_access(
+    restricted: bool,
+    deactivated: bool,
+    deleted: bool,
+    age_declared: bool,
+) -> SessionAccess {
     match (deleted, restricted, deactivated) {
-        (false, false, false) => SessionAccess::Full,
+        (false, false, false) if age_declared => SessionAccess::Full,
+        (false, false, false) => SessionAccess::AgeUndeclared,
         (false, true, true) => SessionAccess::Deactivated,
         _ => SessionAccess::Refused,
     }
@@ -87,6 +97,7 @@ struct SessionRow {
     restricted: bool,
     deactivated: bool,
     deleted: bool,
+    age_declared: bool,
 }
 
 /// The one verdict on a session (#221): the checks every session shares —
@@ -97,7 +108,12 @@ fn session_state(now: DateTime<Utc>, row: &SessionRow) -> SessionAccess {
     if row.revoked || row.expires_at < now || is_idle(now, row.last_seen_at) {
         return SessionAccess::Refused;
     }
-    session_access(row.restricted, row.deactivated, row.deleted)
+    session_access(
+        row.restricted,
+        row.deactivated,
+        row.deleted,
+        row.age_declared,
+    )
 }
 
 /// A `sessions` row of the caller, as `GET /auth/sessions` reads it (#225).
@@ -132,6 +148,7 @@ pub fn active_sessions(
                     restricted: row.restricted,
                     deactivated: false,
                     deleted: false,
+                    age_declared: true,
                 },
             );
             state == SessionAccess::Full
@@ -280,7 +297,7 @@ where
         SELECT s.id as session_id, s.created_at, s.expires_at, s.revoked_at, s.last_seen_at,
                s.restricted, u.id as user_id, u.email, u.display_name, u.email_verified,
                u.is_superadmin, u.deleted_at, u.deactivated_at, u.deletion_requested_at,
-               (u.password_hash IS NOT NULL) as "has_password!"
+               u.age_declared_at, (u.password_hash IS NOT NULL) as "has_password!"
         FROM sessions s
         JOIN users u ON u.id = s.user_id
         WHERE s.token_hash = $1
@@ -302,6 +319,7 @@ where
             restricted: row.restricted,
             deactivated: row.deactivated_at.is_some(),
             deleted: row.deleted_at.is_some(),
+            age_declared: row.age_declared_at.is_some(),
         },
     );
     if access == SessionAccess::Refused {
@@ -360,7 +378,7 @@ pub async fn is_full_session(pool: &PgPool, session_id: Uuid) -> bool {
     let row = sqlx::query!(
         r#"
         SELECT s.expires_at, s.revoked_at, s.last_seen_at, s.restricted,
-               u.deleted_at, u.deactivated_at
+               u.deleted_at, u.deactivated_at, u.age_declared_at
         FROM sessions s
         JOIN users u ON u.id = s.user_id
         WHERE s.id = $1
@@ -381,15 +399,18 @@ pub async fn is_full_session(pool: &PgPool, session_id: Uuid) -> bool {
             restricted: row.restricted,
             deactivated: row.deactivated_at.is_some(),
             deleted: row.deleted_at.is_some(),
+            age_declared: row.age_declared_at.is_some(),
         },
     ) == SessionAccess::Full
 }
 
-/// A full session of an active account. A restricted session (#289) is
-/// refused with 403 `account_deactivated` — its holder proved the
-/// credentials, so the answer tells them nothing they do not know, and
-/// `apps/web` sends them to the deactivated-account page on it. Every
-/// other refusal is the bare 401.
+/// A full session of an active account with an age declaration on file. A
+/// restricted session (#289) is refused with 403 `account_deactivated` —
+/// its holder proved the credentials, so the answer tells them nothing they
+/// do not know, and `apps/web` sends them to the deactivated-account page on
+/// it. A session of an account without age declaration (#318) is refused
+/// with 403 `age_not_declared`, on which `apps/web` sends its holder to the
+/// declaration page. Every other refusal is the bare 401.
 #[async_trait]
 impl<S> FromRequestParts<S> for AuthUser
 where
@@ -400,8 +421,12 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let session = load_session(parts, state).await?;
-        if session.access != SessionAccess::Full {
-            return Err(AppError::AccountDeactivated);
+        match session.access {
+            SessionAccess::Full => {}
+            SessionAccess::AgeUndeclared => return Err(AppError::AgeNotDeclared),
+            SessionAccess::Deactivated | SessionAccess::Refused => {
+                return Err(AppError::AccountDeactivated)
+            }
         }
         Ok(AuthUser {
             user_id: session.user_id,
@@ -470,6 +495,33 @@ where
         Ok(DeactivatedSession {
             user_id: session.user_id,
             session_id: session.session_id,
+        })
+    }
+}
+
+/// The full session of an account with no age declaration on file (#318),
+/// and nothing else: any other session is a 401. Guards only
+/// `POST /auth/age-declaration`; logging out takes [`AnySession`].
+#[derive(Debug, Clone)]
+pub struct AgeUndeclaredSession {
+    pub user_id: Uuid,
+}
+
+#[async_trait]
+impl<S> FromRequestParts<S> for AgeUndeclaredSession
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let session = load_session(parts, state).await?;
+        if session.access != SessionAccess::AgeUndeclared {
+            return Err(AppError::Unauthorized);
+        }
+        Ok(AgeUndeclaredSession {
+            user_id: session.user_id,
         })
     }
 }
@@ -826,13 +878,16 @@ mod tests {
 
     #[test]
     fn a_full_session_of_an_active_account_opens_everything() {
-        assert_eq!(session_access(false, false, false), SessionAccess::Full);
+        assert_eq!(
+            session_access(false, false, false, true),
+            SessionAccess::Full
+        );
     }
 
     #[test]
     fn a_restricted_session_of_a_deactivated_account_opens_only_its_page() {
         assert_eq!(
-            session_access(true, true, false),
+            session_access(true, true, false, true),
             SessionAccess::Deactivated
         );
     }
@@ -841,14 +896,20 @@ mod tests {
     /// (the row left untouched) still opens nothing.
     #[test]
     fn a_full_session_of_a_deactivated_account_is_refused() {
-        assert_eq!(session_access(false, true, false), SessionAccess::Refused);
+        assert_eq!(
+            session_access(false, true, false, true),
+            SessionAccess::Refused
+        );
     }
 
     /// Once the superadmin reactivates the account, the restricted session
     /// does not turn into a full one: the holder logs in again.
     #[test]
     fn a_restricted_session_of_a_reactivated_account_is_refused() {
-        assert_eq!(session_access(true, false, false), SessionAccess::Refused);
+        assert_eq!(
+            session_access(true, false, false, true),
+            SessionAccess::Refused
+        );
     }
 
     #[test]
@@ -856,11 +917,75 @@ mod tests {
         for (restricted, deactivated) in
             [(false, false), (true, true), (false, true), (true, false)]
         {
-            assert_eq!(
-                session_access(restricted, deactivated, true),
-                SessionAccess::Refused,
-                "restricted={restricted} deactivated={deactivated}"
-            );
+            for age_declared in [true, false] {
+                assert_eq!(
+                    session_access(restricted, deactivated, true, age_declared),
+                    SessionAccess::Refused,
+                    "restricted={restricted} deactivated={deactivated} age_declared={age_declared}"
+                );
+            }
+        }
+    }
+
+    // -- age declaration (#318) -------------------------------------------
+
+    /// An account with no age declaration on file — opened through Google,
+    /// or before #137 — gets the declaration page and nothing else.
+    #[test]
+    fn a_full_session_of_an_account_without_age_declaration_opens_only_the_declaration() {
+        assert_eq!(
+            session_access(false, false, false, false),
+            SessionAccess::AgeUndeclared
+        );
+    }
+
+    /// Deactivation outranks the missing declaration: the restricted session
+    /// still opens the deactivated-account page, and the full session of a
+    /// deactivated account still opens nothing.
+    #[test]
+    fn deactivation_outranks_a_missing_age_declaration() {
+        assert_eq!(
+            session_access(true, true, false, false),
+            SessionAccess::Deactivated
+        );
+        assert_eq!(
+            session_access(false, true, false, false),
+            SessionAccess::Refused
+        );
+        assert_eq!(
+            session_access(true, false, false, false),
+            SessionAccess::Refused
+        );
+    }
+
+    /// Liveness comes first here too: a revoked, expired or idle session of
+    /// an account without declaration opens nothing, not even the page.
+    #[test]
+    fn a_dead_session_of_an_account_without_age_declaration_is_refused() {
+        let now = at("2026-09-19T12:00:00Z");
+        let undeclared = || SessionRow {
+            age_declared: false,
+            ..live(now)
+        };
+        assert_eq!(
+            session_state(now, &undeclared()),
+            SessionAccess::AgeUndeclared
+        );
+        for dead in [
+            SessionRow {
+                revoked: true,
+                ..undeclared()
+            },
+            SessionRow {
+                expires_at: at("2026-09-19T11:59:59Z"),
+                ..undeclared()
+            },
+            SessionRow {
+                last_seen_at: at("2026-09-12T11:59:59Z"),
+                ..undeclared()
+            },
+        ] {
+            assert_eq!(session_state(now, &dead), SessionAccess::Refused);
         }
     }
 
@@ -875,6 +1000,7 @@ mod tests {
             restricted: false,
             deactivated: false,
             deleted: false,
+            age_declared: true,
         }
     }
 
