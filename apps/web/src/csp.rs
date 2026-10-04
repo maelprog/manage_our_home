@@ -38,13 +38,15 @@ const CADDYFILE: &str = include_str!("../../../infra/Caddyfile");
 /// name has to be exactly `name`.
 /// And none counts once a `-<name>` anywhere (later in the file, in the
 /// same block, under a matcher) deletes the header again — the name in any
-/// case, or a `*` wildcard covering it (`-Content-*`). Field names match in
+/// case, or a `*` wildcard covering it (`deletes`). Field names match in
 /// any case, and of several values set, the last one is read: it is the one
 /// Caddy sends.
 ///
 /// What it does **not** see — a reading of lines, not Caddy's parser: a
 /// `header` nested in a `handle`, `route` or snippet (scoped by that block,
-/// not by a matcher of its own), and a value split across lines.
+/// not by a matcher of its own), a value split across lines, and Caddy's
+/// replacement form `<name> "<search>" "<replace>"`, which edits a value
+/// rather than setting one: its first quoted string is read as if set.
 fn caddy_header<'a>(caddyfile: &'a str, name: &str) -> Option<&'a str> {
     let mut found = None;
     let mut deleted = false;
@@ -124,10 +126,13 @@ fn strip_name<'a>(line: &'a str, name: &str) -> Option<&'a str> {
 }
 
 /// Whether `-<pattern>` deletes the field `name` in Caddy: the same name in
-/// any case, or a `*` prefix or suffix wildcard (`-Content-*`, `-*-Policy`).
+/// any case, or a `*` wildcard — prefix (`-Content-*`), suffix
+/// (`-*-Policy`) or both, a substring (`-*Security*`).
 fn deletes(pattern: &str, name: &str) -> bool {
     let (pattern, name) = (pattern.to_ascii_lowercase(), name.to_ascii_lowercase());
-    if let Some(prefix) = pattern.strip_suffix('*') {
+    if let Some(inner) = pattern.strip_prefix('*').and_then(|p| p.strip_suffix('*')) {
+        name.contains(inner)
+    } else if let Some(prefix) = pattern.strip_suffix('*') {
         name.starts_with(prefix)
     } else if let Some(suffix) = pattern.strip_prefix('*') {
         name.ends_with(suffix)
@@ -190,8 +195,12 @@ enum Inline {
 /// What it does **not** see — a textual scan, not an HTML parser: spaces
 /// around a handler's `=`, markup assembled from pieces (`"on" + "click"`,
 /// a `<script` split across two literals), entity-encoded URLs
-/// (`javascript&colon;`), and Leptos `view!` attributes, which SSR does not
-/// emit as handlers anyway. One that slipped through would run nowhere
+/// (`javascript&colon;`), a URL opening with a C0 control character before
+/// `javascript:` (browsers strip those too; only tabs and line breaks are
+/// removed here), and Leptos `view!` attributes, which SSR does not emit as
+/// handlers anyway. It also errs the other way on any attribute whose value
+/// starts with `javascript:` — `title="javascript: guide"` is reported,
+/// though it runs nothing. One that slipped through would run nowhere
 /// behind Caddy, and show up as a broken page, not as a hole in the policy.
 fn inline_scripts(source: &str) -> Vec<Inline> {
     let excerpt = |s: &str| s.chars().take(60).collect::<String>();
@@ -294,15 +303,15 @@ fn unescape(line: &str) -> String {
     out
 }
 
-/// The scripts no production code loads: no `Script::<Variant>.tag()` on
-/// an uncommented line of a file's `production_code`, `assets.rs` (which
-/// defines them) left out.
+/// The scripts no production code loads: no `Script::<Variant>.tag()` in a
+/// file's `production_code` once comments are removed (`without_comments`),
+/// `assets.rs` (which defines them) left out.
 fn scripts_not_loaded(sources: &[(String, String)]) -> Vec<Script> {
-    let calls: Vec<&str> = sources
+    let calls: Vec<String> = sources
         .iter()
         .filter(|(path, _)| !path.ends_with("/assets.rs"))
         .flat_map(|(_, text)| production_code(text).lines())
-        .filter(|line| !line.trim_start().starts_with("//"))
+        .map(without_comments)
         .collect();
     Script::ALL
         .into_iter()
@@ -311,6 +320,37 @@ fn scripts_not_loaded(sources: &[(String, String)]) -> Vec<Script> {
             !calls.iter().any(|line| line.contains(&call))
         })
         .collect()
+}
+
+/// `line` without its `/* … */` spans and without what follows `//`. A
+/// textual cut, not a lexer: a `//` inside a string (`"https://…"`) ends the
+/// line too, which can only make a loaded script look unloaded; and a block
+/// comment spanning several lines is not seen, so a call commented out that
+/// way still counts.
+fn without_comments(line: &str) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    loop {
+        let block = rest.find("/*");
+        let to_end = rest.find("//");
+        match (block, to_end) {
+            (Some(b), t) if t.is_none_or(|t| b < t) => {
+                out.push_str(&rest[..b]);
+                match rest[b + 2..].find("*/") {
+                    Some(end) => rest = &rest[b + 2 + end + 2..],
+                    None => return out,
+                }
+            }
+            (_, Some(t)) => {
+                out.push_str(&rest[..t]);
+                return out;
+            }
+            _ => {
+                out.push_str(rest);
+                return out;
+            }
+        }
+    }
 }
 
 fn sources() -> Vec<(String, String)> {
@@ -398,6 +438,7 @@ fn caddy_csp_is_none_once_a_header_deletes_it() {
         "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t}\n\theader -Content-Security-*\n",
         "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t}\n\theader -Content-*\n",
         "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t}\n\theader -*-Policy\n",
+        "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t}\n\theader -*security*\n",
     ] {
         assert_eq!(caddy_csp(file), None, "{file}");
     }
@@ -405,7 +446,7 @@ fn caddy_csp_is_none_once_a_header_deletes_it() {
     // not deleting this one.
     let file = "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t\t-Server\n\t\t-Content-Security-Policy-Report-Only\n\t}\n";
     assert_eq!(caddy_csp(file), Some("default-src 'self'"));
-    let file = "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t\t-X-*\n\t}\n";
+    let file = "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t\t-X-*\n\t\t-*Frame*\n\t}\n";
     assert_eq!(caddy_csp(file), Some("default-src 'self'"));
 }
 
@@ -592,6 +633,16 @@ fn scripts_not_loaded_counts_tag_calls_in_production_code_only() {
     assert_eq!(
         scripts_not_loaded(&[("src/page.rs".to_string(), page.to_string())]),
         vec![Script::ResetPassword, Script::MessagerieLive, Script::Push]
+    );
+    // A call commented out at the end of a line or inside a block comment
+    // is no call either.
+    let page = "html.push_str(&String::new()); // Script::Enhance.tag()\n\
+                let s = String::new() /* Script::ResetPassword.tag() */;\n\
+                let t = Script::MessagerieLive.tag(); /* note */\n\
+                let u = \"https://x\"; let v = Script::Push.tag();\n";
+    assert_eq!(
+        scripts_not_loaded(&[("src/page.rs".to_string(), page.to_string())]),
+        vec![Script::Enhance, Script::ResetPassword, Script::Push]
     );
     // `assets.rs` defines `tag` and calls nothing.
     let assets = "fn f() { Script::Push.tag() }\n";
