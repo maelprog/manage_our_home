@@ -248,14 +248,21 @@ fn render_nav(is_week: bool, focus: NaiveDate, title: &str) -> String {
         )
     };
     let view_q = if is_week { "week" } else { "month" };
+    // The arrows are a bare glyph: their accessible name is what they step
+    // to, which is a week in the week view, not a month.
+    let (prev_label, next_label) = if is_week {
+        ("Semaine précédente", "Semaine suivante")
+    } else {
+        ("Mois précédent", "Mois suivant")
+    };
     let today = today_paris();
     format!(
         r#"<div class="page-header">
 <h1>{title}</h1>
 <span class="actions">
-<a class="btn secondary" href="/agenda?view={view_q}&date={prev}">"◀"</a>
+<a class="btn secondary" href="/agenda?view={view_q}&date={prev}" aria-label="{prev_label}">◀</a>
 <a class="btn secondary" href="/agenda?view={view_q}&date={today}">Aujourd'hui</a>
-<a class="btn secondary" href="/agenda?view={view_q}&date={next}">"▶"</a>
+<a class="btn secondary" href="/agenda?view={view_q}&date={next}" aria-label="{next_label}">▶</a>
 <a class="btn secondary" href="/agenda?view=month&date={focus}">Mois</a>
 <a class="btn secondary" href="/agenda?view=week&date={focus}">Semaine</a>
 <a class="btn secondary" href="/agenda/imports">Agendas Google</a>
@@ -621,5 +628,57 @@ mod tests {
     #[test]
     fn the_week_view_is_named_by_its_first_day() {
         assert_eq!(view_title(true, day(13)), "Semaine du 13 juillet");
+    }
+
+    // -- render_nav ----------------------------------------------------
+    //
+    // The prev/next arrows are a bare glyph. Before #320 the template wrote
+    // them inside a raw string as `"◀"`, so the quotes reached the page, and
+    // nothing gave the links a name a screen reader could announce.
+
+    /// The `<a …>…</a>` whose `href` targets `date`, as rendered.
+    fn nav_link(html: &str, view: &str, date: &str) -> String {
+        let href = format!(r#"href="/agenda?view={view}&date={date}""#);
+        let start = html[..html.find(&href).expect("link is rendered")]
+            .rfind("<a ")
+            .unwrap();
+        let end = start + html[start..].find("</a>").unwrap() + "</a>".len();
+        html[start..end].to_string()
+    }
+
+    #[test]
+    fn the_month_arrows_are_a_bare_glyph_named_for_the_month_they_reach() {
+        let html = render_nav(false, day(15), "juillet 2026");
+        let prev = nav_link(&html, "month", "2026-06-01");
+        let next = nav_link(&html, "month", "2026-08-01");
+        assert!(prev.contains(r#"aria-label="Mois précédent""#), "{prev}");
+        assert!(next.contains(r#"aria-label="Mois suivant""#), "{next}");
+        assert!(prev.ends_with(">◀</a>"), "{prev}");
+        assert!(next.ends_with(">▶</a>"), "{next}");
+    }
+
+    #[test]
+    fn the_week_arrows_are_named_for_the_week_they_reach() {
+        // They step seven days: calling them "Mois précédent" would announce
+        // a jump the link does not make.
+        let html = render_nav(true, day(15), "Semaine du 13 juillet");
+        let prev = nav_link(&html, "week", "2026-07-08");
+        let next = nav_link(&html, "week", "2026-07-22");
+        assert!(
+            prev.contains(r#"aria-label="Semaine précédente""#),
+            "{prev}"
+        );
+        assert!(next.contains(r#"aria-label="Semaine suivante""#), "{next}");
+        assert!(prev.ends_with(">◀</a>"), "{prev}");
+        assert!(next.ends_with(">▶</a>"), "{next}");
+    }
+
+    #[test]
+    fn no_literal_quote_reaches_the_nav_text() {
+        // Attribute values are quoted; text between tags never is.
+        let html = render_nav(false, day(15), "juillet 2026");
+        for text in html.split('>').filter_map(|s| s.split('<').next()) {
+            assert!(!text.contains('"'), "quoted text node: {text:?}");
+        }
     }
 }
