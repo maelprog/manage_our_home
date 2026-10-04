@@ -65,8 +65,19 @@ l'ouverture publique : voir `docs/v2-deployment.md` #16.
 **Mesures de sécurité communes** : chiffrement au repos via `pgcrypto` pour
 les colonnes sensibles, isolation multi-tenant appliquée au niveau base de
 données (Row-Level Security, `FORCE ROW LEVEL SECURITY` sur chaque table
-tenant-scoped), TLS en transit, `cargo audit` en CI, logs d'audit sur les
-actions sensibles (`audit_log`).
+tenant-scoped), TLS en transit entre le navigateur et le serveur,
+`cargo audit` en CI, logs d'audit sur les actions sensibles (`audit_log`).
+Le TLS est terminé par Caddy, frontal de la pile (`infra/Caddyfile`, #141) :
+le nom de domaine public placé dans `SITE_ADDRESS` (par
+`infra/generate-env.sh`) lui fait obtenir et renouveler seul un certificat,
+répondre sur le port 443 et ne faire du port 80 qu'une redirection vers
+443 ; l'en-tête `Strict-Transport-Security` interdit ensuite le HTTP en
+clair au navigateur pendant un an. Il faut pour cela que le nom résolve
+vers l'hôte et que les ports 80 et 443 y soient ouverts depuis Internet
+(README, « Running it for real »). Sans `SITE_ADDRESS`, Caddy écoute en
+HTTP en clair sur `:80` : c'est la pile locale de développement, jamais
+un déploiement public. Derrière Caddy, le trafic vers `apps/web` et
+`apps/api` reste en HTTP sur le réseau Docker interne à l'hôte.
 
 ## Transferts hors de l'Union européenne
 
