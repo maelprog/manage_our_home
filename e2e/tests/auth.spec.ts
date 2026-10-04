@@ -141,7 +141,9 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.getByRole("button", { name: "Continuer" }).click();
     await expect(page).toHaveURL("/account/age?error=age_declaration_required");
     await expect(
-      page.getByText("Le service n'est pas ouvert aux moins de 15 ans"),
+      page.getByText(
+        "Le service n'est pas ouvert aux moins de 15 ans : cochez la case pour déclarer votre âge.",
+      ),
     ).toBeVisible();
 
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
