@@ -234,6 +234,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/groups/:id/leave", post(groups::leave_group))
         .route(
+            "/groups/:id/ownership-notice/seen",
+            post(groups::acknowledge_ownership_notice),
+        )
+        .route(
             "/groups/:id/events",
             post(agenda::events::create_event).get(agenda::events::list_events),
         )
@@ -365,6 +369,14 @@ pub fn build_router(state: AppState) -> Router {
             post(google_calendar::imports::trigger_calendar_import),
         )
         .route("/admin/groups", get(user_admin::admin::list_groups))
+        .route(
+            "/admin/groups/:id/members",
+            get(user_admin::admin::ownerless_group_members),
+        )
+        .route(
+            "/admin/groups/:id/owner",
+            post(user_admin::admin::designate_owner),
+        )
         .route("/admin/users", get(user_admin::admin::list_users))
         .route(
             "/admin/users/:id/deactivate",

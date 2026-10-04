@@ -78,9 +78,22 @@ suspended; after a refusal the holder may ask again, but the deadline runs
 (arbitrage of 2026-09-29). `purge_outlook` (pure, TDD'd) words the case on
 both the holder's page and the detail screen.
 
+### Designating an owner for a group left without one (#323)
+
+The account purge can leave a group with no owner: only members support
+deactivated are left, and they never inherit. `/admin/groups` says which
+group is in that state (`has_owner`) and links it to `/admin/groups/:id`,
+which lists its members — apps/api answers `GET /admin/groups/:id/members`
+for such a group only (409 `group_has_owner` otherwise) — with a
+"Désigner propriétaire" form for each active member (neither deactivated nor
+awaiting deletion, `can_be_designated_owner`, mirror of the api's
+`check_designation`). The designated member is told by email and on their
+home page. Reactivating a member of such a group (`/admin/users/:id`)
+reruns the succession on its own, controller's decision of 2026-10-04.
+
 ### Read-only otherwise, and no audit-log viewer
 
-`/admin/groups` and `/admin/users` are pure look-up tables — no mutation, so no
+`/admin/users` is a pure look-up table — no mutation, so no
 PRG there. Every successful admin action (including the two list reads) already
 writes an `audit_log` row server-side; issue #24 explicitly scopes a separate
 audit-log viewer UI out of this pass, and nothing here adds one.
@@ -96,7 +109,9 @@ set manually via SQL, matching the backend's stance).
 
 | Method | Path | Handler | Purpose | API call(s) |
 |---|---|---|---|---|
-| GET | `/admin/groups` | `admin::groups::get` | Read-only table of every family (id/name/created/member count) across all tenants | `GET /admin/groups` |
+| GET | `/admin/groups` | `admin::groups::get` | Table of every family (id/name/created/member count/owner) across all tenants | `GET /admin/groups` |
+| GET | `/admin/groups/:id` | `admin::groups::detail` | The members of a family left without an owner, and the designation form (#323) | `GET /admin/groups/:id/members` |
+| POST | `/admin/groups/:id/owner` | `admin::groups::designate_owner` | Designate an active member owner (#323) | `POST /admin/groups/:id/owner` |
 | GET | `/admin/users` | `admin::users::get` | Read-only table of every account (email/verified/created/status), each linking to the detail | `GET /admin/users` |
 | GET | `/admin/users/:id` | `admin::users::detail` | One account's detail + the deactivate confirm form (when still active) | `GET /admin/users` (found in the list) |
 | POST | `/admin/users/:id/deactivate` | `admin::users::deactivate` | Immediate deactivate (revoke sessions + set `deactivated_at`) | `POST /admin/users/:id/deactivate` |
@@ -119,6 +134,28 @@ row is the exact `(status, code)` → French UI state.
 | 200 | — | table of families (empty-state note when there are none) |
 | 403 | `forbidden` | empty table, no JSON leak (unreachable — the route is superadmin-gated; defensive) |
 | — | other status | empty table, no JSON leak |
+| — | transport error | service-unavailable page |
+
+### `GET /admin/groups/:id` — `ownerless_group_members` (#323)
+
+| Status | Code | UI |
+|---|---|---|
+| 200 | — | the members, each active one with its designation form |
+| 409 | `group_has_owner` | "Cette famille a un propriétaire" page |
+| 404 | `not_found` | "Famille introuvable" page |
+| 401 | — | reauthentication (#226) |
+| — | other status, transport error | service-unavailable page |
+
+### `POST /admin/groups/:id/owner` — `designate_owner` (#323)
+
+| Status | Code | UI |
+|---|---|---|
+| 204 | — | PRG → `/admin/groups?notice=owner_designated` |
+| 409 | `group_has_owner` | PRG → `/admin/groups?error=group_has_owner` |
+| 422 | `owner_must_be_active` / `not_a_member` | PRG → `/admin/groups/:id?error=<code>` |
+| 404 | `not_found` | "Famille introuvable" page |
+| 401 | — | reauthentication (#226) |
+| — | other status | PRG → `/admin/groups/:id?error=unavailable` |
 | — | transport error | service-unavailable page |
 
 ### `GET /admin/users` — `list_users`

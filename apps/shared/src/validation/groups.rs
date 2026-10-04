@@ -61,6 +61,42 @@ pub fn actor_can_act_on(actor_role: &str, target_role: &str) -> bool {
     }
 }
 
+/// Why a member became the owner of a group without asking for it (#323),
+/// the value of `group_members.ownership_inherited_reason` (migration 0023):
+/// the member is told by email and by a notice on the home page, which say
+/// which of the three it was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnershipReason {
+    /// The previous owner's account was purged (`jobs::account_purge`).
+    AccountPurged,
+    /// The group had no owner left, and this member's account was just
+    /// reactivated by the superadmin.
+    MemberReactivated,
+    /// The group had no owner left, and the superadmin designated this
+    /// member.
+    DesignatedBySupport,
+}
+
+impl OwnershipReason {
+    /// The column's value, as the `CHECK` of migration 0023 spells it.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "account_purged" => Some(OwnershipReason::AccountPurged),
+            "member_reactivated" => Some(OwnershipReason::MemberReactivated),
+            "designated_by_support" => Some(OwnershipReason::DesignatedBySupport),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OwnershipReason::AccountPurged => "account_purged",
+            OwnershipReason::MemberReactivated => "member_reactivated",
+            OwnershipReason::DesignatedBySupport => "designated_by_support",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,5 +182,29 @@ mod tests {
         assert!(!actor_can_act_on("standard", "standard"));
         assert!(!actor_can_act_on("standard", "admin"));
         assert!(!actor_can_act_on("standard", "owner"));
+    }
+
+    // -- OwnershipReason (#323) ---------------------------------------------
+
+    #[test]
+    fn the_three_ownership_reasons_round_trip() {
+        for (text, reason) in [
+            ("account_purged", OwnershipReason::AccountPurged),
+            ("member_reactivated", OwnershipReason::MemberReactivated),
+            (
+                "designated_by_support",
+                OwnershipReason::DesignatedBySupport,
+            ),
+        ] {
+            assert_eq!(OwnershipReason::parse(text), Some(reason));
+            assert_eq!(reason.as_str(), text);
+        }
+    }
+
+    #[test]
+    fn anything_else_is_not_an_ownership_reason() {
+        for text in ["", "purged", "Account_Purged", " account_purged"] {
+            assert_eq!(OwnershipReason::parse(text), None, "{text:?}");
+        }
     }
 }

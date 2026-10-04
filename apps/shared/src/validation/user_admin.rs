@@ -160,10 +160,29 @@ pub fn format_admin_datetime_opt(dt: Option<DateTime<Utc>>) -> String {
     }
 }
 
+/// Whether the superadmin may designate this member owner of a group left
+/// without one (#323): an active member only — not an account support
+/// deactivated, nor one whose deletion is pending. Mirror of
+/// `apps/api/src/groups/succession.rs::check_designation`, which stays the
+/// authority (422 `owner_must_be_active`).
+pub fn can_be_designated_owner(deactivated: bool, pending_deletion: bool) -> bool {
+    !deactivated && !pending_deletion
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    // -- can_be_designated_owner (#323) ---------------------------------------
+
+    #[test]
+    fn only_an_active_member_can_be_designated_owner() {
+        assert!(can_be_designated_owner(false, false));
+        assert!(!can_be_designated_owner(true, false));
+        assert!(!can_be_designated_owner(false, true));
+        assert!(!can_be_designated_owner(true, true));
+    }
 
     fn at(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(y, mo, d, h, mi, 0).unwrap()

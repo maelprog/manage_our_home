@@ -172,6 +172,38 @@ export async function ageSessions(email: string, hours: number): Promise<void> {
 }
 
 /**
+ * Leaves the group named `groupName` the way the account purge can (#323):
+ * `memberEmail` joins it as a standard member, and its owner's membership
+ * goes — the group has no owner. The purge itself runs hourly in apps/api
+ * and cannot be driven from the suite.
+ */
+export async function makeGroupOwnerless(groupName: string, memberEmail: string): Promise<void> {
+  const client = new Client({ connectionString: requireDatabaseUrl() });
+  await client.connect();
+  try {
+    const joined = await client.query(
+      `INSERT INTO group_members (group_id, user_id, role)
+       SELECT g.id, u.id, 'standard' FROM groups g, users u
+        WHERE g.name = $1 AND u.email = $2`,
+      [groupName, memberEmail],
+    );
+    if (joined.rowCount !== 1) {
+      throw new Error(`could not add ${memberEmail} to ${groupName}`);
+    }
+    const left = await client.query(
+      `DELETE FROM group_members
+        WHERE role = 'owner' AND group_id = (SELECT id FROM groups WHERE name = $1)`,
+      [groupName],
+    );
+    if (left.rowCount !== 1) {
+      throw new Error(`no owner to remove from ${groupName}`);
+    }
+  } finally {
+    await client.end();
+  }
+}
+
+/**
  * The stored bounds of the event `title` created by `email`, as Europe/Paris
  * wall-clock `YYYY-MM-DDTHH:MM` strings — the app's fixed display timezone.
  *

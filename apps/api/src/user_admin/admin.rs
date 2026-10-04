@@ -2,15 +2,17 @@ use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
 use crate::audit;
 use crate::error::{AppError, AppResult};
+use crate::groups::succession::{self, check_designation, DesignationRefusal};
 use crate::jobs::account_purge::{record_refusal, RefusalStamps};
 use crate::user_admin::SuperAdminUser;
 use crate::AppState;
+use manage_our_home_shared::validation::groups::OwnershipReason;
 
 #[derive(Serialize)]
 pub struct AdminGroupResponse {
@@ -18,6 +20,8 @@ pub struct AdminGroupResponse {
     pub name: String,
     pub created_at: DateTime<Utc>,
     pub member_count: i64,
+    /// False for a group the purge left without an owner (#323).
+    pub has_owner: bool,
 }
 
 #[derive(Serialize)]
@@ -48,7 +52,8 @@ pub async fn list_groups(
 ) -> AppResult<impl IntoResponse> {
     let rows = sqlx::query!(
         r#"
-        SELECT g.id, g.name, g.created_at, count(gm.user_id) as "member_count!"
+        SELECT g.id, g.name, g.created_at, count(gm.user_id) as "member_count!",
+               COALESCE(bool_or(gm.role = 'owner'), false) AS "has_owner!"
         FROM groups g
         LEFT JOIN group_members gm ON gm.group_id = g.id
         GROUP BY g.id, g.name, g.created_at
@@ -65,6 +70,7 @@ pub async fn list_groups(
             name: r.name,
             created_at: r.created_at,
             member_count: r.member_count,
+            has_owner: r.has_owner,
         })
         .collect();
 
@@ -198,6 +204,22 @@ pub async fn reactivate_user(
         return Err(AppError::NotFound);
     }
 
+    // A group the purge left without an owner, of which this account is a
+    // member, gets one again: `successor` runs on its members as they are
+    // now (#323) — this account, if it comes first.
+    let ownerless = sqlx::query_scalar!(
+        r#"SELECT gm.group_id FROM group_members gm
+           WHERE gm.user_id = $1
+             AND NOT EXISTS (SELECT 1 FROM group_members o
+                             WHERE o.group_id = gm.group_id AND o.role = 'owner')"#,
+        target_user_id
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    for group_id in ownerless {
+        succession::assign_heir(&mut tx, group_id, OwnershipReason::MemberReactivated).await?;
+    }
+
     let answered = sqlx::query!(
         "DELETE FROM account_reactivation_requests WHERE user_id = $1",
         target_user_id
@@ -298,6 +320,127 @@ pub async fn refuse_reactivation(
     )
     .await?;
 
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// One member of a group left without an owner, as
+/// [`ownerless_group_members`] lists it for the superadmin to choose from.
+#[derive(Serialize)]
+pub struct AdminGroupMemberResponse {
+    pub user_id: Uuid,
+    pub display_name: String,
+    pub email: String,
+    pub role: String,
+    pub joined_at: DateTime<Utc>,
+    pub deactivated: bool,
+    pub pending_deletion: bool,
+}
+
+/// The members of a group left without an owner (#323), for the superadmin
+/// to designate one ([`designate_owner`]). Only such a group's: the members
+/// of a group that has an owner are none of support's business (409
+/// `group_has_owner`). An unknown group is a 404. Traced in `audit_log`.
+pub async fn ownerless_group_members(
+    State(state): State<AppState>,
+    actor: SuperAdminUser,
+    Path(group_id): Path<Uuid>,
+) -> AppResult<impl IntoResponse> {
+    let mut tx = crate::db::begin(&state.admin_db).await?;
+    let name = sqlx::query_scalar!("SELECT name FROM groups WHERE id = $1", group_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let members = sqlx::query!(
+        r#"SELECT gm.user_id, u.display_name, u.email, gm.role::text AS "role!", gm.joined_at,
+                  u.deactivated_at IS NOT NULL AS "deactivated!",
+                  u.deletion_requested_at IS NOT NULL AS "pending_deletion!"
+           FROM group_members gm JOIN users u ON u.id = gm.user_id
+           WHERE gm.group_id = $1
+           ORDER BY gm.joined_at, gm.user_id"#,
+        group_id
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    if members.iter().any(|m| m.role == "owner") {
+        return Err(AppError::Conflict("group_has_owner".into()));
+    }
+    let members: Vec<AdminGroupMemberResponse> = members
+        .into_iter()
+        .map(|m| AdminGroupMemberResponse {
+            user_id: m.user_id,
+            display_name: m.display_name,
+            email: m.email,
+            role: m.role,
+            joined_at: m.joined_at,
+            deactivated: m.deactivated,
+            pending_deletion: m.pending_deletion,
+        })
+        .collect();
+    audit::record(
+        &mut tx,
+        Some(actor.user_id),
+        "admin.group.members.list",
+        "group",
+        &group_id.to_string(),
+        json!({ "count": members.len() }),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(
+        json!({ "id": group_id, "name": name, "members": members }),
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct DesignateOwnerRequest {
+    pub user_id: Uuid,
+}
+
+/// Makes an active member the owner of a group left without one (#323,
+/// controller's decision of 2026-10-04): 204. The member is told like an
+/// heir of the purge (`groups::succession::stamp_inheritance`). 404 for an
+/// unknown group; 409 `group_has_owner`; 422 `not_a_member`, or
+/// `owner_must_be_active` for a deactivated account or one whose deletion
+/// is pending ([`check_designation`]). Traced in `audit_log` as a transfer
+/// of ownership, the superadmin its actor.
+pub async fn designate_owner(
+    State(state): State<AppState>,
+    actor: SuperAdminUser,
+    Path(group_id): Path<Uuid>,
+    Json(body): Json<DesignateOwnerRequest>,
+) -> AppResult<impl IntoResponse> {
+    let mut tx = crate::db::begin(&state.admin_db).await?;
+    sqlx::query_scalar!("SELECT id FROM groups WHERE id = $1", group_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let (has_owner, members) = succession::lock_members(&mut tx, group_id).await?;
+    let target = members.iter().find(|m| m.user_id == body.user_id);
+    check_designation(has_owner, target).map_err(|refusal| match refusal {
+        DesignationRefusal::GroupHasOwner => AppError::Conflict("group_has_owner".into()),
+        DesignationRefusal::NotAMember => AppError::Unprocessable("not_a_member".into()),
+        DesignationRefusal::NotActive => AppError::Unprocessable("owner_must_be_active".into()),
+    })?;
+    succession::stamp_inheritance(
+        &mut tx,
+        group_id,
+        body.user_id,
+        OwnershipReason::DesignatedBySupport,
+    )
+    .await?;
+    audit::record(
+        &mut tx,
+        Some(actor.user_id),
+        "ownership_transferred",
+        "group",
+        &group_id.to_string(),
+        json!({
+            "new_owner_id": body.user_id,
+            "reason": OwnershipReason::DesignatedBySupport.as_str(),
+        }),
+    )
+    .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -2387,7 +2387,7 @@ mod tests {
             counts,
             [
                 ("shared/src/validation/rgpd.rs", 1),
-                ("web/src/routes/admin/groups.rs", 4),
+                ("web/src/routes/admin/groups.rs", 10),
                 ("web/src/routes/admin/users.rs", 5),
                 ("web/src/routes/agenda/calendar.rs", 1),
                 ("web/src/routes/agenda/imports.rs", 4),

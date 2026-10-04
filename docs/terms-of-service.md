@@ -104,7 +104,9 @@ jointes, les tâches cochées, les messages, les stocks, les recettes et
 l'historique des repas, la liste de courses, le budget, et les groupes que
 vous avez créés. Sont en revanche supprimés, notamment, vos appartenances
 aux groupes, les invitations que vous avez envoyées et les imports
-calendrier que vous avez configurés. Subsistent un temps les entrées du
+calendrier que vous avez configurés — et un groupe dont vous étiez le
+dernier membre, supprimé avec tout son contenu, puisque plus personne ne
+pourrait le voir. Subsistent un temps les entrées du
 journal d'audit qui concernent votre compte sans être de votre fait (celle
 qui date la suppression, les transferts de propriété, les actions d'un
 autre membre ou de l'éditeur sur votre compte), jusqu'au premier passage de
@@ -133,8 +135,11 @@ plus ancien, à défaut au membre le plus ancien, puis, si tous les autres
 membres ont eux-mêmes demandé leur suppression, à l'administrateur puis au
 membre le plus ancien parmi eux. Un compte désactivé par l'éditeur n'en
 hérite jamais : s'il ne reste que de tels comptes, le groupe reste sans
-propriétaire. Un groupe dont vous étiez le seul membre reste, avec son
-contenu, sans membre.
+propriétaire, jusqu'à ce que l'éditeur réactive l'un d'eux — la propriété
+est alors attribuée de nouveau, dans le même ordre — ou désigne un
+propriétaire parmi les membres actifs. Le membre qui devient propriétaire
+de l'une de ces façons en est averti par email et dans l'application. Un
+groupe dont vous étiez le seul membre est supprimé avec son contenu.
 
 L'éditeur peut suspendre ou fermer un compte qui enfreint les présentes
 conditions, ou dont l'usage met en danger le service ou ses autres

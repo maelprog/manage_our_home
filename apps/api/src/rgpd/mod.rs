@@ -83,7 +83,9 @@ pub async fn export_account(
     let mut group_tx = user_scoped_tx(&state.db, auth.user_id).await?;
     let memberships = sqlx::query!(
         r#"SELECT g.id, g.name, gm.role AS "role: String", gm.joined_at,
-                  (g.created_by = $1) AS "created_by_me!"
+                  (g.created_by = $1) AS "created_by_me!",
+                  gm.ownership_inherited_at, gm.ownership_inherited_reason,
+                  gm.ownership_notice_seen_at, gm.ownership_email_sent_at
            FROM group_members gm
            JOIN groups g ON g.id = gm.group_id
            WHERE gm.user_id = $1
@@ -134,6 +136,12 @@ pub async fn export_account(
             "role": m.role,
             "joined_at": m.joined_at,
             "created_by_me": m.created_by_me,
+            // #323: when and why the membership became the group's owner
+            // without asking, and when that was announced.
+            "ownership_inherited_at": m.ownership_inherited_at,
+            "ownership_inherited_reason": m.ownership_inherited_reason,
+            "ownership_notice_seen_at": m.ownership_notice_seen_at,
+            "ownership_email_sent_at": m.ownership_email_sent_at,
         }));
     }
     // (storage_key, the attachment's JSON) — presigned once every group has

@@ -94,12 +94,14 @@ possibles sont :
   arrière-plan.
 - **Scaleway** (Scaleway SAS, Paris), dont le service d'emails
   transactionnels achemine les emails du site : vérification d'adresse, réinitialisation de mot de passe,
-  invitation à un groupe, rappel d'événement et avertissement avant la
-  suppression d'un compte désactivé — les cinq seuls emails que ce service
-  envoie. Scaleway reçoit l'adresse du destinataire, l'objet et le
+  invitation à un groupe, rappel d'événement, avertissement avant la
+  suppression d'un compte désactivé et avis de la propriété d'un groupe
+  qui vous revient sans que vous l'ayez demandée — les six seuls emails que
+  ce service envoie. Scaleway reçoit l'adresse du destinataire, l'objet et le
   corps de chacun : le corps d'un rappel reprend le titre et la date de
-  l'événement, et le corps d'une invitation nomme le groupe et le membre qui
-  invite. L'objet d'un rappel, lui, ne nomme aucun événement : c'est toujours
+  l'événement, le corps d'une invitation nomme le groupe et le membre qui
+  invite, et le corps d'un avis de propriété nomme le groupe et dit pourquoi
+  il vous revient. L'objet d'un rappel, lui, ne nomme aucun événement : c'est toujours
   « Rappel d'un événement à venir ». Un titre peut être sensible (un examen
   médical, un rendez-vous chez un professionnel) : il ne figure donc pas
   dans l'objet, la ligne que la liste des messages affiche en premier. Il
@@ -322,7 +324,9 @@ de la purge dépasserait.
   C'est un choix intentionnel, cohérent avec le fonctionnement d'un espace
   familial partagé, et un engagement contractuel autant qu'une
   description : il figure aussi dans les [conditions générales
-  d'utilisation](/terms-of-service).
+  d'utilisation](/terms-of-service). Seule exception : un groupe dont
+  vous étiez le dernier membre est supprimé avec tout son contenu, plus
+  personne ne pouvant le voir.
 - **Ce qui subsiste un temps** : les entrées des logs d'audit qui
   concernent votre compte sans être de votre fait — celle qui date la
   purge, celles des transferts de propriété de vos groupes qu'elle opère,
@@ -348,9 +352,19 @@ de la purge dépasserait.
   puis, si tous les autres membres ont eux-mêmes demandé leur
   suppression, à l'administrateur puis au membre le plus ancien parmi eux.
   Un compte désactivé par l'administrateur du service n'en hérite jamais :
-  s'il ne reste que de tels comptes, le groupe reste sans propriétaire.
-  Si vous en étiez le seul membre, il reste, avec son contenu, sans
-  membre.
+  s'il ne reste que de tels comptes, le groupe reste sans propriétaire,
+  jusqu'à ce que l'administrateur du service réactive l'un d'eux — la
+  propriété est alors attribuée de nouveau, dans le même ordre — ou
+  désigne un propriétaire parmi les membres actifs. Si vous en étiez le
+  seul membre, il est supprimé avec tout son contenu : plus personne ne
+  pourrait le voir.
+- Le membre qui devient ainsi propriétaire d'un groupe sans l'avoir
+  demandé en est averti : un avis s'affiche sur sa page d'accueil jusqu'à
+  ce qu'il en prenne connaissance, et un email lui est envoyé, quelles que
+  soient ses préférences de rappel. Sont conservées, avec son appartenance
+  au groupe et jusqu'à ce qu'elle prenne fin, la date et le motif de cette
+  attribution, la date de l'email et celle de sa prise de connaissance ;
+  elles figurent dans l'export de vos données.
 
 ## Vos droits
 

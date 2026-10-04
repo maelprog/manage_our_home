@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT g.id, g.name, g.created_at, gm.role as \"role: String\"\n        FROM group_members gm\n        JOIN groups g ON g.id = gm.group_id\n        WHERE gm.user_id = $1\n        ORDER BY g.created_at\n        ",
+  "query": "\n        SELECT g.id, g.name, g.created_at, gm.role as \"role: String\",\n               gm.ownership_inherited_at, gm.ownership_inherited_reason,\n               (gm.role = 'owner' AND gm.ownership_inherited_at IS NOT NULL\n                AND gm.ownership_notice_seen_at IS NULL) AS \"ownership_notice_pending!\"\n        FROM group_members gm\n        JOIN groups g ON g.id = gm.group_id\n        WHERE gm.user_id = $1\n        ORDER BY g.created_at\n        ",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,34 @@
             "name": "role"
           }
         }
+      },
+      {
+        "ordinal": 4,
+        "name": "ownership_inherited_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "group_members",
+            "name": "ownership_inherited_at"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "ownership_inherited_reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "group_members",
+            "name": "ownership_inherited_reason"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "ownership_notice_pending!",
+        "type_info": "Bool",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -68,8 +96,11 @@
       false,
       false,
       false,
-      false
+      false,
+      true,
+      true,
+      null
     ]
   },
-  "hash": "dbe558ae5641a11aa3a863f5a0e1bee71f4269b3187d00ad608180f5aa5a63e4"
+  "hash": "c34518fca1784b2b478bf6095c0225e4c215122eb1811a7e18ce765d69af0df9"
 }

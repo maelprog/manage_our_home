@@ -462,7 +462,8 @@ async fn an_active_admin_inherits_ahead_of_deactivated_and_pending_admins(db: Pg
 /// With only deactivated members left, nobody inherits. A deactivated
 /// account keeps its membership (the purge only removes the purged
 /// account's own rows), and the group is left without an owner. A group
-/// made only of accounts purged in the same pass ends with no member.
+/// made only of accounts purged in the same pass ends with no member, and
+/// is deleted with the last of them (#323).
 #[sqlx::test]
 async fn with_no_eligible_member_nobody_inherits(db: PgPool) {
     let owning = insert_user(&db, "owning@example.test", Some(31)).await;
@@ -483,6 +484,16 @@ async fn with_no_eligible_member_nobody_inherits(db: PgPool) {
     assert!(user_row(&db, owning_too).await.deleted_at.is_some());
     assert!(user_row(&db, leaving).await.deleted_at.is_some());
     assert_eq!(members(&db, emptied).await, vec![]);
+    assert!(!group_exists(&db, emptied).await);
+    assert!(group_exists(&db, group).await);
+}
+
+async fn group_exists(db: &PgPool, group: Uuid) -> bool {
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM groups WHERE id = $1)")
+        .bind(group)
+        .fetch_one(db)
+        .await
+        .unwrap()
 }
 
 /// The only admin awaiting its own deletion — it can still cancel it —
@@ -691,26 +702,64 @@ async fn the_purge_warning_goes_once_to_the_deactivated_account(db: PgPool) {
 
 const POLICY_URL: &str = "https://maison.example.org/privacy-policy";
 
-/// A group whose only member is purged stays, with its content, and no
-/// member — like the rest of the content shared under it.
+/// #323 (controller's decision of 2026-10-04): a group whose only member
+/// is purged is deleted, its content with it — nobody is left to see it,
+/// nor to delete it. The storage keys of its attachments come back to the
+/// caller, whose job is to delete the objects once the rows are gone; the
+/// deletion is in `audit_log`, with no actor. A group that still has a
+/// member is left in place, and hands back no key.
 #[sqlx::test]
-async fn a_sole_member_group_stays_without_members(db: PgPool) {
+async fn a_group_left_with_no_member_is_deleted_with_its_content(db: PgPool) {
     let owning = insert_user(&db, "owning@example.test", Some(31)).await;
     let group = insert_group(&db, "Solo", owning).await;
     let event = insert_event(&db, group, owning).await;
-
-    purge_due_accounts(&db).await.unwrap();
-
-    assert!(user_row(&db, owning).await.deleted_at.is_some());
-    assert_eq!(members(&db, group).await, vec![]);
-    let kept: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM events e JOIN groups g ON g.id = e.group_id WHERE e.id = $1",
+    sqlx::query(
+        "INSERT INTO event_attachments (event_id, uploaded_by, storage_key, filename,
+                                        mime_type, size_bytes)
+         VALUES ($1, $2, $3, 'photo.jpg', 'image/jpeg', 10)",
     )
     .bind(event)
+    .bind(owning)
+    .bind(format!("{group}/{event}/photo"))
+    .execute(&db)
+    .await
+    .unwrap();
+    let keeper = insert_user(&db, "keeper@example.test", None).await;
+    let shared = insert_group(&db, "Partagé", keeper).await;
+    add_member(&db, shared, owning, "standard").await;
+    let shared_event = insert_event(&db, shared, owning).await;
+
+    let keys = purge_account(&db, owning).await.unwrap();
+
+    assert_eq!(keys, vec![format!("{group}/{event}/photo")]);
+    assert!(user_row(&db, owning).await.deleted_at.is_some());
+    assert!(!group_exists(&db, group).await);
+    for (table, id) in [("events", event), ("events", shared_event)] {
+        let left: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT count(*) FROM {table} WHERE id = $1"
+        )))
+        .bind(id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(left, i64::from(id == shared_event), "{table} {id}");
+    }
+    let attachments: i64 = sqlx::query_scalar("SELECT count(*) FROM event_attachments")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(attachments, 0);
+    assert!(group_exists(&db, shared).await);
+    let deleted: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log
+         WHERE action = 'group_deleted' AND target_id = $1 AND actor_user_id IS NULL
+           AND metadata->>'reason' = 'account_purged'",
+    )
+    .bind(group.to_string())
     .fetch_one(&db)
     .await
     .unwrap();
-    assert_eq!(kept, 1);
+    assert_eq!(deleted, 1);
 }
 
 /// `group_members`, `message_read_state`, `event_assignees`, `invitations`

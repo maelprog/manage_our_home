@@ -20,6 +20,40 @@ pub struct AdminGroupResponse {
     pub name: String,
     pub created_at: DateTime<Utc>,
     pub member_count: i64,
+    /// False for a group the purge left without an owner (#323).
+    #[serde(default = "has_owner_by_default")]
+    pub has_owner: bool,
+}
+
+fn has_owner_by_default() -> bool {
+    true
+}
+
+/// One member of `GET /admin/groups/:id/members` — only answered for a group
+/// left without an owner (#323), for the superadmin to designate one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminGroupMember {
+    pub user_id: Uuid,
+    pub display_name: String,
+    pub email: String,
+    pub role: String,
+    pub joined_at: DateTime<Utc>,
+    pub deactivated: bool,
+    pub pending_deletion: bool,
+}
+
+/// `GET /admin/groups/:id/members` response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminGroupMembersResponse {
+    pub id: Uuid,
+    pub name: String,
+    pub members: Vec<AdminGroupMember>,
+}
+
+/// `POST /admin/groups/:id/owner` request (#323).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DesignateOwnerRequest {
+    pub user_id: Uuid,
 }
 
 /// `GET /admin/groups` response envelope.

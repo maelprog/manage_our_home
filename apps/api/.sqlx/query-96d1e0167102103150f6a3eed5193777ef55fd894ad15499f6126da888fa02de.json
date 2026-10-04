@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT gm.user_id, gm.role::text = 'admin' AS \"is_admin!\", gm.joined_at,\n                      u.deactivated_at IS NOT NULL AS \"deactivated!\",\n                      u.deletion_requested_at IS NOT NULL AS \"pending_deletion!\"\n               FROM group_members gm JOIN users u ON u.id = gm.user_id\n               WHERE gm.group_id = $1 FOR UPDATE OF gm",
+  "query": "SELECT gm.user_id, gm.role::text = 'owner' AS \"is_owner!\",\n                  gm.role::text = 'admin' AS \"is_admin!\", gm.joined_at,\n                  u.deactivated_at IS NOT NULL AS \"deactivated!\",\n                  u.deletion_requested_at IS NOT NULL AS \"pending_deletion!\"\n           FROM group_members gm JOIN users u ON u.id = gm.user_id\n           WHERE gm.group_id = $1 FOR UPDATE OF gm",
   "describe": {
     "columns": [
       {
@@ -16,12 +16,18 @@
       },
       {
         "ordinal": 1,
-        "name": "is_admin!",
+        "name": "is_owner!",
         "type_info": "Bool",
         "origin": "Expression"
       },
       {
         "ordinal": 2,
+        "name": "is_admin!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
         "name": "joined_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -32,13 +38,13 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "deactivated!",
         "type_info": "Bool",
         "origin": "Expression"
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "pending_deletion!",
         "type_info": "Bool",
         "origin": "Expression"
@@ -52,10 +58,11 @@
     "nullable": [
       false,
       null,
+      null,
       false,
       null,
       null
     ]
   },
-  "hash": "cbd2d263d069888b62a83b98d5619823a09811160015bcae7301ab0cf2496b5a"
+  "hash": "96d1e0167102103150f6a3eed5193777ef55fd894ad15499f6126da888fa02de"
 }

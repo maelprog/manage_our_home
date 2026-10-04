@@ -1,5 +1,5 @@
 import { expect, Page, test } from "@playwright/test";
-import { ageSessions, fetchVerificationToken, makeSuperadmin } from "../lib/db";
+import { ageSessions, fetchVerificationToken, makeGroupOwnerless, makeSuperadmin } from "../lib/db";
 
 // Front epic F9 — User admin (issue #24): the superadmin support screens.
 // Read-only look-up of every family (/admin/groups) and every account
@@ -254,5 +254,52 @@ test.describe("User admin — deactivate", () => {
     await target.getByRole("textbox", { name: "Mot de passe" }).fill(PASSWORD);
     await target.getByRole("button", { name: "Se connecter" }).click();
     await expect(target).toHaveURL("/");
+  });
+});
+
+test.describe("User admin — a family without an owner (#323)", () => {
+  test("the superadmin designates an owner, who is told on their home page until they acknowledge it", async ({
+    browser,
+  }) => {
+    // Three browsers and three registrations; a margin, as above.
+    test.slow();
+    const groupName = `Famille Orpheline ${Date.now()}`;
+    const ownerCtx = await browser.newContext();
+    const owner = await ownerCtx.newPage();
+    await registerAndLogin(owner, "e2e-orphan-owner", "Orphan Owner");
+    await createGroup(owner, groupName);
+
+    const memberCtx = await browser.newContext();
+    const member = await memberCtx.newPage();
+    const memberEmail = await registerAndLogin(member, "e2e-orphan-member", "Orphan Member");
+    await makeGroupOwnerless(groupName, memberEmail);
+
+    const { page } = await newSuperadmin(browser, "e2e-admin-designate", "Super Designate");
+    await page.goto("/admin/groups");
+    await page
+      .locator("tr", { hasText: groupName })
+      .getByRole("link", { name: "Aucun — désigner" })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: `Famille sans propriétaire — ${groupName}` }),
+    ).toBeVisible();
+    await page
+      .locator("tr", { hasText: memberEmail })
+      .getByRole("button", { name: "Désigner propriétaire" })
+      .click();
+    await expect(page).toHaveURL("/admin/groups?notice=owner_designated");
+    await expect(page.locator("tr", { hasText: groupName })).toContainText("Oui");
+
+    const notice = member.getByRole("heading", {
+      name: `Vous êtes propriétaire du groupe « ${groupName} »`,
+    });
+    await member.goto("/");
+    await expect(notice).toBeVisible();
+    await expect(member.getByText("l'administrateur du service vous a désigné")).toBeVisible();
+    await member.getByRole("button", { name: "J'en ai pris connaissance" }).click();
+    await expect(member).toHaveURL("/");
+    await expect(notice).toHaveCount(0);
+    await member.reload();
+    await expect(notice).toHaveCount(0);
   });
 });

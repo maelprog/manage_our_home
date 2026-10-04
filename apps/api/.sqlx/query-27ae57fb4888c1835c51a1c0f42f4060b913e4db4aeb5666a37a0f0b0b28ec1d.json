@@ -1,0 +1,130 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT g.id, g.name, gm.role AS \"role: String\", gm.joined_at,\n                  (g.created_by = $1) AS \"created_by_me!\",\n                  gm.ownership_inherited_at, gm.ownership_inherited_reason,\n                  gm.ownership_notice_seen_at, gm.ownership_email_sent_at\n           FROM group_members gm\n           JOIN groups g ON g.id = gm.group_id\n           WHERE gm.user_id = $1\n           ORDER BY g.name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "groups",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "groups",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "role: String",
+        "type_info": {
+          "Custom": {
+            "name": "group_role",
+            "kind": {
+              "Enum": [
+                "owner",
+                "admin",
+                "standard"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "group_members",
+            "name": "role"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "joined_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "group_members",
+            "name": "joined_at"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "created_by_me!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "ownership_inherited_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "group_members",
+            "name": "ownership_inherited_at"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "ownership_inherited_reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "group_members",
+            "name": "ownership_inherited_reason"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "ownership_notice_seen_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "group_members",
+            "name": "ownership_notice_seen_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "ownership_email_sent_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "group_members",
+            "name": "ownership_email_sent_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "27ae57fb4888c1835c51a1c0f42f4060b913e4db4aeb5666a37a0f0b0b28ec1d"
+}

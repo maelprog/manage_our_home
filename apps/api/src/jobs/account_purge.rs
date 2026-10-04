@@ -24,7 +24,10 @@
 //!   group: `events`, `event_attachments` and their objects,
 //!   `event_occurrence_completions`, `messages`, `stock_items`, `recipes`,
 //!   `meal_history`, `grocery_items`, `budget_entries`, `groups`. That
-//!   survival is written into the terms of service.
+//!   survival is written into the terms of service. A group the purge
+//!   leaves with no member at all is the exception: nobody is left to see
+//!   its content, and it is deleted with it (controller's decision of
+//!   2026-10-04, #323).
 
 use std::time::Duration as StdDuration;
 
@@ -37,6 +40,9 @@ use uuid::Uuid;
 
 use crate::attachment_reconcile::ensure_bypasses_rls;
 use crate::email::EmailSender;
+use crate::groups::succession;
+use crate::storage::Storage;
+use manage_our_home_shared::validation::groups::OwnershipReason;
 
 const PURGE_GRACE_DAYS: i64 = 30;
 const POLL_INTERVAL_SECS: u64 = 3600;
@@ -49,8 +55,13 @@ pub const DEACTIVATION_NOTICE_SUBJECT: &str =
 /// (`AppState.admin_db`): five of the tables it deletes from are under
 /// forced RLS policies, and on any other role the pass refuses rather than
 /// stamp an account purged with its memberships left in place. Each pass
-/// sends the due warnings first, then purges.
-pub async fn run(pool: PgPool, email: EmailSender, privacy_policy_url: String) {
+/// sends the due warnings first, then purges — deleting the objects of the
+/// attachments of the groups it deleted for being left with no member
+/// (#323) — then tells the members who became owners of a group, by this
+/// pass or since the last one (`groups::succession`).
+pub async fn run(pool: PgPool, email: EmailSender, storage: Storage, frontend_base_url: String) {
+    let privacy_policy_url = format!("{frontend_base_url}/privacy-policy");
+    let groups_url = format!("{frontend_base_url}/groups");
     let mut ticker = interval(StdDuration::from_secs(POLL_INTERVAL_SECS));
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
@@ -62,8 +73,20 @@ pub async fn run(pool: PgPool, email: EmailSender, privacy_policy_url: String) {
         if let Err(e) = send_deactivation_notices(&pool, &privacy_policy_url, send).await {
             tracing::error!(error = ?e, "deactivation notice job failed");
         }
-        if let Err(e) = purge_due_accounts(&pool).await {
-            tracing::error!(error = ?e, "account purge job failed");
+        match purge_due_accounts(&pool).await {
+            // A failure leaves orphans for the daily reconcile pass.
+            Ok(keys) if !keys.is_empty() => {
+                if let Err(e) = storage.delete_objects(&keys).await {
+                    tracing::error!(error = ?e, "account purge: attachment objects not deleted");
+                }
+            }
+            Ok(_) => {}
+            Err(e) => tracing::error!(error = ?e, "account purge job failed"),
+        }
+        if let Err(e) =
+            succession::send_ownership_notices(&pool, &groups_url, &privacy_policy_url, send).await
+        {
+            tracing::error!(error = ?e, "ownership notice job failed");
         }
     }
 }
@@ -155,8 +178,9 @@ where
 }
 
 /// One pass: every account [`purge_due`] names, each in its own
-/// transaction.
-pub async fn purge_due_accounts(pool: &PgPool) -> anyhow::Result<()> {
+/// transaction. Returns the storage keys [`purge_account`] hands back, for
+/// the caller to delete their objects.
+pub async fn purge_due_accounts(pool: &PgPool) -> anyhow::Result<Vec<String>> {
     let mut conn = pool.acquire().await?;
     ensure_bypasses_rls(&mut conn).await.context(
         "account purge refusing to run: `group_members`, `message_read_state`, \
@@ -179,13 +203,17 @@ pub async fn purge_due_accounts(pool: &PgPool) -> anyhow::Result<()> {
     .fetch_all(pool)
     .await?;
 
+    let mut storage_keys = Vec::new();
     for user_id in candidates {
-        if let Err(e) = purge_account(pool, user_id).await {
-            tracing::error!(error = ?e, %user_id, "account purge failed for one account");
+        match purge_account(pool, user_id).await {
+            Ok(keys) => storage_keys.extend(keys),
+            Err(e) => {
+                tracing::error!(error = ?e, %user_id, "account purge failed for one account")
+            }
         }
     }
 
-    Ok(())
+    Ok(storage_keys)
 }
 
 /// Purges one account, in one transaction — if [`purge_due`] still names
@@ -195,7 +223,11 @@ pub async fn purge_due_accounts(pool: &PgPool) -> anyhow::Result<()> {
 /// and an account no longer due is left untouched, without an error. The
 /// lock also makes a concurrent cancellation or reactivation wait for this
 /// transaction, or this transaction wait for it.
-pub async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<()> {
+///
+/// Returns the storage keys of the attachments of the groups the purge
+/// deleted for being left with no member ([`delete_if_abandoned`]): their
+/// objects are the caller's to delete, the rows being gone.
+pub async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<Vec<String>> {
     let mut tx = crate::db::begin(pool).await?;
 
     let row = sqlx::query!(
@@ -226,15 +258,17 @@ pub async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<()> {
     });
     if !still_due {
         tx.rollback().await?;
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     // `delete_account` refuses an owner, but an account can still become
     // one during its grace period — by creating a group, or by being handed
     // one. Its membership goes like any other; a group it owned passes to
-    // the member `successor` picks. A group with only deactivated members
-    // left gets no owner (they keep their rows), and a group it was alone
-    // in stays with no member, like the rest of the content shared under it.
+    // the member `successor` picks, who is told (#323, `groups::succession`).
+    // A group with only deactivated members left gets no owner (they keep
+    // their rows) until one of them is reactivated or the superadmin
+    // designates one. A group left with no member at all is deleted, its
+    // content with it (controller's decision of 2026-10-04, #323).
     let memberships = sqlx::query!(
         r#"DELETE FROM group_members WHERE user_id = $1
            RETURNING group_id, role::text AS "role!""#,
@@ -243,45 +277,11 @@ pub async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<()> {
     .fetch_all(&mut *tx)
     .await?;
     for owned in memberships.iter().filter(|m| m.role == "owner") {
-        let remaining: Vec<RemainingMember> = sqlx::query!(
-            r#"SELECT gm.user_id, gm.role::text = 'admin' AS "is_admin!", gm.joined_at,
-                      u.deactivated_at IS NOT NULL AS "deactivated!",
-                      u.deletion_requested_at IS NOT NULL AS "pending_deletion!"
-               FROM group_members gm JOIN users u ON u.id = gm.user_id
-               WHERE gm.group_id = $1 FOR UPDATE OF gm"#,
-            owned.group_id
-        )
-        .fetch_all(&mut *tx)
-        .await?
-        .into_iter()
-        .map(|r| RemainingMember {
-            user_id: r.user_id,
-            is_admin: r.is_admin,
-            joined_at: r.joined_at,
-            deactivated: r.deactivated,
-            pending_deletion: r.pending_deletion,
-        })
-        .collect();
-        let Some(new_owner_id) = successor(&remaining) else {
-            continue;
-        };
-        sqlx::query!(
-            "UPDATE group_members SET role = 'owner' WHERE group_id = $1 AND user_id = $2",
-            owned.group_id,
-            new_owner_id
-        )
-        .execute(&mut *tx)
-        .await?;
-        // `transfer_ownership`'s entry, with no actor: the purge made it.
-        crate::audit::record(
-            &mut tx,
-            None,
-            "ownership_transferred",
-            "group",
-            &owned.group_id.to_string(),
-            json!({ "new_owner_id": new_owner_id, "reason": "account_purged" }),
-        )
-        .await?;
+        succession::assign_heir(&mut tx, owned.group_id, OwnershipReason::AccountPurged).await?;
+    }
+    let mut storage_keys = Vec::new();
+    for membership in &memberships {
+        storage_keys.extend(delete_if_abandoned(&mut tx, membership.group_id).await?);
     }
 
     sqlx::query!("DELETE FROM oauth_identities WHERE user_id = $1", user_id)
@@ -359,7 +359,56 @@ pub async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<()> {
     )
     .await?;
     tx.commit().await?;
-    Ok(())
+    Ok(storage_keys)
+}
+
+/// Deletes `group_id` if the purge left it with no member (#323): nobody is
+/// left to see its content, nor to delete it. `events` and everything under
+/// it cascade from `groups`, `event_attachments` with them, so the keys of
+/// their objects are read first and returned — the caller deletes the
+/// objects once the transaction has committed. The other way round, a
+/// rollback would leave rows pointing at objects already gone; this way, an
+/// object whose deletion fails is an orphan the daily reconcile pass
+/// removes (`jobs::attachment_reconcile`).
+///
+/// Written to `audit_log` like `delete_group`, with no actor and the reason.
+async fn delete_if_abandoned(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    group_id: Uuid,
+) -> anyhow::Result<Vec<String>> {
+    let abandoned = sqlx::query_scalar!(
+        r#"SELECT NOT EXISTS (SELECT 1 FROM group_members WHERE group_id = $1) AS "abandoned!""#,
+        group_id
+    )
+    .fetch_one(&mut **tx)
+    .await?;
+    if !abandoned {
+        return Ok(Vec::new());
+    }
+    let keys = sqlx::query_scalar!(
+        "SELECT storage_key FROM event_attachments
+         WHERE event_id IN (SELECT id FROM events WHERE group_id = $1)",
+        group_id,
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    let deleted = sqlx::query!("DELETE FROM groups WHERE id = $1", group_id)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+    if deleted == 0 {
+        return Ok(Vec::new());
+    }
+    crate::audit::record(
+        tx,
+        None,
+        "group_deleted",
+        "group",
+        &group_id.to_string(),
+        json!({ "reason": "account_purged" }),
+    )
+    .await?;
+    Ok(keys)
 }
 
 /// How long an account the superadmin deactivated is kept before the purge
