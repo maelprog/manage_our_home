@@ -1,7 +1,8 @@
 //! `/messagerie` — the family's single chat thread. Renders oldest→newest with
 //! a composer underneath; `?before_created_at`+`?before_id` render an older
 //! window (history page) instead of the live view. The live view carries the
-//! inline WebSocket script (an enhancement — the page is complete without it).
+//! WebSocket script, loaded from `/assets` (an enhancement — the page is
+//! complete without it).
 //! Send/edit/delete are plain form posts; a rejected send/edit re-renders the
 //! thread inline with the submitted text preserved, success PRGs. See
 //! `docs/front-epic-8-messagerie.md`.
@@ -170,8 +171,9 @@ fn message_row(
     )
 }
 
-/// The inline live-updates script. It is the *only* optional part of the page:
-/// it opens the push socket, re-renders `#thread` on any frame (coalesced), and
+/// The live-updates script (`assets::Script::MessagerieLive`). It is the *only*
+/// optional part of the page: it opens the push socket, re-renders `#thread`
+/// on any frame (coalesced), and
 /// turns a mid-session auth/membership loss into a visible banner rather than a
 /// silent hang. Bails out immediately if `WebSocket` is unavailable. Rendered
 /// only on the live view (`data-live="true"`); a history window renders none.

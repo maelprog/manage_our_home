@@ -416,7 +416,8 @@ pub async fn revoke_every_session(
 /// never the query string (#142): a browser does not send the fragment to
 /// the server, so it stays out of every access log along the way and out of
 /// any `Referer`. apps/web's `/reset-password` page moves it into the POST
-/// body with a few lines of inline script.
+/// body with a few lines of script (`apps/web/src/routes/auth/reset_password.rs`,
+/// served under `/assets` since #325).
 fn password_reset_link(frontend_base_url: &str, token: Uuid) -> String {
     format!("{frontend_base_url}/reset-password#token={token}")
 }

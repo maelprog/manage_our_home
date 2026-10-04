@@ -209,13 +209,15 @@ fn violation(report: &Value, names: &Names) -> Option<Violation> {
 /// and a report that cannot be read is not worth telling its sender about.
 pub async fn receive(body: Bytes) -> StatusCode {
     for v in violations(&body) {
+        // Every text field quoted (`?`, Debug): a value holding
+        // ` directive=…` cannot pass for another field of the same line.
         tracing::warn!(
-            document = %v.document,
-            directive = %v.directive,
-            blocked = %v.blocked,
-            source = v.source.as_deref().unwrap_or(""),
+            document = ?v.document,
+            directive = ?v.directive,
+            blocked = ?v.blocked,
+            source = ?v.source.as_deref().unwrap_or(""),
             line = v.line.unwrap_or(0),
-            disposition = %v.disposition,
+            disposition = ?v.disposition,
             "content security policy violation reported"
         );
     }
@@ -435,6 +437,56 @@ mod tests {
         assert_eq!(
             violations(batch.as_bytes()).len(),
             MAX_VIOLATIONS_PER_REQUEST
+        );
+    }
+
+    /// What `receive` writes, through the same formatter as `main`'s
+    /// `tracing_subscriber::fmt::init()`, colours off.
+    async fn logged(body: &'static [u8]) -> String {
+        use std::sync::{Arc, Mutex};
+        #[derive(Clone)]
+        struct Buffer(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Buffer {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let buffer = Buffer(Arc::new(Mutex::new(Vec::new())));
+        let writer = buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        assert_eq!(
+            receive(Bytes::from_static(body)).await,
+            StatusCode::NO_CONTENT
+        );
+        let out = buffer.0.lock().unwrap().clone();
+        String::from_utf8(out).unwrap()
+    }
+
+    /// One violation is one line, and its fields cannot be forged from
+    /// inside a value: no line break, and every text field quoted.
+    #[tokio::test]
+    async fn a_report_cannot_forge_a_line_or_a_field() {
+        let out = logged(
+            br#"{"csp-report": {
+                "document-uri": "https://h/x directive=forged\nERROR forged line",
+                "effective-directive": "img-src",
+                "blocked-uri": "inline"
+            }}"#,
+        )
+        .await;
+        assert_eq!(out.lines().count(), 1, "{out}");
+        assert!(out.contains(r#"directive="img-src""#), "{out}");
+        assert!(
+            out.contains("document=\"https://h/x directive=forged\u{fffd}ERROR forged line\""),
+            "{out}"
         );
     }
 

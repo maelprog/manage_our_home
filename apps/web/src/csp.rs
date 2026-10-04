@@ -37,7 +37,10 @@ const CADDYFILE: &str = include_str!("../../../infra/Caddyfile");
 /// `Content-Security-Policy`, which reports and blocks nothing — the field
 /// name has to be exactly `name`.
 /// And none counts once a `-<name>` anywhere (later in the file, in the
-/// same block, under a matcher) deletes the header again.
+/// same block, under a matcher) deletes the header again — the name in any
+/// case, or a `*` wildcard covering it (`-Content-*`). Field names match in
+/// any case, and of several values set, the last one is read: it is the one
+/// Caddy sends.
 ///
 /// What it does **not** see — a reading of lines, not Caddy's parser: a
 /// `header` nested in a `handle`, `route` or snippet (scoped by that block,
@@ -82,10 +85,13 @@ fn caddy_header<'a>(caddyfile: &'a str, name: &str) -> Option<&'a str> {
         // matcher or not: some response, then, goes without it.
         deleted |= field
             .strip_prefix('-')
-            .and_then(|f| f.strip_prefix(name))
-            .is_some_and(|after| after.is_empty() || after.starts_with(char::is_whitespace));
-        if !scoped && found.is_none() {
-            found = field_value(field, name);
+            .and_then(|f| f.split_whitespace().next())
+            .is_some_and(|pattern| deletes(pattern, name));
+        // Caddy sends the last value set: later ones replace earlier ones.
+        if !scoped {
+            if let Some(value) = field_value(field, name) {
+                found = Some(value);
+            }
         }
     }
     if deleted {
@@ -98,7 +104,7 @@ fn caddy_header<'a>(caddyfile: &'a str, name: &str) -> Option<&'a str> {
 /// The value of `<name> <value>` at the start of `line`: `"…"`, `` `…` ``
 /// or the rest of the line.
 fn field_value<'a>(line: &'a str, name: &str) -> Option<&'a str> {
-    let rest = line.strip_prefix(name)?;
+    let rest = strip_name(line, name)?;
     if !rest.starts_with(char::is_whitespace) {
         return None;
     }
@@ -109,6 +115,25 @@ fn field_value<'a>(line: &'a str, name: &str) -> Option<&'a str> {
         }
     }
     Some(value)
+}
+
+/// `line` after `name`, matched as HTTP matches field names: in any case.
+fn strip_name<'a>(line: &'a str, name: &str) -> Option<&'a str> {
+    let head = line.get(..name.len())?;
+    head.eq_ignore_ascii_case(name).then(|| &line[name.len()..])
+}
+
+/// Whether `-<pattern>` deletes the field `name` in Caddy: the same name in
+/// any case, or a `*` prefix or suffix wildcard (`-Content-*`, `-*-Policy`).
+fn deletes(pattern: &str, name: &str) -> bool {
+    let (pattern, name) = (pattern.to_ascii_lowercase(), name.to_ascii_lowercase());
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        name.starts_with(prefix)
+    } else if let Some(suffix) = pattern.strip_prefix('*') {
+        name.ends_with(suffix)
+    } else {
+        pattern == name
+    }
 }
 
 /// The policy `infra/Caddyfile` enforces on every response.
@@ -156,9 +181,11 @@ enum Inline {
 /// - `<script` not followed by whitespace and `src=`: an external script is
 ///   the one form allowed.
 /// - `javascript:` right after an `=`, an optional quote and optional
-///   spaces.
-/// - A Rust escape (`\n`, `\t`, `\r`) before a handler name counts as the
-///   whitespace it compiles to.
+///   spaces, tabs and line breaks removed first (browsers drop them from a
+///   URL: `java<TAB>script:` runs).
+///
+/// Each line is read with its escapes decoded (`unescape`): `\n`, `\t`,
+/// `\x20`, `\u{20}`, `\x6f`… count as the character they compile to.
 ///
 /// What it does **not** see — a textual scan, not an HTML parser: spaces
 /// around a handler's `=`, markup assembled from pieces (`"on" + "click"`,
@@ -173,6 +200,7 @@ fn inline_scripts(source: &str) -> Vec<Inline> {
         if line.trim_start().starts_with("//") {
             continue;
         }
+        let line = &unescape(line);
         // Same byte offsets as `line`: ASCII lowering keeps every length.
         let lower = line.to_ascii_lowercase();
         // Every match is recorded at its offset, then sorted, so that the
@@ -180,32 +208,29 @@ fn inline_scripts(source: &str) -> Vec<Inline> {
         let mut on_line: Vec<(usize, Inline)> = Vec::new();
         for (at, _) in lower.match_indices('=') {
             let before = &lower[..at];
-            let mut start = before
+            let start = before
                 .rfind(|c: char| !c.is_ascii_lowercase())
                 .map_or(0, |i| i + 1);
-            // `\n`, `\t` or `\r` in a non-raw literal: whitespace once
-            // compiled, though the scan sees a backslash and a letter.
-            let escaped = before[..start].ends_with('\\')
-                && before[start..].starts_with(['n', 't', 'r'])
-                && before[start + 1..].starts_with("on");
-            if escaped {
-                start += 1;
-            }
-            let delimited = escaped
-                || before[..start]
-                    .chars()
-                    .next_back()
-                    .is_none_or(|c| c.is_whitespace() || matches!(c, '"' | '\'' | '/'));
+            let delimited = before[..start]
+                .chars()
+                .next_back()
+                .is_none_or(|c| c.is_whitespace() || matches!(c, '"' | '\'' | '/'));
             if before.len() - start > 2 && before[start..].starts_with("on") && delimited {
                 on_line.push((start, Inline::Handler(excerpt(&line[start..]))));
             }
         }
-        for (at, _) in lower.match_indices("javascript:") {
-            // Browsers strip leading spaces from a URL: `href=" javascript:`.
-            let before =
-                lower[..at].trim_end_matches(|c: char| c.is_whitespace() || c == '"' || c == '\'');
+        // Browsers drop every tab and line break from a URL, and strip its
+        // leading spaces: `href=" java<TAB>script:` runs.
+        let squeezed_line: String = line
+            .chars()
+            .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+            .collect();
+        let squeezed = squeezed_line.to_ascii_lowercase();
+        for (at, _) in squeezed.match_indices("javascript:") {
+            let before = squeezed[..at]
+                .trim_end_matches(|c: char| c.is_whitespace() || c == '"' || c == '\'');
             if before.ends_with('=') {
-                on_line.push((at, Inline::JsUrl(excerpt(&line[at..]))));
+                on_line.push((at, Inline::JsUrl(excerpt(&squeezed_line[at..]))));
             }
         }
         for (at, _) in lower.match_indices("<script") {
@@ -220,6 +245,72 @@ fn inline_scripts(source: &str) -> Vec<Inline> {
         found.extend(on_line.into_iter().map(|(_, inline)| inline));
     }
     found
+}
+
+/// `line` with the escapes of a Rust literal decoded — `\n`, `\t`, `\r`,
+/// `\0`, `\\`, `\"`, `\'`, `\xHH`, `\u{H…}` — as the compiler would in a
+/// non-raw literal. Applied to raw literals and code too, where it can only
+/// add matches, never hide one. Anything else is kept as written.
+fn unescape(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(at) = rest.find('\\') {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 1..];
+        let decoded = match after.chars().next() {
+            Some('n') => Some(('\n', 1)),
+            Some('t') => Some(('\t', 1)),
+            Some('r') => Some(('\r', 1)),
+            Some('0') => Some(('\0', 1)),
+            Some(c @ ('\\' | '"' | '\'')) => Some((c, 1)),
+            Some('x') => after
+                .get(1..3)
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+                .filter(u8::is_ascii)
+                .map(|b| (b as char, 3)),
+            Some('u') => after
+                .strip_prefix("u{")
+                .and_then(|r| r.find('}').map(|end| (&r[..end], end)))
+                .and_then(|(hex, end)| {
+                    u32::from_str_radix(&hex.replace('_', ""), 16)
+                        .ok()
+                        .and_then(char::from_u32)
+                        .map(|c| (c, end + 3))
+                }),
+            _ => None,
+        };
+        match decoded {
+            Some((c, len)) => {
+                out.push(c);
+                rest = &after[len..];
+            }
+            None => {
+                out.push('\\');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The scripts no production code loads: no `Script::<Variant>.tag()` on
+/// an uncommented line of a file's `production_code`, `assets.rs` (which
+/// defines them) left out.
+fn scripts_not_loaded(sources: &[(String, String)]) -> Vec<Script> {
+    let calls: Vec<&str> = sources
+        .iter()
+        .filter(|(path, _)| !path.ends_with("/assets.rs"))
+        .flat_map(|(_, text)| production_code(text).lines())
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect();
+    Script::ALL
+        .into_iter()
+        .filter(|script| {
+            let call = format!("Script::{script:?}.tag()");
+            !calls.iter().any(|line| line.contains(&call))
+        })
+        .collect()
 }
 
 fn sources() -> Vec<(String, String)> {
@@ -301,6 +392,12 @@ fn caddy_csp_is_none_once_a_header_deletes_it() {
         "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t\t-Content-Security-Policy\n\t}\n",
         "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t}\n\theader @api {\n\t\t-Content-Security-Policy\n\t}\n",
         "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t}\n\theader /login -Content-Security-Policy\n",
+        // Header names are case-insensitive, and Caddy deletes by prefix or
+        // suffix wildcard.
+        "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t}\n\theader -content-security-policy\n",
+        "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t}\n\theader -Content-Security-*\n",
+        "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t}\n\theader -Content-*\n",
+        "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t}\n\theader -*-Policy\n",
     ] {
         assert_eq!(caddy_csp(file), None, "{file}");
     }
@@ -308,6 +405,17 @@ fn caddy_csp_is_none_once_a_header_deletes_it() {
     // not deleting this one.
     let file = "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t\t-Server\n\t\t-Content-Security-Policy-Report-Only\n\t}\n";
     assert_eq!(caddy_csp(file), Some("default-src 'self'"));
+    let file = "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t\t-X-*\n\t}\n";
+    assert_eq!(caddy_csp(file), Some("default-src 'self'"));
+}
+
+/// Two `header` directives setting the same field: Caddy sends the last one,
+/// so that is the one the guard reads; and the name matches in any case.
+#[test]
+fn caddy_csp_reads_the_last_value_set_in_any_case() {
+    let file = "\theader Content-Security-Policy \"first\"\n\
+                \theader {\n\t\tcontent-security-policy \"second\"\n\t}\n";
+    assert_eq!(caddy_csp(file), Some("second"));
 }
 
 #[test]
@@ -365,8 +473,8 @@ mod tests { const X: &str = r#"<b onclick="x()">"#; }
 
 /// What sits between the separator and the name in the Rust source rather
 /// than in the HTML: a leading space inside a `javascript:` URL, which
-/// browsers strip, and an escape (`\n`, `\t`, `\r`) in a non-raw literal,
-/// which is whitespace once compiled.
+/// browsers strip, and any escape of a non-raw literal — `\n`, `\t`, `\r`,
+/// `\x..`, `\u{..}` — read as the character it compiles to.
 #[test]
 fn inline_scripts_sees_through_leading_spaces_and_rust_escapes() {
     let src = r##"let a = r#"<a href=" javascript:x()">"#;
@@ -374,14 +482,36 @@ let b = "<b\nonclick=\"x()\">";
 let c = "<b\tonload=x()>";
 let d = "<b\ronfocus='x()'>";
 let e = "\none = 1";
+let f = "<b\x20onblur=x()>";
+let g = "<b\u{20}oninput=x()>";
+let h = "<b\x0conkeyup=x()>";
+let i = "<b \x6fnclick=x()>";
 "##;
     assert_eq!(
         inline_scripts(src),
         vec![
             Inline::JsUrl("javascript:x()\">\"#;".into()),
-            Inline::Handler("onclick=\\\"x()\\\">\";".into()),
+            Inline::Handler("onclick=\"x()\">\";".into()),
             Inline::Handler("onload=x()>\";".into()),
             Inline::Handler("onfocus='x()'>\";".into()),
+            Inline::Handler("onblur=x()>\";".into()),
+            Inline::Handler("oninput=x()>\";".into()),
+            Inline::Handler("onkeyup=x()>\";".into()),
+            Inline::Handler("onclick=x()>\";".into()),
+        ]
+    );
+}
+
+/// Browsers drop every tab and line break from a URL, wherever it sits:
+/// `java<TAB>script:` is `javascript:`.
+#[test]
+fn inline_scripts_sees_a_javascript_url_split_by_tabs_or_line_breaks() {
+    let src = "let a = \"<a href='java\\tscript:x()'>\";\nlet b = \"<a href='java\tscr\\nipt:y()'>\";\nlet c = \"<a href='java script:z()'>\";\n";
+    assert_eq!(
+        inline_scripts(src),
+        vec![
+            Inline::JsUrl("javascript:x()'>\";".into()),
+            Inline::JsUrl("javascript:y()'>\";".into()),
         ]
     );
 }
@@ -442,18 +572,33 @@ fn no_inline_script_in_the_markup() {
 /// `'self'`: dead code that keeps running rights.
 #[test]
 fn every_script_is_loaded_by_some_page() {
-    let production: Vec<String> = sources()
-        .into_iter()
-        .filter(|(path, _)| !path.ends_with("/assets.rs"))
-        .map(|(_, text)| production_code(&text).to_string())
-        .collect();
-    for script in Script::ALL {
-        let name = format!("Script::{script:?}");
-        assert!(
-            production.iter().any(|text| text.contains(&name)),
-            "{name} is served but no page loads it: drop it"
-        );
-    }
+    assert_eq!(
+        scripts_not_loaded(&sources()),
+        vec![],
+        "served but loaded by no page: drop them"
+    );
+}
+
+/// Only a call loads a script: a doc comment naming it, a comment, a test
+/// or the bare variant does not.
+#[test]
+fn scripts_not_loaded_counts_tag_calls_in_production_code_only() {
+    let page = "/// Loads `Script::MessagerieLive.tag()` on the live view.\n\
+                // html.push_str(&Script::Push.tag());\n\
+                let s = Script::ResetPassword;\n\
+                html.push_str(&crate::assets::Script::Enhance.tag());\n\
+                #[cfg(test)]\n\
+                mod tests {\n    fn t() { Script::Push.tag(); }\n}\n";
+    assert_eq!(
+        scripts_not_loaded(&[("src/page.rs".to_string(), page.to_string())]),
+        vec![Script::ResetPassword, Script::MessagerieLive, Script::Push]
+    );
+    // `assets.rs` defines `tag` and calls nothing.
+    let assets = "fn f() { Script::Push.tag() }\n";
+    assert_eq!(
+        scripts_not_loaded(&[("src/assets.rs".to_string(), assets.to_string())]),
+        Script::ALL.to_vec()
+    );
 }
 
 #[test]
