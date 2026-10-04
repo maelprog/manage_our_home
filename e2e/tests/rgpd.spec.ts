@@ -92,7 +92,7 @@ test.describe("RGPD — privacy policy (public)", () => {
 });
 
 test.describe("Documents légaux publics (#132)", () => {
-  // The legal notice (LCEN art. 6-III) and the CGU are served on the same
+  // The legal notice (LCEN art. 1-1) and the CGU are served on the same
   // plumbing as the privacy policy: public route, markdown from docs/ rendered
   // by apps/web. Registering accepts the CGU, so both have to be reachable from
   // the register footer without a session.

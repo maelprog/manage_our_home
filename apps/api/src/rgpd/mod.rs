@@ -616,7 +616,7 @@ pub async fn privacy_policy() -> Response {
     markdown_document(PRIVACY_POLICY_MD)
 }
 
-/// GET /legal-notice — the LCEN art. 6-III notice (publisher, publication
+/// GET /legal-notice — the LCEN art. 1-1 notice (publisher, publication
 /// director, host), and GET /terms-of-service — the CGU (#132). Same three
 /// properties as the privacy policy above, for the same reasons: public, no
 /// session, compiled in from `docs/` so the served text and the versioned one

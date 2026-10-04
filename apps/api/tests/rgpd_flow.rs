@@ -599,7 +599,7 @@ async fn export_requires_auth_and_privacy_policy_is_public(db: PgPool) {
     assert_status(&policy, StatusCode::OK);
 }
 
-/// The legal notice (LCEN art. 6-III) and the CGU are public documents, served
+/// The legal notice (LCEN art. 1-1) and the CGU are public documents, served
 /// exactly like the privacy policy: no session, `text/markdown`, non-empty
 /// (#132). A visitor must be able to read what they are agreeing to *before*
 /// registering, so a session requirement creeping onto these routes has to

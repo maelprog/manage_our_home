@@ -1042,20 +1042,23 @@ mod tests {
         }
     }
 
-    /// The values `docs/legal-notice.md` still leaves to fill (#132). A list of
-    /// its own, not `pending_release_values`: LCEN art. 6-III asks the legal
-    /// notice for things the privacy policy never had to carry — a postal
-    /// address, a publication director, a host — and the host is not chosen yet
-    /// (self-hosting, a VPS later; arbitrated 2026-09-19). The contact address
-    /// is deliberately worded the same in both documents: it is the same
-    /// address, and it is filled once.
+    /// The values `docs/legal-notice.md` still leaves to fill (#132, #314). A
+    /// list of its own, not `pending_release_values`: the legal notice owes the
+    /// public the host's name, address and phone number (LCEN art. 1-1, I 4°),
+    /// which the privacy policy never had to carry, and the host is not chosen
+    /// yet (self-hosting, a VPS later; arbitrated 2026-09-19).
+    ///
+    /// The publisher's own name, address and phone number are deliberately
+    /// absent: the publisher edits on a non-professional basis and keeps the
+    /// anonymity LCEN art. 1-1, II allows (arbitrated 2026-10-04), so those go to
+    /// the host, never into this public repository — `docs/v2-deployment.md`
+    /// #17 carries that step. The contact address is worded the same as in the
+    /// policy: it is the same address, and it is filled once.
     fn pending_legal_notice_values() -> Vec<String> {
         vec![
-            "nom de l'éditeur".to_string(),
-            "adresse postale de l'éditeur".to_string(),
             "adresse de contact".to_string(),
-            "nom du directeur de la publication".to_string(),
             "nom et adresse de l'hébergeur".to_string(),
+            "numéro de téléphone de l'hébergeur".to_string(),
         ]
     }
 
@@ -1137,10 +1140,34 @@ mod tests {
         ));
         let html = render_markdown(md);
         assert!(html.starts_with("<h1>Mentions légales"));
-        // The three identities LCEN art. 6-III makes mandatory.
+        // The three roles LCEN art. 1-1 names: publisher, publication director,
+        // host.
         assert!(html.contains("<h2>Éditeur du service</h2>"));
         assert!(html.contains("<h2>Directeur de la publication</h2>"));
         assert!(html.contains("<h2>Hébergeur</h2>"));
+        // #314: the regime actually applied is the non-professional anonymity
+        // of art. 1-1, II, not the full disclosure of the I. The notice has to
+        // say so, and has to tell a reader where a right-of-reply request goes
+        // when the director is not named: to the host (art. 1-1, III).
+        let flat = flatten(md);
+        assert!(
+            flat.contains("article 1-1") && flat.contains("anonymat"),
+            "the legal notice does not state the LCEN anonymity regime it applies"
+        );
+        assert!(
+            flat.contains("droit de réponse"),
+            "the legal notice does not say where a right-of-reply request goes"
+        );
+        // Every article the notice cites is LCEN art. 1-1 or one of the two code
+        // pénal articles on the host's professional secrecy; see
+        // `cited_article_numbers` for what counts as a citation.
+        assert_eq!(
+            foreign_articles(md),
+            Vec::<String>::new(),
+            "the legal notice cites an article other than LCEN art. 1-1 and code \
+             pénal art. 226-13/226-14: the LCEN obligations live in its art. 1-1 \
+             since loi n° 2024-449"
+        );
         // Same rule as the policy: the reader of a public page cannot open a
         // repository path, so the document has to stand on its own.
         assert_eq!(
@@ -1197,6 +1224,149 @@ mod tests {
             "the CGU point at repo files"
         );
         assert_no_raw_markdown(&html);
+    }
+
+    /// The only articles `docs/legal-notice.md` may cite (#314): LCEN art. 1-1,
+    /// and the code pénal articles 226-13 and 226-14 on the host's
+    /// professional secrecy.
+    const LEGAL_NOTICE_ARTICLES: [&str; 3] = ["1-1", "226-13", "226-14"];
+
+    /// The numbers cited in `md` that are not in `LEGAL_NOTICE_ARTICLES`.
+    fn foreign_articles(md: &str) -> Vec<String> {
+        cited_article_numbers(md)
+            .into_iter()
+            .filter(|n| !LEGAL_NOTICE_ARTICLES.contains(&n.as_str()))
+            .collect()
+    }
+
+    /// Every article number cited in `md`, in reading order, compared exactly
+    /// by the caller (`1-10` is not `1-1`).
+    ///
+    /// A citation is the word `article`, `articles` or `art.` (any case,
+    /// after an elided `l'`/`d'`, wrapped in any punctuation such as `(`,
+    /// `**` or `«`), followed by a word that starts with a digit — glued
+    /// (`art.6`) or not. An enumeration is followed: after the first number,
+    /// each further number separated by `,`, `et`, `ou` or `à` is cited too
+    /// (`articles 1-1 et 6-III` cites both). Leading and trailing punctuation
+    /// is stripped from each number (`6-IV)` is `6-IV`; `6, III` is `6`).
+    ///
+    /// Blind spots, accepted because the legal notice carries none of these
+    /// forms today and a new one would be written by hand under review: a
+    /// number glued to `article` without a dot (`article6`), a number that
+    /// does not start with a digit (`article L. 34-5`, `article premier`),
+    /// a subdivision cited without the word article (`au III du 6`), and an
+    /// enumeration continued after a subdivision (`article 1-1, II et 6`
+    /// stops at `II`).
+    fn cited_article_numbers(md: &str) -> Vec<String> {
+        fn bare(word: &str) -> &str {
+            word.trim_matches(|c: char| !c.is_alphanumeric())
+        }
+        fn is_number(word: &str) -> bool {
+            bare(word).starts_with(|c: char| c.is_ascii_digit())
+        }
+        let words: Vec<&str> = md.split_whitespace().collect();
+        let mut out = Vec::new();
+        for (i, raw) in words.iter().enumerate() {
+            let word = raw.trim_start_matches(|c: char| !c.is_alphanumeric());
+            let word = word.rsplit(['\'', '’']).next().unwrap_or(word);
+            // The first number, and the index of the word that carries it.
+            let first = if word.len() > 4
+                && word.is_char_boundary(4)
+                && word[..4].eq_ignore_ascii_case("art.")
+                && is_number(&word[4..])
+            {
+                (bare(&word[4..]), i)
+            } else if matches!(
+                bare(word).to_lowercase().as_str(),
+                "article" | "articles" | "art"
+            ) && words.get(i + 1).is_some_and(|next| is_number(next))
+            {
+                (bare(words[i + 1]), i + 1)
+            } else {
+                continue;
+            };
+            out.push(first.0.to_string());
+            let mut at = first.1;
+            loop {
+                let next = words.get(at + 1).copied().unwrap_or("");
+                if words[at].ends_with(',') && is_number(next) {
+                    at += 1;
+                } else if matches!(bare(next), "et" | "ou" | "à")
+                    && words.get(at + 2).is_some_and(|n| is_number(n))
+                {
+                    at += 2;
+                } else {
+                    break;
+                }
+                out.push(bare(words[at]).to_string());
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn cited_articles_catch_a_number_inside_parentheses() {
+        assert_eq!(foreign_articles("(article 6-IV)"), vec!["6-IV".to_string()]);
+    }
+
+    #[test]
+    fn cited_articles_follow_an_enumeration() {
+        assert_eq!(
+            foreign_articles("(articles 6 et 7 de la loi)"),
+            vec!["6".to_string(), "7".to_string()]
+        );
+        assert_eq!(
+            foreign_articles("articles 6, 7 ou 8"),
+            vec!["6".to_string(), "7".to_string(), "8".to_string()]
+        );
+    }
+
+    #[test]
+    fn cited_articles_see_through_markdown_emphasis() {
+        assert_eq!(
+            foreign_articles("**article 6** de la loi"),
+            vec!["6".to_string()]
+        );
+    }
+
+    #[test]
+    fn cited_articles_catch_a_number_glued_to_art() {
+        assert_eq!(
+            foreign_articles("voir art.6-III"),
+            vec!["6-III".to_string()]
+        );
+    }
+
+    #[test]
+    fn cited_articles_check_the_second_number_of_an_enumeration() {
+        assert_eq!(
+            foreign_articles("articles 1-1 et 6-III"),
+            vec!["6-III".to_string()]
+        );
+    }
+
+    #[test]
+    fn cited_articles_compare_the_exact_number() {
+        assert_eq!(foreign_articles("article 1-10"), vec!["1-10".to_string()]);
+        assert_eq!(foreign_articles("article 6, III"), vec!["6".to_string()]);
+    }
+
+    #[test]
+    fn cited_articles_accept_what_the_notice_may_cite() {
+        assert_eq!(
+            cited_article_numbers(
+                "L'article 1-1, II de la loi ; Art. 1-1. Les articles 226-13 et \
+                 226-14 du code pénal."
+            ),
+            vec!["1-1", "1-1", "226-13", "226-14"]
+        );
+        assert!(foreign_articles("Les articles 226-13 et 226-14 s'appliquent.").is_empty());
+    }
+
+    #[test]
+    fn cited_articles_ignore_a_word_that_is_not_a_number() {
+        // The stocks feature, in the notice's own intellectual-property section.
+        assert!(cited_article_numbers("recettes, articles de stock, dépenses").is_empty());
     }
 
     /// No markdown marker survived into the output: a shipped document has to
