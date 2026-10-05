@@ -98,7 +98,9 @@ async fn auth_me_reports_superadmin_flag(db: PgPool) {
     );
 }
 
-/// AC #1: a non-superadmin user gets 403 on all three `/admin/*` routes.
+/// AC #1: a non-superadmin user gets 403 on all seven `/admin/*` routes,
+/// `designate_owner` included: its `SuperAdminUser` extractor runs before
+/// the JSON body is read.
 #[sqlx::test]
 async fn non_superadmin_gets_403_on_every_admin_route(db: PgPool) {
     let router = test_router(db.clone());
@@ -112,23 +114,28 @@ async fn non_superadmin_gets_403_on_every_admin_route(db: PgPool) {
     .fetch_one(&db)
     .await
     .unwrap();
-    let _ = group_id;
 
-    let groups_res = call(&router, Method::GET, "/admin/groups", Some(&cookie), None).await;
-    assert_status(&groups_res, StatusCode::FORBIDDEN);
-
-    let users_res = call(&router, Method::GET, "/admin/users", Some(&cookie), None).await;
-    assert_status(&users_res, StatusCode::FORBIDDEN);
-
-    let deactivate_res = call(
-        &router,
-        Method::POST,
-        &format!("/admin/users/{user_id}/deactivate"),
-        Some(&cookie),
-        None,
-    )
-    .await;
-    assert_status(&deactivate_res, StatusCode::FORBIDDEN);
+    let routes = [
+        (Method::GET, "/admin/groups".to_string(), None),
+        (Method::GET, format!("/admin/groups/{group_id}/members"), None),
+        (
+            Method::POST,
+            format!("/admin/groups/{group_id}/owner"),
+            Some(serde_json::json!({ "user_id": user_id })),
+        ),
+        (Method::GET, "/admin/users".to_string(), None),
+        (Method::POST, format!("/admin/users/{user_id}/deactivate"), None),
+        (Method::POST, format!("/admin/users/{user_id}/reactivate"), None),
+        (
+            Method::POST,
+            format!("/admin/users/{user_id}/reactivation-request/refuse"),
+            None,
+        ),
+    ];
+    for (method, uri, body) in routes {
+        let res = call(&router, method, &uri, Some(&cookie), body).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "{uri}");
+    }
 }
 
 /// Unauthenticated requests (no session cookie at all) get 401, not 403 —
