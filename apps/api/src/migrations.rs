@@ -18,11 +18,13 @@
 //! again. `0013_backfill_event_assignees.sql` is the first migration to
 //! hit that, and the one that made it visible.
 //!
-//! And why not `ADMIN_DATABASE_URL`: that role exists for the three
-//! `/admin/*` endpoints (Epic #8) and the attachment reconcile job
-//! (#215). Nothing describes it as the owner of
-//! the tables, and folding DDL into the role that serves request traffic
-//! would widen a deliberately narrow exception.
+//! And why not `ADMIN_DATABASE_URL`: that role exists for the seven
+//! `/admin/*` endpoints (Epic #8) and the background jobs that read or
+//! write across families: attachment reconcile (#215), account purge
+//! (#139), retention purge (#138) and the event reminder worker (#293).
+//! Nothing describes it as the owner of the tables, and folding DDL into
+//! the role that serves request traffic would widen a deliberately narrow
+//! exception.
 //!
 //! The guard below is the half that survives a misconfiguration. Same
 //! shape, and the same reason, as `attachment_reconcile::ensure_bypasses_rls`:

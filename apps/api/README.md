@@ -158,7 +158,7 @@ back to current groups and drop received invitations.
 
 ### Epic #8 — `admin_role` (superadmin endpoints)
 
-The three `/admin/*` endpoints (`src/user_admin/`) are a deliberate, narrow
+The seven `/admin/*` endpoints (`src/user_admin/`) are a deliberate, narrow
 exception to the RLS boundary above: a superadmin needs to list groups and
 users across every family, which the normal RLS-scoped role can never do
 by design. Rather than weaken the `groups`/`group_members` policies, that
@@ -180,12 +180,13 @@ Four other things run on this pool, and none is a request handler:
   `sessions`. It, the account purge below and two superadmin handlers are
   the only code on this pool that deletes Postgres rows — not the only
   code that writes them:
-  the five `/admin/*` handlers each
+  the seven `/admin/*` handlers each
   `INSERT` into `audit_log`, `deactivate_user` also `UPDATE`s `users`
   and `sessions`, `reactivate_user` `users` and `sessions` and deletes
   the account's pending `account_reactivation_requests` row (#256, #289),
-  and `refuse_reactivation` deletes that row and `UPDATE`s `users`
-  (#289); the reminder
+  `refuse_reactivation` deletes that row and `UPDATE`s `users`
+  (#289), and `designate_owner` `UPDATE`s `group_members` (#323); the
+  reminder
   worker below `UPDATE`s `scheduled_notifications` and `INSERT`s into it
   (#293). Of the five purged tables only `invitations` is RLS'd at
   all, and it is `FORCE ROW LEVEL SECURITY`: with no `app.family_id` set,
@@ -224,7 +225,7 @@ Four other things run on this pool, and none is a request handler:
   `scheduled_notifications refill failed` (every hour) at ERROR and does
   nothing.
 
-No request handler other than the four `/admin/*` ones touches `admin_db`.
+No request handler other than the seven `/admin/*` ones touches `admin_db`.
 
 ```sql
 CREATE ROLE admin_role LOGIN PASSWORD '...' NOSUPERUSER BYPASSRLS;

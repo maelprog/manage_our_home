@@ -29,7 +29,7 @@ rationale in `architecture.md` ("v2 — Déploiement multi-famille").
 **Immediate next step:** apart from item 2, none of the above are done
 yet. Given the ~1 week horizon, items 4-9 (RGPD + backups) and 14
 (rate-limiting) are the hard blockers for a responsible first deployment;
-1-2 and 10-13 support them.
+1 and 10-13 support them.
 
 ## Item #16 — remplacer les placeholders du responsable de traitement
 

@@ -266,8 +266,10 @@ déploiement**.
   échelle) plutôt qu'un cloud managé gratuit — même stack Docker Compose
   qu'en local (`infra/docker-compose.yml`), pas de divergence dev/prod, et
   c'est le pont naturel vers le self-host définitif chez soi plus tard.
-- Exposition publique réelle : TLS via Caddy devient obligatoire (déjà
-  scaffoldé dans `infra/Caddyfile`), plus optionnel comme en v1 local.
+- Exposition publique réelle : TLS via Caddy devient obligatoire, plus
+  optionnel comme en v1 local. Configuré dans `infra/Caddyfile` depuis
+  #141 : HTTPS automatique dès que `SITE_ADDRESS` porte le nom de domaine
+  public (`docs/v2-deployment.md` #2).
 
 **Superadmin (item #8 du tracker v1)**
 - Un rôle superadmin technique global, distinct des rôles
