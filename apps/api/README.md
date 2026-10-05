@@ -177,20 +177,23 @@ Four other things run on this pool, and none is a request handler:
 - the **hourly retention purge** (#138, `src/jobs/retention_purge.rs`),
   which `DELETE`s rows, across every family, from `audit_log`,
   `email_verification_tokens`, `password_reset_tokens`, `invitations` and
-  `sessions`. It, the account purge below and two superadmin handlers are
-  the only code on this pool that deletes Postgres rows — not the only
-  code that writes them:
+  `sessions`. It, the account purge below, two superadmin handlers and the
+  reminder worker are the only code on this pool that deletes Postgres
+  rows — not the only code that writes them:
   the seven `/admin/*` handlers each
   `INSERT` into `audit_log`, `deactivate_user` also `UPDATE`s `users`
-  and `sessions`, `reactivate_user` `users` and `sessions` and deletes
-  the account's pending `account_reactivation_requests` row (#256, #289),
+  and `sessions`, `reactivate_user` `users` and `sessions`, deletes
+  the account's pending `account_reactivation_requests` row (#256, #289)
+  and, for each group the account comes back to without an owner,
+  `UPDATE`s `group_members` to name an heir (#323),
   `refuse_reactivation` deletes that row and `UPDATE`s `users`
   (#289), and `designate_owner` `UPDATE`s `group_members` (#323); the
-  reminder
-  worker below `UPDATE`s `scheduled_notifications` and `INSERT`s into it
-  (#293). Of the five purged tables only `invitations` is RLS'd at
-  all, and it is `FORCE ROW LEVEL SECURITY`: with no `app.family_id` set,
-  its `DELETE` on the runtime role matches **no row** and the pass would
+  reminder worker below `UPDATE`s `scheduled_notifications` and `INSERT`s
+  into it (#293), and after each push `DELETE`s or `UPDATE`s the device's
+  `push_subscriptions` row (#306). Of the five purged tables only
+  `invitations` is RLS'd at all, and it is `FORCE ROW LEVEL SECURITY`:
+  with no `app.family_id` set, its `DELETE` on the runtime role matches
+  **no row** and the pass would
   report a clean sweep having erased none of the invited third parties'
   addresses it exists to erase. So it calls the same `ensure_bypasses_rls`
   guard as the reconcile pass — `rolsuper OR rolbypassrls` on its own
@@ -202,9 +205,14 @@ Four other things run on this pool, and none is a request handler:
   superadmin for 2 years with no first reactivation request pending
   (#256, #289), deletes its personal rows
   (`group_members`, `message_read_state`, `event_assignees`, `sessions`,
-  `account_reactivation_requests`,
+  `account_reactivation_requests`, `push_subscriptions` (#306),
   tokens, OAuth identities, its own `audit_log` entries, the `invitations`
-  and `calendar_imports` it created) and anonymises its `users` row. Five of
+  and `calendar_imports` it created) and anonymises its `users` row. Each
+  group it owned passes to an heir when a member is eligible (`UPDATE` of
+  `group_members`, #323), and a group left with no member at all is
+  deleted with its content;
+  each pass also emails the members named heirs and stamps their
+  `group_members` row once the email has gone. Five of
   those tables are `FORCE ROW LEVEL SECURITY`; the pass calls the same
   `ensure_bypasses_rls` guard and, on a role that does not bypass RLS,
   logs `account purge job failed` at ERROR once an hour and purges no one.
@@ -213,7 +221,11 @@ Four other things run on this pool, and none is a request handler:
   and stamps `users` only, which is not RLS'd, and runs on any role;
 - the **event reminder worker** (#293, `src/jobs/scheduled_notifications.rs`),
   which every minute reads the due `scheduled_notifications` of every
-  family, emails each event's creator, and `UPDATE`s each row's status
+  family, emails each event's creator, pushes to their devices, or both,
+  per their reminder channel —
+  forgetting a device its push service no longer knows, or one failing
+  for too long, and recording the answer of the others in
+  `push_subscriptions` — and `UPDATE`s each row's status
   (`sent`, `failed`, or its attempt count); and every hour reads the
   reminders of every recurring event from `event_reminders` and `events`
   and `INSERT`s the occurrences newly in range into

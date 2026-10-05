@@ -92,10 +92,11 @@ pub async fn list_groups(
 /// AC #6: lists every user account, for support look-up by email. `users`
 /// has no RLS of its own (it isn't family-scoped), but still runs on
 /// `admin_db` per the spec's "among request handlers, only that gated path
-/// is allowed to run on a connection carrying BYPASSRLS" rule (the other
-/// user of the pool is the attachment reconcile job, #215, which serves no
-/// request), kept uniform across all three superadmin endpoints rather
-/// than special-cased per table.
+/// is allowed to run on a connection carrying BYPASSRLS" rule (the pool's
+/// other users are the four background jobs — attachment reconcile #215,
+/// retention purge #138, account purge #139, reminder worker #293 — none
+/// of which serves a request), kept uniform across all seven superadmin
+/// endpoints rather than special-cased per table.
 pub async fn list_users(
     State(state): State<AppState>,
     actor: SuperAdminUser,
