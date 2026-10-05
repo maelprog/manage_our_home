@@ -280,7 +280,7 @@ pub async fn detail(
 <dt>Statut</dt><dd>{status}</dd>
 <dt>Suppression demandée le</dt><dd>{requested}</dd>
 <dt>Désactivé le</dt><dd>{deactivated}</dd>
-<dt>Réactivation refusée le</dt><dd>{refused}</dd>
+<dt>Premier refus de réactivation le</dt><dd>{refused}</dd>
 <dt>Purgé le</dt><dd>{deleted}</dd>
 </dl>
 {action}"#,
