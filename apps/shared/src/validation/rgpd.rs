@@ -1611,8 +1611,8 @@ mod tests {
     /// - a line indented by four columns or more (a tab counts four) that does
     ///   not continue a paragraph or a bullet: indented code;
     /// - a link reference definition, `[label]:` or `[^note]:`;
-    /// - inside a `- ` bullet, any of the above, a nested `- ` bullet, and a
-    ///   task box `[ ]`/`[x]`;
+    /// - inside a `- ` bullet, any of the above, a heading of any level
+    ///   (`- # Titre`), a nested `- ` bullet, and a task box `[ ]`/`[x]`;
     /// - an indented `- ` bullet (the renderer drops the nesting);
     /// - two trailing spaces (a hard line break the renderer joins away).
     ///
@@ -1789,6 +1789,14 @@ mod tests {
         }
         if ["[ ]", "[x]", "[X]"].iter().any(|b| item.starts_with(b)) {
             return Some("task box");
+        }
+        // Any heading, even one `heading` accepts on its own line: inside a
+        // bullet the renderer shows its `#` as text.
+        let after_hashes = item.trim_start_matches('#');
+        if after_hashes.len() < item.len()
+            && (after_hashes.is_empty() || after_hashes.starts_with(char::is_whitespace))
+        {
+            return Some("heading in a bullet");
         }
         line_start_marker(item, false)
     }
@@ -2040,6 +2048,10 @@ mod tests {
             "- 2024. item\n",
             "- > citation\n",
             "- #### titre\n",
+            "- # Titre\n",
+            "- ## Titre\n",
+            "- ### Titre\n",
+            "- #\tTitre\n",
             "- - sous-puce\n",
             "- + sous-puce\n",
             "- [ ] tâche\n",
