@@ -91,14 +91,16 @@ pub struct AppState {
     /// Cumulative count of logins per ending, published as an aggregate
     /// and never per request (#178 bis).
     pub login_branches: std::sync::Arc<auth::timing::BranchCounters>,
-    /// Second pool, connected as `admin_role` (`BYPASSRLS`). Touched by
-    /// exactly two code paths: handlers gated behind `SuperAdminUser`
-    /// (Epic #8, see `src/user_admin/mod.rs` for why this is a narrow,
-    /// deliberate exception to the RLS boundary rather than a general
-    /// bypass), and the attachment reconcile job
-    /// (`jobs::attachment_reconcile`, #215), which serves no request and
-    /// needs the unscoped `event_attachments` read. Request handlers
-    /// outside `SuperAdminUser` never use it.
+    /// Second pool, connected as `admin_role` (`BYPASSRLS`). Used by the
+    /// handlers gated behind `SuperAdminUser` (Epic #8, see
+    /// `src/user_admin/mod.rs` for why this is a narrow, deliberate
+    /// exception to the RLS boundary rather than a general bypass), and by
+    /// four background jobs that serve no request and read or write across
+    /// every family: attachment reconcile (`jobs::attachment_reconcile`,
+    /// #215), retention purge (`jobs::retention_purge`, #138), account
+    /// purge (`jobs::account_purge`, #139) and the reminder worker
+    /// (`jobs::scheduled_notifications`, #293). Request handlers outside
+    /// `SuperAdminUser` never use it.
     pub admin_db: PgPool,
     /// How long a client may take to send a request body, on every route
     /// (#219). `BodyReadLimits::PRODUCTION` in production; flow tests
