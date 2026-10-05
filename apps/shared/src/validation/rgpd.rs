@@ -1683,7 +1683,9 @@ mod tests {
         // means the reader follows something other than what was written.
         for href in html.split("<a href=\"").skip(1) {
             let href = href.split('"').next().unwrap_or_default();
-            if href.contains(['(', ' ', '\'']) || href.contains("&quot;") {
+            if href.contains(|c: char| c == '(' || c == '\'' || c.is_whitespace())
+                || href.contains("&quot;")
+            {
                 found.push(format!("link url: {href}"));
             }
         }
@@ -2008,6 +2010,7 @@ mod tests {
             "Voir [x](https://e.org \"titre\").\n",
             "Voir [x](https://e.org 'titre').\n",
             "Voir [x](/a b).\n",
+            "Voir [x](https://e.org/a\tb).\n",
         ]);
     }
 
