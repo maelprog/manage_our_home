@@ -1614,6 +1614,11 @@ mod tests {
     /// - inside a `- ` bullet, any of the above, a heading of any level
     ///   (`- # Titre`), a nested `- ` bullet, and a task box `[ ]`/`[x]`;
     /// - an indented `- ` bullet (the renderer drops the nesting);
+    /// - under a `- ` bullet, a block CommonMark keeps in the item but the
+    ///   renderer moves out of the list: a heading or a table indented under
+    ///   it, a table or a line of text flush against it (a lazy
+    ///   continuation), and any indented line after one or more blank lines
+    ///   (a second paragraph of the item);
     /// - two trailing spaces (a hard line break the renderer joins away).
     ///
     /// Inline markers are read on the text the reader sees — tags dropped,
@@ -1635,17 +1640,24 @@ mod tests {
         for line in md.lines() {
             let t = line.trim();
             if t.is_empty() {
-                prev = Context::Blank;
+                prev = match prev {
+                    Context::List | Context::BlankAfterList => Context::BlankAfterList,
+                    _ => Context::Blank,
+                };
                 continue;
             }
             if line.ends_with("  ") {
                 found.push(format!("hard line break: {t}"));
             }
-            if line.starts_with(char::is_whitespace)
-                && (t.starts_with("- ") || t.starts_with("-\t"))
-            {
+            let indented = line.starts_with(char::is_whitespace);
+            if indented && (t.starts_with("- ") || t.starts_with("-\t")) {
                 found.push(format!("nested bullet: {t}"));
                 prev = Context::List;
+                continue;
+            }
+            if let Some(block) = block_under_bullet(t, indented, prev) {
+                found.push(format!("{block} under a bullet: {t}"));
+                prev = Context::Other;
                 continue;
             }
             let continues = matches!(prev, Context::Paragraph | Context::List);
@@ -1733,9 +1745,39 @@ mod tests {
     #[derive(Clone, Copy, PartialEq)]
     enum Context {
         Blank,
+        /// One or more blank lines after a bullet: CommonMark still lets an
+        /// indented line continue the item there, the renderer does not.
+        BlankAfterList,
         Paragraph,
         List,
         Other,
+    }
+
+    /// The block `t` would put inside the bullet `prev` left open, where the
+    /// renderer closes the list and emits it after: a heading or a table
+    /// indented under the bullet, a table or a line of text flush against it
+    /// (GFM reads it as the item's lazy continuation), and any indented line
+    /// after a blank line (a second paragraph of the item). A line glued to
+    /// the bullet and indented is the continuation the renderer absorbs; a
+    /// heading or a `- ` bullet flush against it closes the item in both.
+    fn block_under_bullet(t: &str, indented: bool, prev: Context) -> Option<&'static str> {
+        match prev {
+            Context::BlankAfterList if indented => Some("block after a blank line"),
+            Context::List if t.starts_with('|') => Some("table"),
+            Context::List => {
+                let after_hashes = t.trim_start_matches('#');
+                let is_heading = after_hashes.len() < t.len()
+                    && (after_hashes.is_empty() || after_hashes.starts_with(char::is_whitespace));
+                if indented {
+                    is_heading.then_some("heading")
+                } else if is_heading || t.starts_with("- ") {
+                    None
+                } else {
+                    Some("lazy continuation text")
+                }
+            }
+            _ => None,
+        }
     }
 
     /// The marker `t` (a trimmed, non-empty, non-table line) opens, if any.
@@ -2119,6 +2161,77 @@ mod tests {
             "- puce\n\t- sous-puce\n",
             "Texte\n  - puce indentée\n",
         ]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_a_heading_under_a_bullet() {
+        // CommonMark keeps it in the item; the renderer closes the list and
+        // emits the heading after it.
+        assert_each_caught(&[
+            "- puce\n  # Titre\n",
+            "- puce\n  ## Titre\n",
+            "- puce\n  ### Titre\n",
+            "- puce\n\t## Titre\n",
+            "- puce\n  qui continue\n  ## Titre\n",
+            "- puce\n\n  ## Titre\n",
+        ]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_a_table_under_a_bullet() {
+        // Indented, CommonMark keeps it in the item; flush against the bullet,
+        // GFM reads its rows as the item's lazy continuation text. Either way
+        // the renderer closes the list and emits a table after it.
+        assert_each_caught(&[
+            "- puce\n  | A | B |\n  |---|---|\n  | x | y |\n",
+            "- puce\n| A | B |\n|---|---|\n| x | y |\n",
+            "- puce\n  qui continue\n  | A | B |\n  |---|---|\n",
+            "- puce\n\n  | A | B |\n  |---|---|\n  | x | y |\n",
+        ]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_a_paragraph_indented_under_a_bullet_after_a_blank_line() {
+        // CommonMark makes it a second paragraph of the item; the renderer
+        // closes the list and emits a paragraph after it.
+        assert_each_caught(&[
+            "- puce\n\n  second paragraphe\n",
+            "- puce\n\n\n  second paragraphe\n",
+            "- puce\n  qui continue\n\n  second paragraphe\n",
+            "- puce\n\n   second paragraphe\n",
+            "- puce\n\n second paragraphe\n",
+        ]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_text_flush_against_a_bullet() {
+        // GFM reads it as the item's lazy continuation (`<li>puce suite</li>`);
+        // the renderer closes the list and emits a paragraph after it.
+        assert_each_caught(&[
+            "- puce\nsuite\n",
+            "- puce\n  qui continue\nsuite\n",
+            "- puce\n#hashtag\n",
+            "- a\nlazy\n\n  second\n",
+        ]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_lets_a_block_follow_a_list_it_does_not_belong_to() {
+        // A line glued to the bullet and indented continues the item, as the
+        // renderer absorbs it; a block flush left after a blank line, or a
+        // heading flush left, closes the list in both readings.
+        for md in [
+            "- puce\n  qui continue\n",
+            "- puce\n      qui continue\n",
+            "- puce\n\nparagraphe\n",
+            "- puce\n## Titre\n",
+            "- puce\n\n## Titre\n",
+            "- puce\n\n| A | B |\n|---|---|\n| x | y |\n",
+            "Texte\n\n  paragraphe indenté\n",
+            "# Titre\n\n  paragraphe indenté\n",
+        ] {
+            assert_eq!(raw_markers_of(md), Vec::<String>::new(), "caught: {md:?}");
+        }
     }
 
     #[test]
