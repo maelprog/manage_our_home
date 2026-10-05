@@ -2134,6 +2134,19 @@ mod tests {
     }
 
     #[test]
+    fn raw_markdown_guard_lets_an_indented_line_continue_a_paragraph() {
+        // Indented code cannot interrupt a paragraph: this is text.
+        assert_eq!(
+            raw_markers_of("Texte\n    suite indentée\n"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            raw_markers_of("- puce\n      suite indentée\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
     fn raw_markdown_guard_reads_a_tab_as_the_blank_after_a_marker() {
         assert_each_caught(&[
             "1.\titem\n",
