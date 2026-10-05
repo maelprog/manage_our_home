@@ -1838,6 +1838,15 @@ mod tests {
         assert!(body.contains("toutes les heures"), "{body}");
         assert!(body.contains("interrompu"), "{body}");
         assert!(body.contains("configuration suspend ce passage"), "{body}");
+        // The same two durations, repeated where the reader who ignores the
+        // email looks (sentences 4 and 5 of `INVITATION_TIME_PHRASES`): each
+        // phrase occurs in its own sentence only, so sentences 1 and 2
+        // cannot keep these green.
+        assert!(
+            body.contains("cesse de fonctionner au bout de 7 jours"),
+            "{body}"
+        );
+        assert!(body.contains("pendant 30 jours après cet envoi"), "{body}");
     }
 
     #[test]
@@ -1875,12 +1884,13 @@ mod tests {
     /// — a word inserted, removed or replaced anywhere between its first word
     /// and its full stop — breaks the exact match, and whichever of its time
     /// words remain are then reported. A change that deletes every one of
-    /// them leaves nothing to report here. Sentences 1, 2 and 3 are covered by
-    /// `invitation_email_states_the_purpose_the_legal_basis_and_the_retention`,
-    /// which asserts "valable 7 jours", "30 jours après cet envoi" and "toutes
-    /// les heures" present. Sentences 4 and 5 are covered by no test: sentence
-    /// 5 carries "30 jours après cet envoi" too, but sentence 2 alone keeps
-    /// that assertion green.
+    /// them leaves nothing to report here. That is why
+    /// `invitation_email_states_the_purpose_the_legal_basis_and_the_retention`
+    /// asserts present a phrase that no other sentence carries: "valable 7
+    /// jours", "dès que le lien est utilisé" and "toutes les heures" for
+    /// sentences 1, 2 and 3, "cesse de fonctionner au bout de 7 jours" and
+    /// "pendant 30 jours après cet envoi" for sentences 4 and 5. Its other
+    /// assertion, "30 jours après cet envoi", matches sentences 2 and 5 both.
     /// Text added before a sentence's first word or after its full stop
     /// leaves the sentence matched and is scanned on its own. Adding an entry
     /// here is a deliberate act, reviewed as such.
