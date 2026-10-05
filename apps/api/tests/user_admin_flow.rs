@@ -117,15 +117,27 @@ async fn non_superadmin_gets_403_on_every_admin_route(db: PgPool) {
 
     let routes = [
         (Method::GET, "/admin/groups".to_string(), None),
-        (Method::GET, format!("/admin/groups/{group_id}/members"), None),
+        (
+            Method::GET,
+            format!("/admin/groups/{group_id}/members"),
+            None,
+        ),
         (
             Method::POST,
             format!("/admin/groups/{group_id}/owner"),
             Some(serde_json::json!({ "user_id": user_id })),
         ),
         (Method::GET, "/admin/users".to_string(), None),
-        (Method::POST, format!("/admin/users/{user_id}/deactivate"), None),
-        (Method::POST, format!("/admin/users/{user_id}/reactivate"), None),
+        (
+            Method::POST,
+            format!("/admin/users/{user_id}/deactivate"),
+            None,
+        ),
+        (
+            Method::POST,
+            format!("/admin/users/{user_id}/reactivate"),
+            None,
+        ),
         (
             Method::POST,
             format!("/admin/users/{user_id}/reactivation-request/refuse"),
