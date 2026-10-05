@@ -124,6 +124,27 @@ async fn export_returns_owned_data_across_categories(db: PgPool) {
     )
     .await;
 
+    // #346: registration writes `age_declared_at` and `created_at` with the
+    // same `now()` of one transaction, so they are equal and an export that
+    // handed back `created_at` under the declaration's name would still match.
+    // Move the declaration to an instant of its own before exporting.
+    let (declared_at, created_at) = sqlx::query_as::<
+        _,
+        (
+            Option<chrono::DateTime<chrono::Utc>>,
+            chrono::DateTime<chrono::Utc>,
+        ),
+    >(
+        "UPDATE users SET age_declared_at = created_at - interval '3 days 7 hours'
+         WHERE email = 'export-owner@example.test'
+         RETURNING age_declared_at, created_at",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let declared_at = declared_at.expect("the declaration was just set");
+    assert_ne!(declared_at, created_at);
+
     let export = call(&router, Method::GET, "/account/export", Some(&cookie), None).await;
     assert_status(&export, StatusCode::OK);
     let doc = json_body(export).await;
@@ -132,13 +153,6 @@ async fn export_returns_owned_data_across_categories(db: PgPool) {
     // #137, #317: the art. 8 GDPR age declaration is data held about the
     // person, so art. 15 hands it back — the very instant on file, not just a
     // non-null field.
-    let declared_at = sqlx::query_scalar::<_, Option<chrono::DateTime<chrono::Utc>>>(
-        "SELECT age_declared_at FROM users WHERE email = 'export-owner@example.test'",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .expect("registration records the age declaration");
     let exported_at: chrono::DateTime<chrono::Utc> =
         serde_json::from_value(doc["profile"]["age_declared_at"].clone())
             .expect("the export carries the age declaration as a timestamp");
