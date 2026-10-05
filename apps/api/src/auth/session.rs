@@ -1,19 +1,15 @@
 use axum::async_trait;
 use axum::extract::{FromRef, FromRequestParts};
 use axum::http::request::Parts;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
 use cookie::{Cookie, SameSite};
-use rand::rngs::OsRng;
-use rand::RngCore;
-use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};
 use tower_cookies::Cookies;
 use uuid::Uuid;
 
 use manage_our_home_shared::dto::auth::ActiveSession;
 
+use super::token::{new_token, token_hash, BearerToken};
 use crate::error::AppError;
 use crate::AppState;
 
@@ -26,8 +22,6 @@ const SESSION_COOKIE_NAME: &str = "session_id";
 /// a sibling subdomain or a plain-HTTP page on the same host cannot plant
 /// one that shadows the real session (cookie tossing, session fixation).
 const HOST_SESSION_COOKIE_NAME: &str = "__Host-session_id";
-/// Raw bytes of a session token (#222), drawn from the OS CSPRNG.
-const SESSION_TOKEN_BYTES: usize = 32;
 /// Absolute lifetime of a session, set at creation in `expires_at` (the
 /// opening plus this, on the database's clock) and in the cookie's
 /// `max_age`. Use never pushes it back. `expires_at` can only move earlier:
@@ -309,7 +303,7 @@ where
     let cookie = cookies
         .get(session_cookie_name(app_state.secure_cookies))
         .ok_or(AppError::Unauthorized)?;
-    let token_hash = session_token_hash(cookie.value()).ok_or(AppError::Unauthorized)?;
+    let token_hash = token_hash(cookie.value()).ok_or(AppError::Unauthorized)?;
 
     let row = sqlx::query!(
         r#"
@@ -587,7 +581,7 @@ where
 /// cookie still sits in the jar the caller passes in, so its name can be
 /// read back from it (`jar.list()`). That route stays open, and
 /// `only_this_module_reads_the_session_cookie` does not see it.
-pub fn set_session_cookie(cookies: &Cookies, token: &SessionToken, secure: bool) {
+pub fn set_session_cookie(cookies: &Cookies, token: &BearerToken, secure: bool) {
     cookies.add(build_session_cookie(token, secure));
 }
 
@@ -608,52 +602,7 @@ fn session_cookie_name(secure: bool) -> &'static str {
     }
 }
 
-/// A fresh session token (#222): the value the cookie carries, and the
-/// hash `sessions.token_hash` keeps. Neither `Debug` nor `Display`, so the
-/// value does not end up in a log by accident.
-pub struct SessionToken {
-    value: String,
-    hash: [u8; 32],
-}
-
-impl SessionToken {
-    /// What the cookie carries: [`SESSION_TOKEN_BYTES`] random bytes,
-    /// unpadded base64url.
-    pub fn value(&self) -> &str {
-        &self.value
-    }
-
-    /// What `sessions.token_hash` keeps: [`session_token_hash`] of
-    /// [`SessionToken::value`].
-    pub fn hash(&self) -> [u8; 32] {
-        self.hash
-    }
-}
-
-pub fn new_session_token() -> SessionToken {
-    let mut bytes = [0u8; SESSION_TOKEN_BYTES];
-    OsRng.fill_bytes(&mut bytes);
-    SessionToken {
-        value: URL_SAFE_NO_PAD.encode(bytes),
-        hash: Sha256::digest(bytes).into(),
-    }
-}
-
-/// The `sessions.token_hash` a cookie value names (#222): the SHA-256 of
-/// the token's raw bytes. `None` for anything that is not a token as
-/// [`new_session_token`] spells it — exactly [`SESSION_TOKEN_BYTES`]
-/// bytes in canonical unpadded base64url — so a malformed cookie is
-/// refused without a query. Computed here, not in SQL, so the token never
-/// travels in a statement or its logged parameters.
-pub fn session_token_hash(cookie_value: &str) -> Option<[u8; 32]> {
-    let bytes = URL_SAFE_NO_PAD.decode(cookie_value).ok()?;
-    if bytes.len() != SESSION_TOKEN_BYTES {
-        return None;
-    }
-    Some(Sha256::digest(bytes).into())
-}
-
-fn build_session_cookie(token: &SessionToken, secure: bool) -> Cookie<'static> {
+fn build_session_cookie(token: &BearerToken, secure: bool) -> Cookie<'static> {
     Cookie::build((session_cookie_name(secure), token.value().to_owned()))
         .http_only(true)
         .secure(secure)
@@ -676,7 +625,7 @@ fn expired_session_cookie(secure: bool) -> Cookie<'static> {
 
 /// Opens a session for `user_id` and returns the token its cookie carries.
 /// The table keeps only the token's hash (#222).
-pub async fn create_session(pool: &PgPool, user_id: Uuid) -> Result<SessionToken, sqlx::Error> {
+pub async fn create_session(pool: &PgPool, user_id: Uuid) -> Result<BearerToken, sqlx::Error> {
     insert_session(pool, user_id, false).await
 }
 
@@ -686,7 +635,7 @@ pub async fn create_session(pool: &PgPool, user_id: Uuid) -> Result<SessionToken
 pub async fn create_restricted_session(
     pool: &PgPool,
     user_id: Uuid,
-) -> Result<SessionToken, sqlx::Error> {
+) -> Result<BearerToken, sqlx::Error> {
     insert_session(pool, user_id, true).await
 }
 
@@ -694,8 +643,8 @@ async fn insert_session(
     pool: &PgPool,
     user_id: Uuid,
     restricted: bool,
-) -> Result<SessionToken, sqlx::Error> {
-    let token = new_session_token();
+) -> Result<BearerToken, sqlx::Error> {
+    let token = new_token();
     // `expires_at` on the database's clock, the one `created_at` and
     // `last_seen_at` are read off: exactly the opening plus the lifetime,
     // which bounds what closing the admin access takes off it (#339).
@@ -783,14 +732,16 @@ pub async fn user_scoped_tx<'a>(
 
 /// Resolves an invitation's `group_id` from its token alone (before
 /// `family_id` is known), relying on the `invitations` RLS policy's
-/// token-based branch rather than bypassing RLS.
+/// token-based branch rather than bypassing RLS. The setting carries the
+/// token's hash in hex (#335), the spelling the policy compares
+/// `invitations.token_hash` in — never the token itself.
 pub async fn token_scoped_tx<'a>(
     pool: &'a PgPool,
-    token: Uuid,
+    token_hash: &[u8; 32],
 ) -> Result<Transaction<'a, Postgres>, sqlx::Error> {
     let mut tx = crate::db::begin(pool).await?;
     sqlx::query("SELECT set_config('app.invitation_token', $1, true)")
-        .bind(token.to_string())
+        .bind(super::token::hash_hex(token_hash))
         .execute(&mut *tx)
         .await?;
     Ok(tx)
@@ -803,70 +754,6 @@ mod tests {
 
     fn at(s: &str) -> DateTime<Utc> {
         s.parse().unwrap()
-    }
-
-    // -- session token (#222) ----------------------------------------------
-
-    #[test]
-    fn a_new_token_is_32_random_bytes_in_unpadded_base64url() {
-        let token = new_session_token();
-        assert_eq!(token.value().len(), 43, "{}", token.value());
-        assert!(token
-            .value()
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
-    }
-
-    #[test]
-    fn a_new_token_carries_the_hash_of_its_own_value() {
-        let token = new_session_token();
-        assert_eq!(session_token_hash(token.value()), Some(token.hash()));
-    }
-
-    #[test]
-    fn two_new_tokens_differ() {
-        let (a, b) = (new_session_token(), new_session_token());
-        assert_ne!(a.value(), b.value());
-        assert_ne!(a.hash(), b.hash());
-    }
-
-    /// The hash is SHA-256 of the 32 decoded bytes: 43 `A`s are 32 zero
-    /// bytes, whose SHA-256 is the published constant below.
-    #[test]
-    fn the_hash_is_sha256_of_the_decoded_bytes() {
-        let zeros = "A".repeat(43);
-        let expected = "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925";
-        let hash = session_token_hash(&zeros).expect("a well-formed token");
-        let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
-        assert_eq!(hex, expected);
-    }
-
-    /// Whatever is not a token as `new_session_token` spells it is refused
-    /// before any query: the former cookie (a `sessions.id`), a hash in hex,
-    /// padded or standard base64, a token one character short or long, and
-    /// a non-canonical spelling of a valid one (the last character's spare
-    /// bits set).
-    #[test]
-    fn anything_but_a_well_formed_token_has_no_hash() {
-        let uuid = Uuid::new_v4().to_string();
-        let hex = "66".repeat(32);
-        let padded = format!("{}=", "A".repeat(43));
-        let standard = format!("{}+A", "A".repeat(41));
-        let short = "A".repeat(42);
-        let long = "A".repeat(44);
-        let non_canonical = format!("{}B", "A".repeat(42));
-        for value in [
-            "",
-            uuid.as_str(),
-            hex.as_str(),
-            padded.as_str(),
-            standard.as_str(),
-            short.as_str(),
-            long.as_str(),
-            non_canonical.as_str(),
-        ] {
-            assert_eq!(session_token_hash(value), None, "{value:?}");
-        }
     }
 
     // -- cookie name (#224) -------------------------------------------------
@@ -889,7 +776,7 @@ mod tests {
     /// session cookie left in place.
     #[test]
     fn both_secure_cookies_meet_the_host_prefix_requirements() {
-        let token = new_session_token();
+        let token = new_token();
         for cookie in [
             build_session_cookie(&token, true),
             expired_session_cookie(true),
@@ -903,7 +790,7 @@ mod tests {
 
     #[test]
     fn insecure_cookies_keep_the_bare_name_and_no_secure_flag() {
-        let token = new_session_token();
+        let token = new_token();
         for cookie in [
             build_session_cookie(&token, false),
             expired_session_cookie(false),
@@ -917,7 +804,7 @@ mod tests {
     /// #222: the cookie carries the token, never the hash the table keeps.
     #[test]
     fn the_session_cookie_carries_the_token() {
-        let token = new_session_token();
+        let token = new_token();
         let cookie = build_session_cookie(&token, true);
         assert_eq!(cookie.value(), token.value());
         assert_eq!(cookie.http_only(), Some(true));

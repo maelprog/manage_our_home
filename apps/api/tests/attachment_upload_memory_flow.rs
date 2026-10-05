@@ -141,13 +141,7 @@ async fn uploader(router: &Router, db: &PgPool) -> (String, String) {
         Some(serde_json::json!({"email": email, "password": password, "display_name": "Mémoire", "declares_minimum_age": true, "accepts_terms": true})),
     )
     .await;
-    let token: uuid::Uuid = sqlx::query_scalar(
-        "SELECT token FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = $1",
-    )
-    .bind(email)
-    .fetch_one(db)
-    .await
-    .unwrap();
+    let token = common::verification_token(db, email).await;
     call(
         router,
         Method::GET,

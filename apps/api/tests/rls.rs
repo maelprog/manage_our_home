@@ -1,5 +1,6 @@
 mod common;
 
+use manage_our_home::auth::token::{hash_hex, new_token};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -168,7 +169,8 @@ async fn invitations_isolated_without_scoping(db: PgPool) {
 
     let expires = chrono::Utc::now() + chrono::Duration::days(7);
     sqlx::query!(
-        "INSERT INTO invitations (group_id, created_by, expires_at) VALUES ($1, $2, $3)",
+        "INSERT INTO invitations (group_id, created_by, expires_at, token_hash)
+         VALUES ($1, $2, $3, gen_random_bytes(32))",
         group_b,
         owner_b,
         expires
@@ -204,6 +206,66 @@ async fn invitations_isolated_without_scoping(db: PgPool) {
         .await
         .unwrap();
     assert!(visible_wrong_scope.is_empty());
+
+    tx.commit().await.unwrap();
+    drop_restricted_role(&db, &role).await;
+}
+
+/// #335: accepting an invitation sets `app.invitation_token` before the
+/// group is known, and the `invitations` policy lets that one row through.
+/// The setting carries the hash of the token in hex, never the token: the
+/// row opens to its hash, and to nothing else — not the token the link
+/// carries, not the hash of another token, not the hash in another
+/// spelling.
+#[sqlx::test]
+async fn an_invitation_is_visible_by_the_hex_of_its_hash_only(db: PgPool) {
+    let owner: Uuid = sqlx::query_scalar(
+        "INSERT INTO users (email, password_hash, display_name, email_verified)
+         VALUES ('e@example.test', 'x', 'E', true) RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let group: Uuid =
+        sqlx::query_scalar("INSERT INTO groups (name, created_by) VALUES ('E', $1) RETURNING id")
+            .bind(owner)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let token = new_token();
+    sqlx::query(
+        "INSERT INTO invitations (group_id, created_by, expires_at, token_hash)
+         VALUES ($1, $2, now() + interval '7 days', $3)",
+    )
+    .bind(group)
+    .bind(owner)
+    .bind(&token.hash()[..])
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let (role, mut tx) = restricted_role_tx(&db).await;
+    let other = new_token();
+    let upper_hex = hash_hex(&token.hash()).to_uppercase();
+    for (setting, visible) in [
+        (hash_hex(&token.hash()), true),
+        (token.value().to_owned(), false),
+        (hash_hex(&other.hash()), false),
+        (upper_hex, false),
+        (String::new(), false),
+    ] {
+        sqlx::query("SELECT set_config('app.invitation_token', $1, true)")
+            .bind(&setting)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let seen: Vec<Uuid> = sqlx::query_scalar("SELECT group_id FROM invitations")
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+        let expected = if visible { vec![group] } else { vec![] };
+        assert_eq!(seen, expected, "app.invitation_token = {setting:?}");
+    }
 
     tx.commit().await.unwrap();
     drop_restricted_role(&db, &role).await;

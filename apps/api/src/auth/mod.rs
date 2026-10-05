@@ -5,6 +5,7 @@ pub mod session;
 pub mod terms_acceptance;
 pub mod throttle;
 pub mod timing;
+pub mod token;
 
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
@@ -38,6 +39,7 @@ use self::session::{
     AnySession, AuthUser,
 };
 use self::timing::{LoginBranch, LoginTiming};
+use self::token::{new_token, token_hash};
 
 pub const EMAIL_VERIFICATION_TTL_HOURS: i64 = 24;
 /// One hour (#138, controller's decision of 2026-09-19): the token is
@@ -119,22 +121,27 @@ pub async fn register(
     .await?;
 
     let expires_at = Utc::now() + Duration::hours(EMAIL_VERIFICATION_TTL_HOURS);
-    let token = sqlx::query_scalar!(
+    let token = new_token();
+    sqlx::query!(
         r#"
-        INSERT INTO email_verification_tokens (user_id, expires_at)
-        VALUES ($1, $2)
-        RETURNING token
+        INSERT INTO email_verification_tokens (user_id, expires_at, token_hash)
+        VALUES ($1, $2, $3)
         "#,
         user.id,
         expires_at,
+        &token.hash()[..],
     )
-    .fetch_one(&mut *tx)
+    .execute(&mut *tx)
     .await?;
     tx.commit().await?;
 
     // Lands on apps/web's /verify-email page (which consumes the token via
     // this API's GET /auth/verify-email), not on the API endpoint itself.
-    let link = format!("{}/verify-email?token={token}", state.frontend_base_url);
+    let link = format!(
+        "{}/verify-email?token={}",
+        state.frontend_base_url,
+        token.value()
+    );
     if let Err(e) = state
         .email
         .send(
@@ -152,13 +159,16 @@ pub async fn register(
 
 #[derive(Deserialize)]
 pub struct VerifyEmailQuery {
-    pub token: Uuid,
+    pub token: String,
 }
 
 pub async fn verify_email(
     State(state): State<AppState>,
     Query(query): Query<VerifyEmailQuery>,
 ) -> AppResult<impl IntoResponse> {
+    // Looked up by its hash (#335): a malformed token is unknown without a
+    // query.
+    let token_hash = token_hash(&query.token).ok_or(AppError::NotFound)?;
     let mut tx = crate::db::begin(&state.db).await?;
     // A token of a deactivated (`deactivated_at`) or purged (`deleted_at`)
     // account answers like an unknown one (#139, #256): support
@@ -168,10 +178,10 @@ pub async fn verify_email(
         SELECT t.user_id, t.expires_at, t.consumed_at
         FROM email_verification_tokens t
         JOIN users u ON u.id = t.user_id
-        WHERE t.token = $1 AND u.deleted_at IS NULL AND u.deactivated_at IS NULL
+        WHERE t.token_hash = $1 AND u.deleted_at IS NULL AND u.deactivated_at IS NULL
         FOR UPDATE OF t
         "#,
-        query.token
+        &token_hash[..]
     )
     .fetch_optional(&mut *tx)
     .await?
@@ -185,8 +195,8 @@ pub async fn verify_email(
     }
 
     sqlx::query!(
-        "UPDATE email_verification_tokens SET consumed_at = now() WHERE token = $1",
-        query.token
+        "UPDATE email_verification_tokens SET consumed_at = now() WHERE token_hash = $1",
+        &token_hash[..]
     )
     .execute(&mut *tx)
     .await?;
@@ -418,7 +428,7 @@ pub async fn revoke_every_session(
 /// any `Referer`. apps/web's `/reset-password` page moves it into the POST
 /// body with a few lines of script (`apps/web/src/routes/auth/reset_password.rs`,
 /// served under `/assets` since #325).
-fn password_reset_link(frontend_base_url: &str, token: Uuid) -> String {
+fn password_reset_link(frontend_base_url: &str, token: &str) -> String {
     format!("{frontend_base_url}/reset-password#token={token}")
 }
 
@@ -436,22 +446,23 @@ pub async fn forgot_password(
     .await?
     {
         let expires_at = Utc::now() + Duration::hours(PASSWORD_RESET_TTL_HOURS);
-        let token = sqlx::query_scalar!(
+        let token = new_token();
+        sqlx::query!(
             r#"
-            INSERT INTO password_reset_tokens (user_id, expires_at)
-            VALUES ($1, $2)
-            RETURNING token
+            INSERT INTO password_reset_tokens (user_id, expires_at, token_hash)
+            VALUES ($1, $2, $3)
             "#,
             user.id,
             expires_at,
+            &token.hash()[..],
         )
-        .fetch_one(&state.db)
+        .execute(&state.db)
         .await?;
 
         // Lands on apps/web's /reset-password form (which POSTs the new
         // password to this API's /auth/password/reset), not on the API
         // endpoint itself (POST-only — a GET there would 405).
-        let link = password_reset_link(&state.frontend_base_url, token);
+        let link = password_reset_link(&state.frontend_base_url, token.value());
         if let Err(e) = state
             .email
             .send(
@@ -498,7 +509,8 @@ pub async fn resend_verification(
     // statement: the new token is inserted (and old ones consumed) only
     // when no token was created within the cooldown window, so concurrent
     // resends can't slip past the rate limit.
-    let token = sqlx::query_scalar!(
+    let token = new_token();
+    let issued = sqlx::query_scalar!(
         r#"
         WITH recent AS (
             SELECT 1
@@ -514,20 +526,25 @@ pub async fn resend_verification(
               AND consumed_at IS NULL
               AND NOT EXISTS (SELECT 1 FROM recent)
         )
-        INSERT INTO email_verification_tokens (user_id, expires_at)
-        SELECT $1, $2
+        INSERT INTO email_verification_tokens (user_id, expires_at, token_hash)
+        SELECT $1, $2, $4
         WHERE NOT EXISTS (SELECT 1 FROM recent)
-        RETURNING token
+        RETURNING user_id
         "#,
         user.id,
         expires_at,
         RESEND_COOLDOWN_MINUTES,
+        &token.hash()[..],
     )
     .fetch_optional(&state.db)
     .await?;
 
-    if let Some(token) = token {
-        let link = format!("{}/auth/verify-email?token={token}", state.public_base_url);
+    if issued.is_some() {
+        let link = format!(
+            "{}/auth/verify-email?token={}",
+            state.public_base_url,
+            token.value()
+        );
         if let Err(e) = state
             .email
             .send(
@@ -549,6 +566,9 @@ pub async fn reset_password(
     State(state): State<AppState>,
     Json(body): Json<ResetPasswordRequest>,
 ) -> AppResult<impl IntoResponse> {
+    // Looked up by its hash (#335): a malformed token is unknown without a
+    // query.
+    let token_hash = token_hash(&body.token).ok_or(AppError::NotFound)?;
     let mut tx = crate::db::begin(&state.db).await?;
     // A token of a deactivated (`deactivated_at`) or purged (`deleted_at`)
     // account answers like an unknown one, and never gives that row a
@@ -558,10 +578,10 @@ pub async fn reset_password(
         SELECT t.user_id, t.expires_at
         FROM password_reset_tokens t
         JOIN users u ON u.id = t.user_id
-        WHERE t.token = $1 AND u.deleted_at IS NULL AND u.deactivated_at IS NULL
+        WHERE t.token_hash = $1 AND u.deleted_at IS NULL AND u.deactivated_at IS NULL
         FOR UPDATE OF t
         "#,
-        body.token
+        &token_hash[..]
     )
     .fetch_optional(&mut *tx)
     .await?
@@ -578,8 +598,8 @@ pub async fn reset_password(
     // worth nothing, so nothing of it is kept. A second use finds no row
     // and answers 404, like a token that never existed.
     sqlx::query!(
-        "DELETE FROM password_reset_tokens WHERE token = $1",
-        body.token
+        "DELETE FROM password_reset_tokens WHERE token_hash = $1",
+        &token_hash[..]
     )
     .execute(&mut *tx)
     .await?;
@@ -664,22 +684,27 @@ pub async fn set_password(
     .execute(&mut *tx)
     .await?;
     let expires_at = Utc::now() + Duration::hours(EMAIL_VERIFICATION_TTL_HOURS);
-    let token = sqlx::query_scalar!(
+    let token = new_token();
+    sqlx::query!(
         r#"
-        INSERT INTO email_verification_tokens (user_id, expires_at)
-        VALUES ($1, $2)
-        RETURNING token
+        INSERT INTO email_verification_tokens (user_id, expires_at, token_hash)
+        VALUES ($1, $2, $3)
         "#,
         auth.user_id,
         expires_at,
+        &token.hash()[..],
     )
-    .fetch_one(&mut *tx)
+    .execute(&mut *tx)
     .await?;
     tx.commit().await?;
 
     // Lands on apps/web's /verify-email page (which consumes the token via
     // this API's GET /auth/verify-email), not on the API endpoint itself.
-    let link = format!("{}/verify-email?token={token}", state.frontend_base_url);
+    let link = format!(
+        "{}/verify-email?token={}",
+        state.frontend_base_url,
+        token.value()
+    );
     if let Err(e) = state
         .email
         .send(
@@ -818,16 +843,16 @@ mod tests {
 
     #[test]
     fn password_reset_link_carries_the_token_in_the_fragment() {
-        let token = Uuid::parse_str("5f0c7a3e-2b1d-4c8e-9a6f-0d3b2e1c4a5b").unwrap();
+        let token = "Zq3_k9XvT2mQ8pLw4rYb7nHc1sDf6gJ0aEuIoVtBy5M";
         assert_eq!(
             password_reset_link("https://maison.example", token),
-            "https://maison.example/reset-password#token=5f0c7a3e-2b1d-4c8e-9a6f-0d3b2e1c4a5b"
+            "https://maison.example/reset-password#token=Zq3_k9XvT2mQ8pLw4rYb7nHc1sDf6gJ0aEuIoVtBy5M"
         );
     }
 
     #[test]
     fn password_reset_link_has_no_query_string() {
-        let link = password_reset_link("http://localhost:3000", Uuid::new_v4());
+        let link = password_reset_link("http://localhost:3000", token::new_token().value());
         let before_fragment = link.split('#').next().unwrap();
         assert!(!before_fragment.contains('?'), "{link}");
         assert_eq!(before_fragment, "http://localhost:3000/reset-password");

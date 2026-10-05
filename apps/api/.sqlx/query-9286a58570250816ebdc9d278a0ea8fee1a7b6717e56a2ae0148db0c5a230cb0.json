@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE email_verification_tokens SET consumed_at = now() WHERE token_hash = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9286a58570250816ebdc9d278a0ea8fee1a7b6717e56a2ae0148db0c5a230cb0"
+}

@@ -6,6 +6,7 @@ use common::{
     assert_status, call, call_upload, drop_prescribed_role, json_body, prescribed_role_pool,
     real_minio_from_env, set_cookie, test_router, test_router_with_storage,
 };
+use manage_our_home::auth::token::token_hash;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -23,13 +24,7 @@ async fn register_verify_login(
         Some(serde_json::json!({"email": email, "password": password, "display_name": email, "declares_minimum_age": true, "accepts_terms": true})),
     )
     .await;
-    let token = sqlx::query_scalar!(
-        "SELECT token FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = $1",
-        email
-    )
-    .fetch_one(db)
-    .await
-    .unwrap();
+    let token = common::verification_token(db, email).await;
     call(
         router,
         Method::GET,
@@ -94,8 +89,8 @@ async fn full_group_lifecycle(db: PgPool) {
 
     // #138: accepting deletes the invitation, and the invited address with
     // it, so re-using the token finds nothing (AC #14 single use).
-    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM invitations WHERE token::text = $1")
-        .bind(&invite_token)
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM invitations WHERE token_hash = $1")
+        .bind(&token_hash(&invite_token).unwrap()[..])
         .fetch_one(&db)
         .await
         .unwrap();
@@ -109,6 +104,17 @@ async fn full_group_lifecycle(db: PgPool) {
     )
     .await;
     assert_status(&reuse, StatusCode::NOT_FOUND);
+    // #335: a link in the former format (a UUID) is unknown, like a
+    // malformed one.
+    let former = call(
+        &router,
+        Method::POST,
+        &format!("/groups/invitations/{}/accept", Uuid::new_v4()),
+        Some(&member_cookie),
+        None,
+    )
+    .await;
+    assert_status(&former, StatusCode::NOT_FOUND);
 
     let member_id: Uuid =
         sqlx::query_scalar!("SELECT id FROM users WHERE email = 'member@example.test'")
@@ -640,18 +646,22 @@ async fn create_invitation_with_email_succeeds_under_prescribed_role(db: PgPool)
 
     // Runtime query on purpose: test-only SQL without a `.sqlx` entry.
     let mut tx = with_family_scope(&db, &group_id).await;
-    let stored: Vec<String> =
-        sqlx::query_scalar("SELECT token::text FROM invitations WHERE group_id = $1::uuid")
+    let stored: Vec<(Vec<u8>, String)> =
+        sqlx::query_as("SELECT i.token_hash, i::text FROM invitations i WHERE group_id = $1::uuid")
             .bind(&group_id)
             .fetch_all(&mut *tx)
             .await
             .unwrap();
     tx.rollback().await.unwrap();
+    assert_eq!(stored.len(), 1, "exactly one invitation");
+    let (hash, row) = &stored[0];
     assert_eq!(
-        stored,
-        vec![token],
-        "exactly one invitation, the one whose token was returned"
+        hash[..],
+        token_hash(&token).unwrap()[..],
+        "the one invitation whose token was returned"
     );
+    // #335: the row keeps the token's hash, never the token itself.
+    assert!(!row.contains(&token), "{row}");
 }
 
 /// AC #9: creating an 11th group is rejected.
@@ -1070,9 +1080,9 @@ async fn expired_invitation_answers_gone(db: PgPool) {
         .unwrap()
         .to_string();
     sqlx::query(
-        "UPDATE invitations SET expires_at = now() - interval '1 minute' WHERE token::text = $1",
+        "UPDATE invitations SET expires_at = now() - interval '1 minute' WHERE token_hash = $1",
     )
-    .bind(&invite_token)
+    .bind(&token_hash(&invite_token).unwrap()[..])
     .execute(&db)
     .await
     .unwrap();
@@ -1087,8 +1097,8 @@ async fn expired_invitation_answers_gone(db: PgPool) {
     .await;
     assert_status(&accept, StatusCode::GONE);
 
-    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM invitations WHERE token::text = $1")
-        .bind(&invite_token)
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM invitations WHERE token_hash = $1")
+        .bind(&token_hash(&invite_token).unwrap()[..])
         .fetch_one(&db)
         .await
         .unwrap();

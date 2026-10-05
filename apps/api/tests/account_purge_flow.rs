@@ -80,10 +80,10 @@ async fn seed_personal_rows(db: &PgPool, group: Uuid, event: Uuid, user: Uuid, t
          VALUES ($1, 'google', $2)",
         "INSERT INTO sessions (user_id, expires_at, token_hash)
          VALUES ($1, now() + interval '1 day', gen_random_bytes(32))",
-        "INSERT INTO email_verification_tokens (user_id, expires_at)
-         VALUES ($1, now() + interval '1 day')",
-        "INSERT INTO password_reset_tokens (user_id, expires_at)
-         VALUES ($1, now() + interval '1 hour')",
+        "INSERT INTO email_verification_tokens (user_id, expires_at, token_hash)
+         VALUES ($1, now() + interval '1 day', gen_random_bytes(32))",
+        "INSERT INTO password_reset_tokens (user_id, expires_at, token_hash)
+         VALUES ($1, now() + interval '1 hour', gen_random_bytes(32))",
         "INSERT INTO audit_log (actor_user_id, action, target_type, target_id)
          VALUES ($1, 'account_data_exported', 'user', $1::text)",
         "INSERT INTO push_subscriptions (user_id, endpoint)
@@ -110,8 +110,8 @@ async fn seed_personal_rows(db: &PgPool, group: Uuid, event: Uuid, user: Uuid, t
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO invitations (group_id, invited_email, created_by, expires_at)
-         VALUES ($1, $2, $3, now() + interval '7 days')",
+        "INSERT INTO invitations (group_id, invited_email, created_by, expires_at, token_hash)
+         VALUES ($1, $2, $3, now() + interval '7 days', gen_random_bytes(32))",
     )
     .bind(group)
     .bind(format!("tiers-{tag}@example.test"))

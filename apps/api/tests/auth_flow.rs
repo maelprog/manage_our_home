@@ -5,6 +5,7 @@ use common::{
     assert_status, call, drop_prescribed_role, json_body, prescribed_role_pool, session_id_of,
     set_cookie, test_router,
 };
+use manage_our_home::auth::token::{new_token, token_hash};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -24,13 +25,7 @@ async fn register_verify_login(
         ),
     )
     .await;
-    let token = sqlx::query_scalar!(
-        "SELECT token FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = $1",
-        email
-    )
-    .fetch_one(db)
-    .await
-    .unwrap();
+    let token = common::verification_token(db, email).await;
     call(
         router,
         Method::GET,
@@ -905,16 +900,7 @@ async fn verify_email_unlocks_login(db: PgPool) {
     .await;
     assert_status(&login_before, StatusCode::UNAUTHORIZED);
 
-    let token = sqlx::query_scalar!(
-        r#"
-        SELECT t.token FROM email_verification_tokens t
-        JOIN users u ON u.id = t.user_id
-        WHERE u.email = 'bob@example.test'
-        "#
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap();
+    let token = common::verification_token(&db, "bob@example.test").await;
 
     let verify = call(
         &router,
@@ -957,12 +943,7 @@ async fn forgot_password_is_anti_enumeration_and_reset_revokes_sessions(db: PgPo
         })),
     )
     .await;
-    let token = sqlx::query_scalar!(
-        "SELECT token FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = 'carol@example.test'"
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap();
+    let token = common::verification_token(&db, "carol@example.test").await;
     call(
         &router,
         Method::GET,
@@ -1000,12 +981,7 @@ async fn forgot_password_is_anti_enumeration_and_reset_revokes_sessions(db: PgPo
     .await;
     assert_eq!(known.status(), unknown.status());
 
-    let reset_token = sqlx::query_scalar!(
-        "SELECT token FROM password_reset_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = 'carol@example.test'"
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap();
+    let reset_token = common::reset_token(&db, "carol@example.test").await;
 
     let reset = call(
         &router,
@@ -1019,8 +995,8 @@ async fn forgot_password_is_anti_enumeration_and_reset_revokes_sessions(db: PgPo
 
     // #138: the token is deleted at use, so a second use finds nothing.
     let left: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM password_reset_tokens WHERE token = $1")
-            .bind(reset_token)
+        sqlx::query_scalar("SELECT count(*) FROM password_reset_tokens WHERE token_hash = $1")
+            .bind(&token_hash(&reset_token).unwrap()[..])
             .fetch_one(&db)
             .await
             .unwrap();
@@ -1052,12 +1028,7 @@ async fn change_password_keeps_current_session_revokes_others(db: PgPool) {
         Some(serde_json::json!({"email": "dave@example.test", "password": "old-password-1", "display_name": "Dave", "declares_minimum_age": true, "accepts_terms": true})),
     )
     .await;
-    let token = sqlx::query_scalar!(
-        "SELECT token FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = 'dave@example.test'"
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap();
+    let token = common::verification_token(&db, "dave@example.test").await;
     call(
         &router,
         Method::GET,
@@ -1127,12 +1098,7 @@ async fn delete_account_blocked_while_owner_then_cancellable(db: PgPool) {
         Some(serde_json::json!({"email": "erin@example.test", "password": "erins-password1", "display_name": "Erin", "declares_minimum_age": true, "accepts_terms": true})),
     )
     .await;
-    let token = sqlx::query_scalar!(
-        "SELECT token FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = 'erin@example.test'"
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap();
+    let token = common::verification_token(&db, "erin@example.test").await;
     call(
         &router,
         Method::GET,
@@ -1317,18 +1283,13 @@ async fn resend_verification_invalidates_old_token_and_new_one_works(db: PgPool)
     )
     .await;
 
-    let old_token = sqlx::query_scalar!(
-        "SELECT token FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = 'fred@example.test'"
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap();
+    let old_token = common::verification_token(&db, "fred@example.test").await;
 
     // Age the registration token past the cooldown window.
-    sqlx::query!(
-        "UPDATE email_verification_tokens SET created_at = now() - interval '10 minutes' WHERE token = $1",
-        old_token
+    sqlx::query(
+        "UPDATE email_verification_tokens SET created_at = now() - interval '10 minutes' WHERE token_hash = $1",
     )
+    .bind(&token_hash(&old_token).unwrap()[..])
     .execute(&db)
     .await
     .unwrap();
@@ -1355,12 +1316,7 @@ async fn resend_verification_invalidates_old_token_and_new_one_works(db: PgPool)
     assert_status(&old_verify, StatusCode::GONE);
 
     // A fresh, unconsumed token was issued; it verifies the email.
-    let new_token = sqlx::query_scalar!(
-        "SELECT token FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = 'fred@example.test' AND t.consumed_at IS NULL"
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap();
+    let new_token = common::verification_token(&db, "fred@example.test").await;
     assert_ne!(old_token, new_token);
 
     let new_verify = call(
@@ -1415,12 +1371,7 @@ async fn resend_verification_noops_for_unknown_and_verified(db: PgPool) {
         })),
     )
     .await;
-    let token = sqlx::query_scalar!(
-        "SELECT token FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = 'grace@example.test'"
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap();
+    let token = common::verification_token(&db, "grace@example.test").await;
     call(
         &router,
         Method::GET,
@@ -1477,18 +1428,13 @@ async fn resend_verification_cooldown_is_silent_noop(db: PgPool) {
     )
     .await;
 
-    let old_token = sqlx::query_scalar!(
-        "SELECT token FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = 'heidi@example.test'"
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap();
+    let old_token = common::verification_token(&db, "heidi@example.test").await;
 
     // Age the registration token so the first resend actually issues one.
-    sqlx::query!(
-        "UPDATE email_verification_tokens SET created_at = now() - interval '10 minutes' WHERE token = $1",
-        old_token
+    sqlx::query(
+        "UPDATE email_verification_tokens SET created_at = now() - interval '10 minutes' WHERE token_hash = $1",
     )
+    .bind(&token_hash(&old_token).unwrap()[..])
     .execute(&db)
     .await
     .unwrap();
@@ -2387,14 +2333,17 @@ async fn expired_reset_token_answers_gone(db: PgPool) {
         .fetch_one(&db)
         .await
         .unwrap();
-    let token: Uuid = sqlx::query_scalar(
-        "INSERT INTO password_reset_tokens (user_id, expires_at) \
-         VALUES ($1, now() - interval '1 minute') RETURNING token",
+    let fresh = new_token();
+    sqlx::query(
+        "INSERT INTO password_reset_tokens (user_id, expires_at, token_hash) \
+         VALUES ($1, now() - interval '1 minute', $2)",
     )
     .bind(user_id)
-    .fetch_one(&db)
+    .bind(&fresh.hash()[..])
+    .execute(&db)
     .await
     .unwrap();
+    let token = fresh.value();
 
     let reset = call(
         &router,
@@ -2407,8 +2356,8 @@ async fn expired_reset_token_answers_gone(db: PgPool) {
     assert_status(&reset, StatusCode::GONE);
 
     let left: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM password_reset_tokens WHERE token = $1")
-            .bind(token)
+        sqlx::query_scalar("SELECT count(*) FROM password_reset_tokens WHERE token_hash = $1")
+            .bind(&fresh.hash()[..])
             .fetch_one(&db)
             .await
             .unwrap();
@@ -2620,4 +2569,144 @@ async fn revoking_all_sessions_ends_the_current_one_too(db: PgPool) {
     )
     .await;
     assert_status(&res, StatusCode::UNAUTHORIZED);
+}
+
+// -- bearer tokens stored by their hash (#335) ------------------------------
+
+/// The three tables that held a bearer token in clear keep only its hash:
+/// no `token` column is left, and every row's `token_hash` is a SHA-256.
+#[sqlx::test]
+async fn token_tables_keep_only_a_32_byte_hash(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "ivan@example.test", "initial-password").await;
+    call(
+        &router,
+        Method::POST,
+        "/auth/password/forgot",
+        None,
+        Some(serde_json::json!({"email": "ivan@example.test"})),
+    )
+    .await;
+    let group = call(
+        &router,
+        Method::POST,
+        "/groups",
+        Some(&cookie),
+        Some(serde_json::json!({"name": "Foyer"})),
+    )
+    .await;
+    let group_id = json_body(group).await["id"].as_str().unwrap().to_string();
+    let invite = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/invitations"),
+        Some(&cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_status(&invite, StatusCode::CREATED);
+
+    for table in [
+        "email_verification_tokens",
+        "password_reset_tokens",
+        "invitations",
+    ] {
+        let columns: Vec<String> = sqlx::query_scalar(
+            "SELECT column_name::text FROM information_schema.columns
+             WHERE table_schema = current_schema() AND table_name = $1",
+        )
+        .bind(table)
+        .fetch_all(&db)
+        .await
+        .unwrap();
+        assert!(
+            !columns.iter().any(|c| c == "token"),
+            "{table}: {columns:?}"
+        );
+        let lengths: Vec<i32> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT octet_length(token_hash) FROM {table}"
+        )))
+        .fetch_all(&db)
+        .await
+        .unwrap();
+        assert!(!lengths.is_empty(), "{table} has no row");
+        assert!(lengths.iter().all(|&n| n == 32), "{table}: {lengths:?}");
+    }
+}
+
+/// A verification token answers once: used, it is gone (410); past its
+/// expiry, too. A token not spelled as the api hands them out — the former
+/// UUID format among them — is unknown (404), like one that never existed.
+#[sqlx::test]
+async fn a_verification_token_is_refused_once_used_expired_or_malformed(db: PgPool) {
+    let router = test_router(db.clone());
+    let verify = |token: String| {
+        let router = router.clone();
+        async move {
+            call(
+                &router,
+                Method::GET,
+                &format!("/auth/verify-email?token={token}"),
+                None,
+                None,
+            )
+            .await
+        }
+    };
+    for email in ["judy@example.test", "kim@example.test"] {
+        call(
+            &router,
+            Method::POST,
+            "/auth/register",
+            None,
+            Some(serde_json::json!({
+                "email": email, "password": "initial-password", "display_name": "T",
+                "declares_minimum_age": true, "accepts_terms": true
+            })),
+        )
+        .await;
+    }
+
+    let used = common::verification_token(&db, "judy@example.test").await;
+    assert_status(&verify(used.clone()).await, StatusCode::OK);
+    assert_status(&verify(used).await, StatusCode::GONE);
+
+    let expired = common::verification_token(&db, "kim@example.test").await;
+    sqlx::query(
+        "UPDATE email_verification_tokens SET expires_at = now() - interval '1 minute'
+         WHERE token_hash = $1",
+    )
+    .bind(&token_hash(&expired).unwrap()[..])
+    .execute(&db)
+    .await
+    .unwrap();
+    assert_status(&verify(expired).await, StatusCode::GONE);
+
+    for malformed in [
+        Uuid::new_v4().to_string(),
+        "A".repeat(42),
+        format!("{}B", "A".repeat(42)),
+    ] {
+        assert_status(&verify(malformed).await, StatusCode::NOT_FOUND);
+    }
+    // Neither is a well-formed token nobody was given.
+    assert_status(&verify("A".repeat(43)).await, StatusCode::NOT_FOUND);
+}
+
+/// Same for a reset: a token in the former UUID format, or malformed, is
+/// unknown (404) and changes nothing.
+#[sqlx::test]
+async fn a_malformed_reset_token_is_unknown(db: PgPool) {
+    let router = test_router(db.clone());
+    for token in [Uuid::new_v4().to_string(), "A".repeat(44), "A".repeat(43)] {
+        let reset = call(
+            &router,
+            Method::POST,
+            "/auth/password/reset",
+            None,
+            Some(serde_json::json!({"token": token, "new_password": "brand-new-password"})),
+        )
+        .await;
+        assert_status(&reset, StatusCode::NOT_FOUND);
+    }
 }

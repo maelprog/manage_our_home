@@ -40,13 +40,7 @@ async fn register_verify_login(router: &axum::Router, db: &PgPool, email: &str) 
         })),
     )
     .await;
-    let token = sqlx::query_scalar!(
-        "SELECT token FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = $1",
-        email
-    )
-    .fetch_one(db)
-    .await
-    .unwrap();
+    let token = common::verification_token(db, email).await;
     call(
         router,
         Method::GET,

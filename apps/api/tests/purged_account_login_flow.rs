@@ -12,6 +12,7 @@ mod common;
 
 use axum::http::{Method, StatusCode};
 use common::{assert_status, call, set_cookie};
+use manage_our_home::auth::token::new_token;
 use manage_our_home::jobs::account_purge::purge_due_accounts;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -94,14 +95,7 @@ async fn register_verify_login(router: &axum::Router, db: &PgPool, email: &str) 
         })),
     )
     .await;
-    let token: Uuid = sqlx::query_scalar(
-        "SELECT t.token FROM email_verification_tokens t
-         JOIN users u ON u.id = t.user_id WHERE u.email = $1",
-    )
-    .bind(email)
-    .fetch_one(db)
-    .await
-    .unwrap();
+    let token = common::verification_token(db, email).await;
     call(
         router,
         Method::GET,
@@ -182,15 +176,18 @@ async fn purged_account(db: &PgPool) -> Purged {
     }
 }
 
-async fn insert_token(db: &PgPool, table: &str, user: Uuid) -> Uuid {
-    sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "INSERT INTO {table} (user_id, expires_at)
-         VALUES ($1, now() + interval '1 hour') RETURNING token"
+async fn insert_token(db: &PgPool, table: &str, user: Uuid) -> String {
+    let token = new_token();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO {table} (user_id, expires_at, token_hash)
+         VALUES ($1, now() + interval '1 hour', $2)"
     )))
     .bind(user)
-    .fetch_one(db)
+    .bind(&token.hash()[..])
+    .execute(db)
     .await
-    .unwrap()
+    .unwrap();
+    token.value().to_owned()
 }
 
 #[sqlx::test]
@@ -324,15 +321,18 @@ async fn an_invitation_cannot_be_accepted_with_the_old_session(db: PgPool) {
     .fetch_one(&db)
     .await
     .unwrap();
-    let token: Uuid = sqlx::query_scalar(
-        "INSERT INTO invitations (group_id, created_by, expires_at)
-         VALUES ($1, $2, now() + interval '7 days') RETURNING token",
+    let invitation = new_token();
+    sqlx::query(
+        "INSERT INTO invitations (group_id, created_by, expires_at, token_hash)
+         VALUES ($1, $2, now() + interval '7 days', $3)",
     )
     .bind(group)
     .bind(owner)
-    .fetch_one(&db)
+    .bind(&invitation.hash()[..])
+    .execute(&db)
     .await
     .unwrap();
+    let token = invitation.value();
 
     let accept = call(
         &purged.router,

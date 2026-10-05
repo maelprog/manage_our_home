@@ -177,9 +177,9 @@ async fn cancelled_token_scoped_tx_leaves_no_open_transaction(
     connect_opts: PgConnectOptions,
 ) {
     let pool = single_connection_pool(pool_opts, connect_opts.clone()).await;
-    let token = Uuid::new_v4();
+    let token_hash = manage_our_home::auth::token::new_token().hash();
     assert_cancel_never_leaks(&pool, &connect_opts, || {
-        manage_our_home::auth::session::token_scoped_tx(&pool, token)
+        manage_our_home::auth::session::token_scoped_tx(&pool, &token_hash)
     })
     .await;
 }

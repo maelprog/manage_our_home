@@ -68,7 +68,7 @@ pub struct ResendVerificationRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResetPasswordRequest {
-    pub token: Uuid,
+    pub token: String,
     pub new_password: String,
 }
 

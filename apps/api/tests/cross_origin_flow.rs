@@ -80,13 +80,7 @@ async fn member(router: &axum::Router, db: &PgPool, email: &str) -> String {
     )
     .await;
     assert_status(&reg, StatusCode::CREATED);
-    let token: uuid::Uuid = sqlx::query_scalar(
-        "SELECT token FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = $1",
-    )
-    .bind(email)
-    .fetch_one(db)
-    .await
-    .unwrap();
+    let token = common::verification_token(db, email).await;
     call(
         router,
         Method::GET,

@@ -11,6 +11,7 @@ use uuid::Uuid;
 use crate::agenda::attachments;
 use crate::audit;
 use crate::auth::session::{scoped_tx, token_scoped_tx, user_scoped_tx, AuthUser};
+use crate::auth::token::{new_token, token_hash};
 use crate::error::{AppError, AppResult};
 use crate::AppState;
 
@@ -442,16 +443,20 @@ pub async fn create_invitation(
     }
 
     let expires_at = Utc::now() + Duration::days(INVITATION_TTL_DAYS);
-    let invitation = sqlx::query!(
+    // Only the token's hash is stored (#335): the token goes out in the
+    // email and in this response, and nowhere else.
+    let token = new_token();
+    let invitation_id = sqlx::query_scalar!(
         r#"
-        INSERT INTO invitations (group_id, invited_email, created_by, expires_at)
-        VALUES ($1, $2, $3, $4)
-        RETURNING id, token
+        INSERT INTO invitations (group_id, invited_email, created_by, expires_at, token_hash)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id
         "#,
         group_id,
         body.invited_email,
         auth.user_id,
         expires_at,
+        &token.hash()[..],
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -478,7 +483,8 @@ pub async fn create_invitation(
     if let (Some(email), Some((group_name, inviter_display_name))) = (&body.invited_email, notice) {
         let link = format!(
             "{}/groups/invitations/{}/accept",
-            state.frontend_base_url, invitation.token
+            state.frontend_base_url,
+            token.value()
         );
         // Absolute: the reader has no session, and no browser tab open on
         // this service, to resolve a relative path against.
@@ -503,7 +509,7 @@ pub async fn create_invitation(
 
     Ok((
         StatusCode::CREATED,
-        Json(json!({ "id": invitation.id, "token": invitation.token })),
+        Json(json!({ "id": invitation_id, "token": token.value() })),
     ))
 }
 
@@ -512,13 +518,19 @@ pub async fn create_invitation(
 pub async fn accept_invitation(
     State(state): State<AppState>,
     auth: AuthUser,
-    Path(token): Path<Uuid>,
+    Path(token): Path<String>,
 ) -> AppResult<impl IntoResponse> {
-    let mut lookup_tx = token_scoped_tx(&state.db, token).await?;
-    let group_id = sqlx::query_scalar!("SELECT group_id FROM invitations WHERE token = $1", token)
-        .fetch_optional(&mut *lookup_tx)
-        .await?
-        .ok_or(AppError::NotFound)?;
+    // Looked up by its hash (#335): a malformed token is unknown without a
+    // query.
+    let token_hash = token_hash(&token).ok_or(AppError::NotFound)?;
+    let mut lookup_tx = token_scoped_tx(&state.db, &token_hash).await?;
+    let group_id = sqlx::query_scalar!(
+        "SELECT group_id FROM invitations WHERE token_hash = $1",
+        &token_hash[..]
+    )
+    .fetch_optional(&mut *lookup_tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
     lookup_tx.commit().await?;
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
@@ -526,10 +538,10 @@ pub async fn accept_invitation(
         r#"
         SELECT id, expires_at
         FROM invitations
-        WHERE token = $1
+        WHERE token_hash = $1
         FOR UPDATE
         "#,
-        token
+        &token_hash[..]
     )
     .fetch_optional(&mut *tx)
     .await?
@@ -542,9 +554,12 @@ pub async fn accept_invitation(
     // Deleted at acceptance rather than marked consumed (#138): the row
     // carries the invited address, which has no use once the person is a
     // member. A second use finds no row and answers 404.
-    sqlx::query!("DELETE FROM invitations WHERE token = $1", token)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query!(
+        "DELETE FROM invitations WHERE token_hash = $1",
+        &token_hash[..]
+    )
+    .execute(&mut *tx)
+    .await?;
 
     sqlx::query!(
         r#"

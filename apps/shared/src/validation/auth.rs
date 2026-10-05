@@ -145,6 +145,23 @@ pub fn format_terms_version(version: &str) -> String {
         .unwrap_or_else(|_| version.to_string())
 }
 
+/// Length of a bearer token as the api spells it (#222, #335): 32 random
+/// bytes in unpadded base64url are 43 characters.
+pub const BEARER_TOKEN_LEN: usize = 43;
+
+/// Whether `token` is spelled like a bearer token the api hands out — a
+/// session cookie, an invitation, a password reset or an email verification
+/// link (#335): exactly [`BEARER_TOKEN_LEN`] characters of the base64url
+/// alphabet. apps/web checks this before putting a token in an api URL, so
+/// a mangled link gets its "invalid link" page without a request. The api
+/// decides the rest (canonical spelling, existence).
+pub fn is_bearer_token(token: &str) -> bool {
+    token.len() == BEARER_TOKEN_LEN
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,5 +359,38 @@ mod tests {
     #[test]
     fn the_version_in_force_is_a_date() {
         assert!(chrono::NaiveDate::parse_from_str(TERMS_VERSION, "%Y-%m-%d").is_ok());
+    }
+
+    // -- is_bearer_token (#335) -----------------------------------------
+
+    #[test]
+    fn a_token_of_43_base64url_characters_is_well_formed() {
+        assert!(is_bearer_token(
+            "Zq3_k9XvT2mQ8pLw4rYb7nHc1sDf6gJ0aEuIoVtBy5M"
+        ));
+        assert!(is_bearer_token(&"A".repeat(43)));
+        assert!(is_bearer_token(&format!("{}-_", "a".repeat(41))));
+    }
+
+    /// The former format (a UUID), a hash in hex, padded or standard base64,
+    /// one character short or long, and characters outside the alphabet —
+    /// a `/` or a `?` would also change the URL the token is put in.
+    #[test]
+    fn anything_else_is_not_a_bearer_token() {
+        for token in [
+            String::new(),
+            "b6f1a4c2-3d5e-4f60-9a71-8b2c3d4e5f60".to_string(),
+            "66".repeat(32),
+            format!("{}=", "A".repeat(42)),
+            format!("{}+A", "A".repeat(41)),
+            format!("{}/A", "A".repeat(41)),
+            format!("{}?A", "A".repeat(41)),
+            format!("{} A", "A".repeat(41)),
+            "A".repeat(42),
+            "A".repeat(44),
+            format!("{}é", "A".repeat(41)),
+        ] {
+            assert!(!is_bearer_token(&token), "{token:?}");
+        }
     }
 }
