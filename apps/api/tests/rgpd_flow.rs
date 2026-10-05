@@ -124,26 +124,31 @@ async fn export_returns_owned_data_across_categories(db: PgPool) {
     )
     .await;
 
-    // #346: registration writes `age_declared_at` and `created_at` with the
-    // same `now()` of one transaction, so they are equal and an export that
-    // handed back `created_at` under the declaration's name would still match.
-    // Move the declaration to an instant of its own before exporting.
-    let (declared_at, created_at) = sqlx::query_as::<
+    // #346: registration writes `age_declared_at`, `terms_accepted_at` and
+    // `created_at` with the same `now()` of one transaction, so they are equal
+    // and an export that handed back one under another's name would still
+    // match. Move each to an instant of its own before exporting.
+    let (declared_at, accepted_at, created_at) = sqlx::query_as::<
         _,
         (
+            Option<chrono::DateTime<chrono::Utc>>,
             Option<chrono::DateTime<chrono::Utc>>,
             chrono::DateTime<chrono::Utc>,
         ),
     >(
-        "UPDATE users SET age_declared_at = created_at - interval '3 days 7 hours'
+        "UPDATE users SET age_declared_at = created_at - interval '3 days 7 hours',
+                          terms_accepted_at = created_at - interval '1 day 2 hours'
          WHERE email = 'export-owner@example.test'
-         RETURNING age_declared_at, created_at",
+         RETURNING age_declared_at, terms_accepted_at, created_at",
     )
     .fetch_one(&db)
     .await
     .unwrap();
     let declared_at = declared_at.expect("the declaration was just set");
+    let accepted_at = accepted_at.expect("the acceptance was just set");
     assert_ne!(declared_at, created_at);
+    assert_ne!(accepted_at, created_at);
+    assert_ne!(accepted_at, declared_at);
 
     let export = call(&router, Method::GET, "/account/export", Some(&cookie), None).await;
     assert_status(&export, StatusCode::OK);
@@ -171,10 +176,11 @@ async fn export_returns_owned_data_across_categories(db: PgPool) {
             .terms_accepted_version
             .expect("registration records the acceptance")
     );
-    let accepted_at: chrono::DateTime<chrono::Utc> =
+    let exported_accepted_at: chrono::DateTime<chrono::Utc> =
         serde_json::from_value(doc["profile"]["terms_accepted_at"].clone())
             .expect("the export carries the acceptance as a timestamp");
-    assert_eq!(Some(accepted_at), terms.terms_accepted_at);
+    assert_eq!(Some(exported_accepted_at), terms.terms_accepted_at);
+    assert_eq!(exported_accepted_at, accepted_at);
     assert_eq!(doc["group_memberships"][0]["name"], "Foyer Export");
     assert_eq!(doc["group_memberships"][0]["role"], "owner");
     assert_eq!(doc["stock_items"][0]["name"], "Farine");
