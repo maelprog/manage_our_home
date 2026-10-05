@@ -1616,8 +1616,9 @@ mod tests {
     /// - an indented `- ` bullet (the renderer drops the nesting);
     /// - under a `- ` bullet, a block CommonMark keeps in the item but the
     ///   renderer moves out of the list: a heading or a table indented under
-    ///   it, a table flush against it, and any indented line after one or
-    ///   more blank lines (a second paragraph of the item);
+    ///   it, a table or a line of text flush against it (a lazy
+    ///   continuation), and any indented line after one or more blank lines
+    ///   (a second paragraph of the item);
     /// - two trailing spaces (a hard line break the renderer joins away).
     ///
     /// Inline markers are read on the text the reader sees — tags dropped,
@@ -1754,19 +1755,26 @@ mod tests {
 
     /// The block `t` would put inside the bullet `prev` left open, where the
     /// renderer closes the list and emits it after: a heading or a table
-    /// indented under the bullet, a table flush against it (GFM reads its
-    /// rows as the item's lazy continuation), and any indented line after a
-    /// blank line (a second paragraph of the item). A line glued to the
-    /// bullet and indented is the continuation the renderer absorbs.
+    /// indented under the bullet, a table or a line of text flush against it
+    /// (GFM reads it as the item's lazy continuation), and any indented line
+    /// after a blank line (a second paragraph of the item). A line glued to
+    /// the bullet and indented is the continuation the renderer absorbs; a
+    /// heading or a `- ` bullet flush against it closes the item in both.
     fn block_under_bullet(t: &str, indented: bool, prev: Context) -> Option<&'static str> {
         match prev {
             Context::BlankAfterList if indented => Some("block after a blank line"),
             Context::List if t.starts_with('|') => Some("table"),
-            Context::List if indented => {
+            Context::List => {
                 let after_hashes = t.trim_start_matches('#');
-                (after_hashes.len() < t.len()
-                    && (after_hashes.is_empty() || after_hashes.starts_with(char::is_whitespace)))
-                .then_some("heading")
+                let is_heading = after_hashes.len() < t.len()
+                    && (after_hashes.is_empty() || after_hashes.starts_with(char::is_whitespace));
+                if indented {
+                    is_heading.then_some("heading")
+                } else if is_heading || t.starts_with("- ") {
+                    None
+                } else {
+                    Some("lazy continuation text")
+                }
             }
             _ => None,
         }
@@ -2190,8 +2198,20 @@ mod tests {
             "- puce\n\n  second paragraphe\n",
             "- puce\n\n\n  second paragraphe\n",
             "- puce\n  qui continue\n\n  second paragraphe\n",
-            "- puce\n\n\tsecond paragraphe\n",
+            "- puce\n\n   second paragraphe\n",
             "- puce\n\n second paragraphe\n",
+        ]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_text_flush_against_a_bullet() {
+        // GFM reads it as the item's lazy continuation (`<li>puce suite</li>`);
+        // the renderer closes the list and emits a paragraph after it.
+        assert_each_caught(&[
+            "- puce\nsuite\n",
+            "- puce\n  qui continue\nsuite\n",
+            "- puce\n#hashtag\n",
+            "- a\nlazy\n\n  second\n",
         ]);
     }
 
