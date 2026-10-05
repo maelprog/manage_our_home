@@ -1612,7 +1612,9 @@ mod tests {
     ///   not continue a paragraph or a bullet: indented code;
     /// - a link reference definition, `[label]:` or `[^note]:`;
     /// - inside a `- ` bullet, any of the above, a nested `- ` bullet, and a
-    ///   task box `[ ]`/`[x]`.
+    ///   task box `[ ]`/`[x]`;
+    /// - an indented `- ` bullet (the renderer drops the nesting);
+    /// - two trailing spaces (a hard line break the renderer joins away).
     ///
     /// Inline markers are read on the text the reader sees — tags dropped,
     /// `<code>` content dropped since it is shown verbatim on purpose: `**`,
@@ -1624,7 +1626,9 @@ mod tests {
     /// quote (a URL cut at its first `)`, or carrying a title), an escaped
     /// `<` (raw HTML, an autolink), an escaped entity
     /// reference (`&copy;`, `&#169;`), any `\` (a backslash escape or a hard
-    /// break), and the pipe syntax of a table that did not render.
+    /// break), and the pipe syntax of a table that did not render. Outside
+    /// links and code spans: a bare `http://`, `https://` or `www.` URL, and
+    /// an `@` between two word characters (an address GFM would link).
     fn raw_markdown_markers(md: &str, html: &str) -> Vec<String> {
         let mut found = Vec::new();
         let mut prev = Context::Blank;
@@ -1632,6 +1636,16 @@ mod tests {
             let t = line.trim();
             if t.is_empty() {
                 prev = Context::Blank;
+                continue;
+            }
+            if line.ends_with("  ") {
+                found.push(format!("hard line break: {t}"));
+            }
+            if line.starts_with(char::is_whitespace)
+                && (t.starts_with("- ") || t.starts_with("-\t"))
+            {
+                found.push(format!("nested bullet: {t}"));
+                prev = Context::List;
                 continue;
             }
             let continues = matches!(prev, Context::Paragraph | Context::List);
@@ -1671,6 +1685,11 @@ mod tests {
             let href = href.split('"').next().unwrap_or_default();
             if href.contains(['(', ' ', '\'']) || href.contains("&quot;") {
                 found.push(format!("link url: {href}"));
+            }
+        }
+        for text in text_outside_links(html) {
+            if has_bare_link(&text) {
+                found.push(format!("bare url or address: {text}"));
             }
         }
         for text in visible_text(html) {
@@ -1844,6 +1863,42 @@ mod tests {
                 text
             })
             .collect()
+    }
+
+    /// Each output line's text outside links and code spans: where a bare
+    /// URL or address would be text here and a link under GFM.
+    fn text_outside_links(html: &str) -> Vec<String> {
+        html.lines()
+            .map(|line| {
+                let mut text = String::new();
+                let mut rest = line;
+                while let Some(open) = rest.find('<') {
+                    text.push_str(&rest[..open]);
+                    let tail = &rest[open..];
+                    let close = if tail.starts_with("<a ") {
+                        "</a>"
+                    } else if tail.starts_with("<code>") {
+                        "</code>"
+                    } else {
+                        ">"
+                    };
+                    rest = tail.find(close).map_or("", |end| &tail[end + close.len()..]);
+                }
+                text.push_str(rest);
+                text
+            })
+            .collect()
+    }
+
+    /// What GFM would turn into a link: `http://`, `https://`, `www.`, or an
+    /// `@` between two word characters (an e-mail address).
+    fn has_bare_link(text: &str) -> bool {
+        let chars: Vec<char> = text.chars().collect();
+        let word = |i: usize| chars.get(i).is_some_and(|c| c.is_alphanumeric());
+        text.contains("http://")
+            || text.contains("https://")
+            || text.contains("www.")
+            || (1..chars.len()).any(|i| chars[i] == '@' && word(i - 1) && word(i + 1))
     }
 
     /// No markdown marker survived into the output: a shipped document has to
@@ -2035,6 +2090,47 @@ mod tests {
     #[test]
     fn raw_markdown_guard_catches_a_closing_heading_sequence() {
         assert_each_caught(&["## Titre ##\n", "# Titre #\n"]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_a_bullet_nested_under_another() {
+        // The renderer puts it at the same level: the nesting is lost.
+        assert_each_caught(&[
+            "- puce\n  - sous-puce\n",
+            "- puce\n    - sous-puce\n",
+            "- puce\n\t- sous-puce\n",
+            "Texte\n  - puce indentée\n",
+        ]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_a_hard_line_break() {
+        // Two trailing spaces break the line in CommonMark; the renderer
+        // joins it with the next one.
+        assert_each_caught(&["ligne  \nsuite\n", "- puce  \n  suite\n"]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_a_bare_url_or_address() {
+        // GFM turns them into links; the renderer leaves them as text.
+        assert_each_caught(&[
+            "Voir https://example.org ici.\n",
+            "Voir http://example.org.\n",
+            "Voir www.example.org.\n",
+            "Écrire à contact@example.org.\n",
+            "- puce vers www.example.org\n",
+            "| A |\n|---|\n| https://example.org |\n",
+            "Voir [le site](https://example.org) ou https://example.org.\n",
+        ]);
+        // Inside a link or a code span, they are what the reader should see.
+        assert_eq!(
+            raw_markers_of(
+                "Écrire à [contact@example.org](mailto:contact@example.org), \
+                 voir [www.example.org](https://www.example.org) ou \
+                 `https://example.org`.\n"
+            ),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
