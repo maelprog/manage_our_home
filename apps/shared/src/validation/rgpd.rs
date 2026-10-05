@@ -1587,46 +1587,77 @@ mod tests {
     }
 
     /// The markdown markers of `md` that `render_markdown` left raw in `html`,
-    /// one entry per finding.
+    /// one entry per finding. When in doubt it reports: a false positive costs
+    /// a reword, a false negative ships raw syntax to the reader.
     ///
     /// Block markers are read on the source lines: the renderer joins a
     /// paragraph's lines with a space, so a numbered list, a quote or a rule
     /// written under a line of text is no longer at the start of anything in
-    /// the output. The line-start markers looked for there are exactly: a
-    /// heading of level 4 or deeper (or a bare `#`), `>`, a number followed by
-    /// `.` or `)`, and a line of three or more `-`, `*` or `_` (a rule, or a
-    /// setext underline in `-`). Nothing else is: a `=` setext underline,
-    /// `+ ` bullets, fenced or indented code pass unseen.
+    /// the output. The line-start markers looked for there are exactly:
+    ///
+    /// - a heading of level 4 or deeper, a bare `#`, or a heading closed by
+    ///   a `#` sequence (`## Titre ##`);
+    /// - `>`;
+    /// - a number followed by `.` or `)` — except on a line that continues a
+    ///   paragraph, where only a `1` is refused, the one number CommonMark
+    ///   lets interrupt a paragraph (`2024. Son I` wrapped under text is text);
+    /// - a line made only of `-` or of `=` (a setext underline, an empty
+    ///   bullet), and a line of three or more `*` or `_` (a rule);
+    /// - a `+` or `*` bullet, and a `-` followed by anything but a space;
+    /// - a code fence, ```` ``` ```` or `~~~`;
+    /// - a line indented by four columns or more (a tab counts four) that does
+    ///   not continue a paragraph or a bullet: indented code;
+    /// - a link reference definition, `[label]:` or `[^note]:`;
+    /// - inside a `- ` bullet, any of the above, a nested `- ` bullet, and a
+    ///   task box `[ ]`/`[x]`.
     ///
     /// Inline markers are read on the text the reader sees — tags dropped,
     /// `<code>` content dropped since it is shown verbatim on purpose: `**`,
     /// any `*`, a `_` opening or closing a word (`snake_case` is left alone),
-    /// and the pipe syntax of a table that did not render.
-    ///
-    /// The number check also fires on a wrapped line that merely starts with
-    /// one (`2024. Son I`), where CommonMark would see a list only for `1.`:
-    /// a false positive, so it fails on the safe side.
+    /// any backtick (a code span left open), any `~` (strikethrough), `](`,
+    /// `][` and `![` (a link the renderer refused, a reference link, an
+    /// image), a `!` glued before a rendered link (an image whose URL was
+    /// accepted), an escaped `<` (raw HTML, an autolink), an escaped entity
+    /// reference (`&copy;`, `&#169;`), any `\` (a backslash escape or a hard
+    /// break), and the pipe syntax of a table that did not render.
     fn raw_markdown_markers(md: &str, html: &str) -> Vec<String> {
         let mut found = Vec::new();
+        let mut prev = Context::Blank;
         for line in md.lines() {
             let t = line.trim();
-            if t.is_empty() || t.starts_with('|') {
+            if t.is_empty() {
+                prev = Context::Blank;
                 continue;
             }
-            let hashes = t.chars().take_while(|&c| c == '#').count();
-            let after_hashes = &t[hashes..];
-            if hashes > 0
-                && (after_hashes.is_empty() || after_hashes.starts_with(' '))
-                && heading(t).is_none()
-            {
-                found.push(format!("heading: {t}"));
-            } else if t.starts_with('>') {
-                found.push(format!("blockquote: {t}"));
-            } else if is_ordered_item(t) {
-                found.push(format!("numbered list: {t}"));
-            } else if is_thematic_break(t) {
-                found.push(format!("rule: {t}"));
+            let continues = matches!(prev, Context::Paragraph | Context::List);
+            if indent_columns(line) >= 4 && !continues {
+                found.push(format!("indented code: {t}"));
+                prev = Context::Other;
+                continue;
             }
+            if t.starts_with('|') {
+                prev = Context::Other;
+                continue;
+            }
+            if let Some(marker) = line_start_marker(t, prev == Context::Paragraph) {
+                found.push(format!("{marker}: {t}"));
+                prev = Context::Other;
+                continue;
+            }
+            prev = if t.starts_with("- ") {
+                Context::List
+            } else if heading(t).is_some() {
+                Context::Other
+            } else if prev == Context::List && line.starts_with(char::is_whitespace) {
+                Context::List
+            } else {
+                Context::Paragraph
+            };
+        }
+        // An image whose URL the renderer accepted: its `!` is left before
+        // the link, so it never reaches the visible text as `![`.
+        for line in html.lines().filter(|l| l.contains("!<a href=")) {
+            found.push(format!("image: {line}"));
         }
         for text in visible_text(html) {
             let chars: Vec<char> = text.chars().collect();
@@ -1639,8 +1670,105 @@ mod tests {
             if text.contains(" | ") || text.contains("|---") {
                 found.push(format!("table: {text}"));
             }
+            if text.contains('`') {
+                found.push(format!("code span: {text}"));
+            }
+            if text.contains('~') {
+                found.push(format!("strikethrough: {text}"));
+            }
+            if text.contains("](") || text.contains("][") || text.contains("![") {
+                found.push(format!("link or image: {text}"));
+            }
+            if text.contains("&lt;") {
+                found.push(format!("raw html: {text}"));
+            }
+            if has_escaped_entity(&text) {
+                found.push(format!("entity: {text}"));
+            }
+            if text.contains('\\') {
+                found.push(format!("backslash: {text}"));
+            }
         }
         found
+    }
+
+    /// What the previous source line left open, as far as the guard needs:
+    /// a paragraph, a `- ` bullet (with its indented continuations), nothing
+    /// (a blank line, the start), or another block.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Context {
+        Blank,
+        Paragraph,
+        List,
+        Other,
+    }
+
+    /// The marker `t` (a trimmed, non-empty, non-table line) opens, if any.
+    /// `in_paragraph`: the line would continue a paragraph.
+    fn line_start_marker(t: &str, in_paragraph: bool) -> Option<&'static str> {
+        let hashes = t.chars().take_while(|&c| c == '#').count();
+        let after_hashes = &t[hashes..];
+        if hashes > 0 && (after_hashes.is_empty() || after_hashes.starts_with(' ')) {
+            match heading(t) {
+                None => return Some("heading"),
+                Some((_, text)) => {
+                    let open = text.trim_end_matches('#');
+                    if open.len() < text.len() && (open.is_empty() || open.ends_with(' ')) {
+                        return Some("heading closing sequence");
+                    }
+                }
+            }
+        }
+        if t.starts_with('>') {
+            return Some("blockquote");
+        }
+        if is_ordered_item(t) && (!in_paragraph || ordered_start(t) == Some(1)) {
+            return Some("numbered list");
+        }
+        let marks: Vec<char> = t.chars().filter(|c| !c.is_whitespace()).collect();
+        if marks.iter().all(|&c| c == '=') || marks.iter().all(|&c| c == '-') {
+            return Some("setext underline or empty bullet");
+        }
+        if is_thematic_break(t) {
+            return Some("rule");
+        }
+        if t.starts_with("```") || t.starts_with("~~~") {
+            return Some("code fence");
+        }
+        if t.starts_with('[') && t.contains("]:") {
+            return Some("reference definition");
+        }
+        let mut rest = t.chars();
+        let first = rest.next();
+        let second = rest.next();
+        if matches!(first, Some('+' | '*')) && second.is_none_or(char::is_whitespace) {
+            return Some("bullet");
+        }
+        if first == Some('-') && second.is_some_and(|c| c != ' ' && c.is_whitespace()) {
+            return Some("bullet");
+        }
+        let item = t.strip_prefix("- ")?.trim_start();
+        if item.starts_with("- ") {
+            return Some("nested bullet");
+        }
+        if ["[ ]", "[x]", "[X]"].iter().any(|b| item.starts_with(b)) {
+            return Some("task box");
+        }
+        line_start_marker(item, false)
+    }
+
+    /// The width of `line`'s leading whitespace, a tab counting up to the
+    /// next multiple of four as CommonMark does.
+    fn indent_columns(line: &str) -> usize {
+        let mut columns = 0;
+        for c in line.chars() {
+            match c {
+                ' ' => columns += 1,
+                '\t' => columns += 4 - columns % 4,
+                _ => break,
+            }
+        }
+        columns
     }
 
     /// `1. `, `1) `, or the number alone on its line: an ordered-list item.
@@ -1650,6 +1778,25 @@ mod tests {
         digits > 0
             && (rest.starts_with('.') || rest.starts_with(')'))
             && (rest.len() == 1 || rest[1..].starts_with(' '))
+    }
+
+    /// The number an ordered item starts with (`01.` starts at 1).
+    fn ordered_start(t: &str) -> Option<u64> {
+        let digits: String = t.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    }
+
+    /// An entity reference of the source, escaped by the renderer: `&amp;`
+    /// followed by a name or `#` number and `;`. A plain `&` is left alone.
+    fn has_escaped_entity(text: &str) -> bool {
+        text.match_indices("&amp;").any(|(at, m)| {
+            let tail = &text[at + m.len()..];
+            let name = tail
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '#')
+                .count();
+            name > 0 && tail[name..].starts_with(';')
+        })
     }
 
     /// Three or more of the same `-`, `*` or `_`, spaces allowed between.
@@ -1749,6 +1896,139 @@ mod tests {
         assert!(!raw_markers_of("Du **gras non fermé.\n").is_empty());
         assert!(!raw_markers_of("#### Trop profond\n").is_empty());
         assert!(!raw_markers_of("Texte\n#### Collé\n").is_empty());
+    }
+
+    /// Each of `inputs` leaves at least one marker for the guard to report.
+    fn assert_each_caught(inputs: &[&str]) {
+        for md in inputs {
+            assert!(!raw_markers_of(md).is_empty(), "not caught: {md:?}");
+        }
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_a_link_the_renderer_refused() {
+        // A refused URL leaves the whole `[label](url)` on the page.
+        assert_each_caught(&[
+            "Voir [s](www.example.org).\n",
+            "Voir [l](architecture.md).\n",
+            "Voir [x](javascript:alert(1)).\n",
+            "- une [l](architecture.md)\n",
+        ]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_an_image() {
+        // Even with an allowed URL: the renderer makes it `!<a>`.
+        assert_each_caught(&[
+            "![img](https://example.org/a.png)\n",
+            "Logo ![img](/a.png) ici.\n",
+        ]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_a_reference_link() {
+        assert_each_caught(&[
+            "Voir [a][b].\n",
+            "Voir [a][].\n",
+            "[b]: https://example.org\n",
+            "Texte\n[b]: https://example.org\n",
+            "[^1]: une note\n",
+        ]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_strikethrough() {
+        assert_each_caught(&["Du ~~barré~~ ici.\n", "Du ~barré~ ici.\n"]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_an_unclosed_backtick() {
+        assert_each_caught(&["Un `code non fermé.\n", "- une `puce\n"]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_a_block_nested_in_a_bullet() {
+        assert_each_caught(&[
+            "- 1. item\n",
+            "- 2024. item\n",
+            "- > citation\n",
+            "- #### titre\n",
+            "- - sous-puce\n",
+            "- + sous-puce\n",
+            "- [ ] tâche\n",
+            "- [x] tâche faite\n",
+        ]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_a_setext_underline() {
+        assert_each_caught(&["Titre\n===\n", "Titre\n=\n", "Titre\n--\n", "Titre\n-\n"]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_other_bullet_markers() {
+        assert_each_caught(&["+ item\n", "Texte\n+ item\n", "* item\n", "-\titem\n"]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_code_blocks() {
+        assert_each_caught(&[
+            "```\ncode\n```\n",
+            "```rust\nlet a = 1;\n```\n",
+            "~~~\ncode\n~~~\n",
+            "Avant\n\n    code indenté\n",
+            "    code en tête\n",
+            "\tcode tabulé\n",
+            "# Titre\n    code sous un titre\n",
+        ]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_raw_html() {
+        assert_each_caught(&[
+            "Du <b>gras</b> brut.\n",
+            "<div>bloc</div>\n",
+            "Lien <https://example.org> automatique.\n",
+            "Texte <!-- commentaire -->\n",
+        ]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_entities_and_escapes() {
+        assert_each_caught(&[
+            "&copy; 2026\n",
+            "Le signe &#169;.\n",
+            "\\*pas d'emphase\\*\n",
+            "ligne\\\nsuite\n",
+        ]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_a_closing_heading_sequence() {
+        assert_each_caught(&["## Titre ##\n", "# Titre #\n"]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_lets_a_wrapped_year_continue_a_paragraph() {
+        // Only `1.` interrupts a paragraph in CommonMark: a wrapped line that
+        // starts with another number continues the text, as rendered.
+        assert_eq!(
+            raw_markers_of("La loi du 21 mai\n2024. Son I s'applique.\n"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            raw_markers_of("Le langage C# reste du texte.\n"),
+            Vec::<String>::new()
+        );
+        // Anywhere a list can start, the number is still refused.
+        assert_each_caught(&[
+            "2024. Son I\n",
+            "Texte\n\n2024. Son I\n",
+            "# Titre\n2024. Son I\n",
+            "- puce\n2024. Son I\n",
+            "Texte\n1. item\n",
+            "Texte\n01. item\n",
+        ]);
     }
 
     #[test]
