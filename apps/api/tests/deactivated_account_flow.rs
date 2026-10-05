@@ -8,7 +8,9 @@ mod common;
 use axum::http::{Method, StatusCode};
 use chrono::{Duration, Utc};
 use common::{assert_status, call, json_body, set_cookie, test_router};
-use manage_our_home::jobs::account_purge::{purge_due_accounts, send_deactivation_notices};
+use manage_our_home::jobs::account_purge::{
+    purge_account, purge_due_accounts, send_deactivation_notices,
+};
 use manage_our_home::jobs::retention_purge::{purge, RetentionCutoffs};
 use serde_json::json;
 use sqlx::PgPool;
@@ -1001,4 +1003,90 @@ async fn a_second_refusal_does_not_postpone_the_purge_again(db: PgPool) {
     days_pass(&db, holder, 10).await;
     purge_due_accounts(&db).await.unwrap();
     assert!(purged(&db, holder).await, "30 days after the first refusal");
+}
+
+/// Waits until `n` backends of this test's database wait on a lock.
+async fn lock_waiters(db: &PgPool, n: i64) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity
+             WHERE datname = current_database() AND wait_event_type = 'Lock'",
+        )
+        .fetch_one(db)
+        .await
+        .unwrap();
+        if waiting == n {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{waiting} backends wait on a lock, expected {n}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// #369: a refusal and a purge pass of the same account, at the same time,
+/// take `users` then the request in the same order, and so never deadlock.
+/// A third transaction holds the request row so that the refusal queues on
+/// it first and the purge second: taking the request before `users`, the
+/// refusal would get the request once released, then wait for the `users`
+/// row the purge holds while the purge waits for the request.
+#[sqlx::test]
+async fn a_refusal_concurrent_with_the_purge_does_not_deadlock(db: PgPool) {
+    let router = test_router(db.clone());
+    let admin = superadmin(&router, &db, "admin@example.test").await;
+    let holder = overdue_with_a_pending_request(&router, &db, &admin, "holder@example.test").await;
+    refuse(&router, &admin, holder).await;
+    let restricted = login_cookie(&router, "holder@example.test").await;
+    assert_eq!(
+        request(&router, &restricted, Some("Encore")).await,
+        StatusCode::CREATED
+    );
+    // Due despite the second request: refused and warned over 30 days ago.
+    backdate(&db, holder, "2 years 60 days", Some(31)).await;
+    backdate_refusal(&db, holder, 32).await;
+
+    let mut gate = db.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM account_reactivation_requests WHERE user_id = $1 FOR UPDATE")
+        .bind(holder)
+        .execute(&mut *gate)
+        .await
+        .unwrap();
+
+    let refusal = tokio::spawn({
+        let router = router.clone();
+        async move {
+            admin_post(
+                &router,
+                &admin,
+                &format!("/admin/users/{holder}/reactivation-request/refuse"),
+            )
+            .await
+        }
+    });
+    lock_waiters(&db, 1).await;
+    let purge = tokio::spawn({
+        let db = db.clone();
+        async move { purge_account(&db, holder).await.map(|_| ()) }
+    });
+    lock_waiters(&db, 2).await;
+    gate.commit().await.unwrap();
+
+    let within = std::time::Duration::from_secs(20);
+    let refusal = tokio::time::timeout(within, refusal).await.unwrap().unwrap();
+    let purge = tokio::time::timeout(within, purge).await.unwrap().unwrap();
+    assert_eq!(refusal, StatusCode::NO_CONTENT);
+    purge.unwrap();
+    assert!(purged(&db, holder).await);
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM account_reactivation_requests WHERE user_id = $1",
+            holder
+        )
+        .await,
+        0
+    );
 }
