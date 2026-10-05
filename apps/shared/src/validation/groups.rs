@@ -5,7 +5,7 @@
 //! process — the UI must never disagree with the backend on what is
 //! allowed, so the rules live here once.
 
-use uuid::Uuid;
+use super::auth::is_bearer_token;
 
 /// `name_required` when the group name is empty after trimming — the exact
 /// rule `apps/api/src/groups/mod.rs::rename_group` enforces (422
@@ -17,25 +17,27 @@ pub fn validate_group_name(name: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Extracts the invitation token (a UUID) from what a user pastes into the
+/// Extracts the invitation token from what a user pastes into the
 /// "join via invite" form: either the bare token or the full invitation
 /// link (`.../groups/invitations/<token>/accept`, the shape
 /// `apps/api/src/groups/mod.rs::create_invitation` emails out). Surrounding
-/// whitespace is tolerated. `None` when no UUID can be found.
-pub fn parse_invitation_token(input: &str) -> Option<Uuid> {
+/// whitespace is tolerated. `None` when no token spelled as
+/// [`is_bearer_token`] wants it can be found (#335).
+pub fn parse_invitation_token(input: &str) -> Option<String> {
     let trimmed = input.trim();
-    if let Ok(token) = trimmed.parse::<Uuid>() {
-        return Some(token);
-    }
-    // Full invitation link: take the path segment right after
-    // `invitations`.
-    let mut segments = trimmed.split('/');
-    while let Some(segment) = segments.next() {
-        if segment == "invitations" {
-            return segments.next()?.parse().ok();
+    let candidate = if is_bearer_token(trimmed) {
+        trimmed
+    } else {
+        // Full invitation link: take the path segment right after
+        // `invitations`.
+        let mut segments = trimmed.split('/');
+        loop {
+            if segments.next()? == "invitations" {
+                break segments.next()?;
+            }
         }
-    }
-    None
+    };
+    is_bearer_token(candidate).then(|| candidate.to_string())
 }
 
 /// True for the roles allowed to invite members, rename the group, and see
@@ -117,23 +119,39 @@ mod tests {
 
     // -- parse_invitation_token --------------------------------------------
 
+    const TOKEN: &str = "Zq3_k9XvT2mQ8pLw4rYb7nHc1sDf6gJ0aEuIoVtBy5M";
+
     #[test]
-    fn bare_uuid_token_is_parsed() {
-        let token: Uuid = "b6f1a4c2-3d5e-4f60-9a71-8b2c3d4e5f60".parse().unwrap();
-        assert_eq!(parse_invitation_token(&token.to_string()), Some(token));
+    fn bare_token_is_parsed() {
+        assert_eq!(parse_invitation_token(TOKEN).as_deref(), Some(TOKEN));
     }
 
     #[test]
     fn token_with_surrounding_whitespace_is_parsed() {
-        let token: Uuid = "b6f1a4c2-3d5e-4f60-9a71-8b2c3d4e5f60".parse().unwrap();
-        assert_eq!(parse_invitation_token(&format!("  {token}\n")), Some(token));
+        assert_eq!(
+            parse_invitation_token(&format!("  {TOKEN}\n")).as_deref(),
+            Some(TOKEN)
+        );
     }
 
     #[test]
     fn full_invitation_link_is_parsed() {
-        let token: Uuid = "b6f1a4c2-3d5e-4f60-9a71-8b2c3d4e5f60".parse().unwrap();
-        let link = format!("https://mondomaine.com/groups/invitations/{token}/accept");
-        assert_eq!(parse_invitation_token(&link), Some(token));
+        let link = format!("https://mondomaine.com/groups/invitations/{TOKEN}/accept");
+        assert_eq!(parse_invitation_token(&link).as_deref(), Some(TOKEN));
+    }
+
+    /// An invitation issued before #335 carried a UUID: its row no longer
+    /// opens anything, so its link is refused here rather than by the api.
+    #[test]
+    fn former_uuid_token_is_rejected() {
+        let uuid = "b6f1a4c2-3d5e-4f60-9a71-8b2c3d4e5f60";
+        assert_eq!(parse_invitation_token(uuid), None);
+        assert_eq!(
+            parse_invitation_token(&format!(
+                "https://mondomaine.com/groups/invitations/{uuid}/accept"
+            )),
+            None
+        );
     }
 
     #[test]
@@ -142,6 +160,12 @@ mod tests {
         assert_eq!(parse_invitation_token("not-a-token"), None);
         assert_eq!(
             parse_invitation_token("https://mondomaine.com/groups/invitations//accept"),
+            None
+        );
+        assert_eq!(
+            parse_invitation_token(&format!(
+                "https://mondomaine.com/groups/invitations/{TOKEN}x/accept"
+            )),
             None
         );
     }

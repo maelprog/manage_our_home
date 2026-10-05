@@ -1,13 +1,14 @@
 # e2e — Playwright suite for apps/web's Auth screens
 
-Drives a real running stack: `apps/web` + `apps/api` + Postgres. Token
-retrieval (email verification / password reset) reads directly off
-Postgres — the exact same mechanism `apps/api/tests/*_flow.rs`'s
-integration tests already use (`SELECT token FROM
-email_verification_tokens ...`), see `lib/db.ts`. apps/api has no
-dev/test HTTP hook for tokens, and this doesn't add one — a direct DB
-read is no weaker a trust boundary than what the Rust integration tests
-already rely on.
+Drives a real running stack: `apps/web` + `apps/api` + Postgres. Tokens
+(email verification / password reset) are set directly in Postgres: the
+tables keep only the SHA-256 of the token mailed out (#335), so
+`lib/db.ts` draws a fresh token, puts its hash on the latest row the api
+created, and uses that token — the exact same mechanism
+`apps/api/tests/*_flow.rs`'s integration tests use
+(`common::verification_token`). apps/api has no dev/test HTTP hook for
+tokens, and this doesn't add one — direct DB access is no weaker a trust
+boundary than what the Rust integration tests already rely on.
 
 ## Running against docker-compose
 

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO invitations (group_id, created_by, expires_at, token_hash)\n         VALUES ($1, $2, $3, gen_random_bytes(32))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1410ee18f123e46f8b333adb67d154bcfaac39139c1e7a447a734295c5b4d68b"
+}

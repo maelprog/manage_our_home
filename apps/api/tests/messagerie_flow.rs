@@ -22,13 +22,7 @@ async fn register_verify_login(
         Some(serde_json::json!({"email": email, "password": password, "display_name": email, "declares_minimum_age": true, "accepts_terms": true})),
     )
     .await;
-    let token = sqlx::query_scalar!(
-        "SELECT token FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = $1",
-        email
-    )
-    .fetch_one(db)
-    .await
-    .unwrap();
+    let token = common::verification_token(db, email).await;
     call(
         router,
         Method::GET,
@@ -277,14 +271,12 @@ async fn only_author_or_admin_can_modify(db: PgPool) {
     let group_id = create_group(&router, &owner_cookie, "Foyer").await;
 
     let group_uuid: uuid::Uuid = group_id.parse().unwrap();
-    let token = sqlx::query_scalar!(
-        "SELECT token FROM invitations WHERE group_id = $1",
-        group_uuid
-    )
-    .fetch_optional(&db)
-    .await
-    .unwrap();
-    if token.is_none() {
+    let invitation =
+        sqlx::query_scalar!("SELECT id FROM invitations WHERE group_id = $1", group_uuid)
+            .fetch_optional(&db)
+            .await
+            .unwrap();
+    if invitation.is_none() {
         let invite = call(
             &router,
             Method::POST,

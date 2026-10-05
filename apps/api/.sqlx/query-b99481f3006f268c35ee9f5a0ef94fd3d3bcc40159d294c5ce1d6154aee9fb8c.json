@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO password_reset_tokens (user_id, expires_at, token_hash)\n            VALUES ($1, $2, $3)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b99481f3006f268c35ee9f5a0ef94fd3d3bcc40159d294c5ce1d6154aee9fb8c"
+}

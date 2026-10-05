@@ -26,14 +26,7 @@ async fn register_verify(router: &axum::Router, db: &PgPool, email: &str) -> Uui
     )
     .await;
     assert_status(&res, StatusCode::CREATED);
-    let token: Uuid = sqlx::query_scalar(
-        "SELECT token FROM email_verification_tokens t JOIN users u ON u.id = t.user_id
-         WHERE u.email = $1",
-    )
-    .bind(email)
-    .fetch_one(db)
-    .await
-    .unwrap();
+    let token = common::verification_token(db, email).await;
     let res = call(
         router,
         Method::GET,

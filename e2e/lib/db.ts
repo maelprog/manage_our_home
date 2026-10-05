@@ -1,57 +1,57 @@
 import { Client } from "pg";
 
+import { newBearerToken } from "./tokens.ts";
+
 // Mirrors apps/api/tests/*_flow.rs's token-retrieval mechanism exactly:
-// those integration tests read `email_verification_tokens`/
-// `password_reset_tokens` directly off the test Postgres database rather
-// than exposing any test-only HTTP endpoint (see e.g. auth_flow.rs's
-// `SELECT t.token FROM email_verification_tokens t JOIN users u ...`).
 // apps/api has no dev/test hook that returns tokens over HTTP, and adding
-// one would weaken prod security for no real gain here — a direct DB read
-// is the same trust boundary the Rust integration tests already rely on,
-// just from Node instead of sqlx.
+// one would weaken prod security for no real gain here — a direct DB access
+// is the same trust boundary the Rust integration tests already rely on
+// (`common::verification_token`), just from Node instead of sqlx.
+//
+// Since #335 the tables keep only the SHA-256 of each token, so the token
+// the api mailed out cannot be read back. Instead the helpers below draw a
+// fresh token (`tokens.ts`), set its hash on the latest row the api created
+// for that account, and return the token: the row keeps its owner, expiry
+// and state, only the secret changes.
 //
 // Requires DATABASE_URL to point at the same Postgres apps/api is using.
 
-export async function fetchVerificationToken(email: string): Promise<string> {
+async function rekeyLatestToken(table: string, email: string): Promise<string | null> {
   const client = new Client({ connectionString: requireDatabaseUrl() });
   await client.connect();
   try {
-    const { rows } = await client.query(
-      `SELECT t.token FROM email_verification_tokens t
-       JOIN users u ON u.id = t.user_id
-       WHERE u.email = $1
-       ORDER BY t.created_at DESC
-       LIMIT 1`,
-      [email],
+    const { token, hash } = newBearerToken();
+    const { rowCount } = await client.query(
+      `UPDATE ${table} SET token_hash = $2
+       WHERE token_hash = (
+         SELECT t.token_hash FROM ${table} t
+         JOIN users u ON u.id = t.user_id
+         WHERE u.email = $1
+         ORDER BY t.created_at DESC
+         LIMIT 1
+       )`,
+      [email, hash],
     );
-    if (rows.length === 0) {
-      throw new Error(`no verification token found for ${email}`);
-    }
-    return rows[0].token as string;
+    return rowCount === 1 ? token : null;
   } finally {
     await client.end();
   }
 }
 
-export async function fetchPasswordResetToken(email: string): Promise<string> {
-  const client = new Client({ connectionString: requireDatabaseUrl() });
-  await client.connect();
-  try {
-    const { rows } = await client.query(
-      `SELECT t.token FROM password_reset_tokens t
-       JOIN users u ON u.id = t.user_id
-       WHERE u.email = $1
-       ORDER BY t.created_at DESC
-       LIMIT 1`,
-      [email],
-    );
-    if (rows.length === 0) {
-      throw new Error(`no password reset token found for ${email}`);
-    }
-    return rows[0].token as string;
-  } finally {
-    await client.end();
+export async function fetchVerificationToken(email: string): Promise<string> {
+  const token = await rekeyLatestToken("email_verification_tokens", email);
+  if (token === null) {
+    throw new Error(`no verification token found for ${email}`);
   }
+  return token;
+}
+
+export async function fetchPasswordResetToken(email: string): Promise<string> {
+  const token = await rekeyLatestToken("password_reset_tokens", email);
+  if (token === null) {
+    throw new Error(`no password reset token found for ${email}`);
+  }
+  return token;
 }
 
 /**

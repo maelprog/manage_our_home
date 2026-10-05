@@ -132,8 +132,9 @@ test.describe("Groups — invitations", () => {
   }) => {
     await registerAndLogin(page, "e2e-badinvite", "Bad Invite User");
 
-    // Valid UUID shape, but no such invitation → apps/api 404.
-    await page.goto("/groups/invitations/00000000-0000-4000-8000-000000000000/accept");
+    // Well-formed token (43 base64url characters, #335), but no such
+    // invitation → apps/api 404.
+    await page.goto(`/groups/invitations/${"A".repeat(43)}/accept`);
     await page.getByRole("button", { name: "Rejoindre le groupe" }).click();
     await expect(page.getByText("Invitation invalide")).toBeVisible();
 

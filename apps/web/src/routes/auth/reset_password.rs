@@ -3,8 +3,7 @@ use axum::response::{Html, IntoResponse};
 use axum::Form;
 use leptos::prelude::*;
 use manage_our_home_shared::dto::auth::ResetPasswordRequest;
-use manage_our_home_shared::validation::auth::validate_password;
-use uuid::Uuid;
+use manage_our_home_shared::validation::auth::{is_bearer_token, validate_password};
 
 use crate::app::{password_error_message, password_field, shell, Width};
 use crate::assets::Script;
@@ -16,7 +15,8 @@ pub struct ResetPasswordForm {
     new_password: String,
 }
 
-/// Moves the token from the link's fragment (`#token=<uuid>`, see
+/// Moves the token from the link's fragment (`#token=<token>`, 43
+/// base64url characters since #335, see
 /// `password_reset_link` in apps/api) into the form's hidden field, then
 /// drops the fragment from the current history entry (#142). The fragment
 /// is never sent to the server, which is the point: the secret stays out of
@@ -32,7 +32,7 @@ pub(crate) const FRAGMENT_SCRIPT: &str = r#"
 (function () {
   var field = document.getElementById("reset-token");
   if (!field) return;
-  var m = /^#token=([0-9A-Fa-f-]{36})$/.exec(location.hash);
+  var m = /^#token=([A-Za-z0-9_-]{43})$/.exec(location.hash);
   if (location.hash) history.replaceState(null, "", location.pathname);
   if (m) field.value = m[1];
   if (!field.value) {
@@ -93,12 +93,12 @@ pub async fn post(
     State(state): State<AppState>,
     Form(form): Form<ResetPasswordForm>,
 ) -> impl IntoResponse {
-    let Ok(token) = Uuid::parse_str(&form.token) else {
+    if !is_bearer_token(&form.token) {
         return Html(invalid_link_page(
             "Lien invalide",
             "Ce lien de réinitialisation n'existe pas.",
         ));
-    };
+    }
     if let Err(code) = validate_password(&form.new_password) {
         return Html(form_page(
             Some(&form.token),
@@ -110,7 +110,7 @@ pub async fn post(
         &state,
         "/auth/password/reset",
         ResetPasswordRequest {
-            token,
+            token: form.token.clone(),
             new_password: form.new_password,
         },
         None,
@@ -152,7 +152,7 @@ pub async fn post(
 mod tests {
     use super::*;
 
-    const TOKEN: &str = "5f0c7a3e-2b1d-4c8e-9a6f-0d3b2e1c4a5b";
+    const TOKEN: &str = "Zq3_k9XvT2mQ8pLw4rYb7nHc1sDf6gJ0aEuIoVtBy5M";
 
     /// The `<input>` tag carrying `id="reset-token"`.
     fn token_field(html: &str) -> &str {

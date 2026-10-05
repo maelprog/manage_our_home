@@ -286,7 +286,7 @@ pub fn set_cookie(response: &Response<Body>) -> Option<String> {
 #[allow(dead_code)]
 pub async fn session_id_of(db: &PgPool, cookie: &str) -> uuid::Uuid {
     let (_, token) = cookie.split_once('=').expect("a name=value cookie pair");
-    let hash = manage_our_home::auth::session::session_token_hash(token).expect("a session token");
+    let hash = manage_our_home::auth::token::token_hash(token).expect("a session token");
     sqlx::query_scalar("SELECT id FROM sessions WHERE token_hash = $1")
         .bind(&hash[..])
         .fetch_one(db)
@@ -300,7 +300,7 @@ pub async fn session_id_of(db: &PgPool, cookie: &str) -> uuid::Uuid {
 // this helper (see note on test_state above).
 #[allow(dead_code)]
 pub async fn insert_session(db: &PgPool, user_id: uuid::Uuid) -> String {
-    let token = manage_our_home::auth::session::new_session_token();
+    let token = manage_our_home::auth::token::new_token();
     sqlx::query(
         "INSERT INTO sessions (user_id, expires_at, token_hash)
          VALUES ($1, now() + interval '1 day', $2)",
@@ -311,6 +311,49 @@ pub async fn insert_session(db: &PgPool, user_id: uuid::Uuid) -> String {
     .await
     .unwrap();
     format!("session_id={}", token.value())
+}
+
+/// A usable token for the latest row of `table` (`email_verification_tokens`
+/// or `password_reset_tokens`) belonging to `email`. The table keeps only
+/// the hash of the token the api mailed out (#335), so it cannot be read
+/// back: a fresh token's hash replaces the row's, and the fresh token is
+/// returned. The row keeps its owner, expiry and state.
+#[allow(dead_code)]
+async fn rekey_latest_token(db: &PgPool, table: &str, email: &str) -> String {
+    let token = manage_our_home::auth::token::new_token();
+    let rekeyed = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "UPDATE {table} SET token_hash = $2
+         WHERE token_hash = (
+             SELECT t.token_hash FROM {table} t JOIN users u ON u.id = t.user_id
+             WHERE u.email = $1 ORDER BY t.created_at DESC LIMIT 1
+         )"
+    )))
+    .bind(email)
+    .bind(&token.hash()[..])
+    .execute(db)
+    .await
+    .unwrap()
+    .rows_affected();
+    assert_eq!(rekeyed, 1, "no {table} row for {email}");
+    token.value().to_owned()
+}
+
+/// The verification link's token for `email`'s latest verification request
+/// (see [`rekey_latest_token`]).
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (see note on test_state above).
+#[allow(dead_code)]
+pub async fn verification_token(db: &PgPool, email: &str) -> String {
+    rekey_latest_token(db, "email_verification_tokens", email).await
+}
+
+/// The reset link's token for `email`'s latest password reset request
+/// (see [`rekey_latest_token`]).
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (see note on test_state above).
+#[allow(dead_code)]
+pub async fn reset_token(db: &PgPool, email: &str) -> String {
+    rekey_latest_token(db, "password_reset_tokens", email).await
 }
 
 // TODO: remove #[allow(dead_code)] once every integration test binary uses

@@ -1,7 +1,7 @@
 use axum::extract::{Query, State};
 use axum::response::{Html, IntoResponse};
 use leptos::prelude::*;
-use uuid::Uuid;
+use manage_our_home_shared::validation::auth::is_bearer_token;
 
 use crate::app::{shell, Width};
 use crate::state::{api_get, AppState};
@@ -24,14 +24,15 @@ pub async fn get(
     State(state): State<AppState>,
     Query(query): Query<VerifyEmailQuery>,
 ) -> impl IntoResponse {
-    // Parse before interpolating into the internal API URL (same pattern as
-    // reset_password.rs): a non-UUID token is "Lien invalide", not a
-    // transport error, and a UUID is URL-safe by construction.
-    let Ok(token) = Uuid::parse_str(&query.token) else {
+    // Checked before interpolating into the internal API URL (same pattern
+    // as reset_password.rs): a token not spelled as the api hands them out
+    // is "Lien invalide", not a transport error, and one that is is
+    // URL-safe by construction (base64url, #335).
+    if !is_bearer_token(&query.token) {
         let (title, body_html) = invalid_link();
         return Html(shell(Width::Form, title, &body_html));
-    };
-    let result = api_get(&state, &format!("/auth/verify-email?token={token}")).await;
+    }
+    let result = api_get(&state, &format!("/auth/verify-email?token={}", query.token)).await;
 
     let (title, body_html): (&str, String) = match result {
         Ok(resp) if resp.status == reqwest::StatusCode::OK => {

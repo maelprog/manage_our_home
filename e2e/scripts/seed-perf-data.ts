@@ -13,7 +13,7 @@
 //!
 //! Trois propriétés non négociables :
 //!
-//! 1. **Tout passe par l'API** sauf le jeton de vérification d'e-mail, lu
+//! 1. **Tout passe par l'API** sauf le jeton de vérification d'e-mail, posé
 //!    directement en base — la frontière de confiance que `lib/db.ts`
 //!    documente déjà et que les tests d'intégration Rust utilisent aussi.
 //!    Les données sont donc valides par construction, et le script survit à
@@ -39,6 +39,7 @@
 import { Client } from "pg";
 
 import { parisDay } from "../lib/dates.ts";
+import { newBearerToken } from "../lib/tokens.ts";
 import {
   BUDGET_ENTRIES,
   EVENTS,
@@ -113,11 +114,14 @@ function isoDay(d: Date): string {
 }
 
 /**
- * Lit le jeton de vérification d'e-mail directement en Postgres.
+ * Pose un jeton de vérification d'e-mail directement en Postgres, et le rend.
  *
  * Même mécanisme et même justification que `e2e/lib/db.ts` : apps/api n'expose
  * aucun crochet HTTP de test pour les jetons, et en ajouter un affaiblirait la
- * production. C'est la seule écriture/lecture directe en base de ce script.
+ * production. Depuis #335 la base ne garde que l'empreinte du jeton envoyé :
+ * on ne peut plus le relire, on pose donc l'empreinte d'un jeton neuf sur la
+ * dernière demande en attente. C'est la seule écriture directe en base de ce
+ * script.
  */
 async function fetchVerificationToken(email: string): Promise<string> {
   const url = process.env.DATABASE_URL;
@@ -130,18 +134,22 @@ async function fetchVerificationToken(email: string): Promise<string> {
   const client = new Client({ connectionString: url });
   await client.connect();
   try {
-    const { rows } = await client.query(
-      `SELECT t.token FROM email_verification_tokens t
-       JOIN users u ON u.id = t.user_id
-       WHERE u.email = $1 AND t.consumed_at IS NULL
-       ORDER BY t.created_at DESC
-       LIMIT 1`,
-      [email],
+    const { token, hash } = newBearerToken();
+    const { rowCount } = await client.query(
+      `UPDATE email_verification_tokens SET token_hash = $2
+       WHERE token_hash = (
+         SELECT t.token_hash FROM email_verification_tokens t
+         JOIN users u ON u.id = t.user_id
+         WHERE u.email = $1 AND t.consumed_at IS NULL
+         ORDER BY t.created_at DESC
+         LIMIT 1
+       )`,
+      [email, hash],
     );
-    if (rows.length === 0) {
+    if (rowCount !== 1) {
       throw new Error(`aucun jeton de vérification en attente pour ${email}`);
     }
-    return rows[0].token as string;
+    return token;
   } finally {
     await client.end();
   }

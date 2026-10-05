@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT t.user_id, t.expires_at\n        FROM password_reset_tokens t\n        JOIN users u ON u.id = t.user_id\n        WHERE t.token = $1 AND u.deleted_at IS NULL AND u.deactivated_at IS NULL\n        FOR UPDATE OF t\n        ",
+  "query": "\n        SELECT t.user_id, t.expires_at\n        FROM password_reset_tokens t\n        JOIN users u ON u.id = t.user_id\n        WHERE t.token_hash = $1 AND u.deleted_at IS NULL AND u.deactivated_at IS NULL\n        FOR UPDATE OF t\n        ",
   "describe": {
     "columns": [
       {
@@ -28,7 +28,7 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Bytea"
       ]
     },
     "nullable": [
@@ -36,5 +36,5 @@
       false
     ]
   },
-  "hash": "84d7894cac5c79ea96198ac3ec161be999a9755d17b5be66fa3028d0ed35c15d"
+  "hash": "a40e8cfcc534222d3e905c8b2c4952aacd517019be993a45c8d7d8d368d059d3"
 }

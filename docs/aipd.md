@@ -99,22 +99,25 @@ chiffrées par `pgcrypto`, chacune avec sa clé (`messages.content`, jeton
 de rafraîchissement Google, URL de flux iCal) ; mots de passe hachés
 argon2 ; cookie de session `HttpOnly`, `Secure`, `SameSite=Lax`, préfixé
 `__Host-` derrière `SECURE_COOKIES` (#224), session de 30 jours au plus et
-close après 7 jours sans activité ; jeton de session stocké par sa seule
-empreinte SHA-256 (`sessions.token_hash`, #222) ; limitation des
+close après 7 jours sans activité ; les quatre jetons porteurs (session,
+invitation, réinitialisation, vérification d'adresse) stockés par leur
+seule empreinte SHA-256 (`token_hash`, #222 pour la session, #335 pour les
+trois autres) ; limitation des
 essais de mot de passe ; politique de sécurité du contenu ; `cargo audit`
 en CI ; journal d'audit des actions sensibles.
 
 **Ce qui reste exposé.**
 - Les pièces jointes et tout le texte libre hors messagerie ne sont pas
   chiffrés au repos par l'application.
-- Trois jetons porteurs sont stockés en clair, et une copie de la base
-  suffit à s'en servir (celui de session ne l'est plus depuis #222) : un
-  jeton d'invitation
-  (`invitations.token`, valable 7 jours) fait entrer n'importe quel compte
-  dans le groupe, l'adresse invitée n'étant pas vérifiée à l'acceptation ;
-  un jeton de réinitialisation (`password_reset_tokens.token`, 1 h) donne
-  le compte ; un jeton de vérification (`email_verification_tokens.token`,
-  24 h) valide une adresse sans la posséder.
+- Les jetons porteurs ne sont plus en base que par leur empreinte (#222,
+  #335), mais ils circulent en clair hors de la base : dans le cookie du
+  navigateur pour la session, dans l'e-mail pour les trois autres. Qui lit
+  la boîte de l'invité ou du titulaire, ou les messages chez le
+  sous-traitant e-mail, tient un jeton utilisable : une invitation
+  (7 jours) fait entrer n'importe quel compte dans le groupe, l'adresse
+  invitée n'étant pas vérifiée à l'acceptation ; une réinitialisation (1 h)
+  donne le compte ; une vérification (24 h) valide une adresse sans la
+  posséder.
 - Les clés de chiffrement sont des variables d'environnement du processus
   `api` : qui prend le serveur prend les clés.
 - TLS est configuré (`docs/v2-deployment.md` #2, depuis #141) : Caddy
@@ -163,11 +166,10 @@ Mesures **proposées** par cette analyse, à arbitrer :
 5. Chiffrer le volume qui porte les données de MinIO et de Postgres sur le
    serveur, ce qui couvre les pièces jointes et le texte libre en cas de vol
    du support (pas en cas d'intrusion sur le serveur en marche).
-6. Ne stocker qu'une empreinte de chacun des trois jetons porteurs encore
-   en clair (invitation, réinitialisation, vérification), pour qu'une copie
-   de la base ne suffise plus à prendre un compte ou une place dans un
-   groupe. Le quatrième, celui de session, n'est plus stocké que par son
-   empreinte (#222) : une copie de la base ne donne plus de session.
+6. Ne stocker qu'une empreinte de chaque jeton porteur, pour qu'une copie
+   de la base ne suffise plus à prendre une session, un compte ou une place
+   dans un groupe — **réalisée** : la session depuis #222, l'invitation, la
+   réinitialisation et la vérification d'adresse depuis #335.
 
 La procédure en cas de violation et le registre des violations sont posés
 par la même issue (`docs/procedure-violation.md`,

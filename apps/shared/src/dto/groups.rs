@@ -89,7 +89,7 @@ pub struct CreateInvitationRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InvitationCreatedResponse {
     pub id: Uuid,
-    pub token: Uuid,
+    pub token: String,
 }
 
 /// `POST /groups/invitations/:token/accept` (200) response.

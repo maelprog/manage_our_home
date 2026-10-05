@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, expires_at\n        FROM invitations\n        WHERE token = $1\n        FOR UPDATE\n        ",
+  "query": "\n        SELECT id, expires_at\n        FROM invitations\n        WHERE token_hash = $1\n        FOR UPDATE\n        ",
   "describe": {
     "columns": [
       {
@@ -28,7 +28,7 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Bytea"
       ]
     },
     "nullable": [
@@ -36,5 +36,5 @@
       false
     ]
   },
-  "hash": "f9d1df8185a92253788606eafba2a26775ae59f7c32ab455ec584a48ec744c1e"
+  "hash": "2607a6b2fa149ed5ca61c9415292667dc4a5911b7d113693f8cef1d9ed53e7d6"
 }

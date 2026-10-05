@@ -22,12 +22,7 @@ async fn full_journey_register_to_ownership_transfer_to_deletion(db: PgPool) {
     .await;
     assert_status(&register, StatusCode::CREATED);
 
-    let verify_token = sqlx::query_scalar!(
-        "SELECT token FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = 'founder@example.test'"
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap();
+    let verify_token = common::verification_token(&db, "founder@example.test").await;
     let verify = call(
         &router,
         Method::GET,
@@ -84,12 +79,7 @@ async fn full_journey_register_to_ownership_transfer_to_deletion(db: PgPool) {
         Some(serde_json::json!({"email": "successor@example.test", "password": "successor-password1", "display_name": "Successor", "declares_minimum_age": true, "accepts_terms": true})),
     )
     .await;
-    let successor_verify_token = sqlx::query_scalar!(
-        "SELECT token FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = 'successor@example.test'"
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap();
+    let successor_verify_token = common::verification_token(&db, "successor@example.test").await;
     call(
         &router,
         Method::GET,
@@ -180,12 +170,7 @@ async fn sensitive_actions_are_audited(db: PgPool) {
         Some(serde_json::json!({"email": "auditor@example.test", "password": "auditor-password1", "display_name": "Auditor", "declares_minimum_age": true, "accepts_terms": true})),
     )
     .await;
-    let token = sqlx::query_scalar!(
-        "SELECT token FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = 'auditor@example.test'"
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap();
+    let token = common::verification_token(&db, "auditor@example.test").await;
     call(
         &router,
         Method::GET,
@@ -212,12 +197,7 @@ async fn sensitive_actions_are_audited(db: PgPool) {
         Some(serde_json::json!({"email": "member2@example.test", "password": "member2-password1", "display_name": "Member2", "declares_minimum_age": true, "accepts_terms": true})),
     )
     .await;
-    let token2 = sqlx::query_scalar!(
-        "SELECT token FROM email_verification_tokens t JOIN users u ON u.id = t.user_id WHERE u.email = 'member2@example.test'"
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap();
+    let token2 = common::verification_token(&db, "member2@example.test").await;
     call(
         &router,
         Method::GET,

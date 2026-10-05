@@ -1,16 +1,16 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT group_id FROM invitations WHERE token = $1",
+  "query": "SELECT id FROM invitations WHERE group_id = $1",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "group_id",
+        "name": "id",
         "type_info": "Uuid",
         "origin": {
           "Table": {
             "table": "invitations",
-            "name": "group_id"
+            "name": "id"
           }
         }
       }
@@ -24,5 +24,5 @@
       false
     ]
   },
-  "hash": "fa1f9d0a4128b766a393477eb2dc3ea6a1aa5716f8bf457242857b70e96890f9"
+  "hash": "71443e7fd64d4a0a8c52659a16e29c137c54ce03825a98792c68d48277b9105e"
 }

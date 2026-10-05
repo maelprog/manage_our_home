@@ -14,7 +14,7 @@ use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use leptos::prelude::*;
 use manage_our_home_shared::dto::groups::AcceptInvitationResponse;
-use uuid::Uuid;
+use manage_our_home_shared::validation::auth::is_bearer_token;
 
 use crate::app::{shell, Width};
 use crate::family::set_active_group_cookie;
@@ -42,11 +42,12 @@ fn gone_page() -> Html<String> {
 }
 
 pub async fn get(CurrentUser(_me): CurrentUser, Path(token): Path<String>) -> Response {
-    // Parse before echoing into the form action (same pattern as
-    // verify_email.rs): a non-UUID token is "Invitation invalide".
-    let Ok(token) = token.parse::<Uuid>() else {
+    // Checked before echoing into the form action (same pattern as
+    // verify_email.rs): a token not spelled as the api hands them out is
+    // "Invitation invalide", and one that is is URL-safe by construction.
+    if !is_bearer_token(&token) {
         return invalid_page().into_response();
-    };
+    }
     let action = format!("/groups/invitations/{token}/accept");
     let body = view! {
         <h1>"Rejoindre un groupe"</h1>
@@ -67,9 +68,9 @@ pub async fn post(
     headers: HeaderMap,
     Path(token): Path<String>,
 ) -> Response {
-    let Ok(token) = token.parse::<Uuid>() else {
+    if !is_bearer_token(&token) {
         return invalid_page().into_response();
-    };
+    }
 
     let cookie = cookie_of(&headers);
     let result = api_request_auth(

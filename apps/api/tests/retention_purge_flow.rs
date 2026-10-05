@@ -39,10 +39,11 @@ async fn insert_audit(db: &PgPool, at: DateTime<Utc>, target: &str) {
     .unwrap();
 }
 
-async fn insert_token(db: &PgPool, table: &str, user: Uuid, created: DateTime<Utc>) -> Uuid {
+/// Returns the row's `token_hash`, its primary key (#335).
+async fn insert_token(db: &PgPool, table: &str, user: Uuid, created: DateTime<Utc>) -> Vec<u8> {
     sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "INSERT INTO {table} (user_id, created_at, expires_at)
-         VALUES ($1, $2, $2 + interval '1 hour') RETURNING token"
+        "INSERT INTO {table} (user_id, created_at, expires_at, token_hash)
+         VALUES ($1, $2, $2 + interval '1 hour', gen_random_bytes(32)) RETURNING token_hash"
     )))
     .bind(user)
     .bind(created)
@@ -53,8 +54,10 @@ async fn insert_token(db: &PgPool, table: &str, user: Uuid, created: DateTime<Ut
 
 async fn insert_invitation(db: &PgPool, group: Uuid, by: Uuid, created: DateTime<Utc>) -> Uuid {
     sqlx::query_scalar(
-        "INSERT INTO invitations (group_id, invited_email, created_by, created_at, expires_at)
-         VALUES ($1, 'tiers@example.test', $2, $3, $3 + interval '7 days') RETURNING id",
+        "INSERT INTO invitations (group_id, invited_email, created_by, created_at, expires_at,
+                                  token_hash)
+         VALUES ($1, 'tiers@example.test', $2, $3, $3 + interval '7 days',
+                 gen_random_bytes(32)) RETURNING id",
     )
     .bind(group)
     .bind(by)
@@ -166,14 +169,18 @@ async fn each_table_loses_exactly_the_rows_past_their_retention(db: PgPool) {
         .await
         .unwrap();
     assert_eq!(audit, vec!["recent".to_string()]);
-    assert_eq!(
-        ids(&db, "SELECT token FROM email_verification_tokens").await,
-        vec![verif_kept]
-    );
-    assert_eq!(
-        ids(&db, "SELECT token FROM password_reset_tokens").await,
-        vec![reset_kept]
-    );
+    let verif_left: Vec<Vec<u8>> =
+        sqlx::query_scalar("SELECT token_hash FROM email_verification_tokens")
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    assert_eq!(verif_left, vec![verif_kept]);
+    let reset_left: Vec<Vec<u8>> =
+        sqlx::query_scalar("SELECT token_hash FROM password_reset_tokens")
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    assert_eq!(reset_left, vec![reset_kept]);
     assert_eq!(ids(&db, "SELECT id FROM invitations").await, vec![inv_kept]);
     let mut sessions = ids(&db, "SELECT id FROM sessions").await;
     sessions.sort();
