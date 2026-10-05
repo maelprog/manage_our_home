@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-10-05.
+Dernière mise à jour : 2026-10-06.
 
 ## Qui est responsable de vos données ?
 
@@ -43,7 +43,7 @@ données sont-elles conservées ? ».
 | Vérification d'email et réinitialisation du mot de passe | jetons à usage unique envoyés par email, valables 24 h (vérification) ou 1 h (réinitialisation) | Exécution du contrat |
 | Protection de la connexion | adresse IP (en IPv6, réduite à son préfixe /64) et email saisi à chaque tentative de connexion par mot de passe, gardés en mémoire du serveur seulement, jamais en base | Intérêt légitime (limiter les essais de mot de passe) |
 | Invitations | adresse email de la personne invitée (si le membre qui invite la saisit), lien d'invitation valable 7 jours ; l'email envoyé nomme le groupe et le membre qui invite | Intérêt légitime (permettre à un membre d'inviter un proche dans son groupe) |
-| Désactivation d'un compte | date à laquelle l'administrateur du service a désactivé le compte, date de l'email qui prévient de sa suppression ; si vous demandez la réactivation, la date de votre demande et le message facultatif que vous y joignez, et la date d'un refus | Intérêt légitime (exploitation et sécurité du service) |
+| Désactivation d'un compte | date à laquelle l'administrateur du service a désactivé le compte, date de l'email qui prévient de sa suppression ; si vous demandez la réactivation, la date de votre demande et le message facultatif que vous y joignez, et la date du premier refus | Intérêt légitime (exploitation et sécurité du service) |
 | Agenda | événements, tâches, pièces jointes, membres assignés à un événement | Exécution du contrat |
 | Rappels d'événements | délai choisi avant l'événement ; la façon dont vos rappels vous parviennent (notification, email ou les deux) ; pour chaque appareil où vous activez les notifications, l'adresse d'abonnement que le service de notification de votre navigateur lui attribue et ses dates d'abonnement, de dernier renouvellement et de dernier envoi réussi, et le nombre et la date de début de ses envois échoués d'affilée (50 appareils au plus par compte). L'email de rappel porte le titre et la date de l'événement ; la notification n'affiche que « Rappel d'un événement à venir » | Exécution du contrat |
 | Stocks / recettes / liste de courses | articles, recettes, ingrédients | Exécution du contrat |
@@ -204,16 +204,18 @@ de la purge dépasserait.
   de 30 jours après cet email, et, s'il n'a pas pu partir, pas avant 2 ans
   et 30 jours de désactivation. Une demande de réactivation en attente
   suspend cette échéance et l'email qui la précède, si c'est la première
-  depuis la désactivation. Après un refus, vous pouvez en faire une
-  nouvelle, mais elle ne suspend plus rien ; et si l'email
+  depuis la désactivation. Après le premier refus, vous pouvez en faire
+  une nouvelle, mais elle ne suspend plus rien ; et si l'email
   d'avertissement était déjà parti, un nouvel email part une fois
   l'échéance à 30 jours ou moins, et la purge n'a pas lieu moins de 30
   jours après lui. Dans tous les cas, elle n'a pas lieu moins de 30 jours
   après le premier refus, que cet email parte ou non. Ce report n'a lieu
-  qu'une fois : un refus suivant ne repousse plus la purge. La date du premier refus est effacée à la réactivation, à une
-  nouvelle désactivation et à la purge. Un compte dont la suppression avait été demandée
-  avant sa désactivation est purgé au terme de ses 30 jours de grâce,
-  comme tout autre, demande de réactivation en attente ou non.
+  qu'une fois : un refus suivant n'envoie pas de nouvel email et ne
+  repousse plus la purge. La date du premier refus est effacée à la
+  réactivation, à une nouvelle désactivation et à la purge. Un compte
+  dont la suppression avait été demandée avant sa désactivation est
+  purgé au terme de ses 30 jours de grâce, comme tout autre, demande de
+  réactivation en attente ou non.
 - **Déclaration d'âge** : la déclaration et sa date restent tant que le
   compte existe, et sont effacées à la purge du compte.
 - **Acceptation des conditions d'utilisation** : la version acceptée et sa
