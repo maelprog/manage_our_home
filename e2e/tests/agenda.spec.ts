@@ -412,7 +412,7 @@ test.describe("Agenda — journée entière", () => {
     await expect(page.getByLabel("Fin")).toHaveValue(last);
   });
 
-  test("cocher puis décocher la case convertit les champs sans déplacer une borne", async ({
+  test("cocher la case ramène un créneau à ses journées, décocher puis recocher ne déplace aucune borne", async ({
     page,
   }) => {
     await registerAndLogin(page, "e2e-agtoggle", "Toggle User");

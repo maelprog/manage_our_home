@@ -747,7 +747,8 @@ pub async fn delete_account(
     )
     .fetch_all(&mut *tx)
     .await?;
-    tx.commit().await?;
+    // Read only: nothing to commit.
+    tx.rollback().await?;
 
     if !owned_groups.is_empty() {
         return Err(AppError::ConflictJson(json!({

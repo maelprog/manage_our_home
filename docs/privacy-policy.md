@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-10-04.
+Dernière mise à jour : 2026-10-05.
 
 ## Qui est responsable de vos données ?
 
@@ -220,7 +220,9 @@ de la purge dépasserait.
   date restent tant que le compte existe ; la prise de connaissance d'une
   nouvelle version les remplace, et la purge du compte les efface.
 - **Sessions de connexion** : une session vaut 30 jours au plus, et prend
-  fin plus tôt si elle reste 7 jours sans activité. Sa trace (dates
+  fin plus tôt si elle reste 7 jours sans activité. La dernière activité
+  n'est enregistrée qu'une fois par heure au plus : la fin peut donc
+  survenir jusqu'à une heure avant ces 7 jours. Sa trace (dates
   de création, de dernière activité, d'expiration et de révocation) est
   supprimée au premier passage de purge qui suit la fin de la session :
   expiration, inactivité, déconnexion, changement de mot de passe ou
@@ -259,8 +261,9 @@ de la purge dépasserait.
   auteur est anonymisé, le contenu reste dans le groupe sans être rattaché
   à son identité. Le fichier d'une pièce jointe que le serveur a reçu sans
   pouvoir l'enregistrer est supprimé par un balayage quotidien moins de
-  48 heures après son dépôt, tant que le serveur tourne et que ce balayage
-  est activé dans sa configuration.
+  48 heures après son dépôt, tant que le serveur tourne et que sa
+  configuration permet ce balayage, aux mêmes conditions que le passage de
+  purge.
 - **Rappels d'événements** : jusqu'à la suppression du rappel ou de
   l'événement ; l'historique des envois (heure, statut, tentatives) part
   avec eux.
@@ -403,11 +406,11 @@ de la purge dépasserait.
   responsable de traitement.
 - **Droit d'opposition (Art. 21)** : vous pouvez vous opposer, pour des
   raisons tenant à votre situation particulière, aux traitements fondés sur
-  l'intérêt légitime (invitations, protection de la connexion, logs
-  d'audit). Le traitement cesse, sauf motifs légitimes et impérieux qui
-  prévalent sur vos intérêts, ou nécessité pour la constatation,
-  l'exercice ou la défense de droits en justice. Adressez la demande au
-  responsable de traitement.
+  l'intérêt légitime (invitations, protection de la connexion,
+  désactivation d'un compte, logs d'audit). Le traitement cesse, sauf
+  motifs légitimes et impérieux qui prévalent sur vos intérêts, ou
+  nécessité pour la constatation, l'exercice ou la défense de droits en
+  justice. Adressez la demande au responsable de traitement.
 - **Retrait du consentement (Art. 7)** : l'import calendrier repose sur le
   consentement de la personne qui fournit l'URL du flux. Un administrateur
   ou le propriétaire du groupe peut supprimer l'import à tout moment ; le
@@ -439,8 +442,8 @@ fonctionner au bout de 7 jours. Votre adresse, elle, reste enregistrée avec
 l'invitation pendant 30 jours après son envoi, puis est effacée au premier
 passage de purge qui suit (ces passages ont lieu toutes les heures quand le
 service fonctionne et que sa configuration les permet, et reprennent à son
-redémarrage ou au rétablissement de cette configuration). Elle l'est
-aussitôt si le lien est utilisé.
+redémarrage, ou au premier passage horaire qui suit le rétablissement de
+cette configuration). Elle l'est aussitôt si le lien est utilisé.
 
 Aucun écran de ce service ne permet d'agir sur cette adresse. Si vous
 ouvrez un compte avec cette même adresse, l'export de ce compte contient

@@ -4,7 +4,8 @@ AIPD au titre de l'article 35 du RGPD, suivant la trame de la CNIL :
 contexte, principes fondamentaux, risques, validation. Rédigée le
 2026-10-02 (#143), relue contre `docs/registre-traitements.md` (mis à jour
 le 2026-09-28) et le code de `main` à cette date ; sous-traitant email et
-transferts mis à jour le 2026-10-04 (Scaleway remplace Mailjet, #328).
+transferts mis à jour le 2026-10-04 (Scaleway remplace Mailjet, #328) ;
+état de TLS mis à jour le 2026-10-05 (#327).
 
 **Statut : projet.** L'analyse est rédigée ; la conclusion (dernière
 section) est une **proposition**, qui ne vaut décision qu'une fois relue et
@@ -116,8 +117,11 @@ en CI ; journal d'audit des actions sensibles.
   24 h) valide une adresse sans la posséder.
 - Les clés de chiffrement sont des variables d'environnement du processus
   `api` : qui prend le serveur prend les clés.
-- TLS n'est pas encore configuré pour la production
-  (`docs/v2-deployment.md` #2), ni les secrets via sops (#15).
+- TLS est configuré (`docs/v2-deployment.md` #2, depuis #141) : Caddy
+  obtient et renouvelle le certificat dès que le nom de domaine public est
+  donné à `SITE_ADDRESS` ; sans lui, la pile reste en HTTP simple. Il ne
+  protège donc rien avant le serveur de production (#1) et ce réglage. Les
+  secrets ne passent pas encore par sops (#15).
 
 **Vraisemblance : limitée**, une fois TLS en place ; **importante** sans lui.
 
@@ -148,7 +152,8 @@ le suivi de déploiement :
 
 1. Sauvegardes chiffrées de Postgres et de MinIO, restauration éprouvée au
    même point (`docs/v2-deployment.md` #8, #9).
-2. TLS en production (#2) et secrets via sops (#15).
+2. TLS en production — configuré (#2), à activer sur le serveur (#1) en
+   y donnant le nom de domaine — et secrets via sops (#15).
 3. Supervision et journaux consultables (#12, #13), sans quoi une violation
    peut passer inaperçue.
 4. Identité du responsable, contact, sous-traitant et transferts (#16, #18).

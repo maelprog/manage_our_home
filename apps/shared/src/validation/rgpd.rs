@@ -549,9 +549,10 @@ fn is_invisible(c: char) -> bool {
 /// therefore states the frequency and what either of them does to it, and
 /// states no deadline — not "au plus tard 30 jours", which the hourly pass
 /// overruns on every invitation, and not a flat hour either, which an outage
-/// overruns just as surely. `docs/privacy-policy.md` and `docs/registre-traitements.md` carry
-/// that same reserve. Deleting the group takes the row earlier, which breaks
-/// no promise: nothing here promises the address stays.
+/// overruns just as surely. `docs/privacy-policy.md` and
+/// `docs/registre-traitements.md` carry that same reserve. Deleting the group
+/// takes the row earlier, which breaks no promise: nothing here promises the
+/// address stays.
 pub fn invitation_email_body(
     group_name: &str,
     inviter_display_name: &str,
@@ -588,7 +589,8 @@ effacement est fait par un passage automatique qui a lieu
 toutes les heures quand le service fonctionne et que sa
 configuration le permet ; si le service est interrompu, ou si sa
 configuration suspend ce passage, il a lieu à son redémarrage ou au
-rétablissement de cette configuration.
+premier passage horaire qui suit le rétablissement de cette
+configuration.
 
 Le responsable de traitement est [nom du responsable de traitement — à
 renseigner avant la mise en ligne], joignable à [adresse de contact — à
@@ -1841,13 +1843,13 @@ mod tests {
     #[test]
     fn invitation_email_speaks_of_time_only_through_its_sanctioned_phrasings() {
         // The purge pass runs hourly and only while the API is up with a role
-        // that bypasses RLS, so the 30th
-        // day is when the row becomes purgeable and no bound on the deletion
-        // holds — "au plus tard 30 jours" and a flat hour both got written
-        // and had to be taken out again (#273). What this pins is narrower
-        // than "no bound at all" and says so: see `time_words_outside`. The
-        // processing register carries the same reserve
-        // (`docs/registre-traitements.md`), unguarded by this test.
+        // that bypasses RLS, so the 30th day is when the row becomes
+        // purgeable and no bound on the deletion holds — "au plus tard 30
+        // jours" and a flat hour both got written and had to be taken out
+        // again (#273). What this pins is narrower than "no bound at all"
+        // and says so: see `time_words_outside`. The processing register
+        // carries the same reserve (`docs/registre-traitements.md`),
+        // unguarded by this test.
         let body = invitation_sample();
         assert_eq!(
             time_words_outside(&body, &INVITATION_TIME_PHRASES),
@@ -1889,8 +1891,8 @@ mod tests {
         "cet effacement est fait par un passage automatique qui a lieu toutes \
          les heures quand le service fonctionne et que sa configuration le \
          permet ; si le service est interrompu, ou si sa configuration suspend \
-         ce passage, il a lieu à son redémarrage ou au rétablissement de cette \
-         configuration.",
+         ce passage, il a lieu à son redémarrage ou au premier passage horaire \
+         qui suit le rétablissement de cette configuration.",
         "si vous ne voulez pas de cette invitation, ignorez cet email : le lien \
          cesse de fonctionner au bout de 7 jours.",
         "votre adresse, elle, reste enregistrée avec l'invitation pendant 30 \
@@ -2133,7 +2135,8 @@ mod tests {
              passage automatique qui a lieu\ntoutes les heures quand le service \
              fonctionne et que sa\nconfiguration le permet ; si le service est \
              interrompu, ou si sa\nconfiguration suspend ce passage, il a lieu à \
-             son redémarrage ou au\nrétablissement de cette configuration.",
+             son redémarrage ou au\npremier passage horaire qui suit le \
+             rétablissement de cette\nconfiguration.",
             &INVITATION_TIME_PHRASES
         )
         .is_empty());
@@ -2442,7 +2445,7 @@ mod tests {
         let body = invitation_sample().replacen("le permet ; si", "le permet ; au plus, si", 1);
         assert_eq!(
             time_words_outside(&body, &INVITATION_TIME_PHRASES),
-            vec!["heures".to_string()]
+            vec!["heures".to_string(), "horaire".to_string()]
         );
     }
 

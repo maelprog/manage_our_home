@@ -90,14 +90,15 @@ pub struct EventResponse {
     /// day several API instances run against the same database *on
     /// different binaries*: events predating `0011_event_assignees.sql`,
     /// which created the junction table empty, read through an instance
-    /// built before `0013_backfill_event_assignees.sql` existed while a newer
-    /// one is part-way through the pass that applies it. A second instance
+    /// built before `0013_backfill_event_assignees.sql` existed, at any time
+    /// from the moment `0011` is applied until a newer instance's migration
+    /// pass has applied `0013`. A second instance
     /// on the same binary cannot serve it: sqlx serialises migration passes
     /// behind an advisory lock, so it waits for the pass and then finds
     /// `0013` applied. A single instance cannot either:
     /// `apps/api/src/main.rs` finishes the migration pass before it binds its
     /// listener, and `infra/docker-compose.yml` runs one `api`. Were it to
-    /// hold, the window would close when the pass finishes — those events
+    /// hold, the window would close when that pass finishes — those events
     /// then carry their creator.
     ///
     /// A second way stayed in that list after #105 had already closed it:
