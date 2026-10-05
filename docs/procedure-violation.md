@@ -36,9 +36,11 @@ meilleurs délais », art. 33(2)), un chercheur en sécurité — et arrive à
      cookie (#222) : une copie de la table ne suffit pas à se connecter.
      La révocation reste le levier quand ce sont les cookies eux-mêmes qui
      ont pu fuir (poste d'un membre, serveur compromis en marche) ;
-   - supprimer les jetons porteurs encore valables, stockés en clair :
-     après une fuite de la base, **chacun est utilisable par qui tient la
-     copie**. Un jeton d'invitation (`invitations.token`, valable
+   - supprimer les jetons porteurs encore valables. La base ne garde que
+     leur empreinte SHA-256 (`token_hash`, #335) : une copie de la base ne
+     suffit pas à s'en servir. Le levier reste nécessaire quand ce sont les
+     liens eux-mêmes qui ont pu fuir (boîte e-mail, sous-traitant e-mail,
+     serveur compromis en marche) : un jeton d'invitation (valable
      7 jours) fait entrer n'importe quel compte dans le groupe, quelle que
      soit l'adresse invitée ; un jeton de réinitialisation
      (`password_reset_tokens`, 1 h) donne le compte ; un jeton de
