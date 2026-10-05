@@ -1603,7 +1603,8 @@ mod tests {
     ///   lets interrupt a paragraph (`2024. Son I` wrapped under text is text);
     /// - a line made only of `-` or of `=` (a setext underline, an empty
     ///   bullet), and a line of three or more `*` or `_` (a rule);
-    /// - a `+` or `*` bullet, and a `-` followed by anything but a space;
+    /// - a `+` or `*` bullet, and a `-` followed by a tab (or any whitespace
+    ///   other than a space): `-item` or `-->` stay text, as in CommonMark;
     /// - a code fence, ```` ``` ```` or `~~~`;
     /// - a line indented by four columns or more (a tab counts four) that does
     ///   not continue a paragraph or a bullet: indented code;
