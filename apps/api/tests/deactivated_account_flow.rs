@@ -1048,7 +1048,7 @@ async fn a_refusal_concurrent_with_the_purge_does_not_deadlock(db: PgPool) {
     backdate(&db, holder, "2 years 60 days", Some(31)).await;
     backdate_refusal(&db, holder, 32).await;
 
-    let mut gate = db.begin().await.unwrap();
+    let mut gate = manage_our_home::db::begin(&db).await.unwrap();
     sqlx::query("SELECT 1 FROM account_reactivation_requests WHERE user_id = $1 FOR UPDATE")
         .bind(holder)
         .execute(&mut *gate)
@@ -1075,7 +1075,10 @@ async fn a_refusal_concurrent_with_the_purge_does_not_deadlock(db: PgPool) {
     gate.commit().await.unwrap();
 
     let within = std::time::Duration::from_secs(20);
-    let refusal = tokio::time::timeout(within, refusal).await.unwrap().unwrap();
+    let refusal = tokio::time::timeout(within, refusal)
+        .await
+        .unwrap()
+        .unwrap();
     let purge = tokio::time::timeout(within, purge).await.unwrap().unwrap();
     assert_eq!(refusal, StatusCode::NO_CONTENT);
     purge.unwrap();
