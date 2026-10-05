@@ -1595,12 +1595,14 @@ mod tests {
     /// written under a line of text is no longer at the start of anything in
     /// the output. The line-start markers looked for there are exactly:
     ///
-    /// - a heading of level 4 or deeper, a bare `#`, or a heading closed by
-    ///   a `#` sequence (`## Titre ##`);
+    /// - a heading of level 4 or deeper, a bare `#`, a heading whose `#` is
+    ///   followed by a tab, or a heading closed by a `#` sequence
+    ///   (`## Titre ##`, a tab before it too);
     /// - `>`;
-    /// - a number followed by `.` or `)` — except on a line that continues a
-    ///   paragraph, where only a `1` is refused, the one number CommonMark
-    ///   lets interrupt a paragraph (`2024. Son I` wrapped under text is text);
+    /// - a number followed by `.` or `)`, then a blank or the line end —
+    ///   except on a line that continues a paragraph, where only a `1` is
+    ///   refused, the one number CommonMark lets interrupt a paragraph
+    ///   (`2024. Son I` wrapped under text is text);
     /// - a line made only of `-` or of `=` (a setext underline, an empty
     ///   bullet), and a line of three or more `*` or `_` (a rule);
     /// - a `+` or `*` bullet, and a `-` followed by a tab (or any whitespace
@@ -1709,12 +1711,14 @@ mod tests {
     fn line_start_marker(t: &str, in_paragraph: bool) -> Option<&'static str> {
         let hashes = t.chars().take_while(|&c| c == '#').count();
         let after_hashes = &t[hashes..];
-        if hashes > 0 && (after_hashes.is_empty() || after_hashes.starts_with(' ')) {
+        if hashes > 0 && (after_hashes.is_empty() || after_hashes.starts_with(char::is_whitespace)) {
             match heading(t) {
                 None => return Some("heading"),
                 Some((_, text)) => {
                     let open = text.trim_end_matches('#');
-                    if open.len() < text.len() && (open.is_empty() || open.ends_with(' ')) {
+                    if open.len() < text.len()
+                        && (open.is_empty() || open.ends_with(char::is_whitespace))
+                    {
                         return Some("heading closing sequence");
                     }
                 }
@@ -1772,13 +1776,14 @@ mod tests {
         columns
     }
 
-    /// `1. `, `1) `, or the number alone on its line: an ordered-list item.
+    /// `1. `, `1) ` (a tab as good as the space), or the number alone on its
+    /// line: an ordered-list item.
     fn is_ordered_item(t: &str) -> bool {
         let digits = t.chars().take_while(char::is_ascii_digit).count();
         let rest = &t[digits..];
         digits > 0
             && (rest.starts_with('.') || rest.starts_with(')'))
-            && (rest.len() == 1 || rest[1..].starts_with(' '))
+            && (rest.len() == 1 || rest[1..].starts_with(char::is_whitespace))
     }
 
     /// The number an ordered item starts with (`01.` starts at 1).
@@ -2007,6 +2012,18 @@ mod tests {
     #[test]
     fn raw_markdown_guard_catches_a_closing_heading_sequence() {
         assert_each_caught(&["## Titre ##\n", "# Titre #\n"]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_reads_a_tab_as_the_blank_after_a_marker() {
+        assert_each_caught(&[
+            "1.\titem\n",
+            "1)\titem\n",
+            "- 1.\titem\n",
+            "Texte\n1.\titem\n",
+            "## Titre\t##\n",
+            "##\tTitre\n",
+        ]);
     }
 
     #[test]
