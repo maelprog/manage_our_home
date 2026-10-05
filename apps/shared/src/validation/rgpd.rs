@@ -1620,7 +1620,9 @@ mod tests {
     /// any backtick (a code span left open), any `~` (strikethrough), `](`,
     /// `][` and `![` (a link the renderer refused, a reference link, an
     /// image), a `!` glued before a rendered link (an image whose URL was
-    /// accepted), an escaped `<` (raw HTML, an autolink), an escaped entity
+    /// accepted), a rendered link whose `href` holds a `(`, a blank or a
+    /// quote (a URL cut at its first `)`, or carrying a title), an escaped
+    /// `<` (raw HTML, an autolink), an escaped entity
     /// reference (`&copy;`, `&#169;`), any `\` (a backslash escape or a hard
     /// break), and the pipe syntax of a table that did not render.
     fn raw_markdown_markers(md: &str, html: &str) -> Vec<String> {
@@ -1661,6 +1663,15 @@ mod tests {
         // the link, so it never reaches the visible text as `![`.
         for line in html.lines().filter(|l| l.contains("!<a href=")) {
             found.push(format!("image: {line}"));
+        }
+        // A link the renderer accepted but cut: it ends the URL at the first
+        // `)` and keeps a title, so a `(`, a blank or a quote in the `href`
+        // means the reader follows something other than what was written.
+        for href in html.split("<a href=\"").skip(1) {
+            let href = href.split('"').next().unwrap_or_default();
+            if href.contains(['(', ' ', '\'']) || href.contains("&quot;") {
+                found.push(format!("link url: {href}"));
+            }
         }
         for text in visible_text(html) {
             let chars: Vec<char> = text.chars().collect();
@@ -1919,6 +1930,18 @@ mod tests {
             "Voir [l](architecture.md).\n",
             "Voir [x](javascript:alert(1)).\n",
             "- une [l](architecture.md)\n",
+        ]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_a_link_whose_url_the_renderer_cut() {
+        // The renderer ends the URL at the first `)` and keeps a title in the
+        // `href`: the link points elsewhere than written, or shows a stray `)`.
+        assert_each_caught(&[
+            "Voir [x](https://e.org/A_(b)).\n",
+            "Voir [x](https://e.org \"titre\").\n",
+            "Voir [x](https://e.org 'titre').\n",
+            "Voir [x](/a b).\n",
         ]);
     }
 
