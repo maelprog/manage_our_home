@@ -1741,7 +1741,8 @@ mod tests {
     fn line_start_marker(t: &str, in_paragraph: bool) -> Option<&'static str> {
         let hashes = t.chars().take_while(|&c| c == '#').count();
         let after_hashes = &t[hashes..];
-        if hashes > 0 && (after_hashes.is_empty() || after_hashes.starts_with(char::is_whitespace)) {
+        if hashes > 0 && (after_hashes.is_empty() || after_hashes.starts_with(char::is_whitespace))
+        {
             match heading(t) {
                 None => return Some("heading"),
                 Some((_, text)) => {
@@ -1882,7 +1883,9 @@ mod tests {
                     } else {
                         ">"
                     };
-                    rest = tail.find(close).map_or("", |end| &tail[end + close.len()..]);
+                    rest = tail
+                        .find(close)
+                        .map_or("", |end| &tail[end + close.len()..]);
                 }
                 text.push_str(rest);
                 text
