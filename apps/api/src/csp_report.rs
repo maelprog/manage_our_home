@@ -94,14 +94,21 @@ fn redact_path(path: &str) -> String {
         .join("/")
 }
 
+/// Length from which a segment of the token alphabet is opaque even
+/// without a digit (#335).
+const OPAQUE_WITHOUT_DIGIT_LEN: usize = 32;
+
 /// A segment that names a thing rather than a place: 16 characters or more,
 /// only letters, digits, `-` and `_`, at least one digit — an invitation
 /// token, a UUID. Route words (`reactivation-request`) have no digit, and a
 /// file name (`enhance-<digest>.js`) has a dot; both stay, they say where
-/// the violation happened.
+/// the violation happened. From [`OPAQUE_WITHOUT_DIGIT_LEN`] characters on,
+/// no digit is needed (#335): a random 43-character token holds none about
+/// once in 1 500, and no route word is that long.
 fn opaque_segment(segment: &str) -> bool {
     segment.len() >= 16
-        && segment.chars().any(|c| c.is_ascii_digit())
+        && (segment.len() >= OPAQUE_WITHOUT_DIGIT_LEN
+            || segment.chars().any(|c| c.is_ascii_digit()))
         && segment
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
@@ -276,6 +283,24 @@ mod tests {
         assert_eq!(
             redact_url("/groups/invitations/Zq3k9XvT2mQ8pLw4/accept"),
             "/groups/invitations/:redacted/accept"
+        );
+    }
+
+    /// #335: an invitation token is 43 base64url characters drawn at random,
+    /// and about one in 1 500 holds no digit. Long enough, a segment is
+    /// opaque without one.
+    #[test]
+    fn redact_url_drops_a_token_without_any_digit() {
+        assert_eq!(
+            redact_url(&format!("/groups/invitations/{}/accept", "A".repeat(43))),
+            "/groups/invitations/:redacted/accept"
+        );
+        assert_eq!(
+            redact_url(&format!(
+                "https://maison.example.org/reset-password/{}",
+                "aB-_".repeat(8)
+            )),
+            "https://maison.example.org/reset-password/:redacted"
         );
     }
 
@@ -492,7 +517,9 @@ mod tests {
 
     #[test]
     fn violations_cuts_every_field() {
-        let long = "a".repeat(1000);
+        // Dotted, so the URL fields are cut rather than redacted: a long
+        // segment of the token alphabet is opaque (#335).
+        let long = "a.".repeat(500);
         let body = format!(
             r#"{{"csp-report": {{"document-uri": "{long}", "effective-directive": "{long}",
                 "blocked-uri": "{long}", "source-file": "{long}", "disposition": "{long}"}}}}"#
