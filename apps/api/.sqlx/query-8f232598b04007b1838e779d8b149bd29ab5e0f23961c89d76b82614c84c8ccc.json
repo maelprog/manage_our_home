@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT reactivation_refused_at, deactivation_notice_sent_at, now() AS \"now!\"\n           FROM users WHERE id = $1 FOR UPDATE",
+  "query": "SELECT reactivation_refused_at, deactivation_notice_sent_at, now() AS \"now!\"\n           FROM users\n           WHERE id = $1 AND deactivated_at IS NOT NULL AND deleted_at IS NULL\n           FOR UPDATE",
   "describe": {
     "columns": [
       {
@@ -43,5 +43,5 @@
       null
     ]
   },
-  "hash": "fcabdf1a2f866039f3172c4e6395d56245a171c797df903058f74b7f4a79618d"
+  "hash": "8f232598b04007b1838e779d8b149bd29ab5e0f23961c89d76b82614c84c8ccc"
 }

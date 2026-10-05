@@ -272,11 +272,23 @@ pub async fn refuse_reactivation(
 ) -> AppResult<impl IntoResponse> {
     let mut tx = crate::db::begin(&state.admin_db).await?;
 
+    // `users` first, then the request: the order the purge job and
+    // `request_reactivation` take them in. The other way round, a refusal
+    // and a purge pass of the same account deadlock (#369). The lock also
+    // keeps the purge job's warning from landing between the read and the
+    // write.
+    let row = sqlx::query!(
+        r#"SELECT reactivation_refused_at, deactivation_notice_sent_at, now() AS "now!"
+           FROM users
+           WHERE id = $1 AND deactivated_at IS NOT NULL AND deleted_at IS NULL
+           FOR UPDATE"#,
+        target_user_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
     let refused = sqlx::query!(
-        r#"DELETE FROM account_reactivation_requests r
-           USING users u
-           WHERE r.user_id = $1 AND u.id = r.user_id
-             AND u.deactivated_at IS NOT NULL AND u.deleted_at IS NULL"#,
+        "DELETE FROM account_reactivation_requests WHERE user_id = $1",
         target_user_id
     )
     .execute(&mut *tx)
@@ -284,16 +296,6 @@ pub async fn refuse_reactivation(
     if refused.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
-
-    // Locked so that the purge job's warning cannot land between the read
-    // and the write.
-    let row = sqlx::query!(
-        r#"SELECT reactivation_refused_at, deactivation_notice_sent_at, now() AS "now!"
-           FROM users WHERE id = $1 FOR UPDATE"#,
-        target_user_id
-    )
-    .fetch_one(&mut *tx)
-    .await?;
     let after = record_refusal(
         RefusalStamps {
             reactivation_refused_at: row.reactivation_refused_at,
