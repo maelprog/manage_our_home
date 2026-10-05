@@ -1312,8 +1312,9 @@ mod tests {
     /// Every age `md` states as the service's minimum, in reading order: the
     /// number in `N ans ou plus`, `N ans et plus`, `moins de N ans` or
     /// `au moins N ans` — the four phrasings the RGPD documents use for the
-    /// art. 8 GDPR threshold (#137). Markdown emphasis, elisions (`d'au moins`)
-    /// and hard wraps are seen through.
+    /// art. 8 GDPR threshold (#137). Markdown emphasis, link text
+    /// (`[16 ans ou plus](/x)`, #346), elisions (`d'au moins`) and hard wraps
+    /// are seen through.
     ///
     /// A duration is not an age: `après 2 ans`, `au plus tôt 2 ans et
     /// 30 jours` match none of the phrasings. Blind spot, accepted because no
@@ -1323,6 +1324,10 @@ mod tests {
         let words: Vec<String> = md
             .split_whitespace()
             .map(|w| {
+                // `plus](/x)` reads as `plus`: a link's target, glued to the
+                // last word of its text, is not part of the word. Cut before
+                // the elision, which the target may contain too.
+                let w = w.split(']').next().unwrap_or(w);
                 // `d'au` reads as `au`: an elision is not part of the word.
                 let w = w.rsplit(['\'', '’']).next().unwrap_or(w);
                 w.trim_matches(|c: char| !c.is_alphanumeric())
@@ -1376,6 +1381,18 @@ mod tests {
             vec![15]
         );
         assert_eq!(stated_minimum_ages("avoir 15\nans ou\nplus"), vec![15]);
+    }
+
+    /// #346: a threshold written as a link's text is still stated — the
+    /// target glued to the last word (`plus](/x)`) is not part of it.
+    #[test]
+    fn stated_minimum_ages_see_through_links() {
+        assert_eq!(stated_minimum_ages("[16 ans ou plus](/x)"), vec![16]);
+        assert_eq!(
+            stated_minimum_ages("être [d'au moins 15 ans](https://example.org/a'b)"),
+            vec![15]
+        );
+        assert_eq!(stated_minimum_ages("aux [moins de 16 ans][ref]"), vec![16]);
     }
 
     #[test]
