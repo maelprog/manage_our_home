@@ -536,7 +536,13 @@ mod tests {
     /// full, it is not a date: never in force, never announced.
     #[test]
     fn a_version_not_written_yyyy_mm_dd_in_full_is_not_a_date() {
-        for version in ["2026-12-1", "2026-1-01", "26-12-01", "+2026-12-01", " 2026-12-01"] {
+        for version in [
+            "2026-12-1",
+            "2026-1-01",
+            "26-12-01",
+            "+2026-12-01",
+            " 2026-12-01",
+        ] {
             assert_eq!(version_date(version), None, "{version}");
             let today = day("2999-01-01");
             assert_eq!(
@@ -544,7 +550,11 @@ mod tests {
                 "2026-10-04",
                 "{version}"
             );
-            assert_eq!(terms_version_announced(today, Some(version)), None, "{version}");
+            assert_eq!(
+                terms_version_announced(today, Some(version)),
+                None,
+                "{version}"
+            );
         }
         assert_eq!(version_date("2026-12-01"), Some(day("2026-12-01")));
         assert!(!terms_acceptance_covers("2026-12-9", "2026-12-10"));
