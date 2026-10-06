@@ -792,6 +792,18 @@ test("refuse un docker run où aucune image n'est lue, au lieu de l'ignorer (#37
   }
 });
 
+test("lit chaque docker run d'une ligne, pas seulement le premier (#374)", () => {
+  for (const run of [
+    `docker run -d ${PG} && docker run -d postgres:16`,
+    `docker run -d ${PG}; docker run -d postgres:16`,
+  ]) {
+    const ci = `${CI_SERVICES_OK}  lint:\n    steps:\n      - run: ${run}\n`;
+    const violations = composeTagViolations(ciFile(ci));
+    assert.equal(violations.length, 1, `${run} : ${violations.join(" | ")}`);
+    assert.ok(violations[0].includes("`postgres:16`"), violations[0]);
+  }
+});
+
 test("lit l'image d'un docker run continué sur plusieurs lignes, à sa ligne (#374)", () => {
   const ci =
     `${CI_SERVICES_OK}  lint:\n    steps:\n      - run: |\n` +

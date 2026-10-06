@@ -340,7 +340,8 @@ export function minioPinViolations(files: ReadonlyArray<SourceFile>): string[] {
 //   - les lignes `image:` (services du compose, `services:` des jobs de
 //     `ci.yml`, forme bloc de `container:`) ;
 //   - la forme ligne de `container:` d'un job (`container: postgres:16`) ;
-//   - `docker run` : la commande est suivie sur ses lignes continuées par
+//   - `docker run` (plusieurs par ligne) : la commande est suivie sur ses
+//     lignes continuées par
 //     `\` et jusqu'au premier séparateur shell, ses options sont sautées
 //     (avec leur valeur, sauf les drapeaux booléens de `docker run`), `--`
 //     clôt les options, et le premier argument restant est l'image. Une
@@ -370,8 +371,9 @@ const TWO_COMPONENT_VERSION = /^\d+\.\d+(?:-[\w.-]+)?$/;
 const IMAGE_LINE = /^\s*(?:image|container):\s*["']?([^\s"'#]+)/;
 
 // `docker run` en début de commande : début de ligne, ou après un blanc ou un
-// séparateur shell (`;`, `&&`, `|`, `(`). `sudo docker run` est lu.
-const DOCKER_RUN = /(?:^|[\s;&|(])docker\s+run(?=\s|$)/;
+// séparateur shell (`;`, `&&`, `|`, `(`). `sudo docker run` est lu. Global :
+// chaque commande d'une ligne est lue.
+const DOCKER_RUN = /(?:^|[\s;&|(])docker\s+run(?=\s|$)/g;
 
 // Options de `docker run` qui ne prennent pas de valeur : les drapeaux sans
 // type de `docker run --help` (client Docker 29.1.3), plus
@@ -517,11 +519,9 @@ function imageLines(file: SourceFile): ImageLine[] {
     if (line.trimStart().startsWith("#")) return;
     const m = line.match(IMAGE_LINE);
     if (m) found.push(parseReference(`${file.path}:${index + 1}`, m[1]));
-    const run = DOCKER_RUN.exec(line);
-    if (run) {
-      found.push(
-        dockerRunImage(file, lines, index, line.slice(run.index + run[0].length)),
-      );
+    for (const run of line.matchAll(DOCKER_RUN)) {
+      const after = line.slice(run.index + run[0].length);
+      found.push(dockerRunImage(file, lines, index, after));
     }
   });
   return found;
