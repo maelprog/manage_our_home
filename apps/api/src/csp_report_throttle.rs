@@ -36,11 +36,13 @@ use std::time::{Duration, Instant};
 use crate::auth::throttle::address_scope;
 
 /// Requests admitted per address within one [`WINDOW`]. A page view
-/// raises one report per violation and per reporting mechanism (the
-/// policy names two), and a household shares one address: 100 leaves room
-/// for a browser extension that trips the policy on every page, while
-/// bounding one address at `100 × MAX_VIOLATIONS_PER_REQUEST` = 1 000 log
-/// lines per window.
+/// raises one report per violation, sent through one mechanism only: the
+/// policy names both `report-to` and `report-uri`, but a browser that
+/// supports `report-to` ignores `report-uri` (CSP3 §5.5), and the Reporting
+/// API may batch several reports into one request. A household shares one
+/// address: 100 leaves room for a browser extension that trips the policy
+/// on every page, while bounding one address at
+/// `100 × MAX_VIOLATIONS_PER_REQUEST` = 1 000 log lines per window.
 pub const MAX_REPORTS: u32 = 100;
 
 /// How long requests accumulate, and so how long an address that reached
