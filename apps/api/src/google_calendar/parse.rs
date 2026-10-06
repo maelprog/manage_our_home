@@ -318,27 +318,35 @@ END:VCALENDAR
         assert_eq!(feed_title(Some("  Anniversaire  ")), "  Anniversaire  ");
     }
 
+    /// The blanks are escaped (`\x20`, `\u{00a0}`): written out, trailing
+    /// whitespace in this literal is the first thing an editor strips.
     #[test]
     fn a_blank_summary_in_a_feed_is_imported_under_the_fallback_title() {
         let ics = "\
 BEGIN:VCALENDAR
 VERSION:2.0
 BEGIN:VEVENT
-UID:blank-summary@google.com
+UID:spaces-summary@google.com
 DTSTAMP:20260101T090000Z
 DTSTART:20260115T140000Z
-SUMMARY:
+SUMMARY:\x20\x20\x20
+END:VEVENT
+BEGIN:VEVENT
+UID:nbsp-summary@google.com
+DTSTAMP:20260101T090000Z
+DTSTART:20260116T140000Z
+SUMMARY:\u{00a0}\u{00a0}
 END:VEVENT
 BEGIN:VEVENT
 UID:empty-summary@google.com
 DTSTAMP:20260101T090000Z
-DTSTART:20260116T140000Z
+DTSTART:20260117T140000Z
 SUMMARY:
 END:VEVENT
 END:VCALENDAR
 ";
         let events = parse_ics(ics).unwrap();
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 3);
         assert!(events.iter().all(|e| e.title == UNTITLED), "{events:?}");
     }
 
