@@ -285,9 +285,15 @@ mod tests {
         );
     }
 
+    /// The version in force accepted: nothing to acknowledge. A version
+    /// announced may still be told about (#367), so this release's notice is
+    /// only checked for the absence of the acknowledgement.
     #[test]
     fn the_version_in_force_accepted_gets_no_notice() {
-        assert_eq!(update_notice(&me(Some(in_force()))), "");
+        assert_eq!(notice_for(Some(in_force()), in_force(), None), "");
+        let html = update_notice(&me(Some(in_force())));
+        assert!(!html.contains("ont changé"), "{html}");
+        assert!(!html.contains("<form"), "{html}");
     }
 
     #[test]
