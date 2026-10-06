@@ -767,17 +767,22 @@ test("lit l'image derrière les drapeaux booléens de docker run et après -- (#
     const ci = `${CI_SERVICES_OK}  lint:\n    steps:\n      - run: ${run}\n`;
     const violations = composeTagViolations(ciFile(ci));
     assert.equal(violations.length, 1, `${run} : ${violations.join(" | ")}`);
-    assert.ok(violations[0].includes("postgres:16"), violations[0]);
+    // L'image elle-même est lue, et refusée pour son tag.
+    assert.ok(violations[0].includes("`postgres:16`"), violations[0]);
+    assert.doesNotMatch(violations[0], /aucune image/);
   }
 });
 
 test("refuse un docker run où aucune image n'est lue, au lieu de l'ignorer (#374)", () => {
   // Une option inconnue supposée à valeur peut avaler la dernière image : la
-  // commande épuisée sans image est elle-même une violation.
+  // commande épuisée sans image est elle-même une violation. La lecture
+  // s'arrête au séparateur shell : `echo` n'est pas pris pour l'image.
   for (const run of [
     "docker run -d --name pg",
     "docker run -d --some-new-flag postgres:16",
     "docker run -d --",
+    "docker run -d --name pg; echo ok",
+    "docker run -d --name pg && echo ok",
   ]) {
     const ci = `${CI_SERVICES_OK}  lint:\n    steps:\n      - run: ${run}\n`;
     const violations = composeTagViolations(ciFile(ci));
