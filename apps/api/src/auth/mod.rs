@@ -25,7 +25,7 @@ use manage_our_home_shared::dto::auth::{
 
 use manage_our_home_shared::validation::auth::{
     validate_age_declaration, validate_display_name, validate_email, validate_password,
-    validate_terms_acceptance, TERMS_VERSION,
+    validate_terms_acceptance,
 };
 
 use crate::client_ip::ClientIp;
@@ -83,8 +83,8 @@ pub async fn me(auth: AuthUser) -> Json<MeResponse> {
 /// still reports the field errors the form can point at first.
 ///
 /// #319: and unless it accepts the CGU (422 `terms_acceptance_required`),
-/// checked after the declaration; the version in force is recorded with the
-/// account, and when.
+/// checked after the declaration; the version in force that day (#367) is
+/// recorded with the account, and when.
 pub async fn register(
     State(state): State<AppState>,
     Json(body): Json<RegisterRequest>,
@@ -115,7 +115,7 @@ pub async fn register(
         body.email,
         password_hash,
         body.display_name,
-        TERMS_VERSION,
+        terms_acceptance::terms_in_force_now(),
     )
     .fetch_one(&mut *tx)
     .await?;

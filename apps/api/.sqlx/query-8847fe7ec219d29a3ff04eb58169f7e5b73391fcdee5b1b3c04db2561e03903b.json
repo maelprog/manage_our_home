@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users SET terms_accepted_version = $2,\n                          terms_accepted_at = now() - interval '1 day'\n         WHERE email = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8847fe7ec219d29a3ff04eb58169f7e5b73391fcdee5b1b3c04db2561e03903b"
+}

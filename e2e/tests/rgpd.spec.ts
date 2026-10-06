@@ -128,6 +128,18 @@ test.describe("Documents légaux publics (#132)", () => {
       await expect(page).toHaveURL(doc.url);
     });
   }
+
+  // #367: the text behind the CGU URLs changes on the date a version
+  // announced applies, not on a deploy. No browser or proxy may reuse a copy
+  // unchecked across that date — the text in force, and the announced one
+  // (or, with nothing announced, the redirect to the text in force).
+  test("CGU : jamais réutilisées depuis un cache sans revalidation", async ({ request }) => {
+    for (const path of ["/terms-of-service", "/terms-of-service/announced"]) {
+      const response = await request.get(path, { maxRedirects: 0 });
+      expect([200, 303]).toContain(response.status());
+      expect(response.headers()["cache-control"]).toBe("no-cache");
+    }
+  });
 });
 
 test.describe("RGPD — account hub gate", () => {

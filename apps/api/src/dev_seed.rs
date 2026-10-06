@@ -51,7 +51,7 @@ pub async fn seed_dev_users(db: &PgPool) -> Result<()> {
         .bind(email)
         .bind(password_hash)
         .bind(display_name)
-        .bind(manage_our_home_shared::validation::auth::TERMS_VERSION)
+        .bind(crate::auth::terms_acceptance::terms_in_force_now())
         .fetch_one(&mut *tx)
         .await?;
         user_ids.push(id);

@@ -5,6 +5,7 @@ use common::{
     assert_status, call, drop_prescribed_role, json_body, prescribed_role_pool, session_id_of,
     set_cookie, test_router,
 };
+use manage_our_home::auth::terms_acceptance::terms_in_force_now;
 use manage_our_home::auth::token::{new_token, token_hash};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -562,10 +563,7 @@ async fn register_requires_the_terms_acceptance_and_records_its_version(db: PgPo
     .await;
     assert_status(&created, StatusCode::CREATED);
     let (version, at) = terms_on_file(&db, "terms@example.test").await;
-    assert_eq!(
-        version.as_deref(),
-        Some(manage_our_home_shared::validation::auth::TERMS_VERSION)
-    );
+    assert_eq!(version.as_deref(), Some(terms_in_force_now()));
     assert!(at.is_some(), "the acceptance was not dated");
 }
 
@@ -632,17 +630,14 @@ async fn an_account_without_terms_acceptance_is_held_at_the_acceptance(db: PgPoo
     .await;
     assert_status(&accepted, StatusCode::NO_CONTENT);
     let (version, at) = terms_on_file(&db, email).await;
-    assert_eq!(
-        version.as_deref(),
-        Some(manage_our_home_shared::validation::auth::TERMS_VERSION)
-    );
+    assert_eq!(version.as_deref(), Some(terms_in_force_now()));
     assert!(at.is_some(), "the acceptance was not dated");
 
     let me = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
     assert_status(&me, StatusCode::OK);
     assert_eq!(
         json_body(me).await["terms_accepted_version"],
-        manage_our_home_shared::validation::auth::TERMS_VERSION
+        terms_in_force_now()
     );
 
     // The holder can log out as any other.
@@ -733,10 +728,7 @@ async fn a_member_on_an_earlier_version_acknowledges_the_new_one(db: PgPool) {
     .await;
     assert_status(&acknowledged, StatusCode::NO_CONTENT);
     let (version, first_at) = terms_on_file(&db, email).await;
-    assert_eq!(
-        version.as_deref(),
-        Some(manage_our_home_shared::validation::auth::TERMS_VERSION)
-    );
+    assert_eq!(version.as_deref(), Some(terms_in_force_now()));
     let first_at = first_at.unwrap();
     assert!(
         first_at > chrono::Utc::now() - chrono::Duration::hours(1),
@@ -756,6 +748,57 @@ async fn a_member_on_an_earlier_version_acknowledges_the_new_one(db: PgPool) {
         terms_on_file(&db, email).await.1,
         Some(first_at),
         "acknowledging the same version again rewrote its date"
+    );
+}
+
+/// #367, rollback: a member accepted a version later than the one this
+/// binary holds in force — a release that announced it, its date passed,
+/// then this earlier release put back. Their acceptance covers the earlier
+/// text: the session is full, `/auth/me` reports the later version, and
+/// acknowledging again does not replace it with the earlier one.
+#[sqlx::test]
+async fn an_acceptance_of_a_later_version_covers_the_one_in_force(db: PgPool) {
+    let router = test_router(db.clone());
+    let email = "later@example.test";
+    let cookie = register_verify_login(&router, &db, email, "long-enough-1").await;
+    let in_force = chrono::NaiveDate::parse_from_str(terms_in_force_now(), "%Y-%m-%d").unwrap();
+    let later = (in_force + chrono::Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+    sqlx::query!(
+        "UPDATE users SET terms_accepted_version = $2,
+                          terms_accepted_at = now() - interval '1 day'
+         WHERE email = $1",
+        email,
+        later
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    let (_, accepted_at) = terms_on_file(&db, email).await;
+
+    let me = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
+    assert_status(&me, StatusCode::OK);
+    assert_eq!(
+        json_body(me).await["terms_accepted_version"],
+        later.as_str()
+    );
+    let groups = call(&router, Method::GET, "/groups", Some(&cookie), None).await;
+    assert_status(&groups, StatusCode::OK);
+
+    let acknowledged = call(
+        &router,
+        Method::POST,
+        "/auth/terms-acceptance",
+        Some(&cookie),
+        Some(serde_json::json!({"accepts_terms": true})),
+    )
+    .await;
+    assert_status(&acknowledged, StatusCode::NO_CONTENT);
+    assert_eq!(
+        terms_on_file(&db, email).await,
+        (Some(later), accepted_at),
+        "an earlier version replaced the later one accepted"
     );
 }
 

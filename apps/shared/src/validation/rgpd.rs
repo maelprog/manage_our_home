@@ -1309,6 +1309,44 @@ mod tests {
         assert_no_raw_markdown(md, &html);
     }
 
+    /// #367: a version announced is held to what the text in force is held
+    /// to — one `Version en vigueur` line, stating the date it applies from,
+    /// no placeholder, no repo path, no leftover markup — and that date
+    /// comes after the version in force, or announcing it would announce
+    /// nothing. With nothing announced there is nothing to pin.
+    #[test]
+    fn an_announced_version_states_its_own_date_and_renders_cleanly() {
+        let Some(announced) = crate::validation::auth::TERMS_ANNOUNCED else {
+            return;
+        };
+        let md = announced.markdown;
+        let version_lines: Vec<&str> = md
+            .lines()
+            .filter(|line| line.starts_with("Version en vigueur :"))
+            .collect();
+        assert_eq!(
+            version_lines,
+            vec![format!("Version en vigueur : {}.", announced.version)],
+            "the announced CGU state a version other than their date"
+        );
+        // Written `YYYY-MM-DD` in full, so that its order as text — the
+        // api's — is its order as a date; then, compared as text, later.
+        assert!(
+            crate::validation::auth::is_terms_version(announced.version),
+            "the announced version `{}` is not a full YYYY-MM-DD date",
+            announced.version
+        );
+        assert!(
+            announced.version > crate::validation::auth::TERMS_VERSION,
+            "the announced version applies before the one in force"
+        );
+        let html = render_markdown(md);
+        assert!(html.starts_with("<h1>Conditions générales d'utilisation"));
+        assert_eq!(release_placeholders(md), Vec::<String>::new());
+        assert_eq!(repo_path_references(md), Vec::<String>::new());
+        assert_no_raw_markdown(md, &html);
+    }
+
     /// Every age `md` states as the service's minimum, in reading order: the
     /// number in `N ans ou plus`, `N ans et plus`, `moins de N ans` or
     /// `au moins N ans` — the four phrasings the RGPD documents use for the

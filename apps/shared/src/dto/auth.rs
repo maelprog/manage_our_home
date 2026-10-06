@@ -22,8 +22,8 @@ pub struct RegisterRequest {
     pub declares_minimum_age: bool,
     /// The acceptance of the CGU (#319): `true` when the person ticked the
     /// box. Omitted, it accepts nothing, answered with a 422
-    /// `terms_acceptance_required`. The version recorded is the one in force,
-    /// `validation::auth::TERMS_VERSION`.
+    /// `terms_acceptance_required`. The version recorded is the one in force
+    /// that day, `validation::auth::terms_in_force_on` (#367).
     #[serde(default)]
     pub accepts_terms: bool,
 }
@@ -123,8 +123,10 @@ pub struct MeResponse {
     pub deletion_requested_at: Option<DateTime<Utc>>,
     /// The version of the CGU the account last accepted
     /// (`users.terms_accepted_version`, #319). A full session always has one
-    /// on file; `apps/web` compares it with `validation::auth::TERMS_VERSION`
-    /// to tell a member who accepted an earlier text that the CGU changed.
+    /// on file; `apps/web` checks whether it covers the version in force that
+    /// day (`validation::auth::terms_in_force_on`,
+    /// `validation::auth::terms_acceptance_covers`, #367) to tell a member who
+    /// accepted an earlier text that the CGU changed.
     /// Defaults to `None`, which announces nothing.
     #[serde(default)]
     pub terms_accepted_version: Option<String>,

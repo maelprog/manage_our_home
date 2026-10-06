@@ -108,16 +108,120 @@ pub fn validate_age_declaration(declares_minimum_age: bool) -> Result<(), &'stat
     Ok(())
 }
 
-/// The version of the CGU (`docs/terms-of-service.md`) in force, as the
-/// document states it on its `Version :` line (#319): the date, `YYYY-MM-DD`,
-/// from which that text applies. It changes only with a substantial
-/// modification — a typo fixed moves the « Dernière mise à jour » date, not
-/// this — because a new version is what members are told about. A test in
-/// `validation::rgpd` pins it to the document, so the two cannot drift.
+/// The version of the text in `docs/terms-of-service.md`, as the document
+/// states it on its `Version en vigueur :` line (#319): the date,
+/// `YYYY-MM-DD`, from which that text applies. It changes only with a
+/// substantial modification — a typo fixed moves the « Dernière mise à
+/// jour » date, not this — because a new version is what members are told
+/// about. A test in `validation::rgpd` pins it to the document, so the two
+/// cannot drift.
+///
+/// It is the version in force until [`TERMS_ANNOUNCED`]'s date: which
+/// version an acceptance records or a page names is
+/// [`terms_in_force_on`]'s answer for the day, not this constant (#367).
 ///
 /// What is kept per account is the version accepted and when
 /// (`users.terms_accepted_version` / `terms_accepted_at`).
 pub const TERMS_VERSION: &str = "2026-10-04";
+
+/// A version of the CGU published before it applies (#367). The CGU promise
+/// that a substantial modification is announced before it takes effect:
+/// until its date, the text in `docs/terms-of-service.md` stays the one in
+/// force and is served as such, and this one is served beside it, as
+/// announced. From its date — read in Europe/Paris on every request, never
+/// fixed at startup — it is the version in force: acceptances record it, and
+/// members who accepted an earlier one are told.
+///
+/// Announcing a version: write its text in
+/// `docs/terms-of-service-announced.md`, its `Version en vigueur :` line
+/// stating the date it applies from, and set [`TERMS_ANNOUNCED`] to that
+/// date and that file. Once the date has passed, a later release folds it
+/// in: the text replaces `docs/terms-of-service.md`, [`TERMS_VERSION`]
+/// takes its date and [`TERMS_ANNOUNCED`] goes back to `None`. Tests in
+/// `validation::rgpd` pin the date to the text, and after [`TERMS_VERSION`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnnouncedTerms {
+    /// The date, `YYYY-MM-DD`, from which this text applies — its version.
+    pub version: &'static str,
+    /// The text, in the same markdown as `docs/terms-of-service.md`.
+    pub markdown: &'static str,
+}
+
+/// The version announced and its text, if any — see [`AnnouncedTerms`].
+pub const TERMS_ANNOUNCED: Option<AnnouncedTerms> = None;
+
+/// The civil day `now` falls on in Europe/Paris, the fixed timezone the
+/// service speaks (F3) and the one a CGU version's date is read in (#367).
+/// The caller passes the clock: nothing in this crate reads it.
+pub fn paris_day(now: chrono::DateTime<chrono::Utc>) -> chrono::NaiveDate {
+    now.with_timezone(&chrono_tz::Europe::Paris).date_naive()
+}
+
+/// The version in force on `today`: `announced` from its date on, `current`
+/// before — and `current` when `announced` is not a date, which no day
+/// makes apply (#367).
+pub fn terms_version_in_force<'a>(
+    today: chrono::NaiveDate,
+    current: &'a str,
+    announced: Option<&'a str>,
+) -> &'a str {
+    match announced {
+        Some(version) if version_date(version).is_some_and(|from| from <= today) => version,
+        _ => current,
+    }
+}
+
+/// The version announced and not yet in force on `today` — the one the CGU
+/// page and the members' notice name, with its date (#367).
+pub fn terms_version_announced(today: chrono::NaiveDate, announced: Option<&str>) -> Option<&str> {
+    announced.filter(|version| version_date(version).is_some_and(|from| today < from))
+}
+
+/// [`terms_version_in_force`] for this release's texts: [`TERMS_VERSION`]
+/// and [`TERMS_ANNOUNCED`].
+pub fn terms_in_force_on(today: chrono::NaiveDate) -> &'static str {
+    terms_version_in_force(today, TERMS_VERSION, TERMS_ANNOUNCED.map(|a| a.version))
+}
+
+/// The announced text not yet in force on `today`, for this release.
+pub fn terms_announced_on(today: chrono::NaiveDate) -> Option<AnnouncedTerms> {
+    TERMS_ANNOUNCED.filter(|a| terms_version_announced(today, Some(a.version)).is_some())
+}
+
+/// Whether having accepted `accepted` covers the version `in_force` (#367):
+/// the same version, or a later one. A later one is what a rollback shows —
+/// a binary released before a version applied, put back after a member
+/// accepted that version — and that member is not to be asked to accept the
+/// earlier text again. Versions are dates; two that are not both dates cover
+/// each other only when equal.
+pub fn terms_acceptance_covers(accepted: &str, in_force: &str) -> bool {
+    match (version_date(accepted), version_date(in_force)) {
+        (Some(accepted), Some(in_force)) => accepted >= in_force,
+        _ => accepted == in_force,
+    }
+}
+
+/// A version's date, `None` when it is not one. Only `YYYY-MM-DD` written in
+/// full counts: chrono alone also reads `2026-12-1`, whose order as text —
+/// the order the api compares stored versions in — is not its order as a
+/// date.
+fn version_date(version: &str) -> Option<chrono::NaiveDate> {
+    let well_formed = version.len() == 10
+        && version.bytes().enumerate().all(|(i, b)| match i {
+            4 | 7 => b == b'-',
+            _ => b.is_ascii_digit(),
+        });
+    if !well_formed {
+        return None;
+    }
+    chrono::NaiveDate::parse_from_str(version, "%Y-%m-%d").ok()
+}
+
+/// Whether `version` is a CGU version as stored and compared: a date written
+/// `YYYY-MM-DD` in full (#367).
+pub fn is_terms_version(version: &str) -> bool {
+    version_date(version).is_some()
+}
 
 /// `terms_acceptance_required` unless the person ticked the box accepting
 /// the CGU (#319) — at registration, or on the page a session without
@@ -130,10 +234,11 @@ pub fn validate_terms_acceptance(accepts_terms: bool) -> Result<(), &'static str
 }
 
 /// Whether an account must be told the CGU changed (#319): it accepted a
-/// version, and not `current`. No acceptance at all is not an update to
-/// announce — that account is held at the acceptance page instead.
-pub fn terms_update_pending(accepted_version: Option<&str>, current: &str) -> bool {
-    accepted_version.is_some_and(|accepted| accepted != current)
+/// version that does not cover `in_force` ([`terms_acceptance_covers`]). No
+/// acceptance at all is not an update to announce — that account is held at
+/// the acceptance page instead.
+pub fn terms_update_pending(accepted_version: Option<&str>, in_force: &str) -> bool {
+    accepted_version.is_some_and(|accepted| !terms_acceptance_covers(accepted, in_force))
 }
 
 /// A CGU version as the pages show it, `04/10/2026` for `2026-10-04` — the
@@ -344,6 +449,146 @@ mod tests {
         assert!(!terms_update_pending(None, "2026-12-01"));
     }
 
+    // -- announced version and its date (#367) ----------------------------
+
+    fn day(s: &str) -> chrono::NaiveDate {
+        chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    fn utc(s: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    /// The day changes at midnight in Paris, not in UTC: 22:30 UTC on
+    /// 30 November is already 1 December there in winter (UTC+1), and
+    /// 22:30 UTC on 30 June is 1 July in summer (UTC+2).
+    #[test]
+    fn the_day_is_read_in_paris() {
+        assert_eq!(paris_day(utc("2026-11-30T22:59:59Z")), day("2026-11-30"));
+        assert_eq!(paris_day(utc("2026-11-30T23:00:00Z")), day("2026-12-01"));
+        assert_eq!(paris_day(utc("2026-06-30T21:59:59Z")), day("2026-06-30"));
+        assert_eq!(paris_day(utc("2026-06-30T22:00:00Z")), day("2026-07-01"));
+    }
+
+    #[test]
+    fn before_its_date_the_announced_version_is_not_in_force() {
+        let today = day("2026-11-30");
+        assert_eq!(
+            terms_version_in_force(today, "2026-10-04", Some("2026-12-01")),
+            "2026-10-04"
+        );
+        assert_eq!(
+            terms_version_announced(today, Some("2026-12-01")),
+            Some("2026-12-01")
+        );
+    }
+
+    /// From its date on — the day itself included — the announced version
+    /// is in force, and nothing is announced any more.
+    #[test]
+    fn from_its_date_the_announced_version_is_in_force() {
+        for today in [day("2026-12-01"), day("2027-03-15")] {
+            assert_eq!(
+                terms_version_in_force(today, "2026-10-04", Some("2026-12-01")),
+                "2026-12-01"
+            );
+            assert_eq!(terms_version_announced(today, Some("2026-12-01")), None);
+        }
+    }
+
+    #[test]
+    fn nothing_announced_leaves_the_current_version_in_force() {
+        let today = day("2026-12-01");
+        assert_eq!(
+            terms_version_in_force(today, "2026-10-04", None),
+            "2026-10-04"
+        );
+        assert_eq!(terms_version_announced(today, None), None);
+    }
+
+    /// A version that is not a date has no day to apply from: it is never
+    /// in force, and it is not announced with a date it does not have.
+    #[test]
+    fn an_announced_version_that_is_not_a_date_never_applies() {
+        let today = day("2999-01-01");
+        assert_eq!(
+            terms_version_in_force(today, "2026-10-04", Some("v2")),
+            "2026-10-04"
+        );
+        assert_eq!(terms_version_announced(today, Some("v2")), None);
+    }
+
+    #[test]
+    fn this_release_has_a_version_in_force_every_day() {
+        let today = day("2026-10-06");
+        let in_force = terms_in_force_on(today);
+        assert!(in_force == TERMS_VERSION || Some(in_force) == TERMS_ANNOUNCED.map(|a| a.version));
+        if let Some(announced) = terms_announced_on(today) {
+            assert_ne!(announced.version, in_force);
+        }
+    }
+
+    /// A version is a date written `YYYY-MM-DD` in full: chrono alone reads
+    /// `2026-12-1` too, and the api compares versions as text, where
+    /// `2026-12-1` sorts after `2026-12-01`'s successors. Not written in
+    /// full, it is not a date: never in force, never announced.
+    #[test]
+    fn a_version_not_written_yyyy_mm_dd_in_full_is_not_a_date() {
+        for version in [
+            "2026-12-1",
+            "2026-1-01",
+            "26-12-01",
+            "+2026-12-01",
+            " 2026-12-01",
+        ] {
+            assert_eq!(version_date(version), None, "{version}");
+            let today = day("2999-01-01");
+            assert_eq!(
+                terms_version_in_force(today, "2026-10-04", Some(version)),
+                "2026-10-04",
+                "{version}"
+            );
+            assert_eq!(
+                terms_version_announced(today, Some(version)),
+                None,
+                "{version}"
+            );
+        }
+        assert_eq!(version_date("2026-12-01"), Some(day("2026-12-01")));
+        assert!(!terms_acceptance_covers("2026-12-9", "2026-12-10"));
+    }
+
+    // -- an acceptance covers its version and the earlier ones (#367) ------
+
+    #[test]
+    fn accepting_the_version_in_force_covers_it() {
+        assert!(terms_acceptance_covers("2026-10-04", "2026-10-04"));
+    }
+
+    #[test]
+    fn accepting_an_earlier_version_does_not_cover_a_later_one() {
+        assert!(!terms_acceptance_covers("2026-10-04", "2026-12-01"));
+    }
+
+    /// The rollback case: a binary released before 2026-12-01 applied holds
+    /// 2026-10-04 as the version in force. A member who already accepted
+    /// 2026-12-01 under the newer binary is not asked again.
+    #[test]
+    fn accepting_a_later_version_covers_an_earlier_one() {
+        assert!(terms_acceptance_covers("2026-12-01", "2026-10-04"));
+        assert!(!terms_update_pending(Some("2026-12-01"), "2026-10-04"));
+    }
+
+    /// Not dates, nothing to order: only the same version covers.
+    #[test]
+    fn versions_that_are_not_dates_cover_only_themselves() {
+        assert!(terms_acceptance_covers("v2", "v2"));
+        assert!(!terms_acceptance_covers("v3", "v2"));
+        assert!(!terms_acceptance_covers("2026-12-01", "v2"));
+    }
+
     #[test]
     fn a_version_reads_as_a_french_day() {
         assert_eq!(format_terms_version("2026-10-04"), "04/10/2026");
@@ -358,7 +603,7 @@ mod tests {
     /// one.
     #[test]
     fn the_version_in_force_is_a_date() {
-        assert!(chrono::NaiveDate::parse_from_str(TERMS_VERSION, "%Y-%m-%d").is_ok());
+        assert!(is_terms_version(TERMS_VERSION), "{TERMS_VERSION}");
     }
 
     // -- is_bearer_token (#335) -----------------------------------------
