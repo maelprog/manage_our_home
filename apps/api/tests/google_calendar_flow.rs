@@ -783,6 +783,230 @@ async fn a_reimport_turning_a_row_all_day_drops_a_rule_stepping_by_less_than_a_d
     assert_status(&rename, StatusCode::OK);
 }
 
+/// #372: a write to the row lands between the re-import's read of `rrule`
+/// and its `UPDATE`. The open transaction below stands in for a `PATCH` that
+/// has written its rules and not committed yet: « Relève » gets
+/// `FREQ=HOURLY` (an hour-bound row takes it), « Marché » goes from a
+/// committed `FREQ=HOURLY` to `FREQ=DAILY`. The re-import turns both rows
+/// all-day. Read without a lock, it decided on the rules it saw before that
+/// write — keep « Relève »'s (none), drop « Marché »'s — and its `UPDATE`,
+/// once let through, left `FREQ=HOURLY` on an all-day row and erased the
+/// `FREQ=DAILY` just written. Locked, the read waits for the write and
+/// decides on what it committed.
+#[sqlx::test]
+async fn a_reimport_decides_on_the_rule_a_concurrent_write_committed(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "cal-race1@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let feed_url = spawn_changing_ics_server(&[ICS_BEFORE_ALL_DAY, ICS_AFTER_ALL_DAY]).await;
+
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/calendar-imports"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"label": "Foyer calendar", "feed_url": feed_url})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let import_id = json_body(create).await["id"].as_str().unwrap().to_string();
+    let import_path = format!("/groups/{group_id}/calendar-imports/{import_id}/import");
+
+    let first = call(
+        &router,
+        Method::POST,
+        &import_path,
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&first, StatusCode::OK);
+    assert_eq!(json_body(first).await["imported"], 2);
+
+    let id_of = |title: &'static str| {
+        let db = db.clone();
+        async move {
+            sqlx::query_scalar::<_, Uuid>("SELECT id FROM events WHERE title = $1")
+                .bind(title)
+                .fetch_one(&db)
+                .await
+                .unwrap()
+        }
+    };
+    let (releve_id, marche_id) = (id_of("Relève").await, id_of("Marché").await);
+    let patch = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/events/{marche_id}"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"rrule": "FREQ=HOURLY;COUNT=5"})),
+    )
+    .await;
+    assert_status(&patch, StatusCode::OK);
+
+    let mut concurrent = manage_our_home::db::begin(&db).await.unwrap();
+    for (id, rule) in [
+        (releve_id, "FREQ=HOURLY;COUNT=5"),
+        (marche_id, "FREQ=DAILY;COUNT=3"),
+    ] {
+        sqlx::query("UPDATE events SET rrule = $2 WHERE id = $1")
+            .bind(id)
+            .bind(rule)
+            .execute(&mut *concurrent)
+            .await
+            .unwrap();
+    }
+
+    let reimport = tokio::spawn({
+        let router = router.clone();
+        let cookie = owner_cookie.clone();
+        async move { call(&router, Method::POST, &import_path, Some(&cookie), None).await }
+    });
+    // The re-import is let through only once it is blocked on a row the
+    // open transaction holds — with or without the fix, it touches them.
+    let mut waited = std::time::Duration::ZERO;
+    loop {
+        let blocked: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+                            WHERE datname = current_database() AND wait_event_type = 'Lock')",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        if blocked {
+            break;
+        }
+        assert!(
+            waited < std::time::Duration::from_secs(10),
+            "the re-import never waited on the open transaction"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        waited += std::time::Duration::from_millis(20);
+    }
+    concurrent.commit().await.unwrap();
+
+    let second = reimport.await.unwrap();
+    assert_status(&second, StatusCode::OK);
+    assert_eq!(json_body(second).await["updated"], 2);
+
+    let row = |id: Uuid| {
+        let db = db.clone();
+        async move {
+            sqlx::query_as::<_, (bool, Option<String>)>(
+                "SELECT all_day, rrule FROM events WHERE id = $1",
+            )
+            .bind(id)
+            .fetch_one(&db)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(row(releve_id).await, (true, None));
+    assert_eq!(
+        row(marche_id).await,
+        (true, Some("FREQ=DAILY;COUNT=3".to_string()))
+    );
+}
+
+/// #372: the import writes `events` without going through `validate_request`,
+/// so a VEVENT whose `SUMMARY` is blank used to be stored with no readable
+/// title, on both write paths. It is stored under the fallback a VEVENT with
+/// no `SUMMARY` at all takes.
+const ICS_TITLED: &str = "\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:flow-titled-1@google.com
+DTSTAMP:20260101T090000Z
+DTSTART:20260601T140000Z
+DTEND:20260601T150000Z
+SUMMARY:Family dinner
+LAST-MODIFIED:20260101T090000Z
+END:VEVENT
+END:VCALENDAR
+";
+const ICS_TITLE_BLANKED: &str = "\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:flow-titled-1@google.com
+DTSTAMP:20260201T090000Z
+DTSTART:20260601T140000Z
+DTEND:20260601T150000Z
+SUMMARY:
+LAST-MODIFIED:20260201T090000Z
+END:VEVENT
+BEGIN:VEVENT
+UID:flow-untitled-1@google.com
+DTSTAMP:20260201T090000Z
+DTSTART:20260602T140000Z
+DTEND:20260602T150000Z
+SUMMARY:
+LAST-MODIFIED:20260201T090000Z
+END:VEVENT
+END:VCALENDAR
+";
+
+#[sqlx::test]
+async fn a_blank_feed_title_is_stored_under_the_fallback(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "cal-title1@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let feed_url = spawn_changing_ics_server(&[ICS_TITLED, ICS_TITLE_BLANKED]).await;
+
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/calendar-imports"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"label": "Foyer calendar", "feed_url": feed_url})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let import_id = json_body(create).await["id"].as_str().unwrap().to_string();
+    let import_path = format!("/groups/{group_id}/calendar-imports/{import_id}/import");
+
+    for expected in [
+        serde_json::json!({"imported": 1, "updated": 0, "skipped": 0}),
+        serde_json::json!({"imported": 1, "updated": 1, "skipped": 0}),
+    ] {
+        let run = call(
+            &router,
+            Method::POST,
+            &import_path,
+            Some(&owner_cookie),
+            None,
+        )
+        .await;
+        assert_status(&run, StatusCode::OK);
+        assert_eq!(json_body(run).await, expected);
+    }
+
+    let mut titles: Vec<(String, String)> = sqlx::query_as(
+        "SELECT cie.external_uid, e.title FROM calendar_import_events cie
+         JOIN events e ON e.id = cie.event_id ORDER BY cie.external_uid",
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    titles.sort();
+    assert_eq!(
+        titles,
+        vec![
+            (
+                "flow-titled-1@google.com".to_string(),
+                "(untitled)".to_string()
+            ),
+            (
+                "flow-untitled-1@google.com".to_string(),
+                "(untitled)".to_string()
+            ),
+        ]
+    );
+}
+
 /// AC (#106 + #118): a row written by the *old* import is repaired on the
 /// next sync, even though the feed hasn't changed.
 ///
