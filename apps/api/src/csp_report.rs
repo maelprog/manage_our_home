@@ -258,19 +258,32 @@ pub async fn throttle(
             StatusCode::TOO_MANY_REQUESTS,
             [(
                 header::RETRY_AFTER,
-                // Whole seconds, rounded up: never earlier than true.
-                (retry_after.as_secs() + u64::from(retry_after.subsec_nanos() > 0))
-                    .max(1)
-                    .to_string(),
+                retry_after_secs(retry_after).to_string(),
             )],
         )
             .into_response(),
     }
 }
 
+/// `Retry-After` value for a refusal lasting `wait`: whole seconds,
+/// rounded up so the client is never told to come back too early, and at
+/// least 1.
+pub fn retry_after_secs(wait: std::time::Duration) -> u64 {
+    (wait.as_secs() + u64::from(wait.subsec_nanos() > 0)).max(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn retry_after_rounds_up_to_whole_seconds() {
+        assert_eq!(retry_after_secs(Duration::from_millis(400)), 1);
+        assert_eq!(retry_after_secs(Duration::from_micros(899_000_001)), 900);
+        assert_eq!(retry_after_secs(Duration::from_secs(900)), 900);
+        assert_eq!(retry_after_secs(Duration::ZERO), 1);
+    }
 
     #[test]
     fn redact_url_drops_query_fragment_and_credentials() {
