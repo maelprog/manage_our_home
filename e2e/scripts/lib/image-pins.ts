@@ -341,11 +341,13 @@ export function minioPinViolations(files: ReadonlyArray<SourceFile>): string[] {
 //     `ci.yml`, forme bloc de `container:`) ;
 //   - la forme ligne de `container:` d'un job (`container: postgres:16`) ;
 //   - `docker run` : la commande est suivie sur ses lignes continuées par
-//     `\`, ses options sont sautées (avec leur valeur, sauf les drapeaux
-//     booléens connus), et le premier argument restant est l'image. Une
-//     option inconnue est supposée prendre une valeur : si elle n'en prend
-//     pas, c'est la commande qui est lue comme image, et refusée — l'erreur
-//     est bruyante, jamais un vert.
+//     `\` et jusqu'au premier séparateur shell, ses options sont sautées
+//     (avec leur valeur, sauf les drapeaux booléens de `docker run`), `--`
+//     clôt les options, et le premier argument restant est l'image. Une
+//     option inconnue est supposée prendre une valeur. Si elle n'en prend
+//     pas, elle avale l'image : la commande est alors lue comme image et
+//     refusée, ou, s'il n'y en a pas, la commande épuisée sans image est
+//     elle-même une violation. L'erreur est bruyante, jamais un vert.
 //
 // Limites : lecture textuelle (pas un parseur YAML ni shell) ; les lignes dont
 // le premier caractère non blanc est `#` sont ignorées ; une image passée dans
@@ -371,20 +373,26 @@ const IMAGE_LINE = /^\s*(?:image|container):\s*["']?([^\s"'#]+)/;
 // séparateur shell (`;`, `&&`, `|`, `(`). `sudo docker run` est lu.
 const DOCKER_RUN = /(?:^|[\s;&|(])docker\s+run(?=\s|$)/;
 
-// Options de `docker run` qui ne prennent pas de valeur. Les autres sont
+// Options de `docker run` qui ne prennent pas de valeur : les drapeaux sans
+// type de `docker run --help` (client Docker 29.1.3), plus
+// `--disable-content-trust`, accepté mais masqué de l'aide. Les autres sont
 // supposées en prendre une (voir l'en-tête de section).
 const RUN_BOOLEAN_LONG: ReadonlySet<string> = new Set([
   "--detach",
-  "--rm",
-  "--interactive",
-  "--tty",
+  "--disable-content-trust",
+  "--help",
   "--init",
-  "--privileged",
-  "--publish-all",
-  "--read-only",
+  "--interactive",
   "--no-healthcheck",
   "--oom-kill-disable",
+  "--privileged",
+  "--publish-all",
   "--quiet",
+  "--read-only",
+  "--rm",
+  "--sig-proxy",
+  "--tty",
+  "--use-api-socket",
 ]);
 const RUN_BOOLEAN_SHORT = "ditPq";
 
@@ -403,6 +411,8 @@ type ImageLine = {
   base: string;
   tag: string | undefined;
   digest: string;
+  /** `docker run` dont aucune image n'a pu être lue (#374). */
+  unread?: true;
 };
 
 function parseReference(where: string, raw: string): ImageLine {
@@ -438,21 +448,29 @@ function canonicalName(name: string): string {
 
 /**
  * L'image d'un `docker run` qui commence sur la ligne `start`, suivie sur
- * ses lignes continuées par `\` : le premier argument qui n'est ni une option
- * ni sa valeur. `undefined` si la commande s'arrête avant.
+ * ses lignes continuées par `\` et jusqu'au premier séparateur shell : le
+ * premier argument qui n'est ni une option ni sa valeur. Si la commande
+ * s'arrête avant, une entrée `unread` rapportée à la ligne du `docker run`.
  */
 function dockerRunImage(
   file: SourceFile,
   lines: ReadonlyArray<string>,
   start: number,
   after: string,
-): ImageLine | undefined {
+): ImageLine {
   const tokens: { text: string; line: number }[] = [];
   let index = start;
   let text = after;
-  for (;;) {
+  collect: for (;;) {
     for (const t of text.match(/"[^"]*"|'[^']*'|\S+/g) ?? []) {
-      if (t !== "\\") tokens.push({ text: t, line: index });
+      if (t === "\\") continue;
+      const cut = /^["']/.test(t) ? -1 : t.search(/[;&|)`]/);
+      if (cut === -1) {
+        tokens.push({ text: t, line: index });
+        continue;
+      }
+      if (cut > 0) tokens.push({ text: t.slice(0, cut), line: index });
+      break collect;
     }
     if (!text.trimEnd().endsWith("\\") || index + 1 >= lines.length) break;
     index += 1;
@@ -461,6 +479,15 @@ function dockerRunImage(
 
   for (let i = 0; i < tokens.length; i += 1) {
     const t = tokens[i].text;
+    if (t === "--") {
+      // Fin des options : l'argument suivant est l'image, quel qu'il soit.
+      const next = tokens[i + 1];
+      if (next === undefined) break;
+      return parseReference(
+        `${file.path}:${next.line + 1}`,
+        next.text.replace(/^["']|["']$/g, ""),
+      );
+    }
     if (t.startsWith("--")) {
       if (!t.includes("=") && !RUN_BOOLEAN_LONG.has(t)) i += 1;
       continue;
@@ -473,10 +500,14 @@ function dockerRunImage(
       if (valued === letters.length - 1) i += 1;
       continue;
     }
-    const raw = t.replace(/^["']|["']$/g, "").replace(/[;&|)].*$/, "");
+    const raw = t.replace(/^["']|["']$/g, "");
     return parseReference(`${file.path}:${tokens[i].line + 1}`, raw);
   }
-  return undefined;
+  return {
+    ...parseReference(`${file.path}:${start + 1}`, ""),
+    raw: `docker run${after}`.trim(),
+    unread: true,
+  };
 }
 
 function imageLines(file: SourceFile): ImageLine[] {
@@ -488,13 +519,9 @@ function imageLines(file: SourceFile): ImageLine[] {
     if (m) found.push(parseReference(`${file.path}:${index + 1}`, m[1]));
     const run = DOCKER_RUN.exec(line);
     if (run) {
-      const image = dockerRunImage(
-        file,
-        lines,
-        index,
-        line.slice(run.index + run[0].length),
+      found.push(
+        dockerRunImage(file, lines, index, line.slice(run.index + run[0].length)),
       );
-      if (image) found.push(image);
     }
   });
   return found;
@@ -510,7 +537,16 @@ export function composeTagViolations(file: SourceFile): string[] {
   const violations: string[] = [];
   const lines = imageLines(file);
 
-  for (const { where, raw, name, base, tag, digest } of lines) {
+  for (const { where, raw, name, base, tag, digest, unread } of lines) {
+    if (unread) {
+      violations.push(
+        `${where} : \`${raw}\` — aucune image lue dans cette commande. Une ` +
+          "option inconnue est supposée prendre une valeur et a pu avaler " +
+          "l'image : le garde-fou ne peut rien prouver sur une image qu'il " +
+          "ne voit pas.",
+      );
+      continue;
+    }
     if (digest !== "" && !DIGEST.test(digest)) {
       violations.push(
         `${where} : \`${raw}\` — digest mal formé « ${digest} ». Attendu : ` +

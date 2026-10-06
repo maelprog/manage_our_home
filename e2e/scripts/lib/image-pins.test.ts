@@ -755,6 +755,38 @@ test("refuse un docker run sur une série flottante ou sans tag (#374)", () => {
   }
 });
 
+test("lit l'image derrière les drapeaux booléens de docker run et après -- (#374)", () => {
+  // `--sig-proxy` et consorts ne prennent pas de valeur : les supposer à
+  // valeur avalait l'image, et la porte rendait 0 violation.
+  for (const run of [
+    "docker run -d --sig-proxy postgres:16",
+    "docker run -d --use-api-socket postgres:16",
+    "docker run -d --disable-content-trust postgres:16",
+    "docker run -d -- postgres:16",
+  ]) {
+    const ci = `${CI_SERVICES_OK}  lint:\n    steps:\n      - run: ${run}\n`;
+    const violations = composeTagViolations(ciFile(ci));
+    assert.equal(violations.length, 1, `${run} : ${violations.join(" | ")}`);
+    assert.ok(violations[0].includes("postgres:16"), violations[0]);
+  }
+});
+
+test("refuse un docker run où aucune image n'est lue, au lieu de l'ignorer (#374)", () => {
+  // Une option inconnue supposée à valeur peut avaler la dernière image : la
+  // commande épuisée sans image est elle-même une violation.
+  for (const run of [
+    "docker run -d --name pg",
+    "docker run -d --some-new-flag postgres:16",
+    "docker run -d --",
+  ]) {
+    const ci = `${CI_SERVICES_OK}  lint:\n    steps:\n      - run: ${run}\n`;
+    const violations = composeTagViolations(ciFile(ci));
+    assert.equal(violations.length, 1, `${run} : ${violations.join(" | ")}`);
+    assert.match(violations[0], /ci\.yml:12 /);
+    assert.match(violations[0], /aucune image/);
+  }
+});
+
 test("lit l'image d'un docker run continué sur plusieurs lignes, à sa ligne (#374)", () => {
   const ci =
     `${CI_SERVICES_OK}  lint:\n    steps:\n      - run: |\n` +
