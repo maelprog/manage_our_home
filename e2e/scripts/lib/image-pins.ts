@@ -340,8 +340,9 @@ export function minioPinViolations(files: ReadonlyArray<SourceFile>): string[] {
 //   - les lignes `image:` (services du compose, `services:` des jobs de
 //     `ci.yml`, forme bloc de `container:`) ;
 //   - la forme ligne de `container:` d'un job (`container: postgres:16`) ;
-//   - `docker run` (plusieurs par ligne) : la commande est suivie sur ses
-//     lignes continuées par
+//   - `docker run` et `docker create` (aussi `docker container run|create`,
+//     après `sudo`, un séparateur shell, `$(` ou un backtick, plusieurs par
+//     ligne) : la commande est suivie sur ses lignes continuées par
 //     `\` et jusqu'au premier séparateur shell, ses options sont sautées
 //     (avec leur valeur, sauf les drapeaux booléens de `docker run`), `--`
 //     clôt les options, et le premier argument restant est l'image. Une
@@ -353,8 +354,8 @@ export function minioPinViolations(files: ReadonlyArray<SourceFile>): string[] {
 // Limites : lecture textuelle (pas un parseur YAML ni shell) ; les lignes dont
 // le premier caractère non blanc est `#` sont ignorées ; une image passée dans
 // une variable (`image: ${X}`, `docker run $IMG`) est refusée comme non
-// épinglée, ce qui est le comportement voulu. `docker create`, `docker pull`
-// et `uses: docker://…` ne sont pas lus.
+// épinglée, ce qui est le comportement voulu. `docker pull`, `docker build`
+// (`FROM`) et `uses: docker://…` ne sont pas lus.
 
 const DIGEST_PINNED: ReadonlyArray<string> = ["postgres", "caddy"];
 
@@ -370,13 +371,15 @@ const TWO_COMPONENT_VERSION = /^\d+\.\d+(?:-[\w.-]+)?$/;
 // image est lue sur sa ligne `image:`.
 const IMAGE_LINE = /^\s*(?:image|container):\s*["']?([^\s"'#]+)/;
 
-// `docker run` en début de commande : début de ligne, ou après un blanc ou un
-// séparateur shell (`;`, `&&`, `|`, `(`). `sudo docker run` est lu. Global :
-// chaque commande d'une ligne est lue.
-const DOCKER_RUN = /(?:^|[\s;&|(])docker\s+run(?=\s|$)/g;
+// `docker run` ou `docker create` (aussi `docker container …`) en début de
+// commande : début de ligne, ou après un blanc, un séparateur shell (`;`,
+// `&&`, `|`), `(` ou un backtick. `sudo docker run` est lu. Global : chaque
+// commande d'une ligne est lue.
+const DOCKER_RUN =
+  /(?:^|[\s;&|(`])(docker\s+(?:container\s+)?(?:run|create))(?=\s|$)/g;
 
-// Options de `docker run` qui ne prennent pas de valeur : les drapeaux sans
-// type de `docker run --help` (client Docker 29.1.3), plus
+// Options de `docker run` et `docker create` qui ne prennent pas de valeur :
+// les drapeaux sans type de `docker run --help` (client Docker 29.1.3), plus
 // `--disable-content-trust`, accepté mais masqué de l'aide. Les autres sont
 // supposées en prendre une (voir l'en-tête de section).
 const RUN_BOOLEAN_LONG: ReadonlySet<string> = new Set([
@@ -413,7 +416,7 @@ type ImageLine = {
   base: string;
   tag: string | undefined;
   digest: string;
-  /** `docker run` dont aucune image n'a pu être lue (#374). */
+  /** `docker run|create` dont aucune image n'a pu être lue (#374). */
   unread?: true;
 };
 
@@ -458,6 +461,7 @@ function dockerRunImage(
   file: SourceFile,
   lines: ReadonlyArray<string>,
   start: number,
+  command: string,
   after: string,
 ): ImageLine {
   const tokens: { text: string; line: number }[] = [];
@@ -507,7 +511,7 @@ function dockerRunImage(
   }
   return {
     ...parseReference(`${file.path}:${start + 1}`, ""),
-    raw: `docker run${after}`.trim(),
+    raw: `${command}${after}`.trim(),
     unread: true,
   };
 }
@@ -521,7 +525,7 @@ function imageLines(file: SourceFile): ImageLine[] {
     if (m) found.push(parseReference(`${file.path}:${index + 1}`, m[1]));
     for (const run of line.matchAll(DOCKER_RUN)) {
       const after = line.slice(run.index + run[0].length);
-      found.push(dockerRunImage(file, lines, index, after));
+      found.push(dockerRunImage(file, lines, index, run[1], after));
     }
   });
   return found;
@@ -530,8 +534,8 @@ function imageLines(file: SourceFile): ImageLine[] {
 /**
  * Rend la liste des violations (vide si la porte est tenue) pour les images
  * d'un fichier : lignes `image:` (compose, `services:` des jobs de `ci.yml`),
- * `container:` et `docker run` (#374). Un fichier où aucune image n'est lue
- * est lui-même une violation.
+ * `container:`, `docker run` et `docker create` (#374). Un fichier où aucune
+ * image n'est lue est lui-même une violation.
  */
 export function composeTagViolations(file: SourceFile): string[] {
   const violations: string[] = [];
@@ -596,7 +600,7 @@ export function composeTagViolations(file: SourceFile): string[] {
   if (lines.length === 0) {
     violations.push(
       `${file.path} : aucune image trouvée (ligne \`image:\`, ` +
-        "`container:` ou `docker run`). Le garde-fou ne peut " +
+        "`container:` ou `docker run|create`). Le garde-fou ne peut " +
         "rien prouver sur des images qu'il ne voit pas.",
     );
   }

@@ -804,6 +804,24 @@ test("lit chaque docker run d'une ligne, pas seulement le premier (#374)", () =>
   }
 });
 
+test("lit docker container run, docker create et docker run entre backticks (#374)", () => {
+  for (const run of [
+    "docker container run -d postgres:16",
+    "docker create --name pg postgres:16",
+    "docker container create postgres:16",
+    "ID=`docker run -d postgres:16`",
+    "ID=$(docker run -d postgres:16)",
+  ]) {
+    const ci = `${CI_SERVICES_OK}  lint:\n    steps:\n      - run: ${run}\n`;
+    const violations = composeTagViolations(ciFile(ci));
+    assert.equal(violations.length, 1, `${run} : ${violations.join(" | ")}`);
+    assert.match(violations[0], /ci\.yml:12 /);
+    assert.ok(violations[0].includes("`postgres:16`"), violations[0]);
+  }
+  const pinned = `${CI_SERVICES_OK}  lint:\n    steps:\n      - run: ID=\`docker run -d ${PG}\`\n`;
+  assert.deepEqual(composeTagViolations(ciFile(pinned)), []);
+});
+
 test("lit l'image d'un docker run continué sur plusieurs lignes, à sa ligne (#374)", () => {
   const ci =
     `${CI_SERVICES_OK}  lint:\n    steps:\n      - run: |\n` +
