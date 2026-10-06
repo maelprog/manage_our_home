@@ -201,9 +201,26 @@ pub fn terms_acceptance_covers(accepted: &str, in_force: &str) -> bool {
     }
 }
 
-/// A version's date, `None` when it is not one.
+/// A version's date, `None` when it is not one. Only `YYYY-MM-DD` written in
+/// full counts: chrono alone also reads `2026-12-1`, whose order as text —
+/// the order the api compares stored versions in — is not its order as a
+/// date.
 fn version_date(version: &str) -> Option<chrono::NaiveDate> {
+    let well_formed = version.len() == 10
+        && version.bytes().enumerate().all(|(i, b)| match i {
+            4 | 7 => b == b'-',
+            _ => b.is_ascii_digit(),
+        });
+    if !well_formed {
+        return None;
+    }
     chrono::NaiveDate::parse_from_str(version, "%Y-%m-%d").ok()
+}
+
+/// Whether `version` is a CGU version as stored and compared: a date written
+/// `YYYY-MM-DD` in full (#367).
+pub fn is_terms_version(version: &str) -> bool {
+    version_date(version).is_some()
 }
 
 /// `terms_acceptance_required` unless the person ticked the box accepting
@@ -513,6 +530,26 @@ mod tests {
         }
     }
 
+    /// A version is a date written `YYYY-MM-DD` in full: chrono alone reads
+    /// `2026-12-1` too, and the api compares versions as text, where
+    /// `2026-12-1` sorts after `2026-12-01`'s successors. Not written in
+    /// full, it is not a date: never in force, never announced.
+    #[test]
+    fn a_version_not_written_yyyy_mm_dd_in_full_is_not_a_date() {
+        for version in ["2026-12-1", "2026-1-01", "26-12-01", "+2026-12-01", " 2026-12-01"] {
+            assert_eq!(version_date(version), None, "{version}");
+            let today = day("2999-01-01");
+            assert_eq!(
+                terms_version_in_force(today, "2026-10-04", Some(version)),
+                "2026-10-04",
+                "{version}"
+            );
+            assert_eq!(terms_version_announced(today, Some(version)), None, "{version}");
+        }
+        assert_eq!(version_date("2026-12-01"), Some(day("2026-12-01")));
+        assert!(!terms_acceptance_covers("2026-12-9", "2026-12-10"));
+    }
+
     // -- an acceptance covers its version and the earlier ones (#367) ------
 
     #[test]
@@ -556,7 +593,7 @@ mod tests {
     /// one.
     #[test]
     fn the_version_in_force_is_a_date() {
-        assert!(chrono::NaiveDate::parse_from_str(TERMS_VERSION, "%Y-%m-%d").is_ok());
+        assert!(is_terms_version(TERMS_VERSION), "{TERMS_VERSION}");
     }
 
     // -- is_bearer_token (#335) -----------------------------------------

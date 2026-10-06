@@ -1329,13 +1329,15 @@ mod tests {
             vec![format!("Version en vigueur : {}.", announced.version)],
             "the announced CGU state a version other than their date"
         );
-        let from = chrono::NaiveDate::parse_from_str(announced.version, "%Y-%m-%d")
-            .expect("the announced version is a date");
-        let current =
-            chrono::NaiveDate::parse_from_str(crate::validation::auth::TERMS_VERSION, "%Y-%m-%d")
-                .unwrap();
+        // Written `YYYY-MM-DD` in full, so that its order as text — the
+        // api's — is its order as a date; then, compared as text, later.
         assert!(
-            from > current,
+            crate::validation::auth::is_terms_version(announced.version),
+            "the announced version `{}` is not a full YYYY-MM-DD date",
+            announced.version
+        );
+        assert!(
+            announced.version > crate::validation::auth::TERMS_VERSION,
             "the announced version applies before the one in force"
         );
         let html = render_markdown(md);
