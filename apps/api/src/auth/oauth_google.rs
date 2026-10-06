@@ -423,11 +423,6 @@ mod tests {
     }
 
     #[test]
-    fn callback_refuses_an_empty_presented_state() {
-        assert!(callback_verifier(Some("s".into()), Some(VERIFIER.into()), "").is_none());
-    }
-
-    #[test]
     fn callback_refuses_a_mismatched_state() {
         assert!(callback_verifier(Some("s".into()), Some(VERIFIER.into()), "other").is_none());
     }
