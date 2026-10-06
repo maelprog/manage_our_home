@@ -42,14 +42,16 @@ fn authorization_request(client: &GoogleOauthClient) -> (Url, CsrfToken, PkceCod
 
 /// Decides, from what `start` left in the browser and what Google sent
 /// back, whether `callback` may exchange the code — and with which
-/// verifier. `None` means refuse: a missing, malformed or mismatched value
-/// never degrades into an exchange without PKCE.
+/// verifier. `None` means refuse: a missing, empty, malformed or mismatched
+/// value never degrades into an exchange without PKCE. An empty `state` is
+/// refused even when the cookie is empty too: `start` never mints one, so
+/// two empty values matching proves nothing.
 fn callback_verifier(
     expected_state: Option<String>,
     pkce_verifier: Option<String>,
     presented_state: &str,
 ) -> Option<PkceCodeVerifier> {
-    if expected_state? != presented_state {
+    if presented_state.is_empty() || expected_state? != presented_state {
         return None;
     }
     let verifier = pkce_verifier?;
@@ -124,8 +126,7 @@ struct GoogleUserInfo {
 pub const GOOGLE_USERINFO_URL: &str = "https://openidconnect.googleapis.com/v1/userinfo";
 
 async fn fetch_google_userinfo(url: &str, access_token: &str) -> anyhow::Result<GoogleUserInfo> {
-    let client = reqwest::Client::new();
-    let info: GoogleUserInfo = client
+    let info: GoogleUserInfo = crate::outbound_http::client()
         .get(url)
         .bearer_auth(access_token)
         .send()
@@ -172,7 +173,7 @@ pub async fn callback(
         .google_oauth
         .exchange_code(AuthorizationCode::new(query.code))
         .set_pkce_verifier(pkce_verifier)
-        .request_async(&reqwest::Client::new())
+        .request_async(crate::outbound_http::client())
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("token exchange failed: {e}")))?;
 
@@ -414,6 +415,16 @@ mod tests {
     #[test]
     fn callback_refuses_without_a_state_cookie() {
         assert!(callback_verifier(None, Some(VERIFIER.into()), "s").is_none());
+    }
+
+    #[test]
+    fn callback_refuses_an_empty_state_even_when_the_cookie_is_empty_too() {
+        assert!(callback_verifier(Some(String::new()), Some(VERIFIER.into()), "").is_none());
+    }
+
+    #[test]
+    fn callback_refuses_an_empty_presented_state() {
+        assert!(callback_verifier(Some("s".into()), Some(VERIFIER.into()), "").is_none());
     }
 
     #[test]

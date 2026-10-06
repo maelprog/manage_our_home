@@ -268,7 +268,7 @@ pub async fn trigger_calendar_import(
     .ok_or(AppError::NotFound)?;
     tx.commit().await?;
 
-    let response = reqwest::Client::new()
+    let response = crate::outbound_http::client()
         .get(&import.feed_url)
         .send()
         .await
