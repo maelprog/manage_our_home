@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE users SET terms_accepted_version = $2, terms_accepted_at = now()\n        WHERE id = $1\n          AND (terms_accepted_version IS NULL\n               OR terms_accepted_version COLLATE \"C\" < $2)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f2f1af81075fb66ab6268a43c520a1dd64b33582c91dcc651bc6dfd51a01a2e3"
+}

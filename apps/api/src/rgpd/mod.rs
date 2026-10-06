@@ -3,6 +3,10 @@ pub mod export;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::{http::header, http::StatusCode, Json};
+use chrono::Utc;
+use manage_our_home_shared::validation::auth::{
+    paris_day, terms_announced_on, AnnouncedTerms, TERMS_ANNOUNCED,
+};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -652,8 +656,43 @@ pub async fn legal_notice() -> Response {
     markdown_document(LEGAL_NOTICE_MD)
 }
 
+/// `GET /terms-of-service` serves the text in force today (#367): the
+/// announced one from its date, `docs/terms-of-service.md` before. The day
+/// is read on every request, and the response is marked `no-cache`, so no
+/// copy kept by a browser or a proxy outlives the switch.
 pub async fn terms_of_service() -> Response {
-    markdown_document(TERMS_OF_SERVICE_MD)
+    let in_force = crate::auth::terms_acceptance::terms_in_force_now();
+    not_cached(markdown_document(terms_markdown(in_force, TERMS_ANNOUNCED)))
+}
+
+/// The text of the version `in_force`: `announced`'s once it is that
+/// version, `docs/terms-of-service.md` otherwise.
+fn terms_markdown(in_force: &str, announced: Option<AnnouncedTerms>) -> &'static str {
+    match announced {
+        Some(announced) if announced.version == in_force => announced.markdown,
+        _ => TERMS_OF_SERVICE_MD,
+    }
+}
+
+/// `GET /terms-of-service/announced` — the version announced and not yet in
+/// force (#367), so it can be read before it applies; 404 when there is
+/// none, which is also the case from its date on: it is then the text
+/// `/terms-of-service` serves. `no-cache` for the same reason.
+pub async fn announced_terms_of_service() -> Response {
+    match terms_announced_on(paris_day(Utc::now())) {
+        Some(announced) => not_cached(markdown_document(announced.markdown)),
+        None => not_cached(StatusCode::NOT_FOUND.into_response()),
+    }
+}
+
+/// Marks a CGU response as one a cache must revalidate before reusing: the
+/// text behind the same URL changes on a date, not on a deploy (#367).
+fn not_cached(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-cache"),
+    );
+    response
 }
 
 /// The one response shape these three documents share. `text/markdown` and not
@@ -666,4 +705,33 @@ fn markdown_document(md: &'static str) -> Response {
         md,
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ANNOUNCED: AnnouncedTerms = AnnouncedTerms {
+        version: "2026-12-01",
+        markdown: "# Conditions générales d'utilisation — annoncées\n",
+    };
+
+    /// #367: from its date, `/terms-of-service` serves the announced text.
+    #[test]
+    fn the_announced_text_is_served_once_in_force() {
+        assert_eq!(
+            terms_markdown("2026-12-01", Some(ANNOUNCED)),
+            ANNOUNCED.markdown
+        );
+    }
+
+    /// Before its date, the text in force is still `docs/terms-of-service.md`.
+    #[test]
+    fn the_current_text_is_served_until_then() {
+        assert_eq!(
+            terms_markdown("2026-10-04", Some(ANNOUNCED)),
+            TERMS_OF_SERVICE_MD
+        );
+        assert_eq!(terms_markdown("2026-10-04", None), TERMS_OF_SERVICE_MD);
+    }
 }

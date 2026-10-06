@@ -209,6 +209,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/legal-notice", get(rgpd::legal_notice))
         .route("/terms-of-service", get(rgpd::terms_of_service))
         .route(
+            "/terms-of-service/announced",
+            get(rgpd::announced_terms_of_service),
+        )
+        .route(
             "/groups",
             post(groups::create_group).get(groups::list_groups),
         )

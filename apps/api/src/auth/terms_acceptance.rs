@@ -13,21 +13,35 @@
 
 use axum::extract::State;
 use axum::{http::StatusCode, Json};
+use chrono::Utc;
 
 use manage_our_home_shared::dto::auth::TermsAcceptanceRequest;
-use manage_our_home_shared::validation::auth::{validate_terms_acceptance, TERMS_VERSION};
+use manage_our_home_shared::validation::auth::{
+    paris_day, terms_in_force_on, validate_terms_acceptance,
+};
 
 use crate::error::{AppError, AppResult};
 use crate::AppState;
 
 use super::session::TermsSession;
 
+/// The CGU version in force now (#367). Read from the clock on every call,
+/// so a version announced ahead takes effect on its day — in Europe/Paris —
+/// without a restart or a deploy.
+pub fn terms_in_force_now() -> &'static str {
+    terms_in_force_on(paris_day(Utc::now()))
+}
+
 /// `POST /auth/terms-acceptance`: records the version in force
-/// (`TERMS_VERSION`) and now, after which a session held at the acceptance
-/// page opens the whole app. 422 `terms_acceptance_required` unless the
-/// body accepts — the registration's rule and code. An account that already
-/// accepted the version in force keeps its date: the first acceptance of a
-/// version is the one on file. A restricted session, or one awaiting its age
+/// ([`terms_in_force_now`]) and now, after which a session held at the
+/// acceptance page opens the whole app. 422 `terms_acceptance_required`
+/// unless the body accepts — the registration's rule and code. An account
+/// whose acceptance on file already covers the version in force keeps it:
+/// the first acceptance of a version is the one on file, and an acceptance
+/// of a later version — recorded before a rollback to a release that
+/// predates it (#367) — is never replaced by an earlier one. Versions are
+/// `YYYY-MM-DD` dates, so comparing them as text in the `"C"` collation
+/// orders them as dates. A restricted session, or one awaiting its age
 /// declaration, is a 401.
 pub async fn accept(
     State(state): State<AppState>,
@@ -40,10 +54,12 @@ pub async fn accept(
     sqlx::query!(
         r#"
         UPDATE users SET terms_accepted_version = $2, terms_accepted_at = now()
-        WHERE id = $1 AND terms_accepted_version IS DISTINCT FROM $2
+        WHERE id = $1
+          AND (terms_accepted_version IS NULL
+               OR terms_accepted_version COLLATE "C" < $2)
         "#,
         session.user_id,
-        TERMS_VERSION
+        terms_in_force_now()
     )
     .execute(&state.db)
     .await?;

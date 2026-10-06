@@ -108,6 +108,10 @@ fn build_router(state: AppState) -> Router {
         .route("/privacy-policy", get(routes::privacy::get))
         .route("/legal-notice", get(routes::legal::legal_notice))
         .route("/terms-of-service", get(routes::legal::terms_of_service))
+        .route(
+            routes::legal::ANNOUNCED_TERMS_PAGE,
+            get(routes::legal::announced_terms_of_service),
+        )
         .route("/account", get(routes::account::get))
         .route("/account/export", get(routes::account::export::get))
         .route(

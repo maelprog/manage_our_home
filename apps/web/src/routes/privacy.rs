@@ -30,6 +30,7 @@ pub async fn get(
         &headers,
         "/privacy-policy",
         "Politique de confidentialité",
+        "",
     )
     .await
 }

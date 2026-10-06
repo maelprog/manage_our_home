@@ -675,6 +675,40 @@ async fn the_legal_notice_and_the_terms_are_public_markdown(db: PgPool) {
     }
 }
 
+/// #367: the CGU behind `/terms-of-service` change on a date, not on a
+/// deploy, so no cache may reuse them unchecked across that date — the text
+/// in force and the announced one alike. Nothing announced, or its date come,
+/// `/terms-of-service/announced` is a 404 rather than a stale text.
+#[sqlx::test]
+async fn the_terms_are_never_reused_from_a_cache(db: PgPool) {
+    use manage_our_home_shared::validation::auth::{paris_day, terms_announced_on};
+    let router = test_router(db.clone());
+    let announced = terms_announced_on(paris_day(chrono::Utc::now()));
+
+    for (path, status) in [
+        ("/terms-of-service", StatusCode::OK),
+        (
+            "/terms-of-service/announced",
+            if announced.is_some() {
+                StatusCode::OK
+            } else {
+                StatusCode::NOT_FOUND
+            },
+        ),
+    ] {
+        let response = call(&router, Method::GET, path, None, None).await;
+        assert_status(&response, status);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-cache"),
+            "{path} may be reused from a cache"
+        );
+    }
+}
+
 /// Issue #140: a recipe is exported with its ingredients, nested under it.
 #[sqlx::test]
 async fn export_nests_the_ingredients_under_their_recipe(db: PgPool) {
