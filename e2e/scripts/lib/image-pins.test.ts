@@ -822,6 +822,24 @@ test("lit docker container run, docker create et docker run entre backticks (#37
   assert.deepEqual(composeTagViolations(ciFile(pinned)), []);
 });
 
+test("lit l'image d'un pas uses: docker:// (#374)", () => {
+  for (const [uses, count] of [
+    ["docker://postgres:16", 1],
+    ['"docker://caddy:2"', 1],
+    [`docker://${PG}`, 0],
+  ] as const) {
+    const ci = `${CI_SERVICES_OK}  lint:\n    steps:\n      - uses: ${uses}\n`;
+    const violations = composeTagViolations(ciFile(ci));
+    assert.equal(violations.length, count, `${uses} : ${violations.join(" | ")}`);
+  }
+  const other = `postgres:16.15@sha256:${"8".repeat(64)}`;
+  const ci = `${CI_SERVICES_OK}  lint:\n    steps:\n      - uses: docker://${other}\n`;
+  assert.equal(
+    pinnedImageDivergence([ciFile(ci), composeFile(COMPOSE_TAGS_OK)]).length,
+    1,
+  );
+});
+
 test("lit l'image d'un docker run continué sur plusieurs lignes, à sa ligne (#374)", () => {
   const ci =
     `${CI_SERVICES_OK}  lint:\n    steps:\n      - run: |\n` +

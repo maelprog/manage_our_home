@@ -336,10 +336,11 @@ export function minioPinViolations(files: ReadonlyArray<SourceFile>): string[] {
 // La règle suit le dernier segment du nom : un registre explicite
 // (`docker.io/library/caddy`) ne fait pas sortir l'image de la règle.
 //
-// Trois écritures d'une image sont lues (#374), dans tout fichier fourni :
+// Quatre écritures d'une image sont lues (#374), dans tout fichier fourni :
 //   - les lignes `image:` (services du compose, `services:` des jobs de
 //     `ci.yml`, forme bloc de `container:`) ;
 //   - la forme ligne de `container:` d'un job (`container: postgres:16`) ;
+//   - `uses: docker://<référence>` d'un pas de job ;
 //   - `docker run` et `docker create` (aussi `docker container run|create`,
 //     après `sudo`, un séparateur shell, `$(` ou un backtick, plusieurs par
 //     ligne) : la commande est suivie sur ses lignes continuées par
@@ -355,7 +356,7 @@ export function minioPinViolations(files: ReadonlyArray<SourceFile>): string[] {
 // le premier caractère non blanc est `#` sont ignorées ; une image passée dans
 // une variable (`image: ${X}`, `docker run $IMG`) est refusée comme non
 // épinglée, ce qui est le comportement voulu. `docker pull`, `docker build`
-// (`FROM`) et `uses: docker://…` ne sont pas lus.
+// (`FROM`) et les images citées par un autre outil ne sont pas lues.
 
 const DIGEST_PINNED: ReadonlyArray<string> = ["postgres", "caddy"];
 
@@ -370,6 +371,9 @@ const TWO_COMPONENT_VERSION = /^\d+\.\d+(?:-[\w.-]+)?$/;
 // commentaire ; un `container:` sans valeur (forme bloc) ne correspond pas, son
 // image est lue sur sa ligne `image:`.
 const IMAGE_LINE = /^\s*(?:image|container):\s*["']?([^\s"'#]+)/;
+
+// `uses: docker://<référence>` d'un pas de job.
+const USES_DOCKER = /^\s*(?:-\s*)?uses:\s*["']?docker:\/\/([^\s"'#]+)/;
 
 // `docker run` ou `docker create` (aussi `docker container …`) en début de
 // commande : début de ligne, ou après un blanc, un séparateur shell (`;`,
@@ -523,6 +527,8 @@ function imageLines(file: SourceFile): ImageLine[] {
     if (line.trimStart().startsWith("#")) return;
     const m = line.match(IMAGE_LINE);
     if (m) found.push(parseReference(`${file.path}:${index + 1}`, m[1]));
+    const uses = line.match(USES_DOCKER);
+    if (uses) found.push(parseReference(`${file.path}:${index + 1}`, uses[1]));
     for (const run of line.matchAll(DOCKER_RUN)) {
       const after = line.slice(run.index + run[0].length);
       found.push(dockerRunImage(file, lines, index, run[1], after));
@@ -534,8 +540,8 @@ function imageLines(file: SourceFile): ImageLine[] {
 /**
  * Rend la liste des violations (vide si la porte est tenue) pour les images
  * d'un fichier : lignes `image:` (compose, `services:` des jobs de `ci.yml`),
- * `container:`, `docker run` et `docker create` (#374). Un fichier où aucune
- * image n'est lue est lui-même une violation.
+ * `container:`, `uses: docker://`, `docker run` et `docker create` (#374). Un
+ * fichier où aucune image n'est lue est lui-même une violation.
  */
 export function composeTagViolations(file: SourceFile): string[] {
   const violations: string[] = [];
@@ -600,7 +606,8 @@ export function composeTagViolations(file: SourceFile): string[] {
   if (lines.length === 0) {
     violations.push(
       `${file.path} : aucune image trouvée (ligne \`image:\`, ` +
-        "`container:` ou `docker run|create`). Le garde-fou ne peut " +
+        "`container:`, `uses: docker://` ou `docker run|create`). Le " +
+        "garde-fou ne peut " +
         "rien prouver sur des images qu'il ne voit pas.",
     );
   }
