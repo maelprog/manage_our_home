@@ -419,8 +419,10 @@ pub fn build_router(state: AppState) -> Router {
         // not, since it only judges browser headers — and how a
         // browser's report request fills `Origin`/`Sec-Fetch-Site` is not
         // something to bet the reports on. The body guard, a small body
-        // limit and a per-address limit (#375) still do; the last one is
-        // outermost, so a refused request is not read.
+        // limit and a per-address limit (#375) still do. A refused request
+        // never reaches the handler, the only thing that reads the body, so
+        // its body is not read wherever that limit sits; outermost, it also
+        // skips the body guard's wrapping.
         .route(
             "/csp-report",
             post(csp_report::receive)
