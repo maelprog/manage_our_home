@@ -21,9 +21,15 @@
 //!
 //! **A full table refuses newcomers rather than evicting anyone.** Evicting
 //! would reset the evicted address's count, which is the very thing an
-//! attacker spread over many addresses would want; refusing only costs
-//! reports, which a browser never resends and which the next page view
-//! raises again. Stale addresses are reclaimed first.
+//! attacker spread over many addresses would want. Stale addresses are
+//! reclaimed first.
+//!
+//! The price: an attacker can keep the table full for as long as it keeps
+//! sending — one request per address per window renews every entry, about
+//! 11 requests a second across [`MAX_TRACKED`] addresses, and a single
+//! IPv6 /48 holds 65 536 /64s. For as long as that lasts, every address not
+//! already tracked is refused, and its reports are lost. What it cannot
+//! do is raise the log lines or the memory past their bounds.
 //!
 //! The address is kept for one window at most and never logged: the
 //! report handler itself still reads the body and nothing else.
@@ -49,7 +55,8 @@ pub const MAX_REPORTS: u32 = 100;
 /// [`MAX_REPORTS`] stays refused at most: the login lock's quarter hour.
 pub const WINDOW: Duration = Duration::from_secs(15 * 60);
 
-/// Ceiling on tracked addresses, the login lock's.
+/// Ceiling on tracked addresses. The same figure as the login lock's
+/// `MAX_TRACKED`, which counts (address, email) pairs, not addresses.
 pub const MAX_TRACKED: usize = 10_000;
 
 /// What [`ReportThrottle::admit`] says about a request.
