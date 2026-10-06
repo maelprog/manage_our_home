@@ -336,11 +336,27 @@ export function minioPinViolations(files: ReadonlyArray<SourceFile>): string[] {
 // La règle suit le dernier segment du nom : un registre explicite
 // (`docker.io/library/caddy`) ne fait pas sortir l'image de la règle.
 //
-// Limites : lecture textuelle des lignes `image:` (pas un parseur YAML) ; une
-// image passée dans une variable (`image: ${X}`) est refusée comme non
-// épinglée, ce qui est le comportement voulu. Dans `ci.yml`, les images
-// lancées par `docker run` (MinIO) ne sont pas sur une ligne `image:` : c'est
-// le garde-fou MinIO ci-dessus qui les tient.
+// Quatre écritures d'une image sont lues (#374), dans tout fichier fourni :
+//   - les lignes `image:` (services du compose, `services:` des jobs de
+//     `ci.yml`, forme bloc de `container:`) ;
+//   - la forme ligne de `container:` d'un job (`container: postgres:16`) ;
+//   - `uses: docker://<référence>` d'un pas de job ;
+//   - `docker run` et `docker create` (aussi `docker container run|create`,
+//     après `sudo`, un séparateur shell, `$(` ou un backtick, plusieurs par
+//     ligne) : la commande est suivie sur ses lignes continuées par
+//     `\` et jusqu'au premier séparateur shell, ses options sont sautées
+//     (avec leur valeur, sauf les drapeaux booléens de `docker run`), `--`
+//     clôt les options, et le premier argument restant est l'image. Une
+//     option inconnue est supposée prendre une valeur. Si elle n'en prend
+//     pas, elle avale l'image : la commande est alors lue comme image et
+//     refusée, ou, s'il n'y en a pas, la commande épuisée sans image est
+//     elle-même une violation. L'erreur est bruyante, jamais un vert.
+//
+// Limites : lecture textuelle (pas un parseur YAML ni shell) ; les lignes dont
+// le premier caractère non blanc est `#` sont ignorées ; une image passée dans
+// une variable (`image: ${X}`, `docker run $IMG`) est refusée comme non
+// épinglée, ce qui est le comportement voulu. `docker pull`, `docker build`
+// (`FROM`) et les images citées par un autre outil ne sont pas lues.
 
 const DIGEST_PINNED: ReadonlyArray<string> = ["postgres", "caddy"];
 
@@ -350,9 +366,51 @@ const FULL_VERSION = /^v?\d+\.\d+\.\d+(?:[-+.][\w.-]+)?$/;
 const TWO_COMPONENT_IMAGES: ReadonlyArray<string> = ["postgres"];
 const TWO_COMPONENT_VERSION = /^\d+\.\d+(?:-[\w.-]+)?$/;
 
-// `image: <référence>`, guillemets simples ou doubles tolérés. L'ancre
-// `^\s*image:` écarte d'elle-même les lignes de commentaire.
-const IMAGE_LINE = /^\s*image:\s*["']?([^\s"'#]+)/;
+// `image: <référence>` et `container: <référence>`, guillemets simples ou
+// doubles tolérés. L'ancre `^\s*` écarte d'elle-même les lignes de
+// commentaire ; un `container:` sans valeur (forme bloc) ne correspond pas, son
+// image est lue sur sa ligne `image:`.
+const IMAGE_LINE = /^\s*(?:image|container):\s*["']?([^\s"'#]+)/;
+
+// `uses: docker://<référence>` d'un pas de job.
+const USES_DOCKER = /^\s*(?:-\s*)?uses:\s*["']?docker:\/\/([^\s"'#]+)/;
+
+// `docker run` ou `docker create` (aussi `docker container …`) en début de
+// commande : début de ligne, ou après un blanc, un séparateur shell (`;`,
+// `&&`, `|`), `(` ou un backtick. `sudo docker run` est lu. Global : chaque
+// commande d'une ligne est lue.
+const DOCKER_RUN =
+  /(?:^|[\s;&|(`])(docker\s+(?:container\s+)?(?:run|create))(?=\s|$)/g;
+
+// Options de `docker run` et `docker create` qui ne prennent pas de valeur :
+// les drapeaux sans type de `docker run --help` (client Docker 29.1.3), plus
+// `--disable-content-trust`, accepté mais masqué de l'aide. Les autres sont
+// supposées en prendre une (voir l'en-tête de section).
+const RUN_BOOLEAN_LONG: ReadonlySet<string> = new Set([
+  "--detach",
+  "--disable-content-trust",
+  "--help",
+  "--init",
+  "--interactive",
+  "--no-healthcheck",
+  "--oom-kill-disable",
+  "--privileged",
+  "--publish-all",
+  "--quiet",
+  "--read-only",
+  "--rm",
+  "--sig-proxy",
+  "--tty",
+  "--use-api-socket",
+]);
+const RUN_BOOLEAN_SHORT = "ditPq";
+
+// Les registres qui désignent Docker Hub.
+const HUB_REGISTRIES: ReadonlyArray<string> = [
+  "docker.io",
+  "index.docker.io",
+  "registry-1.docker.io",
+];
 
 type ImageLine = {
   where: string;
@@ -362,41 +420,143 @@ type ImageLine = {
   base: string;
   tag: string | undefined;
   digest: string;
+  /** `docker run|create` dont aucune image n'a pu être lue (#374). */
+  unread?: true;
 };
+
+function parseReference(where: string, raw: string): ImageLine {
+  const at = raw.indexOf("@");
+  const ref = at === -1 ? raw : raw.slice(0, at);
+  const lastSlash = ref.lastIndexOf("/");
+  const colon = ref.indexOf(":", lastSlash + 1);
+  const name = colon === -1 ? ref : ref.slice(0, colon);
+  return {
+    where,
+    raw,
+    name,
+    base: name.slice(name.lastIndexOf("/") + 1),
+    tag: colon === -1 ? undefined : ref.slice(colon + 1),
+    digest: at === -1 ? "" : raw.slice(at),
+  };
+}
+
+/**
+ * Le nom d'image tel que le registre le résout (#374) : Docker Hub, implicite
+ * ou écrit (`docker.io`, `index.docker.io`), perd son registre, et une image
+ * officielle perd `library/`. `caddy`, `library/caddy` et
+ * `docker.io/library/caddy` donnent `caddy` ; `ghcr.io/x/caddy` reste tel quel.
+ */
+function canonicalName(name: string): string {
+  const slash = name.indexOf("/");
+  const first = slash === -1 ? "" : name.slice(0, slash);
+  const hasRegistry = /[.:]/.test(first) || first === "localhost";
+  if (hasRegistry && !HUB_REGISTRIES.includes(first)) return name;
+  const path = hasRegistry ? name.slice(slash + 1) : name;
+  return /^library\/[^/]+$/.test(path) ? path.slice("library/".length) : path;
+}
+
+/**
+ * L'image d'un `docker run` qui commence sur la ligne `start`, suivie sur
+ * ses lignes continuées par `\` et jusqu'au premier séparateur shell : le
+ * premier argument qui n'est ni une option ni sa valeur. Si la commande
+ * s'arrête avant, une entrée `unread` rapportée à la ligne du `docker run`.
+ */
+function dockerRunImage(
+  file: SourceFile,
+  lines: ReadonlyArray<string>,
+  start: number,
+  command: string,
+  after: string,
+): ImageLine {
+  const tokens: { text: string; line: number }[] = [];
+  let index = start;
+  let text = after;
+  collect: for (;;) {
+    for (const t of text.match(/"[^"]*"|'[^']*'|\S+/g) ?? []) {
+      if (t === "\\") continue;
+      const cut = /^["']/.test(t) ? -1 : t.search(/[;&|)`]/);
+      if (cut === -1) {
+        tokens.push({ text: t, line: index });
+        continue;
+      }
+      if (cut > 0) tokens.push({ text: t.slice(0, cut), line: index });
+      break collect;
+    }
+    if (!text.trimEnd().endsWith("\\") || index + 1 >= lines.length) break;
+    index += 1;
+    text = lines[index];
+  }
+
+  for (let i = 0; i < tokens.length; i += 1) {
+    const t = tokens[i].text;
+    if (t === "--") {
+      // Fin des options : l'argument suivant est l'image, quel qu'il soit.
+      const next = tokens[i + 1];
+      if (next === undefined) break;
+      return parseReference(
+        `${file.path}:${next.line + 1}`,
+        next.text.replace(/^["']|["']$/g, ""),
+      );
+    }
+    if (t.startsWith("--")) {
+      if (!t.includes("=") && !RUN_BOOLEAN_LONG.has(t)) i += 1;
+      continue;
+    }
+    if (t.startsWith("-") && t.length > 1) {
+      // Grappe de drapeaux courts (`-dit`) : la première lettre qui prend une
+      // valeur la prend collée (`-p5432:5432`) ou dans l'argument suivant.
+      const letters = t.slice(1);
+      const valued = [...letters].findIndex((c) => !RUN_BOOLEAN_SHORT.includes(c));
+      if (valued === letters.length - 1) i += 1;
+      continue;
+    }
+    const raw = t.replace(/^["']|["']$/g, "");
+    return parseReference(`${file.path}:${tokens[i].line + 1}`, raw);
+  }
+  return {
+    ...parseReference(`${file.path}:${start + 1}`, ""),
+    raw: `${command}${after}`.trim(),
+    unread: true,
+  };
+}
 
 function imageLines(file: SourceFile): ImageLine[] {
   const found: ImageLine[] = [];
-  file.text.split("\n").forEach((line, index) => {
+  const lines = file.text.split("\n");
+  lines.forEach((line, index) => {
+    if (line.trimStart().startsWith("#")) return;
     const m = line.match(IMAGE_LINE);
-    if (!m) return;
-    const raw = m[1];
-    const at = raw.indexOf("@");
-    const ref = at === -1 ? raw : raw.slice(0, at);
-    const lastSlash = ref.lastIndexOf("/");
-    const colon = ref.indexOf(":", lastSlash + 1);
-    const name = colon === -1 ? ref : ref.slice(0, colon);
-    found.push({
-      where: `${file.path}:${index + 1}`,
-      raw,
-      name,
-      base: name.slice(name.lastIndexOf("/") + 1),
-      tag: colon === -1 ? undefined : ref.slice(colon + 1),
-      digest: at === -1 ? "" : raw.slice(at),
-    });
+    if (m) found.push(parseReference(`${file.path}:${index + 1}`, m[1]));
+    const uses = line.match(USES_DOCKER);
+    if (uses) found.push(parseReference(`${file.path}:${index + 1}`, uses[1]));
+    for (const run of line.matchAll(DOCKER_RUN)) {
+      const after = line.slice(run.index + run[0].length);
+      found.push(dockerRunImage(file, lines, index, run[1], after));
+    }
   });
   return found;
 }
 
 /**
- * Rend la liste des violations (vide si la porte est tenue) pour les lignes
- * `image:` d'un fichier (compose, ou `services:` des jobs de `ci.yml`). Un
- * fichier sans aucune ligne `image:` est lui-même une violation.
+ * Rend la liste des violations (vide si la porte est tenue) pour les images
+ * d'un fichier : lignes `image:` (compose, `services:` des jobs de `ci.yml`),
+ * `container:`, `uses: docker://`, `docker run` et `docker create` (#374). Un
+ * fichier où aucune image n'est lue est lui-même une violation.
  */
 export function composeTagViolations(file: SourceFile): string[] {
   const violations: string[] = [];
   const lines = imageLines(file);
 
-  for (const { where, raw, name, base, tag, digest } of lines) {
+  for (const { where, raw, name, base, tag, digest, unread } of lines) {
+    if (unread) {
+      violations.push(
+        `${where} : \`${raw}\` — aucune image lue dans cette commande. Une ` +
+          "option inconnue est supposée prendre une valeur et a pu avaler " +
+          "l'image : le garde-fou ne peut rien prouver sur une image qu'il " +
+          "ne voit pas.",
+      );
+      continue;
+    }
     if (digest !== "" && !DIGEST.test(digest)) {
       violations.push(
         `${where} : \`${raw}\` — digest mal formé « ${digest} ». Attendu : ` +
@@ -445,7 +605,9 @@ export function composeTagViolations(file: SourceFile): string[] {
 
   if (lines.length === 0) {
     violations.push(
-      `${file.path} : aucune ligne \`image:\` trouvée. Le garde-fou ne peut ` +
+      `${file.path} : aucune image trouvée (ligne \`image:\`, ` +
+        "`container:`, `uses: docker://` ou `docker run|create`). Le " +
+        "garde-fou ne peut " +
         "rien prouver sur des images qu'il ne voit pas.",
     );
   }
@@ -457,8 +619,10 @@ export function composeTagViolations(file: SourceFile): string[] {
  * (#310) : les jobs de `ci.yml` jouent les migrations sur le Postgres que le
  * compose fait tourner, un job laissé sur l'ancien pin teste autre chose. Le
  * robot de mise à jour bouge toutes les occurrences d'une image dans la même
- * PR ; une PR qui n'en bouge qu'une est rouge ici. Les lignes refusées par
- * `composeTagViolations` ne sont pas comparées (déjà signalées).
+ * PR ; une PR qui n'en bouge qu'une est rouge ici. Les lignes sans tag ou au
+ * digest mal formé ne sont pas comparées (`composeTagViolations` les refuse
+ * déjà). Les images sont groupées par nom résolu (`canonicalName`, #374) :
+ * `caddy` et `docker.io/library/caddy` sont comparés entre eux.
  */
 export function pinnedImageDivergence(files: ReadonlyArray<SourceFile>): string[] {
   const violations: string[] = [];
@@ -467,10 +631,11 @@ export function pinnedImageDivergence(files: ReadonlyArray<SourceFile>): string[
     for (const line of imageLines(file)) {
       if (!DIGEST_PINNED.includes(line.base)) continue;
       if (line.tag === undefined || !DIGEST.test(line.digest)) continue;
-      const pins = byImage.get(line.name) ?? new Map<string, string[]>();
+      const image = canonicalName(line.name);
+      const pins = byImage.get(image) ?? new Map<string, string[]>();
       const pin = `${line.tag}${line.digest}`;
       pins.set(pin, [...(pins.get(pin) ?? []), line.where]);
-      byImage.set(line.name, pins);
+      byImage.set(image, pins);
     }
   }
   for (const [image, pins] of byImage) {
