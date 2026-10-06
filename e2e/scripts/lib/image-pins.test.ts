@@ -391,7 +391,6 @@ test("le vrai docker-compose.yml garde le volume MinIO là où l'image Bitnami �
   assert.match(service[1], /^\s+user: "0"$/m);
 });
 
-
 // ---------------------------------------------------------------------------
 // Tags des lignes `image:` (#160, durci par #310).
 //
@@ -676,4 +675,133 @@ test("refuse le vrai ci.yml dont un seul job change de digest postgres", () => {
   const violations = pinnedImageDivergence([{ ...ci, text: mutated }, compose]);
   assert.equal(violations.length, 1, violations.join(" | "));
   assert.match(violations[0], /divergent/);
+});
+
+test("refuse le même caddy épinglé différemment sous deux écritures de son nom (#374)", () => {
+  // `caddy`, `library/caddy` et `docker.io/library/caddy` désignent la même
+  // image du Hub : grouper par nom écrit les laissait diverger sans rien dire.
+  for (const spelled of [
+    "docker.io/library/caddy",
+    "library/caddy",
+    "docker.io/caddy",
+    "index.docker.io/library/caddy",
+  ]) {
+    const ci =
+      CI_SERVICES_OK +
+      `  deploy:\n    container:\n      image: ${spelled}:2.11.4@sha256:${"7".repeat(64)}\n`;
+    const violations = pinnedImageDivergence([ciFile(ci), composeFile(COMPOSE_TAGS_OK)]);
+    assert.equal(violations.length, 1, `${spelled} : ${violations.join(" | ")}`);
+    assert.match(violations[0], /divergent/);
+    assert.match(violations[0], /ci\.yml:12/);
+    assert.match(violations[0], /docker-compose\.yml:\d+/);
+  }
+});
+
+test("accepte le même pin caddy sous deux écritures de son nom (#374)", () => {
+  const ci =
+    CI_SERVICES_OK + `  deploy:\n    container:\n      image: docker.io/library/${CADDY}\n`;
+  assert.deepEqual(pinnedImageDivergence([ciFile(ci), composeFile(COMPOSE_TAGS_OK)]), []);
+});
+
+test("garde distinctes deux images de même nom sur deux registres (#374)", () => {
+  // Seul le Hub est normalisé : `ghcr.io/example/caddy` n'est pas `caddy`.
+  const ci =
+    CI_SERVICES_OK +
+    `  deploy:\n    container:\n      image: ghcr.io/example/caddy:2.11.3@sha256:${"7".repeat(64)}\n`;
+  assert.deepEqual(pinnedImageDivergence([ciFile(ci), composeFile(COMPOSE_TAGS_OK)]), []);
+});
+
+// ---------------------------------------------------------------------------
+// Les autres écritures d'une image dans `ci.yml` (#374) : `container:` sur une
+// ligne, et `docker run`. Jusque-là seules les lignes `image:` étaient lues :
+// un `container: postgres:16` ou un `docker run postgres:16` passait.
+// ---------------------------------------------------------------------------
+
+test("refuse un container: de job sur une série flottante (#374)", () => {
+  for (const to of ["postgres:16", "caddy:2", `postgres${PG_DIGEST}`, "postgres:16.15"]) {
+    const ci = `${CI_SERVICES_OK}  lint:\n    container: ${to}\n`;
+    const violations = composeTagViolations(ciFile(ci));
+    assert.equal(violations.length, 1, `${to} : ${violations.join(" | ")}`);
+    assert.match(violations[0], /ci\.yml:11 /);
+    assert.ok(violations[0].includes(to), violations[0]);
+  }
+  const quoted = `${CI_SERVICES_OK}  lint:\n    container: "postgres:16"\n`;
+  assert.equal(composeTagViolations(ciFile(quoted)).length, 1);
+});
+
+test("accepte un container: de job épinglé, et lit sa forme bloc une seule fois (#374)", () => {
+  const inline = `${CI_SERVICES_OK}  lint:\n    container: ${PG}\n`;
+  assert.deepEqual(composeTagViolations(ciFile(inline)), []);
+  // `container:` suivi d'un bloc : l'image est sur sa propre ligne `image:`.
+  const block = `${CI_SERVICES_OK}  lint:\n    container:\n      image: postgres:16\n`;
+  const violations = composeTagViolations(ciFile(block));
+  assert.equal(violations.length, 1, violations.join(" | "));
+  assert.match(violations[0], /ci\.yml:12 /);
+});
+
+test("refuse un docker run sur une série flottante ou sans tag (#374)", () => {
+  for (const run of [
+    "docker run -d --name pg -p 5432:5432 -e POSTGRES_PASSWORD=x postgres:16",
+    "docker run --rm postgres psql --version",
+    "docker run -d --network=host --name=pg postgres:16-bookworm",
+    "sudo docker run -dit caddy:2 caddy version",
+    'docker run --rm -v "$PWD:/srv" caddy:latest',
+    "set -e; docker run -d postgres:16.15",
+  ]) {
+    const ci = `${CI_SERVICES_OK}  lint:\n    steps:\n      - run: ${run}\n`;
+    const violations = composeTagViolations(ciFile(ci));
+    assert.equal(violations.length, 1, `${run} : ${violations.join(" | ")}`);
+    assert.match(violations[0], /ci\.yml:12 /);
+  }
+});
+
+test("lit l'image d'un docker run continué sur plusieurs lignes, à sa ligne (#374)", () => {
+  const ci =
+    `${CI_SERVICES_OK}  lint:\n    steps:\n      - run: |\n` +
+    "          docker run -d --name pg \\\n" +
+    "            -e POSTGRES_PASSWORD=x \\\n" +
+    "            postgres:16 \\\n" +
+    "            -c fsync=off\n";
+  const violations = composeTagViolations(ciFile(ci));
+  assert.equal(violations.length, 1, violations.join(" | "));
+  assert.match(violations[0], /ci\.yml:15 /);
+  assert.ok(violations[0].includes("postgres:16"), violations[0]);
+});
+
+test("accepte un docker run épinglé et ignore les docker run commentés (#374)", () => {
+  const ci =
+    `${CI_SERVICES_OK}  lint:\n    steps:\n      - run: |\n` +
+    "          # docker run postgres:16 était l'ancienne forme\n" +
+    `          docker run -d --name pg -p 5432:5432 ${PG} -c fsync=off\n` +
+    `          docker run --rm --network host --entrypoint /bin/sh ${CI_CLIENT} -c "mc ls"\n`;
+  assert.deepEqual(composeTagViolations(ciFile(ci)), []);
+});
+
+test("compare aussi les pins des container: et des docker run (#374)", () => {
+  const other = `postgres:16.15@sha256:${"8".repeat(64)}`;
+  for (const extra of [
+    `  lint:\n    container: ${other}\n`,
+    `  lint:\n    steps:\n      - run: docker run -d ${other}\n`,
+  ]) {
+    const violations = pinnedImageDivergence([
+      ciFile(CI_SERVICES_OK + extra),
+      composeFile(COMPOSE_TAGS_OK),
+    ]);
+    assert.equal(violations.length, 1, `${extra} : ${violations.join(" | ")}`);
+    assert.match(violations[0], /divergent/);
+  }
+});
+
+test("lit les images des docker run du vrai ci.yml (#374)", () => {
+  // Contrôle de mutation : dans ci.yml, le serveur MinIO n'est lancé que par
+  // `docker run`. Repassé en `latest` sur un job, la porte des tags le voit.
+  const [ci] = realFiles();
+  const mutated = ci.text.replace(
+    /docker\.io\/bitnamilegacy\/minio:\S+/,
+    "docker.io/bitnamilegacy/minio:latest",
+  );
+  assert.notEqual(mutated, ci.text);
+  const violations = composeTagViolations({ ...ci, text: mutated });
+  assert.equal(violations.length, 1, violations.join(" | "));
+  assert.match(violations[0], /bitnamilegacy\/minio:latest/);
 });
