@@ -50,6 +50,9 @@ pub fn test_state(db: PgPool) -> AppState {
         // that need several distinct clients build their own state.
         trusted_proxies: std::sync::Arc::new(manage_our_home::client_ip::TrustedProxies::none()),
         login_throttle: std::sync::Arc::new(manage_our_home::auth::throttle::LoginThrottle::new()),
+        csp_report_throttle: std::sync::Arc::new(
+            manage_our_home::csp_report_throttle::ReportThrottle::new(),
+        ),
         login_branches: std::sync::Arc::new(
             manage_our_home::auth::timing::BranchCounters::default(),
         ),

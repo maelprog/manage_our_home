@@ -182,7 +182,10 @@ at all: `apps/web` serves its scripts under `/assets`, and
 `cargo test -p manage_our_home_web csp` fails if an inline handler,
 `<script>` or `javascript:` URL comes back. What the policy blocks is
 reported to `apps/api` (`POST /api/csp-report`) and logged there, without
-the reporter's IP address.
+the reporter's IP address. Each client address may send 100 requests
+(a request may batch several reports) in the 15 minutes that follow its
+first one, then gets a 429 until those 15 minutes are over; the count is
+kept in the API's memory and never logged (`apps/api/src/csp_report_throttle.rs`).
 
 It fills `POSTGRES_PASSWORD`, the three `*_ROLE_PASSWORD` values, the three
 `*_ENCRYPTION_KEY` values and `MINIO_ROOT_PASSWORD` with `openssl rand`

@@ -132,6 +132,9 @@ async fn main() -> anyhow::Result<()> {
         admin_db,
         trusted_proxies: std::sync::Arc::new(trusted_proxies),
         login_throttle: std::sync::Arc::new(manage_our_home::auth::throttle::LoginThrottle::new()),
+        csp_report_throttle: std::sync::Arc::new(
+            manage_our_home::csp_report_throttle::ReportThrottle::new(),
+        ),
         login_branches: std::sync::Arc::new(
             manage_our_home::auth::timing::BranchCounters::default(),
         ),
