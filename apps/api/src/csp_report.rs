@@ -13,7 +13,8 @@
 //! logged is a summary built by [`violations`], not the report:
 //!
 //! - **no IP address**, nor any other request header: the handler reads the
-//!   body and nothing else;
+//!   body and nothing else. The address is read only by [`throttle`], which
+//!   counts requests per client and logs nothing;
 //! - URLs stripped of their query, fragment and credentials, and of the
 //!   path segments that look like a token or an identifier ([`redact_url`]):
 //!   `/verify-email?token=…` carries a secret in its query string, the
@@ -24,11 +25,21 @@
 //!   [`MAX_VIOLATIONS_PER_REQUEST`] violations, hence lines, per request,
 //!   under a body limit of
 //!   [`MAX_REPORT_BODY_BYTES`] — the route answers anyone, so the size of
-//!   what one request can write to the log is bounded here.
+//!   what one request can write to the log is bounded here, and how many
+//!   requests one client may send by [`throttle`] (#375).
+
+use std::time::Instant;
 
 use axum::body::Bytes;
-use axum::http::StatusCode;
+use axum::extract::{Request, State};
+use axum::http::{header, StatusCode};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 use serde_json::Value;
+
+use crate::client_ip::ClientIp;
+use crate::csp_report_throttle::Decision;
+use crate::AppState;
 
 /// A report is a few hundred bytes; the Reporting API may batch several.
 pub const MAX_REPORT_BODY_BYTES: usize = 16 * 1024;
@@ -229,6 +240,32 @@ pub async fn receive(body: Bytes) -> StatusCode {
         );
     }
     StatusCode::NO_CONTENT
+}
+
+/// Middleware on `POST /csp-report`: spends one request of the client's
+/// budget (`csp_report_throttle`), or answers 429 with `Retry-After`
+/// without reading the body. A refusal is not logged — that would hand
+/// back the log lines the limit exists to withhold.
+pub async fn throttle(
+    State(state): State<AppState>,
+    ClientIp(client): ClientIp,
+    request: Request,
+    next: Next,
+) -> Response {
+    match state.csp_report_throttle.admit(client, Instant::now()) {
+        Decision::Allow => next.run(request).await,
+        Decision::Refused { retry_after } => (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(
+                header::RETRY_AFTER,
+                // Whole seconds, rounded up: never earlier than true.
+                (retry_after.as_secs() + u64::from(retry_after.subsec_nanos() > 0))
+                    .max(1)
+                    .to_string(),
+            )],
+        )
+            .into_response(),
+    }
 }
 
 #[cfg(test)]

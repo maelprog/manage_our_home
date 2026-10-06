@@ -6,6 +6,7 @@ pub mod budget;
 pub mod client_ip;
 pub mod crypto;
 pub mod csp_report;
+pub mod csp_report_throttle;
 pub mod db;
 pub mod dev_seed;
 pub mod email;
@@ -89,6 +90,9 @@ pub struct AppState {
     /// runs exactly one `api`; see `auth::throttle` for what has to change
     /// if that ever stops being true.
     pub login_throttle: std::sync::Arc<auth::throttle::LoginThrottle>,
+    /// Per-address limit on `POST /csp-report` (#375), keyed like
+    /// `login_throttle` and in-process for the same reason.
+    pub csp_report_throttle: std::sync::Arc<csp_report_throttle::ReportThrottle>,
     /// Cumulative count of logins per ending, published as an aggregate
     /// and never per request (#178 bis).
     pub login_branches: std::sync::Arc<auth::timing::BranchCounters>,
@@ -414,8 +418,9 @@ pub fn build_router(state: AppState) -> Router {
         // nothing else — which any client can do anyway, origin guard or
         // not, since it only judges browser headers — and how a
         // browser's report request fills `Origin`/`Sec-Fetch-Site` is not
-        // something to bet the reports on. The body guard and a small body
-        // limit still do.
+        // something to bet the reports on. The body guard, a small body
+        // limit and a per-address limit (#375) still do; the last one is
+        // outermost, so a refused request is not read.
         .route(
             "/csp-report",
             post(csp_report::receive)
@@ -423,6 +428,10 @@ pub fn build_router(state: AppState) -> Router {
                 .layer(axum::middleware::from_fn_with_state(
                     body_guard,
                     manage_our_home_http_guard::guard_request_body,
+                ))
+                .layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    csp_report::throttle,
                 )),
         )
         .with_state(state)
