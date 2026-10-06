@@ -303,6 +303,14 @@ pub async fn trigger_calendar_import(
         // `event_id` is a NOT NULL FK with ON DELETE CASCADE
         // (`0010_google_calendar_import.sql`), so a mapping cannot outlive its
         // event.
+        //
+        // `FOR UPDATE OF e` (#372): both arms below decide on what this read
+        // returns — `drops_rule_on_reimport` on `rrule`, `plan_row_repair` on
+        // the bounds — then write the row. Unlocked, a `PATCH` committing in
+        // between was overwritten on a stale decision: a `FREQ=HOURLY` it
+        // wrote stayed on the row this sync turns all-day, a `FREQ=DAILY` it
+        // wrote over an hourly rule was dropped. Locked, this read waits for
+        // that write to commit and decides on what it committed.
         let existing = sqlx::query!(
             r#"SELECT cie.event_id, cie.external_updated_at,
                       e.all_day, e.starts_at, e.ends_at, e.rrule,
@@ -311,7 +319,8 @@ pub async fn trigger_calendar_import(
                       ) AS "has_assignee!"
                FROM calendar_import_events cie
                JOIN events e ON e.id = cie.event_id
-               WHERE cie.calendar_import_id = $1 AND cie.external_uid = $2"#,
+               WHERE cie.calendar_import_id = $1 AND cie.external_uid = $2
+               FOR UPDATE OF e"#,
             import_id,
             event.external_uid,
         )

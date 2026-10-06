@@ -38,6 +38,26 @@ fn date_to_utc_midnight(date: NaiveDate) -> DateTime<Utc> {
     Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0).expect("valid midnight"))
 }
 
+/// The title an imported event takes when its feed gives none it could show.
+const UNTITLED: &str = "(untitled)";
+
+/// The title an imported event is stored under (#372). The import writes
+/// `events` directly and never goes through `validate_request`
+/// (`agenda/events.rs`), which refuses a blank title since #120: without
+/// this, a `SUMMARY:` left empty reached the agenda as an event with no
+/// readable name. A feed is not a client that can be told to fix its input,
+/// so the event is kept under the same fallback a VEVENT with no `SUMMARY`
+/// at all already took — dropping it would lose a real appointment over a
+/// missing label. Blank is the API's own test (`str::trim`, U+00A0
+/// included); a readable title is stored as the feed wrote it, padding
+/// included, as the API stores what it is sent.
+fn feed_title(summary: Option<&str>) -> String {
+    match summary {
+        Some(s) if !s.trim().is_empty() => s.to_string(),
+        _ => UNTITLED.to_string(),
+    }
+}
+
 fn resolve(d: &DatePerhapsTime) -> DateTime<Utc> {
     match d {
         DatePerhapsTime::DateTime(dt) => dt.try_into_utc().unwrap_or_else(Utc::now),
@@ -79,7 +99,7 @@ pub fn parse_ics(body: &str) -> Result<Vec<ParsedEvent>, ParseError> {
             .filter(|e| *e >= starts_at)
             .unwrap_or(starts_at);
 
-        let title = event.get_summary().unwrap_or("(untitled)").to_string();
+        let title = feed_title(event.get_summary());
         let description = event.get_description().map(str::to_string);
         let location = event.get_location().map(str::to_string);
         let external_updated_at = event.get_last_modified().or_else(|| event.get_timestamp());
@@ -262,9 +282,72 @@ END:VEVENT
 END:VCALENDAR
 ";
         let events = parse_ics(ics).unwrap();
-        assert_eq!(events[0].title, "(untitled)");
+        assert_eq!(events[0].title, UNTITLED);
         // No DTEND: ends_at falls back to starts_at rather than erroring.
         assert_eq!(events[0].ends_at, events[0].starts_at);
+    }
+
+    // -- feed_title (#372) --------------------------------------------------
+
+    #[test]
+    fn a_missing_summary_takes_the_fallback_title() {
+        assert_eq!(feed_title(None), UNTITLED);
+    }
+
+    #[test]
+    fn an_empty_summary_takes_the_fallback_title() {
+        assert_eq!(feed_title(Some("")), UNTITLED);
+    }
+
+    #[test]
+    fn a_summary_of_spaces_takes_the_fallback_title() {
+        assert_eq!(feed_title(Some("  \t ")), UNTITLED);
+    }
+
+    /// Same `str::trim` as `validate_request` (`agenda/events.rs`), which
+    /// drops U+00A0 too: the import lets through exactly the titles the API
+    /// takes.
+    #[test]
+    fn a_summary_of_non_breaking_spaces_takes_the_fallback_title() {
+        assert_eq!(feed_title(Some("\u{00a0}\u{00a0}")), UNTITLED);
+    }
+
+    /// The API stores a padded title as sent; so does the import.
+    #[test]
+    fn a_readable_summary_is_kept_as_the_feed_wrote_it() {
+        assert_eq!(feed_title(Some("  Anniversaire  ")), "  Anniversaire  ");
+    }
+
+    /// The blanks are escaped (`\x20`, `\u{00a0}`): written out, trailing
+    /// whitespace in this literal is the first thing an editor strips.
+    #[test]
+    fn a_blank_summary_in_a_feed_is_imported_under_the_fallback_title() {
+        let ics = "\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:spaces-summary@google.com
+DTSTAMP:20260101T090000Z
+DTSTART:20260115T140000Z
+SUMMARY:\x20\x20\x20
+END:VEVENT
+BEGIN:VEVENT
+UID:nbsp-summary@google.com
+DTSTAMP:20260101T090000Z
+DTSTART:20260116T140000Z
+SUMMARY:\u{00a0}\u{00a0}
+END:VEVENT
+BEGIN:VEVENT
+UID:empty-summary@google.com
+DTSTAMP:20260101T090000Z
+DTSTART:20260117T140000Z
+SUMMARY:
+END:VEVENT
+END:VCALENDAR
+";
+        let events = parse_ics(ics).unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(events.iter().all(|e| e.title == UNTITLED), "{events:?}");
     }
 
     #[test]
