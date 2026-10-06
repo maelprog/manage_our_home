@@ -783,23 +783,64 @@ async fn a_reimport_turning_a_row_all_day_drops_a_rule_stepping_by_less_than_a_d
     assert_status(&rename, StatusCode::OK);
 }
 
-/// #372: a write to the row lands between the re-import's read of `rrule`
-/// and its `UPDATE`. The open transaction below stands in for a `PATCH` that
-/// has written its rules and not committed yet: « Relève » gets
-/// `FREQ=HOURLY` (an hour-bound row takes it), « Marché » goes from a
-/// committed `FREQ=HOURLY` to `FREQ=DAILY`. The re-import turns both rows
-/// all-day. Read without a lock, it decided on the rules it saw before that
-/// write — keep « Relève »'s (none), drop « Marché »'s — and its `UPDATE`,
-/// once let through, left `FREQ=HOURLY` on an all-day row and erased the
-/// `FREQ=DAILY` just written. Locked, the read waits for the write and
-/// decides on what it committed.
+/// `ICS_AFTER_ALL_DAY` with its two VEVENTs the other way round: the import
+/// walks a feed in document order, and the race below only shows on the row
+/// it reaches first.
+const ICS_AFTER_ALL_DAY_MARCHE_FIRST: &str = "\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:flow-daily-1@google.com
+DTSTAMP:20260201T090000Z
+DTSTART;VALUE=DATE:20260912
+DTEND;VALUE=DATE:20260913
+SUMMARY:Marché
+LAST-MODIFIED:20260201T090000Z
+END:VEVENT
+BEGIN:VEVENT
+UID:flow-hourly-1@google.com
+DTSTAMP:20260201T090000Z
+DTSTART;VALUE=DATE:20260905
+DTEND;VALUE=DATE:20260906
+SUMMARY:Relève
+LAST-MODIFIED:20260201T090000Z
+END:VEVENT
+END:VCALENDAR
+";
+
+/// #372, a stale `FREQ=HOURLY` left on an all-day row: « Relève », reached
+/// first, gets that rule from a write still open when the re-import reads it.
+/// Read without a lock, the row had no rule, nothing was dropped, and the
+/// `UPDATE` let through after the commit turned the row all-day under it.
 #[sqlx::test]
-async fn a_reimport_decides_on_the_rule_a_concurrent_write_committed(db: PgPool) {
+async fn a_reimport_drops_a_sub_daily_rule_a_concurrent_write_committed(db: PgPool) {
+    reimport_against_an_open_write(db, &[ICS_BEFORE_ALL_DAY, ICS_AFTER_ALL_DAY]).await;
+}
+
+/// #372, a `FREQ=DAILY` just written erased: « Marché », reached first, goes
+/// from a committed `FREQ=HOURLY` to `FREQ=DAILY` in a write still open when
+/// the re-import reads it. Read without a lock, the import saw the hourly
+/// rule, decided to drop it, and its `UPDATE` cleared the daily one instead.
+#[sqlx::test]
+async fn a_reimport_keeps_a_daily_rule_a_concurrent_write_committed(db: PgPool) {
+    reimport_against_an_open_write(db, &[ICS_BEFORE_ALL_DAY, ICS_AFTER_ALL_DAY_MARCHE_FIRST]).await;
+}
+
+/// The shared body of the two #372 tests. An open transaction stands in for
+/// a `PATCH` that has written its rules and not committed yet: « Relève »
+/// gets `FREQ=HOURLY` (an hour-bound row takes it), « Marché » goes from a
+/// committed `FREQ=HOURLY` to `FREQ=DAILY`; then the re-import turns both
+/// rows all-day. Locked, the import's read waits for that write and decides
+/// on what it committed. Unlocked, it decides on what it read before — but
+/// only on the first row of `feeds[1]`: the import then waits on that row's
+/// `UPDATE` until the commit, and reads the second row afterwards, committed.
+/// Each of the two tests puts a different row first.
+async fn reimport_against_an_open_write(db: PgPool, feeds: &'static [&'static str]) {
     let router = test_router(db.clone());
     let owner_cookie =
         register_verify_login(&router, &db, "cal-race1@example.test", "owner-password1").await;
     let group_id = create_group(&router, &owner_cookie, "Foyer").await;
-    let feed_url = spawn_changing_ics_server(&[ICS_BEFORE_ALL_DAY, ICS_AFTER_ALL_DAY]).await;
+    let feed_url = spawn_changing_ics_server(feeds).await;
 
     let create = call(
         &router,
@@ -934,7 +975,7 @@ UID:flow-titled-1@google.com
 DTSTAMP:20260201T090000Z
 DTSTART:20260601T140000Z
 DTEND:20260601T150000Z
-SUMMARY:
+SUMMARY:\u{00a0}\x20
 LAST-MODIFIED:20260201T090000Z
 END:VEVENT
 BEGIN:VEVENT
