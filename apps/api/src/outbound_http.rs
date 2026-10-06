@@ -48,6 +48,55 @@ mod tests {
         (url, handle)
     }
 
+    /// reqwest exposes no getter for its timeouts; its `Debug` output names
+    /// the total one (`TotalTimeout` as of 0.12). That timeout bounds the
+    /// connection too, so a client that lost it fails here. The connect
+    /// timeout does not show, and is not checked.
+    #[test]
+    fn the_shared_client_carries_the_request_timeout() {
+        let shown = format!("{:?}", client());
+        assert!(
+            shown.contains(&format!("TotalTimeout: {REQUEST_TIMEOUT:?}")),
+            "{shown}"
+        );
+    }
+
+    /// Every outbound call goes through `client()`: a client built anywhere
+    /// else in `src/` would come without these timeouts. `push.rs` keeps its
+    /// own, with its own timeout and redirect policy.
+    #[test]
+    fn no_other_reqwest_client_is_built_in_the_api_sources() {
+        // A line naming `reqwest` and building a client. This file and
+        // `push.rs` are the two that may.
+        let forbidden = ["Client::new()", "Client::builder()"];
+        let allowed = ["outbound_http.rs", "push.rs"];
+        let mut offenders = Vec::new();
+        let mut dirs = vec![std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src"
+        ))];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                if !name.ends_with(".rs") || allowed.contains(&name.as_str()) {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).unwrap();
+                for (n, line) in source.lines().enumerate() {
+                    if line.contains("reqwest") && forbidden.iter().any(|f| line.contains(f)) {
+                        offenders.push(format!("{}:{}", path.display(), n + 1));
+                    }
+                }
+            }
+        }
+        assert!(offenders.is_empty(), "{offenders:?}");
+    }
+
     #[tokio::test]
     async fn a_peer_that_never_answers_fails_within_the_request_timeout() {
         let (url, peer) = silent_peer().await;
