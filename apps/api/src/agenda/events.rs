@@ -546,8 +546,17 @@ pub async fn update_event(
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let actor_role = require_role(&mut tx, group_id, auth.user_id).await?;
 
+    // `FOR UPDATE` (#391): everything below decides on this read — the rule
+    // is validated against its `all_day` and `starts_at`, and the bounds and
+    // rule a PATCH leaves out are written back from it. Unlocked, a write
+    // committing in between (a Google sync, which locks the same row since
+    // #372) was overwritten on a stale decision: an hourly rule validated on
+    // an hour-bound row landed on the row the sync had just made all-day,
+    // and the bounds and rule the sync had just written were rewritten with
+    // the old ones. Locked, this read waits for that write to commit and
+    // `scoped_tx` holds the row until this one does.
     let existing = sqlx::query!(
-        "SELECT created_by, starts_at, ends_at, all_day, rrule, is_task, completed_at FROM events WHERE id = $1 AND group_id = $2",
+        "SELECT created_by, starts_at, ends_at, all_day, rrule, is_task, completed_at FROM events WHERE id = $1 AND group_id = $2 FOR UPDATE",
         event_id,
         group_id,
     )
@@ -684,8 +693,15 @@ pub async fn delete_event(
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let actor_role = require_role(&mut tx, group_id, auth.user_id).await?;
 
+    // `FOR UPDATE` (#391): the storage keys collected below have to be all
+    // the event has when its row goes. Unlocked, an upload committing in
+    // between (`upload_attachment` holds the event `FOR KEY SHARE`) added a
+    // row this delete never saw: its object was not deleted, and the row went
+    // with the cascade, leaving bytes nothing points at. `FOR UPDATE`
+    // conflicts with `FOR KEY SHARE`: this read waits for the upload and
+    // collects its key, or an upload arriving after it waits and answers 404.
     let existing = sqlx::query!(
-        "SELECT created_by FROM events WHERE id = $1 AND group_id = $2",
+        "SELECT created_by FROM events WHERE id = $1 AND group_id = $2 FOR UPDATE",
         event_id,
         group_id,
     )
