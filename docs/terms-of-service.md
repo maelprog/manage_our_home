@@ -1,6 +1,6 @@
 # Conditions générales d'utilisation — Manage Our Home
 
-Dernière mise à jour : 2026-10-04.
+Dernière mise à jour : 2026-10-06.
 
 Version en vigueur : 2026-10-04.
 
@@ -14,9 +14,9 @@ et ce que l'éditeur attend de vous.
 
 Vous acceptez les présentes conditions en cochant la case prévue à cet
 effet à l'ouverture de votre compte ; un compte ouvert avec Google, ou avant
-que cette case existe, les accepte de la même façon à sa connexion suivante,
-avant tout accès au service. La version acceptée est conservée, avec sa
-date. Si vous ne les acceptez pas, n'ouvrez pas de compte.
+que cette case existe, les accepte de la même façon avant tout autre accès
+au service. La version acceptée est conservée, avec sa date. Si vous ne les
+acceptez pas, n'ouvrez pas de compte.
 
 L'éditeur du service, une personne physique qui l'édite à titre non
 professionnel, est présenté dans les [mentions légales](/legal-notice), qui
@@ -182,13 +182,16 @@ L'éditeur peut modifier les présentes conditions, notamment pour suivre une
 évolution du service ou de la réglementation. La date de dernière mise à
 jour figure en tête de ce document, avec la version en vigueur ; seule une
 modification substantielle change de version. Une modification substantielle
-est annoncée aux membres avant son entrée en vigueur ; continuer à utiliser le
-service après cette date vaut acceptation de la nouvelle version.
+est annoncée aux membres avant son entrée en vigueur : la nouvelle version est
+publiée, avec sa date d'entrée en vigueur, à côté de la version en vigueur,
+qui continue de s'appliquer jusqu'à cette date, et elle est signalée sur la
+page d'accueil du service. Continuer à utiliser le service après cette date
+vaut acceptation de la nouvelle version.
 
-Chaque changement de version est signalé sur la page d'accueil du service à
-tout membre qui a accepté une version antérieure, jusqu'à ce qu'il indique en
-avoir pris connaissance ; la version dont il a pris connaissance est alors
-conservée, avec sa date.
+À partir de cette date, le changement de version est signalé sur la page
+d'accueil du service à tout membre qui a accepté une version antérieure,
+jusqu'à ce qu'il indique en avoir pris connaissance ; la version dont il a
+pris connaissance est alors conservée, avec sa date.
 
 ## Droit applicable et litiges
 
