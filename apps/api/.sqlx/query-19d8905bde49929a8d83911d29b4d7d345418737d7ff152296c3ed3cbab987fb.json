@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT created_by FROM events WHERE id = $1 AND group_id = $2",
+  "query": "SELECT created_by FROM events WHERE id = $1 AND group_id = $2 FOR UPDATE",
   "describe": {
     "columns": [
       {
@@ -25,5 +25,5 @@
       false
     ]
   },
-  "hash": "274931173306953ae22ab2cc641a2b7e038cb42e2de82bc6583d0220183ce411"
+  "hash": "19d8905bde49929a8d83911d29b4d7d345418737d7ff152296c3ed3cbab987fb"
 }

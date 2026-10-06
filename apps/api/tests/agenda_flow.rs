@@ -2605,3 +2605,241 @@ async fn an_event_deleted_while_its_upload_is_in_flight_answers_not_found(db: Pg
     drop(router);
     drop_prescribed_role(&db, pool, &role).await;
 }
+
+/// Waits until some backend of this database is blocked on a lock — the
+/// request the test spawned, held up by the transaction the test keeps open.
+/// With or without a lock on the handler's read, the request touches the row
+/// that transaction holds, so it always gets there.
+async fn wait_for_a_lock_wait(db: &PgPool, what: &str) {
+    let mut waited = std::time::Duration::ZERO;
+    loop {
+        let blocked: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+                            WHERE datname = current_database() AND wait_event_type = 'Lock')",
+        )
+        .fetch_one(db)
+        .await
+        .unwrap();
+        if blocked {
+            return;
+        }
+        assert!(
+            waited < std::time::Duration::from_secs(10),
+            "{what} never waited on the open transaction"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        waited += std::time::Duration::from_millis(20);
+    }
+}
+
+/// Starts `PATCH /events/:id` with `body` while `concurrent` — a write still
+/// open, standing in for a Google sync — holds the row, lets it through once
+/// it is blocked, and returns its response.
+async fn patch_against_an_open_write(
+    router: &axum::Router,
+    db: &PgPool,
+    cookie: &str,
+    path: String,
+    body: serde_json::Value,
+    concurrent: sqlx::Transaction<'static, sqlx::Postgres>,
+) -> axum::http::Response<axum::body::Body> {
+    let patch = tokio::spawn({
+        let (router, cookie) = (router.clone(), cookie.to_string());
+        async move { call(&router, Method::PATCH, &path, Some(&cookie), Some(body)).await }
+    });
+    wait_for_a_lock_wait(db, "the PATCH").await;
+    concurrent.commit().await.unwrap();
+    patch.await.unwrap()
+}
+
+/// #391: a sync turns an hour-bound event all-day while a `PATCH` sets it an
+/// hourly rule. Read without a lock, the `PATCH` validated the rule against
+/// the hour-bound row it saw, then wrote it on the row the sync had just
+/// made all-day — a rule `validate_request` refuses on an all-day event.
+/// Locked, the read waits for the sync and validates against what it wrote.
+#[sqlx::test]
+async fn a_patch_validates_its_rule_on_what_a_concurrent_write_committed(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie =
+        register_verify_login(&router, &db, "patch-race1@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let event_id = Uuid::parse_str(&create_event(&router, &cookie, &group_id).await).unwrap();
+
+    let mut concurrent = manage_our_home::db::begin(&db).await.unwrap();
+    sqlx::query("UPDATE events SET all_day = true WHERE id = $1")
+        .bind(event_id)
+        .execute(&mut *concurrent)
+        .await
+        .unwrap();
+
+    let patch = patch_against_an_open_write(
+        &router,
+        &db,
+        &cookie,
+        format!("/groups/{group_id}/events/{event_id}"),
+        serde_json::json!({"rrule": "FREQ=HOURLY;COUNT=5"}),
+        concurrent,
+    )
+    .await;
+    assert_status(&patch, StatusCode::BAD_REQUEST);
+
+    let row: (bool, Option<String>) =
+        sqlx::query_as("SELECT all_day, rrule FROM events WHERE id = $1")
+            .bind(event_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(row, (true, None));
+}
+
+/// #391: a sync moves an event and gives it a rule while a `PATCH` renames
+/// it. Read without a lock, the `PATCH` rewrote the bounds and the rule it
+/// had read before the sync — erasing what the sync had just written.
+/// Locked, it carries over what the sync committed.
+#[sqlx::test]
+async fn a_patch_keeps_the_bounds_and_rule_a_concurrent_write_committed(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie =
+        register_verify_login(&router, &db, "patch-race2@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let event_id = Uuid::parse_str(&create_event(&router, &cookie, &group_id).await).unwrap();
+
+    let mut concurrent = manage_our_home::db::begin(&db).await.unwrap();
+    let (moved_start, moved_end): (DateTime<Utc>, DateTime<Utc>) = sqlx::query_as(
+        "UPDATE events SET starts_at = starts_at + interval '1 day',
+                           ends_at = ends_at + interval '1 day',
+                           rrule = 'FREQ=DAILY;COUNT=3'
+         WHERE id = $1 RETURNING starts_at, ends_at",
+    )
+    .bind(event_id)
+    .fetch_one(&mut *concurrent)
+    .await
+    .unwrap();
+
+    let patch = patch_against_an_open_write(
+        &router,
+        &db,
+        &cookie,
+        format!("/groups/{group_id}/events/{event_id}"),
+        serde_json::json!({"title": "Réunion déplacée"}),
+        concurrent,
+    )
+    .await;
+    assert_status(&patch, StatusCode::OK);
+
+    let row: (String, DateTime<Utc>, DateTime<Utc>, Option<String>) =
+        sqlx::query_as("SELECT title, starts_at, ends_at, rrule FROM events WHERE id = $1")
+            .bind(event_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        row,
+        (
+            "Réunion déplacée".to_string(),
+            moved_start,
+            moved_end,
+            Some("FREQ=DAILY;COUNT=3".to_string())
+        )
+    );
+}
+
+/// #391: an attachment committed while its event is being deleted. Read
+/// without a lock, `delete_event` collected the storage keys before the
+/// attachment row was visible and deleted no object; the row then went with
+/// the event's cascade, leaving its bytes in storage with nothing pointing at
+/// them. Locked, the read waits for the attachment's transaction (its
+/// `FOR KEY SHARE`, `upload_attachment`) and collects its key.
+///
+/// `test_router`'s storage is unreachable, so a delete that saw the key fails
+/// on it (500) and leaves event and attachment for the retry
+/// (`event_delete_aborts_when_the_attachment_object_cannot_be_removed`); one
+/// that missed it answers 204.
+#[sqlx::test]
+async fn an_event_delete_sees_an_attachment_a_concurrent_upload_committed(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie =
+        register_verify_login(&router, &db, "delete-race@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let event_id = create_event(&router, &cookie, &group_id).await;
+    let user_id: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind("delete-race@example.test")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+
+    // What `upload_attachment`'s second transaction does, left open.
+    let mut upload = with_family_scope(&db, &group_id).await;
+    sqlx::query("SELECT id FROM events WHERE id = $1 FOR KEY SHARE")
+        .bind(Uuid::parse_str(&event_id).unwrap())
+        .execute(&mut *upload)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO event_attachments (event_id, uploaded_by, storage_key, filename, mime_type, size_bytes)
+         VALUES ($1, $2, $3, 'ordonnance.png', 'image/png', 42)",
+    )
+    .bind(Uuid::parse_str(&event_id).unwrap())
+    .bind(user_id)
+    .bind(format!("{group_id}/{event_id}/{}", Uuid::new_v4()))
+    .execute(&mut *upload)
+    .await
+    .unwrap();
+
+    let delete = tokio::spawn({
+        let (router, cookie) = (router.clone(), cookie.clone());
+        let path = format!("/groups/{group_id}/events/{event_id}");
+        async move { call(&router, Method::DELETE, &path, Some(&cookie), None).await }
+    });
+    wait_for_a_lock_wait(&db, "the DELETE").await;
+    upload.commit().await.unwrap();
+
+    let delete = delete.await.unwrap();
+    assert_status(&delete, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        attachment_count(&db, &group_id, &event_id).await,
+        1,
+        "an attachment committed during the delete must not lose its row \
+         while its object stays in storage"
+    );
+}
+
+/// #391: the `PATCH`'s lock is `FOR NO KEY UPDATE`, which does not conflict
+/// with the `FOR KEY SHARE` foreign keys into `events` take. An upload's
+/// second transaction holds it through `put_object`; a plain `FOR UPDATE`
+/// would make every `PATCH` of that event wait for the upload to finish.
+#[sqlx::test]
+async fn a_patch_does_not_wait_for_a_transaction_referencing_the_event(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "patch-keyshare@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let event_id = create_event(&router, &cookie, &group_id).await;
+
+    let mut upload = with_family_scope(&db, &group_id).await;
+    sqlx::query("SELECT id FROM events WHERE id = $1 FOR KEY SHARE")
+        .bind(Uuid::parse_str(&event_id).unwrap())
+        .execute(&mut *upload)
+        .await
+        .unwrap();
+
+    let patch = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        call(
+            &router,
+            Method::PATCH,
+            &format!("/groups/{group_id}/events/{event_id}"),
+            Some(&cookie),
+            Some(serde_json::json!({"title": "Réunion renommée"})),
+        ),
+    )
+    .await
+    .expect("the PATCH waited on a transaction that only references the event");
+    assert_status(&patch, StatusCode::OK);
+    upload.commit().await.unwrap();
+}

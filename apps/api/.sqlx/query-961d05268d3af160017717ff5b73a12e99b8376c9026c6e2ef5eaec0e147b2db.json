@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT created_by, starts_at, ends_at, all_day, rrule, is_task, completed_at FROM events WHERE id = $1 AND group_id = $2",
+  "query": "SELECT created_by, starts_at, ends_at, all_day, rrule, is_task, completed_at FROM events WHERE id = $1 AND group_id = $2 FOR NO KEY UPDATE",
   "describe": {
     "columns": [
       {
@@ -97,5 +97,5 @@
       true
     ]
   },
-  "hash": "54ca8b40bb6b4785e73b547e234b2df81c4ed8af590fd6a737bf3c12e2dba322"
+  "hash": "961d05268d3af160017717ff5b73a12e99b8376c9026c6e2ef5eaec0e147b2db"
 }
