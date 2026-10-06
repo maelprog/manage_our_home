@@ -2803,3 +2803,43 @@ async fn an_event_delete_sees_an_attachment_a_concurrent_upload_committed(db: Pg
          while its object stays in storage"
     );
 }
+
+/// #391: the `PATCH`'s lock is `FOR NO KEY UPDATE`, which does not conflict
+/// with the `FOR KEY SHARE` foreign keys into `events` take. An upload's
+/// second transaction holds it through `put_object`; a plain `FOR UPDATE`
+/// would make every `PATCH` of that event wait for the upload to finish.
+#[sqlx::test]
+async fn a_patch_does_not_wait_for_a_transaction_referencing_the_event(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "patch-keyshare@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let event_id = create_event(&router, &cookie, &group_id).await;
+
+    let mut upload = with_family_scope(&db, &group_id).await;
+    sqlx::query("SELECT id FROM events WHERE id = $1 FOR KEY SHARE")
+        .bind(Uuid::parse_str(&event_id).unwrap())
+        .execute(&mut *upload)
+        .await
+        .unwrap();
+
+    let patch = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        call(
+            &router,
+            Method::PATCH,
+            &format!("/groups/{group_id}/events/{event_id}"),
+            Some(&cookie),
+            Some(serde_json::json!({"title": "Réunion renommée"})),
+        ),
+    )
+    .await
+    .expect("the PATCH waited on a transaction that only references the event");
+    assert_status(&patch, StatusCode::OK);
+    upload.commit().await.unwrap();
+}

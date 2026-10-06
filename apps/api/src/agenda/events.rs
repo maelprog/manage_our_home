@@ -546,17 +546,24 @@ pub async fn update_event(
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let actor_role = require_role(&mut tx, group_id, auth.user_id).await?;
 
-    // `FOR UPDATE` (#391): everything below decides on this read — the rule
-    // is validated against its `all_day` and `starts_at`, and the bounds and
-    // rule a PATCH leaves out are written back from it. Unlocked, a write
-    // committing in between (a Google sync, which locks the same row since
-    // #372) was overwritten on a stale decision: an hourly rule validated on
-    // an hour-bound row landed on the row the sync had just made all-day,
-    // and the bounds and rule the sync had just written were rewritten with
-    // the old ones. Locked, this read waits for that write to commit and
+    // `FOR NO KEY UPDATE` (#391): everything below decides on this read —
+    // the rule is validated against its `all_day` and `starts_at`, and the
+    // bounds and rule a PATCH leaves out are written back from it. Unlocked,
+    // a write committing in between (a Google sync, which locks the same row
+    // since #372) was overwritten on a stale decision: an hourly rule
+    // validated on an hour-bound row landed on the row the sync had just made
+    // all-day, and the bounds and rule the sync had just written were
+    // rewritten with the old ones. Locked, this read waits for that write to commit and
     // `scoped_tx` holds the row until this one does.
+    //
+    // `NO KEY`: a PATCH never changes the row's key, and the plain
+    // `FOR UPDATE` would also conflict with the `FOR KEY SHARE` every foreign
+    // key into `events` takes — an upload's second transaction, held through
+    // `put_object`, and reminder or assignee inserts would stall the PATCH
+    // for nothing. `FOR NO KEY UPDATE` still conflicts with the sync's
+    // `FOR UPDATE OF e` and with any other write to the row.
     let existing = sqlx::query!(
-        "SELECT created_by, starts_at, ends_at, all_day, rrule, is_task, completed_at FROM events WHERE id = $1 AND group_id = $2 FOR UPDATE",
+        "SELECT created_by, starts_at, ends_at, all_day, rrule, is_task, completed_at FROM events WHERE id = $1 AND group_id = $2 FOR NO KEY UPDATE",
         event_id,
         group_id,
     )
