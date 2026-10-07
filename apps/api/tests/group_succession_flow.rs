@@ -492,3 +492,127 @@ async fn a_member_gets_403_on_the_designation_routes(db: PgPool) {
     assert_status(&res, StatusCode::FORBIDDEN);
     assert_eq!(membership(&db, group, member).await.0, "standard");
 }
+
+/// The notice is the owner's: an heir who hands the group on keeps the
+/// stamps of their inheritance on the membership, unacknowledged, and no
+/// longer sees the notice (#370).
+#[sqlx::test]
+async fn an_heir_who_hands_the_group_on_no_longer_sees_the_notice(db: PgPool) {
+    let owning = insert_user(&db, "owning@example.test", Some(31)).await;
+    let heir = insert_user(&db, "heir@example.test", None).await;
+    let other = insert_user(&db, "other@example.test", None).await;
+    let group = insert_group(&db, "Famille Martin", owning).await;
+    add_member(&db, group, heir, "admin", 60).await;
+    add_member(&db, group, other, "standard", 90).await;
+    purge_due_accounts(&db).await.unwrap();
+    let router = test_router(db.clone());
+    let heir_cookie = insert_session(&db, heir).await;
+    assert!(!notice_of(&router, &heir_cookie, group).await.is_null());
+
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group}/transfer-ownership"),
+        Some(&heir_cookie),
+        Some(serde_json::json!({ "new_owner_id": other })),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+
+    assert_eq!(
+        membership(&db, group, heir).await,
+        ("admin".into(), Some("account_purged".into()), false)
+    );
+    let seen: bool = sqlx::query_scalar(
+        "SELECT ownership_notice_seen_at IS NOT NULL FROM group_members
+         WHERE group_id = $1 AND user_id = $2",
+    )
+    .bind(group)
+    .bind(heir)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert!(!seen);
+    assert!(notice_of(&router, &heir_cookie, group).await.is_null());
+}
+
+/// The heir is chosen among the members as they are once a concurrent
+/// departure has committed (#370): `lock_members` waits on the leaving
+/// member's row instead of naming them heir from what it read before the
+/// departure committed. Named that way, the leaving member's row would be
+/// gone by the time `stamp_inheritance` updates it, and the group would be
+/// left without an owner while `audit_log` names one.
+#[sqlx::test]
+async fn an_heir_is_not_chosen_among_members_leaving_concurrently(db: PgPool) {
+    // No owner; `successor` would name `leaving`, the only admin.
+    let leaving = insert_user(&db, "leaving@example.test", None).await;
+    let staying = insert_user(&db, "staying@example.test", None).await;
+    let disabled = insert_user(&db, "disabled@example.test", None).await;
+    deactivate(&db, disabled).await;
+    let group: Uuid =
+        sqlx::query_scalar("INSERT INTO groups (name, created_by) VALUES ($1, $2) RETURNING id")
+            .bind("Famille")
+            .bind(leaving)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    add_member(&db, group, leaving, "admin", 90).await;
+    add_member(&db, group, staying, "standard", 60).await;
+    add_member(&db, group, disabled, "standard", 30).await;
+    let router = test_router(db.clone());
+    let (_, admin_cookie) = superadmin_cookie(&router, &db).await;
+
+    // The departure: its membership row is deleted, not yet committed.
+    let mut departure = manage_our_home::db::begin(&db).await.unwrap();
+    sqlx::query("DELETE FROM group_members WHERE group_id = $1 AND user_id = $2")
+        .bind(group)
+        .bind(leaving)
+        .execute(&mut *departure)
+        .await
+        .unwrap();
+
+    // Reactivating `disabled` looks for an heir meanwhile, and must be
+    // waiting on the departure's row lock before the departure commits.
+    let reactivation = tokio::spawn({
+        let router = router.clone();
+        let path = format!("/admin/users/{disabled}/reactivate");
+        async move { call(&router, Method::POST, &path, Some(&admin_cookie), None).await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_stat_activity
+                 WHERE datname = current_database() AND wait_event_type = 'Lock'",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap();
+            if waiting > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the reactivation never waited on the departure's lock");
+    departure.commit().await.unwrap();
+
+    let res = tokio::time::timeout(std::time::Duration::from_secs(10), reactivation)
+        .await
+        .expect("the reactivation did not finish once the departure committed")
+        .unwrap();
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(
+        membership(&db, group, staying).await,
+        ("owner".into(), Some("member_reactivated".into()), false)
+    );
+    let audited: Vec<String> = sqlx::query_scalar(
+        "SELECT metadata->>'new_owner_id' FROM audit_log
+         WHERE action = 'ownership_transferred' AND target_id = $1",
+    )
+    .bind(group.to_string())
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(audited, vec![staying.to_string()]);
+}
