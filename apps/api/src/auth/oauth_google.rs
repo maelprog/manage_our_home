@@ -125,15 +125,33 @@ struct GoogleUserInfo {
 /// point it at a local listener.
 pub const GOOGLE_USERINFO_URL: &str = "https://openidconnect.googleapis.com/v1/userinfo";
 
+/// A redirect is not followed (#389): it fails the sign-in.
 async fn fetch_google_userinfo(url: &str, access_token: &str) -> anyhow::Result<GoogleUserInfo> {
-    let info: GoogleUserInfo = crate::outbound_http::client()
+    let response = crate::outbound_http::oauth_client()
         .get(url)
         .bearer_auth(access_token)
         .send()
-        .await?
-        .json()
         .await?;
+    if response.status().is_redirection() {
+        anyhow::bail!("userinfo answered a redirect: {}", response.status());
+    }
+    let info: GoogleUserInfo = response.json().await?;
     Ok(info)
+}
+
+/// Trades the code for tokens. A redirect is not followed (#389): `oauth2`
+/// reads the 3xx as an error response and the sign-in fails.
+async fn exchange_code(
+    oauth: &GoogleOauthClient,
+    code: String,
+    pkce_verifier: PkceCodeVerifier,
+) -> anyhow::Result<oauth2::basic::BasicTokenResponse> {
+    oauth
+        .exchange_code(AuthorizationCode::new(code))
+        .set_pkce_verifier(pkce_verifier)
+        .request_async(crate::outbound_http::oauth_client())
+        .await
+        .map_err(|e| anyhow::anyhow!("token exchange failed: {e}"))
 }
 
 /// AC #3, #8: validates the CSRF `state`, exchanges the code with the PKCE
@@ -169,13 +187,9 @@ pub async fn callback(
     let pkce_verifier = callback_verifier(expected_state, pkce_verifier, &query.state)
         .ok_or(AppError::Unauthorized)?;
 
-    let token = state
-        .google_oauth
-        .exchange_code(AuthorizationCode::new(query.code))
-        .set_pkce_verifier(pkce_verifier)
-        .request_async(crate::outbound_http::client())
+    let token = exchange_code(&state.google_oauth, query.code, pkce_verifier)
         .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("token exchange failed: {e}")))?;
+        .map_err(AppError::Internal)?;
 
     let access_token = token.access_token().secret();
     let userinfo = fetch_google_userinfo(&state.google_userinfo_url, access_token)
@@ -425,5 +439,133 @@ mod tests {
     #[test]
     fn callback_refuses_a_mismatched_state() {
         assert!(callback_verifier(Some("s".into()), Some(VERIFIER.into()), "other").is_none());
+    }
+
+    /// Reads one HTTP/1.1 request off `socket`, headers and
+    /// `Content-Length` body, so the answer is not cut short by a reset.
+    async fn read_request(socket: &mut tokio::net::TcpStream) {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let n = socket.read(&mut chunk).await.unwrap();
+            if n == 0 {
+                return;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+                let length: usize = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .map(|v| v.trim().parse().unwrap())
+                    .unwrap_or(0);
+                if buf.len() >= end + 4 + length {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Answers every request with `response`, counting the requests.
+    async fn peer(
+        response: String,
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = hits.clone();
+        let handle = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                read_request(&mut socket).await;
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                socket.write_all(response.as_bytes()).await.unwrap();
+                socket.shutdown().await.ok();
+            }
+        });
+        (url, hits, handle)
+    }
+
+    fn ok_json(body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn temporary_redirect(to: &str) -> String {
+        format!(
+            "HTTP/1.1 307 Temporary Redirect\r\nLocation: {to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+    }
+
+    /// A 307 replays the POST body, authorization code and PKCE verifier
+    /// included, at the `Location`, and the `client_secret` too when the
+    /// redirect stays on the same host: the exchange must stop at the
+    /// redirect (#389). The second peer would answer a valid token, so
+    /// following it would succeed.
+    #[tokio::test]
+    async fn the_code_exchange_follows_no_redirect() {
+        let (target, target_hits, target_task) =
+            peer(ok_json(r#"{"access_token":"t","token_type":"bearer"}"#)).await;
+        let (redirector, redirector_hits, redirector_task) =
+            peer(temporary_redirect(&target)).await;
+        let oauth = client().set_token_uri(TokenUrl::new(redirector).unwrap());
+
+        let outcome = exchange_code(
+            &oauth,
+            "code".into(),
+            PkceCodeVerifier::new(VERIFIER.into()),
+        )
+        .await;
+        redirector_task.abort();
+        target_task.abort();
+
+        assert_eq!(redirector_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(target_hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(outcome.is_err(), "a redirected exchange is a failure");
+    }
+
+    /// Same for userinfo, which carries the access token as a bearer.
+    #[tokio::test]
+    async fn the_userinfo_request_follows_no_redirect() {
+        let (target, target_hits, target_task) = peer(ok_json(
+            r#"{"sub":"1","email":"a@example.com","email_verified":true}"#,
+        ))
+        .await;
+        let (redirector, redirector_hits, redirector_task) =
+            peer(temporary_redirect(&target)).await;
+
+        let outcome = fetch_google_userinfo(&redirector, "access-token").await;
+        redirector_task.abort();
+        target_task.abort();
+
+        assert_eq!(redirector_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(target_hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(outcome.is_err(), "a redirected userinfo is a failure");
+    }
+
+    /// A 3xx whose body is a valid profile is still a failure: the redirect
+    /// is refused on its status, not on a body that fails to parse.
+    #[tokio::test]
+    async fn a_redirect_carrying_a_valid_profile_is_refused() {
+        let body = r#"{"sub":"1","email":"a@example.com","email_verified":true}"#;
+        let (redirector, hits, task) = peer(format!(
+            "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://127.0.0.1:1/\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ))
+        .await;
+
+        let outcome = fetch_google_userinfo(&redirector, "access-token").await;
+        task.abort();
+
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(outcome.is_err(), "a redirected userinfo is a failure");
     }
 }

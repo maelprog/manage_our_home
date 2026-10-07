@@ -1,8 +1,16 @@
-//! The HTTP client for requests this API makes to third parties on behalf
+//! The HTTP clients for requests this API makes to third parties on behalf
 //! of a user request: Google's OAuth token and userinfo endpoints, and the
 //! iCal feeds of calendar imports. Without a timeout, a peer that accepts
 //! the connection and never answers holds the user's request open
 //! indefinitely (#371).
+//!
+//! The OAuth calls get a client of their own that follows no redirect: on a
+//! 307 or 308, reqwest replays the code exchange's POST body, authorization
+//! code and PKCE verifier included, at whatever the `Location` names, and
+//! the `client_secret` too when the redirect stays on the same host (it
+//! drops the `Authorization` header on a change of host or port) (#389).
+//! The `oauth2` crate's documentation advises the same for the code
+//! exchange. The iCal import keeps following redirects, feeds move.
 
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -12,19 +20,43 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Time allowed for the whole request, connection and body included.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-static CLIENT: LazyLock<reqwest::Client> =
-    LazyLock::new(|| build(CONNECT_TIMEOUT, REQUEST_TIMEOUT));
+static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    build(
+        CONNECT_TIMEOUT,
+        REQUEST_TIMEOUT,
+        reqwest::redirect::Policy::default(),
+    )
+});
 
-/// The shared client. Built once, so its connection pool is reused across
-/// requests.
+static OAUTH_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    build(
+        CONNECT_TIMEOUT,
+        REQUEST_TIMEOUT,
+        reqwest::redirect::Policy::none(),
+    )
+});
+
+/// The shared client, which follows redirects (reqwest's default, up to
+/// 10). Built once, so its connection pool is reused across requests.
 pub fn client() -> &'static reqwest::Client {
     &CLIENT
 }
 
-fn build(connect: Duration, request: Duration) -> reqwest::Client {
+/// The client for Google's OAuth endpoints: same timeouts, no redirect
+/// followed. A redirect comes back as the 3xx response itself.
+pub fn oauth_client() -> &'static reqwest::Client {
+    &OAUTH_CLIENT
+}
+
+fn build(
+    connect: Duration,
+    request: Duration,
+    redirect: reqwest::redirect::Policy,
+) -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(connect)
         .timeout(request)
+        .redirect(redirect)
         .build()
         .expect("static reqwest configuration")
 }
@@ -53,17 +85,20 @@ mod tests {
     /// connection too, so a client that lost it fails here. The connect
     /// timeout does not show, and is not checked.
     #[test]
-    fn the_shared_client_carries_the_request_timeout() {
-        let shown = format!("{:?}", client());
-        assert!(
-            shown.contains(&format!("TotalTimeout: {REQUEST_TIMEOUT:?}")),
-            "{shown}"
-        );
+    fn both_clients_carry_the_request_timeout() {
+        for client in [client(), oauth_client()] {
+            let shown = format!("{client:?}");
+            assert!(
+                shown.contains(&format!("TotalTimeout: {REQUEST_TIMEOUT:?}")),
+                "{shown}"
+            );
+        }
     }
 
-    /// Every outbound call goes through `client()`: a client built anywhere
-    /// else in `src/` would come without these timeouts. `push.rs` keeps its
-    /// own, with its own timeout and redirect policy.
+    /// Every outbound call goes through `client()` or `oauth_client()`: a
+    /// client built anywhere else in `src/` would come without these
+    /// timeouts. `push.rs` keeps its own, with its own timeout and redirect
+    /// policy.
     #[test]
     fn no_other_reqwest_client_is_built_in_the_api_sources() {
         // A line naming `reqwest` and building a client. This file and
@@ -100,7 +135,11 @@ mod tests {
     #[tokio::test]
     async fn a_peer_that_never_answers_fails_within_the_request_timeout() {
         let (url, peer) = silent_peer().await;
-        let client = build(Duration::from_secs(1), Duration::from_millis(200));
+        let client = build(
+            Duration::from_secs(1),
+            Duration::from_millis(200),
+            reqwest::redirect::Policy::default(),
+        );
         let outcome = tokio::time::timeout(Duration::from_secs(5), client.get(&url).send()).await;
         peer.abort();
         let error = outcome
