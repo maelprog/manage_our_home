@@ -17,12 +17,11 @@ use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use manage_our_home_shared::dto::stocks::{StockItemResponse, UpdateStockItemRequest};
-use manage_our_home_shared::validation::stocks::{expiry_status, is_low_stock};
+use manage_our_home_shared::validation::stocks::is_low_stock;
 use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
-use crate::routes::agenda::today_paris;
 use crate::state::{api_request_auth, AppState};
 
 use super::new::parse_quantity;
@@ -130,7 +129,7 @@ fn page(
     };
     let expiry_html = match item.expires_on {
         Some(d) => {
-            let badge = expiry_badge(expiry_status(Some(d), today_paris()))
+            let badge = expiry_badge(item.expiry_status)
                 .map(|(class, text)| format!(r#" <span class="{class}">{text}</span>"#))
                 .unwrap_or_default();
             format!(

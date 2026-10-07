@@ -1,23 +1,21 @@
 //! `/stocks` — the active family's inventory, sorted by name (backend order),
 //! with a low-stock badge derived on read. `?low_stock=1` filters to low-stock
 //! items only (delegated to the backend's `?low_stock=true` param).
-//! `?order=expiry` re-sorts the page "à consommer en premier" — soonest expiry
-//! date first, undated items last (#401); the two parameters combine. Each row
-//! carries its expiry date and, when expired or close, a worded badge. PRG
-//! banners after create/update/adjust/delete.
+//! `?sort=expires_on` lists "à consommer en premier" — soonest expiry date
+//! first, undated items last, then by name (#401), delegated to the backend's
+//! identical `sort` param; the two parameters combine. Each row carries its
+//! expiry date and, when expired or close, a worded badge rendered from the
+//! backend's `expiry_status`. PRG banners after create/update/adjust/delete.
 
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use leptos::prelude::*;
-use manage_our_home_shared::dto::stocks::{StockItemList, StockItemResponse};
-use manage_our_home_shared::validation::stocks::{
-    expiry_status, is_low_stock, sort_soonest_expiry_first,
-};
+use manage_our_home_shared::dto::stocks::{StockItemList, StockItemResponse, SORT_BY_EXPIRY};
+use manage_our_home_shared::validation::stocks::is_low_stock;
 
 use crate::app::{shell_with_header, Width};
 use crate::layout::CurrentUser;
-use crate::routes::agenda::today_paris;
 use crate::state::{api_request_auth, AppState};
 
 use super::{
@@ -27,7 +25,7 @@ use super::{
 #[derive(serde::Deserialize)]
 pub struct ListQuery {
     low_stock: Option<String>,
-    order: Option<String>,
+    sort: Option<String>,
     notice: Option<String>,
 }
 
@@ -36,8 +34,8 @@ fn list_href(only_low: bool, by_expiry: bool) -> &'static str {
     match (only_low, by_expiry) {
         (false, false) => "/stocks",
         (true, false) => "/stocks?low_stock=1",
-        (false, true) => "/stocks?order=expiry",
-        (true, true) => "/stocks?low_stock=1&order=expiry",
+        (false, true) => "/stocks?sort=expires_on",
+        (true, true) => "/stocks?low_stock=1&sort=expires_on",
     }
 }
 
@@ -62,15 +60,22 @@ pub async fn get(
     };
 
     let only_low = matches!(query.low_stock.as_deref(), Some("1") | Some("true"));
-    let by_expiry = query.order.as_deref() == Some("expiry");
-    let path = if only_low {
-        format!("/groups/{}/stock-items?low_stock=true", fam.gid)
-    } else {
+    let by_expiry = query.sort.as_deref() == Some(SORT_BY_EXPIRY);
+    let mut params = Vec::new();
+    if only_low {
+        params.push("low_stock=true".to_string());
+    }
+    if by_expiry {
+        params.push(format!("sort={SORT_BY_EXPIRY}"));
+    }
+    let path = if params.is_empty() {
         format!("/groups/{}/stock-items", fam.gid)
+    } else {
+        format!("/groups/{}/stock-items?{}", fam.gid, params.join("&"))
     };
 
     let cookie = stocks_cookie(&headers);
-    let mut items: Vec<StockItemResponse> = match api_request_auth(
+    let items: Vec<StockItemResponse> = match api_request_auth(
         &state,
         reqwest::Method::GET,
         &path,
@@ -90,12 +95,7 @@ pub async fn get(
         Err(_) => return service_unavailable_page().into_response(),
     };
 
-    if by_expiry {
-        sort_soonest_expiry_first(&mut items, |item| item.expires_on);
-    }
-
     let notice = query.notice.as_deref().and_then(notice_text);
-    let today = today_paris();
 
     let rows = items
         .iter()
@@ -111,7 +111,7 @@ pub async fn get(
                 ),
                 None => format!("{} {}", fmt_num(item.quantity), item.unit),
             };
-            let expiry = expiry_badge(expiry_status(item.expires_on, today));
+            let expiry = expiry_badge(item.expiry_status);
             let category = item.category.clone().filter(|c| !c.is_empty());
             view! {
                 <li class="list-row">

@@ -13,12 +13,14 @@
 //! stored — this is the single source of truth the list/detail badge uses.
 //!
 //! `expiry_status` classifies an article's expiry date (`expires_on`, #401)
-//! against the caller's "today", and `sort_soonest_expiry_first` orders the
-//! list for the "à consommer en premier" view. Neither reads the clock: the
-//! caller passes the date, which keeps this crate wasm-clean and the
-//! boundaries testable.
+//! against a given "today". `apps/api` derives it on read into
+//! `StockItemResponse::expiry_status`, like `low_stock`, with today taken in
+//! Europe/Paris; the web pages render that field as is. It does not read the
+//! clock: the caller passes the date, which keeps this crate wasm-clean and
+//! the boundaries testable.
 
 use chrono::NaiveDate;
+use serde::{Deserialize, Serialize};
 
 /// Why a stock-item create/edit form was rejected. Ordered to match the
 /// backend's check order (`create_stock_item` / `update_stock_item`).
@@ -72,7 +74,9 @@ pub const EXPIRY_SOON_DAYS: i64 = 3;
 
 /// Where an article stands against its expiry date. v1 keeps one date per
 /// article — the nearest one — so this is a single verdict, not per batch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// On the wire: `"expired"`, `"soon"`, `"ok"`, `"unknown"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ExpiryStatus {
     /// The date is strictly before today.
     Expired,
@@ -98,17 +102,6 @@ pub fn expiry_status(expires_on: Option<NaiveDate>, today: NaiveDate) -> ExpiryS
     } else {
         ExpiryStatus::Ok
     }
-}
-
-/// Orders items "à consommer en premier": earliest expiry date first, items
-/// without a date last. The sort is stable, so items sharing a date (or both
-/// undated) keep their incoming order — the backend's name order.
-pub fn sort_soonest_expiry_first<T>(items: &mut [T], expires_on: impl Fn(&T) -> Option<NaiveDate>) {
-    // `(is_none, date)`: `false < true` puts every dated item first.
-    items.sort_by_key(|item| {
-        let date = expires_on(item);
-        (date.is_none(), date)
-    });
 }
 
 #[cfg(test)]
@@ -250,21 +243,5 @@ mod tests {
             expiry_status(Some(d(2026, 11, 3)), d(2026, 10, 30)),
             ExpiryStatus::Ok
         );
-    }
-
-    // -- sort_soonest_expiry_first ------------------------------------------
-
-    #[test]
-    fn soonest_first_and_undated_last_keeping_ties_in_order() {
-        let mut items = vec![
-            ("Beurre", None),
-            ("Lait", Some(d(2026, 10, 9))),
-            ("Yaourt", Some(d(2026, 10, 5))),
-            ("Farine", None),
-            ("Crème", Some(d(2026, 10, 9))),
-        ];
-        sort_soonest_expiry_first(&mut items, |i| i.1);
-        let names: Vec<&str> = items.iter().map(|i| i.0).collect();
-        assert_eq!(names, ["Yaourt", "Lait", "Crème", "Beurre", "Farine"]);
     }
 }

@@ -12,10 +12,11 @@
 //! delete button render only for those users. The backend stays the authority
 //! (a forged full-edit/delete is still 403'd, mapped defensively here).
 //!
-//! Expiry date (#401): one date per article, the nearest. Its status
-//! (`validation::stocks::expiry_status`) is derived on render against today in
-//! Europe/Paris and shown as a worded badge — "Périmé", "À consommer bientôt" —
-//! never as a colour alone. `/stocks?order=expiry` lists soonest first.
+//! Expiry date (#401): one date per article, the nearest. Its status is
+//! derived by the backend (`StockItemResponse::expiry_status`, today in
+//! Europe/Paris) and shown here as a worded badge — "Périmé", "À consommer
+//! bientôt" — never as a colour alone. `/stocks?sort=expires_on` lists soonest
+//! first.
 
 pub mod detail;
 pub mod edit;

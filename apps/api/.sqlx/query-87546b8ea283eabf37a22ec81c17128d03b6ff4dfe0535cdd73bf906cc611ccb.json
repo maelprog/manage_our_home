@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on\n        FROM stock_items\n        WHERE group_id = $1\n        ORDER BY name\n        ",
+  "query": "\n        SELECT id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on\n        FROM stock_items\n        WHERE group_id = $1\n        -- With $2 false the CASE is NULL on every row and only `name` orders.\n        ORDER BY CASE WHEN $2 THEN expires_on END ASC NULLS LAST, name\n        ",
   "describe": {
     "columns": [
       {
@@ -105,7 +105,8 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Bool"
       ]
     },
     "nullable": [
@@ -120,5 +121,5 @@
       true
     ]
   },
-  "hash": "93fb8298ab69701b53705b6675d15bf0513dd81bfd9bc5b38065765e2d2a28a8"
+  "hash": "87546b8ea283eabf37a22ec81c17128d03b6ff4dfe0535cdd73bf906cc611ccb"
 }

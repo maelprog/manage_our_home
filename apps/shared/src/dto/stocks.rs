@@ -9,6 +9,8 @@ use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::validation::stocks::ExpiryStatus;
+
 /// `POST /groups/:id/stock-items` request body. Mirrors
 /// `CreateStockItemRequest`. `category`/`reorder_threshold` are omitted from
 /// the wire when `None` (the backend treats an absent `category` as `NULL`,
@@ -90,11 +92,17 @@ pub struct StockItemResponse {
     pub unit: String,
     pub reorder_threshold: Option<f64>,
     pub low_stock: bool,
-    /// Nearest expiry date (#401); the expired/soon status is derived from it
-    /// on render (`validation::stocks::expiry_status`), never sent.
+    /// Nearest expiry date (#401).
     #[serde(default)]
     pub expires_on: Option<NaiveDate>,
+    /// Derived by the backend on read from `expires_on` and today in
+    /// Europe/Paris (`validation::stocks::expiry_status`), never stored.
+    pub expiry_status: ExpiryStatus,
 }
+
+/// `GET /groups/:id/stock-items?sort=…` values. Absent → name order; the
+/// backend 400s anything else (`invalid_sort`).
+pub const SORT_BY_EXPIRY: &str = "expires_on";
 
 /// `GET /groups/:id/stock-items` response envelope (`{ "items": [...] }`).
 #[derive(Debug, Clone, Serialize, Deserialize)]

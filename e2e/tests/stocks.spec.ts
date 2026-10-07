@@ -172,7 +172,7 @@ test.describe("Stocks — expiry date", () => {
     const names = page.locator("ul.list li strong");
     await expect(names).toHaveText(["Lait", "Riz", "Sel", "Yaourt"]);
     await page.getByRole("link", { name: "À consommer en premier" }).click();
-    await expect(page).toHaveURL(/\/stocks\?order=expiry$/);
+    await expect(page).toHaveURL(/\/stocks\?sort=expires_on$/);
     await expect(names).toHaveText(["Yaourt", "Lait", "Riz", "Sel"]);
     await page.getByRole("link", { name: "Trier par nom" }).click();
     await expect(names).toHaveText(["Lait", "Riz", "Sel", "Yaourt"]);
