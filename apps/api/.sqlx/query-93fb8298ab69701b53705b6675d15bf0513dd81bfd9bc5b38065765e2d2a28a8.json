@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, group_id, name, category, quantity, unit, reorder_threshold, created_at\n               FROM stock_items WHERE group_id = $1 AND created_by = $2 ORDER BY created_at",
+  "query": "\n        SELECT id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on\n        FROM stock_items\n        WHERE group_id = $1\n        ORDER BY name\n        ",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,17 @@
       },
       {
         "ordinal": 2,
+        "name": "created_by",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "stock_items",
+            "name": "created_by"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
         "name": "name",
         "type_info": "Text",
         "origin": {
@@ -37,7 +48,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "category",
         "type_info": "Text",
         "origin": {
@@ -48,7 +59,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "quantity",
         "type_info": "Float8",
         "origin": {
@@ -59,7 +70,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "unit",
         "type_info": "Text",
         "origin": {
@@ -70,7 +81,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "reorder_threshold",
         "type_info": "Float8",
         "origin": {
@@ -81,20 +92,19 @@
         }
       },
       {
-        "ordinal": 7,
-        "name": "created_at",
-        "type_info": "Timestamptz",
+        "ordinal": 8,
+        "name": "expires_on",
+        "type_info": "Date",
         "origin": {
           "Table": {
             "table": "stock_items",
-            "name": "created_at"
+            "name": "expires_on"
           }
         }
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
         "Uuid"
       ]
     },
@@ -102,12 +112,13 @@
       false,
       false,
       false,
+      false,
       true,
       false,
       false,
       true,
-      false
+      true
     ]
   },
-  "hash": "a19ba9a2256dac5f67df3c9989e2bff9e9872b42cafbb6257d6e0ea8f1f5237b"
+  "hash": "93fb8298ab69701b53705b6675d15bf0513dd81bfd9bc5b38065765e2d2a28a8"
 }
