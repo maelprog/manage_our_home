@@ -158,11 +158,17 @@ async fn refill_recurring_reminders(pool: &PgPool) -> anyhow::Result<()> {
 /// concurrently (#321): up to [`MAX_CONCURRENT_REMINDERS`] notifications
 /// at once, and up to [`MAX_CONCURRENT_DEVICES`] devices of each, every
 /// device keeping `push::client`'s own timeout. A push service that hangs
-/// holds back its own member's reminder only, and the reading of the next
-/// ones goes on meanwhile. A notification that cannot be seen through (a
-/// database read or write failing) is logged and left pending for the next
-/// pass, without stopping the others; the pass then reports how many there
-/// were.
+/// holds back its own member's reminder, and the reading of the next ones
+/// goes on meanwhile — while fewer than [`MAX_CONCURRENT_REMINDERS`]
+/// reminders hang. Once that many do, no other is pushed until one of them
+/// answers or times out, and the reading stops too as soon as the channel
+/// between both sides is full: `MAX_CONCURRENT_REMINDERS + 1` reminders
+/// read and waiting (its bound plus the reading side's own slot, per
+/// `futures::channel::mpsc::channel`).
+///
+/// A notification that cannot be seen through (a database read or write
+/// failing) is logged and left pending for the next pass, without stopping
+/// the others; the pass then reports how many there were.
 pub async fn send_due_notifications<F, Fut, P, PFut>(
     pool: &PgPool,
     send: F,
