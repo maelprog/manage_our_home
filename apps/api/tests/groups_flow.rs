@@ -1112,3 +1112,57 @@ async fn expired_invitation_answers_gone(db: PgPool) {
     .unwrap();
     assert_eq!(members, 0);
 }
+
+/// #364: the link the invitation email carries — not the token the creation
+/// response returns — joins the group.
+#[sqlx::test]
+async fn the_invitation_email_carries_a_link_that_joins_the_group(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "mail-owner@example.test", "owner-password1").await;
+    let guest_cookie =
+        register_verify_login(&router, &db, "mail-guest@example.test", "guest-password1").await;
+    let create = call(
+        &router,
+        Method::POST,
+        "/groups",
+        Some(&owner_cookie),
+        Some(serde_json::json!({"name": "Foyer"})),
+    )
+    .await;
+    let group_id = json_body(create).await["id"].as_str().unwrap().to_string();
+    let invite = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/invitations"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"invited_email": "mail-guest@example.test"})),
+    )
+    .await;
+    assert_status(&invite, StatusCode::CREATED);
+
+    let token = common::mailed_token(
+        &outbox,
+        "mail-guest@example.test",
+        "http://localhost:5173/groups/invitations/",
+    );
+    let accept = call(
+        &router,
+        Method::POST,
+        &format!("/groups/invitations/{token}/accept"),
+        Some(&guest_cookie),
+        None,
+    )
+    .await;
+    assert_status(&accept, StatusCode::OK);
+    let members: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM group_members m JOIN users u ON u.id = m.user_id
+         WHERE m.group_id = $1::uuid AND u.email = $2",
+    )
+    .bind(&group_id)
+    .bind("mail-guest@example.test")
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(members, 1);
+}
