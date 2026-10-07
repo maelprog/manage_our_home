@@ -1,4 +1,4 @@
-import { expect, Page, test } from "@playwright/test";
+import { BrowserContext, expect, Page, test } from "@playwright/test";
 import { fetchVerificationToken } from "../lib/db";
 
 // Issue #225 — the member's live sessions (/account/sessions): see them,
@@ -18,6 +18,19 @@ async function login(page: Page, email: string): Promise<void> {
   await page.getByRole("textbox", { name: "Mot de passe" }).fill(PASSWORD);
   await page.getByRole("button", { name: "Se connecter" }).click();
   await expect(page).toHaveURL("/");
+}
+
+/**
+ * The session cookies the browser still holds: `session_id`, or
+ * `__Host-session_id` under SECURE_COOKIES. The removal apps/api sends
+ * (`Max-Age=0`) drops the cookie from the jar once apps/web relays it.
+ * Logged out server-side yet still holding the cookie is what this catches
+ * (#368): the redirect to /login alone does not tell.
+ */
+async function sessionCookies(context: BrowserContext): Promise<string[]> {
+  return (await context.cookies())
+    .filter((c) => /(^|-)session_id$/.test(c.name))
+    .map((c) => c.name);
 }
 
 /** Register + verify + login a fresh user on the given page; returns the email. */
@@ -40,6 +53,7 @@ async function registerAndLogin(page: Page, prefix: string): Promise<string> {
 test.describe("Account — active sessions (#225)", () => {
   test("lists this session and another, ends the other, then ends them all", async ({
     page,
+    context,
     browser,
   }) => {
     const email = await registerAndLogin(page, "sessions");
@@ -74,13 +88,41 @@ test.describe("Account — active sessions (#225)", () => {
     await login(other, email);
     await page.reload();
     await expect(rows).toHaveCount(2);
+    expect(await sessionCookies(context)).toHaveLength(1);
     await page.getByRole("button", { name: "Déconnecter toutes les sessions" }).click();
     await expect(page).toHaveURL(/\/login$/);
+    // apps/api's removal of the cookie reached the browser (#368).
+    expect(await sessionCookies(context)).toEqual([]);
     await page.goto("/account");
     await expect(page).toHaveURL(/\/login$/);
     await other.goto("/account");
     await expect(other).toHaveURL(/\/login$/);
 
     await elsewhere.close();
+  });
+
+  test("ending this very session clears its cookie in the browser (#368)", async ({
+    page,
+    context,
+  }) => {
+    await registerAndLogin(page, "sessions-self");
+    await page.goto("/account/sessions");
+    const current = page.locator("li.list-row", { hasText: "Cette session" });
+    await expect(current).toHaveCount(1);
+    const id = await current.getAttribute("data-session");
+    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(await sessionCookies(context)).toHaveLength(1);
+
+    // The page offers no button for this session, but a request can name
+    // it: the form the other rows carry, posted from this page.
+    await page.evaluate((sessionId) => {
+      const form = document.createElement("form");
+      form.method = "post";
+      form.action = `/account/sessions/${sessionId}/revoke`;
+      document.body.appendChild(form);
+      form.submit();
+    }, id);
+    await expect(page).toHaveURL(/\/login$/);
+    expect(await sessionCookies(context)).toEqual([]);
   });
 });
