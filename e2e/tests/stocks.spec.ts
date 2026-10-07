@@ -1,4 +1,5 @@
 import { expect, Page, test } from "@playwright/test";
+import { parisDay } from "../lib/dates";
 import { fetchVerificationToken } from "../lib/db";
 
 // Front epic #4 — Stocks (issue #19) + follow-up #39: every user journey the
@@ -59,6 +60,14 @@ interface ItemOpts {
   unit: string;
   threshold?: string;
   category?: string;
+  /** `YYYY-MM-DD`, as an `<input type="date">` takes it. */
+  expiresOn?: string;
+}
+
+/** `YYYY-MM-DD` → the `DD/MM/YYYY` the pages print. */
+function frDate(iso: string): string {
+  const [y, m, d] = iso.split("-");
+  return `${d}/${m}/${y}`;
 }
 
 /** Fill and submit /stocks/new; asserts the redirect + notice. */
@@ -69,6 +78,7 @@ async function createItem(page: Page, opts: ItemOpts): Promise<void> {
   await page.getByLabel("Unité").fill(opts.unit);
   if (opts.category) await page.getByLabel("Catégorie").fill(opts.category);
   if (opts.threshold !== undefined) await page.getByLabel("Seuil de réappro").fill(opts.threshold);
+  if (opts.expiresOn !== undefined) await page.getByLabel("Date de péremption").fill(opts.expiresOn);
   await page.getByRole("button", { name: "Ajouter l'article" }).click();
   await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
   await expect(page.getByText("Article créé.")).toBeVisible();
@@ -130,6 +140,66 @@ test.describe("Stocks — list & create", () => {
     await createGroup(page, "Famille 404");
     await page.goto("/stocks/00000000-0000-4000-8000-000000000000");
     await expect(page.getByRole("heading", { name: "Article introuvable" })).toBeVisible();
+  });
+});
+
+// #401: one expiry date per article (the nearest). Dates are built in
+// Europe/Paris (`lib/dates.ts`), the day the app judges "today" against.
+test.describe("Stocks — expiry date", () => {
+  test("the list shows each date with a worded status and can put the soonest first", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-stexpiry", "Expiry User");
+    await createGroup(page, "Famille Fraîcheur");
+    const yesterday = parisDay(-1);
+    const inTwoDays = parisDay(2);
+    const inAMonth = parisDay(30);
+    await createItem(page, { name: "Yaourt", quantity: "4", unit: "pot", expiresOn: yesterday });
+    await createItem(page, { name: "Lait", quantity: "1", unit: "L", expiresOn: inTwoDays });
+    await createItem(page, { name: "Riz", quantity: "2", unit: "kg", expiresOn: inAMonth });
+    await createItem(page, { name: "Sel", quantity: "1", unit: "kg" });
+
+    await page.goto("/stocks");
+    const row = (name: string) => page.locator("li", { hasText: name });
+    await expect(row("Yaourt").getByText("Périmé")).toBeVisible();
+    await expect(row("Yaourt")).toContainText(`péremption le ${frDate(yesterday)}`);
+    await expect(row("Lait").getByText("À consommer bientôt")).toBeVisible();
+    await expect(row("Lait")).toContainText(`péremption le ${frDate(inTwoDays)}`);
+    await expect(row("Riz")).toContainText(`péremption le ${frDate(inAMonth)}`);
+    await expect(row("Riz").locator(".badge")).toHaveCount(0);
+    await expect(row("Sel")).not.toContainText("péremption");
+
+    const names = page.locator("ul.list li strong");
+    await expect(names).toHaveText(["Lait", "Riz", "Sel", "Yaourt"]);
+    await page.getByRole("link", { name: "À consommer en premier" }).click();
+    await expect(page).toHaveURL(/\/stocks\?order=expiry$/);
+    await expect(names).toHaveText(["Yaourt", "Lait", "Riz", "Sel"]);
+    await page.getByRole("link", { name: "Trier par nom" }).click();
+    await expect(names).toHaveText(["Lait", "Riz", "Sel", "Yaourt"]);
+  });
+
+  test("a full edit changes the date, then clears it", async ({ page }) => {
+    await registerAndLogin(page, "e2e-stexpedit", "Expiry Editor");
+    await createGroup(page, "Famille Dates");
+    await createItem(page, { name: "Crème", quantity: "1", unit: "pot", expiresOn: parisDay(20) });
+
+    await openItemDetail(page, "Crème");
+    await expect(page.getByText(`Péremption : ${frDate(parisDay(20))}`)).toBeVisible();
+    await expect(page.getByText("À consommer bientôt")).toHaveCount(0);
+
+    await page.getByRole("link", { name: "Modifier l'article" }).click();
+    await expect(page.getByLabel("Date de péremption")).toHaveValue(parisDay(20));
+    await page.getByLabel("Date de péremption").fill(parisDay(0));
+    await page.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(page.getByText("Article mis à jour.")).toBeVisible();
+    await expect(page.getByText(`Péremption : ${frDate(parisDay(0))}`)).toBeVisible();
+    await expect(page.getByText("À consommer bientôt")).toBeVisible();
+
+    await page.getByRole("link", { name: "Modifier l'article" }).click();
+    await page.getByLabel("Date de péremption").fill("");
+    await page.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(page.getByText("Article mis à jour.")).toBeVisible();
+    await expect(page.getByText("Aucune date de péremption.")).toBeVisible();
   });
 });
 
