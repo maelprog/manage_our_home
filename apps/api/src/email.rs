@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use anyhow::Result;
 use lettre::message::Mailbox;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
@@ -34,15 +36,62 @@ pub fn smtp_mode(allow_insecure: Option<&str>, port: Option<&str>) -> Result<Smt
     Ok(SmtpMode::Insecure { port })
 }
 
+/// An email as [`EmailSender::send`] was asked to send it, before any
+/// transfer encoding: what an [`Outbox`] keeps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SentEmail {
+    pub to: String,
+    pub subject: String,
+    pub body: String,
+}
+
+/// The emails an [`EmailSender::in_memory`] sender was given, in order.
+/// Lets the flow tests read the link a handler actually mailed (#364)
+/// rather than forge a token of their own.
+#[derive(Clone, Default)]
+pub struct Outbox(Arc<Mutex<Vec<SentEmail>>>);
+
+impl Outbox {
+    pub fn emails(&self) -> Vec<SentEmail> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn push(&self, email: SentEmail) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).push(email);
+    }
+}
+
+#[derive(Clone)]
+enum Transport {
+    Smtp(AsyncSmtpTransport<Tokio1Executor>),
+    Memory(Outbox),
+}
+
 #[derive(Clone)]
 pub struct EmailSender {
-    transport: AsyncSmtpTransport<Tokio1Executor>,
+    transport: Transport,
     from: Mailbox,
 }
 
 impl EmailSender {
     pub fn new(transport: AsyncSmtpTransport<Tokio1Executor>, from: Mailbox) -> Self {
-        Self { transport, from }
+        Self {
+            transport: Transport::Smtp(transport),
+            from,
+        }
+    }
+
+    /// A sender that keeps every email in the returned [`Outbox`] instead of
+    /// handing it to a relay. For tests only: `main.rs` never builds one.
+    pub fn in_memory(from: Mailbox) -> (Self, Outbox) {
+        let outbox = Outbox::default();
+        (
+            Self {
+                transport: Transport::Memory(outbox.clone()),
+                from,
+            },
+            outbox,
+        )
     }
 
     pub async fn send(&self, to: &str, subject: &str, body: String) -> Result<()> {
@@ -50,9 +99,18 @@ impl EmailSender {
             .from(self.from.clone())
             .to(to.parse()?)
             .subject(subject)
-            .body(body)?;
+            .body(body.clone())?;
         // Never log recipient/body content — PII (AC #3 analog for email).
-        self.transport.send(message).await?;
+        match &self.transport {
+            Transport::Smtp(transport) => {
+                transport.send(message).await?;
+            }
+            Transport::Memory(outbox) => outbox.push(SentEmail {
+                to: to.to_owned(),
+                subject: subject.to_owned(),
+                body,
+            }),
+        }
         Ok(())
     }
 
@@ -86,6 +144,59 @@ impl EmailSender {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sender() -> (EmailSender, Outbox) {
+        EmailSender::in_memory("noreply@example.test".parse().unwrap())
+    }
+
+    #[tokio::test]
+    async fn in_memory_keeps_each_email_as_given_in_order() {
+        let (email, outbox) = sender();
+        email
+            .send("a@example.test", "Premier", "lien : https://x/é?t=1".into())
+            .await
+            .unwrap();
+        email
+            .send("b@example.test", "Second", "corps".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            outbox.emails(),
+            vec![
+                SentEmail {
+                    to: "a@example.test".into(),
+                    subject: "Premier".into(),
+                    body: "lien : https://x/é?t=1".into(),
+                },
+                SentEmail {
+                    to: "b@example.test".into(),
+                    subject: "Second".into(),
+                    body: "corps".into(),
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn in_memory_refuses_what_smtp_would_refuse_and_keeps_nothing() {
+        let (email, outbox) = sender();
+        assert!(email
+            .send("not an address", "Sujet", "corps".into())
+            .await
+            .is_err());
+        assert!(outbox.emails().is_empty());
+    }
+
+    #[tokio::test]
+    async fn clones_share_one_outbox() {
+        let (email, outbox) = sender();
+        email
+            .clone()
+            .send("a@example.test", "Sujet", "corps".into())
+            .await
+            .unwrap();
+        assert_eq!(outbox.clone().emails().len(), 1);
+    }
 
     #[test]
     fn defaults_to_relay() {

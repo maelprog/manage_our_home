@@ -1,5 +1,5 @@
 use lettre::{AsyncSmtpTransport, Tokio1Executor};
-use manage_our_home::email::EmailSender;
+use manage_our_home::email::{EmailSender, Outbox};
 use manage_our_home::{build_router, AppState};
 use oauth2::basic::BasicClient;
 use oauth2::{AuthUrl, ClientId, ClientSecret, RedirectUrl, TokenUrl};
@@ -70,6 +70,48 @@ pub fn test_state(db: PgPool) -> AppState {
             .unwrap(),
         )),
     }
+}
+
+/// [`test_state`] whose emails land in the returned [`Outbox`] instead of
+/// an unreachable relay, for the tests that follow the link a handler
+/// mailed (#364).
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (see note on test_state above).
+#[allow(dead_code)]
+pub fn test_router_with_outbox(db: PgPool) -> (axum::Router, Outbox) {
+    let mut state = test_state(db);
+    let (email, outbox) = EmailSender::in_memory("noreply@example.test".parse().unwrap());
+    state.email = email;
+    (build_router(state), outbox)
+}
+
+/// The token of the link `prefix…` in the latest email sent to `to`: the
+/// characters after `prefix` up to the first one a token cannot hold
+/// (unpadded base64url). Panics when no email went to `to`, or when its
+/// body has no such link.
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (see note on test_state above).
+#[allow(dead_code)]
+pub fn mailed_token(outbox: &Outbox, to: &str, prefix: &str) -> String {
+    let emails = outbox.emails();
+    let email = emails
+        .iter()
+        .rev()
+        .find(|e| e.to == to)
+        .unwrap_or_else(|| panic!("no email sent to {to}"));
+    let (_, rest) = email
+        .body
+        .split_once(prefix)
+        .unwrap_or_else(|| panic!("no link {prefix}… in the email to {to}: {}", email.body));
+    let token: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    assert!(
+        !token.is_empty(),
+        "empty token after {prefix} in the email to {to}"
+    );
+    token
 }
 
 /// A P-256 scalar for the tests' VAPID identity (unpadded base64url).

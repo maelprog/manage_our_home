@@ -2737,10 +2737,21 @@ async fn a_verification_token_is_refused_once_used_expired_or_malformed(db: PgPo
 }
 
 /// Same for a reset: a token in the former UUID format, or malformed, is
-/// unknown (404) and changes nothing.
+/// unknown (404) and changes nothing — not the password, not the
+/// outstanding reset request, not the sessions.
 #[sqlx::test]
 async fn a_malformed_reset_token_is_unknown(db: PgPool) {
     let router = test_router(db.clone());
+    let cookie =
+        register_verify_login(&router, &db, "malformed@example.test", "initial-password").await;
+    call(
+        &router,
+        Method::POST,
+        "/auth/password/forgot",
+        None,
+        Some(serde_json::json!({"email": "malformed@example.test"})),
+    )
+    .await;
     for token in [Uuid::new_v4().to_string(), "A".repeat(44), "A".repeat(43)] {
         let reset = call(
             &router,
@@ -2752,4 +2763,183 @@ async fn a_malformed_reset_token_is_unknown(db: PgPool) {
         .await;
         assert_status(&reset, StatusCode::NOT_FOUND);
     }
+
+    let outstanding: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM password_reset_tokens t JOIN users u ON u.id = t.user_id
+         WHERE u.email = $1",
+    )
+    .bind("malformed@example.test")
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(outstanding, 1, "the reset request must still be pending");
+    assert!(
+        is_logged_in(&router, &cookie).await,
+        "no session may be revoked"
+    );
+    let old_password = call(
+        &router,
+        Method::POST,
+        "/auth/login",
+        None,
+        Some(
+            serde_json::json!({"email": "malformed@example.test", "password": "initial-password"}),
+        ),
+    )
+    .await;
+    assert_status(&old_password, StatusCode::OK);
+}
+
+/// #364: the link the registration email carries — not a token the test
+/// made up — verifies the account and unlocks the login.
+#[sqlx::test]
+async fn the_registration_email_carries_a_link_that_verifies_the_account(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db);
+    let register = call(
+        &router,
+        Method::POST,
+        "/auth/register",
+        None,
+        Some(serde_json::json!({
+            "email": "mailed@example.test",
+            "password": "mailed-password1",
+            "display_name": "Mailed",
+            "declares_minimum_age": true, "accepts_terms": true
+        })),
+    )
+    .await;
+    assert_status(&register, StatusCode::CREATED);
+
+    let token = common::mailed_token(
+        &outbox,
+        "mailed@example.test",
+        "http://localhost:5173/verify-email?token=",
+    );
+    let verify = call(
+        &router,
+        Method::GET,
+        &format!("/auth/verify-email?token={token}"),
+        None,
+        None,
+    )
+    .await;
+    assert_status(&verify, StatusCode::OK);
+    let login = call(
+        &router,
+        Method::POST,
+        "/auth/login",
+        None,
+        Some(serde_json::json!({"email": "mailed@example.test", "password": "mailed-password1"})),
+    )
+    .await;
+    assert_status(&login, StatusCode::OK);
+}
+
+/// #364: the link the forgotten-password email carries resets the password.
+#[sqlx::test]
+async fn the_reset_email_carries_a_link_that_resets_the_password(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    register_verify_login(&router, &db, "reset-mail@example.test", "initial-password").await;
+    let forgot = call(
+        &router,
+        Method::POST,
+        "/auth/password/forgot",
+        None,
+        Some(serde_json::json!({"email": "reset-mail@example.test"})),
+    )
+    .await;
+    assert_status(&forgot, StatusCode::OK);
+
+    let token = common::mailed_token(
+        &outbox,
+        "reset-mail@example.test",
+        "http://localhost:5173/reset-password#token=",
+    );
+    let reset = call(
+        &router,
+        Method::POST,
+        "/auth/password/reset",
+        None,
+        Some(serde_json::json!({"token": token, "new_password": "brand-new-password"})),
+    )
+    .await;
+    assert_status(&reset, StatusCode::OK);
+    let login = call(
+        &router,
+        Method::POST,
+        "/auth/login",
+        None,
+        Some(serde_json::json!({"email": "reset-mail@example.test", "password": "brand-new-password"})),
+    )
+    .await;
+    assert_status(&login, StatusCode::OK);
+}
+
+/// #364: adding a password to an account that had none mails a
+/// verification link; that link verifies the account, and the password
+/// then opens a session.
+#[sqlx::test]
+async fn the_set_password_email_carries_a_link_that_verifies_the_account(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    // Google-only: the oauth identity goes in the same transaction, since
+    // `users` refuses a row with no auth method (deferred trigger).
+    #[allow(clippy::disallowed_methods)]
+    let mut tx = db.begin().await.unwrap();
+    let user_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO users (email, display_name, email_verified, age_declared_at,
+                            terms_accepted_version, terms_accepted_at)
+         VALUES ($1, 'Google Only', true, now(), $2, now())
+         RETURNING id",
+    )
+    .bind("no-password@example.test")
+    .bind(terms_in_force_now())
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO oauth_identities (user_id, provider, provider_user_id)
+         VALUES ($1, 'google', 'google-subject-364')",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let cookie = common::insert_session(&db, user_id).await;
+
+    let set = call(
+        &router,
+        Method::POST,
+        "/settings/password/set",
+        Some(&cookie),
+        Some(serde_json::json!({"new_password": "first-password1"})),
+    )
+    .await;
+    assert_status(&set, StatusCode::OK);
+
+    let token = common::mailed_token(
+        &outbox,
+        "no-password@example.test",
+        "http://localhost:5173/verify-email?token=",
+    );
+    let verify = call(
+        &router,
+        Method::GET,
+        &format!("/auth/verify-email?token={token}"),
+        None,
+        None,
+    )
+    .await;
+    assert_status(&verify, StatusCode::OK);
+    let login = call(
+        &router,
+        Method::POST,
+        "/auth/login",
+        None,
+        Some(
+            serde_json::json!({"email": "no-password@example.test", "password": "first-password1"}),
+        ),
+    )
+    .await;
+    assert_status(&login, StatusCode::OK);
 }
