@@ -2835,6 +2835,59 @@ async fn the_registration_email_carries_a_link_that_verifies_the_account(db: PgP
     assert_status(&login, StatusCode::OK);
 }
 
+/// #364: the link a resent verification email carries verifies the
+/// account. The registration token is aged past the resend cooldown.
+#[sqlx::test]
+async fn the_resent_verification_email_carries_a_link_that_verifies_the_account(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    call(
+        &router,
+        Method::POST,
+        "/auth/register",
+        None,
+        Some(serde_json::json!({
+            "email": "resent@example.test",
+            "password": "resent-password1",
+            "display_name": "Resent",
+            "declares_minimum_age": true, "accepts_terms": true
+        })),
+    )
+    .await;
+    sqlx::query(
+        "UPDATE email_verification_tokens SET created_at = now() - interval '10 minutes'
+         WHERE user_id = (SELECT id FROM users WHERE email = $1)",
+    )
+    .bind("resent@example.test")
+    .execute(&db)
+    .await
+    .unwrap();
+    let resend = call(
+        &router,
+        Method::POST,
+        "/auth/verify-email/resend",
+        None,
+        Some(serde_json::json!({"email": "resent@example.test"})),
+    )
+    .await;
+    assert_status(&resend, StatusCode::OK);
+    assert_eq!(outbox.emails().len(), 2, "registration, then the resend");
+
+    let token = common::mailed_token(
+        &outbox,
+        "resent@example.test",
+        "http://localhost:8080/auth/verify-email?token=",
+    );
+    let verify = call(
+        &router,
+        Method::GET,
+        &format!("/auth/verify-email?token={token}"),
+        None,
+        None,
+    )
+    .await;
+    assert_status(&verify, StatusCode::OK);
+}
+
 /// #364: the link the forgotten-password email carries resets the password.
 #[sqlx::test]
 async fn the_reset_email_carries_a_link_that_resets_the_password(db: PgPool) {
