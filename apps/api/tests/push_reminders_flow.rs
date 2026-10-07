@@ -864,8 +864,9 @@ async fn a_members_devices_are_pushed_at_once(db: PgPool) {
 /// Counts the pushes in flight, and the most seen at once. Each push is
 /// held until `bound` of them were in flight together — or, should the
 /// pass never let that many through, for a few seconds: none answers
-/// before the bound is reached, so `most` reaches it exactly however
-/// slowly the pass gets its pushes started.
+/// before the bound is reached, so `most` reaches it however slowly the
+/// pass gets its pushes started. It is then held a little longer, for a
+/// pass that would start more than `bound` to be seen doing so.
 struct InFlight {
     bound: usize,
     now: AtomicUsize,
@@ -890,6 +891,7 @@ impl InFlight {
         {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
+        tokio::time::sleep(Duration::from_millis(200)).await;
         self.now.fetch_sub(1, Ordering::SeqCst);
         PushOutcome::Delivered
     }
