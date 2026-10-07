@@ -505,9 +505,11 @@ mod tests {
         )
     }
 
-    /// A 307 replays the POST, `client_secret` and code included, at the
-    /// `Location`: the exchange must stop at the redirect (#389). The
-    /// second peer would answer a valid token, so following it would succeed.
+    /// A 307 replays the POST body, authorization code and PKCE verifier
+    /// included, at the `Location`, and the `client_secret` too when the
+    /// redirect stays on the same host: the exchange must stop at the
+    /// redirect (#389). The second peer would answer a valid token, so
+    /// following it would succeed.
     #[tokio::test]
     async fn the_code_exchange_follows_no_redirect() {
         let (target, target_hits, target_task) =

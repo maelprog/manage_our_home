@@ -5,8 +5,10 @@
 //! indefinitely (#371).
 //!
 //! The OAuth calls get a client of their own that follows no redirect: on a
-//! 307 or 308, reqwest replays a POST as is, `client_secret` and
-//! authorization code included, at whatever the `Location` names (#389).
+//! 307 or 308, reqwest replays the code exchange's POST body, authorization
+//! code and PKCE verifier included, at whatever the `Location` names, and
+//! the `client_secret` too when the redirect stays on the same host (it
+//! drops the `Authorization` header on a change of host or port) (#389).
 //! The `oauth2` crate's documentation advises the same for the code
 //! exchange. The iCal import keeps following redirects, feeds move.
 
