@@ -1,5 +1,5 @@
 //! `/stocks/new` — manually add a stock item (name, category, quantity, unit,
-//! reorder threshold). The empty-name / empty-unit / negative-quantity /
+//! reorder threshold, expiry date). The empty-name / empty-unit / negative-quantity /
 //! negative-threshold rules are pre-validated by the shared
 //! `validate_item_form` (inline error, no round trip); the backend's matching
 //! 400s are mapped defensively. Any member may create, so 403 isn't reachable
@@ -9,6 +9,7 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
+use chrono::NaiveDate;
 use manage_our_home_shared::dto::stocks::CreateStockItemRequest;
 use manage_our_home_shared::validation::stocks::{validate_item_form, ItemFormError};
 
@@ -31,6 +32,9 @@ pub struct ItemForm {
     pub unit: String,
     #[serde(default)]
     pub reorder_threshold: String,
+    /// `YYYY-MM-DD` from the `<input type="date">`, empty for no date.
+    #[serde(default)]
+    pub expires_on: String,
 }
 
 /// French copy for a stock-item form error code.
@@ -40,6 +44,7 @@ pub(crate) fn error_message(code: &str) -> &'static str {
         "unit_required" => "L'unité est obligatoire.",
         "quantity_must_be_non_negative" => "La quantité ne peut pas être négative.",
         "reorder_threshold_must_be_non_negative" => "Le seuil de réappro ne peut pas être négatif.",
+        "invalid_expires_on" => "La date de péremption n'est pas une date valide.",
         "unavailable" => "Service momentanément indisponible, merci de réessayer.",
         _ => "Une erreur est survenue, merci de réessayer.",
     }
@@ -78,6 +83,21 @@ pub(crate) fn parse_threshold(s: &str) -> Result<Option<f64>, ()> {
     }
 }
 
+/// Parses the optional expiry date: empty → `Ok(None)` (no date), a
+/// `YYYY-MM-DD` date → `Ok(Some)`, anything else → `Err(())`. Unlike the
+/// budget date, a bad value is refused rather than dropped: silently losing
+/// an expiry date would hide the very warning the field exists for.
+pub(crate) fn parse_expires_on(s: &str) -> Result<Option<NaiveDate>, ()> {
+    let t = s.trim();
+    if t.is_empty() {
+        Ok(None)
+    } else {
+        NaiveDate::parse_from_str(t, "%Y-%m-%d")
+            .map(Some)
+            .map_err(|_| ())
+    }
+}
+
 /// Renders the item form fields (shared markup, pre-filled). Used by create
 /// (empty defaults) and edit (existing values).
 pub(crate) fn form_fields(
@@ -86,6 +106,7 @@ pub(crate) fn form_fields(
     quantity: &str,
     unit: &str,
     reorder_threshold: &str,
+    expires_on: &str,
 ) -> String {
     format!(
         r#"<label>Nom <input type="text" name="name" required value="{name}"/></label>
@@ -95,12 +116,17 @@ pub(crate) fn form_fields(
 <label>Seuil de réappro
 <input type="number" name="reorder_threshold" step="any" min="0" value="{reorder_threshold}" placeholder="Optionnel — laisser vide pour aucun seuil"/>
 <span class="muted">En dessous ou à ce niveau, l'article est signalé « stock bas ». Partagé au niveau de la famille.</span>
+</label>
+<label>Date de péremption
+<input type="date" name="expires_on" value="{expires_on}"/>
+<span class="muted">Optionnel. Si l'article en a plusieurs, la plus proche.</span>
 </label>"#,
         name = html_escape(name),
         category = html_escape(category),
         quantity = html_escape(quantity),
         unit = html_escape(unit),
         reorder_threshold = html_escape(reorder_threshold),
+        expires_on = html_escape(expires_on),
     )
 }
 
@@ -114,6 +140,7 @@ fn page(header: &str, form: &ItemForm, error: Option<&str>) -> String {
         &form.quantity,
         &form.unit,
         &form.reorder_threshold,
+        &form.expires_on,
     );
     let body = format!(
         r#"<h1>Nouvel article</h1>
@@ -162,6 +189,9 @@ pub async fn post(
     let Ok(reorder_threshold) = parse_threshold(&form.reorder_threshold) else {
         return render_error("reorder_threshold_must_be_non_negative");
     };
+    let Ok(expires_on) = parse_expires_on(&form.expires_on) else {
+        return render_error("invalid_expires_on");
+    };
 
     if let Err(e) = validate_item_form(&form.name, &form.unit, quantity, reorder_threshold) {
         return render_error(form_error_code(e));
@@ -177,6 +207,7 @@ pub async fn post(
         quantity,
         unit: form.unit.trim().to_string(),
         reorder_threshold,
+        expires_on,
     };
 
     let cookie = stocks_cookie(&headers);

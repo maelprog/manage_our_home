@@ -1,8 +1,8 @@
 //! `/stocks/:id/edit` — full edit of a stock item (name/category/quantity/
-//! unit/threshold). Same permission bar as delete (`can_modify`): a
+//! unit/threshold/expiry date). Same permission bar as delete (`can_modify`): a
 //! non-permitted user never sees the form (GET → forbidden page), and the
 //! backend 403 is mapped to `?error=forbidden` on the detail page defensively.
-//! A blank category or threshold *clears* it (sent as `Some(None)` per the
+//! A blank category, threshold or expiry date *clears* it (sent as `Some(None)` per the
 //! backend's double-`Option` PATCH contract). Success (200) → PRG
 //! `/stocks/:id?notice=item_updated`.
 
@@ -19,7 +19,8 @@ use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
 use super::new::{
-    error_message, form_error_code, form_fields, parse_quantity, parse_threshold, ItemForm,
+    error_message, form_error_code, form_fields, parse_expires_on, parse_quantity, parse_threshold,
+    ItemForm,
 };
 use super::{
     can_modify, family_context, forbidden_page, item_not_found_page, service_unavailable_page,
@@ -36,6 +37,7 @@ fn page(header: &str, id: Uuid, name: &str, form: &ItemForm, error: Option<&str>
         &form.quantity,
         &form.unit,
         &form.reorder_threshold,
+        &form.expires_on,
     );
     let body = format!(
         r#"<h1>Modifier — {name_esc}</h1>
@@ -106,6 +108,10 @@ pub async fn get(
             .reorder_threshold
             .map(super::fmt_num)
             .unwrap_or_default(),
+        expires_on: item
+            .expires_on
+            .map(|d| d.format("%Y-%m-%d").to_string())
+            .unwrap_or_default(),
     };
     Html(page(&fam.header, item_id, &item.name, &form, None)).into_response()
 }
@@ -139,6 +145,9 @@ pub async fn post(
     let Ok(reorder_threshold) = parse_threshold(&form.reorder_threshold) else {
         return render_error("reorder_threshold_must_be_non_negative");
     };
+    let Ok(expires_on) = parse_expires_on(&form.expires_on) else {
+        return render_error("invalid_expires_on");
+    };
     if let Err(e) = validate_item_form(&form.name, &form.unit, quantity, reorder_threshold) {
         return render_error(form_error_code(e));
     }
@@ -155,6 +164,7 @@ pub async fn post(
         quantity: Some(quantity),
         unit: Some(form.unit.trim().to_string()),
         reorder_threshold: Some(reorder_threshold),
+        expires_on: Some(expires_on),
     };
 
     let cookie = stocks_cookie(&headers);
