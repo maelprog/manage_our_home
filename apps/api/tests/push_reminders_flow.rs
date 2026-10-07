@@ -975,27 +975,48 @@ async fn refuse_writes_to(db: &PgPool, ids: &[Uuid]) {
 
 /// A notification the database fails on stops none of the others (#321):
 /// they are sent, it stays pending for the next pass, and the pass reports
-/// how many failed. One fails on each side of the pass: on the reading
-/// side, retiring a deactivated member's; on the pushing side, marking a
-/// mailed one sent. Both are written first, to be read before the others.
-#[sqlx::test]
-async fn a_database_error_on_one_reminder_stops_none_of_the_others(db: PgPool) {
-    let gone = insert_user(&db, "gone@example.test", "email").await;
-    let unretired = due_reminder(&db, gone).await;
-    sqlx::query("UPDATE users SET deactivated_at = now() WHERE id = $1")
-        .bind(gone)
-        .execute(&db)
-        .await
-        .unwrap();
-    let mailed = insert_user(&db, "mailed@example.test", "email").await;
-    let unsettled = due_reminder(&db, mailed).await;
-    let mut others = Vec::new();
-    for i in 0..3 {
-        let member = insert_user(&db, &format!("other{i}@example.test"), "push").await;
-        add_device(&db, member, &format!("{FCM}-{i}")).await;
-        others.push(due_reminder(&db, member).await);
-    }
-    refuse_writes_to(&db, &[unretired, unsettled]).await;
+/// how many failed. Two fail on each side of the pass: on the reading side,
+/// retiring a deactivated member's; on the pushing side, marking a mailed
+/// one sent. With two on each side, a pass that stopped at its first
+/// failure on either side would report fewer, whatever order the due
+/// notifications are read in (their query has no `ORDER BY`): the
+/// scenario runs with the failing ones written first, then last.
+async fn a_database_error_on_one_reminder_stops_none_of_the_others(
+    db: PgPool,
+    failing_written_first: bool,
+) {
+    let others = |db: PgPool| async move {
+        let mut others = Vec::new();
+        for i in 0..3 {
+            let member = insert_user(&db, &format!("other{i}@example.test"), "push").await;
+            add_device(&db, member, &format!("{FCM}-{i}")).await;
+            others.push(due_reminder(&db, member).await);
+        }
+        others
+    };
+    let failing = |db: PgPool| async move {
+        let mut failing = Vec::new();
+        for i in 0..2 {
+            let gone = insert_user(&db, &format!("gone{i}@example.test"), "email").await;
+            failing.push(due_reminder(&db, gone).await);
+            sqlx::query("UPDATE users SET deactivated_at = now() WHERE id = $1")
+                .bind(gone)
+                .execute(&db)
+                .await
+                .unwrap();
+            let mailed = insert_user(&db, &format!("mailed{i}@example.test"), "email").await;
+            failing.push(due_reminder(&db, mailed).await);
+        }
+        failing
+    };
+    let (failing, others) = if failing_written_first {
+        let failing = failing(db.clone()).await;
+        (failing, others(db.clone()).await)
+    } else {
+        let others = others(db.clone()).await;
+        (failing(db.clone()).await, others)
+    };
+    refuse_writes_to(&db, &failing).await;
 
     let send = |_to: String, _subject: String, _body: String| async { Ok::<(), anyhow::Error>(()) };
     let send_push = |_endpoint: String, _ttl: i64| async { PushOutcome::Delivered };
@@ -1005,19 +1026,24 @@ async fn a_database_error_on_one_reminder_stops_none_of_the_others(db: PgPool) {
 
     assert_eq!(
         error.to_string(),
-        "2 due reminder(s) could not be sent or settled, see above"
+        "4 due reminder(s) could not be sent or settled, see above"
     );
-    assert_eq!(
-        notification(&db, unretired).await,
-        ("pending".into(), 0, None)
-    );
-    assert_eq!(
-        notification(&db, unsettled).await,
-        ("pending".into(), 0, None)
-    );
+    for id in failing {
+        assert_eq!(notification(&db, id).await, ("pending".into(), 0, None));
+    }
     for id in others {
         assert_eq!(notification(&db, id).await, ("sent".into(), 0, None));
     }
+}
+
+#[sqlx::test]
+async fn a_database_error_stops_no_other_reminder_failing_ones_written_first(db: PgPool) {
+    a_database_error_on_one_reminder_stops_none_of_the_others(db, true).await;
+}
+
+#[sqlx::test]
+async fn a_database_error_stops_no_other_reminder_failing_ones_written_last(db: PgPool) {
+    a_database_error_on_one_reminder_stops_none_of_the_others(db, false).await;
 }
 
 // -- RGPD -----------------------------------------------------------------------
