@@ -69,6 +69,10 @@ pub fn test_state(db: PgPool) -> AppState {
             )
             .unwrap(),
         )),
+        // Nothing listens there: no test reaches the real Open Food Facts.
+        // The scan tests that need an answer point this at a local stub.
+        openfoodfacts_base_url: "http://127.0.0.1:1".into(),
+        off_throttle: std::sync::Arc::new(manage_our_home::stocks::openfoodfacts::Throttle::new()),
     }
 }
 

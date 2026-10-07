@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, group_id, name, category, quantity, unit, reorder_threshold, expires_on, created_at\n               FROM stock_items WHERE group_id = $1 AND created_by = $2 ORDER BY created_at",
+  "query": "SELECT id, group_id, name, category, quantity, unit, reorder_threshold, expires_on, barcode, created_at\n               FROM stock_items WHERE group_id = $1 AND created_by = $2 ORDER BY created_at",
   "describe": {
     "columns": [
       {
@@ -93,6 +93,17 @@
       },
       {
         "ordinal": 8,
+        "name": "barcode",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stock_items",
+            "name": "barcode"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -118,8 +129,9 @@
       false,
       true,
       true,
+      true,
       false
     ]
   },
-  "hash": "47e6221c1524304e5d1d37ee93c0ce3f2e8759eb2ef164a33cbafc1085029405"
+  "hash": "c2a89eeaea2f67526cedce4b54b685585044ff72d29a266b4548cc8f3dc1b6c4"
 }

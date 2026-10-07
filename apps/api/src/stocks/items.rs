@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::groups::require_role;
+use crate::stocks::barcode::normalize;
 use crate::stocks::can_modify;
 use crate::AppState;
 
@@ -27,7 +28,25 @@ pub struct CreateStockItemRequest {
     /// The nearest expiry date among the article's units (#401: one date per
     /// article, no per-batch tracking). Absent or `null` → no date.
     pub expires_on: Option<NaiveDate>,
+    /// EAN/UPC code (#402), normalized before it is stored
+    /// (`barcode::normalize`). Absent, `null` or blank → none; anything
+    /// else that is not a code is a 400 `invalid_barcode`.
+    pub barcode: Option<String>,
 }
+
+/// The code to store for a creation request: `Ok(None)` for no code, the
+/// normalized code, or `invalid_barcode`.
+fn barcode_to_store(barcode: Option<&str>) -> AppResult<Option<String>> {
+    match barcode.map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(raw) => normalize(raw)
+            .map(Some)
+            .ok_or_else(|| AppError::BadRequest("invalid_barcode".into())),
+    }
+}
+
+/// The unique index of 0026: one article per code in a family.
+const BARCODE_KEY: &str = "stock_items_group_barcode_key";
 
 fn default_unit() -> String {
     "unit".to_string()
@@ -96,6 +115,8 @@ pub struct StockItemResponse {
     /// Derived on read from `expires_on` against today in Europe/Paris — the
     /// fixed v1 display timezone — never stored, like `low_stock` (#401).
     pub expiry_status: ExpiryStatus,
+    /// EAN/UPC code the article was added under (#402), if any.
+    pub barcode: Option<String>,
 }
 
 struct StockItemRow {
@@ -108,6 +129,7 @@ struct StockItemRow {
     unit: String,
     reorder_threshold: Option<f64>,
     expires_on: Option<NaiveDate>,
+    barcode: Option<String>,
 }
 
 /// "Today" for the expiry status: the civil day in Europe/Paris, the fixed v1
@@ -136,6 +158,7 @@ impl StockItemResponse {
             low_stock,
             expires_on: r.expires_on,
             expiry_status: expiry_status(r.expires_on, today),
+            barcode: r.barcode,
         }
     }
 }
@@ -168,6 +191,7 @@ pub async fn create_stock_item(
         return Err(AppError::BadRequest("unit_required".into()));
     }
     validate_request(body.quantity, body.reorder_threshold)?;
+    let barcode = barcode_to_store(body.barcode.as_deref())?;
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
@@ -175,9 +199,9 @@ pub async fn create_stock_item(
     let item = sqlx::query_as!(
         StockItemRow,
         r#"
-        INSERT INTO stock_items (group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        RETURNING id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on
+        INSERT INTO stock_items (group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on, barcode)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on, barcode
         "#,
         group_id,
         auth.user_id,
@@ -187,9 +211,16 @@ pub async fn create_stock_item(
         body.unit,
         body.reorder_threshold,
         body.expires_on,
+        barcode,
     )
     .fetch_one(&mut *tx)
-    .await?;
+    .await
+    .map_err(|e| match &e {
+        sqlx::Error::Database(db) if db.constraint() == Some(BARCODE_KEY) => {
+            AppError::Conflict("barcode_already_in_stock".into())
+        }
+        _ => AppError::from(e),
+    })?;
     tx.commit().await?;
 
     Ok((
@@ -208,7 +239,7 @@ pub async fn get_stock_item(
 
     let item = sqlx::query_as!(
         StockItemRow,
-        r#"SELECT id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on
+        r#"SELECT id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on, barcode
            FROM stock_items WHERE id = $1 AND group_id = $2"#,
         item_id,
         group_id,
@@ -261,7 +292,7 @@ pub async fn list_stock_items(
     let rows = sqlx::query_as!(
         StockItemRow,
         r#"
-        SELECT id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on
+        SELECT id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on, barcode
         FROM stock_items
         WHERE group_id = $1
         -- With $2 false the CASE is NULL on every row and only `name` orders.
@@ -350,7 +381,7 @@ pub async fn update_stock_item(
             expires_on = $8,
             updated_at = now()
         WHERE id = $1 AND group_id = $2
-        RETURNING id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on
+        RETURNING id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on, barcode
         "#,
         item_id,
         group_id,
@@ -511,11 +542,41 @@ mod tests {
             unit: "pot".into(),
             reorder_threshold: None,
             expires_on,
+            barcode: None,
         }
     }
 
     fn day(y: i32, m: u32, d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn no_barcode_or_a_blank_one_stores_none() {
+        for absent in [None, Some(""), Some("   ")] {
+            assert_eq!(barcode_to_store(absent).unwrap(), None, "{absent:?}");
+        }
+    }
+
+    #[test]
+    fn a_barcode_is_stored_in_its_normalized_form() {
+        assert_eq!(
+            barcode_to_store(Some(" 036000291452 ")).unwrap().as_deref(),
+            Some("0036000291452")
+        );
+        assert_eq!(
+            barcode_to_store(Some("3017620422003")).unwrap().as_deref(),
+            Some("3017620422003")
+        );
+    }
+
+    #[test]
+    fn a_barcode_that_is_not_a_code_is_a_bad_request() {
+        for bad in ["abc", "3017620422004", "12345"] {
+            assert!(
+                matches!(barcode_to_store(Some(bad)), Err(AppError::BadRequest(ref c)) if c == "invalid_barcode"),
+                "{bad:?} must be refused"
+            );
+        }
     }
 
     #[test]

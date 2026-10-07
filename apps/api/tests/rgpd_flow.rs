@@ -975,6 +975,10 @@ async fn export_accounts_for_every_table(db: PgPool) {
             "sync bookkeeping (feed UID -> event); the events are exported themselves",
         ),
         ("_sqlx_migrations", "schema history, no personal data"),
+        (
+            "off_products",
+            "Open Food Facts' public product records, keyed by code: no family, no account",
+        ),
     ];
 
     let mut tables: Vec<String> = sqlx::query_scalar(

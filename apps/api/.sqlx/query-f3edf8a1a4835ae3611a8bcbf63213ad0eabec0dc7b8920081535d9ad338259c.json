@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on\n        FROM stock_items\n        WHERE group_id = $1\n        -- With $2 false the CASE is NULL on every row and only `name` orders.\n        ORDER BY CASE WHEN $2 THEN expires_on END ASC NULLS LAST, name\n        ",
+  "query": "\n        INSERT INTO stock_items (group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on, barcode)\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)\n        RETURNING id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on, barcode\n        ",
   "describe": {
     "columns": [
       {
@@ -101,12 +101,30 @@
             "name": "expires_on"
           }
         }
+      },
+      {
+        "ordinal": 9,
+        "name": "barcode",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stock_items",
+            "name": "barcode"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
-        "Bool"
+        "Uuid",
+        "Text",
+        "Text",
+        "Float8",
+        "Text",
+        "Float8",
+        "Date",
+        "Text"
       ]
     },
     "nullable": [
@@ -118,8 +136,9 @@
       false,
       false,
       true,
+      true,
       true
     ]
   },
-  "hash": "87546b8ea283eabf37a22ec81c17128d03b6ff4dfe0535cdd73bf906cc611ccb"
+  "hash": "f3edf8a1a4835ae3611a8bcbf63213ad0eabec0dc7b8920081535d9ad338259c"
 }

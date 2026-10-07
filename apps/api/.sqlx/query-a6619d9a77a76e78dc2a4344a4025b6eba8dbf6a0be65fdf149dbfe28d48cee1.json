@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        UPDATE stock_items SET\n            name = COALESCE($3, name),\n            category = $4,\n            quantity = $5,\n            unit = COALESCE($6, unit),\n            reorder_threshold = $7,\n            expires_on = $8,\n            updated_at = now()\n        WHERE id = $1 AND group_id = $2\n        RETURNING id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on\n        ",
+  "query": "\n        UPDATE stock_items SET\n            name = COALESCE($3, name),\n            category = $4,\n            quantity = $5,\n            unit = COALESCE($6, unit),\n            reorder_threshold = $7,\n            expires_on = $8,\n            updated_at = now()\n        WHERE id = $1 AND group_id = $2\n        RETURNING id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on, barcode\n        ",
   "describe": {
     "columns": [
       {
@@ -101,6 +101,17 @@
             "name": "expires_on"
           }
         }
+      },
+      {
+        "ordinal": 9,
+        "name": "barcode",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stock_items",
+            "name": "barcode"
+          }
+        }
       }
     ],
     "parameters": {
@@ -124,8 +135,9 @@
       false,
       false,
       true,
+      true,
       true
     ]
   },
-  "hash": "f045f97bb4dc084ef80631fd6d766123739dfb15abc282d9490a2d0ccb2b1ee7"
+  "hash": "a6619d9a77a76e78dc2a4344a4025b6eba8dbf6a0be65fdf149dbfe28d48cee1"
 }

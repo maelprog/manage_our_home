@@ -27,6 +27,10 @@ pub struct CreateStockItemRequest {
     /// Nearest expiry date (#401). Omitted when `None` (no date).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_on: Option<NaiveDate>,
+    /// EAN/UPC code (#402), as the scan returned it. Omitted when `None`.
+    /// One article per code in a family: a second one is a 409.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub barcode: Option<String>,
 }
 
 /// Serde's blanket `Option<T>` impl collapses an explicit `null` and a missing
@@ -98,6 +102,9 @@ pub struct StockItemResponse {
     /// Derived by the backend on read from `expires_on` and today in
     /// Europe/Paris (`validation::stocks::expiry_status`), never stored.
     pub expiry_status: ExpiryStatus,
+    /// EAN/UPC code (#402), `None` for an article entered without one.
+    #[serde(default)]
+    pub barcode: Option<String>,
 }
 
 /// `GET /groups/:id/stock-items?sort=…` values. Absent → name order; the
@@ -108,4 +115,59 @@ pub const SORT_BY_EXPIRY: &str = "expires_on";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StockItemList {
     pub items: Vec<StockItemResponse>,
+}
+
+/// `POST /groups/:id/stock-items/scan` request body (#402): the string a
+/// barcode decoder produced, or the code typed by hand, as is. Every check
+/// on it happens in apps/api (`stocks::barcode`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanRequest {
+    pub raw: String,
+}
+
+/// What Open Food Facts knows of a scanned product, kept only when the
+/// record has a name (a nameless record reads as unknown).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScannedProduct {
+    pub name: String,
+    /// The pack size as Open Food Facts writes it (`"400 g"`), free text.
+    pub quantity: Option<String>,
+    /// Open Food Facts' category tags (`"en:spreads"`).
+    #[serde(default)]
+    pub categories_tags: Vec<String>,
+}
+
+/// Where a pre-filled expiry date comes from. Reserved for #403 (`gs1`, a
+/// date carried by a GS1 code) and #404 (`category`, a default per product
+/// category); never set by #402.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpiresOnSource {
+    Gs1,
+    Category,
+}
+
+/// `POST /groups/:id/stock-items/scan` response body (#402). The scan
+/// writes nothing to the family's stock: it reads the code, the stock and
+/// the product record, and the page decides what to offer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanResult {
+    /// The code in its stored form (a UPC-A becomes its EAN-13). A string
+    /// that is not a code gets a 422 instead of a `ScanResult`, so this is
+    /// always `Some` in a 200.
+    pub code: Option<String>,
+    /// A store's weighing label (GS1 prefixes 20–29): Open Food Facts was
+    /// not asked, and `product` is `None`.
+    pub weighed: bool,
+    /// `None` when the product is unknown, its record has no name, the code
+    /// is a weighing label, an article of the family already carries the
+    /// code, or Open Food Facts could not be reached.
+    pub product: Option<ScannedProduct>,
+    /// The family's article that already carries this code: a rescan adds
+    /// to it rather than creating a second one.
+    pub existing_item_id: Option<Uuid>,
+    /// Reserved for #403 and #404, always `None` here.
+    pub expires_on: Option<NaiveDate>,
+    /// Reserved for #403 and #404, always `None` here.
+    pub expires_on_source: Option<ExpiresOnSource>,
 }

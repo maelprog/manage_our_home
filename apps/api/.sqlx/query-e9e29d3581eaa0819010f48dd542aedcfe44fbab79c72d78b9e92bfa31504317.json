@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT name, quantity, categories_tags, fetched_at FROM off_products WHERE code = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "off_products",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "quantity",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "off_products",
+            "name": "quantity"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "categories_tags",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "off_products",
+            "name": "categories_tags"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "fetched_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "off_products",
+            "name": "fetched_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "e9e29d3581eaa0819010f48dd542aedcfe44fbab79c72d78b9e92bfa31504317"
+}

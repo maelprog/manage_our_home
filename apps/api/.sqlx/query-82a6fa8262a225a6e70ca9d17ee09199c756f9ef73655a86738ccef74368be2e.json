@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO off_products (code, name, quantity, categories_tags, fetched_at)\n                VALUES ($1, $2, $3, $4, now())\n                ON CONFLICT (code) DO UPDATE SET\n                    name = EXCLUDED.name,\n                    quantity = EXCLUDED.quantity,\n                    categories_tags = EXCLUDED.categories_tags,\n                    fetched_at = EXCLUDED.fetched_at\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "82a6fa8262a225a6e70ca9d17ee09199c756f9ef73655a86738ccef74368be2e"
+}

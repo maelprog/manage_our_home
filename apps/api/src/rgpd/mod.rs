@@ -292,7 +292,7 @@ pub async fn export_account(
         }));
 
         let stocks = sqlx::query!(
-            r#"SELECT id, group_id, name, category, quantity, unit, reorder_threshold, expires_on, created_at
+            r#"SELECT id, group_id, name, category, quantity, unit, reorder_threshold, expires_on, barcode, created_at
                FROM stock_items WHERE group_id = $1 AND created_by = $2 ORDER BY created_at"#,
             group_id,
             auth.user_id
@@ -303,7 +303,7 @@ pub async fn export_account(
             json!({
                 "id": s.id, "group_id": s.group_id, "name": s.name, "category": s.category,
                 "quantity": s.quantity, "unit": s.unit, "reorder_threshold": s.reorder_threshold,
-                "expires_on": s.expires_on, "created_at": s.created_at,
+                "expires_on": s.expires_on, "barcode": s.barcode, "created_at": s.created_at,
             })
         }));
 
