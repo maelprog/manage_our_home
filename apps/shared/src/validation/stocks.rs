@@ -8,7 +8,7 @@
 //! so the form rejects before a round trip.
 //!
 //! `is_low_stock` mirrors the backend's derived `low_stock` flag
-//! (`StockItemResponse::from`): an item is low when it has a reorder threshold
+//! (`StockItemResponse::from_row`): an item is low when it has a reorder threshold
 //! and its quantity is at or below it. The flag is derived on read, never
 //! stored — this is the single source of truth the list/detail badge uses.
 //!
