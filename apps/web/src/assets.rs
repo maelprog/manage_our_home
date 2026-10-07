@@ -131,9 +131,9 @@ fn stylesheet_url(css: &str) -> String {
 
 /// `/assets/<stem>-<digest>.<ext>`, the digest taken over `content` — the
 /// naming rule of every file served out of the binary, the stylesheet's
-/// and, since #325, the scripts'.
-fn fingerprinted_url(stem: &str, ext: &str, content: &str) -> String {
-    let digest = Sha256::digest(content.as_bytes());
+/// and, since #325, the scripts', and since #402 the vendored files'.
+fn fingerprinted_url(stem: &str, ext: &str, content: impl AsRef<[u8]>) -> String {
+    let digest = Sha256::digest(content.as_ref());
     let mut hex = String::with_capacity(FINGERPRINT_LEN);
     for byte in digest.iter().take(FINGERPRINT_LEN.div_ceil(2)) {
         use std::fmt::Write;
@@ -185,20 +185,24 @@ async fn serve_stylesheet() -> Response {
 /// - `ResetPassword`, `MessagerieLive`, `Push`: one page each, loaded where
 ///   their inline `<script>` used to sit, so they still run once the markup
 ///   before them is parsed.
+/// - `StockScan`: the "Scanner" button of `/stocks/new` (#402), loaded
+///   after the markup it enhances, like the three above.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Script {
     Enhance,
     ResetPassword,
     MessagerieLive,
     Push,
+    StockScan,
 }
 
 impl Script {
-    pub const ALL: [Script; 4] = [
+    pub const ALL: [Script; 5] = [
         Script::Enhance,
         Script::ResetPassword,
         Script::MessagerieLive,
         Script::Push,
+        Script::StockScan,
     ];
 
     fn stem(self) -> &'static str {
@@ -207,6 +211,7 @@ impl Script {
             Script::ResetPassword => "reset-password",
             Script::MessagerieLive => "messagerie-live",
             Script::Push => "push",
+            Script::StockScan => "stock-scan",
         }
     }
 
@@ -217,6 +222,7 @@ impl Script {
             Script::ResetPassword => crate::routes::auth::reset_password::FRAGMENT_SCRIPT,
             Script::MessagerieLive => crate::routes::messagerie::thread::LIVE_SCRIPT,
             Script::Push => crate::routes::account::notifications::PUSH_SCRIPT,
+            Script::StockScan => crate::routes::stocks::new::SCAN_SCRIPT,
         }
     }
 
@@ -254,6 +260,78 @@ async fn serve_script(script: Script) -> Response {
         .into_response()
 }
 
+/// Third-party files apps/web serves out of its binary (#402), committed
+/// under `src/vendor/` (provenance and digests in `src/vendor/README.md`),
+/// named like everything else here by the digest of their bytes.
+///
+/// Unlike a `Script`, neither is loaded by a `<script>` tag of a page: the
+/// scan script (`Script::StockScan`) reads both URLs from the markup and
+/// fetches them only when the browser has no native `BarcodeDetector` able
+/// to read EAN-13.
+///
+/// - `BarcodePolyfill`: barcode-detector's ponyfill, a `BarcodeDetector`
+///   built on ZXing, exposed as `window.BarcodeDetectionAPI`.
+/// - `ZxingReaderWasm`: the WebAssembly reader it instantiates, served as
+///   `application/wasm`, which streaming compilation requires.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Vendored {
+    BarcodePolyfill,
+    ZxingReaderWasm,
+}
+
+impl Vendored {
+    pub const ALL: [Vendored; 2] = [Vendored::BarcodePolyfill, Vendored::ZxingReaderWasm];
+
+    fn stem_and_ext(self) -> (&'static str, &'static str) {
+        match self {
+            Vendored::BarcodePolyfill => ("barcode-detector", "js"),
+            Vendored::ZxingReaderWasm => ("zxing-reader", "wasm"),
+        }
+    }
+
+    /// What the file holds.
+    pub fn bytes(self) -> &'static [u8] {
+        match self {
+            Vendored::BarcodePolyfill => include_bytes!("vendor/barcode-detector/ponyfill.js"),
+            Vendored::ZxingReaderWasm => include_bytes!("vendor/zxing-wasm/zxing_reader.wasm"),
+        }
+    }
+
+    fn content_type(self) -> &'static str {
+        match self {
+            Vendored::BarcodePolyfill => "text/javascript; charset=utf-8",
+            Vendored::ZxingReaderWasm => "application/wasm",
+        }
+    }
+
+    /// The URL the file is served under, computed once per process.
+    pub fn href(self) -> &'static str {
+        static HREFS: LazyLock<Vec<String>> = LazyLock::new(|| {
+            Vendored::ALL
+                .iter()
+                .map(|v| {
+                    let (stem, ext) = v.stem_and_ext();
+                    fingerprinted_url(stem, ext, v.bytes())
+                })
+                .collect()
+        });
+        let at = Vendored::ALL
+            .iter()
+            .position(|v| *v == self)
+            .expect("Vendored::ALL lists every file");
+        &HREFS[at]
+    }
+}
+
+/// `GET <Vendored::href>` — the file, straight out of the binary.
+async fn serve_vendored(file: Vendored) -> Response {
+    (
+        [(CONTENT_TYPE, HeaderValue::from_static(file.content_type()))],
+        file.bytes(),
+    )
+        .into_response()
+}
+
 /// Resolve the directory `ServeDir` is rooted at. Split out from
 /// `router` so the fallback is testable without a filesystem.
 pub fn resolve_assets_dir(configured: Option<String>) -> PathBuf {
@@ -279,6 +357,9 @@ where
     let mut router = Router::new().route(stylesheet_href(), get(serve_stylesheet));
     for script in Script::ALL {
         router = router.route(script.href(), get(move || serve_script(script)));
+    }
+    for file in Vendored::ALL {
+        router = router.route(file.href(), get(move || serve_vendored(file)));
     }
     router
         .nest_service("/assets", ServeDir::new(dir))
@@ -594,6 +675,72 @@ mod tests {
         ] {
             assert_eq!(get(&path).await.status(), StatusCode::NOT_FOUND, "{path}");
         }
+    }
+
+    // -- the vendored files (#402) -----------------------------------------
+
+    #[tokio::test]
+    async fn serves_each_vendored_file_out_of_the_binary_byte_for_byte() {
+        for (file, content_type) in [
+            (Vendored::BarcodePolyfill, "text/javascript; charset=utf-8"),
+            (Vendored::ZxingReaderWasm, "application/wasm"),
+        ] {
+            let res = get(file.href()).await;
+            assert_eq!(res.status(), StatusCode::OK, "GET {}", file.href());
+            assert_eq!(
+                res.headers()
+                    .get(axum::http::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok()),
+                Some(content_type),
+                "{file:?}: under `nosniff` a script must be served as one, and \
+                 streaming compilation refuses a .wasm served as anything but \
+                 application/wasm"
+            );
+            assert_eq!(
+                res.headers()
+                    .get(axum::http::header::CACHE_CONTROL)
+                    .and_then(|v| v.to_str().ok()),
+                Some(CACHE_FOR_A_YEAR)
+            );
+            let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+                .await
+                .expect("a body");
+            assert_eq!(body.as_ref(), file.bytes(), "{file:?}");
+        }
+    }
+
+    #[test]
+    fn each_vendored_file_is_named_by_the_digest_of_its_bytes() {
+        assert_eq!(
+            Vendored::BarcodePolyfill.href(),
+            fingerprinted_url("barcode-detector", "js", Vendored::BarcodePolyfill.bytes())
+        );
+        assert_eq!(
+            Vendored::ZxingReaderWasm.href(),
+            fingerprinted_url("zxing-reader", "wasm", Vendored::ZxingReaderWasm.bytes())
+        );
+    }
+
+    #[test]
+    fn the_wasm_is_the_one_the_polyfill_was_built_for() {
+        // barcode-detector pins one zxing-wasm release and carries the
+        // SHA-256 of its reader (`ZXING_WASM_SHA256`). Upgrading one file
+        // without the other would hand the polyfill a module whose exports
+        // it does not expect: this fails first.
+        let digest = Sha256::digest(Vendored::ZxingReaderWasm.bytes());
+        let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+        let polyfill = std::str::from_utf8(Vendored::BarcodePolyfill.bytes()).expect("UTF-8");
+        assert!(polyfill.contains(&format!("`{hex}`")), "{hex}");
+    }
+
+    #[test]
+    fn the_polyfill_installs_no_global_barcode_detector() {
+        // The ponyfill build, not the polyfill one: it exposes its class on
+        // `BarcodeDetectionAPI` and leaves `window.BarcodeDetector` alone,
+        // so the scan script decides which one to use.
+        let polyfill = std::str::from_utf8(Vendored::BarcodePolyfill.bytes()).expect("UTF-8");
+        assert!(polyfill.starts_with("var BarcodeDetectionAPI="));
+        assert!(!polyfill.contains("globalThis).BarcodeDetector"));
     }
 
     /// Serve `path` off a throwaway directory, and hand back the status and

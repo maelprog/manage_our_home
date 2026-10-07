@@ -10,7 +10,9 @@
 //! is a file served under `/assets` by `crate::assets` (`assets::Script`),
 //! named by the digest of its content like the stylesheet, and the policy
 //! allows script files from the site's own origin and nothing inline at
-//! all — `script-src 'self'`.
+//! all — `script-src 'self'`. Since #402 it also allows WebAssembly to be
+//! compiled (`'wasm-unsafe-eval'`), for the stocks' barcode reader, and
+//! still no `eval`.
 //!
 //! That holds only as long as nobody writes an inline script again: behind
 //! Caddy it would silently not run, and nothing in the application's own
@@ -632,7 +634,12 @@ fn scripts_not_loaded_counts_tag_calls_in_production_code_only() {
                 mod tests {\n    fn t() { Script::Push.tag(); }\n}\n";
     assert_eq!(
         scripts_not_loaded(&[("src/page.rs".to_string(), page.to_string())]),
-        vec![Script::ResetPassword, Script::MessagerieLive, Script::Push]
+        vec![
+            Script::ResetPassword,
+            Script::MessagerieLive,
+            Script::Push,
+            Script::StockScan
+        ]
     );
     // A call commented out at the end of a line or inside a block comment
     // is no call either.
@@ -642,7 +649,12 @@ fn scripts_not_loaded_counts_tag_calls_in_production_code_only() {
                 let u = \"https://x\"; let v = Script::Push.tag();\n";
     assert_eq!(
         scripts_not_loaded(&[("src/page.rs".to_string(), page.to_string())]),
-        vec![Script::Enhance, Script::ResetPassword, Script::Push]
+        vec![
+            Script::Enhance,
+            Script::ResetPassword,
+            Script::Push,
+            Script::StockScan
+        ]
     );
     // `assets.rs` defines `tag` and calls nothing.
     let assets = "fn f() { Script::Push.tag() }\n";
@@ -652,10 +664,17 @@ fn scripts_not_loaded_counts_tag_calls_in_production_code_only() {
     );
 }
 
+/// Script files from the site, WebAssembly compilation for the scan's
+/// barcode reader (#402, `assets::Vendored::ZxingReaderWasm`), and nothing
+/// else: `'wasm-unsafe-eval'` allows `WebAssembly.compile`/`instantiate`
+/// only, where `'unsafe-eval'` would also let `eval` and `new Function` run.
 #[test]
 fn the_caddyfile_allows_script_files_from_the_site_and_nothing_inline() {
     let policy = caddy_csp(CADDYFILE).expect("infra/Caddyfile sets a Content-Security-Policy");
-    assert_eq!(directive(policy, "script-src"), Some(vec!["'self'"]));
+    assert_eq!(
+        directive(policy, "script-src"),
+        Some(vec!["'self'", "'wasm-unsafe-eval'"])
+    );
 }
 
 /// The reminder notifications' service worker (#306) is a script file,

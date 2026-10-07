@@ -81,6 +81,11 @@
 	#   directive below. `X-Content-Type-Options nosniff` is what keeps the
 	#   other same-origin responses (apps/api's JSON, the fonts) from running
 	#   as a script.
+	#   `'wasm-unsafe-eval'` (#402) lets a page compile WebAssembly, and
+	#   nothing else: no `eval`, no `new Function`, no inline script. The one
+	#   module is the barcode reader of the stocks' "Scanner" button
+	#   (zxing-wasm), served by apps/web under /assets like the scripts, for
+	#   the browsers with no native `BarcodeDetector` (all of iOS).
 	# - `worker-src 'self'`: the service worker of the reminder
 	#   notifications (#306), `/sw.js`, served by apps/web. Written out
 	#   rather than left to fall back on `script-src`, so that a tighter
@@ -114,7 +119,7 @@
 	# `Referer` — `/verify-email?token=…` carries its token in the query
 	# string.
 	header {
-		Content-Security-Policy "default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; report-uri /api/csp-report; report-to csp"
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; report-uri /api/csp-report; report-to csp"
 		Reporting-Endpoints `csp="/api/csp-report"`
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options nosniff
