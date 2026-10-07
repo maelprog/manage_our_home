@@ -1,7 +1,9 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
+use chrono::{Duration, Utc};
 use common::{assert_status, call, json_body, set_cookie, test_router};
+use manage_our_home_shared::validation::auth::paris_day;
 use sqlx::PgPool;
 
 async fn register_verify_login(
@@ -323,6 +325,238 @@ async fn update_can_clear_reorder_threshold(db: PgPool) {
     );
 }
 
+/// AC (#401): an item carries an optional expiry date (one per article, the
+/// nearest), readable on create/get/list, changed by a full edit, left alone
+/// by a quantity-only adjust, cleared by an explicit `null`, and refused when
+/// it is not a calendar date.
+#[sqlx::test]
+async fn expiry_date_is_set_changed_kept_and_cleared(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "stock-expiry@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let items = format!("/groups/{group_id}/stock-items");
+
+    let undated = call(
+        &router,
+        Method::POST,
+        &items,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"name": "Sel", "quantity": 1.0})),
+    )
+    .await;
+    assert_status(&undated, StatusCode::CREATED);
+    assert_eq!(
+        json_body(undated).await["expires_on"],
+        serde_json::Value::Null,
+        "an item created without a date has none"
+    );
+
+    let create = call(
+        &router,
+        Method::POST,
+        &items,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"name": "Yaourt", "quantity": 4.0, "expires_on": "2026-10-09"})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let created = json_body(create).await;
+    assert_eq!(created["expires_on"], "2026-10-09");
+    let item_id = created["id"].as_str().unwrap().to_string();
+    let item = format!("{items}/{item_id}");
+
+    let get = call(&router, Method::GET, &item, Some(&owner_cookie), None).await;
+    assert_status(&get, StatusCode::OK);
+    assert_eq!(json_body(get).await["expires_on"], "2026-10-09");
+
+    let list = call(&router, Method::GET, &items, Some(&owner_cookie), None).await;
+    let listed = json_body(list).await;
+    let yaourt = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["name"] == "Yaourt")
+        .unwrap();
+    assert_eq!(yaourt["expires_on"], "2026-10-09");
+
+    let changed = call(
+        &router,
+        Method::PATCH,
+        &item,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"expires_on": "2026-10-12"})),
+    )
+    .await;
+    assert_status(&changed, StatusCode::OK);
+    assert_eq!(json_body(changed).await["expires_on"], "2026-10-12");
+
+    let adjusted = call(
+        &router,
+        Method::PATCH,
+        &item,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"quantity": 3.0})),
+    )
+    .await;
+    assert_status(&adjusted, StatusCode::OK);
+    assert_eq!(
+        json_body(adjusted).await["expires_on"],
+        "2026-10-12",
+        "a quantity-only adjust must leave the expiry date untouched"
+    );
+
+    let not_a_date = call(
+        &router,
+        Method::PATCH,
+        &item,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"expires_on": "2026-02-30"})),
+    )
+    .await;
+    assert!(
+        not_a_date.status().is_client_error(),
+        "an impossible date must be refused, got {}",
+        not_a_date.status()
+    );
+
+    let cleared = call(
+        &router,
+        Method::PATCH,
+        &item,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"expires_on": null})),
+    )
+    .await;
+    assert_status(&cleared, StatusCode::OK);
+    assert_eq!(
+        json_body(cleared).await["expires_on"],
+        serde_json::Value::Null,
+        "explicit null must clear the expiry date"
+    );
+}
+
+/// AC (#401): every read derives `expiry_status` from the date and today in
+/// Europe/Paris, and `?sort=expires_on` lists soonest first, undated items
+/// last, name breaking ties. Any other `sort` value is a 400.
+#[sqlx::test]
+async fn expiry_status_is_derived_and_sort_puts_undated_last(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "stock-expiry-sort@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let items = format!("/groups/{group_id}/stock-items");
+    let today = paris_day(Utc::now());
+    let day = |offset: i64| (today + Duration::days(offset)).to_string();
+
+    let mut yaourt_id = String::new();
+    for (name, expires_on) in [
+        ("Abricot", None),
+        ("Lait", Some(day(2))),
+        ("Yaourt", Some(day(-1))),
+        ("Riz", Some(day(30))),
+        ("Beurre", Some(day(2))),
+        ("Crème", Some(day(0))),
+    ] {
+        let res = call(
+            &router,
+            Method::POST,
+            &items,
+            Some(&cookie),
+            Some(serde_json::json!({"name": name, "quantity": 1.0, "expires_on": expires_on})),
+        )
+        .await;
+        assert_status(&res, StatusCode::CREATED);
+        let body = json_body(res).await;
+        if name == "Yaourt" {
+            assert_eq!(
+                body["expiry_status"], "expired",
+                "create returns the status"
+            );
+            yaourt_id = body["id"].as_str().unwrap().to_string();
+        }
+    }
+
+    let get = call(
+        &router,
+        Method::GET,
+        &format!("{items}/{yaourt_id}"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(json_body(get).await["expiry_status"], "expired");
+
+    let listing = |query: &'static str| {
+        let router = router.clone();
+        let cookie = cookie.clone();
+        let path = format!("{items}{query}");
+        async move {
+            let res = call(&router, Method::GET, &path, Some(&cookie), None).await;
+            assert_status(&res, StatusCode::OK);
+            json_body(res).await["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|i| {
+                    (
+                        i["name"].as_str().unwrap().to_string(),
+                        i["expiry_status"].as_str().unwrap().to_string(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        }
+    };
+    let pairs = |v: &[(&str, &str)]| {
+        v.iter()
+            .map(|(n, s)| (n.to_string(), s.to_string()))
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        listing("").await,
+        pairs(&[
+            ("Abricot", "unknown"),
+            ("Beurre", "soon"),
+            ("Crème", "soon"),
+            ("Lait", "soon"),
+            ("Riz", "ok"),
+            ("Yaourt", "expired"),
+        ]),
+        "no sort: name order, each with its derived status"
+    );
+    assert_eq!(
+        listing("?sort=expires_on").await,
+        pairs(&[
+            ("Yaourt", "expired"),
+            ("Crème", "soon"),
+            ("Beurre", "soon"),
+            ("Lait", "soon"),
+            ("Riz", "ok"),
+            ("Abricot", "unknown"),
+        ]),
+        "sort=expires_on: soonest first, name breaks ties, undated last"
+    );
+
+    for bad in ["?sort=expiry", "?sort=name", "?sort="] {
+        let res = call(
+            &router,
+            Method::GET,
+            &format!("{items}{bad}"),
+            Some(&cookie),
+            None,
+        )
+        .await;
+        assert_status(&res, StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(res).await["error"], "invalid_sort", "{bad}");
+    }
+}
+
 /// AC (#39): a regular member may adjust the **quantity** of an item another
 /// member created (shared inventory), but a full-record edit (touching any
 /// other field) and delete stay behind the creator/admin/owner bar.
@@ -410,6 +644,23 @@ async fn member_can_adjust_quantity_but_not_edit_or_delete(db: PgPool) {
     )
     .await;
     assert_status(&member_edit_bundled, StatusCode::FORBIDDEN);
+
+    // The expiry date (#401) is part of the full record: setting it on
+    // another member's item is forbidden too, and so is clearing it.
+    for body in [
+        serde_json::json!({"expires_on": "2026-10-09"}),
+        serde_json::json!({"expires_on": null}),
+    ] {
+        let member_expiry = call(
+            &router,
+            Method::PATCH,
+            &format!("/groups/{group_id}/stock-items/{item_id}"),
+            Some(&member_cookie),
+            Some(body),
+        )
+        .await;
+        assert_status(&member_expiry, StatusCode::FORBIDDEN);
+    }
 
     // Delete by the same member → forbidden.
     let member_delete = call(

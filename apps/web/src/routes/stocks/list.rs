@@ -1,25 +1,42 @@
 //! `/stocks` — the active family's inventory, sorted by name (backend order),
 //! with a low-stock badge derived on read. `?low_stock=1` filters to low-stock
-//! items only (delegated to the backend's `?low_stock=true` param). PRG
-//! banners after create/update/adjust/delete.
+//! items only (delegated to the backend's `?low_stock=true` param).
+//! `?sort=expires_on` lists "à consommer en premier" — soonest expiry date
+//! first, undated items last, then by name (#401), delegated to the backend's
+//! identical `sort` param; the two parameters combine. Each row carries its
+//! expiry date and, when expired or close, a worded badge rendered from the
+//! backend's `expiry_status`. PRG banners after create/update/adjust/delete.
 
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use leptos::prelude::*;
-use manage_our_home_shared::dto::stocks::{StockItemList, StockItemResponse};
+use manage_our_home_shared::dto::stocks::{StockItemList, StockItemResponse, SORT_BY_EXPIRY};
 use manage_our_home_shared::validation::stocks::is_low_stock;
 
 use crate::app::{shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
-use super::{family_context, fmt_num, service_unavailable_page, stocks_cookie};
+use super::{
+    expiry_badge, family_context, fmt_date, fmt_num, service_unavailable_page, stocks_cookie,
+};
 
 #[derive(serde::Deserialize)]
 pub struct ListQuery {
     low_stock: Option<String>,
+    sort: Option<String>,
     notice: Option<String>,
+}
+
+/// `/stocks` with the given filter and order, so each toggle keeps the other.
+fn list_href(only_low: bool, by_expiry: bool) -> &'static str {
+    match (only_low, by_expiry) {
+        (false, false) => "/stocks",
+        (true, false) => "/stocks?low_stock=1",
+        (false, true) => "/stocks?sort=expires_on",
+        (true, true) => "/stocks?low_stock=1&sort=expires_on",
+    }
 }
 
 fn notice_text(code: &str) -> Option<&'static str> {
@@ -43,10 +60,18 @@ pub async fn get(
     };
 
     let only_low = matches!(query.low_stock.as_deref(), Some("1") | Some("true"));
-    let path = if only_low {
-        format!("/groups/{}/stock-items?low_stock=true", fam.gid)
-    } else {
+    let by_expiry = query.sort.as_deref() == Some(SORT_BY_EXPIRY);
+    let mut params = Vec::new();
+    if only_low {
+        params.push("low_stock=true".to_string());
+    }
+    if by_expiry {
+        params.push(format!("sort={SORT_BY_EXPIRY}"));
+    }
+    let path = if params.is_empty() {
         format!("/groups/{}/stock-items", fam.gid)
+    } else {
+        format!("/groups/{}/stock-items?{}", fam.gid, params.join("&"))
     };
 
     let cookie = stocks_cookie(&headers);
@@ -77,7 +102,16 @@ pub async fn get(
         .map(|item| {
             let href = format!("/stocks/{}", item.id);
             let low = is_low_stock(item.quantity, item.reorder_threshold);
-            let qty = format!("{} {}", fmt_num(item.quantity), item.unit);
+            let qty = match item.expires_on {
+                Some(d) => format!(
+                    "{} {} · péremption le {}",
+                    fmt_num(item.quantity),
+                    item.unit,
+                    fmt_date(d)
+                ),
+                None => format!("{} {}", fmt_num(item.quantity), item.unit),
+            };
+            let expiry = expiry_badge(item.expiry_status);
             let category = item.category.clone().filter(|c| !c.is_empty());
             view! {
                 <li class="list-row">
@@ -88,6 +122,10 @@ pub async fn get(
                             " "
                             <span class="badge warn">"Stock bas"</span>
                         })}
+                        {expiry.map(|(class, text)| view! {
+                            " "
+                            <span class=class>{text}</span>
+                        })}
                     </span>
                     <span class="muted">{qty}</span>
                 </li>
@@ -95,10 +133,17 @@ pub async fn get(
         })
         .collect::<Vec<_>>();
 
-    let (filter_link, filter_label) = if only_low {
-        ("/stocks", "Voir tout le stock")
+    let filter_link = list_href(!only_low, by_expiry);
+    let filter_label = if only_low {
+        "Voir tout le stock"
     } else {
-        ("/stocks?low_stock=1", "Voir uniquement le stock bas")
+        "Voir uniquement le stock bas"
+    };
+    let order_link = list_href(only_low, !by_expiry);
+    let order_label = if by_expiry {
+        "Trier par nom"
+    } else {
+        "À consommer en premier"
     };
 
     let empty_text = if only_low {
@@ -112,6 +157,7 @@ pub async fn get(
             <h1>"Stocks"</h1>
             <span class="actions">
                 <a class="btn secondary" href=filter_link>{filter_label}</a>
+                <a class="btn secondary" href=order_link>{order_label}</a>
                 <a class="btn" href="/stocks/new">"Nouvel article"</a>
             </span>
         </div>

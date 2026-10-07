@@ -1,4 +1,4 @@
-//! `/stocks/:id` — item detail with the low-stock state, plus the
+//! `/stocks/:id` — item detail with the low-stock and expiry states, plus the
 //! quantity-adjust action and the delete action; full edit lives in `edit.rs`.
 //!
 //! Permission bar: the quantity-adjust form renders for **any** family member
@@ -26,8 +26,8 @@ use crate::state::{api_request_auth, AppState};
 
 use super::new::parse_quantity;
 use super::{
-    can_modify, family_context, fmt_num, forbidden_page, item_not_found_page,
-    service_unavailable_page, stocks_cookie,
+    can_modify, expiry_badge, family_context, fmt_date, fmt_num, forbidden_page,
+    item_not_found_page, service_unavailable_page, stocks_cookie,
 };
 
 #[derive(serde::Deserialize)]
@@ -127,6 +127,18 @@ fn page(
         ),
         None => r#"<p class="muted">Aucun seuil de réappro défini.</p>"#.to_string(),
     };
+    let expiry_html = match item.expires_on {
+        Some(d) => {
+            let badge = expiry_badge(item.expiry_status)
+                .map(|(class, text)| format!(r#" <span class="{class}">{text}</span>"#))
+                .unwrap_or_default();
+            format!(
+                "<p><strong>Péremption :</strong> {}{badge}</p>",
+                fmt_date(d)
+            )
+        }
+        None => r#"<p class="muted">Aucune date de péremption.</p>"#.to_string(),
+    };
 
     // Quantity adjustment is open to any family member (shared inventory);
     // the full-record edit and delete stay behind the `can_edit` bar.
@@ -159,6 +171,7 @@ fn page(
 {low_html}
 {category_html}
 {threshold_html}
+{expiry_html}
 {controls_html}
 <div class="links"><a href="/stocks">Retour aux stocks</a></div>"#,
         name = html_escape(&item.name),

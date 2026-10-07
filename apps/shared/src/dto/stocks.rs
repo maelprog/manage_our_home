@@ -5,8 +5,11 @@
 //! ignores extras on deserialize). The backend is *not* modified by this epic
 //! — these mirror it, they don't replace it.
 
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use crate::validation::stocks::ExpiryStatus;
 
 /// `POST /groups/:id/stock-items` request body. Mirrors
 /// `CreateStockItemRequest`. `category`/`reorder_threshold` are omitted from
@@ -21,6 +24,9 @@ pub struct CreateStockItemRequest {
     pub unit: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reorder_threshold: Option<f64>,
+    /// Nearest expiry date (#401). Omitted when `None` (no date).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_on: Option<NaiveDate>,
 }
 
 /// Serde's blanket `Option<T>` impl collapses an explicit `null` and a missing
@@ -39,7 +45,7 @@ where
 }
 
 /// `PATCH /groups/:id/stock-items/:item_id` request body. Mirrors
-/// `UpdateStockItemRequest`. For `category`/`reorder_threshold` the outer
+/// `UpdateStockItemRequest`. For `category`/`reorder_threshold`/`expires_on` the outer
 /// `Option` distinguishes "leave untouched" (`None`, omitted from the wire)
 /// from "clear" (`Some(None)`, sent as `null`) from "set" (`Some(Some(v))`).
 /// The quantity-adjust action sends only `quantity`; the full edit sends every
@@ -64,6 +70,12 @@ pub struct UpdateStockItemRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub reorder_threshold: Option<Option<f64>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_some",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub expires_on: Option<Option<NaiveDate>>,
 }
 
 /// `GET/POST/PATCH /groups/:id/stock-items[/:item_id]` response body. Mirrors
@@ -80,7 +92,17 @@ pub struct StockItemResponse {
     pub unit: String,
     pub reorder_threshold: Option<f64>,
     pub low_stock: bool,
+    /// Nearest expiry date (#401).
+    #[serde(default)]
+    pub expires_on: Option<NaiveDate>,
+    /// Derived by the backend on read from `expires_on` and today in
+    /// Europe/Paris (`validation::stocks::expiry_status`), never stored.
+    pub expiry_status: ExpiryStatus,
 }
+
+/// `GET /groups/:id/stock-items?sort=…` values. Absent → name order; the
+/// backend 400s anything else (`invalid_sort`).
+pub const SORT_BY_EXPIRY: &str = "expires_on";
 
 /// `GET /groups/:id/stock-items` response envelope (`{ "items": [...] }`).
 #[derive(Debug, Clone, Serialize, Deserialize)]

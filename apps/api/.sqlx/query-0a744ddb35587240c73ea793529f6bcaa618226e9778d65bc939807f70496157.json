@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        UPDATE stock_items SET\n            name = COALESCE($3, name),\n            category = $4,\n            quantity = $5,\n            unit = COALESCE($6, unit),\n            reorder_threshold = $7,\n            updated_at = now()\n        WHERE id = $1 AND group_id = $2\n        RETURNING id, group_id, created_by, name, category, quantity, unit, reorder_threshold\n        ",
+  "query": "SELECT id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on\n           FROM stock_items WHERE id = $1 AND group_id = $2",
   "describe": {
     "columns": [
       {
@@ -90,17 +90,23 @@
             "name": "reorder_threshold"
           }
         }
+      },
+      {
+        "ordinal": 8,
+        "name": "expires_on",
+        "type_info": "Date",
+        "origin": {
+          "Table": {
+            "table": "stock_items",
+            "name": "expires_on"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid",
-        "Text",
-        "Text",
-        "Float8",
-        "Text",
-        "Float8"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -111,8 +117,9 @@
       true,
       false,
       false,
+      true,
       true
     ]
   },
-  "hash": "a38950a11d6e6606ed5c134305af7df9a8774f63c842969ed415579fba9ca4ec"
+  "hash": "0a744ddb35587240c73ea793529f6bcaa618226e9778d65bc939807f70496157"
 }

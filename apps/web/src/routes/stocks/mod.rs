@@ -11,6 +11,12 @@
 //! behind `can_modify` (creator or group admin/owner), so the edit link and
 //! delete button render only for those users. The backend stays the authority
 //! (a forged full-edit/delete is still 403'd, mapped defensively here).
+//!
+//! Expiry date (#401): one date per article, the nearest. Its status is
+//! derived by the backend (`StockItemResponse::expiry_status`, today in
+//! Europe/Paris) and shown here as a worded badge — "Périmé", "À consommer
+//! bientôt" — never as a colour alone. `/stocks?sort=expires_on` lists soonest
+//! first.
 
 pub mod detail;
 pub mod edit;
@@ -19,9 +25,11 @@ pub mod new;
 
 use axum::http::HeaderMap;
 use axum::response::Html;
+use chrono::NaiveDate;
 use leptos::prelude::*;
 use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
+use manage_our_home_shared::validation::stocks::ExpiryStatus;
 use uuid::Uuid;
 
 use crate::app::{shell, Width};
@@ -99,6 +107,23 @@ pub(crate) fn forbidden_page() -> Html<String> {
     Html(shell(Width::Form, "Action non autorisée", &body.to_html()))
 }
 
+/// The worded badge for an expiry status, as `(class, text)`: the text is what
+/// carries the status, the `warn` fill only doubles it (DESIGN.md — colour is
+/// never the sole signal). A far-off or missing date gets no badge.
+pub(crate) fn expiry_badge(status: ExpiryStatus) -> Option<(&'static str, &'static str)> {
+    match status {
+        ExpiryStatus::Expired => Some(("badge warn", "Périmé")),
+        ExpiryStatus::Soon => Some(("badge", "À consommer bientôt")),
+        ExpiryStatus::Ok | ExpiryStatus::Unknown => None,
+    }
+}
+
+/// An expiry date as the French civil date the rest of the app writes
+/// (`09/10/2026`, same as budget and recipes).
+pub(crate) fn fmt_date(d: NaiveDate) -> String {
+    d.format("%d/%m/%Y").to_string()
+}
+
 /// Formats an `f64` quantity/threshold for display and form pre-fill without a
 /// trailing `.0` on whole numbers (`2.0` → `"2"`, `0.5` → `"0.5"`).
 pub(crate) fn fmt_num(n: f64) -> String {
@@ -108,5 +133,34 @@ pub(crate) fn fmt_num(n: f64) -> String {
         // Trim trailing zeros from a fixed rendering.
         let s = format!("{n}");
         s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_expired_or_close_date_is_worded_not_only_coloured() {
+        assert_eq!(
+            expiry_badge(ExpiryStatus::Expired),
+            Some(("badge warn", "Périmé"))
+        );
+        assert_eq!(
+            expiry_badge(ExpiryStatus::Soon),
+            Some(("badge", "À consommer bientôt"))
+        );
+    }
+
+    #[test]
+    fn a_far_or_missing_date_gets_no_badge() {
+        assert_eq!(expiry_badge(ExpiryStatus::Ok), None);
+        assert_eq!(expiry_badge(ExpiryStatus::Unknown), None);
+    }
+
+    #[test]
+    fn an_expiry_date_reads_day_first() {
+        let d = NaiveDate::from_ymd_opt(2026, 10, 9).unwrap();
+        assert_eq!(fmt_date(d), "09/10/2026");
     }
 }

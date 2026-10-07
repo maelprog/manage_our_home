@@ -102,7 +102,7 @@ async fn export_returns_owned_data_across_categories(db: PgPool) {
         Method::POST,
         &format!("/groups/{group_id}/stock-items"),
         Some(&cookie),
-        Some(serde_json::json!({"name": "Farine", "quantity": 2.0, "unit": "kg"})),
+        Some(serde_json::json!({"name": "Farine", "quantity": 2.0, "unit": "kg", "expires_on": "2026-12-01"})),
     )
     .await;
 
@@ -184,6 +184,7 @@ async fn export_returns_owned_data_across_categories(db: PgPool) {
     assert_eq!(doc["group_memberships"][0]["name"], "Foyer Export");
     assert_eq!(doc["group_memberships"][0]["role"], "owner");
     assert_eq!(doc["stock_items"][0]["name"], "Farine");
+    assert_eq!(doc["stock_items"][0]["expires_on"], "2026-12-01");
     assert_eq!(doc["budget_entries"][0]["name"], "Courses");
     assert_eq!(doc["budget_entries"][0]["amount"], 12.5);
     assert_eq!(doc["messages"][0]["content"], "Bonjour la famille");

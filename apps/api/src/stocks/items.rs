@@ -1,6 +1,10 @@
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
+use chrono::{NaiveDate, Utc};
+use manage_our_home_shared::dto::stocks::SORT_BY_EXPIRY;
+use manage_our_home_shared::validation::auth::paris_day;
+use manage_our_home_shared::validation::stocks::{expiry_status, ExpiryStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -20,6 +24,9 @@ pub struct CreateStockItemRequest {
     #[serde(default = "default_unit")]
     pub unit: String,
     pub reorder_threshold: Option<f64>,
+    /// The nearest expiry date among the article's units (#401: one date per
+    /// article, no per-batch tracking). Absent or `null` → no date.
+    pub expires_on: Option<NaiveDate>,
 }
 
 fn default_unit() -> String {
@@ -53,6 +60,9 @@ pub struct UpdateStockItemRequest {
     /// `Some(None)` clears the threshold; `None` leaves it untouched.
     #[serde(default, deserialize_with = "deserialize_some")]
     pub reorder_threshold: Option<Option<f64>>,
+    /// `Some(None)` clears the expiry date; `None` leaves it untouched.
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub expires_on: Option<Option<NaiveDate>>,
 }
 
 impl UpdateStockItemRequest {
@@ -60,13 +70,14 @@ impl UpdateStockItemRequest {
     /// adjustment (or a no-op that touches no field) is open to any group
     /// member — the shared-inventory "any member may adjust the quantity"
     /// tier from issue #19. Touching any full-record field (name, category,
-    /// unit, reorder_threshold) makes it a full edit, which stays behind
+    /// unit, reorder_threshold, expires_on) makes it a full edit, which stays behind
     /// `can_modify` (creator/admin/owner), the same bar as delete.
     fn touches_full_record(&self) -> bool {
         self.name.is_some()
             || self.category.is_some()
             || self.unit.is_some()
             || self.reorder_threshold.is_some()
+            || self.expires_on.is_some()
     }
 }
 
@@ -81,6 +92,10 @@ pub struct StockItemResponse {
     pub unit: String,
     pub reorder_threshold: Option<f64>,
     pub low_stock: bool,
+    pub expires_on: Option<NaiveDate>,
+    /// Derived on read from `expires_on` against today in Europe/Paris — the
+    /// fixed v1 display timezone — never stored, like `low_stock` (#401).
+    pub expiry_status: ExpiryStatus,
 }
 
 struct StockItemRow {
@@ -92,10 +107,19 @@ struct StockItemRow {
     quantity: f64,
     unit: String,
     reorder_threshold: Option<f64>,
+    expires_on: Option<NaiveDate>,
 }
 
-impl From<StockItemRow> for StockItemResponse {
-    fn from(r: StockItemRow) -> Self {
+/// "Today" for the expiry status: the civil day in Europe/Paris, the fixed v1
+/// display timezone the web pages already judge dates in (`today_paris`). The
+/// database's `current_date` would be the server's UTC day, wrong between
+/// midnight and 1–2 a.m. in Paris.
+fn today() -> NaiveDate {
+    paris_day(Utc::now())
+}
+
+impl StockItemResponse {
+    fn from_row(r: StockItemRow, today: NaiveDate) -> Self {
         let low_stock = r
             .reorder_threshold
             .map(|t| r.quantity <= t)
@@ -110,6 +134,8 @@ impl From<StockItemRow> for StockItemResponse {
             unit: r.unit,
             reorder_threshold: r.reorder_threshold,
             low_stock,
+            expires_on: r.expires_on,
+            expiry_status: expiry_status(r.expires_on, today),
         }
     }
 }
@@ -149,9 +175,9 @@ pub async fn create_stock_item(
     let item = sqlx::query_as!(
         StockItemRow,
         r#"
-        INSERT INTO stock_items (group_id, created_by, name, category, quantity, unit, reorder_threshold)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        RETURNING id, group_id, created_by, name, category, quantity, unit, reorder_threshold
+        INSERT INTO stock_items (group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on
         "#,
         group_id,
         auth.user_id,
@@ -160,12 +186,16 @@ pub async fn create_stock_item(
         body.quantity,
         body.unit,
         body.reorder_threshold,
+        body.expires_on,
     )
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
 
-    Ok((StatusCode::CREATED, Json(StockItemResponse::from(item))))
+    Ok((
+        StatusCode::CREATED,
+        Json(StockItemResponse::from_row(item, today())),
+    ))
 }
 
 pub async fn get_stock_item(
@@ -178,7 +208,7 @@ pub async fn get_stock_item(
 
     let item = sqlx::query_as!(
         StockItemRow,
-        r#"SELECT id, group_id, created_by, name, category, quantity, unit, reorder_threshold
+        r#"SELECT id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on
            FROM stock_items WHERE id = $1 AND group_id = $2"#,
         item_id,
         group_id,
@@ -188,7 +218,7 @@ pub async fn get_stock_item(
     .ok_or(AppError::NotFound)?;
     tx.commit().await?;
 
-    Ok(Json(StockItemResponse::from(item)))
+    Ok(Json(StockItemResponse::from_row(item, today())))
 }
 
 #[derive(Deserialize)]
@@ -198,6 +228,24 @@ pub struct ListStockItemsQuery {
     /// "what's missing").
     #[serde(default)]
     pub low_stock: bool,
+    /// `expires_on` → soonest expiry first, undated items last, then by name
+    /// ("à consommer en premier", #401). Absent → by name. Anything else is a
+    /// 400 rather than a silently ignored typo.
+    pub sort: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StockSort {
+    Name,
+    ExpiresOn,
+}
+
+fn parse_sort(sort: Option<&str>) -> AppResult<StockSort> {
+    match sort {
+        None => Ok(StockSort::Name),
+        Some(SORT_BY_EXPIRY) => Ok(StockSort::ExpiresOn),
+        Some(_) => Err(AppError::BadRequest("invalid_sort".into())),
+    }
 }
 
 pub async fn list_stock_items(
@@ -206,26 +254,30 @@ pub async fn list_stock_items(
     Path(group_id): Path<Uuid>,
     Query(query): Query<ListStockItemsQuery>,
 ) -> AppResult<impl IntoResponse> {
+    let by_expiry = parse_sort(query.sort.as_deref())? == StockSort::ExpiresOn;
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
 
     let rows = sqlx::query_as!(
         StockItemRow,
         r#"
-        SELECT id, group_id, created_by, name, category, quantity, unit, reorder_threshold
+        SELECT id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on
         FROM stock_items
         WHERE group_id = $1
-        ORDER BY name
+        -- With $2 false the CASE is NULL on every row and only `name` orders.
+        ORDER BY CASE WHEN $2 THEN expires_on END ASC NULLS LAST, name
         "#,
         group_id,
+        by_expiry,
     )
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;
 
+    let today = today();
     let items: Vec<StockItemResponse> = rows
         .into_iter()
-        .map(StockItemResponse::from)
+        .map(|row| StockItemResponse::from_row(row, today))
         .filter(|item| !query.low_stock || item.low_stock)
         .collect();
 
@@ -246,7 +298,7 @@ pub async fn update_stock_item(
     // commit instead of both transactions reading the same stale quantity
     // and one overwriting the other's write (lost update).
     let existing = sqlx::query!(
-        "SELECT created_by, name, category, quantity, unit, reorder_threshold FROM stock_items WHERE id = $1 AND group_id = $2 FOR UPDATE",
+        "SELECT created_by, name, category, quantity, unit, reorder_threshold, expires_on FROM stock_items WHERE id = $1 AND group_id = $2 FOR UPDATE",
         item_id,
         group_id,
     )
@@ -280,6 +332,10 @@ pub async fn update_stock_item(
         Some(t) => t,
         None => existing.reorder_threshold,
     };
+    let expires_on = match body.expires_on {
+        Some(d) => d,
+        None => existing.expires_on,
+    };
     validate_request(quantity, reorder_threshold)?;
 
     let item = sqlx::query_as!(
@@ -291,9 +347,10 @@ pub async fn update_stock_item(
             quantity = $5,
             unit = COALESCE($6, unit),
             reorder_threshold = $7,
+            expires_on = $8,
             updated_at = now()
         WHERE id = $1 AND group_id = $2
-        RETURNING id, group_id, created_by, name, category, quantity, unit, reorder_threshold
+        RETURNING id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on
         "#,
         item_id,
         group_id,
@@ -302,12 +359,13 @@ pub async fn update_stock_item(
         quantity,
         unit,
         reorder_threshold,
+        expires_on,
     )
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
 
-    Ok(Json(StockItemResponse::from(item)))
+    Ok(Json(StockItemResponse::from_row(item, today())))
 }
 
 pub async fn delete_stock_item(
@@ -354,6 +412,7 @@ mod tests {
             quantity: None,
             unit: None,
             reorder_threshold: None,
+            expires_on: None,
         }
     }
 
@@ -415,6 +474,96 @@ mod tests {
             ..empty_update()
         };
         assert!(cleared.touches_full_record());
+    }
+
+    #[test]
+    fn setting_or_clearing_the_expiry_date_is_a_full_record_edit() {
+        let set = UpdateStockItemRequest {
+            expires_on: Some(NaiveDate::from_ymd_opt(2026, 10, 9)),
+            ..empty_update()
+        };
+        assert!(set.touches_full_record());
+        let cleared = UpdateStockItemRequest {
+            expires_on: Some(None),
+            ..empty_update()
+        };
+        assert!(cleared.touches_full_record());
+    }
+
+    #[test]
+    fn an_explicit_null_expiry_date_is_a_clear_not_an_absent_field() {
+        let cleared: UpdateStockItemRequest =
+            serde_json::from_value(serde_json::json!({ "expires_on": null })).unwrap();
+        assert_eq!(cleared.expires_on, Some(None));
+        let absent: UpdateStockItemRequest =
+            serde_json::from_value(serde_json::json!({ "quantity": 1.0 })).unwrap();
+        assert_eq!(absent.expires_on, None);
+    }
+
+    fn row(expires_on: Option<NaiveDate>) -> StockItemRow {
+        StockItemRow {
+            id: Uuid::nil(),
+            group_id: Uuid::nil(),
+            created_by: Uuid::nil(),
+            name: "Yaourt".into(),
+            category: None,
+            quantity: 1.0,
+            unit: "pot".into(),
+            reorder_threshold: None,
+            expires_on,
+        }
+    }
+
+    fn day(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn the_response_derives_the_expiry_status_from_the_date_and_today() {
+        let today = day(2026, 10, 7);
+        let status = |d| StockItemResponse::from_row(row(d), today).expiry_status;
+        assert_eq!(status(Some(day(2026, 10, 6))), ExpiryStatus::Expired);
+        assert_eq!(status(Some(day(2026, 10, 7))), ExpiryStatus::Soon);
+        assert_eq!(status(Some(day(2026, 10, 10))), ExpiryStatus::Soon);
+        assert_eq!(status(Some(day(2026, 10, 11))), ExpiryStatus::Ok);
+        assert_eq!(status(None), ExpiryStatus::Unknown);
+    }
+
+    #[test]
+    fn the_expiry_status_goes_on_the_wire_in_snake_case() {
+        let body = serde_json::to_value(StockItemResponse::from_row(
+            row(Some(day(2026, 10, 6))),
+            day(2026, 10, 7),
+        ))
+        .unwrap();
+        assert_eq!(body["expiry_status"], "expired");
+        assert_eq!(body["expires_on"], "2026-10-06");
+        let undated =
+            serde_json::to_value(StockItemResponse::from_row(row(None), day(2026, 10, 7))).unwrap();
+        assert_eq!(undated["expiry_status"], "unknown");
+    }
+
+    #[test]
+    fn no_sort_parameter_is_name_order() {
+        assert_eq!(parse_sort(None).unwrap(), StockSort::Name);
+    }
+
+    #[test]
+    fn sort_expires_on_is_expiry_order() {
+        assert_eq!(
+            parse_sort(Some("expires_on")).unwrap(),
+            StockSort::ExpiresOn
+        );
+    }
+
+    #[test]
+    fn an_unknown_sort_is_a_bad_request() {
+        for bad in ["", "expiry", "name", "EXPIRES_ON", "expires_on desc"] {
+            assert!(
+                matches!(parse_sort(Some(bad)), Err(AppError::BadRequest(ref c)) if c == "invalid_sort"),
+                "{bad:?} must be refused"
+            );
+        }
     }
 
     #[test]
