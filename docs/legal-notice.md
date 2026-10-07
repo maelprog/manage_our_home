@@ -1,6 +1,6 @@
 # Mentions légales — Manage Our Home
 
-Dernière mise à jour : 2026-10-04.
+Dernière mise à jour : 2026-10-07.
 
 Ces mentions répondent à l'article 1-1 de la loi n° 2004-575 du 21 juin 2004
 pour la confiance dans l'économie numérique, dans sa rédaction issue de la
@@ -56,6 +56,13 @@ recettes, articles de stock, dépenses, pièces jointes — ne sont pas couverts
 par cette licence. Ils restent les vôtres ; ce que l'éditeur en fait, et ce
 qu'il n'en fait pas, est dit dans les [conditions générales
 d'utilisation](/terms-of-service).
+
+Données produits : Open Food Facts, ODbL. Quand vous scannez le code-barres
+d'un article, le nom et la contenance proposés viennent de la base
+[Open Food Facts](https://world.openfoodfacts.org), publiée sous licence
+[Open Database License (ODbL)](https://opendatacommons.org/licenses/odbl/1-0/).
+Le service n'en garde qu'une copie temporaire, pour ne pas interroger Open
+Food Facts à chaque scan.
 
 ## Données personnelles
 

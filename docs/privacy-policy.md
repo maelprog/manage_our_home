@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-10-06.
+Dernière mise à jour : 2026-10-07.
 
 ## Qui est responsable de vos données ?
 
@@ -46,7 +46,7 @@ données sont-elles conservées ? ».
 | Désactivation d'un compte | date à laquelle l'administrateur du service a désactivé le compte, date de l'email qui prévient de sa suppression ; si vous demandez la réactivation, la date de votre demande et le message facultatif que vous y joignez, et la date du premier refus | Intérêt légitime (exploitation et sécurité du service) |
 | Agenda | événements, tâches, pièces jointes, membres assignés à un événement | Exécution du contrat |
 | Rappels d'événements | délai choisi avant l'événement ; la façon dont vos rappels vous parviennent (notification, email ou les deux) ; pour chaque appareil où vous activez les notifications, l'adresse d'abonnement que le service de notification de votre navigateur lui attribue et ses dates d'abonnement, de dernier renouvellement et de dernier envoi réussi, et le nombre et la date de début de ses envois échoués d'affilée (50 appareils au plus par compte). L'email de rappel porte le titre et la date de l'événement ; la notification n'affiche que « Rappel d'un événement à venir » | Exécution du contrat |
-| Stocks / recettes / liste de courses | articles, recettes, ingrédients | Exécution du contrat |
+| Stocks / recettes / liste de courses | articles (et leur code-barres quand il a été scanné ou saisi), recettes, ingrédients | Exécution du contrat |
 | Budget | dépenses saisies manuellement | Exécution du contrat |
 | Messagerie | messages du fil familial (chiffrés au repos), date de votre dernière lecture du fil | Exécution du contrat |
 | Import calendrier Google | URL de flux iCal (chiffrée), événements importés | Consentement explicite (vous fournissez volontairement l'URL) |
@@ -128,6 +128,15 @@ possibles sont :
   lit qu'en ouvrant l'agenda. Pas de repli : sans appareil abonné, un
   rappel par notification n'est pas envoyé du tout, et le site vous en
   avertit là où vous programmez vos rappels.
+- **Open Food Facts**, base publique de produits alimentaires, quand vous
+  scannez ou saisissez le code-barres d'un article de stock : le serveur lui
+  demande la fiche du produit, avec ce code pour seule information — ni
+  votre adresse IP, ni cookie, ni identifiant de votre compte ou de votre
+  famille. Open Food Facts voit l'adresse du serveur, pas la vôtre, et ne
+  peut pas savoir qui a scanné quoi. Le code d'une étiquette de pesée du
+  magasin ne lui est pas envoyé, ni celui d'un article que votre famille a
+  déjà en stock. Ce n'est pas une donnée personnelle qui sort : ce flux est
+  cité ici pour être complet.
 
 Aucune autre donnée ne quitte le serveur applicatif. Les suggestions de
 recettes sont calculées sur le serveur par des règles fixes (ingrédients en

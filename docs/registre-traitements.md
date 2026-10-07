@@ -1,6 +1,7 @@
 # Registre des traitements — Manage Our Home
 
 Registre tenu au titre de l'article 30 du RGPD. Dernière mise à jour :
+2026-10-07 (code-barres d'un article de stock et Open Food Facts, #402) ;
 2026-10-05 (fin d'une session inactive et jetons de réinitialisation, #327 ;
 jetons stockés par leur empreinte, #335) ;
 2026-10-04 (sous-traitant email, #328 ; acceptation des CGU, #319 ;
@@ -67,6 +68,17 @@ l'ouverture publique : voir `docs/v2-deployment.md` #16.
   l'appareil, signé de la clé VAPID du serveur ; il apprend donc qu'un
   message part de ce serveur vers cet appareil, à cette heure, et rien de
   l'événement. L'appareil affiche toujours « Rappel d'un événement à venir ».
+- **Open Food Facts** (#402) n'est destinataire d'aucune donnée
+  personnelle, et n'appelle donc pas de ligne au tableau ci-dessous. Quand
+  un membre scanne ou saisit le code-barres d'un article, c'est le serveur
+  qui interroge Open Food Facts (`apps/api/src/stocks/openfoodfacts.rs`),
+  avec le code seul : ni cookie, ni identifiant de compte ou de famille, et
+  l'adresse IP vue est celle du serveur, pas celle du membre. Il n'est pas
+  interrogé pour une étiquette de pesée du magasin, pour un code qu'un
+  article de la famille porte déjà, ni pour un code dont la fiche est en
+  cache (`off_products`, table de fiches publiques rattachée à aucune
+  famille ni à aucun compte). Mentionné pour que la liste des flux sortants
+  soit complète.
 
 **Mesures de sécurité communes** : chiffrement au repos via `pgcrypto` pour
 les colonnes sensibles, isolation multi-tenant appliquée au niveau base de
@@ -123,7 +135,7 @@ ligne.
 | 2 | Agenda | événements, tâches et membre ayant coché une tâche, pièces jointes (photos/documents) | Planification familiale | Exécution du contrat | Tant que l'événement/le compte existe ; supprimé avec le groupe ou anonymisé (`created_by`) à la purge du compte auteur ; un fichier de pièce jointe orphelin (sans ligne en base) est supprimé par un balayage quotidien moins de 48 h après son écriture (fenêtre de 24 h + intervalle de 24 h) tant que l'API tourne, et à condition que `ADMIN_DATABASE_URL` désigne un rôle `BYPASSRLS` — sinon le balayage refuse de tourner et l'orphelin reste | Aucun tiers |
 | 2a | Rappels d'événements, par notification ou par email | délai avant l'événement (`event_reminders`) ; file d'envoi par occurrence : heure d'envoi, statut, tentatives, dernière erreur de transport (`scheduled_notifications`) ; canal choisi par compte — notification (par défaut pour un compte créé depuis #306), email ou les deux (`users.reminder_channel`) ; par appareil abonné aux notifications, l'adresse d'abonnement attribuée par le service de notification du navigateur, la plateforme (`web`), les dates d'abonnement, de dernier enregistrement et de dernier envoi réussi, le nombre et la date de début des envois échoués d'affilée (`push_subscriptions`, 50 appareils au plus par compte : le 51e remplace celui qui a servi le moins récemment, enregistrement ou envoi réussi — arbitrage du 2026-10-01). L'email porte le titre et la date de l'événement ; la notification ne porte rien (message vide) et l'appareil affiche « Rappel d'un événement à venir ». Pas de repli d'un canal sur l'autre : sans appareil abonné, un rappel par notification n'est pas envoyé et l'application en avertit (arbitrage du responsable de traitement du 2026-10-01) | Prévenir avant un événement | Exécution du contrat | Un rappel vit jusqu'à sa suppression ou celle de l'événement ; les lignes de la file restent après envoi (statut `sent` ou `failed`) et partent avec le rappel ou l'événement. Un appareil abonné reste jusqu'à ce que son service de notification le dise expiré ou retiré (réponse 404 ou 410 : la ligne est supprimée au premier envoi qui la reçoit), jusqu'à ce que chaque envoi y échoue pendant au moins 7 jours avec au moins 20 échecs d'affilée (`MAX_CONSECUTIVE_FAILURES`, `MIN_FAILING_DAYS`), jusqu'au désabonnement par le membre, ou jusqu'à la purge du compte | Scaleway (email) ; service de notification du navigateur (notification, voir ci-dessus) ; le rappel part au **créateur de l'événement**, quel que soit le membre qui l'a posé, sur le canal du compte de ce créateur (`apps/api/src/jobs/scheduled_notifications.rs`) |
 | 2b | Assignations d'événements | événement, membre assigné, date (`event_assignees`) ; posées par un membre, par défaut le créateur de l'événement, et pour un événement importé le membre qui a lancé l'import | Indiquer pour qui est un événement | Exécution du contrat | Tant que l'événement existe et que l'assignation n'est pas retirée ; elle survit au départ du groupe, pas à la purge du compte, qui la supprime (#139) | Membres du groupe |
-| 3 | Stocks | articles du garde-manger/frigo, quantités, seuils, dates de péremption | Gestion de l'inventaire familial | Exécution du contrat | Idem #2 | Aucun tiers |
+| 3 | Stocks | articles du garde-manger/frigo, quantités, seuils, dates de péremption, code-barres d'un article scanné ou saisi (`stock_items.barcode`, #402) | Gestion de l'inventaire familial | Exécution du contrat | Idem #2 | Aucun tiers (le code-barres seul est envoyé à Open Food Facts, sans donnée personnelle : voir « Sous-traitants (destinataires) ») |
 | 4 | Recettes | recettes, ingrédients, historique des repas | Suggestions de repas (algorithme local, pas d'IA tierce) | Exécution du contrat | Idem #2 | Aucun tiers |
 | 5 | Liste de courses | articles à acheter, source (manuel/recette/stock bas) | Liste de courses partagée | Exécution du contrat | Idem #2 | Aucun tiers |
 | 6 | Budget | dépenses saisies manuellement (montant, nom, date) | Suivi du budget alimentaire familial | Exécution du contrat | Idem #2 | Aucun tiers |
