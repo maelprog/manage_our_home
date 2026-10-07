@@ -861,25 +861,42 @@ async fn a_members_devices_are_pushed_at_once(db: PgPool) {
     assert!(devices(&db, member).await.iter().all(|(_, ok)| *ok));
 }
 
-/// Counts the pushes in flight, and the most seen at once.
-#[derive(Default)]
+/// Counts the pushes in flight, and the most seen at once. Each push is
+/// held until `bound` of them were in flight together — or, should the
+/// pass never let that many through, for a few seconds: none answers
+/// before the bound is reached, so `most` reaches it exactly however
+/// slowly the pass gets its pushes started.
 struct InFlight {
+    bound: usize,
     now: AtomicUsize,
     most: AtomicUsize,
 }
 
 impl InFlight {
+    fn up_to(bound: usize) -> Self {
+        Self {
+            bound,
+            now: AtomicUsize::new(0),
+            most: AtomicUsize::new(0),
+        }
+    }
+
     async fn push(&self) -> PushOutcome {
         let now = self.now.fetch_add(1, Ordering::SeqCst) + 1;
         self.most.fetch_max(now, Ordering::SeqCst);
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let held_until = tokio::time::Instant::now() + Duration::from_secs(5);
+        while self.most.load(Ordering::SeqCst) < self.bound
+            && tokio::time::Instant::now() < held_until
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         self.now.fetch_sub(1, Ordering::SeqCst);
         PushOutcome::Delivered
     }
 }
 
-/// Concurrent, but bounded: never more reminders pushed at once than
-/// `MAX_CONCURRENT_REMINDERS`, and every one of them sent.
+/// Concurrent, but bounded: exactly `MAX_CONCURRENT_REMINDERS` reminders
+/// pushed at once, never more, and every one of them sent.
 #[sqlx::test]
 async fn reminders_are_pushed_at_once_up_to_a_bound(db: PgPool) {
     let mut due = Vec::new();
@@ -889,21 +906,18 @@ async fn reminders_are_pushed_at_once_up_to_a_bound(db: PgPool) {
         due.push(due_reminder(&db, member).await);
     }
 
-    let in_flight = InFlight::default();
+    let in_flight = InFlight::up_to(MAX_CONCURRENT_REMINDERS);
     pass_within(&db, Duration::from_secs(30), |_| in_flight.push()).await;
 
     let most = in_flight.most.load(Ordering::SeqCst);
-    assert!(
-        (2..=MAX_CONCURRENT_REMINDERS).contains(&most),
-        "{most} pushed at once"
-    );
+    assert_eq!(most, MAX_CONCURRENT_REMINDERS, "{most} pushed at once");
     for id in due {
         assert_eq!(notification(&db, id).await.0, "sent");
     }
 }
 
-/// Same bound per member: never more of their devices pushed at once than
-/// `MAX_CONCURRENT_DEVICES`.
+/// Same bound per member: exactly `MAX_CONCURRENT_DEVICES` of their
+/// devices pushed at once, never more.
 #[sqlx::test]
 async fn a_members_devices_are_pushed_at_once_up_to_a_bound(db: PgPool) {
     let member = insert_user(&db, "many@example.test", "push").await;
@@ -912,16 +926,96 @@ async fn a_members_devices_are_pushed_at_once_up_to_a_bound(db: PgPool) {
     }
     let due = due_reminder(&db, member).await;
 
-    let in_flight = InFlight::default();
+    let in_flight = InFlight::up_to(MAX_CONCURRENT_DEVICES);
     pass_within(&db, Duration::from_secs(30), |_| in_flight.push()).await;
 
     let most = in_flight.most.load(Ordering::SeqCst);
-    assert!(
-        (2..=MAX_CONCURRENT_DEVICES).contains(&most),
-        "{most} pushed at once"
-    );
+    assert_eq!(most, MAX_CONCURRENT_DEVICES, "{most} pushed at once");
     assert_eq!(notification(&db, due).await.0, "sent");
     assert!(devices(&db, member).await.iter().all(|(_, ok)| *ok));
+}
+
+// -- a reminder the database fails on (#366) -------------------------------------
+
+/// Makes every write to the given notifications fail in the database, as
+/// a lost connection or a lock timeout would.
+async fn refuse_writes_to(db: &PgPool, ids: &[Uuid]) {
+    sqlx::query("CREATE TABLE refused_notifications (id uuid PRIMARY KEY)")
+        .execute(db)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO refused_notifications SELECT unnest($1::uuid[])")
+        .bind(ids)
+        .execute(db)
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE FUNCTION refuse_notification_write() RETURNS trigger AS $$
+         BEGIN
+             IF OLD.id IN (SELECT id FROM refused_notifications) THEN
+                 RAISE EXCEPTION 'write refused for the test';
+             END IF;
+             RETURN NEW;
+         END
+         $$ LANGUAGE plpgsql",
+    )
+    .execute(db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER refuse_notification_write BEFORE UPDATE ON scheduled_notifications
+         FOR EACH ROW EXECUTE FUNCTION refuse_notification_write()",
+    )
+    .execute(db)
+    .await
+    .unwrap();
+}
+
+/// A notification the database fails on stops none of the others (#321):
+/// they are sent, it stays pending for the next pass, and the pass reports
+/// how many failed. One fails on each side of the pass: on the reading
+/// side, retiring a deactivated member's; on the pushing side, marking a
+/// mailed one sent. Both are written first, to be read before the others.
+#[sqlx::test]
+async fn a_database_error_on_one_reminder_stops_none_of_the_others(db: PgPool) {
+    let gone = insert_user(&db, "gone@example.test", "email").await;
+    let unretired = due_reminder(&db, gone).await;
+    sqlx::query("UPDATE users SET deactivated_at = now() WHERE id = $1")
+        .bind(gone)
+        .execute(&db)
+        .await
+        .unwrap();
+    let mailed = insert_user(&db, "mailed@example.test", "email").await;
+    let unsettled = due_reminder(&db, mailed).await;
+    let mut others = Vec::new();
+    for i in 0..3 {
+        let member = insert_user(&db, &format!("other{i}@example.test"), "push").await;
+        add_device(&db, member, &format!("{FCM}-{i}")).await;
+        others.push(due_reminder(&db, member).await);
+    }
+    refuse_writes_to(&db, &[unretired, unsettled]).await;
+
+    let send = |_to: String, _subject: String, _body: String| async { Ok::<(), anyhow::Error>(()) };
+    let send_push = |_endpoint: String, _ttl: i64| async { PushOutcome::Delivered };
+    let error = send_due_notifications(&db, send, send_push)
+        .await
+        .expect_err("the pass reports the reminders it could not see through");
+
+    assert_eq!(
+        error.to_string(),
+        "2 due reminder(s) could not be sent or settled, see above"
+    );
+    assert_eq!(
+        notification(&db, unretired).await,
+        ("pending".into(), 0, None)
+    );
+    assert_eq!(
+        notification(&db, unsettled).await,
+        ("pending".into(), 0, None)
+    );
+    for id in others {
+        assert_eq!(notification(&db, id).await, ("sent".into(), 0, None));
+    }
 }
 
 // -- RGPD -----------------------------------------------------------------------
