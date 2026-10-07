@@ -548,4 +548,22 @@ mod tests {
         assert_eq!(target_hits.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(outcome.is_err(), "a redirected userinfo is a failure");
     }
+
+    /// A 3xx whose body is a valid profile is still a failure: the redirect
+    /// is refused on its status, not on a body that fails to parse.
+    #[tokio::test]
+    async fn a_redirect_carrying_a_valid_profile_is_refused() {
+        let body = r#"{"sub":"1","email":"a@example.com","email_verified":true}"#;
+        let (redirector, hits, task) = peer(format!(
+            "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://127.0.0.1:1/\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ))
+        .await;
+
+        let outcome = fetch_google_userinfo(&redirector, "access-token").await;
+        task.abort();
+
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(outcome.is_err(), "a redirected userinfo is a failure");
+    }
 }
