@@ -223,7 +223,7 @@ pub(crate) fn photo_error_message(code: &str) -> &'static str {
     match code {
         "unreadable" => "Aucun code-barres n'a pu être lu sur la photo : elle est peut-être floue, prise de trop loin, ou le code sort du cadre.",
         "too_large" => "La photo dépasse 12 Mo.",
-        "not_an_image" => "Ce fichier n'est pas une photo lisible (JPEG, PNG ou WebP).",
+        "not_an_image" => "Ce fichier n'est pas une photo lisible (JPEG ou PNG).",
         "busy" => "Trop d'envois en cours, merci de réessayer dans un instant.",
         _ => "L'envoi de la photo a échoué, merci de réessayer.",
     }

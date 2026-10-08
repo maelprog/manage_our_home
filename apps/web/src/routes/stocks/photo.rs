@@ -13,7 +13,10 @@
 //! Bounds, because one decode costs far more memory than the file it
 //! reads: `MAX_PHOTO_BYTES` on the file; decoder limits on the declared
 //! dimensions (`MAX_DIMENSION`) and on what decoding allocates
-//! (`MAX_ALLOC`), since a small file can claim a huge image; the picture is
+//! (`MAX_ALLOC`), since a small file can claim a huge image — `image`
+//! weighs only its output buffer, so what a JPEG needs beyond it, the
+//! coefficients of a progressive one, is weighed here from its header
+//! (`JpegFrame::decode_bytes`), under the same `MAX_ALLOC`; the picture is
 //! turned grey at once and, past `MAX_SIDE`, reduced by an integer box
 //! average written here — `image`'s own resize goes through an `Rgba32F`
 //! copy, 16 bytes a pixel, which no decoder limit sees; and at most
@@ -23,7 +26,8 @@
 use std::io::Cursor;
 use std::sync::LazyLock;
 
-use image::{DynamicImage, GrayImage, ImageReader, Limits};
+use image::error::{DecodingError, LimitError, LimitErrorKind};
+use image::{DynamicImage, GrayImage, ImageError, ImageFormat, ImageReader, Limits};
 use rxing::{BarcodeFormat, DecodeHints};
 use tokio::sync::Semaphore;
 
@@ -44,21 +48,27 @@ pub const MAX_SIDE: u32 = 4096;
 /// Decoder bound: no dimension past this, whatever the file declares.
 const MAX_DIMENSION: u32 = 8192;
 
-/// Decoder bound on what decoding may allocate: a 24 Mpx frame in RGB
+/// Bound on what decoding may allocate: a 24 Mpx frame in RGB
 /// (6000 × 4000 × 3 = 72 MB) fits; a 48 Mpx one does not, and is refused
 /// as unreadable. Phones hand a file input their default resolution, 12 or
-/// 24 Mpx.
+/// 24 Mpx, in baseline JPEG. A progressive JPEG also holds two bytes per
+/// coefficient: a 12 Mpx one fits at the usual 4:2:0 subsampling (73 MB),
+/// not at 4:4:4 (110 MB).
 const MAX_ALLOC: u64 = 80 * 1024 * 1024;
 
 /// Decodes running at once in this process. The photo route also holds an
 /// upload permit (`manage_our_home_http_guard::UploadGate`), which bounds the
 /// bodies held, up to eight; this bounds the far larger working memory of
-/// decoding them. Heap high-water mark of one decode, measured by
-/// `one_decode_stays_within_its_memory_bound` (2026-10-08): a 12 Mpx colour
-/// JPEG, 46.5 MiB; a 24 Mpx colour JPEG, the largest `MAX_ALLOC` admits,
-/// 91.6 MiB; an 8192 × 8192 grey PNG, 80.6 MiB; an 8000 × 8000 colour JPEG,
-/// refused at its header, 1.7 MiB. So under 185 MiB for two decodes at
-/// once, on top of the bodies the upload gate holds.
+/// decoding them. One decode is held to `MAX_ALLOC` × 3/2 plus 4 MiB, 124
+/// MiB, by `one_decode_stays_within_its_memory_bound`; its heap high-water
+/// marks there (2026-10-08), on the worst inputs each bound admits: grey
+/// with alpha PNG, 8192 × 5120, 120.0 MiB; baseline colour JPEG, 24 Mpx,
+/// 91.6 MiB; grey PNG, 8192², 80.6 MiB; progressive grey JPEG, 5280²,
+/// 80.6 MiB; progressive colour JPEG at 4:4:4, 9.3 Mpx, 80.5 MiB;
+/// progressive CMYK JPEG, 7 Mpx, 73.8 MiB; progressive colour JPEG at
+/// 4:2:0, 12 Mpx, 70.8 MiB. Files past the bounds are refused at their
+/// header, under 0.1 MiB. So under 248 MiB for two decodes at once, on top
+/// of the bodies the upload gate holds.
 pub const DECODE_PERMITS: usize = 2;
 
 /// The process-wide pool of decode permits.
@@ -69,7 +79,7 @@ pub static DECODES: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(DECODE
 pub enum PhotoError {
     /// Over `MAX_PHOTO_BYTES`.
     TooLarge,
-    /// Not a JPEG, PNG or WebP image this build can read, or past the
+    /// Not a JPEG or PNG image this build can read, or past the
     /// decoder bounds.
     NotAnImage,
     /// An image, but no EAN-13, EAN-8 or UPC-A could be read in it.
@@ -124,10 +134,125 @@ pub fn box_downscale(image: &GrayImage, factor: u32) -> GrayImage {
     GrayImage::from_raw(out_w, out_h, out).expect("out_w × out_h bytes")
 }
 
+/// A JPEG's frame header (SOFn): what decoding it will allocate is read
+/// from here, before anything is decoded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JpegFrame {
+    pub width: u32,
+    pub height: u32,
+    /// SOF2, SOF6, SOF10 or SOF14: the image is sent in several scans.
+    pub progressive: bool,
+    /// Each component's sampling factors, horizontal then vertical.
+    pub sampling: Vec<(u32, u32)>,
+}
+
+/// The frame header of the JPEG in `bytes`: the first SOFn, past the
+/// segments before it. `None` when `bytes` is not a JPEG, or when a scan,
+/// the end of the image or the end of the bytes comes first.
+pub fn jpeg_frame(bytes: &[u8]) -> Option<JpegFrame> {
+    let be16 = |at: usize| Some(u16::from_be_bytes([*bytes.get(at)?, *bytes.get(at + 1)?]));
+    if bytes.get(..2)? != [0xFF, 0xD8] {
+        return None;
+    }
+    let mut at = 2;
+    loop {
+        if *bytes.get(at)? != 0xFF {
+            return None;
+        }
+        // A marker may be preceded by any number of fill bytes.
+        while *bytes.get(at)? == 0xFF {
+            at += 1;
+        }
+        let marker = bytes[at];
+        at += 1;
+        match marker {
+            // Standalone markers: no length follows.
+            0x01 | 0xD0..=0xD7 => continue,
+            // Start of image again, end of image, start of scan.
+            0xD8..=0xDA => return None,
+            _ => {}
+        }
+        let length = usize::from(be16(at)?);
+        let segment = bytes.get(at + 2..at + length.max(2))?;
+        // SOF0 to SOF15, less DHT (C4), JPG (C8) and DAC (CC).
+        if (0xC0..=0xCF).contains(&marker) && !matches!(marker, 0xC4 | 0xC8 | 0xCC) {
+            let count = usize::from(*segment.get(5)?);
+            let sampling = segment
+                .get(6..6 + 3 * count)?
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .map(|spec| (u32::from(spec[1] >> 4), u32::from(spec[1] & 0x0F)))
+                .collect();
+            return Some(JpegFrame {
+                height: u32::from(be16(at + 3)?),
+                width: u32::from(be16(at + 5)?),
+                progressive: matches!(marker, 0xC2 | 0xC6 | 0xCA | 0xCE),
+                sampling,
+            });
+        }
+        at += length;
+    }
+}
+
+impl JpegFrame {
+    /// What decoding allocates, in bytes: the output, counted at one byte
+    /// per component and pixel (`image` turns CMYK into RGB, which is
+    /// less); and, for a progressive JPEG, every DCT coefficient of the
+    /// image at once, two bytes each, which zune-jpeg (the decoder behind
+    /// `image`) keeps from the first scan to the last and no `Limits`
+    /// sees. Coefficients are counted on whole MCUs, each component at its
+    /// own sampling, as zune-jpeg lays them out.
+    pub fn decode_bytes(&self) -> u64 {
+        let (width, height) = (u64::from(self.width), u64::from(self.height));
+        let output = width * height * self.sampling.len() as u64;
+        if !self.progressive {
+            return output;
+        }
+        let h_max = self
+            .sampling
+            .iter()
+            .map(|&(h, _)| h)
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        let v_max = self
+            .sampling
+            .iter()
+            .map(|&(_, v)| v)
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        let mcus_x = width.div_ceil(8 * u64::from(h_max));
+        let mcus_y = height.div_ceil(8 * u64::from(v_max));
+        let coefficients: u64 = self
+            .sampling
+            .iter()
+            .map(|&(h, v)| mcus_x * 8 * u64::from(h) * mcus_y * 8 * u64::from(v))
+            .sum();
+        output + 2 * coefficients
+    }
+}
+
 /// `bytes` decoded under the bounds: the dimensions a header declares are
 /// checked before anything is allocated for them.
 fn read_image(bytes: &[u8]) -> image::ImageResult<DynamicImage> {
     let mut reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
+    // `max_alloc` only weighs the output buffer: what a JPEG costs beyond
+    // it is weighed here, from its header.
+    if reader.format() == Some(ImageFormat::Jpeg) {
+        let frame = jpeg_frame(bytes).ok_or_else(|| {
+            ImageError::Decoding(DecodingError::new(
+                ImageFormat::Jpeg.into(),
+                "no frame header",
+            ))
+        })?;
+        if frame.decode_bytes() > MAX_ALLOC {
+            return Err(ImageError::Limits(LimitError::from_kind(
+                LimitErrorKind::InsufficientMemory,
+            )));
+        }
+    }
     let mut limits = Limits::default();
     limits.max_image_width = Some(MAX_DIMENSION);
     limits.max_image_height = Some(MAX_DIMENSION);
@@ -352,43 +477,125 @@ mod tests {
 
     const MIB: usize = 1024 * 1024;
 
-    /// What one decode costs at most, measured on the worst inputs the
-    /// bounds admit (heap high-water marks on 2026-10-08: 91.6, 80.6 and
-    /// 46.5 MiB, in the order below). The colour buffer the decoder fills
-    /// is capped by `MAX_ALLOC`; the grey copy made from it lives beside it
-    /// for a moment, a third of its size; the reduction and the barcode
-    /// search work on the grey picture, a quarter of it once reduced.
+    /// What one decode may cost: the output `MAX_ALLOC` caps (or, for a
+    /// progressive JPEG, the output and its coefficients, which
+    /// `JpegFrame::decode_bytes` keeps under it), then the grey copy made
+    /// from the output, which lives beside it for a moment: at most half
+    /// its size, for a grey picture with alpha. The reduction and the
+    /// barcode search work on the grey picture, smaller still.
+    const DECODE_BOUND: usize = MAX_ALLOC as usize * 3 / 2 + 4 * MIB;
+
+    /// `frame` as `jpeg-encoder` writes it: progressive or not, at
+    /// `sampling`, in `colour` (grey, RGB, or CMYK with white as no ink).
+    fn jpeg_of(
+        frame: &GrayImage,
+        colour: jpeg_encoder::ColorType,
+        sampling: jpeg_encoder::SamplingFactor,
+        progressive: bool,
+    ) -> Vec<u8> {
+        use jpeg_encoder::ColorType;
+        let pixels: Vec<u8> = match colour {
+            ColorType::Luma => frame.as_raw().clone(),
+            ColorType::Rgb => frame.as_raw().iter().flat_map(|&g| [g, g, g]).collect(),
+            ColorType::Cmyk => frame
+                .as_raw()
+                .iter()
+                .flat_map(|&g| [0, 0, 0, 255 - g])
+                .collect(),
+            other => unreachable!("{other:?}"),
+        };
+        let mut out = Vec::new();
+        let mut encoder = jpeg_encoder::Encoder::new(&mut out, 90);
+        encoder.set_sampling_factor(sampling);
+        encoder.set_progressive(progressive);
+        let (width, height) = frame.dimensions();
+        encoder
+            .encode(&pixels, width as u16, height as u16, colour)
+            .unwrap();
+        out
+    }
+
+    /// One decode stays within `DECODE_BOUND`, on the worst inputs each
+    /// bound admits. Heap high-water marks measured on 2026-10-08 are in
+    /// `DECODE_PERMITS`' comment.
     #[test]
     fn one_decode_stays_within_its_memory_bound() {
+        use jpeg_encoder::{ColorType, SamplingFactor};
         let bars = ean13("3017620422003", 6);
-        let bound = (MAX_ALLOC as usize) * 4 / 3 + 4 * MIB;
-        // The largest colour frame `MAX_ALLOC` admits: 24 Mpx, 72 MB in
-        // RGB, plus its 24 MB grey copy.
-        let (outcome, peak) = decode_peak(colour_jpeg(&bars, 6000, 4000));
-        assert_eq!(outcome.as_deref(), Ok("3017620422003"));
-        assert!(peak <= bound, "24 Mpx colour: {} MiB", peak / MIB);
+        let check = |name: &str, bytes: Vec<u8>, read: bool| {
+            let (outcome, peak) = decode_peak(bytes);
+            if read {
+                assert_eq!(outcome.as_deref(), Ok("3017620422003"), "{name}");
+            } else {
+                assert_ne!(outcome, Err(PhotoError::NotAnImage), "{name}");
+            }
+            assert!(peak <= DECODE_BOUND, "{name}: {} MiB", peak / MIB);
+        };
+        // Baseline colour, 24 Mpx: 72 MB of RGB, the most `MAX_ALLOC`
+        // admits, then its 24 MB grey copy.
+        check("24 Mpx colour", colour_jpeg(&bars, 6000, 4000), true);
+        // Progressive colour, 12 Mpx at 4:2:0, the usual subsampling:
+        // 37 MB of RGB and 37 MB of coefficients.
+        let frame = framed(&bars, 4032, 3024);
+        let jpeg = jpeg_of(&frame, ColorType::Rgb, SamplingFactor::R_4_2_0, true);
+        check("12 Mpx progressive 4:2:0", jpeg, true);
+        // Progressive colour at 4:4:4, 9 bytes a pixel: 9.3 Mpx.
+        let frame = framed(&bars, 3520, 2640);
+        let jpeg = jpeg_of(&frame, ColorType::Rgb, SamplingFactor::R_4_4_4, true);
+        check("9.3 Mpx progressive 4:4:4", jpeg, true);
+        // Progressive CMYK, 12 bytes a pixel: 7 Mpx. Whether a barcode is
+        // found in CMYK depends on how its ink is read: only the memory is
+        // the point here.
+        let frame = framed(&bars, 2640, 2640);
+        let jpeg = jpeg_of(&frame, ColorType::Cmyk, SamplingFactor::R_4_4_4, true);
+        check("7 Mpx progressive CMYK", jpeg, false);
+        // Progressive grey, 3 bytes a pixel: 5280 × 5280.
+        let frame = framed(&bars, 5280, 5280);
+        let jpeg = jpeg_of(&frame, ColorType::Luma, SamplingFactor::R_4_4_4, true);
+        check("5280² progressive grey", jpeg, true);
         // The largest picture `MAX_DIMENSION` admits, 8192 × 8192 grey:
         // 64 MB, then a quarter of it.
-        let (outcome, peak) = decode_peak(encode(&framed(&bars, 8192, 8192), ImageFormat::Png));
-        assert_eq!(outcome.as_deref(), Ok("3017620422003"));
-        assert!(peak <= bound, "8192² grey: {} MiB", peak / MIB);
-        // The 12 Mpx phone frame, read at full resolution.
+        let png = encode(&framed(&bars, 8192, 8192), ImageFormat::Png);
+        check("8192² grey PNG", png, true);
+        // Grey with alpha, 2 bytes a pixel, at exactly `MAX_ALLOC`: its
+        // grey copy is half of it, the largest share.
+        let frame = DynamicImage::ImageLuma8(framed(&bars, 8192, 5120)).into_luma_alpha8();
+        let mut png = Cursor::new(Vec::new());
+        DynamicImage::ImageLumaA8(frame)
+            .write_to(&mut png, ImageFormat::Png)
+            .unwrap();
+        check("8192 × 5120 grey and alpha PNG", png.into_inner(), true);
+        // The 12 Mpx phone frame, baseline, read at full resolution.
         let (outcome, peak) = decode_peak(colour_jpeg(&bars, 4032, 3024));
         assert_eq!(outcome.as_deref(), Ok("3017620422003"));
         assert!(peak <= 64 * MIB, "12 Mpx colour: {} MiB", peak / MIB);
     }
 
-    /// The file that made the case (#402): an 8000 × 8000 colour JPEG of
-    /// under 2 MB, which `image`'s `resize_exact`, through its `Rgba32F`
-    /// copy, turned into hundreds of MiB. Its 192 MB of RGB is past
-    /// `MAX_ALLOC`: refused at its header, before its pixels are allocated
-    /// (1.7 MiB measured on 2026-10-08).
+    /// Past the bounds, a photo is refused at its header, before its
+    /// pixels or its coefficients are allocated. The first is the file
+    /// that made the case (#402): an 8000 × 8000 colour JPEG of under
+    /// 2 MB, 192 MB of RGB. The progressive ones fit `MAX_ALLOC` by their
+    /// output alone, not with their coefficients.
     #[test]
-    fn a_photo_past_the_allocation_bound_costs_next_to_nothing() {
+    fn a_photo_past_the_bounds_costs_next_to_nothing() {
+        use jpeg_encoder::{ColorType, SamplingFactor};
         let bars = ean13("3017620422003", 6);
-        let (outcome, peak) = decode_peak(colour_jpeg(&bars, 8000, 8000));
-        assert_eq!(outcome, Err(PhotoError::NotAnImage));
-        assert!(peak <= 4 * MIB, "8000² colour, refused: {} MiB", peak / MIB);
+        let check = |name: &str, bytes: Vec<u8>| {
+            let (outcome, peak) = decode_peak(bytes);
+            assert_eq!(outcome, Err(PhotoError::NotAnImage), "{name}");
+            assert!(peak <= 4 * MIB, "{name}, refused: {} MiB", peak / MIB);
+        };
+        check("8000² colour", colour_jpeg(&bars, 8000, 8000));
+        for (name, width, height, colour) in [
+            ("6000 × 4000 progressive 4:4:4", 6000, 4000, ColorType::Rgb),
+            ("5280² progressive 4:4:4", 5280, 5280, ColorType::Rgb),
+            ("5280² progressive CMYK", 5280, 5280, ColorType::Cmyk),
+            ("8192² progressive grey", 8192, 8192, ColorType::Luma),
+            ("4032 × 3024 progressive 4:4:4", 4032, 3024, ColorType::Rgb),
+        ] {
+            let frame = framed(&bars, width, height);
+            check(name, jpeg_of(&frame, colour, SamplingFactor::R_4_4_4, true));
+        }
     }
 
     #[test]
@@ -480,6 +687,122 @@ mod tests {
             read_image(&png).err()
         );
         assert_eq!(decode_photo(&png), Err(PhotoError::NotAnImage));
+    }
+
+    /// A JPEG cut after its frame header: SOI, an APP1 the parser must
+    /// skip, then SOF`marker` with one component per `(h, v)`, then SOS.
+    fn jpeg_header(marker: u8, width: u16, height: u16, sampling: &[(u8, u8)]) -> Vec<u8> {
+        let mut out = vec![0xFF, 0xD8, 0xFF, 0xE1, 0x00, 0x06, b'E', b'x', b'i', b'f'];
+        out.extend_from_slice(&[0xFF, marker]);
+        out.extend_from_slice(&(8 + 3 * sampling.len() as u16).to_be_bytes());
+        out.push(8);
+        out.extend_from_slice(&height.to_be_bytes());
+        out.extend_from_slice(&width.to_be_bytes());
+        out.push(sampling.len() as u8);
+        for (i, (h, v)) in sampling.iter().enumerate() {
+            out.extend_from_slice(&[i as u8 + 1, h << 4 | v, 0]);
+        }
+        out.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x02]);
+        out
+    }
+
+    const YCC_420: [(u8, u8); 3] = [(2, 2), (1, 1), (1, 1)];
+    const YCC_444: [(u8, u8); 3] = [(1, 1), (1, 1), (1, 1)];
+
+    #[test]
+    fn a_baseline_frame_header_is_read_past_the_app_segments() {
+        let frame = jpeg_frame(&jpeg_header(0xC0, 4032, 3024, &YCC_420)).unwrap();
+        assert_eq!(
+            frame,
+            JpegFrame {
+                width: 4032,
+                height: 3024,
+                progressive: false,
+                sampling: vec![(2, 2), (1, 1), (1, 1)],
+            }
+        );
+    }
+
+    #[test]
+    fn every_multi_scan_frame_is_progressive() {
+        for marker in [0xC2, 0xC6, 0xCA, 0xCE] {
+            assert!(
+                jpeg_frame(&jpeg_header(marker, 8, 8, &YCC_444))
+                    .unwrap()
+                    .progressive
+            );
+        }
+        for marker in [0xC0, 0xC1, 0xC3] {
+            assert!(
+                !jpeg_frame(&jpeg_header(marker, 8, 8, &YCC_444))
+                    .unwrap()
+                    .progressive
+            );
+        }
+    }
+
+    #[test]
+    fn no_frame_header_is_none() {
+        assert_eq!(jpeg_frame(b"not a jpeg"), None);
+        assert_eq!(jpeg_frame(&[0xFF, 0xD8]), None);
+        // Cut inside the frame header.
+        assert_eq!(jpeg_frame(&jpeg_header(0xC2, 8, 8, &YCC_444)[..16]), None);
+        // The scan starts before any frame header.
+        assert_eq!(jpeg_frame(&[0xFF, 0xD8, 0xFF, 0xDA, 0x00, 0x02]), None);
+        // A Huffman table (C4) is not a frame header.
+        assert_eq!(
+            jpeg_frame(&[0xFF, 0xD8, 0xFF, 0xC4, 0x00, 0x02, 0xFF, 0xD9]),
+            None
+        );
+    }
+
+    #[test]
+    fn a_baseline_jpeg_costs_its_output_only() {
+        let frame = jpeg_frame(&jpeg_header(0xC0, 6000, 4000, &YCC_444)).unwrap();
+        assert_eq!(frame.decode_bytes(), 6000 * 4000 * 3);
+    }
+
+    #[test]
+    fn a_progressive_jpeg_also_costs_every_coefficient_at_once() {
+        // 4:4:4, 6000 × 4000: output 72 MB, plus 2 bytes for each sample of
+        // each component, 144 MB.
+        let frame = jpeg_frame(&jpeg_header(0xC2, 6000, 4000, &YCC_444)).unwrap();
+        assert_eq!(frame.decode_bytes(), 72_000_000 + 144_000_000);
+        // 4:2:0, 4032 × 3024: 252 × 189 MCUs of 16 × 16; luma covers them
+        // whole (12 192 768 samples), each chroma a quarter (3 048 192).
+        let frame = jpeg_frame(&jpeg_header(0xC2, 4032, 3024, &YCC_420)).unwrap();
+        assert_eq!(
+            frame.decode_bytes(),
+            36_578_304 + 2 * (12_192_768 + 2 * 3_048_192)
+        );
+        // Grey, 8192 × 8192: 64 MiB out, 128 MiB of coefficients.
+        let frame = jpeg_frame(&jpeg_header(0xC2, 8192, 8192, &[(1, 1)])).unwrap();
+        assert_eq!(frame.decode_bytes(), 3 * 8192 * 8192);
+    }
+
+    #[test]
+    fn coefficients_are_counted_on_whole_mcus() {
+        // 17 × 9, 4:2:0: 2 × 1 MCUs of 16 × 16. Luma 32 × 16, chroma 16 × 8.
+        let frame = jpeg_frame(&jpeg_header(0xC2, 17, 9, &YCC_420)).unwrap();
+        assert_eq!(
+            frame.decode_bytes(),
+            17 * 9 * 3 + 2 * (32 * 16 + 2 * 16 * 8)
+        );
+        // CMYK, four components: counted at one byte each on output.
+        let frame = jpeg_frame(&jpeg_header(0xC2, 8, 8, &[(1, 1); 4])).unwrap();
+        assert_eq!(frame.decode_bytes(), 8 * 8 * 4 + 2 * 4 * 64);
+    }
+
+    #[test]
+    fn a_jpeg_whose_decode_would_pass_the_bound_is_refused_at_its_header() {
+        // 6000 × 4000 progressive 4:4:4: 216 MB, past `MAX_ALLOC`, though
+        // its 72 MB of output is within it.
+        let header = jpeg_header(0xC2, 6000, 4000, &YCC_444);
+        assert!(
+            matches!(read_image(&header), Err(image::ImageError::Limits(_))),
+            "{:?}",
+            read_image(&header).err()
+        );
     }
 
     #[test]
