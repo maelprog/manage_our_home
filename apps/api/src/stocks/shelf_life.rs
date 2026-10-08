@@ -85,6 +85,12 @@ const SHELF_LIVES: &[Row] = &[
     row("en:yogurts", 21, "Yaourts"),
     // Fresh cheeses keep less than ripened ones; before `en:cheeses`.
     row("en:fresh-cheeses", 10, "Fromages à pâte fraîche"),
+    // Fresh Italian cheeses the taxonomy files under `en:cheeses` only, not
+    // `en:fresh-cheeses`: the same short date, before `en:cheeses`.
+    row("en:burrata", 5, "Burrata"),
+    row("en:mozzarella", 10, "Mozzarella"),
+    row("en:ricotta", 10, "Ricotta"),
+    row("en:mascarpone", 10, "Mascarpone"),
     row("en:cheeses", 21, "Fromages"),
     // UHT milk is labelled about three months ahead; before `en:milks`,
     // which has no row of its own (fresh milk is labelled about a week).
@@ -251,6 +257,16 @@ mod tests {
         .unwrap();
         assert_eq!(shelf_life.label, "Semi-conserves");
         assert!(shelf_life.days <= Days::new(30), "{shelf_life:?}");
+    }
+
+    #[test]
+    fn fresh_italian_cheeses_do_not_get_three_weeks() {
+        // Not under `en:fresh-cheeses` in the taxonomy, but fresh all the same.
+        for cheese in ["en:mozzarella", "en:burrata", "en:ricotta", "en:mascarpone"] {
+            let shelf_life =
+                default_shelf_life(&tags(&["en:dairies", "en:cheeses", cheese])).unwrap();
+            assert!(shelf_life.days <= Days::new(10), "{cheese}: {shelf_life:?}");
+        }
     }
 
     #[test]
