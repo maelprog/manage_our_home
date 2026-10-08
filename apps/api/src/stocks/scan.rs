@@ -10,21 +10,21 @@
 //! `raw` is an EAN/UPC (`barcode`), or a GS1 2D code (#403): a DataMatrix
 //! or QR element string, or a GS1 Digital Link URL (`gs1`). Its GTIN then
 //! takes the EAN/UPC path, and the date it carries comes back in
-//! `expires_on`, for the page to pre-fill — never written here.
+//! `expires_on`, for the page to pre-fill — never written here. Without
+//! such a date, a known product's category may give one (#404,
+//! `shelf_life`), proposed the same way.
 
 use axum::extract::{Path, State};
 use axum::Json;
 use chrono::Utc;
-use manage_our_home_shared::dto::stocks::{
-    ExpiresOnSource, ScanRequest, ScanResult, ScannedProduct,
-};
+use manage_our_home_shared::dto::stocks::{ScanRequest, ScanResult, ScannedProduct};
 use manage_our_home_shared::validation::auth::paris_day;
 use uuid::Uuid;
 
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::groups::require_role;
-use crate::stocks::{barcode, gs1, openfoodfacts};
+use crate::stocks::{barcode, gs1, openfoodfacts, shelf_life};
 use crate::AppState;
 
 pub async fn scan_stock_item(
@@ -34,10 +34,11 @@ pub async fn scan_stock_item(
     Json(body): Json<ScanRequest>,
 ) -> AppResult<Json<ScanResult>> {
     // The GS1 two-digit years are placed from the Paris day, like
-    // `expiry_status`.
-    let (code, expires_on) = match barcode::normalize(&body.raw) {
+    // `expiry_status`, and a category's shelf life counts from it.
+    let today = paris_day(Utc::now());
+    let (code, gs1_date) = match barcode::normalize(&body.raw) {
         Some(code) => (code, None),
-        None => gs1::read(&body.raw, paris_day(Utc::now()))
+        None => gs1::read(&body.raw, today)
             .map(|read| (read.code, read.expires_on))
             .ok_or_else(|| AppError::Unprocessable("invalid_barcode".into()))?,
     };
@@ -62,13 +63,20 @@ pub async fn scan_stock_item(
         product_for(&state, &code).await?
     };
 
+    let categories_tags = product
+        .as_ref()
+        .map(|p| p.categories_tags.as_slice())
+        .unwrap_or_default();
+    let proposed = shelf_life::proposed_expiry(gs1_date, categories_tags, today);
+
     Ok(Json(ScanResult {
         code: Some(code),
         weighed,
         product,
         existing_item_id,
-        expires_on,
-        expires_on_source: expires_on.map(|_| ExpiresOnSource::Gs1),
+        expires_on: proposed.as_ref().map(|p| p.on),
+        expires_on_source: proposed.as_ref().map(|p| p.source),
+        expires_on_category: proposed.and_then(|p| p.category).map(str::to_string),
     }))
 }
 

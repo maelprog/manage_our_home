@@ -41,6 +41,54 @@
     else if (input.hasAttribute("data-all-day")) allDay(input);
   });
 
+  // `data-expiry-shortcuts` (`stocks::new::form_fields`, #404): "+3 j",
+  // "+1 sem." and "+1 mois" buttons after the date's label, which fill the
+  // field from the browser's own day. They exist only here: without
+  // JavaScript the field is typed by hand. A month later keeps the day of
+  // the month, or takes the month's last one (31 January → 28 or 29
+  // February).
+  var SHORTCUTS = [["+3 j", 3, 0], ["+1 sem.", 7, 0], ["+1 mois", 0, 1]];
+
+  function expiryShortcuts() {
+    var fields = document.querySelectorAll("input[data-expiry-shortcuts]");
+    Array.prototype.forEach.call(fields, function (field) {
+      var group = document.createElement("div");
+      group.className = "actions";
+      group.setAttribute("role", "group");
+      group.setAttribute("aria-label", "Péremption dans");
+      SHORTCUTS.forEach(function (shortcut) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "secondary sm";
+        button.textContent = shortcut[0];
+        button.addEventListener("click", function () {
+          field.value = later(new Date(), shortcut[1], shortcut[2]);
+        });
+        group.appendChild(button);
+      });
+      // After the label, not in it: a label holds one control.
+      (closest(field, "label") || field).insertAdjacentElement("afterend", group);
+    });
+  }
+
+  function later(today, days, months) {
+    var y = today.getFullYear();
+    var m = today.getMonth() + months;
+    var last = new Date(y, m + 1, 0).getDate();
+    var d = new Date(y, m, Math.min(today.getDate(), last) + days);
+    function pad(n) {
+      return (n < 10 ? "0" : "") + n;
+    }
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+  }
+
+  // Loaded from the <head>: the fields are there once the document is.
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", expiryShortcuts);
+  } else {
+    expiryShortcuts();
+  }
+
   // The "Journée entière" box swaps `Début`/`Fin` between `datetime-local`
   // and `date`. Ticking: each value keeps its date, except an end sitting on
   // midnight past the start's day, which becomes the day before — the same
