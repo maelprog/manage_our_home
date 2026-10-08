@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, group_id, created_by, name, instructions, created_at, updated_at\n        FROM recipes\n        WHERE group_id = $1\n        ORDER BY name\n        ",
+  "query": "\n        SELECT id, group_id, created_by, name, instructions, source_url, created_at, updated_at\n        FROM recipes\n        WHERE group_id = $1\n        ORDER BY name\n        ",
   "describe": {
     "columns": [
       {
@@ -60,6 +60,17 @@
       },
       {
         "ordinal": 5,
+        "name": "source_url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "source_url"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -70,7 +81,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -92,9 +103,10 @@
       false,
       false,
       true,
+      true,
       false,
       false
     ]
   },
-  "hash": "577508c8b1a436722a41d0a0cfec566f985c10172e50eb6d98053c5bc26b5946"
+  "hash": "62163a4ee754355701f5e873c2cb9a254b136a7e2f5813ca8d096301f7feb289"
 }

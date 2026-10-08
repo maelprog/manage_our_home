@@ -10,6 +10,7 @@ use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::groups::require_role;
 use crate::recipes::can_modify;
+use crate::recipes::import::valid_source_url;
 use crate::AppState;
 
 #[derive(Deserialize)]
@@ -28,6 +29,9 @@ pub struct CreateRecipeRequest {
     pub instructions: Option<String>,
     #[serde(default)]
     pub ingredients: Vec<IngredientInput>,
+    /// The page the recipe was imported from (#405), checked by
+    /// `import::valid_source_url`.
+    pub source_url: Option<String>,
 }
 
 /// Serde's blanket `Option<T>` impl treats an explicit JSON `null` the same
@@ -68,6 +72,7 @@ pub struct RecipeResponse {
     pub name: String,
     pub instructions: Option<String>,
     pub ingredients: Vec<IngredientResponse>,
+    pub source_url: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -78,6 +83,7 @@ struct RecipeRow {
     created_by: Uuid,
     name: String,
     instructions: Option<String>,
+    source_url: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -182,6 +188,13 @@ pub async fn create_recipe(
         return Err(AppError::BadRequest("name_required".into()));
     }
     validate_ingredients(&body.ingredients)?;
+    let source_url = match body.source_url.as_deref() {
+        None => None,
+        Some(url) => Some(
+            valid_source_url(url)
+                .ok_or_else(|| AppError::BadRequest("invalid_source_url".into()))?,
+        ),
+    };
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
@@ -189,14 +202,15 @@ pub async fn create_recipe(
     let recipe = sqlx::query_as!(
         RecipeRow,
         r#"
-        INSERT INTO recipes (group_id, created_by, name, instructions)
-        VALUES ($1, $2, $3, $4)
-        RETURNING id, group_id, created_by, name, instructions, created_at, updated_at
+        INSERT INTO recipes (group_id, created_by, name, instructions, source_url)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, group_id, created_by, name, instructions, source_url, created_at, updated_at
         "#,
         group_id,
         auth.user_id,
         name,
         body.instructions,
+        source_url,
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -214,6 +228,7 @@ pub async fn create_recipe(
             name: recipe.name,
             instructions: recipe.instructions,
             ingredients,
+            source_url: recipe.source_url,
             created_at: recipe.created_at,
             updated_at: recipe.updated_at,
         }),
@@ -230,7 +245,7 @@ pub async fn get_recipe(
 
     let recipe = sqlx::query_as!(
         RecipeRow,
-        r#"SELECT id, group_id, created_by, name, instructions, created_at, updated_at
+        r#"SELECT id, group_id, created_by, name, instructions, source_url, created_at, updated_at
            FROM recipes WHERE id = $1 AND group_id = $2"#,
         recipe_id,
         group_id,
@@ -249,6 +264,7 @@ pub async fn get_recipe(
         name: recipe.name,
         instructions: recipe.instructions,
         ingredients,
+        source_url: recipe.source_url,
         created_at: recipe.created_at,
         updated_at: recipe.updated_at,
     }))
@@ -265,7 +281,7 @@ pub async fn list_recipes(
     let recipe_rows = sqlx::query_as!(
         RecipeRow,
         r#"
-        SELECT id, group_id, created_by, name, instructions, created_at, updated_at
+        SELECT id, group_id, created_by, name, instructions, source_url, created_at, updated_at
         FROM recipes
         WHERE group_id = $1
         ORDER BY name
@@ -298,6 +314,7 @@ pub async fn list_recipes(
             name: r.name,
             instructions: r.instructions,
             ingredients: Vec::new(),
+            source_url: r.source_url,
             created_at: r.created_at,
             updated_at: r.updated_at,
         })
@@ -358,7 +375,7 @@ pub async fn update_recipe(
             instructions = $4,
             updated_at = now()
         WHERE id = $1 AND group_id = $2
-        RETURNING id, group_id, created_by, name, instructions, created_at, updated_at
+        RETURNING id, group_id, created_by, name, instructions, source_url, created_at, updated_at
         "#,
         recipe_id,
         group_id,
@@ -388,6 +405,7 @@ pub async fn update_recipe(
         name: recipe.name,
         instructions: recipe.instructions,
         ingredients,
+        source_url: recipe.source_url,
         created_at: recipe.created_at,
         updated_at: recipe.updated_at,
     }))

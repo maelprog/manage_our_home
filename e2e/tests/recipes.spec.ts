@@ -243,3 +243,64 @@ test.describe("Recipes — permission bar", () => {
     await context.close();
   });
 });
+
+// #405: import a recipe from a page's address. The nominal path (a real
+// page read, then the pre-filled form) is covered by
+// apps/api/tests/recipe_import_flow.rs against a local site: this suite
+// has no recipe site to point at, and the server refuses every local or
+// private address by design — which is what the first test checks.
+test.describe("Recipes — import from a URL", () => {
+  test("a local address is refused with a clear message, the address kept", async ({ page }) => {
+    await registerAndLogin(page, "e2e-rcimport", "Import User");
+    await createGroup(page, "Famille Import");
+
+    await page.goto("/recipes");
+    await page.getByRole("link", { name: "Importer depuis une URL" }).click();
+    await expect(page).toHaveURL(/\/recipes\/import$/);
+    await expect(page.getByRole("heading", { name: "Importer une recette", level: 1 })).toBeVisible();
+
+    const address = page.getByRole("textbox", { name: "Adresse de la page" });
+    await address.fill("http://127.0.0.1/recette-locale");
+    await page.getByRole("button", { name: "Importer", exact: true }).click();
+
+    await expect(
+      page.getByText("Cette adresse mène à un réseau local ou privé : elle ne peut pas être importée."),
+    ).toBeVisible();
+    await expect(address).toHaveValue("http://127.0.0.1/recette-locale");
+    // Nothing was created.
+    await page.goto("/recipes");
+    await expect(page.getByText("Aucune recette pour le moment.")).toBeVisible();
+  });
+
+  test("a recipe created with its source links to the page it came from", async ({ page }) => {
+    await registerAndLogin(page, "e2e-rcsource", "Source User");
+    await createGroup(page, "Famille Origine");
+
+    // The create form as the import leaves it: the page's address in a
+    // hidden `source_url` field, next to the fields the member reviews.
+    await page.goto("/recipes/new");
+    await expect(page.getByRole("link", { name: "Importer depuis une URL" })).toHaveAttribute(
+      "href",
+      "/recipes/import",
+    );
+    const source = "https://www.marmiton.org/recettes/recette_crepes-faciles_27121.aspx";
+    await page.locator('form[action="/recipes/new"]').evaluate((form, url) => {
+      const field = document.createElement("input");
+      field.type = "hidden";
+      field.name = "source_url";
+      field.value = url;
+      form.appendChild(field);
+    }, source);
+    await page.getByLabel("Nom").fill("Crêpes importées");
+    await page.getByRole("button", { name: "Créer la recette" }).click();
+    await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\?notice=recipe_created$/);
+
+    const link = page.getByRole("link", { name: "marmiton.org" });
+    await expect(link).toHaveAttribute("href", source);
+    await expect(link).toHaveAttribute("rel", "noopener noreferrer nofollow");
+
+    // A recipe typed by hand shows no source.
+    await createRecipe(page, { name: "Crêpes maison" });
+    await expect(page.getByText("Source :")).toHaveCount(0);
+  });
+});

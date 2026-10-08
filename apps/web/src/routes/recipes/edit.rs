@@ -97,6 +97,7 @@ pub async fn get(
         name: recipe.name.clone(),
         instructions: recipe.instructions.clone().unwrap_or_default(),
         ingredients: format_ingredients(&recipe.ingredients),
+        source_url: String::new(),
     };
     Html(page(&fam.header, recipe_id, &recipe.name, &form, None)).into_response()
 }

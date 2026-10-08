@@ -261,6 +261,10 @@ fn build_router(state: AppState) -> Router {
             "/recipes/new",
             get(routes::recipes::new::get).post(routes::recipes::new::post),
         )
+        .route(
+            "/recipes/import",
+            get(routes::recipes::import::get).post(routes::recipes::import::post),
+        )
         .route("/recipes/:id", get(routes::recipes::detail::get))
         .route(
             "/recipes/:id/edit",

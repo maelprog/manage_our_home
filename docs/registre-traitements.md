@@ -1,6 +1,8 @@
 # Registre des traitements — Manage Our Home
 
 Registre tenu au titre de l'article 30 du RGPD. Dernière mise à jour :
+2026-10-09 (recette importée depuis l'adresse d'une page : adresse conservée,
+page téléchargée par le serveur, #405) ;
 2026-10-08 (code-barres d'un article de stock, photo du code lue sans être conservée, Open Food Facts, #402 ;
 date de péremption lue sur un code 2D GS1, #403) ;
 2026-10-05 (fin d'une session inactive et jetons de réinitialisation, #327 ;
@@ -80,6 +82,16 @@ l'ouverture publique : voir `docs/v2-deployment.md` #16.
   cache (`off_products`, table de fiches publiques rattachée à aucune
   famille ni à aucun compte). Mentionné pour que la liste des flux sortants
   soit complète.
+- **Le site d'une recette importée** (#405) n'est destinataire d'aucune
+  donnée personnelle non plus. Quand un membre colle l'adresse d'une page
+  de recette, c'est le serveur qui télécharge cette page, une fois, au
+  moment de l'import (`apps/api/src/recipes/import.rs`) : sans cookie ni
+  identifiant de compte ou de famille, et l'adresse IP vue est celle du
+  serveur. Le serveur ne suit que des adresses publiques
+  (`apps/api/src/public_destination.rs`) et n'enregistre rien de la page :
+  il en tire un brouillon que le membre relit, et seule l'adresse de la
+  page est conservée, avec la recette si elle est créée. Mentionné pour que
+  la liste des flux sortants soit complète.
 
 **Mesures de sécurité communes** : chiffrement au repos via `pgcrypto` pour
 les colonnes sensibles, isolation multi-tenant appliquée au niveau base de
@@ -137,7 +149,7 @@ ligne.
 | 2a | Rappels d'événements, par notification ou par email | délai avant l'événement (`event_reminders`) ; file d'envoi par occurrence : heure d'envoi, statut, tentatives, dernière erreur de transport (`scheduled_notifications`) ; canal choisi par compte — notification (par défaut pour un compte créé depuis #306), email ou les deux (`users.reminder_channel`) ; par appareil abonné aux notifications, l'adresse d'abonnement attribuée par le service de notification du navigateur, la plateforme (`web`), les dates d'abonnement, de dernier enregistrement et de dernier envoi réussi, le nombre et la date de début des envois échoués d'affilée (`push_subscriptions`, 50 appareils au plus par compte : le 51e remplace celui qui a servi le moins récemment, enregistrement ou envoi réussi — arbitrage du 2026-10-01). L'email porte le titre et la date de l'événement ; la notification ne porte rien (message vide) et l'appareil affiche « Rappel d'un événement à venir ». Pas de repli d'un canal sur l'autre : sans appareil abonné, un rappel par notification n'est pas envoyé et l'application en avertit (arbitrage du responsable de traitement du 2026-10-01) | Prévenir avant un événement | Exécution du contrat | Un rappel vit jusqu'à sa suppression ou celle de l'événement ; les lignes de la file restent après envoi (statut `sent` ou `failed`) et partent avec le rappel ou l'événement. Un appareil abonné reste jusqu'à ce que son service de notification le dise expiré ou retiré (réponse 404 ou 410 : la ligne est supprimée au premier envoi qui la reçoit), jusqu'à ce que chaque envoi y échoue pendant au moins 7 jours avec au moins 20 échecs d'affilée (`MAX_CONSECUTIVE_FAILURES`, `MIN_FAILING_DAYS`), jusqu'au désabonnement par le membre, ou jusqu'à la purge du compte | Scaleway (email) ; service de notification du navigateur (notification, voir ci-dessus) ; le rappel part au **créateur de l'événement**, quel que soit le membre qui l'a posé, sur le canal du compte de ce créateur (`apps/api/src/jobs/scheduled_notifications.rs`) |
 | 2b | Assignations d'événements | événement, membre assigné, date (`event_assignees`) ; posées par un membre, par défaut le créateur de l'événement, et pour un événement importé le membre qui a lancé l'import | Indiquer pour qui est un événement | Exécution du contrat | Tant que l'événement existe et que l'assignation n'est pas retirée ; elle survit au départ du groupe, pas à la purge du compte, qui la supprime (#139) | Membres du groupe |
 | 3 | Stocks | articles du garde-manger/frigo, quantités, seuils, dates de péremption, code-barres d'un article scanné ou saisi (`stock_items.barcode`, #402) ; photo du code-barres envoyée pour le scan, qui peut montrer l'intérieur du logement : lue en mémoire par apps/web (`apps/web/src/routes/stocks/photo.rs`), ni écrite, ni journalisée, ni transmise à apps/api ou à un tiers — seul le code décodé continue : ses chiffres, ou, pour un code 2D GS1 (DataMatrix, QR, #403), son texte (numéro du produit et, selon le code, date de péremption, lot ou numéro de série), dont apps/api n'utilise que le produit et la date ; un autre code 2D de la photo est ignoré | Gestion de l'inventaire familial | Exécution du contrat | Idem #2 pour les articles ; la photo n'est pas conservée : elle disparaît avec la requête qui l'apporte | Aucun tiers (le code-barres seul est envoyé à Open Food Facts, sans donnée personnelle : voir « Sous-traitants (destinataires) ») |
-| 4 | Recettes | recettes, ingrédients, historique des repas | Suggestions de repas (algorithme local, pas d'IA tierce) | Exécution du contrat | Idem #2 | Aucun tiers |
+| 4 | Recettes | recettes, ingrédients, historique des repas ; adresse de la page d'où une recette a été importée (`recipes.source_url`, #405) | Suggestions de repas (algorithme local, pas d'IA tierce) | Exécution du contrat | Idem #2 | Aucun tiers (à l'import, le serveur télécharge la page de la recette sans donnée personnelle : voir « Sous-traitants (destinataires) ») |
 | 5 | Liste de courses | articles à acheter, source (manuel/recette/stock bas) | Liste de courses partagée | Exécution du contrat | Idem #2 | Aucun tiers |
 | 6 | Budget | dépenses saisies manuellement (montant, nom, date) | Suivi du budget alimentaire familial | Exécution du contrat | Idem #2 | Aucun tiers |
 | 7 | Messagerie | contenu des messages (chiffré au repos via `pgcrypto`) | Communication au sein du groupe familial | Exécution du contrat | Idem #2 | Aucun tiers |

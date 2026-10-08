@@ -19,6 +19,7 @@ pub mod messagerie;
 pub mod migrations;
 pub mod notifications;
 pub mod outbound_http;
+pub mod public_destination;
 pub mod recipes;
 pub mod rgpd;
 pub mod stocks;
@@ -128,6 +129,15 @@ pub struct AppState {
     /// The limit on reads sent to Open Food Facts (#402), in-process like
     /// `login_throttle`.
     pub off_throttle: std::sync::Arc<stocks::openfoodfacts::Throttle>,
+    /// The client the recipe import (#405) fetches pages with:
+    /// `outbound_http::recipe_import_client()`, which reaches public
+    /// addresses only. The flow tests use the same configuration
+    /// (`outbound_http::recipe_import_builder`), with a test name pinned to
+    /// their local server.
+    pub recipe_import_client: reqwest::Client,
+    /// The per-member limit on recipe imports (#405), in-process like
+    /// `login_throttle`.
+    pub recipe_import_throttle: std::sync::Arc<recipes::import::ImportThrottle>,
 }
 
 /// Body of the 408 a too-slow request body gets (#219), in the API's usual
@@ -309,6 +319,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/groups/:id/recipes",
             post(recipes::crud::create_recipe).get(recipes::crud::list_recipes),
+        )
+        .route(
+            "/groups/:id/recipes/import",
+            post(recipes::import::import_recipe),
         )
         .route(
             "/groups/:id/recipes/suggestions",

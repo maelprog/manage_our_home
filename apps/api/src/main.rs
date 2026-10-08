@@ -146,6 +146,10 @@ async fn main() -> anyhow::Result<()> {
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| manage_our_home::stocks::openfoodfacts::DEFAULT_BASE_URL.into()),
         off_throttle: std::sync::Arc::new(manage_our_home::stocks::openfoodfacts::Throttle::new()),
+        recipe_import_client: manage_our_home::outbound_http::recipe_import_client().clone(),
+        recipe_import_throttle: std::sync::Arc::new(
+            manage_our_home::recipes::import::ImportThrottle::new(),
+        ),
     };
 
     // On the admin pool: `event_attachments` reads back empty without
