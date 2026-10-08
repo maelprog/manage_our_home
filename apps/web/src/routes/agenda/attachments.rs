@@ -264,6 +264,7 @@ mod tests {
     use tower::ServiceExt;
     use uuid::Uuid;
 
+    use crate::heap_count as heap;
     use crate::state::AppState;
 
     fn with_content_length(value: &str) -> HeaderMap {
@@ -674,90 +675,6 @@ mod tests {
         assert_eq!(web.gate.in_flight(), 0, "the permit must be back");
     }
 
-    /// Heap bytes live on the threads of one runtime, and their high-water
-    /// mark. Only threads that ask to be counted are: the test binary runs
-    /// tests side by side, and only the runtime standing in for apps/web's
-    /// process enrols its threads. Counted across them, not per thread,
-    /// because production runs a multi-threaded runtime (`#[tokio::main]`
-    /// in `src/main.rs`), whose workers pass tasks and buffers between
-    /// them (#250).
-    mod heap {
-        use std::alloc::{GlobalAlloc, Layout, System};
-        use std::cell::Cell;
-        use std::sync::atomic::{AtomicIsize, Ordering};
-
-        struct Counting;
-
-        static LIVE: AtomicIsize = AtomicIsize::new(0);
-        static PEAK: AtomicIsize = AtomicIsize::new(0);
-
-        thread_local! {
-            static COUNTED: Cell<bool> = const { Cell::new(false) };
-        }
-
-        fn add(delta: isize) {
-            if COUNTED.try_with(Cell::get).unwrap_or(false) {
-                let now = LIVE.fetch_add(delta, Ordering::Relaxed) + delta;
-                PEAK.fetch_max(now, Ordering::Relaxed);
-            }
-        }
-
-        fn size(n: usize) -> isize {
-            isize::try_from(n).unwrap_or(isize::MAX)
-        }
-
-        unsafe impl GlobalAlloc for Counting {
-            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-                let ptr = System.alloc(layout);
-                if !ptr.is_null() {
-                    add(size(layout.size()));
-                }
-                ptr
-            }
-
-            unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-                let ptr = System.alloc_zeroed(layout);
-                if !ptr.is_null() {
-                    add(size(layout.size()));
-                }
-                ptr
-            }
-
-            unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-                System.dealloc(ptr, layout);
-                add(-size(layout.size()));
-            }
-
-            unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-                let moved = System.realloc(ptr, layout, new_size);
-                if !moved.is_null() {
-                    add(size(new_size) - size(layout.size()));
-                }
-                moved
-            }
-        }
-
-        #[global_allocator]
-        static COUNTING: Counting = Counting;
-
-        /// From now on, what this thread allocates and frees is counted.
-        pub fn count_this_thread() {
-            COUNTED.with(|counted| counted.set(true));
-        }
-
-        /// Starts a new high-water mark from what is live now, and
-        /// returns it.
-        pub fn start() -> isize {
-            let live = LIVE.load(Ordering::Relaxed);
-            PEAK.store(live, Ordering::Relaxed);
-            live
-        }
-
-        pub fn peak() -> isize {
-            PEAK.load(Ordering::Relaxed)
-        }
-    }
-
     /// A stand-in apps/api that reads no body until `holders` uploads have
     /// reached it: until then, every one of them is held whole by apps/web.
     async fn holding_api(holders: usize) -> String {
@@ -841,6 +758,7 @@ mod tests {
     /// processes.
     #[test]
     fn a_full_pool_of_uploads_at_the_cap_holds_one_copy_of_each() {
+        let _measuring = heap::exclusive();
         let pool = manage_our_home_http_guard::gate::GLOBAL_UPLOADS;
         let outside = tokio::runtime::Builder::new_multi_thread()
             .enable_all()

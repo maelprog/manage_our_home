@@ -32,10 +32,10 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 /// connection's read buffer. So about 169 to 170 MiB for a full pool in
 /// apps/web — of bodies held. The stocks' barcode photo (#402) takes its
 /// permits from the same pool, with a smaller body (12 MiB plus framing),
-/// but decoding a photo needs far more than its body: up to about 92 MiB
-/// each, measured in release. That is not bounded here but by a pool of
-/// its own, `routes::stocks::photo::DECODE_PERMITS` in apps/web (two at
-/// once, about 185 MiB), on top of the bodies above.
+/// but decoding a photo needs far more than its body: up to 91.6 MiB of
+/// heap each, measured by a test of apps/web. That is not bounded here but
+/// by a pool of its own, `routes::stocks::photo::DECODE_PERMITS` in apps/web
+/// (two at once, under 185 MiB), on top of the bodies above.
 pub const GLOBAL_UPLOADS: usize = 8;
 
 /// Uploads one account may have in flight at once.

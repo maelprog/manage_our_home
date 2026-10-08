@@ -53,14 +53,12 @@ const MAX_ALLOC: u64 = 80 * 1024 * 1024;
 /// Decodes running at once in this process. The photo route also holds an
 /// upload permit (`manage_our_home_http_guard::UploadGate`), which bounds the
 /// bodies held, up to eight; this bounds the far larger working memory of
-/// decoding them. Peak resident memory of one decode, measured in release
-/// with `/usr/bin/time -v` on `peak_of_one_decode`, one input per process,
-/// less the 7.7 MiB of the harness decoding a tiny PNG (2026-10-08): a
-/// 12 Mpx colour JPEG, 47 MiB; a 24 Mpx colour JPEG, the largest
-/// `MAX_ALLOC` admits, 92 MiB; an 8192 × 8192 grey PNG, 81 MiB; an
-/// 8000 × 8000 colour JPEG of 1.8 MB, refused at its header, 3 MiB. So
-/// about 185 MiB for the two decodes at once, on top of the bodies the
-/// upload gate holds.
+/// decoding them. Heap high-water mark of one decode, measured by
+/// `one_decode_stays_within_its_memory_bound` (2026-10-08): a 12 Mpx colour
+/// JPEG, 46.5 MiB; a 24 Mpx colour JPEG, the largest `MAX_ALLOC` admits,
+/// 91.6 MiB; an 8192 × 8192 grey PNG, 80.6 MiB; an 8000 × 8000 colour JPEG,
+/// refused at its header, 1.7 MiB. So under 185 MiB for two decodes at
+/// once, on top of the bodies the upload gate holds.
 pub const DECODE_PERMITS: usize = 2;
 
 /// The process-wide pool of decode permits.
@@ -330,38 +328,67 @@ mod tests {
         );
     }
 
-    /// Writes the worst inputs the bounds admit to `$PHOTO_PEAK_DIR`, for
-    /// `peak_of_one_decode` to read back in a process of its own.
-    #[test]
-    #[ignore = "writes the inputs of the release peak measurement"]
-    fn write_peak_inputs() {
-        let dir = std::path::PathBuf::from(std::env::var("PHOTO_PEAK_DIR").unwrap());
-        let bars = ean13("3017620422003", 6);
-        // A 24 Mpx colour JPEG: the largest colour frame `MAX_ALLOC` admits.
-        std::fs::write(dir.join("rgb-24mpx.jpg"), colour_jpeg(&bars, 6000, 4000)).unwrap();
-        // An 8192 × 8192 grey PNG: the largest picture `MAX_DIMENSION`
-        // admits, 64 MB in grey, reduced by 2.
-        std::fs::write(
-            dir.join("grey-8192.png"),
-            encode(&framed(&bars, 8192, 8192), ImageFormat::Png),
-        )
-        .unwrap();
-        // A 12 Mpx colour JPEG, the common phone frame, at full resolution.
-        std::fs::write(dir.join("rgb-12mpx.jpg"), colour_jpeg(&bars, 4032, 3024)).unwrap();
-        // An 8000 × 8000 colour JPEG, 192 MB in RGB: refused by `MAX_ALLOC`.
-        std::fs::write(dir.join("rgb-8000.jpg"), colour_jpeg(&bars, 8000, 8000)).unwrap();
-        // A tiny file, for the baseline of the test process.
-        std::fs::write(dir.join("tiny.png"), encode(&ean13("3017620422003", 2), ImageFormat::Png)).unwrap();
+    /// The heap high-water mark of one `decode_photo(bytes)`, counted on a
+    /// thread of its own, over what was live when it began. `bytes` is
+    /// built before counting starts: the file is the body's cost, which
+    /// the upload gate bounds, not the decode's.
+    fn decode_peak(bytes: Vec<u8>) -> (Result<String, PhotoError>, usize) {
+        let _measuring = crate::heap_count::exclusive();
+        std::thread::spawn(move || {
+            crate::heap_count::count_this_thread();
+            let baseline = crate::heap_count::start();
+            let outcome = decode_photo(&bytes);
+            let peak = usize::try_from(crate::heap_count::peak() - baseline).unwrap();
+            println!(
+                "decode of {} bytes: heap peak {:.1} MiB",
+                bytes.len(),
+                peak as f64 / MIB as f64
+            );
+            (outcome, peak)
+        })
+        .join()
+        .unwrap()
     }
 
-    /// Decodes `$PHOTO_PEAK_INPUT` once; its process's peak resident size,
-    /// read by `/usr/bin/time -v`, is the cost of one decode plus the test
-    /// harness (the `tiny.png` run).
+    const MIB: usize = 1024 * 1024;
+
+    /// What one decode costs at most, measured on the worst inputs the
+    /// bounds admit (heap high-water marks on 2026-10-08: 91.6, 80.6 and
+    /// 46.5 MiB, in the order below). The colour buffer the decoder fills
+    /// is capped by `MAX_ALLOC`; the grey copy made from it lives beside it
+    /// for a moment, a third of its size; the reduction and the barcode
+    /// search work on the grey picture, a quarter of it once reduced.
     #[test]
-    #[ignore = "release peak measurement, one input per process"]
-    fn peak_of_one_decode() {
-        let bytes = std::fs::read(std::env::var("PHOTO_PEAK_INPUT").unwrap()).unwrap();
-        let _ = decode_photo(&bytes);
+    fn one_decode_stays_within_its_memory_bound() {
+        let bars = ean13("3017620422003", 6);
+        let bound = (MAX_ALLOC as usize) * 4 / 3 + 4 * MIB;
+        // The largest colour frame `MAX_ALLOC` admits: 24 Mpx, 72 MB in
+        // RGB, plus its 24 MB grey copy.
+        let (outcome, peak) = decode_peak(colour_jpeg(&bars, 6000, 4000));
+        assert_eq!(outcome.as_deref(), Ok("3017620422003"));
+        assert!(peak <= bound, "24 Mpx colour: {} MiB", peak / MIB);
+        // The largest picture `MAX_DIMENSION` admits, 8192 × 8192 grey:
+        // 64 MB, then a quarter of it.
+        let (outcome, peak) = decode_peak(encode(&framed(&bars, 8192, 8192), ImageFormat::Png));
+        assert_eq!(outcome.as_deref(), Ok("3017620422003"));
+        assert!(peak <= bound, "8192² grey: {} MiB", peak / MIB);
+        // The 12 Mpx phone frame, read at full resolution.
+        let (outcome, peak) = decode_peak(colour_jpeg(&bars, 4032, 3024));
+        assert_eq!(outcome.as_deref(), Ok("3017620422003"));
+        assert!(peak <= 64 * MIB, "12 Mpx colour: {} MiB", peak / MIB);
+    }
+
+    /// The file that made the case (#402): an 8000 × 8000 colour JPEG of
+    /// under 2 MB, which `image`'s `resize_exact`, through its `Rgba32F`
+    /// copy, turned into hundreds of MiB. Its 192 MB of RGB is past
+    /// `MAX_ALLOC`: refused at its header, before its pixels are allocated
+    /// (1.7 MiB measured on 2026-10-08).
+    #[test]
+    fn a_photo_past_the_allocation_bound_costs_next_to_nothing() {
+        let bars = ean13("3017620422003", 6);
+        let (outcome, peak) = decode_peak(colour_jpeg(&bars, 8000, 8000));
+        assert_eq!(outcome, Err(PhotoError::NotAnImage));
+        assert!(peak <= 4 * MIB, "8000² colour, refused: {} MiB", peak / MIB);
     }
 
     #[test]

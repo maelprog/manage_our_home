@@ -11,6 +11,9 @@ mod csp;
 #[cfg(test)]
 mod design_journal;
 mod family;
+// The counting allocator of the memory tests (#250, #402). Test-only.
+#[cfg(test)]
+mod heap_count;
 mod layout;
 mod routes;
 mod state;
