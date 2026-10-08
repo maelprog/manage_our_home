@@ -128,10 +128,9 @@ mod tests {
     }
 
     /// Every outbound call goes through `client()`, `oauth_client()` or
-    /// `recipe_import_client()`: a
-    /// client built anywhere else in `src/` would come without these
-    /// timeouts. `push.rs` keeps its own, with its own timeout and redirect
-    /// policy.
+    /// `recipe_import_client()`: a client built anywhere else in `src/`
+    /// would come without these timeouts. `push.rs` keeps its own, with its
+    /// own timeout and redirect policy.
     #[test]
     fn no_other_reqwest_client_is_built_in_the_api_sources() {
         // A line naming `reqwest` and building a client. This file and
