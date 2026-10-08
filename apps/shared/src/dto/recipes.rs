@@ -34,7 +34,15 @@ pub struct CreateRecipeRequest {
     pub instructions: Option<String>,
     #[serde(default)]
     pub ingredients: Vec<IngredientInput>,
+    /// The page the recipe was imported from (#405): `http`/`https`, at
+    /// most `SOURCE_URL_MAX_LEN` characters. Set by the import only, and
+    /// not editable afterwards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
 }
+
+/// The longest `source_url` a recipe may carry, in characters.
+pub const SOURCE_URL_MAX_LEN: usize = 2048;
 
 /// Serde's blanket `Option<T>` impl collapses an explicit `null` and a
 /// missing key to the same `None`, so a naive `Option<Option<T>>` can never
@@ -91,8 +99,37 @@ pub struct RecipeResponse {
     pub name: String,
     pub instructions: Option<String>,
     pub ingredients: Vec<IngredientResponse>,
+    /// The page the recipe was imported from (#405), if it was.
+    #[serde(default)]
+    pub source_url: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// `POST /groups/:id/recipes/import` request body (#405).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportRecipeRequest {
+    pub url: String,
+}
+
+/// One ingredient line of an imported page, split into quantity, unit and
+/// name — or kept whole as the name when it was not understood.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DraftIngredient {
+    pub quantity: Option<f64>,
+    pub unit: Option<String>,
+    pub name: String,
+}
+
+/// `POST /groups/:id/recipes/import` response (#405): the recipe a page
+/// publishes, for the member to review and correct. Nothing is saved: the
+/// recipe is created by `POST /groups/:id/recipes`, with `source_url`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecipeDraft {
+    pub name: String,
+    pub ingredients: Vec<DraftIngredient>,
+    pub steps: Vec<String>,
+    pub source_url: String,
 }
 
 /// `GET /groups/:id/recipes` response envelope (`{ "recipes": [...] }`).

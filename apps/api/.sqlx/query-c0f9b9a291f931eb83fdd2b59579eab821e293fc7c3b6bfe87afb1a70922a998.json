@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        UPDATE recipes SET\n            name = COALESCE($3, name),\n            instructions = $4,\n            updated_at = now()\n        WHERE id = $1 AND group_id = $2\n        RETURNING id, group_id, created_by, name, instructions, created_at, updated_at\n        ",
+  "query": "\n        INSERT INTO recipes (group_id, created_by, name, instructions, source_url)\n        VALUES ($1, $2, $3, $4, $5)\n        RETURNING id, group_id, created_by, name, instructions, source_url, created_at, updated_at\n        ",
   "describe": {
     "columns": [
       {
@@ -60,6 +60,17 @@
       },
       {
         "ordinal": 5,
+        "name": "source_url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "source_url"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -70,7 +81,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -86,6 +97,7 @@
         "Uuid",
         "Uuid",
         "Text",
+        "Text",
         "Text"
       ]
     },
@@ -95,9 +107,10 @@
       false,
       false,
       true,
+      true,
       false,
       false
     ]
   },
-  "hash": "cb18d9bd8fe8f1cd67df50a5502a0f6b412b82a20b5a963277fbd070748db63f"
+  "hash": "c0f9b9a291f931eb83fdd2b59579eab821e293fc7c3b6bfe87afb1a70922a998"
 }

@@ -11,6 +11,11 @@
 //! drops the `Authorization` header on a change of host or port) (#389).
 //! The `oauth2` crate's documentation advises the same for the code
 //! exchange. The iCal import keeps following redirects, feeds move.
+//!
+//! The recipe import (#405) fetches a page at an address the member typed:
+//! its client only reaches public addresses (`public_destination`), checks
+//! each redirect the same way, and ignores any proxy configured in the
+//! environment, whose address would be resolved instead of the page's.
 
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -46,6 +51,33 @@ pub fn client() -> &'static reqwest::Client {
 /// followed. A redirect comes back as the 3xx response itself.
 pub fn oauth_client() -> &'static reqwest::Client {
     &OAUTH_CLIENT
+}
+
+static RECIPE_IMPORT_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    recipe_import_builder()
+        .build()
+        .expect("static reqwest configuration")
+});
+
+/// The client for the recipe import: same timeouts, public destinations
+/// only, each redirect checked like the first request
+/// (`public_destination`).
+pub fn recipe_import_client() -> &'static reqwest::Client {
+    &RECIPE_IMPORT_CLIENT
+}
+
+/// The recipe import client's configuration. Public so that the flow tests
+/// build the same client, and pin a test name to their local server with
+/// `ClientBuilder::resolve` — a pin set in the tests, never here.
+pub fn recipe_import_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(REQUEST_TIMEOUT)
+        .redirect(crate::public_destination::redirect_policy())
+        .dns_resolver(std::sync::Arc::new(
+            crate::public_destination::PublicOnlyResolver,
+        ))
+        .no_proxy()
 }
 
 fn build(
@@ -86,7 +118,7 @@ mod tests {
     /// timeout does not show, and is not checked.
     #[test]
     fn both_clients_carry_the_request_timeout() {
-        for client in [client(), oauth_client()] {
+        for client in [client(), oauth_client(), recipe_import_client()] {
             let shown = format!("{client:?}");
             assert!(
                 shown.contains(&format!("TotalTimeout: {REQUEST_TIMEOUT:?}")),
@@ -95,7 +127,8 @@ mod tests {
         }
     }
 
-    /// Every outbound call goes through `client()` or `oauth_client()`: a
+    /// Every outbound call goes through `client()`, `oauth_client()` or
+    /// `recipe_import_client()`: a
     /// client built anywhere else in `src/` would come without these
     /// timeouts. `push.rs` keeps its own, with its own timeout and redirect
     /// policy.

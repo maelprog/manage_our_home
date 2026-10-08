@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, group_id, name, instructions, created_at\n               FROM recipes WHERE group_id = $1 AND created_by = $2 ORDER BY created_at",
+  "query": "SELECT id, group_id, created_by, name, instructions, source_url, created_at, updated_at\n           FROM recipes WHERE id = $1 AND group_id = $2",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,17 @@
       },
       {
         "ordinal": 2,
+        "name": "created_by",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "created_by"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
         "name": "name",
         "type_info": "Text",
         "origin": {
@@ -37,7 +48,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "instructions",
         "type_info": "Text",
         "origin": {
@@ -48,13 +59,35 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
+        "name": "source_url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "source_url"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
             "table": "recipes",
             "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "updated_at"
           }
         }
       }
@@ -69,9 +102,12 @@
       false,
       false,
       false,
+      false,
       true,
+      true,
+      false,
       false
     ]
   },
-  "hash": "93ed10b23d7cb4011f4d0df14ecf8bca1b3fd7093dc7d0ff0ce82e6d0ece9d44"
+  "hash": "cba9f42974c2588e8667e1be6a128b0b5112171d66fb2950f95dca0dee003dad"
 }

@@ -73,6 +73,10 @@ pub fn test_state(db: PgPool) -> AppState {
         // The scan tests that need an answer point this at a local stub.
         openfoodfacts_base_url: "http://127.0.0.1:1".into(),
         off_throttle: std::sync::Arc::new(manage_our_home::stocks::openfoodfacts::Throttle::new()),
+        recipe_import_client: manage_our_home::outbound_http::recipe_import_client().clone(),
+        recipe_import_throttle: std::sync::Arc::new(
+            manage_our_home::recipes::import::ImportThrottle::new(),
+        ),
     }
 }
 
