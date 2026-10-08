@@ -519,6 +519,16 @@ mod tests {
     }
 
     #[test]
+    fn of_two_gtin_pairs_the_last_one_is_read() {
+        // A prefix that itself reads `01/<a valid GTIN-8>`: the GTIN is the
+        // one after the last `01`, not the first.
+        assert_eq!(
+            read("https://brand.com/01/96385074/01/03017620422003", today()).map(|r| r.code),
+            Some("3017620422003".into())
+        );
+    }
+
+    #[test]
     fn a_digital_link_without_a_date_or_with_a_short_gtin_is_read() {
         assert_eq!(
             read("http://id.gs1.org/01/036000291452", today()),
