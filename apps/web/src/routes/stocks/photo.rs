@@ -68,9 +68,10 @@ const MAX_ALLOC: u64 = 80 * 1024 * 1024;
 /// MiB, by `one_decode_stays_within_its_memory_bound`; its heap high-water
 /// marks there (2026-10-08, DataMatrix and QR readers included), on the
 /// worst inputs each bound admits: grey with alpha PNG, 8192 × 5120,
-/// 120.0 MiB; grey PNG, 8192², 98.7 MiB; baseline colour JPEG, 24 Mpx,
-/// 91.6 MiB; progressive grey JPEG, 5280², 80.6 MiB; progressive colour
-/// JPEG at 4:4:4, 9.3 Mpx, 80.5 MiB;
+/// 120.0 MiB; grey PNG, 8192², 99.4 MiB blank — the worst case at that
+/// size, where no reader stops early (98.7 MiB with an EAN-13 on it);
+/// baseline colour JPEG, 24 Mpx, 91.6 MiB; progressive grey JPEG, 5280²,
+/// 80.6 MiB; progressive colour JPEG at 4:4:4, 9.3 Mpx, 80.5 MiB;
 /// progressive CMYK JPEG, 7 Mpx, 73.8 MiB; progressive colour JPEG at
 /// 4:2:0, 12 Mpx, 70.8 MiB. Files past the bounds are refused at their
 /// header, under 0.1 MiB. So under 248 MiB for two decodes at once, on top
@@ -632,6 +633,9 @@ mod tests {
         // 64 MB, then a quarter of it.
         let png = encode(&framed(&bars, 8192, 8192), ImageFormat::Png);
         check("8192² grey PNG", png, true);
+        // The same, blank: no reader stops early, the worst case at 8192².
+        let blank = GrayImage::from_pixel(8192, 8192, Luma([255]));
+        check("8192² blank grey PNG", encode(&blank, ImageFormat::Png), false);
         // Grey with alpha, 2 bytes a pixel, at exactly `MAX_ALLOC`: its
         // grey copy is half of it, the largest share.
         let frame = DynamicImage::ImageLuma8(framed(&bars, 8192, 5120)).into_luma_alpha8();
