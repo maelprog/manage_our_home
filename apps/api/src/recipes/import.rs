@@ -153,7 +153,9 @@ fn failed(error: reqwest::Error) -> ImportFailure {
     if error.is_timeout() {
         return ImportFailure::Timeout;
     }
-    tracing::info!(error = %error, "recipe page unreachable");
+    // Without the URL: the address a member typed is kept with the recipe
+    // they save, nowhere else (privacy policy).
+    tracing::info!(error = %error.without_url(), "recipe page unreachable");
     ImportFailure::Unreachable
 }
 
