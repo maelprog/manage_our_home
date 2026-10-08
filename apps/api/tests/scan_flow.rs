@@ -1,6 +1,7 @@
 //! `POST /groups/:id/stock-items/scan` and the barcode on a stock item
-//! (#402), and the GS1 2D codes it reads (#403), end to end, with Open Food
-//! Facts played by a local stub: no test here reaches the network.
+//! (#402), the GS1 2D codes it reads (#403) and the date a product's
+//! category proposes (#404), end to end, with Open Food Facts played by a
+//! local stub: no test here reaches the network.
 
 mod common;
 
@@ -20,6 +21,8 @@ const UNKNOWN: &str = "96385074";
 const NAMELESS: &str = "4006381333931";
 const FAILING: &str = "5000159484695";
 const WEIGHED: &str = "2123456012347";
+/// Known to the stub as a yogurt (`en:yogurts`, a 21-day shelf life).
+const YOGURT: &str = "3033490001063";
 
 /// Stands in for Open Food Facts: counts the reads it gets and answers as
 /// the real service does — a product, a 404 carrying `status: 0`, a record
@@ -45,6 +48,10 @@ async fn off_stub() -> (String, Arc<AtomicUsize>) {
                         "categories_tags": ["en:spreads", "en:sweet-spreads"],
                     })),
                     "0036000291452" => found(serde_json::json!({ "product_name": "Mouchoirs" })),
+                    YOGURT => found(serde_json::json!({
+                        "product_name": "Yaourt nature",
+                        "categories_tags": ["en:dairies", "en:fermented-milk-products", "en:yogurts"],
+                    })),
                     NAMELESS => {
                         found(serde_json::json!({ "product_name": "", "quantity": "1 kg" }))
                     }
@@ -155,8 +162,10 @@ async fn a_known_code_brings_the_product_and_writes_no_article(db: PgPool) {
         serde_json::json!(["en:spreads", "en:sweet-spreads"])
     );
     assert!(body["existing_item_id"].is_null(), "{body}");
+    // `en:spreads` has no shelf life: no date is proposed.
     assert!(body["expires_on"].is_null(), "{body}");
     assert!(body["expires_on_source"].is_null(), "{body}");
+    assert!(body["expires_on_category"].is_null(), "{body}");
     assert_eq!(
         stock_count(&db).await,
         0,
@@ -582,4 +591,81 @@ async fn a_gs1_string_without_a_consumer_gtin_is_a_422(db: PgPool) {
         assert_eq!(json_body(res).await["error"], "invalid_barcode", "{raw:?}");
     }
     assert_eq!(hits.load(Ordering::SeqCst), 0);
+}
+
+#[sqlx::test]
+async fn a_known_category_proposes_a_date_from_today_and_writes_nothing(db: PgPool) {
+    let (router, _) = router_with_off(db.clone()).await;
+    let cookie = register_verify_login(&router, &db, "scan-category@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+
+    // Counted from the Paris day of the scan: either side of the call, in
+    // case midnight passes during it.
+    let before = manage_our_home_shared::validation::auth::paris_day(chrono::Utc::now());
+    let res = scan(&router, &cookie, &group_id, YOGURT).await;
+    let after = manage_our_home_shared::validation::auth::paris_day(chrono::Utc::now());
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    assert_eq!(body["product"]["name"], "Yaourt nature");
+    let expected: Vec<String> = [before, after]
+        .iter()
+        .map(|d| (*d + chrono::Days::new(21)).format("%Y-%m-%d").to_string())
+        .collect();
+    let got = body["expires_on"].as_str().unwrap_or_default().to_string();
+    assert!(expected.contains(&got), "{body} vs {expected:?}");
+    assert_eq!(body["expires_on_source"], "category", "{body}");
+    assert_eq!(body["expires_on_category"], "Yaourts", "{body}");
+    assert_eq!(stock_count(&db).await, 0, "a scan adds nothing");
+}
+
+#[sqlx::test]
+async fn a_gs1_date_wins_over_the_category_and_its_absence_leaves_it(db: PgPool) {
+    let (router, _) = router_with_off(db.clone()).await;
+    let cookie = register_verify_login(&router, &db, "scan-category-gs1@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+
+    // (01) YOGURT as a GTIN-14, (17) 2027-01-31.
+    let dated =
+        json_body(scan(&router, &cookie, &group_id, "010303349000106317270131").await).await;
+    assert_eq!(dated["code"], YOGURT);
+    assert_eq!(dated["expires_on"], "2027-01-31", "{dated}");
+    assert_eq!(dated["expires_on_source"], "gs1", "{dated}");
+    assert!(dated["expires_on_category"].is_null(), "{dated}");
+
+    // The same product as a Digital Link without a date: the category.
+    let undated = json_body(
+        scan(
+            &router,
+            &cookie,
+            &group_id,
+            "https://id.gs1.org/01/03033490001063",
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(undated["expires_on_source"], "category", "{undated}");
+    assert_eq!(undated["expires_on_category"], "Yaourts", "{undated}");
+}
+
+#[sqlx::test]
+async fn an_article_already_in_stock_gets_no_category_date(db: PgPool) {
+    let (router, _) = router_with_off(db.clone()).await;
+    let cookie = register_verify_login(&router, &db, "scan-category-stock@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/stock-items"),
+        Some(&cookie),
+        Some(serde_json::json!({"name": "Yaourts", "quantity": 4.0, "barcode": YOGURT})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+
+    // The article has its own date, or none on purpose: the category
+    // would only guess, and the scan does not ask for the product.
+    let body = json_body(scan(&router, &cookie, &group_id, YOGURT).await).await;
+    assert!(body["existing_item_id"].is_string(), "{body}");
+    assert!(body["expires_on"].is_null(), "{body}");
+    assert!(body["expires_on_source"].is_null(), "{body}");
 }

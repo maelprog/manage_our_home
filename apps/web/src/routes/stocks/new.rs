@@ -25,6 +25,13 @@
 //! form's date, marked "lue sur le code", for the member to check; on
 //! "Déjà en stock", a sooner date than the article's is proposed through
 //! the edit form, never written by the scan.
+//!
+//! Without such a date, a known product's Open Food Facts category may
+//! propose one (#404, apps/api's `stocks::shelf_life`): the form shows it
+//! "proposée d'après la catégorie …", for the member to check. The date
+//! field also gets "+3 j", "+1 sem." and "+1 mois" shortcuts, put there by
+//! `app::ENHANCE_SCRIPT` (`data-expiry-shortcuts`) and counted from the
+//! browser's day: without JavaScript the field is typed by hand.
 
 use axum::extract::{Multipart, Query, State};
 use axum::http::HeaderMap;
@@ -32,7 +39,8 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use chrono::NaiveDate;
 use manage_our_home_shared::dto::stocks::{
-    CreateStockItemRequest, ScanRequest, ScanResult, ScannedProduct, StockItemResponse,
+    CreateStockItemRequest, ExpiresOnSource, ScanRequest, ScanResult, ScannedProduct,
+    StockItemResponse,
 };
 use manage_our_home_shared::validation::stocks::{validate_item_form, ItemFormError};
 use uuid::Uuid;
@@ -67,10 +75,35 @@ pub struct ItemForm {
     /// form; empty for an article entered without one.
     #[serde(default)]
     pub barcode: String,
-    /// `expires_on` was read on a GS1 code (#403): the field says so. Never
-    /// sent by the browser.
+    /// Where `expires_on` comes from when the member did not type it: the
+    /// field says so. Never sent by the browser.
     #[serde(skip)]
-    pub expires_on_read: bool,
+    pub expires_on_origin: DateOrigin,
+}
+
+/// Where the date in the form comes from, said next to the field.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum DateOrigin {
+    /// The article's own date, or none: nothing to say.
+    #[default]
+    Member,
+    /// Read on a GS1 code (#403).
+    Code,
+    /// The scan's day plus the shelf life of this Open Food Facts category,
+    /// by its French name (#404).
+    Category(String),
+}
+
+/// The date a scan proposes, and where it comes from (`DateOrigin`).
+/// A date without a source is left out rather than shown as the member's.
+pub(crate) fn proposed_date(scan: &ScanResult) -> Option<(NaiveDate, DateOrigin)> {
+    let origin = match scan.expires_on_source? {
+        ExpiresOnSource::Gs1 => DateOrigin::Code,
+        ExpiresOnSource::Category => {
+            DateOrigin::Category(scan.expires_on_category.clone().unwrap_or_default())
+        }
+    };
+    Some((scan.expires_on?, origin))
 }
 
 /// French copy for a stock-item form error code.
@@ -149,13 +182,23 @@ pub(crate) fn form_fields(
     unit: &str,
     reorder_threshold: &str,
     expires_on: &str,
-    expires_on_read: bool,
+    expires_on_origin: &DateOrigin,
 ) -> String {
     // Next to the field, so the member checks it before saving.
-    let read_note = if expires_on_read {
-        "\n<span class=\"muted\">Lue sur le code : vérifiez-la, vous pouvez la corriger.</span>"
-    } else {
-        ""
+    let origin_note = match expires_on_origin {
+        DateOrigin::Member => String::new(),
+        DateOrigin::Code => {
+            "\n<span class=\"muted\">Lue sur le code : vérifiez-la, vous pouvez la corriger.</span>"
+                .to_string()
+        }
+        DateOrigin::Category(label) => {
+            let category = if label.is_empty() {
+                "du produit".to_string()
+            } else {
+                format!("« {} »", html_escape(label))
+            };
+            format!("\n<span class=\"muted\">Proposée d'après la catégorie {category} : vérifiez-la, vous pouvez la corriger.</span>")
+        }
     };
     format!(
         r#"<label>Nom <input type="text" name="name" required value="{name}"/></label>
@@ -167,7 +210,7 @@ pub(crate) fn form_fields(
 <span class="muted">En dessous ou à ce niveau, l'article est signalé « stock bas ». Partagé au niveau de la famille.</span>
 </label>
 <label>Date de péremption
-<input type="date" name="expires_on" value="{expires_on}"/>{read_note}
+<input type="date" name="expires_on" value="{expires_on}" data-expiry-shortcuts/>{origin_note}
 <span class="muted">Optionnel. Si l'article en a plusieurs, la plus proche.</span>
 </label>"#,
         name = html_escape(name),
@@ -195,13 +238,17 @@ pub(crate) fn product_label(product: &ScannedProduct) -> String {
 /// What a scan pre-fills: the product's label (`product_label`), one unit
 /// in hand, the code in the hidden field unless `with_code` is false
 /// ("créer quand même un autre article": one article per code), and the
-/// date a GS1 code carried (#403), marked as read on the code.
+/// date the scan proposes (`proposed_date`), with where it comes from.
 pub(crate) fn prefilled_form(
     code: &str,
     product: Option<&ScannedProduct>,
     with_code: bool,
-    expires_on: Option<NaiveDate>,
+    proposed: Option<(NaiveDate, DateOrigin)>,
 ) -> ItemForm {
+    let (expires_on, expires_on_origin) = match proposed {
+        Some((on, origin)) => (on.format("%Y-%m-%d").to_string(), origin),
+        None => Default::default(),
+    };
     ItemForm {
         name: product.map(product_label).unwrap_or_default(),
         quantity: "1".to_string(),
@@ -211,10 +258,8 @@ pub(crate) fn prefilled_form(
         } else {
             String::new()
         },
-        expires_on: expires_on
-            .map(|d| d.format("%Y-%m-%d").to_string())
-            .unwrap_or_default(),
-        expires_on_read: expires_on.is_some(),
+        expires_on,
+        expires_on_origin,
         ..Default::default()
     }
 }
@@ -320,7 +365,7 @@ fn page(
         &form.unit,
         &form.reorder_threshold,
         &form.expires_on,
-        form.expires_on_read,
+        &form.expires_on_origin,
     );
     let barcode_html = if form.barcode.is_empty() {
         String::new()
@@ -522,7 +567,13 @@ async fn scanned(
         None => None,
     };
     if let (Some(item), false) = (&existing, other) {
-        let proposal = date_to_propose(scan.expires_on, item.expires_on);
+        // Only a date read on the code is worth proposing for an article
+        // that has its own (apps/api gives no other for it anyway).
+        let read = match proposed_date(&scan) {
+            Some((on, DateOrigin::Code)) => Some(on),
+            _ => None,
+        };
+        let proposal = date_to_propose(read, item.expires_on);
         let may_edit = can_modify(&fam.role, item.created_by == user_id);
         return Html(already_in_stock_page(
             &fam.header,
@@ -534,7 +585,7 @@ async fn scanned(
         .into_response();
     }
 
-    let mut form = prefilled_form(code, scan.product.as_ref(), !other, scan.expires_on);
+    let mut form = prefilled_form(code, scan.product.as_ref(), !other, proposed_date(&scan));
     // A code already in stock brings no product (apps/api does not ask Open
     // Food Facts for it): "another article anyway" starts from the name of
     // the article that carries it.
@@ -829,7 +880,7 @@ mod tests {
         assert_eq!(form.barcode, "3017620422003");
         assert_eq!(form.category, "");
         assert_eq!(form.expires_on, "");
-        assert!(!form.expires_on_read);
+        assert_eq!(form.expires_on_origin, DateOrigin::Member);
     }
 
     fn day(y: i32, m: u32, d: u32) -> NaiveDate {
@@ -842,24 +893,154 @@ mod tests {
             "3017620422003",
             Some(&product("Nutella", None)),
             true,
-            Some(day(2027, 1, 31)),
+            Some((day(2027, 1, 31), DateOrigin::Code)),
         );
         assert_eq!(form.expires_on, "2027-01-31");
-        assert!(form.expires_on_read);
+        assert_eq!(form.expires_on_origin, DateOrigin::Code);
         // "Créer quand même un autre article" keeps it too: same product.
-        let other = prefilled_form("3017620422003", None, false, Some(day(2027, 1, 31)));
+        let other = prefilled_form(
+            "3017620422003",
+            None,
+            false,
+            Some((day(2027, 1, 31), DateOrigin::Code)),
+        );
         assert_eq!(other.expires_on, "2027-01-31");
+    }
+
+    fn scan_result(
+        expires_on: Option<NaiveDate>,
+        source: Option<ExpiresOnSource>,
+        category: Option<&str>,
+    ) -> ScanResult {
+        ScanResult {
+            code: Some("3033490001063".into()),
+            weighed: false,
+            product: None,
+            existing_item_id: None,
+            expires_on,
+            expires_on_source: source,
+            expires_on_category: category.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn the_scan_says_where_its_date_comes_from() {
+        let on = day(2026, 10, 29);
+        assert_eq!(
+            proposed_date(&scan_result(Some(on), Some(ExpiresOnSource::Gs1), None)),
+            Some((on, DateOrigin::Code))
+        );
+        assert_eq!(
+            proposed_date(&scan_result(
+                Some(on),
+                Some(ExpiresOnSource::Category),
+                Some("Yaourts")
+            )),
+            Some((on, DateOrigin::Category("Yaourts".into())))
+        );
+        assert_eq!(proposed_date(&scan_result(None, None, None)), None);
+        // A date without a source would read as the member's own: none.
+        assert_eq!(proposed_date(&scan_result(Some(on), None, None)), None);
+    }
+
+    #[test]
+    fn a_category_date_prefills_the_field_and_names_the_category() {
+        let form = prefilled_form(
+            "3033490001063",
+            Some(&product("Yaourt nature", None)),
+            true,
+            Some((day(2026, 10, 29), DateOrigin::Category("Yaourts".into()))),
+        );
+        assert_eq!(form.expires_on, "2026-10-29");
+        let html = form_fields(
+            "",
+            "",
+            "",
+            "",
+            "",
+            &form.expires_on,
+            &form.expires_on_origin,
+        );
+        let label = html.split("<label>Date de péremption").nth(1).unwrap();
+        let label = label.split("</label>").next().unwrap();
+        assert!(label.contains(r#"value="2026-10-29""#), "{label}");
+        assert!(
+            label.contains("Proposée d'après la catégorie « Yaourts »"),
+            "{label}"
+        );
+        assert!(!label.contains("Lue sur le code"), "{label}");
+        // A missing name still says where the date comes from.
+        let unnamed = form_fields(
+            "",
+            "",
+            "",
+            "",
+            "",
+            "2026-10-29",
+            &DateOrigin::Category(String::new()),
+        );
+        assert!(
+            unnamed.contains("Proposée d'après la catégorie du produit"),
+            "{unnamed}"
+        );
+        // The name is escaped like any text from Open Food Facts.
+        let hostile = form_fields(
+            "",
+            "",
+            "",
+            "",
+            "",
+            "2026-10-29",
+            &DateOrigin::Category("<b>".into()),
+        );
+        assert!(hostile.contains("« &lt;b&gt; »"), "{hostile}");
+    }
+
+    #[test]
+    fn the_date_field_asks_for_its_shortcuts_without_carrying_them() {
+        let html = form_fields("", "", "", "", "", "", &DateOrigin::Member);
+        assert!(
+            html.contains(
+                r#"<input type="date" name="expires_on" value="" data-expiry-shortcuts/>"#
+            ),
+            "{html}"
+        );
+        // Put there by the script: no button in the markup itself, which
+        // works without it.
+        assert!(!html.contains("<button"), "{html}");
+        assert!(!html.contains("+1 sem."), "{html}");
+        let script = crate::app::ENHANCE_SCRIPT;
+        assert!(script.contains("input[data-expiry-shortcuts]"));
+        for label in ["\"+3 j\"", "\"+1 sem.\"", "\"+1 mois\""] {
+            assert!(script.contains(label), "{label}");
+        }
     }
 
     #[test]
     fn the_date_field_carries_the_mention_only_when_read_on_the_code() {
-        let read = form_fields("Nutella", "", "1", "unité", "", "2027-01-31", true);
+        let read = form_fields(
+            "Nutella",
+            "",
+            "1",
+            "unité",
+            "",
+            "2027-01-31",
+            &DateOrigin::Code,
+        );
         assert!(read.contains(r#"value="2027-01-31""#), "{read}");
         // The mention sits in the date's own label, next to the field.
         let label = read.split("<label>Date de péremption").nth(1).unwrap();
         let label = label.split("</label>").next().unwrap();
         assert!(label.contains("Lue sur le code"), "{label}");
-        let typed = form_fields("Nutella", "", "1", "unité", "", "2027-01-31", false);
+        let typed = form_fields(
+            "Nutella",
+            "",
+            "1",
+            "unité",
+            "",
+            "2027-01-31",
+            &DateOrigin::Member,
+        );
         assert!(!typed.contains("Lue sur le code"), "{typed}");
     }
 

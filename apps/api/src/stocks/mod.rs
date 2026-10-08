@@ -3,6 +3,7 @@ pub mod gs1;
 pub mod items;
 pub mod openfoodfacts;
 pub mod scan;
+pub mod shelf_life;
 
 /// The full-record-edit / delete permission bar for stock items: only the
 /// item's creator or a group admin/owner clears it. Reading, creating and a

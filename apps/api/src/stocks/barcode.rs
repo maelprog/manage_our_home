@@ -30,8 +30,9 @@ pub fn normalize(raw: &str) -> Option<String> {
 
 /// GS1's mod-10 check: from the rightmost digit leftwards, weights 1, 3, 1,
 /// 3…, the check digit included (weight 1), and the sum a multiple of 10.
-/// The same rule for EAN-8 and EAN-13.
-fn check_digit_holds(code: &str) -> bool {
+/// The same rule for every GTIN length: EAN-8, UPC-A, EAN-13 and the
+/// GTIN-14 of a GS1 Digital Link (`gs1`).
+pub(crate) fn check_digit_holds(code: &str) -> bool {
     let sum: u32 = code
         .bytes()
         .rev()

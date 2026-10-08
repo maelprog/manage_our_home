@@ -274,8 +274,9 @@ fn read_image(bytes: &[u8]) -> image::ImageResult<DynamicImage> {
 /// for a DataMatrix, `]Q3`, `]Q4` for a QR code), or a GS1 Digital Link,
 /// an http(s) URL where a `01` path segment is followed by a GTIN: 8, 12,
 /// 13 or 14 digits whose GS1 check digit holds. A `01` that is a month or a
-/// page (`/2026/01/galette`) is not one. Reading the elements is apps/api's
-/// business (`stocks::gs1`).
+/// page (`/2026/01/galette`) is not one, and does not hide a GTIN's `01`
+/// further on — apps/api reads the GTIN after the last such pair. Reading
+/// the elements is apps/api's business (`stocks::gs1`).
 pub fn is_gs1_2d(text: &str, symbology: Option<&str>) -> bool {
     if matches!(symbology, Some("]d2" | "]d5" | "]Q3" | "]Q4")) {
         return true;
@@ -777,6 +778,8 @@ mod tests {
             // GTIN-12 and GTIN-8, with their check digits.
             "https://id.gs1.org/01/036000291452",
             "https://id.gs1.org/01/96385074/10/LOT",
+            // A `01` month in the path prefix, then the GTIN's own `01`.
+            "https://brand.com/2026/01/galette/01/03017620422003?17=270131",
         ] {
             assert!(is_gs1_2d(url, Some("]Q1")), "{url}");
         }

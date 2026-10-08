@@ -270,7 +270,7 @@ pub fn app_header(
 
 /// The behaviours the markup asks for through `data-*` attributes —
 /// `password_field`'s toggle, `data-confirm`, `data-submit-on-change`,
-/// `data-all-day` — loaded by every page (`document`) from
+/// `data-all-day`, `data-expiry-shortcuts` — loaded by every page (`document`) from
 /// `/assets` (`assets::Script::Enhance`). They were inline event handlers
 /// until #325, which infra/Caddyfile's CSP no longer runs (`csp.rs`).
 pub(crate) const ENHANCE_SCRIPT: &str = include_str!("enhance.js");

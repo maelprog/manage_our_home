@@ -12,6 +12,11 @@ export const KNOWN_PRODUCTS: Record<string, Record<string, unknown>> = {
     quantity: "400 g",
     categories_tags: ["en:spreads"],
   },
+  // A category with a default shelf life (#404): `en:yogurts`.
+  "3033490001063": {
+    product_name: "Yaourt nature",
+    categories_tags: ["en:dairies", "en:fermented-milk-products", "en:yogurts"],
+  },
 };
 
 export interface StubAnswer {

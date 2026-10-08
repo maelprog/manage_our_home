@@ -23,7 +23,7 @@ use crate::state::{api_request_auth, AppState};
 
 use super::new::{
     error_message, form_error_code, form_fields, parse_expires_on, parse_quantity, parse_threshold,
-    ItemForm,
+    DateOrigin, ItemForm,
 };
 use super::{
     can_modify, family_context, forbidden_page, item_not_found_page, service_unavailable_page,
@@ -41,7 +41,7 @@ fn page(header: &str, id: Uuid, name: &str, form: &ItemForm, error: Option<&str>
         &form.unit,
         &form.reorder_threshold,
         &form.expires_on,
-        form.expires_on_read,
+        &form.expires_on_origin,
     );
     let body = format!(
         r#"<h1>Modifier — {name_esc}</h1>
@@ -133,7 +133,11 @@ pub async fn get(
         // The edit form neither shows nor sends the code (#402): a PATCH
         // leaves it as it is.
         barcode: String::new(),
-        expires_on_read: proposed.is_some(),
+        expires_on_origin: if proposed.is_some() {
+            DateOrigin::Code
+        } else {
+            DateOrigin::Member
+        },
     };
     Html(page(&fam.header, item_id, &item.name, &form, None)).into_response()
 }

@@ -1,5 +1,6 @@
 import { expect, Page, test } from "@playwright/test";
 import { crc32, deflateSync } from "node:zlib";
+import { parisDay } from "../lib/dates";
 import { fetchVerificationToken } from "../lib/db";
 
 // Issue #402 — scanning an article's barcode on /stocks/new. The photo is a
@@ -11,6 +12,8 @@ import { fetchVerificationToken } from "../lib/db";
 // The camera itself is the browser's: what is tested is the photo it would
 // hand over, drawn here as a PNG. Issue #403 adds the GS1 2D codes, whose
 // decoding apps/web's unit tests cover: here, the string one decodes to.
+// Issue #404 adds the date a known product's category proposes, and the
+// "+3 j / +1 sem. / +1 mois" shortcuts the script puts next to the field.
 
 function uniqueEmail(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.test`;
@@ -23,6 +26,8 @@ const KNOWN = "3017620422003";
 /** Unknown to the stand-in. */
 const UNKNOWN = "4006381333931";
 const WEIGHED = "2123456012347";
+/** In the stand-in, as "Yaourt nature", category `en:yogurts` (21 days). */
+const YOGURT = "3033490001063";
 
 /** An 8-bit greyscale PNG of `rows` (0 = black, 255 = white). */
 function png(width: number, height: number, pixel: (x: number, y: number) => number): Buffer {
@@ -223,6 +228,34 @@ test.describe("Stocks — barcode scan", () => {
     await expect(page.getByText("Péremption : 15/01/2027")).toBeVisible();
   });
 
+  test("a known category proposes a date, and a shortcut replaces it", async ({ page }) => {
+    await registerAndLogin(page, "e2e-scan-category");
+    await createGroup(page, "Famille Yaourt");
+
+    // apps/api counts from the Paris day of the scan.
+    await page.goto(`/stocks/new?scan=${YOGURT}`);
+    await expect(page.getByText("Produit trouvé")).toBeVisible();
+    await expect(page.getByLabel("Nom")).toHaveValue("Yaourt nature");
+    await expect(page.getByLabel("Date de péremption")).toHaveValue(parisDay(21));
+    await expect(page.getByText("Proposée d'après la catégorie « Yaourts »")).toBeVisible();
+
+    // "+1 sem." counts from the browser's own day.
+    const inAWeek = await page.evaluate(() => {
+      const d = new Date();
+      const later = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 7);
+      const pad = (n: number) => String(n).padStart(2, "0");
+      return `${later.getFullYear()}-${pad(later.getMonth() + 1)}-${pad(later.getDate())}`;
+    });
+    await page.getByRole("button", { name: "+1 sem." }).click();
+    await expect(page.getByLabel("Date de péremption")).toHaveValue(inAWeek);
+    // Nothing is written until the form is sent.
+    await page.getByRole("button", { name: "Ajouter l'article" }).click();
+    await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
+    await page.getByRole("link", { name: /Yaourt nature/ }).click();
+    const [y, m, d] = inAWeek.split("-");
+    await expect(page.getByText(`Péremption : ${d}/${m}/${y}`)).toBeVisible();
+  });
+
   test("a string that is not a barcode gets the manual form and a message", async ({ page }) => {
     await registerAndLogin(page, "e2e-scan-invalid");
     await createGroup(page, "Famille Invalide");
@@ -267,5 +300,32 @@ test.describe("Stocks — barcode scan without JavaScript", () => {
     await expect(page.getByText("Déjà en stock : Surligneurs (1 unité)")).toBeVisible();
     await page.getByRole("button", { name: "+1" }).click();
     await expect(page.getByText("Quantité : 2 unité")).toBeVisible();
+  });
+
+  test("a proposed date has no shortcut, nothing is written before sending, a typed date is saved", async ({ page }) => {
+    await registerAndLogin(page, "e2e-scan-nojs-date");
+    await createGroup(page, "Famille Sans Raccourci");
+
+    // A known category: the date is proposed, with its mention, and no
+    // shortcut is put next to it.
+    await page.goto(`/stocks/new?scan=${YOGURT}`);
+    await expect(page.getByLabel("Date de péremption")).toHaveValue(parisDay(21));
+    await expect(page.getByText("Proposée d'après la catégorie « Yaourts »")).toBeVisible();
+    await expect(page.getByRole("button", { name: "+1 sem." })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "+3 j" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "+1 mois" })).toHaveCount(0);
+
+    // Nothing is in stock until the form is sent: the scan wrote nothing.
+    const stock = await page.context().newPage();
+    await stock.goto("/stocks");
+    await expect(stock.getByText("Yaourt nature")).toHaveCount(0);
+    await stock.close();
+
+    // The member types another date by hand; it is the one saved.
+    await page.getByLabel("Date de péremption").fill("2027-02-01");
+    await page.getByRole("button", { name: "Ajouter l'article" }).click();
+    await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
+    await page.getByRole("link", { name: /Yaourt nature/ }).click();
+    await expect(page.getByText("Péremption : 01/02/2027")).toBeVisible();
   });
 });

@@ -138,8 +138,8 @@ pub struct ScannedProduct {
 }
 
 /// Where a pre-filled expiry date comes from: `gs1`, the date a GS1 2D code
-/// carries (#403); `category`, a default per product category, reserved for
-/// #404 and never set yet.
+/// carries (#403); `category`, the scan's day plus a default shelf life for
+/// the product's Open Food Facts category (#404).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExpiresOnSource {
@@ -168,11 +168,16 @@ pub struct ScanResult {
     /// The family's article that already carries this code: a rescan adds
     /// to it rather than creating a second one.
     pub existing_item_id: Option<Uuid>,
-    /// The date a GS1 2D code carries (#403): its expiry date `(17)`, else
-    /// its best-before date `(15)`. `None` for an EAN/UPC, or a GS1 code
-    /// without a readable date. Never written to an article by the scan: the
-    /// page pre-fills it, or proposes it for the article already in stock.
+    /// The date proposed for the article, in this order: the one a GS1 2D
+    /// code carries (#403) — its expiry date `(17)`, else its best-before
+    /// date `(15)`; else, when `product` is known, the scan's day (Paris)
+    /// plus its category's default shelf life (#404); else `None`. Never
+    /// written to an article by the scan: the page pre-fills it, or
+    /// proposes it for the article already in stock.
     pub expires_on: Option<NaiveDate>,
-    /// `Some(Gs1)` exactly when `expires_on` was read from the code.
+    /// Where `expires_on` comes from; `Some` exactly when it is.
     pub expires_on_source: Option<ExpiresOnSource>,
+    /// The French name of the category that gave `expires_on`, `Some`
+    /// exactly when `expires_on_source` is `Category`.
+    pub expires_on_category: Option<String>,
 }
