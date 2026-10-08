@@ -361,6 +361,29 @@ mod tests {
     }
 
     #[test]
+    fn the_first_occurrence_of_an_ai_wins() {
+        // Two (17), two (01): the first of each is read.
+        assert_eq!(
+            read(
+                "010301762042200317270131172801310100036000291452",
+                today()
+            ),
+            Some(Gs1Read {
+                code: "3017620422003".into(),
+                expires_on: Some(day(2027, 1, 31)),
+            })
+        );
+        assert_eq!(
+            read(
+                "https://id.gs1.org/01/03017620422003?17=270131&17=280131",
+                today()
+            )
+            .and_then(|r| r.expires_on),
+            Some(day(2027, 1, 31))
+        );
+    }
+
+    #[test]
     fn a_gtin_alone_is_read_without_a_date() {
         assert_eq!(
             read("0103017620422003", today()),
