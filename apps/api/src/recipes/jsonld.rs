@@ -209,6 +209,10 @@ const BLOCK_TAGS: [&str; 6] = ["br", "p", "li", "div", "ol", "ul"];
 
 /// `text` without its tags; a block tag becomes a line break when
 /// `blocks_as_lines`. A `<` that does not open a tag (`4 < 5`) stays.
+///
+/// One pass: a tag's `>` is looked for only once, and when there is none,
+/// no later `<` can close either, so the rest is copied as it is. Searching
+/// again from each `<` made a page of unclosed `<a` quadratic (#405).
 fn strip_tags(text: &str, blocks_as_lines: bool) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
@@ -219,7 +223,12 @@ fn strip_tags(text: &str, blocks_as_lines: bool) -> String {
             .chars()
             .next()
             .is_some_and(|c| c.is_ascii_alphabetic() || c == '/' || c == '!');
-        match after.find('>').filter(|_| opens_tag) {
+        if !opens_tag {
+            out.push('<');
+            rest = after;
+            continue;
+        }
+        match after.find('>') {
             Some(end) => {
                 let name = after[..end]
                     .trim_start_matches('/')
@@ -234,13 +243,18 @@ fn strip_tags(text: &str, blocks_as_lines: bool) -> String {
             }
             None => {
                 out.push('<');
-                rest = after;
+                out.push_str(after);
+                return out;
             }
         }
     }
     out.push_str(rest);
     out
 }
+
+/// The longest entity name looked for after a `&`, `;` excluded: the
+/// search for its `;` stops there, so each `&` costs a bounded amount.
+const ENTITY_MAX_LEN: usize = 12;
 
 /// Named entities decoded besides the numeric ones: XML's five, the
 /// no-break space, and the letters and signs of French text.
@@ -294,9 +308,11 @@ fn decode_entities(text: &str) -> String {
     while let Some(at) = rest.find('&') {
         out.push_str(&rest[..at]);
         let after = &rest[at + 1..];
-        let decoded = after
-            .find(';')
-            .filter(|&end| end <= 12)
+        // `;` is ASCII: its byte offset is a char boundary.
+        let window = &after.as_bytes()[..after.len().min(ENTITY_MAX_LEN + 1)];
+        let decoded = window
+            .iter()
+            .position(|&b| b == b';')
             .and_then(|end| entity(&after[..end]).map(|c| (c, end)));
         match decoded {
             Some((c, end)) => {
@@ -521,6 +537,45 @@ mod tests {
         let recipe = extract_recipe(&html).unwrap();
         assert_eq!(recipe.name, "Crème & fruits");
         assert_eq!(recipe.ingredients, ["200 g de fraises", "1 pot de crème"]);
+    }
+
+    /// Runs `work` on another thread and fails if it has not returned
+    /// within `limit` — without waiting for a quadratic run to finish.
+    fn within(limit: std::time::Duration, work: impl FnOnce() + Send + 'static) {
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            work();
+            let _ = done.send(());
+        });
+        finished
+            .recv_timeout(limit)
+            .expect("still running past the limit: not linear");
+    }
+
+    /// A page at the import's size limit whose text is all `<` or `&`
+    /// openings that never close: each must not rescan the rest of the
+    /// text (#405 review: 3 Mio of `<a` took 171 s in release).
+    #[test]
+    fn unclosed_tags_and_entities_are_read_in_linear_time() {
+        let size = crate::recipes::import::MAX_PAGE_BYTES;
+        for unit in ["<a", "&a", "<a&b"] {
+            let text = unit.repeat(size / unit.len());
+            let html = page(&[&format!(
+                r#"{{"@type": "Recipe", "name": "x", "recipeInstructions": "{text}", "recipeIngredient": ["{text}"]}}"#
+            )]);
+            within(std::time::Duration::from_secs(5), move || {
+                let recipe = extract_recipe(&html).unwrap();
+                assert_eq!(recipe.steps.len(), 1);
+            });
+        }
+    }
+
+    #[test]
+    fn a_closed_tag_far_after_unclosed_ones_is_still_stripped() {
+        assert_eq!(plain_text("a <b>c</b> d"), "a c d");
+        assert_eq!(plain_text("<a <b>c"), "c");
+        assert_eq!(plain_text("x &amp &amp; y"), "x &amp & y");
+        assert_eq!(plain_text("&;&#;&#x;"), "&;&#;&#x;");
     }
 
     #[test]

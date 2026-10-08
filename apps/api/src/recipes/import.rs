@@ -104,8 +104,19 @@ pub async fn import_recipe(
         return Err(AppError::TooManyRequests);
     }
     let page = fetch_page(&state.recipe_import_client, url.clone()).await?;
-    let recipe = jsonld::extract_recipe(&page).ok_or(ImportFailure::NoRecipe)?;
-    Ok(Json(RecipeDraft {
+    // Reading up to `MAX_PAGE_BYTES` is CPU work, linear but not free: off
+    // the async workers, so one import does not stall other requests.
+    let source_url = url.to_string();
+    let draft = tokio::task::spawn_blocking(move || draft_of(&page, source_url))
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("recipe extraction panicked: {e}")))?;
+    Ok(Json(draft.ok_or(ImportFailure::NoRecipe)?))
+}
+
+/// The draft a page gives, or `None` when it publishes no recipe.
+fn draft_of(page: &str, source_url: String) -> Option<RecipeDraft> {
+    let recipe = jsonld::extract_recipe(page)?;
+    Some(RecipeDraft {
         name: recipe.name,
         ingredients: recipe
             .ingredients
@@ -113,8 +124,8 @@ pub async fn import_recipe(
             .map(|line| ingredient_line::parse_line(line))
             .collect(),
         steps: recipe.steps,
-        source_url: url.to_string(),
-    }))
+        source_url,
+    })
 }
 
 /// The address to fetch: a URL `valid_source_url` accepts once parsed (so
