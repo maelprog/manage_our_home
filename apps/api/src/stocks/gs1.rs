@@ -125,19 +125,23 @@ fn is_url(raw: &str) -> bool {
 }
 
 /// A GS1 Digital Link URI: `…/01/<gtin>[/10/<lot>…][?17=YYMMDD&15=…]`, on
-/// any domain and under any path prefix; a GTIN of 8, 12 or 13 digits is
-/// padded to 14. Only the numeric AI keys of the query are read.
+/// any domain. The GTIN is the segment after the last `01` segment that a
+/// GTIN follows — 8, 12, 13 or 14 digits whose check digit holds — so a
+/// path prefix may hold a `01` of its own (`/2026/01/galette/01/<gtin>`),
+/// the reading apps/web's `photo::is_gs1_2d` makes of the same URL. A GTIN
+/// of 8, 12 or 13 digits is padded to 14. Only the numeric AI keys of the
+/// query are read.
 fn digital_link(raw: &str) -> Option<Fields> {
     let raw = raw.split('#').next().unwrap_or(raw);
     let (path, query) = raw.split_once('?').unwrap_or((raw, ""));
     let (_, after_scheme) = path.split_once("://")?;
     // The first segment is the host.
-    let mut segments = after_scheme.split('/').skip(1);
-    segments.find(|segment| *segment == "01")?;
-    let gtin = segments.next()?;
-    if !matches!(gtin.len(), 8 | 12 | 13 | 14) {
-        return None;
-    }
+    let segments: Vec<&str> = after_scheme.split('/').skip(1).collect();
+    let gtin = segments
+        .windows(2)
+        .rev()
+        .find(|pair| pair[0] == "01" && is_gtin(pair[1]))
+        .map(|pair| pair[1])?;
     let mut fields = Fields::default();
     fields.set("01", &format!("{gtin:0>14}"));
     for pair in query.split('&') {
@@ -146,6 +150,13 @@ fn digital_link(raw: &str) -> Option<Fields> {
         }
     }
     Some(fields)
+}
+
+/// 8, 12, 13 or 14 digits whose GS1 check digit holds.
+fn is_gtin(segment: &str) -> bool {
+    matches!(segment.len(), 8 | 12 | 13 | 14)
+        && segment.bytes().all(|b| b.is_ascii_digit())
+        && barcode::check_digit_holds(segment)
 }
 
 /// The date of a GS1 `YYMMDD` field. The century follows GS1's sliding
@@ -483,6 +494,27 @@ mod tests {
                 code: "3017620422003".into(),
                 expires_on: Some(day(2027, 1, 31)),
             })
+        );
+    }
+
+    #[test]
+    fn a_path_prefix_holding_a_01_segment_is_stepped_over() {
+        // `01` as a month: the GTIN is behind the `01` a GTIN follows, as
+        // apps/web's `is_gs1_2d` judges the URL.
+        assert_eq!(
+            read(
+                "https://brand.com/2026/01/galette/01/03017620422003?17=270131",
+                today()
+            ),
+            Some(Gs1Read {
+                code: "3017620422003".into(),
+                expires_on: Some(day(2027, 1, 31)),
+            })
+        );
+        // A lot that reads `01` after the GTIN changes nothing.
+        assert_eq!(
+            read("https://id.gs1.org/01/03017620422003/10/01", today()).map(|r| r.code),
+            Some("3017620422003".into())
         );
     }
 
