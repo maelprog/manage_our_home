@@ -817,3 +817,118 @@ mod tests {
         assert!(html.contains("&quot;&gt;&lt;script&gt;"), "{html}");
     }
 }
+
+/// `POST /stocks/new/photo` through the real router, against a stand-in
+/// for apps/api that knows the session and one group.
+#[cfg(test)]
+mod photo_route_tests {
+    use std::time::Duration;
+
+    use axum::body::Body;
+    use axum::http::{header, HeaderMap, Method, Request, StatusCode};
+    use axum::response::IntoResponse;
+    use axum::routing::get;
+    use axum::{Json, Router};
+    use manage_our_home_http_guard::{BodyReadLimits, UploadGate};
+    use tower::ServiceExt;
+    use uuid::Uuid;
+
+    use crate::state::AppState;
+
+    const BOUNDARY: &str = "----manageourhomephotoboundary";
+
+    async fn fake_api() -> String {
+        let app = Router::new()
+            .route(
+                "/auth/me",
+                get(|headers: HeaderMap| async move {
+                    if headers.get(header::COOKIE).is_none() {
+                        return StatusCode::UNAUTHORIZED.into_response();
+                    }
+                    Json(serde_json::json!({
+                        "user_id": Uuid::from_u128(7),
+                        "email": "membre@example.test",
+                        "display_name": "Membre",
+                        "email_verified": true,
+                    }))
+                    .into_response()
+                }),
+            )
+            .route(
+                "/groups",
+                get(|| async {
+                    Json(serde_json::json!([{
+                        "group_id": Uuid::nil(),
+                        "name": "Foyer",
+                        "role": "owner",
+                    }]))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    /// A multipart body whose one `photo` field is `size` bytes: a PNG
+    /// signature, then zeros — no image, so a body read whole ends on
+    /// `not_an_image`, and one cut short on `failed`.
+    fn photo_of_size(size: usize) -> Body {
+        let mut body = format!(
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"photo.png\"\r\nContent-Type: image/png\r\n\r\n"
+        )
+        .into_bytes();
+        let mut file = b"\x89PNG\r\n\x1a\n".to_vec();
+        file.resize(size, 0);
+        body.extend_from_slice(&file);
+        body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+        Body::from(body)
+    }
+
+    async fn post_photo(size: usize) -> (StatusCode, String) {
+        let router = crate::build_router(AppState {
+            http: reqwest::Client::new(),
+            api_internal_base_url: fake_api().await,
+            api_public_base_url: "/api".into(),
+            body_read_limits: BodyReadLimits::PRODUCTION,
+            upload_gate: UploadGate::new(8, 2),
+        });
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/stocks/new/photo")
+            .header(header::COOKIE, "session=x")
+            .header(
+                header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={BOUNDARY}"),
+            )
+            .body(photo_of_size(size))
+            .unwrap();
+        let response = tokio::time::timeout(Duration::from_secs(20), router.oneshot(request))
+            .await
+            .expect("an answer within 20 s")
+            .unwrap();
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        (response.status(), location)
+    }
+
+    /// The route reads past axum's 2 MiB default, which would cut a phone's
+    /// photo into `failed` (the failure #243 fixed for the attachments).
+    #[tokio::test]
+    async fn a_photo_over_two_mib_is_read_whole() {
+        let (status, location) = post_photo(5 * 1024 * 1024).await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(location, "/stocks/new?photo=not_an_image");
+    }
+
+    #[tokio::test]
+    async fn a_photo_over_the_cap_is_too_large() {
+        let (status, location) = post_photo(super::MAX_PHOTO_BYTES + 1).await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(location, "/stocks/new?photo=too_large");
+    }
+}
