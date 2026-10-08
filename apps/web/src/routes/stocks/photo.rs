@@ -271,8 +271,10 @@ fn read_image(bytes: &[u8]) -> image::ImageResult<DynamicImage> {
 /// Whether a DataMatrix or QR code is a GS1 one, the only 2D codes passed
 /// on: FNC1 in first position, by its symbology identifier (`]d2`, `]d5`
 /// for a DataMatrix, `]Q3`, `]Q4` for a QR code), or a GS1 Digital Link,
-/// an http(s) URL with a `01` path segment (the GTIN). Reading the elements
-/// is apps/api's business (`stocks::gs1`).
+/// an http(s) URL where a `01` path segment is followed by a GTIN: 8, 12,
+/// 13 or 14 digits whose GS1 check digit holds. A `01` that is a month or a
+/// page (`/2026/01/galette`) is not one. Reading the elements is apps/api's
+/// business (`stocks::gs1`).
 pub fn is_gs1_2d(text: &str, symbology: Option<&str>) -> bool {
     if matches!(symbology, Some("]d2" | "]d5" | "]Q3" | "]Q4")) {
         return true;
@@ -288,7 +290,21 @@ pub fn is_gs1_2d(text: &str, symbology: Option<&str>) -> bool {
     let segments: Vec<&str> = path.split('/').skip(1).collect();
     segments
         .windows(2)
-        .any(|pair| pair[0] == "01" && !pair[1].is_empty())
+        .any(|pair| pair[0] == "01" && is_gtin(pair[1]))
+}
+
+/// 8, 12, 13 or 14 digits whose GS1 mod-10 check holds: from the right,
+/// weights 1, 3, 1, 3…, the check digit included, the sum a multiple of 10.
+fn is_gtin(segment: &str) -> bool {
+    matches!(segment.len(), 8 | 12 | 13 | 14)
+        && segment.bytes().all(|b| b.is_ascii_digit())
+        && segment
+            .bytes()
+            .rev()
+            .enumerate()
+            .map(|(i, b)| u32::from(b - b'0') * if i % 2 == 0 { 1 } else { 3 })
+            .sum::<u32>()
+            .is_multiple_of(10)
 }
 
 /// The formats looked for, in two passes over the same picture.
@@ -750,6 +766,9 @@ mod tests {
         for url in [
             "https://id.gs1.org/01/03017620422003?17=270131",
             "HTTP://example.com/p/01/3017620422003",
+            // GTIN-12 and GTIN-8, with their check digits.
+            "https://id.gs1.org/01/036000291452",
+            "https://id.gs1.org/01/96385074/10/LOT",
         ] {
             assert!(is_gs1_2d(url, Some("]Q1")), "{url}");
         }
@@ -757,6 +776,13 @@ mod tests {
             ("WIFI:T:WPA;S:maison;P:secret;;", Some("]Q1")),
             ("https://example.com/promo?ref=01", Some("]Q1")),
             ("https://example.com/01", Some("]Q1")),
+            // `01` as a month or a page, not a GTIN.
+            ("https://brand.com/2026/01/galette", Some("]Q1")),
+            ("https://brand.com/fr/01/promo", Some("]Q1")),
+            ("https://brand.com/fr/01/12345678901", Some("]Q1")),
+            // A GTIN's length, a wrong check digit.
+            ("https://id.gs1.org/01/03017620422004", Some("]Q1")),
+            ("https://id.gs1.org/01/96385073", Some("]Q1")),
             (GS1_STRING, Some("]d1")),
             (GS1_STRING, None),
             ("BEGIN:VCARD", Some("]Q2")),
@@ -795,6 +821,17 @@ mod tests {
             10,
         );
         let photo = side_by_side(&ean13("3017620422003", 4), &promo);
+        let png = encode(&photo, ImageFormat::Png);
+        assert_eq!(decode_photo(&png).as_deref(), Ok("3017620422003"));
+        // A dated URL has a `01` segment, but no GTIN after it: the EAN
+        // still wins.
+        let dated = matrix_code(
+            "https://brand.com/2026/01/galette",
+            BarcodeFormat::QR_CODE,
+            false,
+            10,
+        );
+        let photo = side_by_side(&ean13("3017620422003", 4), &dated);
         let png = encode(&photo, ImageFormat::Png);
         assert_eq!(decode_photo(&png).as_deref(), Ok("3017620422003"));
         // Alone, nothing is: its text never leaves the process.
