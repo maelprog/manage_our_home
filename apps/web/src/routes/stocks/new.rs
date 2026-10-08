@@ -592,7 +592,8 @@ pub(crate) fn photo_redirect(outcome: Result<String, &str>) -> String {
 
 /// `POST /stocks/new/photo` — the photo of a barcode, decoded in memory
 /// (`photo::decode_photo`) and dropped with the request. Only the decoded
-/// digits leave this handler, in the redirect.
+/// code (digits, or a GS1 2D code's text) leaves this handler, in the
+/// redirect.
 pub async fn photo(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
