@@ -10,17 +10,22 @@
 //! the inside of a home: that is why it goes no further than this module
 //! (`docs/registre-traitements.md`, Stocks).
 //!
-//! Bounds: `MAX_PHOTO_BYTES` on the file, decoder limits on the declared
-//! dimensions and allocation (a small file can claim a huge image), then
-//! the picture is reduced to `MAX_SIDE` on its longest side before the
-//! barcode is looked for — enough for the bars of an article held in front
-//! of the lens, and a fraction of a full camera frame's work.
+//! Bounds, because one decode costs far more memory than the file it
+//! reads: `MAX_PHOTO_BYTES` on the file; decoder limits on the declared
+//! dimensions (`MAX_DIMENSION`) and on what decoding allocates
+//! (`MAX_ALLOC`), since a small file can claim a huge image; the picture is
+//! turned grey at once and, past `MAX_SIDE`, reduced by an integer box
+//! average written here — `image`'s own resize goes through an `Rgba32F`
+//! copy, 16 bytes a pixel, which no decoder limit sees; and at most
+//! `DECODE_PERMITS` decodes run at once in the process, whatever the upload
+//! gate admits.
 
 use std::io::Cursor;
+use std::sync::LazyLock;
 
-use image::imageops::FilterType;
-use image::{DynamicImage, ImageReader, Limits};
+use image::{DynamicImage, GrayImage, ImageReader, Limits};
 use rxing::{BarcodeFormat, DecodeHints};
+use tokio::sync::Semaphore;
 
 /// The largest photo accepted, in bytes. A phone's full-resolution JPEG is a
 /// few megabytes; 12 MiB leaves room for the larger sensors.
@@ -30,15 +35,36 @@ pub const MAX_PHOTO_BYTES: usize = 12 * 1024 * 1024;
 /// `MAX_UPLOAD_BODY_BYTES` does for the attachments.
 pub const MAX_PHOTO_BODY_BYTES: usize = MAX_PHOTO_BYTES + 64 * 1024;
 
-/// The longest side, in pixels, the photo is reduced to before decoding.
-pub const MAX_SIDE: u32 = 2048;
+/// The longest side, in pixels, the barcode is looked for on. 4096 keeps a
+/// 12 Mpx phone frame (4032 × 3024) at full resolution, where a barcode
+/// across a third of the width has bars of 3 px or more; a larger frame is
+/// reduced by a whole factor (`downscale_factor`).
+pub const MAX_SIDE: u32 = 4096;
 
-/// Decoder bounds: no dimension past this, whatever the file declares.
-const MAX_DIMENSION: u32 = 12_000;
+/// Decoder bound: no dimension past this, whatever the file declares.
+const MAX_DIMENSION: u32 = 8192;
 
-/// Decoder bound on what decoding may allocate (a 48 Mpx frame in RGB is
-/// 144 MiB).
-const MAX_ALLOC: u64 = 192 * 1024 * 1024;
+/// Decoder bound on what decoding may allocate: a 24 Mpx frame in RGB
+/// (6000 × 4000 × 3 = 72 MB) fits; a 48 Mpx one does not, and is refused
+/// as unreadable. Phones hand a file input their default resolution, 12 or
+/// 24 Mpx.
+const MAX_ALLOC: u64 = 80 * 1024 * 1024;
+
+/// Decodes running at once in this process. The photo route also holds an
+/// upload permit (`manage_our_home_http_guard::UploadGate`), which bounds the
+/// bodies held, up to eight; this bounds the far larger working memory of
+/// decoding them. Peak resident memory of one decode, measured in release
+/// with `/usr/bin/time -v` on `peak_of_one_decode`, one input per process,
+/// less the 7.7 MiB of the harness decoding a tiny PNG (2026-10-08): a
+/// 12 Mpx colour JPEG, 47 MiB; a 24 Mpx colour JPEG, the largest
+/// `MAX_ALLOC` admits, 92 MiB; an 8192 × 8192 grey PNG, 81 MiB; an
+/// 8000 × 8000 colour JPEG of 1.8 MB, refused at its header, 3 MiB. So
+/// about 185 MiB for the two decodes at once, on top of the bodies the
+/// upload gate holds.
+pub const DECODE_PERMITS: usize = 2;
+
+/// The process-wide pool of decode permits.
+pub static DECODES: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(DECODE_PERMITS));
 
 /// Why a photo gave no code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,15 +89,41 @@ impl PhotoError {
     }
 }
 
-/// `(width, height)` reduced so that the longest side is at most `max`,
-/// keeping the proportions; unchanged when it already fits. Never 0.
-pub fn fitted_size(width: u32, height: u32, max: u32) -> (u32, u32) {
-    let longest = width.max(height);
-    if longest <= max {
-        return (width, height);
+/// The whole factor a `width` × `height` picture is divided by so that its
+/// longest side is at most `max`: 1 when it already fits.
+pub fn downscale_factor(width: u32, height: u32, max: u32) -> u32 {
+    width.max(height).div_ceil(max.max(1)).max(1)
+}
+
+/// `image` reduced by `factor`, each output pixel the average of a
+/// `factor` × `factor` block (the blocks of the last row and column may be
+/// cut short). Grey in, grey out, one byte a pixel: no intermediate copy.
+pub fn box_downscale(image: &GrayImage, factor: u32) -> GrayImage {
+    let factor = factor.max(1);
+    let (width, height) = image.dimensions();
+    let (out_w, out_h) = (width.div_ceil(factor), height.div_ceil(factor));
+    let pixels = image.as_raw();
+    // One running sum per output column, refilled for each row of blocks.
+    let mut sums = vec![0u32; out_w as usize];
+    let mut out = Vec::with_capacity(out_w as usize * out_h as usize);
+    for block_y in 0..out_h {
+        sums.iter_mut().for_each(|s| *s = 0);
+        let rows = (block_y * factor)..((block_y + 1) * factor).min(height);
+        let row_count = rows.len() as u32;
+        for y in rows {
+            let row = &pixels[(y * width) as usize..((y + 1) * width) as usize];
+            for (x, &value) in row.iter().enumerate() {
+                sums[x / factor as usize] += u32::from(value);
+            }
+        }
+        for (block_x, &sum) in sums.iter().enumerate() {
+            let start = block_x as u32 * factor;
+            let cols = (start + factor).min(width) - start;
+            let n = cols * row_count;
+            out.push(((sum + n / 2) / n) as u8);
+        }
     }
-    let scale = |side: u32| ((u64::from(side) * u64::from(max)) / u64::from(longest)).max(1) as u32;
-    (scale(width), scale(height))
+    GrayImage::from_raw(out_w, out_h, out).expect("out_w × out_h bytes")
 }
 
 /// `bytes` decoded under the bounds: the dimensions a header declares are
@@ -92,15 +144,16 @@ pub fn decode_photo(bytes: &[u8]) -> Result<String, PhotoError> {
     if bytes.len() > MAX_PHOTO_BYTES {
         return Err(PhotoError::TooLarge);
     }
-    let image = read_image(bytes).map_err(|_| PhotoError::NotAnImage)?;
-
-    let (width, height) = fitted_size(image.width(), image.height(), MAX_SIDE);
-    let image = if (width, height) == (image.width(), image.height()) {
-        image
+    // Grey at once: the colour buffer goes as soon as the grey one exists.
+    let luma = read_image(bytes)
+        .map_err(|_| PhotoError::NotAnImage)?
+        .into_luma8();
+    let factor = downscale_factor(luma.width(), luma.height(), MAX_SIDE);
+    let luma = if factor > 1 {
+        box_downscale(&luma, factor)
     } else {
-        image.resize_exact(width, height, FilterType::Triangle)
+        luma
     };
-    let luma = DynamicImage::into_luma8(image);
     let (width, height) = luma.dimensions();
 
     let mut hints = DecodeHints {
@@ -198,20 +251,117 @@ mod tests {
     }
 
     #[test]
-    fn a_large_photo_is_reduced_to_the_longest_side() {
-        assert_eq!(fitted_size(4032, 3024, 2048), (2048, 1536));
-        assert_eq!(fitted_size(3024, 4032, 2048), (1536, 2048));
+    fn a_photo_that_fits_is_not_reduced() {
+        assert_eq!(downscale_factor(4032, 3024, 4096), 1);
+        assert_eq!(downscale_factor(4096, 4096, 4096), 1);
+        assert_eq!(downscale_factor(1, 1, 4096), 1);
     }
 
     #[test]
-    fn a_photo_that_fits_is_left_as_it_is() {
-        assert_eq!(fitted_size(1600, 1200, 2048), (1600, 1200));
-        assert_eq!(fitted_size(2048, 10, 2048), (2048, 10));
+    fn a_larger_photo_is_divided_by_the_smallest_whole_factor_that_fits() {
+        assert_eq!(downscale_factor(6000, 4000, 4096), 2);
+        assert_eq!(downscale_factor(4000, 6000, 4096), 2);
+        assert_eq!(downscale_factor(4097, 10, 4096), 2);
+        assert_eq!(downscale_factor(8192, 8192, 4096), 2);
+        assert_eq!(downscale_factor(8193, 1, 4096), 3);
     }
 
     #[test]
-    fn a_reduced_side_never_falls_to_zero() {
-        assert_eq!(fitted_size(100_000, 1, 2048), (2048, 1));
+    fn a_box_downscale_averages_each_block() {
+        // 4 × 2, factor 2: two blocks, of 0/100/200/250 and of four 50s.
+        let image = GrayImage::from_raw(4, 2, vec![0, 100, 50, 50, 200, 250, 50, 50]).unwrap();
+        let small = box_downscale(&image, 2);
+        assert_eq!(small.dimensions(), (2, 1));
+        assert_eq!(small.into_raw(), vec![138, 50]);
+    }
+
+    #[test]
+    fn the_last_blocks_of_an_uneven_picture_are_cut_short() {
+        // 5 × 3, factor 2: 3 × 2 out; the last column and row average what
+        // they have.
+        let image = GrayImage::from_fn(5, 3, |x, y| Luma([(10 * x + 100 * y) as u8]));
+        let small = box_downscale(&image, 2);
+        assert_eq!(small.dimensions(), (3, 2));
+        assert_eq!(small.get_pixel(0, 0).0, [55]); // 0, 10, 100, 110
+        assert_eq!(small.get_pixel(2, 0).0, [90]); // 40, 140
+        assert_eq!(small.get_pixel(0, 1).0, [205]); // 200, 210
+        assert_eq!(small.get_pixel(2, 1).0, [240]); // 240 alone
+    }
+
+    #[test]
+    fn a_factor_of_one_is_the_same_picture() {
+        let image = GrayImage::from_fn(3, 2, |x, y| Luma([(x * 7 + y * 13) as u8]));
+        assert_eq!(box_downscale(&image, 1), image);
+    }
+
+    /// `img` in an RGB frame, as a phone camera hands it over: colour, JPEG.
+    fn colour_jpeg(img: &GrayImage, width: u32, height: u32) -> Vec<u8> {
+        let frame = DynamicImage::ImageLuma8(framed(img, width, height)).into_rgb8();
+        let mut out = Cursor::new(Vec::new());
+        DynamicImage::ImageRgb8(frame)
+            .write_to(&mut out, ImageFormat::Jpeg)
+            .unwrap();
+        out.into_inner()
+    }
+
+    #[test]
+    fn a_12_mpx_colour_frame_with_3_px_bars_is_read() {
+        // The case a reduction to 2048 px lost: 3 px a bar in 4032 × 3024.
+        let jpeg = colour_jpeg(&ean13("3017620422003", 3), 4032, 3024);
+        assert_eq!(decode_photo(&jpeg).as_deref(), Ok("3017620422003"));
+    }
+
+    #[test]
+    fn a_24_mpx_colour_frame_is_reduced_and_read() {
+        // 6000 × 4000, divided by 2: 6 px bars become 3.
+        let jpeg = colour_jpeg(&ean13("3017620422003", 6), 6000, 4000);
+        assert_eq!(decode_photo(&jpeg).as_deref(), Ok("3017620422003"));
+    }
+
+    #[test]
+    fn a_48_mpx_colour_frame_is_refused_by_the_allocation_bound() {
+        // 8000 × 6000 × 3 bytes = 144 MB, past `MAX_ALLOC`, though within
+        // `MAX_DIMENSION`: refused before its pixels are allocated.
+        let jpeg = colour_jpeg(&GrayImage::from_pixel(10, 10, Luma([0])), 8000, 6000);
+        assert!(
+            matches!(read_image(&jpeg), Err(image::ImageError::Limits(_))),
+            "{:?}",
+            read_image(&jpeg).err()
+        );
+    }
+
+    /// Writes the worst inputs the bounds admit to `$PHOTO_PEAK_DIR`, for
+    /// `peak_of_one_decode` to read back in a process of its own.
+    #[test]
+    #[ignore = "writes the inputs of the release peak measurement"]
+    fn write_peak_inputs() {
+        let dir = std::path::PathBuf::from(std::env::var("PHOTO_PEAK_DIR").unwrap());
+        let bars = ean13("3017620422003", 6);
+        // A 24 Mpx colour JPEG: the largest colour frame `MAX_ALLOC` admits.
+        std::fs::write(dir.join("rgb-24mpx.jpg"), colour_jpeg(&bars, 6000, 4000)).unwrap();
+        // An 8192 × 8192 grey PNG: the largest picture `MAX_DIMENSION`
+        // admits, 64 MB in grey, reduced by 2.
+        std::fs::write(
+            dir.join("grey-8192.png"),
+            encode(&framed(&bars, 8192, 8192), ImageFormat::Png),
+        )
+        .unwrap();
+        // A 12 Mpx colour JPEG, the common phone frame, at full resolution.
+        std::fs::write(dir.join("rgb-12mpx.jpg"), colour_jpeg(&bars, 4032, 3024)).unwrap();
+        // An 8000 × 8000 colour JPEG, 192 MB in RGB: refused by `MAX_ALLOC`.
+        std::fs::write(dir.join("rgb-8000.jpg"), colour_jpeg(&bars, 8000, 8000)).unwrap();
+        // A tiny file, for the baseline of the test process.
+        std::fs::write(dir.join("tiny.png"), encode(&ean13("3017620422003", 2), ImageFormat::Png)).unwrap();
+    }
+
+    /// Decodes `$PHOTO_PEAK_INPUT` once; its process's peak resident size,
+    /// read by `/usr/bin/time -v`, is the cost of one decode plus the test
+    /// harness (the `tiny.png` run).
+    #[test]
+    #[ignore = "release peak measurement, one input per process"]
+    fn peak_of_one_decode() {
+        let bytes = std::fs::read(std::env::var("PHOTO_PEAK_INPUT").unwrap()).unwrap();
+        let _ = decode_photo(&bytes);
     }
 
     #[test]

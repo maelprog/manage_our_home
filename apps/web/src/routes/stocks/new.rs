@@ -35,7 +35,7 @@ use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
-use super::photo::{decode_photo, PhotoError, MAX_PHOTO_BYTES};
+use super::photo::{decode_photo, PhotoError, DECODES, MAX_PHOTO_BYTES};
 use super::{
     family_context, fmt_num, forbidden_page, service_unavailable_page, stocks_cookie, FamilyContext,
 };
@@ -549,8 +549,22 @@ pub async fn photo(
         return Redirect::to(&photo_redirect(Err("failed"))).into_response();
     };
 
+    // At most `DECODE_PERMITS` decodes at once in the process: the upload
+    // permit bounds the bodies held, not the working memory of decoding
+    // them, many times larger. Waiting here holds the upload permit, so the
+    // queue is bounded by the upload gate. The permit moves into the
+    // blocking task and is released when the decode ends, even if the
+    // client has gone.
+    let Ok(decode_permit) = DECODES.acquire().await else {
+        return service_unavailable_page().into_response();
+    };
     // CPU-bound: off the async workers.
-    let outcome = match tokio::task::spawn_blocking(move || decode_photo(&bytes)).await {
+    let outcome = match tokio::task::spawn_blocking(move || {
+        let _permit = decode_permit;
+        decode_photo(&bytes)
+    })
+    .await
+    {
         Ok(outcome) => outcome,
         Err(_) => return service_unavailable_page().into_response(),
     };
