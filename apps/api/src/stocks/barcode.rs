@@ -41,14 +41,15 @@ fn check_digit_holds(code: &str) -> bool {
 }
 
 /// Whether a normalized code is a store's in-house label (GS1 prefixes
-/// 20–29, "restricted circulation"): the scales' weighed-goods stickers, which
+/// 20–29 and 020–029, "restricted circulation" — the second, once
+/// normalized, is a UPC-A of number system 2): the scales' weighed-goods stickers, which
 /// encode an article number and a price or weight of the store's own
 /// choosing. No public database knows them, and the same code names a
 /// different product in the next shop, so Open Food Facts is not asked.
 /// Only the 13-digit form is judged: EAN-8 restricted codes are not weighing
 /// labels.
 pub fn is_weighed(code: &str) -> bool {
-    code.len() == 13 && code.starts_with('2')
+    code.len() == 13 && (code.starts_with('2') || code.starts_with("02"))
 }
 
 #[cfg(test)]
@@ -130,5 +131,17 @@ mod tests {
         assert!(!is_weighed("0036000291452"));
         // An EAN-8 is never judged a weighing label, prefix 2 or not.
         assert!(!is_weighed("20000004"));
+    }
+
+    #[test]
+    fn a_upc_a_of_number_system_2_is_a_weighing_label_too() {
+        // GS1 prefixes 020–029: restricted circulation, the UPC-A of a
+        // scale's sticker (number system 2), stored as 02… once normalized.
+        let label = normalize("212345678992").expect("a valid UPC-A");
+        assert_eq!(label, "0212345678992");
+        assert!(is_weighed(&label));
+        // Prefixes 00–01 and 03–09 are ordinary products.
+        assert!(!is_weighed("0012345678905"));
+        assert!(!is_weighed("0312345678906"));
     }
 }
