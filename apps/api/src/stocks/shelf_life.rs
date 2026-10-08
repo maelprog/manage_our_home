@@ -68,10 +68,11 @@ const SHELF_LIVES: &[Row] = &[
     // --- Meat and fish: the shortest dates ---
     // Minced meat spoils first of all fresh meats: a day.
     row("en:ground-meats", 1, "Viandes hachées"),
+    // Raw poultry keeps less than red meat; before `en:fresh-meats`, which
+    // a chicken may carry too.
+    row("en:poultries", 2, "Volailles"),
     // Pre-packed fresh meat is sold a few days from its date.
     row("en:fresh-meats", 3, "Viandes fraîches"),
-    // Raw poultry keeps less than red meat.
-    row("en:poultries", 2, "Volailles"),
     // Sliced ham, the bulk of the category, keeps about a week sealed.
     row("en:hams", 5, "Jambons"),
     // Smoked fish (smoked salmon) is labelled two to three weeks ahead;
@@ -267,6 +268,18 @@ mod tests {
                 default_shelf_life(&tags(&["en:dairies", "en:cheeses", cheese])).unwrap();
             assert!(shelf_life.days <= Days::new(10), "{cheese}: {shelf_life:?}");
         }
+    }
+
+    #[test]
+    fn poultry_tagged_as_fresh_meat_keeps_the_shorter_poultry_date() {
+        let shelf_life = default_shelf_life(&tags(&[
+            "en:meats",
+            "en:fresh-meats",
+            "en:poultries",
+            "en:chickens",
+        ]))
+        .unwrap();
+        assert_eq!(shelf_life.days, Days::new(2), "{shelf_life:?}");
     }
 
     #[test]
