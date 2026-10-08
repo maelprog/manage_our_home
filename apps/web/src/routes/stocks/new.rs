@@ -14,10 +14,13 @@
 //! in a hidden field; a weighing label, an unknown product or a nameless
 //! record get the same form, empty but for the code; a string that is no
 //! code gets the form and a message. The `scan` value comes from the
-//! "Code-barres" field — a GET form that works without JavaScript — or from
-//! the "Scanner" button (`SCAN_SCRIPT`), which only decodes the image.
+//! "Code-barres" field — a GET form — or from the photo of the barcode
+//! (`POST /stocks/new/photo`, decoded in memory by `photo::decode_photo`),
+//! both without JavaScript. A photo that yields no code lands on
+//! `?photo=<error>`: take the photo again, or type the code, and the scan
+//! runs again — never straight to the manual form.
 
-use axum::extract::{Query, State};
+use axum::extract::{Multipart, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
@@ -29,14 +32,13 @@ use manage_our_home_shared::validation::stocks::{validate_item_form, ItemFormErr
 use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
-use crate::assets::{Script, Vendored};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
-use super::{family_context, fmt_num, forbidden_page, stocks_cookie, FamilyContext};
-
-/// The "Scanner" button's behaviour (`assets::Script::StockScan`).
-pub(crate) const SCAN_SCRIPT: &str = include_str!("../../stock_scan.js");
+use super::photo::{decode_photo, PhotoError, MAX_PHOTO_BYTES};
+use super::{
+    family_context, fmt_num, forbidden_page, service_unavailable_page, stocks_cookie, FamilyContext,
+};
 
 /// The shared item form fields, used by both create and edit. `quantity` /
 /// `reorder_threshold` arrive as strings and are parsed in the handler.
@@ -196,25 +198,54 @@ pub(crate) fn prefilled_form(
 /// The ODbL attribution Open Food Facts' data requires wherever it is shown.
 const OFF_ATTRIBUTION: &str = r#"<p class="muted">Données produits : <a href="https://world.openfoodfacts.org">Open Food Facts</a>, <a href="https://opendatacommons.org/licenses/odbl/1-0/">ODbL</a>.</p>"#;
 
-/// The barcode block above the form: the "Code-barres" field, a GET form that
-/// needs no JavaScript, then the "Scanner" button, `hidden` until
-/// `SCAN_SCRIPT` finds a camera API to reveal it.
+/// The barcode block above the form, two plain forms that need no
+/// JavaScript: the photo of the barcode (`capture="environment"` opens the
+/// rear camera on a phone; `data-submit-on-change` sends it as soon as it is
+/// taken where `enhance.js` runs, and the button sends it elsewhere), and
+/// the "Code-barres" field, for the digits typed by hand.
 fn scan_block(scan_value: &str) -> String {
     format!(
-        r#"<form method="get" action="/stocks/new" class="card inline">
+        r#"<form method="post" action="/stocks/new/photo" enctype="multipart/form-data" class="card inline">
+<label>Photographier le code <input type="file" name="photo" accept="image/*" capture="environment" required data-submit-on-change/></label>
+<button type="submit" class="secondary">Scanner</button>
+</form>
+<form method="get" action="/stocks/new" class="card inline">
 <label>Code-barres <input type="text" name="scan" inputmode="numeric" autocomplete="off" value="{scan}"/></label>
 <button type="submit" class="secondary">Chercher le produit</button>
 </form>
-<div data-scan data-scan-polyfill="{polyfill}" data-scan-wasm="{wasm}" hidden>
-<div data-scan-idle><button type="button" class="secondary">Scanner</button></div>
-<div data-scan-view hidden><video muted playsinline></video>
-<button type="button" class="secondary" data-scan-stop>Fermer la caméra</button></div>
-<p class="muted" data-scan-status aria-live="polite"></p>
-</div>"#,
+<p class="muted">La photo est lue sur le serveur puis oubliée : elle n'est ni conservée ni transmise.</p>"#,
         scan = html_escape(scan_value),
-        polyfill = Vendored::BarcodePolyfill.href(),
-        wasm = Vendored::ZxingReaderWasm.href(),
     )
+}
+
+/// French copy for a failed photo scan (`?photo=`).
+pub(crate) fn photo_error_message(code: &str) -> &'static str {
+    match code {
+        "unreadable" => "Aucun code-barres n'a pu être lu sur la photo : elle est peut-être floue, prise de trop loin, ou le code sort du cadre.",
+        "too_large" => "La photo dépasse 12 Mo.",
+        "not_an_image" => "Ce fichier n'est pas une photo lisible (JPEG, PNG ou WebP).",
+        "busy" => "Trop d'envois en cours, merci de réessayer dans un instant.",
+        _ => "L'envoi de la photo a échoué, merci de réessayer.",
+    }
+}
+
+/// After a photo that gave no code: take it again, or type the digits —
+/// either way the scan runs again. The manual article form is offered last,
+/// not instead.
+fn photo_retry_page(header: &str, code: &str) -> String {
+    let body = format!(
+        r#"<h1>Scanner un article</h1>
+<p class="notice error">{message}</p>
+<p>Reprenez la photo, ou tapez les chiffres imprimés sous les barres : le scan sera relancé.</p>
+{scan}
+<div class="links">
+<a href="/stocks/new">Saisir l'article sans code-barres</a>
+<a href="/stocks">Retour aux stocks</a>
+</div>"#,
+        message = html_escape(photo_error_message(code)),
+        scan = scan_block(""),
+    );
+    shell_with_header(Width::Form, "Scanner un article", header, &body)
 }
 
 /// What sits between the barcode block and the form: a notice saying what
@@ -272,10 +303,8 @@ fn page(
 <button type="submit">Ajouter l'article</button>
 </form>
 {attribution}
-<div class="links"><a href="/stocks">Retour aux stocks</a></div>
-{script}"#,
+<div class="links"><a href="/stocks">Retour aux stocks</a></div>"#,
         scan = scan_block(scan_value),
-        script = Script::StockScan.tag(),
     );
     shell_with_header(Width::Form, "Nouvel article", header, &body)
 }
@@ -314,6 +343,10 @@ pub struct NewQuery {
     /// Set by "Créer quand même un autre article": the form without the code.
     #[serde(default)]
     other: Option<String>,
+    /// Set after a photo that gave no code (`PhotoError::code`, `busy`,
+    /// `failed`): the retry page.
+    #[serde(default)]
+    photo: Option<String>,
 }
 
 pub async fn get(
@@ -325,6 +358,9 @@ pub async fn get(
     let Some(fam) = family_context(&state, &headers, &me, "/stocks/new").await else {
         return Redirect::to("/groups/new").into_response();
     };
+    if let Some(code) = query.photo.as_deref() {
+        return Html(photo_retry_page(&fam.header, code)).into_response();
+    }
     if query.scan.trim().is_empty() {
         // Default a fresh form to quantity 0.
         let form = ItemForm {
@@ -439,6 +475,90 @@ async fn fetch_item(
         return None;
     }
     serde_json::from_value(resp.body).ok()
+}
+
+/// Where a photo scan goes next: the code through `?scan=`, the same path as
+/// the "Code-barres" field, or the retry page.
+pub(crate) fn photo_redirect(outcome: Result<String, &str>) -> String {
+    match outcome {
+        Ok(code) => format!(
+            "/stocks/new?{}",
+            serde_urlencoded::to_string([("scan", code.as_str())]).unwrap_or_default()
+        ),
+        Err(error) => format!("/stocks/new?photo={error}"),
+    }
+}
+
+/// `POST /stocks/new/photo` — the photo of a barcode, decoded in memory
+/// (`photo::decode_photo`) and dropped with the request. Only the decoded
+/// digits leave this handler, in the redirect.
+pub async fn photo(
+    CurrentUser(me): CurrentUser,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Response {
+    if family_context(&state, &headers, &me, "/stocks/new")
+        .await
+        .is_none()
+    {
+        return Redirect::to("/groups/new").into_response();
+    }
+    // The photo is held in memory whole, like an attachment: same bound on
+    // how many are held at once, per account and per process.
+    let _permit = match state.upload_gate.try_acquire(me.user_id) {
+        Ok(permit) => permit,
+        Err(busy) => {
+            tracing::info!(?busy, "photo turned away");
+            return Redirect::to(&photo_redirect(Err("busy"))).into_response();
+        }
+    };
+
+    let mut photo: Option<Vec<u8>> = None;
+    loop {
+        match multipart.next_field().await {
+            Ok(Some(mut field)) => {
+                if field.name() != Some("photo") || photo.is_some() {
+                    continue;
+                }
+                let mut bytes = Vec::new();
+                loop {
+                    match field.chunk().await {
+                        Ok(Some(chunk)) => {
+                            if bytes.len() + chunk.len() > MAX_PHOTO_BYTES {
+                                return Redirect::to(&photo_redirect(Err(
+                                    PhotoError::TooLarge.code()
+                                )))
+                                .into_response();
+                            }
+                            bytes.extend_from_slice(&chunk);
+                        }
+                        Ok(None) => break,
+                        Err(_) => {
+                            return Redirect::to(&photo_redirect(Err("failed"))).into_response()
+                        }
+                    }
+                }
+                photo = Some(bytes);
+            }
+            Ok(None) => break,
+            Err(_) => return Redirect::to(&photo_redirect(Err("failed"))).into_response(),
+        }
+    }
+    let Some(bytes) = photo else {
+        return Redirect::to(&photo_redirect(Err("failed"))).into_response();
+    };
+
+    // CPU-bound: off the async workers.
+    let outcome = match tokio::task::spawn_blocking(move || decode_photo(&bytes)).await {
+        Ok(outcome) => outcome,
+        Err(_) => return service_unavailable_page().into_response(),
+    };
+    let target = match &outcome {
+        Ok(code) => photo_redirect(Ok(code.clone())),
+        Err(error) => photo_redirect(Err(error.code())),
+    };
+    Redirect::to(&target).into_response()
 }
 
 pub async fn post(
@@ -611,21 +731,69 @@ mod tests {
     }
 
     #[test]
-    fn the_scan_block_works_without_javascript_and_hides_the_camera() {
+    fn the_scan_block_is_two_plain_forms() {
         let html = scan_block("3017620422003");
-        // The no-JS path: a GET form whose field is named `scan`.
+        // The photo: a multipart POST of one image, the rear camera asked.
+        assert!(
+            html.contains(
+                r#"<form method="post" action="/stocks/new/photo" enctype="multipart/form-data""#
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                r#"<input type="file" name="photo" accept="image/*" capture="environment""#
+            ),
+            "{html}"
+        );
+        // The digits: a GET form whose field is named `scan`.
         assert!(
             html.contains(r#"<form method="get" action="/stocks/new""#),
             "{html}"
         );
         assert!(html.contains(r#"name="scan""#), "{html}");
         assert!(html.contains(r#"value="3017620422003""#), "{html}");
-        // The camera block stays hidden until the script reveals it, and
-        // points at the files the binary serves.
-        assert!(html.contains("data-scan "), "{html}");
-        assert!(html.contains(" hidden>"), "{html}");
-        assert!(html.contains(Vendored::BarcodePolyfill.href()), "{html}");
-        assert!(html.contains(Vendored::ZxingReaderWasm.href()), "{html}");
+        // No script of its own.
+        assert!(!html.contains("<script"), "{html}");
+    }
+
+    #[test]
+    fn a_failed_photo_offers_both_ways_to_scan_again() {
+        let html = photo_retry_page("", "unreadable");
+        assert!(html.contains(photo_error_message("unreadable")), "{html}");
+        assert!(html.contains(r#"action="/stocks/new/photo""#), "{html}");
+        assert!(html.contains(r#"name="scan""#), "{html}");
+        // The article form is not where a failed photo lands.
+        assert!(!html.contains(r#"name="name""#), "{html}");
+    }
+
+    #[test]
+    fn a_decoded_photo_goes_through_the_scan_parameter() {
+        assert_eq!(
+            photo_redirect(Ok("3017620422003".into())),
+            "/stocks/new?scan=3017620422003"
+        );
+        assert_eq!(
+            photo_redirect(Ok("a b&c".into())),
+            "/stocks/new?scan=a+b%26c"
+        );
+        assert_eq!(
+            photo_redirect(Err("unreadable")),
+            "/stocks/new?photo=unreadable"
+        );
+    }
+
+    #[test]
+    fn every_photo_error_has_its_own_message() {
+        let generic = photo_error_message("anything-else");
+        for code in [
+            PhotoError::TooLarge.code(),
+            PhotoError::NotAnImage.code(),
+            PhotoError::NoBarcode.code(),
+            "busy",
+        ] {
+            assert_ne!(photo_error_message(code), generic, "{code}");
+        }
     }
 
     #[test]

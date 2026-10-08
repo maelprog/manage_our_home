@@ -239,32 +239,6 @@ export async function fetchEventBounds(
   }
 }
 
-/**
- * Puts a fresh Open Food Facts record for `code` in apps/api's cache
- * (`off_products`, #402), so a scan of that code is answered from it and
- * the stack never asks the real service: the suite makes no network call
- * outside the stack. `name: null` records "unknown or nameless".
- */
-export async function cacheOffProduct(
-  code: string,
-  name: string | null,
-  quantity: string | null,
-): Promise<void> {
-  const client = new Client({ connectionString: requireDatabaseUrl() });
-  await client.connect();
-  try {
-    await client.query(
-      `INSERT INTO off_products (code, name, quantity, fetched_at)
-       VALUES ($1, $2, $3, now())
-       ON CONFLICT (code) DO UPDATE SET
-         name = EXCLUDED.name, quantity = EXCLUDED.quantity, fetched_at = now()`,
-      [code, name, quantity],
-    );
-  } finally {
-    await client.end();
-  }
-}
-
 function requireDatabaseUrl(): string {
   const url = process.env.DATABASE_URL;
   if (!url) {

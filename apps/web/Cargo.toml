@@ -41,6 +41,18 @@ tower-http = { version = "0.7", features = ["fs"] }
 # exactly that version in apps/api, so the workspace lock gains one line and
 # no new crate: nothing new for `cargo audit` to look at.
 sha2 = "0.11"
+# The stocks' barcode photo (#402): the picture a member takes is decoded
+# here, in memory, and never leaves the process — no WebAssembly in the page
+# (DESIGN.md), no image sent to apps/api or a third party. `image` reads the
+# formats a phone camera hands a file input (JPEG, PNG, WebP) and nothing
+# else: the default features would add a dozen decoders (AVIF, EXR, TIFF…)
+# and rayon. rxing is ZXing in Rust; only its 1D readers are compiled in
+# (EAN-13, EAN-8, UPC-A live under `oned`), without its own `image`
+# feature, which would pull every format back in through `image_formats`,
+# nor its client-side parsers (regex, chrono-tz), 2D formats or character
+# set tables (`no_character_set_support`: EAN and UPC carry digits only).
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+rxing = { version = "0.9", default-features = false, features = ["oned", "decoders", "no_character_set_support"] }
 tower-cookies = "0.10"
 cookie = "0.18"
 # `multipart` on reqwest: forwarding the uploaded file to apps/api.

@@ -487,9 +487,6 @@ dd { margin: var(--s2) 0 0 0; }
    one --t-sm line plus --s3 above and below is 44px (#74). */
 .links a { color: var(--accent); padding: var(--s3) 0; }
 .muted { color: var(--muted); font-size: var(--t-sm); }
-/* The stocks' barcode camera (#402): a phone's 640px-wide stream within the
-   column. */
-video { display: block; max-width: 100%; }
 /* Text whose line breaks are the author's: a message in the thread, a
    recipe's method. Declared after the child-margin reset above, so that one
    sitting inside a `.list-row` keeps its own spacing. */

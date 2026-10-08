@@ -2,7 +2,8 @@
 //! or for lack of room (#219), or because it was sent from another site
 //! (#223). The bounds themselves live in
 //! `manage_our_home_http_guard`; `build_router` installs them on every
-//! route, and `routes::agenda::attachments::upload` takes the upload
+//! route, and `routes::agenda::attachments::upload` and
+//! `routes::stocks::new::photo` (#402) take the upload
 //! permit.
 
 use axum::response::{Html, IntoResponse, Response};

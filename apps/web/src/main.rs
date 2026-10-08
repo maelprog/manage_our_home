@@ -238,6 +238,14 @@ fn build_router(state: AppState) -> Router {
             "/stocks/new",
             get(routes::stocks::new::get).post(routes::stocks::new::post),
         )
+        .route(
+            "/stocks/new/photo",
+            // The photo is read whole: axum's 2 MiB default would refuse
+            // most phone pictures (#402).
+            post(routes::stocks::new::photo).layer(axum::extract::DefaultBodyLimit::max(
+                routes::stocks::photo::MAX_PHOTO_BODY_BYTES,
+            )),
+        )
         .route("/stocks/:id", get(routes::stocks::detail::get))
         .route(
             "/stocks/:id/edit",
