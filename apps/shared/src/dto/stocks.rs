@@ -156,7 +156,8 @@ pub struct ScanResult {
     /// that is not a code gets a 422 instead of a `ScanResult`, so this is
     /// always `Some` in a 200.
     pub code: Option<String>,
-    /// A store's weighing label (GS1 prefixes 20–29): Open Food Facts was
+    /// A store's weighing label (GS1 prefixes 20–29, and 020–029 for a
+    /// UPC-A in its EAN-13 form): Open Food Facts was
     /// not asked, and `product` is `None`.
     pub weighed: bool,
     /// `None` when the product is unknown, its record has no name, the code
