@@ -407,9 +407,9 @@ mod tests {
     }
 
     #[test]
-    fn a_full_camera_frame_is_reduced_and_still_read() {
+    fn a_full_camera_frame_is_read_at_full_resolution() {
         // 4032 × 3024, the frame of a 12 Mpx phone camera; the bars cover
-        // about a third of its width.
+        // about a third of its width. It fits `MAX_SIDE`: not reduced.
         let frame = framed(&ean13("3017620422003", 12), 4032, 3024);
         let png = encode(&frame, ImageFormat::Png);
         assert_eq!(decode_photo(&png).as_deref(), Ok("3017620422003"));
