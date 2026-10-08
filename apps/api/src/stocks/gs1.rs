@@ -32,7 +32,10 @@ pub struct Gs1Read {
 /// `raw` read as a GS1 element string or a GS1 Digital Link URL, `None` when
 /// it is neither, carries no GTIN, or carries one that is not a consumer
 /// unit's EAN/UPC (`gtin_to_code`). `today` places the two-digit years.
+/// Whitespace around the string is dropped, as `barcode::normalize` does;
+/// the FNC1 separator (ASCII 29) is not whitespace and stays.
 pub fn read(raw: &str, today: NaiveDate) -> Option<Gs1Read> {
+    let raw = raw.trim();
     let fields = if is_url(raw) {
         digital_link(raw)?
     } else {
@@ -381,6 +384,22 @@ mod tests {
             .and_then(|r| r.expires_on),
             Some(day(2027, 1, 31))
         );
+    }
+
+    #[test]
+    fn whitespace_around_the_string_is_dropped() {
+        let expected = Some(Gs1Read {
+            code: "3017620422003".into(),
+            expires_on: Some(day(2027, 1, 31)),
+        });
+        assert_eq!(
+            read(
+                " https://id.gs1.org/01/03017620422003?17=270131 \n",
+                today()
+            ),
+            expected
+        );
+        assert_eq!(read("  010301762042200317270131\n", today()), expected);
     }
 
     #[test]
