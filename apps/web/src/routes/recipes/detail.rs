@@ -44,6 +44,32 @@ pub(crate) fn fmt_num(n: f64) -> String {
     }
 }
 
+/// The site an imported recipe comes from (#405), as the page shows it:
+/// the host of an `http`/`https` URL, without a leading `www.`.
+pub(crate) fn source_domain(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url.trim()).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = parsed.host_str().filter(|h| !h.is_empty())?;
+    Some(host.strip_prefix("www.").unwrap_or(host).to_string())
+}
+
+/// The link to the page a recipe was imported from, named by its site.
+/// Nothing for a recipe typed by hand, or for an address that is not a web
+/// page (the API refuses one; this is not where a `javascript:` link gets
+/// a second chance).
+fn source_html(source_url: Option<&str>) -> String {
+    let Some((url, domain)) = source_url.and_then(|u| Some((u.trim(), source_domain(u)?))) else {
+        return String::new();
+    };
+    format!(
+        r#"<p class="muted">Source : <a href="{url}" rel="noopener noreferrer nofollow">{domain}</a></p>"#,
+        url = html_escape(url),
+        domain = html_escape(&domain),
+    )
+}
+
 #[derive(serde::Deserialize)]
 pub struct DetailQuery {
     notice: Option<String>,
@@ -238,8 +264,10 @@ fn page(
         r#"<p class="muted">Seul le créateur ou un administrateur peut modifier ou supprimer cette recette.</p>"#.to_string()
     };
 
+    let source_html = source_html(recipe.source_url.as_deref());
     let body = format!(
         r#"<h1>{name}</h1>
+{source_html}
 {notice_html}{error_html}
 <h2>Ingrédients</h2>
 {ingredients_html}
@@ -335,5 +363,46 @@ pub async fn delete(
             recipe_not_found_page().into_response()
         }
         Ok(_) | Err(_) => service_unavailable_page().into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_domain_is_the_host_without_www() {
+        assert_eq!(
+            source_domain("https://www.marmiton.org/recettes/recette_crepes_27121.aspx"),
+            Some("marmiton.org".into())
+        );
+        assert_eq!(
+            source_domain("http://cuisine.journaldesfemmes.fr/recette/1"),
+            Some("cuisine.journaldesfemmes.fr".into())
+        );
+        assert_eq!(
+            source_domain("https://750g.com:8443/r"),
+            Some("750g.com".into())
+        );
+        assert_eq!(source_domain("javascript:alert(1)"), None);
+        assert_eq!(source_domain("pas une url"), None);
+    }
+
+    #[test]
+    fn source_link_is_rel_noopener_noreferrer_nofollow() {
+        let html = source_html(Some("https://www.750g.com/bento-r78248.htm?a=1&b=2"));
+        assert!(
+            html.contains(
+                r#"<a href="https://www.750g.com/bento-r78248.htm?a=1&amp;b=2" rel="noopener noreferrer nofollow">750g.com</a>"#
+            ),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn no_source_link_without_a_web_address() {
+        assert_eq!(source_html(None), "");
+        assert_eq!(source_html(Some("javascript:alert(1)")), "");
+        assert_eq!(source_html(Some("data:text/html,x")), "");
     }
 }

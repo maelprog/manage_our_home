@@ -4,6 +4,10 @@
 //! (inline error, no round trip); the backend's matching 400s are mapped
 //! defensively. Any member may create, so 403 isn't reachable via the UI.
 //! Success (201) → PRG `/recipes/:id?notice=recipe_created`.
+//!
+//! The import (`import.rs`, #405) renders this same form, pre-filled from
+//! the page it read, with the page's address in a hidden `source_url`
+//! field: the reviewed recipe is created here, like any other.
 
 use axum::extract::State;
 use axum::http::HeaderMap;
@@ -29,6 +33,9 @@ pub struct RecipeForm {
     pub instructions: String,
     #[serde(default)]
     pub ingredients: String,
+    /// The page an imported recipe comes from (#405); empty otherwise.
+    #[serde(default)]
+    pub source_url: String,
 }
 
 /// French copy for a recipe form error code.
@@ -41,6 +48,7 @@ pub(crate) fn error_message(code: &str) -> &'static str {
             "La quantité d'un ingrédient ne peut pas être négative."
         }
         "invalid_seasonal_month" => "Les mois de saison doivent être compris entre 1 et 12.",
+        "invalid_source_url" => "L'adresse de la page d'origine n'est pas valide.",
         "unavailable" => "Service momentanément indisponible, merci de réessayer.",
         _ => "Une erreur est survenue, merci de réessayer.",
     }
@@ -72,19 +80,36 @@ pub(crate) fn form_fields(name: &str, instructions: &str, ingredients: &str) -> 
     )
 }
 
-fn page(header: &str, form: &RecipeForm, error: Option<&str>) -> String {
+/// The create page. With a `source_url`, the form is an imported draft
+/// (#405): a notice names the page and asks for a review, and the address
+/// rides along in a hidden field.
+pub(crate) fn page(header: &str, form: &RecipeForm, error: Option<&str>) -> String {
     let error_html = error
         .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
         .unwrap_or_default();
+    let source_url = form.source_url.trim();
+    let imported_html = if source_url.is_empty() {
+        String::new()
+    } else {
+        let from = super::detail::source_domain(source_url)
+            .map(|domain| format!(" depuis {}", html_escape(&domain)))
+            .unwrap_or_default();
+        format!(
+            r#"<p class="notice">Recette importée{from}. Relisez-la et corrigez-la : rien n'est enregistré avant « Créer la recette ».</p>
+<input type="hidden" name="source_url" value="{url}"/>"#,
+            url = html_escape(source_url),
+        )
+    };
     let fields = form_fields(&form.name, &form.instructions, &form.ingredients);
     let body = format!(
         r#"<h1>Nouvelle recette</h1>
 {error_html}
 <form method="post" action="/recipes/new">
+{imported_html}
 {fields}
 <button type="submit">Créer la recette</button>
 </form>
-<div class="links"><a href="/recipes">Retour aux recettes</a></div>"#,
+<div class="links"><a href="/recipes/import">Importer depuis une URL</a><a href="/recipes">Retour aux recettes</a></div>"#,
     );
     shell_with_header(Width::Form, "Nouvelle recette", header, &body)
 }
@@ -125,10 +150,15 @@ pub async fn post(
         let i = form.instructions.trim();
         (!i.is_empty()).then(|| i.to_string())
     };
+    let source_url = {
+        let s = form.source_url.trim();
+        (!s.is_empty()).then(|| s.to_string())
+    };
     let req = CreateRecipeRequest {
         name: form.name.trim().to_string(),
         instructions,
         ingredients,
+        source_url,
     };
 
     let cookie = recipes_cookie(&headers);

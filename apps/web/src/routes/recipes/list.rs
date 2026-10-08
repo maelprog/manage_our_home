@@ -183,7 +183,10 @@ pub async fn get(
     let body = format!(
         r#"<div class="page-header">
 <h1>Recettes</h1>
+<div class="actions">
+<a class="btn secondary" href="/recipes/import">Importer depuis une URL</a>
 <a class="btn" href="/recipes/new">Nouvelle recette</a>
+</div>
 </div>
 {notice}
 {suggestions_section}
