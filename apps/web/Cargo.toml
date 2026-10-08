@@ -49,8 +49,10 @@ sha2 = "0.11"
 # and rayon. rxing is ZXing in Rust; only its 1D readers are compiled in
 # (EAN-13, EAN-8, UPC-A live under `oned`), without its own `image`
 # feature, which would pull every format back in through `image_formats`,
-# nor its client-side parsers (regex, chrono-tz), 2D formats or character
-# set tables (`no_character_set_support`: EAN and UPC carry digits only).
+# nor its client-side parsers (fancy-regex, chrono-tz, uriparse), 2D formats
+# or character set tables (`no_character_set_support`: EAN and UPC carry
+# digits only). rxing still depends on `regex` itself, which the workspace
+# already had: the lock moves it from 1.12.4 to 1.13.1, a minor release.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 rxing = { version = "0.9", default-features = false, features = ["oned", "decoders", "no_character_set_support"] }
 tower-cookies = "0.10"
