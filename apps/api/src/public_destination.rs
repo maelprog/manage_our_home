@@ -81,9 +81,9 @@ fn is_public_v4(ip: Ipv4Addr) -> bool {
 }
 
 /// IPv6: only global unicast (`2000::/3`) is public, less documentation
-/// (`2001:db8::/32`) and the IETF protocol assignments (`2001::/23`, Teredo
-/// included). An IPv4 address carried in IPv6 — mapped (`::ffff:0:0/96`),
-/// NAT64 (`64:ff9b::/96`) or 6to4 (`2002::/16`) — is judged as that IPv4
+/// (`2001:db8::/32`, `3fff::/20`) and the IETF protocol assignments
+/// (`2001::/23`, Teredo included). An IPv4 address carried in IPv6 —
+/// mapped (`::ffff:0:0/96`), NAT64 (`64:ff9b::/96`) or 6to4 (`2002::/16`) — is judged as that IPv4
 /// address; the first two lie outside `2000::/3`, so are only public that
 /// way.
 fn is_public_v6(ip: Ipv6Addr) -> bool {
@@ -99,7 +99,8 @@ fn is_public_v6(ip: Ipv6Addr) -> bool {
         return is_public_v4(embedded(s[1], s[2]));
     }
     let global_unicast = s[0] & 0xe000 == 0x2000;
-    let documentation = s[0] == 0x2001 && s[1] == 0x0db8;
+    // Documentation: `2001:db8::/32`, and `3fff::/20` (RFC 9637).
+    let documentation = (s[0] == 0x2001 && s[1] == 0x0db8) || (s[0] == 0x3fff && s[1] < 0x1000);
     let protocol_assignments = s[0] == 0x2001 && s[1] < 0x0200;
     global_unicast && !documentation && !protocol_assignments
 }
@@ -233,7 +234,11 @@ mod tests {
 
     #[test]
     fn global_unicast_ipv6_is_public() {
-        for ip in ["2606:4700:4700::1111", "2a00:1450:4007:80e::200e"] {
+        for ip in [
+            "2606:4700:4700::1111",
+            "2a00:1450:4007:80e::200e",
+            "3fff:1000::1",
+        ] {
             assert!(is_public_ip(v6(ip)), "{ip}");
         }
     }
@@ -249,6 +254,9 @@ mod tests {
             "fec0::1",
             "ff02::1",
             "2001:db8::1",
+            // Documentation, RFC 9637.
+            "3fff::1",
+            "3fff:fff:ffff::1",
             "2001::1",
             "100::1",
             "64:ff9b::a00:1",
