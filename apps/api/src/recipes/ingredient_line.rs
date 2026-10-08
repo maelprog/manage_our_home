@@ -11,7 +11,7 @@ use manage_our_home_shared::dto::recipes::DraftIngredient;
 /// `line` as quantity, unit and name: a quantity first (`200`, `1,5`,
 /// `0.5`, `1/2`, `1 1/2`, `½`, `1½`, `un`, `une`), then an optional unit
 /// from `UNITS` or a spoon (`c. à soupe`, `c. à café`), then an optional
-/// `de` / `d'`, then the name. Anything else — no quantity, a range
+/// `de` / `d'`, then the name. Anything else — no quantity, `un peu`, a range
 /// (`2 à 3`, `2-3`), nothing left for the name — is kept whole as the name.
 pub fn parse_line(line: &str) -> DraftIngredient {
     let line = line.trim();
@@ -25,7 +25,7 @@ pub fn parse_line(line: &str) -> DraftIngredient {
 fn understood(line: &str) -> Option<DraftIngredient> {
     let (quantity, rest) = quantity(line)?;
     let rest = rest.trim_start();
-    if is_range(rest) {
+    if is_range(rest) || is_vague(rest) {
         return None;
     }
     let (unit, rest) = match unit(rest) {
@@ -129,6 +129,12 @@ fn is_range(rest: &str) -> bool {
         .iter()
         .find_map(|sep| strip_prefix_ci(rest, sep));
     after.is_some_and(|a| a.trim_start().starts_with(|c: char| c.is_ascii_digit()))
+}
+
+/// `peu`: `1 peu de beurre`, `un peu de sel` give no quantity.
+fn is_vague(rest: &str) -> bool {
+    strip_prefix_ci(rest, "peu")
+        .is_some_and(|after| after.is_empty() || after.starts_with(char::is_whitespace))
 }
 
 /// Units read after a quantity: spellings, the unit written in the draft,
@@ -410,6 +416,8 @@ mod tests {
             "1/0 citron",
             "Farine, panko (sorte de chapelure)",
             "Quelques raisins secs",
+            "1 peu de beurre fondu",
+            "un peu de sel",
             "",
         ] {
             is(line, None, None, line);
