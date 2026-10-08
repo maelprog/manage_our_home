@@ -199,6 +199,34 @@ async fn an_expired_cache_entry_is_asked_again(db: PgPool) {
 }
 
 #[sqlx::test]
+async fn an_expired_record_is_served_when_open_food_facts_fails(db: PgPool) {
+    let (router, hits) = router_with_off(db.clone()).await;
+    let cookie = register_verify_login(&router, &db, "scan-stale@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+    sqlx::query(
+        "INSERT INTO off_products (code, name, quantity, fetched_at) VALUES ($1, 'Ancienne fiche', '1 kg', now() - interval '31 days')",
+    )
+    .bind(FAILING)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let body = json_body(scan(&router, &cookie, &group_id, FAILING).await).await;
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "the expired record is asked again");
+    assert_eq!(body["product"]["name"], "Ancienne fiche", "{body}");
+    assert_eq!(body["product"]["quantity"], "1 kg", "{body}");
+    // The failure is not written over the record.
+    let fetched_recently: bool = sqlx::query_scalar(
+        "SELECT fetched_at > now() - interval '1 day' FROM off_products WHERE code = $1",
+    )
+    .bind(FAILING)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert!(!fetched_recently);
+}
+
+#[sqlx::test]
 async fn an_unknown_or_nameless_code_has_no_product_and_the_miss_is_cached(db: PgPool) {
     let (router, hits) = router_with_off(db.clone()).await;
     let cookie = register_verify_login(&router, &db, "scan-unknown@example.test").await;
