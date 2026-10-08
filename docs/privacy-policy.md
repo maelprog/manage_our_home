@@ -271,8 +271,12 @@ de la purge dépasserait.
   du tout. Elle peut montrer l'intérieur de votre logement ; le serveur la
   lit en mémoire le temps de trouver le code, puis l'oublie avec la
   requête : elle n'est écrite nulle part, ni dans un fichier, ni en base,
-  ni dans les journaux, et n'est transmise à personne. Seuls les chiffres
-  du code continuent, comme si vous les aviez tapés.
+  ni dans les journaux, et n'est transmise à personne. Seul le contenu du
+  code continue, comme si vous l'aviez tapé : ses chiffres, ou, pour un
+  code 2D GS1 (DataMatrix, QR), son texte — numéro du produit et, selon le
+  code, date de péremption, numéro de lot ou de série. Seuls le numéro du
+  produit et la date sont utilisés. Un autre code 2D présent sur la photo
+  (QR d'une marque, d'un réseau Wi-Fi…) est ignoré.
 - **Agenda, stocks, recettes, liste de courses, budget, messagerie** : tant
   que le contenu n'est pas supprimé, et au plus tant que le groupe existe —
   la suppression d'un groupe supprime son contenu. Quand le compte de son

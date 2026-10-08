@@ -48,15 +48,19 @@ sha2 = "0.11"
 # the default features would add a dozen decoders (AVIF, EXR, TIFF…) and
 # rayon. WebP is left out too: its decoder allocates working buffers, up to
 # several times the picture, that `image`'s allocation limit does not see
-# (`routes::stocks::photo` bounds JPEG's own from its header). rxing is ZXing in Rust; only its 1D readers are compiled in
-# (EAN-13, EAN-8, UPC-A live under `oned`), without its own `image`
-# feature, which would pull every format back in through `image_formats`,
-# nor its client-side parsers (fancy-regex, chrono-tz, uriparse), 2D formats
-# or character set tables (`no_character_set_support`: EAN and UPC carry
-# digits only). rxing still depends on `regex` itself, which the workspace
-# already had: the lock moves it from 1.12.4 to 1.13.1, a minor release.
+# (`routes::stocks::photo` bounds JPEG's own from its header). rxing is ZXing in Rust; only the readers the
+# scan needs are compiled in: EAN-13, EAN-8, UPC-A (`oned`), and since #403
+# DataMatrix and QR (`datamatrix`, `qrcode`), the 2D codes a GS1 date
+# travels in. Not its own `image` feature, which would pull every format
+# back in through `image_formats`, nor its client-side parsers
+# (fancy-regex, chrono-tz, uriparse), nor Aztec, PDF417 or MaxiCode. The 2D
+# readers build their text through rxing's character sets, which
+# `no_character_set_support` leaves `unimplemented!()`, so `encoding_rs` is
+# on in its place: the workspace already had that crate, and the lock gains
+# `codepage-437`, `csv` and `csv-core`. rxing still depends on `regex` itself, which the
+# workspace already had: the lock moved it from 1.12.4 to 1.13.1 (#402).
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
-rxing = { version = "0.9", default-features = false, features = ["oned", "decoders", "no_character_set_support"] }
+rxing = { version = "0.9", default-features = false, features = ["oned", "datamatrix", "qrcode", "decoders", "encoding_rs"] }
 tower-cookies = "0.10"
 cookie = "0.18"
 # `multipart` on reqwest: forwarding the uploaded file to apps/api.
@@ -90,3 +94,7 @@ flate2 = "1"
 # The barcode photo's memory tests (#402) need progressive and CMYK JPEGs,
 # which `image`'s own encoder does not write.
 jpeg-encoder = "0.7"
+# The GS1 DataMatrix and QR codes of the photo tests (#403) are drawn by
+# rxing's own writers: `encoders` is a feature of the crate above, enabled
+# for the tests only (resolver 2 keeps it out of the shipped binary).
+rxing = { version = "0.9", default-features = false, features = ["encoders"] }

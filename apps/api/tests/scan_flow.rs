@@ -1,6 +1,6 @@
 //! `POST /groups/:id/stock-items/scan` and the barcode on a stock item
-//! (#402), end to end, with Open Food Facts played by a local stub: no test
-//! here reaches the network.
+//! (#402), and the GS1 2D codes it reads (#403), end to end, with Open Food
+//! Facts played by a local stub: no test here reaches the network.
 
 mod common;
 
@@ -447,4 +447,139 @@ async fn an_invalid_barcode_on_creation_is_a_400(db: PgPool) {
     assert_status(&res, StatusCode::BAD_REQUEST);
     assert_eq!(json_body(res).await["error"], "invalid_barcode");
     assert_eq!(stock_count(&db).await, 0);
+}
+
+/// (01) Nutella's GTIN-14, (10) a lot ended by the FNC1 separator (ASCII
+/// 29), (17) its expiry date: what a GS1 DataMatrix decodes to (#403).
+const GS1_NUTELLA: &str = "010301762042200310LOT-42\u{1d}17270131";
+
+#[sqlx::test]
+async fn a_gs1_element_string_brings_the_product_and_its_date(db: PgPool) {
+    let (router, hits) = router_with_off(db.clone()).await;
+    let cookie = register_verify_login(&router, &db, "scan-gs1@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+
+    // The separator crosses the JSON body as `\u001d`.
+    let body = serde_json::json!({ "raw": GS1_NUTELLA });
+    assert!(body.to_string().contains(r"\u001d"), "{body}");
+    let res = scan(&router, &cookie, &group_id, GS1_NUTELLA).await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    // The GTIN-14 follows the EAN-13 path.
+    assert_eq!(body["code"], NUTELLA);
+    assert_eq!(body["product"]["name"], "Pâte à tartiner Nutella");
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    assert_eq!(body["expires_on"], "2027-01-31", "{body}");
+    assert_eq!(body["expires_on_source"], "gs1", "{body}");
+    assert_eq!(stock_count(&db).await, 0, "a scan adds nothing");
+
+    // (15) alone is used; (17) wins over it.
+    let best_before = json_body(
+        scan(
+            &router,
+            &cookie,
+            &group_id,
+            "01030176204220031527011517270131",
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(best_before["expires_on"], "2027-01-31", "{best_before}");
+    let only_15 =
+        json_body(scan(&router, &cookie, &group_id, "010301762042200315270115").await).await;
+    assert_eq!(only_15["expires_on"], "2027-01-15", "{only_15}");
+}
+
+#[sqlx::test]
+async fn a_gs1_digital_link_brings_the_product_and_its_date(db: PgPool) {
+    let (router, _) = router_with_off(db.clone()).await;
+    let cookie = register_verify_login(&router, &db, "scan-dl@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+
+    let res = scan(
+        &router,
+        &cookie,
+        &group_id,
+        "https://id.gs1.org/01/03017620422003/10/LOT42?17=270131",
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    assert_eq!(body["code"], NUTELLA);
+    assert_eq!(body["product"]["name"], "Pâte à tartiner Nutella");
+    assert_eq!(body["expires_on"], "2027-01-31", "{body}");
+    assert_eq!(body["expires_on_source"], "gs1", "{body}");
+
+    // No date on the code: none in the answer, and no source.
+    let undated = json_body(
+        scan(
+            &router,
+            &cookie,
+            &group_id,
+            "https://id.gs1.org/01/03017620422003",
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(undated["code"], NUTELLA);
+    assert!(undated["expires_on"].is_null(), "{undated}");
+    assert!(undated["expires_on_source"].is_null(), "{undated}");
+}
+
+#[sqlx::test]
+async fn a_gs1_code_already_in_stock_names_the_article_and_brings_the_date(db: PgPool) {
+    let (router, hits) = router_with_off(db.clone()).await;
+    let cookie = register_verify_login(&router, &db, "scan-gs1-stock@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/stock-items"),
+        Some(&cookie),
+        Some(serde_json::json!({"name": "Nutella", "quantity": 1.0, "barcode": NUTELLA, "expires_on": "2027-03-01"})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let item_id = json_body(create).await["id"].as_str().unwrap().to_string();
+
+    let body = json_body(scan(&router, &cookie, &group_id, GS1_NUTELLA).await).await;
+    assert_eq!(body["existing_item_id"], item_id.as_str());
+    assert_eq!(body["expires_on"], "2027-01-31", "{body}");
+    assert_eq!(body["expires_on_source"], "gs1", "{body}");
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "no product needed");
+    // Nothing is written to the article: the page proposes the date.
+    let item = json_body(
+        call(
+            &router,
+            Method::GET,
+            &format!("/groups/{group_id}/stock-items/{item_id}"),
+            Some(&cookie),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(item["expires_on"], "2027-03-01");
+}
+
+#[sqlx::test]
+async fn a_gs1_string_without_a_consumer_gtin_is_a_422(db: PgPool) {
+    let (router, hits) = router_with_off(db.clone()).await;
+    let cookie = register_verify_login(&router, &db, "scan-gs1-bad@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+
+    for raw in [
+        // A date but no (01).
+        "17270131",
+        // A case of the product (indicator digit 1).
+        "011301762042200017270131",
+        // A wrong check digit.
+        "010301762042200417270131",
+        "https://id.gs1.org/01/03017620422004?17=270131",
+    ] {
+        let res = scan(&router, &cookie, &group_id, raw).await;
+        assert_status(&res, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(json_body(res).await["error"], "invalid_barcode", "{raw:?}");
+    }
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
 }

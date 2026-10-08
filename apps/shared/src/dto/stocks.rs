@@ -119,7 +119,7 @@ pub struct StockItemList {
 
 /// `POST /groups/:id/stock-items/scan` request body (#402): the string a
 /// barcode decoder produced, or the code typed by hand, as is. Every check
-/// on it happens in apps/api (`stocks::barcode`).
+/// on it happens in apps/api (`stocks::barcode`, `stocks::gs1`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanRequest {
     pub raw: String,
@@ -137,9 +137,9 @@ pub struct ScannedProduct {
     pub categories_tags: Vec<String>,
 }
 
-/// Where a pre-filled expiry date comes from. Reserved for #403 (`gs1`, a
-/// date carried by a GS1 code) and #404 (`category`, a default per product
-/// category); never set by #402.
+/// Where a pre-filled expiry date comes from: `gs1`, the date a GS1 2D code
+/// carries (#403); `category`, a default per product category, reserved for
+/// #404 and never set yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExpiresOnSource {
@@ -152,7 +152,8 @@ pub enum ExpiresOnSource {
 /// the product record, and the page decides what to offer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanResult {
-    /// The code in its stored form (a UPC-A becomes its EAN-13). A string
+    /// The code in its stored form (a UPC-A becomes its EAN-13, and the
+    /// GTIN-14 of a GS1 2D code the EAN/UPC of the same product). A string
     /// that is not a code gets a 422 instead of a `ScanResult`, so this is
     /// always `Some` in a 200.
     pub code: Option<String>,
@@ -167,8 +168,11 @@ pub struct ScanResult {
     /// The family's article that already carries this code: a rescan adds
     /// to it rather than creating a second one.
     pub existing_item_id: Option<Uuid>,
-    /// Reserved for #403 and #404, always `None` here.
+    /// The date a GS1 2D code carries (#403): its expiry date `(17)`, else
+    /// its best-before date `(15)`. `None` for an EAN/UPC, or a GS1 code
+    /// without a readable date. Never written to an article by the scan: the
+    /// page pre-fills it, or proposes it for the article already in stock.
     pub expires_on: Option<NaiveDate>,
-    /// Reserved for #403 and #404, always `None` here.
+    /// `Some(Gs1)` exactly when `expires_on` was read from the code.
     pub expires_on_source: Option<ExpiresOnSource>,
 }

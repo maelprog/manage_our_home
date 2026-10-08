@@ -2,11 +2,14 @@
 //! unit/threshold/expiry date). Same permission bar as delete (`can_modify`): a
 //! non-permitted user never sees the form (GET → forbidden page), and the
 //! backend 403 is mapped to `?error=forbidden` on the detail page defensively.
+//! `?expires_on=YYYY-MM-DD` pre-fills the date with the one a GS1 code
+//! carried (#403, "Déjà en stock"): shown, marked as read on the code, and
+//! saved only if the member submits the form.
 //! A blank category, threshold or expiry date *clears* it (sent as `Some(None)` per the
 //! backend's double-`Option` PATCH contract). Success (200) → PRG
 //! `/stocks/:id?notice=item_updated`.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
@@ -38,6 +41,7 @@ fn page(header: &str, id: Uuid, name: &str, form: &ItemForm, error: Option<&str>
         &form.unit,
         &form.reorder_threshold,
         &form.expires_on,
+        form.expires_on_read,
     );
     let body = format!(
         r#"<h1>Modifier — {name_esc}</h1>
@@ -79,11 +83,19 @@ async fn fetch_item(
     }
 }
 
+#[derive(serde::Deserialize, Default)]
+pub struct EditQuery {
+    /// The date a GS1 code carried, proposed from "Déjà en stock" (#403).
+    #[serde(default)]
+    expires_on: Option<String>,
+}
+
 pub async fn get(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(item_id): Path<Uuid>,
+    Query(query): Query<EditQuery>,
 ) -> Response {
     let Some(fam) = family_context(&state, &headers, &me, &format!("/stocks/{item_id}/edit")).await
     else {
@@ -99,6 +111,12 @@ pub async fn get(
         return forbidden_page().into_response();
     }
 
+    // A date proposed by the scan replaces the article's in the field; an
+    // unreadable one is ignored.
+    let proposed = query
+        .expires_on
+        .as_deref()
+        .and_then(|d| parse_expires_on(d).ok().flatten());
     let form = ItemForm {
         name: item.name.clone(),
         category: item.category.clone().unwrap_or_default(),
@@ -108,13 +126,14 @@ pub async fn get(
             .reorder_threshold
             .map(super::fmt_num)
             .unwrap_or_default(),
-        expires_on: item
-            .expires_on
+        expires_on: proposed
+            .or(item.expires_on)
             .map(|d| d.format("%Y-%m-%d").to_string())
             .unwrap_or_default(),
         // The edit form neither shows nor sends the code (#402): a PATCH
         // leaves it as it is.
         barcode: String::new(),
+        expires_on_read: proposed.is_some(),
     };
     Html(page(&fam.header, item_id, &item.name, &form, None)).into_response()
 }

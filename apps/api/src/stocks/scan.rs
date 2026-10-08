@@ -6,17 +6,25 @@
 //!
 //! The only write is to the Open Food Facts cache (`off_products`), public
 //! data that belongs to no family (see migration 0026).
+//!
+//! `raw` is an EAN/UPC (`barcode`), or a GS1 2D code (#403): a DataMatrix
+//! or QR element string, or a GS1 Digital Link URL (`gs1`). Its GTIN then
+//! takes the EAN/UPC path, and the date it carries comes back in
+//! `expires_on`, for the page to pre-fill — never written here.
 
 use axum::extract::{Path, State};
 use axum::Json;
 use chrono::Utc;
-use manage_our_home_shared::dto::stocks::{ScanRequest, ScanResult, ScannedProduct};
+use manage_our_home_shared::dto::stocks::{
+    ExpiresOnSource, ScanRequest, ScanResult, ScannedProduct,
+};
+use manage_our_home_shared::validation::auth::paris_day;
 use uuid::Uuid;
 
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::groups::require_role;
-use crate::stocks::{barcode, openfoodfacts};
+use crate::stocks::{barcode, gs1, openfoodfacts};
 use crate::AppState;
 
 pub async fn scan_stock_item(
@@ -25,8 +33,14 @@ pub async fn scan_stock_item(
     Path(group_id): Path<Uuid>,
     Json(body): Json<ScanRequest>,
 ) -> AppResult<Json<ScanResult>> {
-    let code = barcode::normalize(&body.raw)
-        .ok_or_else(|| AppError::Unprocessable("invalid_barcode".into()))?;
+    // The GS1 two-digit years are placed from the Paris day, like
+    // `expiry_status`.
+    let (code, expires_on) = match barcode::normalize(&body.raw) {
+        Some(code) => (code, None),
+        None => gs1::read(&body.raw, paris_day(Utc::now()))
+            .map(|read| (read.code, read.expires_on))
+            .ok_or_else(|| AppError::Unprocessable("invalid_barcode".into()))?,
+    };
     let weighed = barcode::is_weighed(&code);
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
@@ -53,8 +67,8 @@ pub async fn scan_stock_item(
         weighed,
         product,
         existing_item_id,
-        expires_on: None,
-        expires_on_source: None,
+        expires_on,
+        expires_on_source: expires_on.map(|_| ExpiresOnSource::Gs1),
     }))
 }
 

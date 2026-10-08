@@ -1,4 +1,5 @@
 pub mod barcode;
+pub mod gs1;
 pub mod items;
 pub mod openfoodfacts;
 pub mod scan;

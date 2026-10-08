@@ -19,6 +19,12 @@
 //! both without JavaScript. A photo that yields no code lands on
 //! `?photo=<error>`: take the photo again, or type the code, and the scan
 //! runs again — never straight to the manual form.
+//!
+//! GS1 2D codes (#403): a DataMatrix or QR code may carry an expiry date,
+//! which apps/api reads and returns with the product. It pre-fills the
+//! form's date, marked "lue sur le code", for the member to check; on
+//! "Déjà en stock", a sooner date than the article's is proposed through
+//! the edit form, never written by the scan.
 
 use axum::extract::{Multipart, Query, State};
 use axum::http::HeaderMap;
@@ -37,7 +43,8 @@ use crate::state::{api_request_auth, AppState};
 
 use super::photo::{decode_photo, PhotoError, DECODES, MAX_PHOTO_BYTES};
 use super::{
-    family_context, fmt_num, forbidden_page, service_unavailable_page, stocks_cookie, FamilyContext,
+    can_modify, family_context, fmt_date, fmt_num, forbidden_page, service_unavailable_page,
+    stocks_cookie, FamilyContext,
 };
 
 /// The shared item form fields, used by both create and edit. `quantity` /
@@ -60,13 +67,17 @@ pub struct ItemForm {
     /// form; empty for an article entered without one.
     #[serde(default)]
     pub barcode: String,
+    /// `expires_on` was read on a GS1 code (#403): the field says so. Never
+    /// sent by the browser.
+    #[serde(skip)]
+    pub expires_on_read: bool,
 }
 
 /// French copy for a stock-item form error code.
 pub(crate) fn error_message(code: &str) -> &'static str {
     match code {
         "invalid_barcode" => {
-            "Ce code-barres n'est pas reconnu : un EAN-13, un EAN-8 ou un UPC-A est attendu."
+            "Ce code-barres n'est pas reconnu : un EAN-13, un EAN-8, un UPC-A ou un code GS1 (DataMatrix, QR) est attendu."
         }
         "barcode_already_in_stock" => {
             "Un article de la famille porte déjà ce code-barres : celui-ci sera ajouté sans code si vous validez à nouveau."
@@ -138,7 +149,14 @@ pub(crate) fn form_fields(
     unit: &str,
     reorder_threshold: &str,
     expires_on: &str,
+    expires_on_read: bool,
 ) -> String {
+    // Next to the field, so the member checks it before saving.
+    let read_note = if expires_on_read {
+        "\n<span class=\"muted\">Lue sur le code : vérifiez-la, vous pouvez la corriger.</span>"
+    } else {
+        ""
+    };
     format!(
         r#"<label>Nom <input type="text" name="name" required value="{name}"/></label>
 <label>Catégorie <input type="text" name="category" value="{category}" placeholder="Optionnel (ex. Cellier, Frigo)"/></label>
@@ -149,7 +167,7 @@ pub(crate) fn form_fields(
 <span class="muted">En dessous ou à ce niveau, l'article est signalé « stock bas ». Partagé au niveau de la famille.</span>
 </label>
 <label>Date de péremption
-<input type="date" name="expires_on" value="{expires_on}"/>
+<input type="date" name="expires_on" value="{expires_on}"/>{read_note}
 <span class="muted">Optionnel. Si l'article en a plusieurs, la plus proche.</span>
 </label>"#,
         name = html_escape(name),
@@ -175,12 +193,14 @@ pub(crate) fn product_label(product: &ScannedProduct) -> String {
 }
 
 /// What a scan pre-fills: the product's label (`product_label`), one unit
-/// in hand, and the code in the hidden field unless `with_code` is false
-/// ("créer quand même un autre article": one article per code).
+/// in hand, the code in the hidden field unless `with_code` is false
+/// ("créer quand même un autre article": one article per code), and the
+/// date a GS1 code carried (#403), marked as read on the code.
 pub(crate) fn prefilled_form(
     code: &str,
     product: Option<&ScannedProduct>,
     with_code: bool,
+    expires_on: Option<NaiveDate>,
 ) -> ItemForm {
     ItemForm {
         name: product.map(product_label).unwrap_or_default(),
@@ -191,7 +211,25 @@ pub(crate) fn prefilled_form(
         } else {
             String::new()
         },
+        expires_on: expires_on
+            .map(|d| d.format("%Y-%m-%d").to_string())
+            .unwrap_or_default(),
+        expires_on_read: expires_on.is_some(),
         ..Default::default()
+    }
+}
+
+/// The date a GS1 code carries, proposed for the article already in stock
+/// (#403) when it comes sooner than the article's own, or the article has
+/// none. Never written without the member's say.
+pub(crate) fn date_to_propose(
+    read: Option<NaiveDate>,
+    current: Option<NaiveDate>,
+) -> Option<NaiveDate> {
+    let read = read?;
+    match current {
+        Some(current) if current <= read => None,
+        _ => Some(read),
     }
 }
 
@@ -282,6 +320,7 @@ fn page(
         &form.unit,
         &form.reorder_threshold,
         &form.expires_on,
+        form.expires_on_read,
     );
     let barcode_html = if form.barcode.is_empty() {
         String::new()
@@ -311,8 +350,49 @@ fn page(
 
 /// "Déjà en stock" (#402): the family's article carrying the scanned code,
 /// with "+1" — the quantity adjustment any member may make, through the
-/// detail page's own route — and a way to create another article anyway.
-fn already_in_stock_page(header: &str, item: &StockItemResponse, code: &str) -> String {
+/// detail page's own route — and a way to create another article anyway,
+/// which scans `raw`, the string as it came, again (a GS1 code's date then
+/// reaches that form too). The date a GS1 code carried is proposed when it
+/// comes sooner (`date_to_propose`, #403).
+fn already_in_stock_page(
+    header: &str,
+    item: &StockItemResponse,
+    raw: &str,
+    proposal: Option<NaiveDate>,
+    may_edit: bool,
+) -> String {
+    let proposal_html = match proposal {
+        None => String::new(),
+        Some(date) => {
+            let compared = match item.expires_on {
+                Some(current) => format!(
+                    ", plus proche que celle de l'article ({})",
+                    fmt_date(current)
+                ),
+                None => " ; l'article n'en a pas".to_string(),
+            };
+            // Proposed, never written from here: the edit form opens with
+            // it, and saving is the member's call.
+            let action = if may_edit {
+                format!(
+                    r#"
+<p><a href="/stocks/{id}/edit?expires_on={iso}">Mettre cette date sur l'article</a></p>"#,
+                    id = item.id,
+                    iso = date.format("%Y-%m-%d"),
+                )
+            } else {
+                r#"
+<p class="muted">Seuls le créateur de l'article et les administrateurs de la famille peuvent changer sa date.</p>"#
+                    .to_string()
+            };
+            format!(
+                r#"
+<p>Date de péremption lue sur le code : <strong>{date}</strong>{compared}.</p>{action}"#,
+                date = fmt_date(date),
+                compared = html_escape(&compared),
+            )
+        }
+    };
     let id = item.id;
     let body = format!(
         r#"<h1>Déjà en stock</h1>
@@ -320,17 +400,20 @@ fn already_in_stock_page(header: &str, item: &StockItemResponse, code: &str) -> 
 <form method="post" action="/stocks/{id}/adjust" class="actions">
 <input type="hidden" name="quantity" value="{next}"/>
 <button type="submit">+1</button>
-</form>
+</form>{proposal_html}
 <div class="links">
 <a href="/stocks/{id}">Voir l'article</a>
-<a href="/stocks/new?scan={code}&amp;other=1">Créer quand même un autre article</a>
+<a href="{other}">Créer quand même un autre article</a>
 <a href="/stocks">Retour aux stocks</a>
 </div>"#,
         name = html_escape(&item.name),
         qty = html_escape(&fmt_num(item.quantity)),
         unit = html_escape(&item.unit),
         next = html_escape(&fmt_num(item.quantity + 1.0)),
-        code = html_escape(code),
+        other = html_escape(&format!(
+            "/stocks/new?{}&other=1",
+            serde_urlencoded::to_string([("scan", raw)]).unwrap_or_default()
+        )),
     );
     shell_with_header(Width::Form, "Déjà en stock", header, &body)
 }
@@ -369,7 +452,15 @@ pub async fn get(
         };
         return Html(page(&fam.header, &form, None, "", &Intro::default())).into_response();
     }
-    scanned(&state, &headers, &fam, &query.scan, query.other.is_some()).await
+    scanned(
+        &state,
+        &headers,
+        &fam,
+        me.user_id,
+        &query.scan,
+        query.other.is_some(),
+    )
+    .await
 }
 
 /// `GET /stocks/new?scan=…`: what the code stands for, and the page for it.
@@ -377,6 +468,7 @@ async fn scanned(
     state: &AppState,
     headers: &HeaderMap,
     fam: &FamilyContext,
+    user_id: Uuid,
     raw: &str,
     other: bool,
 ) -> Response {
@@ -430,10 +522,19 @@ async fn scanned(
         None => None,
     };
     if let (Some(item), false) = (&existing, other) {
-        return Html(already_in_stock_page(&fam.header, item, code)).into_response();
+        let proposal = date_to_propose(scan.expires_on, item.expires_on);
+        let may_edit = can_modify(&fam.role, item.created_by == user_id);
+        return Html(already_in_stock_page(
+            &fam.header,
+            item,
+            raw,
+            proposal,
+            may_edit,
+        ))
+        .into_response();
     }
 
-    let mut form = prefilled_form(code, scan.product.as_ref(), !other);
+    let mut form = prefilled_form(code, scan.product.as_ref(), !other, scan.expires_on);
     // A code already in stock brings no product (apps/api does not ask Open
     // Food Facts for it): "another article anyway" starts from the name of
     // the article that carries it.
@@ -491,7 +592,8 @@ pub(crate) fn photo_redirect(outcome: Result<String, &str>) -> String {
 
 /// `POST /stocks/new/photo` — the photo of a barcode, decoded in memory
 /// (`photo::decode_photo`) and dropped with the request. Only the decoded
-/// digits leave this handler, in the redirect.
+/// code (digits, or a GS1 2D code's text) leaves this handler, in the
+/// redirect.
 pub async fn photo(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
@@ -719,6 +821,7 @@ mod tests {
             "3017620422003",
             Some(&product("Nutella", Some("400 g"))),
             true,
+            None,
         );
         assert_eq!(form.name, "Nutella (400 g)");
         assert_eq!(form.quantity, "1");
@@ -726,11 +829,139 @@ mod tests {
         assert_eq!(form.barcode, "3017620422003");
         assert_eq!(form.category, "");
         assert_eq!(form.expires_on, "");
+        assert!(!form.expires_on_read);
+    }
+
+    fn day(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn a_date_read_on_the_code_prefills_the_field_and_says_so() {
+        let form = prefilled_form(
+            "3017620422003",
+            Some(&product("Nutella", None)),
+            true,
+            Some(day(2027, 1, 31)),
+        );
+        assert_eq!(form.expires_on, "2027-01-31");
+        assert!(form.expires_on_read);
+        // "Créer quand même un autre article" keeps it too: same product.
+        let other = prefilled_form("3017620422003", None, false, Some(day(2027, 1, 31)));
+        assert_eq!(other.expires_on, "2027-01-31");
+    }
+
+    #[test]
+    fn the_date_field_carries_the_mention_only_when_read_on_the_code() {
+        let read = form_fields("Nutella", "", "1", "unité", "", "2027-01-31", true);
+        assert!(read.contains(r#"value="2027-01-31""#), "{read}");
+        // The mention sits in the date's own label, next to the field.
+        let label = read.split("<label>Date de péremption").nth(1).unwrap();
+        let label = label.split("</label>").next().unwrap();
+        assert!(label.contains("Lue sur le code"), "{label}");
+        let typed = form_fields("Nutella", "", "1", "unité", "", "2027-01-31", false);
+        assert!(!typed.contains("Lue sur le code"), "{typed}");
+    }
+
+    #[test]
+    fn a_sooner_date_or_a_first_date_is_proposed() {
+        let read = Some(day(2027, 1, 31));
+        assert_eq!(date_to_propose(read, Some(day(2027, 3, 1))), read);
+        assert_eq!(date_to_propose(read, None), read);
+        // Later, or the same: nothing to propose.
+        assert_eq!(date_to_propose(read, Some(day(2027, 1, 31))), None);
+        assert_eq!(date_to_propose(read, Some(day(2027, 1, 1))), None);
+        // No date read: nothing either.
+        assert_eq!(date_to_propose(None, Some(day(2027, 1, 1))), None);
+        assert_eq!(date_to_propose(None, None), None);
+    }
+
+    fn item(expires_on: Option<NaiveDate>) -> StockItemResponse {
+        serde_json::from_value(serde_json::json!({
+            "id": Uuid::from_u128(5),
+            "group_id": Uuid::nil(),
+            "name": "Nutella",
+            "category": null,
+            "quantity": 2.0,
+            "unit": "unité",
+            "reorder_threshold": null,
+            "low_stock": false,
+            "created_by": Uuid::from_u128(7),
+            "created_at": "2026-10-01T10:00:00Z",
+            "updated_at": "2026-10-01T10:00:00Z",
+            "expires_on": expires_on,
+            "expiry_status": "unknown",
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn already_in_stock_proposes_the_sooner_date_without_writing_it() {
+        let html = already_in_stock_page(
+            "",
+            &item(Some(day(2027, 3, 1))),
+            "3017620422003",
+            Some(day(2027, 1, 31)),
+            true,
+        );
+        assert!(html.contains("31/01/2027"), "{html}");
+        assert!(html.contains("01/03/2027"), "{html}");
+        // A link to the edit form, pre-filled: nothing is saved from here.
+        let link = format!(
+            r#"href="/stocks/{}/edit?expires_on=2027-01-31""#,
+            Uuid::from_u128(5)
+        );
+        assert!(html.contains(&link), "{html}");
+        // The "+1" stays.
+        assert!(html.contains(">+1</button>"), "{html}");
+    }
+
+    #[test]
+    fn a_member_who_may_not_edit_sees_the_date_without_the_link() {
+        let html = already_in_stock_page(
+            "",
+            &item(None),
+            "3017620422003",
+            Some(day(2027, 1, 31)),
+            false,
+        );
+        assert!(html.contains("31/01/2027"), "{html}");
+        assert!(!html.contains("/edit?expires_on="), "{html}");
+    }
+
+    #[test]
+    fn another_article_anyway_scans_the_same_string_again() {
+        // The GS1 string as scanned, so that its date reaches the form.
+        let html = already_in_stock_page(
+            "",
+            &item(None),
+            "010301762042200310LOT\u{1d}17270131",
+            None,
+            true,
+        );
+        assert!(
+            html.contains(
+                r#"href="/stocks/new?scan=010301762042200310LOT%1D17270131&amp;other=1""#
+            ),
+            "{html}"
+        );
+        let html = already_in_stock_page("", &item(None), "3017620422003", None, true);
+        assert!(
+            html.contains(r#"href="/stocks/new?scan=3017620422003&amp;other=1""#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn without_a_proposal_the_page_says_nothing_of_a_date() {
+        let html = already_in_stock_page("", &item(None), "3017620422003", None, true);
+        assert!(!html.contains("lue sur le code"), "{html}");
+        assert!(!html.contains("/edit?expires_on="), "{html}");
     }
 
     #[test]
     fn an_unknown_product_prefills_the_code_only() {
-        let form = prefilled_form("2123456012347", None, true);
+        let form = prefilled_form("2123456012347", None, true, None);
         assert_eq!(form.name, "");
         assert_eq!(form.quantity, "1");
         assert_eq!(form.unit, "unité");
@@ -739,7 +970,12 @@ mod tests {
 
     #[test]
     fn another_article_anyway_leaves_the_code_out() {
-        let form = prefilled_form("3017620422003", Some(&product("Nutella", None)), false);
+        let form = prefilled_form(
+            "3017620422003",
+            Some(&product("Nutella", None)),
+            false,
+            None,
+        );
         assert_eq!(form.name, "Nutella");
         assert_eq!(form.barcode, "");
     }
@@ -794,6 +1030,11 @@ mod tests {
         assert_eq!(
             photo_redirect(Err("unreadable")),
             "/stocks/new?photo=unreadable"
+        );
+        // A GS1 code's separator (ASCII 29) survives the redirect (#403).
+        assert_eq!(
+            photo_redirect(Ok("010301762042200310LOT\u{1d}17270131".into())),
+            "/stocks/new?scan=010301762042200310LOT%1D17270131"
         );
     }
 

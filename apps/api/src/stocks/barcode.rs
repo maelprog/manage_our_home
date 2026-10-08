@@ -1,8 +1,8 @@
 //! Reading the string a barcode decoder hands over (#402). Every decision
-//! about `raw` is taken here, in Rust: apps/web decodes the photo of the
-//! barcode on its server (`routes::stocks::photo`) and passes the text on,
-//! and the manual "Code-barres" field sends what was typed through the same
-//! path.
+//! about `raw` is taken here, in Rust, or in `gs1` for a GS1 2D code
+//! (#403): apps/web decodes the photo of the barcode on its server
+//! (`routes::stocks::photo`) and passes the text on, and the manual
+//! "Code-barres" field sends what was typed through the same path.
 //!
 //! Accepted: EAN-13, EAN-8 and UPC-A, each with a valid check digit. A UPC-A
 //! is an EAN-13 with a leading `0` — the same product, which a decoder may
