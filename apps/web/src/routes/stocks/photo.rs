@@ -5,7 +5,8 @@
 //!
 //! The photo is never written anywhere and never sent on — not to apps/api,
 //! not to Open Food Facts. It lives in this process's memory for the length
-//! of the request, and only the decoded digits go further, through the same
+//! of the request, and only the decoded code goes further — its digits, or
+//! the text of a GS1 DataMatrix or QR code (#403) — through the same
 //! `GET /stocks/new?scan=…` the "Code-barres" field uses. A photo can show
 //! the inside of a home: that is why it goes no further than this module
 //! (`docs/registre-traitements.md`, Stocks).
@@ -28,7 +29,11 @@ use std::sync::LazyLock;
 
 use image::error::{DecodingError, LimitError, LimitErrorKind};
 use image::{DynamicImage, GrayImage, ImageError, ImageFormat, ImageReader, Limits};
-use rxing::{BarcodeFormat, DecodeHints};
+use rxing::common::HybridBinarizer;
+use rxing::{
+    BarcodeFormat, BinaryBitmap, DecodeHints, Luma8LuminanceSource, MultiFormatReader,
+    RXingResultMetadataType, RXingResultMetadataValue, Reader,
+};
 use tokio::sync::Semaphore;
 
 /// The largest photo accepted, in bytes. A phone's full-resolution JPEG is a
@@ -61,10 +66,11 @@ const MAX_ALLOC: u64 = 80 * 1024 * 1024;
 /// bodies held, up to eight; this bounds the far larger working memory of
 /// decoding them. One decode is held to `MAX_ALLOC` × 3/2 plus 4 MiB, 124
 /// MiB, by `one_decode_stays_within_its_memory_bound`; its heap high-water
-/// marks there (2026-10-08), on the worst inputs each bound admits: grey
-/// with alpha PNG, 8192 × 5120, 120.0 MiB; baseline colour JPEG, 24 Mpx,
-/// 91.6 MiB; grey PNG, 8192², 80.6 MiB; progressive grey JPEG, 5280²,
-/// 80.6 MiB; progressive colour JPEG at 4:4:4, 9.3 Mpx, 80.5 MiB;
+/// marks there (2026-10-08, DataMatrix and QR readers included), on the
+/// worst inputs each bound admits: grey with alpha PNG, 8192 × 5120,
+/// 120.0 MiB; grey PNG, 8192², 98.7 MiB; baseline colour JPEG, 24 Mpx,
+/// 91.6 MiB; progressive grey JPEG, 5280², 80.6 MiB; progressive colour
+/// JPEG at 4:4:4, 9.3 Mpx, 80.5 MiB;
 /// progressive CMYK JPEG, 7 Mpx, 73.8 MiB; progressive colour JPEG at
 /// 4:2:0, 12 Mpx, 70.8 MiB. Files past the bounds are refused at their
 /// header, under 0.1 MiB. So under 248 MiB for two decodes at once, on top
@@ -82,7 +88,8 @@ pub enum PhotoError {
     /// Not a JPEG or PNG image this build can read, or past the
     /// decoder bounds.
     NotAnImage,
-    /// An image, but no EAN-13, EAN-8 or UPC-A could be read in it.
+    /// An image, but no EAN-13, EAN-8, UPC-A, DataMatrix or QR code could
+    /// be read in it.
     NoBarcode,
 }
 
@@ -261,8 +268,43 @@ fn read_image(bytes: &[u8]) -> image::ImageResult<DynamicImage> {
     reader.decode()
 }
 
-/// The text of the first EAN-13, EAN-8 or UPC-A found in `bytes`, decoded
-/// in memory. Blocking and CPU-bound: call it off the async runtime.
+/// Whether a DataMatrix or QR code is a GS1 one, the only 2D codes passed
+/// on: FNC1 in first position, by its symbology identifier (`]d2`, `]d5`
+/// for a DataMatrix, `]Q3`, `]Q4` for a QR code), or a GS1 Digital Link,
+/// an http(s) URL with a `01` path segment (the GTIN). Reading the elements
+/// is apps/api's business (`stocks::gs1`).
+pub fn is_gs1_2d(text: &str, symbology: Option<&str>) -> bool {
+    if matches!(symbology, Some("]d2" | "]d5" | "]Q3" | "]Q4")) {
+        return true;
+    }
+    let Some((scheme, rest)) = text.split_once("://") else {
+        return false;
+    };
+    if !(scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")) {
+        return false;
+    }
+    let path = rest.split(['?', '#']).next().unwrap_or(rest);
+    // The first segment is the host; `01` must be followed by the GTIN.
+    let segments: Vec<&str> = path.split('/').skip(1).collect();
+    segments
+        .windows(2)
+        .any(|pair| pair[0] == "01" && !pair[1].is_empty())
+}
+
+/// The formats looked for, in two passes over the same picture.
+fn hints(formats: &[BarcodeFormat]) -> DecodeHints {
+    DecodeHints {
+        PossibleFormats: Some(formats.iter().copied().collect()),
+        TryHarder: Some(true),
+        ..Default::default()
+    }
+}
+
+/// The text of the code found in `bytes`, decoded in memory: a GS1
+/// DataMatrix or QR code first (#403), which may carry an expiry date, else
+/// an EAN-13, EAN-8 or UPC-A. Any other 2D code — a brand's QR code, a
+/// Wi-Fi one in the background — is passed over, and its text never leaves
+/// this function. Blocking and CPU-bound: call it off the async runtime.
 pub fn decode_photo(bytes: &[u8]) -> Result<String, PhotoError> {
     if bytes.len() > MAX_PHOTO_BYTES {
         return Err(PhotoError::TooLarge);
@@ -279,19 +321,36 @@ pub fn decode_photo(bytes: &[u8]) -> Result<String, PhotoError> {
     };
     let (width, height) = luma.dimensions();
 
-    let mut hints = DecodeHints {
-        PossibleFormats: Some(
-            [
+    // One picture, binarized once, read by both passes.
+    let source = Luma8LuminanceSource::new(luma.into_raw(), width, height)
+        .map_err(|_| PhotoError::NoBarcode)?;
+    let mut bitmap = BinaryBitmap::new(HybridBinarizer::new(source));
+    let mut reader = MultiFormatReader::default();
+    let two_d = reader.decode_with_hints(
+        &mut bitmap,
+        &hints(&[BarcodeFormat::DATA_MATRIX, BarcodeFormat::QR_CODE]),
+    );
+    if let Ok(result) = two_d {
+        let symbology = match result
+            .getRXingResultMetadata()
+            .get(&RXingResultMetadataType::SYMBOLOGY_IDENTIFIER)
+        {
+            Some(RXingResultMetadataValue::SymbologyIdentifier(id)) => Some(id.as_str()),
+            _ => None,
+        };
+        if is_gs1_2d(result.getText(), symbology) {
+            return Ok(result.getText().to_string());
+        }
+    }
+    reader
+        .decode_with_hints(
+            &mut bitmap,
+            &hints(&[
                 BarcodeFormat::EAN_13,
                 BarcodeFormat::EAN_8,
                 BarcodeFormat::UPC_A,
-            ]
-            .into(),
-        ),
-        TryHarder: Some(true),
-        ..Default::default()
-    };
-    rxing::helpers::detect_in_luma_with_hints(luma.into_raw(), width, height, None, &mut hints)
+            ]),
+        )
         .map(|result| result.getText().to_string())
         .map_err(|_| PhotoError::NoBarcode)
 }
@@ -627,6 +686,133 @@ mod tests {
         let turned = image::imageops::rotate90(&framed(&ean13("3017620422003", 4), 1000, 700));
         let png = encode(&turned, ImageFormat::Png);
         assert_eq!(decode_photo(&png).as_deref(), Ok("3017620422003"));
+    }
+
+    /// A 2D code from rxing's writer, `module` pixels per module, with a
+    /// quiet zone of four modules.
+    fn matrix_code(contents: &str, format: BarcodeFormat, gs1: bool, module: u32) -> GrayImage {
+        use rxing::Writer;
+        let hints = rxing::EncodeHints {
+            Gs1Format: Some(gs1),
+            DataMatrixCompact: Some(gs1),
+            Margin: Some("0".into()),
+            ..Default::default()
+        };
+        let matrix = rxing::MultiFormatWriter
+            .encode_with_hints(contents, &format, 0, 0, &hints)
+            .unwrap();
+        let (width, height) = (matrix.getWidth(), matrix.getHeight());
+        let quiet = 4;
+        GrayImage::from_fn(
+            (width + 2 * quiet) * module,
+            (height + 2 * quiet) * module,
+            |x, y| {
+                let (mx, my) = (x / module, y / module);
+                let inside =
+                    (quiet..width + quiet).contains(&mx) && (quiet..height + quiet).contains(&my);
+                Luma([if inside && matrix.get(mx - quiet, my - quiet) {
+                    0
+                } else {
+                    255
+                }])
+            },
+        )
+    }
+
+    /// (01) GTIN-14, (10) a lot ended by FNC1, (17) an expiry date.
+    const GS1_STRING: &str = "010301762042200310LOT-42\u{1d}17270131";
+
+    #[test]
+    fn a_gs1_datamatrix_is_read_with_its_separator() {
+        let code = matrix_code(GS1_STRING, BarcodeFormat::DATA_MATRIX, true, 12);
+        let jpeg = encode(&framed(&code, 1200, 900), ImageFormat::Jpeg);
+        // The leading FNC1 is dropped and the one ending the lot comes back
+        // as ASCII 29: apps/api reads the elements from there (#403).
+        assert_eq!(decode_photo(&jpeg).as_deref(), Ok(GS1_STRING));
+    }
+
+    #[test]
+    fn a_gs1_digital_link_qr_code_is_read() {
+        let url = "https://id.gs1.org/01/03017620422003/10/LOT42?17=270131";
+        let code = matrix_code(url, BarcodeFormat::QR_CODE, false, 10);
+        let jpeg = encode(&framed(&code, 1200, 900), ImageFormat::Jpeg);
+        assert_eq!(decode_photo(&jpeg).as_deref(), Ok(url));
+    }
+
+    #[test]
+    fn a_2d_code_is_gs1_by_its_symbology_or_as_a_digital_link() {
+        // FNC1 in first position: a GS1 DataMatrix (]d2, ]d5 with an ECI),
+        // a GS1 QR code (]Q3, ]Q4).
+        for symbology in ["]d2", "]d5", "]Q3", "]Q4"] {
+            assert!(is_gs1_2d(GS1_STRING, Some(symbology)), "{symbology}");
+        }
+        // A Digital Link is a plain QR code: its URL names the GTIN (01).
+        for url in [
+            "https://id.gs1.org/01/03017620422003?17=270131",
+            "HTTP://example.com/p/01/3017620422003",
+        ] {
+            assert!(is_gs1_2d(url, Some("]Q1")), "{url}");
+        }
+        for (text, symbology) in [
+            ("WIFI:T:WPA;S:maison;P:secret;;", Some("]Q1")),
+            ("https://example.com/promo?ref=01", Some("]Q1")),
+            ("https://example.com/01", Some("]Q1")),
+            (GS1_STRING, Some("]d1")),
+            (GS1_STRING, None),
+            ("BEGIN:VCARD", Some("]Q2")),
+        ] {
+            assert!(!is_gs1_2d(text, symbology), "{text:?} {symbology:?}");
+        }
+    }
+
+    /// `left` and `right` side by side on a white frame.
+    fn side_by_side(left: &GrayImage, right: &GrayImage) -> GrayImage {
+        let width = left.width() + right.width() + 200;
+        let height = left.height().max(right.height()) + 200;
+        let mut frame = GrayImage::from_pixel(width, height, Luma([255]));
+        image::imageops::overlay(&mut frame, left, 50, 100);
+        image::imageops::overlay(&mut frame, right, i64::from(left.width()) + 150, 100);
+        frame
+    }
+
+    #[test]
+    fn a_gs1_code_wins_over_the_ean_printed_beside_it() {
+        let photo = side_by_side(
+            &ean13("3017620422003", 4),
+            &matrix_code(GS1_STRING, BarcodeFormat::DATA_MATRIX, true, 12),
+        );
+        let png = encode(&photo, ImageFormat::Png);
+        assert_eq!(decode_photo(&png).as_deref(), Ok(GS1_STRING));
+    }
+
+    #[test]
+    fn a_qr_code_that_is_no_gs1_code_is_passed_over() {
+        // Beside an EAN, the EAN is read.
+        let promo = matrix_code(
+            "https://example.com/promo",
+            BarcodeFormat::QR_CODE,
+            false,
+            10,
+        );
+        let photo = side_by_side(&ean13("3017620422003", 4), &promo);
+        let png = encode(&photo, ImageFormat::Png);
+        assert_eq!(decode_photo(&png).as_deref(), Ok("3017620422003"));
+        // Alone, nothing is: its text never leaves the process.
+        let wifi = matrix_code(
+            "WIFI:T:WPA;S:maison;P:secret;;",
+            BarcodeFormat::QR_CODE,
+            false,
+            10,
+        );
+        let png = encode(&framed(&wifi, 1200, 900), ImageFormat::Png);
+        assert_eq!(decode_photo(&png), Err(PhotoError::NoBarcode));
+    }
+
+    #[test]
+    fn a_datamatrix_in_a_full_camera_frame_is_read() {
+        let code = matrix_code(GS1_STRING, BarcodeFormat::DATA_MATRIX, true, 24);
+        let png = encode(&framed(&code, 4032, 3024), ImageFormat::Png);
+        assert_eq!(decode_photo(&png).as_deref(), Ok(GS1_STRING));
     }
 
     #[test]

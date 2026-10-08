@@ -9,7 +9,8 @@ import { fetchVerificationToken } from "../lib/db";
 // and answers 404 for anything else. No test reaches the real service.
 //
 // The camera itself is the browser's: what is tested is the photo it would
-// hand over, drawn here as a PNG.
+// hand over, drawn here as a PNG. Issue #403 adds the GS1 2D codes, whose
+// decoding apps/web's unit tests cover: here, the string one decodes to.
 
 function uniqueEmail(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.test`;
@@ -184,6 +185,42 @@ test.describe("Stocks — barcode scan", () => {
     await expect(page.getByLabel("Nom")).toHaveValue("");
     await expect(page.getByText(`Code-barres associé : ${WEIGHED}`)).toBeVisible();
     await expect(page.getByText("Données produits")).toHaveCount(0);
+  });
+
+  test("a GS1 code's date pre-fills the form, then a sooner one is proposed", async ({ page }) => {
+    await registerAndLogin(page, "e2e-scan-gs1");
+    await createGroup(page, "Famille Datamatrix");
+
+    // (01) KNOWN as a GTIN-14, (10) a lot ended by FNC1 (ASCII 29), (17)
+    // 2027-01-31: what a GS1 DataMatrix decodes to (#403).
+    const gs1 = (yymmdd: string) => `010301762042200310LOT-42\u001d17${yymmdd}`;
+    await page.goto(`/stocks/new?scan=${encodeURIComponent(gs1("270131"))}`);
+    expect(page.url()).toContain("%1D17270131");
+    await expect(page.getByText("Produit trouvé")).toBeVisible();
+    await expect(page.getByLabel("Nom")).toHaveValue("Pâte à tartiner (400 g)");
+    await expect(page.getByText(`Code-barres associé : ${KNOWN}`)).toBeVisible();
+    await expect(page.getByLabel("Date de péremption")).toHaveValue("2027-01-31");
+    await expect(page.getByText("Lue sur le code")).toBeVisible();
+    // The member may correct it before saving.
+    await page.getByLabel("Date de péremption").fill("2027-01-30");
+    await page.getByRole("button", { name: "Ajouter l'article" }).click();
+    await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
+
+    // The same product, a sooner date: proposed, not written.
+    await page.goto(`/stocks/new?scan=${encodeURIComponent(gs1("270115"))}`);
+    await expect(page.getByRole("heading", { name: "Déjà en stock" })).toBeVisible();
+    await expect(
+      page.getByText(
+        "Date de péremption lue sur le code : 15/01/2027, plus proche que celle de l'article (30/01/2027).",
+      ),
+    ).toBeVisible();
+    await page.getByRole("link", { name: "Mettre cette date sur l'article" }).click();
+    await expect(page).toHaveURL(/\/stocks\/[0-9a-f-]+\/edit\?expires_on=2027-01-15$/);
+    await expect(page.getByLabel("Date de péremption")).toHaveValue("2027-01-15");
+    await expect(page.getByText("Lue sur le code")).toBeVisible();
+    await page.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(page.getByText("Article mis à jour.")).toBeVisible();
+    await expect(page.getByText("Péremption : 15/01/2027")).toBeVisible();
   });
 
   test("a string that is not a barcode gets the manual form and a message", async ({ page }) => {
