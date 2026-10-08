@@ -59,6 +59,10 @@ const SHELF_LIVES: &[Row] = &[
     // Commercial frozen food is labelled a year or more ahead; six months is
     // the low end, short enough to never outrun the pack.
     row("en:frozen-foods", 180, "Surgelés"),
+    // Semi-preserves (anchovies, fish roe) sit under `en:canned-foods` in
+    // the taxonomy but keep in the fridge, labelled weeks ahead, not years:
+    // before it.
+    row("en:semi-preserved-foods", 21, "Semi-conserves"),
     // Tins are labelled two to five years ahead: the low end.
     row("en:canned-foods", 730, "Conserves"),
     // --- Meat and fish: the shortest dates ---
@@ -232,6 +236,21 @@ mod tests {
                 .map(|s| s.label),
             Some("Surgelés")
         );
+    }
+
+    #[test]
+    fn a_semi_preserve_is_not_a_tin() {
+        // Anchovies, lumpfish roe: `en:semi-preserved-foods` sits under
+        // `en:canned-foods` but keeps in the fridge, for weeks.
+        let shelf_life = default_shelf_life(&tags(&[
+            "en:canned-foods",
+            "en:fresh-foods",
+            "en:semi-preserved-foods",
+            "en:fishes",
+        ]))
+        .unwrap();
+        assert_eq!(shelf_life.label, "Semi-conserves");
+        assert!(shelf_life.days <= Days::new(30), "{shelf_life:?}");
     }
 
     #[test]
