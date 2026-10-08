@@ -112,6 +112,9 @@ pub async fn get(
             .expires_on
             .map(|d| d.format("%Y-%m-%d").to_string())
             .unwrap_or_default(),
+        // The edit form neither shows nor sends the code (#402): a PATCH
+        // leaves it as it is.
+        barcode: String::new(),
     };
     Html(page(&fam.header, item_id, &item.name, &form, None)).into_response()
 }

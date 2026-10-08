@@ -11,6 +11,9 @@ mod csp;
 #[cfg(test)]
 mod design_journal;
 mod family;
+// The counting allocator of the memory tests (#250, #402). Test-only.
+#[cfg(test)]
+mod heap_count;
 mod layout;
 mod routes;
 mod state;
@@ -237,6 +240,14 @@ fn build_router(state: AppState) -> Router {
         .route(
             "/stocks/new",
             get(routes::stocks::new::get).post(routes::stocks::new::post),
+        )
+        .route(
+            "/stocks/new/photo",
+            // The photo is read whole: axum's 2 MiB default would refuse
+            // most phone pictures (#402).
+            post(routes::stocks::new::photo).layer(axum::extract::DefaultBodyLimit::max(
+                routes::stocks::photo::MAX_PHOTO_BODY_BYTES,
+            )),
         )
         .route("/stocks/:id", get(routes::stocks::detail::get))
         .route(

@@ -141,6 +141,11 @@ async fn main() -> anyhow::Result<()> {
         body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
         upload_gate: manage_our_home_http_guard::UploadGate::production(),
         push,
+        openfoodfacts_base_url: env::var(manage_our_home::stocks::openfoodfacts::BASE_URL_ENV)
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| manage_our_home::stocks::openfoodfacts::DEFAULT_BASE_URL.into()),
+        off_throttle: std::sync::Arc::new(manage_our_home::stocks::openfoodfacts::Throttle::new()),
     };
 
     // On the admin pool: `event_attachments` reads back empty without

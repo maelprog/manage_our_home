@@ -607,3 +607,14 @@ row over 7 days (`notifications::push::MAX_CONSECUTIVE_FAILURES`,
 `MIN_FAILING_DAYS`), after which the « no device » warning shows. A browser
 that does not expose a subscription's key keeps the old subscription and
 only recovers the second way.
+
+## Barcode scan: Open Food Facts (#402)
+
+`POST /groups/:id/stock-items/scan` asks Open Food Facts for the product
+behind a code, from the server, at `https://world.openfoodfacts.org` unless
+**`OPENFOODFACTS_BASE_URL`** says otherwise (unset or empty: the default).
+Nothing else to configure: no key, no account. The reads are limited to
+`stocks::openfoodfacts::RATE_LIMIT` per minute from this process, and
+answers are cached in `off_products` (`CACHE_TTL`, `MISS_TTL`). Unreachable,
+throttled or failing, the scan answers without a product and the page
+offers the manual form.

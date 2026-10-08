@@ -321,6 +321,15 @@ jobs:
           SELECT 1 / (NOT (rolsuper OR rolbypassrls))::int
               FROM pg_roles WHERE rolname = 'app_role';
           SQL
+      # Open Food Facts' stand-in (#402): every barcode scan of the suite
+      # asks apps/api, which asks this instead of the real service
+      # (`OPENFOODFACTS_BASE_URL` below), so the job makes no call outside
+      # the runner. Its answers: e2e/scripts/lib/off-stub-core.ts.
+      - name: Start the Open Food Facts stub
+        run: node scripts/off-stub.ts &
+        working-directory: e2e
+        env:
+          OFF_STUB_PORT: "8090"
       - name: Start apps/api (applies migrations on boot)
         run: ./target/debug/manage_our_home &
         env:
@@ -357,6 +366,7 @@ jobs:
           MINIO_ACCESS_KEY: ci-dummy
           MINIO_SECRET_KEY: ci-dummy-secret
           MINIO_BUCKET: manage-our-home
+          OPENFOODFACTS_BASE_URL: http://localhost:8090
       - name: Start apps/web
         run: ./target/debug/manage_our_home_web &
         env:
@@ -368,6 +378,7 @@ jobs:
           for i in $(seq 1 60); do
             curl -s -o /dev/null http://localhost:8080/auth/me \
               && curl -s -o /dev/null http://localhost:3000/login \
+              && curl -s -o /dev/null http://localhost:8090/ \
               && exit 0
             sleep 1
           done

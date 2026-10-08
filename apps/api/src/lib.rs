@@ -120,6 +120,14 @@ pub struct AppState {
     /// configured, notifications are off on this server — no device can
     /// subscribe, and members who chose them are warned they get nothing.
     pub push: Option<std::sync::Arc<notifications::push::Vapid>>,
+    /// Open Food Facts, asked for the product behind a scanned code (#402).
+    /// `stocks::openfoodfacts::DEFAULT_BASE_URL` unless
+    /// `OPENFOODFACTS_BASE_URL` says otherwise; tests point it at a local
+    /// stub, or at nothing.
+    pub openfoodfacts_base_url: String,
+    /// The limit on reads sent to Open Food Facts (#402), in-process like
+    /// `login_throttle`.
+    pub off_throttle: std::sync::Arc<stocks::openfoodfacts::Throttle>,
 }
 
 /// Body of the 408 a too-slow request body gets (#219), in the API's usual
@@ -287,6 +295,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/groups/:id/stock-items",
             post(stocks::items::create_stock_item).get(stocks::items::list_stock_items),
+        )
+        .route(
+            "/groups/:id/stock-items/scan",
+            post(stocks::scan::scan_stock_item),
         )
         .route(
             "/groups/:id/stock-items/:item_id",

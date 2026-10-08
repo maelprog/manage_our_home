@@ -34,7 +34,8 @@
   document.addEventListener("change", function (event) {
     var input = event.target;
     if (!input.hasAttribute) return;
-    // `data-submit-on-change` (the grocery list's check boxes).
+    // `data-submit-on-change` (the grocery list's check boxes, the stocks'
+    // barcode photo, #402).
     if (input.hasAttribute("data-submit-on-change")) input.form.submit();
     // `data-all-day` (`agenda::new::schedule_fields`, #117).
     else if (input.hasAttribute("data-all-day")) allDay(input);
