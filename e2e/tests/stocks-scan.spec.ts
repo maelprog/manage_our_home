@@ -302,13 +302,30 @@ test.describe("Stocks — barcode scan without JavaScript", () => {
     await expect(page.getByText("Quantité : 2 unité")).toBeVisible();
   });
 
-  test("the date field has no shortcut, and is typed by hand", async ({ page }) => {
+  test("a proposed date has no shortcut, nothing is written before sending, a typed date is saved", async ({ page }) => {
     await registerAndLogin(page, "e2e-scan-nojs-date");
     await createGroup(page, "Famille Sans Raccourci");
 
-    await page.goto("/stocks/new");
-    await expect(page.getByLabel("Date de péremption")).toBeVisible();
+    // A known category: the date is proposed, with its mention, and no
+    // shortcut is put next to it.
+    await page.goto(`/stocks/new?scan=${YOGURT}`);
+    await expect(page.getByLabel("Date de péremption")).toHaveValue(parisDay(21));
+    await expect(page.getByText("Proposée d'après la catégorie « Yaourts »")).toBeVisible();
     await expect(page.getByRole("button", { name: "+1 sem." })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "+3 j" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "+1 mois" })).toHaveCount(0);
+
+    // Nothing is in stock until the form is sent: the scan wrote nothing.
+    const stock = await page.context().newPage();
+    await stock.goto("/stocks");
+    await expect(stock.getByText("Yaourt nature")).toHaveCount(0);
+    await stock.close();
+
+    // The member types another date by hand; it is the one saved.
+    await page.getByLabel("Date de péremption").fill("2027-02-01");
+    await page.getByRole("button", { name: "Ajouter l'article" }).click();
+    await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
+    await page.getByRole("link", { name: /Yaourt nature/ }).click();
+    await expect(page.getByText("Péremption : 01/02/2027")).toBeVisible();
   });
 });
