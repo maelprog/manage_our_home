@@ -635,7 +635,11 @@ mod tests {
         check("8192² grey PNG", png, true);
         // The same, blank: no reader stops early, the worst case at 8192².
         let blank = GrayImage::from_pixel(8192, 8192, Luma([255]));
-        check("8192² blank grey PNG", encode(&blank, ImageFormat::Png), false);
+        check(
+            "8192² blank grey PNG",
+            encode(&blank, ImageFormat::Png),
+            false,
+        );
         // Grey with alpha, 2 bytes a pixel, at exactly `MAX_ALLOC`: its
         // grey copy is half of it, the largest share.
         let frame = DynamicImage::ImageLuma8(framed(&bars, 8192, 5120)).into_luma_alpha8();
