@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-10-08.
+Dernière mise à jour : 2026-10-09.
 
 ## Qui est responsable de vos données ?
 
@@ -46,7 +46,7 @@ données sont-elles conservées ? ».
 | Désactivation d'un compte | date à laquelle l'administrateur du service a désactivé le compte, date de l'email qui prévient de sa suppression ; si vous demandez la réactivation, la date de votre demande et le message facultatif que vous y joignez, et la date du premier refus | Intérêt légitime (exploitation et sécurité du service) |
 | Agenda | événements, tâches, pièces jointes, membres assignés à un événement | Exécution du contrat |
 | Rappels d'événements | délai choisi avant l'événement ; la façon dont vos rappels vous parviennent (notification, email ou les deux) ; pour chaque appareil où vous activez les notifications, l'adresse d'abonnement que le service de notification de votre navigateur lui attribue et ses dates d'abonnement, de dernier renouvellement et de dernier envoi réussi, et le nombre et la date de début de ses envois échoués d'affilée (50 appareils au plus par compte). L'email de rappel porte le titre et la date de l'événement ; la notification n'affiche que « Rappel d'un événement à venir » | Exécution du contrat |
-| Stocks / recettes / liste de courses | articles (et leur code-barres quand il a été scanné ou saisi), recettes, ingrédients ; la photo prise pour scanner un code-barres, lue puis oubliée (voir ci-dessous) | Exécution du contrat |
+| Stocks / recettes / liste de courses | articles (et leur code-barres quand il a été scanné ou saisi), recettes (et l'adresse de la page d'où une recette a été importée), ingrédients ; la photo prise pour scanner un code-barres, lue puis oubliée (voir ci-dessous) | Exécution du contrat |
 | Budget | dépenses saisies manuellement | Exécution du contrat |
 | Messagerie | messages du fil familial (chiffrés au repos), date de votre dernière lecture du fil | Exécution du contrat |
 | Import calendrier Google | URL de flux iCal (chiffrée), événements importés | Consentement explicite (vous fournissez volontairement l'URL) |
@@ -138,6 +138,14 @@ possibles sont :
   magasin ne lui est pas envoyé, ni celui d'un article que votre famille a
   déjà en stock. Ce n'est pas une donnée personnelle qui sort : ce flux est
   cité ici pour être complet.
+- **Le site d'une recette que vous importez**, quand vous collez l'adresse
+  d'une page de recette : le serveur télécharge cette page, une fois, au
+  moment de l'import — sans votre adresse IP, sans cookie, sans identifiant
+  de votre compte ou de votre famille. Le site voit l'adresse du serveur,
+  pas la vôtre. Le serveur ne garde rien de la page : la recette qu'il y lit
+  vous est proposée pour relecture, et seule l'adresse de la page est
+  conservée, avec la recette, si vous l'enregistrez. Ce flux est cité ici
+  pour être complet.
 
 Aucune autre donnée ne quitte le serveur applicatif. Les suggestions de
 recettes sont calculées sur le serveur par des règles fixes (ingrédients en

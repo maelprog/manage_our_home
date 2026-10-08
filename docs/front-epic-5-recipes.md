@@ -91,7 +91,9 @@ surfaces is the one a forged request would hit.
 |---|---|---|---|---|
 | GET | `/recipes` | `recipes::list::get` | Suggestions (ranked, with missing-ingredients) + full recipe list | `GET /groups/:id/recipes/suggestions`, `GET /groups/:id/recipes` |
 | GET | `/recipes/new` | `recipes::new::get` | Create form | — |
-| POST | `/recipes/new` | `recipes::new::post` | Create a recipe | `POST /groups/:id/recipes` |
+| POST | `/recipes/new` | `recipes::new::post` | Create a recipe (with `source_url` when imported, #405) | `POST /groups/:id/recipes` |
+| GET | `/recipes/import` | `recipes::import::get` | Import form: the address of a recipe page (#405) | — |
+| POST | `/recipes/import` | `recipes::import::post` | Read the page's recipe, render the create form pre-filled with it; nothing is saved | `POST /groups/:id/recipes/import` |
 | GET | `/recipes/:id` | `recipes::detail::get` | Detail: ingredients, instructions, last-cooked, log-meal form, edit/delete controls | `GET /groups/:id/recipes/:rid`, `GET /groups/:id/recipes/meal-history` |
 | GET | `/recipes/:id/edit` | `recipes::edit::get` | Edit form (creator/admin/owner only) | `GET /groups/:id/recipes/:rid` |
 | POST | `/recipes/:id/edit` | `recipes::edit::post` | Update a recipe | `PATCH /groups/:id/recipes/:rid` |
@@ -114,12 +116,23 @@ each row is the exact `(status, code)` → French UI state.
 | 400 | `ingredient_name_required` | inline "Chaque ingrédient doit avoir un nom." |
 | 400 | `ingredient_quantity_must_be_non_negative` | inline "La quantité d'un ingrédient ne peut pas être négative." |
 | 400 | `invalid_seasonal_month` | inline "Les mois de saison doivent être compris entre 1 et 12." |
+| 400 | `invalid_source_url` | inline "L'adresse de la page d'origine n'est pas valide." (only a forged hidden field) |
 | 403 | `forbidden` | forbidden page (not reachable via UI — any member may create; mapped defensively) |
 | — | transport / other | inline "Service momentanément indisponible…" |
 
 Name + all ingredient rules are pre-validated by the shared
 `validate_recipe_name` / `parse_ingredients` (inline error, no round trip);
 the backend 400s are the defensive fallback.
+
+### `/recipes/import` (#405) — `import_recipe`
+
+| Status | Code | UI |
+|---|---|---|
+| 200 | — | the create form, pre-filled, with a notice naming the site |
+| 422 | `url_invalid`, `url_scheme_refused`, `url_destination_refused`, `source_timeout`, `source_unreachable`, `source_not_html`, `source_too_large`, `no_recipe_found` | same page, address kept, one sentence per code (`recipes::import::error_text`) |
+| 429 | `too_many_attempts` | same page, "Trop d'imports en peu de temps…" |
+| 403 | `forbidden` | forbidden page |
+| — | transport / other | same page, "Service momentanément indisponible…" |
 
 ### `/recipes` (list + suggestions) — `list_recipes` / `suggest_recipes`
 
