@@ -212,7 +212,11 @@ async fn an_expired_record_is_served_when_open_food_facts_fails(db: PgPool) {
     .unwrap();
 
     let body = json_body(scan(&router, &cookie, &group_id, FAILING).await).await;
-    assert_eq!(hits.load(Ordering::SeqCst), 1, "the expired record is asked again");
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "the expired record is asked again"
+    );
     assert_eq!(body["product"]["name"], "Ancienne fiche", "{body}");
     assert_eq!(body["product"]["quantity"], "1 kg", "{body}");
     // The failure is not written over the record.
