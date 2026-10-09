@@ -1970,7 +1970,7 @@ mod tests {
     /// break), and the pipe syntax of a table that did not render. Outside
     /// links and code spans: a bare `http://`, `https://` or `www.` URL in
     /// any case, and an `@` after a word character, `.`, `-`, `_` or `+` and
-    /// before a word character (an address GFM would link).
+    /// before a word character, `-` or `_` (an address GFM would link).
     fn raw_markdown_markers(md: &str, html: &str) -> Vec<String> {
         let mut found = Vec::new();
         let mut prev = Context::Blank;
@@ -2320,17 +2320,18 @@ mod tests {
 
     /// What GFM would turn into a link: `http://`, `https://`, `www.`, in any
     /// case, or an `@` between a character of an address's local part (a
-    /// word character, `.`, `-`, `_` or `+`) and a word character (an e-mail
-    /// address).
+    /// word character, `.`, `-`, `_` or `+`) and a character of its domain
+    /// (a word character, `-` or `_`): an e-mail address.
     fn has_bare_link(text: &str) -> bool {
         let lower = text.to_lowercase();
         let chars: Vec<char> = text.chars().collect();
         let word = |i: usize| chars.get(i).is_some_and(|c| c.is_alphanumeric());
         let local = |i: usize| word(i) || matches!(chars[i], '.' | '-' | '_' | '+');
+        let domain = |i: usize| word(i) || matches!(chars.get(i), Some('-' | '_'));
         lower.contains("http://")
             || lower.contains("https://")
             || lower.contains("www.")
-            || (1..chars.len()).any(|i| chars[i] == '@' && local(i - 1) && word(i + 1))
+            || (1..chars.len()).any(|i| chars[i] == '@' && local(i - 1) && domain(i + 1))
     }
 
     /// No markdown marker survived into the output: a shipped document has to
@@ -2707,6 +2708,12 @@ mod tests {
             "Écrire à a.@b.org.\n",
             "Écrire à a_@b.org.\n",
         ]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_an_address_whose_domain_starts_with_punctuation() {
+        // GFM's domain admits `-` and `_`, its first character included.
+        assert_each_caught(&["Écrire à a@-b.org.\n", "Écrire à a@_b.org.\n"]);
     }
 
     #[test]
