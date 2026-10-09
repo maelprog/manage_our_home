@@ -1656,7 +1656,8 @@ mod tests {
     /// `n°s`, `nºs`, `nos`, any case, glued or not) or not. An enumeration is followed: after the first
     /// number, each further number separated by `,`, `et`, `ou` or `à` (any
     /// case) is cited too (`articles 1-1 et 6-III` cites both), unless
-    /// followed by `°` or `º` (`article 6, 4° du I`: `4°` is an item of a
+    /// followed by `°`, `º` or the letter `o` typed for them (`article 6,
+    /// 4° du I`: `4°` is an item of a
     /// subdivision). Leading and trailing punctuation is stripped from each
     /// number (`6-IV)` is `6-IV`; `6, III` is `6`), and a hyphen U+2010 or
     /// a non-breaking one U+2011 reads as `-`.
@@ -1695,9 +1696,12 @@ mod tests {
                 None => (word, at),
             };
             let number = bare(word);
-            // `º` is a letter and stays in `bare`; `°` is not.
-            let ordinal =
-                number.ends_with('º') || word[word.find(number)? + number.len()..].starts_with('°');
+            // Digits then `º`, or a letter `o` typed for it, stay in `bare`;
+            // `°` is not a letter and follows it.
+            let ordinal = matches!(
+                number.trim_start_matches(|c: char| c.is_ascii_digit()),
+                "º" | "o" | "O"
+            ) || word[word.find(number)? + number.len()..].starts_with('°');
             (number.starts_with(|c: char| c.is_ascii_digit()) && !(subdivision && ordinal))
                 .then(|| (number.replace(['\u{2010}', '\u{2011}'], "-"), at))
         }
@@ -1884,6 +1888,19 @@ mod tests {
             vec!["6".to_string()]
         );
         assert!(foreign_articles("l'article 1-1, 2° du II").is_empty());
+    }
+
+    #[test]
+    fn cited_articles_read_an_o_after_a_number_as_the_ordinal_sign() {
+        // `4o` is how `4°` is often typed.
+        assert_eq!(
+            foreign_articles("article 6, 4o du I"),
+            vec!["6".to_string()]
+        );
+        assert_eq!(
+            foreign_articles("article 6 et 2O du II"),
+            vec!["6".to_string()]
+        );
     }
 
     #[test]
