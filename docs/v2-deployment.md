@@ -21,8 +21,8 @@ rationale in `architecture.md` ("v2 — Déploiement multi-famille").
 | 13 | Monitoring: centralized/queryable logs | missing | |
 | 14 | Rate-limiting on `/login`, `/register` | missing | Called out in `architecture.md` security section as "once exposed to internet" — that condition is now met. |
 | 15 | Secrets via sops in production | missing | Scaffolding exists conceptually in `architecture.md`; not yet wired to a real deployment. |
-| 16 | RGPD: nom et adresse de contact du responsable de traitement | missing | **À remplacer avant la mise en ligne** — bloquant (#131). Art. 13(1)(a) exige l'identité *et* les coordonnées du responsable. Le porteur du projet (personne physique) fournit son nom et une adresse relevée par une personne — pas un `noreply@` — au moment de l'ouverture publique. Voir la procédure ci-dessous. |
-| 17 | LCEN: hébergeur des mentions légales et identité de l'éditeur confiée à l'hébergeur | missing | **À remplacer avant la mise en ligne** — bloquant (#132, #314). Les mentions légales existent et sont servies (`docs/legal-notice.md`, `GET /legal-notice`), mais trois valeurs y sont encore des placeholders. L'éditeur use de l'anonymat de la LCEN art. 1-1, II (arbitrage du 2026-10-04) : son identité est communiquée à l'hébergeur, pas publiée. L'hébergeur dépend de l'item #1. Voir la procédure ci-dessous. |
+| 16 | RGPD: pseudonyme et adresse de contact du responsable de traitement | missing | **À remplacer avant la mise en ligne** — bloquant (#131, #379). Art. 13(1)(a) exige l'identité *et* les coordonnées du responsable. Le porteur du projet (personne physique) est désigné par un pseudonyme, jamais par son nom civil (arbitrage du 2026-10-05, #379 : son nom publié viderait l'anonymat LCEN de l'item #17) ; le risque résiduel au regard de l'art. 13 est décrit dans `docs/registre-traitements.md`, à valider en relecture. Il fournit ce pseudonyme et une adresse dédiée au service, relevée par une personne — pas un `noreply@` — au moment de l'ouverture publique. Voir la procédure ci-dessous. |
+| 17 | LCEN: hébergeur des mentions légales et identité de l'éditeur confiée à l'hébergeur | missing | **À remplacer avant la mise en ligne** — bloquant (#132, #314). Les mentions légales existent et sont servies (`docs/legal-notice.md`, `GET /legal-notice`), mais trois valeurs y sont encore des placeholders. L'éditeur use de l'anonymat de la LCEN art. 1-1, II (arbitrage du 2026-10-04) : son identité est communiquée à l'hébergeur, pas publiée. L'hébergeur dépend de l'item #1 et doit être un tiers : l'anonymat ne tient pas en auto-hébergement (#379). Voir la procédure ci-dessous. |
 | 18 | RGPD: cadre contractuel du sous-traitant email et transferts hors UE | missing | **À faire avant la mise en ligne** — bloquant (#136, #328). Le fournisseur est arrêté (Scaleway Transactional Email, arbitrage du 2026-10-02 qui remplace Mailjet) et ne transfère rien hors UE, relevé daté dans le registre. Restent à établir le cadre contractuel opposable (DPA accepté depuis la console Scaleway) et les transferts hors UE de Google et des services de notification des navigateurs (#306) : trois placeholders les portent dans la politique et le registre. Rien dans le code ne contraint `SMTP_HOST`. Voir la procédure ci-dessous. |
 | 19 | RGPD: AIPD signée et registre des violations ouvert | missing | **À faire avant la mise en ligne** — bloquant (#143). L'AIPD est rédigée (`docs/aipd.md`) mais sa conclusion n'est qu'une proposition : le responsable de traitement la relit et la signe, ce qui remplit son placeholder (`conclusion de l'AIPD, date et signature`). Elle conditionne l'ouverture aux items #2, #8, #9, #12, #13, #15, #16 et #18. Le registre des violations est tenu hors du dépôt, qui est public (`docs/registre-violations.md` en fixe la forme) : l'ouvrir et en noter l'emplacement à la place du placeholder de ce fichier (`emplacement du registre des violations`). `docs/procedure-violation.md` porte le placeholder `adresse de contact`, rempli par l'item #16. Les trois sont épinglés par `the_breach_and_aipd_documents_carry_only_the_placeholders_pinned_here` (`apps/shared/src/validation/rgpd.rs`) : retirer l'attente correspondante en remplissant chacun. |
 
@@ -39,7 +39,7 @@ liée depuis les pieds de page de connexion et d'inscription. Cinq valeurs y
 sont des placeholders, sous la forme
 `[<quoi> — à renseigner avant la mise en ligne]`. Deux relèvent de cet item :
 
-- `nom du responsable de traitement`
+- `pseudonyme du responsable de traitement`
 - `adresse de contact`
 
 Les trois autres (`cadre contractuel du sous-traitant email`,
@@ -49,34 +49,72 @@ relèvent de l'item #18 ci-dessous. Les cinq figurent à l'identique, et dans le
 même ordre de lecture, dans `docs/registre-traitements.md` — c'est ce que la
 suite de tests épingle. `docs/architecture.md` ("Questions résolues" #3)
 renvoie aux deux premiers. `adresse de contact` figure aussi, seule, dans
-`docs/procedure-violation.md` (#143).
+`docs/procedure-violation.md` (#143). Les deux de cet item figurent enfin
+dans les corps des emails d'invitation et d'avertissement de purge
+(`invitation_email_body`, `deactivation_notice_email_body`,
+`apps/shared/src/validation/rgpd.rs`).
+
+Le responsable est désigné **partout** par un pseudonyme (arbitrage du
+2026-10-05, #379), jamais par son nom civil : le dépôt est public, et le
+responsable est aussi l'éditeur qui use de l'anonymat LCEN (item #17). Le
+risque résiduel de ce choix au regard de l'art. 13(1)(a) RGPD est décrit
+dans `docs/registre-traitements.md` (« Pseudonyme du responsable »), à
+valider en relecture. Ce qui doit tenir, au moment de choisir les valeurs :
+
+- le pseudonyme ne reprend ni le nom civil, ni l'identifiant du compte qui
+  héberge le dépôt de code ;
+- l'adresse de contact est dédiée au service, relevée par une personne, et
+  sa partie locale comme son domaine ne nomment pas la personne civile ;
+- le nom affiché de `SMTP_FROM` (en-tête `From` des emails) est le nom du
+  service ou le pseudonyme, jamais le nom civil ;
+- le nom de domaine public (`SITE_ADDRESS`, item #2) est enregistré avec la
+  diffusion restreinte des données du titulaire dans l'annuaire WHOIS : à
+  vérifier chez le bureau d'enregistrement retenu au moment de
+  l'enregistrement.
+
+Le renommage du compte ou du dépôt de code, dont l'adresse porte
+aujourd'hui l'identifiant du porteur (badge et `git clone` du README, et
+User-Agent des requêtes sortantes, pas 4 ci-dessous), est une action du
+porteur, hors du dépôt.
 
 Au moment de l'ouverture publique :
 
-1. Remplacer les deux placeholders dans `docs/privacy-policy.md` et
-   `docs/registre-traitements.md`, l'adresse de contact dans
-   `docs/procedure-violation.md`, et retirer le renvoi de
-   `docs/architecture.md` #3.
+1. Remplacer les deux placeholders dans `docs/privacy-policy.md`,
+   `docs/registre-traitements.md` et les deux corps d'email cités
+   ci-dessus, l'adresse de contact dans `docs/procedure-violation.md`, et
+   retirer le renvoi de `docs/architecture.md` #3.
 2. Reporter la même adresse de contact dans les mentions légales et
-   communiquer l'identité de l'éditeur à l'hébergeur, sans la publier
+   communiquer l'identité civile de l'éditeur à l'hébergeur, sans la publier
    (anonymat LCEN art. 1-1, II) : voir l'item #17 ci-dessous, qui se traite
    dans le même passage.
 3. Rafraîchir la date de dernière mise à jour en tête des deux documents.
-4. Mettre à jour les tests de `apps/shared/src/validation/rgpd.rs` qui
-   épinglent ces valeurs, car tant qu'ils ne le sont pas la suite reste rouge
-   — c'est le rappel mécanique, pas seulement écrit :
-   - `pending_release_values` est leur source unique, et elle porte les six
-     placeholders, ceux de l'item #18 compris : en retirer deux au pas 1 ne
-     la vide donc pas, et `the_internal_rgpd_documents_carry_the_same_placeholders`
-     n'exige que `docs/architecture.md` ait perdu son annonce que le jour où
-     les deux items sont faits et où la liste est vide ;
-   - `renders_the_real_privacy_policy_without_leftover_markup` porte en plus
-     deux attentes littérales à retirer à la main : les `html.contains(…)`
-     posés sur `[nom du responsable de traitement` et sur
-     `[adresse de contact`.
+4. Remplacer, dans les User-Agent des requêtes sortantes
+   (`USER_AGENT` de `apps/api/src/stocks/openfoodfacts.rs` et de
+   `apps/api/src/recipes/import.rs`), l'adresse du dépôt de code par
+   l'adresse de contact : Open Food Facts demande la forme
+   `AppName/Version (ContactEmail)`.
+5. Mettre à jour les tests qui épinglent ces valeurs, car tant qu'ils ne le
+   sont pas la suite reste rouge — c'est le rappel mécanique, pas seulement
+   écrit :
+   - dans `apps/shared/src/validation/rgpd.rs`, `pending_release_values`
+     est leur source unique, et elle porte les cinq placeholders, ceux de
+     l'item #18 compris : en retirer deux au pas 1 ne la vide donc pas, et
+     `the_internal_rgpd_documents_carry_the_same_placeholders` n'exige que
+     `docs/architecture.md` ait perdu son annonce que le jour où les deux
+     items sont faits et où la liste est vide ;
+   - `pending_controller_values` porte les deux de cet item, et
+     `invitation_email_carries_the_controller_identity_and_contact` comme
+     `deactivation_notice_sends_the_reactivation_request_through_a_login`
+     y épinglent les corps d'email ;
+   - `renders_the_real_privacy_policy_without_leftover_markup` boucle sur
+     `pending_release_values` et n'a rien à retirer à la main ;
    - `the_breach_and_aipd_documents_carry_only_the_placeholders_pinned_here`
      attend l'adresse de contact dans `docs/procedure-violation.md` et exige
-     qu'elle disparaisse le même jour que celle de la politique.
+     qu'elle disparaisse le même jour que celle de la politique ;
+   - `the_user_agents_carry_the_contact_address_once_it_is_filled`
+     (`apps/api/src/stocks/openfoodfacts.rs`) exige que les deux User-Agent
+     perdent l'adresse du dépôt et portent une adresse email le jour où
+     celle de la politique est remplie — c'est le rappel du pas 4.
 
 ## Item #17 — remplacer les placeholders des mentions légales
 
@@ -105,17 +143,17 @@ Les nom, prénoms, domicile et numéro de téléphone de l'éditeur ne sont
 **jamais** écrits dans le dépôt, qui est public : ils vont à l'hébergeur
 seul (pas 1 ci-dessous).
 
-L'hébergeur dépend de l'item #1 et n'est pas choisi (arbitrage du
-2026-09-19 : auto-hébergement envisagé, VPS possible ensuite). Les deux
-branches, au moment de la mise en ligne :
-
-- **VPS** : inscrire la raison sociale, l'adresse et le numéro de téléphone
-  du prestataire retenu ;
-- **auto-hébergement** : l'éditeur est son propre hébergeur, et l'anonymat
-  du II ne tient plus — le nom, l'adresse et le numéro de téléphone de
-  l'hébergeur à publier sont alors ceux de l'éditeur. Cette branche demande
-  un nouvel arbitrage avant la mise en ligne, et la réécriture des sections
-  « Éditeur du service » et « Directeur de la publication ».
+L'hébergeur dépend de l'item #1 et n'est pas choisi. L'arbitrage du
+2026-10-05 (« pseudonymiser partout », #379) en fixe la nature : le
+pseudonymat impose un **hébergeur tiers**. En auto-hébergement, l'éditeur
+serait son propre hébergeur, et le nom, l'adresse et le numéro de téléphone
+de l'hébergeur à publier (art. 1-1, I) seraient les siens : l'anonymat du II
+ne tiendrait plus, et le pseudonyme de l'item #16 non plus. L'auto-hébergement
+envisagé par l'arbitrage du 2026-09-19 est donc écarté tant que cet
+arbitrage tient ; y revenir demanderait d'abord de renoncer au pseudonymat,
+puis de réécrire les sections « Éditeur du service » et « Directeur de la
+publication ». Au moment de la mise en ligne, inscrire la raison sociale,
+l'adresse et le numéro de téléphone du prestataire retenu (un VPS, item #1).
 
 Au moment de l'ouverture publique :
 
@@ -141,8 +179,8 @@ Au moment de l'ouverture publique :
      d'oublier l'autre ;
    - `renders_the_real_legal_notice_without_leftover_markup` boucle sur
      `pending_legal_notice_values` et n'a donc rien à retirer à la main ; il
-     exige aussi que le texte cite l'article 1-1 et l'anonymat, ce que la
-     branche auto-hébergement devra revoir.
+     exige aussi que le texte cite l'article 1-1 et l'anonymat, ce qu'un
+     retour à l'auto-hébergement devrait revoir.
 
 ## Item #18 — établir le cadre contractuel du sous-traitant email et les transferts
 

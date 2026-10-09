@@ -378,8 +378,8 @@ fn escape_html(s: &str) -> String {
 
 /// Suffix that marks, inside square brackets, a value the shipped RGPD
 /// documents still leave to fill before the service opens publicly — today the
-/// controller's name and contact address (#131). Written out in full so it can
-/// be grepped from the repository root.
+/// controller's pseudonym and contact address (#131, #379). Written out in full
+/// so it can be grepped from the repository root.
 pub const RELEASE_PLACEHOLDER_SUFFIX: &str = "— à renseigner avant la mise en ligne";
 
 /// The label of every `[… — à renseigner avant la mise en ligne]` placeholder
@@ -637,10 +637,10 @@ configuration suspend ce passage, il a lieu à son redémarrage ou au
 premier passage horaire qui suit le rétablissement de cette
 configuration.
 
-Le responsable de traitement est [nom du responsable de traitement — à
-renseigner avant la mise en ligne], joignable à [adresse de contact — à
-renseigner avant la mise en ligne]. Vous pouvez aussi introduire une
-réclamation auprès de la CNIL.
+Le responsable de traitement est [pseudonyme du responsable de
+traitement — à renseigner avant la mise en ligne], joignable à
+[adresse de contact — à renseigner avant la mise en ligne]. Vous
+pouvez aussi introduire une réclamation auprès de la CNIL.
 
 -- Ce que vous pouvez faire --
 
@@ -707,8 +707,8 @@ comme le prévoient les conditions générales.
 Pour demander sa réactivation, connectez-vous au service avec vos
 identifiants habituels : la page qui s'ouvre porte le formulaire de
 demande. Pour exercer vos droits sur vos données, écrivez au
-responsable de traitement, [nom du responsable de traitement — à
-renseigner avant la mise en ligne], à [adresse de contact — à
+responsable de traitement, [pseudonyme du responsable de traitement —
+à renseigner avant la mise en ligne], à [adresse de contact — à
 renseigner avant la mise en ligne]. Vous pouvez aussi introduire une
 réclamation auprès de la CNIL.
 
@@ -1027,13 +1027,13 @@ mod tests {
 
     #[test]
     fn release_placeholders_lists_each_value_left_to_fill() {
-        let md = "Exploité par [nom du responsable de traitement — à renseigner\n\
-                  avant la mise en ligne], joignable à\n\
+        let md = "Exploité par [pseudonyme du responsable de traitement — à\n\
+                  renseigner avant la mise en ligne], joignable à\n\
                   [adresse de contact — à renseigner avant la mise en ligne].";
         assert_eq!(
             release_placeholders(md),
             vec![
-                "nom du responsable de traitement".to_string(),
+                "pseudonyme du responsable de traitement".to_string(),
                 "adresse de contact".to_string(),
             ]
         );
@@ -1126,9 +1126,15 @@ mod tests {
     /// invitation email carries (art. 14(1)(a)) and the ones
     /// `docs/v2-deployment.md` #16 fills. The email says nothing about
     /// subprocessors, so it must not be pinned to the three values #18 owns.
+    ///
+    /// The controller is named by a **pseudonym**, not a civil name
+    /// (arbitrated 2026-10-05, #379): controller and publisher are the same
+    /// person, so a civil name published here would undo the publisher's LCEN
+    /// anonymity. The residual risk under art. 13(1)(a) is written down in
+    /// `docs/registre-traitements.md`.
     fn pending_controller_values() -> Vec<String> {
         vec![
-            "nom du responsable de traitement".to_string(),
+            "pseudonyme du responsable de traitement".to_string(),
             "adresse de contact".to_string(),
         ]
     }
@@ -1182,7 +1188,8 @@ mod tests {
     /// list of its own, not `pending_release_values`: the legal notice owes the
     /// public the host's name, address and phone number (LCEN art. 1-1, I 4°),
     /// which the privacy policy never had to carry, and the host is not chosen
-    /// yet (self-hosting, a VPS later; arbitrated 2026-09-19).
+    /// yet — a third party, since self-hosting would make the publisher its
+    /// own host and end the anonymity (arbitrated 2026-10-05, #379).
     ///
     /// The publisher's own name, address and phone number are deliberately
     /// absent: the publisher edits on a non-professional basis and keeps the
@@ -1225,6 +1232,59 @@ mod tests {
             "the legal notice and the privacy policy disagree on whether the \
              publisher/controller is still to be filled"
         );
+    }
+
+    /// #379: the controller and publisher is named by a pseudonym. A served
+    /// text that pointed at the code-hosting account — the repository's URL
+    /// carries its owner's handle — would tie that pseudonym back to it. None
+    /// of the three served documents, nor the two emails that name the
+    /// controller, nor the ownership email, may link to a code host.
+    #[test]
+    fn served_texts_do_not_point_at_the_code_hosting_account() {
+        use crate::validation::groups::OwnershipReason;
+        let served = [
+            (
+                "the privacy policy",
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../docs/privacy-policy.md"
+                ))
+                .to_string(),
+            ),
+            (
+                "the legal notice",
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../docs/legal-notice.md"
+                ))
+                .to_string(),
+            ),
+            (
+                "the CGU",
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../docs/terms-of-service.md"
+                ))
+                .to_string(),
+            ),
+            ("the invitation email", invitation_sample()),
+            ("the deactivation notice", notice_sample()),
+            (
+                "the ownership email",
+                ownership_inherited_email_body(
+                    "Famille Martin",
+                    OwnershipReason::AccountPurged,
+                    GROUPS_URL,
+                    POLICY_URL,
+                ),
+            ),
+        ];
+        for (name, text) in served {
+            let lower = text.to_lowercase();
+            for host in ["github", "gitlab", "codeberg"] {
+                assert!(!lower.contains(host), "{name} points at {host}");
+            }
+        }
     }
 
     /// The breach procedure, the breach register template and the AIPD (#143)

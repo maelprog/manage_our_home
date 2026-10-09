@@ -2,7 +2,8 @@
 
 Registre tenu au titre de l'article 30 du RGPD. Dernière mise à jour :
 2026-10-09 (recette importée depuis l'adresse d'une page : adresse conservée,
-page téléchargée par le serveur, #405) ;
+page téléchargée par le serveur, #405 ; responsable désigné par un
+pseudonyme et risque résiduel au regard de l'art. 13, #379) ;
 2026-10-08 (code-barres d'un article de stock, photo du code lue sans être conservée, Open Food Facts, #402 ;
 date de péremption lue sur un code 2D GS1, #403) ;
 2026-10-05 (fin d'une session inactive et jetons de réinitialisation, #327 ;
@@ -14,12 +15,34 @@ migrations `apps/api/migrations/0001` à `0016` et la table des routes de
 traitement de données personnelles est effectué, y compris à petite échelle
 — voir `docs/architecture.md` §10.
 
-**Responsable de traitement** : le porteur du projet, personne physique —
-[nom du responsable de traitement — à renseigner avant la mise en ligne],
+**Responsable de traitement** : le porteur du projet, personne physique,
+désigné par un pseudonyme —
+[pseudonyme du responsable de traitement — à renseigner avant la mise en ligne],
 joignable à [adresse de contact — à renseigner avant la mise en ligne] (voir
 `docs/architecture.md`, "Questions résolues" #3, et
 `docs/privacy-policy.md`). Ces deux valeurs sont des placeholders jusqu'à
 l'ouverture publique : voir `docs/v2-deployment.md` #16.
+
+**Pseudonyme du responsable — risque résiduel, à valider en relecture**
+(arbitrage du 2026-10-05, #379). Le responsable de traitement est aussi
+l'éditeur, qui use de l'anonymat de la LCEN (art. 1-1, II) : publier son
+nom civil dans la politique viderait cet anonymat. Tous les textes publiés
+le désignent donc par un pseudonyme, joignable à une adresse dédiée au
+service. Or l'article 13(1)(a) du RGPD exige de communiquer à la personne
+concernée « l'identité et les coordonnées du responsable du traitement ».
+Un pseudonyme suivi d'une adresse relevée remplit les coordonnées ; il ne
+remplit l'identité qu'au sens où il désigne une personne unique et
+joignable, ce que le texte ne dit pas suffire. Le risque résiduel est qu'une
+personne concernée, ou la CNIL saisie d'une réclamation, tienne
+l'information pour incomplète au regard de l'article 13. Ce qui le réduit :
+l'identité civile n'est pas cachée à qui peut l'exiger — elle est
+communiquée à l'hébergeur (LCEN art. 1-1, II), qui la tient à la
+disposition de l'autorité judiciaire, et elle est communiquée à la CNIL
+sur sa demande ; le service est gratuit, non professionnel et ouvert à
+quelques familles. Ce qui le supprimerait : publier le nom civil, au prix
+de l'anonymat LCEN. Ce choix ne tient qu'avec un hébergeur tiers : en
+auto-hébergement, l'éditeur est son propre hébergeur et doit publier ses
+coordonnées (`docs/v2-deployment.md` #17).
 
 **Sous-traitants (destinataires)** :
 - Aucun tiers commercial pour le stockage/traitement du contenu applicatif
