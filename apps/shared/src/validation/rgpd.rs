@@ -94,7 +94,8 @@ pub fn validate_deletion_confirmation(
 /// `apps/api` serves verbatim over `GET /privacy-policy` — into HTML:
 /// `#`/`##`/`###` headings, wrapped paragraphs, `- ` bullet lists (with
 /// indented continuation lines), pipe tables with a header row, and the inline
-/// `` `code` ``, `**strong**` and `[text](url)` markers.
+/// `` `code` `` (opened by any run of backticks, closed by a run of the same
+/// length), `**strong**` and `[text](url)` markers.
 ///
 /// Everything else is emitted as escaped literal text: the source is trusted
 /// (it ships in the repo, compiled into the API binary via `include_str!`), but
@@ -259,13 +260,35 @@ fn inline(text: &str) -> String {
     while i < chars.len() {
         match chars[i] {
             '`' => {
-                if let Some(end) = find(&chars, i + 1, &['`']) {
-                    out.push_str("<code>");
-                    out.extend(&chars[i + 1..end]);
-                    out.push_str("</code>");
-                    i = end + 1;
-                    continue;
+                // As in CommonMark: a run of n backticks opens a span that
+                // closes on the next run of exactly n, and a run with no such
+                // closer is literal text, whole.
+                let run = backtick_run(&chars, i);
+                match closing_backticks(&chars, i + run, run) {
+                    Some(end) => {
+                        let content: String = chars[i + run..end].iter().collect();
+                        // One leading and one trailing space are stripped
+                        // when both are there and the span is not all spaces.
+                        let content = if content.len() >= 2
+                            && content.starts_with(' ')
+                            && content.ends_with(' ')
+                            && !content.chars().all(|c| c == ' ')
+                        {
+                            &content[1..content.len() - 1]
+                        } else {
+                            &content[..]
+                        };
+                        out.push_str("<code>");
+                        out.push_str(content);
+                        out.push_str("</code>");
+                        i = end + run;
+                    }
+                    None => {
+                        out.extend(&chars[i..i + run]);
+                        i += run;
+                    }
                 }
+                continue;
             }
             '*' if chars.get(i + 1) == Some(&'*') => {
                 if let Some(end) = find(&chars, i + 2, &['*', '*']) {
@@ -297,6 +320,28 @@ fn inline(text: &str) -> String {
 fn find(chars: &[char], from: usize, needle: &[char]) -> Option<usize> {
     (from..chars.len().saturating_sub(needle.len() - 1))
         .find(|&i| chars[i..i + needle.len()] == *needle)
+}
+
+/// The length of the run of backticks that starts at `at`.
+fn backtick_run(chars: &[char], at: usize) -> usize {
+    chars[at..].iter().take_while(|&&c| c == '`').count()
+}
+
+/// The start of the first run of exactly `len` backticks at or after `from`.
+fn closing_backticks(chars: &[char], from: usize, len: usize) -> Option<usize> {
+    let mut i = from;
+    while i < chars.len() {
+        if chars[i] == '`' {
+            let run = backtick_run(chars, i);
+            if run == len {
+                return Some(i);
+            }
+            i += run;
+        } else {
+            i += 1;
+        }
+    }
+    None
 }
 
 /// Parses `[label](url)` starting at `start` (which must be the `[`), returning
@@ -954,6 +999,30 @@ mod tests {
         );
     }
 
+    /// #376: a code span opened by a run of backticks closes on a run of the
+    /// same length, as in CommonMark — ` ``x`` ` used to come out as two
+    /// empty `<code>` around a plain `x`.
+    #[test]
+    fn a_code_span_closes_on_a_backtick_run_of_its_own_length() {
+        assert_eq!(render_markdown("``x``"), "<p><code>x</code></p>");
+        assert_eq!(
+            render_markdown("Voir `` a`b `` ici"),
+            "<p>Voir <code>a`b</code> ici</p>"
+        );
+        assert_eq!(
+            render_markdown("`a``b` et ```c```"),
+            "<p><code>a``b</code> et <code>c</code></p>"
+        );
+    }
+
+    #[test]
+    fn a_backtick_run_left_open_stays_literal() {
+        // No closing run of the same length: the backticks are text, which
+        // the raw-markdown guard then reports.
+        assert_eq!(render_markdown("``x`"), "<p>``x`</p>");
+        assert_eq!(render_markdown("`x``"), "<p>`x``</p>");
+    }
+
     // -- release_placeholders ------------------------------------------------
 
     #[test]
@@ -1351,7 +1420,8 @@ mod tests {
     /// number in `N ans ou plus`, `N ans et plus`, `moins de N ans` or
     /// `au moins N ans` — the four phrasings the RGPD documents use for the
     /// art. 8 GDPR threshold (#137). Markdown emphasis, link text
-    /// (`[16 ans ou plus](/x)`, #346), elisions (`d'au moins`) and hard wraps
+    /// (`[16 ans ou plus](/x)`, #346) and its target even with a title
+    /// (`[16 ans](/x "t") ou plus`), elisions (`d'au moins`) and hard wraps
     /// are seen through.
     ///
     /// A duration is not an age: `après 2 ans`, `au plus tôt 2 ans et
@@ -1359,12 +1429,26 @@ mod tests {
     /// document writes it today and a new one would be written by hand under
     /// review: a threshold phrased otherwise (`15 ans minimum`, `dès 15 ans`).
     fn stated_minimum_ages(md: &str) -> Vec<u32> {
-        let words: Vec<String> = md
+        // A link's target, title and blanks included (`](/x "t")`), is not
+        // part of the text: cut out up to its first `)` (#376). An unclosed
+        // target is left in place.
+        let mut text = String::new();
+        let mut rest = md;
+        while let Some(at) = rest.find("](") {
+            let Some(end) = rest[at + 2..].find(')') else {
+                break;
+            };
+            text.push_str(&rest[..=at]);
+            text.push(' ');
+            rest = &rest[at + 2 + end + 1..];
+        }
+        text.push_str(rest);
+        let words: Vec<String> = text
             .split_whitespace()
             .map(|w| {
-                // `plus](/x)` reads as `plus`: a link's target, glued to the
-                // last word of its text, is not part of the word. Cut before
-                // the elision, which the target may contain too.
+                // `plus][ref]` reads as `plus`: a reference glued to the last
+                // word of a link's text is not part of the word. Cut before
+                // the elision, which the reference may contain too.
                 let w = w.split(']').next().unwrap_or(w);
                 // `d'au` reads as `au`: an elision is not part of the word.
                 let w = w.rsplit(['\'', '’']).next().unwrap_or(w);
@@ -1431,6 +1515,24 @@ mod tests {
             vec![15]
         );
         assert_eq!(stated_minimum_ages("aux [moins de 16 ans][ref]"), vec![16]);
+    }
+
+    /// #376: a link's whole target is cut out, title and blanks included —
+    /// `[16 ans](/x "t") ou plus` used to read `"t")` between `ans` and `ou`.
+    #[test]
+    fn stated_minimum_ages_see_through_a_link_target_with_blanks() {
+        assert_eq!(
+            stated_minimum_ages("avoir [16 ans](/x \"titre\") ou plus"),
+            vec![16]
+        );
+        assert_eq!(
+            stated_minimum_ages("avoir [16 ans](</a b>) ou plus"),
+            vec![16]
+        );
+        assert_eq!(
+            stated_minimum_ages("aux [moins de](/x 'un titre') 16 ans"),
+            vec![16]
+        );
     }
 
     #[test]
@@ -1500,10 +1602,14 @@ mod tests {
     /// A citation is the word `article`, `articles` or `art.` (any case,
     /// after an elided `l'`/`d'`, wrapped in any punctuation such as `(`,
     /// `**` or `«`), followed by a word that starts with a digit — glued
-    /// (`art.6`) or not. An enumeration is followed: after the first number,
-    /// each further number separated by `,`, `et`, `ou` or `à` is cited too
-    /// (`articles 1-1 et 6-III` cites both). Leading and trailing punctuation
-    /// is stripped from each number (`6-IV)` is `6-IV`; `6, III` is `6`).
+    /// (`art.6`) or not, after a number sign `n°`, `nº` or `no` (any case,
+    /// glued or not) or not. An enumeration is followed: after the first
+    /// number, each further number separated by `,`, `et`, `ou` or `à` (any
+    /// case) is cited too (`articles 1-1 et 6-III` cites both), unless
+    /// followed by `°` or `º` (`article 6, 4° du I`: `4°` is an item of a
+    /// subdivision). Leading and trailing punctuation is stripped from each
+    /// number (`6-IV)` is `6-IV`; `6, III` is `6`), and a hyphen U+2010 or
+    /// a non-breaking one U+2011 reads as `-`.
     ///
     /// Blind spots, accepted because the legal notice carries none of these
     /// forms today and a new one would be written by hand under review: a
@@ -1516,8 +1622,31 @@ mod tests {
         fn bare(word: &str) -> &str {
             word.trim_matches(|c: char| !c.is_alphanumeric())
         }
-        fn is_number(word: &str) -> bool {
-            bare(word).starts_with(|c: char| c.is_ascii_digit())
+        /// `n°`, `nº` or `no`, any case: the number sign before a number.
+        fn number_sign(word: &str) -> Option<&str> {
+            let lower = word.to_lowercase();
+            ["n°", "nº", "no"]
+                .iter()
+                .find(|sign| lower.starts_with(*sign))
+                .map(|sign| &word[sign.len()..])
+        }
+        /// The number `words[at]` cites, through a number sign glued to it
+        /// (`n°6`) or standing before it (`n° 6`), with the index of the
+        /// word that carries it. `subdivision`: a number followed by `°` or
+        /// `º` (`4°`, an item of a subdivision) is not an article.
+        fn number_at(words: &[&str], at: usize, subdivision: bool) -> Option<(String, usize)> {
+            let word = *words.get(at)?;
+            let (word, at) = match number_sign(word) {
+                Some("") => (*words.get(at + 1)?, at + 1),
+                Some(glued) => (glued, at),
+                None => (word, at),
+            };
+            let number = bare(word);
+            // `º` is a letter and stays in `bare`; `°` is not.
+            let ordinal =
+                number.ends_with('º') || word[word.find(number)? + number.len()..].starts_with('°');
+            (number.starts_with(|c: char| c.is_ascii_digit()) && !(subdivision && ordinal))
+                .then(|| (number.replace(['\u{2010}', '\u{2011}'], "-"), at))
         }
         let words: Vec<&str> = md.split_whitespace().collect();
         let mut out = Vec::new();
@@ -1528,32 +1657,38 @@ mod tests {
             let first = if word.len() > 4
                 && word.is_char_boundary(4)
                 && word[..4].eq_ignore_ascii_case("art.")
-                && is_number(&word[4..])
             {
-                (bare(&word[4..]), i)
+                let mut glued = words.clone();
+                glued[i] = &word[4..];
+                number_at(&glued, i, false)
             } else if matches!(
                 bare(word).to_lowercase().as_str(),
                 "article" | "articles" | "art"
-            ) && words.get(i + 1).is_some_and(|next| is_number(next))
-            {
-                (bare(words[i + 1]), i + 1)
+            ) {
+                number_at(&words, i + 1, false)
             } else {
+                None
+            };
+            let Some((number, mut at)) = first else {
                 continue;
             };
-            out.push(first.0.to_string());
-            let mut at = first.1;
+            out.push(number);
             loop {
-                let next = words.get(at + 1).copied().unwrap_or("");
-                if words[at].ends_with(',') && is_number(next) {
-                    at += 1;
-                } else if matches!(bare(next), "et" | "ou" | "à")
-                    && words.get(at + 2).is_some_and(|n| is_number(n))
+                let next = if words[at].ends_with(',') {
+                    number_at(&words, at + 1, true)
+                } else if words
+                    .get(at + 1)
+                    .is_some_and(|w| matches!(bare(w).to_lowercase().as_str(), "et" | "ou" | "à"))
                 {
-                    at += 2;
+                    number_at(&words, at + 2, true)
                 } else {
+                    None
+                };
+                let Some((number, next_at)) = next else {
                     break;
-                }
-                out.push(bare(words[at]).to_string());
+                };
+                out.push(number);
+                at = next_at;
             }
         }
         out
@@ -1619,6 +1754,72 @@ mod tests {
     }
 
     #[test]
+    fn cited_articles_read_the_conjunctions_in_any_case() {
+        assert_eq!(
+            foreign_articles("ARTICLES 6 ET 7"),
+            vec!["6".to_string(), "7".to_string()]
+        );
+        assert_eq!(
+            foreign_articles("Articles 6 Ou 7"),
+            vec!["6".to_string(), "7".to_string()]
+        );
+        assert_eq!(
+            foreign_articles("articles 6 À 9"),
+            vec!["6".to_string(), "9".to_string()]
+        );
+    }
+
+    #[test]
+    fn cited_articles_see_through_the_number_sign() {
+        for md in [
+            "article n° 6",
+            "article nº 6",
+            "article N° 6",
+            "article no 6",
+            "article n°6",
+        ] {
+            assert_eq!(foreign_articles(md), vec!["6".to_string()], "{md:?}");
+        }
+        assert_eq!(
+            foreign_articles("articles n° 6 et n° 7"),
+            vec!["6".to_string(), "7".to_string()]
+        );
+    }
+
+    #[test]
+    fn cited_articles_strip_the_punctuation_before_the_word() {
+        assert_eq!(foreign_articles("(art.6)"), vec!["6".to_string()]);
+        assert_eq!(
+            foreign_articles("«\u{a0}art.6\u{a0}»"),
+            vec!["6".to_string()]
+        );
+        assert_eq!(foreign_articles("(article 6)"), vec!["6".to_string()]);
+    }
+
+    #[test]
+    fn cited_articles_do_not_read_a_subdivision_as_an_article() {
+        // `4°` numbers an item of a subdivision, not an article.
+        assert_eq!(
+            foreign_articles("article 6, 4° du I"),
+            vec!["6".to_string()]
+        );
+        assert_eq!(
+            foreign_articles("article 6, 4º du I"),
+            vec!["6".to_string()]
+        );
+        assert!(foreign_articles("l'article 1-1, 2° du II").is_empty());
+    }
+
+    #[test]
+    fn cited_articles_read_a_non_breaking_hyphen_as_a_hyphen() {
+        assert_eq!(
+            cited_article_numbers("article 1\u{2011}1 et article 226\u{2010}13"),
+            vec!["1-1", "226-13"]
+        );
+        assert!(foreign_articles("articles 226\u{2011}13 et 226\u{2011}14").is_empty());
+    }
+
+    #[test]
     fn cited_articles_ignore_a_word_that_is_not_a_number() {
         // The stocks feature, in the notice's own intellectual-property section.
         assert!(cited_article_numbers("recettes, articles de stock, dépenses").is_empty());
@@ -1655,8 +1856,11 @@ mod tests {
     /// - under a `- ` bullet, a block CommonMark keeps in the item but the
     ///   renderer moves out of the list: a heading or a table indented under
     ///   it, a table or a line of text flush against it (a lazy
-    ///   continuation), and any indented line after one or more blank lines
-    ///   (a second paragraph of the item);
+    ///   continuation), a rule, a quote, a fence, another bullet or a
+    ///   numbered list from 1 flush against it (named as that block), any
+    ///   indented line after one or more blank lines (a second paragraph of
+    ///   the item), and a `- ` bullet after one or more blank lines (GFM
+    ///   makes one loose list, the renderer two lists);
     /// - two trailing spaces (a hard line break the renderer joins away).
     ///
     /// Inline markers are read on the text the reader sees — tags dropped,
@@ -1670,8 +1874,9 @@ mod tests {
     /// `<` (raw HTML, an autolink), an escaped entity
     /// reference (`&copy;`, `&#169;`), any `\` (a backslash escape or a hard
     /// break), and the pipe syntax of a table that did not render. Outside
-    /// links and code spans: a bare `http://`, `https://` or `www.` URL, and
-    /// an `@` between two word characters (an address GFM would link).
+    /// links and code spans: a bare `http://`, `https://` or `www.` URL in
+    /// any case, and an `@` after a word character, `.`, `-`, `_` or `+` and
+    /// before a word character (an address GFM would link).
     fn raw_markdown_markers(md: &str, html: &str) -> Vec<String> {
         let mut found = Vec::new();
         let mut prev = Context::Blank;
@@ -1794,13 +1999,16 @@ mod tests {
     /// The block `t` would put inside the bullet `prev` left open, where the
     /// renderer closes the list and emits it after: a heading or a table
     /// indented under the bullet, a table or a line of text flush against it
-    /// (GFM reads it as the item's lazy continuation), and any indented line
-    /// after a blank line (a second paragraph of the item). A line glued to
+    /// (GFM reads it as the item's lazy continuation, or as the block it
+    /// opens: `interrupting_block`), any indented line after a blank line (a
+    /// second paragraph of the item), and a `- ` bullet after a blank line
+    /// (an item of the same, loose, list). A line glued to
     /// the bullet and indented is the continuation the renderer absorbs; a
     /// heading or a `- ` bullet flush against it closes the item in both.
     fn block_under_bullet(t: &str, indented: bool, prev: Context) -> Option<&'static str> {
         match prev {
             Context::BlankAfterList if indented => Some("block after a blank line"),
+            Context::BlankAfterList if t.starts_with("- ") => Some("loose list item"),
             Context::List if t.starts_with('|') => Some("table"),
             Context::List => {
                 let after_hashes = t.trim_start_matches('#');
@@ -1811,10 +2019,41 @@ mod tests {
                 } else if is_heading || t.starts_with("- ") {
                     None
                 } else {
-                    Some("lazy continuation text")
+                    Some(interrupting_block(t).unwrap_or("lazy continuation text"))
                 }
             }
             _ => None,
+        }
+    }
+
+    /// The block `t`, flush against a bullet's text, opens by interrupting
+    /// that text in CommonMark: a rule, a quote, a code fence, another
+    /// bullet or a numbered list from 1, each with content where it needs
+    /// one. Anything else (`2. x`, `===`, `[a]: /b`) is lazy continuation
+    /// text — a setext underline cannot be lazy, so `---` is a rule there.
+    fn interrupting_block(t: &str) -> Option<&'static str> {
+        let mut chars = t.chars();
+        let (first, second) = (chars.next(), chars.next());
+        if is_thematic_break(t) {
+            Some("rule")
+        } else if t.starts_with('>') {
+            Some("blockquote")
+        } else if t.starts_with("```") || t.starts_with("~~~") {
+            Some("code fence")
+        } else if matches!(first, Some('+' | '*' | '-'))
+            && second.is_some_and(char::is_whitespace)
+            && !t[1..].trim().is_empty()
+        {
+            Some("bullet")
+        } else if is_ordered_item(t)
+            && ordered_start(t) == Some(1)
+            && !t.trim_start_matches(|c: char| c.is_ascii_digit())[1..]
+                .trim()
+                .is_empty()
+        {
+            Some("numbered list")
+        } else {
+            None
         }
     }
 
@@ -1983,15 +2222,19 @@ mod tests {
             .collect()
     }
 
-    /// What GFM would turn into a link: `http://`, `https://`, `www.`, or an
-    /// `@` between two word characters (an e-mail address).
+    /// What GFM would turn into a link: `http://`, `https://`, `www.`, in any
+    /// case, or an `@` between a character of an address's local part (a
+    /// word character, `.`, `-`, `_` or `+`) and a word character (an e-mail
+    /// address).
     fn has_bare_link(text: &str) -> bool {
+        let lower = text.to_lowercase();
         let chars: Vec<char> = text.chars().collect();
         let word = |i: usize| chars.get(i).is_some_and(|c| c.is_alphanumeric());
-        text.contains("http://")
-            || text.contains("https://")
-            || text.contains("www.")
-            || (1..chars.len()).any(|i| chars[i] == '@' && word(i - 1) && word(i + 1))
+        let local = |i: usize| word(i) || matches!(chars[i], '.' | '-' | '_' | '+');
+        lower.contains("http://")
+            || lower.contains("https://")
+            || lower.contains("www.")
+            || (1..chars.len()).any(|i| chars[i] == '@' && local(i - 1) && word(i + 1))
     }
 
     /// No markdown marker survived into the output: a shipped document has to
@@ -2254,6 +2497,38 @@ mod tests {
     }
 
     #[test]
+    fn raw_markdown_guard_catches_a_loose_list() {
+        // GFM renders one loose `<ul>` (each item in a `<p>`); the renderer
+        // renders two lists. Arbitrated 2026-10-04: refuse it.
+        assert_each_caught(&["- a\n\n- b\n", "- a\n\n\n- b\n", "- a\n  suite\n\n- b\n"]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_names_the_block_glued_to_a_bullet() {
+        // A quote, a numbered list from 1 or a rule interrupts the item in
+        // CommonMark: it is that block, not lazy continuation text.
+        for (md, finding) in [
+            ("- a\n> cit\n", "blockquote under a bullet: > cit"),
+            ("- a\n1. x\n", "numbered list under a bullet: 1. x"),
+            ("- a\n---\n", "rule under a bullet: ---"),
+            ("- a\n***\n", "rule under a bullet: ***"),
+            ("- a\n```\n", "code fence under a bullet: ```"),
+            ("- a\n2. x\n", "lazy continuation text under a bullet: 2. x"),
+            (
+                "- a\nsuite\n",
+                "lazy continuation text under a bullet: suite",
+            ),
+        ] {
+            // The first finding; `***` also leaves its stars in the item.
+            assert_eq!(
+                raw_markers_of(md).first().map(String::as_str),
+                Some(finding),
+                "{md:?}"
+            );
+        }
+    }
+
+    #[test]
     fn raw_markdown_guard_lets_a_block_follow_a_list_it_does_not_belong_to() {
         // A line glued to the bullet and indented continues the item, as the
         // renderer absorbs it; a block flush left after a blank line, or a
@@ -2300,6 +2575,27 @@ mod tests {
             ),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_a_bare_url_in_any_case() {
+        assert_each_caught(&[
+            "Voir HTTPS://EXAMPLE.ORG ici.\n",
+            "Voir Http://example.org.\n",
+            "Voir WWW.EXAMPLE.ORG.\n",
+            "Voir Www.example.org.\n",
+        ]);
+    }
+
+    #[test]
+    fn raw_markdown_guard_catches_an_address_whose_local_part_ends_in_punctuation() {
+        // GFM's local part admits `.`, `-`, `_` and `+` anywhere.
+        assert_each_caught(&[
+            "Écrire à a-@b.org.\n",
+            "Écrire à a+@b.org.\n",
+            "Écrire à a.@b.org.\n",
+            "Écrire à a_@b.org.\n",
+        ]);
     }
 
     #[test]
@@ -2620,9 +2916,12 @@ mod tests {
     /// 1. normalizes the text and each `allowed` sentence alike: NFKC, so
     ///    decomposed accents and compatibility forms (fullwidth letters) are
     ///    composed back; lowercase; every character of [`APOSTROPHE_LIKE`]
-    ///    turned into the ASCII apostrophe; whitespace flattened, so a
-    ///    sentence hard-wrapped across lines still matches. Nothing is
-    ///    dropped;
+    ///    turned into the ASCII apostrophe; the space, the tab and the line
+    ///    end flattened, so a sentence hard-wrapped across lines still
+    ///    matches. Any other blank (U+00A0, U+202F, U+3000, U+2028, U+0085…)
+    ///    is a space beside a separator or a blank, and is kept as is between
+    ///    two characters of a word (`heu\u{a0}re`), out of NFKC's reach, for
+    ///    step 4 to report (#376). Nothing is dropped;
     /// 2. cuts out every `allowed` sentence, as an exact substring;
     /// 3. splits the rest on the admitted separators only
     ///    (`is_admitted_separator`): the space, ASCII digits and punctuation
@@ -2670,8 +2969,10 @@ mod tests {
     /// `donnée(s)` give `s`; any run holding a character refused by step 4, a
     /// time word or not — another script, but also genuine Latin letters
     /// (`ł`, `ø`, `ß`, the small capitals as in `ᴊour`, the IPA letters) and
-    /// every symbol outside the admitted separators (`€`, `°`, `✓`). None of
-    /// them occurs in the shipped email.
+    /// every symbol outside the admitted separators (`€`, `°`, `✓`); two
+    /// words joined by a blank other than the space (`le\u{a0}service`),
+    /// since a cut word cannot be told from them. None of them occurs in the
+    /// shipped email.
     fn time_words_outside(text: &str, allowed: &[&str]) -> Vec<String> {
         let mut rest = normalize_for_time_words(text);
         for phrase in allowed {
@@ -2692,24 +2993,65 @@ mod tests {
 
     /// Step 1 of `time_words_outside`, applied to the text and to each
     /// allowed sentence alike: NFKC, lowercase, every apostrophe-like
-    /// character turned into U+0027, whitespace flattened. Nothing is
-    /// dropped: a character this does not fold is left in place for step 3
-    /// to report.
+    /// character turned into U+0027, the space, the tab and the line end
+    /// flattened, any other blank kept inside a word. Nothing is dropped: a
+    /// character this does not fold is left in place for step 3 to report.
     fn normalize_for_time_words(text: &str) -> String {
-        let folded: String = text
-            .nfkc()
-            .collect::<String>()
-            .to_lowercase()
-            .chars()
-            .map(|c| {
-                if APOSTROPHE_LIKE.contains(&c) {
-                    '\''
-                } else {
-                    c
-                }
-            })
-            .collect();
-        flatten(&folded)
+        let fold = |piece: &str| -> String {
+            piece
+                .nfkc()
+                .collect::<String>()
+                .to_lowercase()
+                .chars()
+                .map(|c| {
+                    if APOSTROPHE_LIKE.contains(&c) {
+                        '\''
+                    } else {
+                        c
+                    }
+                })
+                .collect()
+        };
+        // A run of blanks other than the space, the tab and the line end
+        // (`is_odd_blank`) between two characters of a word is kept as is,
+        // out of NFKC's reach, so step 4 reports the word it would have cut
+        // (#376); elsewhere it is a space.
+        let chars: Vec<char> = text.chars().collect();
+        let in_word =
+            |c: Option<&char>| c.is_some_and(|&c| !c.is_whitespace() && !is_admitted_separator(c));
+        let mut folded = String::new();
+        let mut piece = String::new();
+        let mut i = 0;
+        while i < chars.len() {
+            if !is_odd_blank(chars[i]) {
+                piece.push(chars[i]);
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < chars.len() && is_odd_blank(chars[i]) {
+                i += 1;
+            }
+            if start > 0 && in_word(chars.get(start - 1)) && in_word(chars.get(i)) {
+                folded.push_str(&fold(&piece));
+                piece.clear();
+                folded.extend(&chars[start..i]);
+            } else {
+                piece.push(' ');
+            }
+        }
+        folded.push_str(&fold(&piece));
+        folded
+            .split([' ', '\t', '\n', '\r'])
+            .filter(|word| !word.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Whitespace other than the space, the tab and the line end: what
+    /// `str::split_whitespace` and NFKC turn into a word break unseen.
+    fn is_odd_blank(c: char) -> bool {
+        c.is_whitespace() && !matches!(c, ' ' | '\t' | '\n' | '\r')
     }
 
     /// The characters that separate words: the space, ASCII digits and
@@ -2938,6 +3280,41 @@ mod tests {
             &["de\u{300}s que le lien est utilise\u{301}"]
         )
         .is_empty());
+    }
+
+    #[test]
+    fn time_words_outside_reports_a_word_cut_by_a_blank_other_than_the_space() {
+        // #376: NFKC turns U+00A0, U+2009, U+202F, U+3000… into a space and
+        // `split_whitespace` cuts on U+2028 and U+0085: `heu re` gave two
+        // pieces off the list. A blank other than the space, the tab and the
+        // line end, between two characters of a word, now keeps the word
+        // together and has it reported.
+        for blank in [
+            '\u{a0}', '\u{1680}', '\u{2000}', '\u{2007}', '\u{2009}', '\u{200a}', '\u{202f}',
+            '\u{205f}', '\u{3000}', '\u{2028}', '\u{2029}', '\u{85}', '\u{b}', '\u{c}',
+        ] {
+            let bypass = format!("une Heu{blank}re");
+            assert_eq!(
+                time_words_outside(&bypass, &INVITATION_TIME_PHRASES),
+                vec![format!("heu{blank}re")],
+                "{bypass:?}"
+            );
+        }
+        // Two words joined by such a blank are reported too: a false
+        // positive, since a cut word cannot be told from two words.
+        assert_eq!(
+            time_words_outside("le\u{a0}service", &INVITATION_TIME_PHRASES),
+            vec!["le\u{a0}service".to_string()]
+        );
+        // Beside a digit or punctuation, it stays a separator, as French
+        // typography uses it there.
+        assert_eq!(
+            time_words_outside(
+                "30\u{a0}jours\u{202f}; effacée\u{a0}:",
+                &INVITATION_TIME_PHRASES
+            ),
+            vec!["jours".to_string()]
+        );
     }
 
     #[test]
