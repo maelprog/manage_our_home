@@ -2995,7 +2995,7 @@ mod tests {
     /// allowed sentence alike: NFKC, lowercase, every apostrophe-like
     /// character turned into U+0027, the space, the tab and the line end
     /// flattened, any other blank kept inside a word. Nothing is dropped: a
-    /// character this does not fold is left in place for step 3 to report.
+    /// character this does not fold is left in place for step 4 to report.
     fn normalize_for_time_words(text: &str) -> String {
         let fold = |piece: &str| -> String {
             piece
