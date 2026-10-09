@@ -1969,7 +1969,7 @@ mod tests {
     /// reference (`&copy;`, `&#169;`), any `\` (a backslash escape or a hard
     /// break), and the pipe syntax of a table that did not render. Outside
     /// links and code spans: a bare `http://`, `https://` or `www.` URL in
-    /// any case, and an `@` after a word character, `.`, `-`, `_` or `+` and
+    /// any case (stricter than GFM on purpose: `has_bare_link`), and an `@` after a word character, `.`, `-`, `_` or `+` and
     /// before a word character, `-` or `_` (an address GFM would link).
     fn raw_markdown_markers(md: &str, html: &str) -> Vec<String> {
         let mut found = Vec::new();
@@ -2318,10 +2318,14 @@ mod tests {
             .collect()
     }
 
-    /// What GFM would turn into a link: `http://`, `https://`, `www.`, in any
-    /// case, or an `@` between a character of an address's local part (a
+    /// What GFM would turn into a link: `http://`, `https://` or `www.`, or an
+    /// `@` between a character of an address's local part (a
     /// word character, `.`, `-`, `_` or `+`) and a character of its domain
     /// (a word character, `-` or `_`): an e-mail address.
+    ///
+    /// The prefixes are compared in any case, which is stricter than GFM on
+    /// purpose: GFM leaves `WWW.EXAMPLE.ORG` as text, but a reader still
+    /// sees a bare address the document should have written as a link.
     fn has_bare_link(text: &str) -> bool {
         let lower = text.to_lowercase();
         let chars: Vec<char> = text.chars().collect();
@@ -2691,6 +2695,7 @@ mod tests {
 
     #[test]
     fn raw_markdown_guard_catches_a_bare_url_in_any_case() {
+        // Stricter than GFM, which leaves `WWW.` as text: refused anyway.
         assert_each_caught(&[
             "Voir HTTPS://EXAMPLE.ORG ici.\n",
             "Voir Http://example.org.\n",
