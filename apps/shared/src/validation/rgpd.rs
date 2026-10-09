@@ -1430,12 +1430,12 @@ mod tests {
     /// review: a threshold phrased otherwise (`15 ans minimum`, `dès 15 ans`).
     fn stated_minimum_ages(md: &str) -> Vec<u32> {
         // A link's target, title and blanks included (`](/x "t")`), is not
-        // part of the text: cut out up to its first `)` (#376). An unclosed
-        // target is left in place.
+        // part of the text: cut out up to its own closing `)` (#376). An
+        // unclosed target is left in place.
         let mut text = String::new();
         let mut rest = md;
         while let Some(at) = rest.find("](") {
-            let Some(end) = rest[at + 2..].find(')') else {
+            let Some(end) = link_target_end(&rest[at + 2..]) else {
                 break;
             };
             text.push_str(&rest[..=at]);
@@ -1474,6 +1474,34 @@ mod tests {
             }
         }
         out
+    }
+
+    /// The byte index of the `)` closing a link target that starts at
+    /// `target` (just past `](`), as CommonMark reads it: a `<…>` target is
+    /// taken whole, parentheses nest, a `"…"` or `'…'` title opened after a
+    /// blank is taken whole, and a backslash escapes the next character.
+    fn link_target_end(target: &str) -> Option<usize> {
+        let mut chars = target.char_indices();
+        if target.starts_with('<') {
+            chars.find(|&(_, c)| c == '>')?;
+        }
+        let (mut depth, mut title, mut after_blank) = (0usize, None, false);
+        while let Some((i, c)) = chars.next() {
+            match (title, c) {
+                (_, '\\') => {
+                    chars.next();
+                }
+                (Some(quote), _) if c == quote => title = None,
+                (Some(_), _) => {}
+                (None, '"' | '\'') if after_blank => title = Some(c),
+                (None, '(') => depth += 1,
+                (None, ')') if depth == 0 => return Some(i),
+                (None, ')') => depth -= 1,
+                _ => {}
+            }
+            after_blank = c.is_whitespace();
+        }
+        None
     }
 
     #[test]
@@ -1531,6 +1559,28 @@ mod tests {
         );
         assert_eq!(
             stated_minimum_ages("aux [moins de](/x 'un titre') 16 ans"),
+            vec![16]
+        );
+    }
+
+    /// A target with balanced parentheses, or a title holding one, ends at
+    /// its own closing `)`, not at the first one.
+    #[test]
+    fn stated_minimum_ages_see_through_a_target_with_parentheses() {
+        assert_eq!(
+            stated_minimum_ages("avoir [16 ans](https://x.org/a_(b)) ou plus"),
+            vec![16]
+        );
+        assert_eq!(
+            stated_minimum_ages("avoir [16 ans](/x \"a (b)\") ou plus"),
+            vec![16]
+        );
+        assert_eq!(
+            stated_minimum_ages("avoir [16 ans](/x 'a ) b') ou plus"),
+            vec![16]
+        );
+        assert_eq!(
+            stated_minimum_ages("avoir [16 ans](</a)b>) ou plus"),
             vec![16]
         );
     }
