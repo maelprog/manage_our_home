@@ -29,8 +29,10 @@ use crate::AppState;
 
 /// Close code sent when the session behind the socket no longer opens the
 /// messagerie (#221), in the application range (4000-4999). A lost
-/// membership still ends the socket without a close frame; `apps/web`
-/// tells the two apart by re-fetching the page, either way.
+/// membership still ends the socket without a close frame. `apps/web` does
+/// not read the code: on any close it re-fetches the page, and both cases
+/// (a redirect to `/login`, or a thread of another group or of none) end in
+/// the same `accessLost()` notice, without navigating to `/login`.
 pub const CLOSE_SESSION_ENDED: u16 = 4401;
 
 pub async fn message_ws(

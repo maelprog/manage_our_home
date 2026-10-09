@@ -181,8 +181,10 @@ jobs:
   # stack — merge gate per docs/v1-scope.md's "Playwright policy" (every
   # front epic ships its journeys here, F1/issue #15 established it). SMTP
   # points at nothing reachable on purpose (handlers log and swallow email
-  # send failures); the suite reads verification/reset tokens straight from
-  # Postgres (e2e/lib/db.ts), same mechanism as apps/api/tests/*_flow.rs.
+  # send failures); the suite gets verification/reset tokens through
+  # Postgres (e2e/lib/db.ts), same mechanism as apps/api/tests/*_flow.rs:
+  # since #335 the tables keep only each token's SHA-256, so it re-keys the
+  # latest row with a token of its own instead of reading one.
   # MinIO is real (started below) because the Agenda epic (F3/#18) uploads
   # and downloads event attachments — the first front epic to touch object
   # storage.
@@ -334,7 +336,7 @@ jobs:
         run: ./target/debug/manage_our_home &
         env:
           # The job-level `DATABASE_URL` stays on `postgres`: it is what the
-          # Playwright suite reads tokens and writes its fixtures through
+          # Playwright suite re-keys tokens and writes its fixtures through
           # (e2e/lib/db.ts), across every family. The API's own runtime pool
           # is the one that must not bypass RLS.
           DATABASE_URL: postgres://app_role:app_role@localhost:5432/postgres

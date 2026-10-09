@@ -33,8 +33,10 @@ const HOST_SESSION_COOKIE_NAME: &str = "__Host-session_id";
 pub const SESSION_TTL_DAYS: i64 = 30;
 /// Inactivity timeout (#195): a session left unused for longer than this is
 /// refused, even within its absolute lifetime. The row is left as it is, not
-/// revoked: `revoked_at` keeps meaning a logout or a password change, and
-/// `last_seen_at` already dates the end of the session.
+/// revoked: `revoked_at` keeps meaning an explicit end (a logout, a password
+/// change or reset, the « Sessions actives » page of #225, or an admin
+/// closing the account's sessions), and `last_seen_at` already dates the end
+/// of the session.
 pub const SESSION_IDLE_TIMEOUT_DAYS: i64 = 7;
 /// `last_seen_at` is only rewritten once it is older than this, so an active
 /// session costs one `UPDATE` per interval instead of one per request. The

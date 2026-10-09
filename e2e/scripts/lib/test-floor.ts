@@ -142,9 +142,11 @@ export function parseTapSummary(report: string): TapSummary | null {
  *     les compteurs ne distinguent pas les deux ;
  *   - un `todo` l'exécute s'il en a un, mais son issue n'entre ni dans `pass`
  *     ni dans `fail` : un corps qui lève sort `not ok … # TODO`, exit 0 ;
- *   - un annulé peut ne jamais démarrer (hook `before` en échec) ; annulé
- *     par timeout, son corps a démarré et peut aller jusqu'au bout — node
- *     cesse de l'attendre sans l'interrompre.
+ *   - un annulé peut ne jamais démarrer (hook `before` en échec dans un
+ *     `describe`) ; annulé par timeout, son corps a démarré et peut aller
+ *     jusqu'au bout — node cesse de l'attendre sans l'interrompre. Un hook
+ *     `before` en échec au niveau racine, lui, n'annule pas : le test est
+ *     compté `fail` (`hookFailed`), corps non lancé.
  * Aucun des trois n'entre dans `pass` ni dans `fail`, donc aucun ne tient le
  * plancher. Le diagnostic, lui, doit les distinguer (voir `diagnose`).
  */
@@ -345,8 +347,8 @@ function diagnose(summary: TapSummary): string {
   if (outcomes > summary.tests) {
     // Sur les rapports mesurés, `tests` vaut la somme des cinq issues. Plus
     // d'issues que de tests, aucun rapport mesuré ne le montre : écrire
-    // « dont » présenterait comme un sous-ensemble ce qui n'en est pas un. On dit
-    // l'incohérence et on renvoie aux chiffres. Le cas inverse, moins
+    // « dont » présenterait comme un sous-ensemble ce qui n'en est pas un.
+    // On dit l'incohérence et on renvoie aux chiffres. Le cas inverse, moins
     // d'issues que de tests, n'est pas signalé : les branches suivantes
     // nomment les compteurs non nuls comme d'habitude, et la formule
     // générique ne sort que si pass, fail, skipped, cancelled et todo valent

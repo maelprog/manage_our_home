@@ -424,9 +424,11 @@ test("floorViolation n'invente pas de cause quand tout est passé sous un seuil 
 // `not ok … # TODO` sans compter en `fail`, exit 0 (mesuré en Node 24.20.0).
 // Un sauté ne tourne pas s'il est déclaré `test.skip(...)`, mais tourne si
 // `t.skip()` est appelé dans son corps. Un annulé peut ne jamais démarrer
-// (hook `before` en échec : `cancelledByParent`, corps non lancé) ; annulé par
-// timeout, son corps a démarré et peut aller jusqu'au bout, node cessant
-// seulement de l'attendre (mesuré).
+// (hook `before` en échec dans un `describe` : `cancelledByParent`, corps non
+// lancé) ; annulé par timeout, son corps a démarré et peut aller jusqu'au
+// bout, node cessant seulement de l'attendre (mesuré). Au niveau racine, un
+// hook `before` en échec n'annule pas : le test compte en `fail`
+// (`hookFailed`), corps non lancé (mesuré en Node 24.20.0).
 // Le plancher ne compte aucun des trois — seuls pass et fail portent un
 // résultat —, mais le diagnostic ne doit pas affirmer sur un corps ce que les
 // compteurs ne disent pas.
