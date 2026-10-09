@@ -332,4 +332,31 @@ mod tests {
     fn the_user_agent_names_the_application() {
         assert!(USER_AGENT.starts_with("manage_our_home/"), "{USER_AGENT}");
     }
+
+    /// Open Food Facts asks for `AppName/Version (ContactEmail)`, and the
+    /// contact is the controller's dedicated address, published under a
+    /// pseudonym (#379). Until that address is chosen, the outbound
+    /// User-Agents — this one and the recipe import's — point at the code
+    /// repository, whose URL carries its owner's handle. The day the privacy
+    /// policy's contact placeholder is filled, both must carry that address
+    /// instead: `docs/v2-deployment.md` #16 sends the author here.
+    #[test]
+    fn the_user_agents_carry_the_contact_address_once_it_is_filled() {
+        use manage_our_home_shared::validation::rgpd::release_placeholders;
+        let policy = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/privacy-policy.md"
+        ));
+        let contact_pending =
+            release_placeholders(policy).contains(&"adresse de contact".to_string());
+        for agent in [USER_AGENT, crate::recipes::import::USER_AGENT] {
+            assert_eq!(
+                agent.contains("github.com"),
+                contact_pending,
+                "the User-Agent `{agent}` and the privacy policy disagree on \
+                 whether the contact address is still to be filled"
+            );
+            assert_eq!(agent.contains('@'), !contact_pending, "{agent}");
+        }
+    }
 }

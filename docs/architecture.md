@@ -217,8 +217,9 @@ remplacement) de l'isolation applicative ci-dessous.
    fonctionnalité de recherche de prix jugée utile — évite l'exposition
    légale (ToS) tant que ce n'est pas justifié.
 3. **Responsable RGPD (data controller) : le porteur du projet, personne
-   physique et contributeur unique.** Son nom et son adresse de contact
-   restent à renseigner : `docs/privacy-policy.md` (servi aux utilisateurs par
+   physique et contributeur unique.** Il est désigné par un pseudonyme, pas
+   par son nom civil (arbitrage du 2026-10-05, #379). Ce pseudonyme et son
+   adresse de contact, dédiée au service, restent à renseigner : `docs/privacy-policy.md` (servi aux utilisateurs par
    `GET /privacy-policy`) et `docs/registre-traitements.md` portent à leur
    place, entre crochets, un libellé suivi de « — à renseigner avant la mise
    en ligne ». La même personne est l'éditeur au sens de la LCEN ; éditeur
@@ -226,9 +227,9 @@ remplacement) de l'isolation applicative ci-dessous.
    2026-10-04, #314) : son identité est confiée à l'hébergeur et non publiée.
    `docs/legal-notice.md` (servi par `GET /legal-notice`, #132) porte donc de
    la même façon l'adresse de contact, puis le nom, l'adresse et le numéro de
-   téléphone de l'hébergeur — ce dernier n'étant pas encore choisi
-   (auto-hébergement, puis éventuellement un VPS ; l'auto-hébergement
-   ferait tomber l'anonymat). Les CGU (`docs/terms-of-service.md`, servies par
+   téléphone de l'hébergeur — ce dernier n'étant pas encore choisi, mais
+   forcément tiers : l'auto-hébergement ferait de l'éditeur son propre
+   hébergeur et ferait tomber l'anonymat (#379). Les CGU (`docs/terms-of-service.md`, servies par
    `GET /terms-of-service`) n'en portent aucun : elles renvoient aux mentions
    légales. Tous seront renseignés au moment de l'ouverture publique, et cette
    phrase disparaîtra avec eux — procédure et forme exacte dans

@@ -5,7 +5,8 @@ contexte, principes fondamentaux, risques, validation. Rédigée le
 2026-10-02 (#143), relue contre `docs/registre-traitements.md` (mis à jour
 le 2026-09-28) et le code de `main` à cette date ; sous-traitant email et
 transferts mis à jour le 2026-10-04 (Scaleway remplace Mailjet, #328) ;
-état de TLS mis à jour le 2026-10-05 (#327).
+état de TLS mis à jour le 2026-10-05 (#327) ; responsable désigné par un
+pseudonyme le 2026-10-09 (#379).
 
 **Statut : projet.** L'analyse est rédigée ; la conclusion (dernière
 section) est une **proposition**, qui ne vaut décision qu'une fois relue et
@@ -72,7 +73,7 @@ et le service n'est pas à grande échelle (section 1).
 | Bases légales | Registre ; exécution du contrat pour l'essentiel | — |
 | Minimisation | Pas de date de naissance (déclaration d'âge seule), pas de téléphone, pas d'adresse, pas d'IP ni d'user-agent en base | — |
 | Durées de conservation | Purge du compte, purge horaire de conservation (#138, #139, #256) | — |
-| Information | `docs/privacy-policy.md`, notice de l'art. 14 dans l'email d'invitation | Identité et contact du responsable encore à renseigner (`docs/v2-deployment.md` #16) |
+| Information | `docs/privacy-policy.md`, notice de l'art. 14 dans l'email d'invitation | Pseudonyme et contact du responsable encore à renseigner (`docs/v2-deployment.md` #16) ; un pseudonyme plutôt que le nom civil, risque résiduel au regard de l'art. 13(1)(a) décrit au registre, à valider (#379) |
 | Droits d'accès et de portabilité | `GET /account/export` | — |
 | Effacement | `POST /account/delete`, purge à 30 jours ; le contenu partagé reste au groupe, anonymisé (CGU, « Vos contenus ») | — |
 | Rectification, opposition, limitation | Écrans de compte, ou adresse de contact | Même réserve que l'information |
@@ -159,7 +160,7 @@ le suivi de déploiement :
    y donnant le nom de domaine — et secrets via sops (#15).
 3. Supervision et journaux consultables (#12, #13), sans quoi une violation
    peut passer inaperçue.
-4. Identité du responsable, contact, sous-traitant et transferts (#16, #18).
+4. Pseudonyme du responsable, contact, sous-traitant et transferts (#16, #18).
 
 Mesures **proposées** par cette analyse, à arbitrer :
 

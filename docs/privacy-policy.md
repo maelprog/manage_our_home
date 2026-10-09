@@ -5,8 +5,9 @@ Dernière mise à jour : 2026-10-09.
 ## Qui est responsable de vos données ?
 
 Manage Our Home est un projet auto-hébergé, développé et exploité par une
-personne physique, [nom du responsable de traitement — à renseigner avant la
-mise en ligne], qui porte l'ensemble des rôles RGPD nécessaires :
+personne physique, désignée ici par un pseudonyme,
+[pseudonyme du responsable de traitement — à renseigner avant la mise en
+ligne], qui porte l'ensemble des rôles RGPD nécessaires :
 
 - **Responsable de traitement (data controller)** : responsable du registre
   des traitements, de la présente politique, et de la base légale de chaque
@@ -22,7 +23,8 @@ mise en ligne], qui porte l'ensemble des rôles RGPD nécessaires :
   incident.
 
 **Pour le joindre** : [adresse de contact — à renseigner avant la mise en
-ligne]. C'est l'adresse à laquelle adresser toute demande d'exercice de vos
+ligne]. Cette adresse est dédiée au service et relevée par une personne.
+C'est l'adresse à laquelle adresser toute demande d'exercice de vos
 droits que les écrans en libre-service ne couvrent pas — rectification hors
 interface, opposition, limitation, directives après décès — ainsi que toute
 question sur la présente politique.
