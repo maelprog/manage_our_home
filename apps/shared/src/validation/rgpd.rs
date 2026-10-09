@@ -1856,8 +1856,9 @@ mod tests {
     /// - under a `- ` bullet, a block CommonMark keeps in the item but the
     ///   renderer moves out of the list: a heading or a table indented under
     ///   it, a table or a line of text flush against it (a lazy
-    ///   continuation), a rule, a quote, a fence, another bullet or a
-    ///   numbered list from 1 flush against it (named as that block), any
+    ///   continuation), a rule, a quote, a fence, raw HTML, another bullet
+    ///   or a numbered list from any number, empty or not, flush against it
+    ///   (named as that block: `interrupting_block`), any
     ///   indented line after one or more blank lines (a second paragraph of
     ///   the item), and a `- ` bullet after one or more blank lines (GFM
     ///   makes one loose list, the renderer two lists);
@@ -2026,11 +2027,14 @@ mod tests {
         }
     }
 
-    /// The block `t`, flush against a bullet's text, opens by interrupting
-    /// that text in CommonMark: a rule, a quote, a code fence, another
-    /// bullet or a numbered list from 1, each with content where it needs
-    /// one. Anything else (`2. x`, `===`, `[a]: /b`) is lazy continuation
-    /// text — a setext underline cannot be lazy, so `---` is a rule there.
+    /// The block `t`, flush left under a bullet's text, opens in CommonMark.
+    /// Flush left, the line is outside the item: any block start closes the
+    /// item — a rule, a quote, a code fence, raw HTML, a `+`/`*`/`-` bullet
+    /// or a numbered list from any number, empty or not (cmark-gfm gives
+    /// `- a\n2. x` an `<ol start="2">`). The "starts at 1, with content"
+    /// rule only binds a list interrupting a paragraph of its own container.
+    /// Anything else (`===`, `--`, `[a]: /b`) is lazy continuation text — a
+    /// setext underline cannot be lazy, so `---` is a rule there.
     fn interrupting_block(t: &str) -> Option<&'static str> {
         let mut chars = t.chars();
         let (first, second) = (chars.next(), chars.next());
@@ -2040,17 +2044,16 @@ mod tests {
             Some("blockquote")
         } else if t.starts_with("```") || t.starts_with("~~~") {
             Some("code fence")
-        } else if matches!(first, Some('+' | '*' | '-'))
-            && second.is_some_and(char::is_whitespace)
-            && !t[1..].trim().is_empty()
+        } else if first == Some('<')
+            && second.is_some_and(|c| c.is_ascii_alphabetic() || matches!(c, '/' | '!' | '?'))
         {
+            Some("raw html")
+        } else if t == "-" {
+            // `- ` trimmed: an empty item of the same list.
+            Some("empty bullet")
+        } else if matches!(first, Some('+' | '*' | '-')) && second.is_none_or(char::is_whitespace) {
             Some("bullet")
-        } else if is_ordered_item(t)
-            && ordered_start(t) == Some(1)
-            && !t.trim_start_matches(|c: char| c.is_ascii_digit())[1..]
-                .trim()
-                .is_empty()
-        {
+        } else if is_ordered_item(t) {
             Some("numbered list")
         } else {
             None
@@ -2505,15 +2508,30 @@ mod tests {
 
     #[test]
     fn raw_markdown_guard_names_the_block_glued_to_a_bullet() {
-        // A quote, a numbered list from 1 or a rule interrupts the item in
-        // CommonMark: it is that block, not lazy continuation text.
+        // Flush left, the line is outside the item, so whatever block it
+        // opens closes the item in CommonMark (cmark-gfm: `2. x` gives an
+        // `<ol start="2">`, `+ ` an empty `<ul>`): it is that block, not
+        // lazy continuation text. The "starts at 1, with content" rule only
+        // binds a list interrupting a paragraph of its own container.
         for (md, finding) in [
             ("- a\n> cit\n", "blockquote under a bullet: > cit"),
             ("- a\n1. x\n", "numbered list under a bullet: 1. x"),
+            ("- a\n2. x\n", "numbered list under a bullet: 2. x"),
+            ("- a\n1.\n", "numbered list under a bullet: 1."),
+            ("- a\n3)\n", "numbered list under a bullet: 3)"),
+            ("- a\n+ \n", "bullet under a bullet: +"),
+            ("- a\n* x\n", "bullet under a bullet: * x"),
+            ("- a\n- \n", "empty bullet under a bullet: -"),
+            ("- a\n<div>\n", "raw html under a bullet: <div>"),
             ("- a\n---\n", "rule under a bullet: ---"),
             ("- a\n***\n", "rule under a bullet: ***"),
             ("- a\n```\n", "code fence under a bullet: ```"),
-            ("- a\n2. x\n", "lazy continuation text under a bullet: 2. x"),
+            ("- a\n===\n", "lazy continuation text under a bullet: ==="),
+            ("- a\n--\n", "lazy continuation text under a bullet: --"),
+            (
+                "- a\n[r]: /b\n",
+                "lazy continuation text under a bullet: [r]: /b",
+            ),
             (
                 "- a\nsuite\n",
                 "lazy continuation text under a bullet: suite",
