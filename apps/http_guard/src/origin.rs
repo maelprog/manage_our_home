@@ -58,6 +58,12 @@ pub fn judge(method: &Method, headers: &HeaderMap, trusted_origin: Option<&str>)
         return CrossOrigin::Allow;
     }
 
+    // An `Origin` sent twice refuses outright: judging only the first
+    // value would let the second through unread. No browser sends two.
+    if headers.get_all(header::ORIGIN).iter().nth(1).is_some() {
+        return CrossOrigin::Refuse;
+    }
+
     // A header that is not valid text is taken as present and matching
     // nothing: it refuses, it never passes.
     let text = |name: &str| headers.get(name).map(|v| v.to_str().unwrap_or(""));
@@ -104,6 +110,11 @@ fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
 /// The origin (`scheme://host[:port]`, lowercase, default port dropped) of
 /// a base URL such as `FRONTEND_BASE_URL`, as a browser writes it in
 /// `Origin`. `None` for a relative URL or anything without a scheme.
+///
+/// Userinfo (`user:pass@`) is kept, not stripped: a browser never writes it
+/// in `Origin`, so such a base URL matches no request and the trusted-origin
+/// rule never fires. A misconfiguration that refuses, never one that lets
+/// a request through.
 pub fn origin_of(url: &str) -> Option<String> {
     let (scheme, rest) = url.split_once("://")?;
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
@@ -346,6 +357,38 @@ mod tests {
         );
     }
 
+    // --- a header sent twice ---
+
+    #[test]
+    fn a_duplicated_origin_is_refused() {
+        // Reading only the first value would let the second ride along
+        // unjudged: whichever comes first, two Origins refuse.
+        assert_eq!(
+            post(&[("origin", FRONT), ("origin", "https://evil.test")]),
+            CrossOrigin::Refuse
+        );
+        assert_eq!(
+            post(&[("origin", "https://evil.test"), ("origin", FRONT)]),
+            CrossOrigin::Refuse
+        );
+        assert_eq!(
+            post(&[
+                ("origin", "https://maison.test"),
+                ("origin", "https://maison.test"),
+                ("host", "maison.test"),
+            ]),
+            CrossOrigin::Refuse
+        );
+    }
+
+    #[test]
+    fn a_duplicated_origin_refuses_the_websocket_handshake() {
+        assert_eq!(
+            ws(&[("origin", FRONT), ("origin", "https://evil.test")]),
+            CrossOrigin::Refuse
+        );
+    }
+
     // --- not a browser ---
 
     #[test]
@@ -430,6 +473,24 @@ mod tests {
         assert_eq!(
             origin_of("http://maison.test:443").as_deref(),
             Some("http://maison.test:443")
+        );
+    }
+
+    #[test]
+    fn origin_of_keeps_userinfo_so_nothing_is_trusted_by_origin() {
+        // A browser never writes userinfo in `Origin`, so a base URL that
+        // carries some can match no request: the trusted-origin rule never
+        // fires, and the guard falls back on Sec-Fetch-Site and Host. A
+        // misconfiguration that refuses, never one that lets through.
+        let trusted = origin_of("http://user:secret@localhost:3000");
+        assert_eq!(trusted.as_deref(), Some("http://user:secret@localhost:3000"));
+        let h = headers(&[
+            ("sec-fetch-site", "same-site"),
+            ("origin", "http://localhost:3000"),
+        ]);
+        assert_eq!(
+            judge(&Method::POST, &h, trusted.as_deref()),
+            CrossOrigin::Refuse
         );
     }
 
