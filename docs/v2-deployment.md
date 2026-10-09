@@ -65,15 +65,13 @@ Au moment de l'ouverture publique :
 4. Mettre à jour les tests de `apps/shared/src/validation/rgpd.rs` qui
    épinglent ces valeurs, car tant qu'ils ne le sont pas la suite reste rouge
    — c'est le rappel mécanique, pas seulement écrit :
-   - `pending_release_values` est leur source unique, et elle porte les six
+   - `pending_release_values` est leur source unique, et elle porte les cinq
      placeholders, ceux de l'item #18 compris : en retirer deux au pas 1 ne
      la vide donc pas, et `the_internal_rgpd_documents_carry_the_same_placeholders`
      n'exige que `docs/architecture.md` ait perdu son annonce que le jour où
      les deux items sont faits et où la liste est vide ;
-   - `renders_the_real_privacy_policy_without_leftover_markup` porte en plus
-     deux attentes littérales à retirer à la main : les `html.contains(…)`
-     posés sur `[nom du responsable de traitement` et sur
-     `[adresse de contact`.
+   - `renders_the_real_privacy_policy_without_leftover_markup` boucle sur
+     `pending_release_values` et n'a rien à retirer à la main ;
    - `the_breach_and_aipd_documents_carry_only_the_placeholders_pinned_here`
      attend l'adresse de contact dans `docs/procedure-violation.md` et exige
      qu'elle disparaisse le même jour que celle de la politique.
