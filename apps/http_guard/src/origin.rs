@@ -58,10 +58,13 @@ pub fn judge(method: &Method, headers: &HeaderMap, trusted_origin: Option<&str>)
         return CrossOrigin::Allow;
     }
 
-    // An `Origin` sent twice refuses outright: judging only the first
-    // value would let the second through unread. No browser sends two.
-    if headers.get_all(header::ORIGIN).iter().nth(1).is_some() {
-        return CrossOrigin::Refuse;
+    // An `Origin` or a `Sec-Fetch-Site` sent twice refuses outright:
+    // judging only the first value would let the second through unread.
+    // No browser sends two.
+    for name in [header::ORIGIN.as_str(), SEC_FETCH_SITE] {
+        if headers.get_all(name).iter().nth(1).is_some() {
+            return CrossOrigin::Refuse;
+        }
     }
 
     // A header that is not valid text is taken as present and matching
@@ -376,6 +379,24 @@ mod tests {
                 ("origin", "https://maison.test"),
                 ("origin", "https://maison.test"),
                 ("host", "maison.test"),
+            ]),
+            CrossOrigin::Refuse
+        );
+    }
+
+    #[test]
+    fn a_duplicated_sec_fetch_site_is_refused() {
+        assert_eq!(
+            post(&[
+                ("sec-fetch-site", "same-origin"),
+                ("sec-fetch-site", "cross-site")
+            ]),
+            CrossOrigin::Refuse
+        );
+        assert_eq!(
+            post(&[
+                ("sec-fetch-site", "same-origin"),
+                ("sec-fetch-site", "same-origin")
             ]),
             CrossOrigin::Refuse
         );
