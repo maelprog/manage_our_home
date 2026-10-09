@@ -236,7 +236,7 @@ de la purge dépasserait.
   l'échéance à 30 jours ou moins, et la purge n'a pas lieu moins de 30
   jours après lui. Dans tous les cas, elle n'a pas lieu moins de 30 jours
   après le premier refus, que cet email parte ou non. Ce report n'a lieu
-  qu'une fois : un refus suivant n'envoie pas de nouvel email et ne
+  qu'une fois : un refus suivant ne relance pas l'avertissement et ne
   repousse plus la purge. La date du premier refus est effacée à la
   réactivation, à une nouvelle désactivation et à la purge. Un compte
   dont la suppression avait été demandée avant sa désactivation est
