@@ -160,7 +160,9 @@ le suivi de déploiement :
    y donnant le nom de domaine — et secrets via sops (#15).
 3. Supervision et journaux consultables (#12, #13), sans quoi une violation
    peut passer inaperçue.
-4. Pseudonyme du responsable, contact, sous-traitant et transferts (#16, #18).
+4. Pseudonyme du responsable, contact, sous-traitant et transferts (#16, #18) ;
+   risque résiduel du pseudonyme au regard de l'art. 13(1)(a) : registre,
+   « Pseudonyme du responsable », à valider (#379).
 
 Mesures **proposées** par cette analyse, à arbitrer :
 

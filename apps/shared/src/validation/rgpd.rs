@@ -1237,8 +1237,8 @@ mod tests {
     /// #379: the controller and publisher is named by a pseudonym. A served
     /// text that pointed at the code-hosting account — the repository's URL
     /// carries its owner's handle — would tie that pseudonym back to it. None
-    /// of the three served documents nor the three emails that name the
-    /// controller may link to a code host.
+    /// of the three served documents, nor the two emails that name the
+    /// controller, nor the ownership email, may link to a code host.
     #[test]
     fn served_texts_do_not_point_at_the_code_hosting_account() {
         use crate::validation::groups::OwnershipReason;
