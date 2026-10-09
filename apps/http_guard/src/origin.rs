@@ -504,7 +504,10 @@ mod tests {
         // fires, and the guard falls back on Sec-Fetch-Site and Host. A
         // misconfiguration that refuses, never one that lets through.
         let trusted = origin_of("http://user:secret@localhost:3000");
-        assert_eq!(trusted.as_deref(), Some("http://user:secret@localhost:3000"));
+        assert_eq!(
+            trusted.as_deref(),
+            Some("http://user:secret@localhost:3000")
+        );
         let h = headers(&[
             ("sec-fetch-site", "same-site"),
             ("origin", "http://localhost:3000"),
