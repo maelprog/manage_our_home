@@ -157,11 +157,19 @@ n'est appelé, ni sur le serveur ni chez un tiers.
 Ce service n'est pas encore ouvert au public, et cette page n'affirmera pas
 plus que ce qui est établi. Voici où en est chacun des quatre cas.
 
-- **Les emails ne quittent pas l'Union européenne.** Ils partent par
-  Scaleway, qui déclare héberger et traiter l'ensemble des données de son
-  service d'emails transactionnels dans l'Union européenne, sans recourir à
-  un sous-traitant établi hors de l'Union pour ce service (déclaration
-  consultée le 4 octobre 2026).
+- **Le relais des emails reste dans l'Union européenne.** Les emails
+  partent par Scaleway, qui déclare héberger et traiter l'ensemble des
+  données de son service d'emails transactionnels dans l'Union européenne,
+  sans recourir à un sous-traitant établi hors de l'Union pour ce service
+  (déclaration consultée le 4 octobre 2026). La même déclaration précise
+  que, pour l'ensemble de ses services, Scaleway peut, dans de rares cas
+  exceptionnels, travailler avec des partenaires américains ou canadiens,
+  sous un mécanisme d'adéquation reconnu (elle cite le cadre de protection
+  des données UE–États-Unis) et sous les clauses contractuelles types de
+  son accord de traitement des données. Cette garantie ne couvre que le
+  relais : une fois l'email remis à votre fournisseur de messagerie, il est
+  conservé là où celui-ci héberge votre boîte, qui peut se trouver hors de
+  l'Union européenne.
 - **Google** reçoit des données dans deux cas seulement : si vous choisissez
   la connexion avec Google, et si un import calendrier est configuré dans
   votre groupe. Son infrastructure est mondiale, donc pour partie hors de
@@ -228,7 +236,7 @@ de la purge dépasserait.
   l'échéance à 30 jours ou moins, et la purge n'a pas lieu moins de 30
   jours après lui. Dans tous les cas, elle n'a pas lieu moins de 30 jours
   après le premier refus, que cet email parte ou non. Ce report n'a lieu
-  qu'une fois : un refus suivant n'envoie pas de nouvel email et ne
+  qu'une fois : un refus suivant ne relance pas l'avertissement et ne
   repousse plus la purge. La date du premier refus est effacée à la
   réactivation, à une nouvelle désactivation et à la purge. Un compte
   dont la suppression avait été demandée avant sa désactivation est
