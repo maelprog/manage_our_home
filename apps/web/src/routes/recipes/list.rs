@@ -17,6 +17,7 @@ use manage_our_home_shared::validation::recipes::stock_summary;
 
 use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
+use crate::routes::stocks::new::OFF_ATTRIBUTION;
 use crate::state::{api_request_auth, AppState};
 
 use super::{family_context, recipes_cookie, service_unavailable_page};
@@ -169,7 +170,8 @@ pub async fn get(
         format!(
             r#"<h2>Suggestions</h2>
 <p class="muted">Classées selon ce que vous avez en stock, la variété (repas récents) et la saison.</p>
-<ul class="list">{rows}</ul>"#,
+<ul class="list">{rows}</ul>
+{OFF_ATTRIBUTION}"#,
         )
     };
 

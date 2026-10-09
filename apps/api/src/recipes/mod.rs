@@ -4,6 +4,7 @@ pub mod ingredient_line;
 pub mod jsonld;
 pub mod meal_history;
 pub mod suggestions;
+pub mod taxonomy;
 
 /// Same permission bar as Stocks/Agenda: any member may create/read a
 /// recipe or log a meal, but only the recipe's creator or a group

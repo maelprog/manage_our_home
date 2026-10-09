@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT s.name, o.categories_tags AS \"categories_tags?\"\n        FROM stock_items s\n        LEFT JOIN off_products o ON o.code = s.barcode\n        WHERE s.group_id = $1 AND s.quantity > 0\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stock_items",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "categories_tags?",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "off_products",
+            "name": "categories_tags"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "de6d048169b8634feef32e61b4f708ea2df90c12e50e59dfeaed869583ec23f2"
+}

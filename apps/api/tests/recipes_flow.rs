@@ -470,3 +470,85 @@ async fn suggestions_rank_by_stock_match_and_variety(db: PgPool) {
         "recently-eaten recipe must be penalized by RECENCY_PENALTY"
     );
 }
+
+/// #406: an article covers a recipe's ingredient through Open Food Facts'
+/// categories. A scanned article takes the categories of its product (here
+/// "Lait demi-écrémé Lactel", under en:semi-skimmed-milks, covers "Lait");
+/// an article typed by hand takes them from its name ("Oeufs" covers
+/// "œuf"). A descendant never covers its ancestor's sibling: the milk does
+/// not cover "Lait de coco".
+#[sqlx::test]
+async fn suggestions_match_stock_through_the_category_taxonomy(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "recipe-taxonomy@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+
+    // What a scan would have cached (#402), written directly: the test
+    // must not reach Open Food Facts.
+    sqlx::query("INSERT INTO off_products (code, name, categories_tags) VALUES ($1, $2, $3)")
+        .bind("4006381333931")
+        .bind("Lait demi-écrémé Lactel")
+        .bind(vec!["en:dairies", "en:milks", "en:semi-skimmed-milks"])
+        .execute(&db)
+        .await
+        .unwrap();
+
+    for item in [
+        serde_json::json!({"name": "Lait demi-écrémé Lactel", "quantity": 1.0, "barcode": "4006381333931"}),
+        serde_json::json!({"name": "Oeufs", "quantity": 6.0}),
+    ] {
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/stock-items"),
+            Some(&cookie),
+            Some(item),
+        )
+        .await;
+        assert_status(&res, StatusCode::CREATED);
+    }
+
+    let recipe = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes"),
+        Some(&cookie),
+        Some(serde_json::json!({
+            "name": "Crêpes coco",
+            "ingredients": [
+                {"name": "Lait", "quantity": 500.0, "unit": "ml"},
+                {"name": "œuf", "quantity": 3.0},
+                {"name": "Lait de coco", "quantity": 200.0, "unit": "ml"}
+            ]
+        })),
+    )
+    .await;
+    assert_status(&recipe, StatusCode::CREATED);
+
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/recipes/suggestions"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    let suggestion = &body["suggestions"][0];
+    assert_eq!(suggestion["matched_ingredients"], 2);
+    assert_eq!(suggestion["total_required_ingredients"], 3);
+    let missing: Vec<&str> = suggestion["missing_ingredients"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(missing, ["Lait de coco"]);
+}

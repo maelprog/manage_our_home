@@ -71,6 +71,10 @@ base64 = "0.23"
 # SHA-256 of the session token (#222): the table keeps the hash, the cookie
 # the token. The newest release, next to the 0.10 other crates still pull.
 sha2 = "0.11"
+# Decompresses the embedded Open Food Facts category taxonomy (#406,
+# `recipes::taxonomy`): 205 KB gzipped instead of 932 KB in the binary.
+# The newest release (dependency policy), shared with apps/web.
+flate2 = "1.1.10"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

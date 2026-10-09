@@ -147,6 +147,8 @@ test.describe("Recipes — suggestions", () => {
 
     await page.goto("/recipes");
     await expect(page.getByRole("heading", { name: "Suggestions" })).toBeVisible();
+    // The stock matching goes through Open Food Facts' categories (#406).
+    await expect(page.getByText("Données produits : Open Food Facts, ODbL.")).toBeVisible();
 
     // Pain: fully stocked.
     await expect(
