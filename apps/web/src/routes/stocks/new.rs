@@ -278,8 +278,10 @@ pub(crate) fn date_to_propose(
     }
 }
 
-/// The ODbL attribution Open Food Facts' data requires wherever it is shown.
-const OFF_ATTRIBUTION: &str = r#"<p class="muted">Données produits : <a href="https://world.openfoodfacts.org">Open Food Facts</a>, <a href="https://opendatacommons.org/licenses/odbl/1-0/">ODbL</a>.</p>"#;
+/// The ODbL attribution Open Food Facts' data requires wherever it is shown
+/// or used: here, and under the recipe suggestions, whose stock matching
+/// goes through its category taxonomy (#406).
+pub(crate) const OFF_ATTRIBUTION: &str = r#"<p class="muted">Données produits : <a href="https://world.openfoodfacts.org">Open Food Facts</a>, <a href="https://opendatacommons.org/licenses/odbl/1-0/">ODbL</a>.</p>"#;
 
 /// The barcode block above the form, two plain forms that need no
 /// JavaScript: the photo of the barcode (`capture="environment"` opens the

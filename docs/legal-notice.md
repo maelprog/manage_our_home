@@ -62,7 +62,9 @@ d'un article, le nom et la contenance proposés viennent de la base
 [Open Food Facts](https://world.openfoodfacts.org), publiée sous licence
 [Open Database License (ODbL)](https://opendatacommons.org/licenses/odbl/1-0/).
 Le service n'en garde qu'une copie temporaire, pour ne pas interroger Open
-Food Facts à chaque scan.
+Food Facts à chaque scan. Les suggestions de recettes rapprochent les
+ingrédients d'une recette des articles en stock grâce à la taxonomie des
+catégories d'Open Food Facts, sous la même licence.
 
 ## Données personnelles
 
