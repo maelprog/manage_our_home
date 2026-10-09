@@ -73,9 +73,8 @@ base64 = "0.23"
 sha2 = "0.11"
 # Decompresses the embedded Open Food Facts category taxonomy (#406,
 # `recipes::taxonomy`): 205 KB gzipped instead of 932 KB in the binary.
-# Already in Cargo.lock (apps/web uses it), so no crate joins the audit
-# surface.
-flate2 = "1.1.9"
+# The newest release (dependency policy), shared with apps/web.
+flate2 = "1.1.10"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
