@@ -27,17 +27,21 @@ const LEFT_IN_TRANSACTION: &str = "SELECT transaction_timestamp() <> statement_t
 /// transaction as open once the server has answered. A future dropped
 /// during that wait — which is what hyper does to a handler when the client
 /// hangs up, e.g. a WebSocket handshake cut short by a navigation — has
-/// nothing to roll back on sqlx's side, and the pool's release ping then
-/// consumes the pending reply. The connection goes back to the pool inside
-/// a transaction that sqlx believes closed and the server holds open. The
-/// next autocommit write on it (`AuthUser`'s `UPDATE sessions SET
-/// last_seen_at`) takes its row lock inside that transaction and never
-/// releases it: every later request of that session waits on it.
+/// nothing to roll back on sqlx's side, and the first query of the pool's
+/// release path then consumes the pending reply (the `after_release` query
+/// of [`pool_options`], which sqlx runs before its release ping, or that
+/// ping on a pool without the hook). Without the `after_release` check, the
+/// connection goes back to the pool inside a transaction that sqlx believes
+/// closed and the server holds open. The next autocommit write on it
+/// (`AuthUser`'s `UPDATE sessions SET last_seen_at`) takes its row lock
+/// inside that transaction and never releases it: every later request of
+/// that session waits on it.
 ///
 /// Here the `BEGIN` runs in its own task. If the caller is dropped, the task
 /// still completes, and the `Transaction` it produces is dropped with its
-/// depth already counted: sqlx queues the `ROLLBACK`, and the release ping
-/// sends it before the connection is reused.
+/// depth already counted: sqlx queues the `ROLLBACK`, and the first query
+/// of the release path (the `after_release` one, or the ping) sends it
+/// before the connection is reused.
 ///
 /// Note the two costs of running the `BEGIN` elsewhere: a caller that is
 /// dropped keeps its place in the pool's acquire queue until the task is
