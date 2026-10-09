@@ -4,12 +4,16 @@
 //! sqlx-postgres 0.9.0 sends `BEGIN`, then waits for the server's reply
 //! before counting the transaction as open. A future dropped during that
 //! wait (a client that hangs up — hyper drops the handler) leaves nothing to
-//! roll back on sqlx's side, and the pool's release ping swallows the
-//! pending reply: the connection goes back to the pool inside a transaction
-//! the server still holds open. The next autocommit write on it — the
-//! `UPDATE sessions SET last_seen_at` of every authenticated request — takes
-//! its row lock inside that transaction and never releases it, freezing
-//! every later request of that session.
+//! roll back on sqlx's side, and the first query of the pool's release path
+//! swallows the pending reply — the `after_release` query of
+//! `db::pool_options`, which sqlx runs before its own release ping (the ping
+//! does it on a pool without that hook). Without the hook's check, the
+//! connection goes back to the pool inside a transaction the server still
+//! holds open.
+//! The next autocommit write on it — the `UPDATE sessions SET last_seen_at`
+//! of every authenticated request — takes its row lock inside that
+//! transaction and never releases it, freezing every later request of that
+//! session.
 //!
 //! Runtime queries (`sqlx::query`, not the macros) so this binary adds
 //! nothing to the `.sqlx` offline cache.
