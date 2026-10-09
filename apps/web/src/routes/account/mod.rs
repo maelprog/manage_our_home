@@ -156,7 +156,7 @@ pub async fn get(
 </section>
 <section class="card">
 <h2>Sessions actives</h2>
-<p class="muted">Voir les appareils où vous êtes connecté, et en déconnecter un ou tous.</p>
+<p class="muted">Voir vos sessions ouvertes, et en fermer une ou toutes.</p>
 <a class="btn secondary" href="/account/sessions">Gérer mes sessions</a>
 </section>
 <section class="card">
