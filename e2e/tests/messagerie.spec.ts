@@ -99,6 +99,54 @@ test.describe("Messagerie — thread & composer", () => {
   });
 });
 
+/** What `watchLiveSocket` counts on the current document of a page. */
+type LiveSocketCounts = { opened: number; closed: number; frames: number };
+
+/**
+ * Counts, on every document `page` loads from now on, the WebSocket opens,
+ * closes and received frames. The live script refreshes `#thread` on a socket
+ * *close* too (its access probe), so a refused handshake still lands a new
+ * message within its reconnect backoff: an update showing up proves nothing
+ * about the socket (#373). These counts do.
+ */
+async function watchLiveSocket(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const Native = window.WebSocket;
+    const counts = { opened: 0, closed: 0, frames: 0 };
+    (window as unknown as { __liveSocket: typeof counts }).__liveSocket = counts;
+    class Watched extends Native {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super(url, protocols);
+        this.addEventListener("open", () => counts.opened++);
+        this.addEventListener("close", () => counts.closed++);
+        this.addEventListener("message", () => counts.frames++);
+      }
+    }
+    window.WebSocket = Watched;
+  });
+}
+
+function liveSocketCounts(page: Page): Promise<LiveSocketCounts> {
+  return page.evaluate(
+    () => (window as unknown as { __liveSocket: LiveSocketCounts }).__liveSocket,
+  );
+}
+
+/** The thread's socket is open (handshake accepted) and has not dropped. */
+async function expectLiveSocketOpen(page: Page): Promise<void> {
+  await expect
+    .poll(() => liveSocketCounts(page), { timeout: 10000 })
+    .toMatchObject({ opened: 1, closed: 0 });
+}
+
+/** The update came as a push frame, on a socket that never dropped. */
+async function expectPushedLive(page: Page): Promise<void> {
+  const counts = await liveSocketCounts(page);
+  expect(counts.opened).toBe(1);
+  expect(counts.closed).toBe(0);
+  expect(counts.frames).toBeGreaterThan(0);
+}
+
 test.describe("Messagerie — live updates (WebSocket)", () => {
   test("a message posted in one session appears live in a second session", async ({
     page,
@@ -116,8 +164,10 @@ test.describe("Messagerie — live updates (WebSocket)", () => {
     await member.getByRole("button", { name: "Rejoindre le groupe" }).click();
 
     // The member sits on the live thread (WS open) without reloading.
+    await watchLiveSocket(member);
     await member.goto("/messagerie");
     await expect(member.getByText("Aucun message pour le moment.")).toBeVisible();
+    await expectLiveSocketOpen(member);
 
     // The owner posts from their own session.
     await sendMessage(page, "Message en direct");
@@ -127,6 +177,7 @@ test.describe("Messagerie — live updates (WebSocket)", () => {
     await expect(
       member.locator("#thread").getByText("Message en direct"),
     ).toBeVisible({ timeout: 15000 });
+    await expectPushedLive(member);
 
     await context.close();
   });
@@ -148,7 +199,9 @@ test.describe("Messagerie — live updates (WebSocket)", () => {
     // The owner starts correcting their own message: disclosure open, new text
     // typed, nothing submitted yet.
     await sendMessage(page, "Texte à corriger");
+    await watchLiveSocket(page);
     await page.goto("/messagerie");
+    await expectLiveSocketOpen(page);
     const row = page.locator("li[data-message-id]", { hasText: "Texte à corriger" });
     await row.locator("summary", { hasText: "Modifier" }).click();
     await row.getByLabel("Modifier le message").fill("Correction en cours");
@@ -162,6 +215,7 @@ test.describe("Messagerie — live updates (WebSocket)", () => {
     await expect(
       page.locator("#thread li[data-message-id]", { hasText: "Message pendant l'édition" }),
     ).toHaveCount(1, { timeout: 15000 });
+    await expectPushedLive(page);
     // ...and the open editor kept both its disclosure and its unsaved text.
     await expect(row.getByLabel("Modifier le message")).toBeVisible();
     await expect(row.getByLabel("Modifier le message")).toHaveValue("Correction en cours");
@@ -193,7 +247,9 @@ test.describe("Messagerie — live updates (WebSocket)", () => {
     await member.getByRole("button", { name: "Rejoindre le groupe" }).click();
 
     await sendMessage(page, "Texte à corriger sans resync");
+    await watchLiveSocket(page);
     await page.goto("/messagerie");
+    await expectLiveSocketOpen(page);
     const row = page.locator("li[data-message-id]", { hasText: "Texte à corriger sans resync" });
     await row.locator("summary", { hasText: "Modifier" }).click();
     await row.getByLabel("Modifier le message").fill("Correction silencieuse");
@@ -204,6 +260,7 @@ test.describe("Messagerie — live updates (WebSocket)", () => {
     await expect(
       page.locator("#thread li[data-message-id]", { hasText: "Message sans rapport" }),
     ).toHaveCount(1, { timeout: 15000 });
+    await expectPushedLive(page);
 
     // Only the live script sends this header (see refresh() in thread.rs).
     let replays = 0;
