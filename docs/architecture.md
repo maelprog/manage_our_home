@@ -232,8 +232,9 @@ remplacement) de l'isolation applicative ci-dessous.
    forcément tiers : l'auto-hébergement ferait de l'éditeur son propre
    hébergeur et ferait tomber l'anonymat (#379). Les CGU
    (`docs/terms-of-service.md`, servies par `GET /terms-of-service`) n'en
-   portent aucun : elles renvoient aux mentions légales. Tous seront renseignés au moment de l'ouverture publique, et cette
-   phrase disparaîtra avec eux — procédure et forme exacte dans
+   portent aucun : elles renvoient aux mentions légales. Tous seront
+   renseignés au moment de l'ouverture publique, et cette phrase
+   disparaîtra avec eux — procédure et forme exacte dans
    `docs/v2-deployment.md` #16 et #17. Il porte l'ensemble des rôles
    nécessaires au déploiement :
    - **Data controller / responsable de traitement** — responsable du
