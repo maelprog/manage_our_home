@@ -30,8 +30,8 @@ use crate::AppState;
 /// taxonomy (#406, `recipes::taxonomy`): an article covers an ingredient
 /// when its category is the ingredient's or descends from it. An article
 /// takes its categories from its scanned product (`off_products`), else
-/// from its name; an ingredient from its name. When either side has none,
-/// the match falls back to the name (case-insensitive, trimmed). It stays a
+/// from its name; an ingredient from its name. Equal names (case-insensitive,
+/// trimmed) match too, whether or not either side has a category. It stays a
 /// heuristic, not an exact reservation check (unit conversion is out of
 /// scope, same as the low_stock heuristic in stocks::items).
 const VARIETY_WINDOW_DAYS: i64 = 14;
@@ -250,14 +250,14 @@ fn stock_entry(taxonomy: &Taxonomy, name: &str, off_categories: &[String]) -> St
     }
 }
 
-/// Whether some article in stock covers a recipe's ingredient: by category
-/// when both sides have one ([`Taxonomy::satisfies`]), by name otherwise.
+/// Whether some article in stock covers a recipe's ingredient: by name
+/// (trimmed, case-insensitive) always, and also by category when both sides
+/// have one ([`Taxonomy::satisfies`]).
 fn in_stock(ingredient_name: &str, ingredient_tag: Option<TagId>, stock: &[StockEntry]) -> bool {
     let name = ingredient_name.trim().to_lowercase();
-    stock.iter().any(|item| match ingredient_tag {
-        Some(tag) if !item.tags.is_empty() => item.tags.contains(&tag),
-        _ => item.name == name,
-    })
+    stock
+        .iter()
+        .any(|item| item.name == name || ingredient_tag.is_some_and(|tag| item.tags.contains(&tag)))
 }
 
 #[cfg(test)]
@@ -308,10 +308,18 @@ mod tests {
     }
 
     #[test]
-    fn categories_decide_when_both_sides_have_one() {
-        // A drink sold as "Lait d'avoine" but scanned under oat drinks is
-        // not milk, whatever its name says.
+    fn category_or_name_when_both_sides_have_a_category() {
+        // Categories that diverge, names equal: the name the family typed
+        // wins (arbitrage of 2026-10-09: the name stays a fallback even
+        // when both sides have a category). Guards against a return to a
+        // category-only rule.
         let stock = [entry("Lait", &["en:oat-based-drinks"])];
+        assert!(covered("lait", &stock));
+        // Category satisfied, names different: the category covers it.
+        let stock = [entry("Lait demi-écrémé Lactel", &["en:semi-skimmed-milks"])];
+        assert!(covered("lait", &stock));
+        // Categories that diverge, names different: no match.
+        let stock = [entry("Boisson avoine", &["en:oat-based-drinks"])];
         assert!(!covered("lait", &stock));
     }
 
