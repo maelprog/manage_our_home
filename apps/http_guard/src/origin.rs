@@ -31,6 +31,10 @@
 //!    is no forgery: apps/web's own calls to apps/api over the internal
 //!    network are of this kind, and so is `curl`.
 //!
+//! Before these rules, a request carrying `Origin` or `Sec-Fetch-Site`
+//! twice is refused: judging only the first value would let the second
+//! through unread, and no browser sends either header twice.
+//!
 //! The Google OAuth callback is a legitimate cross-site navigation, but a
 //! `GET`: it is not looked at here, and is protected by `state` and PKCE
 //! (#193).
