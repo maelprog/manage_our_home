@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::AppResult;
 use crate::groups::require_role;
+use crate::recipes::taxonomy::{taxonomy, TagId, Taxonomy};
 use crate::AppState;
 
 /// Rule-based suggestion algorithm (architecture.md: "a concrete v1 rule,
@@ -25,10 +26,14 @@ use crate::AppState;
 ///    includes the current month, nudging suggestions toward what's in
 ///    season without overriding the stock-match term.
 ///
-/// Ingredient/stock matching is name-based (case-insensitive, trimmed) —
-/// v1 has no shared ingredient taxonomy, so this is a heuristic, not an
-/// exact reservation check (unit conversion is out of scope, same as the
-/// low_stock heuristic in stocks::items).
+/// Ingredient/stock matching goes through Open Food Facts' category
+/// taxonomy (#406, `recipes::taxonomy`): an article covers an ingredient
+/// when its category is the ingredient's or descends from it. An article
+/// takes its categories from its scanned product (`off_products`), else
+/// from its name; an ingredient from its name. When either side has none,
+/// the match falls back to the name (case-insensitive, trimmed). It stays a
+/// heuristic, not an exact reservation check (unit conversion is out of
+/// scope, same as the low_stock heuristic in stocks::items).
 const VARIETY_WINDOW_DAYS: i64 = 14;
 const RECENCY_PENALTY: f64 = 30.0;
 const SEASONAL_BONUS: f64 = 5.0;
@@ -100,14 +105,23 @@ pub async fn suggest_recipes(
     .fetch_all(&mut *tx)
     .await?;
 
-    let stock_names: HashSet<String> = sqlx::query_scalar!(
-        "SELECT name FROM stock_items WHERE group_id = $1 AND quantity > 0",
+    // `off_products` is the public Open Food Facts cache (no RLS, see
+    // migration 0026); the family's rows come from `stock_items`. A cached
+    // record past its TTL still names the product's categories.
+    let taxonomy = taxonomy();
+    let stock: Vec<StockEntry> = sqlx::query!(
+        r#"
+        SELECT s.name, o.categories_tags AS "categories_tags?"
+        FROM stock_items s
+        LEFT JOIN off_products o ON o.code = s.barcode
+        WHERE s.group_id = $1 AND s.quantity > 0
+        "#,
         group_id,
     )
     .fetch_all(&mut *tx)
     .await?
     .into_iter()
-    .map(|n| n.trim().to_lowercase())
+    .map(|r| stock_entry(taxonomy, &r.name, &r.categories_tags.unwrap_or_default()))
     .collect();
 
     let recent_meals: Vec<(Uuid, NaiveDate)> = sqlx::query!(
@@ -149,14 +163,16 @@ pub async fn suggest_recipes(
 
             let required: Vec<&&IngredientRow> =
                 ingredients.iter().filter(|i| !i.is_optional).collect();
-            let matched = required
+            let covered: Vec<bool> = required
                 .iter()
-                .filter(|i| stock_names.contains(&i.name.trim().to_lowercase()))
-                .count();
+                .map(|i| in_stock(&i.name, taxonomy.canonical_ingredient(&i.name), &stock))
+                .collect();
+            let matched = covered.iter().filter(|&&c| c).count();
             let missing_ingredients: Vec<MissingIngredient> = required
                 .iter()
-                .filter(|i| !stock_names.contains(&i.name.trim().to_lowercase()))
-                .map(|i| MissingIngredient {
+                .zip(&covered)
+                .filter(|(_, &c)| !c)
+                .map(|(i, _)| MissingIngredient {
                     name: i.name.clone(),
                     quantity: i.quantity,
                     unit: i.unit.clone(),
@@ -204,4 +220,116 @@ pub async fn suggest_recipes(
     suggestions.truncate(limit);
 
     Ok(Json(json!({ "suggestions": suggestions })))
+}
+
+/// An article in stock as the matching sees it: its name, trimmed and
+/// lowercased, and the categories it belongs to, each with all its
+/// ancestors (empty when it has none).
+struct StockEntry {
+    name: String,
+    tags: HashSet<TagId>,
+}
+
+/// The categories come first from Open Food Facts' `categories_tags` of a
+/// scanned article (#402), the ones the taxonomy knows; otherwise from the
+/// article's name.
+fn stock_entry(taxonomy: &Taxonomy, name: &str, off_categories: &[String]) -> StockEntry {
+    let mut direct: Vec<TagId> = off_categories
+        .iter()
+        .filter_map(|id| taxonomy.tag(id))
+        .collect();
+    if direct.is_empty() {
+        direct.extend(taxonomy.canonical_ingredient(name));
+    }
+    StockEntry {
+        name: name.trim().to_lowercase(),
+        tags: direct
+            .into_iter()
+            .flat_map(|tag| taxonomy.ancestors_or_self(tag))
+            .collect(),
+    }
+}
+
+/// Whether some article in stock covers a recipe's ingredient: by category
+/// when both sides have one ([`Taxonomy::satisfies`]), by name otherwise.
+fn in_stock(ingredient_name: &str, ingredient_tag: Option<TagId>, stock: &[StockEntry]) -> bool {
+    let name = ingredient_name.trim().to_lowercase();
+    stock.iter().any(|item| match ingredient_tag {
+        Some(tag) if !item.tags.is_empty() => item.tags.contains(&tag),
+        _ => item.name == name,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str, off: &[&str]) -> StockEntry {
+        let off: Vec<String> = off.iter().map(|s| s.to_string()).collect();
+        stock_entry(taxonomy(), name, &off)
+    }
+
+    fn covered(ingredient: &str, stock: &[StockEntry]) -> bool {
+        in_stock(
+            ingredient,
+            taxonomy().canonical_ingredient(ingredient),
+            stock,
+        )
+    }
+
+    #[test]
+    fn scanned_article_satisfies_its_ancestor_category() {
+        // The issue's example: a scanned "Lait demi-écrémé Lactel" carries
+        // Open Food Facts' categories down to en:semi-skimmed-milks.
+        let stock = [entry(
+            "Lait demi-écrémé Lactel",
+            &["en:dairies", "en:milks", "en:semi-skimmed-milks"],
+        )];
+        assert!(covered("lait", &stock));
+        assert!(covered("Lait demi-écrémé", &stock));
+        assert!(!covered("lait de coco", &stock));
+        assert!(!covered("beurre", &stock));
+    }
+
+    #[test]
+    fn article_without_categories_is_tagged_from_its_name() {
+        let stock = [entry("Lait demi-écrémé", &[])];
+        assert!(covered("lait", &stock));
+        // Never the reverse: plain milk does not cover semi-skimmed.
+        let stock = [entry("Lait", &[])];
+        assert!(!covered("lait demi-écrémé", &stock));
+        assert!(covered("Laits", &stock));
+    }
+
+    #[test]
+    fn unknown_categories_fall_back_to_the_name() {
+        let stock = [entry("Oeufs", &["xx:not-a-category"])];
+        assert!(covered("œufs", &stock));
+    }
+
+    #[test]
+    fn categories_decide_when_both_sides_have_one() {
+        // A drink sold as "Lait d'avoine" but scanned under oat drinks is
+        // not milk, whatever its name says.
+        let stock = [entry("Lait", &["en:oat-based-drinks"])];
+        assert!(!covered("lait", &stock));
+    }
+
+    #[test]
+    fn name_match_when_either_side_has_no_category() {
+        // Neither side in the taxonomy: the previous name match.
+        let stock = [entry("  Sauce Maison ", &[])];
+        assert!(covered("sauce maison", &stock));
+        assert!(!covered("sauce", &stock));
+        // Only the article has a category: name match too.
+        let stock = [entry("Lait", &[])];
+        assert!(!covered("lait entier bio de la ferme", &stock));
+        let stock = [entry("lait entier bio de la ferme", &[])];
+        assert!(covered("Lait entier bio de la ferme", &stock));
+    }
+
+    #[test]
+    fn nothing_in_stock_covers_nothing() {
+        assert!(!covered("lait", &[]));
+    }
 }
