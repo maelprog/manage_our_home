@@ -1652,8 +1652,8 @@ mod tests {
     /// A citation is the word `article`, `articles` or `art.` (any case,
     /// after an elided `l'`/`d'`, wrapped in any punctuation such as `(`,
     /// `**` or `«`), followed by a word that starts with a digit — glued
-    /// (`art.6`) or not, after a number sign `n°`, `nº` or `no` (any case,
-    /// glued or not) or not. An enumeration is followed: after the first
+    /// (`art.6`) or not, after a number sign (`n°`, `nº`, `no`, `no.`, `№`,
+    /// `n°s`, `nºs`, `nos`, any case, glued or not) or not. An enumeration is followed: after the first
     /// number, each further number separated by `,`, `et`, `ou` or `à` (any
     /// case) is cited too (`articles 1-1 et 6-III` cites both), unless
     /// followed by `°` or `º` (`article 6, 4° du I`: `4°` is an item of a
@@ -1672,13 +1672,16 @@ mod tests {
         fn bare(word: &str) -> &str {
             word.trim_matches(|c: char| !c.is_alphanumeric())
         }
-        /// `n°`, `nº` or `no`, any case: the number sign before a number.
+        /// The number sign before a number, any case — `n°`, `nº`, `no`,
+        /// `no.`, `№`, and the plurals `n°s`, `nºs`, `nos` — and what
+        /// follows it in `word`. Longest spelling first, so `nos` is not
+        /// read as `no` glued to `s`.
         fn number_sign(word: &str) -> Option<&str> {
             let lower = word.to_lowercase();
-            ["n°", "nº", "no"]
+            ["n°s", "nºs", "nos", "no.", "n°", "nº", "no", "№"]
                 .iter()
                 .find(|sign| lower.starts_with(*sign))
-                .map(|sign| &word[sign.len()..])
+                .and_then(|sign| word.get(sign.len()..))
         }
         /// The number `words[at]` cites, through a number sign glued to it
         /// (`n°6`) or standing before it (`n° 6`), with the index of the
@@ -1834,6 +1837,29 @@ mod tests {
             foreign_articles("articles n° 6 et n° 7"),
             vec!["6".to_string(), "7".to_string()]
         );
+    }
+
+    #[test]
+    fn cited_articles_see_through_every_spelling_of_the_number_sign() {
+        for md in [
+            "article № 6",
+            "article №6",
+            "article No. 6",
+            "article no. 6",
+        ] {
+            assert_eq!(foreign_articles(md), vec!["6".to_string()], "{md:?}");
+        }
+        for md in [
+            "articles nos 6 et 7",
+            "articles n°s 6 et 7",
+            "articles Nos 6 et 7",
+        ] {
+            assert_eq!(
+                foreign_articles(md),
+                vec!["6".to_string(), "7".to_string()],
+                "{md:?}"
+            );
+        }
     }
 
     #[test]
