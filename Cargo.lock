@@ -2530,6 +2530,7 @@ dependencies = [
  "chrono",
  "cookie",
  "dotenvy",
+ "flate2",
  "futures",
  "http-body-util",
  "hyper",
