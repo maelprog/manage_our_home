@@ -47,6 +47,7 @@ pub async fn message_ws(
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
     tx.commit().await?;
+    state.message_hubs.ensure_listening().await;
 
     Ok(ws.on_upgrade(move |socket| {
         handle_socket(socket, state, group_id, auth.user_id, auth.session_id)

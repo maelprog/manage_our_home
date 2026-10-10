@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::groups::require_role;
-use crate::messagerie::{can_modify, MessageEvent};
+use crate::messagerie::{can_modify, notify, Change, Notification};
 use crate::AppState;
 
 const MAX_CONTENT_CHARS: usize = 4000;
@@ -150,20 +150,18 @@ pub async fn create_message(
     )
     .fetch_one(&mut *tx)
     .await?;
+    notify(
+        &mut tx,
+        Notification {
+            group_id,
+            change: Change::Created,
+            message_id: row.id,
+        },
+    )
+    .await?;
     tx.commit().await?;
 
-    let message = MessageResponse::from(row);
-    state
-        .message_hubs
-        .publish(
-            group_id,
-            MessageEvent::Created {
-                message: message.clone(),
-            },
-        )
-        .await;
-
-    Ok((StatusCode::CREATED, Json(message)))
+    Ok((StatusCode::CREATED, Json(MessageResponse::from(row))))
 }
 
 pub async fn list_messages(
@@ -347,20 +345,18 @@ pub async fn update_message(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    notify(
+        &mut tx,
+        Notification {
+            group_id,
+            change: Change::Updated,
+            message_id,
+        },
+    )
+    .await?;
     tx.commit().await?;
 
-    let message = MessageResponse::from(row);
-    state
-        .message_hubs
-        .publish(
-            group_id,
-            MessageEvent::Updated {
-                message: message.clone(),
-            },
-        )
-        .await;
-
-    Ok(Json(message))
+    Ok(Json(MessageResponse::from(row)))
 }
 
 pub async fn delete_message(
@@ -394,14 +390,54 @@ pub async fn delete_message(
     if deleted.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
+    notify(
+        &mut tx,
+        Notification {
+            group_id,
+            change: Change::Deleted,
+            message_id,
+        },
+    )
+    .await?;
     tx.commit().await?;
 
-    state
-        .message_hubs
-        .publish(group_id, MessageEvent::Deleted { id: message_id })
-        .await;
-
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// A message as the replica that received its notification reads it back
+/// (#429). The transaction is scoped to the notified group the way
+/// `scoped_tx` scopes a request, and `messages_isolation` filters on that
+/// scope alone: the row is read under RLS, and only if it belongs to that
+/// group. `None` when it no longer exists.
+pub(crate) async fn load_message(
+    db: &sqlx::PgPool,
+    message_encryption_key: &str,
+    group_id: Uuid,
+    message_id: Uuid,
+) -> Result<Option<MessageResponse>, sqlx::Error> {
+    let mut tx = crate::db::begin(db).await?;
+    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let row = sqlx::query_as!(
+        MessageRow,
+        r#"
+        SELECT id, group_id, created_by,
+               pgp_sym_decrypt(content, $3) as "content!",
+               edited_at, created_at, updated_at
+        FROM messages
+        WHERE id = $1 AND group_id = $2
+        "#,
+        message_id,
+        group_id,
+        message_encryption_key,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    Ok(row.map(MessageResponse::from))
 }
 
 #[cfg(test)]

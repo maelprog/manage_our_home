@@ -3,7 +3,7 @@ mod common;
 use axum::http::{Method, StatusCode};
 use common::{assert_status, call, json_body, set_cookie, test_router, test_state};
 use futures::StreamExt;
-use sqlx::PgPool;
+use sqlx::{Connection, PgPool};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -531,9 +531,8 @@ async fn concurrent_edit_and_delete_do_not_panic(db: PgPool) {
 /// tower's `oneshot` test harness doesn't support WS upgrades.
 #[sqlx::test]
 async fn ws_client_receives_message_created_event(db: PgPool) {
-    // Both routers must share one `AppState` (and so one `MessageHub`
-    // instance, via its inner `Arc`) — otherwise the REST call below
-    // publishes into a hub the WS connection never subscribed to.
+    // One replica serving both legs. Two replicas are covered by
+    // `ws_events_reach_every_replica_once` below.
     let state = test_state(db.clone());
     let ws_router = manage_our_home::build_router(state.clone());
     let http_router = manage_our_home::build_router(state);
@@ -1433,4 +1432,318 @@ async fn a_non_member_cannot_mark_a_family_thread_read(db: PgPool) {
         .await
         .unwrap();
     assert_eq!(rows, 0);
+}
+
+// --- Several API replicas (#429) ---
+//
+// Each `test_state` is one replica: its own `MessageHub` and Postgres
+// listener, on the same database. Events travel between replicas through
+// `LISTEN/NOTIFY` only.
+
+/// A replica serving WebSockets on a local port, and a router on the same
+/// state for its HTTP calls.
+async fn serve_replica(db: &PgPool) -> (std::net::SocketAddr, axum::Router) {
+    let state = test_state(db.clone());
+    let ws_router = manage_our_home::build_router(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, ws_router).await.unwrap();
+    });
+    (addr, manage_our_home::build_router(state))
+}
+
+/// Asserts the next frame is the `message.created` of `content`.
+async fn expect_created(ws_stream: &mut WsStream, content: &str) {
+    let event = next_ws_event(ws_stream).await;
+    assert_eq!(event["type"], "message.created", "{event}");
+    assert_eq!(event["message"]["content"], content, "{event}");
+}
+
+/// A write on replica A reaches the sockets of replica B and of A itself,
+/// each exactly once, for every kind of event. A sentinel posted through B
+/// afterwards must be the next frame on both sockets: a duplicate of any
+/// earlier event would come before it.
+#[sqlx::test]
+async fn ws_events_reach_every_replica_once(db: PgPool) {
+    let (addr_a, http_a) = serve_replica(&db).await;
+    let (addr_b, http_b) = serve_replica(&db).await;
+
+    let owner = register_verify_login(
+        &http_a,
+        &db,
+        "msg-replicas-owner@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&http_a, &owner, "Foyer").await;
+
+    let mut on_a = connect_ws(addr_a, &group_id, &owner).await;
+    let mut on_b = connect_ws(addr_b, &group_id, &owner).await;
+    // Same registration delay as the single-replica tests: subscribe()
+    // happens asynchronously after the upgrade.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let (message_id, _) = post_message(&http_a, &group_id, &owner, "posted on A").await;
+    for socket in [&mut on_a, &mut on_b] {
+        expect_created(socket, "posted on A").await;
+    }
+
+    let update = call(
+        &http_a,
+        Method::PATCH,
+        &format!("/groups/{group_id}/messages/{message_id}"),
+        Some(&owner),
+        Some(serde_json::json!({"content": "edited on A"})),
+    )
+    .await;
+    assert_status(&update, StatusCode::OK);
+    for socket in [&mut on_a, &mut on_b] {
+        let updated = next_ws_event(socket).await;
+        assert_eq!(updated["type"], "message.updated");
+        assert_eq!(updated["message"]["id"].as_str().unwrap(), message_id);
+        assert_eq!(updated["message"]["content"], "edited on A");
+    }
+
+    let delete = call(
+        &http_a,
+        Method::DELETE,
+        &format!("/groups/{group_id}/messages/{message_id}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_status(&delete, StatusCode::NO_CONTENT);
+    for socket in [&mut on_a, &mut on_b] {
+        let deleted = next_ws_event(socket).await;
+        assert_eq!(deleted["type"], "message.deleted");
+        assert_eq!(deleted["id"].as_str().unwrap(), message_id);
+    }
+
+    post_message(&http_b, &group_id, &owner, "sentinel on B").await;
+    for socket in [&mut on_a, &mut on_b] {
+        expect_created(socket, "sentinel on B").await;
+    }
+
+    on_a.close(None).await.ok();
+    on_b.close(None).await.ok();
+}
+
+/// A member of another group, connected to replica B, receives nothing of
+/// what is posted through replica A: the sentinel posted in their own group
+/// afterwards is the first frame they see.
+#[sqlx::test]
+async fn ws_other_group_receives_nothing_across_replicas(db: PgPool) {
+    let (_, http_a) = serve_replica(&db).await;
+    let (addr_b, http_b) = serve_replica(&db).await;
+
+    let owner_a = register_verify_login(
+        &http_a,
+        &db,
+        "msg-replicas-iso-a@example.test",
+        "owner-password1",
+    )
+    .await;
+    let outsider = register_verify_login(
+        &http_b,
+        &db,
+        "msg-replicas-iso-b@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_a = create_group(&http_a, &owner_a, "Famille A").await;
+    let group_b = create_group(&http_b, &outsider, "Famille B").await;
+
+    let mut outsider_ws = connect_ws(addr_b, &group_b, &outsider).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    post_message(&http_a, &group_a, &owner_a, "family A secret").await;
+    post_message(&http_a, &group_b, &outsider, "family B sentinel").await;
+
+    let first = next_ws_event(&mut outsider_ws).await;
+    assert_eq!(
+        first["message"]["content"], "family B sentinel",
+        "family B's socket received family A's event"
+    );
+    assert_eq!(first["message"]["group_id"].as_str().unwrap(), group_b);
+
+    outsider_ws.close(None).await.ok();
+}
+
+/// When a replica's listening connection drops, the replica listens again
+/// and closes its sockets: their clients re-fetch the thread on close,
+/// which recovers what was notified in between. A socket opened afterwards
+/// receives the other replica's writes again.
+#[sqlx::test]
+async fn listener_reconnects_after_losing_its_connection(db: PgPool) {
+    let (_, http_a) = serve_replica(&db).await;
+    let (addr_b, _) = serve_replica(&db).await;
+
+    let owner = register_verify_login(
+        &http_a,
+        &db,
+        "msg-replicas-reconnect@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&http_a, &owner, "Foyer").await;
+
+    let mut before = connect_ws(addr_b, &group_id, &owner).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // The harness role may end any backend of this throwaway database (a
+    // superuser in CI). Only B listens: A never opened a socket, and a
+    // replica starts its listener with its first socket in the tests.
+    let terminated: i64 = sqlx::query_scalar(
+        "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity \
+         WHERE datname = current_database() AND query LIKE 'LISTEN %'",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(terminated, 1);
+
+    expect_closed_without_event(&mut before, "the socket outlived its replica's listener").await;
+
+    let mut after = connect_ws(addr_b, &group_id, &owner).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    post_message(&http_a, &group_id, &owner, "after the reconnection").await;
+    expect_created(&mut after, "after the reconnection").await;
+
+    after.close(None).await.ok();
+}
+
+/// Waits (bounded) for a socket to end without receiving any event.
+async fn expect_closed_without_event(ws_stream: &mut WsStream, why: &str) {
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match ws_stream.next().await {
+                Some(Ok(WsMessage::Text(text))) => panic!("unexpected frame {text}"),
+                Some(Ok(WsMessage::Close(_))) | Some(Err(_)) | None => return,
+                Some(Ok(_)) => continue,
+            }
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "{why}");
+}
+
+/// When the listening connection drops and cannot be re-established at
+/// once, the replica keeps retrying on its own and closes its sockets once
+/// it listens again: what was notified in between is lost to them. A
+/// socket opened afterwards receives the other replica's writes again.
+#[sqlx::test]
+async fn listener_recovers_after_a_failed_reconnection(db: PgPool) {
+    let (_, http_a) = serve_replica(&db).await;
+    let (addr_b, _) = serve_replica(&db).await;
+
+    let owner = register_verify_login(
+        &http_a,
+        &db,
+        "msg-replicas-retry@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&http_a, &owner, "Foyer").await;
+
+    let mut before = connect_ws(addr_b, &group_id, &owner).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // This throwaway database stops accepting connections, whatever the
+    // role, and every backend on it ends, the listener's included: sqlx's
+    // own immediate reconnection fails, and only the replica's retry loop
+    // can listen again. Postgres takes that switch from another database
+    // only, so the harness role (a superuser in CI) flips it from the
+    // maintenance one.
+    let test_db: String = sqlx::query_scalar("SELECT current_database()")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    let mut maintenance = sqlx::PgConnection::connect_with(
+        &db.connect_options().as_ref().clone().database("postgres"),
+    )
+    .await
+    .unwrap();
+    let allow_connections = |allow: bool| {
+        format!(
+            "ALTER DATABASE \"{}\" ALLOW_CONNECTIONS {allow}",
+            test_db.replace('"', "\"\"")
+        )
+    };
+    sqlx::raw_sql(sqlx::AssertSqlSafe(allow_connections(false)))
+        .execute(&mut maintenance)
+        .await
+        .unwrap();
+    let listeners: Vec<bool> = sqlx::query_scalar(
+        "SELECT query LIKE 'LISTEN %' FROM pg_stat_activity, \
+         LATERAL pg_terminate_backend(pid) WHERE datname = $1",
+    )
+    .bind(&test_db)
+    .fetch_all(&mut maintenance)
+    .await
+    .unwrap();
+    assert_eq!(listeners.iter().filter(|l| **l).count(), 1);
+    // Long enough for sqlx's reconnection to fail and the replica to fall
+    // back on its retry delay.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(allow_connections(true)))
+        .execute(&mut maintenance)
+        .await
+        .unwrap();
+    maintenance.close().await.unwrap();
+
+    expect_closed_without_event(
+        &mut before,
+        "the socket outlived a listener re-established by its retry loop",
+    )
+    .await;
+
+    let mut after = connect_ws(addr_b, &group_id, &owner).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    post_message(&http_a, &group_id, &owner, "after the retry").await;
+    expect_created(&mut after, "after the retry").await;
+
+    after.close(None).await.ok();
+}
+
+/// A replica listens once however many sockets it opens: a second
+/// listener would push every event twice to each of them.
+#[sqlx::test]
+async fn a_replica_listens_once_for_all_its_sockets(db: PgPool) {
+    let (addr, http) = serve_replica(&db).await;
+
+    let owner = register_verify_login(
+        &http,
+        &db,
+        "msg-replica-once@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&http, &owner, "Foyer").await;
+
+    let mut first = connect_ws(addr, &group_id, &owner).await;
+    let mut second = connect_ws(addr, &group_id, &owner).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let listening: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_stat_activity \
+         WHERE datname = current_database() AND query LIKE 'LISTEN %'",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        listening, 1,
+        "one replica, {listening} listening connections"
+    );
+
+    post_message(&http, &group_id, &owner, "once").await;
+    post_message(&http, &group_id, &owner, "sentinel").await;
+    for socket in [&mut first, &mut second] {
+        expect_created(socket, "once").await;
+        expect_created(socket, "sentinel").await;
+    }
+
+    first.close(None).await.ok();
+    second.close(None).await.ok();
 }

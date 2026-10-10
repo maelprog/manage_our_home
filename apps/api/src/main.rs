@@ -113,6 +113,10 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    let message_encryption_key = env::var("MESSAGE_ENCRYPTION_KEY")?;
+    let message_hubs =
+        manage_our_home::messagerie::MessageHub::new(db.clone(), &message_encryption_key);
+
     let state = AppState {
         db,
         google_oauth,
@@ -121,9 +125,9 @@ async fn main() -> anyhow::Result<()> {
         public_base_url,
         frontend_base_url,
         oauth_encryption_key: env::var("OAUTH_ENCRYPTION_KEY")?,
-        message_encryption_key: env::var("MESSAGE_ENCRYPTION_KEY")?,
+        message_encryption_key,
         calendar_feed_encryption_key: env::var("CALENDAR_FEED_ENCRYPTION_KEY")?,
-        message_hubs: manage_our_home::messagerie::MessageHub::new(),
+        message_hubs,
         message_ws_recheck_interval: std::time::Duration::from_secs(30),
         secure_cookies: env::var("SECURE_COOKIES")
             .map(|v| v == "true")
@@ -182,6 +186,11 @@ async fn main() -> anyhow::Result<()> {
         email,
         state.push.clone(),
     ));
+
+    // Messagerie events reach this replica's sockets through Postgres
+    // `LISTEN`, whichever replica wrote them (#429): listen before serving.
+    // The listener keeps one connection of `db` for the process lifetime.
+    state.message_hubs.ensure_listening().await;
 
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;

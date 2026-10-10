@@ -27,8 +27,13 @@ pub fn test_state(db: PgPool) -> AppState {
         .build();
     let email = EmailSender::new(smtp, "noreply@example.test".parse().unwrap());
 
+    let runtime_db = runtime_pool(&db);
     AppState {
-        db: runtime_pool(&db),
+        message_hubs: manage_our_home::messagerie::MessageHub::new(
+            runtime_db.clone(),
+            "test-message-encryption-key",
+        ),
+        db: runtime_db,
         admin_db: db,
         google_oauth,
         google_userinfo_url: manage_our_home::auth::oauth_google::GOOGLE_USERINFO_URL.into(),
@@ -38,7 +43,6 @@ pub fn test_state(db: PgPool) -> AppState {
         oauth_encryption_key: "test-encryption-key".into(),
         message_encryption_key: "test-message-encryption-key".into(),
         calendar_feed_encryption_key: "test-calendar-feed-encryption-key".into(),
-        message_hubs: manage_our_home::messagerie::MessageHub::new(),
         // Production default; tests that exercise the WS membership recheck
         // (AC #7) override this on their own state to keep the bound short.
         message_ws_recheck_interval: std::time::Duration::from_secs(30),
