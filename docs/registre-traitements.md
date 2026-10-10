@@ -1,6 +1,7 @@
 # Registre des traitements — Manage Our Home
 
 Registre tenu au titre de l'article 30 du RGPD. Dernière mise à jour :
+2026-10-10 (chiffrement au repos du volume des données retenu, #380) ;
 2026-10-09 (recette importée depuis l'adresse d'une page : adresse conservée,
 page téléchargée par le serveur, #405 ; responsable désigné par un
 pseudonyme et risque résiduel au regard de l'art. 13, #379) ;
@@ -132,6 +133,14 @@ vers l'hôte et que les ports 80 et 443 y soient ouverts depuis Internet
 HTTP en clair sur `:80` : c'est la pile locale de développement, jamais
 un déploiement public. Derrière Caddy, le trafic vers `apps/web` et
 `apps/api` reste en HTTP sur le réseau Docker interne à l'hôte.
+Chiffrement au repos du volume qui porte les données de Postgres et de
+MinIO sur le serveur de production (mesure 5 de l'AIPD, arbitrage du
+2026-10-05, #380) : **retenu, pas encore en place** — il vient avec le
+serveur (`docs/v2-deployment.md` #1 et #20). Il couvre aussi les pièces
+jointes et le texte libre que `pgcrypto` ne chiffre pas, contre le vol ou
+la réutilisation du support, pas contre une intrusion sur le serveur en
+marche ; les sauvegardes, qui lisent les données en clair, se chiffrent à
+part (#8).
 
 ## Transferts hors de l'Union européenne
 
