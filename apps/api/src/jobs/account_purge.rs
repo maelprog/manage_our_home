@@ -41,6 +41,7 @@ use uuid::Uuid;
 use crate::attachment_reconcile::ensure_bypasses_rls;
 use crate::email::EmailSender;
 use crate::groups::succession;
+use crate::jobs::single_runner::{exclusively, Job};
 use crate::storage::Storage;
 use manage_our_home_shared::validation::groups::OwnershipReason;
 
@@ -70,23 +71,34 @@ pub async fn run(pool: PgPool, email: EmailSender, storage: Storage, frontend_ba
             let email = email.clone();
             async move { email.send(&to, &subject, body).await }
         };
-        if let Err(e) = send_deactivation_notices(&pool, &privacy_policy_url, send).await {
-            tracing::error!(error = ?e, "deactivation notice job failed");
-        }
-        match purge_due_accounts(&pool).await {
-            // A failure leaves orphans for the daily reconcile pass.
-            Ok(keys) if !keys.is_empty() => {
-                if let Err(e) = storage.delete_objects(&keys).await {
-                    tracing::error!(error = ?e, "account purge: attachment objects not deleted");
-                }
+        // One process at a time runs the three steps (#426): a replica
+        // that finds another one at it skips its tick.
+        let pass = async {
+            if let Err(e) = send_deactivation_notices(&pool, &privacy_policy_url, send).await {
+                tracing::error!(error = ?e, "deactivation notice job failed");
             }
-            Ok(_) => {}
-            Err(e) => tracing::error!(error = ?e, "account purge job failed"),
-        }
-        if let Err(e) =
-            succession::send_ownership_notices(&pool, &groups_url, &privacy_policy_url, send).await
-        {
-            tracing::error!(error = ?e, "ownership notice job failed");
+            match purge_due_accounts(&pool).await {
+                // A failure leaves orphans for the daily reconcile pass.
+                Ok(keys) if !keys.is_empty() => {
+                    if let Err(e) = storage.delete_objects(&keys).await {
+                        tracing::error!(error = ?e, "account purge: attachment objects not deleted");
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => tracing::error!(error = ?e, "account purge job failed"),
+            }
+            if let Err(e) =
+                succession::send_ownership_notices(&pool, &groups_url, &privacy_policy_url, send)
+                    .await
+            {
+                tracing::error!(error = ?e, "ownership notice job failed");
+            }
+            anyhow::Ok(())
+        };
+        match exclusively(&pool, Job::AccountPurge, pass).await {
+            Ok(Some(())) => {}
+            Ok(None) => tracing::debug!("account purge pass skipped: another process runs it"),
+            Err(e) => tracing::error!(error = ?e, "account purge job could not take its lock"),
         }
     }
 }

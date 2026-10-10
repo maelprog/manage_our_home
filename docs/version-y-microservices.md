@@ -134,8 +134,10 @@ sans rien changer à l'architecture v1/v2 actuelle :
    (constat du 2026-10-10, qui corrige le « déjà le cas » du 2026-07-08) :
    le process garde de l'état en mémoire, ou lance des tâches qui supposent
    qu'il est seul. #426 à #429 y remédient :
-   - #426 : les tâches de fond tournent dans chaque process (une
-     notification partirait une fois par réplica) ;
+   - #426 : les tâches de fond tournaient dans chaque process (une
+     notification partait une fois par réplica) — réglé : chaque passe prend
+     un verrou consultatif Postgres et ne tourne que dans un process à la
+     fois ;
    - #427 : le frein anti-force-brute du login compte en mémoire ;
    - #428 : les limites de débit de l'import de recettes, des appels à Open
      Food Facts et des rapports CSP comptent en mémoire ;

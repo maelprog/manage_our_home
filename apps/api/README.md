@@ -248,6 +248,16 @@ Four other things run on this pool, and none is a request handler:
   `scheduled_notifications refill failed` (every hour) at ERROR and does
   nothing.
 
+Every api process starts these jobs, and each pass runs in one process at a
+time (#426, `src/jobs/single_runner.rs`): before a pass, the process opens
+a connection of its own and asks Postgres for that job's advisory lock
+(`pg_try_advisory_lock`, one key per job, and the reminder worker's sending
+and refilling passes each have their own). A process that does not get it
+skips that tick; the lock is released when the pass closes its connection,
+or with the session if that connection is cut, and another process takes
+it on its next tick. Each pass holds one connection to the database on top
+of the pool's while it runs.
+
 No request handler other than the seven `/admin/*` ones touches `admin_db`.
 
 ```sql

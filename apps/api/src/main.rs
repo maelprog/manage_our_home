@@ -176,6 +176,10 @@ async fn main() -> anyhow::Result<()> {
         shutdown: manage_our_home_http_guard::Shutdown::new(),
     };
 
+    // Every replica starts these loops; each pass runs in one process at a
+    // time, under its job's Postgres advisory lock (#426,
+    // `jobs::single_runner`): a replica that finds it held skips its tick.
+    //
     // On the admin pool: `event_attachments` reads back empty without
     // BYPASSRLS, and the pass refuses to run rather than trust that (#215).
     tokio::spawn(jobs::attachment_reconcile::run(
