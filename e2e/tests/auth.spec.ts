@@ -389,6 +389,13 @@ test.describe("Auth — renvoi de l'email de vérification (#420)", () => {
   }) => {
     const pending = uniqueEmail("e2e-resend-pending");
     await register(page, pending);
+    // Past the cooldown, so the pending account's resend really issues a
+    // token: the comparison is between a send and two no-ops, not three
+    // no-ops.
+    const cooldown = Number(
+      await page.locator("button[data-resend-cooldown]").getAttribute("data-resend-cooldown"),
+    );
+    await ageVerificationTokens(pending, cooldown + 1);
     const verified = uniqueEmail("e2e-resend-verified");
     await register(page, verified);
     await page.goto(`/verify-email?token=${await fetchVerificationToken(verified)}`);
@@ -414,6 +421,8 @@ test.describe("Auth — renvoi de l'email de vérification (#420)", () => {
     expect(answers[0]).toMatch(/^200 /);
     expect(answers[1]).toBe(answers[0]);
     expect(answers[2]).toBe(answers[0]);
+    // The pending account's resend was a real one.
+    expect(await countVerificationTokens(pending)).toEqual({ issued: 2, unconsumed: 1 });
   });
 });
 
