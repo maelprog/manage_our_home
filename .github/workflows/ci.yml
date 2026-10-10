@@ -421,9 +421,11 @@ jobs:
       # sessions.spec.ts (the session cookie, set and cleared, under its
       # `__Host-` name).
       #
-      # apps/api restarts under SECURE_COOKIES, its configuration otherwise
-      # unchanged: read back from the running process rather than written a
-      # second time, so the two runs cannot drift apart. Its output goes to a
+      # apps/api restarts with three variables changed — SECURE_COOKIES=true,
+      # and PUBLIC_BASE_URL and FRONTEND_BASE_URL moved to https://localhost —
+      # and the rest of its configuration unchanged: read back from the
+      # running process rather than written a second time, so the two runs
+      # cannot drift apart. Its output goes to a
       # file, where caddy-https.spec.ts looks for the violation it causes
       # (API_LOG_PATH). It stops within SHUTDOWN_GRACE_SECONDS (25 by
       # default). apps/web keeps running as it is: of its configuration, only
