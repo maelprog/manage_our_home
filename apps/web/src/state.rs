@@ -41,6 +41,9 @@ pub struct AppState {
     /// reads the browser's body, and held until the relay to apps/api is
     /// answered: the bytes are in memory for all of it.
     pub upload_gate: std::sync::Arc<manage_our_home_http_guard::UploadGate<uuid::Uuid>>,
+    /// Whether the process is stopping (#424): `/readyz` answers 503 from
+    /// then on. `main.rs` triggers it on SIGTERM.
+    pub shutdown: manage_our_home_http_guard::Shutdown,
 }
 
 /// What the incoming request's session is, as `GET /auth/me` answers it.

@@ -33,6 +33,14 @@ async fn main() {
     let api_public_base_url =
         std::env::var("API_PUBLIC_BASE_URL").unwrap_or_else(|_| "/api".to_string());
     let bind_addr = std::env::var("WEB_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".to_string());
+    // How long a stop may take (#424): a malformed value refuses to start
+    // rather than surface at the first SIGTERM.
+    let shutdown_grace = manage_our_home_http_guard::shutdown::grace_period(
+        std::env::var(manage_our_home_http_guard::shutdown::GRACE_VAR)
+            .ok()
+            .as_deref(),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
 
     let state = AppState {
         http: reqwest::Client::new(),
@@ -40,22 +48,30 @@ async fn main() {
         api_public_base_url,
         body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
         upload_gate: manage_our_home_http_guard::UploadGate::production(),
+        shutdown: manage_our_home_http_guard::Shutdown::new(),
     };
 
+    let shutdown = state.shutdown.clone();
     let app = build_router(state);
 
     tracing::info!(%bind_addr, "starting manage_our_home_web");
     let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
-    // `into_make_service_with_connect_info` is what puts the peer address in
-    // each request's extensions. `/login` appends it to the `X-Forwarded-For`
-    // it relays to apps/api, which is the only way apps/api can tell one
-    // browser from another behind this SSR layer (#178).
-    axum::serve(
+    // On SIGTERM: `/readyz` turns 503, the listener closes and the requests
+    // in flight finish, within `shutdown_grace` (#424). `serve` also puts
+    // the peer address in each request's extensions. `/login` appends it to
+    // the `X-Forwarded-For` it relays to apps/api, which is the only way
+    // apps/api can tell one browser from another behind this SSR layer
+    // (#178).
+    manage_our_home_http_guard::shutdown::serve(
         listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        app,
+        shutdown,
+        manage_our_home_http_guard::shutdown::terminate_signal(),
+        shutdown_grace,
     )
     .await
     .unwrap();
+    tracing::info!("stopped");
 }
 
 /// Every route of apps/web, with its state. A function of its own so the
@@ -396,6 +412,10 @@ fn build_router(state: AppState) -> Router {
             origin_guard,
             manage_our_home_http_guard::guard_cross_origin,
         ))
+        // The orchestrator's probes (#424), after every layer so that none
+        // applies: they read no cookie and no body.
+        .route("/healthz", get(routes::health::healthz))
+        .route("/readyz", get(routes::health::readyz))
         .with_state(state)
 }
 
@@ -446,6 +466,7 @@ mod cross_origin_tests {
             api_public_base_url: "/api".into(),
             body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
             upload_gate: manage_our_home_http_guard::UploadGate::production(),
+            shutdown: manage_our_home_http_guard::Shutdown::new(),
         });
         (router, logins)
     }
