@@ -129,10 +129,7 @@ fn page(status: &DeactivatedAccountResponse, notice: Option<&str>, error: Option
 {request}
 <form method="post" action="/logout">
 <button type="submit" class="secondary">Se déconnecter</button>
-</form>
-<div class="links">
-<a href="/privacy-policy">Politique de confidentialité</a>
-</div>"#,
+</form>"#,
         title = TITLE,
         purge = html_escape(&purge_note(status)),
         notice = notice_html(notice),
