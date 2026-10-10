@@ -118,11 +118,11 @@ services:
   # One-shot (#425): applies the migrations with the api image's `migrate`
   # command, then exits; `api` only starts once it has exited 0, and itself
   # only checks that the schema is current. A `docker compose up` on an
-  # up-to-date base runs it again, as a no-op.
+  # up-to-date base runs it again, as a no-op. No `build:` of its own: it
+  # runs the image `api` builds (same `image:` name), so the workspace is
+  # compiled once.
   migrate:
-    build:
-      context: ..
-      dockerfile: apps/api/Dockerfile
+    image: manage-our-home-api:0.0.0-local
     command: ["migrate"]
     depends_on:
       postgres:
@@ -137,6 +137,10 @@ services:
       MIGRATION_DATABASE_URL: postgres://migration_role:${MIGRATION_ROLE_PASSWORD}@postgres/manage_our_home
 
   api:
+    # The name `migrate` runs too. A local build, never pulled: `0.0.0-local`
+    # says so, and is still the full version e2e/scripts/lib/image-pins.ts
+    # requires of every `image:` line.
+    image: manage-our-home-api:0.0.0-local
     build:
       context: ..
       dockerfile: apps/api/Dockerfile
