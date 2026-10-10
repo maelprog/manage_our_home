@@ -31,51 +31,62 @@ const CADDYFILE: &str = include_str!("../../../infra/Caddyfile");
 /// The value of the header `name` that the Caddyfile sets on **every**
 /// response: inside a `header { … }` block or as `header <name> <value>`,
 /// on an uncommented line, the value either `"…"`, `` `…` `` or a bare token.
+/// `None` when no value holds for every response, or when the guard cannot
+/// tell which one does.
 ///
-/// A `header` that carries a matcher (`header @api { … }`,
-/// `header /login Name "…"`) does not count: it sets the header on the
-/// responses it matches only — except `*`, the matcher of every request.
-/// Neither does `<name>-Report-Only` for
-/// `Content-Security-Policy`, which reports and blocks nothing — the field
-/// name has to be exactly `name`.
-/// And none counts once a `-<name>` anywhere (later in the file, in the
-/// same block, under a matcher) deletes the header again — the name in any
-/// case, or a `*` wildcard covering it (`deletes`) — nor once Caddy's
-/// replacement form `<name> <search> <replace>` edits it: what is sent is
-/// then no longer what the file wrote, until a set in a later `header`
-/// directive writes it again. Inside one `header { … }` block the edit holds
-/// to the end of the block, whatever the order of its lines: Caddy applies
-/// a block's sets before its replacements. Field names match in
-/// any case, and of several values set, the last one is read: it is the one
-/// Caddy sends.
+/// The `header` directives are played in the order Caddy applies them, as
+/// checked against caddy:2.11.4 (`caddy_header_follows_caddys_order_of_operations`):
+///
+/// 1. those with a matcher (`header @api …`, `header /login …`), which
+///    Caddy sorts before the others — `*`, the matcher of every request,
+///    counts as none;
+/// 2. those without, in the order of the file;
+/// 3. the deferred ones — holding a `-<field>`, `?<field>` or `><field>`
+///    line, or `defer` — when the response is written, the first one of the
+///    file last.
+///
+/// Inside one directive the sets come first, then the replacements
+/// (`<name> <search> <replace>`), whatever the order of the lines; of several
+/// sets the last one counts. A replacement leaves the value unknown (the
+/// guard does not compute it), until a set in a directive applied later; a
+/// replacement finding no value does nothing. `?<name>` sets a value only
+/// where there is none; `+<name>` adds a second one, which leaves the value
+/// unknown. A directive with a matcher that touches the field leaves it
+/// unknown too — its responses get something else — unless a set without a
+/// matcher applied later covers them all; deferred, nothing applies after it.
+///
+/// Field names match in any case, and `<name>-Report-Only` is another field:
+/// it reports and blocks nothing. Once a `-<name>` anywhere (matcher or not,
+/// deferred or not) deletes the field — the name in any case, or a `*`
+/// wildcard covering it (`deletes`) — no value holds.
 ///
 /// What it does **not** see — a reading of lines, not Caddy's parser: a
 /// `header` nested in a `handle`, `route` or snippet (scoped by that block,
-/// not by a matcher of its own), and a value split across lines. What Caddy
-/// really sends is checked by the `e2e` job of `ci.yml`, which goes through
-/// this Caddyfile over HTTPS (`e2e/tests/caddy-https.spec.ts`, #381).
+/// not by a matcher of its own) and its place among other directives, a
+/// value split across lines, a block holding a `match` of response matchers,
+/// the relative order of several directives with matchers, and what a
+/// replacement turns the value into. What Caddy really sends is checked by
+/// the `e2e` job of `ci.yml`, which goes through this Caddyfile over HTTPS
+/// (`e2e/tests/caddy-https.spec.ts`, #381).
 fn caddy_header(caddyfile: &str, name: &str) -> Option<String> {
-    let mut found = None;
-    // Deleted on some response: no value holds for every one.
+    let mut directives: Vec<Directive> = Vec::new();
     let mut deleted = false;
-    // Inside a `header … {` block: whether that block carries a matcher.
-    let mut block: Option<bool> = None;
-    // Whether the current block edits the field: Caddy applies a block's
-    // sets before its replacements, so the edit holds to the block's end.
-    let mut edited_in_block = false;
+    // Inside a `header … {` block: the directive it is.
+    let mut block: Option<Directive> = None;
     for line in caddyfile.lines().map(str::trim) {
         if line.starts_with('#') {
             continue;
         }
-        let (scoped, field) = if let Some(scoped) = block {
+        let field = if let Some(open) = block.as_mut() {
             if line.starts_with('}') {
-                block = None;
-                if std::mem::take(&mut edited_in_block) {
-                    found = None;
-                }
+                directives.extend(block.take());
                 continue;
             }
-            (scoped, line)
+            if line == "defer" {
+                open.deferred = true;
+                continue;
+            }
+            line
         } else {
             let Some(rest) = line
                 .strip_prefix("header")
@@ -92,34 +103,135 @@ fn caddy_header(caddyfile: &str, name: &str) -> Option<String> {
             } else {
                 rest
             };
+            let directive = Directive {
+                scoped,
+                ..Directive::default()
+            };
             if rest.starts_with('{') {
-                block = Some(scoped);
+                block = Some(directive);
                 continue;
             }
-            (scoped, rest)
+            directives.push(directive);
+            rest
         };
-        // `-<name>` removes the header from the responses it applies to,
-        // matcher or not: some response, then, goes without it.
-        deleted |= field
-            .strip_prefix('-')
-            .and_then(|f| f.split_whitespace().next())
-            .is_some_and(|pattern| deletes(pattern, name));
-        match field_value(field, name) {
-            // Caddy sends the last value set: later ones replace earlier ones.
-            Some(Field::Set(value)) if !scoped => found = Some(value),
-            // An edit leaves no known value until a set in a later `header`
-            // directive gives one.
-            Some(Field::Replaced) => {
-                found = None;
-                edited_in_block = block.is_some();
-            }
-            _ => {}
+        let directive = block
+            .as_mut()
+            .or(directives.last_mut())
+            .expect("a directive");
+        let (prefix, rest) = match field.chars().next() {
+            Some(c @ ('-' | '?' | '>' | '+')) => (Some(c), &field[1..]),
+            _ => (None, field),
+        };
+        if matches!(prefix, Some('-' | '?' | '>')) {
+            directive.deferred = true;
         }
+        if prefix == Some('-') {
+            // `-<name>` removes the header from the responses it applies to,
+            // matcher or not: some response, then, goes without it.
+            deleted |= rest
+                .split_whitespace()
+                .next()
+                .is_some_and(|pattern| deletes(pattern, name));
+            continue;
+        }
+        directive
+            .ops
+            .extend(field_value(rest, name).map(|field| match (prefix, field) {
+                (None | Some('>'), Field::Set(value)) => Op::Set(value),
+                (None | Some('>'), Field::Replaced) => Op::Replace,
+                (Some('?'), Field::Set(value)) => Op::Default(value),
+                _ => Op::Add,
+            }));
     }
     if deleted {
-        None
+        return None;
+    }
+    let (deferred, now): (Vec<_>, Vec<_>) = directives.into_iter().partition(|d| d.deferred);
+    let (scoped, unscoped): (Vec<_>, Vec<_>) = now.into_iter().partition(|d| d.scoped);
+    let mut value = if scoped.iter().any(|d| !d.ops.is_empty()) {
+        Value::Unknown
     } else {
-        found
+        Value::Absent
+    };
+    for directive in &unscoped {
+        value = directive.apply(value);
+    }
+    for directive in deferred.iter().rev() {
+        if directive.scoped && !directive.ops.is_empty() {
+            return None;
+        }
+        value = directive.apply(value);
+    }
+    match value {
+        Value::Known(value) => Some(value),
+        Value::Absent | Value::Unknown => None,
+    }
+}
+
+/// One `header` directive, as far as one field goes.
+#[derive(Debug, Default)]
+struct Directive {
+    /// It carries a matcher other than `*`.
+    scoped: bool,
+    /// Applied when the response is written, not when the request passes.
+    deferred: bool,
+    /// What it does to the field, in the order of its lines.
+    ops: Vec<Op>,
+}
+
+/// One line of a directive on the field.
+#[derive(Debug)]
+enum Op {
+    /// `<name> <value>` or `><name> <value>`.
+    Set(String),
+    /// `?<name> <value>`: only where there is none.
+    Default(String),
+    /// `+<name> …`, or any form the guard does not read.
+    Add,
+    /// `<name> <search> <replace>`.
+    Replace,
+}
+
+/// What the field holds at one point of the response's way out.
+#[derive(Debug, PartialEq)]
+enum Value {
+    Absent,
+    Known(String),
+    /// Set, but to something the guard does not compute.
+    Unknown,
+}
+
+impl Directive {
+    /// `value` once this directive has run: its sets, then its defaults,
+    /// then its replacements.
+    fn apply(&self, value: Value) -> Value {
+        let mut sets = self.ops.iter().filter_map(|op| match op {
+            Op::Set(v) => Some(v),
+            _ => None,
+        });
+        let defaults: Vec<_> = self
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::Default(v) => Some(v),
+                _ => None,
+            })
+            .collect();
+        let added = self.ops.iter().any(|op| matches!(op, Op::Add));
+        let replaced = self.ops.iter().any(|op| matches!(op, Op::Replace));
+        let last_set = sets.next_back();
+        if added || defaults.len() > 1 || (last_set.is_some() && !defaults.is_empty()) {
+            return Value::Unknown;
+        }
+        let value = match (last_set, defaults.first(), value) {
+            (Some(set), _, _) => Value::Known(set.clone()),
+            (None, Some(default), Value::Absent) => Value::Known((*default).clone()),
+            (None, _, value) => value,
+        };
+        match value {
+            Value::Known(_) if replaced => Value::Unknown,
+            value => value,
+        }
     }
 }
 
@@ -547,7 +659,9 @@ fn caddy_csp_is_none_once_a_replacement_edits_it() {
     for file in [
         "\theader {\n\t\tContent-Security-Policy \"script-src 'self'\"\n\t}\n\theader Content-Security-Policy \"'self'\" \"'self' 'unsafe-inline'\"\n",
         "\theader {\n\t\tContent-Security-Policy \"script-src 'self'\"\n\t\tContent-Security-Policy `'self'` `*`\n\t}\n",
-        "\theader {\n\t\tContent-Security-Policy \"script-src 'self'\"\n\t}\n\theader @api Content-Security-Policy self none\n",
+        // Deferred, the one with a matcher edits the value on the responses
+        // it matches (not deferred, it would run first and edit nothing).
+        "\theader {\n\t\tContent-Security-Policy \"script-src 'self'\"\n\t}\n\theader @api {\n\t\t-Server\n\t\tContent-Security-Policy self none\n\t}\n",
     ] {
         assert_eq!(caddy_csp(file).as_deref(), None, "{file}");
     }
@@ -574,6 +688,101 @@ fn caddy_csp_is_none_once_a_replacement_edits_it() {
     assert_eq!(
         caddy_header(file, "X-Frame-Options").as_deref(),
         Some("DENY")
+    );
+}
+
+/// The order in which Caddy applies `header` directives, each case checked
+/// against caddy:2.11.4 (what it sent is the expected value, or `None` where
+/// the guard declines to tell). The directives with a matcher run before the
+/// others; those without a `-`, `?`, `>` or `defer` run when the request
+/// passes, in the order of the file; the deferred ones when the response is
+/// written, the first one of the file last. Inside one directive the sets
+/// come before the replacements.
+#[test]
+fn caddy_header_follows_caddys_order_of_operations() {
+    let x = |file: &str| caddy_header(file, "X-T");
+    let wrong = [
+        // A deferred directive applies after every directive that is not.
+        (
+            "header {\n-Server\nX-T \"first\"\n}\nheader X-T \"second\"\n",
+            Some("first"),
+        ),
+        ("header >X-T \"a\"\nheader X-T \"b\"\n", Some("a")),
+        (
+            "header {\nX-T \"a\"\ndefer\n}\nheader X-T \"b\"\n",
+            Some("a"),
+        ),
+        (
+            "header {\n-Server\nX-T \"a\"\n}\nheader X-T \"a\" \"z\"\n",
+            Some("a"),
+        ),
+        (
+            "header X-T \"a\"\nheader {\n-Server\nX-T \"a\" \"z\"\n}\n",
+            None,
+        ),
+        // Of two deferred directives, the first of the file applies last.
+        (
+            "header {\n-Server\nX-T \"first\"\n}\nheader {\n-Foo\nX-T \"second\"\n}\n",
+            Some("first"),
+        ),
+        ("header >X-T \"a\"\nheader >X-T \"b\"\n", Some("a")),
+        (
+            "header >X-T \"a\"\nheader {\n-Server\nX-T \"b\"\n}\n",
+            Some("a"),
+        ),
+        // Not deferred: the order of the file; a replacement finding no
+        // value does nothing.
+        ("header X-T \"a\"\nheader X-T \"b\"\n", Some("b")),
+        ("header {\nX-T \"a\"\nX-T \"b\"\n}\n", Some("b")),
+        (
+            "header X-T \"a\"\nheader X-T \"a\" \"z\"\nheader X-T \"b\"\n",
+            Some("b"),
+        ),
+        ("header X-T \"a\" \"z\"\nheader X-T \"a\"\n", Some("a")),
+        // `?` sets a value only where there is none, when the response is
+        // written; `+` adds a second one.
+        ("header X-T \"a\"\nheader ?X-T \"b\"\n", Some("a")),
+        ("header {\n?X-T \"d\"\n}\nheader X-T \"b\"\n", Some("b")),
+        ("header ?X-T \"d\"\n", Some("d")),
+        ("header X-T \"a\"\nheader +X-T \"b\"\n", None),
+        ("header {\nX-T \"a\"\n?X-T \"d\"\n}\n", None),
+        // A directive with a matcher runs first: a later one without
+        // overrides it, wherever the file writes it.
+        (
+            "header X-T \"global\"\nheader /x X-T \"scoped\"\n",
+            Some("global"),
+        ),
+        (
+            "@all path *\nheader X-T \"global\"\nheader @all X-T \"named\"\n",
+            Some("global"),
+        ),
+        (
+            "@all path *\nheader X-T \"a\"\nheader @all X-T \"a\" \"z\"\n",
+            Some("a"),
+        ),
+        // Unless it is deferred: it then applies last, on the responses it
+        // matches only.
+        (
+            "@all path *\nheader X-T \"g\"\nheader @all {\n-Server\nX-T \"s\"\n}\n",
+            None,
+        ),
+        (
+            "header /x {\n-Server\nX-T \"s\"\n}\nheader {\n-Foo\nX-T \"g\"\n}\n",
+            None,
+        ),
+    ]
+    .into_iter()
+    .filter(|(file, sent)| x(file).as_deref() != *sent)
+    .map(|(file, sent)| format!("{file:?}: expected {sent:?}, read {:?}", x(file)))
+    .collect::<Vec<_>>();
+    // The case found in review: a deferred rewrite outlives a later set.
+    let file = "header {\n-Server\nContent-Security-Policy \"script-src 'self'\" \"script-src 'self' 'unsafe-inline'\"\n}\n\
+                header {\nContent-Security-Policy \"default-src 'self'; script-src 'self'\"\n}\n";
+    let review = caddy_csp(file);
+    assert!(
+        wrong.is_empty() && review.is_none(),
+        "\n{}\nreview case: {review:?}",
+        wrong.join("\n")
     );
 }
 
