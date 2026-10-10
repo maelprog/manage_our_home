@@ -194,30 +194,60 @@ impl SchemaDrift {
 
 impl std::fmt::Display for SchemaDrift {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let described = [
-            ("pending", &self.pending),
-            ("failed", &self.failed),
-            ("modified after being applied", &self.modified),
-            ("unknown to this build", &self.unknown),
-        ]
-        .iter()
-        .filter(|(_, versions)| !versions.is_empty())
-        .map(|(label, versions)| {
-            let versions = versions
-                .iter()
-                .map(i64::to_string)
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("{label}: {versions}")
-        })
-        .collect::<Vec<_>>()
-        .join("; ");
+        // Only `pending` is something `migrate` fixes: on the three others
+        // sqlx's migrator refuses too, so each gets its own remedy.
+        let pending_remedy = format!(
+            "Run the `migrate` command (it reads {MIGRATION_URL_VAR}) before starting the \
+             server, or, on a local stack only, set {MIGRATE_ON_BOOT_VAR}=true to have the \
+             server apply them itself"
+        );
+        let cases = [
+            ("pending", &self.pending, pending_remedy.as_str()),
+            (
+                "failed",
+                &self.failed,
+                "A migration pass stopped half way: repair the schema by hand and its \
+                 `_sqlx_migrations` row, as `migrate` refuses a database in that state",
+            ),
+            (
+                "modified after being applied",
+                &self.modified,
+                "A migration file was edited after it was applied: restore the file as it \
+                 was applied and ship the change as a new migration, as `migrate` refuses \
+                 a checksum that moved",
+            ),
+            (
+                "unknown to this build",
+                &self.unknown,
+                "The database was migrated by a newer build: deploy that build or a later \
+                 one, or roll the schema back, as `migrate` cannot remove a migration",
+            ),
+        ];
+        let present = cases
+            .iter()
+            .filter(|(_, versions, _)| !versions.is_empty())
+            .collect::<Vec<_>>();
+        let described = present
+            .iter()
+            .map(|(label, versions, _)| {
+                let versions = versions
+                    .iter()
+                    .map(i64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{label}: {versions}")
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        let remedies = present
+            .iter()
+            .map(|(_, _, remedy)| *remedy)
+            .collect::<Vec<_>>()
+            .join(". ");
         write!(
             f,
             "the database schema does not match the migrations this build carries \
-             ({described}). Apply them with the `migrate` command (it reads \
-             {MIGRATION_URL_VAR}) before starting the server, or, on a local stack only, \
-             set {MIGRATE_ON_BOOT_VAR}=true to have the server apply them itself"
+             ({described}). {remedies}"
         )
     }
 }
@@ -469,7 +499,7 @@ impl LoggingMigrate<'_> {
     /// without the other. That is not a refinement: splitting them is
     /// <https://github.com/launchbadge/sqlx/issues/1966>, where a
     /// migration is applied but not recorded and runs again on the next
-    /// boot. `execution_time` is then filled in by a second statement
+    /// pass. `execution_time` is then filled in by a second statement
     /// outside that transaction — it is initialised to `-1` on purpose
     /// and exists only for debugging, so losing it to a crash between
     /// the two is the accepted trade sqlx already makes.
@@ -486,7 +516,8 @@ impl LoggingMigrate<'_> {
         let per_statement = if migration.no_tx {
             execute_and_count(self.0, table_name, migration).await?
         } else {
-            // A boot-time pass on its own one-connection pool: no client
+            // A pass on its own one-connection pool, run by `migrate` (or at
+            // boot under MIGRATE_ON_BOOT), never by a request: no client
             // hang-up can cancel it, so `db::begin` has nothing to add.
             #[allow(clippy::disallowed_methods)]
             let mut tx = self.0.begin().await?;
@@ -690,6 +721,59 @@ mod tests {
         assert!(msg.contains("pending: 2"), "{msg}");
         assert!(msg.contains("migrate"), "{msg}");
         assert!(msg.contains("MIGRATE_ON_BOOT"), "{msg}");
+    }
+
+    /// A failed row the build does not know either: it is a half-applied
+    /// pass first, and reported as such — never as a clean unknown
+    /// version.
+    #[test]
+    fn an_unknown_version_that_failed_is_reported_as_failed() {
+        let mut row = applied(2, b"b");
+        row.success = false;
+        let drift = schema_drift(&[(1, b"a")], &[applied(1, b"a"), row]);
+        assert_eq!(drift.failed, vec![2]);
+        assert!(drift.unknown.is_empty(), "{drift:?}");
+    }
+
+    /// `migrate` fixes only what is pending; it refuses the three other
+    /// cases itself. So it is offered for those only, and each of the
+    /// others gets the remedy that applies to it.
+    #[test]
+    fn only_a_pending_migration_is_sent_to_migrate() {
+        let mut failed = applied(2, b"b");
+        failed.success = false;
+        let cases = [
+            (
+                schema_drift(&[(1, b"a"), (2, b"b")], &[applied(1, b"a"), failed]),
+                "half way",
+            ),
+            (
+                schema_drift(&[(1, b"a")], &[applied(1, b"x")]),
+                "restore the file",
+            ),
+            (
+                schema_drift(&[(1, b"a")], &[applied(1, b"a"), applied(2, b"b")]),
+                "newer build",
+            ),
+        ];
+        for (drift, remedy) in cases {
+            let msg = drift.to_string();
+            assert!(msg.contains(remedy), "{remedy:?} missing: {msg}");
+            assert!(
+                !msg.contains("MIGRATE_ON_BOOT") && !msg.contains("Run the `migrate` command"),
+                "migrate offered where it would refuse: {msg}"
+            );
+        }
+    }
+
+    /// Several problems at once: each one's remedy is given.
+    #[test]
+    fn each_problem_present_gets_its_remedy() {
+        let msg = schema_drift(&[(1, b"a"), (2, b"b")], &[applied(1, b"x")]).to_string();
+        assert!(msg.contains("pending: 2"), "{msg}");
+        assert!(msg.contains("modified after being applied: 1"), "{msg}");
+        assert!(msg.contains("Run the `migrate` command"), "{msg}");
+        assert!(msg.contains("restore the file"), "{msg}");
     }
 
     #[test]
