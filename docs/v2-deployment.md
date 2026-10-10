@@ -28,9 +28,10 @@ rationale in `architecture.md` ("v2 — Déploiement multi-famille").
 | 20 | Chiffrement au repos du volume des données de Postgres et de MinIO | missing | **À faire avant la mise en ligne** — bloquant (#380). Mesure 5 de l'AIPD, retenue par l'arbitrage du 2026-10-05 ; `docs/privacy-policy.md` (« Sécurité ») et `docs/registre-traitements.md` l'annoncent. Protège les données si le support est volé ou réutilisé (disque, instantané, volume rendu au fournisseur), pas contre une intrusion sur le serveur en marche, où le volume est ouvert. Dépend de l'item #1 ; les sauvegardes (#8) restent à chiffrer à part. `infra/check-volume-encryption.sh` vérifie le résultat. Voir la procédure ci-dessous. |
 
 **Immediate next step:** apart from item 2, none of the above are done
-yet. Given the ~1 week horizon, items 4-9 (RGPD + backups) and 14
-(rate-limiting) are the hard blockers for a responsible first deployment;
-1 and 10-13 support them.
+yet. Given the ~1 week horizon, items 4-9 (RGPD + backups), 14
+(rate-limiting) and 16-20 (controller and publisher identity, email
+subprocessor, signed AIPD, volume encryption) are the hard blockers for a
+responsible first deployment; 1 and 10-13 support them.
 
 ## Item #16 — remplacer les placeholders du responsable de traitement
 
