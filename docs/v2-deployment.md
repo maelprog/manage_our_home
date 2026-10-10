@@ -4,9 +4,16 @@ Companion to `v1-scope.md`, same format. Target: first external deployment
 next week (once v1 is validated), for 10-15 families. Decisions and
 rationale in `architecture.md` ("v2 — Déploiement multi-famille").
 
+**Revised 2026-10-10 (user decisions, epic #441):** v2 is to be deployed on
+k3s, not Docker Compose (nothing is deployed yet) — two self-managed
+clusters, production on a third-party VPS and staging on the home server,
+with Postgres (CloudNativePG) and MinIO inside the cluster, images on GitHub
+Container Registry, and GitOps delivery through Argo CD. Items 1, 11, 12, 13 and 15 below are requalified
+accordingly; the rationale is in `version-y-microservices.md`.
+
 | # | Item | Status | Notes |
 |---|---|---|---|
-| 1 | VPS provisioning | missing | Hetzner/Scaleway, 2 vCPU/4 Go class. Same Docker Compose stack as local dev. |
+| 1 | Hosting: two k3s clusters (production on a third-party VPS, staging on the home server) | missing | Requalified 2026-10-10 (#441); was "VPS provisioning, same Docker Compose stack as local dev". Self-managed k3s, embedded etcd from the first node so the home cluster can grow to several nodes. Production stays on a third-party VPS (Hetzner/Scaleway class): a third-party host keeps the publisher's LCEN anonymity (item #17, #379); the home server is not public (#440). Installation and switch-over from Compose: #438. Docker Compose remains the local development stack. |
 | 2 | TLS via Caddy in production | done | Configured since #141 (`infra/Caddyfile`, site `{$SITE_ADDRESS::80}`): `infra/generate-env.sh <domain>` puts the public domain name in `SITE_ADDRESS`, which turns on Caddy's automatic HTTPS — certificate obtained and renewed by Caddy (kept in the `caddy_data` volume), port 80 only redirecting to 443, `Strict-Transport-Security` on every response. Takes effect on the host of item #1, provided the name resolves to it and its ports 80 and 443 are reachable from the Internet (README, "Running it for real"). The `:80` fallback is the local plain-HTTP stack only. `docs/registre-traitements.md` (« Mesures de sécurité communes ») refers to this setup (#315). |
 | 3 | Superadmin role | missing | Global technical role, distinct from group owner/admin/standard. Single account (maintainer) for now — no support team to model. |
 | 4 | RGPD: data export (Art. 20) | missing | Blocking before first external deployment. |
@@ -16,11 +23,11 @@ rationale in `architecture.md` ("v2 — Déploiement multi-famille").
 | 8 | Backups: Postgres + MinIO, encrypted | missing | Blocking. |
 | 9 | Backups: restore tested | missing | Blocking — must be proven before go-live, not after an incident. **Restore Postgres and MinIO to the same point.** The API deletes, once a day, every attachment object older than 24h that no `event_attachments` row points at (#215, `apps/api/src/jobs/attachment_reconcile.rs`). A Postgres dump older than the bucket leaves every attachment uploaded since the dump without a row, and the next pass after they turn 24h old deletes those files for good. Before such a restore, either restore the bucket to the same point, or keep the API from running the job (start it with `ADMIN_DATABASE_URL` on a role without `BYPASSRLS`, which makes every pass refuse, and also breaks the `/admin/*` endpoints and stops the hourly retention purge (#138) and the hourly account purge (#139), all of which share that pool) until the rows are reconciled. |
 | 10 | CI: `cargo audit` | missing | Same as v1 tracker item #13, still not in `ci.yml`. |
-| 11 | CD: deploy pipeline (build → push → deploy to VPS) | missing | |
-| 12 | Monitoring: uptime check | missing | Not yet designed anywhere in `architecture.md`. |
-| 13 | Monitoring: centralized/queryable logs | missing | |
+| 11 | CD: GitOps delivery to the clusters | missing | Requalified 2026-10-10 (#441); was "build → push → deploy to VPS". Images built, scanned, signed and pushed to GHCR (#430); manifests on a `deploy` branch of this repo, one folder per environment (#431); one Argo CD per cluster with Sealed Secrets (#432); a bot opens promotion PRs, staging following `main` and production following tags (#436). Every change to `deploy` goes through a PR merged by hand by the user, and the production Argo CD has no automatic sync: deploying is the user's "Sync". |
+| 12 | Monitoring: uptime check | missing | Requalified 2026-10-10: carried by #437 (kube-prometheus-stack in the cluster, alerts on failing probes, failed migration Job, late backup, expiring certificate, disk usage). |
+| 13 | Monitoring: centralized/queryable logs | missing | Requalified 2026-10-10: carried by #437 (Loki with a bounded retention, declared in `docs/registre-traitements.md` since the logs hold IP addresses). |
 | 14 | Rate-limiting on `/login`, `/register` | missing | Called out in `architecture.md` security section as "once exposed to internet" — that condition is now met. |
-| 15 | Secrets via sops in production | missing | Scaffolding exists conceptually in `architecture.md`; not yet wired to a real deployment. |
+| 15 | Secrets in production: Sealed Secrets | missing | Requalified 2026-10-10 (#441); was "Secrets via sops in production". Application secrets are to be `SealedSecret` objects on the `deploy` branch, opened only by the cluster's controller; the controller's private key is never to be committed and is to be backed up off the cluster (#432). |
 | 16 | RGPD: pseudonyme et adresse de contact du responsable de traitement | missing | **À remplacer avant la mise en ligne** — bloquant (#131, #379). Art. 13(1)(a) exige l'identité *et* les coordonnées du responsable. Le porteur du projet (personne physique) est désigné par un pseudonyme, jamais par son nom civil (arbitrage du 2026-10-05, #379 : son nom publié viderait l'anonymat LCEN de l'item #17) ; le risque résiduel au regard de l'art. 13 est décrit dans `docs/registre-traitements.md`, à valider en relecture. Il fournit ce pseudonyme et une adresse dédiée au service, relevée par une personne — pas un `noreply@` — au moment de l'ouverture publique. Voir la procédure ci-dessous. |
 | 17 | LCEN: hébergeur des mentions légales et identité de l'éditeur confiée à l'hébergeur | missing | **À remplacer avant la mise en ligne** — bloquant (#132, #314). Les mentions légales existent et sont servies (`docs/legal-notice.md`, `GET /legal-notice`), mais trois valeurs y sont encore des placeholders. L'éditeur use de l'anonymat de la LCEN art. 1-1, II (arbitrage du 2026-10-04) : son identité est communiquée à l'hébergeur, pas publiée. L'hébergeur dépend de l'item #1 et doit être un tiers : l'anonymat ne tient pas en auto-hébergement (#379). Voir la procédure ci-dessous. |
 | 18 | RGPD: cadre contractuel du sous-traitant email et transferts hors UE | missing | **À faire avant la mise en ligne** — bloquant (#136, #328). Le fournisseur est arrêté (Scaleway Transactional Email, arbitrage du 2026-10-02 qui remplace Mailjet) et ne transfère rien hors UE, relevé daté dans le registre. Restent à établir le cadre contractuel opposable (DPA accepté depuis la console Scaleway) et les transferts hors UE de Google et des services de notification des navigateurs (#306) : trois placeholders les portent dans la politique et le registre. Rien dans le code ne contraint `SMTP_HOST`. Voir la procédure ci-dessous. |
@@ -303,7 +310,7 @@ données. Deux voies, selon l'offre retenue à l'item #1 :
 **La clé.**
 
 - Elle ne vit pas sur le serveur : ni dans `infra/.env`, ni dans les
-  secrets sops du déploiement (#15), ni dans un fichier de clé sur le disque
+  secrets scellés du déploiement (#15), ni dans un fichier de clé sur le disque
   système. Un instantané de la machine emporterait sinon la clé avec le
   volume.
 - Le déverrouillage est donc manuel à chaque démarrage du serveur : se

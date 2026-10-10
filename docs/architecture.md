@@ -94,8 +94,8 @@ questionnaire.
 | Web frontend | **Leptos (SSR via `leptos_axum`)** | Superseded 2026-07-08 (see Front epic #1, GH issue #15): keeps the whole stack in Rust — shared DTOs/validation between `apps/api` and `apps/web` via a new `apps/shared` crate compiled natively and to `wasm32-unknown-unknown`, no duplicated request/response types or a second language's tooling/CI/audit surface to maintain. Ecosystem gaps (calendar widgets, rich components) are accepted and closed by hand-rolling rather than pulling in a JS framework, in line with the "one Rust monolith" posture already used for the backend. |
 | Mobile client | **Capacitor wrapping the Leptos web app** | Targeted for v1.1 (not the Auth front epic). Reuses the `apps/web` build instead of maintaining a second UI; native shell only for what genuinely needs it (push notifications, camera for fridge-scan). Cross-origin cookie handling for the Capacitor WebView is an open question, to be resolved in that future epic. |
 | Reverse proxy / TLS | **Caddy** | Automatic TLS renewal, minimal config, fits a home-hosted single-server deployment. |
-| Deployment | **Docker Compose** on your home server | Matches "home hosted"; one compose file for Axum, Postgres, MinIO, Ollama, Caddy; straightforward volume backup for Postgres + MinIO data. |
-| Secrets / encryption keys | **sops** (age-backed) for encrypting secrets at rest in the repo, keys injected as env vars at container start, never committed | Standard practice for home-hosted secret management without a full vault service. |
+| Deployment | **Docker Compose** on your home server | Matches "home hosted"; one compose file for Axum, Postgres, MinIO, Ollama, Caddy; straightforward volume backup for Postgres + MinIO data. **Revised 2026-10-10 (epic #441):** Compose is to stay for local development only; staging and production are to run on k3s (see "Version Y" below). Nothing is deployed yet. |
+| Secrets / encryption keys | **sops** (age-backed) for encrypting secrets at rest in the repo, keys injected as env vars at container start, never committed | Standard practice for home-hosted secret management without a full vault service. **Revised 2026-10-10 (epic #441):** on the k3s clusters, application secrets are to be Sealed Secrets (#432); sops remains for the Compose stack. |
 | PII encryption at rest | **`pgcrypto`** for sensitive columns (e.g. message content, fridge photo metadata) in addition to disk-level encryption on the Postgres/MinIO volumes | RGPD Art. 32 ("mesures techniques appropriées"); protects data even if a DB backup or disk is exfiltrated. |
 | Dependency / vuln scanning | **`cargo audit`** in CI, blocking on high/critical, across the whole workspace (`apps/api`, `apps/web`, `apps/shared`) | Baseline expected by any enterprise security questionnaire; catches known CVEs before deploy. No `npm audit` needed — the frontend is Rust/Leptos, not a JS framework, so there's no separate `package.json` dependency graph to scan. |
 | Transactional email (v1) | **Scaleway Transactional Email** (Scaleway SAS, Paris) as the SMTP relay, sent from Rust via the `lettre` crate | Email verification, password reset, invitations and event reminders need reliable deliverability (SPF/DKIM/DMARC, IP reputation) that's impractical to run well as a single maintainer. Chosen on 2026-10-02 (#328) after comparing self-hosting, Mailjet and Scaleway TEM; it replaces Mailjet (chosen over Brevo on 2026-09-19, #136), whose published sub-processor list names entities outside the EU (#316). Scaleway declares the whole TEM stack hosted and processed in the EU with no non-EU sub-processor for the service, which `docs/registre-traitements.md` records with its dated source: no transfer outside the EU. Self-hosting was set aside for this choice: deliverability (an IP with no reputation, outbound port 25 blocked by ISPs such as Orange, residential ranges on blocklists) and the operating load, for mails as critical as password reset and address verification. Its art. 28 terms (DPA) are accepted from the account console; which version binds, from when and for which sending account is not settled and not asserted: a placeholder in `docs/registre-traitements.md` and `docs/privacy-policy.md`, closed by item #18 of `docs/v2-deployment.md` before go-live. Billed per email sent beyond a free tier of 300 emails a month (Scaleway TEM FAQ, read 2026-10-04). |
@@ -188,7 +188,8 @@ remplacement) de l'isolation applicative ci-dessous.
 **Transport / infra**
 - TLS partout via Caddy, y compris en interne si les services ne sont pas
   co-localisés.
-- Secrets exclusivement via sops ; vérifier qu'aucun secret/token n'atterrit
+- Secrets exclusivement via sops sous Compose, via Sealed Secrets sur les
+  clusters k3s (décidé le 2026-10-10, #432) ; vérifier qu'aucun secret/token n'atterrit
   dans les logs `tracing` (payloads complets à surveiller).
 - WebSockets : authentifier la connexion et revalider l'appartenance à la
   famille à chaque message, pas seulement au handshake.
@@ -247,7 +248,8 @@ remplacement) de l'isolation applicative ci-dessous.
      le produit est commercialisé/déployé chez des tiers).
    - **Administrateur technique / mainteneur** — seul commiteur, donc seul
      responsable de la sécurité applicative, des migrations DB, de la
-     rotation des secrets (sops), et de la réponse technique à incident. La
+     rotation des secrets (sops sous Compose, Sealed Secrets sur les
+     clusters k3s, #432), et de la réponse technique à incident. La
      violation de données — constat, qualification, notification à la CNIL
      sous 72 h, information des personnes — relève du responsable de
      traitement seul : `docs/procedure-violation.md` (#143).
@@ -269,6 +271,11 @@ déploiement**.
   échelle) plutôt qu'un cloud managé gratuit — même stack Docker Compose
   qu'en local (`infra/docker-compose.yml`), pas de divergence dev/prod, et
   c'est le pont naturel vers le self-host définitif chez soi plus tard.
+- **Révisé le 2026-10-10 (epic #441) :** la prod tournera sur un cluster
+  k3s sur un VPS tiers, le staging sur un cluster k3s sur le serveur
+  maison ; Docker Compose ne servira plus qu'au développement local. Rien
+  n'est encore déployé. Voir « Version Y »
+  ci-dessous et `docs/v2-deployment.md` items 1, 11, 12, 13 et 15.
 - Exposition publique réelle : TLS via Caddy devient obligatoire, plus
   optionnel comme en v1 local. Configuré dans `infra/Caddyfile` depuis
   #141 : HTTPS automatique dès que `SITE_ADDRESS` porte le nom de domaine
@@ -295,15 +302,22 @@ déploiement**.
 - Compléter la CI actuelle (`ci.yml` : fmt/clippy/test) avec `cargo audit`
   (item #13 du tracker, encore manquant), puis un pipeline de déploiement
   (build image → push → déployer sur le VPS).
+- **Révisé le 2026-10-10 (epic #441) :** le déploiement passera par une
+  chaîne GitOps — images GHCR signées (#430), branche `deploy` suivie par
+  Argo CD, promotion par PR mergée à la main (#436) ; voir
+  `docs/v2-deployment.md` item 11.
 
 **Monitoring minimal**
 - Pas encore dans l'architecture : au moins un check d'uptime et des logs
   centralisés/consultables, pour savoir qu'une instance servant d'autres
   familles est down avant qu'un utilisateur ne le signale.
+- **Révisé le 2026-10-10 (epic #441) :** prévu dans le cluster par #437
+  (kube-prometheus-stack, Loki, alertes) ; voir `docs/v2-deployment.md`
+  items 12 et 13.
 
 Détail par item : voir `docs/v2-deployment.md`.
 
-## Version Y — trajectoire microservices/Kubernetes (2026-07-08)
+## Version Y — trajectoire microservices/Kubernetes (2026-07-08, révisée le 2026-10-10)
 
 Décidé le 2026-07-08 : au-delà de v1/v2, une trajectoire de formation vers
 une architecture microservices orchestrée par Kubernetes est actée —
@@ -318,15 +332,29 @@ référence pour v1/v2. Chaque extraction de service se fait une par une, sur
 justification concrète (contrainte matérielle différente, pas juste
 "séparation par domaine"). Le seul candidat identifié pour l'instant est
 **Ollama** (futur epic fridge-scan/vision), déjà noté ci-dessus comme "le
-candidat pour un vrai service séparé". Kubernetes n'est introduit qu'à ce
-moment-là, pas avant — Docker Compose reste l'outil de déploiement de
-v1/v2.
+candidat pour un vrai service séparé".
 
-Stack cible, séquencement, discipline à respecter dès maintenant dans le
-monolithe (frontières de module, pas de SQL cross-module, stateless par
-requête) et questions non tranchées (choix du cluster, GPU pour Ollama,
-cas d'usage Kafka, stateful sur K8s ou non, mesh, registry) : voir
-`docs/version-y-microservices.md`.
+**Révisé le 2026-10-10 (arbitrages utilisateur, epic #441) :** Kubernetes
+n'attend plus l'extraction d'Ollama. La décision du 2026-07-08 (Kubernetes
+seulement à partir de cette extraction, Docker Compose pour v1/v2) est
+levée : le monolithe sera déployé sur **k3s auto-géré**, sans attendre, en
+deux clusters — le serveur maison pour le staging, un VPS tiers pour la
+prod —, avec Postgres (CloudNativePG) et MinIO dans le cluster, des images
+publiées sur GitHub Container Registry et un déploiement GitOps (Argo CD,
+Sealed Secrets, branche `deploy`). Docker Compose reste la pile de
+développement local. L'extraction de services reste, elle, soumise à
+justification concrète comme ci-dessus.
+
+La règle « stateless par requête » n'est pas encore tenue : le process garde
+de l'état en mémoire (frein du login, limites de débit, hub WebSocket de la
+messagerie) et lance ses tâches de fond comme s'il était seul — #426 à #429
+y remédient avant tout passage à plusieurs réplicas.
+
+Stack cible, séquencement, discipline à respecter dans le monolithe
+(frontières de module, pas de SQL cross-module, stateless par requête),
+questions tranchées le 2026-10-10 (choix du cluster, stateful sur K8s,
+registry) et questions encore ouvertes (GPU pour Ollama, cas d'usage Kafka,
+mesh, déclencheur de l'extraction d'Ollama) : voir `docs/version-y-microservices.md`.
 
 ## Repo layout (monorepo)
 
