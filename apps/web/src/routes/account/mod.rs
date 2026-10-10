@@ -120,9 +120,8 @@ fn error_html(error: Option<&str>) -> String {
 
 /// `GET /account` — the RGPD hub: who you are, the export entry point, the
 /// deletion entry point (replaced by the pending panel once a request is in
-/// flight), and the links to the three public legal documents — the only place
-/// a signed-in member reaches them, the login and register footers being behind
-/// them (#132).
+/// flight). The three public legal documents are no longer listed here: every
+/// page links them from the shell's footer since #419.
 pub async fn get(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
@@ -164,10 +163,7 @@ pub async fn get(
 <p class="muted">Droit d'accès et de portabilité (Art. 15/20) : téléchargez au format JSON tout ce que le service conserve qui vous concerne.</p>
 <a class="btn secondary" href="/account/export">Exporter mes données</a>
 </section>
-{deletion_section}
-<p class="links"><a href="/privacy-policy">Politique de confidentialité</a>
-<a href="/terms-of-service">Conditions générales d'utilisation</a>
-<a href="/legal-notice">Mentions légales</a></p>"#,
+{deletion_section}"#,
         name = html_escape(&me.display_name),
         email = html_escape(&me.email),
         notice = notice_html(query.notice.as_deref()),
