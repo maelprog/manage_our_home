@@ -7,7 +7,6 @@ use common::{
 };
 use manage_our_home::auth::terms_acceptance::terms_in_force_now;
 use manage_our_home::auth::token::{new_token, token_hash};
-use manage_our_home_shared::validation::auth::VERIFICATION_RESEND_COOLDOWN_SECS;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -1545,12 +1544,13 @@ async fn count_verification_tokens(db: &PgPool, email: &str) -> i64 {
     .unwrap()
 }
 
-/// #420: the cooldown is `VERIFICATION_RESEND_COOLDOWN_SECS` (30 s) and no
-/// longer five minutes. A token a few seconds younger than the bound still
-/// holds the resend back; once it is a second past, the resend issues a new
-/// token.
+/// #420: the cooldown is 30 s, as asked on 2026-10-09, and no longer five
+/// minutes. The ages are written out rather than derived from
+/// `VERIFICATION_RESEND_COOLDOWN_SECS`, so that changing the constant fails
+/// here: a token 25 s old still holds the resend back, one 31 s old lets it
+/// issue a new token.
 #[sqlx::test]
-async fn resend_verification_cooldown_ends_after_the_shared_delay(db: PgPool) {
+async fn resend_verification_cooldown_is_thirty_seconds(db: PgPool) {
     let router = test_router(db.clone());
     let email = "ivan@example.test";
     call(
@@ -1576,7 +1576,7 @@ async fn resend_verification_cooldown_ends_after_the_shared_delay(db: PgPool) {
         )
     };
 
-    age_verification_tokens(&db, email, VERIFICATION_RESEND_COOLDOWN_SECS - 5).await;
+    age_verification_tokens(&db, email, 25).await;
     assert_status(&resend().await, StatusCode::OK);
     assert_eq!(
         count_verification_tokens(&db, email).await,
@@ -1584,7 +1584,7 @@ async fn resend_verification_cooldown_ends_after_the_shared_delay(db: PgPool) {
         "a resend inside the delay issues nothing"
     );
 
-    age_verification_tokens(&db, email, VERIFICATION_RESEND_COOLDOWN_SECS + 1).await;
+    age_verification_tokens(&db, email, 31).await;
     assert_status(&resend().await, StatusCode::OK);
     assert_eq!(
         count_verification_tokens(&db, email).await,
