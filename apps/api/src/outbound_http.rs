@@ -129,19 +129,19 @@ mod tests {
 
     /// Every outbound call goes through `client()`, `oauth_client()` or
     /// `recipe_import_client()`: a client built anywhere else in `src/`
-    /// would come without these timeouts. `push.rs` keeps its own, with its
-    /// own timeout and redirect policy.
+    /// would come without these timeouts. `notifications/push.rs` keeps its
+    /// own, with its own timeout and redirect policy.
     #[test]
     fn no_other_reqwest_client_is_built_in_the_api_sources() {
-        // A line naming `reqwest` and building a client. This file and
-        // `push.rs` are the two that may.
-        let forbidden = ["Client::new()", "Client::builder()"];
-        let allowed = ["outbound_http.rs", "push.rs"];
+        let src = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+        // Paths relative to `src/`: another file named `push.rs` is not
+        // allowed by its name alone.
+        let allowed = [
+            std::path::Path::new("outbound_http.rs"),
+            std::path::Path::new("notifications/push.rs"),
+        ];
         let mut offenders = Vec::new();
-        let mut dirs = vec![std::path::PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src"
-        ))];
+        let mut dirs = vec![src.clone()];
         while let Some(dir) = dirs.pop() {
             for entry in std::fs::read_dir(&dir).unwrap() {
                 let path = entry.unwrap().path();
@@ -149,19 +149,138 @@ mod tests {
                     dirs.push(path);
                     continue;
                 }
-                let name = path.file_name().unwrap().to_string_lossy().into_owned();
-                if !name.ends_with(".rs") || allowed.contains(&name.as_str()) {
+                let relative = path.strip_prefix(&src).unwrap();
+                if path.extension() != Some("rs".as_ref()) || allowed.contains(&relative) {
                     continue;
                 }
                 let source = std::fs::read_to_string(&path).unwrap();
-                for (n, line) in source.lines().enumerate() {
-                    if line.contains("reqwest") && forbidden.iter().any(|f| line.contains(f)) {
-                        offenders.push(format!("{}:{}", path.display(), n + 1));
-                    }
+                for n in client_constructions(&source) {
+                    offenders.push(format!("{}:{n}", relative.display()));
                 }
             }
         }
         assert!(offenders.is_empty(), "{offenders:?}");
+    }
+
+    /// The 1-based lines of `source` that build a reqwest client: `new`,
+    /// `default` or `builder` called on `Client` or `ClientBuilder`, named
+    /// by their `reqwest::` path or by a name that a `use reqwest::…`
+    /// statement brings in (aliases and globs included).
+    fn client_constructions(source: &str) -> Vec<usize> {
+        const TYPES: [&str; 2] = ["Client", "ClientBuilder"];
+        let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+        let mut names: Vec<String> = ["reqwest::", "reqwest::blocking::"]
+            .iter()
+            .flat_map(|path| TYPES.iter().map(move |ty| format!("{path}{ty}")))
+            .collect();
+        // Names brought in by `use reqwest::…;`, which may span lines.
+        let mut rest = source;
+        while let Some(at) = rest.find("use reqwest::") {
+            let preceded_by_ident = rest[..at].chars().next_back().is_some_and(is_ident);
+            let statement = &rest[at..rest[at..].find(';').map_or(rest.len(), |end| at + end)];
+            rest = &rest[at + statement.len()..];
+            if preceded_by_ident {
+                continue;
+            }
+            if statement.contains('*') {
+                names.extend(TYPES.iter().map(|ty| ty.to_string()));
+            }
+            let tokens: Vec<&str> = statement
+                .split(|c| !is_ident(c))
+                .filter(|t| !t.is_empty())
+                .collect();
+            for (i, token) in tokens.iter().enumerate() {
+                if TYPES.contains(token) {
+                    let bound = match tokens.get(i + 1) {
+                        Some(&"as") => tokens.get(i + 2).copied().unwrap_or(token),
+                        _ => token,
+                    };
+                    names.push(bound.to_string());
+                }
+            }
+        }
+        let calls: Vec<String> = names
+            .iter()
+            .flat_map(|name| {
+                ["new", "default", "builder"]
+                    .iter()
+                    .map(move |method| format!("{name}::{method}("))
+            })
+            .collect();
+        source
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| {
+                calls.iter().any(|call| {
+                    line.match_indices(call.as_str()).any(|(at, _)| {
+                        // `aws_sdk_s3::Client::new(` is not a bare `Client`,
+                        // `BasicClient::new(` is not `Client`.
+                        let before = line[..at].chars().next_back();
+                        let qualified = call.starts_with("reqwest::");
+                        !before.is_some_and(|c| is_ident(c) || (!qualified && c == ':'))
+                    })
+                })
+            })
+            .map(|(n, _)| n + 1)
+            .collect()
+    }
+
+    #[test]
+    fn client_constructions_finds_each_form_of_construction() {
+        for (source, line) in [
+            ("let c = reqwest::Client::new();", 1),
+            ("let c = reqwest::Client::default();", 1),
+            ("let c = reqwest::Client::builder().build();", 1),
+            ("let c = reqwest::ClientBuilder::new().build();", 1),
+            ("let c = reqwest::ClientBuilder::default().build();", 1),
+            ("let c = ::reqwest::Client::new();", 1),
+            ("let c = reqwest::blocking::Client::new();", 1),
+            ("use reqwest::Client;\nfn f() {\n    Client::new();\n}", 3),
+            (
+                "use reqwest::Client;\nfn f() -> Client { Client::default() }",
+                2,
+            ),
+            (
+                "use reqwest::ClientBuilder;\nfn f() { ClientBuilder::new() }",
+                2,
+            ),
+            (
+                "use reqwest::{header, Client};\nfn f() { Client::builder() }",
+                2,
+            ),
+            (
+                "use reqwest::{\n    Client,\n    Url,\n};\nfn f() { Client::new() }",
+                5,
+            ),
+            ("use reqwest::Client as Http;\nfn f() { Http::new() }", 2),
+            ("use reqwest::*;\nfn f() { Client::new() }", 2),
+            (
+                "use reqwest::blocking::Client;\nfn f() { Client::new() }",
+                2,
+            ),
+        ] {
+            assert_eq!(client_constructions(source), vec![line], "{source}");
+        }
+    }
+
+    #[test]
+    fn client_constructions_ignores_other_clients_and_other_reqwest_uses() {
+        for source in [
+            "fn f(c: &reqwest::Client) { c.get(url) }",
+            "use reqwest::Url;\nlet u = Url::parse(s);",
+            "let o = BasicClient::new(ClientId::new(id));",
+            "let d = reqwest::Client::new_with_pool();",
+            // Without a `use reqwest::…` bringing it in, a bare `Client` is
+            // another crate's.
+            "use aws_sdk_s3::Client;\nlet s = Client::new(&config);",
+            "use reqwest::Url;\nlet s = aws_sdk_s3::Client::new(&config);",
+        ] {
+            assert_eq!(
+                client_constructions(source),
+                Vec::<usize>::new(),
+                "{source}"
+            );
+        }
     }
 
     #[tokio::test]
