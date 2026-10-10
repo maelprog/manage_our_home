@@ -64,6 +64,37 @@ async fn probes_carry_no_cookie_and_are_never_limited(db: PgPool) {
     }
 }
 
+/// The probes sit outside every layer of the router. Of those layers, the
+/// cross-origin guard is the one a request can see: a cross-site POST is
+/// refused with its 403 before routing, where outside it the method gets
+/// the router's own 405. Moving the probes under the layers turns this red.
+#[sqlx::test]
+async fn probes_are_outside_the_router_layers(db: PgPool) {
+    let router = build_router(test_state(db));
+    // Control: the same request on a route under the layers.
+    let guarded = cross_site_post(&router, "/auth/me").await;
+    assert_eq!(guarded, StatusCode::FORBIDDEN);
+    for path in ["/healthz", "/readyz"] {
+        assert_eq!(
+            cross_site_post(&router, path).await,
+            StatusCode::METHOD_NOT_ALLOWED,
+            "{path} went through the router's layers"
+        );
+    }
+}
+
+async fn cross_site_post(router: &axum::Router, path: &str) -> StatusCode {
+    use tower::ServiceExt;
+    let request = axum::http::Request::builder()
+        .method(Method::POST)
+        .uri(path)
+        .header("sec-fetch-site", "cross-site")
+        .header("origin", "https://evil.test")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    router.clone().oneshot(request).await.unwrap().status()
+}
+
 /// Serves `router` the way `main.rs` does, stopping when the returned
 /// sender fires (in place of SIGTERM).
 async fn start(

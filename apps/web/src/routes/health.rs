@@ -110,4 +110,32 @@ mod tests {
         );
         assert_eq!(probe(state, "/healthz").await, StatusCode::OK);
     }
+
+    /// The probes sit outside every layer of the router: a cross-site POST
+    /// gets the router's 405 there, where the cross-origin guard would
+    /// answer 403 first.
+    #[tokio::test]
+    async fn probes_are_outside_the_router_layers() {
+        let router = crate::build_router(state(fake_api(StatusCode::OK).await));
+        let post = |path: &str| {
+            Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("sec-fetch-site", "cross-site")
+                .header("origin", "https://evil.test")
+                .body(Body::empty())
+                .unwrap()
+        };
+        // Control: the same request on a route under the layers.
+        let guarded = router.clone().oneshot(post("/logout")).await.unwrap();
+        assert_eq!(guarded.status(), StatusCode::FORBIDDEN);
+        for path in ["/healthz", "/readyz"] {
+            let resp = router.clone().oneshot(post(path)).await.unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{path} went through the router's layers"
+            );
+        }
+    }
 }
