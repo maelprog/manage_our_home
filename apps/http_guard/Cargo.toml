@@ -15,13 +15,17 @@ path = "src/lib.rs"
 # 0.7, not the newer 0.8: the middleware and the body it wraps are axum
 # types handed straight to apps/api's and apps/web's routers, which are on
 # 0.7 — a second axum would not interoperate.
-axum = { version = "0.7", default-features = false }
-tokio = { version = "1", features = ["time", "sync"] }
+# `tokio` and `http1` for `shutdown::serve` (#424), which both apps run
+# their server through: features their own axum already has, so the
+# workspace graph does not change.
+axum = { version = "0.7", default-features = false, features = ["tokio", "http1"] }
+# `signal` and `net` for `shutdown` (#424): SIGTERM, and the listener.
+tokio = { version = "1", features = ["time", "sync", "signal", "net"] }
 http-body = "1.0.1"
 bytes = "1.12.0"
 tracing = "0.1"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["time", "sync", "macros", "rt", "test-util"] }
+tokio = { version = "1", features = ["time", "sync", "signal", "net", "macros", "rt", "test-util"] }
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
