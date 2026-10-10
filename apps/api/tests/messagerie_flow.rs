@@ -3,7 +3,7 @@ mod common;
 use axum::http::{Method, StatusCode};
 use common::{assert_status, call, json_body, set_cookie, test_router, test_state};
 use futures::StreamExt;
-use sqlx::PgPool;
+use sqlx::{Connection, PgPool};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -1603,9 +1603,21 @@ async fn listener_reconnects_after_losing_its_connection(db: PgPool) {
     .unwrap();
     assert_eq!(terminated, 1);
 
+    expect_closed_without_event(&mut before, "the socket outlived its replica's listener").await;
+
+    let mut after = connect_ws(addr_b, &group_id, &owner).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    post_message(&http_a, &group_id, &owner, "after the reconnection").await;
+    expect_created(&mut after, "after the reconnection").await;
+
+    after.close(None).await.ok();
+}
+
+/// Waits (bounded) for a socket to end without receiving any event.
+async fn expect_closed_without_event(ws_stream: &mut WsStream, why: &str) {
     let ended = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            match before.next().await {
+            match ws_stream.next().await {
                 Some(Ok(WsMessage::Text(text))) => panic!("unexpected frame {text}"),
                 Some(Ok(WsMessage::Close(_))) | Some(Err(_)) | None => return,
                 Some(Ok(_)) => continue,
@@ -1613,12 +1625,83 @@ async fn listener_reconnects_after_losing_its_connection(db: PgPool) {
         }
     })
     .await;
-    assert!(ended.is_ok(), "the socket outlived its replica's listener");
+    assert!(ended.is_ok(), "{why}");
+}
+
+/// When the listening connection drops and cannot be re-established at
+/// once, the replica keeps retrying on its own and closes its sockets once
+/// it listens again: what was notified in between is lost to them. A
+/// socket opened afterwards receives the other replica's writes again.
+#[sqlx::test]
+async fn listener_recovers_after_a_failed_reconnection(db: PgPool) {
+    let (_, http_a) = serve_replica(&db).await;
+    let (addr_b, _) = serve_replica(&db).await;
+
+    let owner = register_verify_login(
+        &http_a,
+        &db,
+        "msg-replicas-retry@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&http_a, &owner, "Foyer").await;
+
+    let mut before = connect_ws(addr_b, &group_id, &owner).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // This throwaway database stops accepting connections, whatever the
+    // role, and every backend on it ends, the listener's included: sqlx's
+    // own immediate reconnection fails, and only the replica's retry loop
+    // can listen again. Postgres takes that switch from another database
+    // only, so the harness role (a superuser in CI) flips it from the
+    // maintenance one.
+    let test_db: String = sqlx::query_scalar("SELECT current_database()")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    let mut maintenance = sqlx::PgConnection::connect_with(
+        &db.connect_options().as_ref().clone().database("postgres"),
+    )
+    .await
+    .unwrap();
+    let allow_connections = |allow: bool| {
+        format!(
+            "ALTER DATABASE \"{}\" ALLOW_CONNECTIONS {allow}",
+            test_db.replace('"', "\"\"")
+        )
+    };
+    sqlx::raw_sql(sqlx::AssertSqlSafe(allow_connections(false)))
+        .execute(&mut maintenance)
+        .await
+        .unwrap();
+    let listeners: Vec<bool> = sqlx::query_scalar(
+        "SELECT query LIKE 'LISTEN %' FROM pg_stat_activity, \
+         LATERAL pg_terminate_backend(pid) WHERE datname = $1",
+    )
+    .bind(&test_db)
+    .fetch_all(&mut maintenance)
+    .await
+    .unwrap();
+    assert_eq!(listeners.iter().filter(|l| **l).count(), 1);
+    // Long enough for sqlx's reconnection to fail and the replica to fall
+    // back on its retry delay.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(allow_connections(true)))
+        .execute(&mut maintenance)
+        .await
+        .unwrap();
+    maintenance.close().await.unwrap();
+
+    expect_closed_without_event(
+        &mut before,
+        "the socket outlived a listener re-established by its retry loop",
+    )
+    .await;
 
     let mut after = connect_ws(addr_b, &group_id, &owner).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
-    post_message(&http_a, &group_id, &owner, "after the reconnection").await;
-    expect_created(&mut after, "after the reconnection").await;
+    post_message(&http_a, &group_id, &owner, "after the retry").await;
+    expect_created(&mut after, "after the retry").await;
 
     after.close(None).await.ok();
 }
