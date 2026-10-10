@@ -54,15 +54,14 @@ fn page(
             <div inner_html=pw></div>
             <button type="submit">"Se connecter"</button>
         </form>
-        <div class="actions">
+        // #419: stacked, so the Google button takes the width of the form's
+        // own; the legal documents moved to the shell's footer.
+        <div class="actions stacked">
             <a class="btn secondary" href=google_start>"Continuer avec Google"</a>
         </div>
-        <div class="links">
+        <div class="links centered">
             <a href="/register">"Créer un compte"</a>
             <a href="/forgot-password">"Mot de passe oublié ?"</a>
-            <a href="/privacy-policy">"Politique de confidentialité"</a>
-            <a href="/terms-of-service">"Conditions générales d'utilisation"</a>
-            <a href="/legal-notice">"Mentions légales"</a>
         </div>
     };
     shell(Width::Form, "Connexion", &body.to_html())
@@ -183,6 +182,38 @@ mod tests {
         for reason in [None, Some(""), Some("Admin"), Some("other"), Some("<b>")] {
             assert_eq!(reauth_notice(reason), None, "{reason:?}");
         }
+    }
+
+    /// #419: the legal documents are the shell's footer, no longer a line of
+    /// the account links — once each, or Playwright's strict
+    /// `getByRole("link", { name })` would find two.
+    #[test]
+    fn each_legal_document_is_linked_once_from_the_footer() {
+        let html = page("", None, None, "http://api");
+        for (href, _) in crate::app::LEGAL_DOCUMENTS {
+            assert_eq!(
+                html.matches(&format!(r#"href="{href}""#)).count(),
+                1,
+                "{href}: {html}"
+            );
+        }
+        let footer = html.find("<footer").expect("a footer");
+        assert!(html.find(r#"href="/privacy-policy""#).unwrap() > footer);
+    }
+
+    /// #419: the two account links are centred under the form, and the
+    /// Google button takes the form button's width, in its own stacked row.
+    #[test]
+    fn the_account_links_are_centred_and_the_google_button_is_stacked() {
+        let html = page("", None, None, "http://api");
+        assert!(
+            html.contains(r#"<div class="links centered"><a href="/register">"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<div class="actions stacked"><a href="http://api/auth/google/start" class="btn secondary">"#),
+            "{html}"
+        );
     }
 
     #[test]

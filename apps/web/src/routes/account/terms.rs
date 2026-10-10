@@ -77,11 +77,7 @@ fn page(error: Option<&str>) -> String {
 <p class="muted">Si vous ne les acceptez pas, le service ne vous est pas ouvert : déconnectez-vous. Vous pouvez demander la fermeture du compte et la suppression de ses données à l'adresse donnée dans les mentions légales.</p>
 <form method="post" action="/logout">
 <button type="submit" class="secondary">Se déconnecter</button>
-</form>
-<div class="links">
-<a href="/privacy-policy">Politique de confidentialité</a>
-<a href="/legal-notice">Mentions légales</a>
-</div>"#
+</form>"#
     )
 }
 
