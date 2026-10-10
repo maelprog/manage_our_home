@@ -62,6 +62,9 @@ fn page(
         <div class="links centered">
             <a href="/register">"Créer un compte"</a>
             <a href="/forgot-password">"Mot de passe oublié ?"</a>
+            // #420: an unverified account meets the generic 401 below, which
+            // must not say why; the way out is offered to everyone.
+            <a href="/verify-email/resend">"Email de vérification non reçu ?"</a>
         </div>
     };
     shell(Width::Form, "Connexion", &body.to_html())
@@ -212,6 +215,18 @@ mod tests {
         );
         assert!(
             html.contains(r#"<div class="actions stacked"><a href="http://api/auth/google/start" class="btn secondary">"#),
+            "{html}"
+        );
+    }
+
+    /// #420: an unverified account cannot log in, and the login page says
+    /// nothing about why (generic 401): the resend is offered to everyone,
+    /// next to the forgotten password.
+    #[test]
+    fn the_login_page_links_to_the_verification_resend() {
+        let html = page("", None, None, "http://api");
+        assert!(
+            html.contains(r#"<a href="/verify-email/resend">Email de vérification non reçu ?</a>"#),
             "{html}"
         );
     }

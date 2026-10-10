@@ -1451,8 +1451,9 @@ async fn resend_verification_noops_for_unknown_and_verified(db: PgPool) {
     assert_eq!(tokens_before, tokens_after);
 }
 
-/// AC (#27) case 3: a second resend inside the 5-minute window is a silent
-/// no-op — no new token is created.
+/// AC (#27) case 3: a second resend inside the cooldown window
+/// (`VERIFICATION_RESEND_COOLDOWN_SECS`) is a silent no-op — no new token is
+/// created.
 #[sqlx::test]
 async fn resend_verification_cooldown_is_silent_noop(db: PgPool) {
     let router = test_router(db.clone());
@@ -1517,6 +1518,79 @@ async fn resend_verification_cooldown_is_silent_noop(db: PgPool) {
     .await
     .unwrap();
     assert_eq!(count_after_first, count_after_second);
+}
+
+/// Moves every verification token of `email` to `secs` seconds old.
+async fn age_verification_tokens(db: &PgPool, email: &str, secs: i32) {
+    sqlx::query(
+        "UPDATE email_verification_tokens SET created_at = now() - make_interval(secs => $2::int)
+         WHERE user_id = (SELECT id FROM users WHERE email = $1)",
+    )
+    .bind(email)
+    .bind(secs)
+    .execute(db)
+    .await
+    .unwrap();
+}
+
+async fn count_verification_tokens(db: &PgPool, email: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM email_verification_tokens t
+         JOIN users u ON u.id = t.user_id WHERE u.email = $1",
+    )
+    .bind(email)
+    .fetch_one(db)
+    .await
+    .unwrap()
+}
+
+/// #420: the cooldown is 30 s, as asked on 2026-10-09, and no longer five
+/// minutes. The ages are written out rather than derived from
+/// `VERIFICATION_RESEND_COOLDOWN_SECS`, so that changing the constant fails
+/// here: a token 25 s old still holds the resend back, one 31 s old lets it
+/// issue a new token.
+#[sqlx::test]
+async fn resend_verification_cooldown_is_thirty_seconds(db: PgPool) {
+    let router = test_router(db.clone());
+    let email = "ivan@example.test";
+    call(
+        &router,
+        Method::POST,
+        "/auth/register",
+        None,
+        Some(serde_json::json!({
+            "email": email,
+            "password": "initial-password",
+            "display_name": "Ivan",
+            "declares_minimum_age": true, "accepts_terms": true
+        })),
+    )
+    .await;
+    let resend = || {
+        call(
+            &router,
+            Method::POST,
+            "/auth/verify-email/resend",
+            None,
+            Some(serde_json::json!({ "email": email })),
+        )
+    };
+
+    age_verification_tokens(&db, email, 25).await;
+    assert_status(&resend().await, StatusCode::OK);
+    assert_eq!(
+        count_verification_tokens(&db, email).await,
+        1,
+        "a resend inside the delay issues nothing"
+    );
+
+    age_verification_tokens(&db, email, 31).await;
+    assert_status(&resend().await, StatusCode::OK);
+    assert_eq!(
+        count_verification_tokens(&db, email).await,
+        2,
+        "a resend past the delay issues a token"
+    );
 }
 
 // --- #178: the login enumeration oracle, and the lock that bounds the cost
@@ -2836,7 +2910,9 @@ async fn the_registration_email_carries_a_link_that_verifies_the_account(db: PgP
 }
 
 /// #364: the link a resent verification email carries verifies the
-/// account. The registration token is aged past the resend cooldown.
+/// account, and lands where the registration's link does — on apps/web's
+/// `/verify-email` (#420). The registration token is aged past the resend
+/// cooldown.
 #[sqlx::test]
 async fn the_resent_verification_email_carries_a_link_that_verifies_the_account(db: PgPool) {
     let (router, outbox) = common::test_router_with_outbox(db.clone());
@@ -2875,7 +2951,10 @@ async fn the_resent_verification_email_carries_a_link_that_verifies_the_account(
     let token = common::mailed_token(
         &outbox,
         "resent@example.test",
-        "http://localhost:8080/auth/verify-email?token=",
+        // apps/web's page, as the registration email's link (#420): the
+        // API's own endpoint answers an empty 200 or a bare 410, which is
+        // no page for a person to land on.
+        "http://localhost:5173/verify-email?token=",
     );
     let verify = call(
         &router,

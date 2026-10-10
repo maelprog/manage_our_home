@@ -255,14 +255,30 @@ pub async fn post(
 }
 
 pub async fn check_email() -> impl IntoResponse {
+    Html(check_email_page())
+}
+
+fn check_email_page() -> String {
     let body = view! {
         <h1>"Vérifiez votre boîte mail"</h1>
         <p>"Un email de confirmation vous a été envoyé. Cliquez sur le lien qu'il contient pour activer votre compte."</p>
+        <p>"Rien reçu ? Vérifiez vos indésirables, ou demandez un nouvel email."</p>
+    };
+    let links = view! {
         <div class="links">
             <a href="/login">"Retour à la connexion"</a>
         </div>
     };
-    Html(shell(Width::Form, "Vérifiez votre email", &body.to_html()))
+    // #420: an email has just left, so the resend button starts counting
+    // down. The address is not carried over from the registration: it would
+    // have to travel in the URL.
+    let body = format!(
+        "{}{}{}",
+        body.to_html(),
+        crate::routes::auth::resend_verification::resend_form(true),
+        links.to_html()
+    );
+    shell(Width::Form, "Vérifiez votre email", &body)
 }
 
 #[cfg(test)]
@@ -326,6 +342,18 @@ mod tests {
         // A banner error is about the form, not about the email field.
         let html = page("a@b.c", "", Boxes::default(), None, Some("Nom vide."), "");
         assert!(!html.contains("aria-invalid"), "{html}");
+    }
+
+    /// #420: an email that never arrives can be sent again from the page
+    /// that announces it, and one just left, so the button counts down.
+    #[test]
+    fn the_check_email_page_offers_the_resend_with_its_countdown() {
+        let html = check_email_page();
+        assert!(
+            html.contains(&crate::routes::auth::resend_verification::resend_form(true)),
+            "{html}"
+        );
+        assert!(html.contains(r#"href="/login""#), "{html}");
     }
 
     /// #319: the CGU are accepted by a box of their own, unticked on a fresh
