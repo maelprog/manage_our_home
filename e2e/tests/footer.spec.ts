@@ -126,7 +126,11 @@ for (const [layout, viewport] of [
       const form = await page.locator('form[action="/login"]').boundingBox();
       expect(form).not.toBeNull();
       const formCentre = form!.x + form!.width / 2;
-      for (const name of ["Créer un compte", "Mot de passe oublié ?"]) {
+      for (const name of [
+        "Créer un compte",
+        "Mot de passe oublié ?",
+        "Email de vérification non reçu ?",
+      ]) {
         const box = await page.getByRole("link", { name }).boundingBox();
         expect(box, name).not.toBeNull();
         // Either one centred line, or each link centred on its own: what

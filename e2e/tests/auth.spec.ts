@@ -1,7 +1,9 @@
-import { expect, test } from "@playwright/test";
+import { expect, Page, test } from "@playwright/test";
 import {
+  ageVerificationTokens,
   clearAgeDeclaration,
   clearTermsAcceptance,
+  countVerificationTokens,
   fetchPasswordResetToken,
   fetchVerificationToken,
   setTermsAcceptedVersion,
@@ -304,6 +306,111 @@ test.describe("Auth — register → verify → login → logout", () => {
     await expect(notice).toHaveCount(0);
     await page.goto("/account");
     await expect(notice).toHaveCount(0);
+  });
+});
+
+test.describe("Auth — renvoi de l'email de vérification (#420)", () => {
+  const RESEND = "Renvoyer l'email de vérification";
+  const SENT =
+    "Si un compte en attente de vérification existe pour cette adresse, " +
+    "un nouvel email de vérification vient de lui être envoyé.";
+
+  async function register(page: Page, email: string): Promise<void> {
+    await page.goto("/register");
+    await page.getByLabel("Email").fill(email);
+    await page.getByLabel("Nom affiché").fill("Resend User");
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill("e2e-resend-password-1");
+    await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
+    await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
+    await page.getByRole("button", { name: "Créer mon compte" }).click();
+    await expect(page).toHaveURL(/\/register\/check-email$/);
+  }
+
+  test("the button counts the cooldown down, then comes back", async ({ page }) => {
+    // The browser's clock, driven: no 30-second wait.
+    await page.clock.install();
+    await page.goto("/register/check-email");
+    const button = page.locator("button[data-resend-cooldown]");
+    // The length comes from the page, which has it from the shared constant.
+    const cooldown = Number(await button.getAttribute("data-resend-cooldown"));
+    expect(cooldown).toBeGreaterThan(1);
+
+    await expect(button).toBeDisabled();
+    // The installed clock still flows: read the count, don't predict it.
+    const left = async () =>
+      Number((/^Renvoyer l'email \((\d+) s\)$/.exec((await button.textContent()) ?? "") ?? [])[1]);
+    const before = await left();
+    expect(before).toBeGreaterThan(0);
+    expect(before).toBeLessThanOrEqual(cooldown);
+    await page.clock.runFor(2000);
+    await expect.poll(left).toBeLessThan(before);
+    await expect(button).toBeDisabled();
+    // Not announced each second: no live region holds the count.
+    expect(await button.evaluate((b) => b.closest("[aria-live]"))).toBeNull();
+
+    await page.clock.runFor(cooldown * 1000);
+    await expect(button).toBeEnabled();
+    await expect(button).toHaveText(RESEND);
+  });
+
+  test("register, resend, and the second link verifies the account", async ({ page }) => {
+    const email = uniqueEmail("e2e-resend");
+    await page.clock.install();
+    await register(page, email);
+    const button = page.getByRole("button", { name: /^Renvoyer l'email/ });
+    const cooldown = Number(await button.getAttribute("data-resend-cooldown"));
+    await page.clock.runFor(cooldown * 1000);
+    await expect(button).toBeEnabled();
+    // apps/api keeps its own clock: the registration's token is moved past
+    // the cooldown instead.
+    await ageVerificationTokens(email, cooldown + 1);
+
+    await page.getByLabel("Email").fill(email);
+    await button.click();
+    await expect(page).toHaveURL(/\/verify-email\/resend$/);
+    await expect(page.getByText(SENT)).toBeVisible();
+    // A new email left: the countdown starts again.
+    await expect(page.getByRole("button", { name: /^Renvoyer l'email/ })).toBeDisabled();
+
+    // The suite's apps/api has no mailbox to read (its SMTP host is a dummy,
+    // and a failed send is only logged): the second email is seen as the
+    // token it carries — a new one, the first consumed.
+    expect(await countVerificationTokens(email)).toEqual({ issued: 2, unconsumed: 1 });
+    const token = await fetchVerificationToken(email);
+    await page.goto(`/verify-email?token=${token}`);
+    await expect(page.getByText("Email vérifié")).toBeVisible();
+  });
+
+  test("the login page leads to the same form, which says the same to everyone", async ({
+    page,
+  }) => {
+    const pending = uniqueEmail("e2e-resend-pending");
+    await register(page, pending);
+    const verified = uniqueEmail("e2e-resend-verified");
+    await register(page, verified);
+    await page.goto(`/verify-email?token=${await fetchVerificationToken(verified)}`);
+    await expect(page.getByText("Email vérifié")).toBeVisible();
+
+    const answers: string[] = [];
+    for (const email of [uniqueEmail("e2e-resend-unknown"), verified, pending]) {
+      await page.goto("/login");
+      await page.getByRole("link", { name: "Email de vérification non reçu ?" }).click();
+      await expect(page).toHaveURL(/\/verify-email\/resend$/);
+      await page.getByLabel("Email").fill(email);
+      // The answer as the server sent it: once loaded, the page's button
+      // counts down, and its label depends on when it is read.
+      const [answer] = await Promise.all([
+        page.waitForResponse(
+          (r) => r.request().method() === "POST" && r.url().endsWith("/verify-email/resend"),
+        ),
+        page.getByRole("button", { name: RESEND }).click(),
+      ]);
+      await expect(page.getByText(SENT)).toBeVisible();
+      answers.push(`${answer.status()} ${await answer.text()}`);
+    }
+    expect(answers[0]).toMatch(/^200 /);
+    expect(answers[1]).toBe(answers[0]);
+    expect(answers[2]).toBe(answers[0]);
   });
 });
 

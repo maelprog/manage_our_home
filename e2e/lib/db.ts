@@ -172,6 +172,51 @@ export async function ageSessions(email: string, hours: number): Promise<void> {
 }
 
 /**
+ * Backdates every verification token of `email` by `seconds`, so a resend
+ * can be asked past apps/api's cooldown (#420) without waiting it out: the
+ * browser's clock can be driven, the server's cannot.
+ */
+export async function ageVerificationTokens(email: string, seconds: number): Promise<void> {
+  const client = new Client({ connectionString: requireDatabaseUrl() });
+  await client.connect();
+  try {
+    const { rowCount } = await client.query(
+      `UPDATE email_verification_tokens t
+          SET created_at = t.created_at - make_interval(secs => $2)
+         FROM users u
+        WHERE u.id = t.user_id AND u.email = $1`,
+      [email, seconds],
+    );
+    if (rowCount === 0) {
+      throw new Error(`no verification token to age for ${email}`);
+    }
+  } finally {
+    await client.end();
+  }
+}
+
+/** The verification tokens of `email`: all of them, and those still usable. */
+export async function countVerificationTokens(
+  email: string,
+): Promise<{ issued: number; unconsumed: number }> {
+  const client = new Client({ connectionString: requireDatabaseUrl() });
+  await client.connect();
+  try {
+    const { rows } = await client.query(
+      `SELECT count(*)::int AS issued,
+              count(*) FILTER (WHERE t.consumed_at IS NULL)::int AS unconsumed
+         FROM email_verification_tokens t
+         JOIN users u ON u.id = t.user_id
+        WHERE u.email = $1`,
+      [email],
+    );
+    return rows[0];
+  } finally {
+    await client.end();
+  }
+}
+
+/**
  * Leaves the group named `groupName` the way the account purge can (#323):
  * `memberEmail` joins it as a standard member, and its owner's membership
  * goes — the group has no owner. The purge itself runs hourly in apps/api
