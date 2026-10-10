@@ -95,7 +95,10 @@ pub const USER_TIMEOUT_MS: u64 = 60_000;
 pub fn session_settings() -> [(&'static str, String); 4] {
     [
         ("tcp_keepalives_idle", KEEPALIVE_IDLE_SECS.to_string()),
-        ("tcp_keepalives_interval", KEEPALIVE_INTERVAL_SECS.to_string()),
+        (
+            "tcp_keepalives_interval",
+            KEEPALIVE_INTERVAL_SECS.to_string(),
+        ),
         ("tcp_keepalives_count", KEEPALIVE_COUNT.to_string()),
         ("tcp_user_timeout", USER_TIMEOUT_MS.to_string()),
     ]
@@ -107,14 +110,17 @@ pub fn session_settings() -> [(&'static str, String); 4] {
 /// unacknowledged for `USER_TIMEOUT_MS` (which on Linux also caps the
 /// probes).
 pub fn silent_cut_release_bound() -> Duration {
-    let probes = Duration::from_secs(KEEPALIVE_IDLE_SECS + KEEPALIVE_INTERVAL_SECS * KEEPALIVE_COUNT);
+    let probes =
+        Duration::from_secs(KEEPALIVE_IDLE_SECS + KEEPALIVE_INTERVAL_SECS * KEEPALIVE_COUNT);
     probes.max(Duration::from_millis(USER_TIMEOUT_MS))
 }
 
 /// The connection options of the lock's connection: the pool's, plus
 /// [`session_settings`].
 pub fn lock_connect_options(pool: &PgPool) -> PgConnectOptions {
-    (*pool.connect_options()).clone().options(session_settings())
+    (*pool.connect_options())
+        .clone()
+        .options(session_settings())
 }
 
 /// Runs `pass` if no other process is running `job`, and returns its
@@ -189,9 +195,11 @@ mod tests {
     /// Probing must not drop a live session over one lost packet.
     #[test]
     fn the_keepalive_probes_and_does_not_give_up_on_one_miss() {
-        assert!(KEEPALIVE_IDLE_SECS > 0 && KEEPALIVE_INTERVAL_SECS > 0);
-        assert!(KEEPALIVE_COUNT >= 3);
-        assert!(USER_TIMEOUT_MS > 0);
+        const {
+            assert!(KEEPALIVE_IDLE_SECS > 0 && KEEPALIVE_INTERVAL_SECS > 0);
+            assert!(KEEPALIVE_COUNT >= 3);
+            assert!(USER_TIMEOUT_MS > 0);
+        }
     }
 
     /// The names are Postgres's own GUCs, in its units (seconds, and

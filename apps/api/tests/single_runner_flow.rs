@@ -320,12 +320,11 @@ async fn the_lock_session_bounds_a_silent_cut(db: PgPool) {
     let mut conn = lock_connect_options(&db).connect().await.unwrap();
     for (name, value) in session_settings() {
         // `pg_settings.setting` is in the GUC's base unit, as sent.
-        let setting: String =
-            sqlx::query_scalar("SELECT setting FROM pg_settings WHERE name = $1")
-                .bind(name)
-                .fetch_one(&mut conn)
-                .await
-                .unwrap();
+        let setting: String = sqlx::query_scalar("SELECT setting FROM pg_settings WHERE name = $1")
+            .bind(name)
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
         assert_eq!(setting, value, "{name}");
     }
     conn.close().await.unwrap();
