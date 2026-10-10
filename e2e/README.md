@@ -40,6 +40,28 @@ WEB_BASE_URL=http://localhost:3000 \
   npm test
 ```
 
+## Behind Caddy over HTTPS (#381)
+
+`tests/caddy-https.spec.ts` checks what `infra/Caddyfile` adds: the
+security headers on real responses, and a CSP violation delivered to
+apps/api through `Reporting-Endpoints`. It runs only when `WEB_BASE_URL`
+is `https://…`, and is skipped otherwise. `tests/sessions.spec.ts` then
+expects the `__Host-session_id` cookie, so apps/api must run with
+`SECURE_COOKIES=true`. CI's `e2e` job runs both this way after the main
+suite (`SITE_ADDRESS=localhost`, a certificate from Caddy's internal CA):
+
+```
+API_LOG_PATH=<file apps/api's output goes to> \
+DATABASE_URL=postgres://<role>:<password>@localhost:5432/<db> \
+WEB_BASE_URL=https://localhost \
+  npx playwright test caddy-https.spec.ts sessions.spec.ts
+```
+
+`API_LOG_PATH` is where the spec looks for apps/api's log line about the
+violation. Over HTTPS the config accepts Caddy's untrusted certificate and
+launches the full Chromium build instead of the headless shell, which did
+not deliver the report (`playwright.config.ts`).
+
 ## The ICS fixture server (`ICS_FIXTURE_HOST`)
 
 `tests/google-calendar.spec.ts` (front epic F11) starts a throwaway HTTP

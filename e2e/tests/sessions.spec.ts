@@ -12,6 +12,15 @@ function uniqueEmail(prefix: string): string {
 
 const PASSWORD = "e2e-sessions-password-1";
 
+/**
+ * The one session cookie a logged-in browser holds. Over HTTPS — CI runs
+ * this spec a second time behind infra/Caddyfile (#381), with apps/api
+ * under SECURE_COOKIES as deployed — it is `__Host-session_id`.
+ */
+const SESSION_COOKIE = (process.env.WEB_BASE_URL ?? "").startsWith("https://")
+  ? "__Host-session_id"
+  : "session_id";
+
 async function login(page: Page, email: string): Promise<void> {
   await page.goto("/login");
   await page.getByLabel("Email").fill(email);
@@ -88,7 +97,7 @@ test.describe("Account — active sessions (#225)", () => {
     await login(other, email);
     await page.reload();
     await expect(rows).toHaveCount(2);
-    expect(await sessionCookies(context)).toHaveLength(1);
+    expect(await sessionCookies(context)).toEqual([SESSION_COOKIE]);
     await page.getByRole("button", { name: "Déconnecter toutes les sessions" }).click();
     await expect(page).toHaveURL(/\/login$/);
     // apps/api's removal of the cookie reached the browser (#368).
@@ -111,7 +120,7 @@ test.describe("Account — active sessions (#225)", () => {
     await expect(current).toHaveCount(1);
     const id = await current.getAttribute("data-session");
     expect(id).toMatch(/^[0-9a-f-]{36}$/);
-    expect(await sessionCookies(context)).toHaveLength(1);
+    expect(await sessionCookies(context)).toEqual([SESSION_COOKIE]);
 
     // The page offers no button for this session, but a request can name
     // it: the form the other rows carry, posted from this page.

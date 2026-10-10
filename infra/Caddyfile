@@ -103,7 +103,10 @@
 	#   the endpoint declared by `Reporting-Endpoints` (the Reporting API,
 	#   Chromium); `report-uri` is what Firefox and Safari read. Browsers
 	#   only send reports from an HTTPS page, so the `:80` local stack sends
-	#   none.
+	#   none. CI's `e2e` job runs behind this file over HTTPS and checks
+	#   these headers on real responses, and that a violation reaches
+	#   apps/api through `Reporting-Endpoints` (e2e/tests/caddy-https.spec.ts,
+	#   #381).
 	#
 	# Strict-Transport-Security: a browser that once reached the site over
 	# HTTPS refuses plain HTTP to it for a year. Browsers ignore it on a

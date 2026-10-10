@@ -215,6 +215,24 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      # The frontend of a deployment (#381), for the last steps of this job:
+      # same image and pin as infra/docker-compose.yml (image-pins.ts holds
+      # the two together, and Renovate moves them in one PR). It starts on
+      # the image's own Caddyfile, before the checkout; the step "Put
+      # infra/Caddyfile in front of both apps" swaps the repository's in.
+      # `localhost` as the site address gets a certificate from Caddy's
+      # internal CA, and HTTPS on 443. apps/api and apps/web run on the
+      # runner itself, which the names of the Caddyfile's upstreams, `api`
+      # and `web`, are pointed at.
+      caddy:
+        image: caddy:2.11.4@sha256:0c994536bddb66445885237f1a5dcc1916bccea922661c76b4e9fc24061f9b52
+        env:
+          SITE_ADDRESS: localhost
+        ports:
+          - 443:443
+        options: >-
+          --add-host api:host-gateway
+          --add-host web:host-gateway
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
@@ -392,3 +410,58 @@ jobs:
         working-directory: e2e
         env:
           WEB_BASE_URL: http://localhost:3000
+      # #381: until here the suite drives apps/web directly, over plain HTTP;
+      # what infra/Caddyfile adds in a deployment — the security headers,
+      # TLS, the CSP's reporting, which browsers only do from an HTTPS page,
+      # and the `__Host-` session cookie of SECURE_COOKIES — was exercised
+      # nowhere. The steps below put the same two binaries behind the
+      # Caddyfile over HTTPS and run the specs about those:
+      # caddy-https.spec.ts (headers on a real response, a CSP violation
+      # delivered to /api/csp-report through `Reporting-Endpoints`) and
+      # sessions.spec.ts (the session cookie, set and cleared, under its
+      # `__Host-` name).
+      #
+      # apps/api restarts with three variables changed — SECURE_COOKIES=true,
+      # and PUBLIC_BASE_URL and FRONTEND_BASE_URL moved to https://localhost —
+      # and the rest of its configuration unchanged: read back from the
+      # running process rather than written a second time, so the two runs
+      # cannot drift apart. Its output goes to a
+      # file, where caddy-https.spec.ts looks for the violation it causes
+      # (API_LOG_PATH). It stops within SHUTDOWN_GRACE_SECONDS (25 by
+      # default). apps/web keeps running as it is: of its configuration, only
+      # API_PUBLIC_BASE_URL depends on the browser's scheme, and the two
+      # specs do not use it (it is the Messagerie socket's address).
+      - name: Restart apps/api with secure cookies, for the HTTPS run
+        run: |
+          pid=$(pgrep -xf './target/debug/manage_our_home')
+          mapfile -d '' vars < "/proc/$pid/environ"
+          kill "$pid"
+          for i in $(seq 1 60); do
+            kill -0 "$pid" 2>/dev/null || break
+            [ "$i" = 60 ] && { echo "apps/api did not stop in 30s" >&2; exit 1; }
+            sleep 0.5
+          done
+          env -i "${vars[@]}" \
+            SECURE_COOKIES=true \
+            PUBLIC_BASE_URL=https://localhost/api \
+            FRONTEND_BASE_URL=https://localhost \
+            ./target/debug/manage_our_home > "$RUNNER_TEMP/api-https.log" 2>&1 &
+      - name: Put infra/Caddyfile in front of both apps, over HTTPS
+        run: |
+          docker cp infra/Caddyfile "${{ job.services.caddy.id }}:/etc/caddy/Caddyfile"
+          docker restart "${{ job.services.caddy.id }}"
+          for i in $(seq 1 60); do
+            curl -sk -o /dev/null -w '%{http_code}' https://localhost/login | grep -qx 200 \
+              && curl -sk -o /dev/null -w '%{http_code}' https://localhost/api/auth/me | grep -qx 401 \
+              && exit 0
+            sleep 1
+          done
+          echo "the stack did not answer through Caddy in 60s" >&2
+          docker logs "${{ job.services.caddy.id }}"
+          cat "$RUNNER_TEMP/api-https.log"
+          exit 1
+      - run: npx playwright test caddy-https.spec.ts sessions.spec.ts
+        working-directory: e2e
+        env:
+          WEB_BASE_URL: https://localhost
+          API_LOG_PATH: ${{ runner.temp }}/api-https.log
