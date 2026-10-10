@@ -50,7 +50,9 @@ const CADDYFILE: &str = include_str!("../../../infra/Caddyfile");
 /// sets the last one counts. A replacement leaves the value unknown (the
 /// guard does not compute it), until a set in a directive applied later; a
 /// replacement finding no value does nothing. `?<name>` sets a value only
-/// where there is none; `+<name>` adds a second one, which leaves the value
+/// where there is none — and Caddy applies a directive's `?` lines only if
+/// none of their fields is there yet, so a `?` on another field beside it
+/// leaves the value unknown; `+<name>` adds a second one, which leaves the value
 /// unknown. A directive with a matcher that touches the field leaves it
 /// unknown too — its responses get something else — unless a set without a
 /// matcher applied later covers them all; deferred, nothing applies after it.
@@ -64,8 +66,9 @@ const CADDYFILE: &str = include_str!("../../../infra/Caddyfile");
 /// `header` nested in a `handle`, `route` or snippet (scoped by that block,
 /// not by a matcher of its own) and its place among other directives, a
 /// value split across lines, a block holding a `match` of response matchers,
-/// the relative order of several directives with matchers, and what a
-/// replacement turns the value into. What Caddy really sends is checked by
+/// the relative order of several directives with matchers, what a
+/// replacement turns the value into, and whether the other fields of a
+/// directive's `?` lines are already on the response. What Caddy really sends is checked by
 /// the `e2e` job of `ci.yml`, which goes through this Caddyfile over HTTPS
 /// (`e2e/tests/caddy-https.spec.ts`, #381).
 fn caddy_header(caddyfile: &str, name: &str) -> Option<String> {
@@ -125,6 +128,11 @@ fn caddy_header(caddyfile: &str, name: &str) -> Option<String> {
         if matches!(prefix, Some('-' | '?' | '>')) {
             directive.deferred = true;
         }
+        if prefix == Some('?')
+            && strip_name(rest, name).is_none_or(|r| !r.starts_with(char::is_whitespace))
+        {
+            directive.other_default = true;
+        }
         if prefix == Some('-') {
             // `-<name>` removes the header from the responses it applies to,
             // matcher or not: some response, then, goes without it.
@@ -177,6 +185,10 @@ struct Directive {
     deferred: bool,
     /// What it does to the field, in the order of its lines.
     ops: Vec<Op>,
+    /// It holds a `?` line on another field. Caddy applies a directive's
+    /// `?` lines only if none of their fields is there yet, which depends
+    /// on what the rest of the response holds.
+    other_default: bool,
 }
 
 /// One line of a directive on the field.
@@ -220,7 +232,11 @@ impl Directive {
         let added = self.ops.iter().any(|op| matches!(op, Op::Add));
         let replaced = self.ops.iter().any(|op| matches!(op, Op::Replace));
         let last_set = sets.next_back();
-        if added || defaults.len() > 1 || (last_set.is_some() && !defaults.is_empty()) {
+        if added
+            || defaults.len() > 1
+            || (last_set.is_some() && !defaults.is_empty())
+            || (self.other_default && !defaults.is_empty())
+        {
             return Value::Unknown;
         }
         let value = match (last_set, defaults.first(), value) {
@@ -744,6 +760,14 @@ fn caddy_header_follows_caddys_order_of_operations() {
         ("header X-T \"a\"\nheader ?X-T \"b\"\n", Some("a")),
         ("header {\n?X-T \"d\"\n}\nheader X-T \"b\"\n", Some("b")),
         ("header ?X-T \"d\"\n", Some("d")),
+        // The `?` lines of one directive apply only if none of their fields
+        // is there yet: with `?Server` beside it (Caddy sets `Server`), no
+        // X-T is sent. The guard does not know what else the response holds.
+        ("header {\n?X-T \"d\"\n?Server \"x\"\n}\n", None),
+        ("header {\n?X-T \"d\"\n?X-Other \"x\"\n}\n", None),
+        // Plain and `>` sets of the same directive are not conditioned.
+        ("header {\nX-T \"a\"\n?Server \"x\"\n}\n", Some("a")),
+        ("header {\n>X-T \"a\"\n?Server \"x\"\n}\n", Some("a")),
         ("header X-T \"a\"\nheader +X-T \"b\"\n", None),
         ("header {\nX-T \"a\"\n?X-T \"d\"\n}\n", None),
         // A directive with a matcher runs first: a later one without
@@ -779,9 +803,12 @@ fn caddy_header_follows_caddys_order_of_operations() {
     let file = "header {\n-Server\nContent-Security-Policy \"script-src 'self'\" \"script-src 'self' 'unsafe-inline'\"\n}\n\
                 header {\nContent-Security-Policy \"default-src 'self'; script-src 'self'\"\n}\n";
     let review = caddy_csp(file);
+    // And the second one: Caddy sends no policy at all here.
+    let file = "header {\n?Content-Security-Policy \"default-src 'self'; script-src 'self'\"\n?Server x\n}\n";
+    let defaulted = caddy_csp(file);
     assert!(
-        wrong.is_empty() && review.is_none(),
-        "\n{}\nreview case: {review:?}",
+        wrong.is_empty() && review.is_none() && defaulted.is_none(),
+        "\n{}\nreview cases: {review:?}, {defaulted:?}",
         wrong.join("\n")
     );
 }
