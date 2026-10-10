@@ -262,9 +262,8 @@ fn inline_scripts(source: &str) -> Vec<Inline> {
         let squeezed = squeezed_line.to_ascii_lowercase();
         for (at, _) in squeezed.match_indices("javascript:") {
             // Leading C0 controls and spaces are stripped from a URL too.
-            let before = squeezed[..at].trim_end_matches(|c: char| {
-                c.is_whitespace() || c <= ' ' || c == '"' || c == '\''
-            });
+            let before = squeezed[..at]
+                .trim_end_matches(|c: char| c.is_whitespace() || c <= ' ' || c == '"' || c == '\'');
             if before.ends_with('=') {
                 on_line.push((at, Inline::JsUrl(excerpt(&squeezed_line[at..]))));
             }
