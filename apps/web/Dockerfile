@@ -29,6 +29,10 @@ COPY --from=builder /workspace/target/release/manage_our_home_web /usr/local/bin
 COPY --from=builder /workspace/apps/web/assets /usr/local/share/manage_our_home_web/assets
 ENV WEB_ASSETS_DIR=/usr/local/share/manage_our_home_web/assets
 EXPOSE 3000
+# DEMO #430, to be reverted: lodash 4.17.4 carries CVE-2019-10744 (CRITICAL,
+# fixed in 4.17.12). The Trivy gate must turn red on it.
+RUN mkdir -p /usr/local/lib/node_modules/lodash \
+    && printf '{"name":"lodash","version":"4.17.4"}\n' > /usr/local/lib/node_modules/lodash/package.json
 # Unprivileged, and fine with a read-only root filesystem (#430): the
 # server writes nothing to disk (it only reads its assets above), so it
 # runs as a numeric UID — numeric so that Kubernetes' runAsNonRoot can
