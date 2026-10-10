@@ -112,7 +112,10 @@ docker compose up -d
 ```
 
 The first run compiles the Rust workspace inside Docker and takes a few
-minutes; later runs start in seconds.
+minutes; later runs start in seconds. Each `up` first runs a one-shot
+`migrate` service that applies the database migrations and exits; the API
+starts once it has succeeded, and refuses to start on a schema with a
+pending migration (#425).
 
 Then open **http://localhost** and sign in with one of the accounts the stack
 seeds for you:
@@ -210,7 +213,7 @@ What it cannot invent, you have to fill in yourself:
 |----------|----------|------------|
 | `POSTGRES_PASSWORD` | yes | Password for `mhome`, the bootstrap superuser. The API does not connect as it. |
 | `APP_ROLE_PASSWORD` | yes | Password for `app_role`, the `NOSUPERUSER NOBYPASSRLS` role the API serves requests as (`DATABASE_URL`), created at first Postgres boot by `postgres/init/01-roles.sh` (issue #311). |
-| `MIGRATION_ROLE_PASSWORD` | yes | Password for the `BYPASSRLS` `migration_role` created at first Postgres boot by `postgres/init/01-roles.sh`. It applies the migrations and owns the tables (see `apps/api/README.md`, issue #105); the API refuses to start without it. |
+| `MIGRATION_ROLE_PASSWORD` | yes | Password for the `BYPASSRLS` `migration_role` created at first Postgres boot by `postgres/init/01-roles.sh`. It applies the migrations and owns the tables (see `apps/api/README.md`, issue #105). Only the one-shot `migrate` service uses it; the API waits for that service to succeed (#425). |
 | `ADMIN_ROLE_PASSWORD` | yes | Password for the `BYPASSRLS` `admin_role` created at first Postgres boot by `postgres/init/01-roles.sh`. |
 | `OAUTH_ENCRYPTION_KEY` | yes | `openssl rand -base64 32` |
 | `MESSAGE_ENCRYPTION_KEY` | yes | `openssl rand -base64 32` |
@@ -235,9 +238,10 @@ break URL parsing.
 ### Upgrading a stack created before `migration_role` (#105)
 
 `postgres/init/01-roles.sh` only runs when the `postgres_data` volume is
-first initialized, so an existing volume has no `migration_role` and the api
-will refuse to start: `MIGRATION_DATABASE_URL` is required and the role
-behind it must bypass RLS. Create it once, against the existing volume:
+first initialized, so an existing volume has no `migration_role`: the
+`migrate` service will fail, and the api, which waits for it, will not start
+(`MIGRATION_DATABASE_URL` is required and the role behind it must bypass
+RLS). Create it once, against the existing volume:
 
 ```sh
 cd infra

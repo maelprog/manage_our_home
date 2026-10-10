@@ -14,6 +14,12 @@ path = "src/main.rs"
 name = "reconcile-attachments"
 path = "src/bin/reconcile_attachments.rs"
 
+# Applies the migrations and exits (#425): the server only checks that the
+# schema is current, so the migration role's credentials stay off it.
+[[bin]]
+name = "migrate"
+path = "src/bin/migrate.rs"
+
 [lib]
 name = "manage_our_home"
 path = "src/lib.rs"

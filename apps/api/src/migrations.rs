@@ -34,7 +34,7 @@
 use anyhow::Context;
 use futures::future::BoxFuture;
 use futures::TryStreamExt;
-use sqlx::migrate::{AppliedMigration, Migrate, MigrateError, Migration};
+use sqlx::migrate::{AppliedMigration, Migrate, MigrateError, Migration, Migrator};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{AssertSqlSafe, Connection, Executor};
 use std::time::{Duration, Instant};
@@ -120,11 +120,11 @@ pub async fn apply(raw_url: Option<String>) -> anyhow::Result<()> {
         ensure_migration_role(&mut conn).await?;
         // `run_direct` rather than `run`, so the pass goes through
         // `LoggingMigrate` and each migration's row counts are logged
-        // (#154). `sqlx::migrate!` is kept: the migrations stay in the
-        // binary. See `LoggingMigrate` for what `run_direct` being
-        // `#[doc(hidden)]` costs at the next sqlx bump.
+        // (#154). `sqlx::migrate!` is kept (`MIGRATOR`): the migrations
+        // stay in the binary. See `LoggingMigrate` for what `run_direct`
+        // being `#[doc(hidden)]` costs at the next sqlx bump.
         let mut logging = LoggingMigrate(&mut conn);
-        sqlx::migrate!("./migrations")
+        MIGRATOR
             .run_direct(None, &mut logging, false)
             .await
             .context("applying migrations")
@@ -133,6 +133,179 @@ pub async fn apply(raw_url: Option<String>) -> anyhow::Result<()> {
 
     pool.close().await;
     result
+}
+
+/// The migrations this binary was built with. One `migrate!` expansion,
+/// shared by the pass that applies them (`apply`) and the boot check that
+/// compares them with the database (`ensure_schema_current`).
+pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
+
+/// Environment variable that puts the pre-#425 behaviour back for a local
+/// stack: the server applies the migrations itself on boot, through
+/// `MIGRATION_DATABASE_URL`, before checking them.
+pub const MIGRATE_ON_BOOT_VAR: &str = "MIGRATE_ON_BOOT";
+
+/// Reads `MIGRATE_ON_BOOT`. Unset, empty or `false` keeps the default —
+/// check, never migrate; `true` migrates. Anything else is refused rather
+/// than read as one or the other: `ture` must not boot a stack that
+/// silently never migrates.
+pub fn migrate_on_boot(raw: Option<&str>) -> anyhow::Result<bool> {
+    match raw {
+        None | Some("") | Some("false") => Ok(false),
+        Some("true") => Ok(true),
+        Some(other) => anyhow::bail!(
+            "{MIGRATE_ON_BOOT_VAR} must be `true` or `false` (or unset), got {other:?}"
+        ),
+    }
+}
+
+/// One `_sqlx_migrations` row, as far as the boot check is concerned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppliedRow {
+    pub version: i64,
+    pub checksum: Vec<u8>,
+    pub success: bool,
+}
+
+/// How the database's migration history differs from the binary's. Every
+/// list is sorted ascending; all empty means the schema is current.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SchemaDrift {
+    /// Embedded in the binary, not recorded in the database.
+    pub pending: Vec<i64>,
+    /// Recorded with `success = false`: a pass that stopped half way.
+    pub failed: Vec<i64>,
+    /// Recorded with a checksum other than the embedded file's: the file
+    /// was edited after it was applied.
+    pub modified: Vec<i64>,
+    /// Recorded in the database, unknown to the binary: the schema is
+    /// ahead of this build.
+    pub unknown: Vec<i64>,
+}
+
+impl SchemaDrift {
+    pub fn is_current(&self) -> bool {
+        self.pending.is_empty()
+            && self.failed.is_empty()
+            && self.modified.is_empty()
+            && self.unknown.is_empty()
+    }
+}
+
+impl std::fmt::Display for SchemaDrift {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let described = [
+            ("pending", &self.pending),
+            ("failed", &self.failed),
+            ("modified after being applied", &self.modified),
+            ("unknown to this build", &self.unknown),
+        ]
+        .iter()
+        .filter(|(_, versions)| !versions.is_empty())
+        .map(|(label, versions)| {
+            let versions = versions
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{label}: {versions}")
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+        write!(
+            f,
+            "the database schema does not match the migrations this build carries \
+             ({described}). Apply them with the `migrate` command (it reads \
+             {MIGRATION_URL_VAR}) before starting the server, or, on a local stack only, \
+             set {MIGRATE_ON_BOOT_VAR}=true to have the server apply them itself"
+        )
+    }
+}
+
+/// Compares the migrations embedded in the binary, as `(version,
+/// checksum)`, with the rows of `_sqlx_migrations`.
+///
+/// The three checks sqlx's migrator makes before it applies anything — a
+/// dirty row, a checksum that moved, a version it does not know — plus the
+/// one `migrate` exists to resolve: what is still pending. A server that
+/// started on any of them would run queries against a schema it was not
+/// built for.
+pub fn schema_drift(embedded: &[(i64, &[u8])], applied: &[AppliedRow]) -> SchemaDrift {
+    let mut drift = SchemaDrift::default();
+    for (version, checksum) in embedded {
+        match applied.iter().find(|row| row.version == *version) {
+            None => drift.pending.push(*version),
+            Some(row) if !row.success => drift.failed.push(*version),
+            Some(row) if row.checksum.as_slice() != *checksum => drift.modified.push(*version),
+            Some(_) => {}
+        }
+    }
+    for row in applied {
+        if !embedded.iter().any(|(version, _)| *version == row.version) {
+            if row.success {
+                drift.unknown.push(row.version);
+            } else {
+                drift.failed.push(row.version);
+            }
+        }
+    }
+    for versions in [
+        &mut drift.pending,
+        &mut drift.failed,
+        &mut drift.modified,
+        &mut drift.unknown,
+    ] {
+        versions.sort_unstable();
+    }
+    drift
+}
+
+/// Refuses to go on unless every migration embedded in the binary is
+/// recorded as applied, unchanged, and nothing else is (#425).
+///
+/// Runs on whatever connection it is given — the server passes its
+/// runtime pool, which only reads `_sqlx_migrations`, a table without
+/// RLS. A database that was never migrated has no such table; that reads
+/// as "everything pending", not as an error of its own.
+pub async fn ensure_schema_current(conn: &mut sqlx::PgConnection) -> anyhow::Result<()> {
+    let table = &*MIGRATOR.table_name;
+    let exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+        .bind(table)
+        .fetch_one(&mut *conn)
+        .await
+        .context("looking up the migrations table")?;
+
+    let applied: Vec<AppliedRow> = if exists {
+        sqlx::query_as::<_, (i64, Vec<u8>, bool)>(AssertSqlSafe(format!(
+            "SELECT version, checksum, success FROM {table} ORDER BY version"
+        )))
+        .fetch_all(&mut *conn)
+        .await
+        .with_context(|| {
+            format!("reading {table}: the role DATABASE_URL names needs SELECT on it")
+        })?
+        .into_iter()
+        .map(|(version, checksum, success)| AppliedRow {
+            version,
+            checksum,
+            success,
+        })
+        .collect()
+    } else {
+        Vec::new()
+    };
+
+    let embedded: Vec<(i64, &[u8])> = MIGRATOR
+        .iter()
+        .filter(|m| !m.migration_type.is_down_migration())
+        .map(|m| (m.version, &*m.checksum))
+        .collect();
+
+    let drift = schema_drift(&embedded, &applied);
+    if !drift.is_current() {
+        anyhow::bail!("refusing to start: {drift}");
+    }
+    Ok(())
 }
 
 /// The row counts one migration produced, rendered for the log line.
@@ -416,7 +589,126 @@ impl Migrate for LoggingMigrate<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{may_apply_migrations, resolve_migration_url, summarize_row_counts};
+    use super::{
+        may_apply_migrations, migrate_on_boot, resolve_migration_url, schema_drift,
+        summarize_row_counts, AppliedRow, SchemaDrift,
+    };
+
+    fn applied(version: i64, checksum: &[u8]) -> AppliedRow {
+        AppliedRow {
+            version,
+            checksum: checksum.to_vec(),
+            success: true,
+        }
+    }
+
+    /// The state every boot after `migrate` should find: each embedded
+    /// migration recorded once, with the checksum it was built with.
+    #[test]
+    fn a_schema_holding_every_embedded_migration_is_current() {
+        let drift = schema_drift(
+            &[(1, b"a"), (2, b"b")],
+            &[applied(1, b"a"), applied(2, b"b")],
+        );
+        assert!(drift.is_current(), "{drift:?}");
+        assert_eq!(drift, SchemaDrift::default());
+    }
+
+    /// A database nobody has migrated yet: no `_sqlx_migrations` rows at
+    /// all, so every embedded migration is pending.
+    #[test]
+    fn an_empty_database_has_every_migration_pending() {
+        let drift = schema_drift(&[(1, b"a"), (2, b"b")], &[]);
+        assert!(!drift.is_current());
+        assert_eq!(drift.pending, vec![1, 2]);
+    }
+
+    /// The case #425 exists for: a new image rolled out before the
+    /// migration that ships with it was applied.
+    #[test]
+    fn a_schema_behind_the_binary_reports_what_is_missing() {
+        let drift = schema_drift(&[(1, b"a"), (2, b"b"), (3, b"c")], &[applied(1, b"a")]);
+        assert!(!drift.is_current());
+        assert_eq!(drift.pending, vec![2, 3]);
+        assert!(drift.failed.is_empty() && drift.modified.is_empty() && drift.unknown.is_empty());
+    }
+
+    /// A migration file edited after it was applied: the database does not
+    /// hold the schema the binary was built against, and `migrate` itself
+    /// would refuse (sqlx's checksum check).
+    #[test]
+    fn an_edited_migration_is_reported_as_modified() {
+        let drift = schema_drift(
+            &[(1, b"a"), (2, b"b")],
+            &[applied(1, b"a"), applied(2, b"x")],
+        );
+        assert!(!drift.is_current());
+        assert_eq!(drift.modified, vec![2]);
+        assert!(drift.pending.is_empty());
+    }
+
+    /// A row recorded with `success = false` is a pass that stopped half
+    /// way (sqlx calls it dirty): neither applied nor pending.
+    #[test]
+    fn a_failed_migration_is_reported_as_failed_not_modified() {
+        let mut row = applied(2, b"other");
+        row.success = false;
+        let drift = schema_drift(&[(1, b"a"), (2, b"b")], &[applied(1, b"a"), row]);
+        assert!(!drift.is_current());
+        assert_eq!(drift.failed, vec![2]);
+        assert!(drift.modified.is_empty() && drift.pending.is_empty());
+    }
+
+    /// The database is ahead of the binary — an older image started after
+    /// a newer one migrated. sqlx's migrator refuses that too
+    /// (`VersionMissing`), so the boot check does not pretend otherwise.
+    #[test]
+    fn a_migration_the_binary_does_not_know_is_reported_as_unknown() {
+        let drift = schema_drift(&[(1, b"a")], &[applied(1, b"a"), applied(2, b"b")]);
+        assert!(!drift.is_current());
+        assert_eq!(drift.unknown, vec![2]);
+    }
+
+    /// Versions come out sorted whatever order either side is in, so the
+    /// refusal reads the same on every boot.
+    #[test]
+    fn versions_are_reported_in_ascending_order() {
+        let drift = schema_drift(
+            &[(3, b"c"), (1, b"a"), (2, b"b")],
+            &[applied(9, b"z"), applied(7, b"y")],
+        );
+        assert_eq!(drift.pending, vec![1, 2, 3]);
+        assert_eq!(drift.unknown, vec![7, 9]);
+    }
+
+    /// The refusal is the operator's only clue: it names each problem and
+    /// the command that fixes the common one.
+    #[test]
+    fn the_refusal_names_the_versions_and_the_remedy() {
+        let drift = schema_drift(&[(1, b"a"), (2, b"b")], &[applied(1, b"a")]);
+        let msg = drift.to_string();
+        assert!(msg.contains("pending: 2"), "{msg}");
+        assert!(msg.contains("migrate"), "{msg}");
+        assert!(msg.contains("MIGRATE_ON_BOOT"), "{msg}");
+    }
+
+    #[test]
+    fn migrate_on_boot_is_off_unless_asked() {
+        assert!(!migrate_on_boot(None).unwrap());
+        assert!(!migrate_on_boot(Some("")).unwrap());
+        assert!(!migrate_on_boot(Some("false")).unwrap());
+        assert!(migrate_on_boot(Some("true")).unwrap());
+    }
+
+    /// A typo must not quietly pick one of the two behaviours: `ture`
+    /// would otherwise boot a dev stack that never migrates.
+    #[test]
+    fn migrate_on_boot_rejects_anything_else_by_name() {
+        for raw in ["ture", "1", "yes", "TRUE "] {
+            let err = migrate_on_boot(Some(raw)).unwrap_err().to_string();
+            assert!(err.contains("MIGRATE_ON_BOOT"), "{raw:?}: {err}");
+        }
+    }
 
     /// The shape #154 exists to make visible: a file whose DDL succeeds
     /// and whose DML matched nothing. A single summed count would read
