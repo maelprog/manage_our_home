@@ -244,3 +244,6 @@ also the designated trigger for the Version Y microservices/Kubernetes
 trajectory — see `architecture.md` § "Version Y" and
 `docs/version-y-microservices.md`. Its spec, when it happens, should
 account for that (Ollama extraction as a separate service).
+**Revised 2026-10-10 (epic #441):** it no longer triggers Kubernetes, which
+is adopted now to deploy the monolith (k3s); it only triggers the extraction
+of Ollama as a separate service.
