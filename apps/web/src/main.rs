@@ -92,6 +92,11 @@ fn build_router(state: AppState) -> Router {
         )
         .route("/verify-email", get(routes::auth::verify_email::get))
         .route(
+            "/verify-email/resend",
+            get(routes::auth::resend_verification::get)
+                .post(routes::auth::resend_verification::post),
+        )
+        .route(
             "/login",
             get(routes::auth::login::get).post(routes::auth::login::post),
         )
