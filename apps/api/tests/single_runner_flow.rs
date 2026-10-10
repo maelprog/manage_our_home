@@ -14,10 +14,12 @@ use std::time::Duration;
 use chrono::Utc;
 use manage_our_home::jobs::retention_purge::{scheduled_pass, RetentionCutoffs};
 use manage_our_home::jobs::scheduled_notifications::send_pass;
-use manage_our_home::jobs::single_runner::{exclusively, Job};
+use manage_our_home::jobs::single_runner::{
+    exclusively, lock_connect_options, session_settings, Job,
+};
 use manage_our_home::notifications::push::PushOutcome;
 use sqlx::pool::PoolConnection;
-use sqlx::{PgPool, Postgres};
+use sqlx::{ConnectOptions, Connection, PgPool, Postgres};
 use tokio::sync::{Notify, Semaphore};
 use uuid::Uuid;
 
@@ -308,4 +310,23 @@ async fn a_failed_pass_frees_its_lock(db: PgPool) {
     assert!(failed.is_err());
     let (other, _) = hold(&db, Job::AccountPurge).await;
     release(other, Job::AccountPurge).await;
+}
+
+/// The lock's session carries the TCP settings that bound how long a
+/// silently cut connection keeps its lock (`single_runner`): read back
+/// from the server, on a connection opened the way `exclusively` opens it.
+#[sqlx::test]
+async fn the_lock_session_bounds_a_silent_cut(db: PgPool) {
+    let mut conn = lock_connect_options(&db).connect().await.unwrap();
+    for (name, value) in session_settings() {
+        // `pg_settings.setting` is in the GUC's base unit, as sent.
+        let setting: String =
+            sqlx::query_scalar("SELECT setting FROM pg_settings WHERE name = $1")
+                .bind(name)
+                .fetch_one(&mut conn)
+                .await
+                .unwrap();
+        assert_eq!(setting, value, "{name}");
+    }
+    conn.close().await.unwrap();
 }

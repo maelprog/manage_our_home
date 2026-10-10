@@ -254,8 +254,13 @@ a connection of its own and asks Postgres for that job's advisory lock
 (`pg_try_advisory_lock`, one key per job, and the reminder worker's sending
 and refilling passes each have their own). A process that does not get it
 skips that tick; the lock is released when the pass closes its connection,
-or with the session if that connection is cut, and another process takes
-it on its next tick. Each pass holds one connection to the database on top
+or with the session if that connection is lost, and another process takes
+it on its next tick. A connection cut silently (a network partition, a
+node lost) is noticed by the server through TCP alone, which the lock's
+session bounds to a minute: it sets `tcp_keepalives_idle=30`,
+`tcp_keepalives_interval=10`, `tcp_keepalives_count=3` and
+`tcp_user_timeout=60000` itself, so the server's defaults (the OS's, two
+hours) do not apply. Each pass holds one connection to the database on top
 of the pool's while it runs.
 
 No request handler other than the seven `/admin/*` ones touches `admin_db`.
