@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH recent AS (\n            SELECT 1\n            FROM email_verification_tokens\n            WHERE user_id = $1\n              AND created_at > now() - make_interval(secs => $3::int)\n            LIMIT 1\n        ),\n        invalidated AS (\n            UPDATE email_verification_tokens\n            SET consumed_at = now()\n            WHERE user_id = $1\n              AND consumed_at IS NULL\n              AND NOT EXISTS (SELECT 1 FROM recent)\n        )\n        INSERT INTO email_verification_tokens (user_id, expires_at, token_hash)\n        SELECT $1, $2, $4\n        WHERE NOT EXISTS (SELECT 1 FROM recent)\n        RETURNING user_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "email_verification_tokens",
+            "name": "user_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Int4",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5891e6f6b7762f08248e1b33bbffde436a43dc9b14ab54d59a401c4bebcbf905"
+}

@@ -20,6 +20,18 @@ fn invalid_link() -> (&'static str, String) {
     ("Lien invalide", v.to_html())
 }
 
+fn expired_link() -> (&'static str, String) {
+    let v = view! {
+        <h1>"Lien expiré"</h1>
+        <p>"Ce lien de vérification a déjà été utilisé ou a expiré. Si votre compte attend encore sa vérification, demandez un nouvel email."</p>
+        <div class="actions">
+            <a class="btn" href="/verify-email/resend">"Renvoyer l'email de vérification"</a>
+            <a class="btn secondary" href="/login">"Retour à la connexion"</a>
+        </div>
+    };
+    ("Lien expiré", v.to_html())
+}
+
 pub async fn get(
     State(state): State<AppState>,
     Query(query): Query<VerifyEmailQuery>,
@@ -43,14 +55,7 @@ pub async fn get(
             };
             ("Email vérifié", v.to_html())
         }
-        Ok(resp) if resp.status == reqwest::StatusCode::GONE => {
-            let v = view! {
-                <h1>"Lien expiré"</h1>
-                <p>"Ce lien de vérification a déjà été utilisé ou a expiré. Merci de recréer un compte ou de contacter le support pour en obtenir un nouveau."</p>
-                <a class="btn secondary" href="/login">"Retour à la connexion"</a>
-            };
-            ("Lien expiré", v.to_html())
-        }
+        Ok(resp) if resp.status == reqwest::StatusCode::GONE => expired_link(),
         Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => invalid_link(),
         _ => {
             let v = view! {
@@ -62,4 +67,20 @@ pub async fn get(
     };
 
     Html(shell(Width::Form, title, &body_html))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #420: an expired link sent its reader to register again — which
+    /// answers "Un compte existe déjà avec cet email" — or to a support the
+    /// page does not name. The way out is the resend form.
+    #[test]
+    fn an_expired_link_leads_to_the_resend_form() {
+        let (_, html) = expired_link();
+        assert!(html.contains(r#"href="/verify-email/resend""#), "{html}");
+        assert!(!html.contains("recréer un compte"), "{html}");
+        assert!(html.contains(r#"href="/login""#), "{html}");
+    }
 }

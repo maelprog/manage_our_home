@@ -128,7 +128,13 @@ async function undersized(page: Page): Promise<Box[]> {
   }, MIN);
 }
 
-const PUBLIC_PAGES = ["/login", "/register", "/forgot-password"];
+const PUBLIC_PAGES = [
+  "/login",
+  "/register",
+  "/register/check-email",
+  "/forgot-password",
+  "/verify-email/resend",
+];
 const APP_PAGES = [
   "/",
   "/agenda",
