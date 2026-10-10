@@ -81,6 +81,7 @@ pub fn test_state(db: PgPool) -> AppState {
         recipe_import_throttle: std::sync::Arc::new(
             manage_our_home::recipes::import::ImportThrottle::new(),
         ),
+        shutdown: manage_our_home_http_guard::Shutdown::new(),
     }
 }
 

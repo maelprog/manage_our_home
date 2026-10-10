@@ -35,6 +35,11 @@ use crate::AppState;
 /// the same `accessLost()` notice, without navigating to `/login`.
 pub const CLOSE_SESSION_ENDED: u16 = 4401;
 
+/// Close code sent to every open socket when the process stops (#424):
+/// RFC 6455's 1001, "going away". The client reconnects as on any close,
+/// and reaches a replica that is still serving.
+pub const CLOSE_GOING_AWAY: u16 = 1001;
+
 pub async fn message_ws(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -49,8 +54,13 @@ pub async fn message_ws(
     tx.commit().await?;
     state.message_hubs.ensure_listening().await;
 
-    Ok(ws.on_upgrade(move |socket| {
-        handle_socket(socket, state, group_id, auth.user_id, auth.session_id)
+    // Taken before the upgrade so the process cannot exit between the
+    // upgrade and the socket's first poll: axum's graceful shutdown does not
+    // wait for upgraded connections (#424).
+    let hold = state.shutdown.hold();
+    Ok(ws.on_upgrade(move |socket| async move {
+        handle_socket(socket, state, group_id, auth.user_id, auth.session_id).await;
+        drop(hold);
     }))
 }
 
@@ -75,9 +85,21 @@ async fn handle_socket(
     let mut events = state.message_hubs.subscribe(group_id).await;
     let mut recheck = tokio::time::interval(state.message_ws_recheck_interval);
     recheck.tick().await; // first tick fires immediately; skip it
+    let shutdown = state.shutdown.clone();
+    let stopping = shutdown.wait();
+    tokio::pin!(stopping);
 
     loop {
         tokio::select! {
+            () = &mut stopping => {
+                let _ = socket
+                    .send(Message::Close(Some(CloseFrame {
+                        code: CLOSE_GOING_AWAY,
+                        reason: "server_shutdown".into(),
+                    })))
+                    .await;
+                break;
+            }
             incoming = socket.recv() => {
                 match incoming {
                     Some(Ok(Message::Close(_))) | None => break,

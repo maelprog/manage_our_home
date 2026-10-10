@@ -11,6 +11,15 @@ async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
+    // How long a stop may take (#424). Read first: a malformed value
+    // refuses to start rather than surface at the first SIGTERM.
+    let shutdown_grace = manage_our_home_http_guard::shutdown::grace_period(
+        env::var(manage_our_home_http_guard::shutdown::GRACE_VAR)
+            .ok()
+            .as_deref(),
+    )
+    .map_err(anyhow::Error::msg)?;
+
     // Migrations run first, on their own connection, as their own role
     // (`MIGRATION_DATABASE_URL`) — never on the runtime pool. The runtime
     // role is `NOSUPERUSER NOBYPASSRLS` on any deployment that follows
@@ -154,6 +163,7 @@ async fn main() -> anyhow::Result<()> {
         recipe_import_throttle: std::sync::Arc::new(
             manage_our_home::recipes::import::ImportThrottle::new(),
         ),
+        shutdown: manage_our_home_http_guard::Shutdown::new(),
     };
 
     // On the admin pool: `event_attachments` reads back empty without
@@ -192,17 +202,24 @@ async fn main() -> anyhow::Result<()> {
     // The listener keeps one connection of `db` for the process lifetime.
     state.message_hubs.ensure_listening().await;
 
+    let shutdown = state.shutdown.clone();
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
     tracing::info!("listening on {}", listener.local_addr()?);
-    // `into_make_service_with_connect_info` is what puts the peer address
-    // in each request's extensions; without it `client_ip::resolve` has
-    // nothing to check `X-Forwarded-For` against and every client shares
-    // one throttle bucket (#178).
-    axum::serve(
+    // On SIGTERM: `/readyz` turns 503, the listener closes, the requests in
+    // flight finish and the WebSockets get a Close frame, within
+    // `shutdown_grace` (#424). `serve` also puts the peer address in each
+    // request's extensions; without it `client_ip::resolve` has nothing to
+    // check `X-Forwarded-For` against and every client shares one throttle
+    // bucket (#178).
+    manage_our_home_http_guard::shutdown::serve(
         listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        app,
+        shutdown,
+        manage_our_home_http_guard::shutdown::terminate_signal(),
+        shutdown_grace,
     )
     .await?;
+    tracing::info!("stopped");
     Ok(())
 }
