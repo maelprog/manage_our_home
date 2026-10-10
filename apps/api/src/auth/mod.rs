@@ -25,7 +25,7 @@ use manage_our_home_shared::dto::auth::{
 
 use manage_our_home_shared::validation::auth::{
     validate_age_declaration, validate_display_name, validate_email, validate_password,
-    validate_terms_acceptance,
+    validate_terms_acceptance, VERIFICATION_RESEND_COOLDOWN_SECS,
 };
 
 use crate::client_ip::ClientIp;
@@ -479,16 +479,15 @@ pub async fn forgot_password(
     Ok(StatusCode::OK)
 }
 
-const RESEND_COOLDOWN_MINUTES: i32 = 5;
-
 /// Anti-enumeration: always returns 200 with an empty body, whether the
 /// email is unknown, already verified, or unverified. Mirrors
 /// `forgot_password`. When the account exists and is still unverified, any
 /// outstanding verification tokens are invalidated and a fresh one is
 /// issued and emailed (best-effort). A per-email cooldown is enforced
 /// entirely in SQL: if a token was issued for this user within the last
-/// `RESEND_COOLDOWN_MINUTES`, the whole operation is a silent no-op (no new
-/// token, no email).
+/// `VERIFICATION_RESEND_COOLDOWN_SECS` (shared with apps/web, whose resend
+/// button counts it down, #420), the whole operation is a silent no-op (no
+/// new token, no email).
 pub async fn resend_verification(
     State(state): State<AppState>,
     Json(body): Json<ResendVerificationRequest>,
@@ -516,7 +515,7 @@ pub async fn resend_verification(
             SELECT 1
             FROM email_verification_tokens
             WHERE user_id = $1
-              AND created_at > now() - make_interval(mins => $3::int)
+              AND created_at > now() - make_interval(secs => $3::int)
             LIMIT 1
         ),
         invalidated AS (
@@ -533,7 +532,7 @@ pub async fn resend_verification(
         "#,
         user.id,
         expires_at,
-        RESEND_COOLDOWN_MINUTES,
+        VERIFICATION_RESEND_COOLDOWN_SECS,
         &token.hash()[..],
     )
     .fetch_optional(&state.db)

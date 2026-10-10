@@ -7,6 +7,7 @@ use common::{
 };
 use manage_our_home::auth::terms_acceptance::terms_in_force_now;
 use manage_our_home::auth::token::{new_token, token_hash};
+use manage_our_home_shared::validation::auth::VERIFICATION_RESEND_COOLDOWN_SECS;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -1451,8 +1452,9 @@ async fn resend_verification_noops_for_unknown_and_verified(db: PgPool) {
     assert_eq!(tokens_before, tokens_after);
 }
 
-/// AC (#27) case 3: a second resend inside the 5-minute window is a silent
-/// no-op — no new token is created.
+/// AC (#27) case 3: a second resend inside the cooldown window
+/// (`VERIFICATION_RESEND_COOLDOWN_SECS`) is a silent no-op — no new token is
+/// created.
 #[sqlx::test]
 async fn resend_verification_cooldown_is_silent_noop(db: PgPool) {
     let router = test_router(db.clone());
@@ -1517,6 +1519,78 @@ async fn resend_verification_cooldown_is_silent_noop(db: PgPool) {
     .await
     .unwrap();
     assert_eq!(count_after_first, count_after_second);
+}
+
+/// Moves every verification token of `email` to `secs` seconds old.
+async fn age_verification_tokens(db: &PgPool, email: &str, secs: i32) {
+    sqlx::query(
+        "UPDATE email_verification_tokens SET created_at = now() - make_interval(secs => $2::int)
+         WHERE user_id = (SELECT id FROM users WHERE email = $1)",
+    )
+    .bind(email)
+    .bind(secs)
+    .execute(db)
+    .await
+    .unwrap();
+}
+
+async fn count_verification_tokens(db: &PgPool, email: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM email_verification_tokens t
+         JOIN users u ON u.id = t.user_id WHERE u.email = $1",
+    )
+    .bind(email)
+    .fetch_one(db)
+    .await
+    .unwrap()
+}
+
+/// #420: the cooldown is `VERIFICATION_RESEND_COOLDOWN_SECS` (30 s) and no
+/// longer five minutes. A token a few seconds younger than the bound still
+/// holds the resend back; once it is a second past, the resend issues a new
+/// token.
+#[sqlx::test]
+async fn resend_verification_cooldown_ends_after_the_shared_delay(db: PgPool) {
+    let router = test_router(db.clone());
+    let email = "ivan@example.test";
+    call(
+        &router,
+        Method::POST,
+        "/auth/register",
+        None,
+        Some(serde_json::json!({
+            "email": email,
+            "password": "initial-password",
+            "display_name": "Ivan",
+            "declares_minimum_age": true, "accepts_terms": true
+        })),
+    )
+    .await;
+    let resend = || {
+        call(
+            &router,
+            Method::POST,
+            "/auth/verify-email/resend",
+            None,
+            Some(serde_json::json!({ "email": email })),
+        )
+    };
+
+    age_verification_tokens(&db, email, VERIFICATION_RESEND_COOLDOWN_SECS - 5).await;
+    assert_status(&resend().await, StatusCode::OK);
+    assert_eq!(
+        count_verification_tokens(&db, email).await,
+        1,
+        "a resend inside the delay issues nothing"
+    );
+
+    age_verification_tokens(&db, email, VERIFICATION_RESEND_COOLDOWN_SECS + 1).await;
+    assert_status(&resend().await, StatusCode::OK);
+    assert_eq!(
+        count_verification_tokens(&db, email).await,
+        2,
+        "a resend past the delay issues a token"
+    );
 }
 
 // --- #178: the login enumeration oracle, and the lock that bounds the cost

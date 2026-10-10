@@ -250,6 +250,15 @@ pub fn format_terms_version(version: &str) -> String {
         .unwrap_or_else(|_| version.to_string())
 }
 
+/// The delay, in seconds, between two verification emails for one account
+/// (#420). apps/api enforces it (`auth::resend_verification`, inside its SQL
+/// statement: a resend within it is a silent no-op) and apps/web shows it as
+/// the countdown of its "Renvoyer l'email de vérification" button
+/// (`routes::auth::resend_verification`). One value, so the button can never
+/// promise an email the server would refuse. `i32` because Postgres binds it
+/// as an `int`.
+pub const VERIFICATION_RESEND_COOLDOWN_SECS: i32 = 30;
+
 /// Length of a bearer token as the api spells it (#222, #335): 32 random
 /// bytes in unpadded base64url are 43 characters.
 pub const BEARER_TOKEN_LEN: usize = 43;
