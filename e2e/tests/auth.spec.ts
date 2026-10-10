@@ -374,7 +374,10 @@ test.describe("Auth — renvoi de l'email de vérification (#420)", () => {
 
     // The suite's apps/api has no mailbox to read (its SMTP host is a dummy,
     // and a failed send is only logged): the second email is seen as the
-    // token it carries — a new one, the first consumed.
+    // token it carries — a new one, the first consumed. The link is opened
+    // at apps/web's /verify-email, the page the email points to; that the
+    // email really carries that link is apps/api's flow test
+    // (`the_resent_verification_email_carries_a_link_that_verifies_the_account`).
     expect(await countVerificationTokens(email)).toEqual({ issued: 2, unconsumed: 1 });
     const token = await fetchVerificationToken(email);
     await page.goto(`/verify-email?token=${token}`);
