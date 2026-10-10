@@ -29,11 +29,11 @@ bloc. La stratégie retenue est "monolith first" (Martin Fowler) :
    parce que c'est le seul composant avec une contrainte matérielle
    différente du reste (GPU-bound, latence en secondes) — voir
    `architecture.md` § stack.
-3. **Révisé le 2026-10-10 (epic #441) :** Kubernetes est introduit
+3. **Révisé le 2026-10-10 (epic #441) :** Kubernetes est retenu dès
    maintenant, pour déployer le monolithe lui-même, sans attendre
    l'extraction d'Ollama. La décision du 2026-07-08 (Kubernetes seulement à
    partir de cette extraction, Docker Compose pour v1/v2) est levée par
-   l'utilisateur. Le déploiement se fait sur **deux clusters k3s
+   l'utilisateur. Le déploiement se fera sur **deux clusters k3s
    auto-gérés** : le serveur maison pour le staging (et l'usage familial non
    public), un VPS tiers pour la prod. Docker Compose
    (`infra/docker-compose.yml`) reste la pile de développement local.
@@ -72,7 +72,7 @@ microservices, lui, reste conditionné comme ci-dessus.
   que laissé implicite.
 - `v2-deployment.md` (2026-07-08) : aucune décision de v2 n'était remise en
   cause (VPS seul, Compose, pas de K8s pour le déploiement 10-15 familles).
-  **Révisé le 2026-10-10 (epic #441)** : le déploiement v2 se fait sur k3s
+  **Révisé le 2026-10-10 (epic #441)** : le déploiement v2 se fera sur k3s
   (prod sur un VPS tiers, staging sur le serveur maison) ; les items 1, 11,
   12, 13 et 15 de `v2-deployment.md` sont requalifiés en conséquence.
 
@@ -141,7 +141,9 @@ sans rien changer à l'architecture v1/v2 actuelle :
      Food Facts et des rapports CSP comptent en mémoire ;
    - #429 : le hub WebSocket de la messagerie est local au process.
 4. **Config par variables d'environnement**, jamais de chemin/fichier local
-   en dur — déjà la pratique (sops + env vars).
+   en dur — déjà la pratique (env vars, secrets chiffrés par sops sous
+   Compose ; sur les clusters k3s, Sealed Secrets décidé le 2026-10-10,
+   #432).
 
 Ces règles sont listées ici comme garde-fous à vérifier à chaque nouvel
 epic ; la règle 3 demande en plus le code de #426 à #429.
@@ -181,15 +183,15 @@ moment de déclencher cette extraction, pas avant.
    détail.** À valider une fois qu'il y a au moins 2-3 services réels à
    mesher — prématuré de trancher avant.
 6. **Registry : GitHub Container Registry (gratuit, simple) vs. Harbor
-   self-hosted (plus formateur, plus de maintenance).** Non tranché,
-   dépend de l'appétit à maintenir un service de plus. **Tranché le
-   2026-10-10 : GitHub Container Registry** (#430).
+   self-hosted (plus formateur, plus de maintenance).** Dépendait de
+   l'appétit à maintenir un service de plus. **Tranché le 2026-10-10 :
+   GitHub Container Registry** (#430).
 7. **Déclencheur précis de l'extraction d'Ollama** en service séparé :
    "quand l'epic fridge-scan est spec'é et implémenté" est le critère
    qualitatif retenu, mais aucune date/seuil quantitatif n'a été fixé. Ce
    critère ne déclenche plus Kubernetes (arbitrage du 2026-10-10) : Ollama
-   tourne dans le cluster à côté du monolithe (#435), seule son extraction
-   en service propre reste conditionnée. À clarifier si un
+   est prévu dans le cluster à côté du monolithe (#435), seule son
+   extraction en service propre reste conditionnée. À clarifier si un
    objectif de calendrier de formation existe (ex. "je veux avoir touché à
    K8s d'ici telle date" indépendamment de l'avancement produit).
 
@@ -198,7 +200,7 @@ moment de déclencher cette extraction, pas avant.
 - `architecture.md` : stack et décisions v1, référence ce document pour la
   trajectoire long-terme.
 - `v2-deployment.md` : déploiement 10-15 familles. Indépendant de cette
-  trajectoire jusqu'au 2026-10-10 ; depuis, il se fait sur k3s (epic #441)
+  trajectoire jusqu'au 2026-10-10 ; depuis, il est prévu sur k3s (epic #441)
   et ses items 1, 11, 12, 13 et 15 renvoient ici.
 - `v1-scope.md` : suivi des epics fonctionnels ; l'epic fridge-scan
   (déclencheur de l'extraction d'Ollama) y est listé "out of v1", pas

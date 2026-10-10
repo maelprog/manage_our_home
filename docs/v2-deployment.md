@@ -4,11 +4,11 @@ Companion to `v1-scope.md`, same format. Target: first external deployment
 next week (once v1 is validated), for 10-15 families. Decisions and
 rationale in `architecture.md` ("v2 — Déploiement multi-famille").
 
-**Revised 2026-10-10 (user decisions, epic #441):** v2 is deployed on k3s,
-not Docker Compose — two self-managed clusters, production on a third-party
-VPS and staging on the home server, with Postgres (CloudNativePG) and MinIO
-inside the cluster, images on GitHub Container Registry, and GitOps delivery
-through Argo CD. Items 1, 11, 12, 13 and 15 below are requalified
+**Revised 2026-10-10 (user decisions, epic #441):** v2 is to be deployed on
+k3s, not Docker Compose (nothing is deployed yet) — two self-managed
+clusters, production on a third-party VPS and staging on the home server,
+with Postgres (CloudNativePG) and MinIO inside the cluster, images on GitHub
+Container Registry, and GitOps delivery through Argo CD. Items 1, 11, 12, 13 and 15 below are requalified
 accordingly; the rationale is in `version-y-microservices.md`.
 
 | # | Item | Status | Notes |
@@ -27,7 +27,7 @@ accordingly; the rationale is in `version-y-microservices.md`.
 | 12 | Monitoring: uptime check | missing | Requalified 2026-10-10: carried by #437 (kube-prometheus-stack in the cluster, alerts on failing probes, failed migration Job, late backup, expiring certificate, disk usage). |
 | 13 | Monitoring: centralized/queryable logs | missing | Requalified 2026-10-10: carried by #437 (Loki with a bounded retention, declared in `docs/registre-traitements.md` since the logs hold IP addresses). |
 | 14 | Rate-limiting on `/login`, `/register` | missing | Called out in `architecture.md` security section as "once exposed to internet" — that condition is now met. |
-| 15 | Secrets in production: Sealed Secrets | missing | Requalified 2026-10-10 (#441); was "Secrets via sops in production". Application secrets are `SealedSecret` objects on the `deploy` branch, opened only by the cluster's controller; the controller's private key is never committed and is backed up off the cluster (#432). |
+| 15 | Secrets in production: Sealed Secrets | missing | Requalified 2026-10-10 (#441); was "Secrets via sops in production". Application secrets are to be `SealedSecret` objects on the `deploy` branch, opened only by the cluster's controller; the controller's private key is never to be committed and is to be backed up off the cluster (#432). |
 | 16 | RGPD: pseudonyme et adresse de contact du responsable de traitement | missing | **À remplacer avant la mise en ligne** — bloquant (#131, #379). Art. 13(1)(a) exige l'identité *et* les coordonnées du responsable. Le porteur du projet (personne physique) est désigné par un pseudonyme, jamais par son nom civil (arbitrage du 2026-10-05, #379 : son nom publié viderait l'anonymat LCEN de l'item #17) ; le risque résiduel au regard de l'art. 13 est décrit dans `docs/registre-traitements.md`, à valider en relecture. Il fournit ce pseudonyme et une adresse dédiée au service, relevée par une personne — pas un `noreply@` — au moment de l'ouverture publique. Voir la procédure ci-dessous. |
 | 17 | LCEN: hébergeur des mentions légales et identité de l'éditeur confiée à l'hébergeur | missing | **À remplacer avant la mise en ligne** — bloquant (#132, #314). Les mentions légales existent et sont servies (`docs/legal-notice.md`, `GET /legal-notice`), mais trois valeurs y sont encore des placeholders. L'éditeur use de l'anonymat de la LCEN art. 1-1, II (arbitrage du 2026-10-04) : son identité est communiquée à l'hébergeur, pas publiée. L'hébergeur dépend de l'item #1 et doit être un tiers : l'anonymat ne tient pas en auto-hébergement (#379). Voir la procédure ci-dessous. |
 | 18 | RGPD: cadre contractuel du sous-traitant email et transferts hors UE | missing | **À faire avant la mise en ligne** — bloquant (#136, #328). Le fournisseur est arrêté (Scaleway Transactional Email, arbitrage du 2026-10-02 qui remplace Mailjet) et ne transfère rien hors UE, relevé daté dans le registre. Restent à établir le cadre contractuel opposable (DPA accepté depuis la console Scaleway) et les transferts hors UE de Google et des services de notification des navigateurs (#306) : trois placeholders les portent dans la politique et le registre. Rien dans le code ne contraint `SMTP_HOST`. Voir la procédure ci-dessous. |
