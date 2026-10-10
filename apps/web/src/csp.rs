@@ -42,8 +42,10 @@ const CADDYFILE: &str = include_str!("../../../infra/Caddyfile");
 /// same block, under a matcher) deletes the header again — the name in any
 /// case, or a `*` wildcard covering it (`deletes`) — nor once Caddy's
 /// replacement form `<name> <search> <replace>` edits it: what is sent is
-/// then no longer what the file wrote, until a later set writes it again.
-/// Field names match in
+/// then no longer what the file wrote, until a set in a later `header`
+/// directive writes it again. Inside one `header { … }` block the edit holds
+/// to the end of the block, whatever the order of its lines: Caddy applies
+/// a block's sets before its replacements. Field names match in
 /// any case, and of several values set, the last one is read: it is the one
 /// Caddy sends.
 ///
@@ -58,6 +60,9 @@ fn caddy_header(caddyfile: &str, name: &str) -> Option<String> {
     let mut deleted = false;
     // Inside a `header … {` block: whether that block carries a matcher.
     let mut block: Option<bool> = None;
+    // Whether the current block edits the field: Caddy applies a block's
+    // sets before its replacements, so the edit holds to the block's end.
+    let mut edited_in_block = false;
     for line in caddyfile.lines().map(str::trim) {
         if line.starts_with('#') {
             continue;
@@ -65,6 +70,9 @@ fn caddy_header(caddyfile: &str, name: &str) -> Option<String> {
         let (scoped, field) = if let Some(scoped) = block {
             if line.starts_with('}') {
                 block = None;
+                if std::mem::take(&mut edited_in_block) {
+                    found = None;
+                }
                 continue;
             }
             (scoped, line)
@@ -99,8 +107,12 @@ fn caddy_header(caddyfile: &str, name: &str) -> Option<String> {
         match field_value(field, name) {
             // Caddy sends the last value set: later ones replace earlier ones.
             Some(Field::Set(value)) if !scoped => found = Some(value),
-            // An edit leaves no known value until a later set gives one.
-            Some(Field::Replaced) => found = None,
+            // An edit leaves no known value until a set in a later `header`
+            // directive gives one.
+            Some(Field::Replaced) => {
+                found = None;
+                edited_in_block = block.is_some();
+            }
             _ => {}
         }
     }
@@ -539,10 +551,19 @@ fn caddy_csp_is_none_once_a_replacement_edits_it() {
     ] {
         assert_eq!(caddy_csp(file).as_deref(), None, "{file}");
     }
-    // A set after the replacement sets the value anew: Caddy sends that one.
+    // A set in a later `header` directive sets the value anew: Caddy sends
+    // that one.
     let file = "\theader Content-Security-Policy \"a\" \"b\"\n\
                 \theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t}\n";
     assert_eq!(caddy_csp(file).as_deref(), Some("default-src 'self'"));
+    // Within one `header` block Caddy applies every set before any
+    // replacement, whatever the order of the lines: the replacement edits
+    // the value set after it (seen on caddy:2.11.4).
+    let file = "\theader {\n\
+                \t\tContent-Security-Policy \"script-src 'self'\" \"script-src 'self' 'unsafe-inline'\"\n\
+                \t\tContent-Security-Policy \"default-src 'self'; script-src 'self'\"\n\
+                \t}\n";
+    assert_eq!(caddy_csp(file).as_deref(), None);
     // An escaped quote inside a quoted value is part of the value, not its
     // end followed by a second token.
     let file = "\theader X-A \"a\\\"b\"\n";
