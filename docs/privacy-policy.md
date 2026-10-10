@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-10-09.
+Dernière mise à jour : 2026-10-10.
 
 ## Qui est responsable de vos données ?
 
@@ -499,7 +499,10 @@ Les données sensibles (contenu des messages, jetons OAuth, URL de flux
 calendrier) sont chiffrées dans la base de données (`pgcrypto`) ; les mots
 de passe n'y sont conservés que hachés. L'isolation entre familles est
 appliquée au niveau base de données (Row-Level Security), pas seulement au
-niveau applicatif.
+niveau applicatif. Sur le serveur, la base de données et les fichiers joints
+sont conservés sur un volume chiffré, qui les protège si le support de
+stockage est volé ou réutilisé ; ce chiffrement ne protège pas contre une
+intrusion sur le serveur en marche.
 
 Si une donnée personnelle vous concernant venait à fuir sans être chiffrée,
 vous en seriez prévenu par email, à l'adresse de votre compte, même si le

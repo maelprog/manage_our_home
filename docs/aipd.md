@@ -6,7 +6,8 @@ contexte, principes fondamentaux, risques, validation. Rédigée le
 le 2026-09-28) et le code de `main` à cette date ; sous-traitant email et
 transferts mis à jour le 2026-10-04 (Scaleway remplace Mailjet, #328) ;
 état de TLS mis à jour le 2026-10-05 (#327) ; responsable désigné par un
-pseudonyme le 2026-10-09 (#379).
+pseudonyme le 2026-10-09 (#379) ; mesure 5 (chiffrement du volume)
+retenue le 2026-10-10 (#380).
 
 **Statut : projet.** L'analyse est rédigée ; la conclusion (dernière
 section) est une **proposition**, qui ne vaut décision qu'une fois relue et
@@ -109,7 +110,9 @@ en CI ; journal d'audit des actions sensibles.
 
 **Ce qui reste exposé.**
 - Les pièces jointes et tout le texte libre hors messagerie ne sont pas
-  chiffrés au repos par l'application.
+  chiffrés au repos par l'application. Le chiffrement du volume (mesure 5,
+  retenue) les couvrira contre le vol du support, pas sur le serveur en
+  marche.
 - Les jetons porteurs ne sont plus en base que par leur empreinte (#222,
   #335), mais ils circulent en clair hors de la base : dans le cookie du
   navigateur pour la session, dans l'e-mail pour les trois autres. Qui lit
@@ -164,11 +167,14 @@ le suivi de déploiement :
    risque résiduel du pseudonyme au regard de l'art. 13(1)(a) : registre,
    « Pseudonyme du responsable », à valider (#379).
 
-Mesures **proposées** par cette analyse, à arbitrer :
+Mesures **proposées** par cette analyse :
 
 5. Chiffrer le volume qui porte les données de MinIO et de Postgres sur le
    serveur, ce qui couvre les pièces jointes et le texte libre en cas de vol
-   du support (pas en cas d'intrusion sur le serveur en marche).
+   du support (pas en cas d'intrusion sur le serveur en marche) —
+   **retenue** (arbitrage du 2026-10-05, #380) : `docs/v2-deployment.md`
+   #20, à faire avant l'ouverture publique, avec la gestion de la clé et
+   l'effet sur les sauvegardes, qui restent à chiffrer à part (#8).
 6. Ne stocker qu'une empreinte de chaque jeton porteur, pour qu'une copie
    de la base ne suffise plus à prendre une session, un compte ou une place
    dans un groupe — **réalisée** : la session depuis #222, l'invitation, la
