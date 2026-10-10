@@ -25,6 +25,7 @@ rationale in `architecture.md` ("v2 — Déploiement multi-famille").
 | 17 | LCEN: hébergeur des mentions légales et identité de l'éditeur confiée à l'hébergeur | missing | **À remplacer avant la mise en ligne** — bloquant (#132, #314). Les mentions légales existent et sont servies (`docs/legal-notice.md`, `GET /legal-notice`), mais trois valeurs y sont encore des placeholders. L'éditeur use de l'anonymat de la LCEN art. 1-1, II (arbitrage du 2026-10-04) : son identité est communiquée à l'hébergeur, pas publiée. L'hébergeur dépend de l'item #1 et doit être un tiers : l'anonymat ne tient pas en auto-hébergement (#379). Voir la procédure ci-dessous. |
 | 18 | RGPD: cadre contractuel du sous-traitant email et transferts hors UE | missing | **À faire avant la mise en ligne** — bloquant (#136, #328). Le fournisseur est arrêté (Scaleway Transactional Email, arbitrage du 2026-10-02 qui remplace Mailjet) et ne transfère rien hors UE, relevé daté dans le registre. Restent à établir le cadre contractuel opposable (DPA accepté depuis la console Scaleway) et les transferts hors UE de Google et des services de notification des navigateurs (#306) : trois placeholders les portent dans la politique et le registre. Rien dans le code ne contraint `SMTP_HOST`. Voir la procédure ci-dessous. |
 | 19 | RGPD: AIPD signée et registre des violations ouvert | missing | **À faire avant la mise en ligne** — bloquant (#143). L'AIPD est rédigée (`docs/aipd.md`) mais sa conclusion n'est qu'une proposition : le responsable de traitement la relit et la signe, ce qui remplit son placeholder (`conclusion de l'AIPD, date et signature`). Elle conditionne l'ouverture aux items #2, #8, #9, #12, #13, #15, #16 et #18. Le registre des violations est tenu hors du dépôt, qui est public (`docs/registre-violations.md` en fixe la forme) : l'ouvrir et en noter l'emplacement à la place du placeholder de ce fichier (`emplacement du registre des violations`). `docs/procedure-violation.md` porte le placeholder `adresse de contact`, rempli par l'item #16. Les trois sont épinglés par `the_breach_and_aipd_documents_carry_only_the_placeholders_pinned_here` (`apps/shared/src/validation/rgpd.rs`) : retirer l'attente correspondante en remplissant chacun. |
+| 20 | Chiffrement au repos du volume des données de Postgres et de MinIO | missing | **À faire avant la mise en ligne** (#380). Mesure 5 de l'AIPD, retenue par l'arbitrage du 2026-10-05 ; `docs/privacy-policy.md` (« Sécurité ») et `docs/registre-traitements.md` l'annoncent. Protège les données si le support est volé ou réutilisé (disque, instantané, volume rendu au fournisseur), pas contre une intrusion sur le serveur en marche, où le volume est ouvert. Dépend de l'item #1 ; les sauvegardes (#8) restent à chiffrer à part. `infra/check-volume-encryption.sh` vérifie le résultat. Voir la procédure ci-dessous. |
 
 **Immediate next step:** apart from item 2, none of the above are done
 yet. Given the ~1 week horizon, items 4-9 (RGPD + backups) and 14
@@ -259,3 +260,88 @@ Rien de tout cela ne laisse de trace dans le dépôt tant que les placeholders
 restent en place : aucun test ne dira si la configuration de production pointe
 ailleurs que là où le registre le croit. C'est pourquoi le pas 4 est ici plutôt
 que dans un commentaire de code.
+
+## Item #20 — chiffrer le volume des données de Postgres et de MinIO
+
+Mesure 5 de l'AIPD (`docs/aipd.md`, « Plan d'action »), retenue par
+l'arbitrage du 2026-10-05 (#380). Le compose de développement ne change
+pas : ses données sont jetables, et le chiffrement est une propriété de
+l'hôte, pas de `infra/docker-compose.yml`.
+
+**Ce qui est chiffré.** Postgres et MinIO écrivent dans les volumes nommés
+`postgres_data` et `minio_data` de `infra/docker-compose.yml`, que Docker
+range sous sa racine de données (`/var/lib/docker/volumes` par défaut ;
+`docker info --format '{{.DockerRootDir}}'` la donne). Le plus simple est de
+chiffrer le système de fichiers qui porte toute cette racine : il couvre
+aussi `caddy_data` (clé privée du certificat), `ollama_data` et les journaux
+des conteneurs (`/var/lib/docker/containers`), qui peuvent citer des
+données. Deux voies, selon l'offre retenue à l'item #1 :
+
+- **LUKS sur un volume dédié** — un disque ou volume bloc attaché au VPS,
+  chiffré par le système invité, la clé restant hors du fournisseur. C'est la
+  voie que vérifie `infra/check-volume-encryption.sh`. Docker arrêté, avant
+  le premier démarrage de la pile (sinon arrêter, copier la racine
+  existante, puis rebasculer) :
+
+  ```sh
+  cryptsetup luksFormat --type luks2 /dev/<volume>
+  cryptsetup open /dev/<volume> docker-data
+  mkfs.ext4 /dev/mapper/docker-data
+  mount /dev/mapper/docker-data /var/lib/docker
+  ```
+
+  L'auto-hébergement n'est pas une option tant que tient l'arbitrage du
+  pseudonymat (item #17).
+- **Volume chiffré par le fournisseur**, si l'offre le propose : à vérifier
+  dans sa documentation au moment du choix. La clé est alors chez le
+  fournisseur : cela protège contre la perte d'un disque dans son centre de
+  données, pas contre le fournisseur lui-même ni contre un instantané pris
+  depuis sa console. Le script ne le voit pas (il échoue) ; noter dans ce
+  cas l'offre et le réglage relevés dans la console, datés.
+
+**La clé.**
+
+- Elle ne vit pas sur le serveur : ni dans `infra/.env`, ni dans les
+  secrets sops du déploiement (#15), ni dans un fichier de clé sur le disque
+  système. Un instantané de la machine emporterait sinon la clé avec le
+  volume.
+- Le déverrouillage est donc manuel à chaque démarrage du serveur : se
+  connecter, `cryptsetup open`, `mount`, puis démarrer Docker. Après un
+  redémarrage, le service reste arrêté jusqu'à ce geste. Pour que Docker ne
+  démarre jamais sur une racine vide — Postgres initialiserait une base
+  neuve, MinIO un stockage vide, à côté du volume fermé — déclarer le
+  montage dans `/etc/fstab` avec `noauto` et lier Docker à ce montage
+  (`systemctl edit docker.service` :
+  `[Unit]` `RequiresMountsFor=/var/lib/docker`), puis vérifier, volume
+  fermé, que `systemctl start docker` échoue.
+- Elle est sauvegardée hors du serveur, en deux endroits indépendants
+  (gestionnaire de mots de passe du porteur et copie hors ligne), avec
+  l'en-tête LUKS (`cryptsetup luksHeaderBackup /dev/<volume>
+  --header-backup-file <fichier>`), qui se garde comme la clé : avec lui,
+  une ancienne phrase de passe rouvre le volume même après son changement.
+  Perdre la clé, c'est perdre le volume ; il ne reste alors que les
+  sauvegardes (#8).
+
+**Les sauvegardes (#8).** `pg_dump` et une copie du bucket lisent les
+données à travers les services, donc en clair : le chiffrement du volume ne
+s'étend pas à elles. Elles se chiffrent elles-mêmes, avec une clé distincte
+de celle du volume. Un instantané du volume chiffré, s'il en est pris, ne se
+restaure qu'avec l'en-tête et la phrase de passe : la restauration éprouvée
+(#9) inclut ce déverrouillage.
+
+**Vérifier.** Une fois la pile démarrée, en root sur le serveur :
+
+```sh
+cd infra
+sudo ./check-volume-encryption.sh
+```
+
+Sans argument, il contrôle `infra_postgres_data` et `infra_minio_data`
+(nom de projet Compose par défaut) ; donner les noms de `docker volume ls`
+si la pile tourne sous un autre nom. Il sort en 0 si chaque volume repose
+sur une couche dm-crypt, en 1 sinon. Il ne lit que le montage : il ne
+prouve pas que l'échange (swap), s'il y en a un, est chiffré ou absent, ce
+qu'il faut aussi vérifier, Postgres pouvant y laisser des pages.
+
+Une fois l'item fait, rafraîchir la date de dernière mise à jour du registre
+et de l'AIPD en y notant la voie retenue.
