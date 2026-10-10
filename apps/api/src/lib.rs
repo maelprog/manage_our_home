@@ -68,8 +68,9 @@ pub struct AppState {
     /// from `oauth_encryption_key`/`message_encryption_key`, same
     /// per-secret-key-per-epic pattern as Messagerie.
     pub calendar_feed_encryption_key: String,
-    /// In-memory per-family broadcast registry for Messagerie's WS push
-    /// (Epic #7 decision #3).
+    /// Per-family broadcast registry for Messagerie's WS push (Epic #7
+    /// decision #3), fed by Postgres `LISTEN/NOTIFY` so every API replica
+    /// pushes every write (#429).
     pub message_hubs: messagerie::MessageHub,
     /// How often an open Messagerie WS connection re-validates that the
     /// caller is still a group member, bounding how long a removed member
