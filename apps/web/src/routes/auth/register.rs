@@ -101,20 +101,19 @@ fn page(
             <div inner_html=age_field></div>
             <button type="submit">"Créer mon compte"</button>
         </form>
-        <div class="actions">
+        // #419: stacked, so the Google button takes the width of the form's
+        // own.
+        <div class="actions stacked">
             <a class="btn secondary" href=google_start>"Continuer avec Google"</a>
         </div>
+        // RGPD (front epic F10): the policy must be readable *before*
+        // creating an account, so it is linked from the unauthenticated
+        // pages and served without a session. Same for the CGU and the
+        // legal notice since #132 — creating an account accepts the CGU
+        // (the box above, #319), which makes reading them beforehand the
+        // whole point. All three are the shell's footer since #419.
         <div class="links">
             <a href="/login">"J'ai déjà un compte"</a>
-            // RGPD (front epic F10): the policy must be readable *before*
-            // creating an account, so it is linked from the unauthenticated
-            // pages and served without a session. Same for the CGU and the
-            // legal notice since #132 — creating an account accepts the CGU
-            // (the box above, #319), which makes reading them beforehand the
-            // whole point.
-            <a href="/privacy-policy">"Politique de confidentialité"</a>
-            <a href="/terms-of-service">"Conditions générales d'utilisation"</a>
-            <a href="/legal-notice">"Mentions légales"</a>
         </div>
     };
     shell(Width::Form, "Créer un compte", &body.to_html())
@@ -280,6 +279,28 @@ mod tests {
             .expect("attribute outside an input");
         let close = at + html[at..].find('>').expect("unterminated input");
         &html[open..=close]
+    }
+
+    /// #419: the legal documents are the shell's footer, no longer a line of
+    /// the account links — once each, or Playwright's strict
+    /// `getByRole("link", { name })` would find two.
+    #[test]
+    fn each_legal_document_is_linked_once_from_the_footer() {
+        let html = page("", "", Boxes::default(), None, None, "http://api");
+        for (href, _) in crate::app::LEGAL_DOCUMENTS {
+            assert_eq!(
+                html.matches(&format!(r#"href="{href}""#)).count(),
+                1,
+                "{href}: {html}"
+            );
+        }
+        let footer = html.find("<footer").expect("a footer");
+        assert!(html.find(r#"href="/privacy-policy""#).unwrap() > footer);
+        // The Google button takes the form button's width, as on /login.
+        assert!(
+            html.contains(r#"<div class="actions stacked"><a href="http://api/auth/google/start" class="btn secondary">"#),
+            "{html}"
+        );
     }
 
     #[test]

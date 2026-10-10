@@ -47,6 +47,34 @@ impl Width {
     }
 }
 
+/// The three public legal documents, as the footer links them (#419): the
+/// path, then the link's text — which is also the name the e2e suite clicks.
+pub const LEGAL_DOCUMENTS: [(&str, &str); 3] = [
+    ("/privacy-policy", "Politique de confidentialité"),
+    ("/terms-of-service", "Conditions générales d'utilisation"),
+    ("/legal-notice", "Mentions légales"),
+];
+
+/// The footer both shells close on (#419), signed in or not. It is not a
+/// navigation — no `<nav>`, so DESIGN.md → Layout's "a page without a
+/// session renders no navigation" still holds — but the `contentinfo`
+/// landmark, which is why it sits after `<main>` and never inside it.
+/// Before it, the legal documents were lines of the login and register
+/// forms' account links, and a signed-in member reached them through
+/// "Mon compte" only.
+fn footer() -> String {
+    let links: Vec<String> = LEGAL_DOCUMENTS
+        .iter()
+        .map(|(href, label)| format!(r#"<a href="{href}">{label}</a>"#))
+        .collect();
+    // `links centered`: the row the login page's account links use, so the
+    // footer adds no rule of its own to the sheet's budget.
+    format!(
+        "<footer class=\"links centered\">\n{}\n</footer>",
+        links.join("\n")
+    )
+}
+
 /// A page with no navigation: the authentication screens, the public legal
 /// documents served to a signed-out visitor, and the short error pages a route
 /// renders when it has no family context to build a header from.
@@ -59,9 +87,11 @@ pub fn shell(width: Width, title: &str, body_html: &str) -> String {
         &format!(
             r#"<main id="main" class="content{width}">
 {body_html}
-</main>"#,
+</main>
+{footer}"#,
             width = width.class(),
             body_html = body_html,
+            footer = footer(),
         ),
     )
 }
@@ -82,10 +112,12 @@ pub fn shell_with_header(width: Width, title: &str, header_html: &str, body_html
 <main id="main" class="content{width}">
 {body_html}
 </main>
-</div>"#,
+</div>
+{footer}"#,
             header_html = header_html,
             width = width.class(),
             body_html = body_html,
+            footer = footer(),
         ),
     )
 }
@@ -1661,6 +1693,11 @@ mod tests {
             ".notice.warning",
             ".notice.error",
             ".navlink",
+            // #419: the centred row of links the footer shares with the
+            // login page, and the action row that stacks the Google button
+            // at the form button's width.
+            ".links.centered",
+            ".actions.stacked",
         ] {
             assert!(
                 css().contains(class),
@@ -2081,6 +2118,45 @@ mod tests {
         let bare = shell(Width::Form, "Connexion", "<h1>x</h1>");
         assert!(!bare.contains("<header"), "{bare}");
         assert!(!bare.contains(r#"class="app""#), "{bare}");
+    }
+
+    #[test]
+    fn both_shells_close_on_a_footer_that_links_the_legal_documents() {
+        // #419: the privacy policy, the CGU and the legal notice were linked
+        // from the login and register forms, and a signed-in member reached
+        // them through "Mon compte" only. Both shells now close on the same
+        // `<footer>`, with a session or without.
+        let pages = [
+            shell_with_header(Width::Full, "Titre", "<header>nav</header>", "<h1>x</h1>"),
+            shell(Width::Form, "Connexion", "<h1>x</h1>"),
+        ];
+        for html in pages {
+            assert_eq!(html.matches("<footer").count(), 1, "{html}");
+            // After `<main>` and outside it: a `<footer>` inside `<main>` is
+            // that section's footer, not the page's `contentinfo` landmark.
+            let main_end = html.find("</main>").expect("a main");
+            let start = html.find("<footer").expect("a footer");
+            let end = html.find("</footer>").expect("a closed footer");
+            assert!(main_end < start, "the footer must follow <main>: {html}");
+            let footer = &html[start..end];
+            for (href, _) in LEGAL_DOCUMENTS {
+                assert_eq!(
+                    footer.matches(&format!(r#"href="{href}""#)).count(),
+                    1,
+                    "{href} in {footer}"
+                );
+            }
+            // DESIGN.md → Layout: a page without a session renders no
+            // navigation, and this footer is on those pages too.
+            assert!(!footer.contains("<nav"), "{footer}");
+        }
+        // After the grid of the signed-in shell, not in it: inside, the
+        // 861px layout would drop it into the sidebar's column, and placing
+        // it under the content costs the sheet two declarations its budget
+        // does not have. Out of the grid, it spans the page under both.
+        let html = shell_with_header(Width::Full, "Titre", "<header>nav</header>", "<h1>x</h1>");
+        let app_end = html.find("</div>\n<footer").expect("the .app grid closes");
+        assert!(app_end > html.find("</main>").unwrap(), "{html}");
     }
 
     #[test]

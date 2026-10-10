@@ -320,8 +320,11 @@ summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); padding
 .page-header { margin-bottom: var(--s4); }
 .list-row { padding: var(--s2x) 0; border-bottom: 1px solid var(--border); }
 /* A row whose content stacks instead of sitting side by side: a message,
-   a recipe with its summary under the name. */
-.list-row.stacked { flex-direction: column; align-items: stretch; }
+   a recipe with its summary under the name. `.actions.stacked` is the same
+   column for a group of controls (#419): the "Continuer avec Google" under
+   the login and register forms, stretched to the width of the form's own
+   button instead of the width of its label. */
+.list-row.stacked, .actions.stacked { flex-direction: column; align-items: stretch; }
 /* A message you wrote yourself — the most useful thing on a shared family
    thread, and the messagerie said nothing at all (audit §5). The ground is
    `--surface`, the one elevation the system has; the rule is the 4px member
@@ -486,6 +489,14 @@ dd { margin: var(--s2) 0 0 0; }
 /* Each link of the column is a target of its own, not a word in a sentence:
    one --t-sm line plus --s3 above and below is 44px (#74). */
 .links a { color: var(--accent); padding: var(--s3) 0; }
+/* The same links as a centred row, wrapping when the line is full (#419):
+   the login page's account links under the form, and the footer every page
+   closes on — the three legal documents, with a session or without. Quiet on
+   purpose: the action size, the link colour, no ground and no rule. The
+   footer is not a navigation (DESIGN.md → Layout): no `<nav>`, nothing of
+   the tabs. One rule for both, so the footer costs no declaration of its
+   own beyond its place in the grid. */
+.links.centered { flex-flow: row wrap; justify-content: center; column-gap: var(--s4); }
 .muted { color: var(--muted); font-size: var(--t-sm); }
 /* Text whose line breaks are the author's: a message in the thread, a
    recipe's method. Declared after the child-margin reset above, so that one
