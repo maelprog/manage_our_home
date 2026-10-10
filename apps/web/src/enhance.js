@@ -82,11 +82,35 @@
     return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
   }
 
+  // `data-resend-cooldown="<s>"` (`auth::resend_verification::resend_form`,
+  // #420): a verification email has just left, and apps/api sends no other
+  // for that many seconds. The button waits them out disabled, its label
+  // counting down, then takes its own label back. The count is read from the
+  // clock, not from the ticks, so a throttled tab does not stretch it.
+  // Without JavaScript the button is simply usable.
+  function resendCooldowns() {
+    var buttons = document.querySelectorAll("button[data-resend-cooldown]");
+    Array.prototype.forEach.call(buttons, function (button) {
+      var label = button.textContent;
+      var end = Date.now() + 1000 * Number(button.getAttribute("data-resend-cooldown"));
+      (function tick() {
+        var left = Math.ceil((end - Date.now()) / 1000);
+        button.disabled = left > 0;
+        button.textContent = left > 0 ? "Renvoyer l'email (" + left + " s)" : label;
+        if (left > 0) setTimeout(tick, 1000);
+      })();
+    });
+  }
+
   // Loaded from the <head>: the fields are there once the document is.
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", expiryShortcuts);
-  } else {
+  function ready() {
     expiryShortcuts();
+    resendCooldowns();
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", ready);
+  } else {
+    ready();
   }
 
   // The "Journée entière" box swaps `Début`/`Fin` between `datetime-local`
