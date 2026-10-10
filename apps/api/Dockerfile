@@ -29,6 +29,10 @@ COPY --from=builder /workspace/target/release/manage_our_home /usr/local/bin/man
 # --rm api reconcile-attachments` — rather than needing a Rust toolchain
 # next to production. It is a manual pass, not part of CMD.
 COPY --from=builder /workspace/target/release/reconcile-attachments /usr/local/bin/reconcile-attachments
+# The server no longer migrates on boot (#425): this command does, then
+# exits — the compose stack's one-shot `migrate` service runs the same
+# image with `command: ["migrate"]`, and so would a Kubernetes Job.
+COPY --from=builder /workspace/target/release/migrate /usr/local/bin/migrate
 COPY --from=builder /workspace/apps/api/migrations /migrations
 EXPOSE 8080
 # Unprivileged, and fine with a read-only root filesystem (#430): the

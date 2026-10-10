@@ -9,14 +9,23 @@ Epic 1 — Auth + Groups. See `../../docs/architecture.md` and
 cp .env.example .env   # fill in real secrets
 createdb manage_our_home
 cargo sqlx prepare      # regenerate .sqlx query cache after schema changes
-cargo run               # applies migrations through MIGRATION_DATABASE_URL
+cargo run --bin migrate # applies migrations through MIGRATION_DATABASE_URL
+cargo run               # checks the schema is current, refuses to start otherwise
 ```
 
-`MIGRATION_DATABASE_URL` has no default and no fallback — `cargo run` stops
-before opening the runtime pool if it is unset. For a single-role local
-database, point it at the same superuser role `DATABASE_URL` uses; see
-"Deployment note on Row-Level Security" below for why real deployments must
-not.
+The server does not migrate (#425): `migrate` applies the migrations and
+exits, and the server only checks, on boot, that every migration it carries
+is recorded as applied and unchanged — a pending, failed, edited or unknown
+migration stops it with a non-zero exit and a message naming the versions.
+Only `migrate` needs `MIGRATION_DATABASE_URL`. For local development,
+`MIGRATE_ON_BOOT=true` makes `cargo run` apply them itself first, through
+`MIGRATION_DATABASE_URL`, as before; any value other than `true`, `false` or
+empty is refused.
+
+`MIGRATION_DATABASE_URL` has no default and no fallback — `migrate` stops
+before connecting if it is unset. For a single-role local database, point it
+at the same superuser role `DATABASE_URL` uses; see "Deployment note on
+Row-Level Security" below for why real deployments must not.
 
 ## Running tests
 
@@ -116,7 +125,7 @@ below:
 - **`MIGRATION_DATABASE_URL` is required, with no `DATABASE_URL` fallback.**
   A fallback would put the migration back on the runtime role — precisely
   the configuration this section exists to rule out — and it would do so in
-  silence. Unset, or set to an empty string, the API refuses to start.
+  silence. Unset, or set to an empty string, `migrate` refuses to run.
 - **The connection is checked before anything is applied.** `migrations::apply`
   asserts `rolsuper OR rolbypassrls` for its own role and aborts if neither
   holds, so a `MIGRATION_DATABASE_URL` pointed at the wrong role fails loudly
@@ -125,14 +134,16 @@ below:
   inconclusive answer is treated as a refusal.
 
 The elevated connection is opened for the migration pass and closed again
-before the server starts listening; it is not held for the life of the
-process.
+before `migrate` exits (#425). The server holds no such credential: its boot
+check reads `_sqlx_migrations` through `DATABASE_URL`, which the default
+privileges above already grant `SELECT` on.
 
 `infra/` sets this up for the shipped compose stack:
 `postgres/init/01-roles.sh` creates `app_role`, `migration_role` and
 `admin_role` at first boot of the postgres volume, and `docker-compose.yml`
-passes `DATABASE_URL` (as `app_role`, since #311) and
-`MIGRATION_DATABASE_URL` to the api service.
+passes `MIGRATION_DATABASE_URL` to the one-shot `migrate` service only, and
+`DATABASE_URL` (as `app_role`, since #311) to the api service, which starts
+once `migrate` has exited 0.
 
 ### The account export's two functions (#140) — narrow questions across families
 

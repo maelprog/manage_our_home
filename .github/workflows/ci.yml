@@ -323,8 +323,8 @@ jobs:
              mc mb -p local/manage-our-home"
       # The API serves requests as this role (`DATABASE_URL` below), the
       # `NOSUPERUSER NOBYPASSRLS` role apps/api/README.md prescribes, as the
-      # `test` job does (#311). The database is still empty: the API applies
-      # the migrations as `postgres` when it starts, so the grants go through
+      # `test` job does (#311). The database is still empty: the `migrate`
+      # step below applies the migrations as `postgres`, so the grants go through
       # `postgres`'s default privileges, and 0019 finds the role holding
       # them and grants it the account export's two functions. Same grants,
       # same RLS check and same schema caveat as the `test` job.
@@ -350,7 +350,20 @@ jobs:
         working-directory: e2e
         env:
           OFF_STUB_PORT: "8090"
-      - name: Start apps/api (applies migrations on boot)
+      # The API no longer migrates on boot (#425): it checks the schema and
+      # refuses to start on a pending migration. The deployment order is
+      # played here as in infra/docker-compose.yml — `migrate` first, to
+      # completion, then the server.
+      - name: Apply the migrations
+        run: ./target/debug/migrate
+        env:
+          # Required since #105, with no DATABASE_URL fallback: migrations
+          # run on their own connection, as a role that bypasses RLS, and
+          # `migrate` refuses to run otherwise. The postgres service above
+          # only has the superuser role, which qualifies — the point of the
+          # variable here is that the value is stated, not inferred.
+          MIGRATION_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      - name: Start apps/api (checks the schema on boot)
         run: ./target/debug/manage_our_home &
         env:
           # The job-level `DATABASE_URL` stays on `postgres`: it is what the
@@ -358,12 +371,6 @@ jobs:
           # (e2e/lib/db.ts), across every family. The API's own runtime pool
           # is the one that must not bypass RLS.
           DATABASE_URL: postgres://app_role:app_role@localhost:5432/postgres
-          # Required since #105, with no DATABASE_URL fallback: migrations
-          # run on their own connection, as a role that bypasses RLS, and
-          # the API refuses to start otherwise. The postgres service above
-          # only has the superuser role, which qualifies — the point of the
-          # variable here is that the value is stated, not inferred.
-          MIGRATION_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
           # The superadmin endpoints and every background job (attachment
           # reconcile, account and retention purges, scheduled
           # notifications) run on this pool and need a role that bypasses

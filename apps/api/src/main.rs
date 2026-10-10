@@ -20,17 +20,22 @@ async fn main() -> anyhow::Result<()> {
     )
     .map_err(anyhow::Error::msg)?;
 
-    // Migrations run first, on their own connection, as their own role
-    // (`MIGRATION_DATABASE_URL`) — never on the runtime pool. The runtime
-    // role is `NOSUPERUSER NOBYPASSRLS` on any deployment that follows
-    // apps/api/README.md, and under it a migration's DML reads its source
-    // tables back empty and applies to nothing without saying so
-    // (issue #105). `migrations::apply` refuses to start rather than let
-    // that happen, and closes the elevated connection before returning.
-    manage_our_home::migrations::apply(
-        env::var(manage_our_home::migrations::MIGRATION_URL_VAR).ok(),
-    )
-    .await?;
+    // The server does not migrate (#425): the `migrate` command does, once
+    // per deployment, and only it holds the migration role's credentials.
+    // `MIGRATE_ON_BOOT=true` puts the old pass back for a local stack — on
+    // its own connection, as its own role (`MIGRATION_DATABASE_URL`), never
+    // on the runtime pool, for the reason `migrations` gives (#105).
+    let migrate_on_boot = manage_our_home::migrations::migrate_on_boot(
+        env::var(manage_our_home::migrations::MIGRATE_ON_BOOT_VAR)
+            .ok()
+            .as_deref(),
+    )?;
+    if migrate_on_boot {
+        manage_our_home::migrations::apply(
+            env::var(manage_our_home::migrations::MIGRATION_URL_VAR).ok(),
+        )
+        .await?;
+    }
 
     let database_url = env::var("DATABASE_URL")?;
     // Both runtime pools drop a connection that comes back with a
@@ -39,6 +44,11 @@ async fn main() -> anyhow::Result<()> {
         .max_connections(20)
         .connect(&database_url)
         .await?;
+
+    // Either way, nothing is served on a schema this build was not made
+    // for: a pending, failed, edited or unknown migration stops the boot
+    // here, with a non-zero exit.
+    manage_our_home::migrations::ensure_schema_current(&mut *db.acquire().await?).await?;
 
     // Local-dev convenience only (infra/.env.example): pre-verified logins
     // so a fresh stack is usable without completing email verification.

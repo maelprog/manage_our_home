@@ -25,6 +25,15 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    # What `migrate` waits for (#425). Over TCP on purpose: during the first
+    # boot the image runs postgres/init/ against a temporary server that
+    # listens on the Unix socket only, and a socket probe would call that
+    # ready — `migrate` would then race the role creation.
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "mhome", "-d", "manage_our_home"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
 
   # Registry is Docker Hub's `bitnamilegacy` mirror, with the same pin and
   # digest as .github/workflows/ci.yml (e2e/scripts/lib/image-pins.ts holds
@@ -106,25 +115,47 @@ services:
     volumes:
       - ollama_data:/root/.ollama
 
+  # One-shot (#425): applies the migrations with the api image's `migrate`
+  # command, then exits; `api` only starts once it has exited 0, and itself
+  # only checks that the schema is current. A `docker compose up` on an
+  # up-to-date base runs it again, as a no-op. No `build:` of its own: it
+  # runs the image `api` builds (same `image:` name), so the workspace is
+  # compiled once.
+  migrate:
+    image: manage-our-home-api:0.0.0-local
+    command: ["migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Migrations run here, as migration_role, not on DATABASE_URL's pool —
+      # a runtime role set up the way apps/api/README.md prescribes
+      # (NOSUPERUSER NOBYPASSRLS) reads every family-scoped table back empty
+      # during a migration, so a migration's DML would apply to zero rows and
+      # be recorded as applied anyway (issue #105). `migrate` refuses to run
+      # if this role doesn't bypass RLS. Only this service holds it.
+      MIGRATION_DATABASE_URL: postgres://migration_role:${MIGRATION_ROLE_PASSWORD}@postgres/manage_our_home
+
   api:
+    # The name `migrate` runs too. A local build, never pulled: `0.0.0-local`
+    # says so, and is still the full version e2e/scripts/lib/image-pins.ts
+    # requires of every `image:` line.
+    image: manage-our-home-api:0.0.0-local
     build:
       context: ..
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
-    depends_on: [postgres, minio]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio:
+        condition: service_started
     environment:
       # Requests are served as app_role, NOSUPERUSER NOBYPASSRLS (#311):
       # `mhome` is the bootstrap superuser, and a superuser never meets the
       # RLS policies. A stack whose volume predates app_role must create it
       # first (README, "Upgrading a stack created before app_role").
       DATABASE_URL: postgres://app_role:${APP_ROLE_PASSWORD}@postgres/manage_our_home
-      # Migrations run here, not on DATABASE_URL's pool — a runtime role set
-      # up the way apps/api/README.md prescribes (NOSUPERUSER NOBYPASSRLS)
-      # reads every family-scoped table back empty during a migration, so a
-      # migration's DML would apply to zero rows and be recorded as applied
-      # anyway (issue #105). The API refuses to start if this role doesn't
-      # bypass RLS.
-      MIGRATION_DATABASE_URL: postgres://migration_role:${MIGRATION_ROLE_PASSWORD}@postgres/manage_our_home
       ADMIN_DATABASE_URL: postgres://admin_role:${ADMIN_ROLE_PASSWORD}@postgres/manage_our_home
       # Behind Caddy the API is publicly reachable under /api (see
       # infra/Caddyfile), so its own public base URL — used for the Google
