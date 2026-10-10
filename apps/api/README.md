@@ -628,7 +628,9 @@ or body check, no limit) and silent in the journal:
   while the process stops.
 - **`GET /readyz`** — 200 when the runtime pool reaches Postgres within
   `health::READY_DB_TIMEOUT` (2 s), 503 otherwise and from the moment the
-  process starts stopping. No body either way.
+  process starts stopping. No body either way. A probe on it needs a
+  `timeoutSeconds` above those 2 s (Kubernetes defaults to 1 s); the same
+  holds for apps/web's `/readyz`, which waits 2 s for apps/api.
 
 On SIGTERM (or Ctrl-C), the process stops accepting connections, `/readyz`
 turns 503, the requests in flight finish, and every Messagerie WebSocket

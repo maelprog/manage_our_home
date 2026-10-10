@@ -9,7 +9,9 @@ use axum::http::StatusCode;
 
 use crate::state::AppState;
 
-/// How long `/readyz` waits for apps/api.
+/// How long `/readyz` waits for apps/api. Longer than Kubernetes' default
+/// probe `timeoutSeconds` (1 s): a readiness probe on this route must set
+/// `timeoutSeconds` above 2 s.
 pub const READY_API_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The process answers: no I/O. Still 200 while draining — a stopping

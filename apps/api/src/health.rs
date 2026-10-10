@@ -10,10 +10,11 @@ use axum::http::StatusCode;
 
 use crate::AppState;
 
-/// How long `/readyz` waits for Postgres. Under the probe timeouts an
-/// orchestrator uses (Kubernetes: 1 s by default, raised in #431's
-/// manifests), and it bounds the case where the server does not answer at
-/// all rather than refuse.
+/// How long `/readyz` waits for Postgres: it bounds the case where the
+/// server does not answer at all rather than refuse. Longer than
+/// Kubernetes' default probe `timeoutSeconds` (1 s): a readiness probe on
+/// this route must set `timeoutSeconds` above 2 s, or a slow Postgres shows
+/// as a probe timeout instead of this route's 503.
 pub const READY_DB_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The process answers: no I/O, nothing to fail but the process itself.
