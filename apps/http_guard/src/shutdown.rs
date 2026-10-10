@@ -109,6 +109,12 @@ impl Shutdown {
         }
     }
 
+    /// How many [`Hold`]s are live: what [`Shutdown::drain`] still waits
+    /// for once the server is done.
+    pub fn open_holds(&self) -> usize {
+        self.inner.holds.receiver_count()
+    }
+
     /// Runs `server` — an axum server whose graceful shutdown is tied to
     /// [`Shutdown::wait`] — to its end, then waits for every [`Hold`] to
     /// be released. Once the stop has begun, gives the whole of it at most
@@ -222,6 +228,19 @@ mod tests {
     }
 
     // -- Shutdown ----------------------------------------------------------
+
+    #[test]
+    fn open_holds_counts_the_live_holds() {
+        let shutdown = Shutdown::new();
+        assert_eq!(shutdown.open_holds(), 0);
+        let first = shutdown.hold();
+        let second = shutdown.clone().hold();
+        assert_eq!(shutdown.open_holds(), 2);
+        drop(first);
+        assert_eq!(shutdown.open_holds(), 1);
+        drop(second);
+        assert_eq!(shutdown.open_holds(), 0);
+    }
 
     #[tokio::test]
     async fn draining_starts_at_the_trigger_and_stays() {

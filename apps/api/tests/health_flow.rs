@@ -178,7 +178,7 @@ async fn an_open_websocket_gets_a_close_frame_at_the_stop(db: PgPool) {
 
     // A grace period far beyond the test's bounds: the server must end
     // because the socket closed, not because time ran out.
-    let (addr, stop, server) = start(router, shutdown, Duration::from_secs(60)).await;
+    let (addr, stop, server) = start(router, shutdown.clone(), Duration::from_secs(60)).await;
     let mut request = format!("ws://{addr}/groups/{group_id}/messages/ws")
         .into_client_request()
         .unwrap();
@@ -188,6 +188,10 @@ async fn an_open_websocket_gets_a_close_frame_at_the_stop(db: PgPool) {
     let (mut ws, response) = tokio_tungstenite::connect_async(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
     tokio::time::sleep(Duration::from_millis(100)).await;
+    // The open socket holds the process: axum's graceful shutdown does not
+    // wait for an upgraded connection, the hold is what keeps the process
+    // up until its Close frame is out.
+    assert_eq!(shutdown.open_holds(), 1, "the open socket holds nothing");
 
     stop.send(()).unwrap();
 
@@ -211,4 +215,5 @@ async fn an_open_websocket_gets_a_close_frame_at_the_stop(db: PgPool) {
         .expect("the server outlived its last socket")
         .unwrap()
         .unwrap();
+    assert_eq!(shutdown.open_holds(), 0, "the closed socket still holds");
 }
