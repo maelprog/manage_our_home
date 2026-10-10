@@ -268,6 +268,7 @@ mod route_tests {
             api_public_base_url: "/api".into(),
             body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
             upload_gate: manage_our_home_http_guard::UploadGate::production(),
+            shutdown: manage_our_home_http_guard::Shutdown::new(),
         });
         let request = Request::builder()
             .method(Method::POST)

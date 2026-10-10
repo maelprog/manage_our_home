@@ -1316,6 +1316,7 @@ mod photo_route_tests {
             api_public_base_url: "/api".into(),
             body_read_limits: BodyReadLimits::PRODUCTION,
             upload_gate: UploadGate::new(8, 2),
+            shutdown: manage_our_home_http_guard::Shutdown::new(),
         });
         let request = Request::builder()
             .method(Method::POST)

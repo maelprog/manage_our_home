@@ -618,3 +618,28 @@ Nothing else to configure: no key, no account. The reads are limited to
 answers are cached in `off_products` (`CACHE_TTL`, `MISS_TTL`). Unreachable,
 throttled or failing, the scan answers without a product and the page
 offers the manual form.
+
+## Probes and stopping (#424)
+
+Two routes for an orchestrator, outside every guard (no session, no origin
+or body check, no limit) and silent in the journal:
+
+- **`GET /healthz`** — the process answers, without any I/O. Still 200
+  while the process stops.
+- **`GET /readyz`** — 200 when the runtime pool reaches Postgres within
+  `health::READY_DB_TIMEOUT` (2 s), 503 otherwise and from the moment the
+  process starts stopping. No body either way. A probe on it needs a
+  `timeoutSeconds` above those 2 s (Kubernetes defaults to 1 s); the same
+  holds for apps/web's `/readyz`, which waits 2 s for apps/api.
+
+On SIGTERM (or Ctrl-C), the process stops accepting connections, `/readyz`
+turns 503, the requests in flight finish, and every Messagerie WebSocket
+gets a Close frame (1001, `server_shutdown`) — the page reconnects as on
+any close. All of it within **`SHUTDOWN_GRACE_SECONDS`** (whole seconds, at
+least 1; unset: 25, under Kubernetes' default 30 s
+`terminationGracePeriodSeconds`); past it the process exits with whatever
+is still open. A malformed value refuses to start. Docker Compose kills a
+container 10 s after SIGTERM unless `stop_grace_period` says otherwise, so
+under `infra/docker-compose.yml` a stop is cut at 10 s whatever this says.
+apps/web reads the same variable and stops the same way, minus the
+WebSockets it does not have.

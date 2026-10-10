@@ -450,6 +450,7 @@ your browser.
 | `API_INTERNAL_BASE_URL` | `http://localhost:8080` | Where the web server reaches the API (server-to-server). |
 | `API_PUBLIC_BASE_URL` | `/api` | Base URL the browser uses for API-hosted links (e.g. Google OAuth start). |
 | `WEB_BIND_ADDR` | `0.0.0.0:3000` | Address/port the web server binds to. |
+| `SHUTDOWN_GRACE_SECONDS` | `25` | How long a stop on SIGTERM may take (#424); apps/api reads it too. |
 
 ---
 

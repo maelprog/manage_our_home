@@ -14,6 +14,7 @@ pub mod error;
 pub mod google_calendar;
 pub mod grocery_list;
 pub mod groups;
+pub mod health;
 pub mod jobs;
 pub mod messagerie;
 pub mod migrations;
@@ -139,6 +140,10 @@ pub struct AppState {
     /// The per-member limit on recipe imports (#405), in-process like
     /// `login_throttle`.
     pub recipe_import_throttle: std::sync::Arc<recipes::import::ImportThrottle>,
+    /// Whether the process is stopping (#424): `/readyz` answers 503 from
+    /// then on, and every Messagerie WebSocket closes with a Close frame.
+    /// `main.rs` triggers it on SIGTERM; tests trigger it themselves.
+    pub shutdown: manage_our_home_http_guard::Shutdown,
 }
 
 /// Body of the 408 a too-slow request body gets (#219), in the API's usual
@@ -463,5 +468,10 @@ pub fn build_router(state: AppState) -> Router {
                     csp_report::throttle,
                 )),
         )
+        // The orchestrator's probes (#424), after every layer so that none
+        // applies: they read no cookie and no body, and an origin check or
+        // a limit has nothing to protect there.
+        .route("/healthz", get(health::healthz))
+        .route("/readyz", get(health::readyz))
         .with_state(state)
 }

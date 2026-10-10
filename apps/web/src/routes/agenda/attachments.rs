@@ -395,6 +395,7 @@ mod tests {
             api_public_base_url: "/api".into(),
             body_read_limits: limits,
             upload_gate: gate.clone(),
+            shutdown: manage_our_home_http_guard::Shutdown::new(),
         });
         Web {
             router,
@@ -782,6 +783,7 @@ mod tests {
                     api_public_base_url: "/api".into(),
                     body_read_limits: BodyReadLimits::PRODUCTION,
                     upload_gate: UploadGate::new(pool, 2),
+                    shutdown: manage_our_home_http_guard::Shutdown::new(),
                 });
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
                 let addr = listener.local_addr().unwrap();
