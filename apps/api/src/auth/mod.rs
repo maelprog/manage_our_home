@@ -539,9 +539,11 @@ pub async fn resend_verification(
     .await?;
 
     if issued.is_some() {
+        // apps/web's page, as at registration: the API endpoint answers an
+        // empty 200 or a bare 410, nothing a person can read (#420).
         let link = format!(
-            "{}/auth/verify-email?token={}",
-            state.public_base_url,
+            "{}/verify-email?token={}",
+            state.frontend_base_url,
             token.value()
         );
         if let Err(e) = state

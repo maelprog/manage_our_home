@@ -2910,7 +2910,9 @@ async fn the_registration_email_carries_a_link_that_verifies_the_account(db: PgP
 }
 
 /// #364: the link a resent verification email carries verifies the
-/// account. The registration token is aged past the resend cooldown.
+/// account, and lands where the registration's link does — on apps/web's
+/// `/verify-email` (#420). The registration token is aged past the resend
+/// cooldown.
 #[sqlx::test]
 async fn the_resent_verification_email_carries_a_link_that_verifies_the_account(db: PgPool) {
     let (router, outbox) = common::test_router_with_outbox(db.clone());
@@ -2949,7 +2951,10 @@ async fn the_resent_verification_email_carries_a_link_that_verifies_the_account(
     let token = common::mailed_token(
         &outbox,
         "resent@example.test",
-        "http://localhost:8080/auth/verify-email?token=",
+        // apps/web's page, as the registration email's link (#420): the
+        // API's own endpoint answers an empty 200 or a bare 410, which is
+        // no page for a person to land on.
+        "http://localhost:5173/verify-email?token=",
     );
     let verify = call(
         &router,
