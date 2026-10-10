@@ -141,14 +141,17 @@ sans rien changer à l'architecture v1/v2 actuelle :
    - #427 : le frein anti-force-brute du login compte en mémoire ;
    - #428 : les limites de débit de l'import de recettes, des appels à Open
      Food Facts et des rapports CSP comptent en mémoire ;
-   - #429 : le hub WebSocket de la messagerie est local au process.
+   - #429 : le hub WebSocket de la messagerie était local au process —
+     réglé : chaque réplica reçoit les événements des autres par Postgres
+     `LISTEN/NOTIFY`.
 4. **Config par variables d'environnement**, jamais de chemin/fichier local
    en dur — déjà la pratique (env vars, secrets chiffrés par sops sous
    Compose ; sur les clusters k3s, Sealed Secrets décidé le 2026-10-10,
    #432).
 
 Ces règles sont listées ici comme garde-fous à vérifier à chaque nouvel
-epic ; la règle 3 demande en plus le code de #426 à #429.
+epic ; la règle 3 demande encore le code de #427 et #428 (#426 et #429 sont
+réglées).
 
 ## Questions ouvertes / décisions à prendre plus tard
 
