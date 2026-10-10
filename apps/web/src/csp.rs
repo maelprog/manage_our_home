@@ -42,7 +42,8 @@ const CADDYFILE: &str = include_str!("../../../infra/Caddyfile");
 /// same block, under a matcher) deletes the header again — the name in any
 /// case, or a `*` wildcard covering it (`deletes`) — nor once Caddy's
 /// replacement form `<name> <search> <replace>` edits it: what is sent is
-/// then no longer what the file wrote. Field names match in
+/// then no longer what the file wrote, until a later set writes it again.
+/// Field names match in
 /// any case, and of several values set, the last one is read: it is the one
 /// Caddy sends.
 ///
@@ -51,9 +52,9 @@ const CADDYFILE: &str = include_str!("../../../infra/Caddyfile");
 /// not by a matcher of its own), and a value split across lines. What Caddy
 /// really sends is checked by the `e2e` job of `ci.yml`, which goes through
 /// this Caddyfile over HTTPS (`e2e/tests/caddy-https.spec.ts`, #381).
-fn caddy_header<'a>(caddyfile: &'a str, name: &str) -> Option<&'a str> {
+fn caddy_header(caddyfile: &str, name: &str) -> Option<String> {
     let mut found = None;
-    // Deleted or edited on some response: no value holds for every one.
+    // Deleted on some response: no value holds for every one.
     let mut deleted = false;
     // Inside a `header … {` block: whether that block carries a matcher.
     let mut block: Option<bool> = None;
@@ -98,7 +99,8 @@ fn caddy_header<'a>(caddyfile: &'a str, name: &str) -> Option<&'a str> {
         match field_value(field, name) {
             // Caddy sends the last value set: later ones replace earlier ones.
             Some(Field::Set(value)) if !scoped => found = Some(value),
-            Some(Field::Replaced) => deleted = true,
+            // An edit leaves no known value until a later set gives one.
+            Some(Field::Replaced) => found = None,
             _ => {}
         }
     }
@@ -111,31 +113,43 @@ fn caddy_header<'a>(caddyfile: &'a str, name: &str) -> Option<&'a str> {
 
 /// What a `<name> …` line does to the field.
 #[derive(Debug, PartialEq)]
-enum Field<'a> {
+enum Field {
     /// `<name> <value>`: sets it.
-    Set(&'a str),
+    Set(String),
     /// `<name> <search> <replace>`: edits the value already there.
     Replaced,
 }
 
 /// What `line` does to the field `name`, if it starts with it: one value
-/// (`"…"`, `` `…` `` or a bare token) sets it, a second one makes it Caddy's
-/// replacement form. A `#` token ends the line, as in Caddy.
-fn field_value<'a>(line: &'a str, name: &str) -> Option<Field<'a>> {
+/// (`"…"`, in which `\"` is a quote, `` `…` `` or a bare token) sets it, a
+/// second one makes it Caddy's replacement form. A `#` token ends the line,
+/// as in Caddy.
+fn field_value(line: &str, name: &str) -> Option<Field> {
     let rest = strip_name(line, name)?;
     if !rest.starts_with(char::is_whitespace) {
         return None;
     }
     let value = rest.trim();
-    let (first, after) = match ['"', '`']
-        .into_iter()
-        .find_map(|quote| Some((quote, value.strip_prefix(quote)?)))
-    {
-        Some((quote, quoted)) => {
-            let end = quoted.find(quote)?;
-            (&quoted[..end], &quoted[end + 1..])
-        }
-        None => value.split_at(value.find(char::is_whitespace).unwrap_or(value.len())),
+    let (first, after) = if let Some(quoted) = value.strip_prefix('"') {
+        let mut first = String::new();
+        let mut chars = quoted.char_indices();
+        let end = loop {
+            match chars.next()? {
+                (_, '\\') if quoted[chars.offset()..].starts_with('"') => {
+                    first.push('"');
+                    chars.next();
+                }
+                (at, '"') => break at,
+                (_, c) => first.push(c),
+            }
+        };
+        (first, &quoted[end + 1..])
+    } else if let Some(quoted) = value.strip_prefix('`') {
+        let end = quoted.find('`')?;
+        (quoted[..end].to_string(), &quoted[end + 1..])
+    } else {
+        let (first, after) = value.split_at(value.find(char::is_whitespace).unwrap_or(value.len()));
+        (first.to_string(), after)
     };
     let after = after.trim_start();
     if after.is_empty() || after.starts_with('#') {
@@ -168,7 +182,7 @@ fn deletes(pattern: &str, name: &str) -> bool {
 }
 
 /// The policy `infra/Caddyfile` enforces on every response.
-fn caddy_csp(caddyfile: &str) -> Option<&str> {
+fn caddy_csp(caddyfile: &str) -> Option<String> {
     caddy_header(caddyfile, "Content-Security-Policy")
 }
 
@@ -262,8 +276,8 @@ fn inline_scripts(source: &str) -> Vec<Inline> {
         let squeezed = squeezed_line.to_ascii_lowercase();
         for (at, _) in squeezed.match_indices("javascript:") {
             // Leading C0 controls and spaces are stripped from a URL too.
-            let before = squeezed[..at]
-                .trim_end_matches(|c: char| c.is_whitespace() || c <= ' ' || c == '"' || c == '\'');
+            let before =
+                squeezed[..at].trim_end_matches(|c: char| c <= ' ' || c == '"' || c == '\'');
             if before.ends_with('=') {
                 on_line.push((at, Inline::JsUrl(excerpt(&squeezed_line[at..]))));
             }
@@ -462,10 +476,10 @@ fn caddy_csp_reads_the_quoted_value_and_skips_comments() {
                 \t\tContent-Security-Policy \"default-src 'self'; script-src 'self'\"\n\
                 \t}\n";
     assert_eq!(
-        caddy_csp(file),
+        caddy_csp(file).as_deref(),
         Some("default-src 'self'; script-src 'self'")
     );
-    assert_eq!(caddy_csp("header X-Frame-Options DENY\n"), None);
+    assert_eq!(caddy_csp("header X-Frame-Options DENY\n").as_deref(), None);
 }
 
 #[test]
@@ -474,11 +488,11 @@ fn caddy_csp_reads_the_enforced_header_only() {
     let report_only = "\theader {\n\
                        \t\tContent-Security-Policy-Report-Only \"default-src 'self'\"\n\
                        \t}\n";
-    assert_eq!(caddy_csp(report_only), None);
+    assert_eq!(caddy_csp(report_only).as_deref(), None);
     let one_line = "\theader Content-Security-Policy \"default-src 'none'\"\n";
-    assert_eq!(caddy_csp(one_line), Some("default-src 'none'"));
+    assert_eq!(caddy_csp(one_line).as_deref(), Some("default-src 'none'"));
     let other = "\theader X-Content-Security-Policy \"default-src 'none'\"\n";
-    assert_eq!(caddy_csp(other), None);
+    assert_eq!(caddy_csp(other).as_deref(), None);
 }
 
 /// A matcher scopes a `header` to the responses it matches: a policy set
@@ -491,14 +505,14 @@ fn caddy_csp_ignores_a_header_scoped_by_a_matcher() {
         "\theader @api Content-Security-Policy \"default-src 'none'\"\n",
         "\theader /login Content-Security-Policy \"default-src 'none'\"\n",
     ] {
-        assert_eq!(caddy_csp(file), None, "{file}");
+        assert_eq!(caddy_csp(file).as_deref(), None, "{file}");
     }
     // The block after a scoped one is read again, and a line outside any
     // `header` is not a header.
     let file = "\theader @api {\n\t\tContent-Security-Policy \"scoped\"\n\t}\n\
                 \tContent-Security-Policy \"loose\"\n\
                 \theader {\n\t\tContent-Security-Policy \"global\"\n\t}\n";
-    assert_eq!(caddy_csp(file), Some("global"));
+    assert_eq!(caddy_csp(file).as_deref(), Some("global"));
 }
 
 /// `*` is the matcher of every request: a `header *` sets the field on every
@@ -506,11 +520,11 @@ fn caddy_csp_ignores_a_header_scoped_by_a_matcher() {
 #[test]
 fn caddy_csp_reads_a_header_on_the_matcher_of_every_request() {
     let block = "\theader * {\n\t\tContent-Security-Policy \"default-src 'none'\"\n\t}\n";
-    assert_eq!(caddy_csp(block), Some("default-src 'none'"));
+    assert_eq!(caddy_csp(block).as_deref(), Some("default-src 'none'"));
     let one_line = "\theader * Content-Security-Policy \"default-src 'self'\"\n";
-    assert_eq!(caddy_csp(one_line), Some("default-src 'self'"));
+    assert_eq!(caddy_csp(one_line).as_deref(), Some("default-src 'self'"));
     let deleted = "\theader Content-Security-Policy \"default-src 'self'\"\n\theader * -Content-Security-Policy\n";
-    assert_eq!(caddy_csp(deleted), None);
+    assert_eq!(caddy_csp(deleted).as_deref(), None);
 }
 
 /// Caddy's replacement form, `<name> <search> <replace>`, edits the value
@@ -523,12 +537,23 @@ fn caddy_csp_is_none_once_a_replacement_edits_it() {
         "\theader {\n\t\tContent-Security-Policy \"script-src 'self'\"\n\t\tContent-Security-Policy `'self'` `*`\n\t}\n",
         "\theader {\n\t\tContent-Security-Policy \"script-src 'self'\"\n\t}\n\theader @api Content-Security-Policy self none\n",
     ] {
-        assert_eq!(caddy_csp(file), None, "{file}");
+        assert_eq!(caddy_csp(file).as_deref(), None, "{file}");
     }
+    // A set after the replacement sets the value anew: Caddy sends that one.
+    let file = "\theader Content-Security-Policy \"a\" \"b\"\n\
+                \theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t}\n";
+    assert_eq!(caddy_csp(file).as_deref(), Some("default-src 'self'"));
+    // An escaped quote inside a quoted value is part of the value, not its
+    // end followed by a second token.
+    let file = "\theader X-A \"a\\\"b\"\n";
+    assert_eq!(caddy_header(file, "X-A").as_deref(), Some("a\"b"));
     // One value, quoted or bare, is a value, whatever it holds.
     let file = "\theader {\n\t\tContent-Security-Policy \"a b\"\n\t\tX-Frame-Options DENY\n\t}\n";
-    assert_eq!(caddy_csp(file), Some("a b"));
-    assert_eq!(caddy_header(file, "X-Frame-Options"), Some("DENY"));
+    assert_eq!(caddy_csp(file).as_deref(), Some("a b"));
+    assert_eq!(
+        caddy_header(file, "X-Frame-Options").as_deref(),
+        Some("DENY")
+    );
 }
 
 /// A `-Content-Security-Policy` anywhere — later in the file, inside the
@@ -549,14 +574,14 @@ fn caddy_csp_is_none_once_a_header_deletes_it() {
         "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t}\n\theader -*-Policy\n",
         "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t}\n\theader -*security*\n",
     ] {
-        assert_eq!(caddy_csp(file), None, "{file}");
+        assert_eq!(caddy_csp(file).as_deref(), None, "{file}");
     }
     // Deleting another header, or one whose name only starts the same, is
     // not deleting this one.
     let file = "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t\t-Server\n\t\t-Content-Security-Policy-Report-Only\n\t}\n";
-    assert_eq!(caddy_csp(file), Some("default-src 'self'"));
+    assert_eq!(caddy_csp(file).as_deref(), Some("default-src 'self'"));
     let file = "\theader {\n\t\tContent-Security-Policy \"default-src 'self'\"\n\t\t-X-*\n\t\t-*Frame*\n\t}\n";
-    assert_eq!(caddy_csp(file), Some("default-src 'self'"));
+    assert_eq!(caddy_csp(file).as_deref(), Some("default-src 'self'"));
 }
 
 /// Two `header` directives setting the same field: Caddy sends the last one,
@@ -565,7 +590,7 @@ fn caddy_csp_is_none_once_a_header_deletes_it() {
 fn caddy_csp_reads_the_last_value_set_in_any_case() {
     let file = "\theader Content-Security-Policy \"first\"\n\
                 \theader {\n\t\tcontent-security-policy \"second\"\n\t}\n";
-    assert_eq!(caddy_csp(file), Some("second"));
+    assert_eq!(caddy_csp(file).as_deref(), Some("second"));
 }
 
 #[test]
@@ -575,12 +600,15 @@ fn caddy_header_reads_bare_and_backquoted_values() {
                 \t\tReporting-Endpoints `csp=\"/api/csp-report\"`\n\
                 \t}\n\
                 \theader_up Referrer-Policy origin\n";
-    assert_eq!(caddy_header(file, "X-Frame-Options"), Some("DENY"));
     assert_eq!(
-        caddy_header(file, "Reporting-Endpoints"),
+        caddy_header(file, "X-Frame-Options").as_deref(),
+        Some("DENY")
+    );
+    assert_eq!(
+        caddy_header(file, "Reporting-Endpoints").as_deref(),
         Some("csp=\"/api/csp-report\"")
     );
-    assert_eq!(caddy_header(file, "Referrer-Policy"), None);
+    assert_eq!(caddy_header(file, "Referrer-Policy").as_deref(), None);
 }
 
 #[test]
@@ -667,12 +695,14 @@ fn inline_scripts_sees_a_javascript_url_split_by_tabs_or_line_breaks() {
 }
 
 /// Browsers strip every C0 control character and space that opens a URL,
-/// not only tabs and line breaks: `href="\x01javascript:…"` runs.
+/// not only tabs and line breaks: `href="\x01javascript:…"` runs. Nothing
+/// else: after DEL or a no-break space, the URL is relative and runs nothing.
 #[test]
 fn inline_scripts_sees_a_control_character_before_a_javascript_url() {
     let src = r##"let a = "<a href=\"\x01javascript:x()\">";
 let b = "<a href='\x1f \x0bjavascript:y()'>";
 let c = "<a href='\x7fjavascript:z()'>";
+let d = "<a href='\u{a0}javascript:w()'>";
 "##;
     assert_eq!(
         inline_scripts(src),
@@ -805,7 +835,7 @@ let b = b"/*"; Script::Push.tag(); let c = "*/";
 #[test]
 fn the_caddyfile_allows_script_files_from_the_site_and_nothing_inline() {
     let policy = caddy_csp(CADDYFILE).expect("infra/Caddyfile sets a Content-Security-Policy");
-    assert_eq!(directive(policy, "script-src"), Some(vec!["'self'"]));
+    assert_eq!(directive(&policy, "script-src"), Some(vec!["'self'"]));
 }
 
 /// The reminder notifications' service worker (#306) is a script file,
@@ -815,7 +845,7 @@ fn the_caddyfile_allows_script_files_from_the_site_and_nothing_inline() {
 #[test]
 fn the_caddyfile_lets_the_service_worker_register_and_nothing_else() {
     let policy = caddy_csp(CADDYFILE).expect("infra/Caddyfile sets a Content-Security-Policy");
-    assert_eq!(directive(policy, "worker-src"), Some(vec!["'self'"]));
+    assert_eq!(directive(&policy, "worker-src"), Some(vec!["'self'"]));
 }
 
 /// Styles: the sheet under /assets and no `<style>` element; the `style="…"`
@@ -824,9 +854,9 @@ fn the_caddyfile_lets_the_service_worker_register_and_nothing_else() {
 #[test]
 fn the_caddyfile_allows_the_stylesheet_and_style_attributes_only() {
     let policy = caddy_csp(CADDYFILE).expect("infra/Caddyfile sets a Content-Security-Policy");
-    assert_eq!(directive(policy, "style-src"), Some(vec!["'self'"]));
+    assert_eq!(directive(&policy, "style-src"), Some(vec!["'self'"]));
     assert_eq!(
-        directive(policy, "style-src-attr"),
+        directive(&policy, "style-src-attr"),
         Some(vec!["'unsafe-inline'"])
     );
 }
@@ -837,8 +867,8 @@ fn the_caddyfile_allows_the_stylesheet_and_style_attributes_only() {
 #[test]
 fn the_caddyfile_leaves_connections_to_default_src() {
     let policy = caddy_csp(CADDYFILE).expect("infra/Caddyfile sets a Content-Security-Policy");
-    assert_eq!(directive(policy, "connect-src"), None);
-    assert_eq!(directive(policy, "default-src"), Some(vec!["'self'"]));
+    assert_eq!(directive(&policy, "connect-src"), None);
+    assert_eq!(directive(&policy, "default-src"), Some(vec!["'self'"]));
 }
 
 /// Violations are reported to apps/api (`csp_report.rs`), on the site's own
@@ -848,12 +878,12 @@ fn the_caddyfile_leaves_connections_to_default_src() {
 fn the_caddyfile_reports_violations_to_the_api_and_nowhere_else() {
     let policy = caddy_csp(CADDYFILE).expect("infra/Caddyfile sets a Content-Security-Policy");
     assert_eq!(
-        directive(policy, "report-uri"),
+        directive(&policy, "report-uri"),
         Some(vec!["/api/csp-report"])
     );
-    assert_eq!(directive(policy, "report-to"), Some(vec!["csp"]));
+    assert_eq!(directive(&policy, "report-to"), Some(vec!["csp"]));
     assert_eq!(
-        caddy_header(CADDYFILE, "Reporting-Endpoints"),
+        caddy_header(CADDYFILE, "Reporting-Endpoints").as_deref(),
         Some("csp=\"/api/csp-report\"")
     );
 }
@@ -861,11 +891,11 @@ fn the_caddyfile_reports_violations_to_the_api_and_nowhere_else() {
 #[test]
 fn the_caddyfile_sets_the_other_security_headers() {
     let policy = caddy_csp(CADDYFILE).expect("infra/Caddyfile sets a Content-Security-Policy");
-    assert_eq!(directive(policy, "default-src"), Some(vec!["'self'"]));
-    assert_eq!(directive(policy, "object-src"), Some(vec!["'none'"]));
-    assert_eq!(directive(policy, "base-uri"), Some(vec!["'none'"]));
-    assert_eq!(directive(policy, "frame-ancestors"), Some(vec!["'none'"]));
-    assert_eq!(directive(policy, "form-action"), Some(vec!["'self'"]));
+    assert_eq!(directive(&policy, "default-src"), Some(vec!["'self'"]));
+    assert_eq!(directive(&policy, "object-src"), Some(vec!["'none'"]));
+    assert_eq!(directive(&policy, "base-uri"), Some(vec!["'none'"]));
+    assert_eq!(directive(&policy, "frame-ancestors"), Some(vec!["'none'"]));
+    assert_eq!(directive(&policy, "form-action"), Some(vec!["'self'"]));
     let live: Vec<&str> = CADDYFILE
         .lines()
         .map(str::trim)
