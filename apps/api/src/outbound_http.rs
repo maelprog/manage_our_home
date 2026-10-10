@@ -129,19 +129,19 @@ mod tests {
 
     /// Every outbound call goes through `client()`, `oauth_client()` or
     /// `recipe_import_client()`: a client built anywhere else in `src/`
-    /// would come without these timeouts. `push.rs` keeps its own, with its
-    /// own timeout and redirect policy.
+    /// would come without these timeouts. `notifications/push.rs` keeps its
+    /// own, with its own timeout and redirect policy.
     #[test]
     fn no_other_reqwest_client_is_built_in_the_api_sources() {
-        // A line naming `reqwest` and building a client. This file and
-        // `push.rs` are the two that may.
-        let forbidden = ["Client::new()", "Client::builder()"];
-        let allowed = ["outbound_http.rs", "push.rs"];
+        let src = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+        // Paths relative to `src/`: another file named `push.rs` is not
+        // allowed by its name alone.
+        let allowed = [
+            std::path::Path::new("outbound_http.rs"),
+            std::path::Path::new("notifications/push.rs"),
+        ];
         let mut offenders = Vec::new();
-        let mut dirs = vec![std::path::PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src"
-        ))];
+        let mut dirs = vec![src.clone()];
         while let Some(dir) = dirs.pop() {
             for entry in std::fs::read_dir(&dir).unwrap() {
                 let path = entry.unwrap().path();
@@ -149,19 +149,493 @@ mod tests {
                     dirs.push(path);
                     continue;
                 }
-                let name = path.file_name().unwrap().to_string_lossy().into_owned();
-                if !name.ends_with(".rs") || allowed.contains(&name.as_str()) {
+                let relative = path.strip_prefix(&src).unwrap();
+                if path.extension() != Some("rs".as_ref()) || allowed.contains(&relative) {
                     continue;
                 }
                 let source = std::fs::read_to_string(&path).unwrap();
-                for (n, line) in source.lines().enumerate() {
-                    if line.contains("reqwest") && forbidden.iter().any(|f| line.contains(f)) {
-                        offenders.push(format!("{}:{}", path.display(), n + 1));
-                    }
+                for n in client_constructions(&source) {
+                    offenders.push(format!("{}:{n}", relative.display()));
                 }
             }
         }
         assert!(offenders.is_empty(), "{offenders:?}");
+    }
+
+    /// The 1-based lines of `source` that build a reqwest client, whether
+    /// called or named as a function path (`unwrap_or_else(Client::new)`):
+    /// `new`, `default` or `builder` on `Client` or `ClientBuilder`, and
+    /// `get`, which builds a client of its own for one request. Each is
+    /// found under its `reqwest::` path (`reqwest::blocking::` included,
+    /// and wherever `reqwest` is a path segment: `::reqwest`,
+    /// `oauth2::reqwest`) or under a name a `use` statement binds to it:
+    /// the item itself, an alias, a glob, or the `reqwest` or `blocking`
+    /// module under another name. Comments are ignored; a `use` naming
+    /// reqwest that cannot be read is reported as a line of its own.
+    ///
+    /// This reads one file's text, not types. It misses `Default::default()`
+    /// where the type is inferred or annotated, `<reqwest::Client>::new()`
+    /// and `<reqwest::Client as Default>::default()`, a `type` alias,
+    /// `extern crate reqwest as rq;` followed by `rq::Client::new()`, a name
+    /// re-exported from another file (`pub use reqwest::Client as X;` there,
+    /// `super::m::X::new()` here), and a client built inside a macro or by
+    /// another crate.
+    fn client_constructions(source: &str) -> Vec<usize> {
+        let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+        let mut roots = vec!["reqwest".to_string()];
+        let mut blockings = Vec::new();
+        let mut types = Vec::new();
+        let mut functions = Vec::new();
+        let mut found = Vec::new();
+        let source = without_comments(source);
+        let source = source.as_str();
+        // `use` statements are read, then blanked out of the text searched
+        // below: importing `reqwest::get` builds nothing. One that names
+        // reqwest and cannot be read is reported, not skipped.
+        let mut searched = source.as_bytes().to_vec();
+        let mut line_start = 0;
+        for (n, line) in source.split_inclusive('\n').enumerate() {
+            let start = line_start;
+            line_start += line.len();
+            let Some(body) = use_statement_body(line) else {
+                continue;
+            };
+            let body_start = start + line.len() - body.len();
+            let end = source[body_start..].find(';');
+            let tree = &source[body_start..body_start + end.unwrap_or(body.len())];
+            let Some((end, imports)) = end.zip(use_imports(tree)) else {
+                if tree.contains("reqwest") {
+                    found.push(n + 1);
+                }
+                continue;
+            };
+            for (path, bound) in imports {
+                let Some(at) = path.iter().position(|s| s == "reqwest") else {
+                    continue;
+                };
+                let rest: Vec<&str> = path[at + 1..].iter().map(String::as_str).collect();
+                let item = match rest.as_slice() {
+                    [] => {
+                        roots.push(bound);
+                        continue;
+                    }
+                    ["blocking"] => {
+                        blockings.push(bound);
+                        continue;
+                    }
+                    [item] | ["blocking", item] => *item,
+                    _ => continue,
+                };
+                match item {
+                    "Client" | "ClientBuilder" => types.push(bound),
+                    "get" => functions.push(bound),
+                    "*" => {
+                        types.extend(["Client".into(), "ClientBuilder".into()]);
+                        functions.push("get".into());
+                    }
+                    _ => {}
+                }
+            }
+            for byte in &mut searched[start..body_start + end + 1] {
+                if *byte != b'\n' {
+                    *byte = b' ';
+                }
+            }
+        }
+        let modules = roots
+            .iter()
+            .flat_map(|root| [root.clone(), format!("{root}::blocking")])
+            .chain(blockings);
+        for module in modules {
+            types.extend(["Client", "ClientBuilder"].map(|ty| format!("{module}::{ty}")));
+            functions.push(format!("{module}::get"));
+        }
+        let mut patterns = functions;
+        for ty in &types {
+            patterns.extend(["new", "default", "builder"].map(|m| format!("{ty}::{m}")));
+        }
+        let searched = String::from_utf8(searched).expect("ASCII blanks keep UTF-8 valid");
+        found.extend(searched.lines().enumerate().filter_map(|(n, line)| {
+            let builds = patterns.iter().any(|pattern| {
+                line.match_indices(pattern.as_str()).any(|(at, _)| {
+                    let before = line[..at].chars().next_back();
+                    let after = line[at + pattern.len()..].chars().next();
+                    // `BasicClient::new`, `client.get`, `cache::get` and
+                    // `Client::new_with_pool` are other items; a path may
+                    // lead to `reqwest` itself (`oauth2::reqwest::get`).
+                    let path_may_lead = pattern.starts_with("reqwest::");
+                    !before.is_some_and(|c| is_ident(c) || c == '.' || (c == ':' && !path_may_lead))
+                        && !after.is_some_and(is_ident)
+                })
+            });
+            builds.then_some(n + 1)
+        }));
+        found.sort_unstable();
+        found.dedup();
+        found
+    }
+
+    /// `source` with its comments, nested ones included, blanked out;
+    /// newlines are kept, so line numbers hold. String, raw string and char
+    /// literals are stepped over: a `//` or `/*` in one opens no comment.
+    fn without_comments(source: &str) -> String {
+        let bytes = source.as_bytes();
+        let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+        let mut out = bytes.to_vec();
+        let mut i = 0;
+        while i < bytes.len() {
+            let rest = &bytes[i..];
+            let comment_end = if rest.starts_with(b"//") {
+                Some(source[i..].find('\n').map_or(bytes.len(), |e| i + e))
+            } else if rest.starts_with(b"/*") {
+                let (mut depth, mut j) = (0, i);
+                while j < bytes.len() {
+                    if bytes[j..].starts_with(b"/*") {
+                        depth += 1;
+                        j += 2;
+                    } else if bytes[j..].starts_with(b"*/") {
+                        depth -= 1;
+                        j += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                    } else {
+                        j += 1;
+                    }
+                }
+                Some(j)
+            } else {
+                None
+            };
+            if let Some(end) = comment_end {
+                for byte in &mut out[i..end] {
+                    if *byte != b'\n' {
+                        *byte = b' ';
+                    }
+                }
+                i = end;
+                continue;
+            }
+            // A raw string: `r`, or `br`, standing alone before `#…"`.
+            let word_start = if i > 0 && bytes[i - 1] == b'b' {
+                i - 1
+            } else {
+                i
+            };
+            let hashes = rest.iter().skip(1).take_while(|&&b| b == b'#').count();
+            if bytes[i] == b'r'
+                && rest.get(1 + hashes) == Some(&b'"')
+                && (word_start == 0 || !is_ident(bytes[word_start - 1]))
+            {
+                let close = [b"\"".as_slice(), &vec![b'#'; hashes]].concat();
+                let body = i + 2 + hashes;
+                i = bytes[body..]
+                    .windows(close.len())
+                    .position(|w| w == close.as_slice())
+                    .map_or(bytes.len(), |p| body + p + close.len());
+                continue;
+            }
+            match bytes[i] {
+                b'"' => {
+                    let mut j = i + 1;
+                    while j < bytes.len() && bytes[j] != b'"' {
+                        j += if bytes[j] == b'\\' { 2 } else { 1 };
+                    }
+                    i = j + 1;
+                }
+                // A char literal (`'"'`, `'\''`), or else a lifetime.
+                b'\'' if rest.get(1) == Some(&b'\\') => {
+                    i = source
+                        .get(i + 3..)
+                        .and_then(|s| s.find('\''))
+                        .map_or(bytes.len(), |e| i + 3 + e + 1);
+                }
+                b'\'' => {
+                    let width = source[i + 1..].chars().next().map_or(0, char::len_utf8);
+                    i += if bytes.get(i + 1 + width) == Some(&b'\'') {
+                        2 + width
+                    } else {
+                        1
+                    };
+                }
+                _ => i += 1,
+            }
+        }
+        String::from_utf8(out).expect("ASCII blanks keep UTF-8 valid")
+    }
+
+    /// What follows `use` on a line that opens a use statement
+    /// (attributes, `pub` and `pub(…)` allowed before it), or `None`.
+    fn use_statement_body(line: &str) -> Option<&str> {
+        let mut rest = line.trim_start();
+        while let Some(attribute) = rest.strip_prefix("#[") {
+            let mut depth = 1;
+            let end = attribute.find(|c| {
+                depth += match c {
+                    '[' => 1,
+                    ']' => -1,
+                    _ => 0,
+                };
+                depth == 0
+            })?;
+            rest = attribute[end + 1..].trim_start();
+        }
+        if let Some(after_pub) = rest.strip_prefix("pub") {
+            rest = after_pub.trim_start();
+            if rest.starts_with('(') {
+                rest = rest[rest.find(')')? + 1..].trim_start();
+            }
+        }
+        let body = rest.strip_prefix("use")?;
+        body.starts_with(char::is_whitespace).then_some(body)
+    }
+
+    /// The imports of one use statement's tree (the text between `use` and
+    /// `;`): each full path, with the name it binds (`*` for a glob, the
+    /// module's name for `self`). `None` when the text is not a use tree.
+    fn use_imports(tree: &str) -> Option<Vec<(Vec<String>, String)>> {
+        let mut tokens = Vec::new();
+        let mut chars = tree.char_indices().peekable();
+        while let Some((at, c)) = chars.next() {
+            if c.is_whitespace() {
+                continue;
+            }
+            if c.is_alphanumeric() || c == '_' {
+                let mut end = at + c.len_utf8();
+                while let Some(&(next, n)) = chars.peek() {
+                    if !(n.is_alphanumeric() || n == '_') {
+                        break;
+                    }
+                    end = next + n.len_utf8();
+                    chars.next();
+                }
+                tokens.push(&tree[at..end]);
+            } else if c == ':' && chars.next_if(|&(_, n)| n == ':').is_some() {
+                tokens.push("::");
+            } else if "{},*".contains(c) {
+                tokens.push(&tree[at..at + 1]);
+            } else {
+                return None;
+            }
+        }
+        let mut imports = Vec::new();
+        let mut at = 0;
+        use_tree(&tokens, &mut at, &[], &mut imports)?;
+        (at == tokens.len()).then_some(imports)
+    }
+
+    fn use_tree(
+        tokens: &[&str],
+        at: &mut usize,
+        prefix: &[String],
+        imports: &mut Vec<(Vec<String>, String)>,
+    ) -> Option<()> {
+        let mut path = prefix.to_vec();
+        if tokens.get(*at) == Some(&"::") {
+            *at += 1;
+        }
+        loop {
+            let token = *tokens.get(*at)?;
+            *at += 1;
+            match token {
+                "{" => loop {
+                    if tokens.get(*at) == Some(&"}") {
+                        *at += 1;
+                        return Some(());
+                    }
+                    use_tree(tokens, at, &path, imports)?;
+                    match *tokens.get(*at)? {
+                        "," => *at += 1,
+                        "}" => {}
+                        _ => return None,
+                    }
+                },
+                "*" => {
+                    path.push("*".into());
+                    imports.push((path, "*".into()));
+                    return Some(());
+                }
+                "::" | "," | "}" | "as" => return None,
+                segment => {
+                    if segment != "self" {
+                        path.push(segment.into());
+                    }
+                    if tokens.get(*at) == Some(&"::") {
+                        *at += 1;
+                        continue;
+                    }
+                    let bound = if tokens.get(*at) == Some(&"as") {
+                        *at += 2;
+                        tokens.get(*at - 1)?.to_string()
+                    } else {
+                        path.last()?.clone()
+                    };
+                    imports.push((path, bound));
+                    return Some(());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn client_constructions_finds_each_form_of_construction() {
+        for (source, line) in [
+            ("let c = reqwest::Client::new();", 1),
+            ("let c = reqwest::Client::default();", 1),
+            ("let c = reqwest::Client::builder().build();", 1),
+            ("let c = reqwest::ClientBuilder::new().build();", 1),
+            ("let c = reqwest::ClientBuilder::default().build();", 1),
+            ("let c = ::reqwest::Client::new();", 1),
+            ("let c = reqwest::blocking::Client::new();", 1),
+            ("use reqwest::Client;\nfn f() {\n    Client::new();\n}", 3),
+            (
+                "use reqwest::Client;\nfn f() -> Client { Client::default() }",
+                2,
+            ),
+            (
+                "use reqwest::ClientBuilder;\nfn f() { ClientBuilder::new() }",
+                2,
+            ),
+            (
+                "use reqwest::{header, Client};\nfn f() { Client::builder() }",
+                2,
+            ),
+            (
+                "use reqwest::{\n    Client,\n    Url,\n};\nfn f() { Client::new() }",
+                5,
+            ),
+            ("use reqwest::Client as Http;\nfn f() { Http::new() }", 2),
+            ("use reqwest::*;\nfn f() { Client::new() }", 2),
+            (
+                "use reqwest::blocking::Client;\nfn f() { Client::new() }",
+                2,
+            ),
+        ] {
+            assert_eq!(client_constructions(source), vec![line], "{source}");
+        }
+    }
+
+    /// `reqwest::get` builds a client of its own, without timeouts; a
+    /// constructor named as a function path, without a call, builds one
+    /// later; and reqwest is reachable under other names than its own.
+    #[test]
+    fn client_constructions_finds_free_functions_paths_and_reexports() {
+        let missed = [
+            ("let p = reqwest::get(url).await?;", 1),
+            ("let p = reqwest::blocking::get(url)?;", 1),
+            ("use reqwest::get;\nlet p = get(url).await?;", 2),
+            ("let p = urls.map(reqwest::get);", 1),
+            ("let c = o.unwrap_or_else(reqwest::Client::new);", 1),
+            (
+                "use reqwest::Client;\nlet c = o.unwrap_or_else(Client::new);",
+                2,
+            ),
+            ("use ::reqwest::Client;\nfn f() { Client::new() }", 2),
+            ("use oauth2::reqwest::Client;\nfn f() { Client::new() }", 2),
+            ("let c = oauth2::reqwest::Client::new();", 1),
+            (
+                "use reqwest::{self as rq};\nfn f() { rq::Client::new() }",
+                2,
+            ),
+            ("use reqwest as rq;\nfn f() { rq::get(url) }", 2),
+            (
+                "use oauth2::{reqwest as rq};\nfn f() { rq::Client::new() }",
+                2,
+            ),
+            (
+                "use reqwest::blocking;\nfn f() { blocking::Client::new() }",
+                2,
+            ),
+            (
+                "pub(crate) use reqwest::Client;\nfn f() { Client::new() }",
+                2,
+            ),
+            (
+                "#[allow(unused_imports)] use reqwest::Client;\nfn f() { Client::new() }",
+                2,
+            ),
+            // A comment holding the word `use` opens no use statement.
+            ("// clients use a pool;\nlet c = reqwest::Client::new();", 2),
+        ]
+        .into_iter()
+        .filter(|&(source, line)| client_constructions(source) != vec![line])
+        .map(|(source, _)| source)
+        .collect::<Vec<_>>();
+        assert!(missed.is_empty(), "{missed:#?}");
+    }
+
+    /// Comments are not code: one inside a use group, holding a `;` or
+    /// not, leaves the statement readable. A `use` naming reqwest that
+    /// cannot be read is reported rather than skipped. String and char
+    /// literals are not comments.
+    #[test]
+    fn client_constructions_reads_around_comments_and_reports_unreadable_uses() {
+        let missed = [
+            (
+                "use reqwest::{\n    Client, // c\n};\nfn f() { Client::new() }",
+                vec![4],
+            ),
+            (
+                "use reqwest::{\n    Client, // a; b\n};\nfn f() { Client::new() }",
+                vec![4],
+            ),
+            (
+                "use reqwest::{/* a; b */ Client};\nfn f() { Client::new() }",
+                vec![2],
+            ),
+            ("use reqwest::Client<T>;\nfn f() {}", vec![1]),
+            ("pub use reqwest::{Client as};", vec![1]),
+            (
+                "let u = \"http://x\"; let c = reqwest::Client::new();",
+                vec![1],
+            ),
+            (
+                "let u = \"/*\"; let c = reqwest::Client::new(); // */",
+                vec![1],
+            ),
+            (
+                "let u = r#\"\"//\"#; let c = reqwest::Client::new();",
+                vec![1],
+            ),
+            (
+                "let q = '\"'; let c = reqwest::Client::new(); // \"",
+                vec![1],
+            ),
+            ("fn f<'a>(s: &'a str) { reqwest::get(s); } // '", vec![1]),
+            (
+                "// reqwest::Client::new()\n/* /* */ reqwest::get(u) */",
+                vec![],
+            ),
+        ]
+        .into_iter()
+        .filter(|(source, lines)| client_constructions(source) != *lines)
+        .map(|(source, _)| source)
+        .collect::<Vec<_>>();
+        assert!(missed.is_empty(), "{missed:#?}");
+    }
+
+    #[test]
+    fn client_constructions_ignores_other_clients_and_other_reqwest_uses() {
+        for source in [
+            "fn f(c: &reqwest::Client) { c.get(url) }",
+            "use reqwest::get;\nlet r = client.get(url);",
+            "use reqwest::Url;\nlet g = map.get(&key);",
+            "use other::get;\nlet r = get(url);",
+            "let r = cache::get(url);",
+            "use reqwest::Url;\nlet u = Url::parse(s);",
+            "let o = BasicClient::new(ClientId::new(id));",
+            "let d = reqwest::Client::new_with_pool();",
+            // Without a `use reqwest::…` bringing it in, a bare `Client` is
+            // another crate's.
+            "use aws_sdk_s3::Client;\nlet s = Client::new(&config);",
+            "use reqwest::Url;\nlet s = aws_sdk_s3::Client::new(&config);",
+        ] {
+            assert_eq!(
+                client_constructions(source),
+                Vec::<usize>::new(),
+                "{source}"
+            );
+        }
     }
 
     #[tokio::test]
