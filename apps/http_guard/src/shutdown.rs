@@ -292,7 +292,10 @@ mod tests {
         shutdown.trigger();
         let start = tokio::time::Instant::now();
         let server = server_ending(&shutdown, Duration::from_secs(3));
-        shutdown.drain(server, Duration::from_secs(5)).await.unwrap();
+        shutdown
+            .drain(server, Duration::from_secs(5))
+            .await
+            .unwrap();
         assert_eq!(start.elapsed(), Duration::from_secs(3));
     }
 
@@ -307,7 +310,10 @@ mod tests {
         shutdown.trigger();
         let start = tokio::time::Instant::now();
         let server = server_ending(&shutdown, Duration::ZERO);
-        shutdown.drain(server, Duration::from_secs(5)).await.unwrap();
+        shutdown
+            .drain(server, Duration::from_secs(5))
+            .await
+            .unwrap();
         assert_eq!(start.elapsed(), Duration::from_secs(2));
     }
 
@@ -318,7 +324,10 @@ mod tests {
         shutdown.trigger();
         let start = tokio::time::Instant::now();
         let server = server_ending(&shutdown, Duration::from_secs(3600));
-        shutdown.drain(server, Duration::from_secs(5)).await.unwrap();
+        shutdown
+            .drain(server, Duration::from_secs(5))
+            .await
+            .unwrap();
         assert_eq!(start.elapsed(), Duration::from_secs(5));
     }
 

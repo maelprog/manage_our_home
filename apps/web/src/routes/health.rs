@@ -86,17 +86,26 @@ mod tests {
     async fn readyz_is_503_when_apps_api_is_unreachable_or_failing() {
         // Nothing listens on port 1.
         let down = "http://127.0.0.1:1".to_string();
-        assert_eq!(probe(state(down.clone()), "/readyz").await, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            probe(state(down.clone()), "/readyz").await,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
         assert_eq!(probe(state(down), "/healthz").await, StatusCode::OK);
         let failing = fake_api(StatusCode::INTERNAL_SERVER_ERROR).await;
-        assert_eq!(probe(state(failing), "/readyz").await, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            probe(state(failing), "/readyz").await,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 
     #[tokio::test]
     async fn readyz_is_503_once_draining_and_healthz_stays_200() {
         let state = state(fake_api(StatusCode::OK).await);
         state.shutdown.trigger();
-        assert_eq!(probe(state.clone(), "/readyz").await, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            probe(state.clone(), "/readyz").await,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
         assert_eq!(probe(state, "/healthz").await, StatusCode::OK);
     }
 }

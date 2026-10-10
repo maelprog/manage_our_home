@@ -30,12 +30,7 @@ pub async fn readyz(State(state): State<AppState>) -> StatusCode {
     if state.shutdown.is_draining() {
         return StatusCode::SERVICE_UNAVAILABLE;
     }
-    match tokio::time::timeout(
-        READY_DB_TIMEOUT,
-        sqlx::query("SELECT 1").execute(&state.db),
-    )
-    .await
-    {
+    match tokio::time::timeout(READY_DB_TIMEOUT, sqlx::query("SELECT 1").execute(&state.db)).await {
         Ok(Ok(_)) => StatusCode::OK,
         Ok(Err(_)) | Err(_) => StatusCode::SERVICE_UNAVAILABLE,
     }
