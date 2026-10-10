@@ -1705,3 +1705,45 @@ async fn listener_recovers_after_a_failed_reconnection(db: PgPool) {
 
     after.close(None).await.ok();
 }
+
+/// A replica listens once however many sockets it opens: a second
+/// listener would push every event twice to each of them.
+#[sqlx::test]
+async fn a_replica_listens_once_for_all_its_sockets(db: PgPool) {
+    let (addr, http) = serve_replica(&db).await;
+
+    let owner = register_verify_login(
+        &http,
+        &db,
+        "msg-replica-once@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&http, &owner, "Foyer").await;
+
+    let mut first = connect_ws(addr, &group_id, &owner).await;
+    let mut second = connect_ws(addr, &group_id, &owner).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let listening: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_stat_activity \
+         WHERE datname = current_database() AND query LIKE 'LISTEN %'",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        listening, 1,
+        "one replica, {listening} listening connections"
+    );
+
+    post_message(&http, &group_id, &owner, "once").await;
+    post_message(&http, &group_id, &owner, "sentinel").await;
+    for socket in [&mut first, &mut second] {
+        expect_created(socket, "once").await;
+        expect_created(socket, "sentinel").await;
+    }
+
+    first.close(None).await.ok();
+    second.close(None).await.ok();
+}
