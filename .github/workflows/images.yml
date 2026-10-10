@@ -6,7 +6,7 @@
 # provenance attestation. The steps are in image-build.yml.
 #
 # Pull requests build and scan the images without pushing anything, under a
-# read-only token: a Dockerfile change, or a dependency that brings in a
+# read-only token: a Dockerfile change, or a Debian package that brings in a
 # fixable CRITICAL, is red before merge rather than on `main`.
 #
 # The digests are the outputs of the `api` and `web` jobs
