@@ -1,0 +1,65 @@
+# Container images of apps/api and apps/web on GHCR (#430):
+#   ghcr.io/<owner>/manage-our-home-api and ghcr.io/<owner>/manage-our-home-web,
+# linux/amd64, tagged `sha-<full commit SHA>` and, on a `v*` tag, with the
+# tag name. Each is scanned by Trivy (red on a CRITICAL with a fix), carries
+# a Syft SBOM as a cosign attestation, a keyless cosign signature and a
+# provenance attestation. The steps are in image-build.yml.
+#
+# Pull requests build and scan the images without pushing anything, under a
+# read-only token: a Dockerfile change, or a dependency that brings in a
+# fixable CRITICAL, is red before merge rather than on `main`.
+#
+# The digests are the outputs of the `api` and `web` jobs
+# (`needs.api.outputs.digest`, `needs.web.outputs.digest`), for the job that
+# will update the deployment manifests (#436). They are also written to the
+# run summary.
+
+name: Images
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+# Nothing by default; each job below asks for what it uses.
+permissions: {}
+
+jobs:
+  api:
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/image-build.yml
+    with:
+      component: api
+      publish: true
+
+  web:
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/image-build.yml
+    with:
+      component: web
+      publish: true
+
+  # Same build and scan, nothing published, no write permission.
+  pr:
+    if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [api, web]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/image-build.yml
+    with:
+      component: ${{ matrix.component }}
+      publish: false
