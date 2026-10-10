@@ -93,18 +93,44 @@ jobs:
           docker save --output "${RUNNER_TEMP}/image.tar" "${IMAGE}:sha-${GITHUB_SHA}"
 
       # The acceptance criterion of #430: the image runs as a non-root UID on
-      # a read-only root filesystem. `id -u` goes through the image's own
+      # a read-only root filesystem. Both checks go through the image's own
       # user, not a --user override, so a Dockerfile that lost its USER line
       # fails here.
+      # - `id -u` proves the UID only: it would pass on any read-only rootfs.
+      # - web is then actually started read-only, with no tmpfs and every
+      #   capability dropped, and must answer GET /login with 200 — the page
+      #   renders without the API, so no other container is needed.
+      # api is not started here: it refuses to start without a migrated
+      # Postgres (MIGRATION_DATABASE_URL), which this job does not bring up;
+      # for api only the UID is checked.
       - name: Non-root on a read-only filesystem
         env:
           IMAGE: ${{ steps.name.outputs.image }}
         run: |
-          uid=$(docker run --rm --read-only --tmpfs /tmp "${IMAGE}:sha-${GITHUB_SHA}" id -u)
+          ref="${IMAGE}:sha-${GITHUB_SHA}"
+          uid=$(docker run --rm --read-only "$ref" id -u)
           echo "uid=${uid}"
           if [ "$uid" = 0 ]; then
             echo "::error::the ${COMPONENT} image runs as root"
             exit 1
+          fi
+          if [ "$COMPONENT" = web ]; then
+            cid=$(docker run --detach --read-only --cap-drop ALL \
+              --security-opt no-new-privileges \
+              --publish 127.0.0.1:3000:3000 "$ref")
+            code=000
+            for _ in $(seq 1 30); do
+              code=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+                http://127.0.0.1:3000/login || true)
+              [ "$code" = 200 ] && break
+              sleep 1
+            done
+            docker logs "$cid"
+            docker rm --force "$cid" > /dev/null
+            if [ "$code" != 200 ]; then
+              echo "::error::the web image, started read-only, answered GET /login with ${code}"
+              exit 1
+            fi
           fi
 
       # Fails on a CRITICAL vulnerability that has a fixed version
