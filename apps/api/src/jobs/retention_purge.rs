@@ -19,6 +19,7 @@ use tokio::time::{interval, MissedTickBehavior};
 
 use crate::attachment_reconcile::ensure_bypasses_rls;
 use crate::auth::session::SESSION_IDLE_TIMEOUT_DAYS;
+use crate::jobs::single_runner::{exclusively, Job};
 
 /// Rolling six months, the CNIL's recommendation for access logs
 /// (délib. 2021-122). The décret n° 2021-1362 minimum of one year was
@@ -102,11 +103,21 @@ pub async fn run(pool: PgPool) {
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         ticker.tick().await;
-        match purge(&pool, RetentionCutoffs::at(Utc::now())).await {
-            Ok(counts) => tracing::info!(?counts, "retention purge pass done"),
+        match scheduled_pass(&pool, RetentionCutoffs::at(Utc::now())).await {
+            Ok(Some(counts)) => tracing::info!(?counts, "retention purge pass done"),
+            Ok(None) => tracing::debug!("retention purge pass skipped: another process runs it"),
             Err(e) => tracing::error!(error = ?e, "retention purge job failed"),
         }
     }
+}
+
+/// [`purge`], unless another process is running it (#426): `None` then,
+/// and nothing is deleted by this one.
+pub async fn scheduled_pass(
+    pool: &PgPool,
+    cutoffs: RetentionCutoffs,
+) -> anyhow::Result<Option<PurgeCounts>> {
+    exclusively(pool, Job::RetentionPurge, purge(pool, cutoffs)).await
 }
 
 /// One pass, in one transaction. `cutoffs` is a parameter so the flow

@@ -346,9 +346,11 @@ développement local. L'extraction de services reste, elle, soumise à
 justification concrète comme ci-dessus.
 
 La règle « stateless par requête » n'est pas encore tenue : le process garde
-de l'état en mémoire (frein du login, limites de débit, hub WebSocket de la
-messagerie) et lance ses tâches de fond comme s'il était seul — #426 à #429
-y remédient avant tout passage à plusieurs réplicas.
+de l'état en mémoire (frein du login, limites de débit) — #427 et #428 y
+remédient avant tout passage à plusieurs réplicas. Ses tâches de fond, elles,
+ne tournent plus que dans un process à la fois, sous un verrou consultatif
+Postgres par tâche (#426), et le hub WebSocket de la messagerie reçoit les
+événements de tous les réplicas par `LISTEN/NOTIFY` (#429).
 
 Stack cible, séquencement, discipline à respecter dans le monolithe
 (frontières de module, pas de SQL cross-module, stateless par requête),

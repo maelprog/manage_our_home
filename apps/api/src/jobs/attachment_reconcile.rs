@@ -19,6 +19,7 @@ use sqlx::PgPool;
 use tokio::time::{interval, MissedTickBehavior};
 
 use crate::attachment_reconcile::{reconcile, Options, ReconcileOutcome, DEFAULT_MIN_AGE_HOURS};
+use crate::jobs::single_runner::{exclusively, Job};
 use crate::storage::Storage;
 
 /// Once a day. The leak is a handful of objects a year at household scale
@@ -43,13 +44,20 @@ pub fn scheduled_options() -> Options {
 ///
 /// The first tick fires at startup rather than one interval in, so a
 /// process restarted more often than daily still sweeps.
+///
+/// One process at a time sweeps (#426): a replica that finds another one
+/// sweeping skips its pass.
 pub async fn run(pool: PgPool, storage: Storage) {
     let mut ticker = interval(SWEEP_INTERVAL);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         ticker.tick().await;
-        if let Err(e) = sweep(&pool, &storage, &scheduled_options(), Utc::now()).await {
-            tracing::error!(error = ?e, "attachment reconcile job failed");
+        let opts = scheduled_options();
+        let pass = sweep(&pool, &storage, &opts, Utc::now());
+        match exclusively(&pool, Job::AttachmentReconcile, pass).await {
+            Ok(Some(_)) => {}
+            Ok(None) => tracing::debug!("attachment reconcile skipped: another process runs it"),
+            Err(e) => tracing::error!(error = ?e, "attachment reconcile job failed"),
         }
     }
 }

@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::agenda::reminders::{refill_notifications, EventTimes};
 use crate::email::EmailSender;
+use crate::jobs::single_runner::{exclusively, Job};
 use crate::notifications::{push, ReminderChannel};
 
 const SEND_POLL_INTERVAL_SECS: u64 = 60;
@@ -45,14 +46,20 @@ const RECIPIENT_GONE: &str = "recipient account deactivated or purged";
 /// `push` is the server's VAPID identity, `None` when notifications are
 /// off (no `VAPID_PRIVATE_KEY`): a push is then a failure, retried and
 /// finally retired like any other.
+///
+/// Each loop's pass runs in one process at a time (#426), see
+/// [`send_pass`]; the refill likewise.
 pub async fn run(pool: PgPool, email: EmailSender, push: Option<Arc<push::Vapid>>) {
     let pool_for_refill = pool.clone();
     tokio::spawn(async move {
         let mut ticker = interval(StdDuration::from_secs(REFILL_POLL_INTERVAL_SECS));
         loop {
             ticker.tick().await;
-            if let Err(e) = refill_recurring_reminders(&pool_for_refill).await {
-                tracing::error!(error = ?e, "scheduled_notifications refill failed");
+            let pass = refill_recurring_reminders(&pool_for_refill);
+            match exclusively(&pool_for_refill, Job::ReminderRefill, pass).await {
+                Ok(Some(())) => {}
+                Ok(None) => tracing::debug!("reminder refill skipped: another process runs it"),
+                Err(e) => tracing::error!(error = ?e, "scheduled_notifications refill failed"),
             }
         }
     });
@@ -77,10 +84,39 @@ pub async fn run(pool: PgPool, email: EmailSender, push: Option<Arc<push::Vapid>
                 }
             }
         };
-        if let Err(e) = send_due_notifications(&pool, send, send_push).await {
-            tracing::error!(error = ?e, "scheduled_notifications send failed");
+        match send_pass(&pool, send, send_push).await {
+            Ok(Some(())) => {}
+            Ok(None) => tracing::debug!("reminder pass skipped: another process runs it"),
+            Err(e) => tracing::error!(error = ?e, "scheduled_notifications send failed"),
         }
     }
+}
+
+/// [`send_due_notifications`], unless another process is running it
+/// (#426): `None` then, and this one sends nothing.
+///
+/// The pass reads the due notifications and only marks each one once it
+/// went out: two passes at once would both read it pending and both send
+/// it. Holding the lock for the whole pass is what makes each reminder go
+/// once whatever the number of replicas — as long as the holder's lock
+/// connection stays up, see `single_runner`.
+pub async fn send_pass<F, Fut, P, PFut>(
+    pool: &PgPool,
+    send: F,
+    send_push: P,
+) -> anyhow::Result<Option<()>>
+where
+    F: Fn(String, String, String) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+    P: Fn(String, i64) -> PFut,
+    PFut: std::future::Future<Output = push::PushOutcome>,
+{
+    exclusively(
+        pool,
+        Job::ReminderSend,
+        send_due_notifications(pool, send, send_push),
+    )
+    .await
 }
 
 /// Re-runs `refill_notifications` for every reminder attached to a
