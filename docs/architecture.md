@@ -354,7 +354,7 @@ Stack cible, séquencement, discipline à respecter dans le monolithe
 (frontières de module, pas de SQL cross-module, stateless par requête),
 questions tranchées le 2026-10-10 (choix du cluster, stateful sur K8s,
 registry) et questions encore ouvertes (GPU pour Ollama, cas d'usage Kafka,
-mesh) : voir `docs/version-y-microservices.md`.
+mesh, déclencheur de l'extraction d'Ollama) : voir `docs/version-y-microservices.md`.
 
 ## Repo layout (monorepo)
 
