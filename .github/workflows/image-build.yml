@@ -101,8 +101,8 @@ jobs:
       #   capability dropped, and must answer GET /login with 200 — the page
       #   renders without the API, so no other container is needed.
       # api is not started here: it refuses to start without a migrated
-      # Postgres (MIGRATION_DATABASE_URL), which this job does not bring up;
-      # for api only the UID is checked.
+      # Postgres (the `migrate` command applies the schema, #425), which
+      # this job does not bring up; for api only the UID is checked.
       - name: Non-root on a read-only filesystem
         env:
           IMAGE: ${{ steps.name.outputs.image }}
