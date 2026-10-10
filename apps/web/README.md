@@ -49,6 +49,13 @@ inline as above. All have defaults baked into `main.rs`.
 | `API_INTERNAL_BASE_URL` | `http://localhost:8080` | Where this server reaches `apps/api` (server-to-server). In docker-compose: the internal service name `http://api:8080`. |
 | `API_PUBLIC_BASE_URL` | `/api` | Base URL the **browser** uses for API-hosted links (e.g. the Google OAuth start endpoint). Behind Caddy the API lives under `/api`. |
 | `WEB_BIND_ADDR` | `0.0.0.0:3000` | Address/port the web server binds to. |
+| `SHUTDOWN_GRACE_SECONDS` | `25` | How long a stop on SIGTERM may take: the listener closes, the requests in flight finish, then the process exits (#424). Whole seconds, at least 1. |
+
+## Probes
+
+`GET /healthz` answers 200 without any I/O; `GET /readyz` answers 200 when
+apps/api answers its own `/healthz`, 503 otherwise and once the process is
+stopping (#424). Both sit outside every guard and log nothing.
 
 ## Tests
 
