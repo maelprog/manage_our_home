@@ -14,8 +14,9 @@
 //!
 //! That holds only as long as nobody writes an inline script again: behind
 //! Caddy it would silently not run, and nothing in the application's own
-//! tests would notice, because they never go through Caddy (nor does CI's
-//! e2e job). This module is what notices. Its tests hold together:
+//! tests would notice, because they never go through Caddy (CI's e2e job
+//! does since #381, but for a few pages only: `caddy-https.spec.ts`,
+//! `sessions.spec.ts`). This module is what notices. Its tests hold together:
 //!
 //! - the markup: no event-handler attribute, no inline `<script>` and no
 //!   `javascript:` URL in the production code of `src/`;
@@ -33,22 +34,26 @@ const CADDYFILE: &str = include_str!("../../../infra/Caddyfile");
 ///
 /// A `header` that carries a matcher (`header @api { … }`,
 /// `header /login Name "…"`) does not count: it sets the header on the
-/// responses it matches only. Neither does `<name>-Report-Only` for
+/// responses it matches only — except `*`, the matcher of every request.
+/// Neither does `<name>-Report-Only` for
 /// `Content-Security-Policy`, which reports and blocks nothing — the field
 /// name has to be exactly `name`.
 /// And none counts once a `-<name>` anywhere (later in the file, in the
 /// same block, under a matcher) deletes the header again — the name in any
-/// case, or a `*` wildcard covering it (`deletes`). Field names match in
+/// case, or a `*` wildcard covering it (`deletes`) — nor once Caddy's
+/// replacement form `<name> <search> <replace>` edits it: what is sent is
+/// then no longer what the file wrote. Field names match in
 /// any case, and of several values set, the last one is read: it is the one
 /// Caddy sends.
 ///
 /// What it does **not** see — a reading of lines, not Caddy's parser: a
 /// `header` nested in a `handle`, `route` or snippet (scoped by that block,
-/// not by a matcher of its own), a value split across lines, and Caddy's
-/// replacement form `<name> "<search>" "<replace>"`, which edits a value
-/// rather than setting one: its first quoted string is read as if set.
+/// not by a matcher of its own), and a value split across lines. What Caddy
+/// really sends is checked by the `e2e` job of `ci.yml`, which goes through
+/// this Caddyfile over HTTPS (`e2e/tests/caddy-https.spec.ts`, #381).
 fn caddy_header<'a>(caddyfile: &'a str, name: &str) -> Option<&'a str> {
     let mut found = None;
+    // Deleted or edited on some response: no value holds for every one.
     let mut deleted = false;
     // Inside a `header … {` block: whether that block carries a matcher.
     let mut block: Option<bool> = None;
@@ -70,8 +75,9 @@ fn caddy_header<'a>(caddyfile: &'a str, name: &str) -> Option<&'a str> {
                 continue;
             };
             let rest = rest.trim_start();
-            let scoped = rest.starts_with(['@', '/', '*']);
-            let rest = if scoped {
+            let scoped = rest.starts_with(['@', '/']);
+            let every_request = rest.split_whitespace().next() == Some("*");
+            let rest = if scoped || every_request {
                 rest.split_once(char::is_whitespace)
                     .map_or("", |(_, r)| r.trim_start())
             } else {
@@ -89,11 +95,11 @@ fn caddy_header<'a>(caddyfile: &'a str, name: &str) -> Option<&'a str> {
             .strip_prefix('-')
             .and_then(|f| f.split_whitespace().next())
             .is_some_and(|pattern| deletes(pattern, name));
-        // Caddy sends the last value set: later ones replace earlier ones.
-        if !scoped {
-            if let Some(value) = field_value(field, name) {
-                found = Some(value);
-            }
+        match field_value(field, name) {
+            // Caddy sends the last value set: later ones replace earlier ones.
+            Some(Field::Set(value)) if !scoped => found = Some(value),
+            Some(Field::Replaced) => deleted = true,
+            _ => {}
         }
     }
     if deleted {
@@ -103,20 +109,40 @@ fn caddy_header<'a>(caddyfile: &'a str, name: &str) -> Option<&'a str> {
     }
 }
 
-/// The value of `<name> <value>` at the start of `line`: `"…"`, `` `…` ``
-/// or the rest of the line.
-fn field_value<'a>(line: &'a str, name: &str) -> Option<&'a str> {
+/// What a `<name> …` line does to the field.
+#[derive(Debug, PartialEq)]
+enum Field<'a> {
+    /// `<name> <value>`: sets it.
+    Set(&'a str),
+    /// `<name> <search> <replace>`: edits the value already there.
+    Replaced,
+}
+
+/// What `line` does to the field `name`, if it starts with it: one value
+/// (`"…"`, `` `…` `` or a bare token) sets it, a second one makes it Caddy's
+/// replacement form. A `#` token ends the line, as in Caddy.
+fn field_value<'a>(line: &'a str, name: &str) -> Option<Field<'a>> {
     let rest = strip_name(line, name)?;
     if !rest.starts_with(char::is_whitespace) {
         return None;
     }
     let value = rest.trim();
-    for quote in ['"', '`'] {
-        if let Some(quoted) = value.strip_prefix(quote) {
-            return Some(&quoted[..quoted.find(quote)?]);
+    let (first, after) = match ['"', '`']
+        .into_iter()
+        .find_map(|quote| Some((quote, value.strip_prefix(quote)?)))
+    {
+        Some((quote, quoted)) => {
+            let end = quoted.find(quote)?;
+            (&quoted[..end], &quoted[end + 1..])
         }
+        None => value.split_at(value.find(char::is_whitespace).unwrap_or(value.len())),
+    };
+    let after = after.trim_start();
+    if after.is_empty() || after.starts_with('#') {
+        Some(Field::Set(first))
+    } else {
+        Some(Field::Replaced)
     }
-    Some(value)
 }
 
 /// `line` after `name`, matched as HTTP matches field names: in any case.
@@ -186,8 +212,9 @@ enum Inline {
 /// - `<script` not followed by whitespace and `src=`: an external script is
 ///   the one form allowed.
 /// - `javascript:` right after an `=`, an optional quote and optional
-///   spaces, tabs and line breaks removed first (browsers drop them from a
-///   URL: `java<TAB>script:` runs).
+///   spaces and C0 control characters, tabs and line breaks removed first
+///   (browsers drop them from a URL: `java<TAB>script:` and
+///   `<U+0001>javascript:` run).
 ///
 /// Each line is read with its escapes decoded (`unescape`): `\n`, `\t`,
 /// `\x20`, `\u{20}`, `\x6f`… count as the character they compile to.
@@ -195,9 +222,7 @@ enum Inline {
 /// What it does **not** see — a textual scan, not an HTML parser: spaces
 /// around a handler's `=`, markup assembled from pieces (`"on" + "click"`,
 /// a `<script` split across two literals), entity-encoded URLs
-/// (`javascript&colon;`), a URL opening with a C0 control character before
-/// `javascript:` (browsers strip those too; only tabs and line breaks are
-/// removed here), and Leptos `view!` attributes, which SSR does not emit as
+/// (`javascript&colon;`), and Leptos `view!` attributes, which SSR does not emit as
 /// handlers anyway. It also errs the other way on any attribute whose value
 /// starts with `javascript:` — `title="javascript: guide"` is reported,
 /// though it runs nothing. One that slipped through would run nowhere
@@ -236,8 +261,10 @@ fn inline_scripts(source: &str) -> Vec<Inline> {
             .collect();
         let squeezed = squeezed_line.to_ascii_lowercase();
         for (at, _) in squeezed.match_indices("javascript:") {
-            let before = squeezed[..at]
-                .trim_end_matches(|c: char| c.is_whitespace() || c == '"' || c == '\'');
+            // Leading C0 controls and spaces are stripped from a URL too.
+            let before = squeezed[..at].trim_end_matches(|c: char| {
+                c.is_whitespace() || c <= ' ' || c == '"' || c == '\''
+            });
             if before.ends_with('=') {
                 on_line.push((at, Inline::JsUrl(excerpt(&squeezed_line[at..]))));
             }
@@ -304,53 +331,107 @@ fn unescape(line: &str) -> String {
 }
 
 /// The scripts no production code loads: no `Script::<Variant>.tag()` in a
-/// file's `production_code` once comments are removed (`without_comments`),
-/// `assets.rs` (which defines them) left out.
+/// file's `production_code` once its comments and literals are removed
+/// (`code_only`), `assets.rs` (which defines them) left out.
 fn scripts_not_loaded(sources: &[(String, String)]) -> Vec<Script> {
-    let calls: Vec<String> = sources
+    let code: Vec<String> = sources
         .iter()
         .filter(|(path, _)| !path.ends_with("/assets.rs"))
-        .flat_map(|(_, text)| production_code(text).lines())
-        .map(without_comments)
+        .map(|(_, text)| code_only(production_code(text)))
         .collect();
     Script::ALL
         .into_iter()
         .filter(|script| {
             let call = format!("Script::{script:?}.tag()");
-            !calls.iter().any(|line| line.contains(&call))
+            !code.iter().any(|text| text.contains(&call))
         })
         .collect()
 }
 
-/// `line` without its `/* … */` spans and without what follows `//`. A
-/// textual cut, not a lexer: a `//` inside a string (`"https://…"`) ends the
-/// line too, which can only make a loaded script look unloaded; and a block
-/// comment spanning several lines is not seen, so a call commented out that
-/// way still counts.
-fn without_comments(line: &str) -> String {
-    let mut out = String::new();
-    let mut rest = line;
-    loop {
-        let block = rest.find("/*");
-        let to_end = rest.find("//");
-        match (block, to_end) {
-            (Some(b), t) if t.is_none_or(|t| b < t) => {
-                out.push_str(&rest[..b]);
-                match rest[b + 2..].find("*/") {
-                    Some(end) => rest = &rest[b + 2 + end + 2..],
-                    None => return out,
+/// `source` as the compiler reads it as code: `//` comments, `/* … */`
+/// comments (nested, as Rust's nest, and across lines) and the contents of
+/// string literals (`"…"`, `b"…"`, raw `r#"…"#`) and char literals removed.
+/// A `'` opens a char literal only when one character or one escape and a
+/// closing `'` follow; otherwise it is a lifetime or a label, and kept.
+fn code_only(source: &str) -> String {
+    let chars: Vec<char> = source.chars().collect();
+    let at = |i: usize| chars.get(i).copied();
+    let ident = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    let mut out = String::with_capacity(source.len());
+    let mut i = 0;
+    while let Some(c) = at(i) {
+        // A raw string: `r`, or `br`, not inside an identifier, then
+        // `#`s and a `"`. It ends at a `"` followed by as many `#`s.
+        let r = if c == 'b' { i + 1 } else { i };
+        if !ident(i.checked_sub(1).and_then(at)) && at(r) == Some('r') {
+            let hashes = (r + 1..).take_while(|&j| at(j) == Some('#')).count();
+            if at(r + 1 + hashes) == Some('"') {
+                let mut j = r + 2 + hashes;
+                while j < chars.len()
+                    && !(chars[j] == '"' && (1..=hashes).all(|k| at(j + k) == Some('#')))
+                {
+                    j += 1;
+                }
+                out.push_str("\"\"");
+                i = j + 1 + hashes;
+                continue;
+            }
+        }
+        match (c, at(i + 1)) {
+            ('/', Some('/')) => {
+                while at(i).is_some_and(|c| c != '\n') {
+                    i += 1;
                 }
             }
-            (_, Some(t)) => {
-                out.push_str(&rest[..t]);
-                return out;
+            ('/', Some('*')) => {
+                let mut depth = 0;
+                while i < chars.len() {
+                    match (chars[i], at(i + 1)) {
+                        ('/', Some('*')) => {
+                            depth += 1;
+                            i += 2;
+                        }
+                        ('*', Some('/')) => {
+                            depth -= 1;
+                            i += 2;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => i += 1,
+                    }
+                }
+                out.push(' ');
+            }
+            ('"', _) => {
+                i += 1;
+                while let Some(c) = at(i) {
+                    i += if c == '\\' { 2 } else { 1 };
+                    if c == '"' {
+                        break;
+                    }
+                }
+                out.push_str("\"\"");
+            }
+            ('\'', Some('\\')) => {
+                i += 3;
+                while at(i).is_some_and(|c| c != '\'') {
+                    i += 1;
+                }
+                i += 1;
+                out.push_str("' '");
+            }
+            ('\'', Some(_)) if at(i + 2) == Some('\'') => {
+                i += 3;
+                out.push_str("' '");
             }
             _ => {
-                out.push_str(rest);
-                return out;
+                out.push(c);
+                i += 1;
             }
         }
     }
+    out
 }
 
 fn sources() -> Vec<(String, String)> {
@@ -408,7 +489,6 @@ fn caddy_csp_ignores_a_header_scoped_by_a_matcher() {
     for file in [
         "\theader @api {\n\t\tContent-Security-Policy \"default-src 'none'\"\n\t}\n",
         "\theader /login {\n\t\tContent-Security-Policy \"default-src 'none'\"\n\t}\n",
-        "\theader * {\n\t\tContent-Security-Policy \"default-src 'none'\"\n\t}\n",
         "\theader @api Content-Security-Policy \"default-src 'none'\"\n",
         "\theader /login Content-Security-Policy \"default-src 'none'\"\n",
     ] {
@@ -420,6 +500,36 @@ fn caddy_csp_ignores_a_header_scoped_by_a_matcher() {
                 \tContent-Security-Policy \"loose\"\n\
                 \theader {\n\t\tContent-Security-Policy \"global\"\n\t}\n";
     assert_eq!(caddy_csp(file), Some("global"));
+}
+
+/// `*` is the matcher of every request: a `header *` sets the field on every
+/// response, as a `header` without any matcher does.
+#[test]
+fn caddy_csp_reads_a_header_on_the_matcher_of_every_request() {
+    let block = "\theader * {\n\t\tContent-Security-Policy \"default-src 'none'\"\n\t}\n";
+    assert_eq!(caddy_csp(block), Some("default-src 'none'"));
+    let one_line = "\theader * Content-Security-Policy \"default-src 'self'\"\n";
+    assert_eq!(caddy_csp(one_line), Some("default-src 'self'"));
+    let deleted = "\theader Content-Security-Policy \"default-src 'self'\"\n\theader * -Content-Security-Policy\n";
+    assert_eq!(caddy_csp(deleted), None);
+}
+
+/// Caddy's replacement form, `<name> <search> <replace>`, edits the value
+/// sent rather than setting one: what goes out is no longer what the file
+/// wrote, on the responses it applies to, matcher or not.
+#[test]
+fn caddy_csp_is_none_once_a_replacement_edits_it() {
+    for file in [
+        "\theader {\n\t\tContent-Security-Policy \"script-src 'self'\"\n\t}\n\theader Content-Security-Policy \"'self'\" \"'self' 'unsafe-inline'\"\n",
+        "\theader {\n\t\tContent-Security-Policy \"script-src 'self'\"\n\t\tContent-Security-Policy `'self'` `*`\n\t}\n",
+        "\theader {\n\t\tContent-Security-Policy \"script-src 'self'\"\n\t}\n\theader @api Content-Security-Policy self none\n",
+    ] {
+        assert_eq!(caddy_csp(file), None, "{file}");
+    }
+    // One value, quoted or bare, is a value, whatever it holds.
+    let file = "\theader {\n\t\tContent-Security-Policy \"a b\"\n\t\tX-Frame-Options DENY\n\t}\n";
+    assert_eq!(caddy_csp(file), Some("a b"));
+    assert_eq!(caddy_header(file, "X-Frame-Options"), Some("DENY"));
 }
 
 /// A `-Content-Security-Policy` anywhere — later in the file, inside the
@@ -557,6 +667,23 @@ fn inline_scripts_sees_a_javascript_url_split_by_tabs_or_line_breaks() {
     );
 }
 
+/// Browsers strip every C0 control character and space that opens a URL,
+/// not only tabs and line breaks: `href="\x01javascript:…"` runs.
+#[test]
+fn inline_scripts_sees_a_control_character_before_a_javascript_url() {
+    let src = r##"let a = "<a href=\"\x01javascript:x()\">";
+let b = "<a href='\x1f \x0bjavascript:y()'>";
+let c = "<a href='\x7fjavascript:z()'>";
+"##;
+    assert_eq!(
+        inline_scripts(src),
+        vec![
+            Inline::JsUrl("javascript:x()\">\";".into()),
+            Inline::JsUrl("javascript:y()'>\";".into()),
+        ]
+    );
+}
+
 /// The forms HTML accepts beyond the house style: an attribute at the start
 /// of a line, single quotes, no quotes, upper-case names (HTML names are
 /// case-insensitive, so `<SCRIPT>` and `ONCLICK` run all the same), an
@@ -639,10 +766,34 @@ fn scripts_not_loaded_counts_tag_calls_in_production_code_only() {
     let page = "html.push_str(&String::new()); // Script::Enhance.tag()\n\
                 let s = String::new() /* Script::ResetPassword.tag() */;\n\
                 let t = Script::MessagerieLive.tag(); /* note */\n\
-                let u = \"https://x\"; let v = Script::Push.tag();\n";
+                let v = Script::Push.tag();\n";
     assert_eq!(
         scripts_not_loaded(&[("src/page.rs".to_string(), page.to_string())]),
-        vec![Script::Enhance, Script::ResetPassword, Script::Push]
+        vec![Script::Enhance, Script::ResetPassword]
+    );
+    // A block comment spanning lines, nested block comments (Rust's nest)
+    // and a string literal, raw or not, hold no call either.
+    let page = r###"/* a note
+   html.push_str(&Script::Enhance.tag());
+*/
+/* outer /* inner */ Script::ResetPassword.tag() */
+let s = "Script::MessagerieLive.tag()";
+let r = r#"say "Script::Push.tag()" here"#;
+"###;
+    assert_eq!(
+        scripts_not_loaded(&[("src/page.rs".to_string(), page.to_string())]),
+        Script::ALL.to_vec()
+    );
+    // A quote in a char literal opens no string, a lifetime is no char
+    // literal, and comment markers inside a string comment nothing out.
+    let page = r###"let q = '"'; html.push_str(&Script::Enhance.tag());
+fn f<'a>(x: &'a str) { Script::ResetPassword.tag(); }
+let e = '\''; let u = "https://x"; Script::MessagerieLive.tag();
+let b = b"/*"; Script::Push.tag(); let c = "*/";
+"###;
+    assert_eq!(
+        scripts_not_loaded(&[("src/page.rs".to_string(), page.to_string())]),
+        vec![]
     );
     // `assets.rs` defines `tag` and calls nothing.
     let assets = "fn f() { Script::Push.tag() }\n";
