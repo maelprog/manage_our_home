@@ -495,7 +495,7 @@ dd { margin: var(--s2) 0 0 0; }
    purpose: the action size, the link colour, no ground and no rule. The
    footer is not a navigation (DESIGN.md → Layout): no `<nav>`, nothing of
    the tabs. One rule for both, so the footer costs no declaration of its
-   own beyond its place in the grid. */
+   own. */
 .links.centered { flex-flow: row wrap; justify-content: center; column-gap: var(--s4); }
 .muted { color: var(--muted); font-size: var(--t-sm); }
 /* Text whose line breaks are the author's: a message in the thread, a

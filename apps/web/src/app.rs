@@ -874,8 +874,8 @@ mod tests {
 
     #[test]
     fn a_page_outside_the_nav_lights_nothing() {
-        // The three public legal documents and the account screens are
-        // reachable from the header but are not nav tabs.
+        // The three public legal documents, reachable from the footer, and
+        // the account screens, reachable from the header, are not nav tabs.
         for path in [
             "/privacy-policy",
             "/legal-notice",
