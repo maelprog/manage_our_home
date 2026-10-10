@@ -126,14 +126,15 @@ jobs:
 
       - name: SBOM (Syft, SPDX JSON)
         run: |
+          # Written to stdout and redirected here: nothing of the runner is
+          # mounted writable into the Syft container.
           mkdir -p "${RUNNER_TEMP}/sbom"
           docker run --rm \
-            --user "$(id -u):$(id -g)" \
             --volume "${RUNNER_TEMP}/image.tar:/in/image.tar:ro" \
-            --volume "${RUNNER_TEMP}/sbom:/out" \
             "$SYFT_IMAGE" scan docker-archive:/in/image.tar \
-              --output spdx-json=/out/sbom.spdx.json
-          test -s "${RUNNER_TEMP}/sbom/sbom.spdx.json"
+              --output spdx-json \
+            > "${RUNNER_TEMP}/sbom/sbom.spdx.json"
+          jq -e '.spdxVersion and (.packages | length > 0)' "${RUNNER_TEMP}/sbom/sbom.spdx.json" > /dev/null
 
       - name: Log in to GHCR
         if: inputs.publish
