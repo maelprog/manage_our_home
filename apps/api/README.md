@@ -353,19 +353,24 @@ DEBUG login_timing: login timing outcome="ok" total_us=271310 lookup_us=435
   verify_us=257946 session_us=13498 sql_us=13917 other_us=27
 ```
 
+(A line from before #427, which added `throttle_us`.)
+
+- `throttle_us` — the login lock's transactions (#427): its admission,
+  before everything else, and on a success the one that clears the pair,
+  each with its pool checkout
 - `lookup_us` — `SELECT … FROM users WHERE email = $1`, plus the pool
   checkout it waits for first
 - `verify_us` — argon2id verification (CPU, no I/O)
 - `session_us` — `INSERT INTO sessions … RETURNING id`, its commit, and its
   own pool checkout
-- `sql_us` — `lookup + session`
-- `other_us` — `total` minus the three above: cookie building, the handler's
-  own bookkeeping. It is the thinnest of the four, tens of microseconds, and
+- `sql_us` — `throttle + lookup + session`
+- `other_us` — `total` minus the four above: cookie building, the handler's
+  own bookkeeping. It is the thinnest of the five, tens of microseconds, and
   nothing that blocks lives in it.
 
 Two costs are **not** in `other_us`, and both surprise people:
 
-- **Waiting for a database connection** is inside `lookup_us` or
+- **Waiting for a database connection** is inside `throttle_us`, `lookup_us` or
   `session_us`, whichever asked for it — the handler goes through the pool,
   not a held connection. Kill the pool's connections
   (`pg_terminate_backend`) and those two jump by orders of magnitude while
@@ -396,7 +401,7 @@ no line is one of those, not a lost measurement.
   so only `session_us` is zero. A `"rejected"` line with `verify_us=0` is
   the enumeration oracle back.
 - `"throttled"` — 429: the (client address, email) pair is locked (see
-  below). All four phases are zero: the lock is consulted before the lookup
+  below). Every phase but `throttle_us` is zero: the lock is consulted before the lookup
   and before argon2id, which is the point of it.
 - `"error"` — every error that is not one of the above. On today's login path those
   are 500s (a statement failed, or the hashing did), but read the label as
@@ -482,10 +487,29 @@ total. The review of #178 measured 27 000 attempts admitted on one pair for
 The share makes every cycle cost a full table of live pairs spread over at
 least 200 addresses; it does not limit the number of cycles.
 
-The counter is **in this process's memory**, which is correct only because
-`infra/docker-compose.yml` runs one `api`. **If `api` ever runs as more than
-one instance, it must move to a shared store (Redis/Valkey, not Postgres —
-a database write per failed attempt is itself an amplification).**
+The counters are **in Postgres** (#427), in the `UNLOGGED` table
+`login_throttle` (migration `0028`): every replica counts against the same
+rows, and a restart of the API keeps them (a crash of Postgres truncates
+an `UNLOGGED` table, which lifts every lock early). **Neither the address
+nor the email is stored**: a row holds an HMAC-SHA256 of the client address
+and one of the (address, email) pair, keyed from `LOGIN_THROTTLE_KEY`. The
+share is counted on the address's pseudonym. Every replica must be given
+the same key, or each counts on its own; changing it only resets the
+counters. The variable is required: unset, or shorter than 16 bytes once
+trimmed, the API refuses to start (`infra/generate-env.sh` draws one).
+
+Each attempt is one transaction, serialised per client address by an
+advisory lock, on the database's clock. An admitted attempt writes its
+pair's row. A new email from an address also deletes that address's
+stale pairs; once within its share it takes a table-wide lock, deletes
+the rows whose window started more than 30 minutes ago (`WINDOW +
+LOCKOUT`, past which no pair can still be locked), from every address,
+and on a full table evicts one pair. An attempt on a pair already locked
+changes nothing. The hourly retention purge (`jobs::retention_purge`)
+deletes the same 30-minute-old rows, so they go even when no new pair
+comes. The runtime role needs `SELECT, INSERT, UPDATE, DELETE` on the
+table — the `app_role` grant of the Row-Level Security note covers it
+when run after the migration.
 
 **What counts as one address (#198).** An IPv4 address stands for itself. An
 IPv6 one is reduced to its **/64** before it is used as a key: a residential

@@ -383,6 +383,7 @@ jobs:
           GOOGLE_CLIENT_SECRET: ci-dummy
           OAUTH_ENCRYPTION_KEY: ci-dummy-oauth-key
           MESSAGE_ENCRYPTION_KEY: ci-dummy-message-key
+          LOGIN_THROTTLE_KEY: ci-dummy-login-throttle-key
           CALENDAR_FEED_ENCRYPTION_KEY: ci-dummy-calendar-key
           SECURE_COOKIES: "false"
           SMTP_HOST: localhost

@@ -102,7 +102,10 @@ meilleurs délais », art. 33(2)), un chercheur en sécurité — et arrive à
    - renouveler les secrets exposés : `OAUTH_ENCRYPTION_KEY`,
      `MESSAGE_ENCRYPTION_KEY`, `CALENDAR_FEED_ENCRYPTION_KEY` (ce qui
      suppose de rechiffrer les colonnes concernées), les identifiants
-     Postgres, MinIO et SMTP, la clé VAPID (`VAPID_PRIVATE_KEY`) ;
+     Postgres, MinIO et SMTP, la clé VAPID (`VAPID_PRIVATE_KEY`), la clé
+     des pseudonymes du frein de connexion (`LOGIN_THROTTLE_KEY`, la même
+     sur toutes les instances ; les compteurs en cours deviennent
+     illisibles, ce qui lève les blocages plus tôt) ;
    - arrêter l'API, en dernier recours.
 3. **Qualifier.** Répondre par écrit, dans l'entrée du registre : quelles
    tables, quels objets du stockage, quels comptes ; confidentialité,

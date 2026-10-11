@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM login_throttle WHERE scope = $1 AND pair = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "01b27a305894ff15aeaf85127168555c4311057601abdb255b86fbef8d5be74c"
+}

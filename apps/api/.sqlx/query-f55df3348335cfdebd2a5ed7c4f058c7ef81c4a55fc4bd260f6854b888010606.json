@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM login_throttle WHERE window_start <= $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f55df3348335cfdebd2a5ed7c4f058c7ef81c4a55fc4bd260f6854b888010606"
+}

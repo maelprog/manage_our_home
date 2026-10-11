@@ -136,6 +136,16 @@ async fn main() -> anyhow::Result<()> {
     let message_hubs =
         manage_our_home::messagerie::MessageHub::new(db.clone(), &message_encryption_key);
 
+    // The login lock's pseudonyms (#427): every replica must key them
+    // alike, or each counts on its own. Required: no key, no start.
+    let login_throttle_secret = manage_our_home::auth::throttle::validate_secret(
+        env::var(manage_our_home::auth::throttle::SECRET_VAR).ok(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    let login_throttle = std::sync::Arc::new(manage_our_home::auth::throttle::LoginThrottle::new(
+        db.clone(),
+        manage_our_home::auth::throttle::Pseudonyms::new(&login_throttle_secret),
+    ));
     let state = AppState {
         db,
         google_oauth,
@@ -154,7 +164,7 @@ async fn main() -> anyhow::Result<()> {
         storage,
         admin_db,
         trusted_proxies: std::sync::Arc::new(trusted_proxies),
-        login_throttle: std::sync::Arc::new(manage_our_home::auth::throttle::LoginThrottle::new()),
+        login_throttle,
         csp_report_throttle: std::sync::Arc::new(
             manage_our_home::csp_report_throttle::ReportThrottle::new(),
         ),

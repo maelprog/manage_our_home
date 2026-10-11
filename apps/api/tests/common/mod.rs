@@ -28,6 +28,12 @@ pub fn test_state(db: PgPool) -> AppState {
     let email = EmailSender::new(smtp, "noreply@example.test".parse().unwrap());
 
     let runtime_db = runtime_pool(&db);
+    // On the handlers' pool, as in `main.rs`: two states built on one
+    // database share their login counters (#427).
+    let login_throttle = std::sync::Arc::new(manage_our_home::auth::throttle::LoginThrottle::new(
+        runtime_db.clone(),
+        manage_our_home::auth::throttle::Pseudonyms::new("test-login-throttle-key"),
+    ));
     AppState {
         message_hubs: manage_our_home::messagerie::MessageHub::new(
             runtime_db.clone(),
@@ -53,7 +59,7 @@ pub fn test_state(db: PgPool) -> AppState {
         // every test client resolves to the unspecified address. Tests
         // that need several distinct clients build their own state.
         trusted_proxies: std::sync::Arc::new(manage_our_home::client_ip::TrustedProxies::none()),
-        login_throttle: std::sync::Arc::new(manage_our_home::auth::throttle::LoginThrottle::new()),
+        login_throttle,
         csp_report_throttle: std::sync::Arc::new(
             manage_our_home::csp_report_throttle::ReportThrottle::new(),
         ),

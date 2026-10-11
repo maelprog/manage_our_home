@@ -1961,6 +1961,337 @@ async fn a_concurrent_burst_on_one_pair_is_bounded_by_the_threshold(db: PgPool) 
     assert_eq!(locked, burst - max);
 }
 
+/// #427: two instances of the API on one database are two `AppState`s —
+/// two routers here, each built the way `main.rs` builds its own. Attempts
+/// alternated between them reach the lock after [`MAX_FAILURES`] in total,
+/// as with one instance, not after that many on each.
+#[sqlx::test]
+async fn two_instances_on_one_database_share_the_threshold(db: PgPool) {
+    let instances = [
+        router_trusting_10_0_0_0_8(db.clone()),
+        router_trusting_10_0_0_0_8(db.clone()),
+    ];
+
+    for i in 0..manage_our_home::auth::throttle::MAX_FAILURES as usize {
+        let response = login_from(
+            &instances[i % 2],
+            "10.0.0.2:40000",
+            Some("192.168.1.42"),
+            "nobody@example.test",
+            "wrong-password1",
+        )
+        .await;
+        assert_status(&response, StatusCode::UNAUTHORIZED);
+    }
+
+    for instance in &instances {
+        let locked = login_from(
+            instance,
+            "10.0.0.2:40000",
+            Some("192.168.1.42"),
+            "nobody@example.test",
+            "wrong-password1",
+        )
+        .await;
+        assert_status(&locked, StatusCode::TOO_MANY_REQUESTS);
+    }
+}
+
+/// #427: the concurrent burst of #178, split across two instances. Each
+/// one counts under its own lock in memory would admit the threshold
+/// twice; the shared count admits it once.
+#[sqlx::test]
+async fn a_concurrent_burst_across_two_instances_is_bounded_by_the_threshold(db: PgPool) {
+    let instances = [
+        router_trusting_10_0_0_0_8(db.clone()),
+        router_trusting_10_0_0_0_8(db.clone()),
+    ];
+    let burst = 40;
+
+    let responses = futures::future::join_all((0..burst).map(|i| {
+        login_from(
+            &instances[i % 2],
+            "10.0.0.2:40000",
+            Some("192.168.1.42"),
+            "nobody@example.test",
+            "wrong-password1",
+        )
+    }))
+    .await;
+
+    let unauthorized = responses
+        .iter()
+        .filter(|r| r.status() == StatusCode::UNAUTHORIZED)
+        .count();
+    let max = manage_our_home::auth::throttle::MAX_FAILURES as usize;
+    assert_eq!(unauthorized, max, "hashes paid by the burst");
+}
+
+/// #427: neither the address nor the email reaches the table — only
+/// their keyed pseudonyms, and not a bare hash of them either.
+#[sqlx::test]
+async fn the_counters_hold_neither_the_address_nor_the_email(db: PgPool) {
+    let router = router_trusting_10_0_0_0_8(db.clone());
+    let response = login_from(
+        &router,
+        "10.0.0.2:40000",
+        Some("192.168.1.42"),
+        "nobody@example.test",
+        "wrong-password1",
+    )
+    .await;
+    assert_status(&response, StatusCode::UNAUTHORIZED);
+
+    let (rows, clear, bare_hash): (i64, i64, i64) = sqlx::query_as(
+        "SELECT count(*),
+                count(*) FILTER (WHERE position(convert_to('192.168.1.42', 'UTF8') IN scope) > 0
+                                    OR position(convert_to('192.168.1.42', 'UTF8') IN pair) > 0
+                                    OR position(convert_to('nobody@example.test', 'UTF8') IN pair) > 0),
+                count(*) FILTER (WHERE scope = sha256(convert_to('192.168.1.42', 'UTF8')))
+           FROM login_throttle",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!((rows, clear, bare_hash), (1, 0, 0));
+}
+
+/// Seeds `n` live counters with made-up pseudonyms, `MAX_PAIRS_PER_IP` per
+/// made-up address, started a minute ago or a little earlier — each one a
+/// millisecond before the previous, so the oldest, which an eviction takes
+/// first, is one row and the same for every concurrent admission.
+async fn seed_counters(db: &PgPool, n: usize) {
+    sqlx::query(
+        "INSERT INTO login_throttle (scope, pair, attempts, window_start)
+         SELECT decode(lpad(to_hex(i / $2), 64, '0'), 'hex'),
+                decode(lpad(to_hex(i), 64, '0'), 'hex'),
+                1, now() - interval '1 minute' - i * interval '1 millisecond'
+           FROM generate_series(0, $1 - 1) AS i",
+    )
+    .bind(n as i64)
+    .bind(manage_our_home::auth::throttle::MAX_PAIRS_PER_IP as i64)
+    .execute(db)
+    .await
+    .unwrap();
+}
+
+/// Rows in the table, and rows the test's logins added (started in the
+/// last thirty seconds, unlike every seeded one).
+async fn counters(db: &PgPool) -> (i64, i64) {
+    sqlx::query_as(
+        "SELECT count(*), count(*) FILTER (WHERE window_start > now() - interval '30 seconds')
+           FROM login_throttle",
+    )
+    .fetch_one(db)
+    .await
+    .unwrap()
+}
+
+/// #427: rows past `throttle::purge_cutoff` go when a new pair comes in,
+/// from any address — not only when that row's own address returns.
+#[sqlx::test]
+async fn expired_counters_are_purged_by_the_next_new_pair(db: PgPool) {
+    sqlx::query(
+        "INSERT INTO login_throttle (scope, pair, attempts, window_start, locked_until)
+         VALUES (decode(repeat('aa', 32), 'hex'), decode(repeat('aa', 32), 'hex'), 10,
+                 now() - interval '31 minutes', now() - interval '1 minute'),
+                (decode(repeat('aa', 32), 'hex'), decode(repeat('bb', 32), 'hex'), 3,
+                 now() - interval '29 minutes', NULL)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let router = router_trusting_10_0_0_0_8(db.clone());
+    let response = login_from(
+        &router,
+        "10.0.0.2:40000",
+        Some("192.168.1.42"),
+        "nobody@example.test",
+        "wrong-password1",
+    )
+    .await;
+    assert_status(&response, StatusCode::UNAUTHORIZED);
+
+    let left: Vec<String> = sqlx::query_scalar(
+        "SELECT encode(pair, 'hex') FROM login_throttle
+          WHERE scope = decode(repeat('aa', 32), 'hex')",
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    // The 29-minute row is past its window but inside the bound: it is
+    // left for its own address to reclaim, as before #427.
+    assert_eq!(left, ["bb".repeat(32)]);
+    assert_eq!(counters(&db).await, (2, 1));
+}
+
+/// #427: a full table is loaded whole and the eviction of #178 runs on it,
+/// so new pairs arriving one after the other leave it at its ceiling.
+/// (Admissions that overlap: the next two tests.)
+#[sqlx::test]
+async fn a_full_table_in_the_database_stays_at_its_ceiling(db: PgPool) {
+    use manage_our_home::auth::throttle::MAX_TRACKED;
+    seed_counters(&db, MAX_TRACKED).await;
+
+    let router = router_trusting_10_0_0_0_8(db.clone());
+    for i in 0..3 {
+        let response = login_from(
+            &router,
+            "10.0.0.2:40000",
+            Some(&format!("192.168.1.{i}")),
+            "nobody@example.test",
+            "wrong-password1",
+        )
+        .await;
+        assert_status(&response, StatusCode::UNAUTHORIZED);
+    }
+
+    // Every new pair counted, none uncounted, and the table at its ceiling.
+    assert_eq!(counters(&db).await, (MAX_TRACKED as i64, 3));
+}
+
+/// #427: new pairs arriving at once, on two instances, into a full table.
+/// Each one counts the table and evicts; without the table lock several
+/// count the same total and evict the same victim, and the table grows
+/// past its ceiling.
+#[sqlx::test]
+async fn concurrent_new_pairs_on_a_full_table_keep_it_at_its_ceiling(db: PgPool) {
+    use manage_our_home::auth::throttle::MAX_TRACKED;
+    seed_counters(&db, MAX_TRACKED).await;
+
+    let instances = [
+        router_trusting_10_0_0_0_8(db.clone()),
+        router_trusting_10_0_0_0_8(db.clone()),
+    ];
+    let newcomers = 20;
+    let addresses: Vec<String> = (0..newcomers).map(|i| format!("192.168.1.{i}")).collect();
+    let responses = futures::future::join_all(addresses.iter().enumerate().map(|(i, address)| {
+        login_from(
+            &instances[i % 2],
+            "10.0.0.2:40000",
+            Some(address),
+            "nobody@example.test",
+            "wrong-password1",
+        )
+    }))
+    .await;
+    for response in &responses {
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    assert_eq!(counters(&db).await, (MAX_TRACKED as i64, newcomers as i64));
+}
+
+/// #427: a held pair's admission does not take the table lock. If a new
+/// pair's admission purges (or evicts) that pair's row while the first one
+/// is deciding, writing the pair back must not reinsert it outside the
+/// count: the table would then end one row past its ceiling. Played
+/// deterministically — a transaction stands for the new pair's admission
+/// (table lock, purge, insert) and commits only once the real login of the
+/// held pair is waiting behind it.
+#[sqlx::test]
+async fn a_held_pair_purged_meanwhile_is_not_reinserted_past_the_ceiling(db: PgPool) {
+    use manage_our_home::auth::throttle::{MAX_TRACKED, TABLE_LOCK};
+    let router = router_trusting_10_0_0_0_8(db.clone());
+    let first = login_from(
+        &router,
+        "10.0.0.2:40000",
+        Some("192.168.3.1"),
+        "held@example.test",
+        "wrong-password1",
+    )
+    .await;
+    assert_status(&first, StatusCode::UNAUTHORIZED);
+    // A full table, the held pair included, and that pair past the purge
+    // bound.
+    seed_counters(&db, MAX_TRACKED - 1).await;
+    sqlx::query(
+        "UPDATE login_throttle SET window_start = now() - interval '31 minutes'
+          WHERE window_start > now() - interval '30 seconds'",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    assert_eq!(counters(&db).await.0, MAX_TRACKED as i64);
+
+    #[allow(clippy::disallowed_methods)]
+    let mut other = db.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock($1, 0)")
+        .bind(TABLE_LOCK)
+        .execute(&mut *other)
+        .await
+        .unwrap();
+    let purged = sqlx::query(
+        "DELETE FROM login_throttle WHERE window_start <= clock_timestamp() - interval '30 minutes'",
+    )
+    .execute(&mut *other)
+    .await
+    .unwrap()
+    .rows_affected();
+    assert_eq!(purged, 1, "the held pair is the one row past the bound");
+    sqlx::query(
+        "INSERT INTO login_throttle (scope, pair, attempts, window_start)
+         VALUES (decode(repeat('cc', 32), 'hex'), decode(repeat('cc', 32), 'hex'), 1, now())",
+    )
+    .execute(&mut *other)
+    .await
+    .unwrap();
+
+    let held = {
+        let router = router.clone();
+        tokio::spawn(async move {
+            login_from(
+                &router,
+                "10.0.0.2:40000",
+                Some("192.168.3.1"),
+                "held@example.test",
+                "wrong-password1",
+            )
+            .await
+            .status()
+        })
+    };
+    // Long enough for the held pair's admission to reach the row the
+    // other transaction deleted, and wait on it.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    other.commit().await.unwrap();
+
+    assert_eq!(held.await.unwrap(), StatusCode::UNAUTHORIZED);
+    assert_eq!(counters(&db).await.0, MAX_TRACKED as i64);
+}
+
+/// #427: a deployment restarts the API. The lock a pair earned before it
+/// still holds after it.
+#[sqlx::test]
+async fn the_lock_survives_a_restart_of_the_api(db: PgPool) {
+    {
+        let before = router_trusting_10_0_0_0_8(db.clone());
+        for _ in 0..manage_our_home::auth::throttle::MAX_FAILURES {
+            let response = login_from(
+                &before,
+                "10.0.0.2:40000",
+                Some("192.168.1.42"),
+                "nobody@example.test",
+                "wrong-password1",
+            )
+            .await;
+            assert_status(&response, StatusCode::UNAUTHORIZED);
+        }
+    }
+
+    let after = router_trusting_10_0_0_0_8(db.clone());
+    let locked = login_from(
+        &after,
+        "10.0.0.2:40000",
+        Some("192.168.1.42"),
+        "nobody@example.test",
+        "wrong-password1",
+    )
+    .await;
+    assert_status(&locked, StatusCode::TOO_MANY_REQUESTS);
+}
+
 /// The lock is consulted before argon2id, not after: a locked attempt
 /// answers without paying for a hash. If the check moved behind
 /// `verify_password`, the 429 would cost what a 401 costs.

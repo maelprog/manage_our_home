@@ -31,20 +31,26 @@ pub const TARGET: &str = "login_timing";
 
 /// Wall-clock attribution of a single `POST /auth/login`.
 ///
-/// `lookup` and `session` are the handler's two statements (the `users`
-/// SELECT, then the `sessions` INSERT); `verify` is the argon2 check.
-/// `total` is the whole handler, so whatever it holds beyond the three
-/// named phases is [`LoginTiming::other`].
+/// `throttle` is the login lock's transactions (#427); `lookup` and
+/// `session` are the handler's two statements (the `users` SELECT, then the
+/// `sessions` INSERT); `verify` is the argon2 check. `total` is the whole
+/// handler, so whatever it holds beyond the four named phases is
+/// [`LoginTiming::other`].
 ///
 /// A login that ends early leaves the phases it never reached at zero:
 /// that is a real measurement of that outcome, not missing data. Since
 /// #178 that means `session` alone on any refusal — `lookup` and `verify`
 /// are paid by every attempt that gets past the lock, including one on an
 /// email that does not exist, which is exactly the property that closes
-/// the enumeration oracle. A line with all four phases at zero is a login
-/// the throttle stopped before it did anything.
+/// the enumeration oracle. A line whose phases are all zero but
+/// `throttle` is a login the lock stopped before it did anything.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LoginTiming {
+    /// The login lock (#427): its admission transaction, before every
+    /// other phase, and on a success the transaction that clears the pair
+    /// — each with its pool checkout, like the two statements below. Paid
+    /// by every request, a throttled one included.
+    pub throttle: Duration,
     /// `SELECT id, password_hash, email_verified FROM users WHERE email = $1`
     /// — **and the pool checkout it waits for first.** Both statements are
     /// issued against the pool, not a held connection, so acquiring one is
@@ -70,20 +76,21 @@ pub struct LoginTiming {
 }
 
 impl LoginTiming {
-    /// The handler's database time: both statements together.
+    /// The handler's database time: the throttle's transactions and both
+    /// statements together.
     pub fn sql(&self) -> Duration {
-        self.lookup + self.session
+        self.throttle + self.lookup + self.session
     }
 
-    /// Everything `total` holds that none of the three named phases claims:
+    /// Everything `total` holds that none of the four named phases claims:
     /// cookie construction, the branching between the phases, the handler's
-    /// own bookkeeping. It is the *thinnest* of the four, and measured as
+    /// own bookkeeping. It is the *thinnest* of the five, and measured as
     /// tens of microseconds — nothing that blocks lives here.
     ///
     /// Two things that sound like they belong here do not:
     ///
     /// - **Pool checkout.** Waiting for a connection happens inside the
-    ///   phase that needs one, `lookup` or `session` — see
+    ///   phase that needs one, `throttle`, `lookup` or `session` — see
     ///   [`LoginTiming::lookup`]. Starve the pool and `lookup` explodes
     ///   while `other` stays flat.
     /// - **Request-body deserialization.** Axum's extractor runs it before
@@ -96,6 +103,7 @@ impl LoginTiming {
     /// to take down a login.
     pub fn other(&self) -> Duration {
         self.total
+            .saturating_sub(self.throttle)
             .saturating_sub(self.lookup)
             .saturating_sub(self.verify)
             .saturating_sub(self.session)
@@ -114,6 +122,7 @@ impl LoginTiming {
             target: TARGET,
             outcome,
             total_us = micros(self.total),
+            throttle_us = micros(self.throttle),
             lookup_us = micros(self.lookup),
             verify_us = micros(self.verify),
             session_us = micros(self.session),
@@ -386,6 +395,7 @@ mod tests {
             verify: ms(60),
             session: ms(2),
             total: ms(70),
+            ..Default::default()
         };
         assert_eq!(t.sql(), ms(5));
     }
@@ -397,8 +407,38 @@ mod tests {
             verify: ms(60),
             session: ms(2),
             total: ms(70),
+            ..Default::default()
         };
         assert_eq!(t.other(), ms(5));
+    }
+
+    #[test]
+    fn the_throttle_is_database_time_and_not_other() {
+        // #427: the lock is a transaction now. Left out of the named
+        // phases, it would land in `other`, the one said to hold nothing
+        // that blocks.
+        let t = LoginTiming {
+            throttle: ms(4),
+            lookup: ms(3),
+            verify: ms(60),
+            session: ms(2),
+            total: ms(74),
+        };
+        assert_eq!(t.sql(), ms(9));
+        assert_eq!(t.other(), ms(5));
+    }
+
+    #[test]
+    fn a_throttled_login_reports_the_throttle_alone() {
+        let t = LoginTiming {
+            throttle: Duration::from_micros(800),
+            total: Duration::from_micros(830),
+            ..Default::default()
+        };
+        let lines = capture(|| t.emit("throttled"));
+        assert_eq!(lines[0].field("throttle_us"), Some(800));
+        assert_eq!(lines[0].field("lookup_us"), Some(0));
+        assert_eq!(lines[0].field("other_us"), Some(30));
     }
 
     #[test]
@@ -423,6 +463,7 @@ mod tests {
             verify: ms(60),
             session: ms(2),
             total: ms(1),
+            ..Default::default()
         };
         assert_eq!(t.other(), Duration::ZERO);
     }
@@ -643,6 +684,7 @@ mod tests {
             verify: ms(60),
             session: ms(2),
             total: ms(70),
+            ..Default::default()
         };
         let lines = capture(|| t.emit("ok"));
 

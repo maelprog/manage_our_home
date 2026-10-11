@@ -9,6 +9,10 @@
 //! The durations below are the controller's decision of 2026-09-19, not a
 //! technical default, and they are the ones published in
 //! `docs/privacy-policy.md` and recorded in `docs/registre-traitements.md`.
+//!
+//! The pass also deletes the login lock's counters past their own bound
+//! (`auth::throttle::purge_cutoff`, half an hour, #427): not a retention
+//! period of its own, the instant past which no counter can still count.
 
 use std::time::Duration as StdDuration;
 
@@ -89,6 +93,8 @@ pub struct PurgeCounts {
     pub password_reset_tokens: u64,
     pub invitations: u64,
     pub sessions: u64,
+    /// Login lock counters past `auth::throttle::purge_cutoff` (#427).
+    pub login_throttle: u64,
 }
 
 /// Polling worker, `account_purge`'s shape. `pool` must be the `BYPASSRLS`
@@ -196,6 +202,12 @@ pub async fn purge(pool: &PgPool, cutoffs: RetentionCutoffs) -> anyhow::Result<P
     .await?
     .rows_affected();
 
+    // The login lock's counters (#427): an admission that inserts a pair
+    // purges them already, but with no new pair nothing else would. Read
+    // against this pass's clock rather than the database's; the bound is
+    // half an hour wide, so the drift between the two does not matter.
+    let login_throttle = crate::auth::throttle::purge_expired(&mut tx, cutoffs.now.into()).await?;
+
     tx.commit().await?;
 
     Ok(PurgeCounts {
@@ -204,6 +216,7 @@ pub async fn purge(pool: &PgPool, cutoffs: RetentionCutoffs) -> anyhow::Result<P
         password_reset_tokens,
         invitations,
         sessions,
+        login_throttle,
     })
 }
 

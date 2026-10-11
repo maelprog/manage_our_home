@@ -1,0 +1,74 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT scope, pair, attempts, window_start, locked_until FROM login_throttle",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "scope",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "login_throttle",
+            "name": "scope"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "pair",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "login_throttle",
+            "name": "pair"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "attempts",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "login_throttle",
+            "name": "attempts"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "window_start",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "login_throttle",
+            "name": "window_start"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "locked_until",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "login_throttle",
+            "name": "locked_until"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "17afb352da1ccb6c2b3a81679e710bfee4630c5bcf4ee0e531f64f9b22cd9c85"
+}

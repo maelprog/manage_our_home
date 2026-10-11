@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-10-10.
+Dernière mise à jour : 2026-10-11.
 
 ## Qui est responsable de vos données ?
 
@@ -43,7 +43,7 @@ données sont-elles conservées ? ».
 | Conditions d'utilisation | la version des conditions générales que vous avez acceptée — à l'inscription, ou à la première connexion pour un compte ouvert avec Google — ou dont vous avez indiqué avoir pris connaissance après un changement, et sa date | Exécution du contrat (garder trace des conditions qui régissent votre usage du service) |
 | Connexion avec Google | identifiant de votre compte Google, email et nom de votre profil Google, jeton de rafraîchissement délivré par Google (chiffré) | Exécution du contrat (vous choisissez ce mode de connexion) |
 | Vérification d'email et réinitialisation du mot de passe | jetons à usage unique envoyés par email, valables 24 h (vérification) ou 1 h (réinitialisation) | Exécution du contrat |
-| Protection de la connexion | adresse IP (en IPv6, réduite à son préfixe /64) et email saisi à chaque tentative de connexion par mot de passe, gardés en mémoire du serveur seulement, jamais en base | Intérêt légitime (limiter les essais de mot de passe) |
+| Protection de la connexion | adresse IP (en IPv6, réduite à son préfixe /64) et email saisi à chaque tentative de connexion par mot de passe, conservés en base sous forme pseudonymisée seulement (empreinte HMAC calculée avec une clé secrète du serveur, jamais l'adresse ni l'email en clair), avec le nombre de tentatives et leurs horaires | Intérêt légitime (limiter les essais de mot de passe) |
 | Invitations | adresse email de la personne invitée (si le membre qui invite la saisit), lien d'invitation valable 7 jours ; l'email envoyé nomme le groupe et le membre qui invite | Intérêt légitime (permettre à un membre d'inviter un proche dans son groupe) |
 | Désactivation d'un compte | date à laquelle l'administrateur du service a désactivé le compte, date de l'email qui prévient de sa suppression ; si vous demandez la réactivation, la date de votre demande et le message facultatif que vous y joignez, et la date du premier refus | Intérêt légitime (exploitation et sécurité du service) |
 | Agenda | événements, tâches, pièces jointes, membres assignés à un événement | Exécution du contrat |
@@ -276,15 +276,20 @@ de la purge dépasserait.
   est supprimée dès qu'elle est acceptée ; sinon, au premier passage de
   purge qui suit les 30 jours de sa création, ou plus tôt si le groupe est
   supprimé ou si le compte du membre qui l'a envoyée est purgé.
-- **Protection de la connexion** : gardée en mémoire du serveur, jamais en
-  base, et perdue à chaque redémarrage du serveur. Une connexion réussie
-  efface aussitôt les tentatives du même couple (adresse, email). Sinon,
+- **Protection de la connexion** : conservée en base, sous forme
+  pseudonymisée seulement — une empreinte HMAC de l'adresse et une du
+  couple (adresse, email), calculées avec une clé secrète que la base ne
+  contient pas ; ni l'adresse ni l'email n'y figurent en clair. Une donnée
+  pseudonymisée reste une donnée personnelle : qui détient la clé peut
+  recalculer l'empreinte d'une adresse ou d'un email donnés. Ces compteurs
+  survivent au redémarrage du serveur (ils sont partagés entre les
+  instances du service) ; un arrêt brutal de la base les efface. Une
+  connexion réussie efface aussitôt les tentatives du même couple. Sinon,
   les tentatives cessent de compter au bout de 15 minutes (ou à la fin d'un
-  blocage de 15 minutes), mais rien ne les efface à heure fixe : elles ne
-  sont retirées de la mémoire qu'à l'arrivée d'une tentative avec un autre
-  email depuis la même adresse, quand le serveur suit déjà 10 000 couples,
-  ou au redémarrage. Sans nouvelle tentative, elles restent donc en mémoire
-  jusqu'au redémarrage du serveur.
+  blocage de 15 minutes), et une entrée est supprimée au plus tard au
+  premier passage de purge (toutes les heures) qui suit les 30 minutes de
+  sa première tentative — plus tôt à l'arrivée d'une nouvelle tentative
+  après ces 30 minutes, ou quand le serveur suit déjà 10 000 couples.
 - **Photo d'un code-barres** (scan d'un article de stock) : pas conservée
   du tout. Elle peut montrer l'intérieur de votre logement ; le serveur la
   lit en mémoire le temps de trouver le code, puis l'oublie avec la
