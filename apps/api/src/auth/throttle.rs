@@ -67,10 +67,12 @@
 //!   clocks drift still agree on when a window ends.
 //!
 //! The cost the in-memory version was spared: a database round trip per
-//! attempt, and a pool connection held for it. Writes stay bounded: a
-//! refused attempt changes no row and writes nothing, and an admitted one
+//! attempt, and a pool connection held for it. Counter writes stay
+//! bounded: a refused attempt changes no counter, and an admitted one
 //! writes one row — at most [`MAX_FAILURES`] per pair per window, each in
-//! front of an argon2id that costs far more than the write.
+//! front of an argon2id that costs far more than the write. (A pair the
+//! table does not hold yet also runs the purge, which deletes only rows
+//! already past [`purge_cutoff`].)
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv6Addr};
