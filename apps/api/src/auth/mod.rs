@@ -281,9 +281,17 @@ async fn login_inner(
     // spend that CPU first, and a count recorded only once the outcome is
     // known would let a burst of concurrent requests all pass the check
     // before the first one finished hashing (#178). A success clears the
-    // pair below.
-    if let throttle::Decision::Locked { .. } = state.login_throttle.admit(&key, Instant::now()) {
-        return (LoginBranch::Throttled, Err(AppError::TooManyRequests));
+    // pair below. The count is shared by every replica (#427): a store
+    // that cannot answer refuses the attempt rather than admit it uncounted.
+    let at = Instant::now();
+    let admitted = state.login_throttle.admit(&key).await;
+    timing.throttle = at.elapsed();
+    match admitted {
+        Ok(throttle::Decision::Allow) => {}
+        Ok(throttle::Decision::Locked { .. }) => {
+            return (LoginBranch::Throttled, Err(AppError::TooManyRequests))
+        }
+        Err(e) => return (LoginBranch::Error, Err(e.into())),
     }
 
     let at = Instant::now();
@@ -356,7 +364,13 @@ async fn login_inner(
     };
     timing.session = at.elapsed();
     set_session_cookie(cookies, &token, state.secure_cookies);
-    state.login_throttle.record_success(&key);
+    // The session exists: a failure to clear the pair costs this member a
+    // shorter budget until the window ends, not their login.
+    let at = Instant::now();
+    if let Err(e) = state.login_throttle.record_success(&key).await {
+        tracing::warn!(error = %e, "could not clear the login lock after a success");
+    }
+    timing.throttle += at.elapsed();
 
     (
         LoginBranch::Ok,

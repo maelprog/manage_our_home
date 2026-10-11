@@ -89,12 +89,11 @@ pub struct AppState {
     pub trusted_proxies: std::sync::Arc<client_ip::TrustedProxies>,
     /// Per-(address, email) lock on login attempts (#178): every attempt is
     /// counted when admitted, before the argon2 work, and a success clears
-    /// the pair. In-process because `infra/docker-compose.yml`
-    /// runs exactly one `api`; see `auth::throttle` for what has to change
-    /// if that ever stops being true.
+    /// the pair. Counted in Postgres (`login_throttle`, #427), so every
+    /// replica shares one count and a restart keeps it.
     pub login_throttle: std::sync::Arc<auth::throttle::LoginThrottle>,
     /// Per-address limit on `POST /csp-report` (#375), keyed like
-    /// `login_throttle` and in-process for the same reason.
+    /// `login_throttle` but still in-process (#428 moves it).
     pub csp_report_throttle: std::sync::Arc<csp_report_throttle::ReportThrottle>,
     /// Cumulative count of logins per ending, published as an aggregate
     /// and never per request (#178 bis).
@@ -128,8 +127,8 @@ pub struct AppState {
     /// `OPENFOODFACTS_BASE_URL` says otherwise; tests point it at a local
     /// stub, or at nothing.
     pub openfoodfacts_base_url: String,
-    /// The limit on reads sent to Open Food Facts (#402), in-process like
-    /// `login_throttle`.
+    /// The limit on reads sent to Open Food Facts (#402), still
+    /// in-process (#428 moves it).
     pub off_throttle: std::sync::Arc<stocks::openfoodfacts::Throttle>,
     /// The client the recipe import (#405) fetches pages with:
     /// `outbound_http::recipe_import_client()`, which reaches public
@@ -137,8 +136,8 @@ pub struct AppState {
     /// (`outbound_http::recipe_import_builder`), with a test name pinned to
     /// their local server.
     pub recipe_import_client: reqwest::Client,
-    /// The per-member limit on recipe imports (#405), in-process like
-    /// `login_throttle`.
+    /// The per-member limit on recipe imports (#405), still
+    /// in-process (#428 moves it).
     pub recipe_import_throttle: std::sync::Arc<recipes::import::ImportThrottle>,
     /// Whether the process is stopping (#424): `/readyz` answers 503 from
     /// then on, and every Messagerie WebSocket closes with a Close frame.

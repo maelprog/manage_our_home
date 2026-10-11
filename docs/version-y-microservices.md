@@ -138,7 +138,9 @@ sans rien changer à l'architecture v1/v2 actuelle :
      notification partait une fois par réplica) — réglé : chaque passe prend
      un verrou consultatif Postgres et ne tourne que dans un process à la
      fois ;
-   - #427 : le frein anti-force-brute du login compte en mémoire ;
+   - #427 : le frein anti-force-brute du login comptait en mémoire —
+     réglé : ses compteurs sont dans une table Postgres partagée par les
+     réplicas, et survivent au redémarrage de l'API ;
    - #428 : les limites de débit de l'import de recettes, des appels à Open
      Food Facts et des rapports CSP comptent en mémoire ;
    - #429 : le hub WebSocket de la messagerie était local au process —
@@ -150,7 +152,7 @@ sans rien changer à l'architecture v1/v2 actuelle :
    #432).
 
 Ces règles sont listées ici comme garde-fous à vérifier à chaque nouvel
-epic ; la règle 3 demande encore le code de #427 et #428 (#426 et #429 sont
+epic ; la règle 3 demande encore le code de #428 (#426, #427 et #429 sont
 réglées).
 
 ## Questions ouvertes / décisions à prendre plus tard

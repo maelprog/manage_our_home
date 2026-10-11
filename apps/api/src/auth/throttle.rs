@@ -9,8 +9,8 @@
 //! protects nothing.
 //!
 //! **An attempt is counted when it is admitted, not when it fails.**
-//! [`LoginThrottle::admit`] checks the lock and records the attempt under
-//! one mutex acquisition, before the caller does any work; a login that
+//! [`LoginThrottle::admit`] checks the lock and records the attempt in one
+//! transaction, under one lock, before the caller does any work; a login that
 //! then succeeds clears the pair ([`LoginThrottle::record_success`]).
 //! Counting failures only once they are known would let a burst of
 //! concurrent requests all read "not locked" before the first of them
@@ -42,22 +42,42 @@
 //! one pair for 1 000 new emails, measured against the previous version.
 //! Refusing at the share only ever costs the address that asked.
 //!
-//! **The counter lives in this process's memory.** `infra/docker-compose.yml`
-//! declares a single `api` service with no `replicas` and no `deploy:`, so
-//! process-local state is the whole picture and costs nothing.
+//! **The counters live in Postgres (#427), the decision does not.** Until
+//! #427 they lived in this process's memory: with N replicas behind the
+//! ingress an attacker had N times [`MAX_FAILURES`], and every deployment
+//! reset them. They are now rows of the `login_throttle` table
+//! (`migrations/0028_login_throttle.sql`), shared by every replica and
+//! kept across restarts. What decides is unchanged and pure: [`Table`],
+//! the same structure the process used to hold, now filled with the rows
+//! one admission needs, asked, and diffed back ([`Changes`]).
 //!
-//! > **If `api` ever runs as more than one instance, this must move to a
-//! > shared store (Redis/Valkey — not Postgres).** With N instances the
-//! > effective threshold is N times what [`MAX_FAILURES`] says, and an
-//! > attacker spread across them is throttled N times less. Postgres is
-//! > the wrong destination even so: one write per failed attempt is itself
-//! > an amplification — the attacker would be choosing how often this
-//! > service writes to its own database.
+//! One admission is one transaction:
+//!
+//! - a transaction-level advisory lock on the address ([`SCOPE_LOCK`])
+//!   does what the mutex did, per address: two attempts from one address,
+//!   whichever replica takes them, are decided one after the other — so a
+//!   burst still gets [`MAX_FAILURES`] admissions and not one per request,
+//!   and a 51st email cannot slip past the share;
+//! - a pair the table does not hold yet also takes [`TABLE_LOCK`], since
+//!   inserting it counts against [`MAX_TRACKED`] and may evict another
+//!   address's pair. Under it, rows past [`purge_cutoff`] are deleted, the
+//!   table is counted, and only when it is full is all of it loaded — the
+//!   linear path the in-memory table already had;
+//! - the clock is the database's (`clock_timestamp()`), so replicas whose
+//!   clocks drift still agree on when a window ends.
+//!
+//! The cost the in-memory version was spared: a database round trip per
+//! attempt, and a pool connection held for it. Writes stay bounded: a
+//! refused attempt changes no row and writes nothing, and an admitted one
+//! writes one row — at most [`MAX_FAILURES`] per pair per window, each in
+//! front of an argon2id that costs far more than the write.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv6Addr};
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime};
+
+use chrono::{DateTime, Utc};
+use sqlx::{PgPool, Postgres, Transaction};
 
 /// Attempts admitted within [`WINDOW`], on one (address, email) pair, with
 /// no success in between, before the pair is locked. Ten leaves a household
@@ -75,7 +95,7 @@ pub const LOCKOUT: Duration = Duration::from_secs(15 * 60);
 
 /// Ceiling on tracked pairs. The email half of the key is caller-supplied
 /// and `login` does not validate its shape, so without a ceiling an
-/// attacker picks how much memory this process holds.
+/// attacker picks how many rows `login_throttle` holds.
 pub const MAX_TRACKED: usize = 10_000;
 
 /// Pairs one address may hold at once — distinct emails tried from it
@@ -181,15 +201,34 @@ pub fn key(ip: IpAddr, email: &str) -> (IpAddr, String) {
     (ip, email)
 }
 
-#[derive(Debug, Clone, Copy)]
+/// Rows whose window started at or before this instant are stale whatever
+/// happened in them, and can go without being read.
+///
+/// A window is fresh until [`WINDOW`] has elapsed, so the latest a pair can
+/// lock is at the very end of it, and that lock lifts [`LOCKOUT`] later:
+/// `window_start + WINDOW + LOCKOUT` bounds every entry's life. This is a
+/// bound, not [`Entry::is_stale`]: a pair that never locked goes stale
+/// sooner, and is then reclaimed by the table as before.
+pub fn purge_cutoff(now: SystemTime) -> SystemTime {
+    now - (WINDOW + LOCKOUT)
+}
+
+/// Instants are wall-clock (`SystemTime`), not `Instant`, since #427: they
+/// are written to the database and read back by another process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Entry {
     attempts: u32,
-    window_start: Instant,
-    locked_until: Option<Instant>,
+    window_start: SystemTime,
+    locked_until: Option<SystemTime>,
+}
+
+/// How long from `earlier` to `later`, or zero if `later` is not later.
+fn since(later: SystemTime, earlier: SystemTime) -> Duration {
+    later.duration_since(earlier).unwrap_or(Duration::ZERO)
 }
 
 impl Entry {
-    fn fresh(now: Instant) -> Self {
+    fn fresh(now: SystemTime) -> Self {
         Entry {
             attempts: 0,
             window_start: now,
@@ -197,30 +236,51 @@ impl Entry {
         }
     }
 
-    fn locked_at(&self, now: Instant) -> Option<Instant> {
+    fn locked_at(&self, now: SystemTime) -> Option<SystemTime> {
         self.locked_until.filter(|until| *until > now)
     }
 
     /// Nothing left to remember: not locked, and its window is over.
-    fn is_stale(&self, now: Instant) -> bool {
+    fn is_stale(&self, now: SystemTime) -> bool {
         self.locked_at(now).is_none()
-            && (self.locked_until.is_some() || now.duration_since(self.window_start) > WINDOW)
+            && (self.locked_until.is_some() || since(now, self.window_start) > WINDOW)
     }
 
     /// When this entry stops holding its address's share, at the earliest.
-    fn frees_at(&self, now: Instant) -> Instant {
+    fn frees_at(&self, now: SystemTime) -> SystemTime {
         self.locked_at(now).unwrap_or(self.window_start + WINDOW)
     }
 }
 
 /// Pairs grouped by address, so an address's share is one `len()` away.
-#[derive(Debug, Default)]
+///
+/// The whole decision. [`LoginThrottle`] fills one with the rows an
+/// admission needs — the address's own pairs, or every pair when the
+/// table is full — asks it, and writes back what changed.
+#[derive(Debug, Default, Clone)]
 struct Table {
     by_ip: HashMap<IpAddr, HashMap<String, Entry>>,
     total: usize,
 }
 
 impl Table {
+    fn get(&self, ip: IpAddr, email: &str) -> Option<&Entry> {
+        self.by_ip.get(&ip).and_then(|pairs| pairs.get(email))
+    }
+
+    /// Adds a pair read from the store.
+    fn load(&mut self, ip: IpAddr, email: String, entry: Entry) {
+        if self
+            .by_ip
+            .entry(ip)
+            .or_default()
+            .insert(email, entry)
+            .is_none()
+        {
+            self.total += 1;
+        }
+    }
+
     fn held_by(&self, ip: IpAddr) -> usize {
         self.by_ip.get(&ip).map_or(0, HashMap::len)
     }
@@ -236,7 +296,7 @@ impl Table {
         }
     }
 
-    fn reclaim_address(&mut self, ip: IpAddr, now: Instant) {
+    fn reclaim_address(&mut self, ip: IpAddr, now: SystemTime) {
         if let Some(pairs) = self.by_ip.get_mut(&ip) {
             let before = pairs.len();
             pairs.retain(|_, e| !e.is_stale(now));
@@ -247,11 +307,11 @@ impl Table {
         }
     }
 
-    fn address_frees_up_in(&self, ip: IpAddr, now: Instant) -> Duration {
+    fn address_frees_up_in(&self, ip: IpAddr, now: SystemTime) -> Duration {
         self.by_ip
             .get(&ip)
             .and_then(|pairs| pairs.values().map(|e| e.frees_at(now)).min())
-            .map_or(Duration::ZERO, |at| at.saturating_duration_since(now))
+            .map_or(Duration::ZERO, |at| since(at, now))
     }
 
     /// Makes room for one more pair when the table is full, without ever
@@ -282,7 +342,7 @@ impl Table {
     ///
     /// Linear in the table size, and only on the path that inserts a new
     /// pair into a full table.
-    fn make_room(&mut self, now: Instant) {
+    fn make_room(&mut self, now: SystemTime) {
         if self.total < MAX_TRACKED {
             return;
         }
@@ -313,48 +373,29 @@ impl Table {
     }
 }
 
-/// The counter itself. Held in `AppState` behind an `Arc`; every method
-/// takes `&self`.
-#[derive(Debug, Default)]
-pub struct LoginThrottle {
-    table: Mutex<Table>,
-}
-
-impl LoginThrottle {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Checks the lock **and** counts this attempt, atomically. Called
+impl Table {
+    /// Checks the lock **and** counts this attempt, in one step. Called
     /// before the lookup and before argon2id; see the module doc for why
     /// counting cannot wait for the outcome.
     ///
     /// The attempt that reaches [`MAX_FAILURES`] is still admitted and sets
     /// the lock for the ones after it.
-    pub fn admit(&self, key: &(IpAddr, String), now: Instant) -> Decision {
-        let mut table = self.table.lock().unwrap_or_else(|e| e.into_inner());
-        let (ip, email) = (key.0, key.1.as_str());
-
-        let known = table
-            .by_ip
-            .get(&ip)
-            .is_some_and(|pairs| pairs.contains_key(email));
-        if !known {
-            table.reclaim_address(ip, now);
-            if table.held_by(ip) >= MAX_PAIRS_PER_IP {
+    fn admit(&mut self, ip: IpAddr, email: &str, now: SystemTime) -> Decision {
+        if self.get(ip, email).is_none() {
+            self.reclaim_address(ip, now);
+            if self.held_by(ip) >= MAX_PAIRS_PER_IP {
                 return Decision::Locked {
-                    retry_after: table.address_frees_up_in(ip, now),
+                    retry_after: self.address_frees_up_in(ip, now),
                 };
             }
-            table.make_room(now);
-            table
-                .by_ip
+            self.make_room(now);
+            self.by_ip
                 .entry(ip)
                 .or_default()
                 .insert(email.to_owned(), Entry::fresh(now));
-            table.total += 1;
+            self.total += 1;
         }
-        let entry = table
+        let entry = self
             .by_ip
             .get_mut(&ip)
             .and_then(|pairs| pairs.get_mut(email))
@@ -362,7 +403,7 @@ impl LoginThrottle {
 
         if let Some(until) = entry.locked_at(now) {
             return Decision::Locked {
-                retry_after: until.duration_since(now),
+                retry_after: since(until, now),
             };
         }
         if entry.is_stale(now) {
@@ -374,19 +415,255 @@ impl LoginThrottle {
         }
         Decision::Allow
     }
+}
+
+/// What one admission changed in the rows it was handed: what the store
+/// has to delete, and what it has to write.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Changes {
+    removed: Vec<(IpAddr, String)>,
+    written: Vec<(IpAddr, String, Entry)>,
+}
+
+impl Changes {
+    /// `before` is the table as loaded, `after` the same table once asked.
+    fn between(before: &Table, after: &Table) -> Self {
+        let mut changes = Changes::default();
+        for (ip, pairs) in &before.by_ip {
+            for email in pairs.keys() {
+                if after.get(*ip, email).is_none() {
+                    changes.removed.push((*ip, email.clone()));
+                }
+            }
+        }
+        for (ip, pairs) in &after.by_ip {
+            for (email, entry) in pairs {
+                if before.get(*ip, email) != Some(entry) {
+                    changes.written.push((*ip, email.clone(), *entry));
+                }
+            }
+        }
+        changes
+    }
+}
+
+/// Advisory lock class of one address's pairs. The two-key form of
+/// `pg_advisory_xact_lock` lives in a key space of its own, apart from the
+/// single 64-bit keys of the background jobs (#426) and of sqlx's
+/// migrator; the second key is `hashtext` of the address, and two
+/// addresses that collide only wait on each other.
+pub const SCOPE_LOCK: i32 = i32::from_be_bytes(*b"mlgs");
+
+/// Advisory lock class of the table as a whole, taken (with second key 0)
+/// by an admission that inserts a pair: the ceiling, the purge and the
+/// eviction are about every address at once. Always taken after
+/// [`SCOPE_LOCK`], never before, so the two cannot deadlock.
+pub const TABLE_LOCK: i32 = i32::from_be_bytes(*b"mlgt");
+
+/// The counters, in Postgres. Held in `AppState` behind an `Arc`; every
+/// method takes `&self`. Each replica builds its own, on the same table.
+#[derive(Debug, Clone)]
+pub struct LoginThrottle {
+    db: PgPool,
+}
+
+/// A stored row, as the decision reads it.
+fn entry_from_row(
+    attempts: i32,
+    window_start: DateTime<Utc>,
+    locked_until: Option<DateTime<Utc>>,
+) -> Entry {
+    Entry {
+        attempts: u32::try_from(attempts).unwrap_or(0),
+        window_start: window_start.into(),
+        locked_until: locked_until.map(Into::into),
+    }
+}
+
+/// Takes [`SCOPE_LOCK`] on one address, until the transaction ends.
+async fn lock_address(
+    tx: &mut Transaction<'static, Postgres>,
+    ip: IpAddr,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+        .bind(SCOPE_LOCK)
+        .bind(ip.to_string())
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+/// Takes [`TABLE_LOCK`], until the transaction ends.
+async fn lock_table(tx: &mut Transaction<'static, Postgres>) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT pg_advisory_xact_lock($1, 0)")
+        .bind(TABLE_LOCK)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+async fn load_address(
+    tx: &mut Transaction<'static, Postgres>,
+    ip: IpAddr,
+    table: &mut Table,
+) -> Result<(), sqlx::Error> {
+    let rows = sqlx::query!(
+        "SELECT email, attempts, window_start, locked_until
+           FROM login_throttle WHERE scope = $1::text::inet",
+        ip.to_string()
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    for r in rows {
+        table.load(
+            ip,
+            r.email,
+            entry_from_row(r.attempts, r.window_start, r.locked_until),
+        );
+    }
+    Ok(())
+}
+
+async fn load_all(
+    tx: &mut Transaction<'static, Postgres>,
+    table: &mut Table,
+) -> Result<(), sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"SELECT host(scope) AS "scope!", email, attempts, window_start, locked_until
+             FROM login_throttle"#
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    for r in rows {
+        let ip: IpAddr = r
+            .scope
+            .parse()
+            .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
+        table.load(
+            ip,
+            r.email,
+            entry_from_row(r.attempts, r.window_start, r.locked_until),
+        );
+    }
+    Ok(())
+}
+
+async fn write(
+    tx: &mut Transaction<'static, Postgres>,
+    changes: Changes,
+) -> Result<(), sqlx::Error> {
+    if !changes.removed.is_empty() {
+        let (scopes, emails): (Vec<String>, Vec<String>) = changes
+            .removed
+            .into_iter()
+            .map(|(ip, email)| (ip.to_string(), email))
+            .unzip();
+        sqlx::query!(
+            "DELETE FROM login_throttle t
+              USING unnest($1::text[], $2::text[]) AS gone(scope, email)
+              WHERE t.scope = gone.scope::inet AND t.email = gone.email",
+            &scopes,
+            &emails
+        )
+        .execute(&mut **tx)
+        .await?;
+    }
+    for (ip, email, entry) in changes.written {
+        sqlx::query!(
+            "INSERT INTO login_throttle (scope, email, attempts, window_start, locked_until)
+             VALUES ($1::text::inet, $2, $3, $4, $5)
+             ON CONFLICT (scope, email) DO UPDATE
+                SET attempts = EXCLUDED.attempts,
+                    window_start = EXCLUDED.window_start,
+                    locked_until = EXCLUDED.locked_until",
+            ip.to_string(),
+            email,
+            i32::try_from(entry.attempts).unwrap_or(i32::MAX),
+            DateTime::<Utc>::from(entry.window_start),
+            entry.locked_until.map(DateTime::<Utc>::from),
+        )
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
+}
+
+impl LoginThrottle {
+    pub fn new(db: PgPool) -> Self {
+        Self { db }
+    }
+
+    /// Checks the lock **and** counts this attempt, in one transaction:
+    /// see [`Table::admit`] for the decision and the module doc for the
+    /// locks. An error leaves nothing counted and nothing admitted; the
+    /// caller refuses the attempt.
+    pub async fn admit(&self, key: &(IpAddr, String)) -> Result<Decision, sqlx::Error> {
+        let (ip, email) = (key.0, key.1.as_str());
+        let mut tx = crate::db::begin(&self.db).await?;
+        lock_address(&mut tx, ip).await?;
+
+        let known = sqlx::query_scalar!(
+            r#"SELECT EXISTS (
+                   SELECT 1 FROM login_throttle WHERE scope = $1::text::inet AND email = $2
+               ) AS "known!""#,
+            ip.to_string(),
+            email
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        if !known {
+            lock_table(&mut tx).await?;
+        }
+        // Read once every lock is held: an admission decided before ours
+        // never carries a later instant than ours.
+        let now: SystemTime = sqlx::query_scalar!(r#"SELECT clock_timestamp() AS "now!""#)
+            .fetch_one(&mut *tx)
+            .await?
+            .into();
+
+        let mut table = Table::default();
+        if known {
+            load_address(&mut tx, ip, &mut table).await?;
+        } else {
+            sqlx::query!(
+                "DELETE FROM login_throttle WHERE window_start <= $1",
+                DateTime::<Utc>::from(purge_cutoff(now))
+            )
+            .execute(&mut *tx)
+            .await?;
+            let total = sqlx::query_scalar!(r#"SELECT count(*) AS "total!" FROM login_throttle"#)
+                .fetch_one(&mut *tx)
+                .await?;
+            let total = usize::try_from(total).unwrap_or(usize::MAX);
+            if total >= MAX_TRACKED {
+                load_all(&mut tx, &mut table).await?;
+            } else {
+                load_address(&mut tx, ip, &mut table).await?;
+                table.total = total;
+            }
+        }
+
+        let before = table.clone();
+        let decision = table.admit(ip, email, now);
+        write(&mut tx, Changes::between(&before, &table)).await?;
+        tx.commit().await?;
+        Ok(decision)
+    }
 
     /// Clears the pair: a successful login means the address is not the
     /// one the throttle is there for, and the attempts it made — this one
     /// included — were not an attack.
-    pub fn record_success(&self, key: &(IpAddr, String)) {
-        let mut table = self.table.lock().unwrap_or_else(|e| e.into_inner());
-        table.remove(key.0, &key.1);
-    }
-
-    /// Pairs currently held. Exists for the memory-ceiling tests and for
-    /// an operator reading a heap dump; nothing in the handler calls it.
-    pub fn tracked(&self) -> usize {
-        self.table.lock().unwrap_or_else(|e| e.into_inner()).total
+    pub async fn record_success(&self, key: &(IpAddr, String)) -> Result<(), sqlx::Error> {
+        let mut tx = crate::db::begin(&self.db).await?;
+        lock_address(&mut tx, key.0).await?;
+        sqlx::query!(
+            "DELETE FROM login_throttle WHERE scope = $1::text::inet AND email = $2",
+            key.0.to_string(),
+            key.1
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await
     }
 }
 
@@ -394,13 +671,126 @@ impl LoginThrottle {
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
+    use std::sync::Mutex;
+
+    /// The decision alone, held in memory behind a mutex — what
+    /// `LoginThrottle` was before #427, and what it still asks once it has
+    /// loaded the rows under its locks.
+    #[derive(Debug, Default)]
+    struct InMemory(Mutex<Table>);
+
+    impl InMemory {
+        fn new() -> Self {
+            Self::default()
+        }
+
+        fn admit(&self, k: &(IpAddr, String), now: SystemTime) -> Decision {
+            self.0.lock().unwrap().admit(k.0, &k.1, now)
+        }
+
+        fn record_success(&self, k: &(IpAddr, String)) {
+            self.0.lock().unwrap().remove(k.0, &k.1);
+        }
+
+        fn tracked(&self) -> usize {
+            self.0.lock().unwrap().total
+        }
+    }
+
+    // --- #427: what the store relies on ---
+
+    #[test]
+    fn a_pair_that_locks_at_the_end_of_its_window_is_live_just_after_the_cutoff() {
+        // The latest a pair can lock is the last instant of its window; its
+        // lock then runs LOCKOUT more. A purge reaching past that would
+        // lift a lock early.
+        let start = t0();
+        let mut table = Table::default();
+        let k = key(ip("192.168.1.42"), "alice@example.test");
+        table.admit(k.0, &k.1, start);
+        let end_of_window = start + WINDOW;
+        for _ in 1..MAX_FAILURES {
+            assert_eq!(table.admit(k.0, &k.1, end_of_window), Decision::Allow);
+        }
+        let entry = *table.get(k.0, &k.1).unwrap();
+        assert!(entry.locked_at(end_of_window).is_some());
+
+        let just_before = start + WINDOW + LOCKOUT - Duration::from_secs(1);
+        assert!(entry.window_start > purge_cutoff(just_before));
+        assert!(!entry.is_stale(just_before));
+
+        let at_cutoff = start + WINDOW + LOCKOUT;
+        assert!(entry.window_start <= purge_cutoff(at_cutoff));
+        assert!(entry.is_stale(at_cutoff));
+    }
+
+    #[test]
+    fn a_refused_attempt_changes_no_row() {
+        // A locked pair asked again writes nothing: the store's writes are
+        // bounded by admissions, not by attempts.
+        let now = t0();
+        let mut table = Table::default();
+        let k = key(ip("192.168.1.42"), "alice@example.test");
+        for _ in 0..MAX_FAILURES {
+            table.admit(k.0, &k.1, now);
+        }
+        let before = table.clone();
+        assert!(matches!(
+            table.admit(k.0, &k.1, now),
+            Decision::Locked { .. }
+        ));
+        assert_eq!(Changes::between(&before, &table), Changes::default());
+    }
+
+    #[test]
+    fn an_admission_writes_the_pair_it_counted() {
+        let now = t0();
+        let mut table = Table::default();
+        let k = key(ip("192.168.1.42"), "alice@example.test");
+        let before = table.clone();
+        table.admit(k.0, &k.1, now);
+        let changes = Changes::between(&before, &table);
+        assert!(changes.removed.is_empty());
+        assert_eq!(
+            changes.written,
+            vec![(
+                k.0,
+                k.1.clone(),
+                Entry {
+                    attempts: 1,
+                    window_start: now,
+                    locked_until: None
+                }
+            )]
+        );
+    }
+
+    #[test]
+    fn the_pairs_an_admission_reclaims_are_removed_from_the_store() {
+        // A new email from an address reclaims that address's stale pairs:
+        // they have to go from the table, not only from the decision.
+        let now = t0();
+        let mut table = Table::default();
+        let attacker = ip("203.0.113.9");
+        table.admit(attacker, "old@example.test", now);
+        let later = now + WINDOW + Duration::from_secs(1);
+        let before = table.clone();
+        table.admit(attacker, "new@example.test", later);
+        let changes = Changes::between(&before, &table);
+        assert_eq!(
+            changes.removed,
+            vec![(attacker, "old@example.test".to_owned())]
+        );
+        assert_eq!(changes.written.len(), 1);
+        assert_eq!(changes.written[0].1, "new@example.test");
+    }
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
     }
 
-    fn t0() -> Instant {
-        Instant::now()
+    fn t0() -> SystemTime {
+        SystemTime::now()
     }
 
     /// The `i`-th of the addresses a table is filled from, each holding at
@@ -414,7 +804,7 @@ mod tests {
         IpAddr::V4(Ipv4Addr::from(0x0B00_0000 + j as u32))
     }
 
-    fn admit_n(throttle: &LoginThrottle, k: &(IpAddr, String), n: u32, now: Instant) {
+    fn admit_n(throttle: &InMemory, k: &(IpAddr, String), n: u32, now: SystemTime) {
         for _ in 0..n {
             assert_eq!(throttle.admit(k, now), Decision::Allow);
         }
@@ -422,7 +812,7 @@ mod tests {
 
     #[test]
     fn a_pair_with_no_history_is_admitted() {
-        let throttle = LoginThrottle::new();
+        let throttle = InMemory::new();
         let k = key(ip("192.168.1.42"), "alice@example.test");
         assert_eq!(throttle.admit(&k, t0()), Decision::Allow);
     }
@@ -432,7 +822,7 @@ mod tests {
         // Nothing is ever reported back here, exactly like a burst of
         // requests still inside their argon2id: the eleventh is refused
         // all the same.
-        let throttle = LoginThrottle::new();
+        let throttle = InMemory::new();
         let now = t0();
         let k = key(ip("192.168.1.42"), "alice@example.test");
         admit_n(&throttle, &k, MAX_FAILURES, now);
@@ -446,7 +836,7 @@ mod tests {
 
     #[test]
     fn concurrent_admissions_never_exceed_the_threshold() {
-        let throttle = std::sync::Arc::new(LoginThrottle::new());
+        let throttle = std::sync::Arc::new(InMemory::new());
         let now = t0();
         let k = key(ip("192.168.1.42"), "alice@example.test");
         let handles: Vec<_> = (0..64)
@@ -466,7 +856,7 @@ mod tests {
 
     #[test]
     fn the_lock_lifts_once_the_lockout_has_run_out() {
-        let throttle = LoginThrottle::new();
+        let throttle = InMemory::new();
         let now = t0();
         let k = key(ip("192.168.1.42"), "alice@example.test");
         admit_n(&throttle, &k, MAX_FAILURES, now);
@@ -481,7 +871,7 @@ mod tests {
 
     #[test]
     fn attempts_spread_wider_than_the_window_never_add_up() {
-        let throttle = LoginThrottle::new();
+        let throttle = InMemory::new();
         let mut now = t0();
         let k = key(ip("192.168.1.42"), "alice@example.test");
         for _ in 0..(MAX_FAILURES * 3) {
@@ -492,7 +882,7 @@ mod tests {
 
     #[test]
     fn a_locked_pair_does_not_lock_the_same_address_on_another_email() {
-        let throttle = LoginThrottle::new();
+        let throttle = InMemory::new();
         let now = t0();
         let locked = key(ip("192.168.1.42"), "alice@example.test");
         let other = key(ip("192.168.1.42"), "bob@example.test");
@@ -508,7 +898,7 @@ mod tests {
     fn a_locked_pair_does_not_lock_the_same_email_from_another_address() {
         // This is why the key is not the email alone: otherwise anyone who
         // knows an address locks its owner out from anywhere.
-        let throttle = LoginThrottle::new();
+        let throttle = InMemory::new();
         let now = t0();
         let attacker = key(ip("203.0.113.9"), "alice@example.test");
         let owner = key(ip("192.168.1.42"), "alice@example.test");
@@ -522,7 +912,7 @@ mod tests {
 
     #[test]
     fn a_success_clears_the_attempts_that_came_before_it() {
-        let throttle = LoginThrottle::new();
+        let throttle = InMemory::new();
         let now = t0();
         let k = key(ip("192.168.1.42"), "alice@example.test");
         admit_n(&throttle, &k, MAX_FAILURES - 1, now);
@@ -558,7 +948,7 @@ mod tests {
         // A residential IPv6 line is handed a whole /64. Keyed on the /128
         // the socket happens to carry, the client picks a new source
         // address and starts from zero, as often as it likes.
-        let throttle = LoginThrottle::new();
+        let throttle = InMemory::new();
         let now = t0();
         let first = key(ip("2001:db8:1:2::1"), "alice@example.test");
         admit_n(&throttle, &first, MAX_FAILURES, now);
@@ -583,7 +973,7 @@ mod tests {
         // The other half of the grouping: it must not reach past the /64
         // and lock the subscriber next door, which is the denial of
         // service the (address, email) pair exists to avoid.
-        let throttle = LoginThrottle::new();
+        let throttle = InMemory::new();
         let now = t0();
         let attacker = key(ip("2001:db8:1:2::1"), "alice@example.test");
         admit_n(&throttle, &attacker, MAX_FAILURES, now);
@@ -597,7 +987,7 @@ mod tests {
     fn an_ipv6_client_cannot_renew_its_share_by_moving_inside_its_block() {
         // The share is held by the block too: 50 emails per /64, not 50
         // per address the client is free to mint.
-        let throttle = LoginThrottle::new();
+        let throttle = InMemory::new();
         let now = t0();
         for i in 0..MAX_PAIRS_PER_IP {
             let k = key(
@@ -619,7 +1009,7 @@ mod tests {
             key(ip("::ffff:192.168.1.42"), "alice@example.test"),
             key(ip("192.168.1.42"), "alice@example.test")
         );
-        let throttle = LoginThrottle::new();
+        let throttle = InMemory::new();
         let now = t0();
         let mapped = key(ip("::ffff:192.168.1.42"), "alice@example.test");
         admit_n(&throttle, &mapped, MAX_FAILURES, now);
@@ -635,7 +1025,7 @@ mod tests {
         // shares the `::/64` prefix, so a /64 mask applied first would fold
         // the entire IPv4 internet into one key — one household's mistyped
         // passwords would lock every other household out.
-        let throttle = LoginThrottle::new();
+        let throttle = InMemory::new();
         let now = t0();
         let attacker = key(ip("::ffff:203.0.113.9"), "alice@example.test");
         admit_n(&throttle, &attacker, MAX_FAILURES, now);
@@ -662,7 +1052,7 @@ mod tests {
 
     #[test]
     fn an_address_tracks_at_most_its_share_of_pairs() {
-        let throttle = LoginThrottle::new();
+        let throttle = InMemory::new();
         let now = t0();
         let attacker = ip("203.0.113.9");
         for i in 0..MAX_PAIRS_PER_IP {
@@ -692,7 +1082,7 @@ mod tests {
         // The share is a user decision (#178, "50 emails par foyer"), so it
         // is pinned in literals here rather than read back from the
         // constant: changing it has to change this test too.
-        let throttle = LoginThrottle::new();
+        let throttle = InMemory::new();
         let now = t0();
         let household = ip("192.168.1.42");
         for i in 0..50 {
@@ -711,7 +1101,7 @@ mod tests {
 
     #[test]
     fn the_share_frees_up_as_the_address_pairs_go_stale() {
-        let throttle = LoginThrottle::new();
+        let throttle = InMemory::new();
         let now = t0();
         let attacker = ip("203.0.113.9");
         for i in 0..MAX_PAIRS_PER_IP {
@@ -731,7 +1121,7 @@ mod tests {
         // attempts on its target with one brand-new email. Evicting the
         // oldest unlocked pair reset the target on every new email — 9 000
         // attempts admitted for 1 000 new emails.
-        let throttle = LoginThrottle::new();
+        let throttle = InMemory::new();
         let now = t0();
         let attacker = ip("203.0.113.9");
         for i in 0..(MAX_TRACKED - 1) {
@@ -756,7 +1146,7 @@ mod tests {
         );
     }
 
-    fn fill(throttle: &LoginThrottle, now: Instant) {
+    fn fill(throttle: &InMemory, now: SystemTime) {
         for i in 0..MAX_TRACKED {
             throttle.admit(&key(bulk_ip(i), &format!("{i}@example.test")), now);
         }
@@ -765,7 +1155,7 @@ mod tests {
 
     #[test]
     fn stale_pairs_are_reclaimed_rather_than_accumulated() {
-        let throttle = LoginThrottle::new();
+        let throttle = InMemory::new();
         let now = t0();
         fill(&throttle, now);
         let later = now + WINDOW + Duration::from_secs(1);
@@ -775,7 +1165,7 @@ mod tests {
 
     #[test]
     fn a_full_table_of_live_pairs_never_grows_past_its_ceiling() {
-        let throttle = LoginThrottle::new();
+        let throttle = InMemory::new();
         let now = t0();
         fill(&throttle, now);
         for j in 0..500 {
@@ -786,7 +1176,7 @@ mod tests {
 
     #[test]
     fn a_full_table_does_not_open_the_lock_for_a_new_pair() {
-        let throttle = LoginThrottle::new();
+        let throttle = InMemory::new();
         let now = t0();
         fill(&throttle, now);
         let k = key(fresh_ip(0), "target@example.test");
@@ -800,7 +1190,7 @@ mod tests {
         // first to go under eviction by age. Its address holds one pair;
         // the bulk addresses hold up to their share each. A thousand new
         // addresses arriving must not evict it.
-        let throttle = LoginThrottle::new();
+        let throttle = InMemory::new();
         let now = t0();
         let target = key(ip("192.168.1.42"), "victim@example.test");
         admit_n(&throttle, &target, MAX_FAILURES - 1, now);
@@ -820,7 +1210,7 @@ mod tests {
 
     #[test]
     fn eviction_takes_an_unlocked_pair_before_a_locked_one() {
-        let throttle = LoginThrottle::new();
+        let throttle = InMemory::new();
         let now = t0();
         let locked = key(bulk_ip(0), "locked@example.test");
         admit_n(&throttle, &locked, MAX_FAILURES, now);

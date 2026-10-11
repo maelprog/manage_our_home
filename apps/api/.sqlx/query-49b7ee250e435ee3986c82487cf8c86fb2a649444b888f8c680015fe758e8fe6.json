@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM login_throttle WHERE scope = $1::text::inet AND email = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "49b7ee250e435ee3986c82487cf8c86fb2a649444b888f8c680015fe758e8fe6"
+}
