@@ -69,7 +69,10 @@
 //!   inserting it counts against [`MAX_TRACKED`] and may evict another
 //!   address's pair. Under it, rows past [`purge_cutoff`] are deleted, the
 //!   table is counted, and only when it is full is all of it loaded — the
-//!   linear path the in-memory table already had;
+//!   linear path the in-memory table already had. Rows are inserted on
+//!   this path only, so the count holds: a held pair, decided without the
+//!   table lock, is updated in place, and if a new pair's admission purged
+//!   or evicted its row meanwhile, it takes this path as a new pair;
 //! - the clock is the database's (`clock_timestamp()`), so replicas whose
 //!   clocks drift still agree on when a window ends.
 //!
@@ -110,7 +113,9 @@ pub const LOCKOUT: Duration = Duration::from_secs(15 * 60);
 
 /// Ceiling on tracked pairs. The email half of the key is caller-supplied
 /// and `login` does not validate its shape, so without a ceiling an
-/// attacker picks how many rows `login_throttle` holds.
+/// attacker picks how many rows `login_throttle` holds. A ceiling across
+/// replicas because only an admission holding [`TABLE_LOCK`] inserts a
+/// row (see [`LoginThrottle::admit`]).
 pub const MAX_TRACKED: usize = 10_000;
 
 /// Pairs one address may hold at once — distinct emails tried from it
@@ -727,10 +732,18 @@ async fn load_all(
     Ok(())
 }
 
+/// Writes `changes` back. A pair `before` held is updated, never
+/// inserted: its admission did not take [`TABLE_LOCK`], and a new pair's
+/// admission may have purged or evicted its row meanwhile — writing it back
+/// with an insert would put it outside the count, past [`MAX_TRACKED`].
+/// `false` when that happened: the update found no row, and the caller
+/// decides again, as for a new pair. Only a new pair is inserted, under
+/// [`TABLE_LOCK`].
 async fn write(
     tx: &mut Transaction<'static, Postgres>,
+    before: &Table<Pseudonym, Pseudonym>,
     changes: Changes<Pseudonym, Pseudonym>,
-) -> Result<(), sqlx::Error> {
+) -> Result<bool, sqlx::Error> {
     if !changes.removed.is_empty() {
         let (scopes, pairs): (Vec<Vec<u8>>, Vec<Vec<u8>>) = changes
             .removed
@@ -748,23 +761,41 @@ async fn write(
         .await?;
     }
     for (scope, pair, entry) in changes.written {
-        sqlx::query!(
-            "INSERT INTO login_throttle (scope, pair, attempts, window_start, locked_until)
-             VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (scope, pair) DO UPDATE
-                SET attempts = EXCLUDED.attempts,
-                    window_start = EXCLUDED.window_start,
-                    locked_until = EXCLUDED.locked_until",
-            &scope[..],
-            &pair[..],
-            i32::try_from(entry.attempts).unwrap_or(i32::MAX),
-            DateTime::<Utc>::from(entry.window_start),
-            entry.locked_until.map(DateTime::<Utc>::from),
-        )
-        .execute(&mut **tx)
-        .await?;
+        let attempts = i32::try_from(entry.attempts).unwrap_or(i32::MAX);
+        let window_start = DateTime::<Utc>::from(entry.window_start);
+        let locked_until = entry.locked_until.map(DateTime::<Utc>::from);
+        if before.get(scope, &pair).is_some() {
+            let updated = sqlx::query!(
+                "UPDATE login_throttle
+                    SET attempts = $3, window_start = $4, locked_until = $5
+                  WHERE scope = $1 AND pair = $2",
+                &scope[..],
+                &pair[..],
+                attempts,
+                window_start,
+                locked_until,
+            )
+            .execute(&mut **tx)
+            .await?
+            .rows_affected();
+            if updated == 0 {
+                return Ok(false);
+            }
+        } else {
+            sqlx::query!(
+                "INSERT INTO login_throttle (scope, pair, attempts, window_start, locked_until)
+                 VALUES ($1, $2, $3, $4, $5)",
+                &scope[..],
+                &pair[..],
+                attempts,
+                window_start,
+                locked_until,
+            )
+            .execute(&mut **tx)
+            .await?;
+        }
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Deletes every row past [`purge_cutoff`] of `now`, and says how many.
@@ -806,46 +837,42 @@ impl LoginThrottle {
         load_address(&mut tx, scope, &mut table).await?;
         let loaded = table.clone();
         if let Some(refused) = table.refuse_at_share(scope, &pair, now) {
-            write(&mut tx, Changes::between(&loaded, &table)).await?;
+            write(&mut tx, &loaded, Changes::between(&loaded, &table)).await?;
             tx.commit().await?;
             return Ok(refused);
         }
 
-        if table.get(scope, &pair).is_none() {
-            // A new pair counts against the ceiling and may evict another
-            // address's pair: the whole table, under its lock, on a clock
-            // read once that lock is held.
-            lock_table(&mut tx).await?;
-            let now = database_now(&mut tx).await?;
-            purge_expired(&mut tx, now).await?;
-            let total = sqlx::query_scalar!(r#"SELECT count(*) AS "total!" FROM login_throttle"#)
-                .fetch_one(&mut *tx)
-                .await?;
-            let total = usize::try_from(total).unwrap_or(usize::MAX);
-            let mut table = Table::default();
-            if total >= MAX_TRACKED {
-                load_all(&mut tx, &mut table).await?;
-            } else {
-                load_address(&mut tx, scope, &mut table).await?;
-                table.total = total;
+        if table.get(scope, &pair).is_some() {
+            // A held pair: decided on its address's pairs alone, and
+            // updated in place. If its row went meanwhile — purged or
+            // evicted by a new pair's admission — it is a new pair again.
+            let decision = table.admit(scope, &pair, now);
+            if write(&mut tx, &loaded, Changes::between(&loaded, &table)).await? {
+                tx.commit().await?;
+                return Ok(decision);
             }
-            return self.decide(tx, table, scope, pair, now).await;
         }
-        self.decide(tx, loaded, scope, pair, now).await
-    }
 
-    /// Asks `table`, as loaded, and writes back what the answer changed.
-    async fn decide(
-        &self,
-        mut tx: Transaction<'static, Postgres>,
-        mut table: Table<Pseudonym, Pseudonym>,
-        scope: Pseudonym,
-        pair: Pseudonym,
-        now: SystemTime,
-    ) -> Result<Decision, sqlx::Error> {
+        // A new pair counts against the ceiling and may evict another
+        // address's pair: the whole table, under its lock, on a clock read
+        // once that lock is held.
+        lock_table(&mut tx).await?;
+        let now = database_now(&mut tx).await?;
+        purge_expired(&mut tx, now).await?;
+        let total = sqlx::query_scalar!(r#"SELECT count(*) AS "total!" FROM login_throttle"#)
+            .fetch_one(&mut *tx)
+            .await?;
+        let total = usize::try_from(total).unwrap_or(usize::MAX);
+        let mut table = Table::default();
+        if total >= MAX_TRACKED {
+            load_all(&mut tx, &mut table).await?;
+        } else {
+            load_address(&mut tx, scope, &mut table).await?;
+            table.total = total;
+        }
         let before = table.clone();
         let decision = table.admit(scope, &pair, now);
-        write(&mut tx, Changes::between(&before, &table)).await?;
+        write(&mut tx, &before, Changes::between(&before, &table)).await?;
         tx.commit().await?;
         Ok(decision)
     }

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE login_throttle\n                    SET attempts = $3, window_start = $4, locked_until = $5\n                  WHERE scope = $1 AND pair = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Int4",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "be99eb1a66a2f97b3bdf87a9cc17655c6f03cd675f084fa169d6b71da297ca56"
+}

@@ -2126,8 +2126,9 @@ async fn expired_counters_are_purged_by_the_next_new_pair(db: PgPool) {
     assert_eq!(counters(&db).await, (2, 1));
 }
 
-/// #427: a full table is loaded whole and the eviction of #178 runs on it;
-/// the stored table never grows past the ceiling.
+/// #427: a full table is loaded whole and the eviction of #178 runs on it,
+/// so new pairs arriving one after the other leave it at its ceiling.
+/// (Admissions that overlap: the next two tests.)
 #[sqlx::test]
 async fn a_full_table_in_the_database_stays_at_its_ceiling(db: PgPool) {
     use manage_our_home::auth::throttle::MAX_TRACKED;
@@ -2180,6 +2181,84 @@ async fn concurrent_new_pairs_on_a_full_table_keep_it_at_its_ceiling(db: PgPool)
     }
 
     assert_eq!(counters(&db).await, (MAX_TRACKED as i64, newcomers as i64));
+}
+
+/// #427: a held pair's admission does not take the table lock. If a new
+/// pair's admission purges (or evicts) that pair's row while the first one
+/// is deciding, writing the pair back must not reinsert it outside the
+/// count: the table would then end one row past its ceiling. Played
+/// deterministically — a transaction stands for the new pair's admission
+/// (table lock, purge, insert) and commits only once the real login of the
+/// held pair is waiting behind it.
+#[sqlx::test]
+async fn a_held_pair_purged_meanwhile_is_not_reinserted_past_the_ceiling(db: PgPool) {
+    use manage_our_home::auth::throttle::{MAX_TRACKED, TABLE_LOCK};
+    let router = router_trusting_10_0_0_0_8(db.clone());
+    let first = login_from(
+        &router,
+        "10.0.0.2:40000",
+        Some("192.168.3.1"),
+        "held@example.test",
+        "wrong-password1",
+    )
+    .await;
+    assert_status(&first, StatusCode::UNAUTHORIZED);
+    // A full table, the held pair included, and that pair past the purge
+    // bound.
+    seed_counters(&db, MAX_TRACKED - 1).await;
+    sqlx::query(
+        "UPDATE login_throttle SET window_start = now() - interval '31 minutes'
+          WHERE window_start > now() - interval '30 seconds'",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    assert_eq!(counters(&db).await.0, MAX_TRACKED as i64);
+
+    #[allow(clippy::disallowed_methods)]
+    let mut other = db.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock($1, 0)")
+        .bind(TABLE_LOCK)
+        .execute(&mut *other)
+        .await
+        .unwrap();
+    let purged = sqlx::query(
+        "DELETE FROM login_throttle WHERE window_start <= clock_timestamp() - interval '30 minutes'",
+    )
+    .execute(&mut *other)
+    .await
+    .unwrap()
+    .rows_affected();
+    assert_eq!(purged, 1, "the held pair is the one row past the bound");
+    sqlx::query(
+        "INSERT INTO login_throttle (scope, pair, attempts, window_start)
+         VALUES (decode(repeat('cc', 32), 'hex'), decode(repeat('cc', 32), 'hex'), 1, now())",
+    )
+    .execute(&mut *other)
+    .await
+    .unwrap();
+
+    let held = {
+        let router = router.clone();
+        tokio::spawn(async move {
+            login_from(
+                &router,
+                "10.0.0.2:40000",
+                Some("192.168.3.1"),
+                "held@example.test",
+                "wrong-password1",
+            )
+            .await
+            .status()
+        })
+    };
+    // Long enough for the held pair's admission to reach the row the
+    // other transaction deleted, and wait on it.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    other.commit().await.unwrap();
+
+    assert_eq!(held.await.unwrap(), StatusCode::UNAUTHORIZED);
+    assert_eq!(counters(&db).await.0, MAX_TRACKED as i64);
 }
 
 /// #427: a deployment restarts the API. The lock a pair earned before it
