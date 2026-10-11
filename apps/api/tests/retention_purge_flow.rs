@@ -152,6 +152,23 @@ async fn each_table_loses_exactly_the_rows_past_their_retention(db: PgPool) {
     let s_almost_idle = insert_session(&db, live, idle_edge + minute, far, false).await;
     let s_almost_expired = insert_session(&db, live, now, now + minute, false).await;
 
+    // #427: the login lock's counters live half an hour at most.
+    let half_hour = Duration::minutes(30);
+    for (byte, started) in [
+        ("aa", now - half_hour - minute),
+        ("bb", now - half_hour + minute),
+    ] {
+        sqlx::query(
+            "INSERT INTO login_throttle (scope, pair, attempts, window_start)
+             VALUES (decode(repeat($1, 32), 'hex'), decode(repeat($1, 32), 'hex'), 1, $2)",
+        )
+        .bind(byte)
+        .bind(started)
+        .execute(&db)
+        .await
+        .unwrap();
+    }
+
     let counts = purge(&db, RetentionCutoffs::at(now)).await.unwrap();
 
     assert_eq!(
@@ -162,8 +179,15 @@ async fn each_table_loses_exactly_the_rows_past_their_retention(db: PgPool) {
             password_reset_tokens: 1,
             invitations: 1,
             sessions: 4,
+            login_throttle: 1,
         }
     );
+    let throttle_left: Vec<String> =
+        sqlx::query_scalar("SELECT encode(scope, 'hex') FROM login_throttle")
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    assert_eq!(throttle_left, vec!["bb".repeat(32)]);
     let audit: Vec<String> = sqlx::query_scalar("SELECT target_id FROM audit_log")
         .fetch_all(&db)
         .await
