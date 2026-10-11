@@ -108,8 +108,9 @@ pub fn is_fresh(fetched_at: DateTime<Utc>, found: bool, now: DateTime<Utc>) -> b
     now < fetched_at + ttl
 }
 
-/// At most `RATE_LIMIT` reads per `RATE_WINDOW`, sliding. In-process, like
-/// the login throttle: `infra/docker-compose.yml` runs one `api`.
+/// At most `RATE_LIMIT` reads per `RATE_WINDOW`, sliding. In-process:
+/// `infra/docker-compose.yml` runs one `api` (#428 shares it between
+/// replicas, as #427 did for the login lock).
 #[derive(Default)]
 pub struct Throttle {
     admitted: Mutex<VecDeque<Instant>>,

@@ -15,9 +15,10 @@
 //!   client is its /64, not the /128 it can remake at will;
 //! - a request is counted when it is admitted, under one mutex acquisition,
 //!   so concurrent requests cannot all read "under the limit";
-//! - the counter lives in this process's memory, for the reason and with
-//!   the caveat `auth::throttle` gives (one `api` instance), and holds at
-//!   most [`MAX_TRACKED`] addresses.
+//! - the counter lives in this process's memory — right while
+//!   `infra/docker-compose.yml` runs one `api`; with N replicas each
+//!   counts alone (#428; the login lock moved to Postgres in #427) — and
+//!   holds at most [`MAX_TRACKED`] addresses.
 //!
 //! **A full table refuses newcomers rather than evicting anyone.** Evicting
 //! would reset the evicted address's count, which is the very thing an
