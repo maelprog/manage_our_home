@@ -495,10 +495,8 @@ nor the email is stored**: a row holds an HMAC-SHA256 of the client address
 and one of the (address, email) pair, keyed from `LOGIN_THROTTLE_KEY`. The
 share is counted on the address's pseudonym. Every replica must be given
 the same key, or each counts on its own; changing it only resets the
-counters. Unset or blank, the key is derived from `MESSAGE_ENCRYPTION_KEY`
-and the API warns at startup: that key is sent to Postgres as a query
-parameter, so whoever can read the database's statements could recompute
-the pseudonyms — set a dedicated one (`infra/generate-env.sh` does).
+counters. The variable is required: unset, or shorter than 16 bytes once
+trimmed, the API refuses to start (`infra/generate-env.sh` draws one).
 
 Each attempt is one transaction, serialised per client address by an
 advisory lock, on the database's clock. An admitted attempt writes its

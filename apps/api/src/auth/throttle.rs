@@ -528,29 +528,37 @@ fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> Pseudonym {
     mac.finalize().into_bytes().into()
 }
 
-/// Label the throttle's key is derived under, so that the secret it comes
-/// from — [`SECRET_VAR`], or the fallback [`resolve_secret`] names — never
-/// keys anything else's MAC directly.
+/// Label the throttle's key is derived under, so that [`SECRET_VAR`]
+/// never keys anything else's MAC directly.
 const KEY_LABEL: &[u8] = b"manage_our_home login_throttle pseudonyms v1";
 
 /// Environment variable naming the secret the pseudonyms are keyed from.
+/// Required: the API refuses to start without it.
 pub const SECRET_VAR: &str = "LOGIN_THROTTLE_KEY";
 
-/// The secret to key the pseudonyms from: [`SECRET_VAR`] when it is set
-/// and not blank, else `fallback` (`MESSAGE_ENCRYPTION_KEY`, which every
-/// replica already shares). The flag says whether the fallback was taken,
-/// for `main.rs` to warn about.
-///
-/// The fallback exists so a deployment that predates the variable keeps
-/// starting. It is the weaker choice: that key is sent to Postgres as a
-/// `pgp_sym_encrypt` parameter, so whoever can read the database's
-/// statements can recompute the pseudonyms; a dedicated key never leaves
-/// the process.
-pub fn resolve_secret(dedicated: Option<String>, fallback: &str) -> (String, bool) {
-    match dedicated {
-        Some(secret) if !secret.trim().is_empty() => (secret, false),
-        _ => (fallback.to_owned(), true),
+/// Shortest secret [`SECRET_VAR`] may hold, in bytes once surrounding
+/// space is trimmed. `infra/generate-env.sh` draws 32 random bytes,
+/// base64-encoded (44 characters); 16 refuses a placeholder typed by hand
+/// without refusing any key a generator gives.
+pub const MIN_SECRET_LEN: usize = 16;
+
+/// The secret to key the pseudonyms from, as read from [`SECRET_VAR`], or
+/// why the API must not start with it. Every replica must be given the
+/// same one, or each counts under pseudonyms of its own.
+pub fn validate_secret(raw: Option<String>) -> Result<String, String> {
+    let Some(secret) = raw else {
+        return Err(format!(
+            "{SECRET_VAR} is required: it keys the login lock's pseudonyms (#427), and every \
+             replica must share it (generate one with `openssl rand -base64 32`)"
+        ));
+    };
+    if secret.trim().len() < MIN_SECRET_LEN {
+        return Err(format!(
+            "{SECRET_VAR} is shorter than {MIN_SECRET_LEN} bytes once trimmed: use a random \
+             key (`openssl rand -base64 32`)"
+        ));
     }
+    Ok(secret)
 }
 
 /// Keyed pseudonyms of the two halves of a key (#427).
@@ -973,19 +981,30 @@ mod tests {
     }
 
     #[test]
-    fn a_dedicated_secret_wins_and_a_blank_one_falls_back() {
-        assert_eq!(
-            resolve_secret(Some("dedicated".into()), "message key"),
-            ("dedicated".to_owned(), false)
-        );
-        assert_eq!(
-            resolve_secret(Some("  ".into()), "message key"),
-            ("message key".to_owned(), true)
-        );
-        assert_eq!(
-            resolve_secret(None, "message key"),
-            ("message key".to_owned(), true)
-        );
+    fn the_secret_is_required() {
+        let err = validate_secret(None).unwrap_err();
+        assert!(err.contains(SECRET_VAR), "{err}");
+        assert!(validate_secret(Some(String::new())).is_err());
+        assert!(validate_secret(Some(" ".repeat(40))).is_err());
+    }
+
+    #[test]
+    fn a_secret_shorter_than_the_minimum_is_refused() {
+        let short = "a".repeat(MIN_SECRET_LEN - 1);
+        let err = validate_secret(Some(short)).unwrap_err();
+        assert!(err.contains(&MIN_SECRET_LEN.to_string()), "{err}");
+        // Surrounding space does not count towards the length.
+        let padded = format!("  {}  ", "a".repeat(MIN_SECRET_LEN - 1));
+        assert!(validate_secret(Some(padded)).is_err());
+    }
+
+    #[test]
+    fn a_secret_of_the_minimum_length_is_kept_as_given() {
+        let exact = "a".repeat(MIN_SECRET_LEN);
+        assert_eq!(validate_secret(Some(exact.clone())), Ok(exact));
+        // What infra/generate-env.sh writes: 32 bytes, base64.
+        let generated = "q2n1Vg0yQm7cS0b8yJm9n3k0Zt5r6W1xYc2d4e5f6g8=".to_owned();
+        assert_eq!(validate_secret(Some(generated.clone())), Ok(generated));
     }
 
     #[test]
