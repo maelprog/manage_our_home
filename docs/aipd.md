@@ -189,9 +189,12 @@ service n'est pas ouvert.
 
 ## 6. Données de connexion — décret n° 2021-1362
 
-Aucune donnée de connexion n'est conservée : ni IP ni user-agent en base ;
-l'adresse IP d'une tentative de connexion ne vit qu'en mémoire, le temps de
-la limitation des essais (registre, ligne 1d). Le minimum d'un an du décret
+Aucune donnée de connexion n'est conservée en clair : ni IP ni user-agent
+en base. L'adresse IP d'une tentative de connexion n'y entre que
+pseudonymisée (empreinte HMAC sous une clé que la base ne contient pas),
+le temps de la limitation des essais : 30 minutes au plus après la première
+tentative, plus l'heure de la purge (registre, ligne 1d). Pseudonymisée,
+elle reste une donnée personnelle. Le minimum d'un an du décret
 n° 2021-1362 a été **écarté** : il vise les hébergeurs et les services de
 communication au public, pas une application familiale portée par une
 personne physique — arbitrage du responsable de traitement du 2026-09-19
