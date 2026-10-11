@@ -77,6 +77,10 @@ base64 = "0.23"
 # SHA-256 of the session token (#222): the table keeps the hash, the cookie
 # the token. The newest release, next to the 0.10 other crates still pull.
 sha2 = "0.11"
+# The login lock's pseudonyms (#427): HMAC-SHA256 of the client address
+# and of the (address, email) pair, so `login_throttle` holds neither. The
+# newest release, the one aws-sigv4 already pulls next to sha2 0.11.
+hmac = "0.13"
 # Decompresses the embedded Open Food Facts category taxonomy (#406,
 # `recipes::taxonomy`): 205 KB gzipped instead of 932 KB in the binary.
 # The newest release (dependency policy), shared with apps/web.

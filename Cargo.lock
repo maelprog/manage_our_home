@@ -2533,6 +2533,7 @@ dependencies = [
  "dotenvy",
  "flate2",
  "futures",
+ "hmac 0.13.0",
  "http-body-util",
  "hyper",
  "icalendar",

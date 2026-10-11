@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM login_throttle t\n              USING unnest($1::bytea[], $2::bytea[]) AS gone(scope, pair)\n              WHERE t.scope = gone.scope AND t.pair = gone.pair",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "ByteaArray",
+        "ByteaArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "935f2a5f7257f6d4de5c017f23ade90592caf7d6fd2f8dabb51e561a6380ea8d"
+}

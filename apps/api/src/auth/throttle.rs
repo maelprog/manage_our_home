@@ -51,6 +51,11 @@
 //! the same structure the process used to hold, now filled with the rows
 //! one admission needs, asked, and diffed back ([`Changes`]).
 //!
+//! **Neither the address nor the email is stored** ([`Pseudonyms`]): a row
+//! holds an HMAC-SHA256 of the address and one of the (address, email)
+//! pair, under a key the database never sees. The share is counted on the
+//! address's pseudonym, the lock on the pair's.
+//!
 //! One admission is one transaction:
 //!
 //! - a transaction-level advisory lock on the address ([`SCOPE_LOCK`])
@@ -58,7 +63,9 @@
 //!   whichever replica takes them, are decided one after the other — so a
 //!   burst still gets [`MAX_FAILURES`] admissions and not one per request,
 //!   and a 51st email cannot slip past the share;
-//! - a pair the table does not hold yet also takes [`TABLE_LOCK`], since
+//! - the address's own pairs are loaded first, and a new pair is refused
+//!   at the share from those alone ([`Table::refuse_at_share`]);
+//! - a new pair within the share also takes [`TABLE_LOCK`], since
 //!   inserting it counts against [`MAX_TRACKED`] and may evict another
 //!   address's pair. Under it, rows past [`purge_cutoff`] are deleted, the
 //!   table is counted, and only when it is full is all of it loaded — the
@@ -68,17 +75,23 @@
 //!
 //! The cost the in-memory version was spared: a database round trip per
 //! attempt, and a pool connection held for it. Counter writes stay
-//! bounded: a refused attempt changes no counter, and an admitted one
-//! writes one row — at most [`MAX_FAILURES`] per pair per window, each in
-//! front of an argon2id that costs far more than the write. (A pair the
-//! table does not hold yet also runs the purge, which deletes only rows
-//! already past [`purge_cutoff`].)
+//! bounded: an admitted attempt writes its pair's row, at most
+//! [`MAX_FAILURES`] per pair per window, each in front of an argon2id that
+//! costs far more than the write. Deletions come on top of that: a pair
+//! the table does not hold yet reclaims its address's stale pairs, refused
+//! at the share or not, and once past the share runs the purge and, on a
+//! full table, evicts one pair. Only an attempt on a pair already locked
+//! changes nothing.
 
+use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::net::{IpAddr, Ipv6Addr};
 use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Utc};
+use hmac::{Hmac, KeyInit, Mac};
+use sha2::Sha256;
 use sqlx::{PgPool, Postgres, Transaction};
 
 /// Attempts admitted within [`WINDOW`], on one (address, email) pair, with
@@ -259,19 +272,38 @@ impl Entry {
 /// The whole decision. [`LoginThrottle`] fills one with the rows an
 /// admission needs — the address's own pairs, or every pair when the
 /// table is full — asks it, and writes back what changed.
-#[derive(Debug, Default, Clone)]
-struct Table {
-    by_ip: HashMap<IpAddr, HashMap<String, Entry>>,
+///
+/// Generic over the two halves of the key (#427): the unit tests drive it
+/// with the address and the email themselves, the store with their keyed
+/// pseudonyms ([`Pseudonyms`]), which is all `login_throttle` holds. The
+/// decision only ever compares halves for equality, so it is the same
+/// either way.
+#[derive(Debug, Clone)]
+struct Table<A = IpAddr, E = String> {
+    by_ip: HashMap<A, HashMap<E, Entry>>,
     total: usize,
 }
 
-impl Table {
-    fn get(&self, ip: IpAddr, email: &str) -> Option<&Entry> {
+impl<A, E> Default for Table<A, E> {
+    fn default() -> Self {
+        Table {
+            by_ip: HashMap::new(),
+            total: 0,
+        }
+    }
+}
+
+impl<A: Copy + Eq + Hash, E: Clone + Eq + Hash> Table<A, E> {
+    fn get<Q>(&self, ip: A, email: &Q) -> Option<&Entry>
+    where
+        E: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         self.by_ip.get(&ip).and_then(|pairs| pairs.get(email))
     }
 
     /// Adds a pair read from the store.
-    fn load(&mut self, ip: IpAddr, email: String, entry: Entry) {
+    fn load(&mut self, ip: A, email: E, entry: Entry) {
         if self
             .by_ip
             .entry(ip)
@@ -283,11 +315,15 @@ impl Table {
         }
     }
 
-    fn held_by(&self, ip: IpAddr) -> usize {
+    fn held_by(&self, ip: A) -> usize {
         self.by_ip.get(&ip).map_or(0, HashMap::len)
     }
 
-    fn remove(&mut self, ip: IpAddr, email: &str) {
+    fn remove<Q>(&mut self, ip: A, email: &Q)
+    where
+        E: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         if let Some(pairs) = self.by_ip.get_mut(&ip) {
             if pairs.remove(email).is_some() {
                 self.total -= 1;
@@ -298,7 +334,7 @@ impl Table {
         }
     }
 
-    fn reclaim_address(&mut self, ip: IpAddr, now: SystemTime) {
+    fn reclaim_address(&mut self, ip: A, now: SystemTime) {
         if let Some(pairs) = self.by_ip.get_mut(&ip) {
             let before = pairs.len();
             pairs.retain(|_, e| !e.is_stale(now));
@@ -309,7 +345,7 @@ impl Table {
         }
     }
 
-    fn address_frees_up_in(&self, ip: IpAddr, now: SystemTime) -> Duration {
+    fn address_frees_up_in(&self, ip: A, now: SystemTime) -> Duration {
         self.by_ip
             .get(&ip)
             .and_then(|pairs| pairs.values().map(|e| e.frees_at(now)).min())
@@ -373,23 +409,43 @@ impl Table {
             self.remove(ip, &email);
         }
     }
-}
 
-impl Table {
+    /// The part of an admission that needs nothing but the address's own
+    /// pairs: a pair the table does not hold yet first reclaims its
+    /// address's stale pairs, and is refused if the address still holds
+    /// its share. `None`: the pair is held already, or there is room for
+    /// it in the share. [`Table::admit`] starts with exactly this, so the
+    /// store can refuse at the share before it takes [`TABLE_LOCK`] and
+    /// decide the same.
+    fn refuse_at_share<Q>(&mut self, ip: A, email: &Q, now: SystemTime) -> Option<Decision>
+    where
+        E: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        if self.get(ip, email).is_some() {
+            return None;
+        }
+        self.reclaim_address(ip, now);
+        (self.held_by(ip) >= MAX_PAIRS_PER_IP).then(|| Decision::Locked {
+            retry_after: self.address_frees_up_in(ip, now),
+        })
+    }
+
     /// Checks the lock **and** counts this attempt, in one step. Called
     /// before the lookup and before argon2id; see the module doc for why
     /// counting cannot wait for the outcome.
     ///
     /// The attempt that reaches [`MAX_FAILURES`] is still admitted and sets
     /// the lock for the ones after it.
-    fn admit(&mut self, ip: IpAddr, email: &str, now: SystemTime) -> Decision {
+    fn admit<Q>(&mut self, ip: A, email: &Q, now: SystemTime) -> Decision
+    where
+        E: Borrow<Q>,
+        Q: Hash + Eq + ToOwned<Owned = E> + ?Sized,
+    {
+        if let Some(refused) = self.refuse_at_share(ip, email, now) {
+            return refused;
+        }
         if self.get(ip, email).is_none() {
-            self.reclaim_address(ip, now);
-            if self.held_by(ip) >= MAX_PAIRS_PER_IP {
-                return Decision::Locked {
-                    retry_after: self.address_frees_up_in(ip, now),
-                };
-            }
             self.make_room(now);
             self.by_ip
                 .entry(ip)
@@ -421,15 +477,24 @@ impl Table {
 
 /// What one admission changed in the rows it was handed: what the store
 /// has to delete, and what it has to write.
-#[derive(Debug, Default, PartialEq, Eq)]
-struct Changes {
-    removed: Vec<(IpAddr, String)>,
-    written: Vec<(IpAddr, String, Entry)>,
+#[derive(Debug, PartialEq, Eq)]
+struct Changes<A = IpAddr, E = String> {
+    removed: Vec<(A, E)>,
+    written: Vec<(A, E, Entry)>,
 }
 
-impl Changes {
+impl<A, E> Default for Changes<A, E> {
+    fn default() -> Self {
+        Changes {
+            removed: Vec::new(),
+            written: Vec::new(),
+        }
+    }
+}
+
+impl<A: Copy + Eq + Hash, E: Clone + Eq + Hash> Changes<A, E> {
     /// `before` is the table as loaded, `after` the same table once asked.
-    fn between(before: &Table, after: &Table) -> Self {
+    fn between(before: &Table<A, E>, after: &Table<A, E>) -> Self {
         let mut changes = Changes::default();
         for (ip, pairs) in &before.by_ip {
             for email in pairs.keys() {
@@ -449,11 +514,104 @@ impl Changes {
     }
 }
 
+/// One half of a stored key: HMAC-SHA256 of the address or of the pair,
+/// under the throttle's key. All `login_throttle` holds of a client.
+type Pseudonym = [u8; 32];
+
+/// HMAC-SHA256 (RFC 2104) of `parts`, concatenated, under `key`.
+fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> Pseudonym {
+    let mut mac =
+        <Hmac<Sha256> as KeyInit>::new_from_slice(key).expect("HMAC accepts a key of any length");
+    for part in parts {
+        mac.update(part);
+    }
+    mac.finalize().into_bytes().into()
+}
+
+/// Label the throttle's key is derived under, so that the secret it comes
+/// from — [`SECRET_VAR`], or the fallback [`resolve_secret`] names — never
+/// keys anything else's MAC directly.
+const KEY_LABEL: &[u8] = b"manage_our_home login_throttle pseudonyms v1";
+
+/// Environment variable naming the secret the pseudonyms are keyed from.
+pub const SECRET_VAR: &str = "LOGIN_THROTTLE_KEY";
+
+/// The secret to key the pseudonyms from: [`SECRET_VAR`] when it is set
+/// and not blank, else `fallback` (`MESSAGE_ENCRYPTION_KEY`, which every
+/// replica already shares). The flag says whether the fallback was taken,
+/// for `main.rs` to warn about.
+///
+/// The fallback exists so a deployment that predates the variable keeps
+/// starting. It is the weaker choice: that key is sent to Postgres as a
+/// `pgp_sym_encrypt` parameter, so whoever can read the database's
+/// statements can recompute the pseudonyms; a dedicated key never leaves
+/// the process.
+pub fn resolve_secret(dedicated: Option<String>, fallback: &str) -> (String, bool) {
+    match dedicated {
+        Some(secret) if !secret.trim().is_empty() => (secret, false),
+        _ => (fallback.to_owned(), true),
+    }
+}
+
+/// Keyed pseudonyms of the two halves of a key (#427).
+///
+/// The throttle needs to *compare* addresses and pairs, never to read them
+/// back, so the table holds only HMACs of them. A bare hash would not do:
+/// the IPv4 space is 2^32 addresses, hashed in minutes, and an email is
+/// guessable. Under a key the database never sees, the rows tie back to
+/// nobody without it. They stay personal data all the same (pseudonymised,
+/// not anonymised): the key holder can recompute them.
+///
+/// The address pseudonym is what the share counts on; the pair pseudonym
+/// covers the address **and** the email, so one email tried from two
+/// addresses leaves two unrelated values.
+#[derive(Clone)]
+pub struct Pseudonyms {
+    key: [u8; 32],
+}
+
+impl std::fmt::Debug for Pseudonyms {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Pseudonyms(<key>)")
+    }
+}
+
+impl Pseudonyms {
+    /// Derives the throttle's own key from `secret`. Every replica must be
+    /// given the same secret, or each counts under pseudonyms of its own.
+    pub fn new(secret: &str) -> Self {
+        Pseudonyms {
+            key: hmac_sha256(secret.as_bytes(), &[KEY_LABEL]),
+        }
+    }
+
+    /// The address half: what [`MAX_PAIRS_PER_IP`] is counted on. `ip` is
+    /// already an [`address_scope`] when it comes from [`key`].
+    fn scope(&self, ip: IpAddr) -> Pseudonym {
+        hmac_sha256(&self.key, &[b"scope\0", ip.to_string().as_bytes()])
+    }
+
+    /// The pair half. The address comes first and holds no NUL, so the
+    /// NUL after it separates the two unambiguously, whatever the email
+    /// holds.
+    fn pair(&self, ip: IpAddr, email: &str) -> Pseudonym {
+        hmac_sha256(
+            &self.key,
+            &[
+                b"pair\0",
+                ip.to_string().as_bytes(),
+                b"\0",
+                email.as_bytes(),
+            ],
+        )
+    }
+}
+
 /// Advisory lock class of one address's pairs. The two-key form of
 /// `pg_advisory_xact_lock` lives in a key space of its own, apart from the
 /// single 64-bit keys of the background jobs (#426) and of sqlx's
-/// migrator; the second key is `hashtext` of the address, and two
-/// addresses that collide only wait on each other.
+/// migrator; the second key is the first four bytes of the address's
+/// pseudonym, and two addresses that collide only wait on each other.
 pub const SCOPE_LOCK: i32 = i32::from_be_bytes(*b"mlgs");
 
 /// Advisory lock class of the table as a whole, taken (with second key 0)
@@ -463,10 +621,12 @@ pub const SCOPE_LOCK: i32 = i32::from_be_bytes(*b"mlgs");
 pub const TABLE_LOCK: i32 = i32::from_be_bytes(*b"mlgt");
 
 /// The counters, in Postgres. Held in `AppState` behind an `Arc`; every
-/// method takes `&self`. Each replica builds its own, on the same table.
+/// method takes `&self`. Each replica builds its own, on the same table,
+/// with the same secret.
 #[derive(Debug, Clone)]
 pub struct LoginThrottle {
     db: PgPool,
+    pseudonyms: Pseudonyms,
 }
 
 /// A stored row, as the decision reads it.
@@ -482,14 +642,21 @@ fn entry_from_row(
     }
 }
 
+/// A stored pseudonym. The column's CHECK holds it to 32 bytes.
+fn pseudonym_from_row(bytes: Vec<u8>) -> Result<Pseudonym, sqlx::Error> {
+    bytes
+        .try_into()
+        .map_err(|b: Vec<u8>| sqlx::Error::Decode(format!("pseudonym of {} bytes", b.len()).into()))
+}
+
 /// Takes [`SCOPE_LOCK`] on one address, until the transaction ends.
 async fn lock_address(
     tx: &mut Transaction<'static, Postgres>,
-    ip: IpAddr,
+    scope: &Pseudonym,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+    sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
         .bind(SCOPE_LOCK)
-        .bind(ip.to_string())
+        .bind(i32::from_be_bytes([scope[0], scope[1], scope[2], scope[3]]))
         .execute(&mut **tx)
         .await?;
     Ok(())
@@ -504,22 +671,29 @@ async fn lock_table(tx: &mut Transaction<'static, Postgres>) -> Result<(), sqlx:
     Ok(())
 }
 
+async fn database_now(tx: &mut Transaction<'static, Postgres>) -> Result<SystemTime, sqlx::Error> {
+    Ok(sqlx::query_scalar!(r#"SELECT clock_timestamp() AS "now!""#)
+        .fetch_one(&mut **tx)
+        .await?
+        .into())
+}
+
 async fn load_address(
     tx: &mut Transaction<'static, Postgres>,
-    ip: IpAddr,
-    table: &mut Table,
+    scope: Pseudonym,
+    table: &mut Table<Pseudonym, Pseudonym>,
 ) -> Result<(), sqlx::Error> {
     let rows = sqlx::query!(
-        "SELECT email, attempts, window_start, locked_until
-           FROM login_throttle WHERE scope = $1::text::inet",
-        ip.to_string()
+        "SELECT pair, attempts, window_start, locked_until
+           FROM login_throttle WHERE scope = $1",
+        &scope[..]
     )
     .fetch_all(&mut **tx)
     .await?;
     for r in rows {
         table.load(
-            ip,
-            r.email,
+            scope,
+            pseudonym_from_row(r.pair)?,
             entry_from_row(r.attempts, r.window_start, r.locked_until),
         );
     }
@@ -528,22 +702,17 @@ async fn load_address(
 
 async fn load_all(
     tx: &mut Transaction<'static, Postgres>,
-    table: &mut Table,
+    table: &mut Table<Pseudonym, Pseudonym>,
 ) -> Result<(), sqlx::Error> {
     let rows = sqlx::query!(
-        r#"SELECT host(scope) AS "scope!", email, attempts, window_start, locked_until
-             FROM login_throttle"#
+        "SELECT scope, pair, attempts, window_start, locked_until FROM login_throttle"
     )
     .fetch_all(&mut **tx)
     .await?;
     for r in rows {
-        let ip: IpAddr = r
-            .scope
-            .parse()
-            .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
         table.load(
-            ip,
-            r.email,
+            pseudonym_from_row(r.scope)?,
+            pseudonym_from_row(r.pair)?,
             entry_from_row(r.attempts, r.window_start, r.locked_until),
         );
     }
@@ -552,34 +721,34 @@ async fn load_all(
 
 async fn write(
     tx: &mut Transaction<'static, Postgres>,
-    changes: Changes,
+    changes: Changes<Pseudonym, Pseudonym>,
 ) -> Result<(), sqlx::Error> {
     if !changes.removed.is_empty() {
-        let (scopes, emails): (Vec<String>, Vec<String>) = changes
+        let (scopes, pairs): (Vec<Vec<u8>>, Vec<Vec<u8>>) = changes
             .removed
             .into_iter()
-            .map(|(ip, email)| (ip.to_string(), email))
+            .map(|(scope, pair)| (scope.to_vec(), pair.to_vec()))
             .unzip();
         sqlx::query!(
             "DELETE FROM login_throttle t
-              USING unnest($1::text[], $2::text[]) AS gone(scope, email)
-              WHERE t.scope = gone.scope::inet AND t.email = gone.email",
+              USING unnest($1::bytea[], $2::bytea[]) AS gone(scope, pair)
+              WHERE t.scope = gone.scope AND t.pair = gone.pair",
             &scopes,
-            &emails
+            &pairs
         )
         .execute(&mut **tx)
         .await?;
     }
-    for (ip, email, entry) in changes.written {
+    for (scope, pair, entry) in changes.written {
         sqlx::query!(
-            "INSERT INTO login_throttle (scope, email, attempts, window_start, locked_until)
-             VALUES ($1::text::inet, $2, $3, $4, $5)
-             ON CONFLICT (scope, email) DO UPDATE
+            "INSERT INTO login_throttle (scope, pair, attempts, window_start, locked_until)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (scope, pair) DO UPDATE
                 SET attempts = EXCLUDED.attempts,
                     window_start = EXCLUDED.window_start,
                     locked_until = EXCLUDED.locked_until",
-            ip.to_string(),
-            email,
+            &scope[..],
+            &pair[..],
             i32::try_from(entry.attempts).unwrap_or(i32::MAX),
             DateTime::<Utc>::from(entry.window_start),
             entry.locked_until.map(DateTime::<Utc>::from),
@@ -590,9 +759,26 @@ async fn write(
     Ok(())
 }
 
+/// Deletes every row past [`purge_cutoff`] of `now`, and says how many.
+/// Run by an admission that inserts a pair, and by the hourly retention
+/// purge (`jobs::retention_purge`), so a row does not outlive the bound
+/// when no new pair comes.
+pub async fn purge_expired(
+    conn: &mut sqlx::PgConnection,
+    now: SystemTime,
+) -> Result<u64, sqlx::Error> {
+    Ok(sqlx::query!(
+        "DELETE FROM login_throttle WHERE window_start <= $1",
+        DateTime::<Utc>::from(purge_cutoff(now))
+    )
+    .execute(conn)
+    .await?
+    .rows_affected())
+}
+
 impl LoginThrottle {
-    pub fn new(db: PgPool) -> Self {
-        Self { db }
+    pub fn new(db: PgPool, pseudonyms: Pseudonyms) -> Self {
+        Self { db, pseudonyms }
     }
 
     /// Checks the lock **and** counts this attempt, in one transaction:
@@ -600,53 +786,57 @@ impl LoginThrottle {
     /// locks. An error leaves nothing counted and nothing admitted; the
     /// caller refuses the attempt.
     pub async fn admit(&self, key: &(IpAddr, String)) -> Result<Decision, sqlx::Error> {
-        let (ip, email) = (key.0, key.1.as_str());
+        let scope = self.pseudonyms.scope(key.0);
+        let pair = self.pseudonyms.pair(key.0, &key.1);
         let mut tx = crate::db::begin(&self.db).await?;
-        lock_address(&mut tx, ip).await?;
+        lock_address(&mut tx, &scope).await?;
+        let now = database_now(&mut tx).await?;
 
-        let known = sqlx::query_scalar!(
-            r#"SELECT EXISTS (
-                   SELECT 1 FROM login_throttle WHERE scope = $1::text::inet AND email = $2
-               ) AS "known!""#,
-            ip.to_string(),
-            email
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-        if !known {
-            lock_table(&mut tx).await?;
-        }
-        // Read once every lock is held: an admission decided before ours
-        // never carries a later instant than ours.
-        let now: SystemTime = sqlx::query_scalar!(r#"SELECT clock_timestamp() AS "now!""#)
-            .fetch_one(&mut *tx)
-            .await?
-            .into();
-
+        // Everything up to the share needs this address's pairs alone:
+        // a refusal there never waits on the table lock.
         let mut table = Table::default();
-        if known {
-            load_address(&mut tx, ip, &mut table).await?;
-        } else {
-            sqlx::query!(
-                "DELETE FROM login_throttle WHERE window_start <= $1",
-                DateTime::<Utc>::from(purge_cutoff(now))
-            )
-            .execute(&mut *tx)
-            .await?;
+        load_address(&mut tx, scope, &mut table).await?;
+        let loaded = table.clone();
+        if let Some(refused) = table.refuse_at_share(scope, &pair, now) {
+            write(&mut tx, Changes::between(&loaded, &table)).await?;
+            tx.commit().await?;
+            return Ok(refused);
+        }
+
+        if table.get(scope, &pair).is_none() {
+            // A new pair counts against the ceiling and may evict another
+            // address's pair: the whole table, under its lock, on a clock
+            // read once that lock is held.
+            lock_table(&mut tx).await?;
+            let now = database_now(&mut tx).await?;
+            purge_expired(&mut tx, now).await?;
             let total = sqlx::query_scalar!(r#"SELECT count(*) AS "total!" FROM login_throttle"#)
                 .fetch_one(&mut *tx)
                 .await?;
             let total = usize::try_from(total).unwrap_or(usize::MAX);
+            let mut table = Table::default();
             if total >= MAX_TRACKED {
                 load_all(&mut tx, &mut table).await?;
             } else {
-                load_address(&mut tx, ip, &mut table).await?;
+                load_address(&mut tx, scope, &mut table).await?;
                 table.total = total;
             }
+            return self.decide(tx, table, scope, pair, now).await;
         }
+        self.decide(tx, loaded, scope, pair, now).await
+    }
 
+    /// Asks `table`, as loaded, and writes back what the answer changed.
+    async fn decide(
+        &self,
+        mut tx: Transaction<'static, Postgres>,
+        mut table: Table<Pseudonym, Pseudonym>,
+        scope: Pseudonym,
+        pair: Pseudonym,
+        now: SystemTime,
+    ) -> Result<Decision, sqlx::Error> {
         let before = table.clone();
-        let decision = table.admit(ip, email, now);
+        let decision = table.admit(scope, &pair, now);
         write(&mut tx, Changes::between(&before, &table)).await?;
         tx.commit().await?;
         Ok(decision)
@@ -656,12 +846,14 @@ impl LoginThrottle {
     /// one the throttle is there for, and the attempts it made — this one
     /// included — were not an attack.
     pub async fn record_success(&self, key: &(IpAddr, String)) -> Result<(), sqlx::Error> {
+        let scope = self.pseudonyms.scope(key.0);
+        let pair = self.pseudonyms.pair(key.0, &key.1);
         let mut tx = crate::db::begin(&self.db).await?;
-        lock_address(&mut tx, key.0).await?;
+        lock_address(&mut tx, &scope).await?;
         sqlx::query!(
-            "DELETE FROM login_throttle WHERE scope = $1::text::inet AND email = $2",
-            key.0.to_string(),
-            key.1
+            "DELETE FROM login_throttle WHERE scope = $1 AND pair = $2",
+            &scope[..],
+            &pair[..]
         )
         .execute(&mut *tx)
         .await?;
@@ -697,6 +889,144 @@ mod tests {
         fn tracked(&self) -> usize {
             self.0.lock().unwrap().total
         }
+    }
+
+    // --- #427: pseudonyms ---
+
+    #[test]
+    fn the_mac_is_hmac_sha256() {
+        // RFC 4231, test case 2.
+        let mac = hmac_sha256(b"Jefe", &[b"what do ya want ", b"for nothing?"]);
+        let hex: String = mac.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(
+            hex,
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+    }
+
+    #[test]
+    fn a_pseudonym_depends_on_the_key() {
+        // Without the key, hashing all 2^32 IPv4 addresses would undo it.
+        let a = Pseudonyms::new("one secret");
+        let b = Pseudonyms::new("another secret");
+        let client = ip("192.168.1.42");
+        assert_ne!(a.scope(client), b.scope(client));
+        assert_ne!(
+            a.pair(client, "alice@example.test"),
+            b.pair(client, "alice@example.test")
+        );
+        // And it is the address nowhere in clear.
+        let plain = <Sha256 as sha2::Digest>::digest(b"192.168.1.42");
+        assert_ne!(&a.scope(client)[..], &plain[..]);
+    }
+
+    #[test]
+    fn replicas_given_the_same_secret_agree() {
+        let a = Pseudonyms::new("shared");
+        let b = Pseudonyms::new("shared");
+        let client = ip("2001:db8:1:2::");
+        assert_eq!(a.scope(client), b.scope(client));
+        assert_eq!(
+            a.pair(client, "alice@example.test"),
+            b.pair(client, "alice@example.test")
+        );
+    }
+
+    #[test]
+    fn one_email_from_two_addresses_leaves_two_unrelated_pairs() {
+        let p = Pseudonyms::new("shared");
+        assert_ne!(
+            p.pair(ip("192.168.1.42"), "alice@example.test"),
+            p.pair(ip("203.0.113.9"), "alice@example.test")
+        );
+        assert_ne!(p.scope(ip("192.168.1.42")), p.scope(ip("203.0.113.9")));
+    }
+
+    #[test]
+    fn the_pair_halves_cannot_be_shifted_into_each_other() {
+        // "1.2.3.4" + "5x" and "1.2.3.45" + "x" concatenate alike without a
+        // separator.
+        let p = Pseudonyms::new("shared");
+        assert_ne!(
+            p.pair(ip("1.2.3.4"), "5x@example.test"),
+            p.pair(ip("1.2.3.45"), "x@example.test")
+        );
+    }
+
+    #[test]
+    fn the_share_is_counted_on_the_address_pseudonym() {
+        // The decision run on pseudonyms, as the store runs it: fifty
+        // emails from one address, then a refusal.
+        let p = Pseudonyms::new("shared");
+        let household = ip("192.168.1.42");
+        let now = t0();
+        let mut table: Table<Pseudonym, Pseudonym> = Table::default();
+        for i in 0..MAX_PAIRS_PER_IP {
+            let pair = p.pair(household, &format!("{i}@example.test"));
+            assert_eq!(table.admit(p.scope(household), &pair, now), Decision::Allow);
+        }
+        let extra = p.pair(household, "one-more@example.test");
+        assert!(matches!(
+            table.admit(p.scope(household), &extra, now),
+            Decision::Locked { .. }
+        ));
+    }
+
+    #[test]
+    fn a_dedicated_secret_wins_and_a_blank_one_falls_back() {
+        assert_eq!(
+            resolve_secret(Some("dedicated".into()), "message key"),
+            ("dedicated".to_owned(), false)
+        );
+        assert_eq!(
+            resolve_secret(Some("  ".into()), "message key"),
+            ("message key".to_owned(), true)
+        );
+        assert_eq!(
+            resolve_secret(None, "message key"),
+            ("message key".to_owned(), true)
+        );
+    }
+
+    #[test]
+    fn a_share_refusal_decides_what_a_full_admission_decides() {
+        // The store refuses at the share before taking the table lock;
+        // the answer, and what it reclaims, must be the full admission's.
+        let attacker = ip("203.0.113.9");
+        let now = t0();
+        let later = now + WINDOW + Duration::from_secs(1);
+        // As the store loads them: one stale pair, and a full share of
+        // live ones.
+        let mut table = Table::default();
+        let entry = |at| Entry {
+            attempts: 1,
+            window_start: at,
+            locked_until: None,
+        };
+        table.load(attacker, "stale@example.test".to_owned(), entry(now));
+        for i in 0..MAX_PAIRS_PER_IP {
+            table.load(attacker, format!("{i}@example.test"), entry(later));
+        }
+        let mut early = table.clone();
+        let mut full = table.clone();
+        let refused = early.refuse_at_share(attacker, "new@example.test", later);
+        let admitted = full.admit(attacker, "new@example.test", later);
+        assert_eq!(refused, Some(admitted));
+        let (mut by_early, mut by_full) = (
+            Changes::between(&table, &early),
+            Changes::between(&table, &full),
+        );
+        by_early.removed.sort();
+        by_full.removed.sort();
+        assert_eq!(by_early, by_full);
+        assert_eq!(by_early.removed.len(), 1, "the stale pair is reclaimed");
+        // A pair already held is never refused there.
+        assert_eq!(
+            table
+                .clone()
+                .refuse_at_share(attacker, "0@example.test", later),
+            None
+        );
     }
 
     // --- #427: what the store relies on ---

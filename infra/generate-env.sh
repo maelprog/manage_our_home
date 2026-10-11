@@ -102,6 +102,7 @@ GOOGLE_CLIENT_SECRET=
 OAUTH_ENCRYPTION_KEY=$(gen_key)
 MESSAGE_ENCRYPTION_KEY=$(gen_key)
 CALENDAR_FEED_ENCRYPTION_KEY=$(gen_key)
+LOGIN_THROTTLE_KEY=$(gen_key)
 
 ########################################
 # Reminder notifications (Web Push, #306)

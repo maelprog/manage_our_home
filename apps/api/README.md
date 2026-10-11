@@ -490,14 +490,28 @@ least 200 addresses; it does not limit the number of cycles.
 The counters are **in Postgres** (#427), in the `UNLOGGED` table
 `login_throttle` (migration `0028`): every replica counts against the same
 rows, and a restart of the API keeps them (a crash of Postgres truncates
-an `UNLOGGED` table, which lifts every lock early). Each attempt is one
-transaction, serialised per client address by an advisory lock, on the
-database's clock. A refused attempt writes nothing; an admitted one writes
-one row. A new pair also deletes the rows whose window started more than
-30 minutes ago (`WINDOW + LOCKOUT`, past which no pair can still be locked),
-from every address; with no new pair, nothing deletes them. The runtime
-role needs `SELECT, INSERT, UPDATE, DELETE` on the table — the `app_role`
-grant of the Row-Level Security note covers it when run after the migration.
+an `UNLOGGED` table, which lifts every lock early). **Neither the address
+nor the email is stored**: a row holds an HMAC-SHA256 of the client address
+and one of the (address, email) pair, keyed from `LOGIN_THROTTLE_KEY`. The
+share is counted on the address's pseudonym. Every replica must be given
+the same key, or each counts on its own; changing it only resets the
+counters. Unset or blank, the key is derived from `MESSAGE_ENCRYPTION_KEY`
+and the API warns at startup: that key is sent to Postgres as a query
+parameter, so whoever can read the database's statements could recompute
+the pseudonyms — set a dedicated one (`infra/generate-env.sh` does).
+
+Each attempt is one transaction, serialised per client address by an
+advisory lock, on the database's clock. An admitted attempt writes its
+pair's row. A new email from an address also deletes that address's
+stale pairs; once within its share it takes a table-wide lock, deletes
+the rows whose window started more than 30 minutes ago (`WINDOW +
+LOCKOUT`, past which no pair can still be locked), from every address,
+and on a full table evicts one pair. An attempt on a pair already locked
+changes nothing. The hourly retention purge (`jobs::retention_purge`)
+deletes the same 30-minute-old rows, so they go even when no new pair
+comes. The runtime role needs `SELECT, INSERT, UPDATE, DELETE` on the
+table — the `app_role` grant of the Row-Level Security note covers it
+when run after the migration.
 
 **What counts as one address (#198).** An IPv4 address stands for itself. An
 IPv6 one is reduced to its **/64** before it is used as a key: a residential

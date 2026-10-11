@@ -136,8 +136,22 @@ async fn main() -> anyhow::Result<()> {
     let message_hubs =
         manage_our_home::messagerie::MessageHub::new(db.clone(), &message_encryption_key);
 
+    // The login lock's pseudonyms (#427): every replica must key them
+    // alike, or each counts on its own.
+    let (login_throttle_secret, fell_back) = manage_our_home::auth::throttle::resolve_secret(
+        env::var(manage_our_home::auth::throttle::SECRET_VAR).ok(),
+        &message_encryption_key,
+    );
+    if fell_back {
+        tracing::warn!(
+            "{} unset — the login lock's pseudonyms are keyed from MESSAGE_ENCRYPTION_KEY, \
+             which Postgres sees as a query parameter; set a dedicated key",
+            manage_our_home::auth::throttle::SECRET_VAR
+        );
+    }
     let login_throttle = std::sync::Arc::new(manage_our_home::auth::throttle::LoginThrottle::new(
         db.clone(),
+        manage_our_home::auth::throttle::Pseudonyms::new(&login_throttle_secret),
     ));
     let state = AppState {
         db,

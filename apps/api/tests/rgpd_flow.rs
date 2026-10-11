@@ -987,8 +987,9 @@ async fn export_accounts_for_every_table(db: PgPool) {
         ("_sqlx_migrations", "schema history, no personal data"),
         (
             "login_throttle",
-            "the login lock's counters (#427), keyed by (address, typed email) and not by \
-             account; never exported while they lived in memory, and not now",
+            "the login lock's counters (#427): HMAC pseudonyms of (address, typed email), \
+             not tied to an account, which the export could only find by recomputing them; \
+             never exported while they lived in memory, and not now",
         ),
         (
             "off_products",

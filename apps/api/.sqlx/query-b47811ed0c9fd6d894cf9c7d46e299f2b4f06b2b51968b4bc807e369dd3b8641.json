@@ -1,16 +1,16 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT email, attempts, window_start, locked_until\n           FROM login_throttle WHERE scope = $1::text::inet",
+  "query": "SELECT pair, attempts, window_start, locked_until\n           FROM login_throttle WHERE scope = $1",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "email",
-        "type_info": "Text",
+        "name": "pair",
+        "type_info": "Bytea",
         "origin": {
           "Table": {
             "table": "login_throttle",
-            "name": "email"
+            "name": "pair"
           }
         }
       },
@@ -50,7 +50,7 @@
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "Bytea"
       ]
     },
     "nullable": [
@@ -60,5 +60,5 @@
       true
     ]
   },
-  "hash": "1489cceccdd5aaa0ec1545f58a51e19055d1f35e51ff7f31be0f063604088812"
+  "hash": "b47811ed0c9fd6d894cf9c7d46e299f2b4f06b2b51968b4bc807e369dd3b8641"
 }

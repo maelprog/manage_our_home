@@ -2027,15 +2027,75 @@ async fn a_concurrent_burst_across_two_instances_is_bounded_by_the_threshold(db:
     assert_eq!(unauthorized, max, "hashes paid by the burst");
 }
 
+/// #427: neither the address nor the email reaches the table — only
+/// their keyed pseudonyms, and not a bare hash of them either.
+#[sqlx::test]
+async fn the_counters_hold_neither_the_address_nor_the_email(db: PgPool) {
+    let router = router_trusting_10_0_0_0_8(db.clone());
+    let response = login_from(
+        &router,
+        "10.0.0.2:40000",
+        Some("192.168.1.42"),
+        "nobody@example.test",
+        "wrong-password1",
+    )
+    .await;
+    assert_status(&response, StatusCode::UNAUTHORIZED);
+
+    let (rows, clear, bare_hash): (i64, i64, i64) = sqlx::query_as(
+        "SELECT count(*),
+                count(*) FILTER (WHERE position(convert_to('192.168.1.42', 'UTF8') IN scope) > 0
+                                    OR position(convert_to('192.168.1.42', 'UTF8') IN pair) > 0
+                                    OR position(convert_to('nobody@example.test', 'UTF8') IN pair) > 0),
+                count(*) FILTER (WHERE scope = sha256(convert_to('192.168.1.42', 'UTF8')))
+           FROM login_throttle",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!((rows, clear, bare_hash), (1, 0, 0));
+}
+
+/// Seeds `n` live counters with made-up pseudonyms, `MAX_PAIRS_PER_IP` per
+/// made-up address, started a minute ago or a little earlier — each one a
+/// millisecond before the previous, so the oldest, which an eviction takes
+/// first, is one row and the same for every concurrent admission.
+async fn seed_counters(db: &PgPool, n: usize) {
+    sqlx::query(
+        "INSERT INTO login_throttle (scope, pair, attempts, window_start)
+         SELECT decode(lpad(to_hex(i / $2), 64, '0'), 'hex'),
+                decode(lpad(to_hex(i), 64, '0'), 'hex'),
+                1, now() - interval '1 minute' - i * interval '1 millisecond'
+           FROM generate_series(0, $1 - 1) AS i",
+    )
+    .bind(n as i64)
+    .bind(manage_our_home::auth::throttle::MAX_PAIRS_PER_IP as i64)
+    .execute(db)
+    .await
+    .unwrap();
+}
+
+/// Rows in the table, and rows the test's logins added (started in the
+/// last thirty seconds, unlike every seeded one).
+async fn counters(db: &PgPool) -> (i64, i64) {
+    sqlx::query_as(
+        "SELECT count(*), count(*) FILTER (WHERE window_start > now() - interval '30 seconds')
+           FROM login_throttle",
+    )
+    .fetch_one(db)
+    .await
+    .unwrap()
+}
+
 /// #427: rows past `throttle::purge_cutoff` go when a new pair comes in,
 /// from any address — not only when that row's own address returns.
 #[sqlx::test]
 async fn expired_counters_are_purged_by_the_next_new_pair(db: PgPool) {
     sqlx::query(
-        "INSERT INTO login_throttle (scope, email, attempts, window_start, locked_until)
-         VALUES ('203.0.113.9', 'old@example.test', 10,
+        "INSERT INTO login_throttle (scope, pair, attempts, window_start, locked_until)
+         VALUES (decode(repeat('aa', 32), 'hex'), decode(repeat('aa', 32), 'hex'), 10,
                  now() - interval '31 minutes', now() - interval '1 minute'),
-                ('203.0.113.9', 'recent@example.test', 3,
+                (decode(repeat('aa', 32), 'hex'), decode(repeat('bb', 32), 'hex'), 3,
                  now() - interval '29 minutes', NULL)",
     )
     .execute(&db)
@@ -2053,30 +2113,25 @@ async fn expired_counters_are_purged_by_the_next_new_pair(db: PgPool) {
     .await;
     assert_status(&response, StatusCode::UNAUTHORIZED);
 
-    let left: Vec<String> = sqlx::query_scalar("SELECT email FROM login_throttle ORDER BY email")
-        .fetch_all(&db)
-        .await
-        .unwrap();
+    let left: Vec<String> = sqlx::query_scalar(
+        "SELECT encode(pair, 'hex') FROM login_throttle
+          WHERE scope = decode(repeat('aa', 32), 'hex')",
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
     // The 29-minute row is past its window but inside the bound: it is
     // left for its own address to reclaim, as before #427.
-    assert_eq!(left, ["nobody@example.test", "recent@example.test"]);
+    assert_eq!(left, ["bb".repeat(32)]);
+    assert_eq!(counters(&db).await, (2, 1));
 }
 
 /// #427: a full table is loaded whole and the eviction of #178 runs on it;
 /// the stored table never grows past the ceiling.
 #[sqlx::test]
 async fn a_full_table_in_the_database_stays_at_its_ceiling(db: PgPool) {
-    use manage_our_home::auth::throttle::{MAX_PAIRS_PER_IP, MAX_TRACKED};
-    sqlx::query(
-        "INSERT INTO login_throttle (scope, email, attempts, window_start)
-         SELECT '10.0.0.0'::inet + (i / $2), i || '@example.test', 1, now()
-           FROM generate_series(0, $1 - 1) AS i",
-    )
-    .bind(MAX_TRACKED as i64)
-    .bind(MAX_PAIRS_PER_IP as i64)
-    .execute(&db)
-    .await
-    .unwrap();
+    use manage_our_home::auth::throttle::MAX_TRACKED;
+    seed_counters(&db, MAX_TRACKED).await;
 
     let router = router_trusting_10_0_0_0_8(db.clone());
     for i in 0..3 {
@@ -2091,21 +2146,8 @@ async fn a_full_table_in_the_database_stays_at_its_ceiling(db: PgPool) {
         assert_status(&response, StatusCode::UNAUTHORIZED);
     }
 
-    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM login_throttle")
-        .fetch_one(&db)
-        .await
-        .unwrap();
-    assert_eq!(total, MAX_TRACKED as i64);
-    let newcomers: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM login_throttle WHERE email = 'nobody@example.test'",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap();
-    assert_eq!(
-        newcomers, 3,
-        "every new pair is counted, none goes uncounted"
-    );
+    // Every new pair counted, none uncounted, and the table at its ceiling.
+    assert_eq!(counters(&db).await, (MAX_TRACKED as i64, 3));
 }
 
 /// #427: a deployment restarts the API. The lock a pair earned before it

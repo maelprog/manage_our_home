@@ -32,6 +32,7 @@ pub fn test_state(db: PgPool) -> AppState {
     // database share their login counters (#427).
     let login_throttle = std::sync::Arc::new(manage_our_home::auth::throttle::LoginThrottle::new(
         runtime_db.clone(),
+        manage_our_home::auth::throttle::Pseudonyms::new("test-login-throttle-key"),
     ));
     AppState {
         message_hubs: manage_our_home::messagerie::MessageHub::new(
