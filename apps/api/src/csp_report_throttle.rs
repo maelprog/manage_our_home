@@ -7,14 +7,15 @@
 //! to send: at most [`MAX_REPORTS`] per [`WINDOW`], after which it is
 //! answered 429 until the window ends, **before its body is read**.
 //!
-//! Built like the login lock (`auth::throttle`), so that both count the
-//! same client:
+//! It counts the same client as the login lock (`auth::throttle`), by the
+//! same rule, but with its own machinery:
 //!
 //! - the address is the one `client_ip::ClientIp` resolves behind the
 //!   trusted proxies, reduced by `auth::throttle::address_scope` — an IPv6
 //!   client is its /64, not the /128 it can remake at will;
-//! - a request is counted when it is admitted, under one mutex acquisition,
-//!   so concurrent requests cannot all read "under the limit";
+//! - a request is counted when it is admitted, under one mutex acquisition
+//!   here (the login lock does it in one transaction under an advisory
+//!   lock), so concurrent requests cannot all read "under the limit";
 //! - the counter lives in this process's memory — right while
 //!   `infra/docker-compose.yml` runs one `api`; with N replicas each
 //!   counts alone (#428; the login lock moved to Postgres in #427) — and
