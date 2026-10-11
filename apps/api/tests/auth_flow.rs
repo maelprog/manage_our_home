@@ -2150,6 +2150,38 @@ async fn a_full_table_in_the_database_stays_at_its_ceiling(db: PgPool) {
     assert_eq!(counters(&db).await, (MAX_TRACKED as i64, 3));
 }
 
+/// #427: new pairs arriving at once, on two instances, into a full table.
+/// Each one counts the table and evicts; without the table lock several
+/// count the same total and evict the same victim, and the table grows
+/// past its ceiling.
+#[sqlx::test]
+async fn concurrent_new_pairs_on_a_full_table_keep_it_at_its_ceiling(db: PgPool) {
+    use manage_our_home::auth::throttle::MAX_TRACKED;
+    seed_counters(&db, MAX_TRACKED).await;
+
+    let instances = [
+        router_trusting_10_0_0_0_8(db.clone()),
+        router_trusting_10_0_0_0_8(db.clone()),
+    ];
+    let newcomers = 20;
+    let addresses: Vec<String> = (0..newcomers).map(|i| format!("192.168.1.{i}")).collect();
+    let responses = futures::future::join_all(addresses.iter().enumerate().map(|(i, address)| {
+        login_from(
+            &instances[i % 2],
+            "10.0.0.2:40000",
+            Some(address),
+            "nobody@example.test",
+            "wrong-password1",
+        )
+    }))
+    .await;
+    for response in &responses {
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    assert_eq!(counters(&db).await, (MAX_TRACKED as i64, newcomers as i64));
+}
+
 /// #427: a deployment restarts the API. The lock a pair earned before it
 /// still holds after it.
 #[sqlx::test]
