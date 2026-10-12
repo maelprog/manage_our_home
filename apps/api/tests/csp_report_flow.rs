@@ -282,3 +282,18 @@ async fn new_clients_at_once_on_two_instances_do_not_overfill_the_table(db: PgPo
         .unwrap();
     assert_eq!(rows, MAX_TRACKED as i64);
 }
+
+/// #428: a report the limit cannot count is not read. With its table out
+/// of reach, the route answers 500.
+#[sqlx::test]
+async fn a_report_the_limit_cannot_count_is_a_500(db: PgPool) {
+    sqlx::query("ALTER TABLE csp_report_throttle RENAME TO csp_report_throttle_gone")
+        .execute(&db)
+        .await
+        .unwrap();
+    let router = test_router(db);
+    assert_eq!(
+        post(&router, "application/csp-report", LEGACY.into(), &[]).await,
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+}

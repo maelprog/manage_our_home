@@ -521,3 +521,17 @@ async fn members_whose_imports_left_the_window_are_forgotten_by_the_next_import(
     .unwrap();
     assert_eq!(left, vec!["bb".repeat(32)]);
 }
+
+/// #428: an import the limit cannot count is not started. With its table
+/// out of reach, the import answers 500 and the page is not fetched.
+#[sqlx::test]
+async fn an_import_the_limit_cannot_count_is_a_500_and_fetches_nothing(db: PgPool) {
+    let s = setup(db.clone(), true).await;
+    sqlx::query("ALTER TABLE rate_limit_log RENAME TO rate_limit_log_gone")
+        .execute(&db)
+        .await
+        .unwrap();
+    let url = format!("http://{SITE}:{}/marmiton", s.port);
+    assert_status(&import(&s, &url).await, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(s.hits.load(Ordering::SeqCst), 0, "fetched");
+}

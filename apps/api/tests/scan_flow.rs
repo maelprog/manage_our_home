@@ -750,3 +750,28 @@ async fn a_burst_across_two_instances_sends_open_food_facts_the_reads_of_one(db:
     futures::future::join_all(scans).await;
     assert_eq!(hits.load(Ordering::SeqCst), RATE_LIMIT);
 }
+
+/// #428: a read the limit cannot count is not sent. With its table out of
+/// reach, the scan answers without a product, Open Food Facts is not
+/// asked, and nothing is cached.
+#[sqlx::test]
+async fn a_read_the_limit_cannot_count_is_not_sent(db: PgPool) {
+    let (router, hits) = router_with_off(db.clone()).await;
+    let cookie = register_verify_login(&router, &db, "scan-nolimit@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+    sqlx::query("ALTER TABLE rate_limit_log RENAME TO rate_limit_log_gone")
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let res = scan(&router, &cookie, &group_id, NUTELLA).await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    assert!(body["product"].is_null(), "{body}");
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "Open Food Facts asked");
+    let cached: i64 = sqlx::query_scalar("SELECT count(*) FROM off_products")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(cached, 0);
+}
