@@ -2292,9 +2292,11 @@ async fn wait_for_lock_waiters(db: &PgPool, locktype: Option<&str>, n: i64) {
 /// #454: an admission waits on its address's advisory lock holding a
 /// connection. A burst from one address must not take the connections
 /// every other route needs: here four times as many concurrent attempts as
-/// the handlers' pool holds, parked on the lock, and `/readyz` — a 503
-/// when it cannot reach Postgres through that pool within two seconds —
-/// still answers.
+/// the handlers' pool holds. Only as many as the throttle's own pool holds
+/// get a connection and wait on an advisory lock — the first on the table
+/// lock, the others on the address's lock behind it; the rest queue for a
+/// connection of that pool. `/readyz` — a 503 when it cannot reach
+/// Postgres through the handlers' pool within two seconds — still answers.
 #[sqlx::test]
 async fn a_burst_of_logins_from_one_address_leaves_the_handlers_pool_free(db: PgPool) {
     use manage_our_home::auth::throttle::{Pseudonyms, TABLE_LOCK};
@@ -2310,7 +2312,8 @@ async fn a_burst_of_logins_from_one_address_leaves_the_handlers_pool_free(db: Pg
     let router = manage_our_home::build_router(state);
 
     // A new pair takes the table lock: held here, the first attempt waits
-    // on it, and every other one on the address's lock behind it.
+    // on it, and the others that got a connection on the address's lock
+    // behind it.
     #[allow(clippy::disallowed_methods)]
     let mut holder = db.begin().await.unwrap();
     sqlx::query("SELECT pg_advisory_xact_lock($1, 0)")
