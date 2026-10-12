@@ -3,7 +3,7 @@ mod common;
 use axum::http::{Method, StatusCode};
 use common::{
     assert_status, call, drop_prescribed_role, json_body, prescribed_role_pool, session_id_of,
-    set_cookie, test_router,
+    set_cookie, test_router, wait_for_lock_waiters,
 };
 use manage_our_home::auth::terms_acceptance::terms_in_force_now;
 use manage_our_home::auth::token::{new_token, token_hash};
@@ -2259,34 +2259,6 @@ async fn a_held_pair_purged_meanwhile_is_not_reinserted_past_the_ceiling(db: PgP
 
     assert_eq!(held.await.unwrap(), StatusCode::UNAUTHORIZED);
     assert_eq!(counters(&db).await.0, MAX_TRACKED as i64);
-}
-
-/// Waits until at least `n` backends of this test's database wait on a
-/// lock (`pg_locks.granted = false`), of `locktype` if given. A test that
-/// needs requests parked on a lock before it goes on synchronises on this,
-/// not on a sleep: on a slow machine a sleep can end before they get there.
-async fn wait_for_lock_waiters(db: &PgPool, locktype: Option<&str>, n: i64) {
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
-        let waiting: i64 = sqlx::query_scalar(
-            "SELECT count(DISTINCT l.pid)
-               FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
-              WHERE NOT l.granted AND a.datname = current_database()
-                AND ($1::text IS NULL OR l.locktype = $1)",
-        )
-        .bind(locktype)
-        .fetch_one(db)
-        .await
-        .unwrap();
-        if waiting >= n {
-            return;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "{waiting} backend(s) waiting on a lock, expected {n}"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
 }
 
 /// #454: an admission waits on its address's advisory lock holding a

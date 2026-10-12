@@ -519,10 +519,7 @@ first use. Anything but a whole number from 1 — `0`, `four` — refuses to
 start rather than fall back to 4. A burst of attempts from one address
 queues there and slows other logins, not the rest of the API; attempts
 from one address are decided one after the other whatever the size, which
-only lets distinct addresses proceed together. Count those connections,
-on top of the handlers' 20, the admin pool's 5 and one per background job
-pass running (#426), against Postgres's `max_connections`, once per
-replica.
+only lets distinct addresses proceed together.
 
 **The other rate limits count the same way (#428).** The recipe import
 (`recipes::import::RATE_LIMIT` per member per 10 minutes), the reads sent
@@ -538,6 +535,27 @@ once the row's newest admission is 10 minutes old, and a
 `csp_report_throttle` row on its first pass once its window is over. A database
 error refuses the request: a 500 for the import and the CSP report, a scan
 without a product for Open Food Facts.
+
+Their admissions hold a connection while they wait on their subject's
+lock too, so they have pools of their own as well (#483), on
+`DATABASE_URL` and as its role, opened on first use, and validated like
+the login lock's (blank means the default, anything but a whole number
+from 1 refuses to start):
+
+- **`CSP_REPORT_POOL_SIZE`** connections, 2 when unset
+  (`csp_report_throttle::POOL_SIZE`), for `POST /csp-report` alone. The
+  route answers anyone without a session: a flood of reports queues there
+  and delays other reports, not the rest of the API nor the other limits.
+- **`RATE_LIMIT_POOL_SIZE`** connections, 2 when unset
+  (`rate_limit::POOL_SIZE`), shared by the recipe import and Open Food
+  Facts, both behind a session. Open Food Facts counts one subject, the
+  whole server, so its admissions are decided one after the other anyway.
+
+**Connection budget, per replica.** Count, against Postgres's
+`max_connections`: the handlers' 20, the admin pool's 5, the login lock's
+`LOGIN_THROTTLE_POOL_SIZE` (4), `CSP_REPORT_POOL_SIZE` (2),
+`RATE_LIMIT_POOL_SIZE` (2) and one per background job pass running
+(#426) — 33 plus the job passes with the defaults, once per replica.
 
 **What counts as one address (#198).** An IPv4 address stands for itself. An
 IPv6 one is reduced to its **/64** before it is used as a key: a residential

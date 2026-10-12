@@ -64,7 +64,8 @@ pub async fn begin(pool: &PgPool) -> Result<Transaction<'static, Postgres>, sqlx
 }
 
 /// Pool options for the runtime pools (`DATABASE_URL`, `ADMIN_DATABASE_URL`,
-/// and the login throttle's own, `auth::throttle::LoginThrottle::new`).
+/// and the rate limits' own, [`pool_beside`]: the login throttle's,
+/// `auth::throttle::LoginThrottle::new`, and those of #483).
 ///
 /// A connection that comes back to the pool with a transaction still open
 /// on the server is closed instead of being reused, which ends that
@@ -92,4 +93,75 @@ pub fn pool_options() -> PgPoolOptions {
             Ok(!left_in_transaction)
         })
     })
+}
+
+/// The size the environment variable `var`, of value `raw`, asks for a
+/// pool: `default` when unset or blank, otherwise a whole number, at least
+/// one. Anything else is refused rather than replaced by the default, so a
+/// typo stops the API at start instead of leaving the pool at a size
+/// nobody chose (#482, #483).
+pub fn pool_size(var: &str, raw: Option<&str>, default: u32) -> Result<u32, String> {
+    let raw = raw.map(str::trim).unwrap_or("");
+    if raw.is_empty() {
+        return Ok(default);
+    }
+    match raw.parse::<u32>() {
+        Ok(size) if size > 0 => Ok(size),
+        _ => Err(format!(
+            "{var}={raw:?}: expected a whole number of connections, at least 1 \
+             (unset means {default})"
+        )),
+    }
+}
+
+/// A pool of its own beside the handlers' pool `handlers`, of `size`
+/// connections: on the same server and as the same role, with `options`,
+/// opened on first use. What the rate limits wait on with a connection
+/// held — an advisory lock per counted subject — waits there, so a burst
+/// on one of them cannot take the connections every route needs (#454,
+/// #483).
+pub fn pool_beside(options: PgPoolOptions, handlers: &PgPool, size: u32) -> PgPool {
+    options
+        .max_connections(size)
+        .connect_lazy_with((*handlers.connect_options()).clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VAR: &str = "SOME_POOL_SIZE";
+
+    #[test]
+    fn a_pool_size_defaults_when_unset_or_blank() {
+        assert_eq!(pool_size(VAR, None, 3), Ok(3));
+        assert_eq!(pool_size(VAR, Some(""), 3), Ok(3));
+        assert_eq!(pool_size(VAR, Some("  "), 7), Ok(7));
+    }
+
+    #[test]
+    fn a_pool_size_is_read_as_a_whole_number() {
+        assert_eq!(pool_size(VAR, Some("1"), 3), Ok(1));
+        assert_eq!(pool_size(VAR, Some("12"), 3), Ok(12));
+        // Surrounding space, as an env file may leave it, is not an error.
+        assert_eq!(pool_size(VAR, Some(" 8 "), 3), Ok(8));
+    }
+
+    #[test]
+    fn an_unusable_pool_size_names_the_variable_the_value_and_the_default() {
+        for raw in [
+            "0",
+            "-1",
+            "four",
+            "4.5",
+            "4 connections",
+            "0x4",
+            "99999999999",
+        ] {
+            let err = pool_size(VAR, Some(raw), 3).unwrap_err();
+            assert!(err.contains(VAR), "{raw}: {err}");
+            assert!(err.contains(raw), "{raw}: {err}");
+            assert!(err.contains("unset means 3"), "{raw}: {err}");
+        }
+    }
 }

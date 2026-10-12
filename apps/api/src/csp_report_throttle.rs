@@ -39,10 +39,13 @@
 //! do is raise the log lines or the table past their bounds.
 //!
 //! Since #428 every request also costs a transaction and a pool
-//! connection, refused or not: the route answers anyone, so a flood of
-//! reports competes for the pool with the other routes, as the login's
-//! attempts do (#454). A database error answers 500, still before the body
-//! is read.
+//! connection, refused or not, held while it waits on its address's lock.
+//! The route answers anyone, so that connection comes from a pool of the
+//! limit's own (#483), of [`POOL_SIZE`] connections unless
+//! [`POOL_SIZE_VAR`] says otherwise, as the login lock's does (#454): a
+//! flood of reports queues behind it, which delays other reports and
+//! nothing else. A database error answers 500, still before the body is
+//! read.
 //!
 //! The address is kept as a pseudonym for one window, and at most until
 //! the hourly retention purge that follows ([`purge_expired`]). It is never
@@ -159,6 +162,17 @@ pub const SCOPE_LOCK: i32 = i32::from_be_bytes(*b"mcss");
 /// after [`SCOPE_LOCK`], never before, so the two cannot deadlock.
 pub const TABLE_LOCK: i32 = i32::from_be_bytes(*b"mcst");
 
+/// Connections of the limit's own pool, per replica, when
+/// [`POOL_SIZE_VAR`] is unset (#483). Reports from one address are decided
+/// one after the other whatever the size: more connections only let
+/// reports from distinct addresses proceed together.
+pub const POOL_SIZE: u32 = 2;
+
+/// Environment variable sizing the limit's own pool, per replica (#483):
+/// every replica opens that many connections on top of its others, so the
+/// size is set with the deployment, against Postgres's `max_connections`.
+pub const POOL_SIZE_VAR: &str = "CSP_REPORT_POOL_SIZE";
+
 /// The label of the addresses' pseudonyms.
 const LABEL: &str = "csp_report";
 
@@ -178,7 +192,25 @@ async fn database_now(tx: &mut Transaction<'static, Postgres>) -> Result<SystemT
 }
 
 impl ReportThrottle {
-    pub fn new(db: PgPool, pseudonyms: Pseudonyms) -> Self {
+    /// `handlers` is the handlers' pool, read only for where to connect
+    /// and as whom: the limit opens its own, of `pool_size` connections,
+    /// with the same options (`db::pool_options`). It connects on first
+    /// use; until then a database it cannot reach shows as an error on
+    /// [`Self::admit`], which answers 500.
+    pub fn new(handlers: &PgPool, pseudonyms: Pseudonyms, pool_size: u32) -> Self {
+        Self::with_options(crate::db::pool_options(), handlers, pseudonyms, pool_size)
+    }
+
+    /// [`Self::new`] on pool options of the caller's — the integration
+    /// tests give theirs, which check the role each connection opens as.
+    /// The pool is still the limit's own, bounded to `pool_size`.
+    pub fn with_options(
+        options: sqlx::postgres::PgPoolOptions,
+        handlers: &PgPool,
+        pseudonyms: Pseudonyms,
+        pool_size: u32,
+    ) -> Self {
+        let db = crate::db::pool_beside(options, handlers, pool_size);
         Self { db, pseudonyms }
     }
 

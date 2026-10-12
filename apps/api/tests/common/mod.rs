@@ -38,17 +38,24 @@ pub fn test_state(db: PgPool) -> AppState {
         pseudonyms.clone(),
         manage_our_home::auth::throttle::POOL_SIZE,
     );
-    let csp_report_throttle =
-        std::sync::Arc::new(manage_our_home::csp_report_throttle::ReportThrottle::new(
-            runtime_db.clone(),
-            pseudonyms.clone(),
-        ));
+    let csp_report_throttle = csp_report_throttle(
+        &runtime_db,
+        pseudonyms.clone(),
+        manage_our_home::csp_report_throttle::POOL_SIZE,
+    );
+    // The recipe import and Open Food Facts share a pool of their own, as
+    // in `main.rs` (#483).
+    let rate_limit_db = manage_our_home::db::pool_beside(
+        runtime_pool_options(),
+        &runtime_db,
+        manage_our_home::rate_limit::POOL_SIZE,
+    );
     let off_throttle = std::sync::Arc::new(manage_our_home::stocks::openfoodfacts::Throttle::new(
-        runtime_db.clone(),
+        rate_limit_db.clone(),
         pseudonyms.clone(),
     ));
     let recipe_import_throttle = std::sync::Arc::new(
-        manage_our_home::recipes::import::ImportThrottle::new(runtime_db.clone(), pseudonyms),
+        manage_our_home::recipes::import::ImportThrottle::new(rate_limit_db, pseudonyms),
     );
     AppState {
         message_hubs: manage_our_home::messagerie::MessageHub::new(
@@ -215,6 +222,68 @@ pub fn login_throttle(
             pool_size,
         ),
     )
+}
+
+/// The `POST /csp-report` limit of a test state, on the handlers' pool
+/// `handlers` as `main.rs` builds it — a pool of its own on the same
+/// connect options, of `pool_size` connections — with
+/// [`runtime_pool_options`] in place of the production ones (#483).
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (see note on test_state above).
+#[allow(dead_code)]
+pub fn csp_report_throttle(
+    handlers: &PgPool,
+    pseudonyms: manage_our_home::auth::throttle::Pseudonyms,
+    pool_size: u32,
+) -> std::sync::Arc<manage_our_home::csp_report_throttle::ReportThrottle> {
+    std::sync::Arc::new(
+        manage_our_home::csp_report_throttle::ReportThrottle::with_options(
+            runtime_pool_options(),
+            handlers,
+            pseudonyms,
+            pool_size,
+        ),
+    )
+}
+
+/// How many backends of this test's database wait on a lock
+/// (`pg_locks.granted = false`), of `locktype` if given.
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (see note on test_state above).
+#[allow(dead_code)]
+pub async fn lock_waiters(db: &PgPool, locktype: Option<&str>) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(DISTINCT l.pid)
+           FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+          WHERE NOT l.granted AND a.datname = current_database()
+            AND ($1::text IS NULL OR l.locktype = $1)",
+    )
+    .bind(locktype)
+    .fetch_one(db)
+    .await
+    .unwrap()
+}
+
+/// Waits until at least `n` backends of this test's database wait on a
+/// lock (see [`lock_waiters`]). A test that needs requests parked on a lock
+/// before it goes on synchronises on this, not on a sleep: on a slow
+/// machine a sleep can end before they get there.
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (see note on test_state above).
+#[allow(dead_code)]
+pub async fn wait_for_lock_waiters(db: &PgPool, locktype: Option<&str>, n: i64) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let waiting = lock_waiters(db, locktype).await;
+        if waiting >= n {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{waiting} backend(s) waiting on a lock, expected {n}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
 }
 
 /// The options of a pool the handlers' code runs on in a test: idle
