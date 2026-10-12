@@ -844,7 +844,18 @@ impl LoginThrottle {
     /// connects on first use; until then a database it cannot reach shows
     /// as an error on [`Self::admit`], which refuses the attempt.
     pub fn new(handlers: PgPool, pseudonyms: Pseudonyms) -> Self {
-        let db = crate::db::pool_options()
+        Self::with_options(crate::db::pool_options(), &handlers, pseudonyms)
+    }
+
+    /// [`Self::new`] on pool options of the caller's — the integration
+    /// tests give theirs, which check the role each connection opens as.
+    /// The pool is still the throttle's own, bounded to [`POOL_SIZE`].
+    pub fn with_options(
+        options: sqlx::postgres::PgPoolOptions,
+        handlers: &PgPool,
+        pseudonyms: Pseudonyms,
+    ) -> Self {
+        let db = options
             .max_connections(POOL_SIZE)
             .connect_lazy_with((*handlers.connect_options()).clone());
         Self { db, pseudonyms }

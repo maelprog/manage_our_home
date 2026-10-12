@@ -33,10 +33,7 @@ pub fn test_state(db: PgPool) -> AppState {
     // database share their login counters (#427), and the counters of the
     // other limits (#428).
     let pseudonyms = manage_our_home::auth::throttle::Pseudonyms::new("test-login-throttle-key");
-    let login_throttle = std::sync::Arc::new(manage_our_home::auth::throttle::LoginThrottle::new(
-        runtime_db.clone(),
-        pseudonyms.clone(),
-    ));
+    let login_throttle = login_throttle(&runtime_db, pseudonyms.clone());
     let csp_report_throttle =
         std::sync::Arc::new(manage_our_home::csp_report_throttle::ReportThrottle::new(
             runtime_db.clone(),
@@ -187,27 +184,56 @@ pub fn runtime_pool_sized(db: &PgPool, max_connections: u32) -> PgPool {
         .clone()
         .username(&role)
         .password(&password);
-    sqlx::postgres::PgPoolOptions::new()
+    runtime_pool_options()
         // The bounds `#[sqlx::test]` gives its own pool: this one comes on
         // top of it, against the server's connection limit.
         .max_connections(max_connections)
-        .idle_timeout(Some(std::time::Duration::from_secs(1)))
-        .after_connect(|conn, _| {
-            Box::pin(async move {
-                let bypasses: bool = sqlx::query_scalar(
-                    "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user",
-                )
-                .fetch_one(&mut *conn)
-                .await?;
-                if bypasses {
-                    return Err(sqlx::Error::Configuration(
-                        "FLOW_TEST_RUNTIME_ROLE bypasses RLS".into(),
-                    ));
-                }
-                Ok(())
-            })
-        })
         .connect_lazy_with(options)
+}
+
+/// The login throttle of a test state, on the handlers' pool `handlers` as
+/// `main.rs` builds it — a pool of its own on the same connect options —
+/// with [`runtime_pool_options`] in place of the production ones (#454).
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (see note on test_state above).
+#[allow(dead_code)]
+pub fn login_throttle(
+    handlers: &PgPool,
+    pseudonyms: manage_our_home::auth::throttle::Pseudonyms,
+) -> std::sync::Arc<manage_our_home::auth::throttle::LoginThrottle> {
+    std::sync::Arc::new(
+        manage_our_home::auth::throttle::LoginThrottle::with_options(
+            runtime_pool_options(),
+            handlers,
+            pseudonyms,
+        ),
+    )
+}
+
+/// The options of a pool the handlers' code runs on in a test: idle
+/// connections closed after a second, and — under `FLOW_TEST_RUNTIME_ROLE`
+/// — a connection that bypasses RLS refused (see [`runtime_pool`]).
+fn runtime_pool_options() -> sqlx::postgres::PgPoolOptions {
+    let options =
+        sqlx::postgres::PgPoolOptions::new().idle_timeout(Some(std::time::Duration::from_secs(1)));
+    if std::env::var("FLOW_TEST_RUNTIME_ROLE").is_err() {
+        return options;
+    }
+    options.after_connect(|conn, _| {
+        Box::pin(async move {
+            let bypasses: bool = sqlx::query_scalar(
+                "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user",
+            )
+            .fetch_one(&mut *conn)
+            .await?;
+            if bypasses {
+                return Err(sqlx::Error::Configuration(
+                    "FLOW_TEST_RUNTIME_ROLE bypasses RLS".into(),
+                ));
+            }
+            Ok(())
+        })
+    })
 }
 
 /// Points at an unreachable local MinIO endpoint on purpose — most tests

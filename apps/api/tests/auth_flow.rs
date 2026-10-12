@@ -2297,15 +2297,13 @@ async fn wait_for_lock_waiters(db: &PgPool, locktype: Option<&str>, n: i64) {
 /// still answers.
 #[sqlx::test]
 async fn a_burst_of_logins_from_one_address_leaves_the_handlers_pool_free(db: PgPool) {
-    use manage_our_home::auth::throttle::{LoginThrottle, Pseudonyms, TABLE_LOCK};
+    use manage_our_home::auth::throttle::{Pseudonyms, TABLE_LOCK};
     const HANDLERS: u32 = 3;
     let handlers = common::runtime_pool_sized(&db, HANDLERS);
     let mut state = common::test_state(db.clone());
     state.db = handlers.clone();
-    state.login_throttle = std::sync::Arc::new(LoginThrottle::new(
-        handlers,
-        Pseudonyms::new("test-login-throttle-key"),
-    ));
+    state.login_throttle =
+        common::login_throttle(&handlers, Pseudonyms::new("test-login-throttle-key"));
     state.trusted_proxies = std::sync::Arc::new(
         manage_our_home::client_ip::TrustedProxies::parse("10.0.0.0/8").unwrap(),
     );
