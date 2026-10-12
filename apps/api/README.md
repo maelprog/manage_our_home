@@ -512,12 +512,17 @@ table — the `app_role` grant of the Row-Level Security note covers it
 when run after the migration.
 
 An attempt holds a connection while it waits on its address's lock, so
-the throttle has a pool of its own (#454): `throttle::POOL_SIZE`
-connections per replica, on `DATABASE_URL` and as its role, opened on
-first use. A burst of attempts from one address queues there and slows
-other logins, not the rest of the API; count those connections, on top of
-the handlers' 20, the admin pool's 5 and one per background job pass
-running (#426), against Postgres's `max_connections`.
+the throttle has a pool of its own (#454): **`LOGIN_THROTTLE_POOL_SIZE`**
+connections per replica (#482), 4 when unset or blank
+(`throttle::POOL_SIZE`), on `DATABASE_URL` and as its role, opened on
+first use. Anything but a whole number from 1 — `0`, `four` — refuses to
+start rather than fall back to 4. A burst of attempts from one address
+queues there and slows other logins, not the rest of the API; attempts
+from one address are decided one after the other whatever the size, which
+only lets distinct addresses proceed together. Count those connections,
+on top of the handlers' 20, the admin pool's 5 and one per background job
+pass running (#426), against Postgres's `max_connections`, once per
+replica.
 
 **The other rate limits count the same way (#428).** The recipe import
 (`recipes::import::RATE_LIMIT` per member per 10 minutes), the reads sent

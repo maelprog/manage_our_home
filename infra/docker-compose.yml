@@ -171,6 +171,9 @@ services:
       # Keys the login lock's pseudonyms (#427). Required, 16 bytes at
       # least (apps/api/README.md).
       LOGIN_THROTTLE_KEY: ${LOGIN_THROTTLE_KEY}
+      # Connections of the login lock's own pool, per replica (#482).
+      # Empty means 4; anything but a whole number from 1 refuses to start.
+      LOGIN_THROTTLE_POOL_SIZE: ${LOGIN_THROTTLE_POOL_SIZE:-}
       # Reminder notifications (#306): the VAPID key every push is signed
       # with, and a contact for the push services. Empty turns
       # notifications off (apps/api/README.md).

@@ -91,8 +91,9 @@
 //! pool, a burst of concurrent attempts from one address would take every
 //! connection of it and leave the rest of the API waiting. The throttle
 //! opens a pool of its own, on the same server and as the same role, of
-//! [`POOL_SIZE`] connections: a burst can only queue behind it, which slows
-//! other logins and nothing else.
+//! [`POOL_SIZE`] connections unless [`POOL_SIZE_VAR`] says otherwise
+//! (#482): a burst can only queue behind it, which slows other logins and
+//! nothing else.
 
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -649,10 +650,35 @@ pub const SCOPE_LOCK: i32 = i32::from_be_bytes(*b"mlgs");
 /// [`SCOPE_LOCK`], never before, so the two cannot deadlock.
 pub const TABLE_LOCK: i32 = i32::from_be_bytes(*b"mlgt");
 
-/// Connections of the throttle's own pool, per replica (#454). Attempts
-/// from one address are decided one after the other whatever this is: more
-/// connections only let attempts from distinct addresses proceed together.
+/// Connections of the throttle's own pool, per replica, when
+/// [`POOL_SIZE_VAR`] is unset (#454, #482). Attempts from one address are
+/// decided one after the other whatever the size: more connections only
+/// let attempts from distinct addresses proceed together.
 pub const POOL_SIZE: u32 = 4;
+
+/// Environment variable sizing the throttle's own pool, per replica
+/// (#482): every replica opens that many connections on top of its others,
+/// so the size is set with the deployment, against Postgres's
+/// `max_connections`.
+pub const POOL_SIZE_VAR: &str = "LOGIN_THROTTLE_POOL_SIZE";
+
+/// The size [`POOL_SIZE_VAR`] asks for: [`POOL_SIZE`] when unset or blank,
+/// otherwise a whole number, at least one. Anything else is refused rather
+/// than replaced by the default, so a typo stops the API at start instead
+/// of leaving the pool at a size nobody chose.
+pub fn pool_size(raw: Option<&str>) -> Result<u32, String> {
+    let raw = raw.map(str::trim).unwrap_or("");
+    if raw.is_empty() {
+        return Ok(POOL_SIZE);
+    }
+    match raw.parse::<u32>() {
+        Ok(size) if size > 0 => Ok(size),
+        _ => Err(format!(
+            "{POOL_SIZE_VAR}={raw:?}: expected a whole number of connections, at least 1 \
+             (unset means {POOL_SIZE})"
+        )),
+    }
+}
 
 /// The counters, in Postgres. Held in `AppState` behind an `Arc`; every
 /// method takes `&self`. Each replica builds its own, on the same table,
@@ -839,24 +865,25 @@ pub async fn purge_expired(
 
 impl LoginThrottle {
     /// `handlers` is the handlers' pool, read only for where to connect
-    /// and as whom: the throttle opens its own, of [`POOL_SIZE`]
-    /// connections, with the same options (`db::pool_options`). It
+    /// and as whom: the throttle opens its own, of `pool_size` connections
+    /// (see [`pool_size`]), with the same options (`db::pool_options`). It
     /// connects on first use; until then a database it cannot reach shows
     /// as an error on [`Self::admit`], which refuses the attempt.
-    pub fn new(handlers: PgPool, pseudonyms: Pseudonyms) -> Self {
-        Self::with_options(crate::db::pool_options(), &handlers, pseudonyms)
+    pub fn new(handlers: PgPool, pseudonyms: Pseudonyms, pool_size: u32) -> Self {
+        Self::with_options(crate::db::pool_options(), &handlers, pseudonyms, pool_size)
     }
 
     /// [`Self::new`] on pool options of the caller's — the integration
     /// tests give theirs, which check the role each connection opens as.
-    /// The pool is still the throttle's own, bounded to [`POOL_SIZE`].
+    /// The pool is still the throttle's own, bounded to `pool_size`.
     pub fn with_options(
         options: sqlx::postgres::PgPoolOptions,
         handlers: &PgPool,
         pseudonyms: Pseudonyms,
+        pool_size: u32,
     ) -> Self {
         let db = options
-            .max_connections(POOL_SIZE)
+            .max_connections(pool_size)
             .connect_lazy_with((*handlers.connect_options()).clone());
         Self { db, pseudonyms }
     }
@@ -1078,6 +1105,39 @@ mod tests {
             table.admit(p.scope(household), &extra, now),
             Decision::Locked { .. }
         ));
+    }
+
+    #[test]
+    fn the_pool_size_defaults_to_pool_size_when_unset_or_blank() {
+        assert_eq!(pool_size(None), Ok(POOL_SIZE));
+        assert_eq!(pool_size(Some("")), Ok(POOL_SIZE));
+        assert_eq!(pool_size(Some("  ")), Ok(POOL_SIZE));
+        assert_eq!(POOL_SIZE, 4);
+    }
+
+    #[test]
+    fn the_pool_size_is_read_as_a_whole_number() {
+        assert_eq!(pool_size(Some("1")), Ok(1));
+        assert_eq!(pool_size(Some("12")), Ok(12));
+        // Surrounding space, as an env file may leave it, is not an error.
+        assert_eq!(pool_size(Some(" 8 ")), Ok(8));
+    }
+
+    #[test]
+    fn an_unusable_pool_size_refuses_to_start() {
+        for raw in [
+            "0",
+            "-1",
+            "four",
+            "4.5",
+            "4 connections",
+            "0x4",
+            "99999999999",
+        ] {
+            let err = pool_size(Some(raw)).unwrap_err();
+            assert!(err.contains(POOL_SIZE_VAR), "{raw}: {err}");
+            assert!(err.contains(raw), "{raw}: {err}");
+        }
     }
 
     #[test]

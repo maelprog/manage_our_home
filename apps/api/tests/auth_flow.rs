@@ -2297,15 +2297,25 @@ async fn wait_for_lock_waiters(db: &PgPool, locktype: Option<&str>, n: i64) {
 /// lock, the others on the address's lock behind it; the rest queue for a
 /// connection of that pool. `/readyz` — a 503 when it cannot reach
 /// Postgres through the handlers' pool within two seconds — still answers.
+///
+/// #482: the throttle's pool is the size it is given, not the default:
+/// sized here above the handlers' pool (so attempts parked on the
+/// handlers' pool could not reach that many) and away from
+/// `throttle::POOL_SIZE`, exactly that many attempts reach the lock.
 #[sqlx::test]
 async fn a_burst_of_logins_from_one_address_leaves_the_handlers_pool_free(db: PgPool) {
-    use manage_our_home::auth::throttle::{Pseudonyms, TABLE_LOCK};
+    use manage_our_home::auth::throttle::{Pseudonyms, POOL_SIZE, TABLE_LOCK};
     const HANDLERS: u32 = 3;
+    const THROTTLE: u32 = 5;
+    const _: () = assert!(THROTTLE > HANDLERS && THROTTLE != POOL_SIZE);
     let handlers = common::runtime_pool_sized(&db, HANDLERS);
     let mut state = common::test_state(db.clone());
     state.db = handlers.clone();
-    state.login_throttle =
-        common::login_throttle(&handlers, Pseudonyms::new("test-login-throttle-key"));
+    state.login_throttle = common::login_throttle(
+        &handlers,
+        Pseudonyms::new("test-login-throttle-key"),
+        THROTTLE,
+    );
     state.trusted_proxies = std::sync::Arc::new(
         manage_our_home::client_ip::TrustedProxies::parse("10.0.0.0/8").unwrap(),
     );
@@ -2338,8 +2348,21 @@ async fn a_burst_of_logins_from_one_address_leaves_the_handlers_pool_free(db: Pg
             })
         })
         .collect();
-    // As many attempts parked on the lock as the handlers' pool holds.
-    wait_for_lock_waiters(&db, Some("advisory"), i64::from(HANDLERS)).await;
+    // As many attempts parked on the locks as the throttle's pool holds,
+    // more than the handlers' pool could; and no more, once the burst has
+    // had time to try.
+    wait_for_lock_waiters(&db, Some("advisory"), i64::from(THROTTLE)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let waiting: i64 = sqlx::query_scalar(
+        "SELECT count(DISTINCT l.pid)
+           FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+          WHERE NOT l.granted AND a.datname = current_database()
+            AND l.locktype = 'advisory'",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(waiting, i64::from(THROTTLE));
 
     let ready = call(&router, Method::GET, "/readyz", None, None).await;
     assert_status(&ready, StatusCode::OK);

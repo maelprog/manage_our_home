@@ -147,9 +147,18 @@ async fn main() -> anyhow::Result<()> {
     let pseudonyms = manage_our_home::auth::throttle::Pseudonyms::new(&login_throttle_secret);
     // On a pool of its own, opened with `db`'s options (#454): a burst of
     // attempts waiting on the lock cannot take the handlers' connections.
+    // Its size is the deployment's (#482): a malformed value refuses to
+    // start rather than fall back to the default.
+    let login_throttle_pool_size = manage_our_home::auth::throttle::pool_size(
+        env::var(manage_our_home::auth::throttle::POOL_SIZE_VAR)
+            .ok()
+            .as_deref(),
+    )
+    .map_err(anyhow::Error::msg)?;
     let login_throttle = std::sync::Arc::new(manage_our_home::auth::throttle::LoginThrottle::new(
         db.clone(),
         pseudonyms.clone(),
+        login_throttle_pool_size,
     ));
     let csp_report_throttle = std::sync::Arc::new(
         manage_our_home::csp_report_throttle::ReportThrottle::new(db.clone(), pseudonyms.clone()),

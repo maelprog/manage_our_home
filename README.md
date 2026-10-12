@@ -219,6 +219,7 @@ What it cannot invent, you have to fill in yourself:
 | `MESSAGE_ENCRYPTION_KEY` | yes | `openssl rand -base64 32` |
 | `CALENDAR_FEED_ENCRYPTION_KEY` | yes | `openssl rand -base64 32` |
 | `LOGIN_THROTTLE_KEY` | yes | `openssl rand -base64 32`. Keys the login lock's pseudonyms (#427), and those of the recipe import, Open Food Facts and CSP report limits (#428); the same on every replica, 16 bytes at least. |
+| `LOGIN_THROTTLE_POOL_SIZE` | no — defaults to `4` | Connections of the login lock's own pool, per API replica (#482), on top of its other pools (see `apps/api/README.md`). A whole number, at least 1; anything else refuses to start. |
 | `SMTP_HOST`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM` | yes | Mail relay. `SMTP_FROM` must parse as a mailbox. |
 | `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | yes | Object-storage credentials; also used as the API's S3 access/secret key. |
 | `SITE_ADDRESS` | no — defaults to `:80` | Caddy's site address: the public domain name, which turns on automatic HTTPS. Unset means plain HTTP, local testing only. |
