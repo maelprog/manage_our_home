@@ -297,3 +297,31 @@ async fn a_report_the_limit_cannot_count_is_a_500(db: PgPool) {
         StatusCode::INTERNAL_SERVER_ERROR
     );
 }
+
+/// A table full of addresses whose windows are over makes room: the
+/// newcomer reclaims them and is admitted.
+#[sqlx::test]
+async fn a_full_table_of_stale_addresses_admits_a_new_client(db: PgPool) {
+    use manage_our_home::csp_report_throttle::MAX_TRACKED;
+
+    sqlx::query(
+        "INSERT INTO csp_report_throttle (scope, requests, window_start)
+         SELECT sha256(int4send(i)), 1, now() - interval '16 minutes'
+           FROM generate_series(1, $1) AS i",
+    )
+    .bind(MAX_TRACKED as i32)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let router = test_router(db.clone());
+    assert_eq!(
+        post(&router, "application/csp-report", LEGACY.into(), &[]).await,
+        StatusCode::NO_CONTENT
+    );
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM csp_report_throttle")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(rows, 1);
+}
