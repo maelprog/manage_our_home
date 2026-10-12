@@ -2252,9 +2252,9 @@ async fn a_held_pair_purged_meanwhile_is_not_reinserted_past_the_ceiling(db: PgP
             .status()
         })
     };
-    // Long enough for the held pair's admission to reach the row the
-    // other transaction deleted, and wait on it.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // The held pair's admission has reached the row the other transaction
+    // deleted, and waits on it: only then does that transaction commit.
+    wait_for_lock_waiters(&db, None, 1).await;
     other.commit().await.unwrap();
 
     assert_eq!(held.await.unwrap(), StatusCode::UNAUTHORIZED);
