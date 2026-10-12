@@ -520,8 +520,9 @@ per client address per 15 minutes) are counted in the `UNLOGGED` tables
 advisory lock per counted subject and on the database's clock, so N
 replicas allow what one does. Their rows hold HMAC pseudonyms keyed from
 the same `LOGIN_THROTTLE_KEY`, each limit under a label of its own. The
-hourly retention purge deletes a `rate_limit_log` row 10 minutes after its
-newest admission, a `csp_report_throttle` row once its window is over. A database
+hourly retention purge deletes a `rate_limit_log` row on its first pass
+once the row's newest admission is 10 minutes old, and a
+`csp_report_throttle` row on its first pass once its window is over. A database
 error refuses the request: a 500 for the import and the CSP report, a scan
 without a product for Open Food Facts.
 
