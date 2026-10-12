@@ -13,22 +13,25 @@
 //! start `RATE_LIMIT` imports per `RATE_WINDOW`.
 //!
 //! Every failure is a 422 whose code says why (`ImportFailure::code`), or
-//! the usual 429: none is a 500.
+//! the usual 429. The 500s are the database failing (the limit's
+//! included) and an extraction that panics. An import the limit cannot
+//! count is not started (#428).
 
-use std::collections::{HashMap, VecDeque};
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::extract::{Path, State};
 use axum::Json;
 use manage_our_home_shared::dto::recipes::{ImportRecipeRequest, RecipeDraft, SOURCE_URL_MAX_LEN};
 use reqwest::Url;
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::auth::session::{scoped_tx, AuthUser};
+use crate::auth::throttle::Pseudonyms;
 use crate::error::{AppError, AppResult};
 use crate::groups::require_role;
 use crate::public_destination::{check_url, refusal_in, Refused};
+use crate::rate_limit::{SlidingLimiter, SlidingWindow};
 use crate::recipes::{ingredient_line, jsonld};
 use crate::AppState;
 
@@ -97,10 +100,7 @@ pub async fn import_recipe(
     tx.commit().await?;
 
     let url = import_url(&body.url)?;
-    if !state
-        .recipe_import_throttle
-        .admit(auth.user_id, Instant::now())
-    {
+    if !state.recipe_import_throttle.admit(auth.user_id).await? {
         return Err(AppError::TooManyRequests);
     }
     let page = fetch_page(&state.recipe_import_client, url.clone()).await?;
@@ -214,48 +214,25 @@ pub const RATE_LIMIT: usize = 10;
 pub const RATE_WINDOW: Duration = Duration::from_secs(10 * 60);
 
 /// At most `RATE_LIMIT` imports per member per `RATE_WINDOW`, sliding.
-#[derive(Default)]
-pub struct ImportThrottle {
-    admitted: Mutex<HashMap<Uuid, VecDeque<Instant>>>,
-}
+pub const RATE: SlidingWindow = SlidingWindow {
+    limit: RATE_LIMIT,
+    window: RATE_WINDOW,
+};
+
+/// [`RATE`], counted per member in `rate_limit_log` (#428): every replica
+/// counts against the same budget. See `rate_limit` for the mechanism; the
+/// member's id is stored as a keyed pseudonym.
+#[derive(Debug, Clone)]
+pub struct ImportThrottle(SlidingLimiter);
 
 impl ImportThrottle {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(db: PgPool, pseudonyms: Pseudonyms) -> Self {
+        Self(SlidingLimiter::new(db, pseudonyms, "recipe_import", RATE))
     }
 
-    /// Whether `user` may start an import at `now`; counted when it may.
-    pub fn admit(&self, user: Uuid, now: Instant) -> bool {
-        let mut admitted = self
-            .admitted
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        // Every member's imports that left the window are dropped, and a
-        // member left with none is forgotten: the map holds only the
-        // members who imported in the last `RATE_WINDOW`.
-        admitted.retain(|_, times| {
-            while times
-                .front()
-                .is_some_and(|&at| now.saturating_duration_since(at) >= RATE_WINDOW)
-            {
-                times.pop_front();
-            }
-            !times.is_empty()
-        });
-        let times = admitted.entry(user).or_default();
-        if times.len() >= RATE_LIMIT {
-            return false;
-        }
-        times.push_back(now);
-        true
-    }
-
-    /// Members with an import still counted.
-    pub fn tracked(&self) -> usize {
-        self.admitted
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .len()
+    /// Whether `user` may start an import now; counted when it may.
+    pub async fn admit(&self, user: Uuid) -> Result<bool, sqlx::Error> {
+        self.0.admit(user.as_bytes()).await
     }
 }
 
@@ -275,6 +252,7 @@ pub fn valid_source_url(source_url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::SystemTime;
 
     #[test]
     fn html_content_types() {
@@ -318,11 +296,35 @@ mod tests {
         );
     }
 
+    /// The per-member map the process used to hold before #428, on the
+    /// same pure rule the store applies to each member's row: a member
+    /// whose imports all left the window is forgotten, as the store
+    /// deletes such rows on every admission.
+    #[derive(Default)]
+    struct ImportThrottle {
+        admitted: std::collections::HashMap<Uuid, Vec<SystemTime>>,
+    }
+
+    impl ImportThrottle {
+        fn new() -> Self {
+            Self::default()
+        }
+
+        fn admit(&mut self, user: Uuid, now: SystemTime) -> bool {
+            self.admitted.retain(|_, log| !RATE.forgets(log, now));
+            RATE.admit(self.admitted.entry(user).or_default(), now)
+        }
+
+        fn tracked(&self) -> usize {
+            self.admitted.len()
+        }
+    }
+
     #[test]
     fn a_member_gets_rate_limit_imports_per_window() {
-        let throttle = ImportThrottle::new();
+        let mut throttle = ImportThrottle::new();
         let user = Uuid::new_v4();
-        let t0 = Instant::now();
+        let t0 = SystemTime::now();
         for i in 0..RATE_LIMIT {
             assert!(
                 throttle.admit(user, t0 + Duration::from_secs(i as u64)),
@@ -339,9 +341,9 @@ mod tests {
 
     #[test]
     fn members_are_counted_apart() {
-        let throttle = ImportThrottle::new();
+        let mut throttle = ImportThrottle::new();
         let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
-        let now = Instant::now();
+        let now = SystemTime::now();
         for _ in 0..RATE_LIMIT {
             assert!(throttle.admit(a, now));
         }
@@ -351,8 +353,8 @@ mod tests {
 
     #[test]
     fn members_whose_imports_all_left_the_window_are_forgotten() {
-        let throttle = ImportThrottle::new();
-        let now = Instant::now();
+        let mut throttle = ImportThrottle::new();
+        let now = SystemTime::now();
         throttle.admit(Uuid::new_v4(), now);
         throttle.admit(Uuid::new_v4(), now);
         assert_eq!(throttle.tracked(), 2);

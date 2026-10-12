@@ -8,22 +8,26 @@
 //!
 //! Its terms ask for an identifying `User-Agent` and allow 15 product reads
 //! a minute per address (figure from issue #402). The second is kept by
-//! `Throttle`, process-wide, and by the cache below: a product read once is
-//! not asked again for `CACHE_TTL`, an unknown code for `MISS_TTL`. Past the
-//! limit, or when the service fails, the scan answers without a product and
+//! `Throttle`, for the whole server — counted in Postgres since #428, so
+//! that N replicas do not send N times the reads — and by the cache
+//! below: a product read once is not asked again for `CACHE_TTL`, an
+//! unknown code for `MISS_TTL`. Past the limit, when the limit cannot be
+//! read, or when the service fails, the scan answers without a product and
 //! the page falls back on the manual form — nothing is cached then.
 //!
 //! The records are published under the Open Database Licence: the pages
 //! that show one name the source (`apps/web`, `/stocks/new` and the legal
 //! notice).
 
-use std::collections::VecDeque;
-use std::sync::Mutex;
-use std::time::{Duration as StdDuration, Instant};
+use std::time::Duration as StdDuration;
 
 use chrono::{DateTime, Duration, Utc};
 use manage_our_home_shared::dto::stocks::ScannedProduct;
 use serde_json::Value;
+use sqlx::PgPool;
+
+use crate::auth::throttle::Pseudonyms;
+use crate::rate_limit::{SlidingLimiter, SlidingWindow};
 
 /// Production base URL. `OPENFOODFACTS_BASE_URL` overrides it (a stub in
 /// tests and e2e).
@@ -108,36 +112,27 @@ pub fn is_fresh(fetched_at: DateTime<Utc>, found: bool, now: DateTime<Utc>) -> b
     now < fetched_at + ttl
 }
 
-/// At most `RATE_LIMIT` reads per `RATE_WINDOW`, sliding. In-process:
-/// `infra/docker-compose.yml` runs one `api` (#428 shares it between
-/// replicas, as #427 did for the login lock).
-#[derive(Default)]
-pub struct Throttle {
-    admitted: Mutex<VecDeque<Instant>>,
-}
+/// At most `RATE_LIMIT` reads per `RATE_WINDOW`, sliding.
+pub const RATE: SlidingWindow = SlidingWindow {
+    limit: RATE_LIMIT,
+    window: RATE_WINDOW,
+};
+
+/// [`RATE`], counted for the whole server in `rate_limit_log` (#428): Open
+/// Food Facts sees one budget however many replicas send. See `rate_limit`
+/// for the mechanism.
+#[derive(Debug, Clone)]
+pub struct Throttle(SlidingLimiter);
 
 impl Throttle {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(db: PgPool, pseudonyms: Pseudonyms) -> Self {
+        Self(SlidingLimiter::new(db, pseudonyms, "openfoodfacts", RATE))
     }
 
-    /// Whether a read may go out at `now`; counted when it may.
-    pub fn admit(&self, now: Instant) -> bool {
-        let mut admitted = self
-            .admitted
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        while admitted
-            .front()
-            .is_some_and(|&at| now.saturating_duration_since(at) >= RATE_WINDOW)
-        {
-            admitted.pop_front();
-        }
-        if admitted.len() >= RATE_LIMIT {
-            return false;
-        }
-        admitted.push_back(now);
-        true
+    /// Whether a read may go out now; counted when it may. One subject:
+    /// the server.
+    pub async fn admit(&self) -> Result<bool, sqlx::Error> {
+        self.0.admit(b"").await
     }
 }
 
@@ -157,8 +152,15 @@ pub async fn fetch(
     code: &str,
     throttle: &Throttle,
 ) -> Result<Option<ScannedProduct>, LookupError> {
-    if !throttle.admit(Instant::now()) {
-        return Err(LookupError::Throttled);
+    match throttle.admit().await {
+        Ok(true) => {}
+        Ok(false) => return Err(LookupError::Throttled),
+        // Not counted, so not sent: the scan answers without a product,
+        // as when Open Food Facts itself fails.
+        Err(e) => {
+            tracing::warn!(error = %e, "open food facts limit unreadable");
+            return Err(LookupError::Unavailable);
+        }
     }
     let response = crate::outbound_http::client()
         .get(product_url(base, code))
@@ -188,6 +190,7 @@ pub async fn fetch(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::time::SystemTime;
 
     fn found(product: Value) -> Value {
         json!({ "code": "3017620422003", "status": 1, "status_verbose": "product found", "product": product })
@@ -289,10 +292,27 @@ mod tests {
         assert!(!is_fresh(fetched, false, fetched + Duration::days(1)));
     }
 
+    /// The log the process used to hold before #428, on the same pure
+    /// rule the store applies to the server's row.
+    #[derive(Default)]
+    struct Throttle {
+        admitted: Vec<SystemTime>,
+    }
+
+    impl Throttle {
+        fn new() -> Self {
+            Self::default()
+        }
+
+        fn admit(&mut self, now: SystemTime) -> bool {
+            RATE.admit(&mut self.admitted, now)
+        }
+    }
+
     #[test]
     fn the_throttle_admits_fifteen_reads_a_minute() {
-        let throttle = Throttle::new();
-        let start = Instant::now();
+        let mut throttle = Throttle::new();
+        let start = SystemTime::now();
         for i in 0..RATE_LIMIT {
             assert!(throttle.admit(start), "read {i}");
         }
@@ -306,8 +326,8 @@ mod tests {
 
     #[test]
     fn a_refused_read_does_not_count() {
-        let throttle = Throttle::new();
-        let start = Instant::now();
+        let mut throttle = Throttle::new();
+        let start = SystemTime::now();
         for _ in 0..RATE_LIMIT {
             throttle.admit(start);
         }

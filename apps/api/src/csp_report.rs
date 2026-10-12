@@ -28,8 +28,6 @@
 //!   what one request can write to the log is bounded here, and how many
 //!   requests one client may send by [`throttle`] (#375).
 
-use std::time::Instant;
-
 use axum::body::Bytes;
 use axum::extract::{Request, State};
 use axum::http::{header, StatusCode};
@@ -245,16 +243,19 @@ pub async fn receive(body: Bytes) -> StatusCode {
 /// Middleware on `POST /csp-report`: spends one request of the client's
 /// budget (`csp_report_throttle`), or answers 429 with `Retry-After`
 /// without reading the body. A refusal is not logged — that would hand
-/// back the log lines the limit exists to withhold.
+/// back the log lines the limit exists to withhold. A database error
+/// answers 500, also without reading the body.
 pub async fn throttle(
     State(state): State<AppState>,
     ClientIp(client): ClientIp,
     request: Request,
     next: Next,
 ) -> Response {
-    match state.csp_report_throttle.admit(client, Instant::now()) {
-        Decision::Allow => next.run(request).await,
-        Decision::Refused { retry_after } => (
+    match state.csp_report_throttle.admit(client).await {
+        Ok(Decision::Allow) => next.run(request).await,
+        // Not counted, so not read either.
+        Err(e) => crate::error::AppError::from(e).into_response(),
+        Ok(Decision::Refused { retry_after }) => (
             StatusCode::TOO_MANY_REQUESTS,
             [(
                 header::RETRY_AFTER,

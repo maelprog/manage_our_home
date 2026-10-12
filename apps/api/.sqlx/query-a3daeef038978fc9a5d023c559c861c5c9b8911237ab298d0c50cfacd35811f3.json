@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE csp_report_throttle SET requests = $2, window_start = $3\n                  WHERE scope = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int4",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a3daeef038978fc9a5d023c559c861c5c9b8911237ab298d0c50cfacd35811f3"
+}

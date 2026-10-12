@@ -511,6 +511,21 @@ comes. The runtime role needs `SELECT, INSERT, UPDATE, DELETE` on the
 table — the `app_role` grant of the Row-Level Security note covers it
 when run after the migration.
 
+**The other rate limits count the same way (#428).** The recipe import
+(`recipes::import::RATE_LIMIT` per member per 10 minutes), the reads sent
+to Open Food Facts (`stocks::openfoodfacts::RATE_LIMIT` a minute, for the
+whole server) and `POST /csp-report` (`csp_report_throttle::MAX_REPORTS`
+per client address per 15 minutes) are counted in the `UNLOGGED` tables
+`rate_limit_log` and `csp_report_throttle` (migration `0029`), under an
+advisory lock per counted subject and on the database's clock, so N
+replicas allow what one does. Their rows hold HMAC pseudonyms keyed from
+the same `LOGIN_THROTTLE_KEY`, each limit under a label of its own. The
+hourly retention purge deletes a `rate_limit_log` row on its first pass
+once the row's newest admission is 10 minutes old, and a
+`csp_report_throttle` row on its first pass once its window is over. A database
+error refuses the request: a 500 for the import and the CSP report, a scan
+without a product for Open Food Facts.
+
 **What counts as one address (#198).** An IPv4 address stands for itself. An
 IPv6 one is reduced to its **/64** before it is used as a key: a residential
 line is delegated a whole /64 and picks any address inside it, so the /128 on
@@ -664,7 +679,8 @@ only recovers the second way.
 behind a code, from the server, at `https://world.openfoodfacts.org` unless
 **`OPENFOODFACTS_BASE_URL`** says otherwise (unset or empty: the default).
 Nothing else to configure: no key, no account. The reads are limited to
-`stocks::openfoodfacts::RATE_LIMIT` per minute from this process, and
+`stocks::openfoodfacts::RATE_LIMIT` per minute from the whole server,
+every replica included (#428), and
 answers are cached in `off_products` (`CACHE_TTL`, `MISS_TTL`). Unreachable,
 throttled or failing, the scan answers without a product and the page
 offers the manual form.

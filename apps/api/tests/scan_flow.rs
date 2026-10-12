@@ -669,3 +669,109 @@ async fn an_article_already_in_stock_gets_no_category_date(db: PgPool) {
     assert!(body["expires_on"].is_null(), "{body}");
     assert!(body["expires_on_source"].is_null(), "{body}");
 }
+
+/// A valid EAN-13 the stub does not know, one per `i`: `400` and `i` on
+/// nine digits, then the check digit.
+fn unknown_ean13(i: usize) -> String {
+    let body = format!("400{i:09}");
+    let sum: u32 = body
+        .chars()
+        .enumerate()
+        .map(|(k, c)| c.to_digit(10).unwrap() * if k % 2 == 0 { 1 } else { 3 })
+        .sum();
+    format!("{body}{}", (10 - sum % 10) % 10)
+}
+
+/// #428: two instances of the API on one database — two replicas — send
+/// Open Food Facts the reads of one: `RATE_LIMIT` a minute in all, not per
+/// instance. Each scan asks a code no one asked before, so the cache
+/// spares nothing.
+#[sqlx::test]
+async fn two_instances_send_open_food_facts_the_reads_of_one(db: PgPool) {
+    use manage_our_home::stocks::openfoodfacts::RATE_LIMIT;
+
+    let (base, hits) = off_stub().await;
+    let instance = || {
+        let mut state = test_state(db.clone());
+        state.openfoodfacts_base_url = base.clone();
+        manage_our_home::build_router(state)
+    };
+    let (a, b) = (instance(), instance());
+    let cookie = register_verify_login(&a, &db, "scan-replicas@example.test").await;
+    let group_id = create_group(&a, &cookie).await;
+
+    for i in 0..RATE_LIMIT + 5 {
+        let router = if i % 2 == 0 { &a } else { &b };
+        let res = scan(router, &cookie, &group_id, &unknown_ean13(i)).await;
+        assert_status(&res, StatusCode::OK);
+    }
+    assert_eq!(hits.load(Ordering::SeqCst), RATE_LIMIT);
+    // Past the limit, no miss was cached: the code is asked again later.
+    let cached: i64 = sqlx::query_scalar("SELECT count(*) FROM off_products")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(cached, RATE_LIMIT as i64);
+    // One row for the whole server, holding the admitted reads only.
+    let rows: Vec<(String, i32)> = sqlx::query_as(
+        "SELECT kind, cardinality(admitted) FROM rate_limit_log WHERE kind = 'openfoodfacts'",
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(rows, vec![("openfoodfacts".to_string(), RATE_LIMIT as i32)]);
+}
+
+/// The same, with every scan sent at once, half to each instance: the
+/// lock makes them wait on each other, so a burst does not slip past the
+/// limit either.
+#[sqlx::test]
+async fn a_burst_across_two_instances_sends_open_food_facts_the_reads_of_one(db: PgPool) {
+    use manage_our_home::stocks::openfoodfacts::RATE_LIMIT;
+
+    let (base, hits) = off_stub().await;
+    let instance = || {
+        let mut state = test_state(db.clone());
+        state.openfoodfacts_base_url = base.clone();
+        manage_our_home::build_router(state)
+    };
+    let (a, b) = (instance(), instance());
+    let cookie = register_verify_login(&a, &db, "scan-burst@example.test").await;
+    let group_id = create_group(&a, &cookie).await;
+
+    let scans = (0..2 * RATE_LIMIT).map(|i| {
+        let router = if i % 2 == 0 { a.clone() } else { b.clone() };
+        let (cookie, group_id) = (cookie.clone(), group_id.clone());
+        async move {
+            let res = scan(&router, &cookie, &group_id, &unknown_ean13(i)).await;
+            assert_status(&res, StatusCode::OK);
+        }
+    });
+    futures::future::join_all(scans).await;
+    assert_eq!(hits.load(Ordering::SeqCst), RATE_LIMIT);
+}
+
+/// #428: a read the limit cannot count is not sent. With its table out of
+/// reach, the scan answers without a product, Open Food Facts is not
+/// asked, and nothing is cached.
+#[sqlx::test]
+async fn a_read_the_limit_cannot_count_is_not_sent(db: PgPool) {
+    let (router, hits) = router_with_off(db.clone()).await;
+    let cookie = register_verify_login(&router, &db, "scan-nolimit@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+    sqlx::query("ALTER TABLE rate_limit_log RENAME TO rate_limit_log_gone")
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let res = scan(&router, &cookie, &group_id, NUTELLA).await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    assert!(body["product"].is_null(), "{body}");
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "Open Food Facts asked");
+    let cached: i64 = sqlx::query_scalar("SELECT count(*) FROM off_products")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(cached, 0);
+}

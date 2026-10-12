@@ -21,6 +21,7 @@ pub mod migrations;
 pub mod notifications;
 pub mod outbound_http;
 pub mod public_destination;
+pub mod rate_limit;
 pub mod recipes;
 pub mod rgpd;
 pub mod stocks;
@@ -93,7 +94,8 @@ pub struct AppState {
     /// replica shares one count and a restart keeps it.
     pub login_throttle: std::sync::Arc<auth::throttle::LoginThrottle>,
     /// Per-address limit on `POST /csp-report` (#375), keyed like
-    /// `login_throttle` but still in-process (#428 moves it).
+    /// `login_throttle` and, like it, counted in Postgres
+    /// (`csp_report_throttle`, #428).
     pub csp_report_throttle: std::sync::Arc<csp_report_throttle::ReportThrottle>,
     /// Cumulative count of logins per ending, published as an aggregate
     /// and never per request (#178 bis).
@@ -127,8 +129,8 @@ pub struct AppState {
     /// `OPENFOODFACTS_BASE_URL` says otherwise; tests point it at a local
     /// stub, or at nothing.
     pub openfoodfacts_base_url: String,
-    /// The limit on reads sent to Open Food Facts (#402), still
-    /// in-process (#428 moves it).
+    /// The limit on reads sent to Open Food Facts (#402), for the whole
+    /// server: counted in Postgres (`rate_limit_log`, #428).
     pub off_throttle: std::sync::Arc<stocks::openfoodfacts::Throttle>,
     /// The client the recipe import (#405) fetches pages with:
     /// `outbound_http::recipe_import_client()`, which reaches public
@@ -136,8 +138,8 @@ pub struct AppState {
     /// (`outbound_http::recipe_import_builder`), with a test name pinned to
     /// their local server.
     pub recipe_import_client: reqwest::Client,
-    /// The per-member limit on recipe imports (#405), still
-    /// in-process (#428 moves it).
+    /// The per-member limit on recipe imports (#405), counted in
+    /// Postgres (`rate_limit_log`, #428).
     pub recipe_import_throttle: std::sync::Arc<recipes::import::ImportThrottle>,
     /// Whether the process is stopping (#424): `/readyz` answers 503 from
     /// then on, and every Messagerie WebSocket closes with a Close frame.

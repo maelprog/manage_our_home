@@ -169,6 +169,40 @@ async fn each_table_loses_exactly_the_rows_past_their_retention(db: PgPool) {
         .unwrap();
     }
 
+    // #428: a sliding-window row goes once its newest admission is ten
+    // minutes old (`rate_limit::LONGEST_WINDOW`), whatever older ones it
+    // holds; a CSP counter once its quarter-hour window is over.
+    let ten_minutes = Duration::minutes(10);
+    for (byte, admitted) in [
+        ("aa", vec![now - half_hour, now - ten_minutes - minute]),
+        ("bb", vec![now - half_hour, now - ten_minutes + minute]),
+    ] {
+        sqlx::query(
+            "INSERT INTO rate_limit_log (kind, bucket, admitted)
+             VALUES ('recipe_import', decode(repeat($1, 32), 'hex'), $2)",
+        )
+        .bind(byte)
+        .bind(admitted)
+        .execute(&db)
+        .await
+        .unwrap();
+    }
+    let quarter_hour = Duration::minutes(15);
+    for (byte, started) in [
+        ("aa", now - quarter_hour - minute),
+        ("bb", now - quarter_hour + minute),
+    ] {
+        sqlx::query(
+            "INSERT INTO csp_report_throttle (scope, requests, window_start)
+             VALUES (decode(repeat($1, 32), 'hex'), 1, $2)",
+        )
+        .bind(byte)
+        .bind(started)
+        .execute(&db)
+        .await
+        .unwrap();
+    }
+
     let counts = purge(&db, RetentionCutoffs::at(now)).await.unwrap();
 
     assert_eq!(
@@ -180,8 +214,23 @@ async fn each_table_loses_exactly_the_rows_past_their_retention(db: PgPool) {
             invitations: 1,
             sessions: 4,
             login_throttle: 1,
+            rate_limit_log: 1,
+            csp_report_throttle: 1,
         }
     );
+    for (table, query) in [
+        (
+            "rate_limit_log",
+            "SELECT encode(bucket, 'hex') FROM rate_limit_log",
+        ),
+        (
+            "csp_report_throttle",
+            "SELECT encode(scope, 'hex') FROM csp_report_throttle",
+        ),
+    ] {
+        let left: Vec<String> = sqlx::query_scalar(query).fetch_all(&db).await.unwrap();
+        assert_eq!(left, vec!["bb".repeat(32)], "{table}");
+    }
     let throttle_left: Vec<String> =
         sqlx::query_scalar("SELECT encode(scope, 'hex') FROM login_throttle")
             .fetch_all(&db)

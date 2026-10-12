@@ -29,11 +29,25 @@ pub fn test_state(db: PgPool) -> AppState {
 
     let runtime_db = runtime_pool(&db);
     // On the handlers' pool, as in `main.rs`: two states built on one
-    // database share their login counters (#427).
+    // database share their login counters (#427), and the counters of
+    // the other limits (#428).
+    let pseudonyms = manage_our_home::auth::throttle::Pseudonyms::new("test-login-throttle-key");
     let login_throttle = std::sync::Arc::new(manage_our_home::auth::throttle::LoginThrottle::new(
         runtime_db.clone(),
-        manage_our_home::auth::throttle::Pseudonyms::new("test-login-throttle-key"),
+        pseudonyms.clone(),
     ));
+    let csp_report_throttle =
+        std::sync::Arc::new(manage_our_home::csp_report_throttle::ReportThrottle::new(
+            runtime_db.clone(),
+            pseudonyms.clone(),
+        ));
+    let off_throttle = std::sync::Arc::new(manage_our_home::stocks::openfoodfacts::Throttle::new(
+        runtime_db.clone(),
+        pseudonyms.clone(),
+    ));
+    let recipe_import_throttle = std::sync::Arc::new(
+        manage_our_home::recipes::import::ImportThrottle::new(runtime_db.clone(), pseudonyms),
+    );
     AppState {
         message_hubs: manage_our_home::messagerie::MessageHub::new(
             runtime_db.clone(),
@@ -60,9 +74,7 @@ pub fn test_state(db: PgPool) -> AppState {
         // that need several distinct clients build their own state.
         trusted_proxies: std::sync::Arc::new(manage_our_home::client_ip::TrustedProxies::none()),
         login_throttle,
-        csp_report_throttle: std::sync::Arc::new(
-            manage_our_home::csp_report_throttle::ReportThrottle::new(),
-        ),
+        csp_report_throttle,
         login_branches: std::sync::Arc::new(
             manage_our_home::auth::timing::BranchCounters::default(),
         ),
@@ -82,11 +94,9 @@ pub fn test_state(db: PgPool) -> AppState {
         // Nothing listens there: no test reaches the real Open Food Facts.
         // The scan tests that need an answer point this at a local stub.
         openfoodfacts_base_url: "http://127.0.0.1:1".into(),
-        off_throttle: std::sync::Arc::new(manage_our_home::stocks::openfoodfacts::Throttle::new()),
+        off_throttle,
         recipe_import_client: manage_our_home::outbound_http::recipe_import_client().clone(),
-        recipe_import_throttle: std::sync::Arc::new(
-            manage_our_home::recipes::import::ImportThrottle::new(),
-        ),
+        recipe_import_throttle,
         shutdown: manage_our_home_http_guard::Shutdown::new(),
     }
 }

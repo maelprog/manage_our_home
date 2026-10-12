@@ -444,3 +444,94 @@ async fn a_source_url_that_is_not_a_web_address_is_refused(db: PgPool) {
     }
     assert_eq!(recipe_count(&db).await, 0);
 }
+
+/// #428: a member's budget is the same whichever instance of the API — two
+/// replicas on one database — takes each import. Their admissions are kept
+/// under a pseudonym, never the member's id.
+#[sqlx::test]
+async fn a_member_is_limited_to_rate_limit_imports_across_two_instances(db: PgPool) {
+    let s = setup(db.clone(), true).await;
+    let mut state = test_state(db.clone());
+    state.recipe_import_client = test_client(SocketAddr::from(([127, 0, 0, 1], s.port)));
+    let other = Setup {
+        router: manage_our_home::build_router(state),
+        cookie: s.cookie.clone(),
+        group_id: s.group_id.clone(),
+        port: s.port,
+        hits: s.hits.clone(),
+    };
+    let url = format!("http://{SITE}:{}/marmiton", s.port);
+    for i in 0..RATE_LIMIT {
+        let instance = if i % 2 == 0 { &s } else { &other };
+        assert_status(&import(instance, &url).await, StatusCode::OK);
+    }
+    for instance in [&s, &other] {
+        assert_status(&import(instance, &url).await, StatusCode::TOO_MANY_REQUESTS);
+    }
+    assert_eq!(s.hits.load(Ordering::SeqCst), RATE_LIMIT, "not fetched");
+
+    let user: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    let buckets: Vec<Vec<u8>> =
+        sqlx::query_scalar("SELECT bucket FROM rate_limit_log WHERE kind = 'recipe_import'")
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    assert_eq!(buckets.len(), 1);
+    assert_eq!(buckets[0].len(), 32);
+    assert!(
+        !buckets[0]
+            .windows(16)
+            .any(|w| w == user.as_bytes().as_slice()),
+        "the member's id is stored in clear"
+    );
+}
+
+/// A member whose imports all left the window is forgotten by the next
+/// import of anyone, as the in-memory map dropped them; one whose newest
+/// import is still in the window is kept.
+#[sqlx::test]
+async fn members_whose_imports_left_the_window_are_forgotten_by_the_next_import(db: PgPool) {
+    let s = setup(db.clone(), true).await;
+    for (byte, age) in [("aa", "10 minutes 1 second"), ("bb", "9 minutes")] {
+        sqlx::query(
+            "INSERT INTO rate_limit_log (kind, bucket, admitted)
+             VALUES ('recipe_import', decode(repeat($1, 32), 'hex'),
+                     ARRAY[now() - interval '20 minutes', now() - $2::interval])",
+        )
+        .bind(byte)
+        .bind(age)
+        .execute(&db)
+        .await
+        .unwrap();
+    }
+    let url = format!("http://{SITE}:{}/marmiton", s.port);
+    assert_status(&import(&s, &url).await, StatusCode::OK);
+
+    let left: Vec<String> = sqlx::query_scalar(
+        "SELECT encode(bucket, 'hex') FROM rate_limit_log
+          WHERE kind = 'recipe_import' AND encode(bucket, 'hex') IN ($1, $2)",
+    )
+    .bind("aa".repeat(32))
+    .bind("bb".repeat(32))
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(left, vec!["bb".repeat(32)]);
+}
+
+/// #428: an import the limit cannot count is not started. With its table
+/// out of reach, the import answers 500 and the page is not fetched.
+#[sqlx::test]
+async fn an_import_the_limit_cannot_count_is_a_500_and_fetches_nothing(db: PgPool) {
+    let s = setup(db.clone(), true).await;
+    sqlx::query("ALTER TABLE rate_limit_log RENAME TO rate_limit_log_gone")
+        .execute(&db)
+        .await
+        .unwrap();
+    let url = format!("http://{SITE}:{}/marmiton", s.port);
+    assert_status(&import(&s, &url).await, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(s.hits.load(Ordering::SeqCst), 0, "fetched");
+}

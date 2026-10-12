@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM csp_report_throttle WHERE window_start <= $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "02f2c59f3867eca4c121ed7904b1cf154ac117350ebbc60d74c06e9ed288134f"
+}

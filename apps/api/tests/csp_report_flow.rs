@@ -177,3 +177,151 @@ async fn one_client_spending_its_budget_costs_no_other_client(db: PgPool) {
     let res = router.clone().oneshot(from("198.51.100.9:4000")).await;
     assert_eq!(res.unwrap().status(), StatusCode::NO_CONTENT);
 }
+
+/// #428: two instances of the API on one database — two replicas — give a
+/// client one budget between them, in sequence and in a burst, and keep
+/// its address as a pseudonym only.
+#[sqlx::test]
+async fn two_instances_give_a_client_one_budget(db: PgPool) {
+    use manage_our_home::csp_report_throttle::MAX_REPORTS;
+
+    let (a, b) = (test_router(db.clone()), test_router(db.clone()));
+    // Half the budget in sequence, alternating...
+    for i in 0..MAX_REPORTS / 2 {
+        let router = if i % 2 == 0 { &a } else { &b };
+        assert_eq!(
+            post(router, "application/csp-report", LEGACY.into(), &[]).await,
+            StatusCode::NO_CONTENT,
+            "report {i}"
+        );
+    }
+    // ...then twice the rest at once, half on each instance.
+    let rest = MAX_REPORTS - MAX_REPORTS / 2;
+    let burst = futures::future::join_all((0..2 * rest).map(|i| {
+        let router = if i % 2 == 0 { a.clone() } else { b.clone() };
+        async move { post(&router, "application/csp-report", LEGACY.into(), &[]).await }
+    }))
+    .await;
+    let admitted = burst
+        .iter()
+        .filter(|s| **s == StatusCode::NO_CONTENT)
+        .count();
+    let refused = burst
+        .iter()
+        .filter(|s| **s == StatusCode::TOO_MANY_REQUESTS)
+        .count();
+    assert_eq!((admitted, refused), (rest as usize, rest as usize));
+    for router in [&a, &b] {
+        assert_eq!(
+            post(router, "application/csp-report", LEGACY.into(), &[]).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+
+    let rows: Vec<(Vec<u8>, i32)> =
+        sqlx::query_as("SELECT scope, requests FROM csp_report_throttle")
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].1, MAX_REPORTS as i32);
+    // Every test client resolves to the unspecified address: the row is
+    // neither it nor its bare SHA-256.
+    let bare: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM csp_report_throttle
+          WHERE scope = sha256(convert_to('0.0.0.0', 'UTF8'))
+             OR position(convert_to('0.0.0.0', 'UTF8') IN scope) > 0",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(bare, 0);
+}
+
+/// #428: `MAX_TRACKED` holds between replicas. One address short of a full
+/// table, 20 new clients at once, half on each instance: one gets the last
+/// place, the others are refused, and the table ends full, not past it.
+#[sqlx::test]
+async fn new_clients_at_once_on_two_instances_do_not_overfill_the_table(db: PgPool) {
+    use axum::extract::ConnectInfo;
+    use manage_our_home::csp_report_throttle::MAX_TRACKED;
+    use std::net::SocketAddr;
+
+    sqlx::query(
+        "INSERT INTO csp_report_throttle (scope, requests, window_start)
+         SELECT sha256(int4send(i)), 1, now() FROM generate_series(1, $1) AS i",
+    )
+    .bind(MAX_TRACKED as i32 - 1)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let (a, b) = (test_router(db.clone()), test_router(db.clone()));
+    let statuses = futures::future::join_all((0..20u8).map(|i| {
+        let router = if i % 2 == 0 { a.clone() } else { b.clone() };
+        let peer: SocketAddr = format!("198.51.100.{}:4000", i + 1).parse().unwrap();
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/csp-report")
+            .header(header::HOST, "localhost:8080")
+            .header(header::CONTENT_TYPE, "application/csp-report")
+            .extension(ConnectInfo(peer))
+            .body(Body::from(LEGACY))
+            .unwrap();
+        async move { router.oneshot(request).await.unwrap().status() }
+    }))
+    .await;
+    let admitted = statuses
+        .iter()
+        .filter(|s| **s == StatusCode::NO_CONTENT)
+        .count();
+    assert_eq!(admitted, 1, "{statuses:?}");
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM csp_report_throttle")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(rows, MAX_TRACKED as i64);
+}
+
+/// #428: a report the limit cannot count is not read. With its table out
+/// of reach, the route answers 500.
+#[sqlx::test]
+async fn a_report_the_limit_cannot_count_is_a_500(db: PgPool) {
+    sqlx::query("ALTER TABLE csp_report_throttle RENAME TO csp_report_throttle_gone")
+        .execute(&db)
+        .await
+        .unwrap();
+    let router = test_router(db);
+    assert_eq!(
+        post(&router, "application/csp-report", LEGACY.into(), &[]).await,
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+}
+
+/// A table full of addresses whose windows are over makes room: the
+/// newcomer reclaims them and is admitted.
+#[sqlx::test]
+async fn a_full_table_of_stale_addresses_admits_a_new_client(db: PgPool) {
+    use manage_our_home::csp_report_throttle::MAX_TRACKED;
+
+    sqlx::query(
+        "INSERT INTO csp_report_throttle (scope, requests, window_start)
+         SELECT sha256(int4send(i)), 1, now() - interval '16 minutes'
+           FROM generate_series(1, $1) AS i",
+    )
+    .bind(MAX_TRACKED as i32)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let router = test_router(db.clone());
+    assert_eq!(
+        post(&router, "application/csp-report", LEGACY.into(), &[]).await,
+        StatusCode::NO_CONTENT
+    );
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM csp_report_throttle")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(rows, 1);
+}
