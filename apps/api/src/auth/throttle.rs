@@ -85,6 +85,14 @@
 //! at the share or not, and once past the share runs the purge and, on a
 //! full table, evicts one pair. Only an attempt on a pair already locked
 //! changes nothing.
+//!
+//! **That connection is not the handlers' (#454).** An attempt holds it
+//! while it waits on its address's lock, refused or not: on the handlers'
+//! pool, a burst of concurrent attempts from one address would take every
+//! connection of it and leave the rest of the API waiting. The throttle
+//! opens a pool of its own, on the same server and as the same role, of
+//! [`POOL_SIZE`] connections: a burst can only queue behind it, which slows
+//! other logins and nothing else.
 
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -641,11 +649,17 @@ pub const SCOPE_LOCK: i32 = i32::from_be_bytes(*b"mlgs");
 /// [`SCOPE_LOCK`], never before, so the two cannot deadlock.
 pub const TABLE_LOCK: i32 = i32::from_be_bytes(*b"mlgt");
 
+/// Connections of the throttle's own pool, per replica (#454). Attempts
+/// from one address are decided one after the other whatever this is: more
+/// connections only let attempts from distinct addresses proceed together.
+pub const POOL_SIZE: u32 = 4;
+
 /// The counters, in Postgres. Held in `AppState` behind an `Arc`; every
 /// method takes `&self`. Each replica builds its own, on the same table,
 /// with the same secret.
 #[derive(Debug, Clone)]
 pub struct LoginThrottle {
+    /// Its own pool, never the handlers' (#454).
     db: PgPool,
     pseudonyms: Pseudonyms,
 }
@@ -824,7 +838,15 @@ pub async fn purge_expired(
 }
 
 impl LoginThrottle {
-    pub fn new(db: PgPool, pseudonyms: Pseudonyms) -> Self {
+    /// `handlers` is the handlers' pool, read only for where to connect
+    /// and as whom: the throttle opens its own, of [`POOL_SIZE`]
+    /// connections, with the same options (`db::pool_options`). It
+    /// connects on first use; until then a database it cannot reach shows
+    /// as an error on [`Self::admit`], which refuses the attempt.
+    pub fn new(handlers: PgPool, pseudonyms: Pseudonyms) -> Self {
+        let db = crate::db::pool_options()
+            .max_connections(POOL_SIZE)
+            .connect_lazy_with((*handlers.connect_options()).clone());
         Self { db, pseudonyms }
     }
 

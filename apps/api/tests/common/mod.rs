@@ -28,9 +28,10 @@ pub fn test_state(db: PgPool) -> AppState {
     let email = EmailSender::new(smtp, "noreply@example.test".parse().unwrap());
 
     let runtime_db = runtime_pool(&db);
-    // On the handlers' pool, as in `main.rs`: two states built on one
-    // database share their login counters (#427), and the counters of
-    // the other limits (#428).
+    // Built from the handlers' pool, as in `main.rs` — the login throttle
+    // opens its own on the same options (#454): two states built on one
+    // database share their login counters (#427), and the counters of the
+    // other limits (#428).
     let pseudonyms = manage_our_home::auth::throttle::Pseudonyms::new("test-login-throttle-key");
     let login_throttle = std::sync::Arc::new(manage_our_home::auth::throttle::LoginThrottle::new(
         runtime_db.clone(),

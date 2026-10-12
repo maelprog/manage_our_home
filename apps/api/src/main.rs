@@ -145,6 +145,8 @@ async fn main() -> anyhow::Result<()> {
     // The same key pseudonymises the other limits' subjects (#428), each
     // under a label of its own.
     let pseudonyms = manage_our_home::auth::throttle::Pseudonyms::new(&login_throttle_secret);
+    // On a pool of its own, opened with `db`'s options (#454): a burst of
+    // attempts waiting on the lock cannot take the handlers' connections.
     let login_throttle = std::sync::Arc::new(manage_our_home::auth::throttle::LoginThrottle::new(
         db.clone(),
         pseudonyms.clone(),

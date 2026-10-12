@@ -63,7 +63,8 @@ pub async fn begin(pool: &PgPool) -> Result<Transaction<'static, Postgres>, sqlx
     }
 }
 
-/// Pool options for the runtime pools (`DATABASE_URL`, `ADMIN_DATABASE_URL`).
+/// Pool options for the runtime pools (`DATABASE_URL`, `ADMIN_DATABASE_URL`,
+/// and the login throttle's own, `auth::throttle::LoginThrottle::new`).
 ///
 /// A connection that comes back to the pool with a transaction still open
 /// on the server is closed instead of being reused, which ends that
