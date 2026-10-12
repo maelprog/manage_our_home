@@ -142,10 +142,23 @@ async fn main() -> anyhow::Result<()> {
         env::var(manage_our_home::auth::throttle::SECRET_VAR).ok(),
     )
     .map_err(anyhow::Error::msg)?;
+    // The same key pseudonymises the other limits' subjects (#428), each
+    // under a label of its own.
+    let pseudonyms = manage_our_home::auth::throttle::Pseudonyms::new(&login_throttle_secret);
     let login_throttle = std::sync::Arc::new(manage_our_home::auth::throttle::LoginThrottle::new(
         db.clone(),
-        manage_our_home::auth::throttle::Pseudonyms::new(&login_throttle_secret),
+        pseudonyms.clone(),
     ));
+    let csp_report_throttle = std::sync::Arc::new(
+        manage_our_home::csp_report_throttle::ReportThrottle::new(db.clone(), pseudonyms.clone()),
+    );
+    let off_throttle = std::sync::Arc::new(manage_our_home::stocks::openfoodfacts::Throttle::new(
+        db.clone(),
+        pseudonyms.clone(),
+    ));
+    let recipe_import_throttle = std::sync::Arc::new(
+        manage_our_home::recipes::import::ImportThrottle::new(db.clone(), pseudonyms),
+    );
     let state = AppState {
         db,
         google_oauth,
@@ -165,9 +178,7 @@ async fn main() -> anyhow::Result<()> {
         admin_db,
         trusted_proxies: std::sync::Arc::new(trusted_proxies),
         login_throttle,
-        csp_report_throttle: std::sync::Arc::new(
-            manage_our_home::csp_report_throttle::ReportThrottle::new(),
-        ),
+        csp_report_throttle,
         login_branches: std::sync::Arc::new(
             manage_our_home::auth::timing::BranchCounters::default(),
         ),
@@ -178,11 +189,9 @@ async fn main() -> anyhow::Result<()> {
             .ok()
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| manage_our_home::stocks::openfoodfacts::DEFAULT_BASE_URL.into()),
-        off_throttle: std::sync::Arc::new(manage_our_home::stocks::openfoodfacts::Throttle::new()),
+        off_throttle,
         recipe_import_client: manage_our_home::outbound_http::recipe_import_client().clone(),
-        recipe_import_throttle: std::sync::Arc::new(
-            manage_our_home::recipes::import::ImportThrottle::new(),
-        ),
+        recipe_import_throttle,
         shutdown: manage_our_home_http_guard::Shutdown::new(),
     };
 

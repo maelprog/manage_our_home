@@ -598,6 +598,14 @@ impl Pseudonyms {
         }
     }
 
+    /// The key of `subject` in another rate limit than the login lock
+    /// (#428): `rate_limit_log` and `csp_report_throttle` hold this, never
+    /// the subject. `label` names the limit, holds no NUL, and keeps one
+    /// limit's pseudonyms apart from another's and from the login lock's.
+    pub fn limit(&self, label: &str, subject: &[u8]) -> [u8; 32] {
+        hmac_sha256(&self.key, &[b"limit\0", label.as_bytes(), b"\0", subject])
+    }
+
     /// The address half: what [`MAX_PAIRS_PER_IP`] is counted on. `ip` is
     /// already an [`address_scope`] when it comes from [`key`].
     fn scope(&self, ip: IpAddr) -> Pseudonym {
@@ -986,6 +994,38 @@ mod tests {
             p.pair(ip("1.2.3.4"), "5x@example.test"),
             p.pair(ip("1.2.3.45"), "x@example.test")
         );
+    }
+
+    /// #428: the other limits key their subjects under the same secret,
+    /// each under a label of its own.
+    #[test]
+    fn a_limit_pseudonym_depends_on_the_key_and_replicas_agree() {
+        let a = Pseudonyms::new("shared");
+        assert_eq!(
+            a.limit("csp_report", b"192.168.1.42"),
+            Pseudonyms::new("shared").limit("csp_report", b"192.168.1.42")
+        );
+        assert_ne!(
+            a.limit("csp_report", b"192.168.1.42"),
+            Pseudonyms::new("another secret").limit("csp_report", b"192.168.1.42")
+        );
+        let plain = <Sha256 as sha2::Digest>::digest(b"192.168.1.42");
+        assert_ne!(&a.limit("csp_report", b"192.168.1.42")[..], &plain[..]);
+    }
+
+    #[test]
+    fn one_subject_under_two_limits_leaves_two_unrelated_pseudonyms() {
+        let p = Pseudonyms::new("shared");
+        let client = ip("192.168.1.42");
+        let subject = client.to_string();
+        assert_ne!(
+            p.limit("csp_report", subject.as_bytes()),
+            p.limit("recipe_import", subject.as_bytes())
+        );
+        // Nor does a limit's row tie back to the login lock's.
+        assert_ne!(p.limit("csp_report", subject.as_bytes()), p.scope(client));
+        // The label and the subject cannot be shifted into each other.
+        assert_ne!(p.limit("ab", b"c"), p.limit("a", b"bc"));
     }
 
     #[test]

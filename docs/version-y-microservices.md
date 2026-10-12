@@ -142,7 +142,9 @@ sans rien changer à l'architecture v1/v2 actuelle :
      réglé : ses compteurs sont dans une table Postgres partagée par les
      réplicas, et survivent au redémarrage de l'API ;
    - #428 : les limites de débit de l'import de recettes, des appels à Open
-     Food Facts et des rapports CSP comptent en mémoire ;
+     Food Facts et des rapports CSP comptaient en mémoire — réglé : elles
+     comptent dans des tables Postgres partagées par les réplicas, par le
+     mécanisme de #427 ;
    - #429 : le hub WebSocket de la messagerie était local au process —
      réglé : chaque réplica reçoit les événements des autres par Postgres
      `LISTEN/NOTIFY`.
@@ -152,8 +154,7 @@ sans rien changer à l'architecture v1/v2 actuelle :
    #432).
 
 Ces règles sont listées ici comme garde-fous à vérifier à chaque nouvel
-epic ; la règle 3 demande encore le code de #428 (#426, #427 et #429 sont
-réglées).
+epic ; pour la règle 3, #426 à #429 sont réglées.
 
 ## Questions ouvertes / décisions à prendre plus tard
 

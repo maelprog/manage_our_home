@@ -95,6 +95,10 @@ pub struct PurgeCounts {
     pub sessions: u64,
     /// Login lock counters past `auth::throttle::purge_cutoff` (#427).
     pub login_throttle: u64,
+    /// Sliding-window limits past `rate_limit::LONGEST_WINDOW` (#428).
+    pub rate_limit_log: u64,
+    /// CSP report counters whose window is over (#428).
+    pub csp_report_throttle: u64,
 }
 
 /// Polling worker, `account_purge`'s shape. `pool` must be the `BYPASSRLS`
@@ -207,6 +211,11 @@ pub async fn purge(pool: &PgPool, cutoffs: RetentionCutoffs) -> anyhow::Result<P
     // against this pass's clock rather than the database's; the bound is
     // half an hour wide, so the drift between the two does not matter.
     let login_throttle = crate::auth::throttle::purge_expired(&mut tx, cutoffs.now.into()).await?;
+    // The other limits' counters (#428), for the same reason: otherwise
+    // only a later admission of their own limit reclaims them.
+    let rate_limit_log = crate::rate_limit::purge_expired(&mut tx, cutoffs.now.into()).await?;
+    let csp_report_throttle =
+        crate::csp_report_throttle::purge_expired(&mut tx, cutoffs.now.into()).await?;
 
     tx.commit().await?;
 
@@ -217,6 +226,8 @@ pub async fn purge(pool: &PgPool, cutoffs: RetentionCutoffs) -> anyhow::Result<P
         invitations,
         sessions,
         login_throttle,
+        rate_limit_log,
+        csp_report_throttle,
     })
 }
 

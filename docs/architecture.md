@@ -345,11 +345,11 @@ Sealed Secrets, branche `deploy`). Docker Compose reste la pile de
 développement local. L'extraction de services reste, elle, soumise à
 justification concrète comme ci-dessus.
 
-La règle « stateless par requête » n'est pas encore tenue : le process garde
-de l'état en mémoire (limites de débit) — #428 y remédie avant tout passage
-à plusieurs réplicas. Le frein du login, lui, compte dans Postgres (table
-`login_throttle`, #427), partagé par tous les réplicas. Les tâches de fond, elles,
-ne tournent plus que dans un process à la fois, sous un verrou consultatif
+Pour la règle « stateless par requête », les limites de débit comptent
+dans Postgres, partagées par tous les réplicas : le frein du login dans
+`login_throttle` (#427), l'import de recettes, les appels à Open Food Facts
+et les rapports CSP dans `rate_limit_log` et `csp_report_throttle` (#428).
+Les tâches de fond, elles, ne tournent plus que dans un process à la fois, sous un verrou consultatif
 Postgres par tâche (#426), et le hub WebSocket de la messagerie reçoit les
 événements de tous les réplicas par `LISTEN/NOTIFY` (#429).
 

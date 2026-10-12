@@ -992,6 +992,17 @@ async fn export_accounts_for_every_table(db: PgPool) {
              never exported while they lived in memory, and not now",
         ),
         (
+            "rate_limit_log",
+            "the recipe import's per-member counter and the Open Food Facts one (#428): \
+             HMAC pseudonyms and admission times, never exported while they lived in memory, \
+             and purged within the hour after the last admission leaves its window",
+        ),
+        (
+            "csp_report_throttle",
+            "the CSP report counter (#428): HMAC pseudonyms of client addresses, not tied \
+             to an account",
+        ),
+        (
             "off_products",
             "Open Food Facts' public product records, keyed by code: no family, no account",
         ),
