@@ -2252,13 +2252,113 @@ async fn a_held_pair_purged_meanwhile_is_not_reinserted_past_the_ceiling(db: PgP
             .status()
         })
     };
-    // Long enough for the held pair's admission to reach the row the
-    // other transaction deleted, and wait on it.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // The held pair's admission has reached the row the other transaction
+    // deleted, and waits on it: only then does that transaction commit.
+    wait_for_lock_waiters(&db, None, 1).await;
     other.commit().await.unwrap();
 
     assert_eq!(held.await.unwrap(), StatusCode::UNAUTHORIZED);
     assert_eq!(counters(&db).await.0, MAX_TRACKED as i64);
+}
+
+/// Waits until at least `n` backends of this test's database wait on a
+/// lock (`pg_locks.granted = false`), of `locktype` if given. A test that
+/// needs requests parked on a lock before it goes on synchronises on this,
+/// not on a sleep: on a slow machine a sleep can end before they get there.
+async fn wait_for_lock_waiters(db: &PgPool, locktype: Option<&str>, n: i64) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(DISTINCT l.pid)
+               FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+              WHERE NOT l.granted AND a.datname = current_database()
+                AND ($1::text IS NULL OR l.locktype = $1)",
+        )
+        .bind(locktype)
+        .fetch_one(db)
+        .await
+        .unwrap();
+        if waiting >= n {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{waiting} backend(s) waiting on a lock, expected {n}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// #454: an admission waits on its address's advisory lock holding a
+/// connection. A burst from one address must not take the connections
+/// every other route needs: here four times as many concurrent attempts as
+/// the handlers' pool holds, parked on the lock, and `/readyz` — a 503
+/// when it cannot reach Postgres through that pool within two seconds —
+/// still answers.
+#[sqlx::test]
+async fn a_burst_of_logins_from_one_address_leaves_the_handlers_pool_free(db: PgPool) {
+    use manage_our_home::auth::throttle::{Pseudonyms, TABLE_LOCK};
+    const HANDLERS: u32 = 3;
+    let handlers = common::runtime_pool_sized(&db, HANDLERS);
+    let mut state = common::test_state(db.clone());
+    state.db = handlers.clone();
+    state.login_throttle =
+        common::login_throttle(&handlers, Pseudonyms::new("test-login-throttle-key"));
+    state.trusted_proxies = std::sync::Arc::new(
+        manage_our_home::client_ip::TrustedProxies::parse("10.0.0.0/8").unwrap(),
+    );
+    let router = manage_our_home::build_router(state);
+
+    // A new pair takes the table lock: held here, the first attempt waits
+    // on it, and every other one on the address's lock behind it.
+    #[allow(clippy::disallowed_methods)]
+    let mut holder = db.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock($1, 0)")
+        .bind(TABLE_LOCK)
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+
+    let burst: Vec<_> = (0..4 * HANDLERS)
+        .map(|_| {
+            let router = router.clone();
+            tokio::spawn(async move {
+                login_from(
+                    &router,
+                    "10.0.0.2:40000",
+                    Some("192.168.4.1"),
+                    "burst@example.test",
+                    "wrong-password1",
+                )
+                .await
+                .status()
+            })
+        })
+        .collect();
+    // As many attempts parked on the lock as the handlers' pool holds.
+    wait_for_lock_waiters(&db, Some("advisory"), i64::from(HANDLERS)).await;
+
+    let ready = call(&router, Method::GET, "/readyz", None, None).await;
+    assert_status(&ready, StatusCode::OK);
+
+    // And the throttle decides as before: the threshold, then the lock.
+    holder.rollback().await.unwrap();
+    let mut statuses = Vec::new();
+    for attempt in burst {
+        statuses.push(attempt.await.unwrap());
+    }
+    let admitted = statuses
+        .iter()
+        .filter(|&&s| s == StatusCode::UNAUTHORIZED)
+        .count();
+    let locked = statuses
+        .iter()
+        .filter(|&&s| s == StatusCode::TOO_MANY_REQUESTS)
+        .count();
+    let max = statuses
+        .len()
+        .min(manage_our_home::auth::throttle::MAX_FAILURES as usize);
+    assert_eq!((admitted, locked), (max, statuses.len() - max));
 }
 
 /// #427: a deployment restarts the API. The lock a pair earned before it
