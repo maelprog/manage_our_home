@@ -13,8 +13,9 @@
 //! start `RATE_LIMIT` imports per `RATE_WINDOW`.
 //!
 //! Every failure is a 422 whose code says why (`ImportFailure::code`), or
-//! the usual 429. The one 500 is the database failing, the limit's
-//! included (#428): an import the limit cannot count is not started.
+//! the usual 429. The 500s are the database failing (the limit's
+//! included) and an extraction that panics. An import the limit cannot
+//! count is not started (#428).
 
 use std::time::Duration;
 
