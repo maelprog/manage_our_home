@@ -516,8 +516,8 @@ the throttle has a pool of its own (#454): `throttle::POOL_SIZE`
 connections per replica, on `DATABASE_URL` and as its role, opened on
 first use. A burst of attempts from one address queues there and slows
 other logins, not the rest of the API; count those connections, on top of
-the handlers' 20 and the admin pool's 5, against Postgres's
-`max_connections`.
+the handlers' 20, the admin pool's 5 and one per background job pass
+running (#426), against Postgres's `max_connections`.
 
 **The other rate limits count the same way (#428).** The recipe import
 (`recipes::import::RATE_LIMIT` per member per 10 minutes), the reads sent
