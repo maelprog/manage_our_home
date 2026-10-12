@@ -33,7 +33,11 @@ pub fn test_state(db: PgPool) -> AppState {
     // database share their login counters (#427), and the counters of the
     // other limits (#428).
     let pseudonyms = manage_our_home::auth::throttle::Pseudonyms::new("test-login-throttle-key");
-    let login_throttle = login_throttle(&runtime_db, pseudonyms.clone());
+    let login_throttle = login_throttle(
+        &runtime_db,
+        pseudonyms.clone(),
+        manage_our_home::auth::throttle::POOL_SIZE,
+    );
     let csp_report_throttle =
         std::sync::Arc::new(manage_our_home::csp_report_throttle::ReportThrottle::new(
             runtime_db.clone(),
@@ -192,20 +196,23 @@ pub fn runtime_pool_sized(db: &PgPool, max_connections: u32) -> PgPool {
 }
 
 /// The login throttle of a test state, on the handlers' pool `handlers` as
-/// `main.rs` builds it — a pool of its own on the same connect options —
-/// with [`runtime_pool_options`] in place of the production ones (#454).
+/// `main.rs` builds it — a pool of its own on the same connect options, of
+/// `pool_size` connections — with [`runtime_pool_options`] in place of the
+/// production ones (#454, #482).
 // TODO: remove #[allow(dead_code)] once every integration test binary uses
 // this helper (see note on test_state above).
 #[allow(dead_code)]
 pub fn login_throttle(
     handlers: &PgPool,
     pseudonyms: manage_our_home::auth::throttle::Pseudonyms,
+    pool_size: u32,
 ) -> std::sync::Arc<manage_our_home::auth::throttle::LoginThrottle> {
     std::sync::Arc::new(
         manage_our_home::auth::throttle::LoginThrottle::with_options(
             runtime_pool_options(),
             handlers,
             pseudonyms,
+            pool_size,
         ),
     )
 }
