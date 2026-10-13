@@ -6,9 +6,11 @@
 #
 # Same image as api.yaml: the overlays' `images:` pins both at once.
 #
-# On the first sync of an environment the Secret `migrate-secrets` must
-# exist before this hook runs: sealed, it has to be a PreSync hook of a
-# lower sync wave itself (README.md, "Secrets").
+# On the first sync of an environment, the namespace (with its Pod
+# Security labels) and the Secret `migrate-secrets` must both exist before
+# this hook runs; these manifests do not guarantee it. How is for #432 to
+# settle; the leads in README.md ("Premier déploiement d'un
+# environnement") are unverified.
 apiVersion: batch/v1
 kind: Job
 metadata:
