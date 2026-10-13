@@ -1,0 +1,23 @@
+# What runs on the staging cluster (#432), the home server with 4 GB of
+# RAM: rendered by the root Application `platform` (root.yaml), which
+# platform/bootstrap.sh applies. The choice of bricks per cluster is the
+# list of components below: the observability of #437 does not run here.
+#
+# Sync waves of the root Application: the platform's Applications (-10),
+# then the namespace, the ClusterIssuers and the Kyverno policy (-5), the
+# sealed Secrets (-3), the application (0). A wave starts once the
+# previous one is Healthy.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+components:
+  - ../../components/argocd
+  - ../../components/sealed-secrets
+  - ../../components/cert-manager
+  - ../../components/cloudnative-pg
+  - ../../components/kyverno
+  - ../../components/app-namespace
+
+resources:
+  - secrets
+  - manage-our-home.yaml

@@ -1,0 +1,20 @@
+# The application in production (#432). No `syncPolicy.automated`, on
+# purpose (arbitrage of 2026-10-10): a merge on `deploy` that moves its
+# digests leaves it OutOfSync, and nothing is deployed until the user
+# presses Sync in Argo CD. ci/render-test.sh fails if one appears.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: manage-our-home-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/maelprog/manage_our_home.git
+    targetRevision: deploy
+    path: apps/manage-our-home/overlays/prod
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: manage-our-home

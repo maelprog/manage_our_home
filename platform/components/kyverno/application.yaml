@@ -1,0 +1,60 @@
+# Kyverno (#432): the admission controller that enforces
+# signed-images.yaml, next to this file.
+#
+# The admission controller alone (arbitrage of 2026-10-12): the
+# background, cleanup and reports controllers are off, and so are the
+# reports the admission controller would write, which only they read.
+# The policy is checked at admission, never in the background.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kyverno
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  project: default
+  source:
+    repoURL: https://kyverno.github.io/kyverno
+    chart: kyverno
+    targetRevision: 3.9.1
+    helm:
+      releaseName: kyverno
+      valuesObject:
+        admissionController:
+          replicas: 1
+          container:
+            resources:
+              requests: {cpu: 100m, memory: 128Mi}
+              limits: {memory: 384Mi}
+          initContainer:
+            resources:
+              requests: {cpu: 10m, memory: 32Mi}
+              limits: {memory: 128Mi}
+        backgroundController:
+          enabled: false
+        cleanupController:
+          enabled: false
+        reportsController:
+          enabled: false
+        features:
+          admissionReports:
+            enabled: false
+          aggregateReports:
+            enabled: false
+          policyReports:
+            enabled: false
+          validatingAdmissionPolicyReports:
+            enabled: false
+          backgroundScan:
+            enabled: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kyverno
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

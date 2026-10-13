@@ -1,0 +1,35 @@
+# Sealed Secrets (#432): the Secrets of the application are committed as
+# SealedSecret, encrypted for this cluster's controller, which alone holds
+# the private key. Sealing and key backup: platform/README.md.
+#
+# In kube-system under the name kubeseal looks for by default
+# (`sealed-secrets-controller`), so `kubeseal` needs no flag.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sealed-secrets
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  project: default
+  source:
+    repoURL: https://bitnami.github.io/sealed-secrets
+    chart: sealed-secrets
+    targetRevision: 2.20.0
+    helm:
+      releaseName: sealed-secrets
+      valuesObject:
+        fullnameOverride: sealed-secrets-controller
+        resources:
+          requests: {cpu: 10m, memory: 32Mi}
+          limits: {memory: 128Mi}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

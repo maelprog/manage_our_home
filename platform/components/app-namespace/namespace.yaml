@@ -1,0 +1,21 @@
+# The application's namespace, created by the platform rather than by the
+# application's own Argo CD Application (#432): the migration Job is a
+# PreSync hook of that Application, so it runs before the Application
+# applies anything else. On the first sync of an environment, the
+# namespace (with its Pod Security labels) and the Secret
+# `migrate-secrets` must already be there. The root Application applies
+# this namespace, then the environment's SealedSecrets, then the
+# application's Application, one sync wave after the other.
+#
+# Pod Security Admission at `restricted`: the API server itself refuses a
+# pod of this namespace that runs as root, keeps a capability, or allows
+# privilege escalation — whatever a later patch to the manifests says.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: manage-our-home
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"

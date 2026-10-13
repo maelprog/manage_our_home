@@ -8,6 +8,9 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# The namespace itself is the platform's (platform/components/app-namespace,
+# #432): it must exist, with its Pod Security labels, before the PreSync
+# migration Job of the first sync, which this Application cannot ensure.
 namespace: manage-our-home
 
 labels:
@@ -15,7 +18,6 @@ labels:
       app.kubernetes.io/part-of: manage-our-home
 
 resources:
-  - namespace.yaml
   - api.yaml
   - web.yaml
   - migrate-job.yaml
