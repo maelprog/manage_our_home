@@ -1,0 +1,68 @@
+# The api image's `migrate` command (#425): applies the pending migrations
+# as the migration role, then exits. An Argo CD PreSync hook: it runs, and
+# must succeed, before Argo CD applies anything else of the sync — the new
+# api pods start on a schema that is already theirs. A failed Job stops
+# the sync; the running pods are left as they were.
+#
+# Same image as api.yaml: the overlays' `images:` pins both at once.
+#
+# On the first sync of an environment the Secret `migrate-secrets` must
+# exist before this hook runs: sealed, it has to be a PreSync hook of a
+# lower sync wave itself (README.md, "Secrets").
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  labels:
+    app.kubernetes.io/name: migrate
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    # The previous run is deleted when the next one is created, not when
+    # it succeeds: its logs stay readable until the next sync.
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  # Retries cover a Postgres that is not reachable yet. Concurrent runs are
+  # serialised by sqlx's advisory lock, and a run is a no-op on an
+  # up-to-date schema.
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: migrate
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: ghcr.io/maelprog/manage-our-home-api
+          command: ["migrate"]
+          env:
+            # The migration role: owner of the tables, BYPASSRLS (#105).
+            # Only this Job receives it.
+            - name: MIGRATION_DATABASE_URL
+              valueFrom:
+                secretKeyRef: {name: migrate-secrets, key: MIGRATION_DATABASE_URL}
+          securityContext:
+            allowPrivilegeEscalation: false
+            # The migrations are compiled into the binary; nothing is
+            # written but to Postgres.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # Too short-lived for `kubectl top` to sample; the 29 migrations
+          # of main applied on an empty base within this limit, without
+          # an OOM kill (k3d job).
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              memory: 128Mi

@@ -1,0 +1,56 @@
+# Staging: the home server, 4 GB of RAM for the whole cluster (arbitrage
+# of 2026-10-12). Follows `main`; Argo CD syncs it automatically (#432).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# By digest, never by tag: a tag can be moved, a digest cannot, and the
+# Kyverno policy of #432 refuses anything else. Images published by
+# .github/workflows/images.yml on main (#430); this pair is commit
+# 10aabde of main (run 38333383259). #436 opens the PRs that move them.
+images:
+  - name: ghcr.io/maelprog/manage-our-home-api
+    digest: sha256:3448748f41c94ec12dce8a826ca81ba831e17e61c29711b5bd563e71897f4153
+  - name: ghcr.io/maelprog/manage-our-home-web
+    digest: sha256:236d57ab423e5e1cbc966c7d27dd77886e7883556c6a85dbc4406c7f966136f8
+
+# One replica each: the cluster has a budget of about 3 GB for the
+# platform, Postgres, MinIO, api and web together. The
+# PodDisruptionBudgets of the base (maxUnavailable: 1) let a drain
+# through at one replica.
+replicas:
+  - name: api
+    count: 1
+  - name: web
+    count: 1
+
+# Spread by node as a preference only: with one node, or one node short
+# during a drain, DoNotSchedule would leave a pod Pending rather than put
+# it next to another.
+patches:
+  - target:
+      kind: Deployment
+      name: (api|web)
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/topologySpreadConstraints/0/whenUnsatisfiable
+        value: ScheduleAnyway
+
+configMapGenerator:
+  - name: api-config
+    behavior: merge
+    literals:
+      # Placeholders until the ingress (#434) gives staging its address:
+      # `.invalid` resolves nowhere (RFC 2606), so a link built from it
+      # cannot reach a third party.
+      - PUBLIC_BASE_URL=https://staging.manage-our-home.invalid/api
+      - FRONTEND_BASE_URL=https://staging.manage-our-home.invalid
+      - SMTP_HOST=smtp.manage-our-home.invalid
+      - SMTP_FROM=no-reply@staging.manage-our-home.invalid
+      - VAPID_SUBJECT=mailto:admin@staging.manage-our-home.invalid
+  - name: web-config
+    behavior: merge
+    literals:
+      - API_PUBLIC_BASE_URL=https://staging.manage-our-home.invalid/api

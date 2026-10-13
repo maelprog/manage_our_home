@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Installs the tools the CI of this branch runs, at pinned versions, each
+# checked against a SHA-256 written here — a release asset replaced
+# upstream fails the job instead of running. linux/amd64 only.
+#
+#   ci/install-tools.sh <directory> <tool>...
+#   tools: kustomize kubeconform yq kubectl k3d
+#
+# To move a version: change it and its checksum together, the checksum
+# taken from the project's own release checksums file.
+
+set -euo pipefail
+
+dest=$1
+shift
+mkdir -p "$dest"
+
+KUSTOMIZE_VERSION=5.8.3
+KUSTOMIZE_SHA256=cb9e31198d3f63b44848bd0afc4c8efc56e6cfef9c93a4a39a211940e6decd61
+KUBECONFORM_VERSION=0.8.0
+KUBECONFORM_SHA256=9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+YQ_VERSION=4.54.1
+YQ_SHA256=8e34fc298390875de416e6a4afcb8cabeceb25d9aa8506c1a2f9353cf702ea5f
+# Same version as the k3s image of the k3d job (K3S_IMAGE in
+# .github/workflows/deploy.yml).
+KUBECTL_VERSION=1.37.1
+KUBECTL_SHA256=65691ff77eb6fa44c908b77a1082c9f092c3b9733b5cefabec0d1104890e21a8
+K3D_VERSION=5.9.0
+K3D_SHA256=06d8f25bc3a971c4eb29e0ff08429b180402db0f4dec838c9eac427e296800a0
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+fetch() { # url sha256 file
+  curl --fail --silent --show-error --location --retry 3 --output "$tmp/$3" "$1"
+  echo "$2  $tmp/$3" | sha256sum --check --quiet
+}
+
+for tool in "$@"; do
+  case "$tool" in
+    kustomize)
+      fetch "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
+        "$KUSTOMIZE_SHA256" kustomize.tar.gz
+      tar -xzf "$tmp/kustomize.tar.gz" -C "$tmp" kustomize
+      install -m 0755 "$tmp/kustomize" "$dest/kustomize"
+      ;;
+    kubeconform)
+      fetch "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+        "$KUBECONFORM_SHA256" kubeconform.tar.gz
+      tar -xzf "$tmp/kubeconform.tar.gz" -C "$tmp" kubeconform
+      install -m 0755 "$tmp/kubeconform" "$dest/kubeconform"
+      ;;
+    yq)
+      fetch "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64" "$YQ_SHA256" yq
+      install -m 0755 "$tmp/yq" "$dest/yq"
+      ;;
+    kubectl)
+      fetch "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl" "$KUBECTL_SHA256" kubectl
+      install -m 0755 "$tmp/kubectl" "$dest/kubectl"
+      ;;
+    k3d)
+      fetch "https://github.com/k3d-io/k3d/releases/download/v${K3D_VERSION}/k3d-linux-amd64" "$K3D_SHA256" k3d
+      install -m 0755 "$tmp/k3d" "$dest/k3d"
+      ;;
+    *)
+      echo "unknown tool: $tool" >&2
+      exit 1
+      ;;
+  esac
+  echo "installed $tool"
+done

@@ -1,0 +1,83 @@
+# CI of the `deploy` branch (#431): the manifests render, are valid
+# Kubernetes, say what ci/render-test.sh requires of them, and the staging
+# overlay actually runs — deployed in a throwaway k3d cluster against a
+# test Postgres until api and web answer /readyz.
+#
+# This branch shares no history with `main`, and its tree holds only this
+# workflow: the workflows of `main` (ci.yml, images.yml) are not in it, so
+# neither a push here nor a PR into it starts them.
+#
+# Nothing here deploys anywhere: Argo CD pulls this branch (#432), and no
+# token of it is given to the CI.
+
+name: Deploy manifests
+
+on:
+  pull_request:
+    branches: [deploy]
+  push:
+    branches: [deploy]
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  # k3s of the throwaway cluster, by tag and digest. Same Kubernetes
+  # version as ci/validate.sh's schemas and ci/install-tools.sh's kubectl.
+  K3S_IMAGE: rancher/k3s:v1.37.1-k3s1@sha256:ca7f37d993d82ef0dcdcfecb2e0e2618ea541dbaffc620c8cedebe01a82acd0d
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tools
+        run: |
+          ci/install-tools.sh "$RUNNER_TEMP/bin" kustomize kubeconform yq
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: kustomize build | kubeconform -strict
+        run: ci/validate.sh
+      - name: Tests on the render
+        run: ci/render-test.sh
+
+  k3d:
+    needs: render
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The roles the test Postgres is created with: main's own script,
+      # the one infra/docker-compose.yml runs, rather than a copy here
+      # that could drift from it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: main
+          persist-credentials: false
+          sparse-checkout: infra/postgres/init
+          sparse-checkout-cone-mode: false
+      - name: Tools
+        run: |
+          ci/install-tools.sh "$RUNNER_TEMP/bin" kustomize yq kubectl k3d
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: k3d cluster
+        run: |
+          # Traefik and the service load balancer are left out: nothing
+          # here goes through an ingress (#434).
+          k3d cluster create deploy-ci \
+            --image "$K3S_IMAGE" \
+            --k3s-arg '--disable=traefik@server:0' \
+            --k3s-arg '--disable=servicelb@server:0' \
+            --wait --timeout 180s
+          kubectl get nodes -o wide
+      - name: Deploy staging and check it
+        run: ci/staging-smoke.sh main/infra/postgres/init/01-roles.sh

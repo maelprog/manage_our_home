@@ -1,0 +1,52 @@
+# What every environment runs (#431): api and web, their Services and
+# PodDisruptionBudgets, and the migration Job Argo CD runs before each
+# sync. The overlays add what differs: image digests, replicas, the public
+# address, and the staging server's 4 GB constraints.
+#
+# Images are named here without tag or digest: an overlay pins each one by
+# digest (`images:`), and ci/render-test.sh fails on an image that is not.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: manage-our-home
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: manage-our-home
+
+resources:
+  - namespace.yaml
+  - api.yaml
+  - web.yaml
+  - migrate-job.yaml
+
+# Settings in clear, the ones that do not depend on the environment. Each
+# generated name carries a hash of the content, so a change rolls the pods
+# that read it. The secret ones are in Secrets named in api.yaml and
+# migrate-job.yaml, whose values are not in this branch (#432).
+configMapGenerator:
+  - name: api-config
+    literals:
+      # How long the process drains after SIGTERM (#424). The pods'
+      # terminationGracePeriodSeconds covers it plus the preStop sleep;
+      # ci/render-test.sh checks the sum.
+      - SHUTDOWN_GRACE_SECONDS=25
+      - SECURE_COOKIES=true
+      # Whose X-Forwarded-For the API believes (#178,
+      # apps/api/src/client_ip.rs on main): the k3s pod network
+      # (`--cluster-cidr`, 10.42.0.0/16 by default), where web and the
+      # ingress controller run. Its default, 172.16.0.0/12, is Docker's
+      # bridge range: here it would match no proxy, every client would
+      # come from an untrusted pod address, and the login lock would be
+      # one lock for everyone behind web. A cluster started with another
+      # --cluster-cidr must change this.
+      - TRUSTED_PROXY_CIDRS=10.42.0.0/16
+      # MinIO in the cluster (#435), its Service in this namespace.
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_BUCKET=manage-our-home
+  - name: web-config
+    literals:
+      - SHUTDOWN_GRACE_SECONDS=25
+      # The api Service, inside the cluster — not through the ingress.
+      - API_INTERNAL_BASE_URL=http://api:8080
+      - WEB_BIND_ADDR=0.0.0.0:3000
