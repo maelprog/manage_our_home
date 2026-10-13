@@ -1,0 +1,34 @@
+# Production: the third-party VPS. Follows the `v*` tags; Argo CD never
+# syncs it on its own — a merge here leaves the application OutOfSync
+# until the user presses Sync (#432). The base as is: two replicas each,
+# spread by node.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# By digest, never by tag. No `v*` tag has been built by
+# .github/workflows/images.yml yet: until the first one, this is the same
+# pair as staging (main, commit 10aabde). #436 opens the promotion PRs.
+images:
+  - name: ghcr.io/maelprog/manage-our-home-api
+    digest: sha256:3448748f41c94ec12dce8a826ca81ba831e17e61c29711b5bd563e71897f4153
+  - name: ghcr.io/maelprog/manage-our-home-web
+    digest: sha256:236d57ab423e5e1cbc966c7d27dd77886e7883556c6a85dbc4406c7f966136f8
+
+configMapGenerator:
+  - name: api-config
+    behavior: merge
+    literals:
+      # Placeholders until the ingress (#434) gives production its
+      # address: `.invalid` resolves nowhere (RFC 2606).
+      - PUBLIC_BASE_URL=https://manage-our-home.invalid/api
+      - FRONTEND_BASE_URL=https://manage-our-home.invalid
+      - SMTP_HOST=smtp.manage-our-home.invalid
+      - SMTP_FROM=no-reply@manage-our-home.invalid
+      - VAPID_SUBJECT=mailto:admin@manage-our-home.invalid
+  - name: web-config
+    behavior: merge
+    literals:
+      - API_PUBLIC_BASE_URL=https://manage-our-home.invalid/api

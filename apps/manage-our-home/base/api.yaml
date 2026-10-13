@@ -1,0 +1,190 @@
+# apps/api: Deployment, Service, PodDisruptionBudget.
+#
+# The server does not migrate (#425): it checks at start that the schema
+# matches the migrations it carries and exits otherwise. The schema is
+# brought up to date beforehand by migrate-job.yaml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  labels:
+    app.kubernetes.io/name: api
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # A new pod is ready before an old one goes: never below the
+      # replica count, even at one replica.
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: api
+    spec:
+      # The API never calls the Kubernetes API: no token in the pod.
+      automountServiceAccountToken: false
+      # No *_SERVICE_HOST / *_PORT variables injected per Service.
+      enableServiceLinks: false
+      # preStop (10 s) + SHUTDOWN_GRACE_SECONDS (25 s, kustomization.yaml)
+      # + 5 s for the process to exit: the kubelet's SIGKILL never cuts
+      # the drain short (#424).
+      terminationGracePeriodSeconds: 40
+      securityContext:
+        runAsNonRoot: true
+        # The image's own USER (apps/api/Dockerfile on main), restated so
+        # that runAsNonRoot is checked against a known UID.
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        # One replica per node where there are nodes enough. Only the pods
+        # of the current ReplicaSet count (`pod-template-hash`), so a
+        # rollout is not held back by the pods it replaces.
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: api
+          matchLabelKeys:
+            - pod-template-hash
+      containers:
+        - name: api
+          image: ghcr.io/maelprog/manage-our-home-api
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            # Base settings, plus each overlay's (public address, mail).
+            - configMapRef:
+                name: api-config
+          env:
+            # All from the Secret `api-secrets`, sealed per environment
+            # (#432). Each key is required except VAPID_PRIVATE_KEY:
+            # without it, reminders are not sent as notifications
+            # (apps/api/README.md on main). The migration role's URL is
+            # not here: only migrate-job.yaml holds it (#425).
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: {name: api-secrets, key: DATABASE_URL}
+            - name: ADMIN_DATABASE_URL
+              valueFrom:
+                secretKeyRef: {name: api-secrets, key: ADMIN_DATABASE_URL}
+            - name: GOOGLE_CLIENT_ID
+              valueFrom:
+                secretKeyRef: {name: api-secrets, key: GOOGLE_CLIENT_ID}
+            - name: GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: {name: api-secrets, key: GOOGLE_CLIENT_SECRET}
+            - name: OAUTH_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef: {name: api-secrets, key: OAUTH_ENCRYPTION_KEY}
+            - name: MESSAGE_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef: {name: api-secrets, key: MESSAGE_ENCRYPTION_KEY}
+            - name: CALENDAR_FEED_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef: {name: api-secrets, key: CALENDAR_FEED_ENCRYPTION_KEY}
+            - name: LOGIN_THROTTLE_KEY
+              valueFrom:
+                secretKeyRef: {name: api-secrets, key: LOGIN_THROTTLE_KEY}
+            - name: VAPID_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef: {name: api-secrets, key: VAPID_PRIVATE_KEY, optional: true}
+            - name: SMTP_USERNAME
+              valueFrom:
+                secretKeyRef: {name: api-secrets, key: SMTP_USERNAME}
+            - name: SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: api-secrets, key: SMTP_PASSWORD}
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: {name: api-secrets, key: MINIO_ACCESS_KEY}
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef: {name: api-secrets, key: MINIO_SECRET_KEY}
+          securityContext:
+            allowPrivilegeEscalation: false
+            # The server writes nothing to disk (attachments go to MinIO):
+            # no volume, not even /tmp.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # Memory. Request: what the pod holds at rest, with room — 7 to 8 Mi
+          # measured by `kubectl top` on k3s v1.37.1 (two runs, 90 s after start)
+          # in the PR of #431; the k3d job prints it on every run. Limit: the
+          # upload gate lets 8 attachments of up to 20 MiB be read into
+          # memory at once (apps/http_guard on main), 160 MiB, plus the
+          # rest of the process. No CPU limit: throttling would only stretch
+          # requests out, and the request already reserves the share.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              memory: 256Mi
+          # The process answers at all. Generous: the listener only opens
+          # once the pools are connected and the schema checked.
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # The process can serve: not stopping, and Postgres answers.
+          # Above the route's own 2 s wait on Postgres (READY_DB_TIMEOUT,
+          # apps/api/src/health.rs on main), so a slow Postgres reads as
+          # the route's 503 rather than a probe timeout (#424).
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          lifecycle:
+            # The listener closes as soon as SIGTERM arrives (#424), so a
+            # request routed to this pod before every node has dropped it
+            # from the Service's endpoints would be refused. The pod is
+            # taken out of the endpoints when it starts terminating; this
+            # sleep keeps it serving until that has spread.
+            preStop:
+              sleep:
+                seconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  labels:
+    app.kubernetes.io/name: api
+spec:
+  selector:
+    app.kubernetes.io/name: api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+# maxUnavailable rather than minAvailable: at two replicas they say the
+# same, at one (staging) a minAvailable of 1 would refuse every eviction
+# and block a node drain for good.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api
+  labels:
+    app.kubernetes.io/name: api
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api

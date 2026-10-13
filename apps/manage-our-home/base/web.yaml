@@ -1,0 +1,121 @@
+# apps/web: Deployment, Service, PodDisruptionBudget. Same shape as
+# api.yaml, whose comments explain each choice; only what differs is
+# commented here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  labels:
+    app.kubernetes.io/name: web
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: web
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: web
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # preStop (10 s) + SHUTDOWN_GRACE_SECONDS (25 s) + 5 s.
+      terminationGracePeriodSeconds: 40
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: web
+          matchLabelKeys:
+            - pod-template-hash
+      containers:
+        - name: web
+          image: ghcr.io/maelprog/manage-our-home-web
+          ports:
+            - name: http
+              containerPort: 3000
+          # Nothing secret: web holds no credential, it relays the
+          # browser's session cookie to the api.
+          envFrom:
+            - configMapRef:
+                name: web-config
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Reads its assets from the image, writes nothing.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # 3 to 5 Mi at rest, measured as for api. The limit adds up web's
+          # two worst cases, both bounded on main: the upload gate's bodies
+          # (8 at once, about 170 MiB for a full pool at the cap,
+          # apps/http_guard/src/gate.rs) and, on top of them, the barcode
+          # photo decodes (DECODE_PERMITS = 2, up to 124 MiB each, 248 MiB,
+          # apps/web/src/routes/stocks/photo.rs): about 420 MiB, plus the
+          # rest of the process. A limit is not reserved: the scheduler
+          # counts the request only.
+          resources:
+            requests:
+              cpu: 25m
+              memory: 24Mi
+            limits:
+              memory: 448Mi
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # Not stopping, and the api's /healthz answers within 2 s
+          # (READY_API_TIMEOUT, apps/web/src/routes/health.rs on main).
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  labels:
+    app.kubernetes.io/name: web
+spec:
+  selector:
+    app.kubernetes.io/name: web
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: web
+  labels:
+    app.kubernetes.io/name: web
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: web
