@@ -59,15 +59,20 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
-          # 3 to 5 Mi at rest, measured as for api. The limit is api's: web
-          # reads an upload whole before relaying it, under the same gate
-          # of 8 × 20 MiB.
+          # 3 to 5 Mi at rest, measured as for api. The limit adds up web's
+          # two worst cases, both bounded on main: the upload gate's bodies
+          # (8 at once, about 170 MiB for a full pool at the cap,
+          # apps/http_guard/src/gate.rs) and, on top of them, the barcode
+          # photo decodes (DECODE_PERMITS = 2, up to 124 MiB each, 248 MiB,
+          # apps/web/src/routes/stocks/photo.rs): about 420 MiB, plus the
+          # rest of the process. A limit is not reserved: the scheduler
+          # counts the request only.
           resources:
             requests:
               cpu: 25m
               memory: 24Mi
             limits:
-              memory: 256Mi
+              memory: 448Mi
           startupProbe:
             httpGet: {path: /healthz, port: http}
             periodSeconds: 2

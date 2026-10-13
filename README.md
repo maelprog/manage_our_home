@@ -67,9 +67,13 @@ Rendre un overlay : `kustomize build apps/manage-our-home/overlays/staging`.
   écarte.
 - **Mémoire** : requête et limite sur chaque conteneur, Job compris. Au repos,
   api 7 à 8 Mi et web 3 à 5 Mi (`kubectl top`, k3s v1.37.1, deux relevés dans la PR de
-  #431 ; le job k3d le réimprime à chaque passage). Les limites (256 Mi)
-  couvrent la porte d'envoi : 8 pièces jointes de 20 Mi lues en mémoire à
-  la fois.
+  #431 ; le job k3d le réimprime à chaque passage). Les limites couvrent le
+  pire cas borné sur `main` : api 256 Mi pour la porte d'envoi (8 pièces
+  jointes de 20 Mi lues en mémoire à la fois) ; web 448 Mi pour la même
+  porte (environ 170 Mi) plus deux décodages de photo code-barres
+  simultanés (`DECODE_PERMITS = 2`, jusqu'à 124 Mi chacun), soit environ
+  420 Mi. Une limite n'est pas réservée : le planificateur ne compte que
+  les requêtes ; elle ne sert qu'à tuer un pod qui la dépasse.
 - **Migration** : le Job `migrate` lance la commande du même nom de l'image
   api, comme hook `PreSync` : Argo CD n'applique le reste de la synchro que
   s'il réussit. Lui seul reçoit l'URL du rôle de migration.
