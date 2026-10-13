@@ -1,11 +1,17 @@
-# CI of the `deploy` branch (#431): the manifests render, are valid
-# Kubernetes, say what ci/render-test.sh requires of them, and the staging
-# overlay actually runs — deployed in a throwaway k3d cluster against a
-# test Postgres until api and web answer /readyz.
+# CI of the `deploy` branch and of `k3s`, its integration branch (#431):
+# the manifests render, are valid Kubernetes, say what ci/render-test.sh
+# requires of them, and the staging overlay actually runs — deployed in a
+# throwaway k3d cluster against a test Postgres until api and web answer
+# /readyz.
 #
-# This branch shares no history with `main`, and its tree holds only this
+# The PRs of the k3s epic (#431 to #437) target `k3s`; `deploy` only
+# receives `k3s` once, by a PR the user merges by hand, when the whole
+# architecture runs on the test server (arbitrage of 2026-10-13). Both
+# are checked the same way.
+#
+# Neither branch shares history with `main`, and their tree holds only this
 # workflow: the workflows of `main` (ci.yml, images.yml) are not in it, so
-# neither a push here nor a PR into it starts them.
+# neither a push to them nor a PR into them starts them.
 #
 # Nothing here deploys anywhere: Argo CD pulls this branch (#432), and no
 # token of it is given to the CI.
@@ -14,9 +20,9 @@ name: Deploy manifests
 
 on:
   pull_request:
-    branches: [deploy]
+    branches: [deploy, k3s]
   push:
-    branches: [deploy]
+    branches: [deploy, k3s]
   workflow_dispatch:
 
 permissions: {}

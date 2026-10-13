@@ -4,6 +4,13 @@ Cette branche décrit **ce qui tourne** sur les clusters k3s ; le code de
 l'application est sur `main`. Elle ne partage aucun historique avec `main`
 (branche orpheline, #431).
 
+**Branche d'intégration `k3s`** (arbitrage du 2026-10-13) : les PR de
+l'epic k3s (#431 à #437) visent `k3s`, pas `deploy`. Rien n'arrive sur
+`deploy` avant que toute l'architecture tourne sur le serveur de test ;
+alors une seule PR `k3s` → `deploy`, mergée à la main par l'utilisateur,
+fait la promotion. La CI de cette branche (`deploy.yml`) tourne pareil sur
+les deux.
+
 ## Le modèle
 
 - **GitOps** : un Argo CD par cluster lit cette branche et applique son
