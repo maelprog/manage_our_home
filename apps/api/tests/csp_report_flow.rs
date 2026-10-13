@@ -104,6 +104,80 @@ async fn only_post_is_routed(db: PgPool) {
     assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
 }
 
+/// #483: an admission waits on its address's advisory lock holding a
+/// connection, and the route answers anyone, without a session. A burst
+/// from one address must not take the connections every other route
+/// needs: here four times as many concurrent reports as the handlers' pool
+/// holds. Only as many as the limit's own pool holds get a connection and
+/// wait on an advisory lock — the first on the table lock, the others on
+/// the address's lock behind it; the rest queue for a connection of that
+/// pool. `/readyz` — a 503 when it cannot reach Postgres within 2 s through
+/// the handlers' pool — must still answer 200.
+///
+/// The limit's pool is larger than the handlers' and not the default, so a
+/// limit that ignored the size it is given, or took the handlers' pool,
+/// could not park exactly that many reports.
+#[sqlx::test]
+async fn a_burst_of_reports_from_one_address_leaves_the_handlers_pool_free(db: PgPool) {
+    use manage_our_home::auth::throttle::Pseudonyms;
+    use manage_our_home::csp_report_throttle::{MAX_REPORTS, POOL_SIZE, TABLE_LOCK};
+    const HANDLERS: u32 = 3;
+    const LIMIT: u32 = 5;
+    const BURST: u32 = 4 * HANDLERS;
+    const _: () = assert!(LIMIT > HANDLERS && LIMIT != POOL_SIZE && BURST <= MAX_REPORTS);
+    let handlers = common::runtime_pool_sized(&db, HANDLERS);
+    let mut state = common::test_state(db.clone());
+    state.db = handlers.clone();
+    state.csp_report_throttle =
+        common::csp_report_throttle(&handlers, Pseudonyms::new("test-login-throttle-key"), LIMIT);
+    let router = manage_our_home::build_router(state);
+
+    // A new address takes the table lock: held here, the first report
+    // waits on it, and the others that got a connection on the address's
+    // lock behind it.
+    #[allow(clippy::disallowed_methods)]
+    let mut holder = db.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock($1, 0)")
+        .bind(TABLE_LOCK)
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+
+    let burst: Vec<_> = (0..BURST)
+        .map(|_| {
+            let router = router.clone();
+            tokio::spawn(async move {
+                post(&router, "application/csp-report", LEGACY.into(), &[]).await
+            })
+        })
+        .collect();
+    common::wait_for_lock_waiters(&db, Some("advisory"), i64::from(LIMIT)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(
+        common::lock_waiters(&db, Some("advisory")).await,
+        i64::from(LIMIT)
+    );
+
+    let ready = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/readyz")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ready.status(), StatusCode::OK);
+
+    // And the limit decides as before: every report of the burst is within
+    // the budget.
+    holder.rollback().await.unwrap();
+    for report in burst {
+        assert_eq!(report.await.unwrap(), StatusCode::NO_CONTENT);
+    }
+}
+
 /// #375: one client gets `MAX_REPORTS` requests per window, then a 429 —
 /// decided before the body is read, so even an oversized one is refused
 /// as too many rather than as too large. Every request here resolves to

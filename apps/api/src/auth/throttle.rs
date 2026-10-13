@@ -667,17 +667,7 @@ pub const POOL_SIZE_VAR: &str = "LOGIN_THROTTLE_POOL_SIZE";
 /// than replaced by the default, so a typo stops the API at start instead
 /// of leaving the pool at a size nobody chose.
 pub fn pool_size(raw: Option<&str>) -> Result<u32, String> {
-    let raw = raw.map(str::trim).unwrap_or("");
-    if raw.is_empty() {
-        return Ok(POOL_SIZE);
-    }
-    match raw.parse::<u32>() {
-        Ok(size) if size > 0 => Ok(size),
-        _ => Err(format!(
-            "{POOL_SIZE_VAR}={raw:?}: expected a whole number of connections, at least 1 \
-             (unset means {POOL_SIZE})"
-        )),
-    }
+    crate::db::pool_size(POOL_SIZE_VAR, raw, POOL_SIZE)
 }
 
 /// The counters, in Postgres. Held in `AppState` behind an `Arc`; every
@@ -882,9 +872,7 @@ impl LoginThrottle {
         pseudonyms: Pseudonyms,
         pool_size: u32,
     ) -> Self {
-        let db = options
-            .max_connections(pool_size)
-            .connect_lazy_with((*handlers.connect_options()).clone());
+        let db = crate::db::pool_beside(options, handlers, pool_size);
         Self { db, pseudonyms }
     }
 

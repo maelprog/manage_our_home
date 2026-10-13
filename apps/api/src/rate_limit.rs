@@ -27,7 +27,9 @@
 //!
 //! The cost the in-memory version was spared: a database round trip and a
 //! pool connection per admission. Both limits guard a request that costs
-//! far more — an outbound HTTP fetch.
+//! far more — an outbound HTTP fetch. That connection is held while the
+//! admission waits on its subject's lock, so it comes from a pool the
+//! limits share, apart from the handlers' ([`POOL_SIZE`], #483).
 
 use std::time::{Duration, SystemTime};
 
@@ -79,6 +81,18 @@ pub const LOG_LOCK: i32 = i32::from_be_bytes(*b"mrll");
 /// purge deletes a row once its newest admission is that old.
 pub const LONGEST_WINDOW: Duration = Duration::from_secs(10 * 60);
 
+/// Connections of the pool the limits of this module share, per replica,
+/// when [`POOL_SIZE_VAR`] is unset (#483). `main.rs` opens it beside the
+/// handlers' pool (`db::pool_beside`) and gives it to every
+/// [`SlidingLimiter`]: an admission holds its connection while it waits on
+/// its subject's lock, and must not hold one of the handlers'.
+pub const POOL_SIZE: u32 = 2;
+
+/// Environment variable sizing that pool, per replica (#483): every
+/// replica opens that many connections on top of its others, so the size
+/// is set with the deployment, against Postgres's `max_connections`.
+pub const POOL_SIZE_VAR: &str = "RATE_LIMIT_POOL_SIZE";
+
 /// One limit, counted in `rate_limit_log`. Held in `AppState` behind an
 /// `Arc`; each replica builds its own, on the same table, with the same
 /// secret.
@@ -92,7 +106,8 @@ pub struct SlidingLimiter {
 }
 
 impl SlidingLimiter {
-    /// `kind` is one the table's CHECK accepts.
+    /// `kind` is one the table's CHECK accepts. `db` is the limits' own
+    /// pool ([`POOL_SIZE`]), not the handlers'.
     pub fn new(
         db: PgPool,
         pseudonyms: Pseudonyms,
