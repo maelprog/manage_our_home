@@ -143,6 +143,17 @@ for overlay in "${overlays[@]}"; do
     cm=$(y "$ctr | .envFrom // [] | .[] | select(.configMapRef) | .configMapRef.name" | head -n 1)
     drain=$(y "select(.kind == \"ConfigMap\" and .metadata.name == \"$cm\") | .data.SHUTDOWN_GRACE_SECONDS // \"\"")
     tgps=$(y "$dep | .spec.template.spec.terminationGracePeriodSeconds // 30")
+
+    # --- What the ConfigMap says is what the process gets: an `env[]`
+    # entry of the same name wins over `envFrom`, so a TRUSTED_PROXY_CIDRS
+    # or SHUTDOWN_GRACE_SECONDS set there would void the checks on the
+    # ConfigMap below without a word.
+    for k in $(y "select(.kind == \"ConfigMap\" and .metadata.name == \"$cm\") | .data // {} | keys | .[]"); do
+      check
+      v=$(y "$ctr | .env // [] | .[] | select(.name == \"$k\") | .name")
+      [ -z "$v" ] || fail "$d: env[] redefines $k, which its ConfigMap '$cm' sets"
+    done
+
     check
     if [ -z "$drain" ]; then
       fail "$d: SHUTDOWN_GRACE_SECONDS not set in its ConfigMap '$cm'"
