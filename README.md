@@ -99,10 +99,18 @@ Le sens de chaque variable est dans `apps/api/README.md` et
 `infra/generate-env.sh` sur `main`.
 
 **Premier déploiement d'un environnement** : le Job `migrate` est un hook
-`PreSync`, il tourne avant que la synchro applique les autres ressources.
-Le `SealedSecret` de `migrate-secrets` doit donc lui-même être un hook
-`PreSync` d'une vague antérieure (`argocd.argoproj.io/sync-wave: "-1"`),
-sinon le Job attend un Secret qui n'existe pas encore (#432).
+`PreSync`, il tourne avant que la synchro applique les autres ressources,
+`namespace.yaml` compris. Il faut donc, avant lui :
+
+- le namespace : l'Application Argo CD le crée avec l'option de synchro
+  `CreateNamespace=true` (et ses `managedNamespaceMetadata` doivent porter
+  les labels Pod Security de `namespace.yaml`, sinon le Job tourne dans un
+  namespace sans `restricted`) ;
+- le `SealedSecret` de `migrate-secrets`, lui-même hook `PreSync` d'une
+  vague antérieure (`argocd.argoproj.io/sync-wave: "-1"`), sinon le Job
+  attend un Secret qui n'existe pas encore.
+
+Les deux relèvent de #432.
 
 ## Réglages à fixer
 
