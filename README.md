@@ -100,17 +100,25 @@ Le sens de chaque variable est dans `apps/api/README.md` et
 
 **Premier déploiement d'un environnement** : le Job `migrate` est un hook
 `PreSync`, il tourne avant que la synchro applique les autres ressources,
-`namespace.yaml` compris. Il faut donc, avant lui :
+`namespace.yaml` compris. Le namespace `manage-our-home` (avec ses labels
+Pod Security) et le Secret `migrate-secrets` doivent donc **exister avant
+le PreSync** ; tels quels, ces manifests ne le garantissent pas, et le
+premier déploiement d'un environnement échouerait.
 
-- le namespace : l'Application Argo CD le crée avec l'option de synchro
-  `CreateNamespace=true` (et ses `managedNamespaceMetadata` doivent porter
-  les labels Pod Security de `namespace.yaml`, sinon le Job tourne dans un
-  namespace sans `restricted`) ;
-- le `SealedSecret` de `migrate-secrets`, lui-même hook `PreSync` d'une
-  vague antérieure (`argocd.argoproj.io/sync-wave: "-1"`), sinon le Job
-  attend un Secret qui n'existe pas encore.
+La voie reste à trouver et à éprouver avec #432. Pistes **non vérifiées** :
 
-Les deux relèvent de #432.
+- créer le namespace et le Secret de migration côté `platform/`, hors de
+  l'Application de l'appli, avant sa première synchro ;
+- retirer `namespace.yaml` du rendu et faire créer le namespace par
+  l'Application (`CreateNamespace=true`), labels Pod Security et vague
+  de synchro ≤ -2 portés par `managedNamespaceMetadata`, le `SealedSecret`
+  de `migrate-secrets` en hook `PreSync` d'une vague intermédiaire.
+
+À écarter : `CreateNamespace=true` en gardant `namespace.yaml` dans le
+rendu. D'après une lecture du code d'Argo CD (gitops-engine,
+`sync_context.go`) faite en revue de cette PR et non éprouvée sur un
+cluster, le namespace n'est alors pas créé d'avance, puisque le rendu le
+contient, et `managedNamespaceMetadata` est ignoré.
 
 ## Réglages à fixer
 
