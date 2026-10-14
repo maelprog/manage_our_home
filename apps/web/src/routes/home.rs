@@ -34,10 +34,10 @@ use crate::state::{api_request_auth, AppState};
 ///
 /// It used to be three days in all (#73), which turned "the next five" into
 /// "the next five *before the day after tomorrow*": an event at J+3 was never
-/// read, and the card said "nothing planned" (#455). Sixty days reaches past
-/// any family's next appointment while keeping a recurring series' unroll
-/// bounded — a daily series costs sixty occurrences here, and the API caps any
-/// series at its own `MAX_OCCURRENCES` whatever the window.
+/// read, and the card said "nothing planned" (#455). Sixty days leaves room
+/// for a sparse agenda while keeping a recurring series' unroll bounded — a
+/// daily series costs sixty-one occurrences here (today included), and the
+/// API caps any series at its own `MAX_OCCURRENCES` whatever the window.
 const DASHBOARD_AGENDA_HORIZON_DAYS: i64 = 60;
 /// The dashboard shows what's soonest, not everything the horizon holds —
 /// the full picture is one click away on `/agenda`.
