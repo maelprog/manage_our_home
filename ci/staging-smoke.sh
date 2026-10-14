@@ -3,8 +3,8 @@
 # k3d cluster of .github/workflows/deploy.yml, its node capped at 4 GB like
 # the staging server — and lets Argo CD deploy staging, as on the real
 # cluster (#432). Then checks that:
-#   - every Application of the platform, and the application's, is Synced
-#     and Healthy;
+#   - every Application of the platform, staging's Postgres (#433) and the
+#     application's are Synced and Healthy;
 #   - the Secrets arrive sealed: sealed here with the cluster's own
 #     controller, and only the SealedSecrets are applied;
 #   - the migration Job ran as a PreSync hook and succeeded, api and web
@@ -21,6 +21,12 @@
 # test, which must be on GitHub. Needs kustomize, kubectl, helm, kubeseal,
 # yq, openssl and curl. Every credential is generated here, for this run
 # only: none is in the branch.
+#
+# Staging's Postgres is the CloudNativePG Cluster of the overlay, with one
+# change (ci/postgres-backup-patch.yaml): it backs up to a throwaway MinIO
+# (ci/minio.yaml) rather than to Scaleway. A reference Postgres, initialised
+# by 01-roles.sh, is left running for ci/postgres-test.sh, which the job
+# runs next.
 
 set -euo pipefail
 
@@ -54,6 +60,9 @@ dump() {
   kubectl -n kyverno logs deploy/kyverno-admission-controller --tail=80 || true
   kubectl -n argocd logs statefulset/argocd-application-controller --tail=80 || true
   kubectl -n ci-postgres logs deploy/postgres --tail=50 || true
+  kubectl -n "$ns" get clusters.postgresql.cnpg.io,backups.postgresql.cnpg.io -o yaml || true
+  kubectl -n cnpg-system logs deploy/cnpg-cloudnative-pg --tail=80 || true
+  kubectl -n ci-minio logs deploy/minio --tail=30 || true
   echo "::endgroup::"
 }
 on_exit() {
@@ -90,7 +99,7 @@ wait_app() { # name timeout-seconds
   return 1
 }
 
-echo "== test Postgres"
+echo "== reference Postgres (01-roles.sh of main)"
 pg_password=$(pw); app_pw=$(pw); migration_pw=$(pw); admin_pw=$(pw)
 kubectl apply -f - <<< "$(yq e 'select(.kind == "Namespace")' "$root/ci/postgres.yaml")"
 kubectl -n ci-postgres create secret generic postgres \
@@ -102,17 +111,38 @@ kubectl -n ci-postgres create configmap postgres-init --from-file=01-roles.sh="$
 kubectl apply -f "$root/ci/postgres.yaml"
 kubectl -n ci-postgres rollout status deploy/postgres --timeout=180s
 
+echo "== throwaway MinIO, for the backups"
+minio_user=ci-$(openssl rand -hex 4); minio_pw=$(pw)
+kubectl apply -f - <<< "$(yq e 'select(.kind == "Namespace")' "$root/ci/minio.yaml")"
+kubectl -n ci-minio create secret generic minio \
+  --from-literal=MINIO_ROOT_USER="$minio_user" \
+  --from-literal=MINIO_ROOT_PASSWORD="$minio_pw"
+kubectl apply -f "$root/ci/minio.yaml"
+kubectl -n ci-minio rollout status deploy/minio --timeout=180s
+# Bitnami's entrypoint runs a setup instance first, which creates the
+# bucket, then the final one (ci.yml of main, "Start MinIO").
+for i in $(seq 1 60); do
+  kubectl -n ci-minio logs deploy/minio 2> /dev/null | grep -q 'MinIO setup finished' && break
+  [ "$i" = 60 ] && { echo "::error::MinIO setup did not finish"; exit 1; }
+  sleep 2
+done
+
 # The staging root Application, at the commit under test instead of the
-# branch it names — the application's Application included, through a
-# patch the root applies to its own render.
+# branch it names — the application's and Postgres's Applications included,
+# through patches the root applies to its own render. Postgres's also
+# carries ci/postgres-backup-patch.yaml down to the Cluster.
 echo "== bootstrap (root Application at $revision)"
-yq e "
-  .spec.source.targetRevision = \"$revision\" |
-  .spec.source.kustomize.patches = [{
-    \"target\": {\"kind\": \"Application\", \"name\": \"$app\"},
-    \"patch\": \"- op: replace\n  path: /spec/source/targetRevision\n  value: $revision\n\"
-  }]
-" "$root/platform/clusters/staging/root.yaml" > "$work/root.yaml"
+REVISION=$revision APP=$app PG_PATCH=$(cat "$root/ci/postgres-backup-patch.yaml") yq e '
+  .spec.source.targetRevision = strenv(REVISION) |
+  .spec.source.kustomize.patches = [
+    {"target": {"kind": "Application", "name": strenv(APP)},
+     "patch": ([{"op": "replace", "path": "/spec/source/targetRevision", "value": strenv(REVISION)}] | to_yaml)},
+    {"target": {"kind": "Application", "name": "postgres-staging"},
+     "patch": ([{"op": "replace", "path": "/spec/source/targetRevision", "value": strenv(REVISION)},
+                {"op": "add", "path": "/spec/source/kustomize",
+                 "value": {"patches": [{"target": {"kind": "Cluster", "name": "postgres"}, "patch": strenv(PG_PATCH)}]}}] | to_yaml)}
+  ]
+' "$root/platform/clusters/staging/root.yaml" > "$work/root.yaml"
 "$root/platform/bootstrap.sh" staging "$work/root.yaml"
 
 echo "== platform"
@@ -127,8 +157,22 @@ done
 # through a pipe.
 echo "== sealed Secrets"
 kubectl wait --for=jsonpath='{.status.phase}'=Active "namespace/$ns" --timeout=300s
-db=postgres.ci-postgres.svc.cluster.local:5432/manage_our_home
+db=postgres-rw.$ns.svc.cluster.local:5432/manage_our_home
 seal() { kubeseal --format yaml > "$work/$1.sealed.yaml"; }
+# The roles' passwords, read by the Cluster's managed roles (#433); the
+# same ones go in the URLs below.
+role_secret() { # secret role password
+  kubectl -n "$ns" create secret generic "$1" --type=kubernetes.io/basic-auth --dry-run=client -o yaml \
+    --from-literal=username="$2" --from-literal=password="$3" | seal "$1"
+}
+role_secret postgres-app-role app_role "$app_pw"
+role_secret postgres-migration-role migration_role "$migration_pw"
+role_secret postgres-admin-role admin_role "$admin_pw"
+kubectl -n "$ns" create secret generic postgres-backup --dry-run=client -o yaml \
+  --from-literal=ACCESS_KEY_ID="$minio_user" \
+  --from-literal=ACCESS_SECRET_KEY="$minio_pw" \
+  --from-literal=REGION=us-east-1 \
+  | seal postgres-backup
 kubectl -n "$ns" create secret generic migrate-secrets --dry-run=client -o yaml \
   --from-literal=MIGRATION_DATABASE_URL="postgres://migration_role:${migration_pw}@${db}" \
   | seal migrate-secrets
@@ -146,14 +190,19 @@ kubectl -n "$ns" create secret generic api-secrets --dry-run=client -o yaml \
   --from-literal=MINIO_ACCESS_KEY=ci \
   --from-literal=MINIO_SECRET_KEY="$(pw)" \
   | seal api-secrets
-for s in migrate-secrets api-secrets; do
+secrets="postgres-app-role postgres-migration-role postgres-admin-role postgres-backup migrate-secrets api-secrets"
+for s in $secrets; do
   kind=$(yq e '.kind' "$work/$s.sealed.yaml")
   [ "$kind" = SealedSecret ] || { echo "::error::$s: kubeseal gave a $kind"; exit 1; }
   kubectl apply -f "$work/$s.sealed.yaml"
 done
-for s in migrate-secrets api-secrets; do
+for s in $secrets; do
   kubectl -n "$ns" wait --for=create "secret/$s" --timeout=120s
 done
+
+echo "== postgres-staging (Argo CD)"
+wait_app postgres-staging 900
+kubectl -n "$ns" get clusters.postgresql.cnpg.io -o wide
 
 echo "== $app (Argo CD)"
 wait_app "$app" 900
@@ -279,7 +328,7 @@ oom=$(oom_killed)
 notready=$(kubectl get pods -A -o yaml \
   | yq e '.items[] | select(.status.phase != "Succeeded") | select([.status.containerStatuses[]?.ready] | all | not) | .metadata.namespace + "/" + .metadata.name' -)
 [ -z "$notready" ] || { echo "::error::pods not Ready: $notready"; exit 1; }
-for a in platform argocd sealed-secrets cert-manager cloudnative-pg kyverno "$app"; do
+for a in platform argocd sealed-secrets cert-manager cloudnative-pg kyverno postgres-staging "$app"; do
   wait_app "$a" 5
 done
 cat "$work/restarts.after"

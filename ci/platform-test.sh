@@ -43,11 +43,13 @@ for env in staging prod; do
   ya() { yq ea "$1" "$out"; }
   app="manage-our-home-$env"
   appsel="select(.kind == \"Application\" and .metadata.name == \"$app\")"
+  pgapp="postgres-$env"
+  pgsel="select(.kind == \"Application\" and .metadata.name == \"$pgapp\")"
 
-  # --- The bricks, and the application's Application.
+  # --- The bricks, the application's Application and its Postgres's (#433).
   check
   v=$(y 'select(.kind == "Application") | .metadata.name' | sort | tr '\n' ' ')
-  want="argocd cert-manager cloudnative-pg kyverno $app sealed-secrets "
+  want="argocd cert-manager cloudnative-pg kyverno $app $pgapp sealed-secrets "
   [ "$v" = "$want" ] || fail "Applications: expected '$want', got '$v'"
 
   # --- No Secret in clear; whatever the secrets directory holds is sealed.
@@ -59,32 +61,37 @@ for env in staging prod; do
   [ -z "$v" ] || [ "$v" = "SealedSecret " ] || fail "secrets/ renders '$v', expected SealedSecret only"
 
   # --- Synchronisation: production is never synced without the user —
-  # neither the application nor the root (arbitrage of 2026-10-10);
-  # staging is, both.
+  # neither the application, its Postgres nor the root (arbitrage of
+  # 2026-10-10); staging is, all three.
   check
   auto=$(y "$appsel | .spec.syncPolicy.automated // \"none\"" | head -n 1)
+  pauto=$(y "$pgsel | .spec.syncPolicy.automated // \"none\"" | head -n 1)
   rauto=$(yq e '.spec.syncPolicy.automated // "none"' "$rootapp" | head -n 1)
   case "$env" in
     prod)
       [ "$auto" = none ] || fail "$app has syncPolicy.automated: production syncs only on the user's Sync"
+      check
+      [ "$pauto" = none ] || fail "$pgapp has syncPolicy.automated: production syncs only on the user's Sync"
       check
       [ "$rauto" = none ] || fail "root Application has syncPolicy.automated: production syncs only on the user's Sync"
       ;;
     *)
       [ "$auto" != none ] || fail "$app has no syncPolicy.automated"
       check
+      [ "$pauto" != none ] || fail "$pgapp has no syncPolicy.automated"
+      check
       [ "$rauto" != none ] || fail "root Application has no syncPolicy.automated"
       ;;
   esac
 
-  # --- Which commit each cluster reads: one branch for the root and the
-  # application, `deploy` in production.
+  # --- Which commit each cluster reads: one branch for the root, the
+  # application and its Postgres, `deploy` in production.
   check
   revs=$( (y "select(.kind == \"Application\" and .spec.source.repoURL == \"$REPO\") | .spec.source.targetRevision"
     yq e '.spec.source.targetRevision' "$rootapp") | sort -u | tr '\n' ' ')
   n=$( (y "select(.kind == \"Application\" and .spec.source.repoURL == \"$REPO\") | .metadata.name"
     yq e '.metadata.name' "$rootapp") | wc -l)
-  [ "$n" = 2 ] || fail "$n Application(s) read $REPO, expected 2 (root and $app)"
+  [ "$n" = 3 ] || fail "$n Application(s) read $REPO, expected 3 (root, $app and $pgapp)"
   case "$env" in
     prod) want=deploy ;;
     *) want=${EXPECT_STAGING_REVISION:-${revs%% *}} ;;
@@ -96,10 +103,15 @@ for env in staging prod; do
   check
   v=$(y "$appsel | [.spec.source.path, .spec.destination.namespace] | join(\" \")")
   [ "$v" = "apps/manage-our-home/overlays/$env manage-our-home" ] || fail "$app renders '$v'"
+  check
+  v=$(y "$pgsel | [.spec.source.path, .spec.destination.namespace] | join(\" \")")
+  [ "$v" = "apps/manage-our-home/overlays/$env/postgres manage-our-home" ] || fail "$pgapp renders '$v'"
 
   # --- The namespace, its Pod Security level, and the order of the first
   # sync: the namespace and the sealed Secrets exist before the
-  # application's PreSync migration Job runs; the platform before both.
+  # application's PreSync migration Job runs; the platform before both;
+  # Postgres after the Secrets (its roles' passwords) and before the
+  # application (whose PreSync Job migrates it).
   check
   v=$(y 'select(.kind == "Namespace" and .metadata.name == "manage-our-home") | .metadata.labels["pod-security.kubernetes.io/enforce"]')
   [ "$v" = restricted ] || fail "namespace manage-our-home: Pod Security enforce is '$v', expected 'restricted'"
@@ -111,10 +123,11 @@ for env in staging prod; do
   w_ns=$(wave 'select(.kind == "Namespace" and .metadata.name == "manage-our-home")')
   w_policy=$(wave 'select(.kind == "ClusterPolicy")')
   w_secrets=$(yq e '.commonAnnotations["argocd.argoproj.io/sync-wave"]' "$platform/clusters/$env/secrets/kustomization.yaml")
+  w_pg=$(wave "$pgsel")
   w_app=$(wave "$appsel")
   check
-  [ "$w_bricks" -lt "$w_ns" ] && [ "$w_bricks" -lt "$w_policy" ] && [ "$w_ns" -lt "$w_secrets" ] && [ "$w_policy" -lt "$w_app" ] && [ "$w_secrets" -lt "$w_app" ] \
-    || fail "sync waves: bricks $w_bricks < namespace $w_ns, policy $w_policy < secrets $w_secrets < application $w_app does not hold"
+  [ "$w_bricks" -lt "$w_ns" ] && [ "$w_bricks" -lt "$w_policy" ] && [ "$w_ns" -lt "$w_secrets" ] && [ "$w_policy" -lt "$w_app" ] && [ "$w_secrets" -lt "$w_pg" ] && [ "$w_pg" -lt "$w_app" ] \
+    || fail "sync waves: bricks $w_bricks < namespace $w_ns, policy $w_policy < secrets $w_secrets < postgres $w_pg < application $w_app does not hold"
 
   # --- Charts pinned to a version, never a range or a branch.
   for a in $(y 'select(.kind == "Application" and .spec.source.chart != null) | .metadata.name'); do

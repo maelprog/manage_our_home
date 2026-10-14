@@ -229,6 +229,129 @@ for overlay in "${overlays[@]}"; do
   cm=$(y 'select(.kind == "Deployment" and .metadata.name == "api") | .spec.template.spec.containers[0].envFrom[] | select(.configMapRef) | .configMapRef.name' | head -n 1)
   v=$(y "select(.kind == \"ConfigMap\" and .metadata.name == \"$cm\") | .data.TRUSTED_PROXY_CIDRS // \"\"")
   [ "$v" = "10.42.0.0/16" ] || fail "api: TRUSTED_PROXY_CIDRS is '$v', expected '10.42.0.0/16'"
+
+  # --- Postgres (#433): the overlay's `postgres/` folder, which an
+  # Application of its own syncs before the application.
+  pg="$work/$overlay-postgres.yaml"
+  check
+  if ! kustomize build "$app/overlays/$overlay/postgres" > "$pg" 2> "$work/err"; then
+    fail "kustomize build postgres: $(cat "$work/err")"
+    continue
+  fi
+  p() { yq e -N "$1" "$pg" | sed "/^$/d"; }
+  cl='select(.kind == "Cluster" and .metadata.name == "postgres") | .spec'
+  check
+  v=$(p 'select(.kind == "Cluster") | .metadata.name' | tr '\n' ' ')
+  [ "$v" = "postgres " ] || fail "postgres: Clusters are '$v', expected 'postgres'"
+  check
+  n=$(yq ea '[select(.kind == "Secret")] | length' "$pg")
+  [ "$n" = 0 ] || fail "postgres: $n Secret(s) in the render"
+  # Argo CD never deletes it: that would delete its volume.
+  check
+  v=$(p 'select(.kind == "Cluster") | .metadata.annotations["argocd.argoproj.io/sync-options"] // ""')
+  [[ "$v" == *Delete=false* && "$v" == *Prune=false* ]] || fail "postgres: sync-options '$v', expected Delete=false and Prune=false"
+
+  # Instances: one to start with, on staging as in production.
+  check
+  v=$(p "$cl | .instances")
+  [ "$v" = 1 ] || fail "postgres: $v instance(s), expected 1"
+  check
+  v=$(p "$cl | [.affinity.enablePodAntiAffinity, .affinity.topologyKey] | join(\" \")")
+  [ "$v" = "true kubernetes.io/hostname" ] || fail "postgres: anti-affinity is '$v', expected 'true kubernetes.io/hostname'"
+  check
+  v=$(p "$cl | .imageName")
+  [[ "$v" =~ ^ghcr\.io/cloudnative-pg/postgresql:16\.[0-9]+-system-[a-z]+@sha256:[0-9a-f]{64}$ ]] \
+    || fail "postgres: image '$v' is not Postgres 16 by tag and digest, with barman-cloud (system)"
+  check
+  v=$(p "$cl | .enableSuperuserAccess")
+  [ "$v" = false ] || fail "postgres: enableSuperuserAccess is '$v', expected false"
+
+  # Memory: requested and capped; on the 4 GB server, within the 256 to
+  # 384 Mi the arbitrage of 2026-10-12 gives it. shared_buffers within a
+  # quarter of the limit, the rest being the connections' and barman's.
+  check
+  req=$(p "$cl | .resources.requests.memory // \"\"")
+  lim=$(p "$cl | .resources.limits.memory // \"\"")
+  sb=$(p "$cl | .postgresql.parameters.shared_buffers // \"\"")
+  if [ -z "$req" ] || [ -z "$lim" ]; then
+    fail "postgres: memory request '$req' / limit '$lim' missing"
+  elif ! lim_mib=$(to_mib "$lim"); then
+    fail "postgres: memory limit '$lim' is not in Mi or Gi"
+  else
+    if [ "$overlay" = staging ]; then
+      check
+      [ "$lim_mib" -ge 256 ] && [ "$lim_mib" -le 384 ] || fail "postgres: memory limit $lim, expected 256 to 384 Mi on staging"
+    fi
+    check
+    case "$sb" in
+      *MB) sb_mib=${sb%MB} ;;
+      *GB) sb_mib=$((${sb%GB} * 1024)) ;;
+      *) sb_mib="" ;;
+    esac
+    if [ -z "$sb_mib" ]; then
+      fail "postgres: shared_buffers '$sb' is not set in MB or GB"
+    elif [ $((sb_mib * 4)) -gt "$lim_mib" ]; then
+      fail "postgres: shared_buffers $sb is more than a quarter of the limit $lim"
+    fi
+  fi
+  for k in effective_cache_size work_mem maintenance_work_mem max_connections; do
+    check
+    v=$(p "$cl | .postgresql.parameters.$k // \"\"")
+    [ -n "$v" ] || fail "postgres: parameter $k not set"
+  done
+
+  # Connections: what the api pods may open at once fits in
+  # max_connections, beside the superuser slots. Per pod, the budget of
+  # apps/api/README.md on main: the handlers' 20 and the admin pool's 5
+  # (apps/api/src/main.rs), the three limits' pools (their ConfigMap value,
+  # or 4, 2 and 2 when unset), one per background job (4, apps/api/src/
+  # jobs). As many pods as replicas plus maxSurge; then the migration Job's
+  # 1 (apps/api/src/migrations.rs) and reconcile_attachments' 2.
+  check
+  acm=$(y 'select(.kind == "Deployment" and .metadata.name == "api") | .spec.template.spec.containers[0].envFrom[] | select(.configMapRef) | .configMapRef.name' | head -n 1)
+  pool() { y "select(.kind == \"ConfigMap\" and .metadata.name == \"$acm\") | .data.$1 // \"$2\""; }
+  per_pod=$((20 + 5 + $(pool LOGIN_THROTTLE_POOL_SIZE 4) + $(pool CSP_REPORT_POOL_SIZE 2) + $(pool RATE_LIMIT_POOL_SIZE 2) + 4))
+  pods=$(($(y 'select(.kind == "Deployment" and .metadata.name == "api") | .spec.replicas') + $(y 'select(.kind == "Deployment" and .metadata.name == "api") | .spec.strategy.rollingUpdate.maxSurge // 1')))
+  need=$((pods * per_pod + 1 + 2))
+  maxc=$(p "$cl | .postgresql.parameters.max_connections // \"100\"")
+  reserved=$(p "$cl | .postgresql.parameters.superuser_reserved_connections // \"3\"")
+  [ $((maxc - reserved)) -ge "$need" ] \
+    || fail "postgres: max_connections $maxc - $reserved superuser slots < $need ($pods api pods x $per_pod, + 3)"
+
+  # The roles of infra/postgres/init/01-roles.sh (main): their attributes,
+  # each password from a Secret; the database's owner never logs in. The
+  # k3d job compares the result with that script's (ci/postgres-test.sh).
+  check
+  v=$(p "$cl | .managed.roles[] | [.name, (.ensure // \"present\"), (.login // false), (.superuser // false), (.bypassrls // false), (.passwordSecret.name // \"-\")] | join(\" \")" | sort | tr '\n' ';')
+  want="admin_role present true false true postgres-admin-role;app_role present true false false postgres-app-role;mhome present false false false -;migration_role present true false true postgres-migration-role;"
+  [ "$v" = "$want" ] || fail "postgres: managed roles are '$v', expected '$want'"
+  check
+  v=$(p "$cl | .bootstrap.initdb | [.database, .owner] | join(\" \")")
+  [ "$v" = "manage_our_home mhome" ] || fail "postgres: initdb database/owner '$v', expected 'manage_our_home mhome'"
+  check
+  v=$(p "$cl | .bootstrap.initdb.postInitApplicationSQL[]" | grep -c -E '^(CREATE EXTENSION IF NOT EXISTS pgcrypto|CREATE ROLE (app|migration|admin)_role |GRANT USAGE, CREATE ON SCHEMA public TO migration_role|ALTER DEFAULT PRIVILEGES FOR ROLE migration_role IN SCHEMA public GRANT)' || true)
+  [ "$v" = 9 ] || fail "postgres: postInitApplicationSQL holds $v of the 9 statements of 01-roles.sh"
+
+  # Continuous backup off the server, with a retention.
+  bo="$cl | .backup"
+  check
+  v=$(p "$bo | .retentionPolicy // \"\"")
+  [[ "$v" =~ ^[0-9]+[dwm]$ ]] || fail "postgres: retentionPolicy '$v' is not declared"
+  check
+  v=$(p "$bo | .barmanObjectStore | [.endpointURL, .destinationPath] | join(\" \")")
+  [[ "$v" =~ ^https://s3\.fr-par\.scw\.cloud\ s3://[a-z0-9-]*-$overlay/$ ]] \
+    || fail "postgres: backups go to '$v', expected Scaleway fr-par and a bucket of $overlay's own"
+  check
+  v=$(p "$bo | .barmanObjectStore.s3Credentials | [.accessKeyId.name, .secretAccessKey.name] | join(\" \")")
+  [ "$v" = "postgres-backup postgres-backup" ] || fail "postgres: backup credentials from '$v', expected the Secret postgres-backup"
+  # Scaleway refuses the per-request SSE header (cluster.yaml): the bucket
+  # encrypts by default instead.
+  check
+  v=$(p "$bo | .barmanObjectStore | [.wal.encryption // \"\", .data.encryption // \"\"] | join(\"\")")
+  [ -z "$v" ] || fail "postgres: per-request encryption '$v', which Scaleway refuses"
+  check
+  v=$(p 'select(.kind == "ScheduledBackup") | [.spec.cluster.name, .spec.immediate] | join(" ")')
+  [ "$v" = "postgres true" ] || fail "postgres: ScheduledBackup is '$v', expected 'postgres true'"
 done
 
 echo "render-test: $checks checks, $failures failure(s)"

@@ -1,0 +1,179 @@
+# The application's Postgres, run by the CloudNativePG operator of the
+# platform (#432, #433). Synced by an Argo CD Application of its own
+# (platform/clusters/<env>/postgres.yaml), one sync wave before the
+# application's: the migration Job is a PreSync hook of the application, so
+# the database must be up before that Application syncs at all.
+#
+# The services the application connects to: `postgres-rw` (the primary),
+# in this namespace. The URLs of api-secrets and migrate-secrets name it.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgres
+  annotations:
+    # Never deleted by Argo CD, neither when it leaves the branch nor when
+    # its Application is deleted: deleting the Cluster deletes its volume.
+    # Removing a database is a manual act (README.md, "Restaurer").
+    argocd.argoproj.io/sync-options: Delete=false,Prune=false
+spec:
+  # One instance to start with. Several nodes: `instances: 3` gives a
+  # primary and two streaming replicas, one per node (anti-affinity below),
+  # and the operator fails over to a replica on its own (README.md,
+  # "Postgres").
+  instances: 1
+
+  # Same major version as infra/docker-compose.yml on main (postgres:16.15).
+  # The `system` flavour: it carries barman-cloud, which the backups below
+  # run in the instance's pod. By tag and digest; the tag tells the
+  # operator the major version.
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.15-system-trixie@sha256:9314ca1c9eb14cdf1fe19920284a860d4fb0468f6ca7776fa0746e0dc90143d9
+
+  # No `postgres` superuser reachable over the network: the operator keeps
+  # it for itself, through the pod's local socket.
+  enableSuperuserAccess: false
+
+  # One instance per node: with `instances: 3` on three nodes, losing a node
+  # loses one instance only. Without effect at one instance.
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: required
+
+  storage:
+    size: 20Gi
+
+  # Memory: the instance's pod holds Postgres (shared_buffers, plus each
+  # connection's working memory) and, while it runs, the barman-cloud
+  # upload of a WAL segment or of a base backup. The production values;
+  # the staging overlay narrows both to the 4 GB server.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+
+  postgresql:
+    parameters:
+      # A quarter of the limit at most (ci/render-test.sh): the rest is the
+      # connections' memory and the page cache's.
+      shared_buffers: 256MB
+      effective_cache_size: 768MB
+      work_mem: 4MB
+      maintenance_work_mem: 64MB
+      # The connection budget of apps/api/README.md on main, per api pod:
+      # 33 plus one per background job running (4 jobs), 37. Two replicas,
+      # plus one more during a rollout (maxSurge: 1): 111; the migration
+      # Job's 1 and reconcile_attachments' 2 on top, 114, under the 147 left
+      # once the 3 superuser slots are set aside. ci/render-test.sh checks
+      # the sum against the overlay's replicas and pool sizes.
+      max_connections: "150"
+
+  bootstrap:
+    initdb:
+      database: manage_our_home
+      # The database's owner, as POSTGRES_USER is in infra/docker-compose.yml
+      # on main. It owns the database and, through pg_database_owner, the
+      # schema `public`; it never logs in (managed.roles below).
+      owner: mhome
+      encoding: UTF8
+      # The locale of the compose stack's postgres image, so that text
+      # sorts the same way here as there.
+      localeCollate: en_US.utf8
+      localeCType: en_US.utf8
+      # infra/postgres/init/01-roles.sh of main, statement for statement,
+      # as the superuser in the application's database, once, at creation.
+      # The roles are created here without LOGIN nor password, because the
+      # default privileges below need them to exist; managed.roles then
+      # gives each its password, from its sealed Secret, and keeps its
+      # attributes as written there. The k3d job compares the result with a
+      # Postgres initialised by that script (ci/postgres-test.sh).
+      postInitApplicationSQL:
+        - CREATE EXTENSION IF NOT EXISTS pgcrypto
+        - CREATE ROLE migration_role NOSUPERUSER BYPASSRLS
+        - GRANT USAGE, CREATE ON SCHEMA public TO migration_role
+        - CREATE ROLE admin_role NOSUPERUSER BYPASSRLS
+        - ALTER DEFAULT PRIVILEGES FOR ROLE migration_role IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO admin_role
+        - ALTER DEFAULT PRIVILEGES FOR ROLE migration_role IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO admin_role
+        - CREATE ROLE app_role NOSUPERUSER NOBYPASSRLS
+        - ALTER DEFAULT PRIVILEGES FOR ROLE migration_role IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_role
+        - ALTER DEFAULT PRIVILEGES FOR ROLE migration_role IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO app_role
+
+  # The roles of 01-roles.sh, kept as written there by the operator: a
+  # change made by hand in the database is reverted. Each password comes
+  # from a Secret of type kubernetes.io/basic-auth (`username`,
+  # `password`), sealed per environment (platform/clusters/<env>/secrets);
+  # the same password goes in the URL of api-secrets or migrate-secrets.
+  managed:
+    roles:
+      # Serves requests (DATABASE_URL): the RLS policies apply to it.
+      - name: app_role
+        ensure: present
+        login: true
+        superuser: false
+        bypassrls: false
+        passwordSecret:
+          name: postgres-app-role
+      # Applies the migrations (the `migrate` Job), owns every table.
+      - name: migration_role
+        ensure: present
+        login: true
+        superuser: false
+        bypassrls: true
+        passwordSecret:
+          name: postgres-migration-role
+      # The superadmin endpoints and the background jobs (ADMIN_DATABASE_URL).
+      - name: admin_role
+        ensure: present
+        login: true
+        superuser: false
+        bypassrls: true
+        passwordSecret:
+          name: postgres-admin-role
+      # The database's owner logs in as nobody: the operator created it
+      # with a password (Secret `postgres-app`), this takes LOGIN away.
+      - name: mhome
+        ensure: present
+        login: false
+        superuser: false
+        bypassrls: false
+        disablePassword: true
+
+  # Continuous backup: every WAL segment as soon as it is complete (and at
+  # least every 5 minutes, the operator's archive_timeout), plus the base
+  # backups of scheduled-backup.yaml, to an object store off the server.
+  # One bucket per environment, each with a key that reaches it alone: the
+  # home server's key cannot read production's backups. The staging overlay
+  # names its own. The key is the sealed Secret `postgres-backup`.
+  #
+  # Encrypted in transit (HTTPS) and at rest by the bucket's own default
+  # encryption, set when it is created (README.md, "Sauvegardes"):
+  # Scaleway refuses the per-request `x-amz-server-side-encryption: AES256`
+  # header that `encryption: AES256` would send, so there is none here.
+  backup:
+    # Base backups and WAL older than what a recovery to any instant of the
+    # last 30 days needs are deleted by the operator.
+    retentionPolicy: "30d"
+    barmanObjectStore:
+      endpointURL: https://s3.fr-par.scw.cloud
+      destinationPath: s3://manage-our-home-backups-prod/
+      # The folder of this cluster's backups under destinationPath. A
+      # restored cluster writes under a new name (README.md, "Restaurer"):
+      # the operator refuses to archive into a folder that holds another
+      # cluster's WAL.
+      serverName: postgres
+      s3Credentials:
+        accessKeyId:
+          name: postgres-backup
+          key: ACCESS_KEY_ID
+        secretAccessKey:
+          name: postgres-backup
+          key: ACCESS_SECRET_KEY
+        # Signs the requests for the bucket's region (fr-par).
+        region:
+          name: postgres-backup
+          key: REGION
+      wal:
+        compression: gzip
+      data:
+        compression: gzip

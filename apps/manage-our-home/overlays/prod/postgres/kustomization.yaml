@@ -1,0 +1,8 @@
+# Production's Postgres (#433), on the third-party VPS: the base as is.
+# Synced by the Application `postgres-prod`
+# (platform/clusters/prod/postgres.yaml), by hand like the application.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../base/postgres
