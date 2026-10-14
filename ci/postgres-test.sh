@@ -12,8 +12,9 @@
 #      policies apply to it: a group's membership is invisible to it
 #      without that group's `app.family_id`, visible with it.
 #   3. Restore (README.md, "Restaurer"): a row written before an instant T
-#      and one written after; the Cluster is deleted, volume included, and
-#      recreated from the object store at T, as the procedure does. The
+#      and one written after; Argo CD paused and the api stopped, the
+#      Cluster is deleted, volume included, and recreated from the object
+#      store at T with the changes the procedure makes. The
 #      first row is there, the second is not, the roles are still those of
 #      01-roles.sh, RLS still applies, the restored Cluster archives again,
 #      and the api answers /readyz again.
@@ -82,6 +83,11 @@ check_roles() { # label
     echo "::error::the roles of the Cluster differ from those of 01-roles.sh (- reference, + Cluster)"
     exit 1
   fi
+  # The database's owner, which 01-roles.sh does not create, never logs in.
+  local v
+  v=$(cnpg -c "SELECT rolcanlogin::text || ' ' || rolsuper::text FROM pg_roles r JOIN pg_database d ON d.datdba = r.oid WHERE d.datname = current_database() AND r.rolname = 'mhome'")
+  [ "$v" = "false false" ] || { echo "::error::owner mhome: login, superuser = '$v', expected 'false false'"; exit 1; }
+  echo "owner mhome: no login"
 }
 
 # A user, a group and its membership, written as migration_role (which
@@ -159,11 +165,16 @@ echo "switched to a new segment after $segment; last archived: $archived"
 [[ "$archived" > "$segment" || "$archived" == "$segment" ]] || { echo "::error::segment $segment not archived"; exit 1; }
 
 # The procedure of README.md: Argo CD stops syncing (the root first, which
-# would set it back on the Application), the Cluster is deleted with its
-# volume, then recreated from the object store at T.
-echo "== Argo CD paused, Cluster deleted"
-kubectl -n argocd patch application platform --type merge -p '{"spec":{"syncPolicy":{"automated":null}}}'
-kubectl -n argocd patch application postgres-staging --type merge -p '{"spec":{"syncPolicy":{"automated":null}}}'
+# would set it back on the others), the api stops — no more writes, and
+# Postgres's shutdown does not wait on its connections —, the Cluster is
+# deleted with its volume, then recreated from the object store at T.
+echo "== Argo CD paused, api stopped, Cluster deleted"
+for a in platform postgres-staging manage-our-home-staging; do
+  kubectl -n argocd patch application "$a" --type merge -p '{"spec":{"syncPolicy":{"automated":null}}}'
+done
+api_replicas=$(kubectl -n "$ns" get deploy/api -o jsonpath='{.spec.replicas}')
+kubectl -n "$ns" scale deploy/api --replicas=0
+kubectl -n "$ns" wait --for=delete pod -l app.kubernetes.io/name=api --timeout=120s
 old_pvc=$(kubectl -n "$ns" get pvc -l cnpg.io/cluster=postgres -o name)
 kubectl -n "$ns" delete clusters.postgresql.cnpg.io postgres --wait=true --timeout=180s
 kubectl -n "$ns" wait --for=delete pod -l cnpg.io/cluster=postgres --timeout=180s
@@ -211,6 +222,8 @@ wait_archiving
 echo "the restored Cluster archives under its new serverName"
 
 echo "== api /readyz on the restored database"
+kubectl -n "$ns" scale deploy/api --replicas="$api_replicas"
+kubectl -n "$ns" rollout status deploy/api --timeout=180s
 kubectl -n "$ns" port-forward svc/api 18081:8080 > "$work/pf.log" 2>&1 &
 pf_pid=$!
 code=000

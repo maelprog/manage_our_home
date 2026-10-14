@@ -20,6 +20,7 @@ clusters/
     root.yaml           l'Application racine, appliquée par bootstrap.sh
     kustomization.yaml  les briques de ce cluster (liste de components)
     manage-our-home.yaml l'Application de l'appli
+    postgres.yaml       l'Application de son Postgres (#433)
     secrets/            ses SealedSecrets, scellés pour ce cluster
 ```
 
@@ -34,6 +35,7 @@ listée en prod seulement.
 |---|---|---|
 | Racine `platform` | synchro automatique | **manuelle** |
 | `manage-our-home-<env>` | synchro automatique | **manuelle**, sans `syncPolicy.automated` |
+| `postgres-<env>` | synchro automatique | **manuelle**, sans `syncPolicy.automated` |
 | Briques (Argo CD, Kyverno…) | synchro automatique | automatique, mais leur version et leurs valeurs ne changent qu'à la synchro manuelle de la racine |
 | Branche lue | `k3s` pendant l'intégration, `deploy` ensuite | `deploy` |
 
@@ -44,7 +46,8 @@ la CI ni aux agents.
 
 **Promotion `k3s` → `deploy`** : la PR doit passer `targetRevision: k3s` à
 `deploy` dans `clusters/staging/root.yaml` et
-`clusters/staging/manage-our-home.yaml` ; `ci/platform-test.sh` échoue sur
+`clusters/staging/manage-our-home.yaml` et `clusters/staging/postgres.yaml` ;
+`ci/platform-test.sh` échoue sur
 une PR vers `deploy` tant que staging suit `k3s`.
 
 ## Ordre de la première synchro
@@ -60,7 +63,14 @@ vague ne commençant qu'une fois la précédente `Healthy` :
 | -10 | les Applications des briques |
 | -5 | namespace `manage-our-home`, ClusterIssuers, politique Kyverno |
 | -3 | SealedSecrets de `clusters/<env>/secrets/` |
+| -2 | `postgres-<env>` : le Cluster CloudNativePG de l'appli (#433) |
 | 0 | `manage-our-home-<env>` |
+
+Postgres a son Application, avant celle de l'appli, pour la même raison :
+le Job `migrate` doit trouver la base debout. La racine passe à l'appli
+quand le Cluster est `Healthy`. En prod, `postgres-prod` et
+`manage-our-home-prod` sont manuelles : à la première synchro, la racine
+attend que l'utilisateur synchronise `postgres-prod`, puis l'appli.
 
 La santé d'une Application enfant n'est pas calculée par Argo CD depuis
 1.8 : `components/argocd/application.yaml` lui rend ce contrôle
@@ -110,7 +120,19 @@ kubectl -n manage-our-home create secret generic migrate-secrets \
 ```
 
 puis l'ajouter à `resources:` de `secrets/kustomization.yaml`. Idem pour
-`api-secrets`, une `--from-literal` par clé. Sans accès au cluster :
+`api-secrets`, une `--from-literal` par clé, et pour les Secrets du
+Cluster Postgres (`README.md` racine, « Secrets ») ; ceux des rôles sont de
+type `kubernetes.io/basic-auth` :
+
+```sh
+kubectl -n manage-our-home create secret generic postgres-app-role \
+  --type=kubernetes.io/basic-auth --dry-run=client -o yaml \
+  --from-literal=username=app_role --from-literal=password='…' \
+  | kubeseal --format yaml > platform/clusters/staging/secrets/postgres-app-role.yaml
+```
+
+Le mot de passe d'un rôle est aussi dans l'URL qui le nomme
+(`api-secrets`, `migrate-secrets`) : les changer ensemble. Sans accès au cluster :
 `kubeseal --fetch-cert > staging.pem` une fois, puis `kubeseal --cert
 staging.pem`. Un SealedSecret est lié à son nom et à son namespace : le
 renommer le rend illisible.
