@@ -254,7 +254,7 @@ refused kyverno-unsigned "$api_repo@$API_UNSIGNED_DIGEST" "an unsigned manifest 
 restart_counts() {
   kubectl get pods -A -o yaml \
     | yq e '.items[] | .metadata.namespace + "/" + .metadata.name + " " + ([.status.containerStatuses[]?.restartCount] | .[] as $n ireduce (0; . + $n) | tostring)' - \
-    | sort
+    | LC_ALL=C sort
 }
 oom_killed() {
   kubectl get pods -A -o yaml \
@@ -265,8 +265,13 @@ echo "== ${soak} s at rest, 4 GB node"
 restart_counts > "$work/restarts.before"
 sleep "$soak"
 restart_counts > "$work/restarts.after"
-if ! diff "$work/restarts.before" "$work/restarts.after"; then
-  echo "::error::a container restarted during the ${soak} s"
+# Only the pods present in both samples: one that goes away in between
+# (the Kyverno probe pods deleted above, a finished Job reaped by its TTL)
+# has not restarted.
+restarted=$(LC_ALL=C join "$work/restarts.before" "$work/restarts.after" | awk '$2 != $3')
+if [ -n "$restarted" ]; then
+  echo "$restarted"
+  echo "::error::a container restarted during the ${soak} s (pod, restarts before, after)"
   exit 1
 fi
 oom=$(oom_killed)
