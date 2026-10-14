@@ -155,15 +155,27 @@ done
 # Sealed with the certificate of this cluster's controller, as the user
 # does for a real one (platform/README.md); the Secret in clear only goes
 # through a pipe.
-echo "== sealed Secrets"
+#
+# As on a real first boot, where they are sealed once the controller runs
+# and committed afterwards (platform/README.md, "Amorcer un cluster"), they
+# arrive after the Postgres Cluster: the wave of the Secrets is empty in
+# the branch, so the root goes on to Postgres without them. The job waits
+# for the Cluster to exist first, so that this order is the one tested,
+# not a race (#433).
+echo "== sealed Secrets, after the Cluster"
 kubectl wait --for=jsonpath='{.status.phase}'=Active "namespace/$ns" --timeout=300s
+kubectl -n "$ns" wait --for=create clusters.postgresql.cnpg.io/postgres --timeout=600s
 db=postgres-rw.$ns.svc.cluster.local:5432/manage_our_home
 seal() { kubeseal --format yaml > "$work/$1.sealed.yaml"; }
+# The Postgres Secrets carry the label `cnpg.io/reload` (README.md,
+# "Secrets"): the operator watches them, and a Cluster created before them
+# picks them up when they appear.
+cnpg_reload() { kubectl label --local -f - cnpg.io/reload=true -o yaml; }
 # The roles' passwords, read by the Cluster's managed roles (#433); the
 # same ones go in the URLs below.
 role_secret() { # secret role password
   kubectl -n "$ns" create secret generic "$1" --type=kubernetes.io/basic-auth --dry-run=client -o yaml \
-    --from-literal=username="$2" --from-literal=password="$3" | seal "$1"
+    --from-literal=username="$2" --from-literal=password="$3" | cnpg_reload | seal "$1"
 }
 role_secret postgres-app-role app_role "$app_pw"
 role_secret postgres-migration-role migration_role "$migration_pw"
@@ -172,7 +184,7 @@ kubectl -n "$ns" create secret generic postgres-backup --dry-run=client -o yaml 
   --from-literal=ACCESS_KEY_ID="$minio_user" \
   --from-literal=ACCESS_SECRET_KEY="$minio_pw" \
   --from-literal=REGION=us-east-1 \
-  | seal postgres-backup
+  | cnpg_reload | seal postgres-backup
 kubectl -n "$ns" create secret generic migrate-secrets --dry-run=client -o yaml \
   --from-literal=MIGRATION_DATABASE_URL="postgres://migration_role:${migration_pw}@${db}" \
   | seal migrate-secrets
