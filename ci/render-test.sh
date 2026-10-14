@@ -96,17 +96,17 @@ for overlay in "${overlays[@]}"; do
     # run within (migrate-job.yaml).
     check
     case "$name" in
-      api) floor=256 ;;
-      web) floor=448 ;;
-      migrate) floor=128 ;;
-      *) floor="" ;;
+      api) floor=256; why="the worst case main bounds" ;;
+      web) floor=448; why="the worst case main bounds" ;;
+      migrate) floor=128; why="the limit main's migrations were observed to run within" ;;
+      *) floor=""; why="" ;;
     esac
     if [ -z "$floor" ]; then
       fail "$c: no memory floor known for container '$name'"
     elif ! mib=$(to_mib "$lim"); then
       fail "$c: memory limit '$lim' is not in Mi or Gi"
     elif [ "$mib" -lt "$floor" ]; then
-      fail "$c: memory limit $lim is below the ${floor}Mi its worst case needs"
+      fail "$c: memory limit $lim is below its ${floor}Mi floor, $why"
     fi
 
     # --- Unprivileged, read-only, no capability.
