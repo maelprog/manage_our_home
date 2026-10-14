@@ -256,8 +256,10 @@ for overlay in "${overlays[@]}"; do
   v=$(p "$cl | .instances")
   [ "$v" = 1 ] || fail "postgres: $v instance(s), expected 1"
   check
-  v=$(p "$cl | [.affinity.enablePodAntiAffinity, .affinity.topologyKey] | join(\" \")")
-  [ "$v" = "true kubernetes.io/hostname" ] || fail "postgres: anti-affinity is '$v', expected 'true kubernetes.io/hostname'"
+  # One instance per node, strictly: `preferred` would let instances: 3
+  # share a node, and losing it lose them all.
+  v=$(p "$cl | [.affinity.enablePodAntiAffinity, .affinity.topologyKey, .affinity.podAntiAffinityType] | join(\" \")")
+  [ "$v" = "true kubernetes.io/hostname required" ] || fail "postgres: anti-affinity is '$v', expected 'true kubernetes.io/hostname required'"
   check
   v=$(p "$cl | .imageName")
   [[ "$v" =~ ^ghcr\.io/cloudnative-pg/postgresql:16\.[0-9]+-system-[a-z]+@sha256:[0-9a-f]{64}$ ]] \
