@@ -328,9 +328,20 @@ for overlay in "${overlays[@]}"; do
   check
   v=$(p "$cl | .bootstrap.initdb | [.database, .owner] | join(\" \")")
   [ "$v" = "manage_our_home mhome" ] || fail "postgres: initdb database/owner '$v', expected 'manage_our_home mhome'"
+  # The statements of 01-roles.sh, exactly and in order: a widened grant
+  # or an added one fails here, not only in the k3d job.
   check
-  v=$(p "$cl | .bootstrap.initdb.postInitApplicationSQL[]" | grep -c -E '^(CREATE EXTENSION IF NOT EXISTS pgcrypto|CREATE ROLE (app|migration|admin)_role |GRANT USAGE, CREATE ON SCHEMA public TO migration_role|ALTER DEFAULT PRIVILEGES FOR ROLE migration_role IN SCHEMA public GRANT)' || true)
-  [ "$v" = 9 ] || fail "postgres: postInitApplicationSQL holds $v of the 9 statements of 01-roles.sh"
+  v=$(p "$cl | .bootstrap.initdb.postInitApplicationSQL[]")
+  want="CREATE EXTENSION IF NOT EXISTS pgcrypto
+CREATE ROLE migration_role NOSUPERUSER BYPASSRLS
+GRANT USAGE, CREATE ON SCHEMA public TO migration_role
+CREATE ROLE admin_role NOSUPERUSER BYPASSRLS
+ALTER DEFAULT PRIVILEGES FOR ROLE migration_role IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO admin_role
+ALTER DEFAULT PRIVILEGES FOR ROLE migration_role IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO admin_role
+CREATE ROLE app_role NOSUPERUSER NOBYPASSRLS
+ALTER DEFAULT PRIVILEGES FOR ROLE migration_role IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_role
+ALTER DEFAULT PRIVILEGES FOR ROLE migration_role IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO app_role"
+  [ "$v" = "$want" ] || fail "postgres: postInitApplicationSQL is not the 9 statements of 01-roles.sh: $(diff <(echo "$want") <(echo "$v") | tr '\n' ' ')"
 
   # Continuous backup off the server, with a retention.
   bo="$cl | .backup"
