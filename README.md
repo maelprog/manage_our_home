@@ -280,11 +280,19 @@ revenu avant la base laisse des lignes sans objet. D'où l'ordre :
    ```
 
    Le nouveau `serverName` est obligatoire : l'opérateur refuse d'archiver
-   dans un dossier qui contient déjà les WAL d'un autre cluster, et
-   l'ancien dossier reste la source de cette restauration et des
-   suivantes. Le garder ensuite (`postgres-r2` à la restauration
-   d'après) ; le `bootstrap` ne sert qu'à la création, le laisser ne
-   change plus rien.
+   dans un dossier qui contient déjà les WAL d'un autre cluster. Le
+   nouveau nom reste dans l'overlay ensuite : les sauvegardes d'après la
+   restauration sont sous lui. Une restauration ultérieure à un instant
+   postérieur à celle-ci prend donc ce dossier pour source
+   (`serverName: postgres-r1` dans `externalClusters`) et écrit sous un
+   nom neuf (`postgres-r2`) ; à un instant antérieur, l'ancien dossier
+   `postgres`, tant que sa rétention de 30 jours le garde.
+   Une fois le Cluster sain (étape 6), une seconde PR ne garde de ce
+   patch que le remplacement du `serverName` (les deux premières
+   opérations retirées, le `bootstrap.initdb` de la base revient) : le
+   `bootstrap` ne sert
+   qu'à la création, mais laissé dans l'overlay, il rejouerait la
+   restauration à `T` si le Cluster était un jour recréé.
 6. **Vérifier** : `kubectl -n manage-our-home get cluster postgres` en
    `Cluster in healthy state`, condition `ContinuousArchiving` vraie, les
    données attendues présentes.
