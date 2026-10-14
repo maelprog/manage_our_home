@@ -130,6 +130,12 @@ for env in staging prod; do
   check
   v=$(y "$pol | [.spec.failurePolicy, .spec.background, (.spec.rules | length), (.spec.rules[0].match.any[0].resources.namespaces | join(\",\")), (.spec.rules[0].match.any[0].resources.kinds | join(\",\"))] | join(\" \")")
   [ "$v" = "Fail false 1 manage-our-home Pod" ] || fail "ClusterPolicy: '$v', expected 'Fail false 1 manage-our-home Pod'"
+  # Nothing narrows the rule: no exclude, precondition or selector, which
+  # would let some pods of the namespace through unchecked.
+  check
+  v=$(y "$pol | .spec.rules[0] | [(keys | sort | join(\",\")), (.match | keys | sort | join(\",\")), (.match.any | length), (.match.any[0] | keys | sort | join(\",\")), (.match.any[0].resources | keys | sort | join(\",\"))] | join(\" \")")
+  [ "$v" = "match,name,verifyImages any 1 resources kinds,namespaces" ] \
+    || fail "ClusterPolicy rule is narrowed: '$v', expected 'match,name,verifyImages any 1 resources kinds,namespaces'"
   check
   v=$(y "$vi | [.type, .failureAction, .required, .verifyDigest, .mutateDigest, (.imageReferences | join(\",\"))] | join(\" \")")
   [ "$v" = "SigstoreBundle Enforce true true false ghcr.io/maelprog/manage-our-home-*" ] \
