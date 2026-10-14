@@ -3,9 +3,10 @@
 # just brought up — CloudNativePG Cluster `postgres`, api and web running
 # on it, its backups going to the throwaway MinIO of ci/minio.yaml:
 #
-#   1. Roles: app_role, migration_role and admin_role, their attributes,
-#      the default privileges, the grants on the schema `public`, the
-#      extensions, the encoding and the locale are the same as on the
+#   1. Roles: app_role, migration_role and admin_role, their attributes
+#      and per-role settings, the default privileges, the grants on the
+#      schema `public` and on the database, the extensions, the encoding
+#      and the locale are the same as on the
 #      reference Postgres that infra/postgres/init/01-roles.sh of main
 #      initialised (ci/postgres.yaml).
 #   2. RLS: app_role neither bypasses RLS nor owns a table, and the
@@ -71,6 +72,12 @@ SELECT 'default_acl', pg_get_userbyid(defaclrole), defaclnamespace::regnamespace
 SELECT 'schema_public', nspacl::text FROM pg_namespace WHERE nspname = 'public';
 SELECT 'extension', extname FROM pg_extension ORDER BY extname;
 SELECT 'database', pg_encoding_to_char(encoding), datcollate, datctype FROM pg_database WHERE datname = current_database();
+SELECT 'database_acl', coalesce(datacl::text, 'default') FROM pg_database WHERE datname = current_database();
+SELECT 'role_setting', coalesce(pg_get_userbyid(nullif(s.setrole, 0)), '*'), coalesce(d.datname, '*'), s.setconfig::text
+  FROM pg_db_role_setting s LEFT JOIN pg_database d ON d.oid = s.setdatabase
+  WHERE pg_get_userbyid(s.setrole) IN ('app_role', 'migration_role', 'admin_role')
+     OR (s.setrole = 0 AND d.datname = current_database())
+  ORDER BY 2, 3, 4;
 "
 
 check_roles() { # label
