@@ -1,7 +1,7 @@
 # The application in production (#432). No `syncPolicy.automated`, on
 # purpose (arbitrage of 2026-10-10): a merge on `deploy` that moves its
 # digests leaves it OutOfSync, and nothing is deployed until the user
-# presses Sync in Argo CD. ci/render-test.sh fails if one appears.
+# presses Sync in Argo CD. ci/platform-test.sh fails if one appears.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

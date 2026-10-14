@@ -8,8 +8,9 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-# The Kubernetes version of the k3s image ci/install-tools.sh pins for the
-# k3d job, which is the version the clusters are installed with (#438).
+# The Kubernetes version of the k3s image the k3d job runs (K3S_IMAGE in
+# .github/workflows/deploy.yml), which is the version the clusters are
+# installed with (#438).
 k8s_version=${K8S_VERSION:-1.37.1}
 
 for overlay in "$root"/apps/manage-our-home/overlays/*/; do

@@ -31,7 +31,8 @@ K3D_SHA256=06d8f25bc3a971c4eb29e0ff08429b180402db0f4dec838c9eac427e296800a0
 # renders the charts itself.
 HELM_VERSION=4.3.0
 HELM_SHA256=86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb
-# Same version as the controller of platform/apps/sealed-secrets.yaml.
+# Same version as the controller of
+# platform/components/sealed-secrets/application.yaml (chart 2.20.0).
 KUBESEAL_VERSION=0.40.0
 KUBESEAL_SHA256=9314c35916646e9d59c8f06b1314574b4e79c4d76f079433607ed7b697bb5eb7
 # v3: the signatures of images.yml on main are in the Sigstore bundle
