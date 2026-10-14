@@ -46,7 +46,7 @@ use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use chrono::{Datelike, NaiveDate};
 use leptos::prelude::*;
-use manage_our_home_shared::dto::agenda::{OccurrenceList, OccurrenceResponse};
+use manage_our_home_shared::dto::agenda::OccurrenceResponse;
 use manage_our_home_shared::validation::agenda::{month_grid, week_days};
 
 use crate::app::{html_escape, shell_with_header, Width};
@@ -54,8 +54,8 @@ use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
 use super::{
-    agenda_cookie, family_context, fmt_paris, paris_local_to_utc, service_unavailable_page,
-    today_paris, DISPLAY_TZ,
+    agenda_cookie, family_context, fmt_paris, occurrences_from_response, paris_local_to_utc,
+    service_unavailable_page, today_paris, DISPLAY_TZ,
 };
 
 const FR_MONTHS: [&str; 12] = [
@@ -142,7 +142,11 @@ pub async fn get(
         from.format("%Y-%m-%dT%H:%M:%SZ"),
         to.format("%Y-%m-%dT%H:%M:%SZ"),
     );
-    let occurrences: Vec<OccurrenceResponse> = match api_request_auth(
+    // An answer we cannot read (a 400, impossible via the UI, a 500, or a
+    // body that is not an occurrence list) still renders the grid, so the
+    // navigation stays usable, but under an error notice: an empty grid alone
+    // would say "nothing planned" (#455).
+    let (occurrences, load_error): (Vec<OccurrenceResponse>, bool) = match api_request_auth(
         &state,
         reqwest::Method::GET,
         &path,
@@ -151,14 +155,13 @@ pub async fn get(
     )
     .await
     {
-        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
-            serde_json::from_value::<OccurrenceList>(resp.body)
-                .map(|l| l.occurrences)
-                .unwrap_or_default()
-        }
-        // A 400 (impossible via the UI) or anything else: render an empty
-        // calendar rather than leaking JSON.
-        Ok(_) => Vec::new(),
+        Ok(resp) => match occurrences_from_response(resp.status, resp.body) {
+            Ok(occurrences) => (occurrences, false),
+            Err(error) => {
+                tracing::warn!(group_id = %fam.gid, %error, "agenda: could not read the events");
+                (Vec::new(), true)
+            }
+        },
         Err(_) => return service_unavailable_page().into_response(),
     };
 
@@ -196,7 +199,12 @@ pub async fn get(
         .as_deref()
         .and_then(notice_text)
         .map(|n| format!(r#"<p class="notice success">{}</p>"#, html_escape(n)))
-        .unwrap_or_default();
+        .unwrap_or_default()
+        + if load_error {
+            r#"<p class="notice error">Impossible de charger les événements pour le moment.</p>"#
+        } else {
+            ""
+        };
 
     let body = view! {
         <div inner_html=nav_html></div>
