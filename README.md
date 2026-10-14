@@ -14,8 +14,11 @@ les deux.
 ## Le modèle
 
 - **GitOps** : un Argo CD par cluster lit cette branche et applique son
-  overlay (#432). Personne ne fait de `kubectl apply` à la main, la CI non
-  plus : aucun jeton Argo CD ni accès cluster ne lui est donné.
+  overlay (#432) ; pendant l'intégration, celui du serveur de test lit
+  `k3s`, `deploy` restant vide jusqu'à la promotion
+  (`platform/README.md`). Personne ne fait de `kubectl apply` à la main,
+  hors l'amorçage d'un cluster (`platform/bootstrap.sh`), la CI non plus :
+  aucun jeton Argo CD ni accès cluster ne lui est donné.
 - **Une branche, un dossier par environnement** (arbitrage du 2026-10-10).
   Une branche par environnement est un anti-modèle GitOps : la promotion se
   ferait par merge entre branches, et les branches dériveraient. Ici, ce qui
@@ -37,7 +40,6 @@ les deux.
 ```
 apps/manage-our-home/
   base/                 commun à tous les environnements
-    namespace.yaml      namespace, Pod Security « restricted »
     api.yaml            Deployment, Service, PodDisruptionBudget
     web.yaml            idem
     migrate-job.yaml    Job `migrate`, hook Argo CD PreSync (#425)
@@ -45,7 +47,7 @@ apps/manage-our-home/
   overlays/
     staging/            serveur maison, 4 Go : 1 réplica, étalement souple
     prod/               VPS tiers : la base telle quelle, 2 réplicas
-platform/               socle du cluster (#432)
+platform/               socle des clusters, Applications Argo CD (#432)
 ci/                     scripts de la CI de cette branche
 .github/workflows/deploy.yml
 ```
@@ -69,9 +71,9 @@ Rendre un overlay : `kustomize build apps/manage-our-home/overlays/staging`.
   `terminationGracePeriodSeconds: 40` couvre les deux.
 - **Sécurité des pods** : UID 10001 non root, système de fichiers racine en
   lecture seule, aucune capacité, pas d'élévation de privilèges, seccomp
-  `RuntimeDefault`, aucun jeton de compte de service monté. Le namespace
-  est en Pod Security `restricted` : l'API server refuse un pod qui s'en
-  écarte.
+  `RuntimeDefault`, aucun jeton de compte de service monté. Le namespace,
+  posé par la plateforme (`platform/components/app-namespace`), est en Pod
+  Security `restricted` : l'API server refuse un pod qui s'en écarte.
 - **Mémoire** : requête et limite sur chaque conteneur, Job compris. Au repos,
   api 7 à 8 Mi et web 3 à 5 Mi (`kubectl top`, k3s v1.37.1, deux relevés dans la PR de
   #431 ; le job k3d le réimprime à chaque passage). Les limites couvrent le
@@ -105,27 +107,17 @@ listées ci-dessous.
 Le sens de chaque variable est dans `apps/api/README.md` et
 `infra/generate-env.sh` sur `main`.
 
+Leurs valeurs, scellées pour chaque cluster, sont dans
+`platform/clusters/<env>/secrets/` ; procédure de scellement et de
+sauvegarde de la clé du contrôleur : `platform/README.md`.
+
 **Premier déploiement d'un environnement** : le Job `migrate` est un hook
-`PreSync`, il tourne avant que la synchro applique les autres ressources,
-`namespace.yaml` compris. Le namespace `manage-our-home` (avec ses labels
-Pod Security) et le Secret `migrate-secrets` doivent donc **exister avant
-le PreSync** ; tels quels, ces manifests ne le garantissent pas, et le
-premier déploiement d'un environnement échouerait.
-
-La voie reste à trouver et à éprouver avec #432. Pistes **non vérifiées** :
-
-- créer le namespace et le Secret de migration côté `platform/`, hors de
-  l'Application de l'appli, avant sa première synchro ;
-- retirer `namespace.yaml` du rendu et faire créer le namespace par
-  l'Application (`CreateNamespace=true`), labels Pod Security et vague
-  de synchro ≤ -2 portés par `managedNamespaceMetadata`, le `SealedSecret`
-  de `migrate-secrets` en hook `PreSync` d'une vague intermédiaire.
-
-À écarter : `CreateNamespace=true` en gardant `namespace.yaml` dans le
-rendu. D'après une lecture du code d'Argo CD (gitops-engine,
-`sync_context.go`) faite en revue de cette PR et non éprouvée sur un
-cluster, le namespace n'est alors pas créé d'avance, puisque le rendu le
-contient, et `managedNamespaceMetadata` est ignoré.
+`PreSync`, il tourne avant que la synchro de l'appli applique quoi que ce
+soit d'autre. Le namespace `manage-our-home` (avec ses labels Pod
+Security) et le Secret `migrate-secrets` sont donc posés par la plateforme,
+hors de l'Application de l'appli, dans des vagues de synchro antérieures
+à elle (#432, `platform/README.md`, « Ordre de la première synchro ») :
+la base de l'appli ne rend plus de namespace.
 
 ## Réglages à fixer
 
@@ -135,20 +127,39 @@ chaque environnement vient avec l'ingress (#434).
 
 ## CI de cette branche
 
-`.github/workflows/deploy.yml`, sur chaque PR vers `deploy` et chaque push :
+`.github/workflows/deploy.yml`, sur chaque PR vers `deploy` ou `k3s` et
+chaque push sur l'une d'elles :
 
-1. `ci/validate.sh` : `kustomize build` de chaque overlay, `kubeconform
-   -strict` contre les schémas de Kubernetes 1.37.1.
-2. `ci/render-test.sh` : tests sur le rendu — empreintes, limites mémoire,
-   sécurité des conteneurs, sondes, délais d'arrêt, PDB, réplicas et
-   étalement par environnement, aucun secret en clair.
-3. `ci/staging-smoke.sh` dans un cluster k3d jetable : un Postgres de test
-   créé avec les rôles de `infra/postgres/init/01-roles.sh` de `main`, le
-   Job de migration d'abord, puis api et web jusqu'à `Available` et
-   `/readyz` à 200, sans redémarrage, en lecture seule, sur le réseau des
-   pods que l'api croit. Puis `kubectl top`.
+1. `ci/validate.sh` : `kustomize build` de chaque overlay et de la
+   plateforme de chaque cluster, `kubeconform -strict` contre les schémas
+   de Kubernetes 1.37.1 (et ceux du catalogue CRDs-catalog, à un commit
+   épinglé, pour les Applications, ClusterIssuers et ClusterPolicy).
+2. `ci/render-test.sh` : tests sur le rendu des overlays — empreintes,
+   limites mémoire, jamais sous le pire cas qu'elles couvrent (api
+   256 Mi, web 448 Mi, ci-dessus ; migrate 128 Mi), sécurité des
+   conteneurs, sondes, délais d'arrêt, une seule source `envFrom` (la
+   ConfigMap), hook `PreSync` du Job et sa politique de suppression, PDB,
+   réplicas et étalement par environnement, aucun secret en clair.
+3. `ci/platform-test.sh` : tests sur le rendu de la plateforme — prod
+   sans `syncPolicy.automated`, branche suivie, ordre des vagues, namespace
+   `restricted`, politique Kyverno, charts épinglés, et sur le rendu Helm
+   de chaque chart : limite mémoire sur chaque conteneur, un réplica,
+   Argo CD sans Dex, notifications ni ApplicationSet, Kyverno réduit au
+   contrôleur d'admission.
+4. `ci/staging-smoke.sh` dans un cluster k3d jetable dont le nœud a les
+   4 Go du serveur de test : un Postgres de test créé avec les rôles de
+   `infra/postgres/init/01-roles.sh` de `main`, puis
+   `platform/bootstrap.sh staging`, la racine pointée sur le commit testé ;
+   les Secrets scellés avec le contrôleur du cluster ; Argo CD synchronise
+   la plateforme puis staging (Job de migration en PreSync, api et web
+   jusqu'à `Available` et `/readyz` à 200, sans redémarrage, en lecture
+   seule, sur le réseau des pods que l'api croit). Kyverno doit refuser
+   l'image de l'appli par étiquette et un manifeste non signé de son dépôt,
+   et admettre l'image signée. Puis 10 minutes au repos sans redémarrage
+   ni OOM, tous les pods prêts, et `kubectl top pods -A`.
 
-Les outils (kustomize, kubeconform, yq, kubectl, k3d) sont épinglés par
-version et empreinte SHA-256 dans `ci/install-tools.sh`, l'image k3s par
-étiquette et empreinte dans le workflow. En local, avec ces outils dans le
-`PATH` : `ci/validate.sh && ci/render-test.sh`.
+Les outils (kustomize, kubeconform, yq, kubectl, k3d, helm, kubeseal,
+cosign) sont épinglés par version et empreinte SHA-256 dans
+`ci/install-tools.sh`, l'image k3s par étiquette et empreinte dans le
+workflow. En local, avec ces outils dans le `PATH` :
+`ci/validate.sh && ci/render-test.sh && ci/platform-test.sh`.
