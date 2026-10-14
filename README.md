@@ -44,15 +44,19 @@ apps/manage-our-home/
     web.yaml            idem
     migrate-job.yaml    Job `migrate`, hook Argo CD PreSync (#425)
     kustomization.yaml  ConfigMaps (réglages en clair)
+    postgres/           Cluster CloudNativePG et sa sauvegarde nocturne (#433)
   overlays/
     staging/            serveur maison, 4 Go : 1 réplica, étalement souple
+      postgres/         son Postgres, réduit au serveur de 4 Go
     prod/               VPS tiers : la base telle quelle, 2 réplicas
+      postgres/         son Postgres, la base telle quelle
 platform/               socle des clusters, Applications Argo CD (#432)
 ci/                     scripts de la CI de cette branche
 .github/workflows/deploy.yml
 ```
 
-Rendre un overlay : `kustomize build apps/manage-our-home/overlays/staging`.
+Rendre un overlay : `kustomize build apps/manage-our-home/overlays/staging`,
+et son Postgres : `kustomize build apps/manage-our-home/overlays/staging/postgres`.
 
 ## Ce que porte la base
 
@@ -103,6 +107,13 @@ listées ci-dessous.
 |---|---|---|
 | `api-secrets` | `DATABASE_URL`, `ADMIN_DATABASE_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `OAUTH_ENCRYPTION_KEY`, `MESSAGE_ENCRYPTION_KEY`, `CALENDAR_FEED_ENCRYPTION_KEY`, `LOGIN_THROTTLE_KEY`, `VAPID_PRIVATE_KEY` (facultative), `SMTP_USERNAME`, `SMTP_PASSWORD`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` | api |
 | `migrate-secrets` | `MIGRATION_DATABASE_URL` | Job `migrate` |
+| `postgres-app-role`, `postgres-migration-role`, `postgres-admin-role` | `username`, `password` (type `kubernetes.io/basic-auth`) | Cluster `postgres` : mot de passe de chaque rôle |
+| `postgres-backup` | `ACCESS_KEY_ID`, `ACCESS_SECRET_KEY`, `REGION` (`fr-par`) | Cluster `postgres` : clé du bucket de sauvegarde |
+
+Les URL de `api-secrets` et `migrate-secrets` visent le service
+`postgres-rw` du namespace (`postgres://app_role:<mot de passe>@postgres-rw:5432/manage_our_home`,
+de même `admin_role` et `migration_role`), avec le mot de passe scellé
+dans le Secret du rôle : les deux doivent être scellés ensemble.
 
 Le sens de chaque variable est dans `apps/api/README.md` et
 `infra/generate-env.sh` sur `main`.
@@ -119,21 +130,249 @@ hors de l'Application de l'appli, dans des vagues de synchro antérieures
 à elle (#432, `platform/README.md`, « Ordre de la première synchro ») :
 la base de l'appli ne rend plus de namespace.
 
+## Postgres
+
+Le Cluster CloudNativePG `postgres` (`base/postgres/`, #433) est
+synchronisé par une Application à lui, `postgres-<env>`
+(`platform/clusters/<env>/postgres.yaml`), dans une vague antérieure à
+celle de l'appli : le Job `migrate` est un hook `PreSync`, il tourne avant
+que l'Application de l'appli applique quoi que ce soit, la base ne peut donc
+pas en faire partie. Argo CD ne le supprime jamais (`Delete=false`,
+`Prune=false`) : supprimer le Cluster supprime son volume.
+
+- **Instances** : une au départ. Pour plusieurs nœuds, passer
+  `instances: 3` dans l'overlay : un primaire et deux réplicas en
+  streaming, un par nœud (anti-affinité `required` sur
+  `kubernetes.io/hostname`), et l'opérateur bascule seul sur un réplica.
+  Le service `postgres-rw` suit le primaire, l'appli n'a rien à changer.
+- **Rôles** : ceux de `infra/postgres/init/01-roles.sh` de `main`,
+  attributs et droits compris. Les instructions du script sont rejouées à
+  la création (`postInitApplicationSQL`), les rôles créés sans mot de
+  passe ; `managed.roles` leur donne ensuite le leur, depuis leur Secret,
+  et rétablit leurs attributs si on les change à la main. La base appartient
+  à `mhome` (le `POSTGRES_USER` de Compose), qui ne se connecte pas. Pas de
+  superutilisateur joignable par le réseau (`enableSuperuserAccess: false`).
+  Le job k3d compare les rôles, les privilèges par défaut, les droits sur
+  `public`, les extensions et la locale avec ceux d'un Postgres initialisé
+  par le script de `main`.
+- **Image** : `ghcr.io/cloudnative-pg/postgresql:16.15-system-trixie`, par
+  étiquette et empreinte : la version majeure de Compose, et la variante
+  `system`, qui porte barman-cloud.
+- **Mémoire et réglages** :
+
+  | | staging | prod (la base) |
+  |---|---|---|
+  | requête / limite mémoire | 256 / 384 Mi | 512 Mi / 1 Gi |
+  | `shared_buffers` | 64MB | 256MB |
+  | `effective_cache_size` | 192MB | 768MB |
+  | `work_mem` / `maintenance_work_mem` | 2MB / 32MB | 4MB / 64MB |
+  | `max_connections` | 100 | 150 |
+  | volume | 10 Gi | 20 Gi |
+
+  `max_connections` suit le budget de connexions de `apps/api/README.md`
+  sur `main` : 37 par pod api (les 20 des handlers, 5 du pool admin, 4 + 2
+  + 2 des trois limites de débit, une par job de fond), autant de pods que
+  de réplicas plus un pendant un déploiement (`maxSurge: 1`), plus 1 pour
+  le Job `migrate` et 2 pour `reconcile_attachments` : 77 en staging,
+  114 en prod, sous les 97 et 147 laissés par les 3 connexions réservées au
+  superutilisateur. `ci/render-test.sh` refait ce compte sur le rendu, avec
+  les tailles de pool de la ConfigMap de l'api.
+
+### Sauvegardes
+
+Continues, hors du serveur, vers Scaleway Object Storage `fr-par`
+(sous-traitant déjà au registre ; destination et durée y sont déclarées par
+#440) : chaque segment WAL dès qu'il est plein, et au plus tard toutes les
+5 minutes (`archive_timeout` de l'opérateur), plus une sauvegarde de base
+chaque nuit à 3 h UTC et une à la création (`base/postgres/scheduled-backup.yaml`).
+On peut donc restaurer à n'importe quel instant des **30 derniers jours**
+(`retentionPolicy: 30d`), à 5 minutes près au pire pour les dernières
+écritures ; au-delà, l'opérateur supprime sauvegardes et WAL — ceux du
+dossier de son `serverName` seulement, après chacune de ses sauvegardes de
+base. Après une restauration, l'ancien dossier n'est plus purgé par
+personne : la procédure le purge à la main (« Restaurer », étape 8), sans
+quoi la durée déclarée n'est plus tenue.
+
+Un bucket par environnement (`manage-our-home-backups-staging`,
+`manage-our-home-backups-prod`), chacun avec une clé d'API qui n'atteint
+que lui : la clé du serveur maison ne lit pas les sauvegardes de la prod.
+
+**Chiffrement** : en transit par HTTPS ; au repos par le chiffrement par
+défaut du bucket (SSE-ONE, clés gérées par Scaleway), à activer **à la
+création du bucket, avant la première sauvegarde** — il ne s'applique
+qu'aux objets envoyés après :
+
+```sh
+aws s3api put-bucket-encryption --endpoint-url https://s3.fr-par.scw.cloud \
+  --bucket manage-our-home-backups-staging \
+  --server-side-encryption-configuration \
+  '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+aws s3api get-bucket-encryption --endpoint-url https://s3.fr-par.scw.cloud \
+  --bucket manage-our-home-backups-staging
+```
+
+Le réglage par requête (`encryption: AES256` dans le Cluster) n'est pas
+utilisé : Scaleway refuse l'en-tête qu'il envoie, et `ci/render-test.sh`
+échoue s'il apparaît. Ce chiffrement protège les objets chez Scaleway,
+qui détient la clé ; barman-cloud ne chiffre pas côté client.
+
+Les sauvegardes passent par la prise en charge native de barman-cloud
+par l'opérateur (`spec.backup.barmanObjectStore`), dépréciée depuis
+CloudNativePG 1.26 au profit du greffon Barman Cloud mais toujours prise en
+charge par l'opérateur 1.30.1 installé (chart 0.29.1). **Elle disparaît
+avec CloudNativePG 1.31.0** (avertissement que l'opérateur 1.30.1 renvoie à
+chaque `kubectl apply` du Cluster) : passer l'opérateur en 1.31 demande
+d'abord de migrer les sauvegardes vers le greffon, qui ajoute un
+Deployment et un conteneur dans le pod de Postgres, sur le budget du
+serveur de 4 Go. D'ici là, le chart reste en 0.29.x
+(`platform/components/cloudnative-pg/application.yaml`).
+
+### Restaurer
+
+À un instant `T` (UTC), base **et** bucket au même point
+(`docs/v2-deployment.md` de `main`, item 9) : l'api supprime chaque jour
+les objets de pièces jointes de plus de 24 h qu'aucune ligne
+`event_attachments` ne désigne (`attachment_reconcile`). Une base revenue
+à `T` avec un bucket resté au présent laisse sans ligne toutes les pièces
+envoyées après `T`, que la passe suivante efface pour de bon ; un bucket
+revenu avant la base laisse des lignes sans objet. D'où l'ordre :
+
+1. **Arrêter Argo CD sur l'appli et sur Postgres**, la racine d'abord (elle
+   rétablirait la synchro des autres) : retirer `syncPolicy.automated` de
+   `platform`, `postgres-<env>` et `manage-our-home-<env>` (en prod, aucune
+   n'en a).
+2. **Arrêter l'api** (`kubectl -n manage-our-home scale deploy/api
+   --replicas=0`) : plus d'écriture, et plus de passe
+   `attachment_reconcile`.
+3. **Le bucket à `T`** : restaurer le bucket des pièces jointes au même
+   instant, depuis sa propre sauvegarde (MinIO dans le cluster, #435). Sans
+   sauvegarde du bucket à `T`, ne rien supprimer : copier le bucket à part,
+   et ne relancer l'api qu'avec un `ADMIN_DATABASE_URL` sur un rôle sans
+   `BYPASSRLS`, ce qui fait refuser chaque passe de réconciliation (et
+   coupe aussi les routes `/admin/*` et les purges horaires) jusqu'à ce que
+   lignes et objets soient remis d'accord (item 9).
+4. **Supprimer le Cluster**, volume compris :
+   `kubectl -n manage-our-home delete cluster postgres`.
+5. **Le recréer depuis le bucket de sauvegarde à `T`** : une PR sur
+   `overlays/<env>/postgres/kustomization.yaml` ajoute ce patch, puis on
+   resynchronise `postgres-<env>` (Argo CD le recrée, le Cluster ayant
+   disparu) :
+
+   ```yaml
+   - target: {kind: Cluster, name: postgres}
+     patch: |-
+       - op: add
+         path: /spec/externalClusters
+         value:
+           - name: origin
+             barmanObjectStore:  # celui de spec.backup, serverName compris
+               endpointURL: https://s3.fr-par.scw.cloud
+               destinationPath: s3://manage-our-home-backups-<env>/
+               serverName: postgres
+               s3Credentials: {…les mêmes…}
+               wal: {compression: gzip}
+               data: {compression: gzip}
+       - op: replace
+         path: /spec/bootstrap
+         value:
+           recovery:
+             source: origin
+             database: manage_our_home
+             owner: mhome
+             recoveryTarget:
+               targetTime: "2026-10-14 08:30:00.000000+00:00"
+       - op: replace
+         path: /spec/backup/barmanObjectStore/serverName
+         value: postgres-r1
+   ```
+
+   Le nouveau `serverName` est obligatoire : l'opérateur refuse d'archiver
+   dans un dossier qui contient déjà les WAL d'un autre cluster. Le
+   nouveau nom reste dans l'overlay ensuite : les sauvegardes d'après la
+   restauration sont sous lui. Une restauration ultérieure à un instant
+   postérieur à celle-ci prend donc ce dossier pour source
+   (`serverName: postgres-r1` dans `externalClusters`) et écrit sous un
+   nom neuf (`postgres-r2`) — une fois que ce dossier a sa première
+   sauvegarde de base (étape 6) ; à un instant antérieur, l'ancien dossier
+   `postgres`, tant qu'il n'est pas purgé (étape 8).
+   Une fois le Cluster sain (étape 6), une seconde PR ne garde de ce
+   patch que le remplacement du `serverName` (les deux premières
+   opérations retirées, le `bootstrap.initdb` de la base revient) : le
+   `bootstrap` ne sert
+   qu'à la création, mais laissé dans l'overlay, il rejouerait la
+   restauration à `T` si le Cluster était un jour recréé.
+6. **Vérifier, puis sauvegarder** : `kubectl -n manage-our-home get
+   cluster postgres` en `Cluster in healthy state`, condition
+   `ContinuousArchiving` vraie, les données attendues présentes. Puis une
+   sauvegarde de base à la demande, attendue jusqu'à `completed` : le
+   `immediate` du ScheduledBackup n'a joué qu'à sa création, et sans elle
+   le nouveau dossier n'a aucune sauvegarde de base avant 3 h UTC, donc
+   rien d'où restaurer.
+
+   ```sh
+   kubectl -n manage-our-home apply -f - <<EOF
+   apiVersion: postgresql.cnpg.io/v1
+   kind: Backup
+   metadata: {name: postgres-after-restore-$(date -u +%Y%m%d%H%M)}
+   spec: {cluster: {name: postgres}}
+   EOF
+   kubectl -n manage-our-home get backups.postgresql.cnpg.io -w   # PHASE completed
+   ```
+7. **Relancer l'api** (`replicas` de l'overlay), puis rétablir la synchro
+   automatique, la racine en dernier.
+8. **Purger l'ancien dossier** : l'opérateur n'applique la rétention qu'au
+   dossier de son `serverName` courant. Celui d'avant la restauration
+   (`postgres`) se purge à la main, chaque jour (ou à chaque sauvegarde
+   nocturne) tant qu'il existe, depuis le pod de l'instance, qui porte
+   barman-cloud, avec la clé du bucket :
+
+   ```sh
+   kubectl -n manage-our-home exec postgres-1 -c postgres -- env \
+     AWS_ACCESS_KEY_ID='…' AWS_SECRET_ACCESS_KEY='…' AWS_DEFAULT_REGION=fr-par \
+     barman-cloud-backup-delete --endpoint-url https://s3.fr-par.scw.cloud \
+     --retention-policy "RECOVERY WINDOW OF 30 DAYS" \
+     s3://manage-our-home-backups-<env>/ postgres
+   ```
+
+   Trente jours après la restauration, tout ce dossier a dépassé la durée
+   déclarée (il ne reçoit plus rien depuis l'étape 4) : le supprimer en
+   entier (`aws s3 rm --recursive --endpoint-url https://s3.fr-par.scw.cloud
+   s3://manage-our-home-backups-<env>/postgres/`, ou la console Scaleway).
+
+Le job k3d joue les étapes 1, 2, 4, 5, 6 et la relance de l'api
+(`ci/postgres-test.sh`) : une ligne écrite avant `T`, une après, le
+Cluster supprimé avec son volume et recréé avec ces trois changements
+depuis un MinIO jetable — appliqués par `kubectl` au rendu de l'overlay,
+là où la procédure passe par une PR et la synchro d'Argo CD ; la première
+ligne est là, la seconde non, les rôles sont toujours ceux de
+`01-roles.sh`, RLS s'applique, le Cluster restauré archive de nouveau, sa
+sauvegarde à la demande aboutit et figure sous le nouveau `serverName`, la
+commande de purge de l'étape 8 tourne sur l'ancien dossier (sans rien y
+supprimer : ses sauvegardes ont quelques minutes) et l'api répond 200 sur
+`/readyz`. Ni la seconde PR de l'étape 5 ni la suppression du dossier à
+trente jours ne sont jouées. Le bucket des pièces jointes (étape 3) arrive
+avec #435.
+
 ## Réglages à fixer
 
 Les adresses publiques et le relais SMTP des overlays sont des
 emplacements en `.invalid` (RFC 2606 : ne résout nulle part) : l'adresse de
-chaque environnement vient avec l'ingress (#434).
+chaque environnement vient avec l'ingress (#434). Les buckets de
+sauvegarde de Postgres (`manage-our-home-backups-<env>`) sont à créer chez
+Scaleway, chiffrement par défaut activé (« Sauvegardes »), avant le premier
+déploiement ; un autre nom se change dans `base/postgres/cluster.yaml` et
+l'overlay de staging.
 
 ## CI de cette branche
 
 `.github/workflows/deploy.yml`, sur chaque PR vers `deploy` ou `k3s` et
 chaque push sur l'une d'elles :
 
-1. `ci/validate.sh` : `kustomize build` de chaque overlay et de la
-   plateforme de chaque cluster, `kubeconform -strict` contre les schémas
-   de Kubernetes 1.37.1 (et ceux du catalogue CRDs-catalog, à un commit
-   épinglé, pour les Applications, ClusterIssuers et ClusterPolicy).
+1. `ci/validate.sh` : `kustomize build` de chaque overlay, de son
+   Postgres et de la plateforme de chaque cluster, `kubeconform -strict`
+   contre les schémas de Kubernetes 1.37.1 (et ceux du catalogue
+   CRDs-catalog, à un commit épinglé, pour les Applications,
+   ClusterIssuers, ClusterPolicy, Cluster et ScheduledBackup).
 2. `ci/render-test.sh` : tests sur le rendu des overlays — empreintes,
    limites mémoire, jamais sous leur plancher (api 256 Mi et web 448 Mi,
    le pire cas borné ci-dessus ; migrate 128 Mi, la limite sous laquelle
@@ -141,25 +380,36 @@ chaque push sur l'une d'elles :
    des conteneurs, sondes, délais d'arrêt, une seule source `envFrom` (la
    ConfigMap, sans préfixe), hook `PreSync` du Job et sa politique de
    suppression, PDB,
-   réplicas et étalement par environnement, aucun secret en clair.
+   réplicas et étalement par environnement, aucun secret en clair ; et
+   sur le rendu de Postgres : une instance, anti-affinité, image par
+   empreinte, mémoire (256 à 384 Mi en staging) et `shared_buffers` sous
+   le quart de la limite, paramètres présents, budget de connexions,
+   rôles et leurs attributs, sauvegarde vers un bucket Scaleway propre à
+   l'environnement avec rétention, sans en-tête de chiffrement refusé.
 3. `ci/platform-test.sh` : tests sur le rendu de la plateforme — prod
-   sans `syncPolicy.automated`, branche suivie, ordre des vagues, namespace
+   sans `syncPolicy.automated` (racine, appli, Postgres), branche
+   suivie, ordre des vagues (Postgres entre les Secrets et l'appli), namespace
    `restricted`, politique Kyverno (et aucune exclusion, précondition
    ni sélecteur qui restreigne sa règle), charts épinglés, et sur le rendu Helm
    de chaque chart : limite mémoire sur chaque conteneur, un réplica,
    Argo CD sans Dex, notifications ni ApplicationSet, Kyverno réduit au
    contrôleur d'admission.
 4. `ci/staging-smoke.sh` dans un cluster k3d jetable dont le nœud a les
-   4 Go du serveur de test : un Postgres de test créé avec les rôles de
-   `infra/postgres/init/01-roles.sh` de `main`, puis
-   `platform/bootstrap.sh staging`, la racine pointée sur le commit testé ;
-   les Secrets scellés avec le contrôleur du cluster ; Argo CD synchronise
-   la plateforme puis staging (Job de migration en PreSync, api et web
+   4 Go du serveur de test : un Postgres de référence créé avec les rôles
+   de `infra/postgres/init/01-roles.sh` de `main` et un MinIO jetable pour
+   les sauvegardes, puis `platform/bootstrap.sh staging`, la racine pointée
+   sur le commit testé ; les Secrets scellés avec le contrôleur du
+   cluster ; Argo CD synchronise la plateforme, le Postgres de staging
+   (sauvegardé vers ce MinIO, seul écart au rendu, `ci/postgres-backup-patch.yaml`)
+   puis l'appli (Job de migration en PreSync, api et web
    jusqu'à `Available` et `/readyz` à 200, sans redémarrage, en lecture
    seule, sur le réseau des pods que l'api croit). Kyverno doit refuser
    l'image de l'appli par étiquette et un manifeste non signé de son dépôt,
    et admettre l'image signée. Puis 10 minutes au repos sans redémarrage
    ni OOM, tous les pods prêts, et `kubectl top pods -A`.
+5. `ci/postgres-test.sh` sur le même cluster : rôles identiques à ceux de
+   `01-roles.sh`, RLS appliquée à `app_role`, puis la restauration à un
+   instant (« Restaurer » ci-dessus).
 
 Les outils (kustomize, kubeconform, yq, kubectl, k3d, helm, kubeseal,
 cosign) sont épinglés par version et empreinte SHA-256 dans

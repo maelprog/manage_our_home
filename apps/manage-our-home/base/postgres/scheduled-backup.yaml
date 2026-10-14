@@ -1,0 +1,17 @@
+# A base backup of `postgres` every night, and one as soon as this is
+# created (`immediate`): a point-in-time recovery starts from the last base
+# backup taken before the target, then replays the archived WAL up to it.
+# Kept for the Cluster's retentionPolicy (30 days), then deleted by the
+# operator. The schedule has six fields, seconds first, in UTC.
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: postgres-nightly
+spec:
+  schedule: "0 0 3 * * *"
+  immediate: true
+  # The Backup objects belong to this ScheduledBackup: deleting it deletes
+  # them from the cluster, not the backups from the object store.
+  backupOwnerReference: self
+  cluster:
+    name: postgres

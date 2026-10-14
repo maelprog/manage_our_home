@@ -1,0 +1,45 @@
+# Staging's Postgres (#433), on the 4 GB home server (arbitrage of
+# 2026-10-12): one instance, its memory and settings sized for it.
+# Synced by the Application `postgres-staging`
+# (platform/clusters/staging/postgres.yaml).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../base/postgres
+
+patches:
+  - target:
+      kind: Cluster
+      name: postgres
+    patch: |-
+      apiVersion: postgresql.cnpg.io/v1
+      kind: Cluster
+      metadata:
+        name: postgres
+      spec:
+        instances: 1
+        storage:
+          size: 10Gi
+        # Out of the cluster's budget of about 3 GB. Postgres itself sits
+        # near shared_buffers plus a few MiB per open connection; the
+        # limit leaves room for a barman-cloud upload alongside.
+        resources:
+          requests:
+            cpu: 50m
+            memory: 256Mi
+          limits:
+            memory: 384Mi
+        postgresql:
+          parameters:
+            shared_buffers: 64MB
+            effective_cache_size: 192MB
+            work_mem: 2MB
+            maintenance_work_mem: 32MB
+            # One api replica, two during a rollout: 2 x 37, plus the
+            # migration Job's 1 and reconcile_attachments' 2, 77, under
+            # the 97 left beside the 3 superuser slots (base/postgres).
+            max_connections: "100"
+        backup:
+          barmanObjectStore:
+            destinationPath: s3://manage-our-home-backups-staging/

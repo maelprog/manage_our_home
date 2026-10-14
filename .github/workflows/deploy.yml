@@ -2,9 +2,10 @@
 # the manifests render, are valid Kubernetes, say what ci/render-test.sh
 # requires of them, and staging actually runs — in a throwaway k3d cluster
 # whose node has the staging server's 4 GB, the platform bootstrapped by
-# platform/bootstrap.sh and Argo CD deploying the staging overlay against
-# a test Postgres, until api and web answer /readyz and 10 minutes pass
-# without a restart (#432).
+# platform/bootstrap.sh and Argo CD deploying the staging overlay on its
+# CloudNativePG Postgres, until api and web answer /readyz and 10 minutes
+# pass without a restart (#432); then that Postgres is restored from its
+# backups to an instant (#433).
 #
 # The PRs of the k3s epic (#431 to #437) target `k3s`; `deploy` only
 # receives `k3s` once, by a PR the user merges by hand, when the whole
@@ -63,17 +64,19 @@ jobs:
   k3d:
     needs: render
     runs-on: ubuntu-latest
-    # The platform, then 10 minutes at rest (ci/staging-smoke.sh).
-    timeout-minutes: 45
+    # The platform, then 10 minutes at rest (ci/staging-smoke.sh), then the
+    # restore drill (ci/postgres-test.sh).
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The roles the test Postgres is created with: main's own script,
-      # the one infra/docker-compose.yml runs, rather than a copy here
-      # that could drift from it.
+      # The roles of the reference Postgres, which the CloudNativePG
+      # Cluster's are compared with (ci/postgres-test.sh): main's own
+      # script, the one infra/docker-compose.yml runs, rather than a copy
+      # here that could drift from it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
@@ -104,3 +107,8 @@ jobs:
           # branch), or the pushed one.
           REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
         run: ci/staging-smoke.sh main/infra/postgres/init/01-roles.sh "$REVISION"
+      # On the same cluster (#433): staging's Postgres has the roles of
+      # 01-roles.sh and RLS applies to app_role; then it is deleted and
+      # restored from its backups to an instant, and the data checked.
+      - name: Postgres — roles, RLS, point-in-time restore
+        run: ci/postgres-test.sh

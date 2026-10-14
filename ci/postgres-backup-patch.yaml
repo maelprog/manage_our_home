@@ -1,0 +1,11 @@
+# The k3d job's only change to staging's Postgres (#433): its backups go to
+# the throwaway MinIO of ci/minio.yaml instead of Scaleway, whose key the
+# CI does not hold. A JSON patch on the Cluster `postgres`, applied by the
+# CI's Argo CD (ci/staging-smoke.sh) and by the restore drill
+# (ci/postgres-test.sh) alike.
+- op: replace
+  path: /spec/backup/barmanObjectStore/endpointURL
+  value: http://minio.ci-minio.svc.cluster.local:9000
+- op: replace
+  path: /spec/backup/barmanObjectStore/destinationPath
+  value: s3://ci-backups/
