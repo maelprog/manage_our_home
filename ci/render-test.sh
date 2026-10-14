@@ -36,6 +36,15 @@ check() { checks=$((checks + 1)); }
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
+# A memory quantity in Mi, for the units the manifests use.
+to_mib() {
+  case "$1" in
+    *Mi) echo "${1%Mi}" ;;
+    *Gi) echo $((${1%Gi} * 1024)) ;;
+    *) return 1 ;;
+  esac
+}
+
 # Every container of a workload, one line each: `<kind>/<workload>/<container>`.
 WORKLOADS='select(.kind == "Deployment" or .kind == "Job")'
 
@@ -80,6 +89,24 @@ for overlay in "${overlays[@]}"; do
     lim=$(y "$sel | .resources.limits.memory // \"\"")
     [ -n "$req" ] && [ -n "$lim" ] || fail "$c: memory request '$req' / limit '$lim' missing"
 
+    # --- The limit still covers the container's worst case bounded on
+    # main (README.md, "Mémoire"; migrate-job.yaml): a lower one kills
+    # the pod under a load main allows.
+    check
+    case "$name" in
+      api) floor=256 ;;
+      web) floor=448 ;;
+      migrate) floor=128 ;;
+      *) floor="" ;;
+    esac
+    if [ -z "$floor" ]; then
+      fail "$c: no memory floor known for container '$name'"
+    elif ! mib=$(to_mib "$lim"); then
+      fail "$c: memory limit '$lim' is not in Mi or Gi"
+    elif [ "$mib" -lt "$floor" ]; then
+      fail "$c: memory limit $lim is below the ${floor}Mi its worst case needs"
+    fi
+
     # --- Unprivileged, read-only, no capability.
     check
     sc=$(y "$sel | [.securityContext.allowPrivilegeEscalation, .securityContext.readOnlyRootFilesystem, (.securityContext.capabilities.drop // [] | join(\",\"))] | join(\" \")")
@@ -116,6 +143,11 @@ for overlay in "${overlays[@]}"; do
   check
   v=$(y 'select(.kind == "Job" and .metadata.name == "migrate") | [.metadata.annotations["argocd.argoproj.io/hook"], (.spec.template.spec.containers[0].command | join(" ")), .spec.template.spec.restartPolicy] | join(" ")')
   [ "$v" = "PreSync migrate Never" ] || fail "Job migrate: hook/command/restartPolicy is '$v', expected 'PreSync migrate Never'"
+  # The previous run deleted when the next one is created, not when it
+  # succeeds or fails: its logs stay readable until the next sync.
+  check
+  v=$(y 'select(.kind == "Job" and .metadata.name == "migrate") | .metadata.annotations["argocd.argoproj.io/hook-delete-policy"] // ""')
+  [ "$v" = BeforeHookCreation ] || fail "Job migrate: hook-delete-policy is '$v', expected 'BeforeHookCreation'"
   check
   v=$(y 'select(.kind == "Job" and .metadata.name == "migrate") | .spec.template.spec.containers[0].env[] | select(.name == "MIGRATION_DATABASE_URL") | .valueFrom.secretKeyRef.name // ""')
   [ -n "$v" ] || fail "Job migrate: MIGRATION_DATABASE_URL does not come from a Secret"
@@ -140,6 +172,12 @@ for overlay in "${overlays[@]}"; do
     check
     sleep_s=$(y "$ctr | .lifecycle.preStop.sleep.seconds // 0")
     [ "$sleep_s" -ge 1 ] || fail "$d: no preStop sleep"
+    # A single envFrom source, its ConfigMap: a second one could redefine
+    # any key of the first (the last source wins) past the checks below,
+    # which read the first.
+    check
+    v=$(y "$ctr | (.envFrom // []) | [length, (.[0].configMapRef.name // \"none\")] | join(\" \")")
+    [[ "$v" =~ ^1\ [^\ ]+$ ]] && [ "${v#1 }" != none ] || fail "$d: envFrom is '$v', expected exactly one source, a ConfigMap"
     cm=$(y "$ctr | .envFrom // [] | .[] | select(.configMapRef) | .configMapRef.name" | head -n 1)
     drain=$(y "select(.kind == \"ConfigMap\" and .metadata.name == \"$cm\") | .data.SHUTDOWN_GRACE_SECONDS // \"\"")
     tgps=$(y "$dep | .spec.template.spec.terminationGracePeriodSeconds // 30")
