@@ -187,7 +187,11 @@ Continues, hors du serveur, vers Scaleway Object Storage `fr-par`
 chaque nuit à 3 h UTC et une à la création (`base/postgres/scheduled-backup.yaml`).
 On peut donc restaurer à n'importe quel instant des **30 derniers jours**
 (`retentionPolicy: 30d`), à 5 minutes près au pire pour les dernières
-écritures ; au-delà, l'opérateur supprime sauvegardes et WAL.
+écritures ; au-delà, l'opérateur supprime sauvegardes et WAL — ceux du
+dossier de son `serverName` seulement, après chacune de ses sauvegardes de
+base. Après une restauration, l'ancien dossier n'est plus purgé par
+personne : la procédure le purge à la main (« Restaurer », étape 8), sans
+quoi la durée déclarée n'est plus tenue.
 
 Un bucket par environnement (`manage-our-home-backups-staging`,
 `manage-our-home-backups-prod`), chacun avec une clé d'API qui n'atteint
@@ -285,19 +289,52 @@ revenu avant la base laisse des lignes sans objet. D'où l'ordre :
    restauration sont sous lui. Une restauration ultérieure à un instant
    postérieur à celle-ci prend donc ce dossier pour source
    (`serverName: postgres-r1` dans `externalClusters`) et écrit sous un
-   nom neuf (`postgres-r2`) ; à un instant antérieur, l'ancien dossier
-   `postgres`, tant que sa rétention de 30 jours le garde.
+   nom neuf (`postgres-r2`) — une fois que ce dossier a sa première
+   sauvegarde de base (étape 6) ; à un instant antérieur, l'ancien dossier
+   `postgres`, tant qu'il n'est pas purgé (étape 8).
    Une fois le Cluster sain (étape 6), une seconde PR ne garde de ce
    patch que le remplacement du `serverName` (les deux premières
    opérations retirées, le `bootstrap.initdb` de la base revient) : le
    `bootstrap` ne sert
    qu'à la création, mais laissé dans l'overlay, il rejouerait la
    restauration à `T` si le Cluster était un jour recréé.
-6. **Vérifier** : `kubectl -n manage-our-home get cluster postgres` en
-   `Cluster in healthy state`, condition `ContinuousArchiving` vraie, les
-   données attendues présentes.
+6. **Vérifier, puis sauvegarder** : `kubectl -n manage-our-home get
+   cluster postgres` en `Cluster in healthy state`, condition
+   `ContinuousArchiving` vraie, les données attendues présentes. Puis une
+   sauvegarde de base à la demande, attendue jusqu'à `completed` : le
+   `immediate` du ScheduledBackup n'a joué qu'à sa création, et sans elle
+   le nouveau dossier n'a aucune sauvegarde de base avant 3 h UTC, donc
+   rien d'où restaurer.
+
+   ```sh
+   kubectl -n manage-our-home apply -f - <<EOF
+   apiVersion: postgresql.cnpg.io/v1
+   kind: Backup
+   metadata: {name: postgres-after-restore-$(date -u +%Y%m%d%H%M)}
+   spec: {cluster: {name: postgres}}
+   EOF
+   kubectl -n manage-our-home get backups.postgresql.cnpg.io -w   # PHASE completed
+   ```
 7. **Relancer l'api** (`replicas` de l'overlay), puis rétablir la synchro
    automatique, la racine en dernier.
+8. **Purger l'ancien dossier** : l'opérateur n'applique la rétention qu'au
+   dossier de son `serverName` courant. Celui d'avant la restauration
+   (`postgres`) se purge à la main, chaque jour (ou à chaque sauvegarde
+   nocturne) tant qu'il existe, depuis le pod de l'instance, qui porte
+   barman-cloud, avec la clé du bucket :
+
+   ```sh
+   kubectl -n manage-our-home exec postgres-1 -c postgres -- env \
+     AWS_ACCESS_KEY_ID='…' AWS_SECRET_ACCESS_KEY='…' AWS_DEFAULT_REGION=fr-par \
+     barman-cloud-backup-delete --endpoint-url https://s3.fr-par.scw.cloud \
+     --retention-policy "RECOVERY WINDOW OF 30 DAYS" \
+     s3://manage-our-home-backups-<env>/ postgres
+   ```
+
+   Trente jours après la restauration, tout ce dossier a dépassé la durée
+   déclarée (il ne reçoit plus rien depuis l'étape 4) : le supprimer en
+   entier (`aws s3 rm --recursive --endpoint-url https://s3.fr-par.scw.cloud
+   s3://manage-our-home-backups-<env>/postgres/`, ou la console Scaleway).
 
 Le job k3d joue les étapes 1, 2, 4, 5, 6 et la relance de l'api
 (`ci/postgres-test.sh`) : une ligne écrite avant `T`, une après, le
@@ -305,9 +342,13 @@ Cluster supprimé avec son volume et recréé avec ces trois changements
 depuis un MinIO jetable — appliqués par `kubectl` au rendu de l'overlay,
 là où la procédure passe par une PR et la synchro d'Argo CD ; la première
 ligne est là, la seconde non, les rôles sont toujours ceux de
-`01-roles.sh`, RLS s'applique, le Cluster restauré archive de nouveau et
-l'api répond 200 sur `/readyz`. Le bucket des pièces jointes (étape 3)
-arrive avec #435.
+`01-roles.sh`, RLS s'applique, le Cluster restauré archive de nouveau, sa
+sauvegarde à la demande aboutit et figure sous le nouveau `serverName`, la
+commande de purge de l'étape 8 tourne sur l'ancien dossier (sans rien y
+supprimer : ses sauvegardes ont quelques minutes) et l'api répond 200 sur
+`/readyz`. Ni la seconde PR de l'étape 5 ni la suppression du dossier à
+trente jours ne sont jouées. Le bucket des pièces jointes (étape 3) arrive
+avec #435.
 
 ## Réglages à fixer
 

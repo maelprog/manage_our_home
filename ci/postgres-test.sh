@@ -17,8 +17,10 @@
 #      Cluster is deleted, volume included, and recreated from the object
 #      store at T with the changes the procedure makes. The
 #      first row is there, the second is not, the roles are still those of
-#      01-roles.sh, RLS still applies, the restored Cluster archives again,
-#      and the api answers /readyz again.
+#      01-roles.sh, RLS still applies, the restored Cluster archives again
+#      and an on-demand base backup completes under its new serverName (the
+#      nightly one would only come at 3 am), the manual purge command of
+#      the old folder runs, and the api answers /readyz again.
 #
 #   ci/postgres-test.sh
 #
@@ -229,6 +231,53 @@ check_roles "restored"
 check_rls "restored"
 wait_archiving
 echo "the restored Cluster archives under its new serverName"
+
+# The ScheduledBackup's `immediate` fired once, when it was created; the
+# restored Cluster has no base backup of its own until the next night,
+# hence none to restore from under postgres-r1. The procedure takes one on
+# demand (README.md, "Restaurer", step 6).
+echo "== an on-demand base backup of the restored Cluster"
+kubectl apply -f - << EOF
+apiVersion: postgresql.cnpg.io/v1
+kind: Backup
+metadata:
+  name: postgres-after-restore
+  namespace: $ns
+spec:
+  cluster:
+    name: postgres
+EOF
+phase=""
+for _ in $(seq 1 60); do
+  phase=$(kubectl -n "$ns" get backups.postgresql.cnpg.io postgres-after-restore -o jsonpath='{.status.phase}')
+  [ "$phase" = completed ] || [ "$phase" = failed ] && break
+  sleep 5
+done
+kubectl -n "$ns" get backups.postgresql.cnpg.io postgres-after-restore -o yaml | yq e '.status | {"phase": .phase, "serverName": .serverName, "destinationPath": .destinationPath, "backupId": .backupId}' -
+[ "$phase" = completed ] || { echo "::error::on-demand backup is '$phase'"; exit 1; }
+
+# barman-cloud in the instance's pod, with the backup key: the commands
+# the procedure gives for the object store.
+barman() { # command args...
+  local cmd=$1; shift
+  kubectl -n "$ns" exec "$(primary)" -c postgres -- env \
+    AWS_ACCESS_KEY_ID="$(kubectl -n "$ns" get secret postgres-backup -o jsonpath='{.data.ACCESS_KEY_ID}' | base64 -d)" \
+    AWS_SECRET_ACCESS_KEY="$(kubectl -n "$ns" get secret postgres-backup -o jsonpath='{.data.ACCESS_SECRET_KEY}' | base64 -d)" \
+    AWS_DEFAULT_REGION="$(kubectl -n "$ns" get secret postgres-backup -o jsonpath='{.data.REGION}' | base64 -d)" \
+    "$cmd" --endpoint-url "$(yq e 'select(.kind == "Cluster") | .spec.backup.barmanObjectStore.endpointURL' "$work/restore.yaml")" \
+    "$@"
+}
+dest=$(yq e 'select(.kind == "Cluster") | .spec.backup.barmanObjectStore.destinationPath' "$work/restore.yaml")
+n=$(barman barman-cloud-backup-list --format json "$dest" postgres-r1 | yq -p json e '.backups_list | length' -)
+echo "base backups under postgres-r1: $n"
+[ "$n" -ge 1 ] || { echo "::error::no base backup under postgres-r1"; exit 1; }
+# The operator no longer applies the retention to the old folder; the
+# procedure purges it by hand with this command (a no-op here: its
+# backups are minutes old), and it must run.
+barman barman-cloud-backup-delete --retention-policy "RECOVERY WINDOW OF 30 DAYS" "$dest" postgres
+n=$(barman barman-cloud-backup-list --format json "$dest" postgres | yq -p json e '.backups_list | length' -)
+echo "base backups left under the old folder after the 30-day purge: $n"
+[ "$n" -ge 1 ] || { echo "::error::the 30-day purge removed a backup of minutes ago"; exit 1; }
 
 echo "== api /readyz on the restored database"
 kubectl -n "$ns" scale deploy/api --replicas="$api_replicas"
