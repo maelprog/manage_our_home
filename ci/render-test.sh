@@ -89,9 +89,11 @@ for overlay in "${overlays[@]}"; do
     lim=$(y "$sel | .resources.limits.memory // \"\"")
     [ -n "$req" ] && [ -n "$lim" ] || fail "$c: memory request '$req' / limit '$lim' missing"
 
-    # --- The limit still covers the container's worst case bounded on
-    # main (README.md, "Mémoire"; migrate-job.yaml): a lower one kills
-    # the pod under a load main allows.
+    # --- The limit is not lowered below its floor: for api and web, the
+    # worst case main bounds (README.md, "Mémoire"), which a lower limit
+    # would OOM-kill under a load main allows; for migrate, which has no
+    # bounded worst case, the limit main's migrations were observed to
+    # run within (migrate-job.yaml).
     check
     case "$name" in
       api) floor=256 ;;
@@ -172,12 +174,13 @@ for overlay in "${overlays[@]}"; do
     check
     sleep_s=$(y "$ctr | .lifecycle.preStop.sleep.seconds // 0")
     [ "$sleep_s" -ge 1 ] || fail "$d: no preStop sleep"
-    # A single envFrom source, its ConfigMap: a second one could redefine
-    # any key of the first (the last source wins) past the checks below,
-    # which read the first.
+    # A single envFrom source, its ConfigMap, without a prefix: a second
+    # one could redefine any key of the first (the last source wins) past
+    # the checks below, which read the first; a prefix would rename every
+    # key, TRUSTED_PROXY_CIDRS included, so that none of them arrives.
     check
-    v=$(y "$ctr | (.envFrom // []) | [length, (.[0].configMapRef.name // \"none\")] | join(\" \")")
-    [[ "$v" =~ ^1\ [^\ ]+$ ]] && [ "${v#1 }" != none ] || fail "$d: envFrom is '$v', expected exactly one source, a ConfigMap"
+    v=$(y "$ctr | (.envFrom // []) | [length, (.[0].configMapRef.name // \"none\"), (.[0].prefix // \"\")] | join(\" \")")
+    [[ "$v" =~ ^1\ [^\ ]+\ $ ]] && [ "$v" != "1 none " ] || fail "$d: envFrom is '$v', expected exactly one source, a ConfigMap, without prefix"
     cm=$(y "$ctr | .envFrom // [] | .[] | select(.configMapRef) | .configMapRef.name" | head -n 1)
     drain=$(y "select(.kind == \"ConfigMap\" and .metadata.name == \"$cm\") | .data.SHUTDOWN_GRACE_SECONDS // \"\"")
     tgps=$(y "$dep | .spec.template.spec.terminationGracePeriodSeconds // 30")
