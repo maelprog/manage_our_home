@@ -135,14 +135,17 @@ chaque push sur l'une d'elles :
    de Kubernetes 1.37.1 (et ceux du catalogue CRDs-catalog, à un commit
    épinglé, pour les Applications, ClusterIssuers et ClusterPolicy).
 2. `ci/render-test.sh` : tests sur le rendu des overlays — empreintes,
-   limites mémoire, jamais sous le pire cas qu'elles couvrent (api
-   256 Mi, web 448 Mi, ci-dessus ; migrate 128 Mi), sécurité des
-   conteneurs, sondes, délais d'arrêt, une seule source `envFrom` (la
-   ConfigMap), hook `PreSync` du Job et sa politique de suppression, PDB,
+   limites mémoire, jamais sous leur plancher (api 256 Mi et web 448 Mi,
+   le pire cas borné ci-dessus ; migrate 128 Mi, la limite sous laquelle
+   les migrations de `main` ont tourné, observée et non bornée), sécurité
+   des conteneurs, sondes, délais d'arrêt, une seule source `envFrom` (la
+   ConfigMap, sans préfixe), hook `PreSync` du Job et sa politique de
+   suppression, PDB,
    réplicas et étalement par environnement, aucun secret en clair.
 3. `ci/platform-test.sh` : tests sur le rendu de la plateforme — prod
    sans `syncPolicy.automated`, branche suivie, ordre des vagues, namespace
-   `restricted`, politique Kyverno, charts épinglés, et sur le rendu Helm
+   `restricted`, politique Kyverno (et aucune exclusion, précondition
+   ni sélecteur qui restreigne sa règle), charts épinglés, et sur le rendu Helm
    de chaque chart : limite mémoire sur chaque conteneur, un réplica,
    Argo CD sans Dex, notifications ni ApplicationSet, Kyverno réduit au
    contrôleur d'admission.
