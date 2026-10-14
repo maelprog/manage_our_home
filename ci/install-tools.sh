@@ -4,7 +4,7 @@
 # upstream fails the job instead of running. linux/amd64 only.
 #
 #   ci/install-tools.sh <directory> <tool>...
-#   tools: kustomize kubeconform yq kubectl k3d
+#   tools: kustomize kubeconform yq kubectl k3d helm kubeseal cosign
 #
 # To move a version: change it and its checksum together, the checksum
 # taken from the project's own release checksums file.
@@ -27,6 +27,18 @@ KUBECTL_VERSION=1.37.1
 KUBECTL_SHA256=65691ff77eb6fa44c908b77a1082c9f092c3b9733b5cefabec0d1104890e21a8
 K3D_VERSION=5.9.0
 K3D_SHA256=06d8f25bc3a971c4eb29e0ff08429b180402db0f4dec838c9eac427e296800a0
+# Argo CD's first install (platform/bootstrap.sh, #432); after it, Argo CD
+# renders the charts itself.
+HELM_VERSION=4.3.0
+HELM_SHA256=86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb
+# Same version as the controller of
+# platform/components/sealed-secrets/application.yaml (chart 2.20.0).
+KUBESEAL_VERSION=0.40.0
+KUBESEAL_SHA256=9314c35916646e9d59c8f06b1314574b4e79c4d76f079433607ed7b697bb5eb7
+# v3: the signatures of images.yml on main are in the Sigstore bundle
+# format, which cosign v2 does not find.
+COSIGN_VERSION=3.1.3
+COSIGN_SHA256=4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -61,6 +73,21 @@ for tool in "$@"; do
     k3d)
       fetch "https://github.com/k3d-io/k3d/releases/download/v${K3D_VERSION}/k3d-linux-amd64" "$K3D_SHA256" k3d
       install -m 0755 "$tmp/k3d" "$dest/k3d"
+      ;;
+    helm)
+      fetch "https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz" "$HELM_SHA256" helm.tar.gz
+      tar -xzf "$tmp/helm.tar.gz" -C "$tmp" linux-amd64/helm
+      install -m 0755 "$tmp/linux-amd64/helm" "$dest/helm"
+      ;;
+    kubeseal)
+      fetch "https://github.com/bitnami-labs/sealed-secrets/releases/download/v${KUBESEAL_VERSION}/kubeseal-${KUBESEAL_VERSION}-linux-amd64.tar.gz" \
+        "$KUBESEAL_SHA256" kubeseal.tar.gz
+      tar -xzf "$tmp/kubeseal.tar.gz" -C "$tmp" kubeseal
+      install -m 0755 "$tmp/kubeseal" "$dest/kubeseal"
+      ;;
+    cosign)
+      fetch "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64" "$COSIGN_SHA256" cosign
+      install -m 0755 "$tmp/cosign" "$dest/cosign"
       ;;
     *)
       echo "unknown tool: $tool" >&2

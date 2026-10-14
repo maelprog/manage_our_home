@@ -8,9 +8,8 @@
 #
 # On the first sync of an environment, the namespace (with its Pod
 # Security labels) and the Secret `migrate-secrets` must both exist before
-# this hook runs; these manifests do not guarantee it. How is for #432 to
-# settle; the leads in README.md ("Premier déploiement d'un
-# environnement") are unverified.
+# this hook runs: the platform's root Application applies both, in earlier
+# sync waves, before this Application (#432, platform/clusters/<env>).
 apiVersion: batch/v1
 kind: Job
 metadata:

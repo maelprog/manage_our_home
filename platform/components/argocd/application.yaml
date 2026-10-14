@@ -1,0 +1,87 @@
+# Argo CD, managed by itself (#432). platform/bootstrap.sh installs this
+# chart once, at this version and with these values (it reads both from
+# this file); from then on this Application owns the release, and a change
+# here is how Argo CD is upgraded or reconfigured.
+#
+# Trimmed for the 4 GB staging server (arbitrage of 2026-10-12): no Dex
+# (local admin account only), no notifications controller, no
+# ApplicationSet controller, one replica of each remaining component, and
+# a memory limit on every container.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  project: default
+  source:
+    repoURL: https://argoproj.github.io/argo-helm
+    chart: argo-cd
+    targetRevision: 10.10.3
+    helm:
+      releaseName: argocd
+      valuesObject:
+        dex:
+          enabled: false
+        notifications:
+          enabled: false
+        # The chart has no switch for it: no replica, no pod. Its CRD
+        # stays, harmless; the limit is for the day someone scales it up.
+        applicationSet:
+          replicas: 0
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 128Mi}
+        configs:
+          cm:
+            # App of apps (platform/clusters/<env>): the root Application
+            # moves to the next sync wave only once the Applications of
+            # the previous one are Healthy, which needs a health check
+            # for Applications — Argo CD has none of its own since 1.8.
+            resource.customizations.health.argoproj.io_Application: |
+              hs = {}
+              hs.status = "Progressing"
+              hs.message = ""
+              if obj.status ~= nil and obj.status.health ~= nil then
+                hs.status = obj.status.health.status
+                if obj.status.health.message ~= nil then
+                  hs.message = obj.status.health.message
+                end
+              end
+              return hs
+        controller:
+          resources:
+            requests: {cpu: 100m, memory: 192Mi}
+            limits: {memory: 1Gi}
+        repoServer:
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 384Mi}
+          copyutil:
+            resources:
+              requests: {cpu: 10m, memory: 16Mi}
+              limits: {memory: 64Mi}
+        server:
+          resources:
+            requests: {cpu: 25m, memory: 48Mi}
+            limits: {memory: 192Mi}
+        redis:
+          resources:
+            requests: {cpu: 25m, memory: 16Mi}
+            limits: {memory: 96Mi}
+        redisSecretInit:
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 64Mi}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    # No prune: a resource the chart stops rendering is left in place
+    # rather than deleted by the controller it may belong to.
+    automated:
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

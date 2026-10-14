@@ -1,8 +1,10 @@
 # CI of the `deploy` branch and of `k3s`, its integration branch (#431):
 # the manifests render, are valid Kubernetes, say what ci/render-test.sh
-# requires of them, and the staging overlay actually runs — deployed in a
-# throwaway k3d cluster against a test Postgres until api and web answer
-# /readyz.
+# requires of them, and staging actually runs — in a throwaway k3d cluster
+# whose node has the staging server's 4 GB, the platform bootstrapped by
+# platform/bootstrap.sh and Argo CD deploying the staging overlay against
+# a test Postgres, until api and web answer /readyz and 10 minutes pass
+# without a restart (#432).
 #
 # The PRs of the k3s epic (#431 to #437) target `k3s`; `deploy` only
 # receives `k3s` once, by a PR the user merges by hand, when the whole
@@ -13,8 +15,9 @@
 # workflow: the workflows of `main` (ci.yml, images.yml) are not in it, so
 # neither a push to them nor a PR into them starts them.
 #
-# Nothing here deploys anywhere: Argo CD pulls this branch (#432), and no
-# token of it is given to the CI.
+# Nothing here deploys anywhere: each cluster's Argo CD pulls this branch
+# (#432), and no token of it is given to the CI. The throwaway cluster's
+# Argo CD reads the commit under test from GitHub, anonymously.
 
 name: Deploy manifests
 
@@ -44,17 +47,24 @@ jobs:
           persist-credentials: false
       - name: Tools
         run: |
-          ci/install-tools.sh "$RUNNER_TEMP/bin" kustomize kubeconform yq
+          ci/install-tools.sh "$RUNNER_TEMP/bin" kustomize kubeconform yq helm
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: kustomize build | kubeconform -strict
         run: ci/validate.sh
       - name: Tests on the render
         run: ci/render-test.sh
+      - name: Tests on the platform
+        env:
+          # The branch the staging Applications must follow: the one this
+          # PR goes into, or that this push is on (ci/platform-test.sh).
+          EXPECT_STAGING_REVISION: ${{ github.base_ref || github.ref_name }}
+        run: ci/platform-test.sh
 
   k3d:
     needs: render
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The platform, then 10 minutes at rest (ci/staging-smoke.sh).
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -73,17 +83,24 @@ jobs:
           sparse-checkout-cone-mode: false
       - name: Tools
         run: |
-          ci/install-tools.sh "$RUNNER_TEMP/bin" kustomize yq kubectl k3d
+          ci/install-tools.sh "$RUNNER_TEMP/bin" kustomize yq kubectl k3d helm kubeseal
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: k3d cluster
         run: |
           # Traefik and the service load balancer are left out: nothing
-          # here goes through an ingress (#434).
+          # here goes through an ingress (#434). The node gets the staging
+          # server's 4 GB (arbitrage of 2026-10-12).
           k3d cluster create deploy-ci \
             --image "$K3S_IMAGE" \
+            --servers-memory 4g \
             --k3s-arg '--disable=traefik@server:0' \
             --k3s-arg '--disable=servicelb@server:0' \
             --wait --timeout 180s
           kubectl get nodes -o wide
-      - name: Deploy staging and check it
-        run: ci/staging-smoke.sh main/infra/postgres/init/01-roles.sh
+      - name: Bootstrap the platform, let Argo CD deploy staging, check it
+        env:
+          # The commit Argo CD reads: the head of the PR, which is on
+          # GitHub (the merge commit of a pull_request run is not on a
+          # branch), or the pushed one.
+          REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: ci/staging-smoke.sh main/infra/postgres/init/01-roles.sh "$REVISION"

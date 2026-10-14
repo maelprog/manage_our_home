@@ -1,0 +1,56 @@
+# Admission of the application's images (#432), in Enforce: in the
+# namespace manage-our-home, a pod whose image is
+# ghcr.io/maelprog/manage-our-home-* is refused unless
+#   - the image is referenced by digest (`verifyDigest`; `mutateDigest`
+#     off, so a tag is refused rather than resolved to whatever it points
+#     to at that moment), and
+#   - it carries a keyless signature made by .github/workflows/
+#     image-build.yml of main (#430), called from main or from a `v*` tag,
+#     through the GitHub OIDC token, logged in Rekor.
+# Kyverno writes the same rule for Deployments and Jobs (autogen), so an
+# unsigned image is refused when the Deployment is applied, not only when
+# its ReplicaSet tries to create a pod.
+#
+# `SigstoreBundle`: images.yml signs with cosign v3, which stores the
+# signature as a Sigstore bundle attached to the image (OCI referrer), not
+# under the `sha256-<digest>.sig` tag that the `Cosign` type looks for.
+#
+# Checked at admission only (`background: false`): Kyverno runs without
+# its background controller on the 4 GB staging server (application.yaml).
+#
+# After Kyverno's Application (wave -10), whose CRD it needs, and before
+# the application's (wave 0).
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: manage-our-home-signed-images
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  background: false
+  # Kyverno unreachable means refused, not admitted unchecked.
+  failurePolicy: Fail
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: signed-by-images-workflow
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [manage-our-home]
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/maelprog/manage-our-home-*"
+          type: SigstoreBundle
+          failureAction: Enforce
+          required: true
+          verifyDigest: true
+          mutateDigest: false
+          attestors:
+            - entries:
+                - keyless:
+                    issuer: https://token.actions.githubusercontent.com
+                    subjectRegExp: '^https://github\.com/maelprog/manage_our_home/\.github/workflows/image-build\.yml@refs/(heads/main|tags/v[^/]+)$'
+                    rekor:
+                      url: https://rekor.sigstore.dev

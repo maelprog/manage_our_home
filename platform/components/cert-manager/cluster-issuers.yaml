@@ -1,0 +1,42 @@
+# Let's Encrypt, through cert-manager (#432). `letsencrypt-staging` issues
+# untrusted certificates under generous rate limits, to try an ingress
+# out; `letsencrypt` issues the real ones. The ingress of #434 names one.
+#
+# HTTP-01 through Traefik, k3s's ingress controller. No contact address:
+# Let's Encrypt has sent no expiry mail since 2025, and an address here
+# would be personal data in a public branch.
+#
+# After cert-manager's Application (wave -10), whose CRDs they need.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt-staging-account
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: traefik
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt-account
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: traefik
