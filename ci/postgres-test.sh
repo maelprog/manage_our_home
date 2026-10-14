@@ -56,7 +56,7 @@ trap on_exit EXIT
 # false). One value per line, columns separated by `|`.
 primary() { kubectl -n "$ns" get clusters.postgresql.cnpg.io postgres -o jsonpath='{.status.currentPrimary}'; }
 cnpg() { kubectl -n "$ns" exec -i "$(primary)" -c postgres -- psql -X -q -v ON_ERROR_STOP=1 -At -d manage_our_home "$@"; }
-reference() { kubectl -n ci-postgres exec -i deploy/postgres -- psql -X -q -v ON_ERROR_STOP=1 -At -U mhome -d manage_our_home "$@"; }
+reference() { kubectl -n ci-postgres exec -i deploy/postgres -- psql -X -q -v ON_ERROR_STOP=1 -At -U mhome -d manage_our_home; }
 
 # Everything 01-roles.sh decides, nothing it does not (the passwords, which
 # differ by construction, and validity dates).
@@ -188,14 +188,16 @@ echo "deleted, volumes included: $old_pvc"
 # store at T, the old backups as its source, a new serverName.
 echo "== recreated from the object store at T"
 mkdir -p "$work/restore"
+# kustomize takes no absolute path here.
+rel() { realpath --relative-to="$work/restore" "$1"; }
 cat > "$work/restore/kustomization.yaml" << EOF
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - $root/apps/manage-our-home/overlays/staging/postgres
+  - $(rel "$root/apps/manage-our-home/overlays/staging/postgres")
 patches:
   - target: {kind: Cluster, name: postgres}
-    path: $root/ci/postgres-backup-patch.yaml
+    path: $(rel "$root/ci/postgres-backup-patch.yaml")
 EOF
 kustomize build --load-restrictor LoadRestrictionsNone "$work/restore" \
   | TARGET=$target yq e '
