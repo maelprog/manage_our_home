@@ -253,7 +253,10 @@ disait pas.
   icônes n'est pas gratuit non plus — une icône dans le lien change son nom
   accessible, et c'est par ce nom que la suite Playwright sait sur quelle
   page elle est. Les onglets font 48 px de haut (`--s12`), au-dessus des
-  44 px que demande [Espacement](#espacement).
+  44 px que demande [Espacement](#espacement). Chaque onglet recharge la
+  page, et la barre repartirait de son début : au chargement,
+  `apps/web/src/enhance.js` amène l'onglet courant au milieu de la barre,
+  sans animation (#456). Sans JavaScript, la barre repart de son début.
 - **Une page sans session ne rend aucune navigation** (authentification,
   politique de confidentialité vue déconnecté) : pas de grille, pas de
   colonne latérale de 15 rem tenant un seul lien.

@@ -29,14 +29,19 @@
     var form = event.target;
     var question = form.getAttribute && form.getAttribute("data-confirm");
     if (question && !window.confirm(question)) event.preventDefault();
+    else keepScroll(form);
   });
 
   document.addEventListener("change", function (event) {
     var input = event.target;
     if (!input.hasAttribute) return;
     // `data-submit-on-change` (the grocery list's check boxes, the stocks'
-    // barcode photo, #402).
-    if (input.hasAttribute("data-submit-on-change")) input.form.submit();
+    // barcode photo, #402). `form.submit()` fires no `submit` event, hence
+    // the explicit `keepScroll`.
+    if (input.hasAttribute("data-submit-on-change")) {
+      keepScroll(input.form);
+      input.form.submit();
+    }
     // `data-all-day` (`agenda::new::schedule_fields`, #117).
     else if (input.hasAttribute("data-all-day")) allDay(input);
   });
@@ -102,10 +107,57 @@
     });
   }
 
-  // Loaded from the <head>: the fields are there once the document is.
+  // `data-keep-scroll` on a form (#456): the page its redirect lands on
+  // opens at the height the form was sent from, rather than at the top —
+  // the grocery list's check boxes, where the ticked row also moves down.
+  // Only when that page has the sender's path: a redirect elsewhere (an
+  // error page) opens at the top as usual. Kept in sessionStorage, which
+  // can be missing or refuse writes: the page then simply opens at the top.
+  var KEEP_SCROLL = "keep-scroll";
+
+  function keepScroll(form) {
+    if (!form || !form.hasAttribute("data-keep-scroll")) return;
+    try {
+      sessionStorage.setItem(KEEP_SCROLL, JSON.stringify({ path: location.pathname, y: window.scrollY }));
+    } catch (e) {}
+  }
+
+  // "instant" whatever the sheet's `scroll-behavior`: a restored position
+  // is where the reader already was, not a move to animate.
+  function restoreScroll() {
+    var kept = null;
+    try {
+      kept = JSON.parse(sessionStorage.getItem(KEEP_SCROLL));
+      sessionStorage.removeItem(KEEP_SCROLL);
+    } catch (e) {}
+    if (kept && kept.path === location.pathname && typeof kept.y === "number") {
+      window.scrollTo({ top: kept.y, left: 0, behavior: "instant" });
+    }
+  }
+
+  // The phone tab bar (`.tabs`, below 861 px) scrolls sideways and every
+  // tab is a full page load, so the bar comes back scrolled to its start
+  // and a tab near its end — Messagerie — is off screen once followed
+  // (#456). Brings the current tab to the middle of the bar, instantly;
+  // nothing happens when the bar does not overflow (the sidebar).
+  function revealCurrentTab() {
+    var bar = document.querySelector(".tabs");
+    var tab = bar && bar.querySelector('[aria-current="page"]');
+    if (!tab || bar.scrollWidth <= bar.clientWidth) return;
+    var barBox = bar.getBoundingClientRect();
+    var tabBox = tab.getBoundingClientRect();
+    var offset = tabBox.left + tabBox.width / 2 - (barBox.left + barBox.width / 2);
+    bar.scrollTo({ left: bar.scrollLeft + offset, top: 0, behavior: "instant" });
+  }
+
+  // Loaded from the <head>: the fields are there once the document is. The
+  // script comes after the sheet's <link>, so the layout the scroll
+  // positions are read from is the styled one.
   function ready() {
     expiryShortcuts();
     resendCooldowns();
+    revealCurrentTab();
+    restoreScroll();
   }
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", ready);

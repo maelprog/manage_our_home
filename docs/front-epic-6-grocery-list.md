@@ -66,7 +66,9 @@ submit on its own. Each row is therefore a small `<form method=post>` to
   JS disabled and is the deterministic E2E target.
 
 The backend orders the list `checked, name`, so checked items sink to the
-bottom; the UI strikes them through. Any member may check/uncheck any item
+bottom; the UI strikes them through. The check form carries
+`data-keep-scroll` (#456): with JavaScript, the redirected list reopens at
+the height it was ticked from rather than at the top. Any member may check/uncheck any item
 (lighter bar than edit — see the backend's `check_grocery_item` note).
 
 ### Edit/delete on a per-item screen, behind `can_modify`
