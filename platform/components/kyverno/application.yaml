@@ -51,6 +51,17 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: kyverno
+  # The CRDs of the policies.kyverno.io group (subchart kyverno-api)
+  # render `labels: {}` and `annotations: {}`; the API server stores no
+  # empty map, so Argo CD would compare `{}` with nothing and keep the
+  # Application OutOfSync, re-syncing it forever. Only an empty map is
+  # ignored: a label or annotation set on them is still compared.
+  ignoreDifferences:
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+      jqPathExpressions:
+        - .metadata.labels | select(. == {})
+        - .metadata.annotations | select(. == {})
   syncPolicy:
     automated:
       prune: true

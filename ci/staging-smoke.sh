@@ -41,7 +41,7 @@ dump() {
   kubectl get applications -n argocd -o wide || true
   for a in $(kubectl -n argocd get applications -o name 2> /dev/null); do
     echo "--- $a"
-    kubectl -n argocd get "$a" -o yaml | yq e '.status | {"sync": .sync, "health": .health, "operationState": .operationState, "conditions": .conditions}' - || true
+    kubectl -n argocd get "$a" -o yaml | yq e '.status | {"sync": .sync, "health": .health, "outOfSync": [.resources[]? | select(.status == "OutOfSync") | .kind + "/" + .name], "operationState": .operationState, "conditions": .conditions}' - || true
   done
   kubectl get pods -A -o wide || true
   kubectl get events -A --sort-by=.lastTimestamp | tail -n 80 || true
