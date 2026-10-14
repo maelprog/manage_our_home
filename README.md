@@ -219,10 +219,13 @@ qui détient la clé ; barman-cloud ne chiffre pas côté client.
 Les sauvegardes passent par la prise en charge native de barman-cloud
 par l'opérateur (`spec.backup.barmanObjectStore`), dépréciée depuis
 CloudNativePG 1.26 au profit du greffon Barman Cloud mais toujours prise en
-charge par l'opérateur 1.30.1 installé (chart 0.29.1), sans date de
-retrait annoncée. Le greffon ajouterait un Deployment et un conteneur dans
-le pod de Postgres, sur le budget du serveur de 4 Go ; la bascule se fera
-quand l'opérateur l'imposera.
+charge par l'opérateur 1.30.1 installé (chart 0.29.1). **Elle disparaît
+avec CloudNativePG 1.31.0** (avertissement que l'opérateur 1.30.1 renvoie à
+chaque `kubectl apply` du Cluster) : passer l'opérateur en 1.31 demande
+d'abord de migrer les sauvegardes vers le greffon, qui ajoute un
+Deployment et un conteneur dans le pod de Postgres, sur le budget du
+serveur de 4 Go. D'ici là, le chart reste en 0.29.x
+(`platform/components/cloudnative-pg/application.yaml`).
 
 ### Restaurer
 

@@ -90,6 +90,13 @@ Prérequis : un k3s, le contexte `kubectl` pointé dessus, `helm`, `kubectl`,
    (ci-dessous), les commiter dans `clusters/<env>/secrets/` par PR. Tant
    qu'ils manquent, le Job `migrate` attend son Secret et la synchro de
    l'appli échoue au bout de son `activeDeadlineSeconds`, puis réessaie.
+   Le Cluster Postgres, lui, est déjà créé (sa vague passe, celle des
+   Secrets étant vide) : une fois ses Secrets arrivés, toucher l'objet
+   Cluster pour qu'il les relise, sans quoi l'archivage des WAL reste en
+   échec (« failed to get envs: cache miss ») — constaté en k3d avec
+   l'opérateur 1.30.1, et joué par le job k3d :
+   `kubectl -n manage-our-home annotate cluster postgres manage-our-home/secrets-sealed-at="$(date -u +%FT%TZ)" --overwrite`,
+   puis attendre `kubectl -n manage-our-home wait cluster/postgres --for=condition=ContinuousArchiving`.
 3. Sauvegarder la clé du contrôleur (ci-dessous).
 
 Mot de passe `admin` initial d'Argo CD :

@@ -167,15 +167,11 @@ kubectl wait --for=jsonpath='{.status.phase}'=Active "namespace/$ns" --timeout=3
 kubectl -n "$ns" wait --for=create clusters.postgresql.cnpg.io/postgres --timeout=600s
 db=postgres-rw.$ns.svc.cluster.local:5432/manage_our_home
 seal() { kubeseal --format yaml > "$work/$1.sealed.yaml"; }
-# The Postgres Secrets carry the label `cnpg.io/reload` (README.md,
-# "Secrets"): the operator watches them, and a Cluster created before them
-# picks them up when they appear.
-cnpg_reload() { kubectl label --local -f - cnpg.io/reload=true -o yaml; }
 # The roles' passwords, read by the Cluster's managed roles (#433); the
 # same ones go in the URLs below.
 role_secret() { # secret role password
   kubectl -n "$ns" create secret generic "$1" --type=kubernetes.io/basic-auth --dry-run=client -o yaml \
-    --from-literal=username="$2" --from-literal=password="$3" | cnpg_reload | seal "$1"
+    --from-literal=username="$2" --from-literal=password="$3" | seal "$1"
 }
 role_secret postgres-app-role app_role "$app_pw"
 role_secret postgres-migration-role migration_role "$migration_pw"
@@ -184,7 +180,7 @@ kubectl -n "$ns" create secret generic postgres-backup --dry-run=client -o yaml 
   --from-literal=ACCESS_KEY_ID="$minio_user" \
   --from-literal=ACCESS_SECRET_KEY="$minio_pw" \
   --from-literal=REGION=us-east-1 \
-  | cnpg_reload | seal postgres-backup
+  | seal postgres-backup
 kubectl -n "$ns" create secret generic migrate-secrets --dry-run=client -o yaml \
   --from-literal=MIGRATION_DATABASE_URL="postgres://migration_role:${migration_pw}@${db}" \
   | seal migrate-secrets
@@ -211,6 +207,13 @@ done
 for s in $secrets; do
   kubectl -n "$ns" wait --for=create "secret/$s" --timeout=120s
 done
+# A Cluster started before its backup key keeps failing to archive ("failed
+# to get envs: cache miss") until the Cluster object changes: the step the
+# procedure prescribes once the Secrets are in (platform/README.md,
+# "Amorcer un cluster").
+kubectl -n "$ns" annotate clusters.postgresql.cnpg.io/postgres \
+  manage-our-home/secrets-sealed-at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite
+kubectl -n "$ns" wait clusters.postgresql.cnpg.io/postgres --for=condition=ContinuousArchiving --timeout=300s
 
 echo "== postgres-staging (Argo CD)"
 wait_app postgres-staging 900
