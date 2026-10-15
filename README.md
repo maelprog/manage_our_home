@@ -447,8 +447,12 @@ bucket (vague -1), puis api et web (vague 0).
 - **Mémoire** : requête 128 Mi, limite 384 Mi (arbitrage du 2026-10-12 :
   256 à 384 Mi) ; Job : 16 / 64 Mi. Mesuré sous Docker avec cette image,
   cet utilisateur et la racine en lecture seule, pour la PR de #435 :
-  66 Mi au repos, 165 Mi au plus fort de 8 objets de 20 Mi envoyés à la
-  fois par `mc`, cache de pages compris. Le job k3d réimprime le repos.
+  66 à 70 Mi au repos ; 8 objets de 20 Mi envoyés à la fois par `mc`, au
+  plus 139 Mi de mémoire anonyme et 214 Mi hors cache de fichiers inactif
+  (`memory.current` moins `inactive_file`, 7 relevés pendant l'envoi),
+  aucun OOM. Le cache de pages, lui, monte jusqu'à la limite :
+  `memory.current` y touche, mais ce cache se récupère avant tout OOM.
+  Le job k3d réimprime le repos.
 - **Images admises** : MinIO, son client, l'image Postgres du Cluster et
   celle de l'opérateur CloudNativePG (qu'il met dans chaque pod Postgres)
   sont sur la liste fermée du namespace (`platform/README.md`, « Kyverno ») :
@@ -464,8 +468,10 @@ bucket (vague -1), puis api et web (vague 0).
   de `main`, item 8) : voir « Restaurer », étape 3.
 
 **Plusieurs nœuds** : le mode distribué de MinIO n'est pas un changement de
-`replicas`. Il code les objets par effacement sur au moins 4 disques (par
-exemple 4 réplicas, un volume chacun, un pod par nœud), et chaque serveur
+`replicas`. Il code les objets par effacement sur plusieurs disques, au
+moins 2 (`docs/distributed/README.md` de MinIO au tag
+`RELEASE.2025-07-23T15-54-02Z`, la version de l'image) — par exemple 4
+réplicas, un volume chacun, un pod par nœud — et chaque serveur
 reçoit la liste de tous, écrite avec les noms du Service sans tête
 `minio-headless` :
 `minio server http://minio-{0...3}.minio-headless.manage-our-home.svc.cluster.local/bitnami/minio/data`.
