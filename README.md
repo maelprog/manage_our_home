@@ -535,7 +535,9 @@ chaque push sur l'une d'elles :
    `restricted`, politiques Kyverno (et aucune exclusion, précondition
    ni sélecteur qui restreigne leur règle ; chaque image de l'overlay, de
    son Postgres et de l'opérateur CloudNativePG sur la liste fermée, rien
-   d'autre, sans joker hors des images de l'appli), charts épinglés, réglages de
+   d'autre, sans joker ni étiquette sans empreinte hors des images de
+   l'appli ; l'étiquette de l'opérateur est l'appVersion de son chart),
+   charts épinglés, réglages de
    Traefik (`externalTrafficPolicy: Local`, délais de 2 et 5 min,
    limite mémoire, avant l'appli), et sur le rendu Helm
    de chaque chart : limite mémoire sur chaque conteneur, un réplica,
