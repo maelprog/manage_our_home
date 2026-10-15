@@ -261,12 +261,41 @@ for overlay in "${overlays[@]}"; do
   v=$(y "$ir | select(.metadata.name == \"manage-our-home\") | .spec.tls.secretName")
   [ "$v" = manage-our-home-tls ] || fail "the HTTPS IngressRoute serves the Secret '$v', not the certificate's"
   # Every HTTPS route: the security headers first; compressed, and the
-  # /api prefix stripped on api's, except the refused /readyz.
+  # /api prefix stripped on api's, except the refused /readyz. A request
+  # with a body is answered with `Connection: close` (#244); the two
+  # upload routes refuse a body over the api's limit (#219).
   routes="$ir | select(.metadata.name == \"manage-our-home\") | .spec.routes[]"
   check
   v=$(y "$routes | [.priority, .services[0].name, ([.middlewares[].name] | join(\",\"))] | join(\" \")" | tr '\n' ';')
-  [ "$v" = "300 web security-headers,internal-only;200 api security-headers,compress,strip-api;100 web security-headers,compress;" ] \
-    || fail "HTTPS routes (priority, service, middlewares) are '$v'"
+  want="300 web security-headers,internal-only"
+  want+=";260 api security-headers,connection-close,upload-limit,compress,strip-api"
+  want+=";250 web security-headers,connection-close,upload-limit,compress"
+  want+=";220 api security-headers,connection-close,compress,strip-api"
+  want+=";200 api security-headers,compress,strip-api"
+  want+=";120 web security-headers,connection-close,compress"
+  want+=";100 web security-headers,compress;"
+  [ "$v" = "$want" ] || fail "HTTPS routes (priority, service, middlewares) are '$v', expected '$want'"
+  # shellcheck disable=SC2016 # backquotes are Traefik's, not the shell's
+  body='!Method(`GET`) && !Method(`HEAD`) && !Method(`OPTIONS`)'
+  for p in 220 120; do
+    check
+    v=$(y "$routes | select(.priority == $p) | .match")
+    [[ "$v" == *"$body"* ]] || fail "route $p '$v' does not match every method with a body ($body)"
+  done
+  check
+  v=$(y "$routes | select(.priority == 220) | .match")
+  [[ "$v" == *'PathPrefix(`/api/`)'* ]] || fail "route 220 '$v' is not api's"
+  check
+  v=$(y "$routes | select(.priority == 260 or .priority == 250) | .match" | tr '\n' ';')
+  # shellcheck disable=SC2016
+  [ "$v" = 'Host(`'"$host"'`) && Method(`POST`) && PathRegexp(`^/api/groups/[^/]+/events/[^/]+/attachments$`);Host(`'"$host"'`) && Method(`POST`) && PathRegexp(`^/agenda/[^/]+/attachments$`);' ] \
+    || fail "upload routes are '$v', expected POST on the Caddyfile's two upload paths"
+  check
+  v=$(y 'select(.kind == "Middleware" and .metadata.name == "connection-close") | .spec.headers.customResponseHeaders.Connection // ""')
+  [ "$v" = close ] || fail "Middleware connection-close sets Connection '$v', expected close"
+  check
+  v=$(y 'select(.kind == "Middleware" and .metadata.name == "upload-limit") | .spec.buffering.maxRequestBodyBytes // ""')
+  [ "$v" = 21037056 ] || fail "Middleware upload-limit refuses above '$v' bytes, expected 21037056 (MAX_UPLOAD_BODY_BYTES of main)"
   check
   v=$(y "$routes | select(.priority == 300) | .match")
   [[ "$v" == *'Path(`/readyz`)'* && "$v" == *'Path(`/api/readyz`)'* ]] || fail "the refused route '$v' does not cover /readyz and /api/readyz"

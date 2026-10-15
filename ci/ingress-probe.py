@@ -9,6 +9,11 @@ certificate not checked (the k3d job's is self-signed, ci/ci-issuer.yaml).
       Prints the second the ingress cut the connection, or exits 1 if it
       was still open at <give-up seconds>.
 
+  ingress-probe.py post <address> <host> <path> <length> <give-up seconds>
+      POSTs a body of <length> bytes at 2 kB/s, over HTTP/1.1. Prints the
+      status line of the answer and the second it came, or exits 1 if
+      none came by <give-up seconds>.
+
   ingress-probe.py ws <address> <host> <path> <cookie> <marker> <timeout>
       Opens a WebSocket on <path> with the session cookie <cookie>, prints
       `open`, then waits up to <timeout> seconds for a text frame that
@@ -53,6 +58,42 @@ def drip(address, host, give_up):
         print(f"cut after {time.monotonic() - start:.0f} s: {data[:60]!r}", flush=True)
         return 0
     print(f"still open after {give_up} s", flush=True)
+    return 1
+
+
+def post(address, host, path, length, give_up):
+    """POST with a body of <length> bytes announced, sent at 2 kB/s over
+    HTTP/1.1; prints the status of the answer and when it came, or exits
+    1 if none came in <give_up> seconds."""
+    s = connect(address, host)
+    start = time.monotonic()
+    s.sendall(
+        (
+            f"POST {path} HTTP/1.1\r\nHost: {host}\r\n"
+            f"Content-Type: application/octet-stream\r\nContent-Length: {length}\r\n\r\n"
+        ).encode()
+    )
+    s.settimeout(0.1)
+    sent = 0
+    while time.monotonic() - start < give_up:
+        if sent < length:
+            chunk = min(200, length - sent)
+            try:
+                s.sendall(b"a" * chunk)
+                sent += chunk
+            except (OSError, ssl.SSLError):
+                pass
+        try:
+            data = s.recv(4096)
+        except socket.timeout:
+            continue
+        except (OSError, ssl.SSLError) as e:
+            print(f"connection lost after {time.monotonic() - start:.1f} s: {e!r}", flush=True)
+            return 1
+        status = data.split(b"\r\n", 1)[0].decode(errors="replace")
+        print(f"{status} after {time.monotonic() - start:.1f} s, {sent} bytes sent", flush=True)
+        return 0
+    print(f"no answer after {give_up} s, {sent} bytes sent", flush=True)
     return 1
 
 
@@ -116,6 +157,8 @@ if __name__ == "__main__":
     cmd, args = sys.argv[1], sys.argv[2:]
     if cmd == "drip":
         sys.exit(drip(args[0], args[1], int(args[2])))
+    if cmd == "post":
+        sys.exit(post(args[0], args[1], args[2], int(args[3]), int(args[4])))
     if cmd == "ws":
         sys.exit(ws(args[0], args[1], args[2], args[3], args[4], int(args[5])))
     sys.exit(f"unknown probe: {cmd}")

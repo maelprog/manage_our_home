@@ -10,6 +10,11 @@
 #     of the same pods;
 #   - plain HTTP redirects to HTTPS; `/readyz` and `/api/readyz` are
 #     refused from outside (403);
+#   - an answer to a request with a body reaches an HTTP/1.1 client when
+#     it is sent, not once the client has sent the whole body (#244): a
+#     401 within 5 s while the body still trickles in;
+#   - the two upload routes refuse a body over 21 037 056 bytes with a 413
+#     at once, and let one of exactly that size through to the api;
 #   - responses are compressed, zstd then gzip, the stylesheet included
 #     and its Cache-Control kept, a font not;
 #   - the login throttle counts the client's address, not the ingress's:
@@ -17,11 +22,10 @@
 #     X-Forwarded-For it sends, while another client, same email, is not;
 #   - the Messagerie's WebSocket outlives the 5 min idle timeout: opened,
 #     left silent 5 min 20 s, it still delivers a message posted then;
-#   - a client trickling its headers is cut, at the 16 min read timeout
-#     (Traefik has no shorter bound for headers alone: README.md,
-#     "Ingress").
-# The last two run side by side, from the start: the job waits about 16
-# minutes for the second.
+#   - a client trickling its headers is cut, at the 2 min read timeout
+#     (Traefik has no bound for headers alone: README.md, "Ingress").
+# The last two run side by side, from the start: the job waits about 6
+# minutes for the first.
 #
 #   ci/ingress-test.sh <path to infra/Caddyfile of main>
 #
@@ -41,7 +45,7 @@ bg_pids=()
 # rather than the runner: another source address.
 CURL_IMAGE=curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
 # The timeouts of platform/components/traefik/helm-chart-config.yaml.
-READ_TIMEOUT=960
+READ_TIMEOUT=120
 IDLE_TIMEOUT=300
 
 on_exit() {
@@ -84,13 +88,13 @@ echo "== Traefik's settings"
 # until the Deployment carries its values, then for the rollout.
 for i in $(seq 1 60); do
   args=$(kubectl -n kube-system get deploy/traefik -o jsonpath='{.spec.template.spec.containers[0].args}')
-  [[ "$args" == *"websecure.transport.respondingTimeouts.readTimeout=16m"* ]] && break
+  [[ "$args" == *"websecure.transport.respondingTimeouts.readTimeout="* ]] && break
   [ "$i" = 60 ] && { fail "Traefik does not run with the HelmChartConfig's timeouts: $args"; exit 1; }
   sleep 5
 done
 kubectl -n kube-system rollout status deploy/traefik --timeout=180s
-for want in web.transport.respondingTimeouts.readTimeout=16m web.transport.respondingTimeouts.idleTimeout=5m \
-  websecure.transport.respondingTimeouts.idleTimeout=5m; do
+for want in web.transport.respondingTimeouts.readTimeout=2m websecure.transport.respondingTimeouts.readTimeout=2m \
+  web.transport.respondingTimeouts.idleTimeout=5m websecure.transport.respondingTimeouts.idleTimeout=5m; do
   [[ "$args" == *"$want"* ]] || fail "Traefik's arguments lack $want"
 done
 v=$(kubectl -n kube-system get svc/traefik -o jsonpath='{.spec.externalTrafficPolicy}')
@@ -187,6 +191,39 @@ for path in /readyz /api/readyz; do
   [ "$code" = 403 ] || fail "$path answers $code through the ingress, expected 403"
 done
 
+echo "== an answer before the body's end (#244), over HTTP/1.1"
+# apps/api answers 401 to a request without a session before reading its
+# body. Go's server, Traefik's, holds such an answer until it has read the
+# rest of the body (under 256 KiB), unless the answer says
+# `Connection: close` (middlewares.yaml, connection-close).
+probe_post() { # path length -> `<status line> after <s> s, ...`
+  python3 "$root/ci/ingress-probe.py" post "$address" "$host" "$1" "$2" 30 || true
+}
+within() { # answer status seconds: the answer has that status, within that time
+  [[ "$1" =~ ^HTTP/1\.1\ $2\ .*\ after\ ([0-9.]+)\ s ]] && awk -v t="${BASH_REMATCH[1]}" -v m="$3" 'BEGIN { exit !(t < m) }'
+}
+v=$(probe_post /api/groups 100000)
+echo "POST /api/groups, 100 kB at 2 kB/s: $v"
+within "$v" 401 5 || fail "POST /api/groups: '$v', expected its 401 within 5 s, before the body's end"
+
+echo "== upload size (#219)"
+# One byte over storage::MAX_UPLOAD_BODY_BYTES of main (20 MiB + 64 KiB of
+# multipart framing): refused at the ingress, before the body is read.
+over=21037057
+fake=00000000-0000-0000-0000-000000000000
+for path in "/api/groups/$fake/events/$fake/attachments" "/agenda/$fake/attachments"; do
+  v=$(probe_post "$path" "$over")
+  echo "POST $path, $over bytes announced: $v"
+  within "$v" 413 5 || fail "POST $path with $over bytes: '$v', expected a 413 within 5 s"
+done
+# At the limit, the api answers (401, no session): the ingress let it by.
+head -c $((over - 1)) /dev/zero > "$work/limit.bin"
+code=$(ingress "/api/groups/$fake/events/$fake/attachments" --output /dev/null --write-out '%{http_code}' \
+  -H 'Content-Type: application/octet-stream' --data-binary @"$work/limit.bin")
+rm -f "$work/limit.bin"
+echo "POST of $((over - 1)) bytes: $code"
+[ "$code" = 401 ] || fail "a body of exactly $((over - 1)) bytes got $code, expected the api's 401"
+
 echo "== compression"
 enc() { # path accept-encoding -> Content-Encoding (or `none`)
   ingress "$1" --output /dev/null --dump-header - -H "Accept-Encoding: $2" \
@@ -254,7 +291,7 @@ else
   fail "WebSocket: $(cat "$work/ws.log")"
 fi
 
-echo "== trickled headers (cut by $((READ_TIMEOUT + 60)) s, given up at $((READ_TIMEOUT + 90)) s)"
+echo "== trickled headers (cut by $((READ_TIMEOUT + 30)) s, given up at $((READ_TIMEOUT + 90)) s)"
 drip_status=0
 wait "$drip_pid" || drip_status=$?
 cat "$work/drip.log"
@@ -262,9 +299,9 @@ if [ "$drip_status" != 0 ]; then
   fail "a client trickling its headers was not cut"
 else
   t=$(sed -n 's/^cut after \([0-9]*\) s.*/\1/p' "$work/drip.log")
-  # Cut by the read timeout, not before: Traefik's 60 s default would
-  # also cut every upload slower than that.
-  [ "$t" -ge $((READ_TIMEOUT - 10)) ] && [ "$t" -le $((READ_TIMEOUT + 60)) ] \
+  # Cut by the read timeout of the HelmChartConfig, neither Traefik's 60 s
+  # default nor a forgotten longer one.
+  [ "$t" -ge $((READ_TIMEOUT - 10)) ] && [ "$t" -le $((READ_TIMEOUT + 30)) ] \
     || fail "trickled headers cut after $t s, expected the ${READ_TIMEOUT} s read timeout"
 fi
 echo "(started $(($(date +%s) - drip_start)) s ago)"
