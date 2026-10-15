@@ -189,8 +189,9 @@ Requête et limite mémoire sur chaque conteneur des briques, un réplica de
 chaque composant ; Argo CD sans Dex, notifications ni ApplicationSet.
 `ci/platform-test.sh` le vérifie sur le rendu Helm des charts. Traefik, dont
 k3s fournit le chart, reçoit les siennes de son HelmChartConfig (96 / 256 Mi ;
-au repos après les 10 minutes du job k3d, 36 Mi sur GitHub, 88 et 93 Mi sur
-deux passages en local : la requête couvre le plus haut) : vérifiées sur ce HelmChartConfig. Le job k3d
+au repos après les 10 minutes du job k3d, 36 Mi sur GitHub, 88, 93 et
+120 Mi sur trois passages en local : la requête est dans cet intervalle, la
+limite au-dessus de tous) : vérifiées sur ce HelmChartConfig. Le job k3d
 borne le nœud à 4 Go, laisse tout tourner 10 minutes et imprime `kubectl
 top pods -A` avec le total de la plateforme.
 

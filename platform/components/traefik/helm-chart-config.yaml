@@ -52,8 +52,9 @@
 # - Memory: requested and capped like every brick of the platform. What
 #   the k3d job prints after its 10 minutes at rest (`kubectl top`, working
 #   set, Traefik 3.7.13) varies from run to run: 36 Mi in the GitHub job,
-#   88 and 93 Mi in two runs of the same job on a workstation. The request
-#   covers the highest.
+#   88, 93 and 120 Mi in three runs of the same job on a workstation. The
+#   request, 96 Mi, is within that range; the limit, 256 Mi, is above all
+#   of them.
 #
 # Before the application (wave 0), with the namespace and the issuers.
 apiVersion: helm.cattle.io/v1
