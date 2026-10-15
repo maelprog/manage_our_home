@@ -369,10 +369,17 @@ for overlay in "${overlays[@]}"; do
   bucket=$(y "select(.kind == \"ConfigMap\" and .metadata.name == \"$cm\") | .data.MINIO_BUCKET // \"\"")
   v=$(y "$bj | .spec.template.spec.containers[0].env[] | select(.name == \"MINIO_BUCKET\") | .value")
   [ -n "$bucket" ] && [ "$v" = "$bucket" ] || fail "Job minio-bucket creates '$v', api uses '$bucket'"
-  # Run on every sync: it never removes anything.
+  # Run on every sync: it only looks for the bucket and creates it — no
+  # other mc command (rb, rm, anonymous, ilm, admin…), whatever options
+  # come before it. Every `mc` of the script must be read as one of the
+  # three: one whose command cannot be read fails too.
   check
-  v=$(y "$bj | .spec.template.spec.containers[0].command | join(\" \")" | grep -nE 'mc +(rb|rm|ilm|admin)' || true)
-  [ -z "$v" ] || fail "Job minio-bucket removes or reconfigures: $v"
+  script=$(y "$bj | .spec.template.spec.containers[0].command | join(\" \")")
+  calls=$(grep -oE '(^|[^a-zA-Z0-9_./-])mc( |$)' <<< "$script" | wc -l)
+  subs=$(grep -oE '(^|[^a-zA-Z0-9_./-])mc( +-[a-zA-Z-]+)* +[a-z]+' <<< "$script" | awk '{print $NF}')
+  v=$(sort -u <<< "$subs" | tr '\n' ' ')
+  [ "$v" = "alias mb stat " ] && [ "$(wc -l <<< "$subs")" = "$calls" ] \
+    || fail "Job minio-bucket runs mc '$v' ($calls call(s)), expected alias, stat and mb alone"
   # MinIO up (-2), then the bucket (-1), then api and web (0).
   check
   wv() { y "$1 | .metadata.annotations[\"argocd.argoproj.io/sync-wave\"] // \"0\""; }
@@ -515,10 +522,11 @@ ALTER DEFAULT PRIVILEGES FOR ROLE migration_role IN SCHEMA public GRANT USAGE, S
   v=$(p "$bo | .barmanObjectStore | [.wal.encryption // \"\", .data.encryption // \"\"] | join(\"\")")
   [ -z "$v" ] || fail "postgres: per-request encryption '$v', which Scaleway refuses"
   # The Cluster's own folder in the bucket: `postgres`, or `postgres-r<n>`
-  # after the n-th restore (README.md, "Restaurer").
+  # after the n-th restore (README.md, "Restaurer"); unset, the operator
+  # uses the Cluster's name, `postgres`.
   check
   v=$(p "$bo | .barmanObjectStore.serverName // \"\"")
-  [[ "$v" =~ ^postgres(-r[1-9][0-9]*)?$ ]] || fail "postgres: serverName '$v', expected postgres or postgres-r<n>"
+  [[ "$v" =~ ^(postgres(-r[1-9][0-9]*)?)?$ ]] || fail "postgres: serverName '$v', expected postgres, postgres-r<n> or unset"
   check
   v=$(p 'select(.kind == "ScheduledBackup") | [.spec.cluster.name, .spec.immediate] | join(" ")')
   [ "$v" = "postgres true" ] || fail "postgres: ScheduledBackup is '$v', expected 'postgres true'"
