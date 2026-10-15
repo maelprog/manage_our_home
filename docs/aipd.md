@@ -56,8 +56,13 @@ celles qui arrivent ici le font par la bande, pas comme objet du service,
 et le service n'est pas à grande échelle (section 1).
 
 **Les supports.**
-- Un serveur exploité par le responsable : `api`, `web`, Postgres et MinIO
-  (pièces jointes) dans la pile Docker Compose de `infra/`.
+- Le service, prévu sur un VPS loué à un hébergeur tiers, sous-traitant
+  pour l'infrastructure (#440) : `api`, `web`, Postgres et MinIO (pièces
+  jointes) sur un cluster k3s exploité par le responsable
+  (`docs/v2-deployment.md` #1). Rien n'est déployé à ce jour.
+- Scaleway (Scaleway Object Storage, région `fr-par`), sous-traitant pour
+  les sauvegardes continues de la base, conservées 30 jours (#433), qui
+  commencent avec le cluster.
 - Scaleway (Scaleway Transactional Email), sous-traitant pour les emails
   transactionnels (adresse, objet, corps), traités dans l'UE.
 - Google, pour la connexion avec Google et, le cas échéant, l'hébergement
@@ -128,7 +133,7 @@ en CI ; journal d'audit des actions sensibles.
   obtient et renouvelle le certificat dès que le nom de domaine public est
   donné à `SITE_ADDRESS` ; sans lui, la pile reste en HTTP simple. Il ne
   protège donc rien avant le serveur de production (#1) et ce réglage. Les
-  secrets ne passent pas encore par sops (#15).
+  secrets ne passent pas encore par Sealed Secrets (#15).
 
 **Vraisemblance : limitée**, une fois TLS en place ; **importante** sans lui.
 
@@ -160,7 +165,7 @@ le suivi de déploiement :
 1. Sauvegardes chiffrées de Postgres et de MinIO, restauration éprouvée au
    même point (`docs/v2-deployment.md` #8, #9).
 2. TLS en production — configuré (#2), à activer sur le serveur (#1) en
-   y donnant le nom de domaine — et secrets via sops (#15).
+   y donnant le nom de domaine — et secrets via Sealed Secrets (#15).
 3. Supervision et journaux consultables (#12, #13), sans quoi une violation
    peut passer inaperçue.
 4. Pseudonyme du responsable, contact, sous-traitant et transferts (#16, #18) ;

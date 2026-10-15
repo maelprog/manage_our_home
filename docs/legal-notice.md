@@ -1,6 +1,6 @@
 # Mentions légales — Manage Our Home
 
-Dernière mise à jour : 2026-10-08.
+Dernière mise à jour : 2026-10-15.
 
 Ces mentions répondent à l'article 1-1 de la loi n° 2004-575 du 21 juin 2004
 pour la confiance dans l'économie numérique, dans sa rédaction issue de la
@@ -45,6 +45,8 @@ mise en ligne].
 L'hébergement n'est pas arrêté à ce jour. Le nom ou la raison sociale,
 l'adresse et le numéro de téléphone de l'hébergeur effectivement retenu sont
 inscrits ici avant l'ouverture au public.
+
+Le service ouvert au public est hébergé par ce prestataire, et par lui seul.
 
 ## Propriété intellectuelle
 
