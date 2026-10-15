@@ -370,16 +370,28 @@ for overlay in "${overlays[@]}"; do
   v=$(y "$bj | .spec.template.spec.containers[0].env[] | select(.name == \"MINIO_BUCKET\") | .value")
   [ -n "$bucket" ] && [ "$v" = "$bucket" ] || fail "Job minio-bucket creates '$v', api uses '$bucket'"
   # Run on every sync: it only looks for the bucket and creates it — no
-  # other mc command (rb, rm, anonymous, ilm, admin…), whatever options
-  # come before it. Every `mc` of the script must be read as one of the
-  # three: one whose command cannot be read fails too.
+  # other mc command (rb, rm, anonymous, ilm, admin…). The script is cut
+  # into words, quotes dropped; every word whose base name is `mc`
+  # (`mc`, `"mc"`, `./mc`, `/opt/…/bin/mc`) is a call, and the first word
+  # after it that is not an option is its command, which must be alias,
+  # stat or mb. A command named by a variable or a substitution (`$M rb`,
+  # `$(…) rb`) cannot be read that way, nor what eval, xargs or a nested
+  # shell would run: the script may hold none of them.
   check
-  script=$(y "$bj | .spec.template.spec.containers[0].command | join(\" \")")
-  calls=$(grep -oE '(^|[^a-zA-Z0-9_./-])mc( |$)' <<< "$script" | wc -l)
-  subs=$(grep -oE '(^|[^a-zA-Z0-9_./-])mc( +-[a-zA-Z-]+)* +[a-z]+' <<< "$script" | awk '{print $NF}')
+  v=$(y "$bj | .spec.template.spec.containers[0] | [(.command[0:2] | join(\" \")), (.command | length), (.args // [] | length)] | join(\" \")")
+  [ "$v" = "/bin/sh -c 3 0" ] || fail "Job minio-bucket: command is not one script for /bin/sh -c, without args ('$v')"
+  check
+  script=$(y "$bj | .spec.template.spec.containers[0].command[2] // \"\"")
+  subs=$(sed "s/[\"']//g; s/[;&|()]/ /g" <<< "$script" | tr -s ' \t' '\n\n' | awk '
+    want && !/^-/ { print; want = 0; next }
+    { n = split($0, part, "/") }
+    part[n] == "mc" { if (want) print "(none)"; want = 1 }
+    END { if (want) print "(none)" }')
   v=$(sort -u <<< "$subs" | tr '\n' ' ')
-  [ "$v" = "alias mb stat " ] && [ "$(wc -l <<< "$subs")" = "$calls" ] \
-    || fail "Job minio-bucket runs mc '$v' ($calls call(s)), expected alias, stat and mb alone"
+  [ "$v" = "alias mb stat " ] || fail "Job minio-bucket runs mc '$v', expected alias, stat and mb alone"
+  check
+  v=$(grep -nE '(^|[;&|(`]|(^|[[:space:]])(do|then|else|until|while|if|!))[[:space:]]*"?\$|(^|[[:space:];&|(])(eval|exec|xargs|source|\.|sh|bash|env)([[:space:]]|$)' <<< "$script" || true)
+  [ -z "$v" ] || fail "Job minio-bucket runs a command it does not name: $v"
   # MinIO up (-2), then the bucket (-1), then api and web (0).
   check
   wv() { y "$1 | .metadata.annotations[\"argocd.argoproj.io/sync-wave\"] // \"0\""; }
