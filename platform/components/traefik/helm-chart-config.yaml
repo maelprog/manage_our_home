@@ -49,9 +49,11 @@
 #   address it accepted the connection from, as Caddy's `reverse_proxy`
 #   did, so the chain the applications read starts with an address the
 #   browser cannot choose.
-# - Memory: requested and capped like every brick of the platform. 55 Mi
-#   at rest with no route, 88 Mi after the k3d job's 10 minutes at rest
-#   with the application's (`kubectl top`, Traefik 3.7.13).
+# - Memory: requested and capped like every brick of the platform. What
+#   the k3d job prints after its 10 minutes at rest (`kubectl top`, working
+#   set, Traefik 3.7.13) varies from run to run: 36 Mi in the GitHub job,
+#   88 and 93 Mi in two runs of the same job on a workstation. The request
+#   covers the highest.
 #
 # Before the application (wave 0), with the namespace and the issuers.
 apiVersion: helm.cattle.io/v1
