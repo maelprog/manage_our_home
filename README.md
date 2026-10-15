@@ -446,15 +446,25 @@ bucket (vague -1), puis api et web (vague 0).
   MinIO.
 - **Mémoire** : requête 128 Mi, limite 384 Mi (arbitrage du 2026-10-12 :
   256 à 384 Mi) ; Job : 16 / 64 Mi. Mesuré sous Docker avec cette image,
-  cet utilisateur et la racine en lecture seule, pour la PR de #435 :
-  66 à 70 Mi au repos ; 8 objets de 20 Mi envoyés à la fois par `mc`, au
-  plus 139 Mi de mémoire anonyme et 214 Mi hors cache de fichiers inactif
-  (`memory.current` moins `inactive_file`, 7 relevés pendant l'envoi),
-  aucun OOM. 8, c'est la porte d'envoi d'**un** pod api ; la prod en a
-  deux, donc jusqu'à 16 envois : à 16, au plus 155 Mi anonymes et 191 Mi
-  hors cache inactif, aucun OOM. Le cache de pages, lui, monte jusqu'à la limite :
-  `memory.current` y touche, mais ce cache se récupère avant tout OOM.
-  Le job k3d réimprime le repos.
+  cet utilisateur, la racine en lecture seule et la limite de 384 Mi,
+  pour la PR de #435 (un conteneur neuf par essai, mémoire relevée toutes
+  les 20 ms environ, 180 à 270 relevés par essai) : 66 à 70 Mi au repos.
+  8, c'est la porte d'envoi d'**un** pod api ; la prod en a deux, donc
+  jusqu'à 16 envois à la fois. Pires valeurs observées, en objets de
+  20 Mi envoyés par `mc` :
+
+  | Envois | Essais | Mémoire anonyme | Hors cache inactif (`memory.current` − `inactive_file`) |
+  |---|---|---|---|
+  | 8 à la fois | 3 | 141 Mi | 206 Mi |
+  | 16 à la fois | 3 | 193 Mi | 330 Mi (54 Mi sous la limite) |
+  | 8 à la fois, 5 lots enchaînés | 1 | 174 Mi | 235 Mi |
+  | 16 à la fois, 5 lots enchaînés | 2 | 212 Mi | 384 Mi, la limite |
+
+  Aucun OOM en 9 essais. La mémoire anonyme, celle qui ne se récupère
+  pas, garde au moins 172 Mi de marge sous la limite. Le reste est du
+  cache de fichiers, actif compris, que le noyau récupère à la limite :
+  sous 16 envois enchaînés, c'est lui qui atteint 384 Mi, sans OOM. Le
+  job k3d réimprime le repos.
 - **Images admises** : MinIO, son client, l'image Postgres du Cluster et
   celle de l'opérateur CloudNativePG (qu'il met dans chaque pod Postgres)
   sont sur la liste fermée du namespace (`platform/README.md`, « Kyverno ») :
