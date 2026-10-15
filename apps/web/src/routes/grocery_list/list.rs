@@ -71,7 +71,9 @@ fn error_html(error: Option<&str>) -> String {
 /// always-present `Cocher`/`Décocher` button is the no-JS path and the E2E
 /// target. The hidden `checked` field carries the *target* (toggled) state.
 /// The submission on change is `data-submit-on-change`, which
-/// `app::ENHANCE_SCRIPT` acts on.
+/// `app::ENHANCE_SCRIPT` acts on; `data-keep-scroll` has the list reopen at
+/// the height it was ticked from (#456), since the redirect reloads it —
+/// at the top when the check failed, where its error banner is.
 ///
 /// Once an item is checked (bought), the row also shows the Budget
 /// price-on-checkout form (F7): an inline amount field posting to
@@ -118,7 +120,7 @@ fn item_row(item: &GroceryItemResponse, can_edit: bool) -> String {
 
     format!(
         r#"<li class="list-row">
-<form method="post" action="/grocery-list/{id}/check" class="actions">
+<form method="post" action="/grocery-list/{id}/check" class="actions" data-keep-scroll>
 <input type="hidden" name="checked" value="{next}"/>
 <input type="checkbox"{checked_attr} data-submit-on-change aria-label="{name_attr}"/>
 <span{name_class}><strong>{name}</strong>{qty_html}{badge_html}</span>
