@@ -1,0 +1,129 @@
+# The application's ingress (#434): Traefik, k3s's own controller, in
+# front of web and api on one host, as infra/Caddyfile on main put them —
+# the session cookie (HttpOnly, SameSite=Lax) goes with every browser call
+# to either, with no CORS. `/api/*` goes to api without its prefix,
+# everything else to web.
+#
+# An IngressRoute (Traefik's own kind) rather than an Ingress: each route
+# carries its own chain of Middlewares (the prefix stripped for api only,
+# the 403 of `/readyz`, `Connection: close` for the methods with a body,
+# the size bound of the two upload routes), where an Ingress takes one chain for all its
+# paths, through an annotation — it would take one Ingress per chain. Here
+# every routing decision is in one list, with explicit priorities.
+#
+# The host is not written here: `ingress-host.invalid` is replaced in
+# every `match`, and in certificate.yaml, by the host of the overlay's
+# FRONTEND_BASE_URL (base/ingress/host, a Component each overlay lists).
+# ci/render-test.sh fails if a rule keeps another host.
+#
+# Traefik's settings that no IngressRoute reaches (connection timeouts,
+# the client's address) are the platform's:
+# platform/components/traefik/helm-chart-config.yaml.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: manage-our-home
+spec:
+  entryPoints: [websecure]
+  routes:
+    # Not through the ingress: see `internal-only` in middlewares.yaml.
+    # The 403 keeps the security headers.
+    - match: Host(`ingress-host.invalid`) && (Path(`/readyz`) || Path(`/api/readyz`))
+      priority: 300
+      middlewares:
+        - name: security-headers
+        - name: internal-only
+      services:
+        - name: web
+          port: http
+    # The Caddyfile's two upload routes (`@upload`): POST, one path segment
+    # for each `*`. The body bounded (`upload-limit`), and like every
+    # request with a body, answered with `Connection: close`.
+    - match: Host(`ingress-host.invalid`) && Method(`POST`) && PathRegexp(`^/api/groups/[^/]+/events/[^/]+/attachments$`)
+      priority: 260
+      middlewares:
+        - name: security-headers
+        - name: connection-close
+        - name: upload-limit
+        - name: compress
+        - name: strip-api
+      services:
+        - name: api
+          port: http
+    - match: Host(`ingress-host.invalid`) && Method(`POST`) && PathRegexp(`^/agenda/[^/]+/attachments$`)
+      priority: 250
+      middlewares:
+        - name: security-headers
+        - name: connection-close
+        - name: upload-limit
+        - name: compress
+      services:
+        - name: web
+          port: http
+    # Each route below in two: the requests with a body get
+    # `connection-close` (#244) — any method but GET, HEAD and OPTIONS, as
+    # the Caddyfile's `@has_body`, and those three when they announce a
+    # Content-Length, as its `close_on_408` closed after a GET's 408 too.
+    # A GET whose body is chunked is not seen: Go takes Transfer-Encoding
+    # out of the headers a rule reads (measured on Traefik 3.7.13). The
+    # others keep their connection.
+    # The Caddyfile's `handle /api/*`: `/api` alone is web's, as there.
+    - match: Host(`ingress-host.invalid`) && PathPrefix(`/api/`) && (!Method(`GET`) && !Method(`HEAD`) && !Method(`OPTIONS`) || HeaderRegexp(`Content-Length`, `^[1-9][0-9]*$`))
+      priority: 220
+      middlewares:
+        - name: security-headers
+        - name: connection-close
+        - name: compress
+        - name: strip-api
+      services:
+        - name: api
+          port: http
+    - match: Host(`ingress-host.invalid`) && PathPrefix(`/api/`)
+      priority: 200
+      middlewares:
+        - name: security-headers
+        - name: compress
+        - name: strip-api
+      services:
+        - name: api
+          port: http
+    - match: Host(`ingress-host.invalid`) && (!Method(`GET`) && !Method(`HEAD`) && !Method(`OPTIONS`) || HeaderRegexp(`Content-Length`, `^[1-9][0-9]*$`))
+      priority: 120
+      middlewares:
+        - name: security-headers
+        - name: connection-close
+        - name: compress
+      services:
+        - name: web
+          port: http
+    - match: Host(`ingress-host.invalid`)
+      priority: 100
+      middlewares:
+        - name: security-headers
+        - name: compress
+      services:
+        - name: web
+          port: http
+  tls:
+    # certificate.yaml's.
+    secretName: manage-our-home-tls
+---
+# Plain HTTP: a redirect to HTTPS and nothing else. At the lowest
+# priority, so that cert-manager's HTTP-01 solver, an Ingress it creates
+# for `/.well-known/acme-challenge/<token>` on this same entry point while
+# a certificate is being issued, is matched before it (Traefik ranks an
+# Ingress's rule by its length, well above 1).
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: manage-our-home-http
+spec:
+  entryPoints: [web]
+  routes:
+    - match: Host(`ingress-host.invalid`)
+      priority: 1
+      middlewares:
+        - name: https-redirect
+      services:
+        - name: noop@internal
+          kind: TraefikService

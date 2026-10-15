@@ -4,7 +4,8 @@
 # list of components below.
 #
 # Sync waves of the root Application: the platform's Applications (-10),
-# then the namespace, the ClusterIssuers and the Kyverno policy (-5), the
+# then the namespace, the ClusterIssuers, Traefik's settings (#434) and
+# the Kyverno policy (-5), the
 # sealed Secrets (-3), Postgres (-2, #433), the application (0). A wave
 # starts once the previous one is Healthy.
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -14,6 +15,7 @@ components:
   - ../../components/argocd
   - ../../components/sealed-secrets
   - ../../components/cert-manager
+  - ../../components/traefik
   - ../../components/cloudnative-pg
   - ../../components/kyverno
   - ../../components/app-namespace

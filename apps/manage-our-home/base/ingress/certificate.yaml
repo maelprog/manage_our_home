@@ -1,0 +1,24 @@
+# The TLS certificate of the host (#434), from Let's Encrypt through
+# cert-manager and the ClusterIssuers of
+# platform/components/cert-manager/cluster-issuers.yaml; the IngressRoute
+# reads the Secret it fills. Until it is issued, Traefik answers with its
+# own self-signed default certificate.
+#
+# `letsencrypt` on staging too: the staging server is a real host that
+# people browse, and browsers do not trust `letsencrypt-staging`'s
+# certificates — every visit would start with a warning. That issuer stays
+# to try an issuance out by hand, under its generous rate limits.
+#
+# The host is the overlay's (base/ingress/host): `ingress-host.invalid`
+# below is replaced.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: manage-our-home-tls
+spec:
+  secretName: manage-our-home-tls
+  dnsNames:
+    - ingress-host.invalid
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt
