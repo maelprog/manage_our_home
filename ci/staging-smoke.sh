@@ -11,7 +11,8 @@
 #     are Available and answer /readyz with 200, as the non-root,
 #     read-only containers the manifests describe (#431);
 #   - Kyverno refuses an image of the application referenced by tag, and
-#     one that is not signed, and admits a signed one;
+#     one that is not signed, and admits a signed one; it refuses an image
+#     off the namespace's closed list, MinIO's own by tag alone (#435);
 #   - nothing restarts, nothing is OOM-killed, over SOAK_SECONDS (600 s);
 # and prints what every pod uses (`kubectl top pods -A`).
 #
@@ -208,10 +209,13 @@ kubectl -n "$ns" create secret generic api-secrets --dry-run=client -o yaml \
   --from-literal=LOGIN_THROTTLE_KEY="$(key)" \
   --from-literal=SMTP_USERNAME=ci \
   --from-literal=SMTP_PASSWORD="$(pw)" \
-  --from-literal=MINIO_ACCESS_KEY=ci \
-  --from-literal=MINIO_SECRET_KEY="$(pw)" \
   | seal api-secrets
-secrets="postgres-app-role postgres-migration-role postgres-admin-role postgres-backup migrate-secrets api-secrets"
+# MinIO's, which api reads too (#435).
+kubectl -n "$ns" create secret generic minio --dry-run=client -o yaml \
+  --from-literal=MINIO_ROOT_USER="ci-$(openssl rand -hex 4)" \
+  --from-literal=MINIO_ROOT_PASSWORD="$(pw)" \
+  | seal minio
+secrets="postgres-app-role postgres-migration-role postgres-admin-role postgres-backup migrate-secrets api-secrets minio"
 for s in $secrets; do
   kind=$(yq e '.kind' "$work/$s.sealed.yaml")
   [ "$kind" = SealedSecret ] || { echo "::error::$s: kubeseal gave a $kind"; exit 1; }
@@ -308,16 +312,16 @@ spec:
         limits: {memory: 32Mi}
 EOF
 }
-refused() { # name image what
-  local out
+refused() { # name image what [policy]
+  local out policy=${4:-manage-our-home-signed-images}
   if out=$(try_pod "$1" "$2"); then
     echo "::error::Kyverno admitted $3 ($2)"
     kubectl -n "$ns" delete pod "$1" --wait=false || true
     return 1
   fi
   echo "$out"
-  grep -q 'manage-our-home-signed-images' <<< "$out" \
-    || { echo "::error::$3 refused, but not by the policy manage-our-home-signed-images"; return 1; }
+  grep -q "$policy" <<< "$out" \
+    || { echo "::error::$3 refused, but not by the policy $policy"; return 1; }
   echo "refused, as expected: $3"
 }
 out=$(try_pod kyverno-signed "$api_image") || { echo "$out"; echo "::error::Kyverno refused the signed image $api_image"; exit 1; }
@@ -325,6 +329,10 @@ echo "admitted, as expected: the signed image by digest"
 kubectl -n "$ns" delete pod kyverno-signed --wait=false
 refused kyverno-tag "$api_repo:$API_TAG" "a signed image of the application, by tag"
 refused kyverno-unsigned "$api_repo@$API_UNSIGNED_DIGEST" "an unsigned manifest of the application's repository"
+# The closed list (#435): MinIO's image, the one the StatefulSet runs, by
+# its tag alone — the list names it by tag and digest.
+minio_image=$(kubectl -n "$ns" get statefulset/minio -o jsonpath='{.spec.template.spec.containers[0].image}')
+refused kyverno-unlisted "${minio_image%@*}" "an image off the closed list (MinIO's, by tag alone)" manage-our-home-allowed-images
 
 # Restarts before and after: any container that restarts in the window,
 # or was ever OOM-killed, fails the run.

@@ -1,0 +1,66 @@
+# The images the namespace manage-our-home may run (#435): a closed list.
+# A pod whose container, init container or ephemeral container names any
+# other image is refused at admission, in Enforce.
+#
+#   - ghcr.io/maelprog/manage-our-home-*: the application's own, which
+#     signed-images.yaml further requires by digest and signed;
+#   - MinIO and its client, for the bucket Job (apps/manage-our-home/base/
+#     minio), by tag and digest, as infra/docker-compose.yml on main runs
+#     them;
+#   - the Postgres image of the CloudNativePG Cluster
+#     (apps/manage-our-home/base/postgres/cluster.yaml), by tag and digest;
+#   - the CloudNativePG operator's own image, which the operator puts in
+#     each instance's pod as its `bootstrap-controller` init container: the
+#     image the chart of platform/components/cloudnative-pg runs, which the
+#     chart names by tag only.
+#
+# Each entry is written exactly: moving an image means moving it here in the
+# same PR. ci/platform-test.sh fails if an image of the overlays, or the
+# operator's, is missing here, and if anything here matches more than one
+# reference by a wildcard other than the application's.
+#
+# Checked at admission only, like signed-images.yaml (`background: false`).
+# Kyverno writes the same rule for the pod controllers (autogen): a
+# Deployment, StatefulSet or Job with another image is refused when it is
+# applied.
+#
+# After Kyverno's Application (wave -10), whose CRD it needs, and before
+# Postgres (-2) and the application (0).
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: manage-our-home-allowed-images
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  background: false
+  # Kyverno unreachable means refused, not admitted unchecked.
+  failurePolicy: Fail
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: listed-images-only
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [manage-our-home]
+      validate:
+        failureAction: Enforce
+        message: >-
+          The namespace manage-our-home runs only the images listed in the
+          ClusterPolicy manage-our-home-allowed-images
+          (platform/components/kyverno/allowed-images.yaml).
+        pattern:
+          spec:
+            =(ephemeralContainers):
+              - image: &allowed >-
+                  ghcr.io/maelprog/manage-our-home-* |
+                  docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20 |
+                  docker.io/bitnamilegacy/minio-client:2025.7.21-debian-12-r3@sha256:73bd39f7899a0cef12b8dd5df13aa93a3ed1aaa44236542442e9ac76819ac158 |
+                  ghcr.io/cloudnative-pg/postgresql:16.15-system-trixie@sha256:9314ca1c9eb14cdf1fe19920284a860d4fb0468f6ca7776fa0746e0dc90143d9 |
+                  ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1
+            =(initContainers):
+              - image: *allowed
+            containers:
+              - image: *allowed

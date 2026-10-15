@@ -157,11 +157,41 @@ for env in staging prod; do
   v=$(y "$vi | .attestors[0].entries[0].keyless | [.issuer, .subjectRegExp, .rekor.url] | join(\" \")")
   [ "$v" = 'https://token.actions.githubusercontent.com ^https://github\.com/maelprog/manage_our_home/\.github/workflows/image-build\.yml@refs/(heads/main|tags/v[^/]+)$ https://rekor.sigstore.dev' ] \
     || fail "ClusterPolicy keyless attestor: '$v'"
-  # Every image the overlay runs is one the policy checks: a rename of the
-  # images or of the owner would leave them unchecked without a word.
-  for image in $(kustomize build "$root/apps/manage-our-home/overlays/$env" | yq e -N '.. | select(tag == "!!map" and has("image")) | .image' - | sed '/^$/d' | sort -u); do
+
+  # --- The closed list of the namespace's images (#435): enforced on every
+  # pod of the namespace, its three lists of containers alike.
+  al='select(.kind == "ClusterPolicy" and .metadata.name == "manage-our-home-allowed-images")'
+  check
+  v=$(y "$al | [.spec.failurePolicy, .spec.background, (.spec.rules | length), (.spec.rules[0].match.any[0].resources.namespaces | join(\",\")), (.spec.rules[0].match.any[0].resources.kinds | join(\",\")), .spec.rules[0].validate.failureAction] | join(\" \")")
+  [ "$v" = "Fail false 1 manage-our-home Pod Enforce" ] || fail "ClusterPolicy allowed-images: '$v', expected 'Fail false 1 manage-our-home Pod Enforce'"
+  check
+  v=$(y "$al | .spec.rules[0] | [(keys | sort | join(\",\")), (.match | keys | sort | join(\",\")), (.match.any | length), (.match.any[0] | keys | sort | join(\",\")), (.match.any[0].resources | keys | sort | join(\",\")), (.validate | keys | sort | join(\",\")), (.validate.pattern | keys | join(\",\")), (.validate.pattern.spec | keys | sort | join(\",\"))] | join(\" \")")
+  [ "$v" = "match,name,validate any 1 resources kinds,namespaces failureAction,message,pattern spec =(ephemeralContainers),=(initContainers),containers" ] \
+    || fail "ClusterPolicy allowed-images rule is narrowed: '$v'"
+  check
+  v=$(y "$al | .spec.rules[0].validate.pattern.spec | [.[\"=(ephemeralContainers)\"], .[\"=(initContainers)\"], .containers] | .[] | [length, (.[0] | keys | join(\",\")), .[0].image] | join(\" \")" | sort -u | wc -l)
+  [ "$v" = 1 ] || fail "ClusterPolicy allowed-images: its three lists of containers differ"
+  allowed=$(y "$al | .spec.rules[0].validate.pattern.spec.containers[0].image" | tr '|' '\n' | sed 's/^ *//; s/ *$//; /^$/d' | sort)
+  # A wildcard for the application's images only, which signed-images.yaml
+  # checks further; every other entry is one exact reference.
+  for a in $allowed; do
     check
-    [[ "$image" == ghcr.io/maelprog/manage-our-home-* ]] || fail "$image is outside the policy's imageReferences"
+    if [[ "$a" == *[*?]* ]]; then
+      [ "$a" = "ghcr.io/maelprog/manage-our-home-*" ] || fail "ClusterPolicy allowed-images: '$a' is a wildcard"
+    fi
+  done
+  # Every image the overlay and its Postgres run is one the policies
+  # admit: the application's under the signature check (a rename of the
+  # images or of the owner would leave them unchecked without a word), any
+  # other on the closed list, exactly.
+  used=$( (kustomize build "$root/apps/manage-our-home/overlays/$env"
+    echo "---"
+    kustomize build "$root/apps/manage-our-home/overlays/$env/postgres") \
+    | yq e -N '.. | select(tag == "!!map") | select(has("image") or has("imageName")) | .image // .imageName' - | sed '/^$/d' | sort -u)
+  for image in $used; do
+    check
+    [[ "$image" == ghcr.io/maelprog/manage-our-home-* ]] || grep -qxF "$image" <<< "$allowed" \
+      || fail "$image is neither under signed-images.yaml's imageReferences nor on the closed list of allowed-images.yaml"
   done
 
   # --- Traefik, k3s's own (#434): its settings that no IngressRoute
@@ -220,8 +250,23 @@ for env in staging prod; do
       v=$(r 'select(.kind == "Deployment") | .metadata.name' | sort | tr '\n' ' ')
       [ "$v" = "kyverno-admission-controller " ] || fail "Kyverno runs '$v', expected the admission controller alone"
     fi
+    # The operator's image, which it puts in each Postgres pod of the
+    # application's namespace (#435): on the closed list.
+    if [ "$a" = cloudnative-pg ]; then
+      check
+      v=$(r 'select(.kind == "Deployment") | .spec.template.spec.containers[].env[]? | select(.name == "OPERATOR_IMAGE_NAME") | .value')
+      used+=$'\n'"$v"
+      [ -n "$v" ] && grep -qxF "$v" <<< "$allowed" || fail "the operator's image '$v' is not on the closed list of allowed-images.yaml"
+    fi
   done
   ctx=$env
+  # Nothing on the closed list that the cluster does not run: an entry left
+  # behind by an image moved elsewhere would still be admitted.
+  for a in $allowed; do
+    [ "$a" = "ghcr.io/maelprog/manage-our-home-*" ] && continue
+    check
+    grep -qxF "$a" <<< "$used" || fail "ClusterPolicy allowed-images lists '$a', which nothing runs"
+  done
 done
 
 # --- The Argo CD that platform/bootstrap.sh installs is the one its

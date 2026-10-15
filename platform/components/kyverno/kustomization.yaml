@@ -4,3 +4,4 @@ kind: Component
 resources:
   - application.yaml
   - signed-images.yaml
+  - allowed-images.yaml

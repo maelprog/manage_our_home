@@ -1,0 +1,18 @@
+# MinIO in the cluster (#435): the object store of the event attachments,
+# which api reaches at MINIO_ENDPOINT (http://minio:9000, base
+# kustomization.yaml). One node, one drive (README.md, "MinIO", for the
+# distributed mode on several nodes).
+#
+# Synced by the application's Application, before api and web: MinIO
+# (sync wave -2), then the Job that creates the bucket (-1), then the rest
+# (0). The PreSync migration Job runs before all three and does not need
+# MinIO.
+#
+# Its credentials are the Secret `minio`, sealed per cluster like the
+# others (#432); api reads the same Secret.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - statefulset.yaml
+  - bucket-job.yaml
