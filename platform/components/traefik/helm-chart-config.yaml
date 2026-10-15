@@ -41,7 +41,8 @@
 #   did, so the chain the applications read starts with an address the
 #   browser cannot choose.
 # - Memory: requested and capped like every brick of the platform. 55 Mi
-#   at rest (`kubectl top`, k3d, Traefik 3.7.13).
+#   at rest with no route, 88 Mi after the k3d job's 10 minutes at rest
+#   with the application's (`kubectl top`, Traefik 3.7.13).
 #
 # Before the application (wave 0), with the namespace and the issuers.
 apiVersion: helm.cattle.io/v1
@@ -70,6 +71,6 @@ spec:
     resources:
       requests:
         cpu: 25m
-        memory: 64Mi
+        memory: 96Mi
       limits:
         memory: 256Mi
