@@ -22,7 +22,7 @@ use crate::family::{active_group_id_from_headers, resolve_active_group};
 use crate::layout::CurrentUser;
 use crate::routes::account::terms::update_notice;
 use crate::routes::agenda::{
-    fmt_paris, occurrences_from_response, paris_local_to_utc, today_paris,
+    fmt_paris, occurrences_from_response, paris_local_to_utc, read_or_log, today_paris,
 };
 use crate::routes::groups::ownership::ownership_notices;
 use crate::routes::groups::{cookie_of, header_with_groups};
@@ -36,8 +36,12 @@ use crate::state::{api_request_auth, AppState};
 /// "the next five *before the day after tomorrow*": an event at J+3 was never
 /// read, and the card said "nothing planned" (#455). Sixty days leaves room
 /// for a sparse agenda while keeping a recurring series' unroll bounded — a
-/// daily series costs sixty-one occurrences here (today included), and the
-/// API caps any series at its own `MAX_OCCURRENCES` whatever the window.
+/// daily series costs at most sixty-two occurrences here: sixty-one civil
+/// days, plus one when it sits on midnight or 23:59:59, since the API widens
+/// an hour-bound window by a second either side (pinned by
+/// `a_daily_series_at_paris_midnight_costs_the_home_horizon_62_occurrences`
+/// in apps/api's `recurrence.rs`). The API also caps any series at its own
+/// `MAX_OCCURRENCES` whatever the window.
 const DASHBOARD_AGENDA_HORIZON_DAYS: i64 = 60;
 /// The dashboard shows what's soonest, not everything the horizon holds —
 /// the full picture is one click away on `/agenda`.
@@ -496,13 +500,11 @@ pub async fn get(
     )
     .await
     {
-        Ok(resp) => match occurrences_from_response(resp.status, resp.body) {
-            Ok(occurrences) => Some(occurrences),
-            Err(error) => {
-                tracing::warn!(group_id = %fam.gid, %error, "home: agenda card could not read the events");
-                None
-            }
-        },
+        Ok(resp) => read_or_log(
+            occurrences_from_response(resp.status, resp.body),
+            fam.gid,
+            "home",
+        ),
         Err(_) => return service_unavailable_page().into_response(),
     };
 

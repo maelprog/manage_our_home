@@ -709,6 +709,57 @@ mod tests {
         assert_eq!(occurrences, vec![start]);
     }
 
+    // -- what a daily series costs the home dashboard (#455) ------------------
+    //
+    // apps/web's agenda card reads `[Paris midnight today, last second of
+    // the Paris day 60 days later]` — 61 civil days. An hour-bound series
+    // takes a second either side, so a daily one anchored on either edge of
+    // the day gets one more occurrence than the days the window spans.
+
+    /// The window the card asks for when today is 2026-10-14 in Paris; it
+    /// crosses the October change of hour.
+    fn home_horizon() -> (DateTime<Utc>, DateTime<Utc>) {
+        (
+            paris(2026, 10, 14, 0, 0),
+            paris(2026, 12, 13, 23, 59) + Duration::seconds(59),
+        )
+    }
+
+    #[test]
+    fn a_daily_series_at_paris_midnight_costs_the_home_horizon_62_occurrences() {
+        let (from, to) = home_horizon();
+        let occs = expand_occurrences("FREQ=DAILY", paris(2026, 9, 1, 0, 0), from, to).unwrap();
+        assert_eq!(occs.len(), 62);
+        // The 62nd is the next day's midnight, one second past `to`.
+        assert_eq!(occs.last(), Some(&(to + Duration::seconds(1))));
+    }
+
+    #[test]
+    fn a_daily_series_at_23_59_59_costs_the_home_horizon_62_occurrences() {
+        let (from, to) = home_horizon();
+        let start = paris(2026, 9, 1, 23, 59) + Duration::seconds(59);
+        let occs = expand_occurrences("FREQ=DAILY", start, from, to).unwrap();
+        assert_eq!(occs.len(), 62);
+        // The first is the eve's last second, one second before `from`.
+        assert_eq!(occs.first(), Some(&(from - Duration::seconds(1))));
+    }
+
+    #[test]
+    fn a_daily_series_inside_the_day_or_all_day_costs_it_61() {
+        let (from, to) = home_horizon();
+        let noon = expand_occurrences("FREQ=DAILY", paris(2026, 9, 1, 12, 0), from, to).unwrap();
+        assert_eq!(noon.len(), 61);
+        let all_day = expand_all_day_occurrences(
+            "FREQ=DAILY",
+            paris(2026, 9, 1, 0, 0),
+            paris(2026, 9, 2, 0, 0),
+            from,
+            to,
+        )
+        .unwrap();
+        assert_eq!(all_day.len(), 61);
+    }
+
     // -- expand_occurrences across a DST change (#116) ------------------------
     //
     // An hour-bound series is a wall-clock promise: « tous les lundis à 9 h »
