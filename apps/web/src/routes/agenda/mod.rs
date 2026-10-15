@@ -179,9 +179,9 @@ pub(crate) fn today_paris() -> chrono::NaiveDate {
 }
 
 /// Why an answer from `GET /groups/:gid/events` could not be read as a list
-/// of occurrences. Both readers of that endpoint (the home dashboard and
-/// `/agenda`) used to fold either case into an empty list, so a failing API
-/// rendered as "nothing planned", with nothing in the logs (#455).
+/// of occurrences. The home dashboard and `/agenda` used to fold either case
+/// into an empty list, so a failing API rendered as "nothing planned", with
+/// nothing in the logs (#455).
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum OccurrencesUnreadable {
     /// Any status but 200.
@@ -212,6 +212,22 @@ pub(crate) fn occurrences_from_response(
     serde_json::from_value::<OccurrenceList>(body)
         .map(|l| l.occurrences)
         .map_err(|e| OccurrencesUnreadable::Body(e.to_string()))
+}
+
+/// What a page renders from: `Some` when the answer was read, an empty list
+/// included; `None` when it was not, after logging why, with the group and
+/// the page (`reader`). `None` must render as an error, never as "nothing
+/// here" (#455).
+pub(crate) fn read_or_log<T, E: std::fmt::Display>(
+    answer: Result<T, E>,
+    group_id: Uuid,
+    reader: &'static str,
+) -> Option<T> {
+    answer
+        .inspect_err(
+            |error| tracing::warn!(%group_id, %error, reader, "could not read apps/api's answer"),
+        )
+        .ok()
 }
 
 // -- shared error/landing pages ---------------------------------------------
@@ -336,6 +352,31 @@ mod tests {
             occurrences_from_response(reqwest::StatusCode::OK, body),
             Err(OccurrencesUnreadable::Body(_))
         ));
+    }
+
+    // -- read_or_log (#455) ----------------------------------------------------
+
+    /// An empty list read from a 200 is a real answer: `Some`, not `None`.
+    #[test]
+    fn a_read_answer_is_kept_even_empty() {
+        let answer = occurrences_from_response(
+            reqwest::StatusCode::OK,
+            serde_json::json!({ "occurrences": [] }),
+        );
+        assert_eq!(
+            read_or_log(answer, Uuid::nil(), "test").map(|o| o.len()),
+            Some(0)
+        );
+    }
+
+    /// A failed answer is `None`, never the empty list it used to become.
+    #[test]
+    fn an_unreadable_answer_is_none_not_an_empty_list() {
+        let answer = occurrences_from_response(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({ "error": "internal" }),
+        );
+        assert!(read_or_log(answer, Uuid::nil(), "test").is_none());
     }
 
     // -- date_only -----------------------------------------------------------
