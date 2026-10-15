@@ -30,7 +30,8 @@ use crate::state::{api_request_auth, AppState};
 use super::new::{reminder_push_block, reminder_select};
 use super::{
     agenda_cookie, can_modify, event_not_found_page, family_context, fmt_paris, forbidden_page,
-    occurrences_from_response, read_or_log, service_unavailable_page, today_paris,
+    json_from_response, occurrences_from_response, read_or_log, service_unavailable_page,
+    today_paris,
 };
 
 #[derive(serde::Deserialize)]
@@ -166,7 +167,9 @@ pub async fn get(
         Err(_) => return service_unavailable_page().into_response(),
     };
 
-    let attachments: Vec<AttachmentResponse> = match api_request_auth(
+    // `None`: the list could not be read, which renders as an error rather
+    // than as "no attachment" (#455).
+    let attachments: Option<Vec<AttachmentResponse>> = match api_request_auth(
         &state,
         reqwest::Method::GET,
         &format!("/groups/{}/events/{}/attachments", fam.gid, event_id),
@@ -175,10 +178,12 @@ pub async fn get(
     )
     .await
     {
-        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
-            serde_json::from_value(resp.body).unwrap_or_default()
-        }
-        _ => Vec::new(),
+        Ok(resp) => read_or_log(
+            json_from_response(resp.status, resp.body),
+            fam.gid,
+            "agenda detail attachments",
+        ),
+        Err(error) => read_or_log::<Vec<_>, _>(Err(error), fam.gid, "agenda detail attachments"),
     };
 
     // Recurring task: fetch the upcoming occurrences (next 60 days) so each
@@ -235,7 +240,7 @@ pub async fn get(
         &fam.header,
         &event,
         occurrences.as_deref(),
-        &attachments,
+        attachments.as_deref(),
         &members,
         can_edit,
         query.occ.as_deref(),
@@ -252,7 +257,7 @@ fn page(
     header: &str,
     event: &EventResponse,
     occurrences: Option<&[OccurrenceResponse]>,
-    attachments: &[AttachmentResponse],
+    attachments: Option<&[AttachmentResponse]>,
     members: &[GroupMember],
     can_edit: bool,
     focus_occ: Option<&str>,
@@ -449,8 +454,16 @@ fn render_occurrence_completions(
     )
 }
 
-fn render_attachments(id: Uuid, attachments: &[AttachmentResponse], can_edit: bool) -> String {
+/// `attachments` is `None` when the API's answer could not be read: the
+/// list renders as an error, never as "no attachment", and the upload form
+/// stays (#455).
+fn render_attachments(
+    id: Uuid,
+    attachments: Option<&[AttachmentResponse]>,
+    can_edit: bool,
+) -> String {
     let rows: String = attachments
+        .unwrap_or_default()
         .iter()
         .map(|a| {
             let size_kb = (a.size_bytes as f64 / 1024.0).round() as i64;
@@ -473,10 +486,11 @@ fn render_attachments(id: Uuid, attachments: &[AttachmentResponse], can_edit: bo
             )
         })
         .collect();
-    let list = if attachments.is_empty() {
-        r#"<p class="muted">Aucune pièce jointe.</p>"#.to_string()
-    } else {
-        format!(r#"<ul class="list">{rows}</ul>"#)
+    let list = match attachments {
+        None => r#"<p class="notice error">Impossible de charger les pièces jointes pour le moment.</p>"#
+            .to_string(),
+        Some([]) => r#"<p class="muted">Aucune pièce jointe.</p>"#.to_string(),
+        Some(_) => format!(r#"<ul class="list">{rows}</ul>"#),
     };
     let upload = format!(
         r#"<form method="post" action="/agenda/{id}/attachments" enctype="multipart/form-data">
@@ -630,6 +644,49 @@ mod tests {
         let html = render_occurrence_completions(uid(9), Some(&[]), None);
         assert!(html.contains("Aucune occurrence à venir"), "{html}");
         assert!(!html.contains("notice error"), "{html}");
+    }
+
+    // -- render_attachments (#455) -------------------------------------------
+
+    /// An API failure is not "no attachment"; uploading stays possible.
+    #[test]
+    fn unreadable_attachments_are_an_error_not_an_empty_list() {
+        let html = render_attachments(uid(9), None, true);
+        assert!(!html.contains("Aucune pièce jointe"), "{html}");
+        assert!(html.contains(r#"class="notice error""#), "{html}");
+        assert!(
+            html.contains("Impossible de charger les pièces jointes"),
+            "{html}"
+        );
+        assert!(html.contains(r#"enctype="multipart/form-data""#), "{html}");
+    }
+
+    #[test]
+    fn no_attachment_says_so_without_an_error() {
+        let html = render_attachments(uid(9), Some(&[]), true);
+        assert!(html.contains("Aucune pièce jointe."), "{html}");
+        assert!(!html.contains("notice error"), "{html}");
+    }
+
+    /// The attachments endpoint answers a bare array.
+    #[test]
+    fn an_attachment_list_is_read_from_a_200() {
+        let body = serde_json::json!([{
+            "id": uid(1),
+            "event_id": uid(9),
+            "filename": "scan.pdf",
+            "mime_type": "application/pdf",
+            "size_bytes": 2048,
+        }]);
+        let read: Vec<AttachmentResponse> =
+            json_from_response(reqwest::StatusCode::OK, body).unwrap();
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].filename, "scan.pdf");
+        assert!(json_from_response::<Vec<AttachmentResponse>>(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({ "error": "internal" })
+        )
+        .is_err());
     }
 
     // -- assignees_html (#98 round-2, Mo2) -------------------------------

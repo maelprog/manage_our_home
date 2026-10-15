@@ -178,20 +178,21 @@ pub(crate) fn today_paris() -> chrono::NaiveDate {
     Utc::now().with_timezone(&DISPLAY_TZ).date_naive()
 }
 
-/// Why an answer from `GET /groups/:gid/events` could not be read as a list
-/// of occurrences. Its three readers (the home dashboard, `/agenda`, and a
-/// recurring task's detail page) used to fold either case into an empty
-/// list, so a failing API rendered as "nothing planned", with nothing in the
-/// logs (#455).
+/// Why an apps/api answer could not be read as what the page asked for.
+/// The three readers of `GET /groups/:gid/events` (the home dashboard,
+/// `/agenda`, and a recurring task's detail page) used to fold either case
+/// into an empty list, so a failing API rendered as "nothing planned", with
+/// nothing in the logs (#455); the detail page did the same with its
+/// attachments.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum OccurrencesUnreadable {
+pub(crate) enum UnreadableAnswer {
     /// Any status but 200.
     Status(reqwest::StatusCode),
-    /// A 200 whose body is not an `OccurrenceList`.
+    /// A 200 whose body is not what was asked for.
     Body(String),
 }
 
-impl std::fmt::Display for OccurrencesUnreadable {
+impl std::fmt::Display for UnreadableAnswer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Status(status) => write!(f, "unexpected status {status}"),
@@ -200,19 +201,26 @@ impl std::fmt::Display for OccurrencesUnreadable {
     }
 }
 
+/// A 200's body read as `T`, or why the answer carries nothing we can
+/// trust.
+pub(crate) fn json_from_response<T: serde::de::DeserializeOwned>(
+    status: reqwest::StatusCode,
+    body: serde_json::Value,
+) -> Result<T, UnreadableAnswer> {
+    if status != reqwest::StatusCode::OK {
+        return Err(UnreadableAnswer::Status(status));
+    }
+    serde_json::from_value::<T>(body).map_err(|e| UnreadableAnswer::Body(e.to_string()))
+}
+
 /// The occurrences an events-endpoint answer carries, or why it carries
 /// none we can trust: an empty `Ok` means the family has nothing in the
 /// window, never that the API failed.
 pub(crate) fn occurrences_from_response(
     status: reqwest::StatusCode,
     body: serde_json::Value,
-) -> Result<Vec<OccurrenceResponse>, OccurrencesUnreadable> {
-    if status != reqwest::StatusCode::OK {
-        return Err(OccurrencesUnreadable::Status(status));
-    }
-    serde_json::from_value::<OccurrenceList>(body)
-        .map(|l| l.occurrences)
-        .map_err(|e| OccurrencesUnreadable::Body(e.to_string()))
+) -> Result<Vec<OccurrenceResponse>, UnreadableAnswer> {
+    json_from_response::<OccurrenceList>(status, body).map(|l| l.occurrences)
 }
 
 /// What a page renders from: `Some` when the answer was read, an empty list
@@ -327,7 +335,7 @@ mod tests {
         assert_eq!(
             occurrences_from_response(reqwest::StatusCode::INTERNAL_SERVER_ERROR, body)
                 .map(|o| o.len()),
-            Err(OccurrencesUnreadable::Status(
+            Err(UnreadableAnswer::Status(
                 reqwest::StatusCode::INTERNAL_SERVER_ERROR
             ))
         );
@@ -340,9 +348,7 @@ mod tests {
         let body = serde_json::json!({ "error": "to_before_from" });
         assert!(matches!(
             occurrences_from_response(reqwest::StatusCode::BAD_REQUEST, body),
-            Err(OccurrencesUnreadable::Status(
-                reqwest::StatusCode::BAD_REQUEST
-            ))
+            Err(UnreadableAnswer::Status(reqwest::StatusCode::BAD_REQUEST))
         ));
     }
 
@@ -351,7 +357,7 @@ mod tests {
         let body = serde_json::json!({ "items": [] });
         assert!(matches!(
             occurrences_from_response(reqwest::StatusCode::OK, body),
-            Err(OccurrencesUnreadable::Body(_))
+            Err(UnreadableAnswer::Body(_))
         ));
     }
 
