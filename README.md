@@ -126,8 +126,8 @@ auto-signé par défaut.
 |---|---|
 | En-têtes de sécurité (#141) : CSP, `Reporting-Endpoints`, HSTS, `nosniff`, `X-Frame-Options`, `Referrer-Policy` | Middleware `security-headers`, mêmes valeurs ; le job k3d les compare à celles du Caddyfile de `main`, sur `/`, `/login` et `/api/healthz` |
 | `encode zstd gzip`, rien sous 512 octets | Middleware `compress`, `encodings: [zstd, gzip]`, `minResponseBodyBytes: 512`, sur une liste de types textuels (Traefik n'accepte pas `text/*`) |
-| `read_body 16m` : délai de toute la requête | `readTimeout: 2m` sur les deux points d'entrée, le même délai de Go (`ReadTimeout`), abaissé pour borner aussi les en-têtes (ligne suivante ; arbitrage du 2026-10-15). Un envoi doit donc arriver en 2 min : 175 ko/s, environ 1,4 Mbit/s montant, pour le plus gros corps accepté (21 037 056 octets), 42 ko/s pour une photo de 5 Mo. Le silence de 30 s des applications reste en deçà : leur 408 vient d'abord |
-| `read_header 10s` : en-têtes au goutte-à-goutte coupés à 10 s | Traefik n'a pas de délai propre aux en-têtes : ils tombent sous le `readTimeout` de 2 min. Un client qui égrène ses en-têtes est coupé à 2 min ; le job k3d le mesure |
+| `read_body 16m` : délai de toute la requête | `readTimeout: 2m` sur les deux points d'entrée, le même délai de Go (`ReadTimeout`), abaissé pour borner aussi les en-têtes (ligne suivante ; arbitrage du 2026-10-15). Un envoi doit donc arriver en 2 min : 175 ko/s, environ 1,4 Mbit/s montant, pour le plus gros corps accepté (21 037 056 octets), 42 ko/s pour une photo de 5 Mo. Sur toutes les routes sauf les deux d'envoi, un corps silencieux 30 s reçoit d'abord le 408 des applications. Sur les deux routes d'envoi, Traefik lit le corps lui-même avant de le transmettre (`upload-limit`) : un corps plus lent que 2 min s'y termine par un 499 de Traefik, pas par leur 408 |
+| `read_header 10s` : en-têtes au goutte-à-goutte coupés à 10 s | Traefik n'a pas de délai propre aux en-têtes. En HTTP/1.1 ils tombent sous le `readTimeout` : un client qui égrène ses en-têtes est coupé à 2 min, le job k3d le mesure. En HTTP/2, le `readTimeout` ne les atteint pas : c'est l'`idleTimeout` qui ferme la connexion, à 5 min |
 | `idle 5m` | `idleTimeout: 5m` |
 | Le WebSocket de la messagerie échappe à `read_body` | Idem : ni `readTimeout` ni `idleTimeout` ne l'atteignent une fois ouvert ; le job k3d le tient 5 min 20 s en silence, puis y reçoit un message |
 | `Connection: close` sur toute réponse à une requête HTTP/1.1 avec corps, 408 compris (#244) | Middleware `connection-close`, sur les routes des méthodes autres que GET, HEAD et OPTIONS. Traefik ne sait pas choisir une route selon la version du protocole : il s'applique aussi en HTTP/2 (arbitrage du 2026-10-15), où Go en fait un GOAWAY — la connexion se ferme une fois ses requêtes en cours servies, le navigateur en rouvre une après chaque formulaire envoyé. Mesuré sur 3.7.13 (POST de 100 ko envoyé à 5 ko/s, 401 sans lecture) : 19 s sans lui en HTTP/1.1, 0,03 s avec ; le job k3d vérifie un 401 de l'api en moins de 5 s, corps encore en cours |
@@ -448,7 +448,7 @@ chaque push sur l'une d'elles :
    suivie, ordre des vagues (Postgres entre les Secrets et l'appli), namespace
    `restricted`, politique Kyverno (et aucune exclusion, précondition
    ni sélecteur qui restreigne sa règle), charts épinglés, réglages de
-   Traefik (`externalTrafficPolicy: Local`, délais de 16 et 5 min,
+   Traefik (`externalTrafficPolicy: Local`, délais de 2 et 5 min,
    limite mémoire, avant l'appli), et sur le rendu Helm
    de chaque chart : limite mémoire sur chaque conteneur, un réplica,
    Argo CD sans Dex, notifications ni ApplicationSet, Kyverno réduit au

@@ -14,15 +14,22 @@
 #   at 8 s, headers trickled one line a second were cut at 8.0 s, and so
 #   was a body sent 1 byte a second). Traefik has no header-only bound
 #   (Caddy's `read_header 10s`), so this one bound sets both how long a
-#   client trickling its headers holds a connection, and how long the
-#   slowest upload may take. 2 min (arbitrage of 2026-10-15: the global
-#   bound lowered, slow uploads cut with it): headers trickled are cut at
-#   2 min rather than Caddy's 16; the largest body the api accepts,
-#   21 037 056 bytes (20 MiB of attachment and 64 KiB of multipart
-#   framing), needs 175 kB/s, about 1.4 Mbit/s up, to arrive in time, a
-#   5 MB photo 42 kB/s. Above the applications' own 30 s of silence, which
-#   they still answer with their 408 first; below their 15 min total,
-#   which no longer comes into play. ci/ingress-test.sh measures the cut.
+#   client trickling its headers holds an HTTP/1.1 connection, and how
+#   long the slowest upload may take. 2 min (arbitrage of 2026-10-15: the
+#   global bound lowered, slow uploads cut with it): headers trickled over
+#   HTTP/1.1 are cut at 2 min, where Caddy cut them at 10 s. Over HTTP/2
+#   the request's headers come in frames on a connection already read, and
+#   `readTimeout` does not reach them: `idleTimeout`, 5 min, ends such a
+#   connection (a GOAWAY). The largest body the api accepts, 21 037 056
+#   bytes (20 MiB of attachment and 64 KiB of multipart framing), needs
+#   175 kB/s, about 1.4 Mbit/s up, to arrive in time, a 5 MB photo
+#   42 kB/s. On every route but the two upload ones, a body silent for
+#   30 s is still answered first by the applications' own 408, below
+#   2 min. On the two upload routes Traefik reads the whole body itself
+#   before passing it on (`upload-limit`, apps/manage-our-home/base/
+#   ingress/middlewares.yaml): the applications see nothing of a slow
+#   body, and one slower than 2 min ends in Traefik's 499, not their 408.
+#   ci/ingress-test.sh measures the HTTP/1.1 cut.
 #   `idleTimeout` 5 min is Caddy's `idle`. No write timeout, as in Caddy.
 #   Neither reaches the Messagerie WebSocket once upgraded (measured the
 #   same way: a socket held 15 s through an 8 s readTimeout and a 5 s
