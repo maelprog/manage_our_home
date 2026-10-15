@@ -223,13 +223,18 @@ for path in "/api/groups/$fake/events/$fake/attachments" "/agenda/$fake/attachme
   echo "POST $path, $over bytes announced: $v"
   within "$v" 413 5 || fail "POST $path with $over bytes: '$v', expected a 413 within 5 s"
 done
-# At the limit, the api answers (401, no session): the ingress let it by.
+# At the limit, the ingress lets the body by: Traefik reads it whole, then
+# passes it to the api, which answers 401 (no session) without reading it
+# and closes. Depending on when that close reaches Traefik, still sending
+# the buffered body, the client gets the api's 401 or Traefik's 502 (both
+# seen in k3d) — either way past the limit, never its 413.
 head -c $((over - 1)) /dev/zero > "$work/limit.bin"
 code=$(ingress "/api/groups/$fake/events/$fake/attachments" --output /dev/null --write-out '%{http_code}' \
   -H 'Content-Type: application/octet-stream' --data-binary @"$work/limit.bin")
 rm -f "$work/limit.bin"
 echo "POST of $((over - 1)) bytes: $code"
-[ "$code" = 401 ] || fail "a body of exactly $((over - 1)) bytes got $code, expected the api's 401"
+[ "$code" = 401 ] || [ "$code" = 502 ] \
+  || fail "a body of exactly $((over - 1)) bytes got $code, expected to pass the limit (the api's 401, or a 502)"
 
 echo "== compression"
 enc() { # path accept-encoding -> Content-Encoding (or `none`)
