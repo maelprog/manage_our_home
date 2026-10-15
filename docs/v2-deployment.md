@@ -209,7 +209,10 @@ Au moment de l'ouverture publique :
    - `renders_the_real_legal_notice_without_leftover_markup` boucle sur
      `pending_legal_notice_values` et n'a donc rien à retirer à la main ; il
      exige aussi que le texte cite l'article 1-1 et l'anonymat, ce qu'un
-     retour à l'auto-hébergement devrait revoir.
+     retour à l'auto-hébergement devrait revoir, et qu'il écarte l'instance
+     familiale du serveur maison (« par lui seul », « pas joignable depuis
+     Internet », « réseau privé virtuel », #440) — le paragraphe que le
+     pas 3 garde.
 
 ## Item #18 — établir le cadre contractuel du sous-traitant email et les transferts
 

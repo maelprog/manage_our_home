@@ -139,7 +139,8 @@ ci-dessous).
 
 **Sites d'hébergement** (arbitrage (b) du 2026-10-10, #440). Deux
 clusters k3s, tous deux exploités par le responsable de traitement
-(`docs/v2-deployment.md` #1) :
+(`docs/v2-deployment.md` #1). Ils sont prévus, pas encore déployés : ce
+qui suit décrit l'organisation retenue, qui s'applique avec eux :
 - **Production — le service public.** Un VPS loué à l'hébergeur tiers
   ci-dessus, nommé dans les mentions légales. C'est la seule instance
   ouverte au public, et la seule que décrivent la politique de
@@ -310,7 +311,9 @@ les `ownership_transferred` qui le désignent comme successeur à la purge
 d'un autre compte. Elles ne désignent plus qu'un identifiant anonymisé.
 Reste enfin une invitation adressée à l'adresse du compte, jusqu'à son
 acceptation, la suppression du groupe ou le terme de ses 30 jours
-(ligne 1c).
+(ligne 1c). Hors de la base, la copie de ce que la purge supprime ou
+anonymise reste dans les sauvegardes de la base jusqu'à la fin de leur
+fenêtre, 31 jours environ (« Sauvegardes de la base » ci-dessus).
 
 Le job tourne une fois par heure, dès le démarrage de l'API, aux mêmes
 conditions que la purge de conservation ci-dessous : cinq des tables qu'il

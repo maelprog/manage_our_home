@@ -404,6 +404,10 @@ de la purge dépasserait.
   invitation qu'un membre aurait envoyée à votre adresse, jusqu'à son
   acceptation, à la suppression du groupe ou au premier passage de purge
   qui suit les 30 jours de son envoi (voir « Invitations » plus haut).
+- **Ce qui subsiste dans les sauvegardes** : la copie de vos données dans
+  les sauvegardes de la base, jusqu'à 31 jours environ après la purge,
+  puis elle disparaît avec elles (voir « Sauvegardes de la base » plus
+  haut).
 - **Quand elle a lieu** : la purge passe toutes les heures, aux mêmes
   conditions que les suppressions automatiques décrites plus haut — quand
   le service fonctionne et que sa configuration permet ce passage. Elle a
