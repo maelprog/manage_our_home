@@ -1354,6 +1354,12 @@ mod tests {
             flat.contains("droit de réponse"),
             "the legal notice does not say where a right-of-reply request goes"
         );
+        // #440: the anonymity needs a third-party host, so the notice states
+        // that the host it names is the one serving the service.
+        assert!(
+            flat.contains("par lui seul"),
+            "the legal notice does not state who hosts the service"
+        );
         // Every article the notice cites is LCEN art. 1-1 or one of the two code
         // pénal articles on the host's professional secrecy; see
         // `cited_article_numbers` for what counts as a citation.
