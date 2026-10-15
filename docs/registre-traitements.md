@@ -53,9 +53,11 @@ au public (arbitrage du 2026-10-10, #440 ; « Sites d'hébergement »
 ci-dessous).
 
 **Sous-traitants (destinataires)** :
-- Aucun service tiers ne traite le contenu applicatif : Postgres et MinIO
+- Aucun service applicatif tiers ne traite le contenu : Postgres et MinIO
   tournent dans les clusters exploités par le responsable de traitement
-  (« Sites d'hébergement » ci-dessous). Le conteneur `ollama` déclaré dans
+  (« Sites d'hébergement » ci-dessous) ; seuls l'hébergeur du VPS de
+  production et le stockage des sauvegardes, nommés plus bas, en portent
+  les données. Le conteneur `ollama` déclaré dans
   `infra/docker-compose.yml` ne reçoit aucune donnée : aucun code de
   `apps/` ne l'appelle, et les suggestions de recettes sont un tri par
   règles (`apps/api/src/recipes/suggestions.rs`).
@@ -164,8 +166,8 @@ Storage, région `fr-par`, un bucket par environnement
 avec une clé qui n'atteint que lui — la clé du serveur maison ne lit pas
 les sauvegardes de la production. Conservation : 30 jours (`retentionPolicy:
 "30d"`) — l'opérateur supprime les copies et les WAL dont une restauration
-à un instant des 30 derniers jours n'a plus besoin, soit environ 31 jours
-au plus pour la plus ancienne copie complète gardée. Après une
+à un instant des 30 derniers jours n'a plus besoin ; la plus ancienne
+copie complète gardée a donc jusqu'à 31 jours environ. Après une
 restauration, l'ancien dossier de sauvegarde échappe à cette rétention :
 il est purgé à la main sur la même fenêtre, puis supprimé en entier trente
 jours plus tard (README de la branche de déploiement, « Restaurer »).
