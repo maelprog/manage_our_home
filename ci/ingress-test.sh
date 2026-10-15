@@ -12,7 +12,8 @@
 #     refused from outside (403);
 #   - an answer to a request with a body reaches an HTTP/1.1 client when
 #     it is sent, not once the client has sent the whole body (#244): a
-#     401 within 5 s while the body still trickles in;
+#     401 within 5 s while the body still trickles in, for a POST and for
+#     a GET that announces a body;
 #   - the two upload routes refuse a body over 21 037 056 bytes with a 413
 #     at once, and let one of exactly that size through to the api;
 #   - responses are compressed, zstd then gzip, the stylesheet included
@@ -197,8 +198,8 @@ echo "== an answer before the body's end (#244), over HTTP/1.1"
 # body. Go's server, Traefik's, holds such an answer until it has read the
 # rest of the body (under 256 KiB), unless the answer says
 # `Connection: close` (middlewares.yaml, connection-close).
-probe_post() { # path length -> `<status line> after <s> s, ...`
-  python3 "$root/ci/ingress-probe.py" post "$address" "$host" "$1" "$2" 30 || true
+probe_post() { # path length [method] -> `<status line> after <s> s, ...`
+  python3 "$root/ci/ingress-probe.py" post "$address" "$host" "$1" "$2" 30 "${3:-POST}" || true
 }
 within() { # answer status seconds: the answer has that status, within that time
   [[ "$1" =~ ^HTTP/1\.1\ $2\ .*\ after\ ([0-9.]+)\ s ]] && awk -v t="${BASH_REMATCH[1]}" -v m="$3" 'BEGIN { exit !(t < m) }'
@@ -206,6 +207,11 @@ within() { # answer status seconds: the answer has that status, within that time
 v=$(probe_post /api/groups 100000)
 echo "POST /api/groups, 100 kB at 2 kB/s: $v"
 within "$v" 401 5 || fail "POST /api/groups: '$v', expected its 401 within 5 s, before the body's end"
+# A GET that announces a body (Content-Length) too: the Caddyfile's
+# close_on_408 closed after any 408, a GET's included.
+v=$(probe_post /api/groups 100000 GET)
+echo "GET /api/groups, 100 kB at 2 kB/s: $v"
+within "$v" 401 5 || fail "GET /api/groups with a body: '$v', expected its 401 within 5 s, before the body's end"
 
 echo "== upload size (#219)"
 # One byte over storage::MAX_UPLOAD_BODY_BYTES of main (20 MiB + 64 KiB of

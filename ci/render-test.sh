@@ -276,11 +276,14 @@ for overlay in "${overlays[@]}"; do
   want+=";100 web security-headers,compress;"
   [ "$v" = "$want" ] || fail "HTTPS routes (priority, service, middlewares) are '$v', expected '$want'"
   # shellcheck disable=SC2016 # backquotes are Traefik's, not the shell's
-  body='!Method(`GET`) && !Method(`HEAD`) && !Method(`OPTIONS`)'
+  # Any method but GET, HEAD and OPTIONS (the Caddyfile's `@has_body`), and
+  # those three when they announce a body (its `close_on_408`, which also
+  # closed after a GET's 408).
+  body='(!Method(`GET`) && !Method(`HEAD`) && !Method(`OPTIONS`) || HeaderRegexp(`Content-Length`, `^[1-9][0-9]*$`))'
   for p in 220 120; do
     check
     v=$(y "$routes | select(.priority == $p) | .match")
-    [[ "$v" == *"$body"* ]] || fail "route $p '$v' does not match every method with a body ($body)"
+    [[ "$v" == *"$body"* ]] || fail "route $p '$v' does not match every request with a body ($body)"
   done
   check
   v=$(y "$routes | select(.priority == 220) | .match")

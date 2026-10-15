@@ -60,11 +60,15 @@ spec:
       services:
         - name: web
           port: http
-    # Each route below in two: the methods with a body (the Caddyfile's
-    # `@has_body`, #244) get `connection-close`, GET, HEAD and OPTIONS keep
-    # their connection.
+    # Each route below in two: the requests with a body get
+    # `connection-close` (#244) — any method but GET, HEAD and OPTIONS, as
+    # the Caddyfile's `@has_body`, and those three when they announce a
+    # Content-Length, as its `close_on_408` closed after a GET's 408 too.
+    # A GET whose body is chunked is not seen: Go takes Transfer-Encoding
+    # out of the headers a rule reads (measured on Traefik 3.7.13). The
+    # others keep their connection.
     # The Caddyfile's `handle /api/*`: `/api` alone is web's, as there.
-    - match: Host(`ingress-host.invalid`) && PathPrefix(`/api/`) && !Method(`GET`) && !Method(`HEAD`) && !Method(`OPTIONS`)
+    - match: Host(`ingress-host.invalid`) && PathPrefix(`/api/`) && (!Method(`GET`) && !Method(`HEAD`) && !Method(`OPTIONS`) || HeaderRegexp(`Content-Length`, `^[1-9][0-9]*$`))
       priority: 220
       middlewares:
         - name: security-headers
@@ -83,7 +87,7 @@ spec:
       services:
         - name: api
           port: http
-    - match: Host(`ingress-host.invalid`) && !Method(`GET`) && !Method(`HEAD`) && !Method(`OPTIONS`)
+    - match: Host(`ingress-host.invalid`) && (!Method(`GET`) && !Method(`HEAD`) && !Method(`OPTIONS`) || HeaderRegexp(`Content-Length`, `^[1-9][0-9]*$`))
       priority: 120
       middlewares:
         - name: security-headers
