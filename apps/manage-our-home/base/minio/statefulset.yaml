@@ -82,11 +82,11 @@ spec:
               drop: ["ALL"]
           # Memory, out of the staging cluster's budget of about 3 GB
           # (arbitrage of 2026-10-12, 256 to 384 Mi for MinIO). Measured
-          # with this image, as this user, read-only, under Docker on the
-          # PR of #435: 66 MiB at rest; 8 uploads of 20 MiB at once (what
-          # api's upload gate lets through, README.md, "Mémoire") peaked
-          # at 165 MiB, page cache included. The k3d job prints it at rest
-          # on every run.
+          # with this image, as this user, read-only, under Docker, in the
+          # PR of #435: 66 MiB at rest; 8 objects of 20 MiB sent at once
+          # with mc (as many as api's upload gate lets through, README.md,
+          # "Mémoire"), a peak of 165 MiB, page cache included. The k3d
+          # job prints it at rest on every run.
           resources:
             requests:
               cpu: 50m

@@ -10,8 +10,11 @@
 #   3. Replayed by a new sync of the application, the bucket Job succeeds
 #      and does nothing: it says the bucket is there, and the attachment
 #      is still there.
-#   4. MinIO restarted, the attachment is still there: it is on the volume
-#      of the StatefulSet's claim, not in the pod.
+#   4. MinIO's volume claim is not tracked by Argo CD, which therefore
+#      never prunes it; MinIO restarted, the attachment is still there: it
+#      is on the volume of the StatefulSet's claim, not in the pod.
+#   5. The copy of the bucket that the restore procedure sets aside
+#      (README.md, "Restaurer", step 3) holds the attachment.
 #
 #   ci/minio-test.sh
 #
@@ -142,6 +145,14 @@ grep -qx "bucket $bucket: already there, nothing to do" "$work/bucket-2.log" \
 ! grep -q 'created' "$work/bucket-2.log" || { echo "::error::the replayed bucket Job created something"; exit 1; }
 read_back "after the replay"
 
+# Argo CD prunes only what it tracks: the volume's claim, made by the
+# StatefulSet controller, carries none of its marks (README.md, "MinIO").
+echo "== MinIO's volume, out of Argo CD's reach"
+pvc=$(kubectl -n "$ns" get pvc data-minio-0 -o yaml)
+v=$(yq e '[(.metadata.annotations // {} | keys | .[] | select(test("^argocd\\.argoproj\\.io/"))), (.metadata.labels // {} | keys | .[] | select(. == "app.kubernetes.io/instance"))] | join(",")' <<< "$pvc")
+[ -z "$v" ] || { echo "::error::Argo CD tracks MinIO's volume claim ($v): pruning would delete it"; exit 1; }
+echo "claim data-minio-0: $(yq e '.status.phase + ", " + .status.capacity.storage' <<< "$pvc"), not tracked by Argo CD"
+
 echo "== MinIO restarted"
 kubectl -n "$ns" delete pod minio-0 --wait=true
 kubectl -n "$ns" wait --for=create pod/minio-0 --timeout=120s
@@ -150,5 +161,13 @@ kill "${pf_pids[@]}" 2> /dev/null || true
 kubectl -n "$ns" port-forward svc/minio 19000:9000 > "$work/pf-minio-2.log" 2>&1 &
 pf_pids+=($!)
 read_back "after a restart"
+
+# The copy set aside before a restore (README.md, "Restaurer", step 3),
+# by its own command: the object is in it.
+echo "== the bucket set aside, as the restore procedure does"
+kubectl -n "$ns" exec minio-0 -- tar -C "$data" -cf - "$bucket" > "$work/bucket.tar"
+tar -tf "$work/bucket.tar" | grep -qx "$bucket/$key/xl.meta" \
+  || { echo "::error::the copy of the bucket lacks $bucket/$key"; exit 1; }
+echo "copy of the bucket: $(tar -tf "$work/bucket.tar" | grep -c '/xl.meta$') object(s), $bucket/$key among them"
 
 echo "MinIO: OK"

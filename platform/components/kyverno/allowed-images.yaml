@@ -15,9 +15,10 @@
 #     chart names by tag only.
 #
 # Each entry is written exactly: moving an image means moving it here in the
-# same PR. ci/platform-test.sh fails if an image of the overlays, or the
-# operator's, is missing here, and if anything here matches more than one
-# reference by a wildcard other than the application's.
+# same PR. ci/platform-test.sh fails if an image of the overlays, their
+# Postgres or the operator is missing here, if an entry names an image
+# nothing runs, and if an entry other than the application's is a
+# wildcard.
 #
 # Checked at admission only, like signed-images.yaml (`background: false`).
 # Kyverno writes the same rule for the pod controllers (autogen): a
