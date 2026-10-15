@@ -173,12 +173,14 @@ for env in staging prod; do
   [ "$v" = 1 ] || fail "ClusterPolicy allowed-images: its three lists of containers differ"
   allowed=$(y "$al | .spec.rules[0].validate.pattern.spec.containers[0].image" | tr '|' '\n' | sed 's/^ *//; s/ *$//; /^$/d' | sort)
   # A wildcard for the application's images only, which signed-images.yaml
-  # checks further; every other entry is one exact reference.
+  # checks further; every other entry is one exact reference, by digest.
+  # A tag can be moved, a digest cannot: every other entry carries one.
   for a in $allowed; do
+    [ "$a" = "ghcr.io/maelprog/manage-our-home-*" ] && continue
     check
-    if [[ "$a" == *[*?]* ]]; then
-      [ "$a" = "ghcr.io/maelprog/manage-our-home-*" ] || fail "ClusterPolicy allowed-images: '$a' is a wildcard"
-    fi
+    [[ "$a" != *[*?]* ]] || fail "ClusterPolicy allowed-images: '$a' is a wildcard"
+    check
+    [[ "$a" =~ @sha256:[0-9a-f]{64}$ ]] || fail "ClusterPolicy allowed-images: '$a' is not pinned by digest"
   done
   # Every image the overlay and its Postgres run is one the policies
   # admit: the application's under the signature check (a rename of the

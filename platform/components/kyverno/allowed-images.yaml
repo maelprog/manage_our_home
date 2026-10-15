@@ -11,14 +11,14 @@
 #     (apps/manage-our-home/base/postgres/cluster.yaml), by tag and digest;
 #   - the CloudNativePG operator's own image, which the operator puts in
 #     each instance's pod as its `bootstrap-controller` init container: the
-#     image the chart of platform/components/cloudnative-pg runs, which the
-#     chart names by tag only.
+#     image the chart of platform/components/cloudnative-pg runs, by tag
+#     and digest (its `image.tag`).
 #
 # Each entry is written exactly: moving an image means moving it here in the
 # same PR. ci/platform-test.sh fails if an image of the overlays, their
 # Postgres or the operator is missing here, if an entry names an image
 # nothing runs, and if an entry other than the application's is a
-# wildcard.
+# wildcard or lacks a digest.
 #
 # Checked at admission only, like signed-images.yaml (`background: false`).
 # Kyverno writes the same rule for the pod controllers (autogen): a
@@ -60,7 +60,7 @@ spec:
                   docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20 |
                   docker.io/bitnamilegacy/minio-client:2025.7.21-debian-12-r3@sha256:73bd39f7899a0cef12b8dd5df13aa93a3ed1aaa44236542442e9ac76819ac158 |
                   ghcr.io/cloudnative-pg/postgresql:16.15-system-trixie@sha256:9314ca1c9eb14cdf1fe19920284a860d4fb0468f6ca7776fa0746e0dc90143d9 |
-                  ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1
+                  ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1@sha256:923c267ec29636db3bee20f993d0ec4973fa22998e1adad37da79e4d32b5bc07
             =(initContainers):
               - image: *allowed
             containers:

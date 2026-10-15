@@ -189,12 +189,13 @@ les images de l'appli (`ghcr.io/maelprog/manage-our-home-*`, que la
 politique précédente exige par empreinte et signées), MinIO et son client
 (`README.md` racine, « MinIO »), l'image Postgres du Cluster, et celle de
 l'opérateur CloudNativePG, qu'il met dans chaque pod Postgres
-(`bootstrap-controller`) et que son chart nomme par étiquette seule.
+(`bootstrap-controller`), par étiquette et empreinte : le `image.tag` de
+`components/cloudnative-pg/application.yaml` porte l'empreinte.
 Chacune y est écrite exactement : déplacer une image, c'est la déplacer
 dans la liste dans la même PR. `ci/platform-test.sh` échoue si une image
 de l'overlay, de son Postgres ou de l'opérateur manque à la liste, si la
 liste nomme une image que rien ne lance, ou si une entrée autre que celle
-de l'appli contient un joker.
+de l'appli contient un joker ou n'a pas d'empreinte.
 
 Kyverno tourne réduit à son contrôleur d'admission (arbitrage du
 2026-10-12) : ni contrôleur d'arrière-plan, ni nettoyage, ni rapports. Les
