@@ -155,8 +155,8 @@ sortants possibles sont :
   Scaleway (Scaleway SAS), dans sa région de Paris, pour pouvoir restaurer
   le service après une panne ou une erreur. La copie voyage chiffrée et
   Scaleway la chiffre sur ses disques, avec une clé qu'il détient ; ce qui
-  est chiffré dans la base (messages, jetons, adresses de flux calendrier)
-  le reste dans la copie. Elle est conservée 30 jours (voir « Combien de
+  est chiffré dans la base (messages, jetons OAuth, adresses de flux
+  calendrier) le reste dans la copie. Elle est conservée 30 jours (voir « Combien de
   temps vos données sont-elles conservées ? »).
 
 Aucune autre donnée ne quitte le serveur applicatif. Les suggestions de
@@ -355,8 +355,8 @@ de la purge dépasserait.
 - **Sauvegardes de la base** : de quoi restaurer la base à n'importe quel
   instant des 30 derniers jours, et pas au-delà. Une donnée supprimée du
   service, purge d'un compte comprise, reste donc dans les sauvegardes
-  environ 31 jours — les 30 jours, plus l'écart avec la copie complète de
-  la nuit qui les précède — puis disparaît avec elles. Les sauvegardes ne
+  jusqu'à 31 jours environ — les 30 jours, plus l'écart avec la copie
+  complète de la nuit qui les précède — puis disparaît avec elles. Les sauvegardes ne
   contiennent pas les fichiers des pièces jointes.
 
 ### Suppression de votre compte
