@@ -96,4 +96,36 @@ test.describe("keep scroll — grocery list check-off", () => {
     const after = await page.evaluate(() => window.scrollY);
     expect(Math.abs(after - before)).toBeLessThanOrEqual(rowHeight);
   });
+
+  test("a check-off that fails lands on the list with its error banner in view", async ({ page }) => {
+    await registerAndLogin(page, "e2e-checkscrollerr", "Check Scroll Err");
+    await createGroup(page, "Famille Coche Ratée");
+
+    for (let n = 1; n <= 30; n++) {
+      const name = `Article ${String(n).padStart(2, "0")}`;
+      const response = await page.request.post("/grocery-list/add", {
+        form: { name, quantity: "", unit: "" },
+      });
+      expect(response.ok()).toBe(true);
+    }
+
+    await page.goto("/grocery-list");
+    const box = page.getByRole("checkbox", { name: "Article 25", exact: true });
+    await box.scrollIntoViewIfNeeded();
+    expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+
+    // The check post answers as apps/web does when apps/api fails
+    // (`grocery_list::list`'s check handler): a redirect to the list
+    // carrying `error=unavailable`.
+    await page.route("**/grocery-list/*/check", (route) =>
+      route.fulfill({ status: 303, headers: { location: "/grocery-list?error=unavailable" } }),
+    );
+    await box.click();
+    await page.waitForURL(/\/grocery-list\?error=unavailable$/);
+
+    // The banner sits above the list: the page must not reopen down at the
+    // row, or the failure goes unseen.
+    await expect(page.locator(".notice.error")).toBeInViewport();
+    await expect(page.getByRole("checkbox", { name: "Article 25", exact: true })).not.toBeChecked();
+  });
 });

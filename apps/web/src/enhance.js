@@ -110,9 +110,12 @@
   // `data-keep-scroll` on a form (#456): the page its redirect lands on
   // opens at the height the form was sent from, rather than at the top —
   // the grocery list's check boxes, where the ticked row also moves down.
-  // Only when that page has the sender's path: a redirect elsewhere (an
-  // error page) opens at the top as usual. Kept in sessionStorage, which
-  // can be missing or refuse writes: the page then simply opens at the top.
+  // Only when that page has the sender's path and shows no error: a
+  // failed post comes back to the same list with its `.notice.error`
+  // banner at the top (`?error=…`), which the reader must see, and a
+  // redirect elsewhere opens at the top as usual. Kept in sessionStorage,
+  // which can be missing or refuse writes: the page then simply opens at
+  // the top.
   var KEEP_SCROLL = "keep-scroll";
 
   function keepScroll(form) {
@@ -130,6 +133,7 @@
       kept = JSON.parse(sessionStorage.getItem(KEEP_SCROLL));
       sessionStorage.removeItem(KEEP_SCROLL);
     } catch (e) {}
+    if (document.querySelector(".notice.error")) return;
     if (kept && kept.path === location.pathname && typeof kept.y === "number") {
       window.scrollTo({ top: kept.y, left: 0, behavior: "instant" });
     }
@@ -152,12 +156,18 @@
 
   // Loaded from the <head>: the fields are there once the document is. The
   // script comes after the sheet's <link>, so the layout the scroll
-  // positions are read from is the styled one.
+  // positions are read from is the styled one. The two scroll fixes run
+  // apart: one throwing (a browser refusing `behavior: "instant"`) must not
+  // cost the other.
   function ready() {
     expiryShortcuts();
     resendCooldowns();
-    revealCurrentTab();
-    restoreScroll();
+    try {
+      revealCurrentTab();
+    } catch (e) {}
+    try {
+      restoreScroll();
+    } catch (e) {}
   }
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", ready);

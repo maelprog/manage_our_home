@@ -68,7 +68,8 @@ submit on its own. Each row is therefore a small `<form method=post>` to
 The backend orders the list `checked, name`, so checked items sink to the
 bottom; the UI strikes them through. The check form carries
 `data-keep-scroll` (#456): with JavaScript, the redirected list reopens at
-the height it was ticked from rather than at the top. Any member may check/uncheck any item
+the height it was ticked from rather than at the top — unless the check
+failed, so that the error banner above the list is seen. Any member may check/uncheck any item
 (lighter bar than edit — see the backend's `check_grocery_item` note).
 
 ### Edit/delete on a per-item screen, behind `can_modify`

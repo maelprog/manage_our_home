@@ -72,7 +72,8 @@ fn error_html(error: Option<&str>) -> String {
 /// target. The hidden `checked` field carries the *target* (toggled) state.
 /// The submission on change is `data-submit-on-change`, which
 /// `app::ENHANCE_SCRIPT` acts on; `data-keep-scroll` has the list reopen at
-/// the height it was ticked from (#456), since the redirect reloads it.
+/// the height it was ticked from (#456), since the redirect reloads it —
+/// at the top when the check failed, where its error banner is.
 ///
 /// Once an item is checked (bought), the row also shows the Budget
 /// price-on-checkout form (F7): an inline amount field posting to
