@@ -28,8 +28,8 @@ accordingly; the rationale is in `version-y-microservices.md`.
 | 13 | Monitoring: centralized/queryable logs | missing | Requalified 2026-10-10: carried by #437 (Loki with a bounded retention, declared in `docs/registre-traitements.md` since the logs hold IP addresses). |
 | 14 | Rate-limiting on `/login`, `/register` | missing | Called out in `architecture.md` security section as "once exposed to internet" — that condition is now met. |
 | 15 | Secrets in production: Sealed Secrets | missing | Requalified 2026-10-10 (#441); was "Secrets via sops in production". Application secrets are to be `SealedSecret` objects on the `deploy` branch, opened only by the cluster's controller; the controller's private key is never to be committed and is to be backed up off the cluster (#432). |
-| 16 | RGPD: pseudonyme et adresse de contact du responsable de traitement | missing | **À remplacer avant la mise en ligne** — bloquant (#131, #379). Art. 13(1)(a) exige l'identité *et* les coordonnées du responsable. Le porteur du projet (personne physique) est désigné par un pseudonyme, jamais par son nom civil (arbitrage du 2026-10-05, #379 : son nom publié viderait l'anonymat LCEN de l'item #17) ; le risque résiduel au regard de l'art. 13 est décrit dans `docs/registre-traitements.md`, à valider en relecture. Il fournit ce pseudonyme et une adresse dédiée au service, relevée par une personne — pas un `noreply@` — au moment de l'ouverture publique. Voir la procédure ci-dessous. |
-| 17 | LCEN: hébergeur des mentions légales et identité de l'éditeur confiée à l'hébergeur | missing | **À remplacer avant la mise en ligne** — bloquant (#132, #314). Les mentions légales existent et sont servies (`docs/legal-notice.md`, `GET /legal-notice`), mais trois valeurs y sont encore des placeholders. L'éditeur use de l'anonymat de la LCEN art. 1-1, II (arbitrage du 2026-10-04) : son identité est communiquée à l'hébergeur, pas publiée. L'hébergeur dépend de l'item #1 et doit être un tiers : l'anonymat ne tient pas en auto-hébergement (#379). Voir la procédure ci-dessous. |
+| 16 | RGPD: pseudonyme et adresse de contact du responsable de traitement | missing | **À remplacer avant la mise en ligne** — bloquant (#131, #379). Art. 13(1)(a) exige l'identité *et* les coordonnées du responsable. Le porteur du projet (personne physique) est désigné par un pseudonyme, jamais par son nom civil (arbitrage du 2026-10-05, #379 : son nom publié viderait l'anonymat LCEN de l'item #17 ; il tient parce que la production est chez un hébergeur tiers et que le serveur maison n'est pas public, arbitrage (b) du 2026-10-10, #440) ; le risque résiduel au regard de l'art. 13 est décrit dans `docs/registre-traitements.md`, à valider en relecture. Il fournit ce pseudonyme et une adresse dédiée au service, relevée par une personne — pas un `noreply@` — au moment de l'ouverture publique. Voir la procédure ci-dessous. |
+| 17 | LCEN: hébergeur des mentions légales et identité de l'éditeur confiée à l'hébergeur | missing | **À remplacer avant la mise en ligne** — bloquant (#132, #314). Les mentions légales existent et sont servies (`docs/legal-notice.md`, `GET /legal-notice`), mais trois valeurs y sont encore des placeholders. L'éditeur use de l'anonymat de la LCEN art. 1-1, II (arbitrage du 2026-10-04) : son identité est communiquée à l'hébergeur, pas publiée. L'hébergeur dépend de l'item #1 et doit être un tiers : l'anonymat ne tient pas en auto-hébergement (#379). D'où l'arbitrage (b) du 2026-10-10 (#440) : production publique sur un VPS tiers, seul hébergeur nommé ; le serveur maison sert le staging et l'usage familial, joignable par VPN seulement, et les mentions légales le disent. Voir la procédure ci-dessous. |
 | 18 | RGPD: cadre contractuel du sous-traitant email et transferts hors UE | missing | **À faire avant la mise en ligne** — bloquant (#136, #328). Le fournisseur est arrêté (Scaleway Transactional Email, arbitrage du 2026-10-02 qui remplace Mailjet) et ne transfère rien hors UE, relevé daté dans le registre. Restent à établir le cadre contractuel opposable (DPA accepté depuis la console Scaleway) et les transferts hors UE de Google et des services de notification des navigateurs (#306) : trois placeholders les portent dans la politique et le registre. Rien dans le code ne contraint `SMTP_HOST`. Voir la procédure ci-dessous. |
 | 19 | RGPD: AIPD signée et registre des violations ouvert | missing | **À faire avant la mise en ligne** — bloquant (#143). L'AIPD est rédigée (`docs/aipd.md`) mais sa conclusion n'est qu'une proposition : le responsable de traitement la relit et la signe, ce qui remplit son placeholder (`conclusion de l'AIPD, date et signature`). Elle conditionne l'ouverture aux items #2, #8, #9, #12, #13, #15, #16 et #18. Le registre des violations est tenu hors du dépôt, qui est public (`docs/registre-violations.md` en fixe la forme) : l'ouvrir et en noter l'emplacement à la place du placeholder de ce fichier (`emplacement du registre des violations`). `docs/procedure-violation.md` porte le placeholder `adresse de contact`, rempli par l'item #16. Les trois sont épinglés par `the_breach_and_aipd_documents_carry_only_the_placeholders_pinned_here` (`apps/shared/src/validation/rgpd.rs`) : retirer l'attente correspondante en remplissant chacun. |
 | 20 | Chiffrement au repos du volume des données de Postgres et de MinIO | missing | **À faire avant la mise en ligne** — bloquant (#380). Mesure 5 de l'AIPD, retenue par l'arbitrage du 2026-10-05 ; `docs/privacy-policy.md` (« Sécurité ») et `docs/registre-traitements.md` l'annoncent. Protège les données si le support est volé ou réutilisé (disque, instantané, volume rendu au fournisseur), pas contre une intrusion sur le serveur en marche, où le volume est ouvert. Dépend de l'item #1 ; les sauvegardes (#8) restent à chiffrer à part. `infra/check-volume-encryption.sh` vérifie le résultat. Voir la procédure ci-dessous. |
@@ -157,12 +157,27 @@ L'hébergeur dépend de l'item #1 et n'est pas choisi. L'arbitrage du
 pseudonymat impose un **hébergeur tiers**. En auto-hébergement, l'éditeur
 serait son propre hébergeur, et le nom, l'adresse et le numéro de téléphone
 de l'hébergeur à publier (art. 1-1, I) seraient les siens : l'anonymat du II
-ne tiendrait plus, et le pseudonyme de l'item #16 non plus. L'auto-hébergement
-envisagé par l'arbitrage du 2026-09-19 est donc écarté tant que cet
-arbitrage tient ; y revenir demanderait d'abord de renoncer au pseudonymat,
-puis de réécrire les sections « Éditeur du service » et « Directeur de la
-publication ». Au moment de la mise en ligne, inscrire la raison sociale,
-l'adresse et le numéro de téléphone du prestataire retenu (un VPS, item #1).
+ne tiendrait plus, et le pseudonyme de l'item #16 non plus. Un relais placé
+devant un serveur maison (tunnel, reverse proxy sur un VPS) n'y change rien :
+le contenu resterait stocké chez l'éditeur.
+
+L'arbitrage (b) du 2026-10-10 (#440) en tire l'hébergement en deux sites :
+
+- la **production**, seul service ouvert au public, tourne sur un VPS loué
+  à un tiers (item #1) ; ce prestataire est le seul hébergeur nommé dans
+  les mentions légales ;
+- le **serveur maison** porte le staging et sert à l'usage familial. Il
+  n'est pas ouvert au public : aucun port n'est ouvert sur la box, pas même
+  80 ou 443, et les membres de la famille comme le porteur n'y accèdent que
+  par VPN (Headscale, serveur de coordination sur le VPS, #443). Les
+  mentions légales (section « Hébergeur ») et le registre (« Sites
+  d'hébergement ») le disent : ce n'est pas le service public.
+
+Ouvrir le serveur maison au public, même derrière un relais, ferait tomber
+cet arbitrage ; y revenir demanderait d'abord de renoncer au pseudonymat,
+puis de réécrire les sections « Éditeur du service », « Directeur de la
+publication » et « Hébergeur ». Au moment de la mise en ligne, inscrire la
+raison sociale, l'adresse et le numéro de téléphone du prestataire retenu.
 
 Au moment de l'ouverture publique :
 
@@ -175,10 +190,15 @@ Au moment de l'ouverture publique :
    l'éditeur sont la même personne physique, et l'adresse de contact est la
    même.
 3. Retirer, dans la section « Hébergeur », le paragraphe qui explique que
-   l'hébergement n'est pas arrêté.
+   l'hébergement n'est pas arrêté ; garder celui qui écarte l'instance
+   familiale du serveur maison.
 4. Rafraîchir la date de dernière mise à jour en tête de
    `docs/legal-notice.md` (les CGU ne changent pas).
-5. Mettre à jour les tests de `apps/shared/src/validation/rgpd.rs` qui
+5. Nommer le même prestataire dans `docs/registre-traitements.md` : la
+   ligne « hébergeur du VPS de production » des sous-traitants, avec son
+   cadre contractuel (art. 28) et la localisation de ses centres de
+   données, et la ligne correspondante du tableau des transferts.
+6. Mettre à jour les tests de `apps/shared/src/validation/rgpd.rs` qui
    épinglent ces valeurs, faute de quoi la suite reste rouge :
    - `pending_legal_notice_values` est leur source unique ; la vider reflète
      le pas 2 ;
@@ -224,7 +244,10 @@ Au moment de l'ouverture publique :
    un traitement hors UE pour Transactional Email, la ligne Scaleway du
    tableau des transferts du registre et la politique ne tiennent plus :
    les corriger avant d'ouvrir. Sinon, rafraîchir la date de consultation
-   dans les deux documents.
+   dans les deux documents. Faire de même pour Object Storage, qui reçoit
+   les sauvegardes de la base (#433) : vérifier que le DPA du pas 1 couvre
+   le projet qui porte leurs buckets, et remplir la ligne de ce service dans
+   le tableau des transferts du registre.
 3. **Vérifier le domaine d'envoi.** Ajouter le domaine de `SMTP_FROM` dans
    Transactional Email, publier les enregistrements SPF et DKIM que la
    console fournit, puis un enregistrement DMARC (`_dmarc.<domaine>`, en
@@ -298,8 +321,9 @@ données. Deux voies, selon l'offre retenue à l'item #1 :
   mount /dev/mapper/docker-data /var/lib/docker
   ```
 
-  L'auto-hébergement n'est pas une option tant que tient l'arbitrage du
-  pseudonymat (item #17).
+  Cette voie vise le VPS de production (item #17 : la production ne
+  tourne pas sur le serveur maison). Le serveur maison, qui porte le
+  staging et l'usage familial (#440), n'est pas tranché ici.
 - **Volume chiffré par le fournisseur**, si l'offre le propose : à vérifier
   dans sa documentation au moment du choix. La clé est alors chez le
   fournisseur : cela protège contre la perte d'un disque dans son centre de

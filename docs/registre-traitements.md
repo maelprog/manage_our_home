@@ -1,6 +1,8 @@
 # Registre des traitements — Manage Our Home
 
 Registre tenu au titre de l'article 30 du RGPD. Dernière mise à jour :
+2026-10-15 (hébergement en deux sites — production sur un VPS tiers, serveur
+maison non public — et sauvegardes de la base hors site, #440, #433) ;
 2026-10-11 (protection de la connexion : compteurs en base, pseudonymisés
 HMAC, #427) ;
 2026-10-10 (chiffrement au repos du volume des données retenu, #380) ;
@@ -45,12 +47,15 @@ sur sa demande ; le service est gratuit, non professionnel et ouvert à
 quelques familles. Ce qui le supprimerait : publier le nom civil, au prix
 de l'anonymat LCEN. Ce choix ne tient qu'avec un hébergeur tiers : en
 auto-hébergement, l'éditeur est son propre hébergeur et doit publier ses
-coordonnées (`docs/v2-deployment.md` #17).
+coordonnées (`docs/v2-deployment.md` #17). C'est pourquoi le service public
+tourne sur un VPS loué à un tiers, et le serveur maison n'est pas ouvert
+au public (arbitrage du 2026-10-10, #440 ; « Sites d'hébergement »
+ci-dessous).
 
 **Sous-traitants (destinataires)** :
-- Aucun tiers commercial pour le stockage/traitement du contenu applicatif
-  (self-hosted : Postgres et MinIO tournent sur le serveur exploité par le
-  responsable de traitement). Le conteneur `ollama` déclaré dans
+- Aucun service tiers ne traite le contenu applicatif : Postgres et MinIO
+  tournent dans les clusters exploités par le responsable de traitement
+  (« Sites d'hébergement » ci-dessous). Le conteneur `ollama` déclaré dans
   `infra/docker-compose.yml` ne reçoit aucune donnée : aucun code de
   `apps/` ne l'appelle, et les suggestions de recettes sont un tri par
   règles (`apps/api/src/recipes/suggestions.rs`).
@@ -119,6 +124,59 @@ coordonnées (`docs/v2-deployment.md` #17).
   page est conservée, avec la recette si elle est créée. Mentionné pour que
   la liste des flux sortants soit complète.
 
+- L'**hébergeur du VPS de production**, qui fournit la machine sur
+  laquelle tourne le service public, et donc les disques qui portent ses
+  données : sous-traitant (art. 28) au titre de l'infrastructure. Il n'est
+  pas choisi (`docs/v2-deployment.md` #1) ; son nom, son cadre contractuel
+  et la localisation de ses centres de données sont inscrits ici au même
+  pas que dans les mentions légales (#17).
+- **Scaleway** (Scaleway SAS, Paris), stockage objet (Scaleway Object
+  Storage, région `fr-par`), pour les sauvegardes de la base décrites
+  ci-dessous. Même fournisseur que le relais email, autre service : le
+  cadre contractuel s'établit au même pas (`docs/v2-deployment.md` #18).
+
+**Sites d'hébergement** (arbitrage (b) du 2026-10-10, #440). Deux
+clusters k3s, tous deux exploités par le responsable de traitement
+(`docs/v2-deployment.md` #1) :
+- **Production — le service public.** Un VPS loué à l'hébergeur tiers
+  ci-dessus, nommé dans les mentions légales. C'est la seule instance
+  ouverte au public, et la seule que décrivent la politique de
+  confidentialité et les mentions légales.
+- **Serveur maison — staging et usage familial, non public.** Le serveur
+  personnel du responsable, qui porte l'environnement de staging et sert
+  aussi à l'usage de sa famille. Y accèdent les membres de la famille du
+  responsable (comptes de l'application) et le responsable comme
+  administrateur. On n'y accède que par un réseau privé virtuel (Headscale,
+  serveur de coordination sur le VPS de production, #443, prévu pour la
+  v2) ; aucun port n'est ouvert sur la box Internet, pas même 80 ou 443 :
+  l'instance n'est pas joignable par le public. Ce n'est donc pas le
+  service public : personne d'autre que la famille n'y a de compte. Ses
+  traitements sont ceux de ce registre, appliqués aux seuls membres de la
+  famille, sans autre destinataire que ceux nommés ici.
+
+**Sauvegardes de la base** (#433 ; manifests de la branche de déploiement,
+`apps/manage-our-home/base/postgres/`). Chaque environnement sauvegarde
+son Postgres (CloudNativePG, barman-cloud) en continu : chaque segment de
+WAL dès qu'il est complet, et au moins toutes les 5 minutes, plus une
+copie complète chaque nuit à 3 h UTC. Destination : Scaleway Object
+Storage, région `fr-par`, un bucket par environnement
+(`manage-our-home-backups-prod`, `manage-our-home-backups-staging`), chacun
+avec une clé qui n'atteint que lui — la clé du serveur maison ne lit pas
+les sauvegardes de la production. Conservation : 30 jours (`retentionPolicy:
+"30d"`) — l'opérateur supprime les copies et les WAL dont une restauration
+à un instant des 30 derniers jours n'a plus besoin, soit environ 31 jours
+au plus pour la plus ancienne copie complète gardée. Après une
+restauration, l'ancien dossier de sauvegarde échappe à cette rétention :
+il est purgé à la main sur la même fenêtre, puis supprimé en entier trente
+jours plus tard (README de la branche de déploiement, « Restaurer »).
+Chiffrement : HTTPS en transit, chiffrement par défaut du bucket au repos,
+dont Scaleway détient la clé ; pas de chiffrement côté client. Les
+colonnes chiffrées par `pgcrypto` le restent dans les sauvegardes. Une
+donnée effacée de la base (purge d'un compte comprise) y reste donc
+jusqu'à la fin de cette fenêtre. Le bucket des pièces jointes (MinIO)
+n'est pas encore sauvegardé (#435). Rien n'est déployé à ce jour : ces
+sauvegardes commencent avec les clusters.
+
 **Mesures de sécurité communes** : chiffrement au repos via `pgcrypto` pour
 les colonnes sensibles, isolation multi-tenant appliquée au niveau base de
 données (Row-Level Security, `FORCE ROW LEVEL SECURITY` sur chaque table
@@ -161,7 +219,9 @@ quel, avec sa source et sa date ; le reste attend la mise en ligne
 | Google (connexion avec Google) | la demande d'autorisation, l'échange du code par le serveur, la lecture du profil (`sub`, email, nom) | Google Ireland Limited pour les utilisateurs de l'UE, sur une infrastructure mondiale dont une partie est aux États-Unis. Google déclare que « Google LLC, y compris ses filiales américaines détenues à 100 % (sauf exclusion explicite) » adhère aux principes du cadre de confidentialité des données — la réserve laisse ouverte l'entité qui traite effectivement, et la liste officielle du cadre n'a pas pu être consultée le 2026-09-21, le site répondant en erreur. Rien n'est donc vérifié ici au-delà de la déclaration | [transferts hors UE de Google — à renseigner avant la mise en ligne] |
 | Services de notification des navigateurs (Google, Mozilla, Apple, Microsoft) | l'adresse d'abonnement d'un appareil (`push_subscriptions.endpoint`) et, à chaque rappel, une requête sans charge utile signée de la clé VAPID du serveur | Infrastructures mondiales, pour partie hors UE ; l'adresse d'abonnement nomme le service (`fcm.googleapis.com`, `updates.push.services.mozilla.com`, `*.push.apple.com`, `*.notify.windows.com` — les seuls hôtes que `notifications::push::validate_endpoint` accepte). Rien d'autre n'est vérifié | [transferts hors UE des services de notification — à renseigner avant la mise en ligne] |
 | Hébergeur du flux iCal (Google en pratique) | l'URL de flux fournie et la requête du serveur vers cette URL | Le code accepte toute URL `http`/`https` et ne la contraint pas à l'UE : la localisation dépend de ce que le membre a collé | Celui de la ligne Google ci-dessus tant que le flux est hébergé par Google ; à rappeler à qui configure un import dans le cas contraire |
-| Postgres, MinIO, Ollama | rien : ils tournent sur le serveur du responsable de traitement | Aucun code de `apps/` n'appelle un tiers pour ces trois services | Sans objet : pas de tiers, pas de transfert |
+| Postgres, MinIO, Ollama | rien : ils tournent dans les clusters du responsable de traitement | Aucun code de `apps/` n'appelle un tiers pour ces trois services | Sans objet : pas de tiers, pas de transfert |
+| Hébergeur du VPS de production | la machine et ses disques : toutes les données du service public | Rien : l'hébergeur n'est pas choisi (`docs/v2-deployment.md` #1) | À établir avec son choix, au même pas que les mentions légales (`docs/v2-deployment.md` #17) |
+| Scaleway (stockage objet des sauvegardes, Scaleway Object Storage) | les sauvegardes de la base de chaque environnement (copies complètes et WAL) | Région `fr-par` (Paris) fixée dans les manifests (#433). La liste des sous-traitants ultérieurs de Scaleway n'a pas été relue pour ce service | À établir au pas 2 de `docs/v2-deployment.md` #18, comme pour le relais email |
 
 **Ce que cette section ne garantit pas.** La localisation du relais est une
 garantie d'exploitation, pas une propriété du code : l'hôte vient de la

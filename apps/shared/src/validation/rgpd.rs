@@ -1354,6 +1354,16 @@ mod tests {
             flat.contains("droit de réponse"),
             "the legal notice does not say where a right-of-reply request goes"
         );
+        // #440: the anonymity holds only because the public service is on a
+        // third-party host. The family instance on the home server is not
+        // public, and the notice has to say so — reachable through a VPN only.
+        assert!(
+            flat.contains("pas joignable depuis Internet")
+                && flat.contains("réseau privé virtuel")
+                && flat.contains("par lui seul"),
+            "the legal notice does not set the home server's family instance \
+             apart from the public service"
+        );
         // Every article the notice cites is LCEN art. 1-1 or one of the two code
         // pénal articles on the host's professional secrecy; see
         // `cited_article_numbers` for what counts as a citation.
