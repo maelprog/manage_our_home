@@ -179,9 +179,10 @@ pub(crate) fn today_paris() -> chrono::NaiveDate {
 }
 
 /// Why an answer from `GET /groups/:gid/events` could not be read as a list
-/// of occurrences. The home dashboard and `/agenda` used to fold either case
-/// into an empty list, so a failing API rendered as "nothing planned", with
-/// nothing in the logs (#455).
+/// of occurrences. Its three readers (the home dashboard, `/agenda`, and a
+/// recurring task's detail page) used to fold either case into an empty
+/// list, so a failing API rendered as "nothing planned", with nothing in the
+/// logs (#455).
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum OccurrencesUnreadable {
     /// Any status but 200.

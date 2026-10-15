@@ -15,7 +15,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use chrono::{DateTime, Duration, Utc};
 use manage_our_home_shared::dto::agenda::{
-    AttachmentResponse, EventResponse, OccurrenceList, OccurrenceResponse, UpdateEventRequest,
+    AttachmentResponse, EventResponse, OccurrenceResponse, UpdateEventRequest,
 };
 use manage_our_home_shared::dto::groups::GroupMember;
 use manage_our_home_shared::validation::agenda::{parse_rrule, Freq, RecurrenceEnd};
@@ -30,7 +30,7 @@ use crate::state::{api_request_auth, AppState};
 use super::new::{reminder_push_block, reminder_select};
 use super::{
     agenda_cookie, can_modify, event_not_found_page, family_context, fmt_paris, forbidden_page,
-    service_unavailable_page, today_paris,
+    occurrences_from_response, read_or_log, service_unavailable_page, today_paris,
 };
 
 #[derive(serde::Deserialize)]
@@ -182,28 +182,34 @@ pub async fn get(
     };
 
     // Recurring task: fetch the upcoming occurrences (next 60 days) so each
-    // one can carry its own completion toggle.
+    // one can carry its own completion toggle. `None`: the answer could not
+    // be read, which renders as an error rather than as "no upcoming
+    // occurrence" (#455).
     let recurring_task = event.is_task && event.rrule.is_some();
-    let occurrences: Vec<OccurrenceResponse> = if recurring_task {
+    let occurrences: Option<Vec<OccurrenceResponse>> = if recurring_task {
         let from = today_paris();
         let to = from + Duration::days(60);
         let path = format!(
             "/groups/{}/events?from={}T00:00:00Z&to={}T23:59:59Z",
             fam.gid, from, to
         );
-        match api_request_auth(&state, reqwest::Method::GET, &path, cookie.as_deref(), None).await {
-            Ok(resp) if resp.status == reqwest::StatusCode::OK => {
-                serde_json::from_value::<OccurrenceList>(resp.body)
-                    .map(|l| l.occurrences)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|o| o.event.id == event_id)
-                    .collect()
-            }
-            _ => Vec::new(),
-        }
+        let answer =
+            api_request_auth(&state, reqwest::Method::GET, &path, cookie.as_deref(), None).await;
+        let read = match answer {
+            Ok(resp) => read_or_log(
+                occurrences_from_response(resp.status, resp.body),
+                fam.gid,
+                "agenda detail",
+            ),
+            Err(error) => read_or_log::<Vec<_>, _>(Err(error), fam.gid, "agenda detail"),
+        };
+        read.map(|occs| {
+            occs.into_iter()
+                .filter(|o| o.event.id == event_id)
+                .collect()
+        })
     } else {
-        Vec::new()
+        Some(Vec::new())
     };
 
     let members = fetch_group_detail(&state, cookie.as_deref(), fam.gid)
@@ -228,7 +234,7 @@ pub async fn get(
     Html(page(
         &fam.header,
         &event,
-        &occurrences,
+        occurrences.as_deref(),
         &attachments,
         &members,
         can_edit,
@@ -245,7 +251,7 @@ pub async fn get(
 fn page(
     header: &str,
     event: &EventResponse,
-    occurrences: &[OccurrenceResponse],
+    occurrences: Option<&[OccurrenceResponse]>,
     attachments: &[AttachmentResponse],
     members: &[GroupMember],
     can_edit: bool,
@@ -391,11 +397,17 @@ fn render_oneoff_completion(id: Uuid, event: &EventResponse) -> String {
     )
 }
 
+/// `occurrences` is `None` when the API's answer could not be read: that
+/// renders as an error, never as "no upcoming occurrence" (#455).
 fn render_occurrence_completions(
     id: Uuid,
-    occurrences: &[OccurrenceResponse],
+    occurrences: Option<&[OccurrenceResponse]>,
     focus_occ: Option<&str>,
 ) -> String {
+    let Some(occurrences) = occurrences else {
+        return r#"<p class="notice error">Impossible de charger les occurrences pour le moment.</p>"#
+            .to_string();
+    };
     if occurrences.is_empty() {
         return r#"<p class="muted">Aucune occurrence à venir dans les 60 prochains jours.</p>"#
             .to_string();
@@ -597,6 +609,27 @@ mod tests {
             email: format!("{name}@example.test"),
             role: "member".to_string(),
         }
+    }
+
+    // -- render_occurrence_completions (#455) ------------------------------
+
+    /// An API failure is not "no upcoming occurrence".
+    #[test]
+    fn unreadable_occurrences_are_an_error_not_an_empty_list() {
+        let html = render_occurrence_completions(uid(9), None, None);
+        assert!(!html.contains("Aucune occurrence"), "{html}");
+        assert!(html.contains(r#"class="notice error""#), "{html}");
+        assert!(
+            html.contains("Impossible de charger les occurrences"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn no_upcoming_occurrence_says_so_without_an_error() {
+        let html = render_occurrence_completions(uid(9), Some(&[]), None);
+        assert!(html.contains("Aucune occurrence à venir"), "{html}");
+        assert!(!html.contains("notice error"), "{html}");
     }
 
     // -- assignees_html (#98 round-2, Mo2) -------------------------------
