@@ -514,6 +514,11 @@ ALTER DEFAULT PRIVILEGES FOR ROLE migration_role IN SCHEMA public GRANT USAGE, S
   check
   v=$(p "$bo | .barmanObjectStore | [.wal.encryption // \"\", .data.encryption // \"\"] | join(\"\")")
   [ -z "$v" ] || fail "postgres: per-request encryption '$v', which Scaleway refuses"
+  # The Cluster's own folder in the bucket: `postgres`, or `postgres-r<n>`
+  # after the n-th restore (README.md, "Restaurer").
+  check
+  v=$(p "$bo | .barmanObjectStore.serverName // \"\"")
+  [[ "$v" =~ ^postgres(-r[1-9][0-9]*)?$ ]] || fail "postgres: serverName '$v', expected postgres or postgres-r<n>"
   check
   v=$(p 'select(.kind == "ScheduledBackup") | [.spec.cluster.name, .spec.immediate] | join(" ")')
   [ "$v" = "postgres true" ] || fail "postgres: ScheduledBackup is '$v', expected 'postgres true'"
