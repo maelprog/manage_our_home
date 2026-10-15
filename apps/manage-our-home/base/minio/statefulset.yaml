@@ -84,9 +84,11 @@ spec:
           # (arbitrage of 2026-10-12, 256 to 384 Mi for MinIO). Measured
           # with this image, as this user, read-only, under Docker, in the
           # PR of #435: 66 to 70 MiB at rest; 8 objects of 20 MiB sent at
-          # once with mc (as many as api's upload gate lets through,
-          # README.md, "Mémoire"), at most 139 MiB anonymous and 214 MiB
-          # without the inactive file cache, no OOM kill — the page cache
+          # once with mc (as many as the upload gate of one api replica
+          # lets through, README.md, "Mémoire"), at most 139 MiB anonymous
+          # and 214 MiB without the inactive file cache, no OOM kill; 16 at
+          # once (prod's two replicas), at most 155 and 191 MiB — the page
+          # cache
           # itself grows up to the limit, and is reclaimed. The k3d job
           # prints it at rest on every run.
           resources:

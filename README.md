@@ -450,7 +450,9 @@ bucket (vague -1), puis api et web (vague 0).
   66 à 70 Mi au repos ; 8 objets de 20 Mi envoyés à la fois par `mc`, au
   plus 139 Mi de mémoire anonyme et 214 Mi hors cache de fichiers inactif
   (`memory.current` moins `inactive_file`, 7 relevés pendant l'envoi),
-  aucun OOM. Le cache de pages, lui, monte jusqu'à la limite :
+  aucun OOM. 8, c'est la porte d'envoi d'**un** pod api ; la prod en a
+  deux, donc jusqu'à 16 envois : à 16, au plus 155 Mi anonymes et 191 Mi
+  hors cache inactif, aucun OOM. Le cache de pages, lui, monte jusqu'à la limite :
   `memory.current` y touche, mais ce cache se récupère avant tout OOM.
   Le job k3d réimprime le repos.
 - **Images admises** : MinIO, son client, l'image Postgres du Cluster et
