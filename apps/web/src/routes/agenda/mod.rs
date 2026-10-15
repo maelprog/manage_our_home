@@ -30,6 +30,7 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Europe::Paris;
 use chrono_tz::Tz;
 use leptos::prelude::*;
+use manage_our_home_shared::dto::agenda::{OccurrenceList, OccurrenceResponse};
 use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
 use manage_our_home_shared::validation::agenda::{normalize_all_day, paris_start_of_day};
@@ -177,6 +178,67 @@ pub(crate) fn today_paris() -> chrono::NaiveDate {
     Utc::now().with_timezone(&DISPLAY_TZ).date_naive()
 }
 
+/// Why an apps/api answer could not be read as what the page asked for.
+/// The three readers of `GET /groups/:gid/events` (the home dashboard,
+/// `/agenda`, and a recurring task's detail page) used to fold either case
+/// into an empty list, so a failing API rendered as "nothing planned", with
+/// nothing in the logs (#455); the detail page did the same with its
+/// attachments.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum UnreadableAnswer {
+    /// Any status but 200.
+    Status(reqwest::StatusCode),
+    /// A 200 whose body is not what was asked for.
+    Body(String),
+}
+
+impl std::fmt::Display for UnreadableAnswer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Status(status) => write!(f, "unexpected status {status}"),
+            Self::Body(error) => write!(f, "unreadable body: {error}"),
+        }
+    }
+}
+
+/// A 200's body read as `T`, or why the answer carries nothing we can
+/// trust.
+pub(crate) fn json_from_response<T: serde::de::DeserializeOwned>(
+    status: reqwest::StatusCode,
+    body: serde_json::Value,
+) -> Result<T, UnreadableAnswer> {
+    if status != reqwest::StatusCode::OK {
+        return Err(UnreadableAnswer::Status(status));
+    }
+    serde_json::from_value::<T>(body).map_err(|e| UnreadableAnswer::Body(e.to_string()))
+}
+
+/// The occurrences an events-endpoint answer carries, or why it carries
+/// none we can trust: an empty `Ok` means the family has nothing in the
+/// window, never that the API failed.
+pub(crate) fn occurrences_from_response(
+    status: reqwest::StatusCode,
+    body: serde_json::Value,
+) -> Result<Vec<OccurrenceResponse>, UnreadableAnswer> {
+    json_from_response::<OccurrenceList>(status, body).map(|l| l.occurrences)
+}
+
+/// What a page renders from: `Some` when the answer was read, an empty list
+/// included; `None` when it was not, after logging why, with the group and
+/// the page (`reader`). `None` must render as an error, never as "nothing
+/// here" (#455).
+pub(crate) fn read_or_log<T, E: std::fmt::Display>(
+    answer: Result<T, E>,
+    group_id: Uuid,
+    reader: &'static str,
+) -> Option<T> {
+    answer
+        .inspect_err(
+            |error| tracing::warn!(%group_id, %error, reader, "could not read apps/api's answer"),
+        )
+        .ok()
+}
+
 // -- shared error/landing pages ---------------------------------------------
 
 pub(crate) fn event_not_found_page() -> Html<String> {
@@ -223,6 +285,105 @@ mod tests {
 
     fn days(start: &str, end: &str) -> (String, String) {
         (start.to_string(), end.to_string())
+    }
+
+    // -- occurrences_from_response (#455) ------------------------------------
+
+    fn occurrence_json(title: &str) -> serde_json::Value {
+        let id = Uuid::nil();
+        serde_json::json!({
+            "id": id,
+            "group_id": id,
+            "created_by": id,
+            "title": title,
+            "description": null,
+            "location": null,
+            "starts_at": "2026-10-20T08:00:00Z",
+            "ends_at": "2026-10-20T09:00:00Z",
+            "all_day": false,
+            "is_task": false,
+            "completed_at": null,
+            "rrule": null,
+            "assignee_ids": [],
+            "occurrence_starts_at": "2026-10-20T08:00:00Z",
+            "occurrence_ends_at": "2026-10-20T09:00:00Z",
+        })
+    }
+
+    #[test]
+    fn a_200_carrying_occurrences_is_read() {
+        let body = serde_json::json!({ "occurrences": [occurrence_json("Piscine")] });
+        let occs = occurrences_from_response(reqwest::StatusCode::OK, body).unwrap();
+        assert_eq!(occs.len(), 1);
+        assert_eq!(occs[0].event.title, "Piscine");
+    }
+
+    /// An empty window is a real answer, and the only one that may read as
+    /// "nothing planned".
+    #[test]
+    fn a_200_with_no_occurrence_is_an_empty_list_not_an_error() {
+        let body = serde_json::json!({ "occurrences": [] });
+        assert_eq!(
+            occurrences_from_response(reqwest::StatusCode::OK, body).map(|o| o.len()),
+            Ok(0)
+        );
+    }
+
+    #[test]
+    fn a_500_is_an_error_not_an_empty_list() {
+        let body = serde_json::json!({ "error": "internal" });
+        assert_eq!(
+            occurrences_from_response(reqwest::StatusCode::INTERNAL_SERVER_ERROR, body)
+                .map(|o| o.len()),
+            Err(UnreadableAnswer::Status(
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR
+            ))
+        );
+    }
+
+    /// A 400 is impossible through the UI, but it is still not "nothing
+    /// planned".
+    #[test]
+    fn a_400_is_an_error_too() {
+        let body = serde_json::json!({ "error": "to_before_from" });
+        assert!(matches!(
+            occurrences_from_response(reqwest::StatusCode::BAD_REQUEST, body),
+            Err(UnreadableAnswer::Status(reqwest::StatusCode::BAD_REQUEST))
+        ));
+    }
+
+    #[test]
+    fn a_200_whose_body_is_not_a_list_is_an_error() {
+        let body = serde_json::json!({ "items": [] });
+        assert!(matches!(
+            occurrences_from_response(reqwest::StatusCode::OK, body),
+            Err(UnreadableAnswer::Body(_))
+        ));
+    }
+
+    // -- read_or_log (#455) ----------------------------------------------------
+
+    /// An empty list read from a 200 is a real answer: `Some`, not `None`.
+    #[test]
+    fn a_read_answer_is_kept_even_empty() {
+        let answer = occurrences_from_response(
+            reqwest::StatusCode::OK,
+            serde_json::json!({ "occurrences": [] }),
+        );
+        assert_eq!(
+            read_or_log(answer, Uuid::nil(), "test").map(|o| o.len()),
+            Some(0)
+        );
+    }
+
+    /// A failed answer is `None`, never the empty list it used to become.
+    #[test]
+    fn an_unreadable_answer_is_none_not_an_empty_list() {
+        let answer = occurrences_from_response(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({ "error": "internal" }),
+        );
+        assert!(read_or_log(answer, Uuid::nil(), "test").is_none());
     }
 
     // -- date_only -----------------------------------------------------------

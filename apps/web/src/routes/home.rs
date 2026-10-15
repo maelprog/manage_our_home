@@ -3,7 +3,7 @@ use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use leptos::prelude::*;
-use manage_our_home_shared::dto::agenda::{OccurrenceList, OccurrenceResponse};
+use manage_our_home_shared::dto::agenda::OccurrenceResponse;
 use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::budget::{BudgetPeriodTotal, BudgetSummary};
 use manage_our_home_shared::dto::grocery_list::{GroceryItemList, GroceryItemResponse};
@@ -21,16 +21,30 @@ use crate::app::{
 use crate::family::{active_group_id_from_headers, resolve_active_group};
 use crate::layout::CurrentUser;
 use crate::routes::account::terms::update_notice;
-use crate::routes::agenda::{fmt_paris, paris_local_to_utc, today_paris};
+use crate::routes::agenda::{
+    fmt_paris, occurrences_from_response, paris_local_to_utc, read_or_log, today_paris,
+};
 use crate::routes::groups::ownership::ownership_notices;
 use crate::routes::groups::{cookie_of, header_with_groups};
 use crate::state::{api_request_auth, AppState};
 
-/// "Quelques jours" (issue #73): today plus the next two civil days — enough
-/// to answer "what's coming up", not a second calendar next to `/agenda`.
-const DASHBOARD_AGENDA_WINDOW_DAYS: i64 = 3;
-/// The dashboard shows what's soonest, not everything the window holds — the
-/// full picture is one click away on `/agenda`.
+/// How far ahead the agenda card reads: today plus this many civil days
+/// (Paris). The card shows the next `DASHBOARD_AGENDA_CAP` occurrences, so
+/// this is not what it displays but where it stops looking.
+///
+/// It used to be three days in all (#73), which turned "the next five" into
+/// "the next five *before the day after tomorrow*": an event at J+3 was never
+/// read, and the card said "nothing planned" (#455). Sixty days leaves room
+/// for a sparse agenda while keeping a recurring series' unroll bounded — a
+/// daily series costs at most sixty-two occurrences here: sixty-one civil
+/// days, plus one when it sits on midnight or 23:59:59, since the API widens
+/// an hour-bound window by a second either side (pinned by
+/// `a_daily_series_at_paris_midnight_costs_the_home_horizon_62_occurrences`
+/// in apps/api's `recurrence.rs`). The API also caps any series at its own
+/// `MAX_OCCURRENCES` whatever the window.
+const DASHBOARD_AGENDA_HORIZON_DAYS: i64 = 60;
+/// The dashboard shows what's soonest, not everything the horizon holds —
+/// the full picture is one click away on `/agenda`.
 const DASHBOARD_AGENDA_CAP: usize = 5;
 /// Same trade for stock: a taste of what's low, `/stocks?low_stock=1` for
 /// the rest.
@@ -79,6 +93,19 @@ fn soonest_occurrences(
     refs.sort_by_key(|o| o.occurrence_starts_at);
     refs.truncate(cap);
     refs
+}
+
+/// The `[from, to]` instants the agenda card asks the API for: from Paris
+/// midnight `today` to the last second of the Paris civil day
+/// `DASHBOARD_AGENDA_HORIZON_DAYS` later — the same civil-day -> UTC
+/// conversion `/agenda` uses, so a DST change inside the horizon lands on the
+/// right offset. `None` only if a bound is not a valid Paris local time.
+fn agenda_horizon(today: NaiveDate) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    let last_day = today + Duration::days(DASHBOARD_AGENDA_HORIZON_DAYS);
+    Some((
+        paris_local_to_utc(&format!("{today}T00:00"))?,
+        paris_local_to_utc(&format!("{last_day}T23:59:59"))?,
+    ))
 }
 
 /// How many grocery-list items are still unchecked — the count the dashboard
@@ -240,17 +267,30 @@ fn agenda_row(occ: &OccurrenceResponse, members: &[GroupMember]) -> String {
     )
 }
 
+/// `occurrences` is `None` when the API's answer could not be read: that
+/// renders as an error, never as the "nothing planned" an empty list means
+/// (#455).
 fn agenda_block(
-    occurrences: &[OccurrenceResponse],
+    occurrences: Option<&[OccurrenceResponse]>,
     now: DateTime<Utc>,
     members: &[GroupMember],
 ) -> String {
-    let picked = soonest_occurrences(occurrences, now, DASHBOARD_AGENDA_CAP);
-    let body = if picked.is_empty() {
-        r#"<p class="muted">Rien de prévu dans les prochains jours.</p>"#.to_string()
-    } else {
-        let rows: String = picked.iter().map(|o| agenda_row(o, members)).collect();
-        format!(r#"<ul class="list">{rows}</ul>"#)
+    let body = match occurrences {
+        None => {
+            r#"<p class="notice error">Impossible de charger les événements pour le moment.</p>"#
+                .to_string()
+        }
+        Some(occurrences) => {
+            let picked = soonest_occurrences(occurrences, now, DASHBOARD_AGENDA_CAP);
+            if picked.is_empty() {
+                format!(
+                    r#"<p class="muted">Rien de prévu dans les {DASHBOARD_AGENDA_HORIZON_DAYS} prochains jours.</p>"#
+                )
+            } else {
+                let rows: String = picked.iter().map(|o| agenda_row(o, members)).collect();
+                format!(r#"<ul class="list">{rows}</ul>"#)
+            }
+        }
     };
     format!(
         r#"<section class="card">
@@ -441,16 +481,12 @@ pub async fn get(
     let cookie = cookie_of(&headers);
     let today = today_paris();
 
-    // Agenda: today .. today + (WINDOW_DAYS - 1), same Paris-civil-day ->
-    // UTC-instant conversion `/agenda` itself uses.
-    let last_day = today + Duration::days(DASHBOARD_AGENDA_WINDOW_DAYS - 1);
-    let (Some(from), Some(to)) = (
-        paris_local_to_utc(&format!("{today}T00:00")),
-        paris_local_to_utc(&format!("{last_day}T23:59:59")),
-    ) else {
+    let Some((from, to)) = agenda_horizon(today) else {
         return service_unavailable_page().into_response();
     };
-    let occurrences: Vec<OccurrenceResponse> = match api_request_auth(
+    // `None`: the answer could not be read, which the card shows as an error
+    // rather than as an empty agenda (#455).
+    let occurrences: Option<Vec<OccurrenceResponse>> = match api_request_auth(
         &state,
         reqwest::Method::GET,
         &format!(
@@ -464,12 +500,11 @@ pub async fn get(
     )
     .await
     {
-        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
-            serde_json::from_value::<OccurrenceList>(resp.body)
-                .map(|l| l.occurrences)
-                .unwrap_or_default()
-        }
-        Ok(_) => Vec::new(),
+        Ok(resp) => read_or_log(
+            occurrences_from_response(resp.status, resp.body),
+            fam.gid,
+            "home",
+        ),
         Err(_) => return service_unavailable_page().into_response(),
     };
 
@@ -568,7 +603,7 @@ pub async fn get(
         // #323: a group that came to the member without their asking, until
         // they acknowledge it — from the same `GET /groups` the header uses.
         ownership = ownership_notices(&groups),
-        agenda = agenda_block(&occurrences, chrono::Utc::now(), &members),
+        agenda = agenda_block(occurrences.as_deref(), chrono::Utc::now(), &members),
         stocks = stocks_block(&low_stock),
         grocery = grocery_block(count_unchecked(&grocery_items)),
         budget = budget_block(current_month_total(&budget_summary.periods, today), today),
@@ -752,10 +787,118 @@ mod pure_logic_tests {
         assert!(soonest_occurrences(&[], late_afternoon(), 5).is_empty());
     }
 
+    /// The use case behind #455: the family's next event is ten days out,
+    /// with nothing before it but one appointment tomorrow. Both are among
+    /// the next five, so both are picked — the selection has no day bound of
+    /// its own, only the cap.
+    #[test]
+    fn an_occurrence_ten_days_out_is_picked_when_it_is_among_the_next_five() {
+        let now = late_afternoon();
+        let day = |d: i64| now + Duration::days(d);
+        let occs = vec![
+            occurrence_between(day(10), day(10) + Duration::hours(1), false, "J+10"),
+            occurrence_between(day(1), day(1) + Duration::hours(1), false, "J+1"),
+        ];
+        let picked = soonest_occurrences(&occs, now, 5);
+        let titles: Vec<&str> = picked.iter().map(|o| o.event.title.as_str()).collect();
+        assert_eq!(titles, ["J+1", "J+10"]);
+    }
+
+    /// And when five occurrences come first, the far one is the one cut.
+    #[test]
+    fn a_far_occurrence_gives_way_to_five_nearer_ones() {
+        let now = late_afternoon();
+        let mut occs: Vec<OccurrenceResponse> = (1..=5)
+            .map(|d| {
+                let s = now + Duration::days(d);
+                occurrence_between(s, s + Duration::hours(1), false, &format!("J+{d}"))
+            })
+            .collect();
+        let far = now + Duration::days(10);
+        occs.push(occurrence_between(
+            far,
+            far + Duration::hours(1),
+            false,
+            "J+10",
+        ));
+        let picked = soonest_occurrences(&occs, now, 5);
+        assert_eq!(picked.len(), 5);
+        assert!(picked.iter().all(|o| o.event.title != "J+10"));
+    }
+
+    // -- agenda_horizon (#455) ------------------------------------------
+
+    fn ymd(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    /// Starts at Paris midnight today: this morning's events are still read,
+    /// `soonest_occurrences` is what drops the finished ones.
+    #[test]
+    fn the_horizon_starts_at_paris_midnight_today() {
+        let (from, _) = agenda_horizon(ymd(2026, 9, 3)).unwrap();
+        assert_eq!(from, Utc.with_ymd_and_hms(2026, 9, 2, 22, 0, 0).unwrap());
+    }
+
+    /// Ends on the last second of the Paris day `HORIZON_DAYS` later — here
+    /// across the October DST change, so on the winter offset (UTC+1).
+    #[test]
+    fn the_horizon_ends_on_the_last_second_of_its_last_paris_day() {
+        let today = ymd(2026, 10, 14);
+        let last_day = today + Duration::days(DASHBOARD_AGENDA_HORIZON_DAYS);
+        assert_eq!(last_day, ymd(2026, 12, 13));
+        let (_, to) = agenda_horizon(today).unwrap();
+        assert_eq!(to, Utc.with_ymd_and_hms(2026, 12, 13, 22, 59, 59).unwrap());
+    }
+
+    /// The acceptance criterion of #455: an event ten days out is read at
+    /// all — the old three-day window never asked the API for it.
+    #[test]
+    fn an_event_ten_days_out_falls_inside_the_horizon() {
+        let today = ymd(2026, 10, 14);
+        let (from, to) = agenda_horizon(today).unwrap();
+        let ten_days_out = Utc.with_ymd_and_hms(2026, 10, 24, 18, 0, 0).unwrap();
+        assert!(from <= ten_days_out && ten_days_out <= to);
+    }
+
+    // -- agenda_block (#455) --------------------------------------------
+
+    /// An API failure is not "nothing planned".
+    #[test]
+    fn an_unreadable_agenda_is_an_error_not_an_empty_card() {
+        let html = agenda_block(None, late_afternoon(), &[]);
+        assert!(!html.contains("Rien de prévu"), "{html}");
+        assert!(html.contains(r#"class="notice error""#), "{html}");
+        assert!(html.contains("Impossible de charger"), "{html}");
+    }
+
+    /// The empty copy names the horizon it actually searched.
+    #[test]
+    fn an_empty_horizon_says_how_far_it_looked() {
+        let html = agenda_block(Some(&[]), late_afternoon(), &[]);
+        assert!(
+            html.contains(&format!(
+                "Rien de prévu dans les {DASHBOARD_AGENDA_HORIZON_DAYS} prochains jours."
+            )),
+            "{html}"
+        );
+        assert!(!html.contains("notice error"), "{html}");
+    }
+
+    /// Everything in the list is over: the card is empty, not in error.
+    #[test]
+    fn a_horizon_holding_only_finished_events_is_empty_not_an_error() {
+        let occs = vec![occurrence_span(8, 9, "Ce matin")];
+        let html = agenda_block(Some(&occs), late_afternoon(), &[]);
+        assert!(html.contains("Rien de prévu"), "{html}");
+        assert!(!html.contains("notice error"), "{html}");
+    }
+
     /// The exact shape of the verification finding on #98: six occurrences
     /// this morning (08h-13h), `now` at 17h16 — every one of them is
     /// already over, so none should be picked, even though the API window
-    /// (Paris midnight .. midnight+WINDOW_DAYS) still returns all six.
+    /// (Paris midnight .. `DASHBOARD_AGENDA_HORIZON_DAYS` later) still
+    /// returns all six.
     #[test]
     fn occurrences_earlier_today_than_now_are_excluded() {
         let now = late_afternoon();

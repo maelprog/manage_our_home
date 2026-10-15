@@ -46,7 +46,7 @@ use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use chrono::{Datelike, NaiveDate};
 use leptos::prelude::*;
-use manage_our_home_shared::dto::agenda::{OccurrenceList, OccurrenceResponse};
+use manage_our_home_shared::dto::agenda::OccurrenceResponse;
 use manage_our_home_shared::validation::agenda::{month_grid, week_days};
 
 use crate::app::{html_escape, shell_with_header, Width};
@@ -54,8 +54,8 @@ use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
 use super::{
-    agenda_cookie, family_context, fmt_paris, paris_local_to_utc, service_unavailable_page,
-    today_paris, DISPLAY_TZ,
+    agenda_cookie, family_context, fmt_paris, occurrences_from_response, paris_local_to_utc,
+    read_or_log, service_unavailable_page, today_paris, DISPLAY_TZ,
 };
 
 const FR_MONTHS: [&str; 12] = [
@@ -101,6 +101,23 @@ fn notice_text(code: &str) -> Option<&'static str> {
     }
 }
 
+/// The notices above the grid: the outcome of the action that led here
+/// (`?notice=`), then, when the events could not be read (`load_error`),
+/// the error that keeps an empty grid from reading as "nothing planned"
+/// (#455).
+fn notices_html(notice: Option<&str>, load_error: bool) -> String {
+    let success = notice
+        .and_then(notice_text)
+        .map(|n| format!(r#"<p class="notice success">{}</p>"#, html_escape(n)))
+        .unwrap_or_default();
+    let error = if load_error {
+        r#"<p class="notice error">Impossible de charger les événements pour le moment.</p>"#
+    } else {
+        ""
+    };
+    success + error
+}
+
 pub async fn get(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
@@ -142,7 +159,11 @@ pub async fn get(
         from.format("%Y-%m-%dT%H:%M:%SZ"),
         to.format("%Y-%m-%dT%H:%M:%SZ"),
     );
-    let occurrences: Vec<OccurrenceResponse> = match api_request_auth(
+    // An answer we cannot read (a 400, impossible via the UI, a 500, or a
+    // body that is not an occurrence list) still renders the grid, so the
+    // navigation stays usable, but under an error notice: an empty grid alone
+    // would say "nothing planned" (#455).
+    let (occurrences, load_error): (Vec<OccurrenceResponse>, bool) = match api_request_auth(
         &state,
         reqwest::Method::GET,
         &path,
@@ -151,14 +172,14 @@ pub async fn get(
     )
     .await
     {
-        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
-            serde_json::from_value::<OccurrenceList>(resp.body)
-                .map(|l| l.occurrences)
-                .unwrap_or_default()
-        }
-        // A 400 (impossible via the UI) or anything else: render an empty
-        // calendar rather than leaking JSON.
-        Ok(_) => Vec::new(),
+        Ok(resp) => match read_or_log(
+            occurrences_from_response(resp.status, resp.body),
+            fam.gid,
+            "agenda",
+        ) {
+            Some(occurrences) => (occurrences, false),
+            None => (Vec::new(), true),
+        },
         Err(_) => return service_unavailable_page().into_response(),
     };
 
@@ -191,12 +212,7 @@ pub async fn get(
     let title = view_title(is_week, focus);
     let grid_html = render_grid(&days, &by_day, focus_month, today, cap, &title);
     let nav_html = render_nav(is_week, focus, &title);
-    let notice_html = query
-        .notice
-        .as_deref()
-        .and_then(notice_text)
-        .map(|n| format!(r#"<p class="notice success">{}</p>"#, html_escape(n)))
-        .unwrap_or_default();
+    let notice_html = notices_html(query.notice.as_deref(), load_error);
 
     let body = view! {
         <div inner_html=nav_html></div>
@@ -418,6 +434,31 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use manage_our_home_shared::dto::agenda::EventResponse;
     use uuid::Uuid;
+
+    // -- notices_html (#455) -------------------------------------------
+
+    #[test]
+    fn unreadable_events_put_an_error_above_the_grid() {
+        let html = notices_html(None, true);
+        assert!(html.contains(r#"class="notice error""#), "{html}");
+        assert!(
+            html.contains("Impossible de charger les événements"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn readable_events_put_no_error_above_the_grid() {
+        assert_eq!(notices_html(None, false), "");
+    }
+
+    /// An action's outcome and a failed read can come together: both show.
+    #[test]
+    fn the_action_notice_and_the_error_both_show() {
+        let html = notices_html(Some("event_created"), true);
+        assert!(html.contains("Événement créé."), "{html}");
+        assert!(html.contains(r#"class="notice error""#), "{html}");
+    }
 
     // -- day_split -----------------------------------------------------
     //

@@ -15,7 +15,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use chrono::{DateTime, Duration, Utc};
 use manage_our_home_shared::dto::agenda::{
-    AttachmentResponse, EventResponse, OccurrenceList, OccurrenceResponse, UpdateEventRequest,
+    AttachmentResponse, EventResponse, OccurrenceResponse, UpdateEventRequest,
 };
 use manage_our_home_shared::dto::groups::GroupMember;
 use manage_our_home_shared::validation::agenda::{parse_rrule, Freq, RecurrenceEnd};
@@ -30,7 +30,8 @@ use crate::state::{api_request_auth, AppState};
 use super::new::{reminder_push_block, reminder_select};
 use super::{
     agenda_cookie, can_modify, event_not_found_page, family_context, fmt_paris, forbidden_page,
-    service_unavailable_page, today_paris,
+    json_from_response, occurrences_from_response, read_or_log, service_unavailable_page,
+    today_paris,
 };
 
 #[derive(serde::Deserialize)]
@@ -166,7 +167,9 @@ pub async fn get(
         Err(_) => return service_unavailable_page().into_response(),
     };
 
-    let attachments: Vec<AttachmentResponse> = match api_request_auth(
+    // `None`: the list could not be read, which renders as an error rather
+    // than as "no attachment" (#455).
+    let attachments: Option<Vec<AttachmentResponse>> = match api_request_auth(
         &state,
         reqwest::Method::GET,
         &format!("/groups/{}/events/{}/attachments", fam.gid, event_id),
@@ -175,35 +178,43 @@ pub async fn get(
     )
     .await
     {
-        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
-            serde_json::from_value(resp.body).unwrap_or_default()
-        }
-        _ => Vec::new(),
+        Ok(resp) => read_or_log(
+            json_from_response(resp.status, resp.body),
+            fam.gid,
+            "agenda detail attachments",
+        ),
+        Err(error) => read_or_log::<Vec<_>, _>(Err(error), fam.gid, "agenda detail attachments"),
     };
 
     // Recurring task: fetch the upcoming occurrences (next 60 days) so each
-    // one can carry its own completion toggle.
+    // one can carry its own completion toggle. `None`: the answer could not
+    // be read, which renders as an error rather than as "no upcoming
+    // occurrence" (#455).
     let recurring_task = event.is_task && event.rrule.is_some();
-    let occurrences: Vec<OccurrenceResponse> = if recurring_task {
+    let occurrences: Option<Vec<OccurrenceResponse>> = if recurring_task {
         let from = today_paris();
         let to = from + Duration::days(60);
         let path = format!(
             "/groups/{}/events?from={}T00:00:00Z&to={}T23:59:59Z",
             fam.gid, from, to
         );
-        match api_request_auth(&state, reqwest::Method::GET, &path, cookie.as_deref(), None).await {
-            Ok(resp) if resp.status == reqwest::StatusCode::OK => {
-                serde_json::from_value::<OccurrenceList>(resp.body)
-                    .map(|l| l.occurrences)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|o| o.event.id == event_id)
-                    .collect()
-            }
-            _ => Vec::new(),
-        }
+        let answer =
+            api_request_auth(&state, reqwest::Method::GET, &path, cookie.as_deref(), None).await;
+        let read = match answer {
+            Ok(resp) => read_or_log(
+                occurrences_from_response(resp.status, resp.body),
+                fam.gid,
+                "agenda detail",
+            ),
+            Err(error) => read_or_log::<Vec<_>, _>(Err(error), fam.gid, "agenda detail"),
+        };
+        read.map(|occs| {
+            occs.into_iter()
+                .filter(|o| o.event.id == event_id)
+                .collect()
+        })
     } else {
-        Vec::new()
+        Some(Vec::new())
     };
 
     let members = fetch_group_detail(&state, cookie.as_deref(), fam.gid)
@@ -228,8 +239,8 @@ pub async fn get(
     Html(page(
         &fam.header,
         &event,
-        &occurrences,
-        &attachments,
+        occurrences.as_deref(),
+        attachments.as_deref(),
         &members,
         can_edit,
         query.occ.as_deref(),
@@ -245,8 +256,8 @@ pub async fn get(
 fn page(
     header: &str,
     event: &EventResponse,
-    occurrences: &[OccurrenceResponse],
-    attachments: &[AttachmentResponse],
+    occurrences: Option<&[OccurrenceResponse]>,
+    attachments: Option<&[AttachmentResponse]>,
     members: &[GroupMember],
     can_edit: bool,
     focus_occ: Option<&str>,
@@ -391,11 +402,17 @@ fn render_oneoff_completion(id: Uuid, event: &EventResponse) -> String {
     )
 }
 
+/// `occurrences` is `None` when the API's answer could not be read: that
+/// renders as an error, never as "no upcoming occurrence" (#455).
 fn render_occurrence_completions(
     id: Uuid,
-    occurrences: &[OccurrenceResponse],
+    occurrences: Option<&[OccurrenceResponse]>,
     focus_occ: Option<&str>,
 ) -> String {
+    let Some(occurrences) = occurrences else {
+        return r#"<p class="notice error">Impossible de charger les occurrences pour le moment.</p>"#
+            .to_string();
+    };
     if occurrences.is_empty() {
         return r#"<p class="muted">Aucune occurrence à venir dans les 60 prochains jours.</p>"#
             .to_string();
@@ -437,8 +454,16 @@ fn render_occurrence_completions(
     )
 }
 
-fn render_attachments(id: Uuid, attachments: &[AttachmentResponse], can_edit: bool) -> String {
+/// `attachments` is `None` when the API's answer could not be read: the
+/// list renders as an error, never as "no attachment", and the upload form
+/// stays (#455).
+fn render_attachments(
+    id: Uuid,
+    attachments: Option<&[AttachmentResponse]>,
+    can_edit: bool,
+) -> String {
     let rows: String = attachments
+        .unwrap_or_default()
         .iter()
         .map(|a| {
             let size_kb = (a.size_bytes as f64 / 1024.0).round() as i64;
@@ -461,10 +486,11 @@ fn render_attachments(id: Uuid, attachments: &[AttachmentResponse], can_edit: bo
             )
         })
         .collect();
-    let list = if attachments.is_empty() {
-        r#"<p class="muted">Aucune pièce jointe.</p>"#.to_string()
-    } else {
-        format!(r#"<ul class="list">{rows}</ul>"#)
+    let list = match attachments {
+        None => r#"<p class="notice error">Impossible de charger les pièces jointes pour le moment.</p>"#
+            .to_string(),
+        Some([]) => r#"<p class="muted">Aucune pièce jointe.</p>"#.to_string(),
+        Some(_) => format!(r#"<ul class="list">{rows}</ul>"#),
     };
     let upload = format!(
         r#"<form method="post" action="/agenda/{id}/attachments" enctype="multipart/form-data">
@@ -597,6 +623,70 @@ mod tests {
             email: format!("{name}@example.test"),
             role: "member".to_string(),
         }
+    }
+
+    // -- render_occurrence_completions (#455) ------------------------------
+
+    /// An API failure is not "no upcoming occurrence".
+    #[test]
+    fn unreadable_occurrences_are_an_error_not_an_empty_list() {
+        let html = render_occurrence_completions(uid(9), None, None);
+        assert!(!html.contains("Aucune occurrence"), "{html}");
+        assert!(html.contains(r#"class="notice error""#), "{html}");
+        assert!(
+            html.contains("Impossible de charger les occurrences"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn no_upcoming_occurrence_says_so_without_an_error() {
+        let html = render_occurrence_completions(uid(9), Some(&[]), None);
+        assert!(html.contains("Aucune occurrence à venir"), "{html}");
+        assert!(!html.contains("notice error"), "{html}");
+    }
+
+    // -- render_attachments (#455) -------------------------------------------
+
+    /// An API failure is not "no attachment"; uploading stays possible.
+    #[test]
+    fn unreadable_attachments_are_an_error_not_an_empty_list() {
+        let html = render_attachments(uid(9), None, true);
+        assert!(!html.contains("Aucune pièce jointe"), "{html}");
+        assert!(html.contains(r#"class="notice error""#), "{html}");
+        assert!(
+            html.contains("Impossible de charger les pièces jointes"),
+            "{html}"
+        );
+        assert!(html.contains(r#"enctype="multipart/form-data""#), "{html}");
+    }
+
+    #[test]
+    fn no_attachment_says_so_without_an_error() {
+        let html = render_attachments(uid(9), Some(&[]), true);
+        assert!(html.contains("Aucune pièce jointe."), "{html}");
+        assert!(!html.contains("notice error"), "{html}");
+    }
+
+    /// The attachments endpoint answers a bare array.
+    #[test]
+    fn an_attachment_list_is_read_from_a_200() {
+        let body = serde_json::json!([{
+            "id": uid(1),
+            "event_id": uid(9),
+            "filename": "scan.pdf",
+            "mime_type": "application/pdf",
+            "size_bytes": 2048,
+        }]);
+        let read: Vec<AttachmentResponse> =
+            json_from_response(reqwest::StatusCode::OK, body).unwrap();
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].filename, "scan.pdf");
+        assert!(json_from_response::<Vec<AttachmentResponse>>(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({ "error": "internal" })
+        )
+        .is_err());
     }
 
     // -- assignees_html (#98 round-2, Mo2) -------------------------------

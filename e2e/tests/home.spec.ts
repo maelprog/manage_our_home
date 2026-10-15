@@ -249,6 +249,25 @@ test.describe("Accueil — le tableau de bord d'une famille peuplée", () => {
     await expect(page.getByLabel("Fin")).toHaveValue(today);
   });
 
+  test("un événement à J+5 apparaît sur l'accueil", async ({ page }) => {
+    await registerAndLogin(page, "e2e-homefar", "Far Owner");
+    await createGroup(page, FAMILY);
+
+    // #455 : la carte ne lisait que aujourd'hui, J+1 et J+2. Un événement à
+    // J+5 n'était jamais demandé à l'API, et la carte disait « Rien de prévu ».
+    const day = isoDay(5);
+    await createEvent(page, {
+      title: "Contrôle technique",
+      start: `${day}T10:00`,
+      end: `${day}T11:00`,
+    });
+
+    await page.goto("/");
+    const agenda = card(page, "Prochains événements");
+    await expect(agenda.getByText("Contrôle technique")).toBeVisible();
+    await expect(agenda.getByText(/Rien de prévu/)).toHaveCount(0);
+  });
+
   test("un événement déjà commencé mais pas terminé reste affiché", async ({ page }) => {
     await registerAndLogin(page, "e2e-homerunning", "Running Owner");
     await createGroup(page, FAMILY);
