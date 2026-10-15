@@ -22,8 +22,9 @@
 #     X-Forwarded-For it sends, while another client, same email, is not;
 #   - the Messagerie's WebSocket outlives the 5 min idle timeout: opened,
 #     left silent 5 min 20 s, it still delivers a message posted then;
-#   - a client trickling its headers is cut, at the 2 min read timeout
-#     (Traefik has no bound for headers alone: README.md, "Ingress").
+#   - a client trickling its headers over HTTP/1.1 is cut, at the 2 min
+#     read timeout (Traefik has no bound for headers alone; over HTTP/2
+#     the 5 min idle timeout ends it: README.md, "Ingress").
 # The last two run side by side, from the start: the job waits about 6
 # minutes for the first.
 #
@@ -244,7 +245,9 @@ else
   v=$(ingress "$css" --output /dev/null --dump-header - -H 'Accept-Encoding: zstd, gzip' | tr -d '\r' | grep -i '^cache-control:' || true)
   [[ "$v" == *immutable* ]] || fail "$css: Cache-Control '$v' lost its immutable"
   font=$(ingress "$css" --compressed | grep -oE '/assets/[^)"'"'"' ]+\.woff2' | head -n 1)
-  if [ -n "$font" ]; then
+  if [ -z "$font" ]; then
+    fail "no .woff2 font named by $css: the check that fonts are not compressed again has nothing to check"
+  else
     v=$(enc "$font" 'zstd, gzip')
     [ "$v" = none ] || fail "$font: a font compressed again ($v)"
   fi
