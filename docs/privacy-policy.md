@@ -1,11 +1,11 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-10-11.
+Dernière mise à jour : 2026-10-15.
 
 ## Qui est responsable de vos données ?
 
-Manage Our Home est un projet auto-hébergé, développé et exploité par une
-personne physique, désignée ici par un pseudonyme,
+Manage Our Home est un projet développé et exploité par une personne
+physique, désignée ici par un pseudonyme,
 [pseudonyme du responsable de traitement — à renseigner avant la mise en
 ligne], qui porte l'ensemble des rôles RGPD nécessaires :
 
@@ -79,9 +79,10 @@ tout autre contenu.
 
 ## Avec qui vos données sont-elles partagées ?
 
-Aucun tiers commercial. Le service est self-hosted : aucune donnée n'est
-vendue ni partagée à des fins publicitaires. Les seuls flux sortants
-possibles sont :
+Aucune donnée n'est vendue ni partagée à des fins publicitaires. Le
+service tourne sur un serveur loué à un hébergeur, nommé dans les
+[mentions légales](/legal-notice). En dehors de lui, les seuls flux
+sortants possibles sont :
 
 - **Google** (connexion) : uniquement si vous choisissez « Se connecter
   avec Google ». Votre navigateur passe alors par Google, puis le serveur
@@ -148,6 +149,15 @@ possibles sont :
   vous est proposée pour relecture, et seule l'adresse de la page est
   conservée, avec la recette, si vous l'enregistrez. Ce flux est cité ici
   pour être complet.
+- **Sauvegardes** (Scaleway, stockage objet) : la base de données du
+  service — tout ce que décrit cette page, sauf les fichiers des pièces
+  jointes — est copiée en continu vers un espace de stockage loué à
+  Scaleway (Scaleway SAS), dans sa région de Paris, pour pouvoir restaurer
+  le service après une panne ou une erreur. La copie voyage chiffrée et
+  Scaleway la chiffre sur ses disques, avec une clé qu'il détient ; ce qui
+  est chiffré dans la base (messages, jetons OAuth, adresses de flux
+  calendrier) le reste dans la copie. Elle est conservée 30 jours (voir
+  « Combien de temps vos données sont-elles conservées ? »).
 
 Aucune autre donnée ne quitte le serveur applicatif. Les suggestions de
 recettes sont calculées sur le serveur par des règles fixes (ingrédients en
@@ -190,8 +200,9 @@ plus que ce qui est établi. Voici où en est chacun des quatre cas.
   rappels vous parviennent par email seulement, rien ne part vers eux.
 - **Le reste ne quitte pas le serveur du service** : vos messages, votre
   agenda, vos listes, votre budget et vos pièces jointes n'y sont partagés
-  avec aucun tiers. L'hébergeur de ce serveur est nommé dans les
-  [mentions légales](/legal-notice).
+  avec aucun tiers, sinon par la sauvegarde de la base, conservée chez
+  Scaleway dans sa région de Paris. L'hébergeur de ce serveur est nommé
+  dans les [mentions légales](/legal-notice).
 
 ## Combien de temps vos données sont-elles conservées ?
 
@@ -341,6 +352,12 @@ de la purge dépasserait.
   « Suppression de votre compte » ci-dessous).
 - **Export de vos données** : généré à la demande et renvoyé directement,
   il n'est pas conservé sur le serveur.
+- **Sauvegardes de la base** : de quoi restaurer la base à n'importe quel
+  instant des 30 derniers jours, et pas au-delà. Une donnée supprimée du
+  service, purge d'un compte comprise, reste donc dans les sauvegardes
+  jusqu'à 31 jours environ — les 30 jours, plus l'écart avec la copie
+  complète de la nuit qui les précède — puis disparaît avec elles. Les
+  sauvegardes ne contiennent pas les fichiers des pièces jointes.
 
 ### Suppression de votre compte
 
@@ -387,6 +404,10 @@ de la purge dépasserait.
   invitation qu'un membre aurait envoyée à votre adresse, jusqu'à son
   acceptation, à la suppression du groupe ou au premier passage de purge
   qui suit les 30 jours de son envoi (voir « Invitations » plus haut).
+- **Ce qui subsiste dans les sauvegardes** : la copie de vos données dans
+  les sauvegardes de la base, jusqu'à 31 jours environ après la purge,
+  puis elle disparaît avec elles (voir « Sauvegardes de la base » plus
+  haut).
 - **Quand elle a lieu** : la purge passe toutes les heures, aux mêmes
   conditions que les suppressions automatiques décrites plus haut — quand
   le service fonctionne et que sa configuration permet ce passage. Elle a
