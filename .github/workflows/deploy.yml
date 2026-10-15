@@ -66,8 +66,8 @@ jobs:
     needs: render
     runs-on: ubuntu-latest
     # The platform, then 10 minutes at rest (ci/staging-smoke.sh), the
-    # ingress and its 16-minute read timeout (ci/ingress-test.sh), then the
-    # restore drill (ci/postgres-test.sh).
+    # ingress and its 5 minutes of WebSocket silence (ci/ingress-test.sh),
+    # then the restore drill (ci/postgres-test.sh).
     timeout-minutes: 80
     permissions:
       contents: read

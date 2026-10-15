@@ -6,7 +6,8 @@
 #
 # An IngressRoute (Traefik's own kind) rather than an Ingress: each route
 # carries its own chain of Middlewares (the prefix stripped for api only,
-# the 403 of `/readyz`), where an Ingress takes one chain for all its
+# the 403 of `/readyz`, `Connection: close` for the methods with a body,
+# the size bound of the two upload routes), where an Ingress takes one chain for all its
 # paths, through an annotation — it would take one Ingress per chain. Here
 # every routing decision is in one list, with explicit priorities.
 #
@@ -35,7 +36,44 @@ spec:
       services:
         - name: web
           port: http
+    # The Caddyfile's two upload routes (`@upload`): POST, one path segment
+    # for each `*`. The body bounded (`upload-limit`), and like every
+    # request with a body, answered with `Connection: close`.
+    - match: Host(`ingress-host.invalid`) && Method(`POST`) && PathRegexp(`^/api/groups/[^/]+/events/[^/]+/attachments$`)
+      priority: 260
+      middlewares:
+        - name: security-headers
+        - name: connection-close
+        - name: upload-limit
+        - name: compress
+        - name: strip-api
+      services:
+        - name: api
+          port: http
+    - match: Host(`ingress-host.invalid`) && Method(`POST`) && PathRegexp(`^/agenda/[^/]+/attachments$`)
+      priority: 250
+      middlewares:
+        - name: security-headers
+        - name: connection-close
+        - name: upload-limit
+        - name: compress
+      services:
+        - name: web
+          port: http
+    # Each route below in two: the methods with a body (the Caddyfile's
+    # `@has_body`, #244) get `connection-close`, GET, HEAD and OPTIONS keep
+    # their connection.
     # The Caddyfile's `handle /api/*`: `/api` alone is web's, as there.
+    - match: Host(`ingress-host.invalid`) && PathPrefix(`/api/`) && !Method(`GET`) && !Method(`HEAD`) && !Method(`OPTIONS`)
+      priority: 220
+      middlewares:
+        - name: security-headers
+        - name: connection-close
+        - name: compress
+        - name: strip-api
+      services:
+        - name: api
+          port: http
     - match: Host(`ingress-host.invalid`) && PathPrefix(`/api/`)
       priority: 200
       middlewares:
@@ -44,6 +82,15 @@ spec:
         - name: strip-api
       services:
         - name: api
+          port: http
+    - match: Host(`ingress-host.invalid`) && !Method(`GET`) && !Method(`HEAD`) && !Method(`OPTIONS`)
+      priority: 120
+      middlewares:
+        - name: security-headers
+        - name: connection-close
+        - name: compress
+      services:
+        - name: web
           port: http
     - match: Host(`ingress-host.invalid`)
       priority: 100

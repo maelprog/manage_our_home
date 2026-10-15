@@ -13,14 +13,16 @@
 #   headers *and* body, from its first byte (measured on Traefik 3.7.13:
 #   at 8 s, headers trickled one line a second were cut at 8.0 s, and so
 #   was a body sent 1 byte a second). Traefik has no header-only bound
-#   (Caddy's `read_header 10s`): the one bound has to let a slow body
-#   through to the applications, which answer it themselves — 30 s of
-#   silence, 1 kB/s on average after 10 s, 15 min in all, a 408 — so it
-#   is Caddy's `read_body`, 16 min, one minute above them. A client
-#   trickling its headers is therefore cut after 16 minutes, not 10
-#   seconds: the gap is listed in the PR of #434, and ci/ingress-test.sh
-#   measures the cut. Traefik's default, 60 s, would cut every upload
-#   slower than that.
+#   (Caddy's `read_header 10s`), so this one bound sets both how long a
+#   client trickling its headers holds a connection, and how long the
+#   slowest upload may take. 2 min (arbitrage of 2026-10-15: the global
+#   bound lowered, slow uploads cut with it): headers trickled are cut at
+#   2 min rather than Caddy's 16; the largest body the api accepts,
+#   21 037 056 bytes (20 MiB of attachment and 64 KiB of multipart
+#   framing), needs 175 kB/s, about 1.4 Mbit/s up, to arrive in time, a
+#   5 MB photo 42 kB/s. Above the applications' own 30 s of silence, which
+#   they still answer with their 408 first; below their 15 min total,
+#   which no longer comes into play. ci/ingress-test.sh measures the cut.
 #   `idleTimeout` 5 min is Caddy's `idle`. No write timeout, as in Caddy.
 #   Neither reaches the Messagerie WebSocket once upgraded (measured the
 #   same way: a socket held 15 s through an 8 s readTimeout and a 5 s
@@ -61,12 +63,12 @@ spec:
       web:
         transport:
           respondingTimeouts:
-            readTimeout: 16m
+            readTimeout: 2m
             idleTimeout: 5m
       websecure:
         transport:
           respondingTimeouts:
-            readTimeout: 16m
+            readTimeout: 2m
             idleTimeout: 5m
     resources:
       requests:

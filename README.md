@@ -126,12 +126,12 @@ auto-signé par défaut.
 |---|---|
 | En-têtes de sécurité (#141) : CSP, `Reporting-Endpoints`, HSTS, `nosniff`, `X-Frame-Options`, `Referrer-Policy` | Middleware `security-headers`, mêmes valeurs ; le job k3d les compare à celles du Caddyfile de `main`, sur `/`, `/login` et `/api/healthz` |
 | `encode zstd gzip`, rien sous 512 octets | Middleware `compress`, `encodings: [zstd, gzip]`, `minResponseBodyBytes: 512`, sur une liste de types textuels (Traefik n'accepte pas `text/*`) |
-| `read_body 16m` : délai de toute la requête | `readTimeout: 16m` sur les deux points d'entrée : le même délai de Go (`ReadTimeout`) |
-| `read_header 10s` : en-têtes au goutte-à-goutte coupés à 10 s | **Pas d'équivalent** : Traefik n'a pas de délai propre aux en-têtes, et son seul délai de lecture doit laisser passer un corps lent jusqu'aux applications (15 min, puis leur 408). Un client qui égrène ses en-têtes est coupé à 16 min ; le job k3d le mesure |
+| `read_body 16m` : délai de toute la requête | `readTimeout: 2m` sur les deux points d'entrée, le même délai de Go (`ReadTimeout`), abaissé pour borner aussi les en-têtes (ligne suivante ; arbitrage du 2026-10-15). Un envoi doit donc arriver en 2 min : 175 ko/s, environ 1,4 Mbit/s montant, pour le plus gros corps accepté (21 037 056 octets), 42 ko/s pour une photo de 5 Mo. Le silence de 30 s des applications reste en deçà : leur 408 vient d'abord |
+| `read_header 10s` : en-têtes au goutte-à-goutte coupés à 10 s | Traefik n'a pas de délai propre aux en-têtes : ils tombent sous le `readTimeout` de 2 min. Un client qui égrène ses en-têtes est coupé à 2 min ; le job k3d le mesure |
 | `idle 5m` | `idleTimeout: 5m` |
 | Le WebSocket de la messagerie échappe à `read_body` | Idem : ni `readTimeout` ni `idleTimeout` ne l'atteignent une fois ouvert ; le job k3d le tient 5 min 20 s en silence, puis y reçoit un message |
-| `Connection: close` sur toute réponse à une requête HTTP/1.1 avec corps, 408 compris (#244) | **Pas repris.** Traefik ne sait pas choisir une route selon la version du protocole, et sur HTTP/2 ce `Connection: close` ferme la connexion partagée (GOAWAY) après chaque POST. Les navigateurs passent tous en HTTP/2 sur Traefik, qui y répond sans attendre le corps (mesuré sur 3.7.13 : 401 au bout de 1 s, corps de 100 ko envoyé à 5 ko/s). Seul un client HTTP/1.1 attend la fin de son corps (19 s dans la même mesure), ou les 16 min du délai de lecture |
-| `request_body max_size` sur les deux routes d'envoi : 413 au-delà de 21 037 056 octets | **Pas repris** : le Middleware `buffering` de Traefik lirait chaque corps en entier avant de le transmettre, ce qui défait le délai des applications sur un corps lent. api et web refusent eux-mêmes un corps au-delà de leur limite ; le refus vient d'elles au lieu du proxy |
+| `Connection: close` sur toute réponse à une requête HTTP/1.1 avec corps, 408 compris (#244) | Middleware `connection-close`, sur les routes des méthodes autres que GET, HEAD et OPTIONS. Traefik ne sait pas choisir une route selon la version du protocole : il s'applique aussi en HTTP/2 (arbitrage du 2026-10-15), où Go en fait un GOAWAY — la connexion se ferme une fois ses requêtes en cours servies, le navigateur en rouvre une après chaque formulaire envoyé. Mesuré sur 3.7.13 (POST de 100 ko envoyé à 5 ko/s, 401 sans lecture) : 19 s sans lui en HTTP/1.1, 0,03 s avec ; le job k3d vérifie un 401 de l'api en moins de 5 s, corps encore en cours |
+| `request_body max_size` sur les deux routes d'envoi : 413 au-delà de 21 037 056 octets | Middleware `upload-limit` (`buffering`, `maxRequestBodyBytes: 21037056`) sur ces deux routes, en POST (arbitrage du 2026-10-15). Traefik lit le corps en entier avant de le transmettre (1 Mio en mémoire, le reste en fichier) : la réponse anticipée d'une application à un envoi n'arrive qu'une fois le corps reçu. Le job k3d vérifie le 413 immédiat au-delà, le passage à la limite |
 | `X-Forwarded-For` : la valeur du client est remplacée, pas complétée | Idem par défaut dans Traefik (aucune `forwardedHeaders.trustedIPs`). Et `externalTrafficPolicy: Local` sur son Service : sans lui, ServiceLB et kube-proxy masquaient l'adresse du client, que Traefik voyait comme 10.42.0.1 — dans `TRUSTED_PROXY_CIDRS`, un seul compteur du frein du login pour tous. Le job k3d verrouille une adresse par dix échecs et vérifie qu'un second client ne l'est pas |
 | Redirection HTTP vers HTTPS (HTTPS automatique) | `IngressRoute` `manage-our-home-http` : 301 pour GET et HEAD, 308 sinon (Caddy : 308) |
 
@@ -477,7 +477,9 @@ chaque push sur l'une d'elles :
    verrouillée par le frein du login le reste quel que soit son
    `X-Forwarded-For`, un second client ne l'est pas ; le WebSocket de la
    messagerie reçoit un message après 5 min 20 s de silence ; un client
-   qui égrène ses en-têtes est coupé au délai de lecture de 16 min.
+   qui égrène ses en-têtes est coupé au délai de lecture de 2 min ; une
+   réponse à un POST arrive avant la fin de son corps (#244) ; les routes
+   d'envoi répondent 413 au-delà de 21 037 056 octets.
 6. `ci/postgres-test.sh` sur le même cluster : rôles identiques à ceux de
    `01-roles.sh`, RLS appliquée à `app_role`, puis la restauration à un
    instant (« Restaurer » ci-dessus).

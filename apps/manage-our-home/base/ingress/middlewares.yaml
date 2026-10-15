@@ -1,9 +1,9 @@
 # The Traefik Middlewares of the ingress (#434): what infra/Caddyfile on
 # main does to every request and response, one Middleware per guard.
-# ingressroute.yaml chains them, in this order: headers, compression, then
-# for the api the prefix. Each comment says which lines of the Caddyfile it
-# takes over; the guards Traefik has no equivalent for are in the PR of
-# #434 and in README.md ("Ingress").
+# ingressroute.yaml chains them, in this order: headers, `Connection:
+# close` on a request with a body, the upload limit, compression, then
+# for the api the prefix. Each comment says which lines of the Caddyfile
+# it takes over; what differs from it is in README.md ("Ingress").
 #
 # Security headers (#141), on every response of both applications, the
 # values of the Caddyfile's `header` block character for character: the
@@ -81,6 +81,55 @@ metadata:
 spec:
   stripPrefix:
     prefixes: [/api]
+---
+# The Caddyfile's `@has_body` + `header Connection close` (#244), and its
+# `close_on_408`: any answer to a request that carries a body must reach
+# the client when it is sent. Go's server, Traefik's as Caddy's, answering
+# a request whose body is not fully read and is under 256 KiB first reads
+# and discards the rest — unless the answer says `Connection: close`. An
+# application may answer before reading the body (401, 403, 503 of the
+# upload gate, web's 303 to /login, its own 408), and Traefik its 502:
+# measured on Traefik 3.7.13, a POST of 100 kB sent at 5 kB/s to an
+# upstream answering 401 without reading got it after 19 s over HTTP/1.1,
+# after 0.03 s with this header.
+#
+# ingressroute.yaml puts it on the methods with a body, as `@has_body`
+# (`not method GET HEAD OPTIONS`). Caddy also kept it to HTTP/1.1; Traefik
+# cannot match the protocol, so it goes on HTTP/2 too (arbitrage of
+# 2026-10-15), where Go turns it into a GOAWAY: the connection is closed
+# once its streams in flight are done, and the browser opens a new one for
+# the requests after the POST — one TLS handshake per form sent. HTTP/2
+# did not need it (same measurement: the 401 after 1 s).
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: connection-close
+spec:
+  headers:
+    customResponseHeaders:
+      Connection: close
+---
+# The Caddyfile's `request_body max_size 21037056` on its two upload
+# routes (#219): a body over what apps/api accepts
+# (`storage::MAX_UPLOAD_BODY_BYTES` on main, 20 MiB of attachment plus
+# 64 KiB of multipart framing) is answered 413 here, instead of travelling
+# to an application that would refuse it. A Content-Length above it is
+# refused before any byte of the body is read.
+#
+# Traefik's only way to bound a body is to buffer it (arbitrage of
+# 2026-10-15): on these two routes the body is read whole by Traefik
+# before it is passed on — the first MiB in memory, the rest in a file of
+# the Traefik pod's /tmp. So an application's early answer to an upload
+# (401, 403, 503 of its gate) only comes once the body is in, or the
+# 2 min read timeout has run out.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: upload-limit
+spec:
+  buffering:
+    maxRequestBodyBytes: 21037056
+    memRequestBodyBytes: 1048576
 ---
 # Plain HTTP only redirects to HTTPS, as Caddy's automatic HTTPS did:
 # permanently, a 301 for GET and HEAD and a 308 (method kept) for the
