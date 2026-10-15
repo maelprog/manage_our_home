@@ -56,8 +56,14 @@ celles qui arrivent ici le font par la bande, pas comme objet du service,
 et le service n'est pas à grande échelle (section 1).
 
 **Les supports.**
-- Un serveur exploité par le responsable : `api`, `web`, Postgres et MinIO
-  (pièces jointes) dans la pile Docker Compose de `infra/`.
+- Deux sites exploités par le responsable (#440) : le service public sur
+  un VPS loué à un hébergeur tiers, sous-traitant pour l'infrastructure, et
+  le serveur maison, non public (staging et usage familial, joignable par
+  VPN seulement) ; sur chacun, `api`, `web`, Postgres et MinIO (pièces
+  jointes) — pile Docker Compose de `infra/` aujourd'hui, k3s demain
+  (`docs/v2-deployment.md` #1).
+- Scaleway (Scaleway Object Storage, région `fr-par`), sous-traitant pour
+  les sauvegardes continues de la base, conservées 30 jours (#433).
 - Scaleway (Scaleway Transactional Email), sous-traitant pour les emails
   transactionnels (adresse, objet, corps), traités dans l'UE.
 - Google, pour la connexion avec Google et, le cas échéant, l'hébergement
