@@ -164,6 +164,20 @@ for env in staging prod; do
     [[ "$image" == ghcr.io/maelprog/manage-our-home-* ]] || fail "$image is outside the policy's imageReferences"
   done
 
+  # --- Traefik, k3s's own (#434): its settings that no IngressRoute
+  # reaches. The client's address kept (`Local`), the Caddyfile's
+  # connection bounds on both entry points, memory capped; before the
+  # application. ci/ingress-test.sh checks that Traefik runs with them.
+  hcc='select(.kind == "HelmChartConfig" and .metadata.name == "traefik" and .metadata.namespace == "kube-system")'
+  check
+  y "$hcc | .spec.valuesContent" > "$work/traefik-values.yaml"
+  t() { yq e -N "$1" "$work/traefik-values.yaml"; }
+  v=$(t '[.service.spec.externalTrafficPolicy, (.ports.web.transport.respondingTimeouts | [.readTimeout, .idleTimeout] | join(",")), (.ports.websecure.transport.respondingTimeouts | [.readTimeout, .idleTimeout] | join(",")), .resources.limits.memory // "none"] | join(" ")')
+  [[ "$v" =~ ^Local\ 16m,5m\ 16m,5m\ [0-9]+Mi$ ]] || fail "Traefik's HelmChartConfig: '$v', expected 'Local 16m,5m 16m,5m <limit>Mi'"
+  check
+  w_traefik=$(wave "$hcc")
+  [ -n "$w_traefik" ] && [ "$w_traefik" -lt "$w_app" ] || fail "Traefik's HelmChartConfig (wave '$w_traefik') is not before the application ($w_app)"
+
   # --- What the charts install, rendered by Helm with their values: a
   # memory limit on every container, one replica of everything (the
   # 4 GB staging server, arbitrage of 2026-10-12), and nothing of Argo

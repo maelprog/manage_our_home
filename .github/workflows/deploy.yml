@@ -4,8 +4,9 @@
 # whose node has the staging server's 4 GB, the platform bootstrapped by
 # platform/bootstrap.sh and Argo CD deploying the staging overlay on its
 # CloudNativePG Postgres, until api and web answer /readyz and 10 minutes
-# pass without a restart (#432); then that Postgres is restored from its
-# backups to an instant (#433).
+# pass without a restart (#432); then the ingress is checked against the
+# guards of main's infra/Caddyfile (#434), and that Postgres is restored
+# from its backups to an instant (#433).
 #
 # The PRs of the k3s epic (#431 to #437) target `k3s`; `deploy` only
 # receives `k3s` once, by a PR the user merges by hand, when the whole
@@ -64,9 +65,10 @@ jobs:
   k3d:
     needs: render
     runs-on: ubuntu-latest
-    # The platform, then 10 minutes at rest (ci/staging-smoke.sh), then the
+    # The platform, then 10 minutes at rest (ci/staging-smoke.sh), the
+    # ingress and its 16-minute read timeout (ci/ingress-test.sh), then the
     # restore drill (ci/postgres-test.sh).
-    timeout-minutes: 60
+    timeout-minutes: 80
     permissions:
       contents: read
     steps:
@@ -76,13 +78,16 @@ jobs:
       # The roles of the reference Postgres, which the CloudNativePG
       # Cluster's are compared with (ci/postgres-test.sh): main's own
       # script, the one infra/docker-compose.yml runs, rather than a copy
-      # here that could drift from it.
+      # here that could drift from it. Likewise the Caddyfile, whose
+      # headers the ingress's are compared with (ci/ingress-test.sh).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           path: main
           persist-credentials: false
-          sparse-checkout: infra/postgres/init
+          sparse-checkout: |
+            infra/postgres/init
+            infra/Caddyfile
           sparse-checkout-cone-mode: false
       - name: Tools
         run: |
@@ -90,14 +95,12 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: k3d cluster
         run: |
-          # Traefik and the service load balancer are left out: nothing
-          # here goes through an ingress (#434). The node gets the staging
-          # server's 4 GB (arbitrage of 2026-10-12).
+          # k3s as installed on the servers, Traefik and its ServiceLB
+          # included: the ingress is tested through them (#434). The node
+          # gets the staging server's 4 GB (arbitrage of 2026-10-12).
           k3d cluster create deploy-ci \
             --image "$K3S_IMAGE" \
             --servers-memory 4g \
-            --k3s-arg '--disable=traefik@server:0' \
-            --k3s-arg '--disable=servicelb@server:0' \
             --wait --timeout 180s
           kubectl get nodes -o wide
       - name: Bootstrap the platform, let Argo CD deploy staging, check it
@@ -107,6 +110,11 @@ jobs:
           # branch), or the pushed one.
           REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
         run: ci/staging-smoke.sh main/infra/postgres/init/01-roles.sh "$REVISION"
+      # On the same cluster (#434): the ingress, against main's Caddyfile
+      # run in front of the same pods; the client's address through it;
+      # the WebSocket past the idle timeout; trickled headers cut.
+      - name: Ingress — the Caddyfile's guards
+        run: ci/ingress-test.sh main/infra/Caddyfile
       # On the same cluster (#433): staging's Postgres has the roles of
       # 01-roles.sh and RLS applies to app_role; then it is deleted and
       # restored from its backups to an instant, and the data checked.

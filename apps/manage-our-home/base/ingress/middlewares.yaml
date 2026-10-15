@@ -1,0 +1,94 @@
+# The Traefik Middlewares of the ingress (#434): what infra/Caddyfile on
+# main does to every request and response, one Middleware per guard.
+# ingressroute.yaml chains them, in this order: headers, compression, then
+# for the api the prefix. Each comment says which lines of the Caddyfile it
+# takes over; the guards Traefik has no equivalent for are in the PR of
+# #434 and in README.md ("Ingress").
+#
+# Security headers (#141), on every response of both applications, the
+# values of the Caddyfile's `header` block character for character: the
+# reasons for each directive are written there, next to the test in
+# apps/web/src/csp.rs that pins them. ci/ingress-test.sh compares them, on
+# real responses of `/`, `/login` and an api route, with those of main's
+# Caddyfile run in front of the same pods. A change here goes with the
+# same change there.
+#
+# `customResponseHeaders` replaces what an application might have set, as
+# Caddy's `header` did; listed first in each chain, it also covers the
+# answers Traefik makes itself (a 502 when a backend is down).
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: security-headers
+spec:
+  headers:
+    customResponseHeaders:
+      Content-Security-Policy: "default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; report-uri /api/csp-report; report-to csp"
+      Reporting-Endpoints: 'csp="/api/csp-report"'
+      Strict-Transport-Security: max-age=31536000
+      X-Content-Type-Options: nosniff
+      X-Frame-Options: DENY
+      Referrer-Policy: no-referrer
+---
+# The Caddyfile's `encode zstd gzip`: zstd first, then gzip, and nothing
+# under 512 bytes (Caddy's `minimum_length` default; Traefik's is 1024).
+# Traefik would otherwise also offer brotli; Caddy's menu was these two.
+#
+# Which responses: Caddy compresses a list of textual types by default;
+# Traefik's default goes the other way (every type but a few), attachments
+# (PDF, photos) and fonts included, which only costs CPU. Its
+# `includedContentTypes` takes no wildcard (`text/*`), so the list names
+# the textual types the applications serve on main — pages, stylesheet,
+# scripts, the api's JSON, the Markdown of the legal texts, plain text —
+# and the few other textual ones a page or route could come to use.
+# Parameters (`; charset=utf-8`) are ignored in the comparison (measured
+# on Traefik 3.7.13). A textual type missing here is served uncompressed,
+# not refused.
+#
+# BREACH: the Caddyfile's reasoning (no route excluded) holds unchanged —
+# the bodies are the same.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: compress
+spec:
+  compress:
+    encodings: [zstd, gzip]
+    minResponseBodyBytes: 512
+    includedContentTypes:
+      - text/html
+      - text/css
+      - text/javascript
+      - application/javascript
+      - application/json
+      - application/ld+json
+      - application/manifest+json
+      - application/xhtml+xml
+      - application/xml
+      - text/plain
+      - text/markdown
+      - text/calendar
+      - text/csv
+      - image/svg+xml
+---
+# The Caddyfile's `handle /api/*` + `uri strip_prefix /api`: apps/api's
+# routes have no prefix of their own.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: strip-api
+spec:
+  stripPrefix:
+    prefixes: [/api]
+---
+# Plain HTTP only redirects to HTTPS, as Caddy's automatic HTTPS did:
+# permanently, a 301 for GET and HEAD and a 308 (method kept) for the
+# others, measured on Traefik 3.7.13 — where Caddy answers 308 to all.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: https-redirect
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true

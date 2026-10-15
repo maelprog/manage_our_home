@@ -1,7 +1,8 @@
 # What every environment runs (#431): api and web, their Services and
-# PodDisruptionBudgets, and the migration Job Argo CD runs before each
-# sync. The overlays add what differs: image digests, replicas, the public
-# address, and the staging server's 4 GB constraints.
+# PodDisruptionBudgets, the migration Job Argo CD runs before each sync,
+# and the ingress in front of them (#434). The overlays add what differs:
+# image digests, replicas, the public address, and the staging server's
+# 4 GB constraints.
 #
 # Images are named here without tag or digest: an overlay pins each one by
 # digest (`images:`), and ci/render-test.sh fails on an image that is not.
@@ -21,6 +22,7 @@ resources:
   - api.yaml
   - web.yaml
   - migrate-job.yaml
+  - ingress
 
 # Settings in clear, the ones that do not depend on the environment. Each
 # generated name carries a hash of the content, so a change rolls the pods

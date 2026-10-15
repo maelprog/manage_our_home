@@ -1,0 +1,8 @@
+# The k3d job's only change to the application's render (#434): its
+# certificate comes from the throwaway self-signed ClusterIssuer of
+# ci/ci-issuer.yaml instead of Let's Encrypt, which cannot reach a k3d
+# cluster nor issue for a `.invalid` host. A JSON patch on the Certificate
+# `manage-our-home-tls`, applied by the CI's Argo CD (ci/staging-smoke.sh).
+- op: replace
+  path: /spec/issuerRef/name
+  value: ci-selfsigned

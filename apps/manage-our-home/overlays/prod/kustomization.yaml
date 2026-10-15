@@ -8,6 +8,10 @@ kind: Kustomization
 resources:
   - ../../base
 
+# The ingress's host, its rules and certificate: FRONTEND_BASE_URL's below.
+components:
+  - ../../base/ingress/host
+
 # By digest, never by tag. No `v*` tag has been built by
 # .github/workflows/images.yml yet: until the first one, this is the same
 # pair as staging (main, commit 10aabde). #436 opens the promotion PRs.
@@ -21,8 +25,10 @@ configMapGenerator:
   - name: api-config
     behavior: merge
     literals:
-      # Placeholders until the ingress (#434) gives production its
-      # address: `.invalid` resolves nowhere (RFC 2606).
+      # Placeholders until production's address is chosen: `.invalid`
+      # resolves nowhere (RFC 2606). The ingress (#434) serves the host of
+      # FRONTEND_BASE_URL and asks Let's Encrypt for its certificate; the
+      # other three name the same host (ci/render-test.sh).
       - PUBLIC_BASE_URL=https://manage-our-home.invalid/api
       - FRONTEND_BASE_URL=https://manage-our-home.invalid
       - SMTP_HOST=smtp.manage-our-home.invalid

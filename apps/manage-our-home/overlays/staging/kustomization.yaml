@@ -6,6 +6,10 @@ kind: Kustomization
 resources:
   - ../../base
 
+# The ingress's host, its rules and certificate: FRONTEND_BASE_URL's below.
+components:
+  - ../../base/ingress/host
+
 # By digest, never by tag: a tag can be moved, a digest cannot, and the
 # Kyverno policy of #432 refuses anything else. Images published by
 # .github/workflows/images.yml on main (#430); this pair is commit
@@ -42,9 +46,11 @@ configMapGenerator:
   - name: api-config
     behavior: merge
     literals:
-      # Placeholders until the ingress (#434) gives staging its address:
-      # `.invalid` resolves nowhere (RFC 2606), so a link built from it
-      # cannot reach a third party.
+      # Placeholders until staging's address is chosen: `.invalid`
+      # resolves nowhere (RFC 2606), so a link built from it cannot reach
+      # a third party. The ingress (#434) serves the host of
+      # FRONTEND_BASE_URL and asks Let's Encrypt for its certificate; the
+      # other three name the same host (ci/render-test.sh).
       - PUBLIC_BASE_URL=https://staging.manage-our-home.invalid/api
       - FRONTEND_BASE_URL=https://staging.manage-our-home.invalid
       - SMTP_HOST=smtp.manage-our-home.invalid

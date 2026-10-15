@@ -230,6 +230,53 @@ for overlay in "${overlays[@]}"; do
   v=$(y "select(.kind == \"ConfigMap\" and .metadata.name == \"$cm\") | .data.TRUSTED_PROXY_CIDRS // \"\"")
   [ "$v" = "10.42.0.0/16" ] || fail "api: TRUSTED_PROXY_CIDRS is '$v', expected '10.42.0.0/16'"
 
+  # --- The ingress (#434). One host, FRONTEND_BASE_URL's, in every rule
+  # and in the certificate; the api's and web's public URLs under it.
+  check
+  front=$(y "select(.kind == \"ConfigMap\" and .metadata.name == \"$cm\") | .data.FRONTEND_BASE_URL // \"\"")
+  host=${front#https://}
+  [[ "$front" =~ ^https://[a-z0-9.-]+$ ]] || fail "api: FRONTEND_BASE_URL '$front' is not https://<host>"
+  check
+  v=$(y "select(.kind == \"ConfigMap\" and .metadata.name == \"$cm\") | .data.PUBLIC_BASE_URL // \"\"")
+  [ "$v" = "https://$host/api" ] || fail "api: PUBLIC_BASE_URL '$v', expected https://$host/api"
+  check
+  wcm=$(y 'select(.kind == "Deployment" and .metadata.name == "web") | .spec.template.spec.containers[0].envFrom[] | select(.configMapRef) | .configMapRef.name' | head -n 1)
+  v=$(y "select(.kind == \"ConfigMap\" and .metadata.name == \"$wcm\") | .data.API_PUBLIC_BASE_URL // \"\"")
+  [ "$v" = "https://$host/api" ] || fail "web: API_PUBLIC_BASE_URL '$v', expected https://$host/api"
+  ir='select(.kind == "IngressRoute")'
+  check
+  v=$(y "$ir | .metadata.name + \" \" + (.spec.entryPoints | join(\",\"))" | sort | tr '\n' ';')
+  [ "$v" = "manage-our-home websecure;manage-our-home-http web;" ] || fail "IngressRoutes are '$v'"
+  # shellcheck disable=SC2016 # backquotes are Traefik's, not the shell's
+  for m in $(y "$ir | .spec.routes[].match" | sed 's/ /_/g'); do
+    check
+    [[ "$m" == 'Host(`'"$host"'`)'* ]] && [ "$(grep -o 'Host(' <<< "$m" | wc -l)" = 1 ] \
+      || fail "IngressRoute rule '${m//_/ }' does not start with Host(\`$host\`), alone"
+  done
+  check
+  v=$(y 'select(.kind == "Certificate") | [.metadata.name, (.spec.dnsNames | join(",")), .spec.issuerRef.kind, .spec.issuerRef.name, .spec.secretName] | join(" ")')
+  [ "$v" = "manage-our-home-tls $host ClusterIssuer letsencrypt manage-our-home-tls" ] \
+    || fail "Certificate is '$v', expected 'manage-our-home-tls $host ClusterIssuer letsencrypt manage-our-home-tls'"
+  check
+  v=$(y "$ir | select(.metadata.name == \"manage-our-home\") | .spec.tls.secretName")
+  [ "$v" = manage-our-home-tls ] || fail "the HTTPS IngressRoute serves the Secret '$v', not the certificate's"
+  # Every HTTPS route: the security headers first, compressed, and the
+  # /api prefix stripped on api's.
+  routes="$ir | select(.metadata.name == \"manage-our-home\") | .spec.routes[]"
+  check
+  v=$(y "$routes | [.priority, .services[0].name, ([.middlewares[].name] | join(\",\"))] | join(\" \")" | tr '\n' ';')
+  [ "$v" = "200 api security-headers,compress,strip-api;100 web security-headers,compress;" ] \
+    || fail "HTTPS routes (priority, service, middlewares) are '$v'"
+  check
+  v=$(y "$ir | select(.metadata.name == \"manage-our-home-http\") | .spec.routes[] | [.priority, ([.middlewares[].name] | join(\",\")), .services[0].name] | join(\" \")")
+  [ "$v" = "1 https-redirect noop@internal" ] || fail "plain HTTP route is '$v', expected '1 https-redirect noop@internal'"
+  # The six headers of the Caddyfile's `header` block; ci/ingress-test.sh
+  # compares their values with main's, on real responses.
+  check
+  v=$(y 'select(.kind == "Middleware" and .metadata.name == "security-headers") | .spec.headers.customResponseHeaders | to_entries | .[] | select(.value != "") | .key' | sort | tr '\n' ' ')
+  [ "$v" = "Content-Security-Policy Referrer-Policy Reporting-Endpoints Strict-Transport-Security X-Content-Type-Options X-Frame-Options " ] \
+    || fail "Middleware security-headers sets '$v'"
+
   # --- Postgres (#433): the overlay's `postgres/` folder, which an
   # Application of its own syncs before the application.
   pg="$work/$overlay-postgres.yaml"

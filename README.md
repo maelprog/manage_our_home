@@ -43,6 +43,8 @@ apps/manage-our-home/
     api.yaml            Deployment, Service, PodDisruptionBudget
     web.yaml            idem
     migrate-job.yaml    Job `migrate`, hook Argo CD PreSync (#425)
+    ingress/            routes et Middlewares Traefik, certificat (#434)
+      host/             Component : l'hôte de l'overlay dans les règles
     kustomization.yaml  ConfigMaps (réglages en clair)
     postgres/           Cluster CloudNativePG et sa sauvegarde nocturne (#433)
   overlays/
@@ -95,6 +97,47 @@ et son Postgres : `kustomize build apps/manage-our-home/overlays/staging/postgre
   défaut Docker (`172.16.0.0/12`) et tous les clients partageraient un seul
   compteur du frein du login (#178). Un cluster installé avec un autre
   `--cluster-cidr` doit le changer.
+
+## Ingress
+
+Traefik, le contrôleur d'ingress que k3s installe lui-même (Traefik 3.7.13
+avec k3s v1.37.1), devant web et api sur un seul hôte, comme
+`infra/Caddyfile` de `main` : `/api/*` va à api sans son préfixe, le reste
+à web (#434). Les routes et les Middlewares sont dans `base/ingress/`
+(une `IngressRoute` Traefik : chaque route y a sa chaîne de Middlewares) ;
+ce qu'aucune route n'atteint — délais des connexions, adresse du client —
+se règle sur Traefik lui-même, par la plateforme
+(`platform/components/traefik`, un `HelmChartConfig` que k3s fusionne
+dans les valeurs de son chart).
+
+**L'hôte** est celui de `FRONTEND_BASE_URL` dans l'overlay : le Component
+`base/ingress/host` le recopie dans chaque règle et dans le certificat.
+`PUBLIC_BASE_URL` et `API_PUBLIC_BASE_URL` le nomment sous `/api` ;
+`ci/render-test.sh` échoue si l'un d'eux, une règle ou le certificat s'en
+écarte. Le certificat vient de Let's Encrypt (`letsencrypt`, staging
+compris : les navigateurs ne font pas confiance à `letsencrypt-staging`)
+par cert-manager, en HTTP-01 : le nom doit résoudre vers le serveur, ports
+80 et 443 ouverts. En attendant, Traefik répond avec son certificat
+auto-signé par défaut.
+
+**Les garde-fous du Caddyfile** et ce qui les reprend :
+
+| Caddyfile (`main`) | Ici |
+|---|---|
+| En-têtes de sécurité (#141) : CSP, `Reporting-Endpoints`, HSTS, `nosniff`, `X-Frame-Options`, `Referrer-Policy` | Middleware `security-headers`, mêmes valeurs ; le job k3d les compare à celles du Caddyfile de `main`, sur `/`, `/login` et `/api/healthz` |
+| `encode zstd gzip`, rien sous 512 octets | Middleware `compress`, `encodings: [zstd, gzip]`, `minResponseBodyBytes: 512`, sur une liste de types textuels (Traefik n'accepte pas `text/*`) |
+| `read_body 16m` : délai de toute la requête | `readTimeout: 16m` sur les deux points d'entrée : le même délai de Go (`ReadTimeout`) |
+| `read_header 10s` : en-têtes au goutte-à-goutte coupés à 10 s | **Pas d'équivalent** : Traefik n'a pas de délai propre aux en-têtes, et son seul délai de lecture doit laisser passer un corps lent jusqu'aux applications (15 min, puis leur 408). Un client qui égrène ses en-têtes est coupé à 16 min ; le job k3d le mesure |
+| `idle 5m` | `idleTimeout: 5m` |
+| Le WebSocket de la messagerie échappe à `read_body` | Idem : ni `readTimeout` ni `idleTimeout` ne l'atteignent une fois ouvert ; le job k3d le tient 5 min 20 s en silence, puis y reçoit un message |
+| `Connection: close` sur toute réponse à une requête HTTP/1.1 avec corps, 408 compris (#244) | **Pas repris.** Traefik ne sait pas choisir une route selon la version du protocole, et sur HTTP/2 ce `Connection: close` ferme la connexion partagée (GOAWAY) après chaque POST. Les navigateurs passent tous en HTTP/2 sur Traefik, qui y répond sans attendre le corps (mesuré sur 3.7.13 : 401 au bout de 1 s, corps de 100 ko envoyé à 5 ko/s). Seul un client HTTP/1.1 attend la fin de son corps (19 s dans la même mesure), ou les 16 min du délai de lecture |
+| `request_body max_size` sur les deux routes d'envoi : 413 au-delà de 21 037 056 octets | **Pas repris** : le Middleware `buffering` de Traefik lirait chaque corps en entier avant de le transmettre, ce qui défait le délai des applications sur un corps lent. api et web refusent eux-mêmes un corps au-delà de leur limite ; le refus vient d'elles au lieu du proxy |
+| `X-Forwarded-For` : la valeur du client est remplacée, pas complétée | Idem par défaut dans Traefik (aucune `forwardedHeaders.trustedIPs`). Et `externalTrafficPolicy: Local` sur son Service : sans lui, ServiceLB et kube-proxy masquaient l'adresse du client, que Traefik voyait comme 10.42.0.1 — dans `TRUSTED_PROXY_CIDRS`, un seul compteur du frein du login pour tous. Le job k3d verrouille une adresse par dix échecs et vérifie qu'un second client ne l'est pas |
+| Redirection HTTP vers HTTPS (HTTPS automatique) | `IngressRoute` `manage-our-home-http` : 301 pour GET et HEAD, 308 sinon (Caddy : 308) |
+
+`externalTrafficPolicy: Local` a un prix : seul un nœud qui fait tourner
+un pod Traefik répond. k3s n'en lance qu'un ; avec plusieurs nœuds, l'adresse
+publique doit viser celui-là, ou Traefik tourner sur chacun.
 
 ## Secrets
 
@@ -356,8 +399,12 @@ avec #435.
 ## Réglages à fixer
 
 Les adresses publiques et le relais SMTP des overlays sont des
-emplacements en `.invalid` (RFC 2606 : ne résout nulle part) : l'adresse de
-chaque environnement vient avec l'ingress (#434). Les buckets de
+emplacements en `.invalid` (RFC 2606 : ne résout nulle part). L'adresse
+d'un environnement se fixe dans `FRONTEND_BASE_URL` de son overlay, avec
+`PUBLIC_BASE_URL` et `API_PUBLIC_BASE_URL` sur le même hôte : l'ingress et
+son certificat suivent (« Ingress »). Tant qu'elle reste en `.invalid`,
+Let's Encrypt refuse le certificat et l'Application de l'appli ne passe
+pas `Healthy`. Les buckets de
 sauvegarde de Postgres (`manage-our-home-backups-<env>`) sont à créer chez
 Scaleway, chiffrement par défaut activé (« Sauvegardes »), avant le premier
 déploiement ; un autre nom se change dans `base/postgres/cluster.yaml` et
@@ -372,7 +419,8 @@ chaque push sur l'une d'elles :
    Postgres et de la plateforme de chaque cluster, `kubeconform -strict`
    contre les schémas de Kubernetes 1.37.1 (et ceux du catalogue
    CRDs-catalog, à un commit épinglé, pour les Applications,
-   ClusterIssuers, ClusterPolicy, Cluster et ScheduledBackup).
+   ClusterIssuers, ClusterPolicy, Cluster, ScheduledBackup,
+   IngressRoutes, Middlewares, Certificate et HelmChartConfig).
 2. `ci/render-test.sh` : tests sur le rendu des overlays — empreintes,
    limites mémoire, jamais sous leur plancher (api 256 Mi et web 448 Mi,
    le pire cas borné ci-dessus ; migrate 128 Mi, la limite sous laquelle
@@ -380,7 +428,11 @@ chaque push sur l'une d'elles :
    des conteneurs, sondes, délais d'arrêt, une seule source `envFrom` (la
    ConfigMap, sans préfixe), hook `PreSync` du Job et sa politique de
    suppression, PDB,
-   réplicas et étalement par environnement, aucun secret en clair ; et
+   réplicas et étalement par environnement, aucun secret en clair ;
+   l'ingress : un seul hôte, celui de `FRONTEND_BASE_URL`, dans chaque
+   règle, le certificat et les URL publiques, l'émetteur `letsencrypt`,
+   la chaîne de Middlewares de chaque route, HTTP
+   réduit à la redirection, les six en-têtes de sécurité posés ; et
    sur le rendu de Postgres : une instance, anti-affinité, image par
    empreinte, mémoire (256 à 384 Mi en staging) et `shared_buffers` sous
    le quart de la limite, paramètres présents, budget de connexions,
@@ -390,7 +442,9 @@ chaque push sur l'une d'elles :
    sans `syncPolicy.automated` (racine, appli, Postgres), branche
    suivie, ordre des vagues (Postgres entre les Secrets et l'appli), namespace
    `restricted`, politique Kyverno (et aucune exclusion, précondition
-   ni sélecteur qui restreigne sa règle), charts épinglés, et sur le rendu Helm
+   ni sélecteur qui restreigne sa règle), charts épinglés, réglages de
+   Traefik (`externalTrafficPolicy: Local`, délais de 16 et 5 min,
+   limite mémoire, avant l'appli), et sur le rendu Helm
    de chaque chart : limite mémoire sur chaque conteneur, un réplica,
    Argo CD sans Dex, notifications ni ApplicationSet, Kyverno réduit au
    contrôleur d'admission.
@@ -401,13 +455,24 @@ chaque push sur l'une d'elles :
    sur le commit testé ; les Secrets scellés avec le contrôleur du
    cluster ; Argo CD synchronise la plateforme, le Postgres de staging
    (sauvegardé vers ce MinIO, seul écart au rendu, `ci/postgres-backup-patch.yaml`)
-   puis l'appli (Job de migration en PreSync, api et web
+   puis l'appli (certificat d'un émetteur auto-signé, seul écart à son
+   rendu, `ci/certificate-patch.yaml` ; Job de migration en PreSync, api et web
    jusqu'à `Available` et `/readyz` à 200, sans redémarrage, en lecture
    seule, sur le réseau des pods que l'api croit). Kyverno doit refuser
    l'image de l'appli par étiquette et un manifeste non signé de son dépôt,
    et admettre l'image signée. Puis 10 minutes au repos sans redémarrage
    ni OOM, tous les pods prêts, et `kubectl top pods -A`.
-5. `ci/postgres-test.sh` sur le même cluster : rôles identiques à ceux de
+5. `ci/ingress-test.sh` sur le même cluster, par l'adresse du nœud comme
+   un client (« Ingress ») : Traefik tourne avec ses réglages et sert le
+   certificat de l'appli ; les en-têtes de sécurité de `/`, `/login` et
+   `/api/healthz` sont ceux de Caddy avec le Caddyfile de `main`, lancé
+   devant les mêmes pods (`ci/caddy.yaml`) ; HTTP redirige ; compression zstd puis gzip, feuille de style comprise et
+   son `Cache-Control` gardé, police non recompressée ; une adresse
+   verrouillée par le frein du login le reste quel que soit son
+   `X-Forwarded-For`, un second client ne l'est pas ; le WebSocket de la
+   messagerie reçoit un message après 5 min 20 s de silence ; un client
+   qui égrène ses en-têtes est coupé au délai de lecture de 16 min.
+6. `ci/postgres-test.sh` sur le même cluster : rôles identiques à ceux de
    `01-roles.sh`, RLS appliquée à `app_role`, puis la restauration à un
    instant (« Restaurer » ci-dessus).
 

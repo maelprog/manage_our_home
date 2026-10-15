@@ -2,7 +2,7 @@
 
 Socle des clusters (#432) : Argo CD, qui se gère lui-même après amorçage,
 Sealed Secrets, cert-manager (émetteurs Let's Encrypt), opérateur
-CloudNativePG, Kyverno. Modèle « app of apps » : une Application racine
+CloudNativePG, Kyverno, et les réglages de Traefik, l'ingress de k3s (#434). Modèle « app of apps » : une Application racine
 par cluster rend `clusters/<env>/`, qui contient toutes les autres.
 
 ```
@@ -11,6 +11,7 @@ components/             une brique par dossier (Component Kustomize)
   argocd/               Application d'Argo CD lui-même
   sealed-secrets/       contrôleur Sealed Secrets (kube-system)
   cert-manager/         cert-manager et ClusterIssuers Let's Encrypt
+  traefik/              réglages du Traefik de k3s (HelmChartConfig, #434)
   cloudnative-pg/       opérateur CloudNativePG (les bases : #433)
   kyverno/              Kyverno et la politique des images signées
   app-namespace/        namespace `manage-our-home`, Pod Security `restricted`
@@ -61,7 +62,7 @@ vague ne commençant qu'une fois la précédente `Healthy` :
 | Vague | Quoi |
 |---|---|
 | -10 | les Applications des briques |
-| -5 | namespace `manage-our-home`, ClusterIssuers, politique Kyverno |
+| -5 | namespace `manage-our-home`, ClusterIssuers, réglages de Traefik, politique Kyverno |
 | -3 | SealedSecrets de `clusters/<env>/secrets/` |
 | -2 | `postgres-<env>` : le Cluster CloudNativePG de l'appli (#433) |
 | 0 | `manage-our-home-<env>` |
@@ -186,7 +187,9 @@ passer.
 
 Requête et limite mémoire sur chaque conteneur des briques, un réplica de
 chaque composant ; Argo CD sans Dex, notifications ni ApplicationSet.
-`ci/platform-test.sh` le vérifie sur le rendu Helm des charts. Le job k3d
+`ci/platform-test.sh` le vérifie sur le rendu Helm des charts. Traefik, dont
+k3s fournit le chart, reçoit les siennes de son HelmChartConfig (64 / 256 Mi ;
+55 Mi au repos en k3d) : vérifiées sur ce HelmChartConfig. Le job k3d
 borne le nœud à 4 Go, laisse tout tourner 10 minutes et imprime `kubectl
 top pods -A` avec le total de la plateforme.
 
@@ -196,3 +199,7 @@ Chaque chart est épinglé à une version exacte dans son
 `components/*/application.yaml`. Le suivi par Renovate (gestionnaire
 `argocd`) demande que la configuration Renovate de `main`, seule lue,
 inclue la branche `deploy` : ce n'est pas encore le cas.
+
+Traefik fait exception : son chart et sa version sont ceux de k3s (Traefik
+3.7.13 avec k3s v1.37.1) et changent avec lui ; la brique `traefik/` ne
+porte que des valeurs.
