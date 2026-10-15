@@ -8,7 +8,8 @@
 #     of the Compose stack, character for character: the same requests go
 #     through Caddy with main's infra/Caddyfile (ci/caddy.yaml), in front
 #     of the same pods;
-#   - plain HTTP redirects to HTTPS;
+#   - plain HTTP redirects to HTTPS; `/readyz` and `/api/readyz` are
+#     refused from outside (403);
 #   - responses are compressed, zstd then gzip, the stylesheet included
 #     and its Cache-Control kept, a font not;
 #   - the login throttle counts the client's address, not the ingress's:
@@ -178,9 +179,13 @@ for path in / /login /api/healthz; do
     | sed -n 's/^</  only from Caddy:/p; s/^>/  only from the ingress:/p' || true
 done
 
-echo "== HTTP"
+echo "== HTTP, /readyz"
 v=$(curl --silent --resolve "$host:80:$address" --output /dev/null --write-out '%{http_code} %{redirect_url}' "http://$host/login?next=x")
 [ "$v" = "301 https://$host/login?next=x" ] || fail "plain HTTP answers '$v', expected a 301 to https://$host/login?next=x"
+for path in /readyz /api/readyz; do
+  code=$(ingress "$path" --output /dev/null --write-out '%{http_code}')
+  [ "$code" = 403 ] || fail "$path answers $code through the ingress, expected 403"
+done
 
 echo "== compression"
 enc() { # path accept-encoding -> Content-Encoding (or `none`)

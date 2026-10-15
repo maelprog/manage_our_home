@@ -260,13 +260,19 @@ for overlay in "${overlays[@]}"; do
   check
   v=$(y "$ir | select(.metadata.name == \"manage-our-home\") | .spec.tls.secretName")
   [ "$v" = manage-our-home-tls ] || fail "the HTTPS IngressRoute serves the Secret '$v', not the certificate's"
-  # Every HTTPS route: the security headers first, compressed, and the
-  # /api prefix stripped on api's.
+  # Every HTTPS route: the security headers first; compressed, and the
+  # /api prefix stripped on api's, except the refused /readyz.
   routes="$ir | select(.metadata.name == \"manage-our-home\") | .spec.routes[]"
   check
   v=$(y "$routes | [.priority, .services[0].name, ([.middlewares[].name] | join(\",\"))] | join(\" \")" | tr '\n' ';')
-  [ "$v" = "200 api security-headers,compress,strip-api;100 web security-headers,compress;" ] \
+  [ "$v" = "300 web security-headers,internal-only;200 api security-headers,compress,strip-api;100 web security-headers,compress;" ] \
     || fail "HTTPS routes (priority, service, middlewares) are '$v'"
+  check
+  v=$(y "$routes | select(.priority == 300) | .match")
+  [[ "$v" == *'Path(`/readyz`)'* && "$v" == *'Path(`/api/readyz`)'* ]] || fail "the refused route '$v' does not cover /readyz and /api/readyz"
+  check
+  v=$(y 'select(.kind == "Middleware" and .metadata.name == "internal-only") | .spec.ipAllowList.sourceRange | join(",")')
+  [ "$v" = 127.0.0.1/32 ] || fail "Middleware internal-only lets '$v' through"
   check
   v=$(y "$ir | select(.metadata.name == \"manage-our-home-http\") | .spec.routes[] | [.priority, ([.middlewares[].name] | join(\",\")), .services[0].name] | join(\" \")")
   [ "$v" = "1 https-redirect noop@internal" ] || fail "plain HTTP route is '$v', expected '1 https-redirect noop@internal'"

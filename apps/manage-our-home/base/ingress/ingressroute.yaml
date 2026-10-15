@@ -5,8 +5,8 @@
 # everything else to web.
 #
 # An IngressRoute (Traefik's own kind) rather than an Ingress: each route
-# carries its own chain of Middlewares (the prefix stripped for api
-# only), where an Ingress takes one chain for all its
+# carries its own chain of Middlewares (the prefix stripped for api only,
+# the 403 of `/readyz`), where an Ingress takes one chain for all its
 # paths, through an annotation — it would take one Ingress per chain. Here
 # every routing decision is in one list, with explicit priorities.
 #
@@ -25,6 +25,16 @@ metadata:
 spec:
   entryPoints: [websecure]
   routes:
+    # Not through the ingress: see `internal-only` in middlewares.yaml.
+    # The 403 keeps the security headers.
+    - match: Host(`ingress-host.invalid`) && (Path(`/readyz`) || Path(`/api/readyz`))
+      priority: 300
+      middlewares:
+        - name: security-headers
+        - name: internal-only
+      services:
+        - name: web
+          port: http
     # The Caddyfile's `handle /api/*`: `/api` alone is web's, as there.
     - match: Host(`ingress-host.invalid`) && PathPrefix(`/api/`)
       priority: 200

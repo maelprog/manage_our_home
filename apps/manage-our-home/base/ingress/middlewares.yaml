@@ -15,7 +15,8 @@
 #
 # `customResponseHeaders` replaces what an application might have set, as
 # Caddy's `header` did; listed first in each chain, it also covers the
-# answers Traefik makes itself (a 502 when a backend is down).
+# answers Traefik makes itself (a 502 when a backend is down, the 403 of
+# `internal-only`).
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
@@ -92,3 +93,15 @@ spec:
   redirectScheme:
     scheme: https
     permanent: true
+---
+# `/readyz` (#424) is for the kubelet, which reaches the pods directly:
+# through the ingress it was a database round trip anyone could ask for,
+# unthrottled (apps/api's `SELECT 1`, or apps/web's call to it). No client
+# comes from the Traefik pod's own loopback, so this answers 403 to all.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: internal-only
+spec:
+  ipAllowList:
+    sourceRange: [127.0.0.1/32]

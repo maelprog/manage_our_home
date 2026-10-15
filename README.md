@@ -135,6 +135,11 @@ auto-signé par défaut.
 | `X-Forwarded-For` : la valeur du client est remplacée, pas complétée | Idem par défaut dans Traefik (aucune `forwardedHeaders.trustedIPs`). Et `externalTrafficPolicy: Local` sur son Service : sans lui, ServiceLB et kube-proxy masquaient l'adresse du client, que Traefik voyait comme 10.42.0.1 — dans `TRUSTED_PROXY_CIDRS`, un seul compteur du frein du login pour tous. Le job k3d verrouille une adresse par dix échecs et vérifie qu'un second client ne l'est pas |
 | Redirection HTTP vers HTTPS (HTTPS automatique) | `IngressRoute` `manage-our-home-http` : 301 pour GET et HEAD, 308 sinon (Caddy : 308) |
 
+S'y ajoute un refus : `/readyz` et `/api/readyz` répondent 403 par
+l'ingress (#424). Ces routes sont pour le kubelet, qui atteint les pods
+directement ; par Caddy, elles étaient un aller-retour à Postgres que
+n'importe qui pouvait demander sans frein.
+
 `externalTrafficPolicy: Local` a un prix : seul un nœud qui fait tourner
 un pod Traefik répond. k3s n'en lance qu'un ; avec plusieurs nœuds, l'adresse
 publique doit viser celui-là, ou Traefik tourner sur chacun.
@@ -431,7 +436,7 @@ chaque push sur l'une d'elles :
    réplicas et étalement par environnement, aucun secret en clair ;
    l'ingress : un seul hôte, celui de `FRONTEND_BASE_URL`, dans chaque
    règle, le certificat et les URL publiques, l'émetteur `letsencrypt`,
-   la chaîne de Middlewares de chaque route, HTTP
+   la chaîne de Middlewares de chaque route, `/readyz` refusé, HTTP
    réduit à la redirection, les six en-têtes de sécurité posés ; et
    sur le rendu de Postgres : une instance, anti-affinité, image par
    empreinte, mémoire (256 à 384 Mi en staging) et `shared_buffers` sous
@@ -466,7 +471,8 @@ chaque push sur l'une d'elles :
    un client (« Ingress ») : Traefik tourne avec ses réglages et sert le
    certificat de l'appli ; les en-têtes de sécurité de `/`, `/login` et
    `/api/healthz` sont ceux de Caddy avec le Caddyfile de `main`, lancé
-   devant les mêmes pods (`ci/caddy.yaml`) ; HTTP redirige ; compression zstd puis gzip, feuille de style comprise et
+   devant les mêmes pods (`ci/caddy.yaml`) ; HTTP redirige ; `/readyz`
+   répond 403 ; compression zstd puis gzip, feuille de style comprise et
    son `Cache-Control` gardé, police non recompressée ; une adresse
    verrouillée par le frein du login le reste quel que soit son
    `X-Forwarded-For`, un second client ne l'est pas ; le WebSocket de la
