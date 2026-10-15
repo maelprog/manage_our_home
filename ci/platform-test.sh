@@ -259,6 +259,13 @@ for env in staging prod; do
       v=$(r 'select(.kind == "Deployment") | .spec.template.spec.containers[].env[]? | select(.name == "OPERATOR_IMAGE_NAME") | .value')
       used+=$'\n'"$v"
       [ -n "$v" ] && grep -qxF "$v" <<< "$allowed" || fail "the operator's image '$v' is not on the closed list of allowed-images.yaml"
+      # The digest pins the image, not the chart: its tag must still be
+      # the version the chart ships, or a chart bump would leave the old
+      # operator running.
+      check
+      app_version=$(helm show chart "$chart" --repo "$repo" --version "$version" 2> /dev/null | yq e '.appVersion' -)
+      tag=${v%@*}; tag=${tag##*:}
+      [ -n "$app_version" ] && [ "$tag" = "${app_version#v}" ] || fail "the operator's image tag '$tag' is not the chart's appVersion '$app_version'"
     fi
   done
   ctx=$env
