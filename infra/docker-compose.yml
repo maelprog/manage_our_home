@@ -10,7 +10,7 @@ services:
     # PostgreSQL minor releases are fixes, often security ones: Renovate
     # (renovate.json) opens a PR for each new 16.x or digest republication,
     # and leaves the major series alone (a 16 -> 17 move needs a dump/restore).
-    image: postgres:16.15@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
+    image: postgres:16.15@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d
     restart: unless-stopped
     environment:
       POSTGRES_DB: manage_our_home
