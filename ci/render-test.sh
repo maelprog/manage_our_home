@@ -369,14 +369,20 @@ for overlay in "${overlays[@]}"; do
   bucket=$(y "select(.kind == \"ConfigMap\" and .metadata.name == \"$cm\") | .data.MINIO_BUCKET // \"\"")
   v=$(y "$bj | .spec.template.spec.containers[0].env[] | select(.name == \"MINIO_BUCKET\") | .value")
   [ -n "$bucket" ] && [ "$v" = "$bucket" ] || fail "Job minio-bucket creates '$v', api uses '$bucket'"
-  # Run on every sync: it only looks for the bucket and creates it — no
-  # other mc command (rb, rm, anonymous, ilm, admin…). The script is cut
-  # into words, quotes dropped; every word whose base name is `mc`
-  # (`mc`, `"mc"`, `./mc`, `/opt/…/bin/mc`) is a call, and the first word
-  # after it that is not an option is its command, which must be alias,
-  # stat or mb. A command named by a variable or a substitution (`$M rb`,
-  # `$(…) rb`) cannot be read that way, nor what eval, xargs or a nested
-  # shell would run: the script may hold none of them.
+  # Run on every sync, the Job should only look for the bucket and create
+  # it. A guard against the plain slips, not a shell parser: the script is
+  # cut into words, quotes dropped; a word whose base name is `mc` is
+  # taken for a call, the next word not starting with `-` for its command,
+  # which must be alias, stat or mb. A second check refuses a line where
+  # `$` follows a separator, `do`, `then`, `else`, `until`, `while`, `if`
+  # or `!`, and the words eval, exec, xargs, source, `.`, sh, bash and env.
+  # Forms tested by mutation: `mc rb`, `mc --quiet rb`, `mc --config-dir
+  # … rb`, `mc --json anonymous set`, `/opt/…/bin/mc rb`, `./mc rb`,
+  # `"mc" rb`, `'mc' rb`, `M=mc; $M rb`, `"$M" rb`, `$(echo mc) rb`,
+  # eval, sh -c, xargs, a bare `mc`. Not covered, among others: an
+  # option taking a value before the command (`mc --config-dir stat rb`),
+  # a variable after `{`, an assignment, command, time, nohup or timeout
+  # (`{ $M rb; }`, `A=1 $M rb`, `command $M rb`…), `m\c`, globs.
   check
   v=$(y "$bj | .spec.template.spec.containers[0] | [(.command[0:2] | join(\" \")), (.command | length), (.args // [] | length)] | join(\" \")")
   [ "$v" = "/bin/sh -c 3 0" ] || fail "Job minio-bucket: command is not one script for /bin/sh -c, without args ('$v')"
