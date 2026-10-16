@@ -666,6 +666,18 @@ mod tests {
         );
     }
 
+    /// The API refuses a negative offset; one forged in the query string
+    /// must not wrap into a delay of thousands of years.
+    #[test]
+    fn a_negative_offset_reads_as_at_event_time() {
+        let html = render_reminder_created(uid(9), uid(3), -1);
+        assert!(
+            html.contains("Rappel actif : à l'heure de l'événement."),
+            "{html}"
+        );
+        assert!(!html.contains("avant"), "{html}");
+    }
+
     #[test]
     fn the_delete_form_targets_the_created_reminder() {
         let html = render_reminder_created(uid(9), uid(3), 10);
