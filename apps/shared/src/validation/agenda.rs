@@ -1,6 +1,6 @@
 //! Pure, dependency-light logic for the Agenda screens (front epic #3,
 //! issue #18), shared by `apps/web`'s SSR pages. Written test-first per
-//! `.claude/CLAUDE.md`'s TDD process. Four concerns live here so the UI and
+//! `.claude/CLAUDE.md`'s TDD process. Its concerns live here so the UI and
 //! the fixed backend can never drift.
 //!
 //! `build_rrule`/`parse_rrule` are the **RRULE v1 subset** builder/parser:
@@ -18,6 +18,9 @@
 //!
 //! `month_grid`/`week_days` are the civil-date maths behind the hand-rolled
 //! calendar (no calendar library, the accepted Leptos trade-off).
+//!
+//! `format_reminder_offset` words a reminder's minutes-before offset as
+//! days, hours and minutes for the event page (#457).
 
 use chrono::{DateTime, Datelike, NaiveDate, NaiveTime, TimeZone, Utc, Weekday};
 use chrono_tz::Europe::Paris;
@@ -351,6 +354,33 @@ pub fn validate_attachment(filename: &str, size_bytes: u64) -> Result<(), Attach
         return Err(AttachmentError::TooLarge);
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Reminder offset wording (#457)
+// ---------------------------------------------------------------------------
+
+/// A reminder offset in minutes (`event_reminders.offset_minutes`), worded
+/// as days, hours and minutes for display: zero components are omitted,
+/// "jour" takes a plural, and 0 reads "à l'heure de l'événement".
+/// The result names a duration only; the caller adds "avant" when non-zero.
+pub fn format_reminder_offset(minutes: u32) -> String {
+    if minutes == 0 {
+        return "à l'heure de l'événement".to_string();
+    }
+    let (days, hours, mins) = (minutes / 1440, minutes % 1440 / 60, minutes % 60);
+    let mut parts = Vec::with_capacity(3);
+    if days > 0 {
+        let unit = if days == 1 { "jour" } else { "jours" };
+        parts.push(format!("{days} {unit}"));
+    }
+    if hours > 0 {
+        parts.push(format!("{hours} h"));
+    }
+    if mins > 0 {
+        parts.push(format!("{mins} min"));
+    }
+    parts.join(" ")
 }
 
 // ---------------------------------------------------------------------------
@@ -707,5 +737,50 @@ mod tests {
         let (s, e) = normalize_all_day(start, start);
         assert_eq!(s, utc(2026, 1, 4, 23, 0));
         assert_eq!(e, utc(2026, 1, 5, 23, 0));
+    }
+
+    // -- format_reminder_offset (#457) ---------------------------------------
+
+    #[test]
+    fn reminder_offset_zero_offset_is_at_event_time() {
+        assert_eq!(format_reminder_offset(0), "à l'heure de l'événement");
+    }
+
+    #[test]
+    fn reminder_offset_minutes_only() {
+        assert_eq!(format_reminder_offset(10), "10 min");
+        assert_eq!(format_reminder_offset(1), "1 min");
+    }
+
+    #[test]
+    fn reminder_offset_whole_hour_omits_zero_minutes() {
+        assert_eq!(format_reminder_offset(60), "1 h");
+        assert_eq!(format_reminder_offset(120), "2 h");
+    }
+
+    #[test]
+    fn reminder_offset_one_day_is_singular() {
+        assert_eq!(format_reminder_offset(1440), "1 jour");
+    }
+
+    #[test]
+    fn reminder_offset_several_days_are_plural() {
+        assert_eq!(format_reminder_offset(10080), "7 jours");
+    }
+
+    #[test]
+    fn reminder_offset_day_hour_and_minutes() {
+        assert_eq!(format_reminder_offset(1510), "1 jour 1 h 10 min");
+        assert_eq!(format_reminder_offset(3070), "2 jours 3 h 10 min");
+    }
+
+    #[test]
+    fn reminder_offset_zero_hours_between_days_and_minutes_are_omitted() {
+        assert_eq!(format_reminder_offset(2890), "2 jours 10 min");
+    }
+
+    #[test]
+    fn reminder_offset_hours_and_minutes_without_days() {
+        assert_eq!(format_reminder_offset(90), "1 h 30 min");
     }
 }
