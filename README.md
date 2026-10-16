@@ -511,19 +511,19 @@ compris.
   qu'elle n'est pas mergée plutôt que doublée.
 - **Prod** : sur un tag `v*`, une PR qui ne touche que `overlays/prod`,
   dont le corps liste les commits depuis la version en prod et les
-  migrations nouvelles. Elle promeut la paire que staging fait tourner
-  pour le commit du tag, pas celle que `images.yml` construit sur le tag :
-  celle-là est reconstruite, rien ne garantit que ses empreintes soient
-  celles de staging, et elle n'y a pas tourné. L'étiquette `sha-<commit>`
-  ne la désigne pas non plus de façon sûre : la construction du tag la
-  pousse à nouveau (`image-build.yml`). La paire se lit dans
-  `overlays/staging`.
-- **Le bot qui ouvre ces PR n'est pas encore en place** (#436) : un
-  workflow déclenché par `main` et ses tags ne peut vivre que sur `main`,
-  et son identité — une GitHub App qui ne peut qu'ouvrir des PR, hors de
-  toute liste de contournement, jamais un jeton personnel — est à créer
-  par l'utilisateur. D'ici là, ces PR s'ouvrent à la main avec
-  `ci/set-images.sh`.
+  migrations nouvelles. Elle promeut la paire de `overlays/staging`, celle
+  qui tourne en staging, et non les images que `images.yml` construit sur
+  le tag (arbitrage du 2026-10-16 ; `images.yml` reste tel quel) : celles-là
+  sont reconstruites, rien ne garantit que leurs empreintes soient celles
+  de staging, et elles n'y ont pas tourné. L'étiquette `sha-<commit>` ne
+  désigne pas non plus la paire de staging de façon sûre : la construction
+  du tag la pousse à nouveau (`image-build.yml`).
+- **Le bot** qui ouvre ces PR est le workflow `promote.yml` de `main`,
+  livré par une PR vers `main` (#436) : un workflow déclenché par `main` et
+  ses tags ne peut vivre que sur `main`. Son identité — une GitHub App qui
+  ne peut qu'ouvrir des PR, hors de toute liste de contournement, jamais un
+  jeton personnel — est créée par l'utilisateur. Tant qu'il n'est pas en
+  place, ces PR s'ouvrent à la main avec `ci/set-images.sh`.
 
 ### Ce que la CI vérifie
 
