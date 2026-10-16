@@ -29,7 +29,8 @@
         "required_status_checks": [
           { "context": "render" },
           { "context": "promotion" },
-          { "context": "k3d" }
+          { "context": "k3d" },
+          { "context": "observability" }
         ]
       }
     }

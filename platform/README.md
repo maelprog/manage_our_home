@@ -15,6 +15,7 @@ components/             une brique par dossier (Component Kustomize)
   cloudnative-pg/       opérateur CloudNativePG (les bases : #433)
   kyverno/              Kyverno, la politique des images signées et la liste fermée des images
   app-namespace/        namespace `manage-our-home`, Pod Security `restricted`
+  observability/        métriques, journaux et alertes (#437), en prod seulement
 clusters/
   staging/              serveur maison, 4 Go
   prod/                 VPS tiers
@@ -23,14 +24,18 @@ clusters/
     manage-our-home.yaml l'Application de l'appli
     postgres.yaml       l'Application de son Postgres (#433)
     secrets/            ses SealedSecrets, scellés pour ce cluster
+    monitoring-secrets/ ceux de l'observabilité, namespace `monitoring` (#437)
 ```
 
 ## Environnements
 
 Le paramètre d'environnement de l'amorçage choisit la racine, donc les
 briques (la liste `components:` de `clusters/<env>/kustomization.yaml`) et
-la branche suivie. L'observabilité (#437) viendra comme une brique de plus,
-listée en prod seulement.
+la branche suivie. L'observabilité (#437) est une brique de plus, listée
+en prod seulement : sur les 4 Go du serveur de test, elle ne tient pas à
+côté du reste (arbitrage du 2026-10-12). La surveillance du staging se
+limite à `kubectl top` et aux journaux des pods. `ci/platform-test.sh`
+échoue si le rendu de staging en contient quoi que ce soit.
 
 | | staging | prod |
 |---|---|---|
@@ -62,8 +67,8 @@ vague ne commençant qu'une fois la précédente `Healthy` :
 | Vague | Quoi |
 |---|---|
 | -10 | les Applications des briques |
-| -5 | namespace `manage-our-home`, ClusterIssuers, réglages de Traefik, politique Kyverno |
-| -3 | SealedSecrets de `clusters/<env>/secrets/` |
+| -5 | namespace `manage-our-home`, ClusterIssuers, réglages de Traefik, politique Kyverno ; en prod, les alertes et sondes de l'observabilité |
+| -3 | SealedSecrets de `clusters/<env>/secrets/` ; en prod, ceux de `monitoring-secrets/` |
 | -2 | `postgres-<env>` : le Cluster CloudNativePG de l'appli (#433) |
 | 0 | `manage-our-home-<env>` |
 
@@ -203,6 +208,93 @@ politiques ne sont évaluées qu'à l'admission. Kyverno injoignable, l'admissio
 des pods de l'appli échoue (`failurePolicy: Fail`) plutôt que de laisser
 passer.
 
+## Observabilité
+
+`components/observability/` (#437), sur le cluster de prod seulement, dans
+le namespace `monitoring` :
+
+- **kube-prometheus-stack** : l'opérateur Prometheus, un Prometheus
+  (mesures gardées 15 jours, 8 Go au plus de son volume de 10 Gi), un
+  Alertmanager, Grafana, kube-state-metrics et node-exporter. Ni le
+  contrôleur, ni l'ordonnanceur, ni le proxy, ni etcd, que k3s fait
+  tourner dans son propre processus, ni l'API server, ne sont lus.
+- **Loki**, en un seul processus, ses données sur un volume de 10 Gi, et
+  **Grafana Alloy**, qui lit les journaux de chaque conteneur par l'API
+  Kubernetes (comme `kubectl logs`) et les lui envoie. Alloy ne lit que
+  les pods et leurs journaux : aucun Secret.
+- **Rétention des journaux : 14 jours** (`retention_period: 336h`,
+  `loki.yaml`), appliquée par le compacteur de Loki. Ils peuvent contenir
+  des adresses IP : cette durée est celle que déclarent le registre des
+  traitements et la politique de confidentialité de `main` (« Journaux
+  techniques ») ; elle ne change qu'avec eux. `ci/platform-test.sh` la
+  vérifie sur le rendu, le job `observability` sur le Loki qui tourne.
+
+### Alertes
+
+Celles qui partent par mail sont celles de `alerts.yaml`, chacune
+marquée `notify: mail` :
+
+| Alerte | Quand |
+|---|---|
+| `ContainerNotReady` | un conteneur en marche ne passe plus sa sonde readiness depuis 5 min |
+| `ContainerRestarting` | 3 redémarrages ou plus en 30 min (sonde liveness, plantage) |
+| `MigrationJobFailed` | le Job `migrate` de l'appli a échoué |
+| `PostgresBackupLate` | dernière copie complète de plus de 26 h (une chaque nuit à 3 h UTC) |
+| `PostgresWALArchivingFailing` | le dernier envoi d'un WAL a échoué, depuis 10 min |
+| `PostgresMetricsAbsent` | plus aucune mesure de Postgres depuis 30 min : les deux précédentes ne pourraient plus partir |
+| `CertificateExpiringSoon` | un certificat expire dans moins de 21 jours (cert-manager renouvelle à 30) |
+| `CertificateNotReady` | un certificat pas `Ready` depuis 1 h |
+| `DiskAlmostFull` | un disque du nœud plein à plus de 80 % depuis 15 min |
+
+Les règles du chart restent, visibles dans Alertmanager et Grafana, sans
+mail. `ci/alerts-test.sh` vérifie chaque alerte avec `promtool` contre
+`ci/alerts-test.yaml`, et la configuration d'Alertmanager avec `amtool` ;
+le job k3d `observability` les fait se déclencher pour de vrai (« CI de
+cette branche », README racine). `monitors.yaml` fait lire à Prometheus
+les mesures de cert-manager et des instances Postgres, sans toucher à
+leurs briques ; `ci/postgres-test.sh` vérifie sur staging que ces pods
+les exportent.
+
+Les mails passent par le relais SMTP de l'appli. La configuration
+d'Alertmanager, avec le destinataire (une donnée personnelle, qu'une
+branche publique ne porte pas) et les identifiants du relais, est le
+Secret `alertmanager-config`, scellé pour le cluster. Tant qu'il manque,
+Alertmanager tourne avec une configuration qui n'envoie rien. Le
+remplir depuis `alertmanager.template.yaml` et le sceller, sans rien
+écrire en clair sur disque :
+
+```sh
+SMTP_HOST=smtp.tem.scaleway.com SMTP_FROM='…' SMTP_USERNAME='…' \
+  SMTP_PASSWORD='…' ALERT_TO='…' \
+  platform/components/observability/alertmanager-config.sh \
+  | kubectl -n monitoring create secret generic alertmanager-config \
+      --dry-run=client -o yaml --from-file=alertmanager.yaml=/dev/stdin \
+  | kubeseal --format yaml > platform/clusters/prod/monitoring-secrets/alertmanager-config.yaml
+```
+
+puis l'ajouter à `resources:` de `monitoring-secrets/kustomization.yaml`,
+par PR. Le mot de passe SMTP est celui de `api-secrets` : les changer
+ensemble.
+
+### Grafana
+
+Aucune entrée publique : ni Ingress, ni Service hors du cluster
+(`ci/platform-test.sh` le vérifie sur le rendu de chaque chart). Depuis
+un poste qui a accès au cluster :
+
+```sh
+kubectl -n monitoring get secret kube-prometheus-stack-grafana \
+  -o jsonpath='{.data.admin-password}' | base64 -d
+kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
+```
+
+puis `http://localhost:3000`, compte `admin`. Le mot de passe est tiré
+par le chart à la première synchro, puis gardé : l'Application ignore ce
+champ du Secret et l'empreinte qu'en portent les pods de Grafana, que
+chaque rendu tirerait à nouveau. Sans volume, Grafana repart à chaque
+redémarrage des tableaux du chart et de ce mot de passe. Les sources
+Prometheus et Loki y sont déjà.
+
 ## Mémoire
 
 Requête et limite mémoire sur chaque conteneur des briques, un réplica de
@@ -214,6 +306,16 @@ au repos après les 10 minutes du job k3d, 36 Mi sur GitHub, 88, 93 et
 limite au-dessus de tous) : vérifiées sur ce HelmChartConfig. Le job k3d
 borne le nœud à 4 Go, laisse tout tourner 10 minutes et imprime `kubectl
 top pods -A` avec le total de la plateforme.
+
+L'observabilité (prod) suit la même règle, Prometheus et Alertmanager
+compris (leurs limites sont sur leurs ressources `Prometheus` et
+`Alertmanager`, celles des rechargeurs de configuration sur les arguments
+de l'opérateur). Le job `observability` imprime aussi `kubectl top` après
+5 minutes au repos : 1 267 Mi pour le namespace `monitoring` sur un
+passage local du job (Grafana et ses deux sidecars 481 Mi, Prometheus
+346 Mi, Alloy 139 Mi, Loki 113 Mi), avec quelques heures de mesures et
+de journaux seulement : Prometheus et Loki grossissent avec eux, sous
+leurs limites de 1 Gi et 512 Mi.
 
 ## Versions
 
