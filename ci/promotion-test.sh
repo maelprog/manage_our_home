@@ -82,7 +82,7 @@ set_pair "$d" staging P1 > /dev/null 2>&1 || fail "second identical run failed"
 [ -z "$(git -C "$d" status --porcelain)" ] \
   || fail "an identical second run changed the tree (an open PR updated with nothing would get a commit)"
 
-for bad in latest "sha256:abc" "$(digest x | tr a-f A-F)" "$(digest x)@x"; do
+for bad in latest "sha256:abc" "sha256:$(digest x | cut -d: -f2 | tr a-f A-F)" "$(digest x)@x"; do
   check
   if "$d/ci/set-images.sh" prod P9 "$bad" "$(digest P9-web)" > /dev/null 2>&1; then
     fail "accepted '$bad' as a digest"
