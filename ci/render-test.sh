@@ -24,7 +24,7 @@ SECRET_NAMES=(
   OAUTH_ENCRYPTION_KEY MESSAGE_ENCRYPTION_KEY CALENDAR_FEED_ENCRYPTION_KEY
   LOGIN_THROTTLE_KEY VAPID_PRIVATE_KEY
   SMTP_USERNAME SMTP_PASSWORD
-  MINIO_ACCESS_KEY MINIO_SECRET_KEY
+  MINIO_ACCESS_KEY MINIO_SECRET_KEY MINIO_ROOT_USER MINIO_ROOT_PASSWORD
 )
 
 failures=0
@@ -46,7 +46,11 @@ to_mib() {
 }
 
 # Every container of a workload, one line each: `<kind>/<workload>/<container>`.
-WORKLOADS='select(.kind == "Deployment" or .kind == "Job")'
+WORKLOADS='select(.kind == "Deployment" or .kind == "StatefulSet" or .kind == "Job")'
+
+# The third-party images the overlays run (#435): MinIO and its client, by
+# tag and digest — those of infra/docker-compose.yml on main.
+THIRD_PARTY_IMAGES='^docker\.io/bitnamilegacy/minio(-client)?:[0-9][^@]*@sha256:[0-9a-f]{64}$'
 
 for overlay in "${overlays[@]}"; do
   out="$work/$overlay.yaml"
@@ -63,8 +67,11 @@ for overlay in "${overlays[@]}"; do
   deployments=$(y 'select(.kind == "Deployment") | .metadata.name' | sort | tr '\n' ' ')
   [ "$deployments" = "api web " ] || fail "Deployments: expected 'api web', got '$deployments'"
   check
-  jobs=$(y 'select(.kind == "Job") | .metadata.name' | tr '\n' ' ')
-  [ "$jobs" = "migrate " ] || fail "Jobs: expected 'migrate', got '$jobs'"
+  sts=$(y 'select(.kind == "StatefulSet") | .metadata.name' | sort | tr '\n' ' ')
+  [ "$sts" = "minio " ] || fail "StatefulSets: expected 'minio', got '$sts'"
+  check
+  jobs=$(y 'select(.kind == "Job") | .metadata.name' | sort | tr '\n' ' ')
+  [ "$jobs" = "migrate minio-bucket " ] || fail "Jobs: expected 'migrate minio-bucket', got '$jobs'"
 
   # --- No Secret rendered: their values are sealed elsewhere (#432).
   check
@@ -77,10 +84,11 @@ for overlay in "${overlays[@]}"; do
     kind=${c%%/*}; rest=${c#*/}; w=${rest%%/*}; name=${rest#*/}
     sel="select(.kind == \"$kind\" and .metadata.name == \"$w\") | .spec.template.spec | (.containers + (.initContainers // []))[] | select(.name == \"$name\")"
 
-    # --- Images by digest, never by tag alone.
+    # --- Images by digest, never by tag alone: the application's, pinned
+    # by the overlay; MinIO's, by tag and digest in the base.
     check
     image=$(y "$sel | .image")
-    [[ "$image" =~ ^ghcr\.io/[a-z0-9-]+/manage-our-home-(api|web)@sha256:[0-9a-f]{64}$ ]] \
+    [[ "$image" =~ ^ghcr\.io/[a-z0-9-]+/manage-our-home-(api|web)@sha256:[0-9a-f]{64}$ || "$image" =~ $THIRD_PARTY_IMAGES ]] \
       || fail "$c: image '$image' is not referenced by digest"
 
     # --- Memory: requested and capped on every container.
@@ -93,12 +101,18 @@ for overlay in "${overlays[@]}"; do
     # worst case main bounds (README.md, "Mémoire"), which a lower limit
     # would OOM-kill under a load main allows; for migrate, which has no
     # bounded worst case, the limit main's migrations were observed to
-    # run within (migrate-job.yaml).
+    # run within (migrate-job.yaml); for MinIO, the low end of what the
+    # arbitrage of 2026-10-12 gives it, and on staging no more than its
+    # high end (384 Mi); for the bucket Job, the limit it was observed to
+    # run within (minio/bucket-job.yaml).
     check
+    ceiling=""
     case "$name" in
       api) floor=256; why="the worst case main bounds" ;;
       web) floor=448; why="the worst case main bounds" ;;
       migrate) floor=128; why="the limit main's migrations were observed to run within" ;;
+      minio) floor=256; why="the arbitrage of 2026-10-12"; [ "$overlay" = staging ] && ceiling=384 ;;
+      bucket) floor=64; why="the limit the bucket Job was observed to run within" ;;
       *) floor=""; why="" ;;
     esac
     if [ -z "$floor" ]; then
@@ -107,6 +121,8 @@ for overlay in "${overlays[@]}"; do
       fail "$c: memory limit '$lim' is not in Mi or Gi"
     elif [ "$mib" -lt "$floor" ]; then
       fail "$c: memory limit $lim is below its ${floor}Mi floor, $why"
+    elif [ -n "$ceiling" ] && [ "$mib" -gt "$ceiling" ]; then
+      fail "$c: memory limit $lim is above ${ceiling}Mi on $overlay, $why"
     fi
 
     # --- Unprivileged, read-only, no capability.
@@ -315,6 +331,82 @@ for overlay in "${overlays[@]}"; do
   [ "$v" = "Content-Security-Policy Referrer-Policy Reporting-Endpoints Strict-Transport-Security X-Content-Type-Options X-Frame-Options " ] \
     || fail "Middleware security-headers sets '$v'"
 
+  # --- MinIO (#435): one node, its volume kept, reached by api at
+  # MINIO_ENDPOINT, before api and web; the bucket api names created by
+  # a Sync hook in between.
+  st='select(.kind == "StatefulSet" and .metadata.name == "minio")'
+  mc="$st | .spec.template.spec.containers[0]"
+  check
+  v=$(y "$st | [.spec.replicas, .spec.persistentVolumeClaimRetentionPolicy.whenDeleted, .spec.persistentVolumeClaimRetentionPolicy.whenScaled] | join(\" \")")
+  [ "$v" = "1 Retain Retain" ] || fail "minio: replicas and PVC retention '$v', expected '1 Retain Retain'"
+  # The server's data path is the volume of the claim template, nothing
+  # else: an emptyDir there would lose every attachment at the next start.
+  check
+  data=$(y "$mc | .command[2] // \"\"")
+  v=$(y "$mc | .volumeMounts[] | select(.mountPath == \"$data\") | .name")
+  w=$(y "$st | .spec.volumeClaimTemplates[].metadata.name")
+  [ -n "$data" ] && [ "$v" = "$w" ] && [ "$(y "$mc | .command[1]")" = server ] \
+    || fail "minio: serves '$data', mounted from '$v', the claim template being '$w'"
+  check
+  v=$(y "$mc | .env[] | select(.name == \"MINIO_ROOT_USER\" or .name == \"MINIO_ROOT_PASSWORD\") | .valueFrom.secretKeyRef | .name + \"/\" + .key" | tr '\n' ' ')
+  [ "$v" = "minio/MINIO_ROOT_USER minio/MINIO_ROOT_PASSWORD " ] || fail "minio: credentials from '$v', expected the Secret minio"
+  check
+  v=$(y "select(.kind == \"Deployment\" and .metadata.name == \"api\") | .spec.template.spec.containers[0].env[] | select(.name == \"MINIO_ACCESS_KEY\" or .name == \"MINIO_SECRET_KEY\") | .valueFrom.secretKeyRef | .name + \"/\" + .key" | tr '\n' ' ')
+  [ "$v" = "minio/MINIO_ROOT_USER minio/MINIO_ROOT_PASSWORD " ] || fail "api: MinIO credentials from '$v', expected those MinIO starts with"
+  # api's endpoint is the Service that selects MinIO's pods, on its port.
+  check
+  endpoint=$(y "select(.kind == \"ConfigMap\" and .metadata.name == \"$cm\") | .data.MINIO_ENDPOINT // \"\"")
+  svc=${endpoint#http://}; port=${svc##*:}; svc=${svc%:*}
+  pods=$(y "$st | .spec.template.metadata.labels | to_entries | map(.key + \"=\" + .value) | join(\",\")")
+  v=$(y "select(.kind == \"Service\" and .metadata.name == \"$svc\") | [(.spec.selector | to_entries | map(.key + \"=\" + .value) | join(\",\")), (.spec.ports[] | select(.port == $port) | .targetPort)] | join(\" \")")
+  [ -n "$v" ] && [[ ",$pods," == *",${v% *},"* ]] && [ "${v#* }" = "$(y "$mc | .ports[] | select(.containerPort == $port) | .name")" ] \
+    || fail "api: MINIO_ENDPOINT '$endpoint' is not a Service selecting MinIO's pods on its port ('$v')"
+  bj='select(.kind == "Job" and .metadata.name == "minio-bucket")'
+  check
+  v=$(y "$bj | [.metadata.annotations[\"argocd.argoproj.io/hook\"], .metadata.annotations[\"argocd.argoproj.io/hook-delete-policy\"], .spec.template.spec.restartPolicy] | join(\" \")")
+  [ "$v" = "Sync BeforeHookCreation Never" ] || fail "Job minio-bucket: hook/delete policy/restartPolicy '$v', expected 'Sync BeforeHookCreation Never'"
+  check
+  bucket=$(y "select(.kind == \"ConfigMap\" and .metadata.name == \"$cm\") | .data.MINIO_BUCKET // \"\"")
+  v=$(y "$bj | .spec.template.spec.containers[0].env[] | select(.name == \"MINIO_BUCKET\") | .value")
+  [ -n "$bucket" ] && [ "$v" = "$bucket" ] || fail "Job minio-bucket creates '$v', api uses '$bucket'"
+  # Run on every sync, the Job should only look for the bucket and create
+  # it. A guard against the plain slips, not a shell parser: the script is
+  # cut into words, quotes dropped; a word whose base name is `mc` is
+  # taken for a call, the next word not starting with `-` for its command,
+  # which must be alias, stat or mb. A second check refuses a line where
+  # `$` follows a separator, `do`, `then`, `else`, `until`, `while`, `if`
+  # or `!`, and the words eval, exec, xargs, source, `.`, sh, bash and env.
+  # Forms tested by mutation: `mc rb`, `mc --quiet rb`, `mc --config-dir
+  # … rb`, `mc --json anonymous set`, `/opt/…/bin/mc rb`, `./mc rb`,
+  # `"mc" rb`, `'mc' rb`, `M=mc; $M rb`, `"$M" rb`, `$(echo mc) rb`,
+  # eval, sh -c, xargs, a bare `mc`. Not covered, among others: an
+  # option taking a value before the command (`mc --config-dir stat rb`),
+  # a variable after `{`, an assignment, command, time, nohup or timeout
+  # (`{ $M rb; }`, `A=1 $M rb`, `command $M rb`…), `m\c`, globs.
+  check
+  v=$(y "$bj | .spec.template.spec.containers[0] | [(.command[0:2] | join(\" \")), (.command | length), (.args // [] | length)] | join(\" \")")
+  [ "$v" = "/bin/sh -c 3 0" ] || fail "Job minio-bucket: command is not one script for /bin/sh -c, without args ('$v')"
+  check
+  script=$(y "$bj | .spec.template.spec.containers[0].command[2] // \"\"")
+  subs=$(sed "s/[\"']//g; s/[;&|()]/ /g" <<< "$script" | tr -s ' \t' '\n\n' | awk '
+    want && !/^-/ { print; want = 0; next }
+    { n = split($0, part, "/") }
+    part[n] == "mc" { if (want) print "(none)"; want = 1 }
+    END { if (want) print "(none)" }')
+  v=$(sort -u <<< "$subs" | tr '\n' ' ')
+  [ "$v" = "alias mb stat " ] || fail "Job minio-bucket runs mc '$v', expected alias, stat and mb alone"
+  check
+  v=$(grep -nE '(^|[;&|(`]|(^|[[:space:]])(do|then|else|until|while|if|!))[[:space:]]*"?\$|(^|[[:space:];&|(])(eval|exec|xargs|source|\.|sh|bash|env)([[:space:]]|$)' <<< "$script" || true)
+  [ -z "$v" ] || fail "Job minio-bucket runs a command it does not name: $v"
+  # MinIO up (-2), then the bucket (-1), then api and web (0).
+  check
+  wv() { y "$1 | .metadata.annotations[\"argocd.argoproj.io/sync-wave\"] // \"0\""; }
+  w_minio=$( (wv "$st"; wv 'select(.kind == "Service" and (.metadata.name == "minio" or .metadata.name == "minio-headless"))') | sort -u | tr '\n' ' ')
+  w_bucket=$(wv "$bj")
+  w_apps=$(wv 'select(.kind == "Deployment")' | sort -u | tr '\n' ' ')
+  [ "$(wc -w <<< "$w_minio")" = 1 ] && [ "${w_minio% }" -lt "$w_bucket" ] && [ "$(wc -w <<< "$w_apps")" = 1 ] && [ "$w_bucket" -lt "${w_apps% }" ] \
+    || fail "sync waves: MinIO '$w_minio' < bucket Job '$w_bucket' < api and web '$w_apps' does not hold"
+
   # --- Postgres (#433): the overlay's `postgres/` folder, which an
   # Application of its own syncs before the application.
   pg="$work/$overlay-postgres.yaml"
@@ -447,6 +539,12 @@ ALTER DEFAULT PRIVILEGES FOR ROLE migration_role IN SCHEMA public GRANT USAGE, S
   check
   v=$(p "$bo | .barmanObjectStore | [.wal.encryption // \"\", .data.encryption // \"\"] | join(\"\")")
   [ -z "$v" ] || fail "postgres: per-request encryption '$v', which Scaleway refuses"
+  # The Cluster's own folder in the bucket: `postgres`, or `postgres-r<n>`
+  # after the n-th restore (README.md, "Restaurer"); unset, the operator
+  # uses the Cluster's name, `postgres`.
+  check
+  v=$(p "$bo | .barmanObjectStore.serverName // \"\"")
+  [[ "$v" =~ ^(postgres(-r[1-9][0-9]*)?)?$ ]] || fail "postgres: serverName '$v', expected postgres, postgres-r<n> or unset"
   check
   v=$(p 'select(.kind == "ScheduledBackup") | [.spec.cluster.name, .spec.immediate] | join(" ")')
   [ "$v" = "postgres true" ] || fail "postgres: ScheduledBackup is '$v', expected 'postgres true'"

@@ -5,7 +5,8 @@
 # platform/bootstrap.sh and Argo CD deploying the staging overlay on its
 # CloudNativePG Postgres, until api and web answer /readyz and 10 minutes
 # pass without a restart (#432); then the ingress is checked against the
-# guards of main's infra/Caddyfile (#434), and that Postgres is restored
+# guards of main's infra/Caddyfile (#434), an attachment sent through the
+# API is checked in MinIO's bucket (#435), and that Postgres is restored
 # from its backups to an instant (#433).
 #
 # The PRs of the k3s epic (#431 to #437) target `k3s`; `deploy` only
@@ -67,7 +68,7 @@ jobs:
     runs-on: ubuntu-latest
     # The platform, then 10 minutes at rest (ci/staging-smoke.sh), the
     # ingress and its 5 minutes of WebSocket silence (ci/ingress-test.sh),
-    # then the restore drill (ci/postgres-test.sh).
+    # MinIO (ci/minio-test.sh), then the restore drill (ci/postgres-test.sh).
     timeout-minutes: 80
     permissions:
       contents: read
@@ -115,6 +116,11 @@ jobs:
       # the WebSocket past the idle timeout; trickled headers cut.
       - name: Ingress — the Caddyfile's guards
         run: ci/ingress-test.sh main/infra/Caddyfile
+      # On the same cluster (#435): an attachment sent through the API
+      # lands in MinIO's bucket and reads back; the bucket Job, replayed by
+      # a sync, changes nothing; MinIO restarted, the attachment is there.
+      - name: MinIO — an attachment in the bucket, the bucket Job replayed
+        run: ci/minio-test.sh
       # On the same cluster (#433): staging's Postgres has the roles of
       # 01-roles.sh and RLS applies to app_role; then it is deleted and
       # restored from its backups to an instant, and the data checked.

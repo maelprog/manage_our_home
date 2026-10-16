@@ -66,11 +66,11 @@ spec:
             - configMapRef:
                 name: api-config
           env:
-            # All from the Secret `api-secrets`, sealed per environment
-            # (#432). Each key is required except VAPID_PRIVATE_KEY:
-            # without it, reminders are not sent as notifications
-            # (apps/api/README.md on main). The migration role's URL is
-            # not here: only migrate-job.yaml holds it (#425).
+            # From the Secret `api-secrets`, sealed per environment
+            # (#432), MinIO's excepted. Each key is required except
+            # VAPID_PRIVATE_KEY: without it, reminders are not sent as
+            # notifications (apps/api/README.md on main). The migration
+            # role's URL is not here: only migrate-job.yaml holds it (#425).
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef: {name: api-secrets, key: DATABASE_URL}
@@ -104,12 +104,15 @@ spec:
             - name: SMTP_PASSWORD
               valueFrom:
                 secretKeyRef: {name: api-secrets, key: SMTP_PASSWORD}
+            # MinIO's credentials (#435): those of the Secret `minio`
+            # that MinIO itself starts with, as in infra/docker-compose.yml
+            # on main — one sealed value, not two to keep in step.
             - name: MINIO_ACCESS_KEY
               valueFrom:
-                secretKeyRef: {name: api-secrets, key: MINIO_ACCESS_KEY}
+                secretKeyRef: {name: minio, key: MINIO_ROOT_USER}
             - name: MINIO_SECRET_KEY
               valueFrom:
-                secretKeyRef: {name: api-secrets, key: MINIO_SECRET_KEY}
+                secretKeyRef: {name: minio, key: MINIO_ROOT_PASSWORD}
           securityContext:
             allowPrivilegeEscalation: false
             # The server writes nothing to disk (attachments go to MinIO):

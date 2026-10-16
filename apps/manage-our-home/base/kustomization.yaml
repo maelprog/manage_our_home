@@ -1,6 +1,7 @@
 # What every environment runs (#431): api and web, their Services and
 # PodDisruptionBudgets, the migration Job Argo CD runs before each sync,
-# and the ingress in front of them (#434). The overlays add what differs:
+# the ingress in front of them (#434), and MinIO with the Job that creates
+# its bucket (#435). The overlays add what differs:
 # image digests, replicas, the public address, and the staging server's
 # 4 GB constraints.
 #
@@ -23,6 +24,7 @@ resources:
   - web.yaml
   - migrate-job.yaml
   - ingress
+  - minio
 
 # Settings in clear, the ones that do not depend on the environment. Each
 # generated name carries a hash of the content, so a change rolls the pods
@@ -45,7 +47,8 @@ configMapGenerator:
       # one lock for everyone behind web. A cluster started with another
       # --cluster-cidr must change this.
       - TRUSTED_PROXY_CIDRS=10.42.0.0/16
-      # MinIO in the cluster (#435), its Service in this namespace.
+      # MinIO in the cluster (#435, minio/), its Service in this
+      # namespace. The bucket Job restates MINIO_BUCKET (render-test.sh).
       - MINIO_ENDPOINT=http://minio:9000
       - MINIO_BUCKET=manage-our-home
   - name: web-config

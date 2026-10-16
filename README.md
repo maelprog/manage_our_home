@@ -45,6 +45,7 @@ apps/manage-our-home/
     migrate-job.yaml    Job `migrate`, hook Argo CD PreSync (#425)
     ingress/            routes et Middlewares Traefik, certificat (#434)
       host/             Component : l'hôte de l'overlay dans les règles
+    minio/              MinIO et le Job qui crée son bucket (#435)
     kustomization.yaml  ConfigMaps (réglages en clair)
     postgres/           Cluster CloudNativePG et sa sauvegarde nocturne (#433)
   overlays/
@@ -153,8 +154,9 @@ listées ci-dessous.
 
 | Secret | Clés | Lu par |
 |---|---|---|
-| `api-secrets` | `DATABASE_URL`, `ADMIN_DATABASE_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `OAUTH_ENCRYPTION_KEY`, `MESSAGE_ENCRYPTION_KEY`, `CALENDAR_FEED_ENCRYPTION_KEY`, `LOGIN_THROTTLE_KEY`, `VAPID_PRIVATE_KEY` (facultative), `SMTP_USERNAME`, `SMTP_PASSWORD`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` | api |
+| `api-secrets` | `DATABASE_URL`, `ADMIN_DATABASE_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `OAUTH_ENCRYPTION_KEY`, `MESSAGE_ENCRYPTION_KEY`, `CALENDAR_FEED_ENCRYPTION_KEY`, `LOGIN_THROTTLE_KEY`, `VAPID_PRIVATE_KEY` (facultative), `SMTP_USERNAME`, `SMTP_PASSWORD` | api |
 | `migrate-secrets` | `MIGRATION_DATABASE_URL` | Job `migrate` |
+| `minio` | `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | MinIO, le Job `minio-bucket`, et api (ses `MINIO_ACCESS_KEY` et `MINIO_SECRET_KEY`) |
 | `postgres-app-role`, `postgres-migration-role`, `postgres-admin-role` | `username`, `password` (type `kubernetes.io/basic-auth`) | Cluster `postgres` : mot de passe de chaque rôle |
 | `postgres-backup` | `ACCESS_KEY_ID`, `ACCESS_SECRET_KEY`, `REGION` (`fr-par`) | Cluster `postgres` : clé du bucket de sauvegarde |
 
@@ -292,13 +294,21 @@ revenu avant la base laisse des lignes sans objet. D'où l'ordre :
 2. **Arrêter l'api** (`kubectl -n manage-our-home scale deploy/api
    --replicas=0`) : plus d'écriture, et plus de passe
    `attachment_reconcile`.
-3. **Le bucket à `T`** : restaurer le bucket des pièces jointes au même
-   instant, depuis sa propre sauvegarde (MinIO dans le cluster, #435). Sans
-   sauvegarde du bucket à `T`, ne rien supprimer : copier le bucket à part,
-   et ne relancer l'api qu'avec un `ADMIN_DATABASE_URL` sur un rôle sans
-   `BYPASSRLS`, ce qui fait refuser chaque passe de réconciliation (et
-   coupe aussi les routes `/admin/*` et les purges horaires) jusqu'à ce que
-   lignes et objets soient remis d'accord (item 9).
+3. **Le bucket à `T`** : le bucket des pièces jointes (« MinIO ») n'a pas
+   encore de sauvegarde, il ne peut pas revenir à `T`. Ne rien y
+   supprimer : le copier à part, api arrêtée, depuis le volume de MinIO,
+
+   ```sh
+   kubectl -n manage-our-home exec minio-0 -- \
+     tar -C /bitnami/minio/data -cf - manage-our-home > pieces-jointes-$(date -u +%Y%m%d%H%M).tar
+   ```
+
+   puis ne relancer l'api (étape 7) qu'avec un `ADMIN_DATABASE_URL` sur un
+   rôle sans `BYPASSRLS`, ce qui fait refuser chaque passe de
+   réconciliation (et coupe aussi les routes `/admin/*` et les purges
+   horaires) jusqu'à ce que lignes et objets soient remis d'accord
+   (item 9). La copie contient les pièces jointes en clair : la ranger
+   comme le serait une sauvegarde, hors du dépôt.
 4. **Supprimer le Cluster**, volume compris :
    `kubectl -n manage-our-home delete cluster postgres`.
 5. **Le recréer depuis le bucket de sauvegarde à `T`** : une PR sur
@@ -398,8 +408,90 @@ sauvegarde à la demande aboutit et figure sous le nouveau `serverName`, la
 commande de purge de l'étape 8 tourne sur l'ancien dossier (sans rien y
 supprimer : ses sauvegardes ont quelques minutes) et l'api répond 200 sur
 `/readyz`. Ni la seconde PR de l'étape 5 ni la suppression du dossier à
-trente jours ne sont jouées. Le bucket des pièces jointes (étape 3) arrive
-avec #435.
+trente jours ne sont jouées. De l'étape 3, `ci/minio-test.sh` joue la copie
+du bucket et vérifie qu'elle contient la pièce jointe envoyée.
+
+## MinIO
+
+Le stockage objet des pièces jointes d'événements (`base/minio/`, #435),
+dans le namespace de l'appli : api l'atteint à `MINIO_ENDPOINT`
+(`http://minio:9000`), bucket `MINIO_BUCKET` (`manage-our-home`). Il est
+synchronisé par l'Application de l'appli, dans cet ordre : le Job `migrate`
+(PreSync, il n'a pas besoin de MinIO), MinIO (vague -2), le Job qui crée le
+bucket (vague -1), puis api et web (vague 0).
+
+- **Un nœud, un disque** : un StatefulSet à un réplica, son volume de
+  20 Gi venu de la classe de stockage par défaut (`local-path` sur k3s).
+  Le volume survit au StatefulSet (`persistentVolumeClaimRetentionPolicy`
+  en `Retain`) : ni sa suppression ni un élagage d'Argo CD ne retirent les
+  pièces jointes. Perdre le disque du nœud, c'est les perdre (« Restaurer »).
+- **Image** : celle de `infra/docker-compose.yml` sur `main`, même étiquette
+  et même empreinte (`docker.io/bitnamilegacy/minio`, le miroir Bitnami :
+  l'organisation `minio` refuse les tirages anonymes, #274). Le binaire
+  MinIO est lancé directement, sans l'entrypoint Bitnami, qui veut écrire
+  dans l'image et, sur un volume existant, être root : ici l'UID 1001 de
+  l'image, système de fichiers racine en lecture seule, aucune capacité,
+  comme les pods de l'appli. Les données sont au même chemin que dans
+  Compose (`/bitnami/minio/data`). La console web est coupée
+  (`MINIO_BROWSER=off`) : rien n'y mène.
+- **Bucket** : le Job `minio-bucket`, image `minio-client` de Compose
+  (son service `minio-init`), est un hook `Sync` d'Argo CD : il tourne à
+  chaque synchro. Si le bucket existe, il le dit (« already there, nothing
+  to do ») et sort en 0 sans rien changer ; sinon il le crée. Il ne
+  supprime ni ne vide rien. Le nom du bucket y est répété (la ConfigMap de
+  l'api n'est appliquée qu'à la vague 0) ; `ci/render-test.sh` vérifie que
+  les deux concordent.
+- **Identifiants** : le Secret `minio` (« Secrets »), lu par MinIO, par le
+  Job et par api, comme Compose donne à l'api les identifiants racine de
+  MinIO.
+- **Mémoire** : requête 128 Mi, limite 384 Mi (arbitrage du 2026-10-12 :
+  256 à 384 Mi) ; Job : 16 / 64 Mi. Mesuré sous Docker avec cette image,
+  cet utilisateur, la racine en lecture seule et la limite de 384 Mi
+  **sans swap** (`--memory-swap 384m`, comme un pod), pour la PR de #435
+  (un conteneur neuf par essai, mémoire relevée toutes les 20 ms environ,
+  180 à 330 relevés par essai) : 66 à 70 Mi au repos. 8, c'est la porte
+  d'envoi d'**un** pod api ; la prod en a deux, donc jusqu'à 16 envois à
+  la fois. Pires valeurs observées, en objets de 20 Mi envoyés par `mc`,
+  arrondies au Mi supérieur :
+
+  | Envois | Essais | Mémoire anonyme | Hors cache inactif (`memory.current` − `inactive_file`) |
+  |---|---|---|---|
+  | 8 à la fois | 3 | 138 Mi | 228 Mi |
+  | 16 à la fois | 3 | 193 Mi | 345 Mi |
+  | 8 à la fois, 5 lots enchaînés | 1 | 181 Mi | 246 Mi |
+  | 16 à la fois, 5 lots enchaînés | 3 | 228 Mi | 380 Mi |
+
+  Aucun OOM ni swap en 10 essais. La mémoire anonyme, celle qui ne se
+  récupère pas, a gardé au moins 156 Mi de marge sous la limite. Le
+  reste est du cache de fichiers, partie active comprise, que le noyau
+  récupère à la limite. Avec le swap que Docker accorde par défaut, la
+  mémoire anonyme culminait plus bas, une partie partant en swap : ces
+  chiffres-là ne valent pas pour un pod. Le job k3d réimprime le repos.
+- **Images admises** : MinIO, son client, l'image Postgres du Cluster et
+  celle de l'opérateur CloudNativePG (qu'il met dans chaque pod Postgres)
+  sont sur la liste fermée du namespace (`platform/README.md`, « Kyverno ») :
+  toute autre image y est refusée à l'admission. Changer l'une d'elles,
+  c'est changer la liste dans la même PR ; `ci/platform-test.sh` échoue
+  sinon.
+- **Téléchargement** : l'api rend des URL signées sur `MINIO_ENDPOINT`,
+  soit `http://minio:9000`, qui ne se résout que dans le cluster. web y
+  redirige le navigateur, qui ne l'atteint pas : comme avec Compose, où
+  MinIO n'est pas publié non plus. Ni l'appli ni l'ingress ne le règlent
+  encore.
+- **Pas de sauvegarde** du bucket pour l'instant (`docs/v2-deployment.md`
+  de `main`, item 8) : voir « Restaurer », étape 3.
+
+**Plusieurs nœuds** : le mode distribué de MinIO n'est pas un changement de
+`replicas`. Il code les objets par effacement sur plusieurs disques, au
+moins 2 (`docs/distributed/README.md` de MinIO au tag
+`RELEASE.2025-07-23T15-54-02Z`, la version de l'image) — par exemple 4
+réplicas, un volume chacun, un pod par nœud — et chaque serveur
+reçoit la liste de tous, écrite avec les noms du Service sans tête
+`minio-headless` :
+`minio server http://minio-{0...3}.minio-headless.manage-our-home.svc.cluster.local/bitnami/minio/data`.
+Un déploiement à un disque ne se convertit pas sur place : monter le
+nouveau à côté, y recopier le bucket (`mc mirror`), basculer
+`MINIO_ENDPOINT`, puis retirer l'ancien.
 
 ## Réglages à fixer
 
@@ -434,6 +526,11 @@ chaque push sur l'une d'elles :
    ConfigMap, sans préfixe), hook `PreSync` du Job et sa politique de
    suppression, PDB,
    réplicas et étalement par environnement, aucun secret en clair ;
+   MinIO : un réplica, volume gardé et monté là où le serveur écrit,
+   identifiants du Secret `minio` pour lui et pour api, `MINIO_ENDPOINT`
+   sur son Service, limite de 256 à 384 Mi en staging, Job de bucket en
+   hook `Sync` sur le bucket de l'api, sans suppression, entre MinIO et
+   l'appli ;
    l'ingress : un seul hôte, celui de `FRONTEND_BASE_URL`, dans chaque
    règle, le certificat et les URL publiques, l'émetteur `letsencrypt`,
    la chaîne de Middlewares de chaque route, `/readyz` refusé, HTTP
@@ -442,12 +539,17 @@ chaque push sur l'une d'elles :
    empreinte, mémoire (256 à 384 Mi en staging) et `shared_buffers` sous
    le quart de la limite, paramètres présents, budget de connexions,
    rôles et leurs attributs, sauvegarde vers un bucket Scaleway propre à
-   l'environnement avec rétention, sans en-tête de chiffrement refusé.
+   l'environnement avec rétention, sans en-tête de chiffrement refusé,
+   sous le `serverName` `postgres` ou `postgres-r<n>`.
 3. `ci/platform-test.sh` : tests sur le rendu de la plateforme — prod
    sans `syncPolicy.automated` (racine, appli, Postgres), branche
    suivie, ordre des vagues (Postgres entre les Secrets et l'appli), namespace
-   `restricted`, politique Kyverno (et aucune exclusion, précondition
-   ni sélecteur qui restreigne sa règle), charts épinglés, réglages de
+   `restricted`, politiques Kyverno (et aucune exclusion, précondition
+   ni sélecteur qui restreigne leur règle ; chaque image de l'overlay, de
+   son Postgres et de l'opérateur CloudNativePG sur la liste fermée, rien
+   d'autre, sans joker ni étiquette sans empreinte hors des images de
+   l'appli ; l'étiquette de l'opérateur est l'appVersion de son chart),
+   charts épinglés, réglages de
    Traefik (`externalTrafficPolicy: Local`, délais de 2 et 5 min,
    limite mémoire, avant l'appli), et sur le rendu Helm
    de chaque chart : limite mémoire sur chaque conteneur, un réplica,
@@ -465,8 +567,9 @@ chaque push sur l'une d'elles :
    jusqu'à `Available` et `/readyz` à 200, sans redémarrage, en lecture
    seule, sur le réseau des pods que l'api croit). Kyverno doit refuser
    l'image de l'appli par étiquette et un manifeste non signé de son dépôt,
-   et admettre l'image signée. Puis 10 minutes au repos sans redémarrage
-   ni OOM, tous les pods prêts, et `kubectl top pods -A`.
+   et admettre l'image signée ; refuser une image hors de la liste fermée
+   (celle de MinIO, par étiquette seule). Puis 10 minutes au repos sans
+   redémarrage ni OOM, tous les pods prêts, et `kubectl top pods -A`.
 5. `ci/ingress-test.sh` sur le même cluster, par l'adresse du nœud comme
    un client (« Ingress ») : Traefik tourne avec ses réglages et sert le
    certificat de l'appli ; les en-têtes de sécurité de `/`, `/login` et
@@ -480,7 +583,15 @@ chaque push sur l'une d'elles :
    qui égrène ses en-têtes est coupé au délai de lecture de 2 min ; une
    réponse à un POST arrive avant la fin de son corps (#244) ; les routes
    d'envoi répondent 413 au-delà de 21 037 056 octets.
-6. `ci/postgres-test.sh` sur le même cluster : rôles identiques à ceux de
+6. `ci/minio-test.sh` sur le même cluster : le Job de bucket de la synchro
+   a créé le bucket ; une pièce jointe envoyée par l'api (au travers de
+   l'ingress) est sur le volume de MinIO et se relit à l'identique par
+   l'URL signée que rend l'api ; une nouvelle synchro d'Argo CD rejoue le
+   Job, qui trouve le bucket et ne fait rien, la pièce jointe toujours
+   là ; Argo CD ne suit pas le volume de MinIO (il ne peut donc pas
+   l'élaguer) ; MinIO redémarré, la pièce jointe est encore là ; la copie du bucket de
+   « Restaurer », étape 3, la contient.
+7. `ci/postgres-test.sh` sur le même cluster : rôles identiques à ceux de
    `01-roles.sh`, RLS appliquée à `app_role`, puis la restauration à un
    instant (« Restaurer » ci-dessus).
 

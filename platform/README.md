@@ -13,7 +13,7 @@ components/             une brique par dossier (Component Kustomize)
   cert-manager/         cert-manager et ClusterIssuers Let's Encrypt
   traefik/              réglages du Traefik de k3s (HelmChartConfig, #434)
   cloudnative-pg/       opérateur CloudNativePG (les bases : #433)
-  kyverno/              Kyverno et la politique des images signées
+  kyverno/              Kyverno, la politique des images signées et la liste fermée des images
   app-namespace/        namespace `manage-our-home`, Pod Security `restricted`
 clusters/
   staging/              serveur maison, 4 Go
@@ -67,6 +67,11 @@ vague ne commençant qu'une fois la précédente `Healthy` :
 | -2 | `postgres-<env>` : le Cluster CloudNativePG de l'appli (#433) |
 | 0 | `manage-our-home-<env>` |
 
+Dans l'Application de l'appli, après le Job `migrate` : MinIO (vague -2),
+le Job qui crée son bucket (hook `Sync`, vague -1), puis api et web
+(vague 0), chaque vague attendant que la précédente soit `Healthy`
+(`README.md` racine, « MinIO »).
+
 Postgres a son Application, avant celle de l'appli, pour la même raison :
 le Job `migrate` doit trouver la base debout. La racine passe à l'appli
 quand le Cluster est `Healthy`. En prod, `postgres-prod` et
@@ -109,7 +114,7 @@ ce Secret.
 ## Secrets
 
 Aucune valeur secrète en clair dans la branche. Les Secrets de l'appli
-(`api-secrets`, `migrate-secrets` ; clés dans le `README.md` racine) sont
+(`api-secrets`, `migrate-secrets`, `minio` ; clés dans le `README.md` racine) sont
 des `SealedSecret`, chiffrés pour **un** cluster : seul son contrôleur
 détient la clé privée qui les ouvre. `ci/platform-test.sh` échoue si un
 `Secret` est rendu, ou si `secrets/` contient autre chose que des
@@ -177,9 +182,24 @@ tag `v*` (#430), signature inscrite dans Rekor. Les signatures de cosign v3
 sont des bundles Sigstore attachés à l'image (référents OCI) : la règle est
 de type `SigstoreBundle`.
 
+`components/kyverno/allowed-images.yaml`, en `Enforce` sur le même
+namespace (#435) : une **liste fermée** d'images. Un pod dont un conteneur
+(init et éphémères compris) nomme une autre image est refusé. La liste :
+les images de l'appli (`ghcr.io/maelprog/manage-our-home-*`, que la
+politique précédente exige par empreinte et signées), MinIO et son client
+(`README.md` racine, « MinIO »), l'image Postgres du Cluster, et celle de
+l'opérateur CloudNativePG, qu'il met dans chaque pod Postgres
+(`bootstrap-controller`), par étiquette et empreinte : le `image.tag` de
+`components/cloudnative-pg/application.yaml` porte l'empreinte.
+Chacune y est écrite exactement : déplacer une image, c'est la déplacer
+dans la liste dans la même PR. `ci/platform-test.sh` échoue si une image
+de l'overlay, de son Postgres ou de l'opérateur manque à la liste, si la
+liste nomme une image que rien ne lance, ou si une entrée autre que celle
+de l'appli contient un joker ou n'a pas d'empreinte.
+
 Kyverno tourne réduit à son contrôleur d'admission (arbitrage du
-2026-10-12) : ni contrôleur d'arrière-plan, ni nettoyage, ni rapports. La
-politique n'est évaluée qu'à l'admission. Kyverno injoignable, l'admission
+2026-10-12) : ni contrôleur d'arrière-plan, ni nettoyage, ni rapports. Les
+politiques ne sont évaluées qu'à l'admission. Kyverno injoignable, l'admission
 des pods de l'appli échoue (`failurePolicy: Fail`) plutôt que de laisser
 passer.
 
