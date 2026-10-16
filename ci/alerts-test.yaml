@@ -1,0 +1,210 @@
+# promtool unit tests of the alerts that send a mail (#437),
+# platform/components/observability/alerts.yaml: each fires on the
+# series it is about, and stays silent on their healthy counterpart.
+# ci/alerts-test.sh extracts the rules into rules.yaml, next to a copy of
+# this file, and runs `promtool test rules` on it.
+rule_files:
+  - rules.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # --- A container running but not ready: its readiness probe fails.
+  - interval: 1m
+    input_series:
+      - series: 'kube_pod_container_status_ready{namespace="manage-our-home", pod="api-0", container="api"}'
+        values: '0x15'
+      - series: 'kube_pod_container_status_running{namespace="manage-our-home", pod="api-0", container="api"}'
+        values: '1x15'
+      # Ready: silent.
+      - series: 'kube_pod_container_status_ready{namespace="manage-our-home", pod="web-0", container="web"}'
+        values: '1x15'
+      - series: 'kube_pod_container_status_running{namespace="manage-our-home", pod="web-0", container="web"}'
+        values: '1x15'
+      # Not ready because not running (a finished Job's pod): silent.
+      - series: 'kube_pod_container_status_ready{namespace="manage-our-home", pod="migrate-x", container="migrate"}'
+        values: '0x15'
+      - series: 'kube_pod_container_status_running{namespace="manage-our-home", pod="migrate-x", container="migrate"}'
+        values: '0x15'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: ContainerNotReady
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: ContainerNotReady
+        exp_alerts:
+          - exp_labels: {severity: warning, notify: mail, namespace: manage-our-home, pod: api-0, container: api}
+            exp_annotations:
+              summary: "Le conteneur manage-our-home/api-0/api ne passe plus sa sonde de disponibilité"
+              description: "En marche mais pas prêt depuis 5 minutes : sa sonde readiness échoue, il ne reçoit plus de trafic."
+
+  # --- A container restarted three times in 30 minutes: its liveness
+  # probe kills it, or it crashes.
+  - interval: 1m
+    input_series:
+      - series: 'kube_pod_container_status_restarts_total{namespace="manage-our-home", pod="api-0", container="api"}'
+        values: '0 0 0 1 1 1 2 2 2 3 3 3 3 3 3'
+      # One restart: silent.
+      - series: 'kube_pod_container_status_restarts_total{namespace="manage-our-home", pod="web-0", container="web"}'
+        values: '0 0 0 1 1 1 1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ContainerRestarting
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: ContainerRestarting
+        exp_alerts:
+          - exp_labels: {severity: warning, notify: mail, namespace: manage-our-home, pod: api-0, container: api}
+            exp_annotations:
+              summary: "Le conteneur manage-our-home/api-0/api redémarre en boucle"
+              description: "3 redémarrages ou plus en 30 minutes : sa sonde liveness échoue, ou il s'arrête seul."
+
+  # --- The migration Job failed; another Job's failure does not page.
+  - interval: 1m
+    input_series:
+      - series: 'kube_job_failed{namespace="manage-our-home", job_name="migrate", condition="true"}'
+        values: '1x5'
+      - series: 'kube_job_failed{namespace="manage-our-home", job_name="migrate", condition="false"}'
+        values: '0x5'
+      - series: 'kube_job_failed{namespace="manage-our-home", job_name="minio-bucket", condition="true"}'
+        values: '1x5'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: MigrationJobFailed
+        exp_alerts:
+          - exp_labels: {severity: critical, notify: mail, namespace: manage-our-home, job_name: migrate, condition: "true"}
+            exp_annotations:
+              summary: "Le Job de migration de manage-our-home a échoué"
+              description: "La synchro de l'appli ne va pas plus loin : api et web restent à la version précédente. Lire `kubectl -n manage-our-home logs job/migrate`."
+
+  # --- The last base backup is more than 26 hours old (one is taken
+  # every night at 3:00 UTC).
+  - interval: 1h
+    input_series:
+      # Taken at t=0, never again.
+      - series: 'cnpg_collector_last_available_backup_timestamp{namespace="manage-our-home", pod="postgres-1"}'
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 25h
+        alertname: PostgresBackupLate
+        exp_alerts: []
+      - eval_time: 27h
+        alertname: PostgresBackupLate
+        exp_alerts:
+          - exp_labels: {severity: critical, notify: mail, namespace: manage-our-home, pod: postgres-1}
+            exp_annotations:
+              summary: "La dernière sauvegarde complète de Postgres date de plus de 26 heures"
+              description: "Une copie complète est prise chaque nuit à 3 h UTC : celle de la nuit dernière manque. Voir `kubectl -n manage-our-home get backups`."
+
+  # --- WAL archiving fails: the last failure is newer than the last
+  # success. Silent once a success follows.
+  - interval: 1m
+    input_series:
+      - series: 'cnpg_pg_stat_archiver_last_failed_time{namespace="manage-our-home", pod="postgres-1"}'
+        values: '0 0 0 180 240 300 360 420 480 540 600 660 720 780 840 900 960 1020 1080 1140 1200 1200 1200 1200'
+      - series: 'cnpg_pg_stat_archiver_last_archived_time{namespace="manage-our-home", pod="postgres-1"}'
+        values: '60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 1260 1260 1260'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PostgresWALArchivingFailing
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: PostgresWALArchivingFailing
+        exp_alerts:
+          - exp_labels: {severity: critical, notify: mail, namespace: manage-our-home, pod: postgres-1}
+            exp_annotations:
+              summary: "L'archivage des WAL de Postgres échoue"
+              description: "Le dernier envoi d'un segment WAL vers le stockage des sauvegardes a échoué depuis 10 minutes : la restauration à un instant s'arrête au dernier segment envoyé."
+      - eval_time: 22m
+        alertname: PostgresWALArchivingFailing
+        exp_alerts: []
+
+  # --- Postgres's metrics are missing: the backup alerts above could not
+  # fire.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="other"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: PostgresMetricsAbsent
+        exp_alerts:
+          - exp_labels: {severity: warning, notify: mail, namespace: manage-our-home}
+            exp_annotations:
+              summary: "Prometheus ne reçoit plus les mesures de Postgres"
+              description: "Sans elles, ni le retard d'une sauvegarde ni l'échec de l'archivage des WAL ne seraient signalés."
+  - interval: 1m
+    input_series:
+      - series: 'cnpg_collector_last_available_backup_timestamp{namespace="manage-our-home", pod="postgres-1"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: PostgresMetricsAbsent
+        exp_alerts: []
+
+  # --- A certificate expires in less than 21 days: cert-manager renews
+  # 30 days before, so its renewal has failed for 9 days.
+  - interval: 1h
+    input_series:
+      # Expires at 30 days, then at 20 days of the evaluation.
+      - series: 'certmanager_certificate_expiration_timestamp_seconds{namespace="manage-our-home", name="manage-our-home-tls"}'
+        values: '2592000x2 1728000x2'
+    alert_rule_test:
+      - eval_time: 1h
+        alertname: CertificateExpiringSoon
+        exp_alerts: []
+      - eval_time: 3h
+        alertname: CertificateExpiringSoon
+        exp_alerts:
+          - exp_labels: {severity: critical, notify: mail, namespace: manage-our-home, name: manage-our-home-tls}
+            exp_annotations:
+              summary: "Le certificat manage-our-home/manage-our-home-tls expire dans moins de 21 jours"
+              description: "cert-manager le renouvelle 30 jours avant son expiration : ce renouvellement échoue. Voir `kubectl -n manage-our-home describe certificate manage-our-home-tls`."
+
+  # --- A certificate not Ready for an hour.
+  - interval: 1m
+    input_series:
+      - series: 'certmanager_certificate_ready_status{namespace="manage-our-home", name="manage-our-home-tls", condition="True"}'
+        values: '0x80'
+      - series: 'certmanager_certificate_ready_status{namespace="manage-our-home", name="manage-our-home-tls", condition="False"}'
+        values: '1x80'
+      - series: 'certmanager_certificate_ready_status{namespace="other", name="fine", condition="True"}'
+        values: '1x80'
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: CertificateNotReady
+        exp_alerts: []
+      - eval_time: 70m
+        alertname: CertificateNotReady
+        exp_alerts:
+          - exp_labels: {severity: warning, notify: mail, namespace: manage-our-home, name: manage-our-home-tls, condition: "True"}
+            exp_annotations:
+              summary: "Le certificat manage-our-home/manage-our-home-tls n'est pas prêt depuis une heure"
+              description: "Voir `kubectl -n manage-our-home describe certificate manage-our-home-tls`."
+
+  # --- A disk more than 80 % full; tmpfs and the like are not disks.
+  - interval: 1m
+    input_series:
+      - series: 'node_filesystem_size_bytes{instance="node", device="/dev/sda1", fstype="ext4", mountpoint="/"}'
+        values: '100x30'
+      - series: 'node_filesystem_avail_bytes{instance="node", device="/dev/sda1", fstype="ext4", mountpoint="/"}'
+        values: '19x30'
+      - series: 'node_filesystem_size_bytes{instance="node", device="/dev/sdb", fstype="ext4", mountpoint="/data"}'
+        values: '100x30'
+      - series: 'node_filesystem_avail_bytes{instance="node", device="/dev/sdb", fstype="ext4", mountpoint="/data"}'
+        values: '21x30'
+      - series: 'node_filesystem_size_bytes{instance="node", device="tmpfs", fstype="tmpfs", mountpoint="/run"}'
+        values: '100x30'
+      - series: 'node_filesystem_avail_bytes{instance="node", device="tmpfs", fstype="tmpfs", mountpoint="/run"}'
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: DiskAlmostFull
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: DiskAlmostFull
+        exp_alerts:
+          - exp_labels: {severity: warning, notify: mail, instance: node, device: /dev/sda1, fstype: ext4, mountpoint: /}
+            exp_annotations:
+              summary: "Le disque / de node est plein à 81%"
+              description: "Plus de 80 % de / est occupé depuis 15 minutes. Postgres, MinIO, Loki et Prometheus écrivent sur les volumes du nœud."

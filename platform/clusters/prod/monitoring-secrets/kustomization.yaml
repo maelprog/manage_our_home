@@ -1,0 +1,23 @@
+# The observability's Secrets for this cluster, as SealedSecrets (#437):
+# `alertmanager-config`, Alertmanager's configuration filled from
+# platform/components/observability/alertmanager.template.yaml and sealed
+# with this cluster's controller certificate (platform/README.md,
+# "Observabilité"). Apart from secrets/, whose Secrets are all in the
+# application's namespace: these are in `monitoring`.
+#
+# None yet: sealed once the cluster runs. Until then Alertmanager runs
+# with a configuration that sends nothing.
+#
+# Applied by the root Application with the other Secrets (wave -3), after
+# the observability's Applications (wave -10), which create the namespace.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: monitoring
+
+commonAnnotations:
+  argocd.argoproj.io/sync-wave: "-3"
+  # The SealedSecret CRD comes with the controller's Application.
+  argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+
+resources: []

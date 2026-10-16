@@ -1,0 +1,102 @@
+# Grafana Alloy (#437): reads the logs of every container of the cluster
+# through the Kubernetes API (`pods/log`, as `kubectl logs` does) and
+# pushes them to Loki (loki.yaml, next to this file). No host path: it
+# reads nothing of the node.
+#
+# One replica (a Deployment): on one node, a DaemonSet would be the same
+# pod; with several nodes, the one replica still reads every pod through
+# the API, without the duplicates a DaemonSet would send.
+#
+# Its RBAC is narrowed to what that needs — pods, their logs and the
+# namespaces, read-only — instead of the chart's default, which lets it
+# read every Secret of the cluster.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: alloy
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  project: default
+  source:
+    repoURL: https://grafana.github.io/helm-charts
+    chart: alloy
+    targetRevision: 1.13.1
+    helm:
+      releaseName: alloy
+      valuesObject:
+        controller:
+          type: deployment
+          replicas: 1
+        crds:
+          create: false
+        rbac:
+          # The chart writes both lists into one ClusterRole, and renders
+          # an empty one as `[]` after the other: neither can be empty.
+          rules:
+            - apiGroups: [""]
+              resources: ["pods", "pods/log"]
+              verbs: ["get", "list", "watch"]
+          clusterRules:
+            - apiGroups: [""]
+              resources: ["namespaces"]
+              verbs: ["get", "list", "watch"]
+        alloy:
+          # No usage report sent to Grafana Labs.
+          enableReporting: false
+          resources:
+            requests: {cpu: 25m, memory: 96Mi}
+            limits: {memory: 256Mi}
+          configMap:
+            content: |
+              discovery.kubernetes "pods" {
+                role = "pod"
+              }
+
+              // The stream labels: where a line comes from, nothing of
+              // what it says.
+              discovery.relabel "pods" {
+                targets = discovery.kubernetes.pods.targets
+                rule {
+                  source_labels = ["__meta_kubernetes_namespace"]
+                  target_label  = "namespace"
+                }
+                rule {
+                  source_labels = ["__meta_kubernetes_pod_name"]
+                  target_label  = "pod"
+                }
+                rule {
+                  source_labels = ["__meta_kubernetes_pod_container_name"]
+                  target_label  = "container"
+                }
+                rule {
+                  source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+                  target_label  = "app"
+                }
+              }
+
+              loki.source.kubernetes "pods" {
+                targets    = discovery.relabel.pods.output
+                forward_to = [loki.write.default.receiver]
+              }
+
+              loki.write "default" {
+                endpoint {
+                  url = "http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push"
+                }
+              }
+        configReloader:
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 64Mi}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

@@ -4,7 +4,7 @@
 # upstream fails the job instead of running. linux/amd64 only.
 #
 #   ci/install-tools.sh <directory> <tool>...
-#   tools: kustomize kubeconform yq kubectl k3d helm kubeseal cosign
+#   tools: kustomize kubeconform yq kubectl k3d helm kubeseal cosign promtool amtool
 #
 # To move a version: change it and its checksum together, the checksum
 # taken from the project's own release checksums file.
@@ -39,6 +39,16 @@ KUBESEAL_SHA256=9314c35916646e9d59c8f06b1314574b4e79c4d76f079433607ed7b697bb5eb7
 # format, which cosign v2 does not find.
 COSIGN_VERSION=3.1.3
 COSIGN_SHA256=4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+# promtool, for the alerts' tests (ci/alerts-test.sh, #437): the version of
+# the Prometheus that kube-prometheus-stack 92.9.0 runs
+# (platform/components/observability/kube-prometheus-stack.yaml). The
+# checksum is that of the release tarball, from its sha256sums.txt.
+PROMETHEUS_VERSION=3.15.0
+PROMETHEUS_SHA256=2a542df32eac02ee17b9d844fb2aa1de00dafa5476579ba8a3ba862e9d572ea0
+# amtool, for Alertmanager's configuration (ci/alerts-test.sh): the
+# version of the Alertmanager the same chart runs.
+ALERTMANAGER_VERSION=0.34.1
+ALERTMANAGER_SHA256=265b9d1e55ef0d5306a436018af6d2b686c2ce051f03d968f7464ecb1372a7e8
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -88,6 +98,18 @@ for tool in "$@"; do
     cosign)
       fetch "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64" "$COSIGN_SHA256" cosign
       install -m 0755 "$tmp/cosign" "$dest/cosign"
+      ;;
+    promtool)
+      fetch "https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz" \
+        "$PROMETHEUS_SHA256" prometheus.tar.gz
+      tar -xzf "$tmp/prometheus.tar.gz" -C "$tmp" "prometheus-${PROMETHEUS_VERSION}.linux-amd64/promtool"
+      install -m 0755 "$tmp/prometheus-${PROMETHEUS_VERSION}.linux-amd64/promtool" "$dest/promtool"
+      ;;
+    amtool)
+      fetch "https://github.com/prometheus/alertmanager/releases/download/v${ALERTMANAGER_VERSION}/alertmanager-${ALERTMANAGER_VERSION}.linux-amd64.tar.gz" \
+        "$ALERTMANAGER_SHA256" alertmanager.tar.gz
+      tar -xzf "$tmp/alertmanager.tar.gz" -C "$tmp" "alertmanager-${ALERTMANAGER_VERSION}.linux-amd64/amtool"
+      install -m 0755 "$tmp/alertmanager-${ALERTMANAGER_VERSION}.linux-amd64/amtool" "$dest/amtool"
       ;;
     *)
       echo "unknown tool: $tool" >&2

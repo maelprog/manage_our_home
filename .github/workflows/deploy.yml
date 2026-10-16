@@ -9,7 +9,9 @@
 # API is checked in MinIO's bucket (#435), and that Postgres is restored
 # from its backups to an instant (#433). Beside them, the promotion job
 # (#436): the overlays' images are signed as Kyverno requires, and a PR
-# moves prod only to the pair staging runs (README, « Promotion »).
+# moves prod only to the pair staging runs (README, « Promotion »); and
+# the observability job (#437), on a second throwaway cluster: production's
+# metrics, logs and alerts, which staging does not run.
 #
 # The PRs of the k3s epic (#431 to #437) target `k3s`; `deploy` only
 # receives `k3s` once, by a PR the user merges by hand, when the whole
@@ -66,6 +68,12 @@ jobs:
         run: ci/platform-test.sh
       - name: Tests on the promotion scripts
         run: ci/promotion-test.sh
+      # The alerts that mail (#437): promtool on their rules, amtool on
+      # Alertmanager's configuration and its routes.
+      - name: Tests on the alerts
+        run: |
+          ci/install-tools.sh "$RUNNER_TEMP/bin" promtool amtool
+          ci/alerts-test.sh
 
   # Promotion (#436): every image an overlay names is signed by main's
   # images workflow, as Kyverno will require; and a PR only moves prod to
@@ -162,3 +170,34 @@ jobs:
       # restored from its backups to an instant, and the data checked.
       - name: Postgres — roles, RLS, point-in-time restore
         run: ci/postgres-test.sh
+
+  # The observability (#437), which staging does not run (arbitrage of
+  # 2026-10-12): on a cluster of its own, beside the staging one, its node
+  # with the same 4 GB. Argo CD deploys production's observability brick,
+  # with cert-manager; alerts fire on fixtures, reach Alertmanager and a
+  # mail catcher; logs reach Loki; Grafana answers through a port-forward.
+  observability:
+    needs: render
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tools
+        run: |
+          ci/install-tools.sh "$RUNNER_TEMP/bin" yq kubectl k3d helm
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: k3d cluster
+        run: |
+          k3d cluster create deploy-ci-observability \
+            --image "$K3S_IMAGE" \
+            --servers-memory 4g \
+            --wait --timeout 180s
+          kubectl get nodes -o wide
+      - name: Bootstrap, let Argo CD deploy the observability, check it
+        env:
+          REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: ci/observability-test.sh "$REVISION"

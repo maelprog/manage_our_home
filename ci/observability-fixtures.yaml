@@ -1,0 +1,111 @@
+# What ci/observability-test.sh makes the alerts fire on (#437), in the
+# k3d job only:
+#   - a mail catcher (Mailpit), the SMTP relay of Alertmanager there;
+#   - a certificate that lives an hour (cert-manager's floor), so less
+#     than the 21 days of CertificateExpiringSoon;
+#   - a Job named `migrate` in namespace `manage-our-home` that fails,
+#     for MigrationJobFailed;
+#   - a pod whose readiness probe always fails, for ContainerNotReady; it
+#     logs one marker line, which the test looks for in Loki.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ci-mail
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mailpit
+  namespace: ci-mail
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: mailpit}
+  template:
+    metadata:
+      labels: {app: mailpit}
+    spec:
+      containers:
+        - name: mailpit
+          image: docker.io/axllent/mailpit:v1.31.6@sha256:23fe39e81bde596a918000b3135c0f85dc8bb4c9ea6be274b051143f3e300387
+          ports:
+            - {name: smtp, containerPort: 1025}
+            - {name: http, containerPort: 8025}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+          resources:
+            limits: {memory: 128Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mailpit
+  namespace: ci-mail
+spec:
+  selector: {app: mailpit}
+  ports:
+    - {name: smtp, port: 1025, targetPort: smtp}
+    - {name: http, port: 8025, targetPort: http}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ci-obs
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ci-short
+  namespace: ci-obs
+spec:
+  secretName: ci-short-tls
+  duration: 1h
+  renewBefore: 20m
+  dnsNames: [ci-short.example.invalid]
+  issuerRef:
+    kind: ClusterIssuer
+    name: ci-selfsigned
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ci-not-ready
+  namespace: ci-obs
+spec:
+  containers:
+    - name: probe
+      image: docker.io/library/busybox:1.38.0@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
+      # One line for Loki, then nothing. Two ports: the collector
+      # discovers a pod once per port, and must still send the line once.
+      command: ["sh", "-c", "echo ci-loki-marker; exec sleep 86400"]
+      ports:
+        - {name: a, containerPort: 8081}
+        - {name: b, containerPort: 8082}
+      readinessProbe:
+        exec:
+          command: ["false"]
+        periodSeconds: 10
+      resources:
+        limits: {memory: 32Mi}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: manage-our-home
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  namespace: manage-our-home
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: docker.io/library/busybox:1.38.0@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
+          command: ["sh", "-c", "echo migration failed on purpose; exit 1"]
+          resources:
+            limits: {memory: 32Mi}

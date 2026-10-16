@@ -1,0 +1,16 @@
+# Observability (#437): metrics, logs and alerts, in namespace
+# `monitoring`. Listed by the production cluster only
+# (platform/clusters/prod/kustomization.yaml): the 4 GB staging server
+# cannot hold it next to the rest (arbitrage of 2026-10-12).
+#
+# alertmanager.template.yaml, next to these, is not a manifest: the
+# configuration that is filled and sealed per cluster.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - kube-prometheus-stack.yaml
+  - loki.yaml
+  - alloy.yaml
+  - alerts.yaml
+  - monitors.yaml

@@ -1,0 +1,40 @@
+# Alertmanager's configuration (#437) — not a manifest: the content of
+# the Secret `alertmanager-config` (key `alertmanager.yaml`) of namespace
+# `monitoring`, which Alertmanager reads (kube-prometheus-stack.yaml).
+# The five values in capitals are filled per cluster and the result is
+# sealed, never committed in clear: the SMTP relay is the application's
+# (SMTP_HOST, SMTP_FROM of the overlay, SMTP_USERNAME and SMTP_PASSWORD of
+# `api-secrets`), the recipient an address of whoever runs the cluster —
+# personal data, which a public branch must not hold.
+# platform/README.md ("Observabilité") gives the command.
+#
+# Only the alerts labelled `notify: mail` (alerts.yaml) are mailed; the
+# chart's own rules, Watchdog included, go to `null` and stay visible in
+# Alertmanager and Grafana.
+global:
+  smtp_smarthost: SMTP_HOST:587
+  smtp_from: SMTP_FROM
+  smtp_auth_username: SMTP_USERNAME
+  smtp_auth_password: SMTP_PASSWORD
+  smtp_require_tls: true
+route:
+  receiver: "null"
+  group_by: [alertname, namespace]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 12h
+  routes:
+    - receiver: mail
+      matchers: ['notify = mail']
+receivers:
+  - name: "null"
+  - name: mail
+    email_configs:
+      - to: ALERT_TO
+        send_resolved: true
+# The chart's: a critical alert silences the warning of the same name in
+# the same namespace.
+inhibit_rules:
+  - source_matchers: ['severity = critical']
+    target_matchers: ['severity =~ warning|info']
+    equal: [namespace, alertname]
