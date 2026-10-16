@@ -414,6 +414,10 @@ de la purge dépasserait.
   invitation qu'un membre aurait envoyée à votre adresse, jusqu'à son
   acceptation, à la suppression du groupe ou au premier passage de purge
   qui suit les 30 jours de son envoi (voir « Invitations » plus haut).
+  Enfin, les journaux techniques qui citeraient l'identifiant de votre
+  compte, jusqu'à leur suppression au terme de leurs 14 jours, ou plus
+  tard pour la copie que le serveur garde jusqu'à sa rotation (voir
+  « Journaux techniques » plus haut).
 - **Ce qui subsiste dans les sauvegardes** : la copie de vos données dans
   les sauvegardes de la base, jusqu'à 31 jours environ après la purge,
   puis elle disparaît avec elles (voir « Sauvegardes de la base » plus

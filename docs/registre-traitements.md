@@ -305,7 +305,10 @@ Reste enfin une invitation adressée à l'adresse du compte, jusqu'à son
 acceptation, la suppression du groupe ou le terme de ses 30 jours
 (ligne 1c). Hors de la base, la copie de ce que la purge supprime ou
 anonymise reste dans les sauvegardes de la base jusqu'à la fin de leur
-fenêtre, 31 jours environ (« Sauvegardes de la base » ci-dessus).
+fenêtre, 31 jours environ (« Sauvegardes de la base » ci-dessus), et
+les journaux techniques qui citeraient l'identifiant du compte restent
+jusqu'à leur terme de 14 jours dans Loki, ou jusqu'à leur rotation par
+kubelet pour la copie du nœud (ligne « Journaux techniques »).
 
 Le job tourne une fois par heure, dès le démarrage de l'API, aux mêmes
 conditions que la purge de conservation ci-dessous : cinq des tables qu'il
