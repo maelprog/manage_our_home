@@ -17,7 +17,9 @@ les deux.
   overlay (#432) ; pendant l'intégration, celui du serveur de test lit
   `k3s`, `deploy` restant vide jusqu'à la promotion
   (`platform/README.md`). Personne ne fait de `kubectl apply` à la main,
-  hors l'amorçage d'un cluster (`platform/bootstrap.sh`), la CI non plus :
+  hors l'amorçage d'un cluster (`platform/bootstrap.sh`) et les briques
+  posées hors d'Argo CD (kube-vip, MetalLB, kured,
+  system-upgrade-controller : `docs/install-k3s.md`), la CI non plus :
   aucun jeton Argo CD ni accès cluster ne lui est donné.
 - **Une branche, un dossier par environnement** (arbitrage du 2026-10-10).
   Une branche par environnement est un anti-modèle GitOps : la promotion se
@@ -54,6 +56,7 @@ apps/manage-our-home/
     prod/               VPS tiers : la base telle quelle, 2 réplicas
       postgres/         son Postgres, la base telle quelle
 platform/               socle des clusters, Applications Argo CD (#432)
+docs/install-k3s.md     installer un cluster, y basculer depuis Compose (#438)
 ci/                     scripts de la CI de cette branche
 .github/workflows/deploy.yml
 .github/rulesets/deploy.json   ruleset de la branche `deploy` (« Promotion »)

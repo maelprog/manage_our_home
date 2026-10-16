@@ -90,8 +90,9 @@ racine n'attendrait pas ses briques.
 
 ## Amorcer un cluster
 
-Prérequis : un k3s, le contexte `kubectl` pointé dessus, `helm`, `kubectl`,
-`yq` et `kubeseal` aux versions de `ci/install-tools.sh`.
+Prérequis : un k3s (installé comme le décrit `docs/install-k3s.md`), le
+contexte `kubectl` pointé dessus, `helm`, `kubectl`, `yq` et `kubeseal`
+aux versions de `ci/install-tools.sh`.
 
 1. `platform/bootstrap.sh staging` (ou `prod`) : installe Argo CD avec Helm,
    à la version et avec les valeurs de `components/argocd/application.yaml`,
