@@ -354,7 +354,10 @@ de la purge dépasserait.
   votre compte sans être de votre fait restent jusqu'à ce terme (voir
   « Suppression de votre compte » ci-dessous).
 - **Journaux techniques** : 14 jours, puis supprimés dans les heures qui
-  suivent. Ils restent sur le serveur, consultables par le seul
+  suivent. Le serveur garde en outre une copie des derniers messages de
+  chaque composant jusqu'à ce que de plus récents les remplacent : cette
+  rotation dépend du volume écrit, pas de l'âge, et peut donc venir après
+  ces 14 jours pour un composant qui écrit peu. Ils restent sur le serveur, consultables par le seul
   responsable du service, et la suppression de votre compte ne les efface
   pas avant ce terme.
 - **Export de vos données** : généré à la demande et renvoyé directement,
