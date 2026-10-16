@@ -560,7 +560,7 @@ double.
 
 `.github/rulesets/deploy.json` : PR obligatoire, liste de contournement
 vide, ni suppression ni force-push, et les jobs de `deploy.yml` (`render`,
-`promotion`, `k3d`) exigés au vert. Il ne vise que `deploy` : `k3s` reste
+`promotion`, `k3d`, `observability`) exigés au vert. Il ne vise que `deploy` : `k3s` reste
 mergée par la vérification des PR de l'epic (arbitrage du 2026-10-13).
 L'utilisateur, administrateur du dépôt, l'applique une fois :
 
@@ -615,7 +615,10 @@ pas `Healthy`. Les buckets de
 sauvegarde de Postgres (`manage-our-home-backups-<env>`) sont à créer chez
 Scaleway, chiffrement par défaut activé (« Sauvegardes »), avant le premier
 déploiement ; un autre nom se change dans `base/postgres/cluster.yaml` et
-l'overlay de staging.
+l'overlay de staging. En prod, le destinataire des alertes et les
+identifiants du relais SMTP vont dans le Secret scellé
+`alertmanager-config` (`platform/README.md`, « Observabilité ») : tant
+qu'il manque, Alertmanager n'envoie rien.
 
 ## CI de cette branche
 
@@ -661,13 +664,26 @@ chaque push sur l'une d'elles :
    l'appli ; l'étiquette de l'opérateur est l'appVersion de son chart),
    charts épinglés, réglages de
    Traefik (`externalTrafficPolicy: Local`, délais de 2 et 5 min,
-   limite mémoire, avant l'appli), et sur le rendu Helm
+   limite mémoire, avant l'appli), l'observabilité en prod seulement
+   (aucune Application, règle, sonde ni objet de `monitoring` dans le
+   rendu de staging ; ses règles, sondes et Secrets après ses
+   Applications), et sur le rendu Helm
    de chaque chart : limite mémoire sur chaque conteneur, un réplica,
+   aucun Ingress ni Service hors `ClusterIP`,
    Argo CD sans Dex, notifications ni ApplicationSet, Kyverno réduit au
-   contrôleur d'admission.
+   contrôleur d'admission ; Prometheus et Alertmanager à un réplica et
+   bornés, comme les rechargeurs de configuration de l'opérateur,
+   Alertmanager sur le Secret scellé `alertmanager-config`, Loki à
+   14 jours de rétention appliquée, Alloy sans accès aux Secrets.
 4. `ci/promotion-test.sh` : tests de `ci/set-images.sh`,
    `ci/promotion-check.sh`, `ci/verify-signatures.sh` et du ruleset de
    `deploy` (« Promotion »).
+   Puis `ci/alerts-test.sh` : `promtool` sur les règles des alertes
+   envoyées par mail et leurs tests (`ci/alerts-test.yaml`, chacune
+   déclenchée par ce qu'elle surveille et seulement par cela), `amtool`
+   sur la configuration d'Alertmanager remplie par
+   `alertmanager-config.sh` (ces alertes vont au mail, celles du chart,
+   Watchdog compris, nulle part) (`platform/README.md`, « Observabilité »).
 5. Job `promotion` : `ci/verify-signatures.sh`, et sur une PR
    `ci/promotion-check.sh` contre la branche visée (« Promotion »).
 6. `ci/staging-smoke.sh` dans un cluster k3d jetable dont le nœud a les
@@ -707,11 +723,28 @@ chaque push sur l'une d'elles :
    l'élaguer) ; MinIO redémarré, la pièce jointe est encore là ; la copie du bucket de
    « Restaurer », étape 3, la contient.
 9. `ci/postgres-test.sh` sur le même cluster : rôles identiques à ceux de
-   `01-roles.sh`, RLS appliquée à `app_role`, puis la restauration à un
+   `01-roles.sh`, RLS appliquée à `app_role`, les mesures que lisent les
+   alertes de sauvegarde de la prod exportées par les pods et le port que
+   nomme leur PodMonitor (#437), puis la restauration à un
    instant (« Restaurer » ci-dessus).
+10. Job `observability`, sur un second cluster k3d jetable au nœud de
+    4 Go (#437) : `ci/observability-test.sh` amorce Argo CD comme
+    `platform/bootstrap.sh`, la racine rendant `ci/observability` (Argo
+    CD, cert-manager et la brique d'observabilité de la prod) au commit
+    testé. Les Applications `Synced` et `Healthy` ; Prometheus lit
+    cert-manager, kube-state-metrics, node-exporter et le kubelet, et a
+    les règles ; sur les montages de `ci/observability-fixtures.yaml` (un
+    certificat d'une heure, un Job `migrate` en échec, un pod jamais
+    prêt), les alertes se déclenchent, atteignent Alertmanager (Watchdog
+    aussi) et partent par mail vers un Mailpit jetable, Watchdog non ;
+    Loki a, une fois, la ligne qu'a écrite le pod, et tourne avec ses
+    14 jours ; Grafana répond par `port-forward`, avec son mot de passe
+    généré, et lit Loki ; rien de `monitoring` n'est exposé. Puis
+    5 minutes au repos sans redémarrage, Applications toujours `Synced`,
+    même pod et même mot de passe pour Grafana, et `kubectl top pods -A`.
 
 Les outils (kustomize, kubeconform, yq, kubectl, k3d, helm, kubeseal,
-cosign) sont épinglés par version et empreinte SHA-256 dans
+cosign, promtool, amtool) sont épinglés par version et empreinte SHA-256 dans
 `ci/install-tools.sh`, l'image k3s par étiquette et empreinte dans le
 workflow. En local, avec ces outils dans le `PATH` :
-`ci/validate.sh && ci/render-test.sh && ci/platform-test.sh && ci/promotion-test.sh`.
+`ci/validate.sh && ci/render-test.sh && ci/platform-test.sh && ci/promotion-test.sh && ci/alerts-test.sh`.

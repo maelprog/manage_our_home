@@ -1,0 +1,48 @@
+# What Prometheus scrapes beyond the chart's own targets (#437): the
+# metrics that alerts.yaml's certificate and Postgres alerts read. Both
+# live here, in `monitoring`, and reach into the namespaces of what they
+# watch: neither the cert-manager nor the CloudNativePG brick is touched,
+# and staging, which has no Prometheus, renders neither.
+#
+# After the Applications (wave -10): the CRDs are kube-prometheus-stack's.
+#
+# cert-manager's controller exposes its certificates' expiry and Ready
+# condition on port 9402 (`http-metrics`) of its Service.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: cert-manager
+  namespace: monitoring
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  namespaceSelector:
+    matchNames: [cert-manager]
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cert-manager
+      app.kubernetes.io/component: controller
+  endpoints:
+    - port: http-metrics
+---
+# Each instance of the application's Postgres (#433) exposes its
+# backups and its WAL archiving on port 9187 (`metrics`), as every
+# CloudNativePG instance does.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: postgres
+  namespace: monitoring
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  namespaceSelector:
+    matchNames: [manage-our-home]
+  selector:
+    matchLabels:
+      cnpg.io/cluster: postgres
+      cnpg.io/podRole: instance
+  podMetricsEndpoints:
+    - port: metrics

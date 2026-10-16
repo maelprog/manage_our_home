@@ -155,6 +155,34 @@ done
 kubectl -n "$ns" get backups.postgresql.cnpg.io
 [ "$done_" -gt 0 ] || { echo "::error::no completed base backup"; exit 1; }
 
+# The production alerts on the backups (#437) read three metrics of the
+# instances, through the PodMonitor of the observability, which staging
+# does not run: the pods its selector picks, on the port it names, export
+# them — the backup's timestamp set now that one has completed.
+echo "== the metrics the backup alerts read"
+monitor="$root/platform/components/observability/monitors.yaml"
+selector=$(yq e 'select(.kind == "PodMonitor") | .spec.selector.matchLabels | to_entries | map(.key + "=" + .value) | join(",")' "$monitor")
+port=$(yq e 'select(.kind == "PodMonitor") | .spec.podMetricsEndpoints[0].port' "$monitor")
+pod=$(kubectl -n "$ns" get pods -l "$selector" -o jsonpath='{.items[0].metadata.name}')
+[ -n "$pod" ] || { echo "::error::no pod matches the PodMonitor's selector $selector"; exit 1; }
+number=$(kubectl -n "$ns" get pod "$pod" -o yaml | PORT=$port yq e '.spec.containers[].ports[]? | select(.name == strenv(PORT)) | .containerPort' -)
+[ -n "$number" ] || { echo "::error::$pod has no port named $port"; exit 1; }
+kubectl -n "$ns" port-forward "pod/$pod" "19187:$number" > "$work/pf-metrics.log" 2>&1 &
+pf_pid=$!
+for _ in $(seq 1 30); do
+  curl --silent --fail http://127.0.0.1:19187/metrics > "$work/metrics" && break
+  sleep 1
+done
+kill "$pf_pid" 2> /dev/null || true
+pf_pid=""
+for m in cnpg_collector_last_available_backup_timestamp cnpg_pg_stat_archiver_last_archived_time cnpg_pg_stat_archiver_last_failed_time; do
+  v=$(awk -v m="$m" '$1 == m || index($1, m "{") == 1 { print $2; exit }' "$work/metrics")
+  [ -n "$v" ] || { echo "::error::$pod ($selector, port $port) does not export $m"; exit 1; }
+  echo "$m = $v"
+done
+v=$(awk '$1 == "cnpg_collector_last_available_backup_timestamp" || index($1, "cnpg_collector_last_available_backup_timestamp{") == 1 { print ($2 > 0) ? "set" : "zero"; exit }' "$work/metrics")
+[ "$v" = set ] || { echo "::error::cnpg_collector_last_available_backup_timestamp is 0 after a completed backup"; exit 1; }
+
 echo "== a row before T, a row after"
 add_group before > /dev/null
 sleep 2

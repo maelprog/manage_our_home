@@ -46,19 +46,47 @@ for env in staging prod; do
   pgapp="postgres-$env"
   pgsel="select(.kind == \"Application\" and .metadata.name == \"$pgapp\")"
 
-  # --- The bricks, the application's Application and its Postgres's (#433).
+  # --- The bricks, the application's Application and its Postgres's (#433);
+  # in production, the observability's three (#437).
   check
   v=$(y 'select(.kind == "Application") | .metadata.name' | sort | tr '\n' ' ')
-  want="argocd cert-manager cloudnative-pg kyverno $app $pgapp sealed-secrets "
+  case "$env" in
+    prod) want="alloy argocd cert-manager cloudnative-pg kube-prometheus-stack kyverno loki $app $pgapp sealed-secrets " ;;
+    *) want="argocd cert-manager cloudnative-pg kyverno $app $pgapp sealed-secrets " ;;
+  esac
   [ "$v" = "$want" ] || fail "Applications: expected '$want', got '$v'"
 
-  # --- No Secret in clear; whatever the secrets directory holds is sealed.
+  # --- The observability (#437) runs in production only: staging's render
+  # has none of it — no Application, rule, monitor or anything else in its
+  # namespace, nor its component (arbitrage of 2026-10-12).
+  check
+  obs=$( (y 'select(.metadata.namespace == "monitoring" or .spec.destination.namespace == "monitoring") | .kind + "/" + .metadata.name'
+    y 'select(.apiVersion == "monitoring.coreos.com/v1") | .kind + "/" + .metadata.name') | sort -u | tr '\n' ' ')
+  listed=$(yq e '.components[]' "$platform/clusters/$env/kustomization.yaml" | grep -c 'components/observability$' || true)
+  case "$env" in
+    prod)
+      want="Application/alloy Application/kube-prometheus-stack Application/loki PodMonitor/postgres PrometheusRule/manage-our-home-alerts ServiceMonitor/cert-manager "
+      [ "$obs" = "$want" ] || fail "observability: expected '$want', got '$obs'"
+      check
+      [ "$listed" = 1 ] || fail "components/observability is not listed"
+      ;;
+    *)
+      [ -z "$obs" ] || fail "staging renders observability: '$obs'"
+      check
+      [ "$listed" = 0 ] || fail "staging lists components/observability"
+      ;;
+  esac
+
+  # --- No Secret in clear; whatever the secrets directories hold is sealed.
   check
   n=$(ya '[select(.kind == "Secret")] | length')
   [ "$n" = 0 ] || fail "$n Secret(s) in the render: only SealedSecrets are committed"
-  check
-  v=$(kustomize build "$platform/clusters/$env/secrets" | yq e -N 'select(. != null) | .kind' - | sed '/^$/d' | sort -u | tr '\n' ' ')
-  [ -z "$v" ] || [ "$v" = "SealedSecret " ] || fail "secrets/ renders '$v', expected SealedSecret only"
+  for d in secrets monitoring-secrets; do
+    [ -d "$platform/clusters/$env/$d" ] || continue
+    check
+    v=$(kustomize build "$platform/clusters/$env/$d" | yq e -N 'select(. != null) | .kind' - | sed '/^$/d' | sort -u | tr '\n' ' ')
+    [ -z "$v" ] || [ "$v" = "SealedSecret " ] || fail "$d/ renders '$v', expected SealedSecret only"
+  done
 
   # --- Synchronisation: production is never synced without the user —
   # neither the application, its Postgres nor the root (arbitrage of
@@ -128,6 +156,19 @@ for env in staging prod; do
   check
   [ "$w_bricks" -lt "$w_ns" ] && [ "$w_bricks" -lt "$w_policy" ] && [ "$w_ns" -lt "$w_secrets" ] && [ "$w_policy" -lt "$w_app" ] && [ "$w_secrets" -lt "$w_pg" ] && [ "$w_pg" -lt "$w_app" ] \
     || fail "sync waves: bricks $w_bricks < namespace $w_ns, policy $w_policy < secrets $w_secrets < postgres $w_pg < application $w_app does not hold"
+  # The observability's rules and monitors, and its Secrets, after the
+  # Applications that bring their CRDs and create their namespace (#437).
+  if [ "$env" = prod ]; then
+    for r in $(y 'select(.apiVersion == "monitoring.coreos.com/v1") | .kind + "/" + .metadata.name'); do
+      check
+      w=$(wave "select(.kind == \"${r%/*}\" and .metadata.name == \"${r#*/}\")")
+      [ "$w" -gt "$w_bricks" ] || fail "$r (wave $w) is not after the bricks ($w_bricks)"
+    done
+    check
+    w=$(yq e '.commonAnnotations["argocd.argoproj.io/sync-wave"]' "$platform/clusters/$env/monitoring-secrets/kustomization.yaml")
+    v=$(yq e '.namespace' "$platform/clusters/$env/monitoring-secrets/kustomization.yaml")
+    [ "$w" -gt "$w_bricks" ] && [ "$v" = monitoring ] || fail "monitoring-secrets/: wave $w, namespace '$v', expected after $w_bricks, monitoring"
+  fi
 
   # --- Charts pinned to a version, never a range or a branch.
   for a in $(y 'select(.kind == "Application" and .spec.source.chart != null) | .metadata.name'); do
@@ -242,6 +283,68 @@ for env in staging prod; do
       esac
       [ "${d#*=}" = "$want" ] || fail "${d%=*}: ${d#*=} replica(s), expected $want"
     done
+    # Nothing of a chart reachable from outside the cluster (#437: Grafana
+    # through `kubectl port-forward` only): no Ingress, no Service but
+    # ClusterIP.
+    check
+    v=$(r 'select(.kind == "Ingress" or (.kind == "Service" and (.spec.type // "ClusterIP") != "ClusterIP")) | .kind + "/" + .metadata.name' | tr '\n' ' ')
+    [ -z "$v" ] || fail "exposed outside the cluster: '$v'"
+    if [ "$a" = kube-prometheus-stack ]; then
+      # Prometheus and Alertmanager are the operator's StatefulSets, not
+      # the chart's: their replicas and limits are on the custom
+      # resources, and those of the config reloader the operator adds to
+      # them on its arguments.
+      for k in Prometheus Alertmanager; do
+        check
+        v=$(r "select(.kind == \"$k\") | [((.spec.replicas // 1) | tostring), (.spec.resources.limits.memory // \"none\")] | join(\" \")")
+        [[ "$v" =~ ^1\ [0-9]+[MG]i$ ]] || fail "$k: '$v', expected one replica and a memory limit"
+      done
+      check
+      v=$(r 'select(.kind == "Deployment" and .metadata.name == "kube-prometheus-stack-operator") | .spec.template.spec.containers[0].args[] | select(test("^--config-reloader-memory-limit=[0-9]+Mi$"))')
+      [ -n "$v" ] || fail "the operator gives its config reloaders no memory limit"
+      # Alertmanager reads the sealed Secret of
+      # clusters/<env>/monitoring-secrets, which the chart does not write.
+      check
+      v=$(r 'select(.kind == "Alertmanager") | [.spec.configSecret, (.spec.alertmanagerConfigSelector // {} | length | tostring)] | join(" ")')
+      n=$(yq ea '[select(.kind == "Secret" and .metadata.name == "alertmanager-config")] | length' "$rendered")
+      [ "$v" = "alertmanager-config 0" ] && [ "$n" = 0 ] || fail "Alertmanager: configuration '$v' ($n chart Secret), expected the sealed alertmanager-config"
+      # The ignoreDifferences that keep Grafana's generated password name
+      # what the chart renders, and a field it renders: a wrong path would
+      # leave the password and its checksum re-drawn at every refresh.
+      # JSON pointers become yq paths; the jq paths here are plain paths,
+      # which yq reads as they are.
+      for i in $(y "$sel | .ignoreDifferences[] | .kind + \"/\" + .name"); do
+        check
+        v=$(r "select(.kind == \"${i%/*}\" and .metadata.name == \"${i#*/}\") | .metadata.name")
+        [ -n "$v" ] || fail "ignoreDifferences names $i, which the chart does not render"
+        paths=$(y "$sel | .ignoreDifferences[] | select(.kind + \"/\" + .name == \"$i\") | (((.jsonPointers // [])[] | \"ptr \" + .), ((.jqPathExpressions // [])[] | \"jq \" + .))")
+        while IFS= read -r p; do
+          [ -n "$p" ] || continue
+          case "$p" in
+            "ptr "*) p=${p#ptr }; p=$(sed 's|/\([^/]*\)|["\1"]|g; s|^|.|' <<< "$p") ;;
+            *) p=${p#jq } ;;
+          esac
+          check
+          v=$(r "select(.kind == \"${i%/*}\" and .metadata.name == \"${i#*/}\") | $p // \"\"")
+          [ -n "$v" ] || fail "ignoreDifferences of $i: '$p' is not in what the chart renders"
+        done <<< "$paths"
+      done
+    fi
+    # Loki keeps the logs 14 days, the duration PR #505 writes into main's
+    # docs/registre-traitements.md ("Journaux techniques"): they
+    # can hold IP addresses (#437). The compactor applies it.
+    if [ "$a" = loki ]; then
+      check
+      r 'select(.kind == "ConfigMap" and .metadata.name == "loki") | .data["config.yaml"]' > "$work/loki-config.yaml"
+      v=$(yq e -N '[.limits_config.retention_period, .compactor.retention_enabled] | join(" ")' "$work/loki-config.yaml")
+      [ "$v" = "336h true" ] || fail "Loki retention: '$v', expected '336h true' (the registre's 14 days)"
+    fi
+    # Alloy reads the pods' logs, and nothing else: no Secret.
+    if [ "$a" = alloy ]; then
+      check
+      v=$(r 'select(.kind == "ClusterRole" or .kind == "Role") | .rules[].resources[] | select(test("^(secrets|[*])$"))')
+      [ -z "$v" ] || fail "Alloy may read '$v'"
+    fi
     if [ "$a" = argocd ]; then
       check
       v=$(r 'select(.kind == "Deployment" or .kind == "StatefulSet") | .metadata.name' | grep -E 'dex|notifications' || true)

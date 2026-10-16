@@ -1,0 +1,176 @@
+# kube-prometheus-stack (#437): the Prometheus operator, one Prometheus,
+# one Alertmanager, Grafana, kube-state-metrics and node-exporter. The
+# alerts that page are alerts.yaml's, next to this file; the chart's own
+# rules stay, visible in Grafana and Alertmanager, without a mail.
+#
+# Sized for one node: one replica of everything, a memory limit on every
+# container (the operator puts on the config reloaders it adds to
+# Prometheus and Alertmanager the limits of `prometheusConfigReloader`).
+# What k3s does not expose as separate components — controller manager,
+# scheduler, proxy, etcd, all in the k3s process — is not scraped, and
+# neither is the API server, whose histograms would be most of
+# Prometheus's series.
+#
+# Nothing is reachable from outside the cluster: no Ingress, every
+# Service ClusterIP; Grafana is reached by `kubectl port-forward`
+# (platform/README.md, "Observabilité"). Its admin password is the one
+# the chart generates at the first sync, kept from then on (the
+# ignoreDifferences below); persistence off, its settings are the chart's.
+#
+# Alertmanager reads its configuration — the SMTP relay, its
+# credentials, the recipient — from the Secret `alertmanager-config`,
+# sealed per cluster from alertmanager.template.yaml. Until it is there,
+# the operator gives Alertmanager a configuration that sends nothing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kube-prometheus-stack
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  project: default
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: kube-prometheus-stack
+    targetRevision: 92.9.0
+    helm:
+      releaseName: kube-prometheus-stack
+      valuesObject:
+        defaultRules:
+          rules:
+            etcd: false
+            kubeApiserverAvailability: false
+            kubeApiserverBurnrate: false
+            kubeApiserverHistogram: false
+            kubeApiserverSlos: false
+            kubeControllerManager: false
+            kubeProxy: false
+            kubeSchedulerAlerting: false
+            kubeSchedulerRecording: false
+            windows: false
+        windowsMonitoring:
+          enabled: false
+        kubeApiServer:
+          enabled: false
+        kubeControllerManager:
+          enabled: false
+        kubeScheduler:
+          enabled: false
+        kubeProxy:
+          enabled: false
+        kubeEtcd:
+          enabled: false
+        prometheusOperator:
+          # No admission webhook (and so no Job to make its certificate):
+          # the rules here are checked by promtool in the CI instead
+          # (ci/alerts-test.sh). Its TLS used the webhook's certificate.
+          admissionWebhooks:
+            enabled: false
+          tls:
+            enabled: false
+          resources:
+            requests: {cpu: 25m, memory: 48Mi}
+            limits: {memory: 192Mi}
+          prometheusConfigReloader:
+            resources:
+              requests: {cpu: 10m, memory: 16Mi}
+              limits: {memory: 64Mi}
+        prometheus:
+          prometheusSpec:
+            replicas: 1
+            scrapeInterval: 60s
+            evaluationInterval: 60s
+            # Metrics hold no personal data (names of pods and nodes,
+            # counters); 15 days, and never more than 8 GB of its 10 Gi
+            # volume.
+            retention: 15d
+            retentionSize: 8GB
+            resources:
+              requests: {cpu: 100m, memory: 384Mi}
+              limits: {memory: 1Gi}
+            storageSpec:
+              volumeClaimTemplate:
+                spec:
+                  accessModes: ["ReadWriteOnce"]
+                  resources:
+                    requests:
+                      storage: 10Gi
+            # Every rule, ServiceMonitor and PodMonitor of the cluster,
+            # not only those carrying the chart's release label.
+            ruleSelectorNilUsesHelmValues: false
+            serviceMonitorSelectorNilUsesHelmValues: false
+            podMonitorSelectorNilUsesHelmValues: false
+            probeSelectorNilUsesHelmValues: false
+            scrapeConfigSelectorNilUsesHelmValues: false
+        alertmanager:
+          alertmanagerSpec:
+            replicas: 1
+            retention: 120h
+            useExistingSecret: true
+            configSecret: alertmanager-config
+            resources:
+              requests: {cpu: 10m, memory: 32Mi}
+              limits: {memory: 128Mi}
+        grafana:
+          replicas: 1
+          defaultDashboardsTimezone: Europe/Paris
+          testFramework:
+            enabled: false
+          resources:
+            requests: {cpu: 25m, memory: 128Mi}
+            limits: {memory: 384Mi}
+          sidecar:
+            resources:
+              requests: {cpu: 10m, memory: 64Mi}
+              limits: {memory: 192Mi}
+          additionalDataSources:
+            - name: Loki
+              type: loki
+              uid: loki
+              access: proxy
+              url: http://loki.monitoring.svc.cluster.local:3100
+          grafana.ini:
+            analytics:
+              reporting_enabled: false
+              check_for_updates: false
+              check_for_plugin_updates: false
+        kube-state-metrics:
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 128Mi}
+        prometheus-node-exporter:
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 64Mi}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  # Grafana's admin password: the chart draws it at random on every
+  # render (Argo CD has no Helm `lookup` to find the one already drawn),
+  # into its Secret and into a checksum on Grafana's pods. Both are left
+  # as the first sync wrote them: otherwise each refresh would see them
+  # change and restart Grafana with a new password.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: kube-prometheus-stack-grafana
+      namespace: monitoring
+      jsonPointers:
+        - /data/admin-password
+    - group: apps
+      kind: Deployment
+      name: kube-prometheus-stack-grafana
+      namespace: monitoring
+      jqPathExpressions:
+        - '.spec.template.metadata.annotations["checksum/secret"]'
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # The CRDs are too large for the last-applied annotation of a
+      # client-side apply.
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true

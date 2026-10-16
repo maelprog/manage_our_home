@@ -51,8 +51,9 @@
 #   browser cannot choose.
 # - Memory: requested and capped like every brick of the platform. What
 #   the k3d job prints after its 10 minutes at rest (`kubectl top`, working
-#   set, Traefik 3.7.13) varies from run to run: 36 Mi in the GitHub job,
-#   88, 93 and 120 Mi in three runs of the same job on a workstation. The
+#   set, Traefik 3.7.13) varies from run to run: 32 Mi in the GitHub job
+#   (run 38896429123, #437), 88, 93, 106 and 120 Mi in four runs of the
+#   same job on a workstation. The
 #   request, 96 Mi, is within that range; the limit, 256 Mi, is above all
 #   of them.
 #
