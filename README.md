@@ -541,7 +541,16 @@ Le job `promotion` de `deploy.yml`, sur chaque PR :
   branche (le retour arrière ci-dessous). La paire se compare entière, api
   et web ensemble : elles viennent d'un même commit et ont tourné ensemble
   en staging. Une paire que staging a fait tourner autrefois mais plus
-  maintenant est refusée.
+  maintenant est rouge. Avant tout cela, la paire du fichier doit être ce
+  que prod rend : ni `newName`, ni `newTag`, ni patch qui déplace une
+  image de l'appli derrière elle.
+
+Limite : le contrôle juge la branche visée telle qu'elle était quand le
+job a tourné. Le ruleset n'exige pas que la PR soit à jour de sa base
+(`strict_required_status_checks_policy: false`) : une PR de promotion
+verte reste mergeable après que staging a bougé, sans que le job ait
+retourné. Avant de merger une promotion de prod dont la base a avancé,
+relancer le job `promotion` (ou mettre la PR à jour de sa base).
 
 `ci/promotion-test.sh` (job `render`) teste ces scripts et le ruleset
 ci-dessous sur des copies jetables de la branche, cosign remplacé par un
@@ -571,12 +580,17 @@ git push origin HEAD:deploy                                           # refusé
 
 ### Revenir en arrière
 
-Un retour arrière est la PR du `git revert` du commit de promotion :
+Un retour arrière est la PR du `git revert` du commit de promotion. Une
+promotion mergée par squash (ou rebase) est un commit ordinaire :
+`git revert <commit>`. Mergée par un commit de fusion, il faut dire quel
+parent garder : `git revert -m 1 <commit de fusion>` (le parent 1 est
+`deploy` avant la fusion).
+
 
 ```
 git fetch origin
 git switch -c revert/prod-<version> origin/deploy
-git revert <commit de la promotion>
+git revert <commit de la promotion>        # -m 1 si c'est un commit de fusion
 git push -u origin revert/prod-<version>
 gh pr create --base deploy --fill
 ```
