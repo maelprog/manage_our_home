@@ -1357,8 +1357,9 @@ mod tests {
         // #440: the anonymity needs a third-party host, so the notice states
         // that the host it names is the one serving the service.
         assert!(
-            flat.contains("par lui seul"),
-            "the legal notice does not state who hosts the service"
+            flat.contains("hébergé par ce prestataire, et par lui seul"),
+            "the legal notice does not state that the host it names, and it \
+             alone, hosts the service"
         );
         // Every article the notice cites is LCEN art. 1-1 or one of the two code
         // pénal articles on the host's professional secrecy; see
