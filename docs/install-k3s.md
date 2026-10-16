@@ -45,7 +45,8 @@ et web, dans un budget d'environ 3 Go pour tout le cluster. N'y tournent
 Chaque conteneur a une limite mémoire (`ci/render-test.sh` et
 `ci/platform-test.sh` le vérifient sur le rendu), une seule instance de
 chaque composant, Argo CD et Kyverno allégés. Sur le rendu de la branche
-(#438, conteneurs principaux, sans les pods propres à k3s), les requêtes
+(#438, conteneurs principaux, Traefik compris, sans les autres pods
+propres à k3s), les requêtes
 mémoire du staging font 1 160 Mi et ses limites 4 512 Mi : une limite
 n'est pas réservée, la somme peut dépasser la RAM. Relevé sur une VM
 Debian 13 de 4 Go (2 Go de swap) avec un seul nœud, le staging déployé

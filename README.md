@@ -17,10 +17,14 @@ les deux.
   overlay (#432) ; pendant l'intégration, celui du serveur de test lit
   `k3s`, `deploy` restant vide jusqu'à la promotion
   (`platform/README.md`). Personne ne fait de `kubectl apply` à la main,
-  hors l'amorçage d'un cluster (`platform/bootstrap.sh`) et les briques
+  hors l'amorçage d'un cluster (`platform/bootstrap.sh`), les briques
   posées hors d'Argo CD (kube-vip, MetalLB, kured,
-  system-upgrade-controller : `docs/install-k3s.md`), la CI non plus :
-  aucun jeton Argo CD ni accès cluster ne lui est donné.
+  system-upgrade-controller) et les gestes d'exploitation que prescrit
+  `docs/install-k3s.md` : la première sauvegarde de base (§ 4), la
+  bascule depuis Compose (§ 6, synchro suspendue par `kubectl patch`),
+  l'exercice de restauration (§ 7) ; et la restauration ci-dessous
+  (« Restaurer »). La CI non plus : aucun jeton Argo CD ni accès cluster
+  ne lui est donné.
 - **Une branche, un dossier par environnement** (arbitrage du 2026-10-10).
   Une branche par environnement est un anti-modèle GitOps : la promotion se
   ferait par merge entre branches, et les branches dériveraient. Ici, ce qui
