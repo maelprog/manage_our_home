@@ -1,6 +1,8 @@
 # Registre des traitements — Manage Our Home
 
 Registre tenu au titre de l'article 30 du RGPD. Dernière mise à jour :
+2026-10-16 (journaux techniques du cluster de production, gardés 14 jours,
+et alertes de supervision, #437) ;
 2026-10-15 (hébergement sur un VPS loué à un hébergeur tiers, sauvegardes
 de la base hors site, #440, #433) ;
 2026-10-11 (protection de la connexion : compteurs en base, pseudonymisés
@@ -84,7 +86,11 @@ tourne sur un VPS loué à un hébergeur tiers (arbitrage du 2026-10-10,
   [cadre contractuel du sous-traitant email — à renseigner avant la mise
   en ligne]. À ce jour aucun compte d'envoi n'est ouvert et aucune donnée
   personnelle ne lui a été transmise ; l'établir est bloquant avant la
-  mise en ligne (`docs/v2-deployment.md` #18).
+  mise en ligne (`docs/v2-deployment.md` #18). Les alertes de
+  supervision du cluster de production (#437) passent par le même relais :
+  elles ne vont qu'au responsable de traitement et ne portent que des noms
+  de composants (namespace, pod, certificat, disque) et des mesures, aucune
+  donnée d'utilisateur.
 - Google, pour deux flux distincts, chacun déclenché seulement par
   l'utilisateur :
   - la **connexion avec Google** (`/auth/google/start`,
@@ -181,6 +187,14 @@ jointes et le texte libre que `pgcrypto` ne chiffre pas, contre le vol ou
 la réutilisation du support, pas contre une intrusion sur le serveur en
 marche ; les sauvegardes, qui lisent les données en clair, se chiffrent à
 part (#8).
+Les journaux techniques et les mesures du cluster de production (#437 ;
+branche de déploiement, `platform/components/observability/`) ne se
+lisent que depuis le cluster : Loki, Prometheus et Grafana n'ont aucune
+entrée publique (pas d'Ingress, services internes au cluster), et Grafana
+se consulte par `kubectl port-forward`, réservé à qui détient les accès
+d'administration du cluster, puis avec son mot de passe d'administration.
+Les mesures (Prometheus, 15 jours) ne portent que des noms de composants
+et des compteurs, aucune donnée personnelle.
 
 ## Transferts hors de l'Union européenne
 
@@ -231,6 +245,7 @@ ligne.
 | 8 | User admin (superadmin) | liste des groupes/utilisateurs à l'échelle globale, avec pour chaque groupe s'il a un propriétaire ; pour un groupe resté sans propriétaire seulement, la liste de ses membres (nom affiché, email, rôle, date d'arrivée, compte désactivé ou en suppression demandée) et la désignation de l'un des membres actifs comme propriétaire (#323) ; désactivation et réactivation d'un compte, date de désactivation (`users.deactivated_at`) et date de l'email d'avertissement (`users.deactivation_notice_sent_at`) ; demande de réactivation du titulaire, sa date et son message facultatif de 1000 caractères au plus (`account_reactivation_requests`, #289), date du premier refus depuis la désactivation (`users.reactivation_refused_at`) | Support technique/maintenance de la plateforme | Intérêt légitime (exploitation du service) | La désactivation n'efface rien et dure jusqu'à la réactivation, qui efface les deux dates. La demande de réactivation — une en attente à la fois — est supprimée par la décision du superadmin (réactivation ou refus) ou par la purge du compte ; tant qu'elle est en attente, la purge à 2 ans et son email d'avertissement sont suspendus, si c'est la première depuis la désactivation — pas la purge d'un compte dont la suppression a été demandée (ci-dessous). Le premier refus depuis la désactivation date `reactivation_refused_at` : une nouvelle demande reste possible mais ne suspend plus rien (arbitrage du responsable de traitement du 2026-09-29) ; il efface aussi la date de l'email, si bien que, si l'avertissement était déjà parti, un nouveau part une fois l'échéance à 30 jours ou moins, et la purge a lieu 30 jours après lui au plus tôt ; elle n'a de toute façon jamais lieu moins de 30 jours après le refus, que ce nouvel email parte ou non (#296). Ce report de 30 jours n'a lieu qu'une fois : un refus suivant supprime la demande sans rien changer d'autre, ni la date du premier refus ni celle de l'email, et ne repousse donc plus la purge (arbitrage du responsable de traitement du 2026-10-02, #313). `reactivation_refused_at` est effacé par la réactivation, une nouvelle désactivation et la purge. Sans réactivation, le compte est purgé (voir « Droit à l'effacement » ci-dessous) après 2 ans de désactivation — durée recommandée par la CNIL pour un compte inactif, arbitrage du responsable de traitement du 2026-09-28 (#256) ; son titulaire est averti par email 30 jours avant (de nouveau après le premier refus, s'il suit un avertissement, dans le cas ci-dessus), et la purge n'a jamais lieu moins de 30 jours après cet email ; s'il n'a pas pu partir, elle a lieu au plus tôt 2 ans et 30 jours après la désactivation. Exception : un compte dont la suppression a été demandée est purgé au terme de ses 30 jours de grâce, désactivé ou non, demande de réactivation en attente ou non, refus ou non (ligne 1, #139) | Scaleway (l'email d'avertissement : adresse du compte, dates de désactivation et de purge, identité et contact du responsable) |
 | 9 | Import calendrier Google | URL de flux iCal privée (chiffrée), libellé, date du dernier import, événements importés et leur identifiant externe | Miroir en lecture seule d'un agenda Google externe | Consentement explicite (l'utilisateur fournit volontairement l'URL) | Jusqu'à la suppression de l'import par un administrateur ou le propriétaire du groupe, ou du groupe ; les événements importés restent après la suppression de l'import sauf si leur suppression est demandée avec lui ; la purge du compte du membre qui a configuré l'import supprime l'import, URL de flux comprise, et laisse ses événements dans le groupe (#139) | Hébergeur du flux (Google en pratique ; le code accepte toute URL `http`/`https`), interrogé par le serveur à chaque import lancé par un membre — aucune synchronisation en arrière-plan |
 | — | Logs d'audit (transverse) | horodatage, acteur, action, cible, métadonnées (identifiants et compteurs) ; actions journalisées : export, demande et annulation de suppression de compte, demande de réactivation d'un compte désactivé, purge, suppression de groupe (y compris par la purge, faute de membre), transfert de propriété (y compris par la purge, par la réactivation d'un membre d'un groupe sans propriétaire et par la désignation du superadmin, avec le motif), changement de rôle, consultation des listes et des membres d'un groupe sans propriétaire, désactivation et réactivation d'un compte et refus d'une demande de réactivation par le superadmin — les connexions ne le sont pas | Traçabilité de sécurité, obligations RGPD (preuve des actions d'export/suppression) | Intérêt légitime | 6 mois glissants (recommandation de la CNIL pour les journaux, délibération n° 2021-122), appliqués par la purge de conservation horaire (#138) ; la purge d'un compte supprime aussitôt les entrées dont il est l'acteur ; restent, pour la même durée, celles qui le concernent sans être de son fait (voir « Droit à l'effacement » ci-dessous) (#139). Le minimum d'un an du décret n° 2021-1362 a été écarté : il vise les hébergeurs et les services de communication au public, pas une application familiale portée par une personne physique — arbitrage du responsable de traitement du 2026-09-19, à revoir si le service change de nature | Aucun tiers |
+| — | Journaux techniques (transverse) | ce que les conteneurs du cluster de production écrivent sur leur sortie — api, web, Postgres, MinIO, Traefik et les composants de la plateforme : messages de fonctionnement et d'erreur, horodatés, rattachés à leur namespace, leur pod et leur conteneur (#437). Les applications n'y écrivent pas l'adresse IP des clients, mais un message peut citer l'identifiant d'un compte ou d'un groupe, ou une valeur reprise d'une erreur (celle du relais email ou de Postgres, par exemple) ; ceux de Traefik et de Postgres peuvent contenir une adresse IP | Diagnostiquer une panne, détecter et comprendre un incident de sécurité | Intérêt légitime (fonctionnement et sécurité du service) | 14 jours dans Loki (`retention_period: 336h`, `platform/components/observability/loki.yaml` de la branche de déploiement), après quoi son compacteur les supprime à son passage suivant, dans les heures qui suivent ; le nœud garde aussi les derniers journaux de chaque conteneur jusqu'à leur rotation par kubelet. La purge d'un compte ne les touche pas : ils s'effacent à ce terme | Aucun tiers : Loki tourne dans le cluster, sur le VPS (voir « Hébergeur du VPS ») |
 | 12 | RGPD (export/suppression) | export à la demande (Art. 20), demande/annulation de suppression (Art. 17) | Exercice des droits RGPD | Obligation légale | L'export n'est pas persisté côté serveur (généré à la demande, retourné directement) | Aucun tiers |
 
 ## Droit à l'effacement — modalités de purge

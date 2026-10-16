@@ -53,6 +53,7 @@ données sont-elles conservées ? ».
 | Messagerie | messages du fil familial (chiffrés au repos), date de votre dernière lecture du fil | Exécution du contrat |
 | Import calendrier Google | URL de flux iCal (chiffrée), événements importés | Consentement explicite (vous fournissez volontairement l'URL) |
 | Logs d'audit | actions sensibles : export, demande, annulation et exécution de la suppression d'un compte, suppression d'un groupe, transfert de propriété, changement de rôle, actions d'administration (les connexions ne sont pas journalisées) | Intérêt légitime (sécurité, traçabilité) |
+| Journaux techniques | messages de fonctionnement et d'erreur du serveur, qui peuvent contenir l'adresse IP d'une connexion, l'identifiant de votre compte ou de votre groupe, ou une valeur reprise d'une erreur | Intérêt légitime (fonctionnement et sécurité du service) |
 
 ## Le service et les mineurs
 
@@ -350,6 +351,10 @@ de la purge dépasserait.
   aussitôt les entrées de vos propres actions ; celles qui concernent
   votre compte sans être de votre fait restent jusqu'à ce terme (voir
   « Suppression de votre compte » ci-dessous).
+- **Journaux techniques** : 14 jours, puis supprimés dans les heures qui
+  suivent. Ils restent sur le serveur, consultables par le seul
+  responsable du service, et la suppression de votre compte ne les efface
+  pas avant ce terme.
 - **Export de vos données** : généré à la demande et renvoyé directement,
   il n'est pas conservé sur le serveur.
 - **Sauvegardes de la base** : de quoi restaurer la base à n'importe quel

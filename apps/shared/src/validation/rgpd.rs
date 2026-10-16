@@ -1699,6 +1699,63 @@ mod tests {
         }
     }
 
+    /// Days Loki keeps the logs of the production cluster's containers (#437):
+    /// `retention_period: 336h` in `platform/components/observability/loki.yaml`
+    /// of the deployment branch, which `ci/platform-test.sh` checks there. The
+    /// logs can hold IP addresses, so the registre and the policy state this
+    /// duration; the two branches change it together.
+    const CONTAINER_LOG_RETENTION_DAYS: u32 = 14;
+
+    #[test]
+    fn the_registre_and_the_policy_state_how_long_the_container_logs_are_kept() {
+        let days = format!("{CONTAINER_LOG_RETENTION_DAYS} jours");
+        let registre = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/registre-traitements.md"
+        ));
+        let row = registre
+            .lines()
+            .find(|l| l.starts_with("| — | Journaux techniques"))
+            .expect("the registre has no row for the container logs");
+        let cells = table_cells(row.trim());
+        // #, epic, data, purpose, legal basis, retention, recipients.
+        assert_eq!(
+            cells.len(),
+            7,
+            "the container logs row has {} cells",
+            cells.len()
+        );
+        assert!(
+            cells[2].contains("adresse IP"),
+            "the registre does not say the container logs can hold IP addresses"
+        );
+        assert!(
+            cells[5].starts_with(&days),
+            "the registre keeps the container logs `{}`, Loki {days}",
+            cells[5]
+        );
+
+        let policy = flatten(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/privacy-policy.md"
+        )));
+        assert!(
+            policy.contains("| Journaux techniques |"),
+            "the policy's table of collected data has no row for the container logs"
+        );
+        let bullet = policy
+            .split("- **Journaux techniques** :")
+            .nth(1)
+            .expect("the policy states no retention for the container logs")
+            .split(" - **")
+            .next()
+            .unwrap_or_default();
+        assert!(
+            bullet.starts_with(&format!(" {days}")),
+            "the policy keeps the container logs `{bullet}`, Loki {days}"
+        );
+    }
+
     /// The only articles `docs/legal-notice.md` may cite (#314): LCEN art. 1-1,
     /// and the code pénal articles 226-13 and 226-14 on the host's
     /// professional secrecy.
