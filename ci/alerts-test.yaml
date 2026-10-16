@@ -68,6 +68,9 @@ tests:
         values: '0x5'
       - series: 'kube_job_failed{namespace="manage-our-home", job_name="minio-bucket", condition="true"}'
         values: '1x5'
+      # A Job of the same name elsewhere is not the application's.
+      - series: 'kube_job_failed{namespace="other", job_name="migrate", condition="true"}'
+        values: '1x5'
     alert_rule_test:
       - eval_time: 1m
         alertname: MigrationJobFailed
@@ -168,8 +171,13 @@ tests:
         values: '0x80'
       - series: 'certmanager_certificate_ready_status{namespace="manage-our-home", name="manage-our-home-tls", condition="False"}'
         values: '1x80'
+      # A Ready certificate: its other conditions are at 0, and silent.
       - series: 'certmanager_certificate_ready_status{namespace="other", name="fine", condition="True"}'
         values: '1x80'
+      - series: 'certmanager_certificate_ready_status{namespace="other", name="fine", condition="False"}'
+        values: '0x80'
+      - series: 'certmanager_certificate_ready_status{namespace="other", name="fine", condition="Unknown"}'
+        values: '0x80'
     alert_rule_test:
       - eval_time: 50m
         alertname: CertificateNotReady
