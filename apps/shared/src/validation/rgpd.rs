@@ -1727,7 +1727,7 @@ mod tests {
             cells.len()
         );
         assert!(
-            cells[2].contains("adresse IP"),
+            cells[2].contains("peuvent contenir une adresse IP"),
             "the registre does not say the container logs can hold IP addresses"
         );
         assert!(
