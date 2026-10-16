@@ -7,7 +7,9 @@
 # pass without a restart (#432); then the ingress is checked against the
 # guards of main's infra/Caddyfile (#434), an attachment sent through the
 # API is checked in MinIO's bucket (#435), and that Postgres is restored
-# from its backups to an instant (#433).
+# from its backups to an instant (#433). Beside them, the promotion job
+# (#436): the overlays' images are signed as Kyverno requires, and a PR
+# moves prod only to the pair staging runs (README, « Promotion »).
 #
 # The PRs of the k3s epic (#431 to #437) target `k3s`; `deploy` only
 # receives `k3s` once, by a PR the user merges by hand, when the whole
@@ -62,6 +64,40 @@ jobs:
           # PR goes into, or that this push is on (ci/platform-test.sh).
           EXPECT_STAGING_REVISION: ${{ github.base_ref || github.ref_name }}
         run: ci/platform-test.sh
+      - name: Tests on the promotion scripts
+        run: ci/promotion-test.sh
+
+  # Promotion (#436): every image an overlay names is signed by main's
+  # images workflow, as Kyverno will require; and a PR only moves prod to
+  # the pair staging runs at the tip of the branch it goes into, or back to
+  # a pair prod ran before (the revert of a promotion).
+  promotion:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tools
+        run: |
+          ci/install-tools.sh "$RUNNER_TEMP/bin" kustomize yq cosign
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Signatures of the overlays' images
+        run: ci/verify-signatures.sh
+      # The branch the PR goes into, at its tip and with its history: what
+      # staging runs now, and the pairs prod ran before.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          ref: ${{ github.base_ref }}
+          path: base-branch
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prod moves only to what staging runs
+        if: github.event_name == 'pull_request'
+        run: ci/promotion-check.sh base-branch
 
   k3d:
     needs: render

@@ -12,13 +12,14 @@ components:
 
 # By digest, never by tag: a tag can be moved, a digest cannot, and the
 # Kyverno policy of #432 refuses anything else. Images published by
-# .github/workflows/images.yml on main (#430); this pair is commit
-# 10aabde of main (run 38333383259). #436 opens the PRs that move them.
+# .github/workflows/images.yml on main (#430), the source of the pair
+# after each digest (the first: run 38333383259). Moved by
+# ci/set-images.sh, in a PR (README, « Promotion », #436).
 images:
   - name: ghcr.io/maelprog/manage-our-home-api
-    digest: sha256:3448748f41c94ec12dce8a826ca81ba831e17e61c29711b5bd563e71897f4153
+    digest: sha256:3448748f41c94ec12dce8a826ca81ba831e17e61c29711b5bd563e71897f4153 # main 10aabde
   - name: ghcr.io/maelprog/manage-our-home-web
-    digest: sha256:236d57ab423e5e1cbc966c7d27dd77886e7883556c6a85dbc4406c7f966136f8
+    digest: sha256:236d57ab423e5e1cbc966c7d27dd77886e7883556c6a85dbc4406c7f966136f8 # main 10aabde
 
 # One replica each: the cluster has a budget of about 3 GB for the
 # platform, Postgres, MinIO, api and web together. The
