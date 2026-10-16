@@ -313,8 +313,8 @@ compris (leurs limites sont sur leurs ressources `Prometheus` et
 de l'opérateur). Le job `observability` imprime aussi `kubectl top` après
 5 minutes au repos : 1 267 Mi pour le namespace `monitoring` sur un
 passage local du job (Grafana et ses deux sidecars 481 Mi, Prometheus
-346 Mi, Alloy 139 Mi, Loki 113 Mi), avec quelques heures de mesures et
-de journaux seulement : Prometheus et Loki grossissent avec eux, sous
+346 Mi, Alloy 139 Mi, Loki 113 Mi), avec un quart d'heure de mesures
+et de journaux seulement : Prometheus et Loki grossissent avec eux, sous
 leurs limites de 1 Gi et 512 Mi.
 
 ## Versions
