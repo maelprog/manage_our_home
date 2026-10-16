@@ -14,12 +14,13 @@ components:
 
 # By digest, never by tag. No `v*` tag has been built by
 # .github/workflows/images.yml yet: until the first one, this is the same
-# pair as staging (main, commit 10aabde). #436 opens the promotion PRs.
+# pair as staging. Moved by ci/set-images.sh, in a promotion PR that CI
+# keeps to the pair staging runs (README, « Promotion », #436).
 images:
   - name: ghcr.io/maelprog/manage-our-home-api
-    digest: sha256:3448748f41c94ec12dce8a826ca81ba831e17e61c29711b5bd563e71897f4153
+    digest: sha256:3448748f41c94ec12dce8a826ca81ba831e17e61c29711b5bd563e71897f4153 # main 10aabde
   - name: ghcr.io/maelprog/manage-our-home-web
-    digest: sha256:236d57ab423e5e1cbc966c7d27dd77886e7883556c6a85dbc4406c7f966136f8
+    digest: sha256:236d57ab423e5e1cbc966c7d27dd77886e7883556c6a85dbc4406c7f966136f8 # main 10aabde
 
 configMapGenerator:
   - name: api-config
