@@ -12,11 +12,13 @@
 #     included: it is not what is running there now.
 #
 # The pair is compared whole, api and web together: they were built from
-# one commit, and staging ran them together.
+# one commit, and staging ran them together. Before any of that, the pair
+# of the file must be what prod renders: no newName, newTag or patch that
+# moves an application image behind it.
 #
 #   ci/promotion-check.sh <base>
 #
-# Needs git and yq (mikefarah, v4) on PATH.
+# Needs git, kustomize and yq (mikefarah, v4) on PATH.
 
 set -euo pipefail
 
@@ -45,6 +47,28 @@ fi
 head_prod=$(pair "$root/$prod")
 if [ -z "$head_prod" ]; then
   echo "FAIL: no application image in $prod" >&2
+  exit 1
+fi
+
+# The pair of the file is what prod runs only if nothing else moves an
+# application image: no key but name and digest on its entries (a newName
+# or a newTag would replace them), and what kustomize renders for every
+# container (init containers included) is that pair — a patch of an
+# image shows there.
+extra=$(yq '[.images[] | select(.name | test("^ghcr\.io/maelprog/manage-our-home-")) | keys | .[] | select(. != "name" and . != "digest")] | unique | join(" ")' "$root/$prod")
+if [ -n "$extra" ]; then
+  echo "FAIL: $prod: the application's images may carry name and digest only, not: $extra" >&2
+  exit 1
+fi
+if ! rendered=$(kustomize build "$(dirname "$root/$prod")" | yq -N '.. | select(tag == "!!map" and has("containers")) | ((.containers // []) + (.initContainers // []))[].image'); then
+  echo "FAIL: kustomize build of the prod overlay" >&2
+  exit 1
+fi
+# Every image of the render that is not a third party's (render-test.sh
+# pins those: MinIO's, by tag and digest), sorted like the pair.
+rendered=$(grep -v '^docker\.io/bitnamilegacy/' <<< "$rendered" | sort -u | paste -sd ' ' -)
+if [ "$rendered" != "$head_prod" ]; then
+  echo "FAIL: prod renders the application's images as '$rendered', its images: say '$head_prod'" >&2
   exit 1
 fi
 

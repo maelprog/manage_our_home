@@ -82,7 +82,7 @@ jobs:
           persist-credentials: false
       - name: Tools
         run: |
-          ci/install-tools.sh "$RUNNER_TEMP/bin" yq cosign
+          ci/install-tools.sh "$RUNNER_TEMP/bin" kustomize yq cosign
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Signatures of the overlays' images
         run: ci/verify-signatures.sh

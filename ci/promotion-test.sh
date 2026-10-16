@@ -153,6 +153,29 @@ expect fail "prod moved to a pair staging ran but no longer runs" head_pair prod
 expect fail "prod moved to staging's api and an older web" mixed
 expect fail "staging and prod moved together to a new pair" both_new
 
+# What the overlay runs is what kustomize renders, not only the `digest:`
+# lines: anything else that moves an application image is refused, the
+# pair of the file left as it is.
+prod_file() { echo "$h/$overlays/prod/kustomization.yaml"; }
+new_name() {
+  N="$API" yq -i '(.images[] | select(.name == env(N))).newName = "ghcr.io/evil/manage-our-home-api"' "$(prod_file)"
+}
+new_tag() {
+  N="$API" yq -i '(.images[] | select(.name == env(N))).newTag = "latest"' "$(prod_file)"
+}
+image_patch() { # the api container to P3's api image, by a patch
+  P="- op: replace
+  path: /spec/template/spec/containers/0/image
+  value: $API@$(digest P3-api)" yq -i '.patches += [{"target": {"kind": "Deployment", "name": "api"}, "patch": env(P)}]' "$(prod_file)"
+}
+reordered() { # staging's pair, web listed before api
+  head_pair prod P6 && yq -i '.images |= reverse' "$(prod_file)"
+}
+expect fail "an api image renamed by newName" new_name
+expect fail "an api image given a newTag" new_tag
+expect fail "the api container's image moved by a patch" image_patch
+expect pass "prod moved to the pair staging runs, web listed first" reordered
+
 # A base with no overlay yet — `deploy` before `k3s` is merged into it.
 check
 empty="$work/empty"
