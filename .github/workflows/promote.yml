@@ -217,6 +217,13 @@ jobs:
           API: ${{ steps.digests.outputs.api }}
           WEB: ${{ steps.digests.outputs.web }}
         run: |
+          # `- <short> <subject>`, the subject in a code span: a `#N` there
+          # would put a reference to this PR in the timeline of issue N.
+          commits() { # repository, range
+            git -C "$1" log --format='%h%x09%s' "$2" | while IFS=$'\t' read -r h subject; do
+              printf -- "- %s \`%s\`\\n" "$h" "${subject//\`/}"
+            done
+          }
           commit_of() { # overlay file -> commit of `main` its api image comes from, or nothing
             N="$API_IMAGE" yq '.images[] | select(.name == env(N)) | .digest | line_comment' "$1" \
               | grep -oE 'main [0-9a-f]{7,40}' | head -n 1 | cut -d' ' -f2 || true
@@ -263,7 +270,7 @@ jobs:
             if [ -n "$since" ] && git -C ../main merge-base --is-ancestor "$since" "$SHA" 2> /dev/null; then
               echo "### Commits since the one staging runs (main ${since})"
               echo
-              git -C ../main log --format='- %h %s' "${since}..${SHA}"
+              commits ../main "${since}..${SHA}"
               echo
               echo "### New migrations"
               echo
@@ -273,7 +280,7 @@ jobs:
               echo "The commit staging runs could not be read from \`overlays/staging\`: no list of commits."
             fi
             echo
-            echo "Opened by \`promote.yml\` of \`main\` (#436). To be merged by hand; the \`promotion\` job checks the signatures."
+            echo "Opened by \`promote.yml\` of \`main\`. To be merged by hand; the \`promotion\` job checks the signatures."
           } > "$RUNNER_TEMP/body.md"
 
       - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -298,7 +305,7 @@ jobs:
           cd deploy
           id=$(gh api "users/${SLUG}[bot]" --jq .id)
           git -c user.name="${SLUG}[bot]" -c user.email="${id}+${SLUG}[bot]@users.noreply.github.com" \
-            commit --quiet --all --message "deploy(staging): main ${SHA::7} (#436)"
+            commit --quiet --all --message "deploy(staging): main ${SHA::7}"
           auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
           echo "::add-mask::${auth}"
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}" \
@@ -387,6 +394,13 @@ jobs:
           digest_of() { # overlay file, image
             N="$2" yq '.images[] | select(.name == env(N)) | .digest' "$1"
           }
+          # `- <short> <subject>`, the subject in a code span: a `#N` there
+          # would put a reference to this PR in the timeline of issue N.
+          commits() { # repository, range
+            git -C "$1" log --format='%h%x09%s' "$2" | while IFS=$'\t' read -r h subject; do
+              printf -- "- %s \`%s\`\\n" "$h" "${subject//\`/}"
+            done
+          }
           commit_of() { # overlay file -> commit of `main` its api image comes from, or nothing
             N="$API_IMAGE" yq '.images[] | select(.name == env(N)) | .digest | line_comment' "$1" \
               | grep -oE 'main [0-9a-f]{7,40}' | head -n 1 | cut -d' ' -f2 || true
@@ -432,11 +446,11 @@ jobs:
             elif g merge-base --is-ancestor "$S" "$T"; then
               echo "**${TAG} points at ${T::7}, after the commit staging runs: these commits of the tag are not in this promotion.**"
               echo
-              g log --format='- %h %s' "${S}..${T}"
+              commits ../main "${S}..${T}"
             elif g merge-base --is-ancestor "$T" "$S"; then
               echo "**${TAG} points at ${T::7}, before the commit staging runs: these commits, not in the tag, go to prod with it.**"
               echo
-              g log --format='- %h %s' "${T}..${S}"
+              commits ../main "${T}..${S}"
             else
               echo "**${TAG} points at ${T::7}, which is not on the line of the commit staging runs.**"
             fi
@@ -446,7 +460,7 @@ jobs:
             if [ -n "$P" ] && g merge-base --is-ancestor "$P" "$S"; then
               echo "### Commits since the one prod runs (main ${P::7})"
               echo
-              g log --format='- %h %s' "${P}..${S}"
+              commits ../main "${P}..${S}"
               echo
               echo "### New migrations"
               echo
@@ -462,7 +476,7 @@ jobs:
               echo "The commit prod runs ('${p}') is not before the one staging runs on \`main\`: no list of commits or migrations. Compare by hand."
             fi
             echo
-            echo "Opened by \`promote.yml\` of \`main\` (#436). To be merged by hand; the \`promotion\` job is red if this pair is not the one staging runs. Argo CD then waits for « Sync » on prod."
+            echo "Opened by \`promote.yml\` of \`main\`. To be merged by hand; the \`promotion\` job is red if this pair is not the one staging runs. Argo CD then waits for « Sync » on prod."
           } > "$RUNNER_TEMP/body.md"
 
       - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -486,7 +500,7 @@ jobs:
           cd deploy
           id=$(gh api "users/${SLUG}[bot]" --jq .id)
           git -c user.name="${SLUG}[bot]" -c user.email="${id}+${SLUG}[bot]@users.noreply.github.com" \
-            commit --quiet --all --message "deploy(prod): ${TAG}, main ${SHORT} (#436)"
+            commit --quiet --all --message "deploy(prod): ${TAG}, main ${SHORT}"
           auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
           echo "::add-mask::${auth}"
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}" \
