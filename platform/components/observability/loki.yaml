@@ -9,8 +9,9 @@
 # Retention: 14 days (`retention_period: 336h`), applied by the compactor,
 # which deletes what is older at its next pass (every 10 minutes, after
 # `retention_delete_delay`, 2 hours). The logs can hold IP addresses:
-# this duration is the one main's docs/registre-traitements.md declares
-# ("Journaux techniques"); change both together. ci/platform-test.sh
+# this duration is the one PR #505 writes into main's
+# docs/registre-traitements.md ("Journaux techniques"); once it is merged,
+# change both together. ci/platform-test.sh
 # checks the rendered configuration.
 apiVersion: argoproj.io/v1alpha1
 kind: Application

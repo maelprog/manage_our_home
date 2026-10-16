@@ -224,9 +224,10 @@ le namespace `monitoring` :
   les pods et leurs journaux : aucun Secret.
 - **Rétention des journaux : 14 jours** (`retention_period: 336h`,
   `loki.yaml`), appliquée par le compacteur de Loki. Ils peuvent contenir
-  des adresses IP : cette durée est celle que déclarent le registre des
-  traitements et la politique de confidentialité de `main` (« Journaux
-  techniques ») ; elle ne change qu'avec eux. `ci/platform-test.sh` la
+  des adresses IP : cette durée est celle que la PR #505 inscrit au
+  registre des traitements et dans la politique de confidentialité de
+  `main` (« Journaux techniques ») ; une fois celle-ci mergée, elle ne
+  change qu'avec eux. `ci/platform-test.sh` la
   vérifie sur le rendu, le job `observability` sur le Loki qui tourne.
 
 ### Alertes

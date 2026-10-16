@@ -316,8 +316,8 @@ for env in staging prod; do
         [ -n "$v" ] || fail "ignoreDifferences names $i, which the chart does not render"
       done
     fi
-    # Loki keeps the logs 14 days, the duration main's
-    # docs/registre-traitements.md declares ("Journaux techniques"): they
+    # Loki keeps the logs 14 days, the duration PR #505 writes into main's
+    # docs/registre-traitements.md ("Journaux techniques"): they
     # can hold IP addresses (#437). The compactor applies it.
     if [ "$a" = loki ]; then
       check
