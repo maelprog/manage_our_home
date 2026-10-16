@@ -12,6 +12,10 @@
 //! (non-empty title, `ends_at >= starts_at`) so the form rejects before a
 //! round trip.
 //!
+//! `paris_date`/`paris_start_of_day`/`normalize_all_day` pin an all-day
+//! event to Europe/Paris midnights, from the opening of its first day to
+//! the opening of the day after its last one.
+//!
 //! `validate_attachment` is the client-side pre-check (extension allow-list
 //! and size cap) `architecture.md`'s Uploads section asks for *before*
 //! upload; the backend still sniffs the real MIME type authoritatively.
