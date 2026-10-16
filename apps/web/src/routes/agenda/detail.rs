@@ -18,7 +18,9 @@ use manage_our_home_shared::dto::agenda::{
     AttachmentResponse, EventResponse, OccurrenceResponse, UpdateEventRequest,
 };
 use manage_our_home_shared::dto::groups::GroupMember;
-use manage_our_home_shared::validation::agenda::{parse_rrule, Freq, RecurrenceEnd};
+use manage_our_home_shared::validation::agenda::{
+    format_reminder_offset, parse_rrule, Freq, RecurrenceEnd,
+};
 use manage_our_home_shared::validation::messagerie::author_name;
 use uuid::Uuid;
 
@@ -343,15 +345,7 @@ fn page(
     // Reminders: add form + one-shot display of a just-created reminder
     // (backend exposes no list endpoint — documented v1 limitation).
     let just_created = reminder
-        .map(|(rid, offset)| {
-            format!(
-                r#"<p class="notice success split">
-<span>Rappel actif : {offset} min avant.</span>
-<form method="post" action="/agenda/{id}/reminders/{rid}/delete">
-<button type="submit" class="secondary">Supprimer ce rappel</button>
-</form></p>"#
-            )
-        })
+        .map(|(rid, offset)| render_reminder_created(id, rid, offset))
         .unwrap_or_default();
     let reminder_select_html = reminder_select("reminder", None);
     let reminders_html = format!(
@@ -383,6 +377,25 @@ fn page(
         title = html_escape(&event.title),
     );
     shell_with_header(Width::Read, &event.title, header, &body)
+}
+
+/// The one-shot notice shown after a reminder is created, with its delete
+/// button. `offset` is the minutes-before value echoed in the redirect.
+/// The API refuses a negative offset; a forged one in the query reads as 0.
+fn render_reminder_created(id: Uuid, rid: Uuid, offset: i32) -> String {
+    let minutes = u32::try_from(offset).unwrap_or(0);
+    let when = if minutes == 0 {
+        format_reminder_offset(0)
+    } else {
+        format!("{} avant", format_reminder_offset(minutes))
+    };
+    format!(
+        r#"<p class="notice success split">
+<span>Rappel actif : {when}.</span>
+<form method="post" action="/agenda/{id}/reminders/{rid}/delete">
+<button type="submit" class="secondary">Supprimer ce rappel</button>
+</form></p>"#
+    )
 }
 
 fn render_oneoff_completion(id: Uuid, event: &EventResponse) -> String {
@@ -623,6 +636,59 @@ mod tests {
             email: format!("{name}@example.test"),
             role: "member".to_string(),
         }
+    }
+
+    // -- render_reminder_created (#457) ------------------------------------
+
+    #[test]
+    fn a_one_day_reminder_reads_in_days() {
+        let html = render_reminder_created(uid(9), uid(3), 1440);
+        assert!(html.contains("Rappel actif : 1 jour avant."), "{html}");
+        assert!(!html.contains("1440"), "{html}");
+    }
+
+    #[test]
+    fn a_mixed_offset_reads_in_days_hours_and_minutes() {
+        let html = render_reminder_created(uid(9), uid(3), 1510);
+        assert!(
+            html.contains("Rappel actif : 1 jour 1 h 10 min avant."),
+            "{html}"
+        );
+    }
+
+    /// "à l'heure de l'événement avant" would not be French.
+    #[test]
+    fn an_at_event_time_reminder_has_no_avant() {
+        let html = render_reminder_created(uid(9), uid(3), 0);
+        assert!(
+            html.contains("Rappel actif : à l'heure de l'événement."),
+            "{html}"
+        );
+    }
+
+    /// The API refuses a negative offset; one forged in the query string
+    /// must not wrap into a delay of thousands of years.
+    #[test]
+    fn a_negative_offset_reads_as_at_event_time() {
+        let html = render_reminder_created(uid(9), uid(3), -1);
+        assert!(
+            html.contains("Rappel actif : à l'heure de l'événement."),
+            "{html}"
+        );
+        assert!(!html.contains("avant"), "{html}");
+    }
+
+    #[test]
+    fn the_delete_form_targets_the_created_reminder() {
+        let html = render_reminder_created(uid(9), uid(3), 10);
+        assert!(
+            html.contains(&format!(
+                r#"action="/agenda/{}/reminders/{}/delete""#,
+                uid(9),
+                uid(3)
+            )),
+            "{html}"
+        );
     }
 
     // -- render_occurrence_completions (#455) ------------------------------
