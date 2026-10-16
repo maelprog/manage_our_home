@@ -91,6 +91,19 @@ for bad in latest "sha256:abc" "sha256:$(digest x | cut -d: -f2 | tr a-f A-F)" "
   git -C "$d" checkout --quiet -- .
 done
 
+# An overlay naming the api twice: refused, and said so, rather than
+# both entries rewritten.
+check
+N="$API" yq -i '.images += [.images[] | select(.name == env(N))]' "$d/$overlays/prod/kustomization.yaml"
+git -C "$d" -c user.name=t -c user.email=t@t commit --quiet -am "api twice"
+if "$d/ci/set-images.sh" prod P9 "$(digest P9-api)" "$(digest P9-web)" > "$work/out" 2>&1; then
+  fail "accepted an overlay that names the api twice"
+fi
+grep -q "expected one image named $API, found 2" "$work/out" \
+  || fail "the api named twice, not said so: $(cat "$work/out")"
+[ -z "$(git -C "$d" status --porcelain)" ] || fail "the api named twice, yet the tree changed"
+git -C "$d" reset --quiet --hard HEAD~1
+
 check
 if "$d/ci/set-images.sh" dev P9 "$(digest P9-api)" "$(digest P9-web)" > /dev/null 2>&1; then
   fail "accepted an overlay that does not exist"
@@ -163,17 +176,22 @@ new_name() {
 new_tag() {
   N="$API" yq -i '(.images[] | select(.name == env(N))).newTag = "latest"' "$(prod_file)"
 }
-image_patch() { # the api container to P3's api image, by a patch
+image_patch() { # the api container to an image of elsewhere, by a patch
   P="- op: replace
   path: /spec/template/spec/containers/0/image
-  value: $API@$(digest P3-api)" yq -i '.patches += [{"target": {"kind": "Deployment", "name": "api"}, "patch": env(P)}]' "$(prod_file)"
+  value: ghcr.io/evil/manage-our-home-api@$(digest P3-api)" yq -i '.patches += [{"target": {"kind": "Deployment", "name": "api"}, "patch": strenv(P)}]' "$(prod_file)"
 }
 reordered() { # staging's pair, web listed before api
   head_pair prod P6 && yq -i '.images |= reverse' "$(prod_file)"
 }
+# And for the reason given: the check says why, not merely fails.
+said() { grep -q "$1" "$work/out" || fail "$2: not refused for '$1' — $(cat "$work/out")"; }
 expect fail "an api image renamed by newName" new_name
+said "name and digest only, not: newName" newName
 expect fail "an api image given a newTag" new_tag
+said "name and digest only, not: newTag" newTag
 expect fail "the api container's image moved by a patch" image_patch
+said "prod renders the application's images as" patch
 expect pass "prod moved to the pair staging runs, web listed first" reordered
 
 # A base with no overlay yet — `deploy` before `k3s` is merged into it.
