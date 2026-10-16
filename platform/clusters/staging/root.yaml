@@ -13,7 +13,7 @@ spec:
     repoURL: https://github.com/maelprog/manage_our_home.git
     # Same as manage-our-home.yaml: `k3s` during the integration of the
     # epic, `deploy` from the promotion on.
-    targetRevision: k3s
+    targetRevision: deploy
     path: platform/clusters/staging
   destination:
     server: https://kubernetes.default.svc

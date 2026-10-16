@@ -20,7 +20,7 @@ spec:
   source:
     repoURL: https://github.com/maelprog/manage_our_home.git
     # Same branch as the root and the application.
-    targetRevision: k3s
+    targetRevision: deploy
     path: apps/manage-our-home/overlays/staging/postgres
   destination:
     server: https://kubernetes.default.svc

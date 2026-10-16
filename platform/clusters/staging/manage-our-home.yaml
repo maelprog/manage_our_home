@@ -16,7 +16,7 @@ spec:
     # `k3s` while the k3s epic is integrated there (arbitrage of
     # 2026-10-13); the promotion PR to `deploy` changes it, which
     # ci/platform-test.sh requires of a PR to `deploy`.
-    targetRevision: k3s
+    targetRevision: deploy
     path: apps/manage-our-home/overlays/staging
   destination:
     server: https://kubernetes.default.svc
