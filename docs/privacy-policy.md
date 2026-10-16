@@ -151,8 +151,10 @@ possibles sont :
   conservée, avec la recette, si vous l'enregistrez. Ce flux est cité ici
   pour être complet.
 - **Sauvegardes** (Scaleway, stockage objet) : la base de données du
-  service — tout ce que décrit cette page, sauf les fichiers des pièces
-  jointes — est copiée en continu vers un espace de stockage loué à
+  service — ce que décrit cette page et que la base conserve : ni les
+  fichiers des pièces jointes, rangés à part, ni la photo d'un code-barres
+  ou l'export de vos données, jamais écrits en base, ni les journaux
+  techniques — est copiée en continu vers un espace de stockage loué à
   Scaleway (Scaleway SAS), dans sa région de Paris, pour pouvoir restaurer
   le service après une panne ou une erreur. La copie voyage chiffrée et
   Scaleway la chiffre sur ses disques, avec une clé qu'il détient ; ce qui
