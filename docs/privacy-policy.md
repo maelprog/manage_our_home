@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-10-15.
+Dernière mise à jour : 2026-10-16.
 
 ## Qui est responsable de vos données ?
 
