@@ -1,7 +1,8 @@
 # The bot of the promotions (#436): it opens the pull requests that move
 # the images of the `deploy` branch, and never merges them — nothing
-# reaches `deploy` without a merge the user makes by hand (arbitrage of
-# 2026-10-10), staging included.
+# should reach `deploy` without a merge the user makes by hand (arbitrage
+# of 2026-10-10), staging included. That rests on the code of this file,
+# not on the platform: see « Identity » below.
 #
 # - staging: once Images (images.yml) has published the images of a commit
 #   of `main`, a PR into `deploy` that moves `overlays/staging` to that
@@ -20,9 +21,14 @@
 #
 # Identity: a GitHub App, never a personal token, whose installation token
 # is asked here for contents: write (to push the PR's branch) and
-# pull_requests: write (to open it), on this repository only. The App is
-# not in the bypass list of the `deploy` ruleset, so it cannot push to
-# `deploy` itself. Its client ID is the repository variable
+# pull_requests: write (to open it), on this repository only. Kept out of
+# the bypass list of the `deploy` ruleset (README of `deploy`), it cannot
+# push to `deploy` directly. It could still merge a PR: the merge API asks
+# for contents: write only, and neither that ruleset nor the protection of
+# `main` asks for an approval — once the checks are green, a token of this
+# App can merge its own PR into `deploy`, or into `main`. That this bot
+# never merges is a property of the steps below, which never call it, and
+# of whoever can edit them. Its client ID is the repository variable
 # PROMOTE_APP_CLIENT_ID, its private key the secret PROMOTE_APP_PRIVATE_KEY;
 # until both exist, each run ends with a warning and opens nothing. A PR
 # opened by GITHUB_TOKEN would not start deploy.yml, and its checks are
