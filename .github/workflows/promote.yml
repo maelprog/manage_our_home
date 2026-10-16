@@ -1,0 +1,459 @@
+# The bot of the promotions (#436): it opens the pull requests that move
+# the images of the `deploy` branch, and never merges them — nothing
+# reaches `deploy` without a merge the user makes by hand (arbitrage of
+# 2026-10-10), staging included.
+#
+# - staging: once Images (images.yml) has published the images of a commit
+#   of `main`, a PR into `deploy` that moves `overlays/staging` to that
+#   pair. One branch, `promote/staging`, rebuilt from `deploy` each time:
+#   an open PR is updated, not doubled.
+# - prod: on a `v*` tag, a PR into `deploy` that moves `overlays/prod` to
+#   the pair of `overlays/staging` on `deploy` — what staging runs — and
+#   not the images Images rebuilds for the tag (arbitrage of 2026-10-16):
+#   those never ran in staging, and ci/promotion-check.sh on `deploy`
+#   refuses them. The PR's body lists the commits since the one prod runs
+#   and the migrations they add.
+#
+# The edit itself is `ci/set-images.sh` of the `deploy` branch, the checks
+# of a promotion PR are the `promotion` job of its deploy.yml, and a
+# rollback is the PR of a `git revert` (its README, « Promotion »).
+#
+# Identity: a GitHub App, never a personal token, whose installation token
+# is asked here for contents: write (to push the PR's branch) and
+# pull_requests: write (to open it), on this repository only. The App is
+# not in the bypass list of the `deploy` ruleset, so it cannot push to
+# `deploy` itself. Its client ID is the repository variable
+# PROMOTE_APP_CLIENT_ID, its private key the secret PROMOTE_APP_PRIVATE_KEY;
+# until both exist, each run ends with a warning and opens nothing. A PR
+# opened by GITHUB_TOKEN would not start deploy.yml, and its checks are
+# required by the ruleset: hence the App.
+#
+# No loop: the PRs go into `deploy`, whose tree holds neither images.yml
+# nor this file, so neither starts there; this workflow starts on a
+# successful push run of Images on `main` and on a `v*` tag, which a PR
+# into `deploy` is not. Nothing of `main` is run with the App's token: the
+# checkout of `main` is only read by git for the PR's body, and the scripts
+# run come from `deploy`, which only the user's merges move.
+
+name: Promote
+
+on:
+  workflow_run:
+    workflows: [Images]
+    types: [completed]
+    branches: [main]
+  push:
+    tags: ["v*"]
+
+# Nothing by default; each job below asks for what it uses.
+permissions: {}
+
+# `bash -eo pipefail`, not the default `bash -e`: a failed command on the
+# left of a pipe fails the step.
+defaults:
+  run:
+    shell: bash
+
+env:
+  API_IMAGE: ghcr.io/maelprog/manage-our-home-api
+  WEB_IMAGE: ghcr.io/maelprog/manage-our-home-web
+  STAGING_OVERLAY: apps/manage-our-home/overlays/staging/kustomization.yaml
+  PROD_OVERLAY: apps/manage-our-home/overlays/prod/kustomization.yaml
+
+jobs:
+  staging:
+    # A pull request run of Images publishes nothing; a run for a tag is
+    # not `main`'s (prod is promoted from staging, below).
+    if: >-
+      github.event_name == 'workflow_run'
+      && github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_branch == 'main'
+      && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # One at a time; the ancestry check below keeps an older commit whose
+    # images finished last from replacing a newer one.
+    concurrency:
+      group: promote-staging
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      SHA: ${{ github.event.workflow_run.head_sha }}
+      RUN_URL: ${{ github.event.workflow_run.html_url }}
+      BRANCH: promote/staging
+    steps:
+      - name: Bot configured
+        id: app
+        env:
+          CLIENT_ID: ${{ vars.PROMOTE_APP_CLIENT_ID }}
+          HAS_KEY: ${{ secrets.PROMOTE_APP_PRIVATE_KEY != '' }}
+        run: |
+          if [ -n "$CLIENT_ID" ] && [ "$HAS_KEY" = true ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the promotion App is not configured (variable PROMOTE_APP_CLIENT_ID, secret PROMOTE_APP_PRIVATE_KEY): no staging PR for ${SHA}"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.app.outputs.ready == 'true'
+        with:
+          ref: deploy
+          path: deploy
+          persist-credentials: false
+
+      # `deploy` receives the overlays and their scripts with `k3s`, once
+      # (#431): until then there is nothing to move.
+      - name: Overlays on deploy
+        id: tree
+        if: steps.app.outputs.ready == 'true'
+        run: |
+          for f in "$STAGING_OVERLAY" ci/set-images.sh ci/install-tools.sh; do
+            if [ ! -f "deploy/$f" ]; then
+              echo "::warning::deploy has no $f yet: no staging PR for ${SHA}"
+              echo "ready=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Tools
+        if: steps.tree.outputs.ready == 'true'
+        run: |
+          deploy/ci/install-tools.sh "$RUNNER_TEMP/bin" yq cosign
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # The images of this commit are tagged `sha-<commit>`, but the build
+      # of a `v*` tag on the same commit pushes that tag again. So the
+      # digest the tag resolves to is kept only if it carries the keyless
+      # signature images.yml makes on a push to `main` for this very commit
+      # (the certificate's workflow ref, trigger and commit). Otherwise the
+      # job fails: the PR is then opened by hand, with the digests of the
+      # run summary of Images.
+      - name: Digests of the commit
+        id: digests
+        if: steps.tree.outputs.ready == 'true'
+        run: |
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/image-build.yml@refs/heads/main"
+          for c in api web; do
+            image=$API_IMAGE
+            [ "$c" = web ] && image=$WEB_IMAGE
+            digest=$(docker buildx imagetools inspect "${image}:sha-${SHA}" --format '{{json .Manifest}}' | jq -r .digest)
+            if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::no digest for ${image}:sha-${SHA} (got '${digest}')"
+              exit 1
+            fi
+            if ! cosign verify "${image}@${digest}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity "$identity" \
+              --certificate-github-workflow-ref refs/heads/main \
+              --certificate-github-workflow-trigger push \
+              --certificate-github-workflow-sha "$SHA" > /dev/null; then
+              echo "::error::${image}@${digest} (tag sha-${SHA}) is not signed by the push run of main for ${SHA}: the tag was moved, open the PR by hand with the digests of ${RUN_URL}"
+              exit 1
+            fi
+            echo "${c}=${digest}" >> "$GITHUB_OUTPUT"
+          done
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.tree.outputs.ready == 'true'
+        with:
+          ref: main
+          path: main
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+
+      # The pair already proposed: the open PR's, else deploy's. If its
+      # commit comes after this one on `main`, this run is late and stops.
+      - name: Edit staging
+        id: edit
+        if: steps.tree.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          API: ${{ steps.digests.outputs.api }}
+          WEB: ${{ steps.digests.outputs.web }}
+        run: |
+          commit_of() { # overlay file -> commit of `main` its api image comes from, or nothing
+            N="$API_IMAGE" yq '.images[] | select(.name == env(N)) | .digest | line_comment' "$1" \
+              | grep -oE 'main [0-9a-f]{7,40}' | head -n 1 | cut -d' ' -f2 || true
+          }
+          current="deploy/$STAGING_OVERLAY"
+          pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --base deploy --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$pr" ]; then
+            gh api -H 'Accept: application/vnd.github.raw' \
+              "repos/${GITHUB_REPOSITORY}/contents/${STAGING_OVERLAY}?ref=${BRANCH}" > "$RUNNER_TEMP/proposed.yaml"
+            current="$RUNNER_TEMP/proposed.yaml"
+          fi
+          proposed=$(commit_of "$current")
+          if [ -n "$proposed" ] \
+            && full=$(git -C main rev-parse --verify --quiet "${proposed}^{commit}") \
+            && [ "$full" != "$SHA" ] \
+            && git -C main merge-base --is-ancestor "$SHA" "$full"; then
+            echo "::notice::staging is already proposed at main ${proposed}, after ${SHA}: nothing to do"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          since=$(commit_of "deploy/$STAGING_OVERLAY")
+
+          cd deploy
+          git switch --create "$BRANCH"
+          ci/set-images.sh staging "main ${SHA::7}" "$API" "$WEB"
+          if git diff --quiet; then
+            echo "::notice::deploy's staging already runs the pair of ${SHA}: nothing to do"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "pr=${pr}" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "Moves \`overlays/staging\` to the images Images published for \`main\` ${SHA} (${RUN_URL})."
+            echo
+            echo "- api: \`${API_IMAGE}@${API}\`"
+            echo "- web: \`${WEB_IMAGE}@${WEB}\`"
+            echo
+            echo "Both are signed by the push run of \`main\` for this commit (checked with cosign before this PR was opened)."
+            echo
+            if [ -n "$since" ] && git -C ../main merge-base --is-ancestor "$since" "$SHA" 2> /dev/null; then
+              echo "### Commits since the one staging runs (main ${since})"
+              echo
+              git -C ../main log --format='- %h %s' "${since}..${SHA}"
+              echo
+              echo "### New migrations"
+              echo
+              m=$(git -C ../main diff --name-only --diff-filter=A "$since" "$SHA" -- apps/api/migrations/)
+              if [ -n "$m" ]; then while read -r f; do echo "- \`$f\`"; done <<< "$m"; else echo "None."; fi
+            else
+              echo "The commit staging runs could not be read from \`overlays/staging\`: no list of commits."
+            fi
+            echo
+            echo "Opened by \`promote.yml\` of \`main\` (#436). To be merged by hand; the \`promotion\` job checks the signatures."
+          } > "$RUNNER_TEMP/body.md"
+
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: token
+        if: steps.edit.outputs.changed == 'true'
+        with:
+          client-id: ${{ vars.PROMOTE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PROMOTE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      # The branch is rebuilt from deploy and pushed over the previous one:
+      # an open PR then shows one commit, the last pair.
+      - name: Push and open (or update) the PR
+        if: steps.edit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          SLUG: ${{ steps.token.outputs.app-slug }}
+          PR: ${{ steps.edit.outputs.pr }}
+        run: |
+          cd deploy
+          id=$(gh api "users/${SLUG}[bot]" --jq .id)
+          git -c user.name="${SLUG}[bot]" -c user.email="${id}+${SLUG}[bot]@users.noreply.github.com" \
+            commit --quiet --all --message "deploy(staging): main ${SHA::7} (#436)"
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::${auth}"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}" \
+            push --force "https://github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${BRANCH}"
+          title="deploy(staging): main ${SHA::7}"
+          if [ -n "$PR" ]; then
+            jq -n --arg title "$title" --rawfile body "$RUNNER_TEMP/body.md" '{title: $title, body: $body}' \
+              | gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${PR}" --input - > /dev/null
+            echo "updated: #${PR}"
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --base deploy --head "$BRANCH" \
+              --title "$title" --body-file "$RUNNER_TEMP/body.md"
+          fi
+
+  prod:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: promote-prod
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Bot configured
+        id: app
+        env:
+          CLIENT_ID: ${{ vars.PROMOTE_APP_CLIENT_ID }}
+          HAS_KEY: ${{ secrets.PROMOTE_APP_PRIVATE_KEY != '' }}
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'${TAG}' is not a version tag (vX.Y.Z)"
+            exit 1
+          fi
+          if [ -n "$CLIENT_ID" ] && [ "$HAS_KEY" = true ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the promotion App is not configured (variable PROMOTE_APP_CLIENT_ID, secret PROMOTE_APP_PRIVATE_KEY): no prod PR for ${TAG}"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.app.outputs.ready == 'true'
+        with:
+          ref: deploy
+          path: deploy
+          persist-credentials: false
+
+      - name: Overlays on deploy
+        id: tree
+        if: steps.app.outputs.ready == 'true'
+        run: |
+          for f in "$STAGING_OVERLAY" "$PROD_OVERLAY" ci/set-images.sh ci/install-tools.sh; do
+            if [ ! -f "deploy/$f" ]; then
+              echo "::warning::deploy has no $f yet: no prod PR for ${TAG}"
+              echo "ready=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Tools
+        if: steps.tree.outputs.ready == 'true'
+        run: |
+          deploy/ci/install-tools.sh "$RUNNER_TEMP/bin" yq
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.tree.outputs.ready == 'true'
+        with:
+          ref: main
+          path: main
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+
+      - name: Edit prod
+        id: edit
+        if: steps.tree.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          digest_of() { # overlay file, image
+            N="$2" yq '.images[] | select(.name == env(N)) | .digest' "$1"
+          }
+          commit_of() { # overlay file -> commit of `main` its api image comes from, or nothing
+            N="$API_IMAGE" yq '.images[] | select(.name == env(N)) | .digest | line_comment' "$1" \
+              | grep -oE 'main [0-9a-f]{7,40}' | head -n 1 | cut -d' ' -f2 || true
+          }
+          staging="deploy/$STAGING_OVERLAY"
+          prod="deploy/$PROD_OVERLAY"
+          api=$(digest_of "$staging" "$API_IMAGE")
+          web=$(digest_of "$staging" "$WEB_IMAGE")
+          if [ "$api" = "$(digest_of "$prod" "$API_IMAGE")" ] && [ "$web" = "$(digest_of "$prod" "$WEB_IMAGE")" ]; then
+            echo "::notice::prod already runs the pair of staging: no PR for ${TAG}"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          s=$(commit_of "$staging")
+          p=$(commit_of "$prod")
+          if [ -z "$s" ] || ! S=$(git -C main rev-parse --verify --quiet "${s}^{commit}"); then
+            echo "::error::the commit of main staging runs cannot be read from deploy's overlays/staging ('${s}')"
+            exit 1
+          fi
+          T=$GITHUB_SHA # the commit the tag points at
+
+          cd deploy
+          branch="promote/prod-${TAG}"
+          git switch --create "$branch"
+          ci/set-images.sh prod "${TAG}: main ${S::7}" "$api" "$web"
+          pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --base deploy --head "$branch" --state open --json number --jq '.[0].number // empty')
+          {
+            echo "changed=true"
+            echo "branch=${branch}"
+            echo "short=${S::7}"
+            echo "pr=${pr}"
+          } >> "$GITHUB_OUTPUT"
+
+          g() { git -C ../main "$@"; }
+          {
+            echo "Moves \`overlays/prod\` to the pair \`overlays/staging\` runs on \`deploy\`: the images of \`main\` ${S::7}, promoted for ${TAG}."
+            echo
+            echo "- api: \`${API_IMAGE}@${api}\`"
+            echo "- web: \`${WEB_IMAGE}@${web}\`"
+            echo
+            if [ "$S" = "$T" ]; then
+              echo "${TAG} points at the commit staging runs."
+            elif g merge-base --is-ancestor "$S" "$T"; then
+              echo "**${TAG} points at ${T::7}, after the commit staging runs: these commits of the tag are not in this promotion.**"
+              echo
+              g log --format='- %h %s' "${S}..${T}"
+            elif g merge-base --is-ancestor "$T" "$S"; then
+              echo "**${TAG} points at ${T::7}, before the commit staging runs: these commits, not in the tag, go to prod with it.**"
+              echo
+              g log --format='- %h %s' "${T}..${S}"
+            else
+              echo "**${TAG} points at ${T::7}, which is not on the line of the commit staging runs.**"
+            fi
+            echo
+            P=""
+            [ -n "$p" ] && P=$(g rev-parse --verify --quiet "${p}^{commit}" || true)
+            if [ -n "$P" ] && g merge-base --is-ancestor "$P" "$S"; then
+              echo "### Commits since the one prod runs (main ${P::7})"
+              echo
+              g log --format='- %h %s' "${P}..${S}"
+              echo
+              echo "### New migrations"
+              echo
+              m=$(g diff --name-only --diff-filter=A "$P" "$S" -- apps/api/migrations/)
+              if [ -n "$m" ]; then
+                while read -r f; do echo "- \`$f\`"; done <<< "$m"
+                echo
+                echo "A rollback of this promotion does not undo them (README of \`deploy\`, « Revenir en arrière »)."
+              else
+                echo "None."
+              fi
+            else
+              echo "The commit prod runs ('${p}') is not before the one staging runs on \`main\`: no list of commits or migrations. Compare by hand."
+            fi
+            echo
+            echo "Opened by \`promote.yml\` of \`main\` (#436). To be merged by hand; the \`promotion\` job is red if this pair is not the one staging runs. Argo CD then waits for « Sync » on prod."
+          } > "$RUNNER_TEMP/body.md"
+
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: token
+        if: steps.edit.outputs.changed == 'true'
+        with:
+          client-id: ${{ vars.PROMOTE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PROMOTE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Push and open (or update) the PR
+        if: steps.edit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          SLUG: ${{ steps.token.outputs.app-slug }}
+          BRANCH: ${{ steps.edit.outputs.branch }}
+          SHORT: ${{ steps.edit.outputs.short }}
+          PR: ${{ steps.edit.outputs.pr }}
+        run: |
+          cd deploy
+          id=$(gh api "users/${SLUG}[bot]" --jq .id)
+          git -c user.name="${SLUG}[bot]" -c user.email="${id}+${SLUG}[bot]@users.noreply.github.com" \
+            commit --quiet --all --message "deploy(prod): ${TAG}, main ${SHORT} (#436)"
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::${auth}"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}" \
+            push --force "https://github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${BRANCH}"
+          title="deploy(prod): ${TAG}, main ${SHORT}"
+          if [ -n "$PR" ]; then
+            jq -n --arg title "$title" --rawfile body "$RUNNER_TEMP/body.md" '{title: $title, body: $body}' \
+              | gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${PR}" --input - > /dev/null
+            echo "updated: #${PR}"
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --base deploy --head "$BRANCH" \
+              --title "$title" --body-file "$RUNNER_TEMP/body.md"
+          fi
