@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-10-15.
+Dernière mise à jour : 2026-10-16.
 
 ## Qui est responsable de vos données ?
 
@@ -53,6 +53,7 @@ données sont-elles conservées ? ».
 | Messagerie | messages du fil familial (chiffrés au repos), date de votre dernière lecture du fil | Exécution du contrat |
 | Import calendrier Google | URL de flux iCal (chiffrée), événements importés | Consentement explicite (vous fournissez volontairement l'URL) |
 | Logs d'audit | actions sensibles : export, demande, annulation et exécution de la suppression d'un compte, suppression d'un groupe, transfert de propriété, changement de rôle, actions d'administration (les connexions ne sont pas journalisées) | Intérêt légitime (sécurité, traçabilité) |
+| Journaux techniques | messages de fonctionnement et d'erreur du serveur, qui peuvent contenir l'adresse IP d'une connexion, l'identifiant de votre compte ou de votre groupe, ou une valeur reprise d'une erreur | Intérêt légitime (fonctionnement et sécurité du service) |
 
 ## Le service et les mineurs
 
@@ -150,8 +151,10 @@ possibles sont :
   conservée, avec la recette, si vous l'enregistrez. Ce flux est cité ici
   pour être complet.
 - **Sauvegardes** (Scaleway, stockage objet) : la base de données du
-  service — tout ce que décrit cette page, sauf les fichiers des pièces
-  jointes — est copiée en continu vers un espace de stockage loué à
+  service — ce que décrit cette page et que la base conserve : ni les
+  fichiers des pièces jointes, rangés à part, ni la photo d'un code-barres
+  ou l'export de vos données, jamais écrits en base, ni les journaux
+  techniques — est copiée en continu vers un espace de stockage loué à
   Scaleway (Scaleway SAS), dans sa région de Paris, pour pouvoir restaurer
   le service après une panne ou une erreur. La copie voyage chiffrée et
   Scaleway la chiffre sur ses disques, avec une clé qu'il détient ; ce qui
@@ -350,6 +353,13 @@ de la purge dépasserait.
   aussitôt les entrées de vos propres actions ; celles qui concernent
   votre compte sans être de votre fait restent jusqu'à ce terme (voir
   « Suppression de votre compte » ci-dessous).
+- **Journaux techniques** : 14 jours, puis supprimés dans les heures qui
+  suivent. Le serveur garde en outre une copie des derniers messages de
+  chaque composant jusqu'à ce que de plus récents les remplacent : cette
+  rotation dépend du volume écrit, pas de l'âge, et peut donc venir après
+  ces 14 jours pour un composant qui écrit peu. Ils restent sur le serveur, consultables par le seul
+  responsable du service, et la suppression de votre compte ne les efface
+  pas avant ce terme.
 - **Export de vos données** : généré à la demande et renvoyé directement,
   il n'est pas conservé sur le serveur.
 - **Sauvegardes de la base** : de quoi restaurer la base à n'importe quel
@@ -404,6 +414,10 @@ de la purge dépasserait.
   invitation qu'un membre aurait envoyée à votre adresse, jusqu'à son
   acceptation, à la suppression du groupe ou au premier passage de purge
   qui suit les 30 jours de son envoi (voir « Invitations » plus haut).
+  Enfin, les journaux techniques qui citeraient l'identifiant de votre
+  compte, jusqu'à leur suppression au terme de leurs 14 jours, ou plus
+  tard pour la copie que le serveur garde jusqu'à sa rotation (voir
+  « Journaux techniques » plus haut).
 - **Ce qui subsiste dans les sauvegardes** : la copie de vos données dans
   les sauvegardes de la base, jusqu'à 31 jours environ après la purge,
   puis elle disparaît avec elles (voir « Sauvegardes de la base » plus
