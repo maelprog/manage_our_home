@@ -187,6 +187,19 @@ image_patch_of() { # <kind> <name> <image>: its first container to <image>, by a
   value: $3" yq -i '.patches += [{"target": {"kind": strenv(K), "name": strenv(W)}, "patch": strenv(P)}]' "$(prod_file)"
 }
 api_image_patch() { image_patch_of Deployment api "$1"; }
+bare_pod() { # a Pod of its own in the prod overlay, on an image of elsewhere
+  cat > "$h/$overlays/prod/pod.yaml" << EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: extra
+spec:
+  containers:
+    - name: thing
+      image: ghcr.io/evil/thing@$(digest evil)
+EOF
+  yq -i '.resources += ["pod.yaml"]' "$(prod_file)"
+}
 minio_as_api() { # an application image run by MinIO's container
   image_patch_of StatefulSet minio "$API@$(digest P3-api)"
 }
@@ -213,6 +226,8 @@ expect fail "the api container on the web image of the pair, by a patch" api_as_
 said "Deployment/api/api" "api on web"
 expect fail "MinIO's container on an application image, by a patch" minio_as_api
 said "StatefulSet/minio/minio" "MinIO on api"
+expect fail "a bare Pod added to prod, on an image of elsewhere" bare_pod
+said "Pod/extra/thing" "bare Pod"
 expect pass "prod moved to the pair staging runs, web listed first" reordered
 
 # A base with no overlay yet — `deploy` before `k3s` is merged into it.

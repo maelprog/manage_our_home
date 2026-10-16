@@ -65,7 +65,9 @@ ref_of() { # image name -> name@digest in the prod overlay
 }
 api_ref=$(ref_of ghcr.io/maelprog/manage-our-home-api)
 web_ref=$(ref_of ghcr.io/maelprog/manage-our-home-web)
-# Every container of the render, `<kind>/<workload>/<container>`: the
+# Every container of the render, whatever its kind (Pod, Deployment, Job,
+# CronJob…): each `containers`, `initContainers` and `ephemeralContainers`
+# list of each document, as `<kind>/<name>/<container>`. The
 # application's, with the image each must run; the third parties' (MinIO
 # and its client, pinned by tag and digest by render-test.sh), with the
 # repository theirs must come from. Any other container fails.
@@ -79,10 +81,9 @@ declare -A third=(
   [Job/minio-bucket/bucket]='^docker\.io/bitnamilegacy/minio-client:'
 )
 if ! rendered=$(kustomize build "$(dirname "$root/$prod")" | yq -N '
-    (.spec.template.spec // .spec.jobTemplate.spec.template.spec) as $pod
-    | select($pod != null)
-    | .kind as $k | .metadata.name as $n
-    | (($pod.containers // []) + ($pod.initContainers // []))[]
+    .kind as $k | .metadata.name as $n
+    | .. | select(tag == "!!map")
+    | ((.containers // []) + (.initContainers // []) + (.ephemeralContainers // []))[]
     | $k + "/" + $n + "/" + .name + " " + .image'); then
   echo "FAIL: kustomize build of the prod overlay" >&2
   exit 1
