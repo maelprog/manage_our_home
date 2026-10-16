@@ -309,11 +309,25 @@ for env in staging prod; do
       n=$(yq ea '[select(.kind == "Secret" and .metadata.name == "alertmanager-config")] | length' "$rendered")
       [ "$v" = "alertmanager-config 0" ] && [ "$n" = 0 ] || fail "Alertmanager: configuration '$v' ($n chart Secret), expected the sealed alertmanager-config"
       # The ignoreDifferences that keep Grafana's generated password name
-      # what the chart renders.
+      # what the chart renders, and a field it renders: a wrong path would
+      # leave the password and its checksum re-drawn at every refresh.
+      # JSON pointers become yq paths; the jq paths here are plain paths,
+      # which yq reads as they are.
       for i in $(y "$sel | .ignoreDifferences[] | .kind + \"/\" + .name"); do
         check
         v=$(r "select(.kind == \"${i%/*}\" and .metadata.name == \"${i#*/}\") | .metadata.name")
         [ -n "$v" ] || fail "ignoreDifferences names $i, which the chart does not render"
+        paths=$(y "$sel | .ignoreDifferences[] | select(.kind + \"/\" + .name == \"$i\") | (((.jsonPointers // [])[] | \"ptr \" + .), ((.jqPathExpressions // [])[] | \"jq \" + .))")
+        while IFS= read -r p; do
+          [ -n "$p" ] || continue
+          case "$p" in
+            "ptr "*) p=${p#ptr }; p=$(sed 's|/\([^/]*\)|["\1"]|g; s|^|.|' <<< "$p") ;;
+            *) p=${p#jq } ;;
+          esac
+          check
+          v=$(r "select(.kind == \"${i%/*}\" and .metadata.name == \"${i#*/}\") | $p // \"\"")
+          [ -n "$v" ] || fail "ignoreDifferences of $i: '$p' is not in what the chart renders"
+        done <<< "$paths"
       done
     fi
     # Loki keeps the logs 14 days, the duration PR #505 writes into main's
