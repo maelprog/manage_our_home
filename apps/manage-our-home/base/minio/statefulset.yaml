@@ -82,14 +82,15 @@ spec:
               drop: ["ALL"]
           # Memory, out of the staging cluster's budget of about 3 GB
           # (arbitrage of 2026-10-12, 256 to 384 Mi for MinIO). Measured
-          # with this image, as this user, read-only, under Docker, in the
-          # PR of #435, sampled every 20 ms or so: 66 to 70 MiB at rest.
-          # Objects of 20 MiB sent with mc, 16 at once (the upload gates of
-          # prod's two api replicas, README.md, "Mémoire"), batches chained:
-          # at worst 212 MiB anonymous, 172 MiB under the limit; the file
-          # cache, active part included, fills the rest up to the limit and
-          # is reclaimed there. No OOM kill in 9 runs. The k3d job prints
-          # the memory at rest on every run.
+          # with this image, as this user, read-only, under Docker with
+          # this limit and no swap (as a pod), in the PR of #435, sampled
+          # every 20 ms or so: 66 to 70 MiB at rest. Objects of 20 MiB
+          # sent with mc, 16 at once (the upload gates of prod's two api
+          # replicas, README.md, "Mémoire"), 5 batches chained: at worst
+          # 228 MiB anonymous, at least 156 MiB under the limit; the file
+          # cache, active part included, fills the rest and is reclaimed
+          # at the limit. No OOM kill in 10 runs. The k3d job prints the
+          # memory at rest on every run.
           resources:
             requests:
               cpu: 50m
