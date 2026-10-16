@@ -64,7 +64,7 @@ spec:
         prometheusOperator:
           # No admission webhook (and so no Job to make its certificate):
           # the rules here are checked by promtool in the CI instead
-          # (ci/platform-test.sh). Its TLS used the webhook's certificate.
+          # (ci/alerts-test.sh). Its TLS used the webhook's certificate.
           admissionWebhooks:
             enabled: false
           tls:
