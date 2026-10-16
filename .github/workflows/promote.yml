@@ -78,17 +78,20 @@ jobs:
       && github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # One at a time; the ancestry check below keeps an older commit whose
-    # images finished last from replacing a newer one.
+    # One at a time. GitHub keeps one pending run per group and cancels
+    # the one it replaces, and runs of Images can finish out of order: so
+    # a run does not promote the commit of its event but the newest commit
+    # of `main` whose Images push run has succeeded, read when it starts
+    # (« Newest published commit »). A cancelled run loses nothing.
     concurrency:
       group: promote-staging
       cancel-in-progress: false
     permissions:
+      actions: read
       contents: read
       pull-requests: read
     env:
-      SHA: ${{ github.event.workflow_run.head_sha }}
-      RUN_URL: ${{ github.event.workflow_run.html_url }}
+      EVENT_SHA: ${{ github.event.workflow_run.head_sha }}
       BRANCH: promote/staging
     steps:
       - name: Bot configured
@@ -100,7 +103,7 @@ jobs:
           if [ -n "$CLIENT_ID" ] && [ "$HAS_KEY" = true ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::the promotion App is not configured (variable PROMOTE_APP_CLIENT_ID, secret PROMOTE_APP_PRIVATE_KEY): no staging PR for ${SHA}"
+            echo "::warning::the promotion App is not configured (variable PROMOTE_APP_CLIENT_ID, secret PROMOTE_APP_PRIVATE_KEY): no staging PR for ${EVENT_SHA}"
             echo "ready=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -119,7 +122,7 @@ jobs:
         run: |
           for f in "$STAGING_OVERLAY" ci/set-images.sh ci/install-tools.sh; do
             if [ ! -f "deploy/$f" ]; then
-              echo "::warning::deploy has no $f yet: no staging PR for ${SHA}"
+              echo "::warning::deploy has no $f yet: no staging PR for ${EVENT_SHA}"
               echo "ready=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -132,6 +135,39 @@ jobs:
           deploy/ci/install-tools.sh "$RUNNER_TEMP/bin" yq cosign
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.tree.outputs.ready == 'true'
+        with:
+          ref: main
+          path: main
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+
+      # The first commit of `main`, from its tip down its first parents,
+      # that has a successful push run of Images: the event's commit or a
+      # newer one.
+      - name: Newest published commit
+        id: newest
+        if: steps.tree.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          runs=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/images.yml/runs?branch=main&event=push&status=success&per_page=100" \
+            --jq '.workflow_runs[] | .head_sha + " " + .html_url')
+          sha=$EVENT_SHA url=$EVENT_RUN_URL
+          while read -r c; do
+            u=$(awk -v c="$c" '$1 == c { print $2; exit }' <<< "$runs")
+            if [ -n "$u" ]; then sha=$c url=$u; break; fi
+            [ "$c" = "$EVENT_SHA" ] && break
+          done < <(git -C main rev-list --first-parent -n 200 HEAD)
+          [ "$sha" = "$EVENT_SHA" ] || echo "::notice::a newer commit of main has its images: ${sha}, not ${EVENT_SHA}"
+          {
+            echo "sha=${sha}"
+            echo "run_url=${url}"
+          } >> "$GITHUB_OUTPUT"
+
       # The images of this commit are tagged `sha-<commit>`, but the build
       # of a `v*` tag on the same commit pushes that tag again. So the
       # digest the tag resolves to is kept only if it carries the keyless
@@ -142,6 +178,9 @@ jobs:
       - name: Digests of the commit
         id: digests
         if: steps.tree.outputs.ready == 'true'
+        env:
+          SHA: ${{ steps.newest.outputs.sha }}
+          RUN_URL: ${{ steps.newest.outputs.run_url }}
         run: |
           identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/image-build.yml@refs/heads/main"
           for c in api web; do
@@ -164,15 +203,6 @@ jobs:
             echo "${c}=${digest}" >> "$GITHUB_OUTPUT"
           done
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: steps.tree.outputs.ready == 'true'
-        with:
-          ref: main
-          path: main
-          fetch-depth: 0
-          filter: blob:none
-          persist-credentials: false
-
       # The pair already proposed: the open PR's, else deploy's. If its
       # commit comes after this one on `main`, this run is late and stops.
       - name: Edit staging
@@ -180,6 +210,8 @@ jobs:
         if: steps.tree.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.newest.outputs.sha }}
+          RUN_URL: ${{ steps.newest.outputs.run_url }}
           API: ${{ steps.digests.outputs.api }}
           WEB: ${{ steps.digests.outputs.web }}
         run: |
@@ -256,6 +288,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           SLUG: ${{ steps.token.outputs.app-slug }}
+          SHA: ${{ steps.newest.outputs.sha }}
           PR: ${{ steps.edit.outputs.pr }}
         run: |
           cd deploy
