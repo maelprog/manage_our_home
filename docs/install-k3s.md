@@ -149,13 +149,13 @@ serveur$ sudo ufw allow from <lan> to any port 2379:2380 proto tcp   # etcd, ent
 serveur$ sudo ufw allow from <lan> to any port 10250 proto tcp       # kubelet
 serveur$ sudo ufw allow from <lan> to any port 8472 proto udp        # VXLAN de flannel
 serveur$ sudo ufw allow from <lan> to any port 7946                  # MetalLB, entre nœuds
-serveur$ sudo ufw enable
+serveur$ sudo ufw --force enable                # sans la question : 22 est déjà ouvert
 serveur$ sudo ufw status numbered
 ```
 
 Au VPS (un seul nœud), seules les trois premières et les deux réseaux du
 cluster servent ; l'API Kubernetes s'atteint alors par un tunnel SSH
-(`ssh -L 6443:127.0.0.1:6443 <utilisateur>@<vps>`) plutôt que d'ouvrir
+(`ssh -fN -L 6443:127.0.0.1:6443 <utilisateur>@<vps>`) plutôt que d'ouvrir
 6443 sur Internet.
 
 ### Swap
@@ -472,8 +472,17 @@ intacte.
   adresse fixe, viserait un nœud que kured vide un jour ou l'autre.
   **MetalLB** donne au Service une adresse à lui, annoncée en ARP par le
   nœud qui porte Traefik, et la déplace avec lui. ServiceLB désactivé sur
-  **tous** les serveurs (`disable: [servicelb]` dans `config.yaml`, puis
-  `sudo systemctl restart k3s`).
+  **tous** les serveurs : soit dès l'installation (les lignes `disable`
+  décommentées dans `config.yaml`), soit après, sur chaque serveur :
+
+  ```sh
+  serveur$ printf 'disable:\n  - servicelb\n' | sudo tee -a /etc/rancher/k3s/config.yaml
+  serveur$ sudo systemctl restart k3s
+  ```
+
+  Les pods `svclb-traefik-*` disparaissent ; l'`EXTERNAL-IP` de Traefik
+  affiche encore l'adresse du nœud, qui ne répond plus, jusqu'à ce que
+  MetalLB lui en donne une.
 
 MetalLB, chart 0.16.1, en mode L2, limites mémoire posées :
 
@@ -543,12 +552,21 @@ Joué sur la VM de 4 Go : service coupé 13 min 22 s entre le dépôt de
 fenêtre de nuit. Avec plusieurs nœuds, api et web repartent sur un autre
 nœud ; Postgres, lui, reste là où est son volume `local-path`.
 
-Essai, hors fenêtre de nuit (`--set configuration.startTime=00:00 --set
-configuration.endTime=23:59` le temps de l'essai) :
+Essai, hors fenêtre de nuit : fenêtre ouverte et vérification chaque
+minute (au lieu d'une heure) le temps de l'essai, puis retour aux
+réglages ci-dessus :
 
 ```sh
+poste$ helm upgrade kured kured --repo https://kubereboot.github.io/charts \
+  --version 6.1.0 --namespace kube-system --reuse-values \
+  --set configuration.startTime=00:00 --set configuration.endTime=23:59 \
+  --set configuration.period=1m --wait
 serveur$ sudo touch /var/run/reboot-required
 poste$ kubectl get nodes -w          # SchedulingDisabled, puis NotReady, puis Ready
+poste$ helm upgrade kured kured --repo https://kubereboot.github.io/charts \
+  --version 6.1.0 --namespace kube-system --reuse-values \
+  --set configuration.startTime=03:30 --set configuration.endTime=05:30 \
+  --set configuration.period=1h --wait
 ```
 
 ### system-upgrade-controller : monter k3s de version
@@ -698,10 +716,13 @@ poste$ kubectl -n manage-our-home wait cluster/postgres --for=condition=Continuo
 ```
 
 **La première sauvegarde de base.** Celle que le ScheduledBackup lance à
-sa création (`immediate`) est partie avant les Secrets : elle reste en
+sa création (`immediate`) part en même temps que le Cluster, avant ou
+après les Secrets selon le moment. Partie avant, elle reste en
 `walArchivingFailing` et bloque les suivantes (l'opérateur n'en fait
-qu'une à la fois). Sans sauvegarde de base, rien n'est restaurable avant
-la nuit. La supprimer, en lancer une, l'attendre :
+qu'une à la fois) : sans sauvegarde de base, rien n'est restaurable avant
+la nuit. Les deux cas se sont produits sur deux installations
+successives de la même VM. Si `get backups` en montre une en
+`walArchivingFailing`, la supprimer ; puis en lancer une, et l'attendre :
 
 ```sh
 poste$ kubectl -n manage-our-home get backups.postgresql.cnpg.io
