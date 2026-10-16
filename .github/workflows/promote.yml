@@ -203,8 +203,10 @@ jobs:
             echo "${c}=${digest}" >> "$GITHUB_OUTPUT"
           done
 
-      # The pair already proposed: the open PR's, else deploy's. If its
-      # commit comes after this one on `main`, this run is late and stops.
+      # The pairs already there: deploy's, and the open PR's. If either
+      # comes from a commit after this one on `main` (deploy may have been
+      # moved by hand past the PR), this run is late and stops: it would
+      # propose a step back.
       - name: Edit staging
         id: edit
         if: steps.tree.outputs.ready == 'true'
@@ -219,22 +221,24 @@ jobs:
             N="$API_IMAGE" yq '.images[] | select(.name == env(N)) | .digest | line_comment' "$1" \
               | grep -oE 'main [0-9a-f]{7,40}' | head -n 1 | cut -d' ' -f2 || true
           }
-          current="deploy/$STAGING_OVERLAY"
+          there=("deploy/$STAGING_OVERLAY")
           pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --base deploy --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
           if [ -n "$pr" ]; then
             gh api -H 'Accept: application/vnd.github.raw' \
               "repos/${GITHUB_REPOSITORY}/contents/${STAGING_OVERLAY}?ref=${BRANCH}" > "$RUNNER_TEMP/proposed.yaml"
-            current="$RUNNER_TEMP/proposed.yaml"
+            there+=("$RUNNER_TEMP/proposed.yaml")
           fi
-          proposed=$(commit_of "$current")
-          if [ -n "$proposed" ] \
-            && full=$(git -C main rev-parse --verify --quiet "${proposed}^{commit}") \
-            && [ "$full" != "$SHA" ] \
-            && git -C main merge-base --is-ancestor "$SHA" "$full"; then
-            echo "::notice::staging is already proposed at main ${proposed}, after ${SHA}: nothing to do"
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          for f in "${there[@]}"; do
+            at=$(commit_of "$f")
+            if [ -n "$at" ] \
+              && full=$(git -C main rev-parse --verify --quiet "${at}^{commit}") \
+              && [ "$full" != "$SHA" ] \
+              && git -C main merge-base --is-ancestor "$SHA" "$full"; then
+              echo "::notice::staging is already at main ${at} ($f), after ${SHA}: nothing to do"
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
           since=$(commit_of "deploy/$STAGING_OVERLAY")
 
           cd deploy
