@@ -52,25 +52,68 @@ fi
 
 # The pair of the file is what prod runs only if nothing else moves an
 # application image: no key but name and digest on its entries (a newName
-# or a newTag would replace them), and what kustomize renders for every
-# container (init containers included) is that pair — a patch of an
-# image shows there.
+# or a newTag would replace them), and, container by container, what
+# kustomize renders is what that container must run — a patch of an
+# image shows there, even onto an image the render holds elsewhere.
 extra=$(yq '[.images[] | select(.name | test("^ghcr\.io/maelprog/manage-our-home-")) | keys | .[] | select(. != "name" and . != "digest")] | unique | join(" ")' "$root/$prod")
 if [ -n "$extra" ]; then
   echo "FAIL: $prod: the application's images may carry name and digest only, not: $extra" >&2
   exit 1
 fi
-if ! rendered=$(kustomize build "$(dirname "$root/$prod")" | yq -N '.. | select(tag == "!!map" and has("containers")) | ((.containers // []) + (.initContainers // []))[].image'); then
+ref_of() { # image name -> name@digest in the prod overlay
+  N="$1" yq '.images[] | select(.name == env(N)) | .name + "@" + .digest' "$root/$prod"
+}
+api_ref=$(ref_of ghcr.io/maelprog/manage-our-home-api)
+web_ref=$(ref_of ghcr.io/maelprog/manage-our-home-web)
+# Every container of the render, `<kind>/<workload>/<container>`: the
+# application's, with the image each must run; the third parties' (MinIO
+# and its client, pinned by tag and digest by render-test.sh), with the
+# repository theirs must come from. Any other container fails.
+declare -A app=(
+  [Deployment/api/api]=$api_ref
+  [Job/migrate/migrate]=$api_ref
+  [Deployment/web/web]=$web_ref
+)
+declare -A third=(
+  [StatefulSet/minio/minio]='^docker\.io/bitnamilegacy/minio:'
+  [Job/minio-bucket/bucket]='^docker\.io/bitnamilegacy/minio-client:'
+)
+if ! rendered=$(kustomize build "$(dirname "$root/$prod")" | yq -N '
+    (.spec.template.spec // .spec.jobTemplate.spec.template.spec) as $pod
+    | select($pod != null)
+    | .kind as $k | .metadata.name as $n
+    | (($pod.containers // []) + ($pod.initContainers // []))[]
+    | $k + "/" + $n + "/" + .name + " " + .image'); then
   echo "FAIL: kustomize build of the prod overlay" >&2
   exit 1
 fi
-# Every image of the render that is not a third party's (render-test.sh
-# pins those: MinIO's, by tag and digest), sorted like the pair.
-rendered=$(grep -v '^docker\.io/bitnamilegacy/' <<< "$rendered" | sort -u | paste -sd ' ' -)
-if [ "$rendered" != "$head_prod" ]; then
-  echo "FAIL: prod renders the application's images as '$rendered', its images: say '$head_prod'" >&2
-  exit 1
-fi
+bad=0
+declare -A seen=()
+while read -r id image; do
+  [ -n "$id" ] || continue
+  seen[$id]=1
+  if [ -n "${app[$id]+x}" ]; then
+    if [ "$image" != "${app[$id]}" ]; then
+      echo "FAIL: prod renders $id with '$image', not '${app[$id]}' of its images:" >&2
+      bad=1
+    fi
+  elif [ -n "${third[$id]+x}" ]; then
+    if ! [[ "$image" =~ ${third[$id]} ]]; then
+      echo "FAIL: prod renders $id with '$image', not from ${third[$id]}" >&2
+      bad=1
+    fi
+  else
+    echo "FAIL: prod renders a container this check does not know: $id ($image)" >&2
+    bad=1
+  fi
+done <<< "$rendered"
+for id in "${!app[@]}"; do
+  if [ -z "${seen[$id]+x}" ]; then
+    echo "FAIL: prod no longer renders $id" >&2
+    bad=1
+  fi
+done
+[ "$bad" -eq 0 ] || exit 1
 
 if [ "$head_prod" = "$(pair_at HEAD "$prod")" ]; then
   echo "prod: images unchanged"

@@ -181,6 +181,21 @@ image_patch() { # the api container to an image of elsewhere, by a patch
   path: /spec/template/spec/containers/0/image
   value: ghcr.io/evil/manage-our-home-api@$(digest P3-api)" yq -i '.patches += [{"target": {"kind": "Deployment", "name": "api"}, "patch": strenv(P)}]' "$(prod_file)"
 }
+image_patch_of() { # <kind> <name> <image>: its first container to <image>, by a patch
+  K="$1" W="$2" P="- op: replace
+  path: /spec/template/spec/containers/0/image
+  value: $3" yq -i '.patches += [{"target": {"kind": strenv(K), "name": strenv(W)}, "patch": strenv(P)}]' "$(prod_file)"
+}
+api_image_patch() { image_patch_of Deployment api "$1"; }
+minio_as_api() { # an application image run by MinIO's container
+  image_patch_of StatefulSet minio "$API@$(digest P3-api)"
+}
+api_as_minio() { # an image the render holds elsewhere, for MinIO
+  api_image_patch "docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5@$(digest evil)"
+}
+api_as_web() { # the web image of the pair, on the api container
+  api_image_patch "$WEB@$(image_digest "$h" prod "$WEB")"
+}
 reordered() { # staging's pair, web listed before api
   head_pair prod P6 && yq -i '.images |= reverse' "$(prod_file)"
 }
@@ -191,7 +206,13 @@ said "name and digest only, not: newName" newName
 expect fail "an api image given a newTag" new_tag
 said "name and digest only, not: newTag" newTag
 expect fail "the api container's image moved by a patch" image_patch
-said "prod renders the application's images as" patch
+said "prod renders Deployment/api/api" patch
+expect fail "the api container on a MinIO image, by a patch" api_as_minio
+said "Deployment/api/api" "api on MinIO"
+expect fail "the api container on the web image of the pair, by a patch" api_as_web
+said "Deployment/api/api" "api on web"
+expect fail "MinIO's container on an application image, by a patch" minio_as_api
+said "StatefulSet/minio/minio" "MinIO on api"
 expect pass "prod moved to the pair staging runs, web listed first" reordered
 
 # A base with no overlay yet — `deploy` before `k3s` is merged into it.
