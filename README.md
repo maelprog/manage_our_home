@@ -17,8 +17,14 @@ les deux.
   overlay (#432) ; pendant l'intégration, celui du serveur de test lit
   `k3s`, `deploy` restant vide jusqu'à la promotion
   (`platform/README.md`). Personne ne fait de `kubectl apply` à la main,
-  hors l'amorçage d'un cluster (`platform/bootstrap.sh`), la CI non plus :
-  aucun jeton Argo CD ni accès cluster ne lui est donné.
+  hors l'amorçage d'un cluster (`platform/bootstrap.sh`), les briques
+  posées hors d'Argo CD (kube-vip, MetalLB, kured,
+  system-upgrade-controller) et les gestes d'exploitation que prescrit
+  `docs/install-k3s.md` : la première sauvegarde de base (§ 4), la
+  bascule depuis Compose (§ 6, synchro suspendue par `kubectl patch`),
+  l'exercice de restauration (§ 7) ; et la restauration ci-dessous
+  (« Restaurer »). La CI non plus : aucun jeton Argo CD ni accès cluster
+  ne lui est donné.
 - **Une branche, un dossier par environnement** (arbitrage du 2026-10-10).
   Une branche par environnement est un anti-modèle GitOps : la promotion se
   ferait par merge entre branches, et les branches dériveraient. Ici, ce qui
@@ -54,6 +60,7 @@ apps/manage-our-home/
     prod/               VPS tiers : la base telle quelle, 2 réplicas
       postgres/         son Postgres, la base telle quelle
 platform/               socle des clusters, Applications Argo CD (#432)
+docs/install-k3s.md     installer un cluster, y basculer depuis Compose (#438)
 ci/                     scripts de la CI de cette branche
 .github/workflows/deploy.yml
 .github/rulesets/deploy.json   ruleset de la branche `deploy` (« Promotion »)
@@ -520,10 +527,21 @@ compris.
   du tag la pousse à nouveau (`image-build.yml`).
 - **Le bot** qui ouvre ces PR est le workflow `promote.yml` de `main`,
   livré par une PR vers `main` (#436) : un workflow déclenché par `main` et
-  ses tags ne peut vivre que sur `main`. Son identité — une GitHub App qui
-  ne peut qu'ouvrir des PR, hors de toute liste de contournement, jamais un
-  jeton personnel — est créée par l'utilisateur. Tant qu'il n'est pas en
-  place, ces PR s'ouvrent à la main avec `ci/set-images.sh`.
+  ses tags ne peut vivre que sur `main`. Son identité — une GitHub App,
+  jamais un jeton personnel, hors de la liste de contournement du ruleset
+  ci-dessous — est créée par l'utilisateur. Son jeton demande `contents:
+  write` (pousser la branche de la PR) et `pull_requests: write` (l'ouvrir).
+  Tant qu'il n'est pas en place, ces PR s'ouvrent à la main avec
+  `ci/set-images.sh`.
+
+  **Limite** (arbitrage du 2026-10-16) : ce jeton **peut merger sa propre
+  PR**. L'API de merge ne demande que `contents: write`, et ni le ruleset
+  de `deploy` (aucune approbation exigée) ni la protection de `main` ne
+  demandent une approbation : une fois les checks au vert, un jeton de
+  l'App peut merger une PR vers `deploy`, ou vers `main`. Hors de la liste
+  de contournement, il ne peut pas pousser directement sur `deploy`. Que
+  le bot ne merge jamais tient au code de `promote.yml`, qui n'appelle pas
+  cette API, et à qui peut le modifier — pas à la plateforme.
 
 ### Ce que la CI vérifie
 
