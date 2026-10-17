@@ -1,9 +1,7 @@
-# A self-signed ClusterIssuer for the k3d job only (#434): the issuer of
-# the application's certificate there (ci/certificate-patch.yaml), so
-# that the Certificate becomes Ready, the application Healthy, and the
-# ingress serves the certificate it names. ci/ingress-test.sh talks to it
-# with curl --insecure: what it tests is what Traefik does to the
-# requests, not the chain of trust, which Let's Encrypt provides for real.
+# A self-signed ClusterIssuer for the observability's k3d job only (#437):
+# the issuer of the short-lived certificate of ci/observability-fixtures.yaml,
+# whose expiry alert that job fires. The application's certificate needs
+# none in CI: staging's comes from its home CA (platform/components/home-ca).
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:

@@ -29,10 +29,9 @@
 # by 01-roles.sh, is left running for ci/postgres-test.sh, which the job
 # runs next.
 #
-# The application's certificate comes from a self-signed ClusterIssuer
-# (ci/ci-issuer.yaml, ci/certificate-patch.yaml) rather than Let's
-# Encrypt, which cannot reach this cluster: the only change to the
-# application's render. What the ingress does is ci/ingress-test.sh's,
+# The application is rendered as is: its certificate comes from the home
+# CA of the staging cluster (platform/components/home-ca), which needs
+# nothing from outside. What the ingress does is ci/ingress-test.sh's,
 # which the job runs next.
 
 set -euo pipefail
@@ -137,17 +136,22 @@ done
 # The staging root Application, at the commit under test instead of the
 # branch it names — the application's and Postgres's Applications included,
 # through patches the root applies to its own render. Postgres's also
-# carries ci/postgres-backup-patch.yaml down to the Cluster, the
-# application's ci/certificate-patch.yaml down to its Certificate (#434).
+# carries ci/postgres-backup-patch.yaml down to the Cluster.
+#
+# The root's render keeps everything but the SealedSecrets of
+# platform/clusters/staging/secrets/: those are sealed for the real staging
+# server, whose key this cluster's controller does not hold (#514). The
+# job seals its own, below, whether that directory is empty or not.
 echo "== bootstrap (root Application at $revision)"
-REVISION=$revision APP=$app PG_PATCH=$(cat "$root/ci/postgres-backup-patch.yaml") \
-  CERT_PATCH=$(cat "$root/ci/certificate-patch.yaml") yq e '
+# shellcheck disable=SC2016 # $patch is kustomize's, not the shell's
+REVISION=$revision APP=$app NS=$ns PG_PATCH=$(cat "$root/ci/postgres-backup-patch.yaml") yq e '
   .spec.source.targetRevision = strenv(REVISION) |
   .spec.source.kustomize.patches = [
+    {"target": {"kind": "SealedSecret", "namespace": strenv(NS)},
+     "patch": ({"$patch": "delete", "apiVersion": "bitnami.com/v1alpha1", "kind": "SealedSecret",
+                "metadata": {"name": "any"}} | to_yaml)},
     {"target": {"kind": "Application", "name": strenv(APP)},
-     "patch": ([{"op": "replace", "path": "/spec/source/targetRevision", "value": strenv(REVISION)},
-                {"op": "add", "path": "/spec/source/kustomize",
-                 "value": {"patches": [{"target": {"kind": "Certificate", "name": "manage-our-home-tls"}, "patch": strenv(CERT_PATCH)}]}}] | to_yaml)},
+     "patch": ([{"op": "replace", "path": "/spec/source/targetRevision", "value": strenv(REVISION)}] | to_yaml)},
     {"target": {"kind": "Application", "name": "postgres-staging"},
      "patch": ([{"op": "replace", "path": "/spec/source/targetRevision", "value": strenv(REVISION)},
                 {"op": "add", "path": "/spec/source/kustomize",
@@ -162,9 +166,6 @@ root_wait=$!
 for a in argocd sealed-secrets cert-manager cloudnative-pg kyverno; do
   wait_app "$a" 900
 done
-# The issuer of the application's certificate in this cluster
-# (ci/certificate-patch.yaml), once cert-manager's CRDs are in.
-kubectl apply -f "$root/ci/ci-issuer.yaml"
 
 # Sealed with the certificate of this cluster's controller, as the user
 # does for a real one (platform/README.md); the Secret in clear only goes
@@ -172,10 +173,11 @@ kubectl apply -f "$root/ci/ci-issuer.yaml"
 #
 # As on a real first boot, where they are sealed once the controller runs
 # and committed afterwards (platform/README.md, "Amorcer un cluster"), they
-# arrive after the Postgres Cluster: the wave of the Secrets is empty in
-# the branch, so the root goes on to Postgres without them. The job waits
-# for the Cluster to exist first, so that this order is the one tested,
-# not a race (#433).
+# arrive after the Postgres Cluster: the root's render here has no
+# SealedSecret (see the bootstrap above), so its wave of the Secrets is
+# empty and the root goes on to Postgres without them. The job waits for
+# the Cluster to exist first, so that this order is the one tested, not a
+# race (#433).
 echo "== sealed Secrets, after the Cluster"
 kubectl wait --for=jsonpath='{.status.phase}'=Active "namespace/$ns" --timeout=300s
 kubectl -n "$ns" wait --for=create clusters.postgresql.cnpg.io/postgres --timeout=600s
@@ -224,6 +226,29 @@ done
 for s in $secrets; do
   kubectl -n "$ns" wait --for=create "secret/$s" --timeout=120s
 done
+# The SealedSecrets of the namespace are the job's, and only them: the root
+# rendered none, each one carries what the job sealed, the controller
+# unsealed it, and nothing failed to unseal — what a SealedSecret of the
+# branch, sealed for another cluster, would do (#514).
+ci_sealed_only() {
+  local rendered names want got synced failed
+  rendered=$(kubectl -n argocd get application platform -o yaml \
+    | yq e '[.status.resources[]? | select(.kind == "SealedSecret") | .namespace + "/" + .name] | join(" ")' -)
+  [ -z "$rendered" ] || { echo "::error::the root Application rendered SealedSecrets of the branch: $rendered"; return 1; }
+  names=$(kubectl -n "$ns" get sealedsecrets -o yaml | yq e '[.items[].metadata.name] | sort | join(" ")' -)
+  want=$(tr ' ' '\n' <<< "$secrets" | LC_ALL=C sort | paste -sd ' ' -)
+  [ "$names" = "$want" ] || { echo "::error::SealedSecrets in $ns: '$names', expected the job's: '$want'"; return 1; }
+  for s in $secrets; do
+    want=$(yq e -o json -I0 '.spec.encryptedData' "$work/$s.sealed.yaml")
+    got=$(kubectl -n "$ns" get sealedsecret "$s" -o yaml | yq e -o json -I0 '.spec.encryptedData' -)
+    [ "$got" = "$want" ] || { echo "::error::SealedSecret $s is not the one the job sealed"; return 1; }
+    synced=$(kubectl -n "$ns" get sealedsecret "$s" -o yaml | yq e '.status.conditions[]? | select(.type == "Synced") | .status' -)
+    [ "$synced" = True ] || { echo "::error::SealedSecret $s is not unsealed (Synced: '$synced')"; return 1; }
+  done
+  failed=$(kubectl -n "$ns" get events --field-selector reason=ErrUnsealFailed -o name)
+  [ -z "$failed" ] || { echo "::error::ErrUnsealFailed in $ns: $failed"; return 1; }
+  echo "SealedSecrets of $ns: the job's only, all unsealed"
+}
 # A Cluster started before its backup key keeps failing to archive ("failed
 # to get envs: cache miss") until the Cluster object changes: the step the
 # procedure prescribes once the Secrets are in (platform/README.md,
@@ -239,6 +264,7 @@ kubectl -n "$ns" get clusters.postgresql.cnpg.io -o wide
 echo "== $app (Argo CD)"
 wait_app "$app" 900
 wait "$root_wait"
+ci_sealed_only
 kubectl -n "$ns" get job/migrate -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/hook}{"\n"}'
 kubectl -n "$ns" wait --for=condition=Complete job/migrate --timeout=0
 kubectl -n "$ns" logs job/migrate
@@ -367,6 +393,7 @@ notready=$(kubectl get pods -A -o yaml \
 for a in platform argocd sealed-secrets cert-manager cloudnative-pg kyverno postgres-staging "$app"; do
   wait_app "$a" 5
 done
+ci_sealed_only
 cat "$work/restarts.after"
 
 echo "== memory and CPU at rest"

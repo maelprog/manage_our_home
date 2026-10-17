@@ -123,11 +123,15 @@ dans les valeurs de son chart).
 `base/ingress/host` le recopie dans chaque règle et dans le certificat.
 `PUBLIC_BASE_URL` et `API_PUBLIC_BASE_URL` le nomment sous `/api` ;
 `ci/render-test.sh` échoue si l'un d'eux, une règle ou le certificat s'en
-écarte. Le certificat vient de Let's Encrypt (`letsencrypt`, staging
-compris : les navigateurs ne font pas confiance à `letsencrypt-staging`)
+écarte. En prod, le certificat vient de Let's Encrypt (`letsencrypt`)
 par cert-manager, en HTTP-01 : le nom doit résoudre vers le serveur, ports
-80 et 443 ouverts. En attendant, Traefik répond avec son certificat
-auto-signé par défaut.
+80 et 443 ouverts. Le staging n'est servi qu'au réseau maison, sous
+`staging.home.arpa` (RFC 8375), un nom pour lequel aucune autorité
+publique ne signe : son certificat vient de l'autorité maison du cluster
+(`home-ca`, `platform/components/home-ca`), dont chaque appareil installe
+la racine une fois (`docs/install-k3s.md`, « Le réseau maison »,
+arbitrage du 2026-10-17). En attendant le certificat, Traefik répond avec
+son certificat auto-signé par défaut.
 
 **Les garde-fous du Caddyfile** et ce qui les reprend :
 
@@ -623,13 +627,14 @@ tag) ou restaurer Postgres à un instant antérieur (« Restaurer »).
 
 ## Réglages à fixer
 
-Les adresses publiques et le relais SMTP des overlays sont des
-emplacements en `.invalid` (RFC 2606 : ne résout nulle part). L'adresse
-d'un environnement se fixe dans `FRONTEND_BASE_URL` de son overlay, avec
-`PUBLIC_BASE_URL` et `API_PUBLIC_BASE_URL` sur le même hôte : l'ingress et
-son certificat suivent (« Ingress »). Tant qu'elle reste en `.invalid`,
-Let's Encrypt refuse le certificat et l'Application de l'appli ne passe
-pas `Healthy`. Les buckets de
+L'adresse publique de la prod et le relais SMTP des deux overlays sont
+des emplacements en `.invalid` (RFC 2606 : ne résout nulle part).
+L'adresse d'un environnement se fixe dans `FRONTEND_BASE_URL` de son
+overlay, avec `PUBLIC_BASE_URL` et `API_PUBLIC_BASE_URL` sur le même
+hôte : l'ingress et son certificat suivent (« Ingress »). Tant que celle
+de la prod reste en `.invalid`, Let's Encrypt refuse le certificat et
+l'Application de l'appli ne passe pas `Healthy`. Celle du staging est
+fixée : `staging.home.arpa`, au réseau maison. Les buckets de
 sauvegarde de Postgres (`manage-our-home-backups-<env>`) sont à créer chez
 Scaleway, chiffrement par défaut activé (« Sauvegardes »), avant le premier
 déploiement ; un autre nom se change dans `base/postgres/cluster.yaml` et
@@ -663,7 +668,8 @@ chaque push sur l'une d'elles :
    hook `Sync` sur le bucket de l'api, sans suppression, entre MinIO et
    l'appli ;
    l'ingress : un seul hôte, celui de `FRONTEND_BASE_URL`, dans chaque
-   règle, le certificat et les URL publiques, l'émetteur `letsencrypt`,
+   règle, le certificat et les URL publiques, l'émetteur `letsencrypt`
+   (`home-ca` en staging, sous un nom en `.home.arpa`),
    la chaîne de Middlewares de chaque route, `/readyz` refusé, HTTP
    réduit à la redirection, les six en-têtes de sécurité posés ; et
    sur le rendu de Postgres : une instance, anti-affinité, image par
@@ -711,8 +717,8 @@ chaque push sur l'une d'elles :
    sur le commit testé ; les Secrets scellés avec le contrôleur du
    cluster ; Argo CD synchronise la plateforme, le Postgres de staging
    (sauvegardé vers ce MinIO, seul écart au rendu, `ci/postgres-backup-patch.yaml`)
-   puis l'appli (certificat d'un émetteur auto-signé, seul écart à son
-   rendu, `ci/certificate-patch.yaml` ; Job de migration en PreSync, api et web
+   puis l'appli, rendue telle quelle (certificat de l'autorité maison du
+   staging, `platform/components/home-ca` ; Job de migration en PreSync, api et web
    jusqu'à `Available` et `/readyz` à 200, sans redémarrage, en lecture
    seule, sur le réseau des pods que l'api croit). Kyverno doit refuser
    l'image de l'appli par étiquette et un manifeste non signé de son dépôt,
@@ -721,7 +727,8 @@ chaque push sur l'une d'elles :
    redémarrage ni OOM, tous les pods prêts, et `kubectl top pods -A`.
 7. `ci/ingress-test.sh` sur le même cluster, par l'adresse du nœud comme
    un client (« Ingress ») : Traefik tourne avec ses réglages et sert le
-   certificat de l'appli ; les en-têtes de sécurité de `/`, `/login` et
+   certificat de l'appli, qu'accepte un client ne faisant confiance qu'à
+   la racine de l'autorité maison ; les en-têtes de sécurité de `/`, `/login` et
    `/api/healthz` sont ceux de Caddy avec le Caddyfile de `main`, lancé
    devant les mêmes pods (`ci/caddy.yaml`) ; HTTP redirige ; `/readyz`
    répond 403 ; compression zstd puis gzip, feuille de style comprise et

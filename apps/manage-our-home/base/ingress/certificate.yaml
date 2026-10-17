@@ -4,10 +4,12 @@
 # reads the Secret it fills. Until it is issued, Traefik answers with its
 # own self-signed default certificate.
 #
-# `letsencrypt` on staging too: the staging server is a real host that
-# people browse, and browsers do not trust `letsencrypt-staging`'s
-# certificates — every visit would start with a warning. That issuer stays
-# to try an issuance out by hand, under its generous rate limits.
+# `letsencrypt` is production's: browsers do not trust
+# `letsencrypt-staging`'s certificates, and that issuer stays to try an
+# issuance out by hand, under its generous rate limits. The staging
+# overlay names `home-ca` instead (platform/components/home-ca): the test
+# server is served on the home network only, under a `.home.arpa` name no
+# public CA issues for.
 #
 # The host is the overlay's (base/ingress/host): `ingress-host.invalid`
 # below is replaced.
