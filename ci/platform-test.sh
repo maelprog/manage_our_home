@@ -87,6 +87,13 @@ for env in staging prod; do
     *) want="" ;;
   esac
   [ "$v" = "$want" ] || fail "home CA: expected '$want', got '$v'"
+  # Its root is valid for `home.arpa` names only (a critical name
+  # constraint): a device that trusts it trusts nothing else it signs.
+  if [ "$env" = staging ]; then
+    check
+    v=$(y 'select(.kind == "Certificate" and .metadata.name == "home-ca-root") | [(.spec.nameConstraints.critical // false), ((.spec.nameConstraints.permitted.dnsDomains // []) | join(","))] | join(" ")')
+    [ "$v" = "true home.arpa" ] || fail "home CA: root's name constraints are '$v', expected critical, home.arpa only"
+  fi
 
   # --- No Secret in clear; whatever the secrets directories hold is sealed.
   check

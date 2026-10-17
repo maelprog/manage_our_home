@@ -10,16 +10,17 @@
 # issuer, the root it signs (a CA certificate, kept as a Secret in
 # cert-manager's namespace, where a ClusterIssuer reads it), and the CA
 # issuer the application's certificate names. The root lasts ten years
-# and is renewed 30 days before its end, with a new key: every device
-# trusts the new root again. Losing the cluster loses it, with the same
-# consequence.
+# and is renewed 30 days before its end with the same key
+# (`rotationPolicy: Never`); devices are given the renewed root then.
+# Losing the cluster loses the key: a new root, which every device
+# trusts again.
 #
-# What a device trusts with it: any certificate this issuer signs, for
-# any name — the root carries no name constraint, and the ClusterIssuer
-# answers a Certificate of any namespace. Whoever can create a
-# Certificate in the cluster (its administrators) could sign for any
-# site those devices visit. docs/install-k3s.md says so; restricting the
-# root to `home.arpa` is an open issue.
+# What a device trusts with it: certificates for `home.arpa` names only.
+# The root carries a critical name constraint (cert-manager's
+# NameConstraints gate, Beta and on by default since 1.14): a
+# certificate it signs for any other name is rejected by the client, so
+# trusting this root does not let the cluster sign for the sites the
+# device visits.
 #
 # After cert-manager's Application (wave -10), whose CRDs they need; the
 # CA issuer one wave after its root, which it is Ready only with.
@@ -47,6 +48,11 @@ spec:
   secretName: home-ca-root
   duration: 87600h # 10 years
   renewBefore: 720h
+  nameConstraints:
+    critical: true
+    permitted:
+      dnsDomains:
+        - home.arpa
   privateKey:
     algorithm: ECDSA
     size: 256
