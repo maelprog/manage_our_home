@@ -803,7 +803,9 @@ en `home.arpa` seulement, **chez un client qui applique les contraintes
 d'une racine**. La racine porte une contrainte de nom critique
 (`nameConstraints`) ; un tel client refuse un certificat qu'elle
 signerait pour un autre nom. L'appliquer à une racine est facultatif
-(RFC 5280 § 6.1, RFC 5937) : OpenSSL et curl le font (vérifié par la CI) ;
+(RFC 5280 § 6.1, RFC 5937) : OpenSSL, et curl avec lui, le fait (la CI
+fait signer par la racine un certificat hors `home.arpa` et OpenSSL le
+refuse) ;
 pour les navigateurs et les systèmes, ce n'est pas vérifié ici. Donc
 n'installer la racine que sur les appareils qui utilisent le staging, la
 retirer quand ils ne s'en servent plus, et garder le fichier d'accès au

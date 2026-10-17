@@ -20,7 +20,9 @@
 # a critical one (cert-manager's NameConstraints gate, Beta and on by
 # default since 1.17): such a client rejects a certificate it signs for
 # any other name. Enforcing a trust anchor's constraints is optional
-# (RFC 5280 § 6.1, RFC 5937): OpenSSL and curl do (ci/ingress-test.sh);
+# (RFC 5280 § 6.1, RFC 5937): OpenSSL, and curl with it, does — the k3d
+# job signs a leaf outside home.arpa with this root and OpenSSL refuses
+# it (ci/ingress-test.sh);
 # for browsers and operating systems it is not checked here, so the root
 # goes on the devices that use staging only (docs/install-k3s.md).
 #
