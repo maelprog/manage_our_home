@@ -269,10 +269,18 @@ for overlay in "${overlays[@]}"; do
     [[ "$m" == 'Host(`'"$host"'`)'* ]] && [ "$(grep -o 'Host(' <<< "$m" | wc -l)" = 1 ] \
       || fail "IngressRoute rule '${m//_/ }' does not start with Host(\`$host\`), alone"
   done
+  # Its issuer: Let's Encrypt, except on staging, served on the home
+  # network only under a `.home.arpa` name (RFC 8375) that Let's Encrypt
+  # cannot issue for — the home CA of platform/components/home-ca there.
+  check
+  case "$overlay" in
+    staging) issuer=home-ca; [[ "$host" == *.home.arpa ]] || fail "staging: host '$host' is not under .home.arpa, the only names home-ca serves" ;;
+    *) issuer=letsencrypt ;;
+  esac
   check
   v=$(y 'select(.kind == "Certificate") | [.metadata.name, (.spec.dnsNames | join(",")), .spec.issuerRef.kind, .spec.issuerRef.name, .spec.secretName] | join(" ")')
-  [ "$v" = "manage-our-home-tls $host ClusterIssuer letsencrypt manage-our-home-tls" ] \
-    || fail "Certificate is '$v', expected 'manage-our-home-tls $host ClusterIssuer letsencrypt manage-our-home-tls'"
+  [ "$v" = "manage-our-home-tls $host ClusterIssuer $issuer manage-our-home-tls" ] \
+    || fail "Certificate is '$v', expected 'manage-our-home-tls $host ClusterIssuer $issuer manage-our-home-tls'"
   check
   v=$(y "$ir | select(.metadata.name == \"manage-our-home\") | .spec.tls.secretName")
   [ "$v" = manage-our-home-tls ] || fail "the HTTPS IngressRoute serves the Secret '$v', not the certificate's"

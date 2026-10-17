@@ -3,7 +3,8 @@
 # reached the way a client reaches it: the node's address, ports 80 and 443
 # (k3s's ServiceLB), the host as SNI and Host. Checks that:
 #   - Traefik runs with the settings of platform/components/traefik, and
-#     serves the application's certificate for its host;
+#     serves the application's certificate for its host, which a client
+#     trusting only the home CA's root accepts;
 #   - the security headers of `/`, `/login` and `/api/healthz` are those
 #     of the Compose stack, character for character: the same requests go
 #     through Caddy with main's infra/Caddyfile (ci/caddy.yaml), in front
@@ -112,6 +113,13 @@ done
 subject=$(openssl s_client -connect "$address:443" -servername "$host" < /dev/null 2> /dev/null \
   | openssl x509 -noout -ext subjectAltName 2> /dev/null || true)
 [[ "$subject" == *"DNS:$host"* ]] || fail "the certificate served for $host is not the application's: '$subject'"
+# Signed by staging's home CA (platform/components/home-ca): a client
+# that trusts its root alone, as a device of the home network does once
+# it is installed, accepts the site without --insecure.
+kubectl -n cert-manager get secret home-ca-root -o jsonpath='{.data.ca\.crt}' | base64 -d > "$work/home-ca.crt"
+code=$(curl --silent --cacert "$work/home-ca.crt" --resolve "$host:443:$address" --output /dev/null \
+  --write-out '%{http_code}' "https://$host/api/healthz" || true)
+[ "$code" = 200 ] || fail "https://$host/api/healthz answers '$code' to a client trusting only the home CA's root"
 
 # The two long probes, from now on: the WebSocket needs a session first.
 echo "== a member with a family, for the WebSocket"

@@ -29,10 +29,9 @@
 # by 01-roles.sh, is left running for ci/postgres-test.sh, which the job
 # runs next.
 #
-# The application's certificate comes from a self-signed ClusterIssuer
-# (ci/ci-issuer.yaml, ci/certificate-patch.yaml) rather than Let's
-# Encrypt, which cannot reach this cluster: the only change to the
-# application's render. What the ingress does is ci/ingress-test.sh's,
+# The application is rendered as is: its certificate comes from the home
+# CA of the staging cluster (platform/components/home-ca), which needs
+# nothing from outside. What the ingress does is ci/ingress-test.sh's,
 # which the job runs next.
 
 set -euo pipefail
@@ -137,17 +136,13 @@ done
 # The staging root Application, at the commit under test instead of the
 # branch it names — the application's and Postgres's Applications included,
 # through patches the root applies to its own render. Postgres's also
-# carries ci/postgres-backup-patch.yaml down to the Cluster, the
-# application's ci/certificate-patch.yaml down to its Certificate (#434).
+# carries ci/postgres-backup-patch.yaml down to the Cluster.
 echo "== bootstrap (root Application at $revision)"
-REVISION=$revision APP=$app PG_PATCH=$(cat "$root/ci/postgres-backup-patch.yaml") \
-  CERT_PATCH=$(cat "$root/ci/certificate-patch.yaml") yq e '
+REVISION=$revision APP=$app PG_PATCH=$(cat "$root/ci/postgres-backup-patch.yaml") yq e '
   .spec.source.targetRevision = strenv(REVISION) |
   .spec.source.kustomize.patches = [
     {"target": {"kind": "Application", "name": strenv(APP)},
-     "patch": ([{"op": "replace", "path": "/spec/source/targetRevision", "value": strenv(REVISION)},
-                {"op": "add", "path": "/spec/source/kustomize",
-                 "value": {"patches": [{"target": {"kind": "Certificate", "name": "manage-our-home-tls"}, "patch": strenv(CERT_PATCH)}]}}] | to_yaml)},
+     "patch": ([{"op": "replace", "path": "/spec/source/targetRevision", "value": strenv(REVISION)}] | to_yaml)},
     {"target": {"kind": "Application", "name": "postgres-staging"},
      "patch": ([{"op": "replace", "path": "/spec/source/targetRevision", "value": strenv(REVISION)},
                 {"op": "add", "path": "/spec/source/kustomize",
@@ -162,9 +157,6 @@ root_wait=$!
 for a in argocd sealed-secrets cert-manager cloudnative-pg kyverno; do
   wait_app "$a" 900
 done
-# The issuer of the application's certificate in this cluster
-# (ci/certificate-patch.yaml), once cert-manager's CRDs are in.
-kubectl apply -f "$root/ci/ci-issuer.yaml"
 
 # Sealed with the certificate of this cluster's controller, as the user
 # does for a real one (platform/README.md); the Secret in clear only goes

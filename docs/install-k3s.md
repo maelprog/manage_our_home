@@ -27,6 +27,7 @@ Arbitrage (b) du 2026-10-10 :
 | Branche suivie | `k3s` pendant l'intégration, `deploy` ensuite | `deploy` |
 | Observabilité (#437) | non | oui |
 | Entrée HTTP | ServiceLB (un nœud) ou MetalLB (plusieurs) | ServiceLB |
+| Adresse, certificat | `staging.home.arpa`, réseau maison seulement, autorité maison | nom public, Let's Encrypt |
 | Adresse de l'API Kubernetes | kube-vip (plusieurs serveurs) | celle du nœud |
 
 ### Prérequis matériels
@@ -468,8 +469,9 @@ intacte.
 - **Un seul nœud** (le VPS, ou un staging d'un nœud) : **ServiceLB**, celui
   de k3s, rien à faire. Les ports 80 et 443 du nœud mènent à Traefik.
 - **Plusieurs nœuds** (staging) : ServiceLB ouvre 80 et 443 sur chaque
-  nœud, mais seul celui de Traefik répond ; la box, qui redirige vers une
-  adresse fixe, viserait un nœud que kured vide un jour ou l'autre.
+  nœud, mais seul celui de Traefik répond ; `staging.home.arpa`, qui
+  résout vers une adresse fixe, viserait un nœud que kured vide un jour
+  ou l'autre.
   **MetalLB** donne au Service une adresse à lui, annoncée en ARP par le
   nœud qui porte Traefik, et la déplace avec lui. ServiceLB désactivé sur
   **tous** les serveurs : soit dès l'installation (les lignes `disable`
@@ -516,7 +518,8 @@ poste$ curl -s -o /dev/null -w '%{http_code}\n' http://<adresse de l'ingress>/  
 ```
 
 `<adresse de l'ingress>` : une adresse libre du réseau local, hors DHCP,
-autre que `<vip>`. La box redirige TCP 80 et 443 vers elle.
+autre que `<vip>`. C'est elle que `staging.home.arpa` désigne (§ 4,
+« Le réseau maison »).
 
 ### kured : redémarrer un nœud à la fois
 
@@ -741,9 +744,68 @@ Puis **sauvegarder la clé du contrôleur** hors du serveur (même page,
 
 **Avant le premier déploiement** : le bucket de sauvegarde de
 l'environnement chez Scaleway, chiffrement par défaut activé avant la
-première sauvegarde (`README.md`, « Sauvegardes ») ; l'adresse publique
-de l'overlay et son DNS (`README.md`, « Réglages à fixer ») ; en prod, le
-Secret `alertmanager-config` (`platform/README.md`, « Observabilité »).
+première sauvegarde (`README.md`, « Sauvegardes ») ; en prod, l'adresse
+publique de l'overlay et son DNS (`README.md`, « Réglages à fixer ») et
+le Secret `alertmanager-config` (`platform/README.md`, « Observabilité ») ;
+au staging, le réseau maison (ci-dessous).
+
+### Le réseau maison (staging)
+
+Le staging n'est pas exposé à Internet (arbitrage du 2026-10-17) : pas
+de redirection de ports sur la box, pas de nom public. Il est servi sous
+`staging.home.arpa`, un nom réservé aux réseaux domestiques (RFC 8375),
+avec un certificat de l'autorité maison du cluster
+(`platform/components/home-ca`) : cert-manager en crée la racine au
+premier démarrage et signe le certificat de l'appli avec elle.
+
+**Le nom.** Chaque appareil doit résoudre `staging.home.arpa` vers
+l'adresse du serveur (au staging à plusieurs nœuds, `<adresse de
+l'ingress>` de MetalLB) : dans le DNS local de la box si elle le permet
+(une entrée d'hôte), sinon dans le fichier `hosts` de chaque appareil
+(`/etc/hosts`, `C:\Windows\System32\drivers\etc\hosts`) :
+
+```
+<adresse du serveur>  staging.home.arpa
+```
+
+Un téléphone n'a pas de fichier `hosts` modifiable : sans DNS de la box,
+il ne peut pas joindre le staging.
+
+**La racine.** Une fois la plateforme synchronisée, la sortir du
+cluster (elle est publique : c'est un certificat, pas une clé) :
+
+```sh
+poste$ kubectl -n cert-manager wait certificate/home-ca-root --for=condition=Ready --timeout=5m
+poste$ kubectl -n cert-manager get secret home-ca-root -o jsonpath='{.data.ca\.crt}' | base64 -d > home-ca.crt
+poste$ openssl x509 -in home-ca.crt -noout -subject -enddate -fingerprint -sha256
+```
+
+puis l'installer comme autorité de confiance sur chaque appareil qui
+ouvre le staging :
+
+| Appareil | Où |
+|---|---|
+| Debian, Ubuntu | `sudo cp home-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates` |
+| Windows | double-clic sur le fichier, « Installer le certificat », magasin « Autorités de certification racines de confiance » |
+| macOS | Trousseau d'accès, trousseau « Système », puis « Toujours approuver » sur le certificat |
+| Android | Paramètres, Sécurité, « Installer un certificat », « Certificat CA » (Chrome le reconnaît) |
+| iOS | ouvrir le fichier (AirDrop, mail), installer le profil, puis Réglages, Général, Informations, « Réglages des certificats », activer la confiance totale |
+| Firefox | il a son propre magasin : Paramètres, Vie privée et sécurité, Certificats, Importer, « Confirmer cette AC pour identifier des sites web » |
+
+Vérifier depuis le poste, sans `--insecure` :
+
+```sh
+poste$ curl -sS --cacert home-ca.crt -o /dev/null -w '%{http_code}\n' https://staging.home.arpa/api/healthz   # 200
+```
+
+Le service worker, la PWA et les notifications push exigent un
+certificat reconnu : sur un appareil sans la racine, ils ne marchent pas,
+même après avoir passé l'avertissement du navigateur.
+
+La racine vaut 10 ans et sa clé ne vit que dans le cluster. Un cluster
+réinstallé en tire une nouvelle : la réinstaller sur chaque appareil (et
+retirer l'ancienne). Le certificat de l'appli, lui, se renouvelle seul
+tous les 60 jours, sans rien changer aux appareils.
 
 ## 5. Déployer en prod
 
@@ -899,10 +961,11 @@ la télécharger.
 
 ### 5. Le DNS, puis la coupure de Compose
 
-L'enregistrement `A` de l'hôte vise maintenant le cluster (au staging,
-la redirection 80/443 de la box vise `<adresse de l'ingress>`) ;
+En prod, l'enregistrement `A` de l'hôte vise maintenant le cluster ;
 cert-manager obtient le certificat dès que Let's Encrypt atteint le
-port 80 (`README.md`, « Ingress »).
+port 80 (`README.md`, « Ingress »). Au staging, `staging.home.arpa` vise
+le serveur dans le DNS de la box ou les `hosts` (§ 4, « Le réseau
+maison ») ; l'adresse qu'utilisait Compose ne sert plus.
 
 Compose reste arrêté, **volumes gardés** : c'est le retour arrière. Après
 quelques jours sans incident :

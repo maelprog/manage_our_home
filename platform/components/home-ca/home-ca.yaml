@@ -1,0 +1,59 @@
+# The home network's certificate authority, staging only (arbitrage of
+# 2026-10-17): the test server is reached from home, under a `.home.arpa`
+# name (RFC 8375) that no public CA issues for, so Let's Encrypt is out.
+# cert-manager makes a root of its own and signs the application's
+# certificate with it (apps/manage-our-home/overlays/staging); each device
+# that browses staging trusts that root once (docs/install-k3s.md, "Le
+# réseau maison").
+#
+# Three steps, cert-manager's documented CA bootstrap: a self-signed
+# issuer, the root it signs (a CA certificate, kept as a Secret in
+# cert-manager's namespace, where a ClusterIssuer reads it), and the CA
+# issuer the application's certificate names. The root is never renewed
+# under the devices' feet before ten years; losing the cluster loses it,
+# and every device trusts the new one again.
+#
+# After cert-manager's Application (wave -10), whose CRDs they need; the
+# CA issuer one wave after its root, which it is Ready only with.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: home-ca-selfsigned
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: home-ca-root
+  namespace: cert-manager
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  isCA: true
+  commonName: manage-our-home staging CA
+  secretName: home-ca-root
+  duration: 87600h # 10 years
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Never
+  issuerRef:
+    kind: ClusterIssuer
+    name: home-ca-selfsigned
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: home-ca
+  annotations:
+    argocd.argoproj.io/sync-wave: "-4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  ca:
+    secretName: home-ca-root
