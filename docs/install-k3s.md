@@ -798,6 +798,17 @@ Vérifier depuis le poste, sans `--insecure` :
 poste$ curl -sS --cacert home-ca.crt -o /dev/null -w '%{http_code}\n' https://staging.home.arpa/api/healthz   # 200
 ```
 
+**Ce que l'appareil accepte avec elle** : tout certificat que signe
+`home-ca`, pour **n'importe quel nom**, pas seulement
+`staging.home.arpa`. La racine ne porte pas de contrainte de nom, et le
+ClusterIssuer répond aux Certificates de tout namespace. Quiconque peut
+créer un Certificate dans le cluster (ses administrateurs, ou qui vole le
+fichier d'accès `k3s.yaml`) pourrait signer pour n'importe quel site que
+visitent ces appareils. N'installer la racine que sur les appareils qui
+utilisent le staging, la retirer quand ils ne s'en servent plus, et
+garder le fichier d'accès au cluster comme une clé SSH. Restreindre la
+racine à `home.arpa` est un point ouvert (fin de ce document).
+
 Le service worker, la PWA et les notifications push exigent un
 certificat reconnu : sur un appareil sans la racine, ils ne marchent pas,
 même après avoir passé l'avertissement du navigateur.
@@ -1062,6 +1073,11 @@ Sur le serveur de test, la copie prend la mémoire d'un second Postgres
 heures d'usage.
 
 ## Points ouverts
+
+- **Racine `home-ca` sans contrainte de nom** (§ 4, « Le réseau
+  maison ») : elle vaut pour tout nom sur les appareils qui l'installent.
+  La restreindre à `home.arpa` (`nameConstraints` de cert-manager, derrière
+  une *feature gate*) reste à faire.
 
 - **Chiffrement au repos des volumes** (`docs/v2-deployment.md` de
   `main`, item 20) : la procédure de cet item vise un hôte Compose (LUKS

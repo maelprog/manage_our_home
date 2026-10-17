@@ -274,7 +274,7 @@ for overlay in "${overlays[@]}"; do
   # cannot issue for — the home CA of platform/components/home-ca there.
   check
   case "$overlay" in
-    staging) issuer=home-ca; [[ "$host" == *.home.arpa ]] || fail "staging: host '$host' is not under .home.arpa, the only names home-ca serves" ;;
+    staging) issuer=home-ca; [[ "$host" == *.home.arpa ]] || fail "staging: host '$host' is not under .home.arpa, the home network's names" ;;
     *) issuer=letsencrypt ;;
   esac
   check

@@ -81,9 +81,9 @@ for env in staging prod; do
   # root, kept by cert-manager in its own namespace, and the CA
   # ClusterIssuer that signs from it, one wave after the root.
   check
-  v=$(y 'select(.kind == "ClusterIssuer" or (.kind == "Certificate" and .metadata.namespace == "cert-manager")) | [.kind, .metadata.name, .metadata.annotations["argocd.argoproj.io/sync-wave"], (.spec.ca.secretName // .spec.secretName // (.spec.selfSigned | select(.) | "selfSigned") // ""), (.spec.isCA // "")] | join(" ")' | { grep -v letsencrypt || true; } | sort | tr '\n' ';')
+  v=$(y 'select(.kind == "ClusterIssuer" or (.kind == "Certificate" and .metadata.namespace == "cert-manager")) | [.kind, .metadata.name, .metadata.annotations["argocd.argoproj.io/sync-wave"], (.spec.ca.secretName // .spec.secretName // (.spec.selfSigned | select(.) | "selfSigned") // ""), (.spec.isCA // ""), (.spec.issuerRef.name // "")] | join(" ")' | { grep -v letsencrypt || true; } | sort | tr '\n' ';')
   case "$env" in
-    staging) want="Certificate home-ca-root -5 home-ca-root true;ClusterIssuer home-ca -4 home-ca-root ;ClusterIssuer home-ca-selfsigned -5 selfSigned ;" ;;
+    staging) want="Certificate home-ca-root -5 home-ca-root true home-ca-selfsigned;ClusterIssuer home-ca -4 home-ca-root  ;ClusterIssuer home-ca-selfsigned -5 selfSigned  ;" ;;
     *) want="" ;;
   esac
   [ "$v" = "$want" ] || fail "home CA: expected '$want', got '$v'"
