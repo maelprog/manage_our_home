@@ -105,12 +105,17 @@ aux versions de `ci/install-tools.sh`.
    qu'ils manquent, le Job `migrate` attend son Secret et la synchro de
    l'appli échoue au bout de son `activeDeadlineSeconds`, puis réessaie.
    Le Cluster Postgres, lui, est déjà créé (sa vague passe, celle des
-   Secrets étant vide) : une fois ses Secrets arrivés, toucher l'objet
+   Secrets étant vide tant que `secrets/` ne contient rien pour ce
+   cluster) : une fois ses Secrets arrivés, toucher l'objet
    Cluster pour qu'il les relise, sans quoi l'archivage des WAL reste en
    échec (« failed to get envs: cache miss ») — constaté en k3d avec
    l'opérateur 1.30.1, et joué par le job k3d :
    `kubectl -n manage-our-home annotate cluster postgres manage-our-home/secrets-sealed-at="$(date -u +%FT%TZ)" --overwrite`,
    puis attendre `kubectl -n manage-our-home wait cluster/postgres --for=condition=ContinuousArchiving`.
+   Le job k3d rejoue ce premier démarrage sur un cluster neuf, dont le
+   contrôleur ne peut pas ouvrir les SealedSecrets commités pour le vrai
+   serveur : sa racine les retire du rendu (`ci/staging-smoke.sh`) et il
+   scelle les siens, que `secrets/` soit vide ou rempli.
 3. Sauvegarder la clé du contrôleur (ci-dessous).
 
 Mot de passe `admin` initial d'Argo CD :
