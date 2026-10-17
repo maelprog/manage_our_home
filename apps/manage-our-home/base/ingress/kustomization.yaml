@@ -1,0 +1,10 @@
+# The ingress (#434): Traefik's routes and Middlewares, and the
+# certificate of the host. The host itself is the overlay's: host/ is a
+# Component every overlay lists, which writes it in.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - middlewares.yaml
+  - ingressroute.yaml
+  - certificate.yaml

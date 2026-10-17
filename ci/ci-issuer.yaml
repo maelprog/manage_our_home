@@ -1,0 +1,10 @@
+# A self-signed ClusterIssuer for the observability's k3d job only (#437):
+# the issuer of the short-lived certificate of ci/observability-fixtures.yaml,
+# whose expiry alert that job fires. The application's certificate needs
+# none in CI: staging's comes from its home CA (platform/components/home-ca).
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: ci-selfsigned
+spec:
+  selfSigned: {}

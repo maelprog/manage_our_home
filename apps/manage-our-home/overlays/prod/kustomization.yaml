@@ -1,0 +1,41 @@
+# Production: the third-party VPS. Follows the `v*` tags; Argo CD never
+# syncs it on its own — a merge here leaves the application OutOfSync
+# until the user presses Sync (#432). The base as is: two replicas each,
+# spread by node.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# The ingress's host, its rules and certificate: FRONTEND_BASE_URL's below.
+components:
+  - ../../base/ingress/host
+
+# By digest, never by tag. No `v*` tag has been built by
+# .github/workflows/images.yml yet: until the first one, this is the same
+# pair as staging. Moved by ci/set-images.sh, in a promotion PR that CI
+# keeps to the pair staging runs (README, « Promotion », #436).
+images:
+  - name: ghcr.io/maelprog/manage-our-home-api
+    digest: sha256:3448748f41c94ec12dce8a826ca81ba831e17e61c29711b5bd563e71897f4153 # main 10aabde
+  - name: ghcr.io/maelprog/manage-our-home-web
+    digest: sha256:236d57ab423e5e1cbc966c7d27dd77886e7883556c6a85dbc4406c7f966136f8 # main 10aabde
+
+configMapGenerator:
+  - name: api-config
+    behavior: merge
+    literals:
+      # Placeholders until production's address is chosen: `.invalid`
+      # resolves nowhere (RFC 2606). The ingress (#434) serves the host of
+      # FRONTEND_BASE_URL and asks Let's Encrypt for its certificate; the
+      # other three name the same host (ci/render-test.sh).
+      - PUBLIC_BASE_URL=https://manage-our-home.invalid/api
+      - FRONTEND_BASE_URL=https://manage-our-home.invalid
+      - SMTP_HOST=smtp.manage-our-home.invalid
+      - SMTP_FROM=no-reply@manage-our-home.invalid
+      - VAPID_SUBJECT=mailto:admin@manage-our-home.invalid
+  - name: web-config
+    behavior: merge
+    literals:
+      - API_PUBLIC_BASE_URL=https://manage-our-home.invalid/api

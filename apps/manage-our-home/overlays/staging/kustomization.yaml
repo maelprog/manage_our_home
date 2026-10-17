@@ -1,0 +1,76 @@
+# Staging: the home server, 4 GB of RAM for the whole cluster (arbitrage
+# of 2026-10-12). Follows `main`; Argo CD syncs it automatically (#432).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# The ingress's host, its rules and certificate: FRONTEND_BASE_URL's below.
+components:
+  - ../../base/ingress/host
+
+# By digest, never by tag: a tag can be moved, a digest cannot, and the
+# Kyverno policy of #432 refuses anything else. Images published by
+# .github/workflows/images.yml on main (#430), the source of the pair
+# after each digest (the first: run 38333383259). Moved by
+# ci/set-images.sh, in a PR (README, « Promotion », #436).
+images:
+  - name: ghcr.io/maelprog/manage-our-home-api
+    digest: sha256:3448748f41c94ec12dce8a826ca81ba831e17e61c29711b5bd563e71897f4153 # main 10aabde
+  - name: ghcr.io/maelprog/manage-our-home-web
+    digest: sha256:236d57ab423e5e1cbc966c7d27dd77886e7883556c6a85dbc4406c7f966136f8 # main 10aabde
+
+# One replica each: the cluster has a budget of about 3 GB for the
+# platform, Postgres, MinIO, api and web together. The
+# PodDisruptionBudgets of the base (maxUnavailable: 1) let a drain
+# through at one replica.
+replicas:
+  - name: api
+    count: 1
+  - name: web
+    count: 1
+
+# Spread by node as a preference only: with one node, or one node short
+# during a drain, DoNotSchedule would leave a pod Pending rather than put
+# it next to another.
+patches:
+  - target:
+      kind: Deployment
+      name: (api|web)
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/topologySpreadConstraints/0/whenUnsatisfiable
+        value: ScheduleAnyway
+  # Served on the home network only, under a `.home.arpa` name no public
+  # CA issues for: the certificate comes from the home CA of the staging
+  # cluster (platform/components/home-ca), not from Let's Encrypt.
+  - target:
+      kind: Certificate
+      name: manage-our-home-tls
+    patch: |-
+      - op: replace
+        path: /spec/issuerRef/name
+        value: home-ca
+
+configMapGenerator:
+  - name: api-config
+    behavior: merge
+    literals:
+      # The home network's name of the staging server (RFC 8375: never
+      # delegated on the Internet), which the box's DNS or each device's
+      # hosts file resolves (docs/install-k3s.md, "Le réseau maison").
+      # The ingress (#434) serves the host of FRONTEND_BASE_URL, with a
+      # certificate of the home CA; the other two name the same host
+      # (ci/render-test.sh).
+      - PUBLIC_BASE_URL=https://staging.home.arpa/api
+      - FRONTEND_BASE_URL=https://staging.home.arpa
+      # Placeholders until a relay is chosen: `.invalid` resolves nowhere
+      # (RFC 2606), so no mail leaves for a third party.
+      - SMTP_HOST=smtp.manage-our-home.invalid
+      - SMTP_FROM=no-reply@staging.manage-our-home.invalid
+      - VAPID_SUBJECT=mailto:admin@staging.manage-our-home.invalid
+  - name: web-config
+    behavior: merge
+    literals:
+      - API_PUBLIC_BASE_URL=https://staging.home.arpa/api

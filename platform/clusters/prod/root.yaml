@@ -1,0 +1,24 @@
+# The root Application of the production cluster (app of apps, #432):
+# renders platform/clusters/prod. Applied once by
+# `platform/bootstrap.sh prod`, and again only when this file changes.
+#
+# No `syncPolicy.automated` (arbitrage of 2026-10-10: nothing reaches
+# production without the user's Sync): a merge on `deploy` that changes
+# the platform — a chart version, a value, the policy — leaves this
+# Application OutOfSync until the user syncs it. The Applications it
+# renders sync on their own once it has, each from a chart pinned here.
+# The application itself stays manual (manage-our-home.yaml).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/maelprog/manage_our_home.git
+    targetRevision: deploy
+    path: platform/clusters/prod
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd

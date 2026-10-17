@@ -1,0 +1,30 @@
+# The root Application of the staging cluster (app of apps, #432): renders
+# platform/clusters/staging, which holds every other Application. Applied
+# once by `platform/bootstrap.sh staging`, and again only when this file
+# changes — it is not part of its own render.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/maelprog/manage_our_home.git
+    # Same as manage-our-home.yaml: `k3s` during the integration of the
+    # epic, `deploy` from the promotion on.
+    targetRevision: deploy
+    path: platform/clusters/staging
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 10m

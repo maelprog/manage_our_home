@@ -1,0 +1,35 @@
+# The host of the ingress (#434), taken from the one place an overlay
+# names it: FRONTEND_BASE_URL in its `api-config` (`https://<host>`, the
+# third field split on `/`). Written into every rule of the IngressRoutes
+# (the field between the first two backquotes, `Host(`<host>`)`) and into
+# the certificate. Listed under `components:` by each overlay: a Component
+# runs after the overlay has merged its own literals into `api-config`,
+# where the base alone would not see them.
+#
+# PUBLIC_BASE_URL and API_PUBLIC_BASE_URL name the same host under `/api`;
+# ci/render-test.sh fails if one of them, a rule or the certificate
+# disagrees with FRONTEND_BASE_URL.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+replacements:
+  - source:
+      kind: ConfigMap
+      name: api-config
+      fieldPath: data.FRONTEND_BASE_URL
+      options:
+        delimiter: /
+        index: 2
+    targets:
+      - select:
+          kind: IngressRoute
+        fieldPaths:
+          - spec.routes.*.match
+        options:
+          delimiter: "`"
+          index: 1
+      - select:
+          kind: Certificate
+          name: manage-our-home-tls
+        fieldPaths:
+          - spec.dnsNames.0

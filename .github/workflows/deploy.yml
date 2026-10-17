@@ -1,0 +1,203 @@
+# CI of the `deploy` branch and of `k3s`, its integration branch (#431):
+# the manifests render, are valid Kubernetes, say what ci/render-test.sh
+# requires of them, and staging actually runs — in a throwaway k3d cluster
+# whose node has the staging server's 4 GB, the platform bootstrapped by
+# platform/bootstrap.sh and Argo CD deploying the staging overlay on its
+# CloudNativePG Postgres, until api and web answer /readyz and 10 minutes
+# pass without a restart (#432); then the ingress is checked against the
+# guards of main's infra/Caddyfile (#434), an attachment sent through the
+# API is checked in MinIO's bucket (#435), and that Postgres is restored
+# from its backups to an instant (#433). Beside them, the promotion job
+# (#436): the overlays' images are signed as Kyverno requires, and a PR
+# moves prod only to the pair staging runs (README, « Promotion »); and
+# the observability job (#437), on a second throwaway cluster: production's
+# metrics, logs and alerts, which staging does not run.
+#
+# The PRs of the k3s epic (#431 to #437) target `k3s`; `deploy` only
+# receives `k3s` once, by a PR the user merges by hand, when the whole
+# architecture runs on the test server (arbitrage of 2026-10-13). Both
+# are checked the same way.
+#
+# Neither branch shares history with `main`, and their tree holds only this
+# workflow: the workflows of `main` (ci.yml, images.yml) are not in it, so
+# neither a push to them nor a PR into them starts them.
+#
+# Nothing here deploys anywhere: each cluster's Argo CD pulls this branch
+# (#432), and no token of it is given to the CI. The throwaway cluster's
+# Argo CD reads the commit under test from GitHub, anonymously.
+
+name: Deploy manifests
+
+on:
+  pull_request:
+    branches: [deploy, k3s]
+  push:
+    branches: [deploy, k3s]
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  # k3s of the throwaway cluster, by tag and digest. Same Kubernetes
+  # version as ci/validate.sh's schemas and ci/install-tools.sh's kubectl.
+  K3S_IMAGE: rancher/k3s:v1.37.1-k3s1@sha256:ca7f37d993d82ef0dcdcfecb2e0e2618ea541dbaffc620c8cedebe01a82acd0d
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tools
+        run: |
+          ci/install-tools.sh "$RUNNER_TEMP/bin" kustomize kubeconform yq helm
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: kustomize build | kubeconform -strict
+        run: ci/validate.sh
+      - name: Tests on the render
+        run: ci/render-test.sh
+      - name: Tests on the platform
+        env:
+          # The branch the staging Applications must follow: the one this
+          # PR goes into, or that this push is on (ci/platform-test.sh).
+          EXPECT_STAGING_REVISION: ${{ github.base_ref || github.ref_name }}
+        run: ci/platform-test.sh
+      - name: Tests on the promotion scripts
+        run: ci/promotion-test.sh
+      # The alerts that mail (#437): promtool on their rules, amtool on
+      # Alertmanager's configuration and its routes.
+      - name: Tests on the alerts
+        run: |
+          ci/install-tools.sh "$RUNNER_TEMP/bin" promtool amtool
+          ci/alerts-test.sh
+
+  # Promotion (#436): every image an overlay names is signed by main's
+  # images workflow, as Kyverno will require; and a PR only moves prod to
+  # the pair staging runs at the tip of the branch it goes into, or back to
+  # a pair prod ran before (the revert of a promotion).
+  promotion:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tools
+        run: |
+          ci/install-tools.sh "$RUNNER_TEMP/bin" kustomize yq cosign
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Signatures of the overlays' images
+        run: ci/verify-signatures.sh
+      # The branch the PR goes into, at its tip and with its history: what
+      # staging runs now, and the pairs prod ran before.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          ref: ${{ github.base_ref }}
+          path: base-branch
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prod moves only to what staging runs
+        if: github.event_name == 'pull_request'
+        run: ci/promotion-check.sh base-branch
+
+  k3d:
+    needs: render
+    runs-on: ubuntu-latest
+    # The platform, then 10 minutes at rest (ci/staging-smoke.sh), the
+    # ingress and its 5 minutes of WebSocket silence (ci/ingress-test.sh),
+    # MinIO (ci/minio-test.sh), then the restore drill (ci/postgres-test.sh).
+    timeout-minutes: 80
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The roles of the reference Postgres, which the CloudNativePG
+      # Cluster's are compared with (ci/postgres-test.sh): main's own
+      # script, the one infra/docker-compose.yml runs, rather than a copy
+      # here that could drift from it. Likewise the Caddyfile, whose
+      # headers the ingress's are compared with (ci/ingress-test.sh).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: main
+          persist-credentials: false
+          sparse-checkout: |
+            infra/postgres/init
+            infra/Caddyfile
+          sparse-checkout-cone-mode: false
+      - name: Tools
+        run: |
+          ci/install-tools.sh "$RUNNER_TEMP/bin" kustomize yq kubectl k3d helm kubeseal
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: k3d cluster
+        run: |
+          # k3s as installed on the servers, Traefik and its ServiceLB
+          # included: the ingress is tested through them (#434). The node
+          # gets the staging server's 4 GB (arbitrage of 2026-10-12).
+          k3d cluster create deploy-ci \
+            --image "$K3S_IMAGE" \
+            --servers-memory 4g \
+            --wait --timeout 180s
+          kubectl get nodes -o wide
+      - name: Bootstrap the platform, let Argo CD deploy staging, check it
+        env:
+          # The commit Argo CD reads: the head of the PR, which is on
+          # GitHub (the merge commit of a pull_request run is not on a
+          # branch), or the pushed one.
+          REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: ci/staging-smoke.sh main/infra/postgres/init/01-roles.sh "$REVISION"
+      # On the same cluster (#434): the ingress, against main's Caddyfile
+      # run in front of the same pods; the client's address through it;
+      # the WebSocket past the idle timeout; trickled headers cut.
+      - name: Ingress — the Caddyfile's guards
+        run: ci/ingress-test.sh main/infra/Caddyfile
+      # On the same cluster (#435): an attachment sent through the API
+      # lands in MinIO's bucket and reads back; the bucket Job, replayed by
+      # a sync, changes nothing; MinIO restarted, the attachment is there.
+      - name: MinIO — an attachment in the bucket, the bucket Job replayed
+        run: ci/minio-test.sh
+      # On the same cluster (#433): staging's Postgres has the roles of
+      # 01-roles.sh and RLS applies to app_role; then it is deleted and
+      # restored from its backups to an instant, and the data checked.
+      - name: Postgres — roles, RLS, point-in-time restore
+        run: ci/postgres-test.sh
+
+  # The observability (#437), which staging does not run (arbitrage of
+  # 2026-10-12): on a cluster of its own, beside the staging one, its node
+  # with the same 4 GB. Argo CD deploys production's observability brick,
+  # with cert-manager; alerts fire on fixtures, reach Alertmanager and a
+  # mail catcher; logs reach Loki; Grafana answers through a port-forward.
+  observability:
+    needs: render
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tools
+        run: |
+          ci/install-tools.sh "$RUNNER_TEMP/bin" yq kubectl k3d helm
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: k3d cluster
+        run: |
+          k3d cluster create deploy-ci-observability \
+            --image "$K3S_IMAGE" \
+            --servers-memory 4g \
+            --wait --timeout 180s
+          kubectl get nodes -o wide
+      - name: Bootstrap, let Argo CD deploy the observability, check it
+        env:
+          REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: ci/observability-test.sh "$REVISION"

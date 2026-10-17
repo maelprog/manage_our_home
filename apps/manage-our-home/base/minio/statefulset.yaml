@@ -1,0 +1,167 @@
+# MinIO (#435): StatefulSet, its Service and the headless Service the
+# StatefulSet names.
+#
+# One node, one drive: the attachments are on one volume, and losing the
+# node's disk loses them. Several nodes call for the distributed mode,
+# which is not a change of `replicas` (README.md, "MinIO").
+#
+# The image is the one infra/docker-compose.yml runs on main, same tag and
+# digest: Docker Hub's `bitnamilegacy` mirror, the `minio` organisation
+# having closed anonymous pulls everywhere it publishes (#274). Bitnami's
+# entrypoint is not used: it needs a writable root filesystem and, for an
+# existing volume, root (Compose runs it as `user: "0"`). The MinIO binary
+# it starts is run directly instead, as the image's own unprivileged user,
+# on the data path Compose mounts (/bitnami/minio/data): a volume copied
+# from Compose is seen at the same place.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+  labels:
+    app.kubernetes.io/name: minio
+  annotations:
+    # Before the bucket Job (-1) and api and web (0): Argo CD moves on once
+    # MinIO is Ready.
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  replicas: 1
+  serviceName: minio-headless
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: minio
+  # The volume outlives the StatefulSet: deleting it, or Argo CD pruning
+  # it, leaves the attachments' volume (the Kubernetes default, restated).
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minio
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        # The image's own user (Bitnami's 1001).
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        # A volume already owned by 1001 is not walked again at each start.
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: minio
+          image: docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20
+          command:
+            - /opt/bitnami/minio/bin/minio
+            - server
+            - /bitnami/minio/data
+            - --address
+            - ":9000"
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef: {name: minio, key: MINIO_ROOT_USER}
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: minio, key: MINIO_ROOT_PASSWORD}
+            # No web console: nothing routes to it, and it is a second
+            # listener to keep closed.
+            - name: MINIO_BROWSER
+              value: "off"
+          ports:
+            - name: s3
+              containerPort: 9000
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Writes go to the volume and to /tmp only.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # Memory, out of the staging cluster's budget of about 3 GB
+          # (arbitrage of 2026-10-12, 256 to 384 Mi for MinIO). Measured
+          # with this image, as this user, read-only, under Docker with
+          # this limit and no swap (as a pod), in the PR of #435, sampled
+          # every 20 ms or so: 66 to 70 MiB at rest. Objects of 20 MiB
+          # sent with mc, 16 at once (the upload gates of prod's two api
+          # replicas, README.md, "Mémoire"), 5 batches chained: at worst
+          # 228 MiB anonymous, at least 156 MiB under the limit; the file
+          # cache, active part included, fills the rest and is reclaimed
+          # at the limit. No OOM kill in 10 runs. The k3d job prints the
+          # memory at rest on every run.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 384Mi
+          startupProbe:
+            httpGet: {path: /minio/health/live, port: s3}
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: {path: /minio/health/live, port: s3}
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: {path: /minio/health/ready, port: s3}
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          volumeMounts:
+            - name: data
+              mountPath: /bitnami/minio/data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi
+---
+# What api reaches (MINIO_ENDPOINT=http://minio:9000).
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  labels:
+    app.kubernetes.io/name: minio
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  selector:
+    app.kubernetes.io/name: minio
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: s3
+---
+# The StatefulSet's `serviceName`: a DNS name per pod, which the
+# distributed mode's server list is written with (README.md, "MinIO").
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-headless
+  labels:
+    app.kubernetes.io/name: minio
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: minio
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: s3

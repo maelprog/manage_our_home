@@ -1,0 +1,13 @@
+# What the k3d job of the observability (#437) runs, rendered by its root
+# Application at the commit under test (ci/observability-test.sh): Argo
+# CD, cert-manager — whose metrics the certificate alerts read — and the
+# observability brick exactly as production lists it. Not a cluster of
+# its own: staging does not run the observability (arbitrage of
+# 2026-10-12), and prod's root only syncs on the user's Sync.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+components:
+  - ../../platform/components/argocd
+  - ../../platform/components/cert-manager
+  - ../../platform/components/observability

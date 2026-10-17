@@ -1,0 +1,79 @@
+# The Compose stack's reverse proxy, for the k3d job only (#434): Caddy
+# with infra/Caddyfile of main, the file and image infra/docker-compose.yml
+# runs, in front of the same api and web pods as the ingress.
+# ci/ingress-test.sh compares the headers of both on the same requests.
+#
+# SITE_ADDRESS unset, as in the local stack: `:80`, plain HTTP, every
+# `header` of the file sent all the same. The Caddyfile names its upstreams
+# `api:8080` and `web:3000`, the Compose service names: two ExternalName
+# Services give those names here to the application's Services. The
+# Caddyfile arrives as the ConfigMap `caddyfile`, created by the job from
+# main's checkout.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ci-caddy
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: ci-caddy
+spec:
+  type: ExternalName
+  externalName: api.manage-our-home.svc.cluster.local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: ci-caddy
+spec:
+  type: ExternalName
+  externalName: web.manage-our-home.svc.cluster.local
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: caddy
+  namespace: ci-caddy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: caddy
+  template:
+    metadata:
+      labels:
+        app: caddy
+    spec:
+      containers:
+        - name: caddy
+          # infra/docker-compose.yml's pin on main (#310).
+          image: caddy:2.11.4@sha256:0c994536bddb66445885237f1a5dcc1916bccea922661c76b4e9fc24061f9b52
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - {name: caddyfile, mountPath: /etc/caddy}
+            - {name: data, mountPath: /data}
+            - {name: config, mountPath: /config}
+          resources:
+            requests: {memory: 32Mi}
+            limits: {memory: 128Mi}
+      volumes:
+        - name: caddyfile
+          configMap: {name: caddyfile}
+        - {name: data, emptyDir: {}}
+        - {name: config, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: caddy
+  namespace: ci-caddy
+spec:
+  selector:
+    app: caddy
+  ports:
+    - port: 80
+      targetPort: 80

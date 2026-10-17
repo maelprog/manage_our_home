@@ -1,0 +1,37 @@
+# Staging's Postgres (#433): the CloudNativePG Cluster of
+# apps/manage-our-home/overlays/staging/postgres. An Application of its own,
+# one sync wave before the application's: the application's migration Job
+# is a PreSync hook, which runs before that Application applies anything,
+# so the database cannot be part of it. After the sealed Secrets (wave -3),
+# which hold the roles' passwords and the backup key. The root moves on to
+# the application once this one is Healthy, that is once the Cluster is.
+#
+# Argo CD never deletes the Cluster (its Delete=false,Prune=false
+# annotation): restoring it is a manual procedure (README.md, "Restaurer").
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: postgres-staging
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/maelprog/manage_our_home.git
+    # Same branch as the root and the application.
+    targetRevision: deploy
+    path: apps/manage-our-home/overlays/staging/postgres
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: manage-our-home
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 10m

@@ -1,0 +1,89 @@
+# Traefik, the ingress controller k3s installs itself (#434): its chart is
+# k3s's (HelmChart `traefik` in kube-system, Traefik 3.7 with k3s
+# v1.37.1), and this HelmChartConfig is the only way k3s offers to change
+# its values — k3s's helm-controller merges it over its own and upgrades
+# the release. Not an Argo CD Application: k3s owns the chart and its
+# version, which move with k3s.
+#
+# What the application's ingress (apps/manage-our-home/base/ingress) needs
+# of it is set on the entry points, which no Middleware reaches:
+#
+# - Connection bounds, those of infra/Caddyfile on main (#219). Traefik's
+#   `readTimeout` is Go's ReadTimeout: one deadline for the whole request,
+#   headers *and* body, from its first byte (measured on Traefik 3.7.13:
+#   at 8 s, headers trickled one line a second were cut at 8.0 s, and so
+#   was a body sent 1 byte a second). Traefik has no header-only bound
+#   (Caddy's `read_header 10s`), so this one bound sets both how long a
+#   client trickling its headers holds an HTTP/1.1 connection, and how
+#   long the slowest upload may take. 2 min (arbitrage of 2026-10-15: the
+#   global bound lowered, slow uploads cut with it): headers trickled over
+#   HTTP/1.1 are cut at 2 min, where Caddy cut them at 10 s. Over HTTP/2
+#   the request's headers come in frames on a connection already read, and
+#   `readTimeout` does not reach them: `idleTimeout`, 5 min, ends such a
+#   connection (a GOAWAY). The largest body the api accepts, 21 037 056
+#   bytes (20 MiB of attachment and 64 KiB of multipart framing), needs
+#   175 kB/s, about 1.4 Mbit/s up, to arrive in time, a 5 MB photo
+#   42 kB/s. On every route but the two upload ones, a body silent for
+#   30 s is still answered first by the applications' own 408, below
+#   2 min. On the two upload routes Traefik reads the whole body itself
+#   before passing it on (`upload-limit`, apps/manage-our-home/base/
+#   ingress/middlewares.yaml): the applications see nothing of a slow
+#   body, and one slower than 2 min ends in Traefik's 499, not their 408.
+#   ci/ingress-test.sh measures the HTTP/1.1 cut.
+#   `idleTimeout` 5 min is Caddy's `idle`. No write timeout, as in Caddy.
+#   Neither reaches the Messagerie WebSocket once upgraded (measured the
+#   same way: a socket held 15 s through an 8 s readTimeout and a 5 s
+#   idleTimeout kept both directions working; ci/ingress-test.sh holds the
+#   real one past 5 min).
+# - The client's address (#178). k3s's ServiceLB forwards to Traefik's
+#   Service; with the default `externalTrafficPolicy: Cluster`, kube-proxy
+#   rewrites the source, and Traefik saw every client as 10.42.0.1 — inside
+#   TRUSTED_PROXY_CIDRS, so the api's login throttle would have counted the
+#   whole world as one client. `Local` keeps the client's address (measured
+#   in k3d: 172.20.0.1 and 172.20.0.4 for two clients, instead of
+#   10.42.0.1 for both). Its price: only a node that runs a Traefik pod
+#   answers — k3s runs one; with several nodes, the public address must
+#   reach that one, or Traefik run on each (README.md, "Ingress").
+#   Traefik itself trusts no X-Forwarded-For it receives (no
+#   `forwardedHeaders.trustedIPs`): it replaces the header with the
+#   address it accepted the connection from, as Caddy's `reverse_proxy`
+#   did, so the chain the applications read starts with an address the
+#   browser cannot choose.
+# - Memory: requested and capped like every brick of the platform. What
+#   the k3d job prints after its 10 minutes at rest (`kubectl top`, working
+#   set, Traefik 3.7.13) varies from run to run: 32 Mi in the GitHub job
+#   (run 38896429123, #437), 88, 93, 106 and 120 Mi in four runs of the
+#   same job on a workstation. The
+#   request, 96 Mi, is within that range; the limit, 256 Mi, is above all
+#   of them.
+#
+# Before the application (wave 0), with the namespace and the issuers.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+spec:
+  valuesContent: |-
+    service:
+      spec:
+        externalTrafficPolicy: Local
+    ports:
+      web:
+        transport:
+          respondingTimeouts:
+            readTimeout: 2m
+            idleTimeout: 5m
+      websecure:
+        transport:
+          respondingTimeouts:
+            readTimeout: 2m
+            idleTimeout: 5m
+    resources:
+      requests:
+        cpu: 25m
+        memory: 96Mi
+      limits:
+        memory: 256Mi

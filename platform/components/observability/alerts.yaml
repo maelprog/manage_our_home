@@ -1,0 +1,116 @@
+# The alerts that send a mail (#437), those the issue names: a container
+# failing its probes, the migration Job failed, a late Postgres backup, an
+# expiring certificate, a disk more than 80 % full. Each carries
+# `notify: mail`, the label Alertmanager routes to the mail receiver
+# (alertmanager.template.yaml); the chart's own rules have none and mail
+# nothing. ci/alerts-test.sh checks each with promtool against
+# ci/alerts-test.yaml.
+#
+# What they read: kube-state-metrics and node-exporter (the chart's),
+# cert-manager and the Postgres instances (monitors.yaml, next to this
+# file).
+#
+# After the Applications (wave -10): the CRD is kube-prometheus-stack's.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: manage-our-home-alerts
+  namespace: monitoring
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  groups:
+    - name: manage-our-home.pods
+      rules:
+        # Running but not ready: the readiness probe fails (a container
+        # with no readiness probe is ready as soon as it runs).
+        - alert: ContainerNotReady
+          expr: |
+            kube_pod_container_status_ready == 0
+            and on (namespace, pod, container)
+            kube_pod_container_status_running == 1
+          for: 5m
+          labels: {severity: warning, notify: mail}
+          annotations:
+            summary: "Le conteneur {{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }} ne passe plus sa sonde de disponibilité"
+            description: "En marche mais pas prêt depuis 5 minutes : sa sonde readiness échoue, il ne reçoit plus de trafic."
+        # Restarted again and again: the liveness probe kills it, or it
+        # crashes.
+        - alert: ContainerRestarting
+          expr: increase(kube_pod_container_status_restarts_total[30m]) >= 3
+          labels: {severity: warning, notify: mail}
+          annotations:
+            summary: "Le conteneur {{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }} redémarre en boucle"
+            description: "3 redémarrages ou plus en 30 minutes : sa sonde liveness échoue, ou il s'arrête seul."
+    - name: manage-our-home.application
+      rules:
+        # The PreSync hook of the application's Application (#431): when
+        # it fails, the sync stops there.
+        - alert: MigrationJobFailed
+          expr: kube_job_failed{namespace="manage-our-home", job_name="migrate"} > 0
+          labels: {severity: critical, notify: mail}
+          annotations:
+            summary: "Le Job de migration de manage-our-home a échoué"
+            description: "La synchro de l'appli ne va pas plus loin : api et web restent à la version précédente. Lire `kubectl -n manage-our-home logs job/migrate`."
+    - name: manage-our-home.postgres
+      rules:
+        # The ScheduledBackup takes one every night at 3:00 UTC
+        # (apps/manage-our-home/base/postgres/scheduled-backup.yaml): one
+        # missed night, plus 2 hours.
+        - alert: PostgresBackupLate
+          expr: time() - cnpg_collector_last_available_backup_timestamp{namespace="manage-our-home"} > 26 * 3600
+          labels: {severity: critical, notify: mail}
+          annotations:
+            summary: "La dernière sauvegarde complète de Postgres date de plus de 26 heures"
+            description: "Une copie complète est prise chaque nuit à 3 h UTC : celle de la nuit dernière manque. Voir `kubectl -n manage-our-home get backups`."
+        # The continuous part of the backups: the WAL, at least every 5
+        # minutes. The last failure newer than the last success.
+        - alert: PostgresWALArchivingFailing
+          expr: |
+            cnpg_pg_stat_archiver_last_failed_time{namespace="manage-our-home"}
+            > cnpg_pg_stat_archiver_last_archived_time{namespace="manage-our-home"}
+          for: 10m
+          labels: {severity: critical, notify: mail}
+          annotations:
+            summary: "L'archivage des WAL de Postgres échoue"
+            description: "Le dernier envoi d'un segment WAL vers le stockage des sauvegardes a échoué depuis 10 minutes : la restauration à un instant s'arrête au dernier segment envoyé."
+        # Without the instances' metrics, the two alerts above stay
+        # silent whatever happens.
+        - alert: PostgresMetricsAbsent
+          expr: absent(cnpg_collector_last_available_backup_timestamp{namespace="manage-our-home"})
+          for: 30m
+          labels: {severity: warning, notify: mail}
+          annotations:
+            summary: "Prometheus ne reçoit plus les mesures de Postgres"
+            description: "Sans elles, ni le retard d'une sauvegarde ni l'échec de l'archivage des WAL ne seraient signalés."
+    - name: manage-our-home.certificates
+      rules:
+        # cert-manager renews 30 days before the end (a third of Let's
+        # Encrypt's 90 days): under 21, its renewal has failed for 9 days.
+        - alert: CertificateExpiringSoon
+          expr: certmanager_certificate_expiration_timestamp_seconds - time() < 21 * 86400
+          labels: {severity: critical, notify: mail}
+          annotations:
+            summary: "Le certificat {{ $labels.namespace }}/{{ $labels.name }} expire dans moins de 21 jours"
+            description: "cert-manager le renouvelle 30 jours avant son expiration : ce renouvellement échoue. Voir `kubectl -n {{ $labels.namespace }} describe certificate {{ $labels.name }}`."
+        - alert: CertificateNotReady
+          expr: certmanager_certificate_ready_status{condition="True"} == 0
+          for: 1h
+          labels: {severity: warning, notify: mail}
+          annotations:
+            summary: "Le certificat {{ $labels.namespace }}/{{ $labels.name }} n'est pas prêt depuis une heure"
+            description: "Voir `kubectl -n {{ $labels.namespace }} describe certificate {{ $labels.name }}`."
+    - name: manage-our-home.node
+      rules:
+        # The node's disks, not the memory-backed or overlay filesystems.
+        - alert: DiskAlmostFull
+          expr: |
+            1 - node_filesystem_avail_bytes{fstype=~"ext4|xfs|btrfs"}
+              / node_filesystem_size_bytes{fstype=~"ext4|xfs|btrfs"}
+            > 0.80
+          for: 15m
+          labels: {severity: warning, notify: mail}
+          annotations:
+            summary: "Le disque {{ $labels.mountpoint }} de {{ $labels.instance }} est plein à {{ $value | humanizePercentage }}"
+            description: "Plus de 80 % de {{ $labels.mountpoint }} est occupé depuis 15 minutes. Postgres, MinIO, Loki et Prometheus écrivent sur les volumes du nœud."

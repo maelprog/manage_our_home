@@ -1,0 +1,23 @@
+# The application's Postgres (#433): a CloudNativePG Cluster and its
+# nightly base backup. Rendered by the overlays' `postgres/` folders, which
+# an Argo CD Application of their own syncs before the application's
+# (platform/clusters/<env>/postgres.yaml): the application's PreSync
+# migration Job needs the database up.
+#
+# Secrets it reads, sealed per environment (platform/clusters/<env>/secrets):
+#   postgres-app-role, postgres-migration-role, postgres-admin-role
+#     kubernetes.io/basic-auth (`username`, `password`): each role's password
+#   postgres-backup
+#     ACCESS_KEY_ID, ACCESS_SECRET_KEY, REGION: the object store's key
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: manage-our-home
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: manage-our-home
+
+resources:
+  - cluster.yaml
+  - scheduled-backup.yaml

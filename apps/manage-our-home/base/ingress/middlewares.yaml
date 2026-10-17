@@ -1,0 +1,158 @@
+# The Traefik Middlewares of the ingress (#434): what infra/Caddyfile on
+# main does to every request and response, one Middleware per guard.
+# ingressroute.yaml chains them, in this order: headers, `Connection:
+# close` on a request with a body, the upload limit, compression, then
+# for the api the prefix. Each comment says which lines of the Caddyfile
+# it takes over; what differs from it is in README.md ("Ingress").
+#
+# Security headers (#141), on every response of both applications, the
+# values of the Caddyfile's `header` block character for character: the
+# reasons for each directive are written there, next to the test in
+# apps/web/src/csp.rs that pins them. ci/ingress-test.sh compares them, on
+# real responses of `/`, `/login` and an api route, with those of main's
+# Caddyfile run in front of the same pods. A change here goes with the
+# same change there.
+#
+# `customResponseHeaders` replaces what an application might have set, as
+# Caddy's `header` did; listed first in each chain, it also covers the
+# answers Traefik makes itself (a 502 when a backend is down, the 403 of
+# `internal-only`).
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: security-headers
+spec:
+  headers:
+    customResponseHeaders:
+      Content-Security-Policy: "default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; report-uri /api/csp-report; report-to csp"
+      Reporting-Endpoints: 'csp="/api/csp-report"'
+      Strict-Transport-Security: max-age=31536000
+      X-Content-Type-Options: nosniff
+      X-Frame-Options: DENY
+      Referrer-Policy: no-referrer
+---
+# The Caddyfile's `encode zstd gzip`: zstd first, then gzip, and nothing
+# under 512 bytes (Caddy's `minimum_length` default; Traefik's is 1024).
+# Traefik would otherwise also offer brotli; Caddy's menu was these two.
+#
+# Which responses: Caddy compresses a list of textual types by default;
+# Traefik's default goes the other way (every type but a few), attachments
+# (PDF, photos) and fonts included, which only costs CPU. Its
+# `includedContentTypes` takes no wildcard (`text/*`), so the list names
+# the textual types the applications serve on main — pages, stylesheet,
+# scripts, the api's JSON, the Markdown of the legal texts, plain text —
+# and the few other textual ones a page or route could come to use.
+# Parameters (`; charset=utf-8`) are ignored in the comparison (measured
+# on Traefik 3.7.13). A textual type missing here is served uncompressed,
+# not refused.
+#
+# BREACH: the Caddyfile's reasoning (no route excluded) holds unchanged —
+# the bodies are the same.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: compress
+spec:
+  compress:
+    encodings: [zstd, gzip]
+    minResponseBodyBytes: 512
+    includedContentTypes:
+      - text/html
+      - text/css
+      - text/javascript
+      - application/javascript
+      - application/json
+      - application/ld+json
+      - application/manifest+json
+      - application/xhtml+xml
+      - application/xml
+      - text/plain
+      - text/markdown
+      - text/calendar
+      - text/csv
+      - image/svg+xml
+---
+# The Caddyfile's `handle /api/*` + `uri strip_prefix /api`: apps/api's
+# routes have no prefix of their own.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: strip-api
+spec:
+  stripPrefix:
+    prefixes: [/api]
+---
+# The Caddyfile's `@has_body` + `header Connection close` (#244), and its
+# `close_on_408`: any answer to a request that carries a body must reach
+# the client when it is sent. Go's server, Traefik's as Caddy's, answering
+# a request whose body is not fully read and is under 256 KiB first reads
+# and discards the rest — unless the answer says `Connection: close`. An
+# application may answer before reading the body (401, 403, 503 of the
+# upload gate, web's 303 to /login, its own 408), and Traefik its 502:
+# measured on Traefik 3.7.13, a POST of 100 kB sent at 5 kB/s to an
+# upstream answering 401 without reading got it after 19 s over HTTP/1.1,
+# after 0.03 s with this header.
+#
+# ingressroute.yaml puts it on the requests with a body: any method but
+# GET, HEAD and OPTIONS, as `@has_body`, and those three when they
+# announce a Content-Length (a 408 to a GET is closed too, as by
+# `close_on_408`). Caddy also kept it to HTTP/1.1; Traefik
+# cannot match the protocol, so it goes on HTTP/2 too (arbitrage of
+# 2026-10-15), where Go turns it into a GOAWAY: the connection is closed
+# once its streams in flight are done, and the browser opens a new one for
+# the requests after the POST — one TLS handshake per form sent. HTTP/2
+# did not need it (same measurement: the 401 after 1 s).
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: connection-close
+spec:
+  headers:
+    customResponseHeaders:
+      Connection: close
+---
+# The Caddyfile's `request_body max_size 21037056` on its two upload
+# routes (#219): a body over what apps/api accepts
+# (`storage::MAX_UPLOAD_BODY_BYTES` on main, 20 MiB of attachment plus
+# 64 KiB of multipart framing) is answered 413 here, instead of travelling
+# to an application that would refuse it. A Content-Length above it is
+# refused before any byte of the body is read.
+#
+# Traefik's only way to bound a body is to buffer it (arbitrage of
+# 2026-10-15): on these two routes the body is read whole by Traefik
+# before it is passed on — the first MiB in memory, the rest in a file of
+# the Traefik pod's /tmp. So an application's early answer to an upload
+# (401, 403, 503 of its gate) only comes once the body is in, or the
+# 2 min read timeout has run out.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: upload-limit
+spec:
+  buffering:
+    maxRequestBodyBytes: 21037056
+    memRequestBodyBytes: 1048576
+---
+# Plain HTTP only redirects to HTTPS, as Caddy's automatic HTTPS did:
+# permanently, a 301 for GET and HEAD and a 308 (method kept) for the
+# others, measured on Traefik 3.7.13 — where Caddy answers 308 to all.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: https-redirect
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+# `/readyz` (#424) is for the kubelet, which reaches the pods directly:
+# through the ingress it was a database round trip anyone could ask for,
+# unthrottled (apps/api's `SELECT 1`, or apps/web's call to it). No client
+# comes from the Traefik pod's own loopback, so this answers 403 to all.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: internal-only
+spec:
+  ipAllowList:
+    sourceRange: [127.0.0.1/32]
