@@ -1,11 +1,12 @@
 # What runs on the staging cluster (#432), the home server with 4 GB of
 # RAM: rendered by the root Application `platform` (root.yaml), which
 # platform/bootstrap.sh applies. The choice of bricks per cluster is the
-# list of components below: the observability of #437 does not run here.
+# list of components below: the observability of #437 does not run here,
+# and the home CA runs here only (the certificate of `staging.home.arpa`).
 #
 # Sync waves of the root Application: the platform's Applications (-10),
 # then the namespace, the ClusterIssuers, Traefik's settings (#434) and
-# the Kyverno policy (-5), the
+# the Kyverno policy (-5), the home CA's issuer (-4), the
 # sealed Secrets (-3), Postgres (-2, #433), the application (0). A wave
 # starts once the previous one is Healthy.
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -15,6 +16,7 @@ components:
   - ../../components/argocd
   - ../../components/sealed-secrets
   - ../../components/cert-manager
+  - ../../components/home-ca
   - ../../components/traefik
   - ../../components/cloudnative-pg
   - ../../components/kyverno

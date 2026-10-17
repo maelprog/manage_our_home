@@ -3,7 +3,9 @@
 # reached the way a client reaches it: the node's address, ports 80 and 443
 # (k3s's ServiceLB), the host as SNI and Host. Checks that:
 #   - Traefik runs with the settings of platform/components/traefik, and
-#     serves the application's certificate for its host;
+#     serves the application's certificate for its host, which a client
+#     trusting only the home CA's root accepts, that root constrained to
+#     home.arpa — OpenSSL refuses what it would sign for another name;
 #   - the security headers of `/`, `/login` and `/api/healthz` are those
 #     of the Compose stack, character for character: the same requests go
 #     through Caddy with main's infra/Caddyfile (ci/caddy.yaml), in front
@@ -112,6 +114,30 @@ done
 subject=$(openssl s_client -connect "$address:443" -servername "$host" < /dev/null 2> /dev/null \
   | openssl x509 -noout -ext subjectAltName 2> /dev/null || true)
 [[ "$subject" == *"DNS:$host"* ]] || fail "the certificate served for $host is not the application's: '$subject'"
+# Signed by staging's home CA (platform/components/home-ca): a client
+# that trusts its root alone, as a device of the home network does once
+# it is installed, accepts the site without --insecure.
+kubectl -n cert-manager get secret home-ca-root -o jsonpath='{.data.ca\.crt}' | base64 -d > "$work/home-ca.crt"
+code=$(curl --silent --cacert "$work/home-ca.crt" --resolve "$host:443:$address" --output /dev/null \
+  --write-out '%{http_code}' "https://$host/api/healthz" || true)
+[ "$code" = 200 ] || fail "https://$host/api/healthz answers '$code' to a client trusting only the home CA's root"
+# cert-manager wrote the root's name constraint into it: home.arpa only.
+v=$(openssl x509 -in "$work/home-ca.crt" -noout -ext nameConstraints 2> /dev/null | tr -d ' \n' || true)
+[ "$v" = "X509v3NameConstraints:criticalPermitted:DNS:home.arpa" ] || fail "the home CA's root is not constrained to home.arpa: '$v'"
+# And a client that enforces it refuses what the root would sign outside
+# home.arpa: a leaf signed here with the root's own key, for a name inside
+# and one outside, checked by OpenSSL (which curl uses). The key only
+# goes through $work, removed on exit.
+kubectl -n cert-manager get secret home-ca-root -o jsonpath='{.data.tls\.key}' | base64 -d > "$work/home-ca.key"
+for name in staging.home.arpa outside.example.test; do
+  openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj "/CN=$name" \
+    -keyout "$work/leaf.key" -out "$work/leaf.csr" 2> /dev/null
+  openssl x509 -req -in "$work/leaf.csr" -CA "$work/home-ca.crt" -CAkey "$work/home-ca.key" -set_serial 1 -days 1 \
+    -extfile <(printf 'subjectAltName=DNS:%s\n' "$name") -out "$work/$name.crt" 2> /dev/null
+  if openssl verify -CAfile "$work/home-ca.crt" "$work/$name.crt" > "$work/verify.log" 2>&1; then v=accepted; else v=refused; fi
+  case "$name" in *.home.arpa) want=accepted ;; *) want=refused ;; esac
+  [ "$v" = "$want" ] || fail "a certificate of the home CA for $name is $v by OpenSSL, expected $want: $(cat "$work/verify.log")"
+done
 
 # The two long probes, from now on: the WebSocket needs a session first.
 echo "== a member with a family, for the WebSocket"

@@ -2,7 +2,8 @@
 """Raw-socket probes of the ingress for ci/ingress-test.sh (#434): what curl
 cannot do — trickle a request's headers, hold a WebSocket open in silence.
 Standard library only; TLS to the node's address with the host as SNI, the
-certificate not checked (the k3d job's is self-signed, ci/ci-issuer.yaml).
+certificate not checked (the k3d job's comes from staging's home CA,
+platform/components/home-ca, which ci/ingress-test.sh checks with curl).
 
   ingress-probe.py drip <address> <host> <give-up seconds>
       Sends a request's headers one line every 5 s, never ending them.

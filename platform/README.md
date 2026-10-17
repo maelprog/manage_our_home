@@ -1,7 +1,8 @@
 # platform/
 
 Socle des clusters (#432) : Argo CD, qui se gère lui-même après amorçage,
-Sealed Secrets, cert-manager (émetteurs Let's Encrypt), opérateur
+Sealed Secrets, cert-manager (émetteurs Let's Encrypt, et l'autorité
+maison du staging), opérateur
 CloudNativePG, Kyverno, et les réglages de Traefik, l'ingress de k3s (#434). Modèle « app of apps » : une Application racine
 par cluster rend `clusters/<env>/`, qui contient toutes les autres.
 
@@ -11,6 +12,7 @@ components/             une brique par dossier (Component Kustomize)
   argocd/               Application d'Argo CD lui-même
   sealed-secrets/       contrôleur Sealed Secrets (kube-system)
   cert-manager/         cert-manager et ClusterIssuers Let's Encrypt
+  home-ca/              autorité de certification du réseau maison, en staging seulement
   traefik/              réglages du Traefik de k3s (HelmChartConfig, #434)
   cloudnative-pg/       opérateur CloudNativePG (les bases : #433)
   kyverno/              Kyverno, la politique des images signées et la liste fermée des images

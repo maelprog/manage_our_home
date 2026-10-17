@@ -1,0 +1,77 @@
+# The home network's certificate authority, staging only (arbitrage of
+# 2026-10-17): the test server is reached from home, under a `.home.arpa`
+# name (RFC 8375) that no public CA issues for, so Let's Encrypt is out.
+# cert-manager makes a root of its own and signs the application's
+# certificate with it (apps/manage-our-home/overlays/staging); each device
+# that browses staging trusts that root once (docs/install-k3s.md, "Le
+# réseau maison").
+#
+# Three steps, cert-manager's documented CA bootstrap: a self-signed
+# issuer, the root it signs (a CA certificate, kept as a Secret in
+# cert-manager's namespace, where a ClusterIssuer reads it), and the CA
+# issuer the application's certificate names. The root lasts ten years
+# and is renewed 30 days before its end with the same key
+# (`rotationPolicy: Never`); devices are given the renewed root then.
+# Losing the cluster loses the key: a new root, which every device
+# trusts again.
+#
+# What a device trusts with it: certificates for `home.arpa` names only,
+# with a client that enforces a root's name constraints. The root carries
+# a critical one (cert-manager's NameConstraints gate, Beta and on by
+# default since 1.17): such a client rejects a certificate it signs for
+# any other name. Enforcing a trust anchor's constraints is optional
+# (RFC 5280 § 6.1, RFC 5937): OpenSSL, and curl with it, does — the k3d
+# job signs a leaf outside home.arpa with this root and OpenSSL refuses
+# it (ci/ingress-test.sh);
+# for browsers and operating systems it is not checked here, so the root
+# goes on the devices that use staging only (docs/install-k3s.md).
+#
+# After cert-manager's Application (wave -10), whose CRDs they need; the
+# CA issuer one wave after its root, which it is Ready only with.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: home-ca-selfsigned
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: home-ca-root
+  namespace: cert-manager
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  isCA: true
+  commonName: manage-our-home staging CA
+  secretName: home-ca-root
+  duration: 87600h # 10 years
+  renewBefore: 720h
+  nameConstraints:
+    critical: true
+    permitted:
+      dnsDomains:
+        - home.arpa
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Never
+  issuerRef:
+    kind: ClusterIssuer
+    name: home-ca-selfsigned
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: home-ca
+  annotations:
+    argocd.argoproj.io/sync-wave: "-4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  ca:
+    secretName: home-ca-root
