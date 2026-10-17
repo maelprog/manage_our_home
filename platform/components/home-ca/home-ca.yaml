@@ -15,12 +15,14 @@
 # Losing the cluster loses the key: a new root, which every device
 # trusts again.
 #
-# What a device trusts with it: certificates for `home.arpa` names only.
-# The root carries a critical name constraint (cert-manager's
-# NameConstraints gate, Beta and on by default since 1.14): a
-# certificate it signs for any other name is rejected by the client, so
-# trusting this root does not let the cluster sign for the sites the
-# device visits.
+# What a device trusts with it: certificates for `home.arpa` names only,
+# with a client that enforces a root's name constraints. The root carries
+# a critical one (cert-manager's NameConstraints gate, Beta and on by
+# default since 1.17): such a client rejects a certificate it signs for
+# any other name. Enforcing a trust anchor's constraints is optional
+# (RFC 5280 § 6.1, RFC 5937): OpenSSL and curl do (ci/ingress-test.sh);
+# for browsers and operating systems it is not checked here, so the root
+# goes on the devices that use staging only (docs/install-k3s.md).
 #
 # After cert-manager's Application (wave -10), whose CRDs they need; the
 # CA issuer one wave after its root, which it is Ready only with.

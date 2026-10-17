@@ -123,7 +123,7 @@ code=$(curl --silent --cacert "$work/home-ca.crt" --resolve "$host:443:$address"
 [ "$code" = 200 ] || fail "https://$host/api/healthz answers '$code' to a client trusting only the home CA's root"
 # cert-manager wrote the root's name constraint into it: home.arpa only.
 v=$(openssl x509 -in "$work/home-ca.crt" -noout -ext nameConstraints 2> /dev/null | tr -d ' \n' || true)
-[[ "$v" == *critical*Permitted:DNS:home.arpa ]] || fail "the home CA's root is not constrained to home.arpa: '$v'"
+[ "$v" = "X509v3NameConstraints:criticalPermitted:DNS:home.arpa" ] || fail "the home CA's root is not constrained to home.arpa: '$v'"
 
 # The two long probes, from now on: the WebSocket needs a session first.
 echo "== a member with a family, for the WebSocket"

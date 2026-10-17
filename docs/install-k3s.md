@@ -799,10 +799,15 @@ poste$ curl -sS --cacert home-ca.crt -o /dev/null -w '%{http_code}\n' https://st
 ```
 
 **Ce que l'appareil accepte avec elle** : des certificats pour des noms
-en `home.arpa` seulement. La racine porte une contrainte de nom critique
-(`nameConstraints`) : un certificat qu'elle signerait pour un autre nom
-est refusé par le client. Lui faire confiance ne permet donc pas au
-cluster de signer pour les sites que visite l'appareil. La vérifier :
+en `home.arpa` seulement, **chez un client qui applique les contraintes
+d'une racine**. La racine porte une contrainte de nom critique
+(`nameConstraints`) ; un tel client refuse un certificat qu'elle
+signerait pour un autre nom. L'appliquer à une racine est facultatif
+(RFC 5280 § 6.1, RFC 5937) : OpenSSL et curl le font (vérifié par la CI) ;
+pour les navigateurs et les systèmes, ce n'est pas vérifié ici. Donc
+n'installer la racine que sur les appareils qui utilisent le staging, la
+retirer quand ils ne s'en servent plus, et garder le fichier d'accès au
+cluster comme une clé SSH. La contrainte, sur la racine :
 
 ```sh
 poste$ openssl x509 -in home-ca.crt -noout -ext nameConstraints   # Permitted: DNS:home.arpa
