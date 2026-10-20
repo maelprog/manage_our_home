@@ -18,7 +18,7 @@ components:
 # keeps to the pair staging runs (README, « Promotion », #436).
 images:
   - name: ghcr.io/maelprog/manage-our-home-api
-    digest: sha256:3448748f41c94ec12dce8a826ca81ba831e17e61c29711b5bd563e71897f4153 # main 10aabde
+    digest: sha256:487f5566738c88a269afae4ab837405883e89c60958a8eabf72d7ffeffcc72d5 # main 6a4bd32
   - name: ghcr.io/maelprog/manage-our-home-web
     digest: sha256:236d57ab423e5e1cbc966c7d27dd77886e7883556c6a85dbc4406c7f966136f8 # main 10aabde
 
