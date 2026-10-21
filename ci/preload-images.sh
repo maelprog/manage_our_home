@@ -35,23 +35,31 @@ trap 'rm -rf "$work"' EXIT
 # The images of the workloads in a render, outside quay.io and ghcr.io,
 # sorted and without repeats.
 select_images() {
-  yq e '
+  local all
+  all=$(yq e '
     select(.spec.template.spec != null) |
     (.spec.template.spec.initContainers[]?, .spec.template.spec.containers[]?) |
     .image
-  ' - | grep -v -e '^---$' -e '^quay\.io/' -e '^ghcr\.io/' | sort -u || true
+  ' -) || return 1
+  # grep finding nothing is an answer: no image to preload.
+  grep -v -e '^---$' -e '^quay\.io/' -e '^ghcr\.io/' <<< "$all" | sort -u || true
 }
 
 images() {
   local list
-  yq e '.spec.source.helm.valuesObject' "$argocd" > "$work/values.yaml"
+  # Each step checked: callers run this in a command substitution, and an
+  # empty render must not read as "no image".
+  yq e '.spec.source.helm.valuesObject' "$argocd" > "$work/values.yaml" || return 1
   helm template "$(yq e '.spec.source.helm.releaseName' "$argocd")" \
     "$(yq e '.spec.source.chart' "$argocd")" \
     --repo "$(yq e '.spec.source.repoURL' "$argocd")" \
     --version "$(yq e '.spec.source.targetRevision' "$argocd")" \
     --namespace "$(yq e '.spec.destination.namespace' "$argocd")" \
-    --values "$work/values.yaml" > "$work/render.yaml"
-  list=$(select_images < "$work/render.yaml")
+    --values "$work/values.yaml" > "$work/render.yaml" || {
+    echo "::error::helm template of Argo CD's chart failed" >&2
+    return 1
+  }
+  list=$(select_images < "$work/render.yaml") || return 1
   if [ -z "$list" ]; then
     echo "::error::Argo CD's chart renders no image outside quay.io and ghcr.io any more: drop ci/preload-images.sh and its steps in deploy.yml" >&2
     return 1

@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Tests of ci/preload-images.sh (#557), offline, on fixtures: which images
 # of a render it preloads, and its verdict on a namespace's events — the
-# imported copy used, or the image pulled from its registry anyway. Needs
-# yq (mikefarah, v4) on PATH.
+# imported copy used, or the image pulled from its registry anyway; then
+# key, pull, import and check against stand-ins for helm, docker, k3d and
+# kubectl: a failed or empty render, a refused pull, a missing archive, an
+# image missing from the node, several images judged. Needs yq (mikefarah,
+# v4) on PATH.
 #
 #   ci/preload-images-test.sh
 #
@@ -124,29 +127,142 @@ expect_verdict "no event for the image" 1 < <(events \
 
 expect_verdict "no event at all" 1 < <(events)
 
-# --- pull, against a stand-in helm and docker -----------------------------
+# --- key, pull, import, check: against stand-in helm, docker, k3d, kubectl
 
+OTHER=docker.io/library/busybox:1.37
 stubs=$(mktemp -d)
 trap 'rm -rf "$stubs"' EXIT
-cat > "$stubs/helm" <<EOF
+# helm prints $STUB_RENDER, or fails when STUB_HELM_FAIL is set.
+cat > "$stubs/helm" <<'EOF'
 #!/usr/bin/env bash
-printf 'kind: Deployment\nspec: {template: {spec: {containers: [{image: $REDIS}]}}}\n'
+[ -z "${STUB_HELM_FAIL:-}" ] || { echo "Error: repo not reachable" >&2; exit 1; }
+cat "$STUB_RENDER"
 EOF
+# docker: pull fails with $STUB_PULL_ERROR if set; exec (crictl inspecti
+# in the node) fails for the image in $STUB_NODE_MISSING.
 cat > "$stubs/docker" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >> "$STUB_LOG"
 case "$1" in
-  pull) [ -z "$STUB_PULL_ERROR" ] || { echo "$STUB_PULL_ERROR" >&2; exit 1; } ;;
+  pull) [ -z "${STUB_PULL_ERROR:-}" ] || { echo "$STUB_PULL_ERROR" >&2; exit 1; } ;;
   save) touch "$3" ;;
+  exec) [ "${*: -1}" != "${STUB_NODE_MISSING:-}" ] || { echo "no such image" >&2; exit 1; } ;;
 esac
 EOF
-chmod +x "$stubs/helm" "$stubs/docker"
+cat > "$stubs/k3d" <<'EOF'
+#!/usr/bin/env bash
+echo "k3d $*" >> "$STUB_LOG"
+EOF
+cat > "$stubs/kubectl" <<'EOF'
+#!/usr/bin/env bash
+cat "$STUB_EVENTS"
+EOF
+chmod +x "$stubs/helm" "$stubs/docker" "$stubs/k3d" "$stubs/kubectl"
+
+render() { # image...
+  local img
+  for img in "$@"; do
+    echo "---"
+    echo "kind: Deployment"
+    echo "spec: {template: {spec: {containers: [{image: $img}]}}}"
+  done
+}
+render "$REDIS" > "$stubs/render-redis.yaml"
+render "$REDIS" "$OTHER" quay.io/argoproj/argocd:v3.5.5 > "$stubs/render-two.yaml"
+render quay.io/argoproj/argocd:v3.5.5 > "$stubs/render-none.yaml"
+
+# Runs the script with the stand-ins; sets out, err and rc.
+run() { # args...
+  : > "$stubs/log"
+  rc=0
+  out=$(PATH="$stubs:$PATH" STUB_LOG="$stubs/log" STUB_RENDER=${STUB_RENDER:-$stubs/render-redis.yaml} \
+    PRELOAD_RETRY_DELAY=0 "$script" "$@" 2> "$stubs/err") || rc=$?
+  err=$(cat "$stubs/err")
+}
+expect() { # name expected-rc stderr-grep (empty: none)
+  checks=$((checks + 1))
+  [ "$rc" = "$2" ] || fail "$1: exited $rc, expected $2 [$err]"
+  [ -z "$3" ] || grep -qF -- "$3" <<< "$err" || fail "$1: no [$3] in [$err]"
+}
+
+run key
+expect "key" 0 ""
+checks=$((checks + 1))
+[ "$out" = "key=argocd-images-$REDIS" ] || fail "key: got [$out]"
+
+STUB_RENDER=$stubs/render-two.yaml run key
+expect "key, two images" 0 ""
+checks=$((checks + 1))
+[ "$out" = "key=argocd-images-$OTHER $REDIS" ] || fail "key, two images: got [$out]"
+
+STUB_RENDER=$stubs/render-none.yaml run key
+expect "key, nothing to preload" 1 "renders no image outside quay.io and ghcr.io"
+
+STUB_HELM_FAIL=1 run key
+expect "key, helm fails" 1 "helm template of Argo CD's chart failed"
+checks=$((checks + 1))
+! grep -q "renders no image" <<< "$err" || fail "key, helm fails: read as an empty render [$err]"
+checks=$((checks + 1))
+[ -z "$out" ] || fail "key, helm fails: printed [$out]"
+
+echo "kind: [Deployment" > "$stubs/render-broken.yaml"
+STUB_RENDER=$stubs/render-broken.yaml run key
+expect "key, render yq cannot read" 1 ""
+checks=$((checks + 1))
+! grep -q "renders no image" <<< "$err" || fail "key, render yq cannot read: read as an empty render [$err]"
+
+STUB_HELM_FAIL=1 run pull "$stubs/out.tar"
+expect "pull, helm fails" 1 "helm template of Argo CD's chart failed"
+checks=$((checks + 1))
+! grep -q '^pull ' "$stubs/log" || fail "pull, helm fails: pulled anyway"
+
+run import "$stubs/missing.tar" c
+expect "import, no archive" 1 "is missing or empty"
+checks=$((checks + 1))
+! grep -q '^k3d ' "$stubs/log" || fail "import, no archive: k3d ran"
+: > "$stubs/images.tar"
+run import "$stubs/images.tar" c
+expect "import, empty archive" 1 "is missing or empty"
+
+echo x > "$stubs/images.tar"
+run import "$stubs/images.tar" c
+expect "import" 0 ""
+checks=$((checks + 1))
+grep -qxF "exec k3d-c-server-0 crictl inspecti $REDIS" "$stubs/log" || fail "import: image not looked for in the node"
+STUB_NODE_MISSING=$REDIS run import "$stubs/images.tar" c
+expect "import, image not in the node" 1 "$REDIS is not in k3d-c-server-0 after the import"
+STUB_RENDER=$stubs/render-two.yaml STUB_NODE_MISSING=$REDIS run import "$stubs/images.tar" c
+expect "import, the second of two not in the node" 1 "$REDIS is not in k3d-c-server-0 after the import"
+STUB_HELM_FAIL=1 run import "$stubs/images.tar" c
+expect "import, helm fails" 1 "helm template of Argo CD's chart failed"
+
+present_of() { echo "Container image \"$1\" already present on machine"; }
+pulling_of() { echo "Pulling image \"$1\""; }
+events "$(event r Pulled "$(present_of "$REDIS")")" "$(event o Pulled "$(present_of "$OTHER")")" > "$stubs/ev-ok.json"
+events "$(event r Pulling "$(pulling_of "$REDIS")")" "$(event o Pulled "$(present_of "$OTHER")")" > "$stubs/ev-redis.json"
+events "$(event r Pulled "$(present_of "$REDIS")")" "$(event o Pulling "$(pulling_of "$OTHER")")" > "$stubs/ev-other.json"
+events "$(event r Pulling "$(pulling_of "$REDIS")")" "$(event o Pulling "$(pulling_of "$OTHER")")" > "$stubs/ev-both.json"
+
+STUB_EVENTS=$stubs/ev-ok.json STUB_RENDER=$stubs/render-two.yaml run check
+expect "check, two images found on the node" 0 ""
+STUB_EVENTS=$stubs/ev-redis.json STUB_RENDER=$stubs/render-two.yaml run check
+expect "check, the second of two pulled" 1 "$REDIS was pulled"
+STUB_EVENTS=$stubs/ev-other.json STUB_RENDER=$stubs/render-two.yaml run check
+expect "check, the first of two pulled" 1 "$OTHER was pulled"
+# Both judged, not only the first.
+STUB_EVENTS=$stubs/ev-both.json STUB_RENDER=$stubs/render-two.yaml run check
+expect "check, both pulled: the first said" 1 "$OTHER was pulled"
+expect "check, both pulled: the second said" 1 "$REDIS was pulled"
+STUB_EVENTS=$stubs/ev-ok.json STUB_HELM_FAIL=1 run check
+expect "check, helm fails" 1 "helm template of Argo CD's chart failed"
+
+# pull, against the same stand-ins.
 
 expect_pull() { # name pull-error 0|1 stderr-grep pulls
   local rc=0 err
   checks=$((checks + 1))
   : > "$stubs/log"
-  err=$(PATH="$stubs:$PATH" STUB_LOG="$stubs/log" STUB_PULL_ERROR=$2 PRELOAD_RETRY_DELAY=0 \
+  err=$(PATH="$stubs:$PATH" STUB_LOG="$stubs/log" STUB_PULL_ERROR=$2 PRELOAD_RETRY_DELAY=0 STUB_RENDER="$stubs/render-redis.yaml" \
     "$script" pull "$stubs/out.tar" 2>&1 > /dev/null) || rc=1
   [ "$rc" = "$3" ] || fail "$1: pull exited $rc, expected $3"
   [ -z "$4" ] || grep -qF -- "$4" <<< "$err" || fail "$1: no [$4] in [$err]"
