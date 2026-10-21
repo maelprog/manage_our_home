@@ -13,7 +13,7 @@ WORKDIR /workspace
 COPY . .
 RUN cargo build --release -p manage_our_home
 
-FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
+FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
 # `apt-get upgrade`: a pinned digest freezes the Debian packages it was
 # built with, and Debian's security fixes land in bookworm-security
 # before the image is republished — on 2026-10-10 the pinned base carried
