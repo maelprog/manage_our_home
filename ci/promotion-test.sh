@@ -274,6 +274,9 @@ both_minio() { staging_minio "$1" && prod_minio "$1"; }
 prod_bucket() { patch_image "$(prod_file)" Job minio-bucket "$MC@$(digest "$1")"; }
 prod_minio_first() { yq -i 'del(.patches)' "$(prod_file)"; } # the revert of M1's promotion
 mc_base=$(yq '.spec.template.spec.containers[0].image' "$root/apps/manage-our-home/base/minio/bucket-job.yaml")
+expect pass "prod's MinIO unchanged (M1), staging's ahead (M2)" noop
+! grep -q "StatefulSet/minio/minio" "$work/out" \
+  || fail "prod's MinIO unchanged, yet taken for a move: $(cat "$work/out")"
 expect pass "prod's MinIO moved to the one staging runs" prod_minio M2
 expect pass "prod's MinIO back to the one it ran first (M0)" prod_minio_first
 expect fail "prod's MinIO moved alone to another digest of its repository" prod_minio M3
