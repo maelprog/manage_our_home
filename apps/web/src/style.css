@@ -590,8 +590,7 @@ caption, .skip-link:not(:focus) { clip-path: inset(50%); }
 /* The Messagerie tab's unread count (#463) is a `.badge.warn` — its own
    ground and text, so it reads the same on a current tab — set off from the
    label. The words it stands for ("(3 non lus)") are in `.sr-only` beside
-   it: a 1px box and not `.skip-link`'s clip alone, which would leave the
-   text's full width in the scrollable area of the tab bar and the sidebar. */
+   it, the usual visually-hidden pattern. */
 .navlink .badge { margin-left: var(--s2x); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 /* -- The agenda below the breakpoint (#71) --------------------------------
