@@ -68,6 +68,8 @@ jobs:
         run: ci/platform-test.sh
       - name: Tests on the promotion scripts
         run: ci/promotion-test.sh
+      - name: Tests on the preload of Argo CD's images
+        run: ci/preload-images-test.sh
       # The alerts that mail (#437): promtool on their rules, amtool on
       # Alertmanager's configuration and its routes.
       - name: Tests on the alerts
@@ -138,6 +140,32 @@ jobs:
         run: |
           ci/install-tools.sh "$RUNNER_TEMP/bin" kustomize yq kubectl k3d helm kubeseal
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # argocd-redis's image is on ECR public, which refuses the
+      # anonymous pulls of a fresh cluster on a shared runner address
+      # often enough to make this job red (#557): it comes from the
+      # Actions cache instead, imported into the node before the
+      # bootstrap. ECR is only asked on a cache miss; the image, so the
+      # key, is the one Argo CD's chart renders (ci/preload-images.sh).
+      - name: Argo CD's images outside quay.io and ghcr.io
+        id: preload
+        run: ci/preload-images.sh key >> "$GITHUB_OUTPUT"
+      - name: Restore them from the cache
+        id: preload-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/argocd-images.tar
+          key: ${{ steps.preload.outputs.key }}
+      - name: Cache miss — pull them from their registry
+        if: steps.preload-cache.outputs.cache-hit != 'true'
+        run: ci/preload-images.sh pull "$RUNNER_TEMP/argocd-images.tar"
+      # Saved at once rather than at the end of the job, which a red step
+      # further down would skip.
+      - name: Cache miss — save them
+        if: steps.preload-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/argocd-images.tar
+          key: ${{ steps.preload.outputs.key }}
       - name: k3d cluster
         run: |
           # k3s as installed on the servers, Traefik and its ServiceLB
@@ -148,13 +176,21 @@ jobs:
             --servers-memory 4g \
             --wait --timeout 180s
           kubectl get nodes -o wide
+      - name: Import Argo CD's images into the node
+        run: ci/preload-images.sh import "$RUNNER_TEMP/argocd-images.tar" deploy-ci
       - name: Bootstrap the platform, let Argo CD deploy staging, check it
+        id: bootstrap
         env:
           # The commit Argo CD reads: the head of the PR, which is on
           # GitHub (the merge commit of a pull_request run is not on a
           # branch), or the pushed one.
           REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
         run: ci/staging-smoke.sh main/infra/postgres/init/01-roles.sh "$REVISION"
+      # Also after a red bootstrap: whether redis was pulled says if ECR
+      # had a hand in it.
+      - name: argocd-redis started from the imported image
+        if: ${{ !cancelled() && (steps.bootstrap.outcome == 'success' || steps.bootstrap.outcome == 'failure') }}
+        run: ci/preload-images.sh check
       # On the same cluster (#434): the ingress, against main's Caddyfile
       # run in front of the same pods; the client's address through it;
       # the WebSocket past the idle timeout; trickled headers cut.
@@ -190,6 +226,27 @@ jobs:
         run: |
           ci/install-tools.sh "$RUNNER_TEMP/bin" yq kubectl k3d helm
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # As in the k3d job (#557).
+      - name: Argo CD's images outside quay.io and ghcr.io
+        id: preload
+        run: ci/preload-images.sh key >> "$GITHUB_OUTPUT"
+      - name: Restore them from the cache
+        id: preload-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/argocd-images.tar
+          key: ${{ steps.preload.outputs.key }}
+      - name: Cache miss — pull them from their registry
+        if: steps.preload-cache.outputs.cache-hit != 'true'
+        run: ci/preload-images.sh pull "$RUNNER_TEMP/argocd-images.tar"
+      # Saved at once rather than at the end of the job, which a red step
+      # further down would skip.
+      - name: Cache miss — save them
+        if: steps.preload-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/argocd-images.tar
+          key: ${{ steps.preload.outputs.key }}
       - name: k3d cluster
         run: |
           k3d cluster create deploy-ci-observability \
@@ -197,7 +254,13 @@ jobs:
             --servers-memory 4g \
             --wait --timeout 180s
           kubectl get nodes -o wide
+      - name: Import Argo CD's images into the node
+        run: ci/preload-images.sh import "$RUNNER_TEMP/argocd-images.tar" deploy-ci-observability
       - name: Bootstrap, let Argo CD deploy the observability, check it
+        id: bootstrap
         env:
           REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
         run: ci/observability-test.sh "$REVISION"
+      - name: argocd-redis started from the imported image
+        if: ${{ !cancelled() && (steps.bootstrap.outcome == 'success' || steps.bootstrap.outcome == 'failure') }}
+        run: ci/preload-images.sh check
