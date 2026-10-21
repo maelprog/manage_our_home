@@ -14,7 +14,7 @@ use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use manage_our_home_shared::dto::stocks::{StockItemResponse, UpdateStockItemRequest};
-use manage_our_home_shared::validation::stocks::validate_item_form;
+use manage_our_home_shared::validation::stocks::{normalize_unit, validate_item_form};
 use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
@@ -174,7 +174,7 @@ pub async fn post(
     let Ok(expires_on) = parse_expires_on(&form.expires_on) else {
         return render_error("invalid_expires_on");
     };
-    if let Err(e) = validate_item_form(&form.name, &form.unit, quantity, reorder_threshold) {
+    if let Err(e) = validate_item_form(&form.name, quantity, reorder_threshold) {
         return render_error(form_error_code(e));
     }
 
@@ -188,7 +188,7 @@ pub async fn post(
         name: Some(form.name.trim().to_string()),
         category,
         quantity: Some(quantity),
-        unit: Some(form.unit.trim().to_string()),
+        unit: Some(normalize_unit(&form.unit)),
         reorder_threshold: Some(reorder_threshold),
         expires_on: Some(expires_on),
     };

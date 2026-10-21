@@ -218,9 +218,9 @@ async fn negative_quantity_is_rejected(db: PgPool) {
 
 /// AC: `name` is trimmed on write, `category` can be explicitly cleared via
 /// `{"category": null}` (distinct from omitting the field), and a blank
-/// `unit` is rejected the same way a blank `name` is.
+/// `unit` becomes "unité" instead of an error (#458).
 #[sqlx::test]
-async fn update_can_clear_category_and_rejects_blank_unit(db: PgPool) {
+async fn update_can_clear_category_and_defaults_blank_unit(db: PgPool) {
     let router = test_router(db.clone());
     let owner_cookie =
         register_verify_login(&router, &db, "stock-clear@example.test", "owner-password1").await;
@@ -265,7 +265,56 @@ async fn update_can_clear_category_and_rejects_blank_unit(db: PgPool) {
         Some(serde_json::json!({"unit": "  "})),
     )
     .await;
-    assert_status(&blank_unit, StatusCode::BAD_REQUEST);
+    assert_status(&blank_unit, StatusCode::OK);
+    assert_eq!(json_body(blank_unit).await["unit"], "unité");
+}
+
+/// #458: an empty, blank or absent `unit` on create is stored as "unité"
+/// (never the SQL column default `'unit'`), and a filled one is trimmed.
+#[sqlx::test]
+async fn create_defaults_an_empty_unit_to_unite(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "stock-unit@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    let cases = [
+        (
+            serde_json::json!({"name": "Oeufs", "quantity": 6.0, "unit": ""}),
+            "unité",
+        ),
+        (
+            serde_json::json!({"name": "Citrons", "quantity": 2.0, "unit": "   "}),
+            "unité",
+        ),
+        (
+            serde_json::json!({"name": "Pommes", "quantity": 3.0}),
+            "unité",
+        ),
+        (
+            serde_json::json!({"name": "Farine", "quantity": 1.0, "unit": " kg "}),
+            "kg",
+        ),
+    ];
+    for (body, expected) in cases {
+        let create = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/stock-items"),
+            Some(&owner_cookie),
+            Some(body.clone()),
+        )
+        .await;
+        assert_status(&create, StatusCode::CREATED);
+        let item = json_body(create).await;
+        assert_eq!(item["unit"], expected, "returned unit for {body}");
+        let stored: String = sqlx::query_scalar("SELECT unit FROM stock_items WHERE id = $1::uuid")
+            .bind(item["id"].as_str().unwrap())
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(stored, expected, "stored unit for {body}");
+    }
 }
 
 /// AC: `reorder_threshold` can be explicitly cleared via

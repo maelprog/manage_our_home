@@ -51,6 +51,75 @@ async fn create_group(router: &axum::Router, cookie: &str, name: &str) -> String
     json_body(res).await["id"].as_str().unwrap().to_string()
 }
 
+/// #458: a quantity entered without a unit gets "unité", on create and on
+/// update; without a quantity the unit stays null; a typed unit is kept.
+#[sqlx::test]
+async fn a_quantity_without_unit_gets_the_default_unit(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie =
+        register_verify_login(&router, &db, "grocery-unit@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+
+    let create = |body: serde_json::Value| {
+        let router = router.clone();
+        let cookie = cookie.clone();
+        let group_id = group_id.clone();
+        async move {
+            let res = call(
+                &router,
+                Method::POST,
+                &format!("/groups/{group_id}/grocery-items"),
+                Some(&cookie),
+                Some(body),
+            )
+            .await;
+            assert_status(&res, StatusCode::CREATED);
+            json_body(res).await
+        }
+    };
+
+    let eggs = create(serde_json::json!({"name": "Oeufs", "quantity": 6.0, "unit": ""})).await;
+    assert_eq!(eggs["unit"], "unité");
+    let lemons = create(serde_json::json!({"name": "Citrons", "quantity": 2.0})).await;
+    assert_eq!(lemons["unit"], "unité");
+    let flour =
+        create(serde_json::json!({"name": "Farine", "quantity": 1.0, "unit": " kg "})).await;
+    assert_eq!(flour["unit"], "kg");
+    let salt = create(serde_json::json!({"name": "Sel", "unit": "  "})).await;
+    assert_eq!(salt["unit"], serde_json::Value::Null);
+    assert_eq!(salt["quantity"], serde_json::Value::Null);
+
+    let patch = |id: String, body: serde_json::Value| {
+        let router = router.clone();
+        let cookie = cookie.clone();
+        let group_id = group_id.clone();
+        async move {
+            let res = call(
+                &router,
+                Method::PATCH,
+                &format!("/groups/{group_id}/grocery-items/{id}"),
+                Some(&cookie),
+                Some(body),
+            )
+            .await;
+            assert_status(&res, StatusCode::OK);
+            json_body(res).await
+        }
+    };
+
+    // A quantity added to an item without unit: the unit follows.
+    let salt_id = salt["id"].as_str().unwrap().to_string();
+    let salt = patch(salt_id.clone(), serde_json::json!({"quantity": 1.0})).await;
+    assert_eq!(salt["unit"], "unité");
+    // Clearing the unit while the quantity stays: back to the default.
+    let flour_id = flour["id"].as_str().unwrap().to_string();
+    let flour = patch(flour_id, serde_json::json!({"unit": null})).await;
+    assert_eq!(flour["unit"], "unité");
+    // Clearing both: the unit stays null.
+    let salt = patch(salt_id, serde_json::json!({"quantity": null, "unit": null})).await;
+    assert_eq!(salt["unit"], serde_json::Value::Null);
+}
+
 /// AC: full CRUD lifecycle for a manually-entered grocery item, scoped to a group.
 #[sqlx::test]
 async fn full_grocery_item_lifecycle(db: PgPool) {

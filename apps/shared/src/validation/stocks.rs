@@ -4,8 +4,9 @@
 //! the fixed backend (`apps/api/src/stocks/`) can never drift:
 //!
 //! `validate_item_form` mirrors `apps/api/src/stocks/items.rs`'s create/update
-//! guards (non-empty `name`/`unit`, non-negative `quantity`/`reorder_threshold`)
-//! so the form rejects before a round trip.
+//! guards (non-empty `name`, non-negative `quantity`/`reorder_threshold`)
+//! so the form rejects before a round trip. A blank `unit` is not an error:
+//! `normalize_unit` turns it into `DEFAULT_UNIT` (#458).
 //!
 //! `is_low_stock` mirrors the backend's derived `low_stock` flag
 //! (`StockItemResponse::from_row`): an item is low when it has a reorder threshold
@@ -27,26 +28,21 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ItemFormError {
     NameRequired,
-    UnitRequired,
     QuantityNegative,
     ThresholdNegative,
 }
 
-/// Mirrors `apps/api/src/stocks/items.rs`: `name` and `unit` must be non-empty
-/// after trimming, `quantity` must be `>= 0`, and a present `reorder_threshold`
+/// Mirrors `apps/api/src/stocks/items.rs`: `name` must be non-empty after
+/// trimming, `quantity` must be `>= 0`, and a present `reorder_threshold`
 /// must be `>= 0`. Kept in the same order the backend validates so the first
 /// error surfaced matches what a forged request would hit.
 pub fn validate_item_form(
     name: &str,
-    unit: &str,
     quantity: f64,
     reorder_threshold: Option<f64>,
 ) -> Result<(), ItemFormError> {
     if name.trim().is_empty() {
         return Err(ItemFormError::NameRequired);
-    }
-    if unit.trim().is_empty() {
-        return Err(ItemFormError::UnitRequired);
     }
     if quantity < 0.0 {
         return Err(ItemFormError::QuantityNegative);
@@ -57,6 +53,23 @@ pub fn validate_item_form(
         }
     }
     Ok(())
+}
+
+/// The unit an article gets when none is typed (#458). The SQL column
+/// default (`'unit'`, migration 0004) is never reached: `apps/api` always
+/// writes the normalized value.
+pub const DEFAULT_UNIT: &str = "unité";
+
+/// The unit to store for what the user typed: trimmed, or `DEFAULT_UNIT`
+/// when blank. Shared by `apps/api` (create and update) and the web forms, so
+/// an empty field is never an error.
+pub fn normalize_unit(raw: &str) -> String {
+    let unit = raw.trim();
+    if unit.is_empty() {
+        DEFAULT_UNIT.to_string()
+    } else {
+        unit.to_string()
+    }
 }
 
 /// Mirror of the backend's derived `low_stock` flag
@@ -113,23 +126,15 @@ mod tests {
     #[test]
     fn empty_name_is_rejected() {
         assert_eq!(
-            validate_item_form("   ", "kg", 1.0, None),
+            validate_item_form("   ", 1.0, None),
             Err(ItemFormError::NameRequired)
-        );
-    }
-
-    #[test]
-    fn empty_unit_is_rejected() {
-        assert_eq!(
-            validate_item_form("Farine", "  ", 1.0, None),
-            Err(ItemFormError::UnitRequired)
         );
     }
 
     #[test]
     fn negative_quantity_is_rejected() {
         assert_eq!(
-            validate_item_form("Farine", "kg", -0.1, None),
+            validate_item_form("Farine", -0.1, None),
             Err(ItemFormError::QuantityNegative)
         );
     }
@@ -137,29 +142,42 @@ mod tests {
     #[test]
     fn negative_threshold_is_rejected() {
         assert_eq!(
-            validate_item_form("Farine", "kg", 1.0, Some(-1.0)),
+            validate_item_form("Farine", 1.0, Some(-1.0)),
             Err(ItemFormError::ThresholdNegative)
         );
     }
 
     #[test]
     fn zero_quantity_and_zero_threshold_are_accepted() {
-        assert!(validate_item_form("Farine", "kg", 0.0, Some(0.0)).is_ok());
+        assert!(validate_item_form("Farine", 0.0, Some(0.0)).is_ok());
     }
 
     #[test]
     fn valid_form_without_threshold_is_accepted() {
-        assert!(validate_item_form("Lait", "L", 2.0, None).is_ok());
+        assert!(validate_item_form("Lait", 2.0, None).is_ok());
+    }
+
+    // -- normalize_unit ------------------------------------------------------
+
+    #[test]
+    fn default_unit_is_the_french_word() {
+        assert_eq!(DEFAULT_UNIT, "unité");
     }
 
     #[test]
-    fn name_check_precedes_unit_check() {
-        // Both name and unit are empty: the backend hits `name_required`
-        // first, so we must too.
-        assert_eq!(
-            validate_item_form("", "", 1.0, None),
-            Err(ItemFormError::NameRequired)
-        );
+    fn empty_unit_becomes_the_default() {
+        assert_eq!(normalize_unit(""), "unité");
+    }
+
+    #[test]
+    fn blank_unit_becomes_the_default() {
+        assert_eq!(normalize_unit("  \t "), "unité");
+    }
+
+    #[test]
+    fn a_filled_unit_is_kept_trimmed() {
+        assert_eq!(normalize_unit("  kg "), "kg");
+        assert_eq!(normalize_unit("L"), "L");
     }
 
     // -- is_low_stock --------------------------------------------------------

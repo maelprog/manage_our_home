@@ -11,8 +11,9 @@ use uuid::Uuid;
 
 /// `POST /groups/:id/grocery-items` request body. Mirrors
 /// `CreateGroceryItemRequest`. `quantity`/`unit` are omitted from the wire
-/// when `None` (the backend treats an absent quantity/unit as `NULL`); only
-/// `name` is required.
+/// when `None` (the backend stores an absent quantity as `NULL`, and an absent
+/// unit as `NULL` too, unless a quantity is given: then « unité », #458);
+/// only `name` is required.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateGroceryItemRequest {
     pub name: String,
@@ -42,7 +43,8 @@ where
 /// `UpdateGroceryItemRequest`. For `quantity`/`unit` the outer `Option`
 /// distinguishes "leave untouched" (`None`, omitted from the wire) from
 /// "clear" (`Some(None)`, sent as `null`) from "set" (`Some(Some(v))`). The
-/// edit form always sends every field, so a blank quantity/unit clears it.
+/// edit form always sends every field, so a blank quantity/unit clears it
+/// (a cleared unit becomes « unité » while a quantity remains, #458).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdateGroceryItemRequest {
     #[serde(skip_serializing_if = "Option::is_none")]

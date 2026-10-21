@@ -2,6 +2,7 @@ use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
 use chrono::{DateTime, Utc};
+use manage_our_home_shared::validation::grocery_list::normalize_unit;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
@@ -37,7 +38,8 @@ pub struct UpdateGroceryItemRequest {
     /// `Some(None)` clears the quantity; `None` leaves it untouched.
     #[serde(default, deserialize_with = "deserialize_some")]
     pub quantity: Option<Option<f64>>,
-    /// `Some(None)` clears the unit; `None` leaves it untouched.
+    /// `Some(None)` clears the unit, unless a quantity remains: then it is
+    /// « unité » (#458). `None` leaves it untouched.
     #[serde(default, deserialize_with = "deserialize_some")]
     pub unit: Option<Option<String>>,
 }
@@ -114,6 +116,8 @@ pub async fn create_grocery_item(
         return Err(AppError::BadRequest("name_required".into()));
     }
     validate_quantity(body.quantity)?;
+    // A quantity typed without a unit gets the default one (#458).
+    let unit = normalize_unit(body.quantity, body.unit.as_deref());
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
@@ -129,7 +133,7 @@ pub async fn create_grocery_item(
         auth.user_id,
         name,
         body.quantity,
-        body.unit,
+        unit,
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -253,10 +257,13 @@ pub async fn update_grocery_item(
         None => existing.quantity,
     };
     validate_quantity(quantity)?;
+    // Normalized on the values the row ends up with (#458): a quantity left
+    // without a unit, whichever field the PATCH touched, gets the default one.
     let unit = match body.unit {
         Some(u) => u,
         None => existing.unit,
     };
+    let unit = normalize_unit(quantity, unit.as_deref());
 
     let item = sqlx::query_as!(
         GroceryItemRow,

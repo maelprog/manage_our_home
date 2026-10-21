@@ -1,8 +1,9 @@
 //! `/stocks/new` — manually add a stock item (name, category, quantity, unit,
-//! reorder threshold, expiry date). The empty-name / empty-unit / negative-quantity /
+//! reorder threshold, expiry date). The empty-name / negative-quantity /
 //! negative-threshold rules are pre-validated by the shared
 //! `validate_item_form` (inline error, no round trip); the backend's matching
-//! 400s are mapped defensively. Any member may create, so 403 isn't reachable
+//! 400s are mapped defensively. A blank unit becomes "unité"
+//! (`normalize_unit`, #458). Any member may create, so 403 isn't reachable
 //! via the UI. Success (201) → PRG `/stocks?notice=item_created`.
 //!
 //! Barcode (#402): `GET /stocks/new?scan=<raw>` asks apps/api what the code
@@ -42,7 +43,9 @@ use manage_our_home_shared::dto::stocks::{
     CreateStockItemRequest, ExpiresOnSource, ScanRequest, ScanResult, ScannedProduct,
     StockItemResponse,
 };
-use manage_our_home_shared::validation::stocks::{validate_item_form, ItemFormError};
+use manage_our_home_shared::validation::stocks::{
+    normalize_unit, validate_item_form, ItemFormError, DEFAULT_UNIT,
+};
 use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
@@ -116,7 +119,6 @@ pub(crate) fn error_message(code: &str) -> &'static str {
             "Un article de la famille porte déjà ce code-barres : celui-ci sera ajouté sans code si vous validez à nouveau."
         }
         "name_required" => "Le nom est obligatoire.",
-        "unit_required" => "L'unité est obligatoire.",
         "quantity_must_be_non_negative" => "La quantité ne peut pas être négative.",
         "reorder_threshold_must_be_non_negative" => "Le seuil de réappro ne peut pas être négatif.",
         "invalid_expires_on" => "La date de péremption n'est pas une date valide.",
@@ -130,7 +132,6 @@ pub(crate) fn error_message(code: &str) -> &'static str {
 pub(crate) fn form_error_code(err: ItemFormError) -> &'static str {
     match err {
         ItemFormError::NameRequired => "name_required",
-        ItemFormError::UnitRequired => "unit_required",
         ItemFormError::QuantityNegative => "quantity_must_be_non_negative",
         ItemFormError::ThresholdNegative => "reorder_threshold_must_be_non_negative",
     }
@@ -204,7 +205,7 @@ pub(crate) fn form_fields(
         r#"<label>Nom <input type="text" name="name" required value="{name}"/></label>
 <label>Catégorie <input type="text" name="category" value="{category}" placeholder="Optionnel (ex. Cellier, Frigo)"/></label>
 <label>Quantité <input type="number" name="quantity" step="any" min="0" value="{quantity}"/></label>
-<label>Unité <input type="text" name="unit" required value="{unit}" placeholder="ex. kg, L, unité"/></label>
+<label>Unité <input type="text" name="unit" value="{unit}" placeholder="unité si vide (ex. kg, L)"/></label>
 <label>Seuil de réappro
 <input type="number" name="reorder_threshold" step="any" min="0" value="{reorder_threshold}" placeholder="Optionnel — laisser vide pour aucun seuil"/>
 <span class="muted">En dessous ou à ce niveau, l'article est signalé « stock bas ». Partagé au niveau de la famille.</span>
@@ -252,7 +253,7 @@ pub(crate) fn prefilled_form(
     ItemForm {
         name: product.map(product_label).unwrap_or_default(),
         quantity: "1".to_string(),
-        unit: "unité".to_string(),
+        unit: DEFAULT_UNIT.to_string(),
         barcode: if with_code {
             code.to_string()
         } else {
@@ -761,7 +762,7 @@ pub async fn post(
         return render_error("invalid_expires_on");
     };
 
-    if let Err(e) = validate_item_form(&form.name, &form.unit, quantity, reorder_threshold) {
+    if let Err(e) = validate_item_form(&form.name, quantity, reorder_threshold) {
         return render_error(form_error_code(e));
     }
 
@@ -773,7 +774,7 @@ pub async fn post(
         name: form.name.trim().to_string(),
         category,
         quantity,
-        unit: form.unit.trim().to_string(),
+        unit: normalize_unit(&form.unit),
         reorder_threshold,
         expires_on,
         barcode: {

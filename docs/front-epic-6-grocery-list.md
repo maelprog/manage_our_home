@@ -82,7 +82,8 @@ the forbidden page; on the list, the per-row "Modifier" link renders only
 for items they may modify. The backend stays the authority — a forged
 PATCH/DELETE is still `403`'d and mapped defensively. Editing uses the
 backend's double-`Option` PATCH contract: a blank quantity/unit field
-**clears** it (`Some(None)`), a filled one sets it.
+**clears** it (`Some(None)`), a filled one sets it — except that a unit
+cleared while a quantity remains is stored as « unité » (#458).
 
 ### Budget (F7) price-on-checkout hook — out of scope here
 
