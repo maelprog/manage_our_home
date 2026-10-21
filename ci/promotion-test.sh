@@ -286,6 +286,14 @@ said "$MC@$(digest M3)" "client elsewhere, proposed"
 said "$mc_base" "client elsewhere, staging's"
 expect fail "staging's and prod's MinIO moved together to a new digest" both_minio M3
 said "StatefulSet/minio/minio" "MinIO moved together"
+# Two containers of one name, MinIO's moved, an initContainer beside it
+# on the image prod runs: each is checked, neither hides the other.
+minio_twice() {
+  prod_minio M3 && P='[{"op": "add", "path": "/spec/template/spec/initContainers", "value": [{"name": "minio", "image": "'"$MINIO@$(digest M1)"'"}]}]' \
+    yq -i '.patches += [{"target": {"kind": "StatefulSet", "name": "minio"}, "patch": strenv(P)}]' "$(prod_file)"
+}
+expect fail "prod's MinIO moved, an initContainer of the same name on the image prod runs" minio_twice
+said "prod renders StatefulSet/minio/minio more than once" "MinIO twice"
 
 # A base with no overlay yet — `deploy` before `k3s` is merged into it.
 check

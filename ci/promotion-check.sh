@@ -130,6 +130,13 @@ bad=0
 declare -A seen=() head_third=()
 while read -r id image; do
   [ -n "$id" ] || continue
+  # Two containers of one name in one document (a container and an
+  # initContainer, say): one image per id, or the third parties' check
+  # below would see only the last.
+  if [ -n "${seen[$id]+x}" ]; then
+    echo "FAIL: prod renders $id more than once" >&2
+    bad=1
+  fi
   seen[$id]=1
   if [ -n "${app[$id]+x}" ]; then
     if [ "$image" != "${app[$id]}" ]; then
