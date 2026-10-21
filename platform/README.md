@@ -120,9 +120,15 @@ aux versions de `ci/install-tools.sh`.
 
 Mot de passe `admin` initial d'Argo CD :
 `kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d`,
-puis `kubectl -n argocd port-forward svc/argocd-server 8080:443`. Pas de
+puis `kubectl -n argocd scale deploy/argocd-server --replicas=1` et
+`kubectl -n argocd port-forward svc/argocd-server 8080:443`. Pas de
 Dex : seul le compte local existe. Changer le mot de passe, puis supprimer
 ce Secret.
+
+L'interface ne tourne pas d'elle-même (`server.replicas: 0`, pour la RAM du
+serveur de 4 Go) : la monter à 1 comme ci-dessus le temps de s'en servir,
+puis `kubectl -n argocd scale deploy/argocd-server --replicas=0`. Argo CD
+ignore ce nombre de répliques et ne le remet pas à zéro tout seul.
 
 ## Secrets
 

@@ -7,6 +7,12 @@
 # (local admin account only), no notifications controller, no
 # ApplicationSet controller, one replica of each remaining component, and
 # a memory limit on every container.
+#
+# Trimmed again on 2026-10-21, the controller at 502 Mi for ~700 objects:
+# GOMEMLIMIT makes its garbage collector give memory back instead of
+# letting the heap grow toward the limit, and the server (the web UI,
+# reached by port-forward only) runs no replica until someone scales it up
+# to use it; ignoreDifferences keeps self-heal from scaling it back down.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -52,9 +58,12 @@ spec:
               end
               return hs
         controller:
+          env:
+            - name: GOMEMLIMIT
+              value: 350MiB
           resources:
             requests: {cpu: 100m, memory: 192Mi}
-            limits: {memory: 1Gi}
+            limits: {memory: 512Mi}
         repoServer:
           resources:
             requests: {cpu: 50m, memory: 64Mi}
@@ -64,6 +73,7 @@ spec:
               requests: {cpu: 10m, memory: 16Mi}
               limits: {memory: 64Mi}
         server:
+          replicas: 0
           resources:
             requests: {cpu: 25m, memory: 48Mi}
             limits: {memory: 192Mi}
@@ -78,6 +88,13 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      name: argocd-server
+      namespace: argocd
+      jsonPointers:
+        - /spec/replicas
   syncPolicy:
     # No prune: a resource the chart stops rendering is left in place
     # rather than deleted by the controller it may belong to.
@@ -85,3 +102,4 @@ spec:
       selfHeal: true
     syncOptions:
       - ServerSideApply=true
+      - RespectIgnoreDifferences=true
