@@ -3,6 +3,7 @@
   "description": "#310: only postgres and caddy, pinned by full tag and digest in infra/docker-compose.yml and in the services of .github/workflows/ci.yml (Dependabot does not read workflow services images, dependabot-core#5541). #430: and the rust and debian base images of apps/api/Dockerfile and apps/web/Dockerfile, pinned by digest. Every other dependency stays out of scope here.",
   "enabledManagers": ["docker-compose", "github-actions", "dockerfile"],
   "pinDigests": true,
+  "rebaseWhen": "behind-base-branch",
   "packageRules": [
     {
       "description": "Off by default: actions, MinIO mirror images and anything else these managers find.",
@@ -35,6 +36,12 @@
       "matchPackageNames": ["postgres", "caddy"],
       "matchUpdateTypes": ["major"],
       "enabled": false
+    },
+    {
+      "description": "Digest republications and patch releases merge themselves once every check is green, e2e included. platformAutomerge is off on purpose: GitHub's native auto-merge waits only for the required checks (fmt-clippy, test), not for the e2e jobs a caddy or postgres bump can break; Renovate's own automerge waits for all of them. rebaseWhen above keeps these branches up to date, since main requires it (strict) and Renovate cannot read the branch protection to find out.",
+      "matchUpdateTypes": ["digest", "patch"],
+      "automerge": true,
+      "platformAutomerge": false
     }
   ]
 }
