@@ -50,6 +50,12 @@ When exporting, only the events attributed to the user are exported.
 - **User admin** : un superadmin technique global (l'administrateur de la plateforme), distinct des rôles owner/admin/standard scopés au groupe. Recoupe le rôle "administrateur technique / mainteneur" déjà mentionné dans architecture.md (section RGPD). À cadrer comme sa propre epic.
 - **Messagerie** : un seul fil de discussion par famille (pas de DM entre users). Texte seul en v1, pièces jointes reportées à une version ultérieure.
 - **Budget** : lié à la liste de courses — prix saisis manuellement par item, avec cumul par période. Pas un suivi de dépenses générales (loyer, factures, etc.) indépendant.
+- **Rappels d'événement, mobile, hors ligne (sine qua non, 2026-09-03)** : la
+  notification d'un rappel (réglage `Add settings` ci-dessus) doit se
+  déclencher sur l'app mobile même sans réseau au moment prévu. Vérifié
+  compatible avec le front Rust actuel via le plugin natif Local Notifications
+  de Capacitor — détail dans `architecture.md` (Questions résolues #4) et
+  `front-stack-study.md` § 2.3.
 
 Ordre de dépendance recommandé pour le spec : Groups (multi-famille) → Agenda → Stocks → Recettes → Liste de courses → Budget. Messagerie et User admin sont indépendants et peuvent être spec'és à tout moment après Groups.
 
