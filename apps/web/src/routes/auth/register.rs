@@ -224,15 +224,8 @@ pub async fn post(
         Ok(resp) if resp.status == reqwest::StatusCode::CREATED => {
             Redirect::to("/register/check-email").into_response()
         }
-        Ok(resp) if resp.status == reqwest::StatusCode::CONFLICT => Html(page(
-            &form.email,
-            &form.display_name,
-            boxes,
-            Some("Un compte existe déjà avec cet email."),
-            None,
-            &state.api_public_base_url,
-        ))
-        .into_response(),
+        // An address already taken gets the same answer as a new one (#460):
+        // the API mails its holder instead of telling whoever typed it.
         Ok(_) => Html(page(
             &form.email,
             &form.display_name,

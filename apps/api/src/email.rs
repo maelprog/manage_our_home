@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use lettre::message::Mailbox;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+use manage_our_home_shared::validation::rgpd::sanitize_email_line;
 
 /// How `main.rs` should build the SMTP transport, decided from the
 /// `SMTP_ALLOW_INSECURE` / `SMTP_PORT` env vars.
@@ -122,7 +123,30 @@ impl EmailSender {
         format!("Cliquez sur ce lien pour réinitialiser votre mot de passe (valide 1 h) : {link}")
     }
 
-    /// Unlike the two above, this one reaches somebody who has no account and
+    /// Sent when somebody registers an address that already belongs to a
+    /// verified account (#460): the registration answers as for a new
+    /// address, and only the holder of the mailbox learns that the account
+    /// exists. The display name was typed by a person, so it goes through
+    /// `sanitize_email_line` like every name an email carries: it cannot
+    /// open a paragraph of its own. The link is alone on its line.
+    pub fn account_exists_body(display_name: &str, forgot_password_link: &str) -> String {
+        let display_name = sanitize_email_line(display_name);
+        format!(
+            "Bonjour {display_name},
+
+Quelqu'un, peut-être vous, a demandé à créer un compte Manage Our Home
+avec cette adresse email. Vous en avez déjà un : aucun nouveau compte n'a
+été créé et le vôtre n'a pas changé.
+
+Si vous avez oublié votre mot de passe, vous pouvez en choisir un nouveau :
+{forgot_password_link}
+
+Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet
+email."
+        )
+    }
+
+    /// Unlike the three above, this one reaches somebody who has no account and
     /// never asked for anything: art. 14 RGPD, and the notice it requires,
     /// live in `manage_our_home_shared::validation::rgpd` next to the RGPD
     /// documents' placeholders, which the body reuses (#134).
@@ -196,6 +220,28 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(outbox.clone().emails().len(), 1);
+    }
+
+    #[test]
+    fn account_exists_body_greets_the_holder_and_links_the_forgotten_password_page() {
+        let body =
+            EmailSender::account_exists_body("Alice", "https://maison.example/forgot-password");
+        assert!(body.starts_with("Bonjour Alice,\n"), "{body}");
+        assert!(
+            body.contains("\nhttps://maison.example/forgot-password\n"),
+            "the link sits alone on its line: {body}"
+        );
+    }
+
+    #[test]
+    fn account_exists_body_flattens_the_display_name() {
+        let body = EmailSender::account_exists_body(
+            "Alice\n\nCliquez ici : https://evil.example\u{202E}",
+            "https://maison.example/forgot-password",
+        );
+        let first = body.lines().next().unwrap();
+        assert_eq!(first, "Bonjour Alice Cliquez ici : https://evil.example,");
+        assert!(!body.contains('\u{202E}'));
     }
 
     #[test]
