@@ -3504,3 +3504,169 @@ async fn the_set_password_email_carries_a_link_that_verifies_the_account(db: PgP
     .await;
     assert_status(&login, StatusCode::OK);
 }
+
+/// #459: what `register` sends for `email`, with the declarations it needs.
+async fn register_as(router: &axum::Router, email: &str) -> axum::response::Response {
+    call(
+        router,
+        Method::POST,
+        "/auth/register",
+        None,
+        Some(serde_json::json!({
+            "email": email,
+            "password": "correct horse battery staple",
+            "display_name": "Case Test",
+            "declares_minimum_age": true, "accepts_terms": true
+        })),
+    )
+    .await
+}
+
+async fn stored_emails(db: &PgPool) -> Vec<String> {
+    sqlx::query_scalar("SELECT email FROM users ORDER BY email")
+        .fetch_all(db)
+        .await
+        .unwrap()
+}
+
+/// #459: an address names one account whatever its capitals. Registered
+/// with capitals, it is stored lowercase, and the password signs in
+/// however the address is typed — padded or not.
+#[sqlx::test]
+async fn an_address_registered_with_capitals_signs_in_whatever_its_case(db: PgPool) {
+    let router = test_router(db.clone());
+    assert_status(
+        &register_as(&router, "Alice@Example.com").await,
+        StatusCode::CREATED,
+    );
+    assert_eq!(stored_emails(&db).await, ["alice@example.com"]);
+
+    let token = common::verification_token(&db, "alice@example.com").await;
+    let verify = call(
+        &router,
+        Method::GET,
+        &format!("/auth/verify-email?token={token}"),
+        None,
+        None,
+    )
+    .await;
+    assert_status(&verify, StatusCode::OK);
+
+    for typed in [
+        "alice@example.com",
+        "Alice@Example.com",
+        "ALICE@EXAMPLE.COM",
+        " alice@example.com ",
+    ] {
+        let login = call(
+            &router,
+            Method::POST,
+            "/auth/login",
+            None,
+            Some(serde_json::json!({
+                "email": typed, "password": "correct horse battery staple"
+            })),
+        )
+        .await;
+        assert_status(&login, StatusCode::OK);
+        assert!(set_cookie(&login).is_some(), "{typed:?}");
+    }
+}
+
+/// #459: a second registration of the same address in other capitals is a
+/// registration of an existing account, refused like an exact duplicate.
+#[sqlx::test]
+async fn a_registration_in_other_capitals_is_a_duplicate(db: PgPool) {
+    let router = test_router(db.clone());
+    assert_status(
+        &register_as(&router, "Alice@Example.com").await,
+        StatusCode::CREATED,
+    );
+    assert_status(
+        &register_as(&router, "ALICE@example.com").await,
+        StatusCode::CONFLICT,
+    );
+    assert_eq!(stored_emails(&db).await, ["alice@example.com"]);
+}
+
+/// #459: the forgotten-password and resend requests find the account
+/// whatever capitals the address is typed in.
+#[sqlx::test]
+async fn forgotten_password_and_resend_find_the_account_in_other_capitals(db: PgPool) {
+    let router = test_router(db.clone());
+    assert_status(
+        &register_as(&router, "carol@example.test").await,
+        StatusCode::CREATED,
+    );
+    let user_id = user_id_by_email(&db, "carol@example.test").await;
+
+    let res = call(
+        &router,
+        Method::POST,
+        "/auth/password/forgot",
+        None,
+        Some(serde_json::json!({"email": " Carol@Example.TEST "})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let resets: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM password_reset_tokens WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(resets, 1, "a reset token for the account");
+
+    // Past the resend cooldown the registration's own token started.
+    sqlx::query(
+        "UPDATE email_verification_tokens SET created_at = now() - interval '1 day'
+         WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .execute(&db)
+    .await
+    .unwrap();
+    let res = call(
+        &router,
+        Method::POST,
+        "/auth/verify-email/resend",
+        None,
+        Some(serde_json::json!({"email": "CAROL@example.test"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let fresh: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM email_verification_tokens
+         WHERE user_id = $1 AND created_at > now() - interval '1 hour'",
+    )
+    .bind(user_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(fresh, 1, "a fresh verification token for the account");
+}
+
+/// #459: a Google profile whose address carries capitals signs in to the
+/// account registered by hand in lowercase, instead of opening a second
+/// one beside it.
+#[sqlx::test]
+async fn a_google_profile_in_other_capitals_signs_in_to_the_existing_account(db: PgPool) {
+    let router = router_with_google_stub(db.clone(), "google-sub-459", "Dave@Example.test").await;
+    register_verify_login(&router, &db, "dave@example.test", "dave-password-1").await;
+    let user_id = user_id_by_email(&db, "dave@example.test").await;
+
+    let res = google_callback(&router).await;
+    assert!(res.status().is_redirection(), "{}", res.status());
+    assert_eq!(stored_emails(&db).await, ["dave@example.test"]);
+    assert_eq!(google_identity_rows(&db, user_id).await, 1);
+}
+
+/// #459: a Google sign-up stores the address in the same form as a
+/// password registration.
+#[sqlx::test]
+async fn a_google_sign_up_stores_the_address_lowercase(db: PgPool) {
+    let router = router_with_google_stub(db.clone(), "google-sub-459b", "Erin@Example.test").await;
+    let res = google_callback(&router).await;
+    assert!(res.status().is_redirection(), "{}", res.status());
+    assert_eq!(stored_emails(&db).await, ["erin@example.test"]);
+}

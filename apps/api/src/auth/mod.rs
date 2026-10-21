@@ -24,8 +24,8 @@ use manage_our_home_shared::dto::auth::{
 };
 
 use manage_our_home_shared::validation::auth::{
-    validate_age_declaration, validate_display_name, validate_email, validate_password,
-    validate_terms_acceptance, VERIFICATION_RESEND_COOLDOWN_SECS,
+    normalize_email, validate_age_declaration, validate_display_name, validate_email,
+    validate_password, validate_terms_acceptance, VERIFICATION_RESEND_COOLDOWN_SECS,
 };
 
 use crate::client_ip::ClientIp;
@@ -87,8 +87,9 @@ pub async fn me(auth: AuthUser) -> Json<MeResponse> {
 /// recorded with the account, and when.
 pub async fn register(
     State(state): State<AppState>,
-    Json(body): Json<RegisterRequest>,
+    Json(mut body): Json<RegisterRequest>,
 ) -> AppResult<impl IntoResponse> {
+    body.email = normalize_email(&body.email);
     validate_email(&body.email).map_err(unprocessable)?;
     validate_password(&body.password).map_err(unprocessable)?;
     validate_display_name(&body.display_name).map_err(unprocessable)?;
@@ -267,12 +268,13 @@ async fn login_inner(
     state: &AppState,
     client_ip: std::net::IpAddr,
     cookies: &Cookies,
-    body: LoginRequest,
+    mut body: LoginRequest,
     timing: &mut LoginTiming,
 ) -> (
     LoginBranch,
     AppResult<(StatusCode, Json<serde_json::Value>)>,
 ) {
+    body.email = normalize_email(&body.email);
     let key = throttle::key(client_ip, &body.email);
 
     // **Before** the lookup and before argon2, never after — and counted in
@@ -450,8 +452,9 @@ fn password_reset_link(frontend_base_url: &str, token: &str) -> String {
 /// leaking which emails are registered (anti-enumeration).
 pub async fn forgot_password(
     State(state): State<AppState>,
-    Json(body): Json<ForgotPasswordRequest>,
+    Json(mut body): Json<ForgotPasswordRequest>,
 ) -> AppResult<impl IntoResponse> {
+    body.email = normalize_email(&body.email);
     if let Some(user) = sqlx::query!(
         "SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL AND deactivated_at IS NULL",
         body.email
@@ -504,8 +507,9 @@ pub async fn forgot_password(
 /// new token, no email).
 pub async fn resend_verification(
     State(state): State<AppState>,
-    Json(body): Json<ResendVerificationRequest>,
+    Json(mut body): Json<ResendVerificationRequest>,
 ) -> AppResult<impl IntoResponse> {
+    body.email = normalize_email(&body.email);
     let Some(user) = sqlx::query!(
         "SELECT id FROM users WHERE email = $1 AND email_verified = false AND deleted_at IS NULL
            AND deactivated_at IS NULL",

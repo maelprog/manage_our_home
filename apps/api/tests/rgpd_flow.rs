@@ -780,8 +780,9 @@ async fn export_nests_the_ingredients_under_their_recipe(db: PgPool) {
 /// data about them, even from a group they never joined. It comes out with
 /// its group and its sender, as the invitation email states them — not its
 /// token, not the group as a former membership, nothing else of the group.
-/// Addresses compare exactly, as registration and login compare them: other
-/// capitals are another address.
+/// Addresses compare whatever their capitals, as registration and login
+/// compare them (#459): an invitation to `Invitee@Example.test` is one to
+/// `invitee@example.test`, stored as such.
 #[sqlx::test]
 async fn export_lists_the_invitations_addressed_to_the_caller(db: PgPool) {
     let router = test_router(db.clone());
@@ -832,15 +833,21 @@ async fn export_lists_the_invitations_addressed_to_the_caller(db: PgPool) {
         assert_status(&export, StatusCode::OK);
         let doc = json_body(export).await;
         let received = doc["invitations_received"].as_array().unwrap();
-        assert_eq!(received.len(), 1, "{label}: only the one to my address");
-        assert_eq!(received[0]["group_id"], group_id.as_str(), "{label}");
-        assert_eq!(received[0]["group_name"], "Foyer Invitant", "{label}");
-        assert_eq!(received[0]["invited_by"], "inviter@example.test", "{label}");
         assert_eq!(
-            received[0]["invited_email"], "invitee@example.test",
-            "{label}"
+            received.len(),
+            2,
+            "{label}: the two to my address, whatever its capitals"
         );
-        assert!(received[0].get("token").is_none(), "{label}");
+        for invitation in received {
+            assert_eq!(invitation["group_id"], group_id.as_str(), "{label}");
+            assert_eq!(invitation["group_name"], "Foyer Invitant", "{label}");
+            assert_eq!(invitation["invited_by"], "inviter@example.test", "{label}");
+            assert_eq!(
+                invitation["invited_email"], "invitee@example.test",
+                "{label}"
+            );
+            assert!(invitation.get("token").is_none(), "{label}");
+        }
 
         let text = doc.to_string();
         for token in &tokens {
@@ -853,10 +860,6 @@ async fn export_lists_the_invitations_addressed_to_the_caller(db: PgPool) {
         assert!(
             !text.contains("someone-else"),
             "{label}: another invitation"
-        );
-        assert!(
-            !text.contains("Invitee@Example.test"),
-            "{label}: other capitals"
         );
         assert!(
             doc["former_groups"].as_array().unwrap().is_empty(),
