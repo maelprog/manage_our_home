@@ -1615,6 +1615,260 @@ mod tests {
         );
     }
 
+    // -- redundancy in the sheet -------------------------------------------
+    //
+    // These replace `DECLARATIONS_CEILING` (2026-10-20, DESIGN.md journal).
+    // That ceiling weighed the declarations and was read as "a rule that
+    // repeats another one goes" — but it counted bytes, not repeats, so it
+    // only spoke once the total spilled over, and then about the whole sheet
+    // rather than the line at fault. The three tests below name the line.
+
+    /// One rule of a stylesheet: the at-rule it sits in (`""` at top level),
+    /// its selector list normalised to `a, b c`, and its body.
+    #[derive(Debug, PartialEq)]
+    struct CssRule {
+        context: String,
+        selector: String,
+        body: String,
+    }
+
+    /// Every rule of a comment-free stylesheet, in source order. A block
+    /// whose prelude is a conditional at-rule (`@media`, `@supports`) is
+    /// descended into and becomes the `context` of what it holds; any other
+    /// prelude, `@font-face` included, is a rule of its own.
+    fn css_rules(css: &str) -> Vec<CssRule> {
+        let normalise = |prelude: &str| {
+            prelude
+                .split(',')
+                .map(|part| part.split_whitespace().collect::<Vec<_>>().join(" "))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut out = Vec::new();
+        let mut context = String::new();
+        let mut rest = css;
+        loop {
+            let open = rest.find('{');
+            let close = rest.find('}');
+            match (open, close) {
+                // The end of a conditional block comes before the next rule.
+                (_, Some(c)) if open.is_none_or(|o| c < o) => {
+                    context.clear();
+                    rest = &rest[c + 1..];
+                }
+                (Some(o), _) => {
+                    let prelude = normalise(&rest[..o]);
+                    let conditional =
+                        prelude.starts_with('@') && !prelude.starts_with("@font-face");
+                    if conditional {
+                        context = prelude;
+                        rest = &rest[o + 1..];
+                    } else {
+                        let end = o + rest[o..].find('}').unwrap_or(rest.len() - o);
+                        out.push(CssRule {
+                            context: context.clone(),
+                            selector: prelude,
+                            body: rest[o + 1..end].to_string(),
+                        });
+                        rest = rest.get(end + 1..).unwrap_or("");
+                    }
+                }
+                _ => break,
+            }
+        }
+        out
+    }
+
+    /// `context { selector }` for every selector list declared more than
+    /// once in the same context. `@font-face` is exempt: two of them are two
+    /// families, not one rule written twice.
+    fn duplicate_selectors(rules: &[CssRule]) -> Vec<String> {
+        let mut seen = BTreeSet::new();
+        let mut out = Vec::new();
+        for rule in rules.iter().filter(|r| !r.selector.starts_with('@')) {
+            if !seen.insert((&rule.context, &rule.selector)) {
+                out.push(format!("{} {{ {} }}", rule.context, rule.selector));
+            }
+        }
+        out
+    }
+
+    /// `selector: property` for every property set twice in one block.
+    fn duplicate_properties(rules: &[CssRule]) -> Vec<String> {
+        let mut out = Vec::new();
+        for rule in rules {
+            let mut seen = BTreeSet::new();
+            for (name, _) in rule.body.split(';').filter_map(|d| d.split_once(':')) {
+                let name = name.trim().to_ascii_lowercase();
+                if !seen.insert(name.clone()) {
+                    out.push(format!("{}: {name}", rule.selector));
+                }
+            }
+        }
+        out
+    }
+
+    /// Every class name a selector of the sheet styles.
+    fn stylesheet_classes(rules: &[CssRule]) -> BTreeSet<String> {
+        let ident = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+        let mut out = BTreeSet::new();
+        for rule in rules.iter().filter(|r| !r.selector.starts_with('@')) {
+            for (at, _) in rule.selector.match_indices('.') {
+                let name: String = rule.selector[at + 1..]
+                    .chars()
+                    .take_while(|&c| ident(c))
+                    .collect();
+                if name.starts_with(|c: char| c.is_ascii_alphabetic()) {
+                    out.insert(name);
+                }
+            }
+        }
+        out
+    }
+
+    /// Every class name a source could put on an element: what
+    /// `referenced_classes` reads, plus each word of a string literal made
+    /// of class-like words only — `" mine"` appended through a `format!`
+    /// placeholder, `classList.toggle("shown", …)` in the enhancement
+    /// script. Lenient on purpose: a literal `"done"` written for another
+    /// reason keeps `.done` alive, which errs towards a missed dead rule,
+    /// never towards a red test on a live one.
+    fn class_mentions(src: &str) -> BTreeSet<String> {
+        let class_like = |w: &str| {
+            w.starts_with(|c: char| c.is_ascii_lowercase())
+                && w.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        };
+        let mut out: BTreeSet<String> = referenced_classes(src).into_iter().collect();
+        // Odd-numbered pieces between quotes are the literals; a raw string
+        // holding quotes of its own throws the pairing off for a stretch,
+        // which only ever adds words, never hides one.
+        for literal in src.split('"').skip(1).step_by(2) {
+            let words: Vec<_> = literal.split_whitespace().collect();
+            if !words.is_empty() && words.iter().all(|w| class_like(w)) {
+                out.extend(words.into_iter().map(str::to_string));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn css_rules_reads_top_level_and_media_rules_with_their_context() {
+        let css = ".a, .b  .c { x: 1; }\n@media (min-width: 9px) {\n  .a { y: 2; }\n}\n@font-face { font-family: F; }";
+        assert_eq!(
+            css_rules(css),
+            [
+                CssRule {
+                    context: String::new(),
+                    selector: ".a, .b .c".into(),
+                    body: " x: 1; ".into(),
+                },
+                CssRule {
+                    context: "@media (min-width: 9px)".into(),
+                    selector: ".a".into(),
+                    body: " y: 2; ".into(),
+                },
+                CssRule {
+                    context: String::new(),
+                    selector: "@font-face".into(),
+                    body: " font-family: F; ".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_selector_restated_in_the_same_context_is_a_duplicate() {
+        let rules = css_rules(".a { x: 1; } .b { x: 1; } .a { y: 2; }");
+        assert_eq!(duplicate_selectors(&rules), [" { .a }"]);
+    }
+
+    #[test]
+    fn a_selector_restated_under_a_media_query_is_not() {
+        let rules = css_rules(".a { x: 1; } @media (m) { .a { x: 2; } }");
+        assert!(duplicate_selectors(&rules).is_empty());
+    }
+
+    #[test]
+    fn two_font_faces_are_two_families_not_a_duplicate() {
+        let rules = css_rules("@font-face { font-family: A; } @font-face { font-family: B; }");
+        assert!(duplicate_selectors(&rules).is_empty());
+    }
+
+    #[test]
+    fn a_property_set_twice_in_one_block_is_a_duplicate() {
+        let rules = css_rules(".a { color: red; margin: 0; color: blue; }");
+        assert_eq!(duplicate_properties(&rules), [".a: color"]);
+    }
+
+    #[test]
+    fn custom_properties_and_a_multi_line_value_are_not_duplicates() {
+        let rules = css_rules(
+            ":root { --s1: 4px; --s2: 8px; }\n.a {\n  transition:\n    color 1s,\n    background 1s;\n}",
+        );
+        assert!(duplicate_properties(&rules).is_empty());
+    }
+
+    #[test]
+    fn stylesheet_classes_reads_every_class_of_a_compound_selector() {
+        let rules = css_rules(
+            ".a.b > .c-d:hover, td > .e { x: 1; } .f:not(:has(.g)) { y: 2; } @font-face { src: url(\"/x.woff2\"); }",
+        );
+        let names: Vec<_> = stylesheet_classes(&rules).into_iter().collect();
+        assert_eq!(names, ["a", "b", "c-d", "e", "f", "g"]);
+    }
+
+    #[test]
+    fn class_mentions_sees_attributes_appended_words_and_toggles() {
+        let src = concat!(
+            r##"format!(r#"<li class="list-row{mine}">"#, mine = " mine");"##,
+            "\nbutton.classList.toggle(\"shown\", show);",
+            "\nlet message = \"Une phrase, pas une classe.\";",
+        );
+        let names: Vec<_> = class_mentions(src).into_iter().collect();
+        assert_eq!(names, ["list-row", "mine", "shown"]);
+    }
+
+    #[test]
+    fn no_selector_is_declared_twice_in_the_same_context() {
+        let duplicates = duplicate_selectors(&css_rules(&css()));
+        assert!(
+            duplicates.is_empty(),
+            "these selector lists open a second block where the first one \
+             already lives — merge them: {duplicates:#?}"
+        );
+    }
+
+    #[test]
+    fn no_block_sets_the_same_property_twice() {
+        let duplicates = duplicate_properties(&css_rules(&css()));
+        assert!(
+            duplicates.is_empty(),
+            "the first of each pair is dead — the second wins: {duplicates:#?}"
+        );
+    }
+
+    #[test]
+    fn every_class_the_stylesheet_styles_is_worn_by_something() {
+        // The other direction of `every_class_a_source_references_exists_in_
+        // the_stylesheet`: a rule for a class no route emits any more is
+        // weight every visitor downloads for nothing, and nothing else says
+        // so — a selector that matches nothing is not an error in CSS.
+        let mut worn = class_mentions(ENHANCE_SCRIPT);
+        for (_, body) in rust_sources() {
+            worn.extend(class_mentions(&body));
+        }
+        let dead: Vec<_> = stylesheet_classes(&css_rules(&css()))
+            .into_iter()
+            .filter(|name| !worn.contains(name))
+            .collect();
+        assert!(
+            dead.is_empty(),
+            "style.css styles these classes and no source puts them on an \
+             element — drop the rule, or the source lost a class: {dead:#?}"
+        );
+    }
+
     #[test]
     fn no_inline_style_hand_rolls_a_component() {
         // These are the declarations the audit found copied across routes.
@@ -2853,195 +3107,56 @@ mod tests {
     /// rule here is `DECLARATIONS_CEILING`'s — redo the arithmetic against
     /// the sheet of the day and say so in the PR body — plus one step:
     /// **ask first**.
-    const SHEET_CEILING: usize = 13 * 1024;
-
-    /// 3 KiB of declarations, comments stripped. **Unchanged by #89** —
-    /// same number, same reason — and it is now the only one of the two
-    /// with any bite.
     ///
-    /// Calibrated to trip before `SHEET_CEILING` does. **What that
-    /// ordering is worth has changed, and pretending otherwise would be
-    /// the weakest part of #89** — so, plainly:
+    /// # Raised from 13 312 to 43 008 on 2026-10-20, and why
     ///
-    /// * Its original purpose is **gone**. It existed so the pressure
-    ///   never landed on the comments, because inlining charged every
-    ///   comment to every page view. The sheet is cached now; a comment
-    ///   costs one download per deploy. There is no per-page-view prose
-    ///   tax left to protect anyone from.
-    /// * What it still does is **narrower, and real**: it decides which
-    ///   question the first failing test asks. `DECLARATIONS_CEILING` asks
-    ///   "is there a rule here that restates another one?" — local,
-    ///   answerable, cheap to fix. `SHEET_CEILING` asks "does the delivery
-    ///   strategy still work?", whose only remaining answer is splitting
-    ///   the sheet, a whole issue. Keeping the cheap question first is
-    ///   worth keeping. And deleting comments is *still* the tempting
-    ///   shortcut in front of a red size test, even though it now buys
-    ///   almost nothing; the ordering keeps that shortcut off the first
-    ///   path.
+    /// Everything above is the record of how 13 312 was picked. It is
+    /// superseded on a user arbitration that changes the *question*, not
+    /// the arithmetic: **"one round trip" is dropped as the bound, "two
+    /// round trips" replaces it.**
     ///
-    /// The ordering has a floor: declarations are 28.1 % of the compressed
-    /// sheet (3 071 of 10 926, flate2 level 6, after #72), so this ceiling
-    /// is reached first only while `SHEET_CEILING` stays above
-    /// `DECLARATIONS_CEILING / 0.281`. Read the other way round — which is
-    /// the form #72 needed — this ceiling may rise to at most
-    /// `SHEET_CEILING × 0.281` = 11 264 × 3 071 / 10 926 = **3 166.0 bytes**
-    /// before the pair inverts.
+    /// **Why the old question was too strict.** Missing one round trip
+    /// costs one RTT, on a cold cache only — once per visitor and per
+    /// deploy, since the sheet is `immutable` under a content-addressed
+    /// URL. The users are a household that comes back every day, on phones
+    /// at most ten years old; parsing 40 KiB of CSS is a few milliseconds
+    /// on any of them. What the ceiling was buying was a single RTT on the
+    /// first paint after a deploy, and it was buying it with a budget that
+    /// had 1 349 bytes left. The user judged that trade not worth it.
     ///
-    /// After #71 that floor sat at **10 239.66 against a ceiling of
-    /// 10 240** — 0.34 bytes of margin, *as flate2 measures it*. That sign
-    /// is not a property of the world: an independent reading with system
-    /// zlib put the same pair at 9 978 / 2 992, a floor of 10 244.8, i.e.
-    /// **already inverted by ~4.8 bytes**. Which way it tips depends on
-    /// the gzip implementation; what both readings agree on is that the
-    /// margin was inside 5 bytes of the ceiling, i.e. gone. #89 does not
-    /// fix that by trimming anything — `SHEET_CEILING` moves to 11 264,
-    /// which puts the floor **872 bytes** under it. The pair works again
-    /// because the sheet got a window of its own, not because anyone
-    /// deleted a comment.
+    /// **The derivation, same method as #72's, one window further.** Slow
+    /// start doubles `cwnd` after the first flight is acknowledged:
     ///
-    /// What it has cost so far: #69 spent a third of the room that was
-    /// left (2 298 → 2 670 bytes) for the hover, focus and nav-current
-    /// rules; #70 nearly two thirds of the rest (2 670 → 2 921) for the
-    /// responsive shell; #71 74 more (→ 2 995) for the agenda's single
-    /// table; #72 76 more (→ 3 071) for the messagerie's four rules. #89
-    /// adds none — it moves the sheet without touching a rule.
+    /// * **First flight** — **14 254 bytes** of body, derived above (IW10
+    ///   less 280 of headers and 66 of TLS framing).
+    /// * **Second flight** — 20 segments × 1 460 = **29 200 bytes**, less
+    ///   TLS framing for the two records it spans (2 × 22 = **44**) ⇒
+    ///   **29 156**. No headers: they went out in the first flight.
+    /// * ⇒ **43 410 bytes** of compressed body within two round trips.
     ///
-    /// # Raised from 3 072 to 3 136 by #72, and why
+    /// **42 KiB (43 008) is the largest KiB boundary that fits**, 402 bytes
+    /// under the bound — the price of rounding, as before, not a reserve.
+    /// The bound is still conservative: the sheet is fetched on the
+    /// connection that just carried the document, with `cwnd` already
+    /// grown, so in practice it often still lands in one.
     ///
-    /// This is the first raise, and it is an arbitration, not a drift. The
-    /// old value did not become inconvenient; **it became pathological**,
-    /// and the probe is one line:
+    /// **What it gives up.** The sheet guard no longer fires in the course
+    /// of ordinary work: at today's ~100 bytes a paragraph it leaves room
+    /// for a few hundred. It is an alarm for accidents now — a vendored
+    /// framework, a base64 font — not a pressure on style. **What it
+    /// keeps**: the remedy past the bound (split the sheet) and the rule
+    /// that the value does not move without asking.
     ///
-    /// At 3 071 against a ceiling of 3 072, appending an ordinary
-    /// three-line comment block to `style.css` — no rule, no selector, pure
-    /// prose — measures **3 072**. It lands exactly on the ceiling, and the
-    /// next comment breaks the build. `css_without_comments` removes the
-    /// text between `/*` and `*/` but keeps the newline and the indentation
-    /// around it, so prose is not free here even though everything that
-    /// governs this file says it is: the message this very test prints
-    /// ("Comments are not counted here, so this is about the CSS"), the
-    /// bullet above ("There is no per-page-view prose tax left to protect
-    /// anyone from"), and the note at the head of `style.css` since #89
-    /// ("Write the comment"). A guard whose remedy is "delete a redundant
-    /// rule" that in practice fires on a paragraph is telling the next
-    /// author to do the one thing #89 exists to stop.
-    ///
-    /// The derivation of 3 136, in the same form as the bound above and on
-    /// the same measurements (flate2 level 6, this branch):
-    ///
-    /// * **Upper bound — the ordering must survive.** The pair inverts at
-    ///   `SHEET_CEILING × declarations / sheet`, which was 11 264 × 3 071 /
-    ///   10 926 = **3 166.0** when this value was chosen. At or above that,
-    ///   `SHEET_CEILING` fires first and the expensive question ("does the
-    ///   delivery strategy still work?") becomes the one a red build asks.
-    ///   That is the whole thing this ceiling exists to prevent, so 3 166
-    ///   was a wall, not a target. (`SHEET_CEILING` moved to 13 312 later
-    ///   in the same issue, which lifts that wall to 3 741.6 — 3 136 is
-    ///   further inside the bracket than it was, never nearer the edge.
-    ///   The value is left where the arbitration put it: it was chosen for
-    ///   the pathology below, not for the bracket.)
-    /// * **Round down to the 64-byte step below it: 3 136** (3 KiB + 64 B).
-    ///   The 30 bytes given up buy the band the ratio needs. Re-measured
-    ///   on *today's* sheet rather than carried over from #89 — whose "~5
-    ///   bytes apart" was about the sheet of the day — flate2 and system
-    ///   zlib disagree by **35 bytes on the sheet and 13 on the
-    ///   declarations**; 30 covers the 13 that matter here, and the bound
-    ///   recomputed under zlib (3 189.6) still sits above 3 136. The ratio
-    ///   also moves as the sheet grows. Sitting *on* 3 166 would rebuild
-    ///   the 0.34-byte margin #89 spent a whole issue undoing.
-    /// * **Lower bound — sanity.** 3 136 − 3 071 = **65 bytes** of real
-    ///   headroom, against the ~1 byte a comment block costs. The tripwire
-    ///   is gone; the guard is a guard again.
-    ///
-    /// `SHEET_CEILING` moved to **13 312** later in this same issue, on its
-    /// own arbitration and for reasons that have nothing to do with this
-    /// one (see its comment). Together they leave #73 and #74 **65 bytes of
-    /// declarations and 2 386 bytes of sheet**.
-    ///
-    /// **What a paragraph really costs, measured in situ.** Three earlier
-    /// readings in this file were wrong and are worth naming — two on the
-    /// method, the third on the sample it was read from. Take the method
-    /// first: appending the *same* comment block over and over measures
-    /// ~135 bytes for the first and 5–20 for each repeat — but that is
-    /// gzip finding a copy of text it has already seen, not the cost of
-    /// writing something. The project briefing warns about exactly this,
-    /// and DESIGN.md already dismisses an earlier figure for the same
-    /// fault.
-    ///
-    /// The number that means anything is measured **by deleting real
-    /// comment blocks from this stylesheet, one at a time, and weighing
-    /// what comes back** — not by appending filler.
-    ///
-    /// **That number is no longer restated here.** It was, as a range read
-    /// off a ten-block sample, and the range was then taken for the
-    /// sheet's: the real spread across blocks is wide enough that a small
-    /// sample's upper bound **badly understates the worst case**, which is
-    /// exactly the mistake a reader budgeting "at worst so many bytes a
-    /// paragraph" would make. A number nobody copies cannot go stale
-    /// (#95).
-    ///
-    /// To get it for today's sheet: drop one comment block from
-    /// `style.css` with its whole lines, reweigh, take the difference,
-    /// repeat block by block — and reweigh with **the guard's own encoder
-    /// and no other**: flate2 level 6, `Compression::default()`, which is
-    /// `gzipped` above and the thing that decides whether this test
-    /// passes. Node's zlib (`npm run measure`) answers a few bytes away
-    /// with nobody being wrong; it is a different encoder, and **naming
-    /// which one you read is part of the number**. On varied prose the
-    /// sheet grows in step: 10 926 → 11 076 (1 block) → 11 212 (2) →
-    /// 11 450 (4) → 11 911 (8) → 13 139 (20).
-    ///
-    /// So **2 386 bytes is roughly twenty more paragraphs**, and that is
-    /// the honest figure for #73 and #74 to plan against.
-    ///
-    /// **Declarations do *not* plateau** — an earlier draft of this comment
-    /// claimed they did, off the same degenerate corpus. On varied prose
-    /// they creep: 3 071 → 3 072 (1–4 blocks) → 3 074 (8) → 3 074 (20) →
-    /// **3 075 (50)**. `css_without_comments` keeps each block's newline
-    /// and indentation, and those accumulate; there is no ceiling to the
-    /// creep, only a very shallow slope. The practical conclusion survives
-    /// — at ~0.08 bytes a block, reaching 3 136 from 3 071 would take some
-    /// **800 paragraphs**, and `SHEET_CEILING` rings around twenty — but it
-    /// survives *because the sheet guard fires first*, not because this one
-    /// is immune. Do not write "never" here.
-    ///
-    /// **Which of the two fires first depends on the shape of the growth,
-    /// and the honest answer is: usually the sheet.** Comparing *levels*
-    /// (declarations are 28.1 % of the sheet) says this guard leads — but
-    /// no batch has ever grown at the cumulative ratio. Marginal ratio per
-    /// batch — measured over `git show <merge>:apps/web/src/style.css` at
-    /// each design merge (`3d1ed71` #66, `330bbf2` #67, `e5785ac` #68,
-    /// `30fbd01` #69, `bc438e4` #70, `edc0527` #71, `9f08e97` #89), gzip
-    /// level 6 with the comment-stripping of `css_without_comments`
-    /// reimplemented over each revision:
-    ///
-    /// | batch | Δ sheet | Δ declarations | marginal |
-    /// |---|---|---|---|
-    /// | #67 | +358 | +123 | 34.4 % |
-    /// | #68 | +2 918 | +626 | **21.5 %** |
-    /// | #69 | +1 440 | +369 | 25.6 % |
-    /// | #70 | +935 | +252 | 27.0 % |
-    /// | #71 | +411 | +72 | 17.5 % |
-    /// | #89 | +146 | 0 | 0 % |
-    /// | **#72** | +791 | +76 | **9.6 %** |
-    ///
-    /// (Those are system-zlib figures, which run ~11 bytes under flate2 on
-    /// the sheet and ~3 on the declarations; the ratios are unaffected.)
-    /// An earlier draft of this comment put #68 at 22.8 %. That figure
-    /// takes #66 as the base and so charges #67's growth to #68:
-    /// (123 + 626) / (358 + 2 918) = 22.9 %. Against its actual base it is
-    /// **21.5 %**.
-    ///
-    /// Only #67 — 358 bytes of `@font-face` and almost no prose — ever beat
-    /// the cumulative 28.1 %. At one paragraph per rule the ordering barely
-    /// holds; at two it inverts; at three — the shape of #72 itself — it is
-    /// `SHEET_CEILING` that rings. Write for the sheet.
-    ///
-    /// A ceiling, not a target. What it forbids is drifting past it
-    /// unnoticed while #73–#74 each add "just a few rules"; raising it
-    /// again means redoing the arithmetic above against the sheet of the
-    /// day and saying so in the PR body, as #72 did.
-    const DECLARATIONS_CEILING: usize = 3 * 1024 + 64;
+    /// **The lower bound above is gone with it.** `DECLARATIONS_CEILING` was
+    /// removed the same day: it weighed bytes and was read as "no rule
+    /// repeats another", so it only spoke once the total spilled over. The
+    /// redundancy it stood for is now held by three tests that name the
+    /// line at fault (`no_selector_is_declared_twice_in_the_same_context`,
+    /// `no_block_sets_the_same_property_twice`,
+    /// `every_class_the_stylesheet_styles_is_worn_by_something`). Every
+    /// mention of the ordering of "the two guards" in this comment is the
+    /// record of a pair that no longer exists.
+    const SHEET_CEILING: usize = 42 * 1024;
 
     /// A byte count with its thousands separated, as DESIGN.md writes
     /// numbers — `10 926`, not `10926`.
@@ -3066,20 +3181,6 @@ mod tests {
         format!("{:.1}", 100.0 * part / whole).replace('.', ",")
     }
 
-    /// A one-decimal byte figure, French-style — `2 154,7`, `-2 154,7`.
-    ///
-    /// Rounds *once*, on the scaled value, then splits. Rounding the whole
-    /// part and the fraction separately loses the carry (`11 157,96` prints
-    /// `11 157,10`), and clamping the whole part loses the sign — which
-    /// matters here, because the one figure that can go negative is the
-    /// inversion margin, whose sign is the message.
-    fn tenths(n: f64) -> String {
-        let scaled = (n * 10.0).round();
-        let sign = if scaled < 0.0 { "-" } else { "" };
-        let abs = scaled.abs() as usize;
-        format!("{sign}{},{}", thousands(abs / 10), abs % 10)
-    }
-
     #[test]
     fn thousands_groups_from_the_right() {
         assert_eq!(thousands(0), "0");
@@ -3090,35 +3191,8 @@ mod tests {
     }
 
     #[test]
-    fn percent_and_tenths_use_the_french_decimal_comma() {
+    fn percent_uses_the_french_decimal_comma() {
         assert_eq!(percent(2_386.0, 13_312.0), "17,9");
-        assert_eq!(tenths(2_154.7), "2\u{202f}154,7");
-        assert_eq!(tenths(11_157.3), "11\u{202f}157,3");
-    }
-
-    /// Rounding a tenth up has to carry into the units, and past them.
-    ///
-    /// Written because the first version of `tenths` truncated the whole part
-    /// and rounded the fraction *separately*, so anything from x.95 up
-    /// printed a tenth of "10": `11 157,10`. The two figures this function
-    /// exists for are read as budget headroom — a tenth that reads as ten is
-    /// the kind of thing nobody re-checks.
-    #[test]
-    fn tenths_carries_into_the_whole_part() {
-        assert_eq!(tenths(11_157.96), "11\u{202f}158,0");
-        assert_eq!(tenths(999.97), "1\u{202f}000,0");
-        assert_eq!(tenths(9.95), "10,0");
-        assert_eq!(tenths(0.04), "0,0");
-    }
-
-    /// A negative inversion margin is the whole point of printing one: it
-    /// says the two guards have swapped order. The first version clamped the
-    /// whole part at zero and dropped the sign, so `-2 154,7` printed `0,7`.
-    #[test]
-    fn tenths_keeps_the_sign_of_a_negative_margin() {
-        assert_eq!(tenths(-2_154.7), "-2\u{202f}154,7");
-        assert_eq!(tenths(-0.4), "-0,4");
-        assert_eq!(tenths(0.0), "0,0");
     }
 
     /// What is left under a ceiling — or, past it, by how much.
@@ -3190,16 +3264,16 @@ mod tests {
     /// be measured by *the same encoder as the guards*, not by one that
     /// merely claims to be the same — three verification findings came out of
     /// confusing flate2 level 6 with the system zlib and with Node's. A test
-    /// in this module calls the very `gzipped` the two assertions call and
-    /// reads the very constants they compare against, so the two cannot drift.
+    /// in this module calls the very `gzipped` the sheet assertion calls and
+    /// reads the very constant it compares against, so the two cannot drift.
     /// The alternatives cannot: `flate2` is deliberately a dev-dependency
     /// (see apps/web/Cargo.toml — nothing in the shipped binary compresses
     /// anything), and this crate has no `lib` target, so an `xtask` or a
     /// second `[[bin]]` would have to re-declare both the encoder and its
     /// level, which is exactly the ambiguity this report exists to close.
     ///
-    /// It asserts nothing on purpose — the assertions are the two tests
-    /// below. This one only reads what they read out loud.
+    /// It asserts nothing on purpose — the assertion is the test below.
+    /// This one only reads what it reads out loud.
     #[test]
     fn budget_report() {
         let sheet_raw = crate::assets::STYLESHEET.len();
@@ -3207,15 +3281,6 @@ mod tests {
         let declarations_source = css();
         let declarations_raw = declarations_source.len();
         let declarations = gzipped(declarations_source.as_bytes());
-
-        // The share of the compressed sheet the declarations occupy, and the
-        // two readings of the ordering constraint it produces. The pair of
-        // guards inverts — the sheet ceiling firing before the declarations
-        // one — when `SHEET_CEILING` drops below this floor.
-        let share = declarations as f64 / sheet as f64;
-        let inversion_floor = DECLARATIONS_CEILING as f64 / share;
-        let inversion_margin = SHEET_CEILING as f64 - inversion_floor;
-        let declarations_at_inversion = SHEET_CEILING as f64 * share;
 
         let inline_styles: usize = rust_sources()
             .iter()
@@ -3258,7 +3323,8 @@ mod tests {
                 headroom(sheet, SHEET_CEILING)
             ),
             String::new(),
-            "Déclarations — la même feuille, commentaires retirés".to_string(),
+            "Déclarations — la même feuille, commentaires retirés (sans plafond".to_string(),
+            "depuis le 2026-10-20 : la redondance est tenue par trois tests)".to_string(),
             format!(
                 "  brut ...................................... {} o",
                 thousands(declarations_raw)
@@ -3266,15 +3332,6 @@ mod tests {
             format!(
                 "  compressées ............................... {} o",
                 thousands(declarations)
-            ),
-            format!(
-                "  DECLARATIONS_CEILING ...................... {} o  ({})",
-                thousands(DECLARATIONS_CEILING),
-                kib_expression(DECLARATIONS_CEILING)
-            ),
-            format!(
-                "  reste ..................................... {}",
-                headroom(declarations, DECLARATIONS_CEILING)
             ),
             String::new(),
             "Part des commentaires — ce que la prose pèse dans la feuille".to_string(),
@@ -3285,32 +3342,6 @@ mod tests {
             format!(
                 "  du compressé .............................. {} %",
                 percent((sheet - declarations) as f64, sheet as f64)
-            ),
-            String::new(),
-            "Ordre des deux garde-fous — lequel mord en premier".to_string(),
-            format!(
-                "  part des déclarations dans la feuille ..... {} %",
-                percent(declarations as f64, sheet as f64)
-            ),
-            format!(
-                "  plancher d'inversion (SHEET_CEILING mini) . {} o",
-                tenths(inversion_floor)
-            ),
-            format!(
-                "  marge d'inversion ......................... {} o",
-                tenths(inversion_margin)
-            ),
-            format!(
-                "  DECLARATIONS_CEILING d'inversion .......... {} o",
-                tenths(declarations_at_inversion)
-            ),
-            format!(
-                "  → {} mord en premier.",
-                if inversion_margin > 0.0 {
-                    "DECLARATIONS_CEILING"
-                } else {
-                    "SHEET_CEILING"
-                }
             ),
             String::new(),
             "Styles inline résiduels dans les routes".to_string(),
@@ -3332,30 +3363,18 @@ mod tests {
     }
 
     #[test]
-    fn the_compressed_stylesheet_still_arrives_in_one_round_trip() {
+    fn the_compressed_stylesheet_arrives_within_two_round_trips() {
         let sheet = gzipped(crate::assets::STYLESHEET.as_bytes());
         assert!(
             sheet <= SHEET_CEILING,
             "the stylesheet compresses to {sheet} bytes; the budget is \
              {SHEET_CEILING} (DESIGN.md → Livraison du CSS). The sheet is \
-             render-blocking on a cold cache, so past this it needs a second \
+             render-blocking on a cold cache, so past this it needs a third \
              round trip before anything paints. There is no /assets to move \
              it to any more — that move already happened (#89) — so the \
              remedy would be splitting the sheet, which is an issue of its \
              own. Do not answer this by deleting comments: the sheet is \
              cached now, the prose is paid once per deploy, not per page view."
-        );
-    }
-
-    #[test]
-    fn the_compressed_declarations_stay_inside_the_design_system_budget() {
-        let declarations = gzipped(css().as_bytes());
-        assert!(
-            declarations <= DECLARATIONS_CEILING,
-            "the declarations compress to {declarations} bytes, ceiling is \
-             {DECLARATIONS_CEILING}. Comments are not counted here, so this is \
-             about the CSS: a rule that restates another one is what to remove. \
-             Raising the ceiling needs a reason in the PR."
         );
     }
 }
