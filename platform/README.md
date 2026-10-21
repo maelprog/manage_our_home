@@ -134,9 +134,10 @@ ignore ce nombre de répliques et ne le remet pas à zéro tout seul.
 
 Le projet `default`, auquel appartiennent toutes les Applications, est
 déclaré dans `components/argocd/appproject.yaml`, puisque l'interface qui
-le crée d'ordinaire ne tourne pas. L'Application `platform` le gère, avec
-`prune` : retirer ce fichier de la kustomization supprimerait le projet,
-et plus aucune Application ne se synchroniserait.
+le crée d'ordinaire ne tourne pas. L'Application `platform` le gère :
+retirer ce fichier de la kustomization supprimerait le projet (en staging
+par le prune automatique ; en prod au premier Sync avec Prune coché), et
+plus aucune Application ne se synchroniserait.
 
 ## Secrets
 

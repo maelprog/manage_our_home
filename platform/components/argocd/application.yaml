@@ -11,10 +11,10 @@
 # Trimmed again on 2026-10-21, the controller at 502 Mi for ~700 objects:
 # Go does not read the cgroup's memory limit, so the controller's garbage
 # collector only aimed at about twice the live heap (GOGC=100), whatever
-# the limit; GOMEMLIMIT gives it a soft one to collect harder against. The
-# server (the web UI,
-# reached by port-forward only) runs no replica until someone scales it up
-# to use it; ignoreDifferences keeps self-heal from scaling it back down.
+# the limit; GOMEMLIMIT gives it a soft one to collect harder against.
+# The server (the web UI, reached by port-forward only) runs no replica
+# until someone scales it up to use it; ignoreDifferences keeps self-heal
+# from scaling it back down.
 # The server is also what creates the default AppProject at start-up:
 # appproject.yaml declares it instead.
 apiVersion: argoproj.io/v1alpha1
