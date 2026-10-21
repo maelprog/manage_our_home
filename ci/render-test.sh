@@ -165,6 +165,7 @@ for overlay in "${overlays[@]}"; do
   [ "$v" = "PreSync /bin/sh -c Never" ] || fail "Job migrate: hook/command/restartPolicy is '$v', expected 'PreSync /bin/sh -c Never'"
   check
   v=$(y 'select(.kind == "Job" and .metadata.name == "migrate") | .spec.template.spec.containers[0].command[2] // ""')
+  # shellcheck disable=SC2016 # the script's own text, not the shell's
   grep -qF 'out=$(migrate 2>&1)' <<< "$v" || fail "Job migrate: its shell does not run the migrate command"
   # The previous run deleted when the next one is created, not when it
   # succeeds or fails: its logs stay readable until the next sync.
