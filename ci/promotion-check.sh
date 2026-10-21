@@ -16,6 +16,16 @@
 # of the file must be what prod renders: no newName, newTag or patch that
 # moves an application image behind it.
 #
+# Every image prod renders is checked, a container's (`containers`,
+# `initContainers`, `ephemeralContainers`) or a volume's
+# (`volumes[].image.reference`): the application's must be the pair's,
+# MinIO's and its client's are the third parties', and any other fails.
+# A third party's image, tag and digest, is held to the same rule as the
+# pair, container by container: unchanged from what prod renders at the
+# tip of <base>, or what staging renders there, or what prod rendered at
+# an earlier commit of <base> (a revert). A patch of the prod overlay
+# alone that moves MinIO to another digest of its repository fails.
+#
 #   ci/promotion-check.sh <base>
 #
 # Needs git, kustomize and yq (mikefarah, v4) on PATH.
@@ -28,8 +38,11 @@ if [ $# -ne 1 ]; then
 fi
 base=$1
 root=$(cd "$(dirname "$0")/.." && pwd)
-prod=apps/manage-our-home/overlays/prod/kustomization.yaml
-staging=apps/manage-our-home/overlays/staging/kustomization.yaml
+app_dir=apps/manage-our-home
+prod=$app_dir/overlays/prod/kustomization.yaml
+staging=$app_dir/overlays/staging/kustomization.yaml
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
 
 # `<name>@<digest>` of each application image, sorted, on one line.
 pair() {
@@ -65,12 +78,41 @@ ref_of() { # image name -> name@digest in the prod overlay
 }
 api_ref=$(ref_of ghcr.io/maelprog/manage-our-home-api)
 web_ref=$(ref_of ghcr.io/maelprog/manage-our-home-web)
-# Every container of the render, whatever its kind (Pod, Deployment, Job,
-# CronJob…): each `containers`, `initContainers` and `ephemeralContainers`
-# list of each document, as `<kind>/<name>/<container>`. The
-# application's, with the image each must run; the third parties' (MinIO
-# and its client, pinned by tag and digest by render-test.sh), with the
-# repository theirs must come from. Any other container fails.
+# Every image of a render, whatever its kind (Pod, Deployment, Job,
+# CronJob…), one per line: each container of the `containers`,
+# `initContainers` and `ephemeralContainers` lists of each document, as
+# `<kind>/<name>/<container> <image>`, and each volume of an image, as
+# `<kind>/<name>/volume:<volume> <image>`.
+images_of() {
+  yq -N '
+    .kind as $k | .metadata.name as $n
+    | .. | select(tag == "!!map")
+    | ((((.containers // []) + (.initContainers // []) + (.ephemeralContainers // []))[]
+        | $k + "/" + $n + "/" + .name + " " + .image),
+      ((.volumes // [])[] | select(has("image"))
+        | $k + "/" + $n + "/volume:" + .name + " " + (.image.reference // "")))'
+}
+# images_of the render of <overlay> as <base> holds it at <commit>, kept
+# in $work; fails if it does not render.
+render_at() { # commit overlay
+  local out="$work/render-$1-$2"
+  if [ ! -e "$out" ]; then
+    rm -rf "$work/tree"
+    mkdir "$work/tree"
+    git -C "$base" archive "$1" "$app_dir" | tar -x -C "$work/tree" \
+      && kustomize build "$work/tree/$app_dir/overlays/$2" | images_of > "$out.tmp" \
+      || return 1
+    mv "$out.tmp" "$out"
+  fi
+  cat "$out"
+}
+image_in() { # id, in images_of on stdin
+  awk -v id="$1" '$1 == id { print $2 }'
+}
+# The application's containers, with the image each must run; the third
+# parties' (MinIO and its client, pinned by tag and digest by
+# render-test.sh), with the repository theirs must come from, the image
+# itself compared with staging's below. Any other image fails.
 declare -A app=(
   [Deployment/api/api]=$api_ref
   [Job/migrate/migrate]=$api_ref
@@ -80,16 +122,12 @@ declare -A third=(
   [StatefulSet/minio/minio]='^docker\.io/bitnamilegacy/minio:'
   [Job/minio-bucket/bucket]='^docker\.io/bitnamilegacy/minio-client:'
 )
-if ! rendered=$(kustomize build "$(dirname "$root/$prod")" | yq -N '
-    .kind as $k | .metadata.name as $n
-    | .. | select(tag == "!!map")
-    | ((.containers // []) + (.initContainers // []) + (.ephemeralContainers // []))[]
-    | $k + "/" + $n + "/" + .name + " " + .image'); then
+if ! rendered=$(kustomize build "$(dirname "$root/$prod")" | images_of); then
   echo "FAIL: kustomize build of the prod overlay" >&2
   exit 1
 fi
 bad=0
-declare -A seen=()
+declare -A seen=() head_third=()
 while read -r id image; do
   [ -n "$id" ] || continue
   seen[$id]=1
@@ -99,12 +137,13 @@ while read -r id image; do
       bad=1
     fi
   elif [ -n "${third[$id]+x}" ]; then
+    head_third[$id]=$image
     if ! [[ "$image" =~ ${third[$id]} ]]; then
       echo "FAIL: prod renders $id with '$image', not from ${third[$id]}" >&2
       bad=1
     fi
   else
-    echo "FAIL: prod renders a container this check does not know: $id ($image)" >&2
+    echo "FAIL: prod renders an image this check does not know: $id ($image)" >&2
     bad=1
   fi
 done <<< "$rendered"
@@ -113,6 +152,42 @@ for id in "${!app[@]}"; do
     echo "FAIL: prod no longer renders $id" >&2
     bad=1
   fi
+done
+[ "$bad" -eq 0 ] || exit 1
+
+# The third parties, container by container: what prod renders at the
+# tip of <base>, or what staging renders there, or what prod rendered at
+# an earlier commit of <base>.
+if ! base_prod=$(render_at HEAD prod) || ! base_staging_images=$(render_at HEAD staging); then
+  echo "FAIL: kustomize build of the base branch's overlays" >&2
+  exit 1
+fi
+for id in "${!head_third[@]}"; do
+  image=${head_third[$id]}
+  [ "$image" != "$(image_in "$id" <<< "$base_prod")" ] || continue
+  staging_image=$(image_in "$id" <<< "$base_staging_images")
+  if [ "$image" = "$staging_image" ]; then
+    echo "prod: $id promoted to the image staging runs ($image)"
+    continue
+  fi
+  reverted=""
+  for c in $(git -C "$base" log --format=%H -- "$app_dir"); do
+    if [ "$( (render_at "$c" prod 2> /dev/null || true) | image_in "$id")" = "$image" ]; then
+      reverted=$c
+      break
+    fi
+  done
+  if [ -n "$reverted" ]; then
+    echo "prod: $id back to the image it ran at $(git -C "$base" log -1 --format='%h %s' "$reverted")"
+    continue
+  fi
+  {
+    echo "FAIL: prod would run $id on an image that is neither the one staging runs nor one prod ran before."
+    echo "  proposed for prod:  $image"
+    echo "  staging runs:       ${staging_image:-(no such container)}"
+    echo "Only what ran in staging is promoted: move staging to this image first."
+  } >&2
+  bad=1
 done
 [ "$bad" -eq 0 ] || exit 1
 
