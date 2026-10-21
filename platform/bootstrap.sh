@@ -47,5 +47,8 @@ helm upgrade --install "$release" "$chart" \
   --values "$work/values.yaml" \
   --wait --timeout 10m
 
+echo "== default AppProject"
+kubectl apply -f "$here/components/argocd/appproject.yaml"
+
 echo "== root Application ($root_app)"
 kubectl apply -f "$root_app"
