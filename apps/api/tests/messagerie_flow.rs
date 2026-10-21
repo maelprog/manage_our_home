@@ -1179,10 +1179,13 @@ async fn unread_lists_only_what_arrived_after_the_read_marker(db: PgPool) {
     let group_id = create_group(&router, &owner, "Foyer lecture").await;
     invite_and_join(&router, &group_id, &owner, &member).await;
 
+    // Older than the owner's marker below: read for the owner (who wrote it
+    // anyway), still unread for the member, who never marked anything.
+    post_message(&router, &group_id, &owner, "bonjour").await;
     post_message(&router, &group_id, &member, "un").await;
     let (_, second_at) = post_message(&router, &group_id, &member, "deux").await;
 
-    // Never read anything: both are unread.
+    // Never read anything: both of the member's messages are unread.
     let (contents, has_more, total) = unread(&router, &group_id, &owner, None).await;
     assert_eq!(contents.len(), 2, "{contents:?}");
     assert!(!has_more);
@@ -1193,18 +1196,19 @@ async fn unread_lists_only_what_arrived_after_the_read_marker(db: PgPool) {
     assert!(contents.is_empty(), "{contents:?}");
     assert_eq!(total, 0);
 
-    // A newer message is unread again — and only for the reader who marked.
+    // A newer message is unread again for the owner.
     post_message(&router, &group_id, &member, "trois").await;
     let (contents, _, total) = unread(&router, &group_id, &owner, None).await;
     assert_eq!(contents, vec!["trois".to_string()]);
     assert_eq!(total, 1);
 
-    // The member never marked anything read, but wrote all three: their own
-    // messages are not unread for them (#551).
+    // The owner's marker is the owner's alone: the member never marked
+    // anything, so the owner's "bonjour" — older than that marker — is still
+    // unread for them. Their own three messages are not (#551).
     let (contents, has_more, total) = unread(&router, &group_id, &member, None).await;
-    assert!(contents.is_empty(), "{contents:?}");
+    assert_eq!(contents, vec!["bonjour".to_string()]);
     assert!(!has_more);
-    assert_eq!(total, 0);
+    assert_eq!(total, 1);
 }
 
 /// Blocker B1 as a backend contract: marking read "up to" an older message
