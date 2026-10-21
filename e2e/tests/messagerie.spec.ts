@@ -436,9 +436,17 @@ test.describe("Messagerie — unread badge in the navigation (#463)", () => {
     await registerAndLogin(member, "e2e-msgbadgemember", "Badge Member");
     await member.goto(href);
     await member.getByRole("button", { name: "Rejoindre le groupe" }).click();
-    await sendMessage(member, "Premier non lu");
-    await sendMessage(member, "Deuxième non lu");
-    await sendMessage(member, "Troisième non lu");
+    // Posted without the redirect to /messagerie being followed: the member
+    // never opens the thread, so their read marker stays behind their own
+    // three messages — only the exclusion of the author keeps them off the
+    // count.
+    for (const content of ["Premier non lu", "Deuxième non lu", "Troisième non lu"]) {
+      const response = await member.request.post("/messagerie", {
+        form: { content },
+        maxRedirects: 0,
+      });
+      expect(response.status()).toBe(303);
+    }
 
     // The author is not told about their own messages.
     await member.goto("/");
