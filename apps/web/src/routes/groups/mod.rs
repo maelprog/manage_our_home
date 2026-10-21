@@ -20,9 +20,9 @@ use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
 use uuid::Uuid;
 
-use crate::app::app_header;
+use crate::app::{app_header, nav_link_is_current};
 use crate::family::{active_group_id_from_headers, resolve_active_group, set_active_group_cookie};
-use crate::state::{fetch_groups, AppState};
+use crate::state::{api_request_auth, fetch_groups, AppState};
 
 pub(crate) fn cookie_of(headers: &HeaderMap) -> Option<String> {
     headers
@@ -42,6 +42,11 @@ pub(crate) fn role_label(role: &str) -> &'static str {
 
 /// Fetches the caller's groups and renders the shared authenticated
 /// header (nav + family switcher) for a Groups page.
+///
+/// Every authenticated page goes through here, so this is also where the
+/// Messagerie tab's unread count is fetched (#463) — except on the
+/// messagerie itself, which advances the read marker *after* its header is
+/// built: the count would be the one the page is clearing.
 pub(crate) async fn header_with_groups(
     state: &AppState,
     headers: &HeaderMap,
@@ -54,8 +59,27 @@ pub(crate) async fn header_with_groups(
         .unwrap_or_default();
     let preferred = active_group_id_from_headers(headers);
     let active = resolve_active_group(&groups, preferred);
-    let header = app_header(me, &groups, active, redirect_to);
+    let unread = match active {
+        Some(g) if !nav_link_is_current("/messagerie", redirect_to) => {
+            fetch_unread_count(state, cookie.as_deref(), g.group_id).await
+        }
+        _ => 0,
+    };
+    let header = app_header(me, &groups, active, redirect_to, unread);
     (groups, header)
+}
+
+/// `GET /groups/:id/messages/unread_count` (#463). Any failure — apps/api
+/// unreachable, a refusal, a body that does not parse — counts as 0: the
+/// tab loses its pastille, the page still renders.
+async fn fetch_unread_count(state: &AppState, cookie: Option<&str>, group_id: Uuid) -> u64 {
+    let path = format!("/groups/{group_id}/messages/unread_count");
+    match api_request_auth(state, reqwest::Method::GET, &path, cookie, None).await {
+        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
+            resp.body["unread_count"].as_u64().unwrap_or(0)
+        }
+        _ => 0,
+    }
 }
 
 #[derive(serde::Deserialize)]

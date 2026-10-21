@@ -396,6 +396,10 @@ pub fn build_router(state: AppState) -> Router {
             post(messagerie::messages::mark_messages_read),
         )
         .route(
+            "/groups/:id/messages/unread_count",
+            get(messagerie::messages::unread_count),
+        )
+        .route(
             "/groups/:id/messages/:message_id",
             axum::routing::patch(messagerie::messages::update_message)
                 .delete(messagerie::messages::delete_message),

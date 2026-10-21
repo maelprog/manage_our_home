@@ -1434,6 +1434,97 @@ async fn a_non_member_cannot_mark_a_family_thread_read(db: PgPool) {
     assert_eq!(rows, 0);
 }
 
+// -- unread count for the navigation badge (#463) ----------------------------
+
+/// `GET …/messages/unread_count`, returning `unread_count`.
+async fn unread_count(router: &axum::Router, group_id: &str, cookie: &str) -> i64 {
+    let res = call(
+        router,
+        Method::GET,
+        &format!("/groups/{group_id}/messages/unread_count"),
+        Some(cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    json_body(res).await["unread_count"].as_i64().unwrap()
+}
+
+/// The nav badge's count: another member's messages after the caller's read
+/// marker, and nothing the caller wrote themselves.
+#[sqlx::test]
+async fn the_unread_count_leaves_out_the_callers_own_messages(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner = register_verify_login(
+        &router,
+        &db,
+        "msg-badge-owner@example.test",
+        "owner-password1",
+    )
+    .await;
+    let member = register_verify_login(
+        &router,
+        &db,
+        "msg-badge-member@example.test",
+        "member-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner, "Foyer pastille").await;
+    invite_and_join(&router, &group_id, &owner, &member).await;
+
+    assert_eq!(unread_count(&router, &group_id, &owner).await, 0);
+
+    post_message(&router, &group_id, &member, "un").await;
+    post_message(&router, &group_id, &member, "deux").await;
+    let (_, third_at) = post_message(&router, &group_id, &member, "trois").await;
+    // The owner's own message, posted without opening the thread: unread by
+    // the watermark's rule, but not something to be told about.
+    post_message(&router, &group_id, &owner, "le mien").await;
+
+    assert_eq!(unread_count(&router, &group_id, &owner).await, 3);
+    // The member wrote three of the four; only the owner's one is news.
+    assert_eq!(unread_count(&router, &group_id, &member).await, 1);
+
+    mark_read(&router, &group_id, &owner, Some(&third_at)).await;
+    assert_eq!(unread_count(&router, &group_id, &owner).await, 0);
+
+    post_message(&router, &group_id, &member, "quatre").await;
+    assert_eq!(unread_count(&router, &group_id, &owner).await, 1);
+}
+
+/// Same `require_role` bar as the rest of the thread: a non-member learns
+/// nothing, not even a count.
+#[sqlx::test]
+async fn a_non_member_cannot_read_a_family_unread_count(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner = register_verify_login(
+        &router,
+        &db,
+        "msg-badge-out-owner@example.test",
+        "owner-password1",
+    )
+    .await;
+    let outsider = register_verify_login(
+        &router,
+        &db,
+        "msg-badge-out-other@example.test",
+        "other-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner, "Foyer pastille fermé").await;
+    post_message(&router, &group_id, &owner, "privé").await;
+
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/messages/unread_count"),
+        Some(&outsider),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+}
+
 // --- Several API replicas (#429) ---
 //
 // Each `test_state` is one replica: its own `MessageHub` and Postgres
