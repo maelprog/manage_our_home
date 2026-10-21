@@ -44,7 +44,7 @@ use manage_our_home_shared::dto::stocks::{
     StockItemResponse,
 };
 use manage_our_home_shared::validation::stocks::{
-    normalize_unit, validate_item_form, ItemFormError,
+    normalize_unit, validate_item_form, ItemFormError, DEFAULT_UNIT,
 };
 use uuid::Uuid;
 
@@ -253,7 +253,7 @@ pub(crate) fn prefilled_form(
     ItemForm {
         name: product.map(product_label).unwrap_or_default(),
         quantity: "1".to_string(),
-        unit: "unité".to_string(),
+        unit: DEFAULT_UNIT.to_string(),
         barcode: if with_code {
             code.to_string()
         } else {
