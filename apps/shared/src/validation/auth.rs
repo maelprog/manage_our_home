@@ -52,8 +52,9 @@ pub fn validate_password(password: &str) -> Result<(), &'static str> {
 
 /// `invalid_email` unless the value has the basic `x@y.z` shape: a non-empty
 /// local part, a single `@`, and a domain containing a dot with non-empty
-/// labels on both sides of it. No surrounding whitespace allowed. This is a
-/// shape check, not RFC 5322 compliance.
+/// labels on both sides of it. No surrounding whitespace allowed: callers
+/// pass the address through [`normalize_email`] first. This is a shape
+/// check, not RFC 5322 compliance.
 pub fn validate_email(email: &str) -> Result<(), &'static str> {
     if email != email.trim() {
         return Err("invalid_email");
@@ -72,6 +73,22 @@ pub fn validate_email(email: &str) -> Result<(), &'static str> {
         return Err("invalid_email");
     }
     Ok(())
+}
+
+/// The form under which an address is stored and looked up (#459):
+/// surrounding whitespace trimmed, every letter lowercased. Every address
+/// the API receives — registration, login, forgotten password, resend,
+/// Google sign-in, invitation — goes through it before being validated,
+/// stored or compared, so `Alice@Example.com` and `alice@example.com` are
+/// one account. RFC 5321 leaves the local part's case to the receiving
+/// server, but no mainstream provider tells the two apart, and a member
+/// typing a capital at login is far likelier than two people owning
+/// addresses that differ only by case.
+///
+/// Only case and surrounding whitespace are folded: dots and `+` tags are
+/// provider-specific and stay as typed.
+pub fn normalize_email(email: &str) -> String {
+    email.trim().to_lowercase()
 }
 
 /// `display_name_required` when the name is empty after trimming surrounding
@@ -387,11 +404,51 @@ mod tests {
 
     #[test]
     fn emails_with_surrounding_whitespace_are_rejected() {
-        // Server-side semantics: the API stores and matches the exact
-        // string, so the form must reject padded input rather than
-        // silently trimming it.
+        // `validate_email` checks the shape of an address already passed
+        // through `normalize_email`, which trims: padding reaching it
+        // means a caller skipped the normalisation.
         assert_eq!(validate_email(" a@b.co"), Err("invalid_email"));
         assert_eq!(validate_email("a@b.co "), Err("invalid_email"));
+    }
+
+    // -- normalize_email ----------------------------------------------
+
+    #[test]
+    fn normalize_email_lowercases_the_whole_address() {
+        assert_eq!(normalize_email("Alice@Example.COM"), "alice@example.com");
+        assert_eq!(normalize_email("ALICE@example.com"), "alice@example.com");
+    }
+
+    #[test]
+    fn normalize_email_trims_surrounding_whitespace() {
+        assert_eq!(normalize_email("  bob@x.test\t\n"), "bob@x.test");
+    }
+
+    #[test]
+    fn normalize_email_leaves_an_already_normal_address_unchanged() {
+        assert_eq!(normalize_email("carol@x.test"), "carol@x.test");
+    }
+
+    #[test]
+    fn normalize_email_keeps_inner_characters_other_than_case() {
+        // Only case and surrounding whitespace are folded: dots and `+`
+        // tags are the provider's business, not ours.
+        assert_eq!(normalize_email("D.Ave+Tag@X.test"), "d.ave+tag@x.test");
+    }
+
+    #[test]
+    fn normalize_email_is_idempotent() {
+        let once = normalize_email(" Éloïse@Exemple.FR ");
+        assert_eq!(once, "éloïse@exemple.fr");
+        assert_eq!(normalize_email(&once), once);
+    }
+
+    #[test]
+    fn normalized_padded_mixed_case_address_passes_validation() {
+        assert_eq!(
+            validate_email(&normalize_email(" Alice@Example.com ")),
+            Ok(())
+        );
     }
 
     // -- validate_display_name --------------------------------------------

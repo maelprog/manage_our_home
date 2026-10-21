@@ -4,8 +4,8 @@ use axum::Form;
 use leptos::prelude::*;
 use manage_our_home_shared::dto::auth::RegisterRequest;
 use manage_our_home_shared::validation::auth::{
-    validate_age_declaration, validate_display_name, validate_email, validate_password,
-    validate_terms_acceptance, MINIMUM_AGE_YEARS,
+    normalize_email, validate_age_declaration, validate_display_name, validate_email,
+    validate_password, validate_terms_acceptance, MINIMUM_AGE_YEARS,
 };
 
 use crate::app::{password_error_message, password_field, shell, Width};
@@ -147,7 +147,7 @@ pub async fn post(
         declares_minimum_age,
         accepts_terms,
     };
-    if validate_email(&form.email).is_err() {
+    if validate_email(&normalize_email(&form.email)).is_err() {
         return Html(page(
             &form.email,
             &form.display_name,
