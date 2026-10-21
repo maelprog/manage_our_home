@@ -268,6 +268,10 @@ ci_sealed_only
 kubectl -n "$ns" get job/migrate -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/hook}{"\n"}'
 kubectl -n "$ns" wait --for=condition=Complete job/migrate --timeout=0
 kubectl -n "$ns" logs job/migrate
+# Complete at its first pod: the race with the migration role's password
+# is waited out inside it (#520, migrate-job.yaml), not left to a retry.
+failed=$(kubectl -n "$ns" get job/migrate -o jsonpath='{.status.failed}')
+[ "${failed:-0}" -eq 0 ] || { kubectl -n "$ns" get pods -l app.kubernetes.io/name=migrate; echo "::error::job/migrate: $failed pod(s) failed before it completed"; exit 1; }
 kubectl -n "$ns" wait --for=condition=Available deploy/api deploy/web --timeout=60s
 kubectl -n "$ns" get pods -o wide
 
@@ -387,8 +391,20 @@ if [ -n "$restarted" ]; then
 fi
 oom=$(oom_killed)
 [ -z "$oom" ] || { echo "::error::OOM-killed: $oom"; exit 1; }
-notready=$(kubectl get pods -A -o yaml \
-  | yq e '.items[] | select(.status.phase != "Succeeded") | select([.status.containerStatuses[]?.ready] | all | not) | .metadata.namespace + "/" + .metadata.name' -)
+# Not Ready: every pod with a container not ready, but those that ran to
+# their end — Succeeded, or Failed in a Job whose retry then completed it
+# (#520). A Failed pod outside a Job, or in a Job failed or still running,
+# still counts — even with no container status (an evicted pod), which
+# `all` of an empty list would pass.
+not_ready() { # pods.yaml jobs.yaml
+  yq e '.items[] | select([.status.conditions[]? | select(.type == "Complete" and .status == "True")] | length > 0) | .metadata.namespace + "/" + .metadata.name' "$2" \
+    > "$work/jobs.complete"
+  yq e '.items[] | select(.status.phase != "Succeeded") | select(.status.phase == "Failed" or ([.status.containerStatuses[]?.ready] | all | not)) | .metadata.namespace + "/" + .metadata.name + " " + .status.phase + " " + .metadata.namespace + "/" + ([.metadata.ownerReferences[]? | select(.kind == "Job") | .name] | .[0] // "")' "$1" \
+    | awk 'FILENAME != "-" { complete[$1] = 1; next } !($2 == "Failed" && $3 in complete) { print $1 }' "$work/jobs.complete" -
+}
+kubectl get pods -A -o yaml > "$work/pods.yaml"
+kubectl get jobs -A -o yaml > "$work/jobs.yaml"
+notready=$(not_ready "$work/pods.yaml" "$work/jobs.yaml")
 [ -z "$notready" ] || { echo "::error::pods not Ready: $notready"; exit 1; }
 for a in platform argocd sealed-secrets cert-manager cloudnative-pg kyverno postgres-staging "$app"; do
   wait_app "$a" 5
