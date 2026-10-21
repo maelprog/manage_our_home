@@ -1,6 +1,6 @@
 //! Pure, dependency-light logic for the Grocery-list screens (front epic F6,
 //! issue #21), shared by `apps/web`'s SSR pages. Written test-first per
-//! `.claude/CLAUDE.md`'s TDD process. Four concerns live here so the UI and
+//! `.claude/CLAUDE.md`'s TDD process. Five concerns live here so the UI and
 //! the fixed backend (`apps/api/src/grocery_list/`) can never drift:
 //!
 //! - `validate_item_form` mirrors the backend's create/update guards
@@ -12,6 +12,8 @@
 //!   may create/read/check off (that lighter bar is *not* gated here).
 //! - `fmt_num` / `quantity_label` format the optional quantity/unit for
 //!   display and form pre-fill (no trailing `.0` on whole numbers).
+//! - `normalize_unit` fills in the default unit when a quantity is typed
+//!   without one (#458); `apps/api` applies it to every manual write.
 //! - `source_label` turns the informational `source` (`manual`/`recipe`/
 //!   `low_stock`) into the French provenance badge the list shows on
 //!   auto-generated rows.
@@ -51,6 +53,19 @@ pub fn validate_item_form(name: &str, quantity: Option<f64>) -> Result<(), ItemF
         }
     }
     Ok(())
+}
+
+/// The unit to store for a grocery item (#458): a typed unit is kept,
+/// trimmed; a quantity typed without one gets `stocks::DEFAULT_UNIT`
+/// (a quantity of 3 reads "3 unité"); with neither, the unit stays empty
+/// (`None`).
+/// `apps/api` applies it on create and on update, to the values the row
+/// ends up with.
+pub fn normalize_unit(quantity: Option<f64>, unit: Option<&str>) -> Option<String> {
+    match unit.map(str::trim) {
+        Some(u) if !u.is_empty() => Some(u.to_string()),
+        _ => quantity.map(|_| super::stocks::DEFAULT_UNIT.to_string()),
+    }
 }
 
 /// Mirror of `apps/api/src/grocery_list/mod.rs::can_modify`: the item's
@@ -98,6 +113,36 @@ pub fn source_label(source: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- normalize_unit ------------------------------------------------------
+
+    #[test]
+    fn a_quantity_without_unit_gets_the_default_unit() {
+        assert_eq!(normalize_unit(Some(3.0), None), Some("unité".to_string()));
+        assert_eq!(
+            normalize_unit(Some(3.0), Some("")),
+            Some("unité".to_string())
+        );
+        assert_eq!(
+            normalize_unit(Some(0.0), Some("  ")),
+            Some("unité".to_string())
+        );
+    }
+
+    #[test]
+    fn no_quantity_and_no_unit_stays_empty() {
+        assert_eq!(normalize_unit(None, None), None);
+        assert_eq!(normalize_unit(None, Some(" ")), None);
+    }
+
+    #[test]
+    fn a_filled_unit_is_kept_trimmed_with_or_without_quantity() {
+        assert_eq!(
+            normalize_unit(Some(1.0), Some(" kg ")),
+            Some("kg".to_string())
+        );
+        assert_eq!(normalize_unit(None, Some("L")), Some("L".to_string()));
+    }
 
     // -- validate_item_form --------------------------------------------------
 

@@ -4,7 +4,7 @@ use axum::{http::StatusCode, Json};
 use chrono::{NaiveDate, Utc};
 use manage_our_home_shared::dto::stocks::SORT_BY_EXPIRY;
 use manage_our_home_shared::validation::auth::paris_day;
-use manage_our_home_shared::validation::stocks::{expiry_status, ExpiryStatus};
+use manage_our_home_shared::validation::stocks::{expiry_status, normalize_unit, ExpiryStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -22,7 +22,9 @@ pub struct CreateStockItemRequest {
     pub category: Option<String>,
     #[serde(default)]
     pub quantity: f64,
-    #[serde(default = "default_unit")]
+    /// Absent, empty or blank → `DEFAULT_UNIT` ("unité", #458), through
+    /// `normalize_unit`.
+    #[serde(default)]
     pub unit: String,
     pub reorder_threshold: Option<f64>,
     /// The nearest expiry date among the article's units (#401: one date per
@@ -47,10 +49,6 @@ fn barcode_to_store(barcode: Option<&str>) -> AppResult<Option<String>> {
 
 /// The unique index of 0026: one article per code in a family.
 const BARCODE_KEY: &str = "stock_items_group_barcode_key";
-
-fn default_unit() -> String {
-    "unit".to_string()
-}
 
 /// Serde's blanket `Option<T>` impl treats an explicit JSON `null` the same
 /// as a missing key (both call `visit_none`), so a naive `Option<Option<T>>`
@@ -187,9 +185,7 @@ pub async fn create_stock_item(
     if name.is_empty() {
         return Err(AppError::BadRequest("name_required".into()));
     }
-    if body.unit.trim().is_empty() {
-        return Err(AppError::BadRequest("unit_required".into()));
-    }
+    let unit = normalize_unit(&body.unit);
     validate_request(body.quantity, body.reorder_threshold)?;
     let barcode = barcode_to_store(body.barcode.as_deref())?;
 
@@ -208,7 +204,7 @@ pub async fn create_stock_item(
         name,
         body.category,
         body.quantity,
-        body.unit,
+        unit,
         body.reorder_threshold,
         body.expires_on,
         barcode,
@@ -348,11 +344,8 @@ pub async fn update_stock_item(
         Some(n) => Some(n.to_string()),
         None => None,
     };
-    let unit = match body.unit.as_deref().map(str::trim) {
-        Some("") => return Err(AppError::BadRequest("unit_required".into())),
-        Some(u) => Some(u.to_string()),
-        None => None,
-    };
+    // A blank unit becomes the default one (#458) instead of an error.
+    let unit = body.unit.as_deref().map(normalize_unit);
     let category = match body.category {
         Some(c) => c,
         None => existing.category,

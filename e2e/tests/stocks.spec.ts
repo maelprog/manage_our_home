@@ -135,6 +135,15 @@ test.describe("Stocks — list & create", () => {
     await expect(page.getByText("Le nom est obligatoire.")).toBeVisible();
   });
 
+  // #458: the unit field is optional; left empty, the article gets « unité ».
+  test("an empty unit is saved as « unité »", async ({ page }) => {
+    await registerAndLogin(page, "e2e-stunit", "Unit User");
+    await createGroup(page, "Famille Oeufs");
+    await createItem(page, { name: "Oeufs", quantity: "6", unit: "" });
+    await openItemDetail(page, "Oeufs");
+    await expect(page.getByText("Quantité : 6 unité")).toBeVisible();
+  });
+
   test("unknown item id shows the not-found page", async ({ page }) => {
     await registerAndLogin(page, "e2e-st404", "Stock 404");
     await createGroup(page, "Famille 404");
