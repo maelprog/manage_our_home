@@ -258,9 +258,10 @@ pub async fn list_messages(
 /// counts — `created_at` strictly after the caller's watermark, every
 /// message when there is none — **less the caller's own messages**: what
 /// one wrote oneself is not news. `unread_total` (the home card) still
-/// counts them; posting goes through `/messagerie`, whose reload advances
-/// the watermark past one's own message, so the two only part when a member
-/// wrote after the last message they were shown.
+/// counts them. The two only part when the caller has messages of their own
+/// newer than their watermark: posting goes through `/messagerie`, whose
+/// reload advances the watermark past the message just sent, so in practice
+/// that is when this advance failed (it is best-effort).
 pub async fn unread_count(
     State(state): State<AppState>,
     auth: AuthUser,
