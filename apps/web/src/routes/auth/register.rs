@@ -384,3 +384,59 @@ mod tests {
         assert!(!input_named(&back, "minimum_age").contains("checked"));
     }
 }
+
+/// The route on the real router, against a stand-in apps/api.
+#[cfg(test)]
+mod route_tests {
+    use axum::body::{to_bytes, Body};
+    use axum::http::{header, Method, Request, StatusCode};
+    use axum::routing::post;
+    use axum::Router;
+    use tower::ServiceExt;
+
+    use crate::state::AppState;
+
+    /// An apps/api whose registration creates every account it is sent.
+    async fn fake_api() -> String {
+        let app = Router::new().route("/auth/register", post(|| async { StatusCode::CREATED }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    /// #459: the form checks the address as apps/api does, once normalised,
+    /// so surrounding spaces and capitals the API accepts are not refused
+    /// here first.
+    #[tokio::test]
+    async fn a_padded_address_in_capitals_is_not_refused_by_the_form() {
+        let router = crate::build_router(AppState {
+            http: reqwest::Client::new(),
+            api_internal_base_url: fake_api().await,
+            api_public_base_url: "/api".into(),
+            body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
+            upload_gate: manage_our_home_http_guard::UploadGate::production(),
+            shutdown: manage_our_home_http_guard::Shutdown::new(),
+        });
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/register")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(
+                "email=+Alice%40Example.com+&password=correct+horse+battery+staple\
+                 &display_name=Alice&minimum_age=on&accepts_terms=on",
+            ))
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        let status = response.status();
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .map(|v| v.to_str().unwrap().to_owned());
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!body.contains("Adresse email invalide."), "{body}");
+        assert!(status.is_redirection(), "{status}: {body}");
+        assert_eq!(location.as_deref(), Some("/register/check-email"));
+    }
+}
