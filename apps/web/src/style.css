@@ -224,7 +224,7 @@ form { display: flex; flex-direction: column; gap: var(--s3); margin: 0; }
 label, .field { display: flex; flex-direction: column; gap: var(--s1); font-size: var(--t-sm); }
 /* The row, not the 13px native box, is what a finger aims at: the label
    toggles its checkbox, so its height is the target (#74). */
-.field.inline { flex-direction: row; align-items: center; gap: var(--s2x); font-weight: 400; min-height: var(--s12); }
+.field.inline { flex-direction: row; align-items: center; gap: var(--s2x); min-height: var(--s12); }
 input, select, textarea {
   font-size: var(--t-base);
   /* No form control inherits the page font by default: measured in Chromium,

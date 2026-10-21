@@ -589,6 +589,10 @@ feuille. La « taxe sur la documentation » listée plus bas comme coût n°3 de
 l'inlining n'existe plus. L'en-tête de `style.css` le dit désormais au seul
 lecteur que ça concerne : celui qui s'apprête à écrire une règle.
 
+*Le dispositif à deux plafonds dont parle ce paragraphe n'existe plus depuis
+le 2026-10-20 : `DECLARATIONS_CEILING` a été remplacé par trois tests de
+redondance (voir le journal). Le texte est gardé comme raisonnement d'époque.*
+
 **Et donc le dispositif à deux plafonds n'a plus de prose à protéger** — ce
 qui rétrécit l'ordre des deux garde-fous sans l'annuler. Il est tentant, en
 lisant le reste de cette section, de croire que cet ordre garde toute sa
@@ -844,8 +848,8 @@ chacun et qu'un seuil dont le motif a disparu est pire qu'un seuil absent.
 | Seuil | Ce qui le tient | Ce qu'on fait au dépassement |
 |---|---|---|
 | Réponse complète compressée, routes principales | rien — il dépend des données d'un foyer, il se mesure sur une stack semée | alléger le **document** — la feuille n'y est plus |
-| Feuille compressée | `SHEET_CEILING`, `the_compressed_stylesheet_still_arrives_in_one_round_trip` | découper la feuille ; il n'y a plus de `/assets` où la déplacer |
-| Déclarations compressées | `DECLARATIONS_CEILING`, `the_compressed_declarations_stay_inside_the_design_system_budget` | supprimer une règle redondante |
+| Feuille compressée | `SHEET_CEILING`, `the_compressed_stylesheet_arrives_within_two_round_trips` | découper la feuille ; il n'y a plus de `/assets` où la déplacer |
+| Redondance de la feuille (remplace `DECLARATIONS_CEILING` depuis le 2026-10-20) | `no_selector_is_declared_twice_in_the_same_context`, `no_block_sets_the_same_property_twice`, `every_class_the_stylesheet_styles_is_worn_by_something` | fusionner les deux blocs, retirer la déclaration morte ou la règle de la classe que plus rien ne porte — le test nomme la ligne |
 
 Les valeurs des deux plafonds, le poids du jour et ce qui reste sous chacun
 s'impriment avec [la commande du budget](#où-lire-les-chiffres). Leurs
@@ -878,8 +882,11 @@ pas une — c'est ce que la première rédaction de cette section ratait, en
 présentant le choix comme binaire (supprimer le garde-fou, ou le porter à
 14 336) :
 
-- **Borne haute — un aller-retour.** La feuille est bloquante au premier
-  rendu, elle doit donc arriver en un seul : IW10 ⇒ 14 336 o, moins les
+- **Borne haute — deux allers-retours depuis le 2026-10-20, un seul
+  avant.** Ce qui suit est la borne d'un aller-retour, base de la nouvelle :
+  le relèvement et sa dérivation sont au [journal](#journal-des-décisions) et
+  dans le doc-comment de `SHEET_CEILING`. La feuille est bloquante au premier
+  rendu, elle devait donc arriver en un seul : IW10 ⇒ 14 336 o, moins les
   en-têtes de réponse et le cadrage TLS, dont la dérivation chiffrée est dans
   le doc-comment de `SHEET_CEILING`. La borne est conservatrice deux fois.
   D'abord parce que la feuille pèse nettement moins. Ensuite parce qu'elle
@@ -887,7 +894,8 @@ présentant le choix comme binaire (supprimer le garde-fou, ou le porter à
   connexion qui vient de porter le document, un RTT plus tard, avec une
   `cwnd` déjà crue par le slow start — la fenêtre réellement disponible est
   plus large que celle qu'on lui compte.
-- **Borne basse — l'ordre des deux garde-fous.** Le plafond des déclarations
+- **Borne basse — l'ordre des deux garde-fous** *(tombée le 2026-10-20 avec
+  `DECLARATIONS_CEILING`)*. Le plafond des déclarations
   n'est atteint le premier que si celui de la feuille reste au-dessus de
   `DECLARATIONS_CEILING` divisé par la part que les déclarations occupent
   dans la feuille compressée. C'est cette borne, et non la précédente, qui a
@@ -897,10 +905,11 @@ présentant le choix comme binaire (supprimer le garde-fou, ou le porter à
   chaque règle écrite, ce qui est précisément pourquoi ils ne sont plus
   recopiés ici.
 
-Ce plafond a été relevé deux fois, par #89 puis par #72, chaque fois sur un
-arbitrage de l'utilisateur et une dérivation refaite depuis la borne physique.
-Les deux sont au [journal](#journal-des-décisions), aux 2026-08-04 et
-2026-08-06, et dans le doc-comment de la constante. 14 336 aurait aussi été
+Ce plafond a été relevé trois fois, par #89, par #72 puis le 2026-10-20,
+chaque fois sur un arbitrage de l'utilisateur et une dérivation refaite depuis
+la borne physique. Les trois sont au [journal](#journal-des-décisions), aux
+2026-08-04, 2026-08-06 et 2026-10-20, et dans le doc-comment de la constante.
+Ce paragraphe-ci décrit les deux premiers. 14 336 aurait aussi été
 défendable sur la seule borne haute — c'est même le nombre le plus permissif
 qui le soit, et c'est pour ça qu'il n'est pas retenu : un plafond qui ne
 sonnerait qu'après plusieurs lots n'est pas un garde-fou. Le test
@@ -908,7 +917,11 @@ sonnerait qu'après plusieurs lots n'est pas un garde-fou. Le test
 `the_compressed_stylesheet_still_arrives_in_one_round_trip` — renommé, pas
 supprimé.
 
-**Seuil 3 — les déclarations : motif rétréci par #89, valeur relevée par #72.**
+**Seuil 3 — les déclarations : motif rétréci par #89, valeur relevée par #72,
+supprimé le 2026-10-20.** Il comptait des octets et se lisait « aucune règle
+n'en répète une autre » ; il ne parlait donc qu'une fois le total débordé, et
+de la feuille entière plutôt que de la ligne fautive. Trois tests le
+remplacent (tableau ci-dessus). Ce qui suit est l'état d'avant.
 Ce que #89 en disait — même valeur, même remède, même test — a tenu jusqu'à
 #72, qui a relevé le plafond (journal, 2026-08-05) ; le remède et le test, eux,
 n'ont pas bougé. Ce qui suit est le raisonnement de #89 sur la *calibration*,
@@ -948,8 +961,8 @@ une mesure**, et c'est pourquoi la commande le nomme.
 
 #### Où en est le budget aujourd'hui
 
-Ici, nulle part. `SHEET_CEILING`, `DECLARATIONS_CEILING`, le poids du jour et
-ce qui reste sous chacun sont imprimés par
+Ici, nulle part. `SHEET_CEILING`, le poids du jour de la feuille et de ses
+déclarations, et ce qui reste sous le plafond sont imprimés par
 [la commande du budget](#où-lire-les-chiffres), qui les lit là où ils sont
 tenus. Ce paragraphe portait un tableau de quatre colonnes ; il périmait à
 chaque PR, et c'est ce que #95 retire.
@@ -957,8 +970,9 @@ chaque PR, et c'est ce que #95 retire.
 **Les deux plafonds ont été relevés par #72, sur deux arbitrages distincts et
 pour deux raisons sans rapport.** Les dérivations complètes — celles qui
 disent d'où sort chaque valeur, et non ce qu'elle vaut aujourd'hui — sont dans
-les doc-comments de `SHEET_CEILING` et `DECLARATIONS_CEILING` et aux entrées
-de journal des 2026-08-05 et 2026-08-06. En deux mots, parce que le motif est
+le doc-comment de `SHEET_CEILING` (celui de `DECLARATIONS_CEILING` est parti
+avec la constante, il reste dans l'historique git) et aux entrées de journal
+des 2026-08-05 et 2026-08-06. En deux mots, parce que le motif est
 ce qui reste ici :
 
 **Les déclarations :** le plafond se déclenchait sur un paragraphe. Appendre
@@ -1021,6 +1035,10 @@ commune mesure avec celle que la feuille prend sur le même bloc. La conclusion
 pratique tient, mais elle tient **parce que le garde-fou de feuille sonne
 d'abord**, pas parce que celui-ci serait immunisé. Ne pas écrire « jamais ».
 
+*Ce qui suit vaut pour la borne d'un aller-retour ; depuis le 2026-10-20 la
+borne est celle de deux, dérivée au journal et dans le doc-comment. Le
+raisonnement est le même, une fenêtre plus loin.*
+
 `SHEET_CEILING` n'est **pas la borne physique** : c'est le palier de KiB
 immédiatement sous elle, et l'écart entre les deux n'est ni une marge calculée
 ni une réserve dimensionnée — c'est le prix de l'arrondi. Le dire coûte moins
@@ -1033,7 +1051,7 @@ n'y a qu'un argument à faire sur les nombres ronds — mais *faire*
 cet argument n'est pas une ligne qu'on modifie en passant. **Aucun relèvement
 de `SHEET_CEILING` sans arbitrage** : les deux relèvements de #72 et celui
 de #89 avant eux sont tous passés par un arbitrage de l'utilisateur avant que
-la valeur bouge. La règle est celle de `DECLARATIONS_CEILING` — refaire
+la valeur bouge. La règle est celle qu'avait `DECLARATIONS_CEILING` — refaire
 l'arithmétique contre la feuille du jour et le dire dans le corps de PR —
 avec une marche de plus : demander d'abord.
 
@@ -1160,8 +1178,8 @@ et la réponse est la porte de sortie ci-dessous, pas un nombre plus grand.
 </details>
 
 Les deux derniers seuils sont tenus par des tests dans `apps/web/src/app.rs`
-(`the_compressed_stylesheet_still_arrives_in_one_round_trip` et
-`the_compressed_declarations_stay_inside_the_design_system_budget`). Le
+(`the_compressed_stylesheet_arrives_within_two_round_trips` et, depuis le
+2026-10-20, les trois tests de redondance du tableau des seuils). Le
 premier ne l'est pas, et ne peut pas l'être : il dépend du volume de données
 d'un foyer. Il se vérifie en mesurant une stack qui tourne **avec des données
 dedans** — une stack vide sous-estime le document d'un facteur deux à trois,
@@ -1357,3 +1375,5 @@ quatre tours de vérification à #72.
 | 2026-09-28 | Le jeton de réinitialisation expire en 1 h et disparaît à l'usage (#279) | Correction de l'entrée du 2026-07-30 sur BREACH, atterrie donc gelée : elle dit la péremption vérifiée à 24 h, ce qui était exact à sa date. L'arbitrage du 2026-09-19 l'a ramenée à 1 h (`PASSWORD_RESET_TTL_HOURS`, `apps/api/src/auth/mod.rs`), appliquée par #273, qui supprime aussi le jeton à l'usage au lieu de le marquer consommé : l'usage unique tient à la suppression de la ligne, et un second usage répond 404. Le raisonnement BREACH de l'entrée corrigée n'en dépend pas — la page n'a toujours qu'une variable, le jeton |
 | 2026-10-01 | Cinq jetons changent de valeur pour tenir AA, et le contraste devient un test (#74) | Arbitrage utilisateur du 2026-10-01, qui approuve explicitement les cinq valeurs ci-dessous. Deux paires avaient été laissées à #74 par l'entrée du 2026-07-30 (`--success`, `--warning`), une par celle du 2026-08-05 (`--muted` sur `--accent-soft` en sombre) ; les teintes `--m3` et `--m4` l'étaient par le commentaire de `.avatar` dans la feuille. Mesuré ici en WCAG 2.x sur les valeurs de la feuille : en clair, `--success` sur `--success-soft` 4,43:1, `--warning` sur `--warning-soft` 4,06:1, `--m3` et `--m4` sur `--bg` 3,95:1 et 3,55:1 ; en sombre, `--muted` sur `--accent-soft` 4,38:1, paire réelle — la case du jour quand il tombe hors du mois affiché, `.cal-day.outside` dans `.current`. Le remède assombrit **la moitié texte** de chaque paire, à teinte et saturation constantes, juste au-delà de 4,5:1, sans toucher aux fonds : `--success` `#3F7A34` → `#3E7733` (4,61:1), `--warning` `#9A6B10` → `#8E630F` (4,62:1), `--m3` `#4B8B4A` → `#457F44` (4,60:1 sur `--bg`), `--m4` `#B07A2E` → `#976928` (4,61:1) ; seule exception, `--accent-soft` sombre `#1E3A39` → `#1C3635`, puisque c'est le fond qu'on ne peut pas éclaircir sous le texte (4,63:1). Deux paires de survol, trouvées à la vérification, se règlent par une déclaration et non par un jeton : l'avatar peint son propre fond `--surface` (sur une ligne survolée, `--hover`, six teintes sur huit tombaient à 4,16–4,44:1 en clair), et `.chip:hover` repasse le texte en `--fg` (une pastille faite, `--muted` sur `--border`, mesurait 4,34:1 en clair et 4,38:1 en sombre). La couleur d'un membre reste accompagnée de son nom (WCAG 1.4.1). **Le contraste est désormais un test** (`every_text_colour_the_sheet_paints_meets_aa_in_both_themes`), qui calcule ces rapports depuis la feuille pour les paires qu'il liste : les ratios écrits au présent sous [Couleur](#couleur) et [Interaction et motion](#interaction-et-motion) en sortent. `.badge.warn` garde son `--error` plein |
 | 2026-10-10 | Les documents légaux passent dans un pied de page commun, et la connexion est recadrée (#419) | Demande du 2026-10-09. Les trois liens légaux étaient des lignes de la colonne `.links` des formulaires de connexion et d'inscription ; aucune page n'avait de `<footer>`, et une page connectée ne les montrait que dans « Mon compte ». `shell()` et `shell_with_header()` rendent désormais le même `<footer>` après `<main>` (repère `contentinfo`), avec session ou sans. Il n'est pas une navigation : la règle « une page sans session ne rend aucune navigation » de [Layout](#layout) tient. Il ne coûte aucune règle propre : c'est `.links.centered`, la ligne centrée que prennent aussi « Créer un compte » et « Mot de passe oublié ? » sous le formulaire de connexion. Sur une page connectée il suit la grille au lieu d'y entrer : dedans, au-dessus de 861 px, il tombait dans la colonne latérale, et le placer sous le contenu demandait deux déclarations de plus (`grid-column` pour lui, `grid-row` pour la colonne latérale) que le budget des déclarations n'avait plus. Il s'étend donc sous les deux colonnes, centré sur la page et non sur le contenu. « Continuer avec Google » prend la largeur du bouton du formulaire par `.actions.stacked`, ajouté au sélecteur de `.list-row.stacked`, et reste en variante `secondary`. Les liens de compte de l'inscription et des autres formulaires restent alignés à gauche : la demande ne visait que la connexion |
+| 2026-10-20 | Plafond de feuille : **13 KiB → 42 KiB** (43 008 o), la borne passe d'un aller-retour à deux | Arbitrage utilisateur du 2026-10-20. La question change, pas la méthode. Manquer l'aller-retour unique coûte **un RTT, à cache froid seulement** — une fois par visiteur et par déploiement, la feuille étant `immutable` sous une URL à empreinte. Les utilisateurs sont un foyer qui revient chaque jour, sur des téléphones de dix ans au plus, pour qui analyser 40 Kio de CSS coûte quelques millisecondes : le budget achetait un RTT au premier affichage après déploiement, au prix d'un plafond qui ne laissait que 1 349 o (flate2 niveau 6). Dérivation, celle de #72 prolongée d'une fenêtre : le slow start double la `cwnd` après le premier vol — 14 254 o au premier vol (IW10 moins 280 o d'en-têtes et 66 o de cadrage TLS), 20 × 1 460 = 29 200 o au second moins 44 o de cadrage pour ses deux enregistrements TLS, soit **43 410 o** en deux allers-retours. 42 KiB est le plus grand palier de KiB qui tienne, 402 o dessous — prix de l'arrondi, pas réserve. La borne reste conservatrice : la feuille part sur la connexion qui vient de porter le document, `cwnd` déjà crue. **Ce que ça abandonne** : le garde-fou de feuille ne sonne plus au fil du travail ordinaire ; il devient une alarme contre les accidents (framework recopié, police en base64), et la pression vers la sobriété passe aux tests de redondance de l'entrée suivante. **Ce que ça garde** : le remède au-delà (découper la feuille) et la règle de demander avant de bouger la valeur. Test renommé `the_compressed_stylesheet_arrives_within_two_round_trips` |
+| 2026-10-20 | `DECLARATIONS_CEILING` supprimé, la redondance est tenue par trois tests | Arbitrage utilisateur du 2026-10-20, après le relèvement de `SHEET_CEILING` le même jour. Le plafond ne laissait plus que 2 o (3 134 sur 3 136, flate2 niveau 6), et une passe de chasse aux doublons faite à la main n'a rendu que 7 o — un `font-weight: 400` resté de l'extraction des styles inline (#68), retiré. La feuille était propre et le garde-fou bloquait quand même : il comptait des **octets**, pas des **répétitions**, et ne parlait qu'une fois le total débordé. Remplacé par ce qu'il prétendait tenir, chaque test nommant la ligne fautive : un même sélecteur ouvert deux fois dans le même contexte (`@media` compris), une même propriété posée deux fois dans un bloc, une classe stylée que plus aucune source n'émet — le sens inverse de `every_class_a_source_references_exists_in_the_stylesheet`, qui manquait. Les trois ont été vérifiés rouges sur une classe morte et deux doublons injectés. **Ce que ça abandonne** : toute borne sur le volume des déclarations, et la contrainte d'ordre des deux garde-fous, qui était la borne basse de `SHEET_CEILING`. **Pas couvert, dit plutôt que laissé à trouver** : une valeur en dur là où un token existe (les `rem` de `.prose`) — c'est une décision de design, pas un doublon, à traiter à part. Rapport `budget_report` allégé de la section d'ordre |

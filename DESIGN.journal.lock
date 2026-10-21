@@ -71,3 +71,5 @@ abf56e5a2ff9b3af  2026-08-29  Le tarif d'un paragraphe sort de la prose : « 73 
 ce757abbce46e8ff  2026-09-28  Le jeton de réinitialisation expire en 1 h et disparaît à l'
 ca22e6599f6aa053  2026-10-01  Cinq jetons changent de valeur pour tenir AA, et le contrast
 060f46544c51629f  2026-10-10  Les documents légaux passent dans un pied de page commun, et
+e0d2de87e9743d96  2026-10-20  Plafond de feuille : **13 KiB → 42 KiB** (43 008 o), la born
+22bed983bfc38e2f  2026-10-20  `DECLARATIONS_CEILING` supprimé, la redondance est tenue par
