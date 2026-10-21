@@ -163,10 +163,54 @@ for overlay in "${overlays[@]}"; do
   check
   v=$(y 'select(.kind == "Job" and .metadata.name == "migrate") | [.metadata.annotations["argocd.argoproj.io/hook"], (.spec.template.spec.containers[0].command[0:2] | join(" ")), .spec.template.spec.restartPolicy] | join(" ")')
   [ "$v" = "PreSync /bin/sh -c Never" ] || fail "Job migrate: hook/command/restartPolicy is '$v', expected 'PreSync /bin/sh -c Never'"
+  # The script itself, run by sh against a fake `migrate`, and fake `date`
+  # (each call 10 s later than the last) and `sleep` (none): it succeeds
+  # when migrate does; stops at once, with migrate's code, on any error but
+  # the connection's; retries that one, then fails once its window is past.
+  y 'select(.kind == "Job" and .metadata.name == "migrate") | .spec.template.spec.containers[0].command[2] // ""' > "$work/migrate.sh"
+  mkdir -p "$work/fake"
+  cat > "$work/fake/migrate" << 'EOF'
+#!/bin/sh
+n=$(($(cat "$FAKE/calls" 2> /dev/null || echo 0) + 1)); echo "$n" > "$FAKE/calls"
+echo "fake migrate, run $n"
+case $FAKE_MODE in
+  ok) exit 0 ;;
+  other) echo "Error: applying migrations" >&2; exit 3 ;;
+  race) [ "$n" -gt 2 ] && exit 0 ;;
+esac
+echo "Error: connecting as the migration role (MIGRATION_DATABASE_URL)" >&2
+echo "Caused by: password authentication failed for user \"migration_role\"" >&2
+exit 1
+EOF
+  cat > "$work/fake/date" << 'EOF'
+#!/bin/sh
+t=$(($(cat "$FAKE/now" 2> /dev/null || echo 1000000) + 10)); echo "$t" > "$FAKE/now"; echo "$t"
+EOF
+  printf '#!/bin/sh\n' > "$work/fake/sleep"
+  chmod +x "$work/fake/migrate" "$work/fake/date" "$work/fake/sleep"
+  run_migrate() { # mode -> "<exit code> <runs of migrate>", its output in $work/migrate.out
+    rm -f "$work/fake/calls" "$work/fake/now"
+    local rc=0
+    FAKE=$work/fake FAKE_MODE=$1 TMPDIR=$work/fake PATH="$work/fake:$PATH" \
+      timeout 20 sh -c "$(cat "$work/migrate.sh")" > "$work/migrate.out" 2>&1 || rc=$?
+    echo "$rc $(cat "$work/fake/calls" 2> /dev/null || echo 0)"
+  }
   check
-  v=$(y 'select(.kind == "Job" and .metadata.name == "migrate") | .spec.template.spec.containers[0].command[2] // ""')
-  # shellcheck disable=SC2016 # the script's own text, not the shell's
-  grep -qF 'out=$(migrate 2>&1)' <<< "$v" || fail "Job migrate: its shell does not run the migrate command"
+  v=$(run_migrate ok)
+  [ "$v" = "0 1" ] || fail "Job migrate: migrate succeeding gives '$v' (exit code, runs), expected '0 1'"
+  check
+  v=$(run_migrate other)
+  [ "$v" = "3 1" ] || fail "Job migrate: another error of migrate gives '$v' (exit code, runs), expected '3 1', its code and no retry"
+  check
+  v=$(run_migrate race)
+  [ "$v" = "0 3" ] || fail "Job migrate: two refused connections then success give '$v' (exit code, runs), expected '0 3'"
+  check
+  v=$(run_migrate refused)
+  read -r rc runs <<< "$v"
+  [ "$rc" = 1 ] && [ "$runs" -gt 1 ] && [ "$runs" -le 10 ] \
+    || fail "Job migrate: a connection refused for good gives '$v' (exit code, runs), expected exit code 1 after a bounded number of retries (124: no deadline)"
+  check
+  grep -q 'password authentication failed' "$work/migrate.out" || fail "Job migrate: migrate's error does not reach the pod's log"
   # The previous run deleted when the next one is created, not when it
   # succeeds or fails: its logs stay readable until the next sync.
   check
