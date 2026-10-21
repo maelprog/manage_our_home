@@ -24,8 +24,9 @@ metadata:
 spec:
   # Retries cover a Postgres that is not reachable yet. Concurrent runs are
   # serialised by sqlx's advisory lock, and a run is a no-op on an
-  # up-to-date schema. A role refused for good fails the Job within the
-  # deadline: 4 pods of about 95 s, plus the backoff between them.
+  # up-to-date schema. A role refused for good fails the Job: 4 pods of
+  # about 2 minutes each (see the command), plus the backoff between them,
+  # or the deadline first.
   backoffLimit: 3
   activeDeadlineSeconds: 600
   template:
@@ -51,27 +52,44 @@ spec:
           # password (managed roles, postgres/cluster.yaml), and its first
           # pod used to end in Error. Only that failure is retried —
           # `connecting as the migration role` is the context main's
-          # `migrations::apply` gives it, before anything is applied — and
-          # for 90 s at most: a password that stays wrong still fails the
-          # pod, then the Job (backoffLimit). Any other failure fails the
-          # pod at once.
+          # `migrations::apply` gives it, before anything is applied. New
+          # attempts start for 90 s; the last one runs until migrate gives
+          # up connecting (its pool's 30 s acquire timeout, at most), so a
+          # password that stays wrong fails the pod within about 2 minutes,
+          # then the Job (backoffLimit). Any other failure fails the pod at
+          # once, with migrate's exit code.
+          #
+          # migrate's log (stdout) reaches the pod's as it goes; its error
+          # (stderr), kept in /tmp to be read, right after it exits. The
+          # shell is PID 1, which ignores a signal it has no handler for:
+          # the trap passes the kubelet's SIGTERM on to migrate.
           command:
             - /bin/sh
             - -c
             - |
+              err=${TMPDIR:-/tmp}/migrate.err
+              trap 'stop=1; kill -TERM "$pid" 2> /dev/null' TERM INT
               deadline=$(($(date +%s) + 90))
               while :; do
-                out=$(migrate 2>&1)
+                migrate 2> "$err" &
+                pid=$!
+                wait "$pid"
                 rc=$?
-                printf '%s\n' "$out"
+                # A trapped signal ends `wait` early: wait for migrate's own exit.
+                while kill -0 "$pid" 2> /dev/null; do
+                  wait "$pid"
+                  rc=$?
+                done
+                cat "$err" >&2
                 [ "$rc" -eq 0 ] && exit 0
-                case $out in
-                  *"connecting as the migration role"*) ;;
-                  *) exit "$rc" ;;
-                esac
+                [ -z "${stop:-}" ] || exit "$rc"
+                grep -q 'connecting as the migration role' "$err" || exit "$rc"
                 [ "$(date +%s)" -lt "$deadline" ] || exit "$rc"
                 echo "migrate: the migration role is not accepted yet, retrying in 5 s"
-                sleep 5
+                sleep 5 &
+                pid=$!
+                wait "$pid"
+                [ -z "${stop:-}" ] || exit 143
               done
           env:
             # The migration role: owner of the tables, BYPASSRLS (#105).
@@ -82,7 +100,7 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
             # The migrations are compiled into the binary; nothing is
-            # written but to Postgres.
+            # written but to Postgres, and migrate's error to /tmp.
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
@@ -95,3 +113,12 @@ spec:
               memory: 32Mi
             limits:
               memory: 128Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # migrate's error, a few lines, read back by the shell above.
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
