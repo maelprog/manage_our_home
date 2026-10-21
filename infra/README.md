@@ -1,7 +1,12 @@
 # infra
 
-- `docker-compose.yml` — la stack complète (Postgres, MinIO, API, web, Caddy).
+- `docker-compose.yml` — la stack de développement local (Postgres, MinIO,
+  Ollama, API, web, Caddy). Staging et production tournent sur k3s
+  (epic #441), plus sur Compose.
 - `generate-env.sh` — génère le `.env` attendu par la compose.
+- `postgres/init/` — rôles Postgres créés au premier démarrage du volume.
+- `check-volume-encryption.sh` — vérifie que les données Postgres et MinIO
+  reposent sur un volume chiffré (LUKS, #380).
 - `docker-prune.sh` — purge périodique des ressources Docker.
 - `mcp-playwright.sh` — serveur MCP Playwright, en conteneur (`.mcp.json`).
 
