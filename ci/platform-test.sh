@@ -296,7 +296,7 @@ for env in staging prod; do
     for d in $(r 'select(.kind == "Deployment" or .kind == "StatefulSet") | .kind + "/" + .metadata.name + "=" + ((.spec.replicas // 1) | tostring)'); do
       check
       case "${d%=*}" in
-        Deployment/argocd-applicationset-controller) want=0 ;;
+        Deployment/argocd-applicationset-controller | Deployment/argocd-server) want=0 ;;
         *) want=1 ;;
       esac
       [ "${d#*=}" = "$want" ] || fail "${d%=*}: ${d#*=} replica(s), expected $want"

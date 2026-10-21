@@ -1,0 +1,17 @@
+# The default AppProject, which every Application here belongs to. Argo
+# CD's server creates it at start-up; it runs no replica (application.yaml),
+# so it is declared here, with the spec the server gives it. Not in the
+# chart's extraObjects: the chart's CRDs are templates of the same release,
+# so Helm cannot map an AppProject at install. platform/bootstrap.sh
+# applies it before the root Application, which needs it to sync.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: default
+  namespace: argocd
+spec:
+  sourceRepos: ["*"]
+  destinations:
+    - {namespace: "*", server: "*"}
+  clusterResourceWhitelist:
+    - {group: "*", kind: "*"}
