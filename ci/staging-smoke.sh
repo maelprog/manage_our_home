@@ -387,8 +387,19 @@ if [ -n "$restarted" ]; then
 fi
 oom=$(oom_killed)
 [ -z "$oom" ] || { echo "::error::OOM-killed: $oom"; exit 1; }
-notready=$(kubectl get pods -A -o yaml \
-  | yq e '.items[] | select(.status.phase != "Succeeded") | select([.status.containerStatuses[]?.ready] | all | not) | .metadata.namespace + "/" + .metadata.name' -)
+# Not Ready: every pod with a container not ready, but those that ran to
+# their end — Succeeded, or Failed in a Job whose retry then completed it
+# (#520). A Failed pod outside a Job, or in a Job failed or still running,
+# still counts.
+not_ready() { # pods.yaml jobs.yaml
+  yq e '.items[] | select([.status.conditions[]? | select(.type == "Complete" and .status == "True")] | length > 0) | .metadata.namespace + "/" + .metadata.name' "$2" \
+    > "$work/jobs.complete"
+  yq e '.items[] | select(.status.phase != "Succeeded") | select([.status.containerStatuses[]?.ready] | all | not) | .metadata.namespace + "/" + .metadata.name + " " + .status.phase + " " + .metadata.namespace + "/" + ([.metadata.ownerReferences[]? | select(.kind == "Job") | .name] | .[0] // "")' "$1" \
+    | awk 'FILENAME != "-" { complete[$1] = 1; next } !($2 == "Failed" && $3 in complete) { print $1 }' "$work/jobs.complete" -
+}
+kubectl get pods -A -o yaml > "$work/pods.yaml"
+kubectl get jobs -A -o yaml > "$work/jobs.yaml"
+notready=$(not_ready "$work/pods.yaml" "$work/jobs.yaml")
 [ -z "$notready" ] || { echo "::error::pods not Ready: $notready"; exit 1; }
 for a in platform argocd sealed-secrets cert-manager cloudnative-pg kyverno postgres-staging "$app"; do
   wait_app "$a" 5
