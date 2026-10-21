@@ -4,6 +4,7 @@ use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
 use chrono::{Duration, Utc};
+use manage_our_home_shared::validation::auth::normalize_email;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -434,8 +435,11 @@ pub async fn create_invitation(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(group_id): Path<Uuid>,
-    Json(body): Json<CreateInvitationRequest>,
+    Json(mut body): Json<CreateInvitationRequest>,
 ) -> AppResult<impl IntoResponse> {
+    // Stored as accounts are (#459), so the invitation is found by the
+    // export of the account it names whatever capitals either was typed in.
+    body.invited_email = body.invited_email.as_deref().map(normalize_email);
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let role = require_role(&mut tx, group_id, auth.user_id).await?;
     if role != "owner" && role != "admin" {

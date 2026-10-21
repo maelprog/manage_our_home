@@ -103,6 +103,7 @@ use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, KeyInit, Mac};
+use manage_our_home_shared::validation::auth::normalize_email;
 use sha2::Sha256;
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -217,11 +218,12 @@ pub fn address_scope(ip: IpAddr) -> IpAddr {
 
 /// Key for one (address, email) pair, with the address reduced to the
 /// client it really identifies ([`address_scope`]) and the email
-/// normalised so `Alice@Example.test` and `alice@example.test` cannot be
-/// used as two separate budgets against the same account.
+/// normalised as the account lookup normalises it ([`normalize_email`],
+/// #459), so `Alice@Example.test` and `alice@example.test` cannot be used
+/// as two separate budgets against the same account.
 pub fn key(ip: IpAddr, email: &str) -> (IpAddr, String) {
     let ip = address_scope(ip);
-    let mut email = email.trim().to_lowercase();
+    let mut email = normalize_email(email);
     let mut cut = MAX_KEY_EMAIL_LEN.min(email.len());
     while cut > 0 && !email.is_char_boundary(cut) {
         cut -= 1;

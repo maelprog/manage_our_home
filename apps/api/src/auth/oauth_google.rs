@@ -1,5 +1,6 @@
 use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Redirect};
+use manage_our_home_shared::validation::auth::normalize_email;
 use oauth2::url::Url;
 use oauth2::{
     AuthorizationCode, CsrfToken, PkceCodeChallenge, PkceCodeVerifier, Scope, TokenResponse,
@@ -199,6 +200,9 @@ pub async fn callback(
     if !userinfo.email_verified {
         return Err(AppError::Unauthorized);
     }
+    // Stored and matched in the same form as a password account's (#459),
+    // so a Google profile finds the account its holder registered by hand.
+    let email = normalize_email(&userinfo.email);
 
     let refresh_token_plain = token.refresh_token().map(|t| t.secret().clone());
 
@@ -233,7 +237,7 @@ pub async fn callback(
                 r#"SELECT id, deleted_at IS NOT NULL AS "purged!",
                           deactivated_at IS NOT NULL AS "deactivated!"
                    FROM users WHERE email = $1"#,
-                userinfo.email
+                email
             )
             .fetch_optional(&mut *tx)
             .await?;
@@ -278,7 +282,7 @@ pub async fn callback(
                 VALUES ($1, true, $2)
                 RETURNING id
                 "#,
-                userinfo.email,
+                email,
                 display_name,
             )
             .fetch_one(&mut *tx)
