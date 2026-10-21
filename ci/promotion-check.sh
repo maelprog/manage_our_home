@@ -16,15 +16,18 @@
 # of the file must be what prod renders: no newName, newTag or patch that
 # moves an application image behind it.
 #
-# Every image prod renders is checked, a container's (`containers`,
-# `initContainers`, `ephemeralContainers`) or a volume's
+# Every image the prod overlay renders is checked, a container's
+# (`containers`, `initContainers`, `ephemeralContainers`) or a volume's
 # (`volumes[].image.reference`): the application's must be the pair's,
 # MinIO's and its client's are the third parties', and any other fails.
+# Postgres's image is not read: the CNPG Cluster's `imageName` is rendered
+# by overlays/prod/postgres, a kustomization of its own.
 # A third party's image, tag and digest, is held to the same rule as the
 # pair, container by container: unchanged from what prod renders at the
 # tip of <base>, or what staging renders there, or what prod rendered at
 # an earlier commit of <base> (a revert). A patch of the prod overlay
-# alone that moves MinIO to another digest of its repository fails.
+# alone that moves MinIO to another digest of its repository fails, and
+# so does one PR moving staging's and prod's together.
 #
 #   ci/promotion-check.sh <base>
 #

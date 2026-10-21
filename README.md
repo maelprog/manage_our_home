@@ -565,15 +565,20 @@ Le job `promotion` de `deploy.yml`, sur chaque PR :
   en staging. Une paire que staging a fait tourner autrefois mais plus
   maintenant est rouge. Avant tout cela, la paire du fichier doit être ce
   que prod rend : ni `newName`, ni `newTag`, ni patch qui déplace une
-  image de l'appli derrière elle. Toute image du rendu de prod est
-  contrôlée, celle d'un conteneur (`containers`, `initContainers`,
-  `ephemeralContainers`) comme celle d'un volume (`image.reference`) :
-  une image ni de l'appli ni de MinIO ou de son client est rouge. Les
+  image de l'appli derrière elle. Toute image du rendu de l'overlay de
+  prod est contrôlée, celle d'un conteneur (`containers`,
+  `initContainers`, `ephemeralContainers`) comme celle d'un volume
+  (`image.reference`) : une image ni de l'appli ni de MinIO ou de son
+  client est rouge. L'image de Postgres n'est pas lue : l'`imageName` du
+  `Cluster` CNPG est rendu par `overlays/prod/postgres`, une
+  kustomization à part. Les
   images de MinIO et de son client (tag et empreinte) suivent la même
   règle que la paire, conteneur par conteneur : inchangées, ou celle que
   staging rend au bout de la branche visée, ou une image que prod a
   rendue à un commit antérieur. Un patch du seul overlay de prod qui
-  passe MinIO à une autre empreinte de son dépôt est rouge.
+  passe MinIO à une autre empreinte de son dépôt est rouge, et une même
+  PR qui change MinIO en staging et en prod l'est aussi : staging le fait
+  tourner d'abord.
 
 Limite : le contrôle juge la branche visée telle qu'elle était quand le
 job a tourné. Le ruleset n'exige pas que la PR soit à jour de sa base
