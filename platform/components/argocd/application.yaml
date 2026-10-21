@@ -13,6 +13,8 @@
 # letting the heap grow toward the limit, and the server (the web UI,
 # reached by port-forward only) runs no replica until someone scales it up
 # to use it; ignoreDifferences keeps self-heal from scaling it back down.
+# The server is also what creates the default AppProject at start-up:
+# appproject.yaml declares it instead.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -72,21 +74,6 @@ spec:
             resources:
               requests: {cpu: 10m, memory: 16Mi}
               limits: {memory: 64Mi}
-        # Argo CD's server creates the default AppProject at start-up;
-        # with no server replica, nothing would, and no Application could
-        # sync. Declared here with the spec the server gives it.
-        extraObjects:
-          - apiVersion: argoproj.io/v1alpha1
-            kind: AppProject
-            metadata:
-              name: default
-              namespace: argocd
-            spec:
-              sourceRepos: ["*"]
-              destinations:
-                - {namespace: "*", server: "*"}
-              clusterResourceWhitelist:
-                - {group: "*", kind: "*"}
         server:
           replicas: 0
           resources:
