@@ -268,6 +268,10 @@ ci_sealed_only
 kubectl -n "$ns" get job/migrate -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/hook}{"\n"}'
 kubectl -n "$ns" wait --for=condition=Complete job/migrate --timeout=0
 kubectl -n "$ns" logs job/migrate
+# Complete at its first pod: the race with the migration role's password
+# is waited out inside it (#520, migrate-job.yaml), not left to a retry.
+failed=$(kubectl -n "$ns" get job/migrate -o jsonpath='{.status.failed}')
+[ "${failed:-0}" -eq 0 ] || { kubectl -n "$ns" get pods -l app.kubernetes.io/name=migrate; echo "::error::job/migrate: $failed pod(s) failed before it completed"; exit 1; }
 kubectl -n "$ns" wait --for=condition=Available deploy/api deploy/web --timeout=60s
 kubectl -n "$ns" get pods -o wide
 

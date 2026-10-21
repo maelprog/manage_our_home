@@ -158,9 +158,14 @@ for overlay in "${overlays[@]}"; do
   [ -z "$v" ] || fail "a Deployment receives MIGRATION_DATABASE_URL"
 
   # --- The migration Job: the `migrate` command, as an Argo CD PreSync hook.
+  # The command is a shell that runs `migrate`, retried while the migration
+  # role is not accepted yet (#520, migrate-job.yaml).
   check
-  v=$(y 'select(.kind == "Job" and .metadata.name == "migrate") | [.metadata.annotations["argocd.argoproj.io/hook"], (.spec.template.spec.containers[0].command | join(" ")), .spec.template.spec.restartPolicy] | join(" ")')
-  [ "$v" = "PreSync migrate Never" ] || fail "Job migrate: hook/command/restartPolicy is '$v', expected 'PreSync migrate Never'"
+  v=$(y 'select(.kind == "Job" and .metadata.name == "migrate") | [.metadata.annotations["argocd.argoproj.io/hook"], (.spec.template.spec.containers[0].command[0:2] | join(" ")), .spec.template.spec.restartPolicy] | join(" ")')
+  [ "$v" = "PreSync /bin/sh -c Never" ] || fail "Job migrate: hook/command/restartPolicy is '$v', expected 'PreSync /bin/sh -c Never'"
+  check
+  v=$(y 'select(.kind == "Job" and .metadata.name == "migrate") | .spec.template.spec.containers[0].command[2] // ""')
+  grep -qF 'out=$(migrate 2>&1)' <<< "$v" || fail "Job migrate: its shell does not run the migrate command"
   # The previous run deleted when the next one is created, not when it
   # succeeds or fails: its logs stay readable until the next sync.
   check

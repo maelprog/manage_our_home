@@ -24,7 +24,8 @@ metadata:
 spec:
   # Retries cover a Postgres that is not reachable yet. Concurrent runs are
   # serialised by sqlx's advisory lock, and a run is a no-op on an
-  # up-to-date schema.
+  # up-to-date schema. A role refused for good fails the Job within the
+  # deadline: 4 pods of about 95 s, plus the backoff between them.
   backoffLimit: 3
   activeDeadlineSeconds: 600
   template:
@@ -44,7 +45,34 @@ spec:
       containers:
         - name: migrate
           image: ghcr.io/maelprog/manage-our-home-api
-          command: ["migrate"]
+          # `migrate`, retried in the same pod while it cannot connect as
+          # the migration role (#520): on an environment's first sync, this
+          # hook can start before CloudNativePG has set that role's
+          # password (managed roles, postgres/cluster.yaml), and its first
+          # pod used to end in Error. Only that failure is retried —
+          # `connecting as the migration role` is the context main's
+          # `migrations::apply` gives it, before anything is applied — and
+          # for 90 s at most: a password that stays wrong still fails the
+          # pod, then the Job (backoffLimit). Any other failure fails the
+          # pod at once.
+          command:
+            - /bin/sh
+            - -c
+            - |
+              deadline=$(($(date +%s) + 90))
+              while :; do
+                out=$(migrate 2>&1)
+                rc=$?
+                printf '%s\n' "$out"
+                [ "$rc" -eq 0 ] && exit 0
+                case $out in
+                  *"connecting as the migration role"*) ;;
+                  *) exit "$rc" ;;
+                esac
+                [ "$(date +%s)" -lt "$deadline" ] || exit "$rc"
+                echo "migrate: the migration role is not accepted yet, retrying in 5 s"
+                sleep 5
+              done
           env:
             # The migration role: owner of the tables, BYPASSRLS (#105).
             # Only this Job receives it.
