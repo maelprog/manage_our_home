@@ -38,7 +38,8 @@ pub struct UpdateGroceryItemRequest {
     /// `Some(None)` clears the quantity; `None` leaves it untouched.
     #[serde(default, deserialize_with = "deserialize_some")]
     pub quantity: Option<Option<f64>>,
-    /// `Some(None)` clears the unit; `None` leaves it untouched.
+    /// `Some(None)` clears the unit, unless a quantity remains: then it is
+    /// « unité » (#458). `None` leaves it untouched.
     #[serde(default, deserialize_with = "deserialize_some")]
     pub unit: Option<Option<String>>,
 }

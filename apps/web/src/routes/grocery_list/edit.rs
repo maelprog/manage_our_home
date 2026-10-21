@@ -3,8 +3,9 @@
 //! a non-permitted user never sees the form (GET → forbidden page), and the
 //! backend 403 is mapped to `?error=forbidden` on the list defensively. A
 //! blank quantity/unit field *clears* it (sent as `Some(None)` per the
-//! backend's double-`Option` PATCH contract); the form always sends every
-//! field. Success (200) → PRG `/grocery-list?notice=item_updated`.
+//! backend's double-`Option` PATCH contract), except that a unit cleared
+//! while a quantity remains is stored as « unité » (#458); the form always
+//! sends every field. Success (200) → PRG `/grocery-list?notice=item_updated`.
 
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
@@ -159,6 +160,8 @@ pub async fn post(
 
     // The edit form always sends every field: name as `Some(..)`, and a blank
     // quantity/unit clears it (`Some(None)`), else sets it (`Some(Some(..))`).
+    // The backend turns a cleared unit into « unité » while a quantity
+    // remains (#458).
     let unit = {
         let u = form.unit.trim();
         Some((!u.is_empty()).then(|| u.to_string()))
