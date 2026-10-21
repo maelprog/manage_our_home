@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, group_id, created_by,\n               pgp_sym_decrypt(content, $4) as \"content!\",\n               edited_at, created_at, updated_at\n        FROM messages\n        WHERE group_id = $1\n          AND ($2::timestamptz IS NULL OR (created_at, id) < ($2, $3))\n        ORDER BY created_at DESC, id DESC\n        LIMIT $5\n        ",
+  "query": "\n        SELECT id, group_id, created_by,\n               pgp_sym_decrypt(content, $4) as \"content!\",\n               edited_at, created_at, updated_at\n        FROM messages\n        WHERE group_id = $1\n          AND ($2::timestamptz IS NULL OR (created_at, id) < ($2, $3))\n          AND (NOT $6 OR created_by <> $7)\n        ORDER BY created_at DESC, id DESC\n        LIMIT $5\n        ",
   "describe": {
     "columns": [
       {
@@ -82,7 +82,9 @@
         "Timestamptz",
         "Uuid",
         "Text",
-        "Int8"
+        "Int8",
+        "Bool",
+        "Uuid"
       ]
     },
     "nullable": [
@@ -95,5 +97,5 @@
       false
     ]
   },
-  "hash": "57f594e86854f08269c2fd86b2bef1787ce8a248b5d0a9ff9ec22905bafb8961"
+  "hash": "ce1397b159fb7d0f930e494893319f25ccc8b3aa4560f7405c45df4c4baee732"
 }

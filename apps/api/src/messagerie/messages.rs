@@ -33,7 +33,8 @@ pub struct ListMessagesQuery {
     pub limit: Option<i64>,
     /// #73: when set, the response holds only messages the caller hasn't
     /// read yet (`created_at` after their `message_read_state.last_read_at`
-    /// watermark, `unread_messages` below) instead of the newest page.
+    /// watermark, and not written by them — #551; `unread_messages` below)
+    /// instead of the newest page.
     #[serde(default)]
     pub unread: bool,
 }
@@ -96,7 +97,7 @@ fn validate_content(content: &str) -> AppResult<&str> {
     Ok(trimmed)
 }
 
-/// Which of `messages` are unread, given the caller's `last_read_at`
+/// Which of `messages` are unread for `caller`, given their `last_read_at`
 /// watermark (`None` — never read anything in this family — means every
 /// message is unread). "Unread" is `created_at` strictly after the
 /// watermark: a message created at exactly `last_read_at` is what set the
@@ -104,23 +105,27 @@ fn validate_content(content: &str) -> AppResult<&str> {
 /// `last_read_at` is `now()` at write time, not copied from a message row),
 /// so it counts as read, not unread.
 ///
+/// A message the caller wrote is never unread, whatever the watermark says
+/// (#551): what one wrote oneself is not news. The navigation pastille
+/// (`unread_count`) and the home card (`list_messages?unread=true`) apply
+/// the same rule, so they show the same number.
+///
 /// Pulled out as pure logic (issue #73) so "what counts as unread" is
 /// TDD'd without a database; `list_messages` below calls it on an
-/// already-fetched, `created_at DESC`-ordered page rather than reimplementing
-/// the rule in SQL — unread messages are exactly the prefix of that page
-/// newer than the watermark, so no extra sort is needed.
+/// already-fetched, `created_at DESC`-ordered page of other members'
+/// messages — unread messages are exactly the prefix of that page newer
+/// than the watermark, so no extra sort is needed.
 fn unread_messages(
     messages: &[MessageResponse],
     last_read_at: Option<DateTime<Utc>>,
+    caller: Uuid,
 ) -> Vec<MessageResponse> {
-    match last_read_at {
-        None => messages.to_vec(),
-        Some(watermark) => messages
-            .iter()
-            .filter(|m| m.created_at > watermark)
-            .cloned()
-            .collect(),
-    }
+    messages
+        .iter()
+        .filter(|m| m.created_by != caller)
+        .filter(|m| last_read_at.is_none_or(|watermark| m.created_at > watermark))
+        .cloned()
+        .collect()
 }
 
 pub async fn create_message(
@@ -181,6 +186,9 @@ pub async fn list_messages(
     // Cursor pagination (decision #7): `(created_at, id) < (before_created_at,
     // before_id)` when a cursor is supplied, else the most recent page.
     // Fetches `limit + 1` rows to compute `has_more` without a second query.
+    // The unread path leaves the caller's own messages out of the page
+    // (#551): `unread_messages` would drop them anyway, and fetched here they
+    // would take page slots from other members' unread ones.
     let rows = sqlx::query_as!(
         MessageRow,
         r#"
@@ -190,6 +198,7 @@ pub async fn list_messages(
         FROM messages
         WHERE group_id = $1
           AND ($2::timestamptz IS NULL OR (created_at, id) < ($2, $3))
+          AND (NOT $6 OR created_by <> $7)
         ORDER BY created_at DESC, id DESC
         LIMIT $5
         "#,
@@ -198,6 +207,8 @@ pub async fn list_messages(
         query.before_id,
         state.message_encryption_key,
         limit + 1,
+        query.unread,
+        auth.user_id,
     )
     .fetch_all(&mut *tx)
     .await?;
@@ -231,14 +242,16 @@ pub async fn list_messages(
             SELECT count(*) AS "count!"
             FROM messages
             WHERE group_id = $1
+              AND created_by <> $3
               AND ($2::timestamptz IS NULL OR created_at > $2)
             "#,
             group_id,
             last_read_at,
+            auth.user_id,
         )
         .fetch_one(&mut *tx)
         .await?;
-        messages = unread_messages(&messages, last_read_at);
+        messages = unread_messages(&messages, last_read_at, auth.user_id);
         (unread_total > messages.len() as i64, Some(unread_total))
     } else {
         (has_more, None)
@@ -256,12 +269,9 @@ pub async fn list_messages(
 /// One `count(*)` and no decryption, unlike `?unread=true&limit=1`, which
 /// decrypts a page to throw it away. It counts what `unread_messages`
 /// counts — `created_at` strictly after the caller's watermark, every
-/// message when there is none — **less the caller's own messages**: what
-/// one wrote oneself is not news. `unread_total` (the home card) still
-/// counts them. The two only part when the caller has messages of their own
-/// newer than their watermark: posting goes through `/messagerie`, whose
-/// reload advances the watermark past the message just sent, so in practice
-/// that is when this advance failed (it is best-effort).
+/// message when there is none, **less the caller's own messages**: what
+/// one wrote oneself is not news. `unread_total` (the home card) applies the
+/// same rule since #551, so the pastille and the card show the same number.
 pub async fn unread_count(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -548,14 +558,14 @@ mod tests {
     #[test]
     fn never_read_before_means_every_message_is_unread() {
         let messages = vec![message_at(8), message_at(9)];
-        assert_eq!(unread_messages(&messages, None).len(), 2);
+        assert_eq!(unread_messages(&messages, None, CALLER).len(), 2);
     }
 
     #[test]
     fn only_messages_after_the_watermark_are_unread() {
         let watermark = chrono::Utc.with_ymd_and_hms(2026, 9, 3, 10, 0, 0).unwrap();
         let messages = vec![message_at(9), message_at(11), message_at(12)];
-        let unread = unread_messages(&messages, Some(watermark));
+        let unread = unread_messages(&messages, Some(watermark), CALLER);
         assert_eq!(unread.len(), 2);
         assert!(unread.iter().all(|m| m.created_at > watermark));
     }
@@ -565,20 +575,48 @@ mod tests {
         let watermark = chrono::Utc.with_ymd_and_hms(2026, 9, 3, 10, 0, 0).unwrap();
         let mut m = message_at(9);
         m.created_at = watermark;
-        assert!(unread_messages(&[m], Some(watermark)).is_empty());
+        assert!(unread_messages(&[m], Some(watermark), CALLER).is_empty());
     }
 
     #[test]
     fn everything_before_the_watermark_leaves_nothing_unread() {
         let watermark = chrono::Utc.with_ymd_and_hms(2026, 9, 3, 23, 0, 0).unwrap();
         let messages = vec![message_at(8), message_at(9)];
-        assert!(unread_messages(&messages, Some(watermark)).is_empty());
+        assert!(unread_messages(&messages, Some(watermark), CALLER).is_empty());
     }
 
     #[test]
     fn an_empty_message_list_has_nothing_unread() {
         let watermark = chrono::Utc.with_ymd_and_hms(2026, 9, 3, 10, 0, 0).unwrap();
-        assert!(unread_messages(&[], Some(watermark)).is_empty());
-        assert!(unread_messages(&[], None).is_empty());
+        assert!(unread_messages(&[], Some(watermark), CALLER).is_empty());
+        assert!(unread_messages(&[], None, CALLER).is_empty());
+    }
+
+    /// The caller, distinct from `message_at`'s `Uuid::nil()` author.
+    const CALLER: Uuid = Uuid::from_u128(1);
+
+    fn own_message_at(hour: u32) -> MessageResponse {
+        MessageResponse {
+            created_by: CALLER,
+            ..message_at(hour)
+        }
+    }
+
+    #[test]
+    fn the_callers_own_message_newer_than_the_watermark_is_read() {
+        let watermark = chrono::Utc.with_ymd_and_hms(2026, 9, 3, 10, 0, 0).unwrap();
+        let messages = vec![own_message_at(12), message_at(11), own_message_at(9)];
+        let unread = unread_messages(&messages, Some(watermark), CALLER);
+        assert_eq!(unread.len(), 1);
+        assert_eq!(unread[0].created_at, messages[1].created_at);
+        assert_eq!(unread[0].created_by, Uuid::nil());
+    }
+
+    #[test]
+    fn without_a_watermark_only_the_other_members_messages_are_unread() {
+        let messages = vec![own_message_at(12), message_at(11), message_at(9)];
+        let unread = unread_messages(&messages, None, CALLER);
+        assert_eq!(unread.len(), 2);
+        assert!(unread.iter().all(|m| m.created_by != CALLER));
     }
 }

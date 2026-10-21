@@ -1199,10 +1199,12 @@ async fn unread_lists_only_what_arrived_after_the_read_marker(db: PgPool) {
     assert_eq!(contents, vec!["trois".to_string()]);
     assert_eq!(total, 1);
 
-    // The member never marked anything read, so all three are unread for them.
-    let (contents, _, total) = unread(&router, &group_id, &member, None).await;
-    assert_eq!(contents.len(), 3, "{contents:?}");
-    assert_eq!(total, 3);
+    // The member never marked anything read, but wrote all three: their own
+    // messages are not unread for them (#551).
+    let (contents, has_more, total) = unread(&router, &group_id, &member, None).await;
+    assert!(contents.is_empty(), "{contents:?}");
+    assert!(!has_more);
+    assert_eq!(total, 0);
 }
 
 /// Blocker B1 as a backend contract: marking read "up to" an older message
@@ -1490,6 +1492,54 @@ async fn the_unread_count_leaves_out_the_callers_own_messages(db: PgPool) {
 
     post_message(&router, &group_id, &member, "quatre").await;
     assert_eq!(unread_count(&router, &group_id, &owner).await, 1);
+}
+
+/// #551: the home card (`?unread=true`) and the nav badge (`unread_count`)
+/// agree when the caller has messages of their own newer than their read
+/// marker — both leave those out; the card used to count them. The card's
+/// page is capped at two here, so the caller's own newer messages must not
+/// take its slots either.
+#[sqlx::test]
+async fn the_home_card_and_the_badge_agree_on_the_callers_own_messages(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner = register_verify_login(
+        &router,
+        &db,
+        "msg-agree-owner@example.test",
+        "owner-password1",
+    )
+    .await;
+    let member = register_verify_login(
+        &router,
+        &db,
+        "msg-agree-member@example.test",
+        "member-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner, "Foyer accord").await;
+    invite_and_join(&router, &group_id, &owner, &member).await;
+
+    let (_, seen_at) = post_message(&router, &group_id, &member, "déjà lu").await;
+    mark_read(&router, &group_id, &owner, Some(&seen_at)).await;
+
+    post_message(&router, &group_id, &member, "autre A").await;
+    post_message(&router, &group_id, &member, "autre B").await;
+    post_message(&router, &group_id, &member, "autre C").await;
+    // Newer than the owner's marker, and the newest of all.
+    post_message(&router, &group_id, &owner, "le mien 1").await;
+    post_message(&router, &group_id, &owner, "le mien 2").await;
+
+    let badge = unread_count(&router, &group_id, &owner).await;
+    let (contents, has_more, total) = unread(&router, &group_id, &owner, Some(2)).await;
+    assert_eq!(badge, 3);
+    assert_eq!(total, badge, "card and badge must show the same number");
+    assert_eq!(contents, vec!["autre C".to_string(), "autre B".to_string()]);
+    assert!(has_more, "two shown of three unread");
+
+    let (contents, has_more, total) = unread(&router, &group_id, &owner, None).await;
+    assert_eq!(total, 3);
+    assert_eq!(contents.len(), 3, "{contents:?}");
+    assert!(!has_more);
 }
 
 /// Same `require_role` bar as the rest of the thread: a non-member learns
