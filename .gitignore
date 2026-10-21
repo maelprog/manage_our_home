@@ -8,3 +8,4 @@ target/
 .claude/issue-log/
 .claude/arbitrages.md
 .claude/orchestrator-history.md
+.playwright-mcp/
