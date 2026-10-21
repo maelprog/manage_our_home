@@ -118,11 +118,26 @@ aux versions de `ci/install-tools.sh`.
    scelle les siens, que `secrets/` soit vide ou rempli.
 3. Sauvegarder la clé du contrôleur (ci-dessous).
 
-Mot de passe `admin` initial d'Argo CD :
-`kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d`,
-puis `kubectl -n argocd port-forward svc/argocd-server 8080:443`. Pas de
+Mot de passe `admin` initial d'Argo CD : c'est l'interface qui crée son
+Secret à son premier démarrage. D'abord
+`kubectl -n argocd scale deploy/argocd-server --replicas=1` et
+`kubectl -n argocd rollout status deploy/argocd-server`, puis
+`kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d`
+et `kubectl -n argocd port-forward svc/argocd-server 8080:443`. Pas de
 Dex : seul le compte local existe. Changer le mot de passe, puis supprimer
 ce Secret.
+
+L'interface ne tourne pas d'elle-même (`server.replicas: 0`, pour la RAM du
+serveur de 4 Go) : la monter à 1 comme ci-dessus le temps de s'en servir,
+puis `kubectl -n argocd scale deploy/argocd-server --replicas=0`. Argo CD
+ignore ce nombre de répliques et ne le remet pas à zéro tout seul.
+
+Le projet `default`, auquel appartiennent toutes les Applications, est
+déclaré dans `components/argocd/appproject.yaml`, puisque l'interface qui
+le crée d'ordinaire ne tourne pas. L'Application `platform` le gère :
+retirer ce fichier de la kustomization supprimerait le projet (en staging
+par le prune automatique ; en prod au premier Sync avec Prune coché), et
+plus aucune Application ne se synchroniserait.
 
 ## Secrets
 

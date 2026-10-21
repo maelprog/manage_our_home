@@ -835,9 +835,11 @@ Rien n'arrive en prod sans deux gestes de l'utilisateur (arbitrage du
    bot `promote.yml` de `main` sur un tag `v*`, ou à la main avec
    `ci/set-images.sh`). Ses checks sont exigés au vert par le ruleset.
    Argo CD de la prod voit alors `manage-our-home-prod` `OutOfSync`.
-2. **« Sync »** dans l'Argo CD du VPS (par le tunnel :
+2. **« Sync »** dans l'Argo CD du VPS (l'interface ne tourne pas
+   d'elle-même : `kubectl -n argocd scale deploy/argocd-server --replicas=1`,
+   puis par le tunnel :
    `kubectl -n argocd port-forward svc/argocd-server 8080:443`, puis
-   `https://localhost:8080`) : `manage-our-home-prod`, et avant elle
+   `https://localhost:8080` ; la redescendre ensuite à `--replicas=0`) : `manage-our-home-prod`, et avant elle
    `platform` ou `postgres-prod` si la PR les touche. Sans le CLI d'Argo
    CD, la même demande de synchro par `kubectl` :
 
