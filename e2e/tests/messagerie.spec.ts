@@ -415,3 +415,61 @@ test.describe("Messagerie — pagination", () => {
     await expect(page.getByLabel("Votre message")).toBeVisible();
   });
 });
+
+test.describe("Messagerie — unread badge in the navigation (#463)", () => {
+  test("the Messagerie tab counts another member's unread messages until the thread is opened", async ({
+    page,
+    browser,
+  }) => {
+    await registerAndLogin(page, "e2e-msgbadgeowner", "Badge Owner");
+    await createGroup(page, "Famille Pastille");
+    const href = await createInvitationLink(page, "Famille Pastille");
+
+    // Nothing posted yet: no badge, the tab is plain "Messagerie".
+    await page.goto("/");
+    const tab = page.locator(".tabs").getByRole("link", { name: "Messagerie" });
+    await expect(tab).toHaveAccessibleName("Messagerie");
+    await expect(tab.locator(".badge")).toHaveCount(0);
+
+    const context = await browser.newContext();
+    const member = await context.newPage();
+    await registerAndLogin(member, "e2e-msgbadgemember", "Badge Member");
+    await member.goto(href);
+    await member.getByRole("button", { name: "Rejoindre le groupe" }).click();
+    // Posted without the redirect to /messagerie being followed: the member
+    // never opens the thread, so their read marker stays behind their own
+    // three messages — only the exclusion of the author keeps them off the
+    // count.
+    for (const content of ["Premier non lu", "Deuxième non lu", "Troisième non lu"]) {
+      const response = await member.request.post("/messagerie", {
+        form: { content },
+        maxRedirects: 0,
+      });
+      expect(response.status()).toBe(303);
+    }
+
+    // The author is not told about their own messages.
+    await member.goto("/");
+    await expect(member.locator(".tabs .badge")).toHaveCount(0);
+    await context.close();
+
+    // The owner is: three, drawn for the eye and said in the link's name —
+    // which still holds "Messagerie", the word the suite finds the tab by.
+    await page.goto("/");
+    await expect(tab.locator(".badge")).toHaveText("3");
+    await expect(tab).toHaveAccessibleName("Messagerie (3 non lus)");
+
+    // Same tab in the phone's bottom bar.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(tab.locator(".badge")).toBeVisible();
+    await page.setViewportSize({ width: 1280, height: 720 });
+
+    // Opening the thread reads them: no badge there, none afterwards.
+    await tab.click();
+    await expect(page).toHaveURL("/messagerie");
+    await expect(tab.locator(".badge")).toHaveCount(0);
+    await page.goto("/agenda");
+    await expect(tab.locator(".badge")).toHaveCount(0);
+    await expect(tab).toHaveAccessibleName("Messagerie");
+  });
+});

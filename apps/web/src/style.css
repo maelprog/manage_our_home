@@ -587,6 +587,12 @@ caption, .skip-link:not(:focus) { clip-path: inset(50%); }
    header's actions, which was 30px until #74 moved the floor here. */
 .navlink { display: inline-flex; align-items: center; min-height: var(--s12); padding: var(--s1) var(--s2x); border-radius: var(--r-sm); color: var(--fg); text-decoration: none; }
 .navlink[aria-current="page"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+/* The Messagerie tab's unread count (#463) is a `.badge.warn` — its own
+   ground and text, so it reads the same on a current tab — set off from the
+   label. The words it stands for ("(3 non lus)") are in `.sr-only` beside
+   it, the usual visually-hidden pattern. */
+.navlink .badge { margin-left: var(--s2x); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 /* -- The agenda below the breakpoint (#71) --------------------------------
    Seven columns on 390px give ~50px a day, so the agenda stops being a grid:
    one markup, re-read as the list of the days that carry something (why one

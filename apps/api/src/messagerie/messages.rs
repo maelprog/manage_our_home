@@ -250,6 +250,48 @@ pub async fn list_messages(
     ))
 }
 
+/// `GET /groups/:id/messages/unread_count` — the number on the Messagerie
+/// tab's pastille (#463), fetched by apps/web for every authenticated page.
+///
+/// One `count(*)` and no decryption, unlike `?unread=true&limit=1`, which
+/// decrypts a page to throw it away. It counts what `unread_messages`
+/// counts — `created_at` strictly after the caller's watermark, every
+/// message when there is none — **less the caller's own messages**: what
+/// one wrote oneself is not news. `unread_total` (the home card) still
+/// counts them. The two only part when the caller has messages of their own
+/// newer than their watermark: posting goes through `/messagerie`, whose
+/// reload advances the watermark past the message just sent, so in practice
+/// that is when this advance failed (it is best-effort).
+pub async fn unread_count(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(group_id): Path<Uuid>,
+) -> AppResult<impl IntoResponse> {
+    let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
+    require_role(&mut tx, group_id, auth.user_id).await?;
+
+    let unread_count = sqlx::query_scalar!(
+        r#"
+        SELECT count(*) AS "count!"
+        FROM messages m
+        WHERE m.group_id = $1
+          AND m.created_by <> $2
+          AND m.created_at > COALESCE(
+              (SELECT r.last_read_at FROM message_read_state r
+               WHERE r.group_id = $1 AND r.user_id = $2),
+              '-infinity'::timestamptz
+          )
+        "#,
+        group_id,
+        auth.user_id,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    Ok(Json(json!({ "unread_count": unread_count })))
+}
+
 /// Advances the caller's read watermark for this family (issue #73). Called
 /// when the member opens the **live** `/messagerie`
 /// (`apps/web/src/routes/messagerie/thread.rs`, `read_watermark`).

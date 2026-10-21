@@ -190,13 +190,39 @@ pub fn nav_link_is_current(href: &str, current_path: &str) -> bool {
 /// One `<a class="navlink">`, carrying `aria-current="page"` when it leads to
 /// the page being rendered. `href` and `label` are literals from the nav
 /// table below, so only the path needs escaping.
-fn navlink(href: &str, label: &str, current_path: &str) -> String {
+///
+/// `badge` follows the label inside the link: `unread_badge`'s markup, or
+/// empty.
+fn navlink(href: &str, label: &str, current_path: &str, badge: &str) -> String {
     let current = if nav_link_is_current(href, current_path) {
         r#" aria-current="page""#
     } else {
         ""
     };
-    format!(r#"<a class="navlink" href="{href}"{current}>{label}</a>"#)
+    format!(r#"<a class="navlink" href="{href}"{current}>{label}{badge}</a>"#)
+}
+
+/// The red count the Messagerie tab wears when the active family has unread
+/// messages (#463), or nothing at all at zero.
+///
+/// The figure is drawn for the eye and said for the ear separately: the
+/// visible pastille is `aria-hidden` and stops at "99+", and a visually
+/// hidden " (3 non lus)" carries the exact count into the link's accessible
+/// name — "Messagerie (3 non lus)", which still holds "Messagerie" for the
+/// e2e suite that finds the tab by name.
+pub(crate) fn unread_badge(unread: u64) -> String {
+    if unread == 0 {
+        return String::new();
+    }
+    let shown = if unread > 99 {
+        "99+".to_string()
+    } else {
+        unread.to_string()
+    };
+    let words = if unread == 1 { "non lu" } else { "non lus" };
+    format!(
+        r#"<span class="badge warn" aria-hidden="true">{shown}</span><span class="sr-only"> ({unread} {words})</span>"#
+    )
 }
 
 /// The main navigation, in order. `/admin/users` is appended for the single
@@ -234,11 +260,15 @@ const NAV: [(&str, &str); 8] = [
 /// switcher has to come back to. A caller that ever passes something else
 /// would mislead the nav, not the switcher — the failure is cosmetic and
 /// visible on the page itself.
+///
+/// `unread_messages` is the active family's unread count, which the
+/// Messagerie tab shows as a pastille (`unread_badge`, #463); 0 shows none.
 pub fn app_header(
     me: &MeResponse,
     groups: &[GroupSummary],
     active: Option<&GroupSummary>,
     redirect_to: &str,
+    unread_messages: u64,
 ) -> String {
     let switcher = if groups.is_empty() {
         r#"<a href="/groups/new">Créer une famille</a>"#.to_string()
@@ -276,7 +306,14 @@ pub fn app_header(
         .iter()
         .copied()
         .chain(me.is_superadmin.then_some(("/admin/users", "Admin")))
-        .map(|(href, label)| navlink(href, label, redirect_to))
+        .map(|(href, label)| {
+            let badge = if href == "/messagerie" {
+                unread_badge(unread_messages)
+            } else {
+                String::new()
+            };
+            navlink(href, label, redirect_to, &badge)
+        })
         .collect();
     format!(
         r#"<header>
@@ -296,7 +333,7 @@ pub fn app_header(
         // "Mon compte" is a destination like any other, so it goes through
         // the same helper rather than restating its conditional (#69's
         // leftover nit, in this diff anyway because the link moves).
-        account = navlink("/account", "Mon compte", redirect_to),
+        account = navlink("/account", "Mon compte", redirect_to, ""),
     )
 }
 
@@ -928,7 +965,7 @@ mod tests {
 
     #[test]
     fn the_header_marks_exactly_one_link_as_the_current_page() {
-        let header = app_header(&me(true), &[], None, "/agenda/new");
+        let header = app_header(&me(true), &[], None, "/agenda/new", 0);
         assert_eq!(
             header.matches(r#"aria-current="page""#).count(),
             1,
@@ -941,11 +978,73 @@ mod tests {
         assert_eq!(header.matches(r#"class="navlink""#).count(), 10);
     }
 
+    // -- unread badge on the Messagerie tab (#463) -------------------------
+
+    #[test]
+    fn no_unread_message_means_no_badge() {
+        assert_eq!(unread_badge(0), "");
+    }
+
+    #[test]
+    fn the_badge_shows_the_count_and_says_it_in_words() {
+        let badge = unread_badge(3);
+        assert!(
+            badge.contains(r#"<span class="badge warn" aria-hidden="true">3</span>"#),
+            "{badge}"
+        );
+        assert!(
+            badge.contains(r#"<span class="sr-only"> (3 non lus)</span>"#),
+            "{badge}"
+        );
+    }
+
+    #[test]
+    fn one_unread_message_is_singular() {
+        assert!(
+            unread_badge(1).contains(" (1 non lu)<"),
+            "{}",
+            unread_badge(1)
+        );
+    }
+
+    #[test]
+    fn the_visible_count_stops_at_99_plus_and_the_spoken_one_does_not() {
+        assert!(unread_badge(99).contains(r#"aria-hidden="true">99</span>"#));
+        let badge = unread_badge(250);
+        assert!(
+            badge.contains(r#"aria-hidden="true">99+</span>"#),
+            "{badge}"
+        );
+        assert!(badge.contains(" (250 non lus)"), "{badge}");
+    }
+
+    #[test]
+    fn the_header_puts_the_badge_on_the_messagerie_tab_only() {
+        let header = app_header(&me(false), &[], None, "/agenda", 3);
+        let link = &header[header
+            .find(r#"href="/messagerie""#)
+            .expect("messagerie tab")..];
+        let link = &link[..link.find("</a>").expect("end of the tab")];
+        assert!(link.contains(">Messagerie<"), "{link}");
+        assert!(link.contains(" (3 non lus)"), "{link}");
+        assert_eq!(header.matches(r#"class="badge warn""#).count(), 1);
+        // The navigation itself is unchanged: same links, one current page.
+        assert_eq!(header.matches(r#"class="navlink""#).count(), 9);
+        assert_eq!(header.matches(r#"aria-current="page""#).count(), 1);
+    }
+
+    #[test]
+    fn the_header_has_no_badge_without_unread_messages() {
+        let header = app_header(&me(false), &[], None, "/agenda", 0);
+        assert!(!header.contains("badge"), "{header}");
+        assert!(header.contains(r#"<a class="navlink" href="/messagerie">Messagerie</a>"#));
+    }
+
     #[test]
     fn the_account_link_is_current_on_the_account_screens() {
         // "Mon compte" is a destination like any other; on /account/export
         // the header has to say so too.
-        let header = app_header(&me(false), &[], None, "/account/export");
+        let header = app_header(&me(false), &[], None, "/account/export", 0);
         assert!(header.contains(r#"href="/account" aria-current="page""#));
         assert_eq!(header.matches(r#"aria-current="page""#).count(), 1);
     }
@@ -954,7 +1053,7 @@ mod tests {
     fn the_header_navigation_is_not_secondary_content() {
         // The nav sat in a `.muted` block: grey, 0.875rem, ranked below the
         // content it leads to (#69).
-        let header = app_header(&me(false), &[], None, "/");
+        let header = app_header(&me(false), &[], None, "/", 0);
         let nav = &header[..header.find("</nav>").expect("a nav in the header")];
         assert!(
             !nav.contains("muted"),
