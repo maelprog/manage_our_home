@@ -26,6 +26,7 @@ use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
+use crate::lenient_query::lenient;
 use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
@@ -42,8 +43,11 @@ pub struct DetailQuery {
     notice: Option<String>,
     error: Option<String>,
     /// Set after a reminder is created, so the (non-enumerable) reminder can
-    /// be shown once with a delete link.
+    /// be shown once with a delete link. Both read as absent when they do
+    /// not convert (#580): no banner, offset 0.
+    #[serde(default, deserialize_with = "lenient")]
     rid: Option<Uuid>,
+    #[serde(default, deserialize_with = "lenient")]
     offset: Option<i32>,
 }
 
@@ -627,6 +631,31 @@ mod tests {
     /// a fixed id per member reads better than a random one.
     fn uid(n: u128) -> Uuid {
         Uuid::from_u128(n)
+    }
+
+    fn detail_query(raw: &str) -> DetailQuery {
+        serde_urlencoded::from_str(raw).expect("a malformed parameter must not reject the page")
+    }
+
+    #[test]
+    fn malformed_rid_or_offset_reads_as_absent() {
+        // #580: no banner without a valid rid; an unconvertible offset is 0.
+        assert!(detail_query("rid=").rid.is_none());
+        assert!(detail_query("rid=x&offset=30").rid.is_none());
+        let rid = "6f1c1c1e-3b4a-4d2e-9f00-0123456789ab";
+        for offset in ["", "abc", "1.5", "99999999999"] {
+            let q = detail_query(&format!("rid={rid}&offset={offset}"));
+            assert_eq!(q.rid, Some(Uuid::parse_str(rid).unwrap()), "{offset}");
+            assert_eq!(q.offset, None, "{offset}");
+        }
+    }
+
+    #[test]
+    fn valid_rid_and_offset_keep_their_effect() {
+        let q = detail_query("occ=2026-10-22&rid=6f1c1c1e-3b4a-4d2e-9f00-0123456789ab&offset=30");
+        assert_eq!(q.occ.as_deref(), Some("2026-10-22"));
+        assert!(q.rid.is_some());
+        assert_eq!(q.offset, Some(30));
     }
 
     fn member(id: Uuid, name: &str) -> GroupMember {

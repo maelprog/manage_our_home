@@ -25,6 +25,7 @@ use uuid::Uuid;
 use crate::app::{html_escape, member_colour, member_initial, shell_with_header, Width};
 use crate::assets::Script;
 use crate::layout::CurrentUser;
+use crate::lenient_query::lenient;
 use crate::state::{api_request_auth, AppState};
 
 use super::{
@@ -35,13 +36,18 @@ use super::{
 /// Query params for `GET /messagerie`. All optional: with none it's the live
 /// view; `before_*` make it a history window; `limit` sets the page size.
 /// `notice` is the PRG success banner; `reply_to` is the message the composer
-/// answers (#465), set by a row's "Répondre" link.
+/// answers (#465), set by a row's "Répondre" link. A typed parameter that
+/// does not convert reads as absent (#580) rather than failing the page.
 #[derive(serde::Deserialize)]
 pub struct ThreadQuery {
     notice: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
     reply_to: Option<Uuid>,
+    #[serde(default, deserialize_with = "lenient")]
     before_created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, deserialize_with = "lenient")]
     before_id: Option<Uuid>,
+    #[serde(default, deserialize_with = "lenient")]
     limit: Option<i64>,
 }
 
@@ -1046,6 +1052,36 @@ fn read_watermark(list: &MessageList, live: bool) -> Option<DateTime<Utc>> {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    fn thread_query(raw: &str) -> ThreadQuery {
+        serde_urlencoded::from_str(raw).expect("a malformed parameter must not reject the page")
+    }
+
+    #[test]
+    fn malformed_thread_parameters_read_as_absent() {
+        // #580: each typed parameter, empty then unconvertible.
+        for raw in [
+            "reply_to=&before_created_at=&before_id=&limit=",
+            "reply_to=pas-un-uuid&before_created_at=y&before_id=x&limit=abc",
+        ] {
+            let q = thread_query(raw);
+            assert!(q.reply_to.is_none(), "{raw}");
+            assert!(q.before_created_at.zip(q.before_id).is_none(), "{raw}");
+            assert_eq!(clamp_limit(q.limit), clamp_limit(None), "{raw}");
+        }
+    }
+
+    #[test]
+    fn valid_thread_parameters_keep_their_effect() {
+        let id = "6f1c1c1e-3b4a-4d2e-9f00-0123456789ab";
+        let q = thread_query(&format!(
+            "notice=message_sent&reply_to={id}&before_created_at=2026-10-22T08%3A30%3A00Z&before_id={id}&limit=20"
+        ));
+        assert_eq!(q.notice.as_deref(), Some("message_sent"));
+        assert_eq!(q.reply_to, Some(Uuid::parse_str(id).unwrap()));
+        assert!(q.before_created_at.zip(q.before_id).is_some());
+        assert_eq!(q.limit, Some(20));
+    }
 
     fn sample(content: &str) -> MessageResponse {
         let now = chrono::Utc::now();
