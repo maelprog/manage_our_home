@@ -41,8 +41,13 @@ function todayAt(hour: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(hour)}:00`;
 }
 
-/** One family with something on each page, so every component renders. */
-async function seed(page: Page): Promise<void> {
+/**
+ * One family with something on each page, so every component renders.
+ * Returns the pages whose path carries an id the seed only learns here: the
+ * member list, the seeded member's profile, and the event's detail (its
+ * assignee, the creator, is a `.member` link — #466).
+ */
+async function seed(page: Page): Promise<string[]> {
   await registerAndLogin(page, "Touch Tester");
   await page.goto("/groups/new");
   await page.getByLabel("Nom du groupe").fill("Famille Cibles");
@@ -65,6 +70,20 @@ async function seed(page: Page): Promise<void> {
   await page.getByLabel("Fin").fill(todayAt(11));
   await page.getByRole("button", { name: "Créer l'événement" }).click();
   await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
+  const eventHref = await page.locator("a.chip", { hasText: "Rendez-vous" }).first().getAttribute("href");
+  if (!eventHref) throw new Error("no link to the seeded event");
+  // The visit below measures the assignee's link only if there is one.
+  await page.goto(eventHref);
+  await expect(page.locator("a.member")).toHaveCount(1);
+
+  await page.goto("/groups");
+  const membersHref = await page.getByRole("link", { name: "Membres" }).getAttribute("href");
+  if (!membersHref) throw new Error("no link to the seeded group's members");
+  await page.goto(membersHref);
+  const profileHref = await page.locator("a.member").first().getAttribute("href");
+  if (!profileHref) throw new Error("no link to the seeded member's profile");
+
+  return [membersHref, profileHref, eventHref];
 }
 
 interface Box {
@@ -79,7 +98,7 @@ interface Box {
  * and button-styled links, fields, nav links, the password toggle, the
  * agenda's arrows and chips, a disclosure's summary, a `.links` column, a
  * member's name as a link to their profile (`.member`, #466 — the seeded
- * message's author on /messagerie).
+ * message's author on /messagerie, the member list, the event's assignee).
  *
  * Left out, each for a stated reason:
  * - a bare text link (`<a>` with no class): inside a sentence it is WCAG
@@ -169,8 +188,8 @@ for (const [layout, viewport] of [
         }
       };
       for (const path of PUBLIC_PAGES) await visit(path);
-      await seed(page);
-      for (const path of APP_PAGES) await visit(path);
+      const seeded = await seed(page);
+      for (const path of [...APP_PAGES, ...seeded]) await visit(path);
       expect(failures, failures.join("\n")).toEqual([]);
     });
   });
