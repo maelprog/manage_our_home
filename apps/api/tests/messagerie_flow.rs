@@ -1892,3 +1892,192 @@ async fn a_replica_listens_once_for_all_its_sockets(db: PgPool) {
     first.close(None).await.ok();
     second.close(None).await.ok();
 }
+
+// -- #464: replying to a message ------------------------------------------
+
+/// `POST …/messages` with a `reply_to_id`, returning the raw response.
+async fn post_reply(
+    router: &axum::Router,
+    group_id: &str,
+    cookie: &str,
+    content: &str,
+    reply_to_id: &str,
+) -> axum::response::Response {
+    call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/messages"),
+        Some(cookie),
+        Some(serde_json::json!({ "content": content, "reply_to_id": reply_to_id })),
+    )
+    .await
+}
+
+/// `GET …/messages` (newest first), returning the `messages` array.
+async fn list_all(router: &axum::Router, group_id: &str, cookie: &str) -> Vec<serde_json::Value> {
+    let res = call(
+        router,
+        Method::GET,
+        &format!("/groups/{group_id}/messages"),
+        Some(cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    json_body(res).await["messages"].as_array().unwrap().clone()
+}
+
+/// A reply names its parent — id, author, excerpt of the decrypted content
+/// — in the creation response, the listing, the edit response and the WS
+/// events; a long parent is cut with an ellipsis; and the excerpt is nowhere
+/// in the table in clear.
+#[sqlx::test]
+async fn a_reply_carries_its_parent_everywhere(db: PgPool) {
+    let (addr, router) = serve_replica(&db).await;
+    let owner =
+        register_verify_login(&router, &db, "reply-owner@example.test", "owner-password1").await;
+    let member =
+        register_verify_login(&router, &db, "reply-member@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner, "Foyer").await;
+    invite_and_join(&router, &group_id, &owner, &member).await;
+
+    let parent_content = format!("Qui fait les courses ? {}", "blabla ".repeat(40));
+    let parent = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/messages"),
+        Some(&owner),
+        Some(serde_json::json!({ "content": parent_content })),
+    )
+    .await;
+    assert_status(&parent, StatusCode::CREATED);
+    let parent = json_body(parent).await;
+    let parent_id = parent["id"].as_str().unwrap().to_string();
+    assert!(parent["reply_to"].is_null(), "{parent}");
+
+    let mut ws = connect_ws(addr, &group_id, &member).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let reply = post_reply(&router, &group_id, &member, "Moi !", &parent_id).await;
+    assert_status(&reply, StatusCode::CREATED);
+    let reply = json_body(reply).await;
+    let reply_id = reply["id"].as_str().unwrap().to_string();
+    assert_eq!(reply["reply_to"]["id"], parent_id.as_str());
+    assert_eq!(reply["reply_to"]["created_by"], parent["created_by"]);
+    let excerpt = reply["reply_to"]["excerpt"].as_str().unwrap().to_string();
+    let kept = excerpt
+        .strip_suffix('…')
+        .expect("a long parent is cut with an ellipsis");
+    assert!(parent_content.starts_with(kept), "{excerpt}");
+    assert!(kept.chars().count() < parent_content.trim().chars().count());
+    assert!(kept.starts_with("Qui fait les courses ?"));
+
+    let event = next_ws_event(&mut ws).await;
+    assert_eq!(event["type"], "message.created", "{event}");
+    assert_eq!(event["message"]["reply_to"], reply["reply_to"], "{event}");
+
+    let listed = list_all(&router, &group_id, &owner).await;
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0]["id"], reply_id.as_str());
+    assert_eq!(listed[0]["reply_to"], reply["reply_to"]);
+    assert!(listed[1]["reply_to"].is_null());
+
+    let edit = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/messages/{reply_id}"),
+        Some(&member),
+        Some(serde_json::json!({ "content": "Moi, ce soir" })),
+    )
+    .await;
+    assert_status(&edit, StatusCode::OK);
+    let edited = json_body(edit).await;
+    assert_eq!(edited["reply_to"], reply["reply_to"]);
+    let event = next_ws_event(&mut ws).await;
+    assert_eq!(event["type"], "message.updated", "{event}");
+    assert_eq!(event["message"]["reply_to"], reply["reply_to"], "{event}");
+
+    // Nothing of the excerpt is stored in clear. `content` is the only
+    // column of `messages` that can hold text at all — every other one is a
+    // uuid or a timestamp — and its bytes never contain the excerpt's.
+    let text_columns: Vec<(String, String)> = sqlx::query_as(
+        "SELECT column_name::text, data_type::text FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'messages'
+           AND data_type NOT IN ('uuid', 'timestamp with time zone')",
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(text_columns, [("content".into(), "bytea".into())]);
+    let in_clear: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM messages
+         WHERE position(convert_to('Qui fait les courses', 'UTF8') IN content) > 0",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(in_clear, 0);
+
+    ws.close(None).await.ok();
+}
+
+/// A parent of another family — even one the caller belongs to — or one
+/// that does not exist is 422 `reply_to_invalid`, and nothing is inserted.
+#[sqlx::test]
+async fn replying_to_another_familys_message_is_refused(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner =
+        register_verify_login(&router, &db, "reply-two@example.test", "owner-password1").await;
+    let group_a = create_group(&router, &owner, "Famille A").await;
+    let group_b = create_group(&router, &owner, "Famille B").await;
+    let (in_a, _) = post_message(&router, &group_a, &owner, "Dans A").await;
+
+    for parent in [in_a.as_str(), "00000000-0000-0000-0000-000000000464"] {
+        let res = post_reply(&router, &group_b, &owner, "Dans B", parent).await;
+        assert_status(&res, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(json_body(res).await["error"], "reply_to_invalid");
+    }
+
+    let in_b: i64 = sqlx::query_scalar("SELECT count(*) FROM messages WHERE group_id::text = $1")
+        .bind(&group_b)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(in_b, 0);
+}
+
+/// Deleting the parent keeps the reply, which then answers `reply_to: null`.
+#[sqlx::test]
+async fn deleting_the_parent_keeps_the_reply_without_its_parent(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner =
+        register_verify_login(&router, &db, "reply-del@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner, "Foyer").await;
+    let (parent_id, _) = post_message(&router, &group_id, &owner, "Parent").await;
+    let reply = post_reply(&router, &group_id, &owner, "Réponse", &parent_id).await;
+    assert_status(&reply, StatusCode::CREATED);
+    let reply_id = json_body(reply).await["id"].as_str().unwrap().to_string();
+
+    let delete = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}/messages/{parent_id}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_status(&delete, StatusCode::NO_CONTENT);
+
+    let listed = list_all(&router, &group_id, &owner).await;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["id"], reply_id.as_str());
+    assert_eq!(listed[0]["content"], "Réponse");
+    assert!(listed[0]["reply_to"].is_null(), "{}", listed[0]);
+    let link: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT reply_to_id FROM messages WHERE id::text = $1")
+            .bind(&reply_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert!(link.is_none());
+}

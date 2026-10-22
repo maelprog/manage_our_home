@@ -115,12 +115,21 @@ async fn export_returns_owned_data_across_categories(db: PgPool) {
     )
     .await;
 
-    call(
+    let first_message = call(
         &router,
         Method::POST,
         &format!("/groups/{group_id}/messages"),
         Some(&cookie),
         Some(serde_json::json!({"content": "Bonjour la famille"})),
+    )
+    .await;
+    let first_message = json_body(first_message).await["id"].clone();
+    call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/messages"),
+        Some(&cookie),
+        Some(serde_json::json!({"content": "Et re-bonjour", "reply_to_id": first_message})),
     )
     .await;
 
@@ -188,6 +197,10 @@ async fn export_returns_owned_data_across_categories(db: PgPool) {
     assert_eq!(doc["budget_entries"][0]["name"], "Courses");
     assert_eq!(doc["budget_entries"][0]["amount"], 12.5);
     assert_eq!(doc["messages"][0]["content"], "Bonjour la famille");
+    // #464: a reply exports the id of the message it answers.
+    assert!(doc["messages"][0]["reply_to_id"].is_null());
+    assert_eq!(doc["messages"][1]["content"], "Et re-bonjour");
+    assert_eq!(doc["messages"][1]["reply_to_id"], first_message);
 
     let audit_action: Option<String> = sqlx::query_scalar(
         "SELECT action FROM audit_log WHERE action = 'account_data_exported' LIMIT 1",

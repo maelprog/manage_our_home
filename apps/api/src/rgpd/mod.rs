@@ -398,7 +398,8 @@ pub async fn export_account(
         }));
 
         let message_rows = sqlx::query!(
-            r#"SELECT id, group_id, pgp_sym_decrypt(content, $3) as "content!", edited_at, created_at
+            r#"SELECT id, group_id, pgp_sym_decrypt(content, $3) as "content!", reply_to_id,
+                      edited_at, created_at
                FROM messages WHERE group_id = $1 AND created_by = $2 ORDER BY created_at"#,
             group_id,
             auth.user_id,
@@ -409,6 +410,7 @@ pub async fn export_account(
         c.messages.extend(message_rows.into_iter().map(|m| {
             json!({
                 "id": m.id, "group_id": m.group_id, "content": m.content,
+                "reply_to_id": m.reply_to_id,
                 "edited_at": m.edited_at, "created_at": m.created_at,
             })
         }));
