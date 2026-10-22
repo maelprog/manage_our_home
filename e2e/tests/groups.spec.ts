@@ -168,6 +168,98 @@ test.describe("Groups — invitations", () => {
     await expect(member.getByRole("button", { name: "Changer le rôle" })).toHaveCount(0);
     await expect(member.getByRole("button", { name: "Retirer" })).toHaveCount(0);
   });
+
+  // #462: an invitation opened without a session survives the login.
+  test("logged out: the invite link leads to the login, then back to the invitation", async ({
+    page,
+    browser,
+  }) => {
+    await registerAndLogin(page, "e2e-backinviter", "Back Inviter");
+    await createGroup(page, "Famille Retour");
+    const invite = await createInviteLink(page, "Famille Retour");
+    // The link to share is absolute (#462).
+    expect(invite).toMatch(/^https?:\/\/[^/]+\/groups\/invitations\/[A-Za-z0-9_-]{43}\/accept$/);
+
+    // An account of its own, then a browser without its session.
+    const { email } = await secondUser(browser, "e2e-backguest", "Back Guest");
+    const context = await browser.newContext();
+    const guest = await context.newPage();
+    await guest.goto(invite);
+    await expect(guest).toHaveURL(/\/login$/);
+    await guest.getByLabel("Email").fill(email);
+    await guest.getByRole("textbox", { name: "Mot de passe" }).fill(PASSWORD);
+    await guest.getByRole("button", { name: "Se connecter" }).click();
+
+    await expect(guest).toHaveURL(invite);
+    await expect(guest.getByRole("heading", { name: "Rejoindre un groupe" })).toBeVisible();
+    await guest.getByRole("button", { name: "Rejoindre le groupe" }).click();
+    await expect(guest).toHaveURL(/\/groups\?notice=joined$/);
+    await expect(guest.locator("li", { hasText: "Famille Retour" })).toBeVisible();
+
+    // Once: the next visit of `/` is the dashboard.
+    await guest.goto("/");
+    await expect(guest).toHaveURL("/");
+    await context.close();
+  });
+
+  // #462: and the registration, its email verification and the login.
+  test("no account: the invite link leads through the registration back to the invitation", async ({
+    page,
+    browser,
+  }) => {
+    await registerAndLogin(page, "e2e-newinviter", "New Inviter");
+    await createGroup(page, "Famille Nouvelle");
+    const invite = await createInviteLink(page, "Famille Nouvelle");
+
+    const context = await browser.newContext();
+    const guest = await context.newPage();
+    await guest.goto(invite);
+    await expect(guest).toHaveURL(/\/login$/);
+    await guest.getByRole("link", { name: "Créer un compte" }).click();
+
+    const email = uniqueEmail("e2e-newguest");
+    await guest.getByLabel("Email").fill(email);
+    await guest.getByLabel("Nom affiché").fill("New Guest");
+    await guest.getByRole("textbox", { name: "Mot de passe" }).fill(PASSWORD);
+    await guest.getByRole("textbox", { name: "Confirmation" }).fill(PASSWORD);
+    await guest.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
+    await guest
+      .getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." })
+      .check();
+    await guest.getByRole("button", { name: "Créer mon compte" }).click();
+    await expect(guest).toHaveURL(/\/register\/check-email$/);
+
+    const token = await fetchVerificationToken(email);
+    await guest.goto(`/verify-email?token=${token}`);
+    await guest.getByRole("link", { name: "Se connecter" }).click();
+    await guest.getByLabel("Email").fill(email);
+    await guest.getByRole("textbox", { name: "Mot de passe" }).fill(PASSWORD);
+    await guest.getByRole("button", { name: "Se connecter" }).click();
+
+    await expect(guest).toHaveURL(invite);
+    await guest.getByRole("button", { name: "Rejoindre le groupe" }).click();
+    await expect(guest).toHaveURL(/\/groups\?notice=joined$/);
+    await expect(guest.locator("li", { hasText: "Famille Nouvelle" })).toBeVisible();
+    await context.close();
+  });
+
+  // #462: a return address naming another site is ignored.
+  test("a next parameter naming another site ends the login on the home page", async ({
+    page,
+    browser,
+  }) => {
+    const email = await registerAndLogin(page, "e2e-nextevil", "Next Evil");
+    for (const next of ["https://evil.example", "//evil.example", "/\\evil", "javascript:alert(1)"]) {
+      const context = await browser.newContext();
+      const visitor = await context.newPage();
+      await visitor.goto(`/login?next=${encodeURIComponent(next)}`);
+      await visitor.getByLabel("Email").fill(email);
+      await visitor.getByRole("textbox", { name: "Mot de passe" }).fill(PASSWORD);
+      await visitor.getByRole("button", { name: "Se connecter" }).click();
+      await expect(visitor).toHaveURL("/");
+      await context.close();
+    }
+  });
 });
 
 test.describe("Groups — member roles and removal", () => {

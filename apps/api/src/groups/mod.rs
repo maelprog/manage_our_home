@@ -484,12 +484,15 @@ pub async fn create_invitation(
     };
     tx.commit().await?;
 
+    // Absolute, in the email as in the response (#462): the link is shared
+    // with someone who has no tab open on this service to resolve a
+    // relative path against.
+    let link = format!(
+        "{}/groups/invitations/{}/accept",
+        state.frontend_base_url,
+        token.value()
+    );
     if let (Some(email), Some((group_name, inviter_display_name))) = (&body.invited_email, notice) {
-        let link = format!(
-            "{}/groups/invitations/{}/accept",
-            state.frontend_base_url,
-            token.value()
-        );
         // Absolute: the reader has no session, and no browser tab open on
         // this service, to resolve a relative path against.
         let privacy_policy_url = format!("{}/privacy-policy", state.frontend_base_url);
@@ -513,7 +516,7 @@ pub async fn create_invitation(
 
     Ok((
         StatusCode::CREATED,
-        Json(json!({ "id": invitation_id, "token": token.value() })),
+        Json(json!({ "id": invitation_id, "token": token.value(), "accept_url": link })),
     ))
 }
 

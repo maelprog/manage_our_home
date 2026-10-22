@@ -448,6 +448,25 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Response {
+    // #462: where the password login, Google's callback and the age and
+    // terms pages land — so where a visitor turned away from an invitation
+    // before having a session is sent back to it, once. A cookie that names
+    // no allowed page is cleared too, by sending back to `/` itself.
+    let cookies = headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|v| v.to_str().ok());
+    if let Some(value) = crate::return_to::return_cookie(cookies) {
+        let to = crate::return_to::safe_return_path(value).unwrap_or("/");
+        return (
+            [(
+                axum::http::header::SET_COOKIE,
+                crate::return_to::clear_return_cookie(),
+            )],
+            Redirect::to(to),
+        )
+            .into_response();
+    }
+
     let (fam, groups) = family_context(&state, &headers, &me).await;
 
     let Some(fam) = fam else {

@@ -3,7 +3,9 @@
 //! `apps/api/src/groups/mod.rs::create_invitation`'s
 //! `{frontend_base_url}/groups/invitations/{token}/accept`). GET shows a
 //! confirm page (auth-gated: an anonymous visitor is bounced to /login by
-//! `CurrentUser` and can come back after logging in); POST calls the API.
+//! `CurrentUser`, which remembers this page, and `/` sends them back here
+//! once logged in — after a registration and its email verification too,
+//! in the same browser, `crate::return_to`, #462); POST calls the API.
 //!
 //! Error table (`accept_invitation`): 404 unknown or already accepted token
 //! (accepting deletes the invitation, #138), 410 Gone when past the 7-day

@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 
 use crate::app::{password_field, shell, Width};
 use crate::layout::RedirectIfAuthenticated;
+use crate::return_to::{safe_return_path, set_return_cookie};
 use crate::state::{api_post_json, AppState};
 
 #[derive(serde::Deserialize)]
@@ -17,10 +18,13 @@ pub struct LoginForm {
 }
 
 /// `GET /login`'s query: `?reauth=admin` when an `/admin` page sent the
-/// visitor here (#226).
+/// visitor here (#226); `?next=` a page to come back to once logged in
+/// (#462), kept only when it is a `return_to::safe_return_path` — anything
+/// else is ignored and the login ends on `/`.
 #[derive(serde::Deserialize)]
 pub struct LoginQuery {
     reauth: Option<String>,
+    next: Option<String>,
 }
 
 /// The notice `?reauth=` puts above the form. Only the one value the
@@ -74,13 +78,21 @@ pub async fn get(
     _redirect: RedirectIfAuthenticated,
     State(state): State<AppState>,
     Query(query): Query<LoginQuery>,
-) -> impl IntoResponse {
-    Html(page(
+) -> Response {
+    let html = Html(page(
         "",
         None,
         reauth_notice(query.reauth.as_deref()),
         &state.api_public_base_url,
-    ))
+    ));
+    match query.next.as_deref().and_then(safe_return_path) {
+        Some(next) => (
+            [(axum::http::header::SET_COOKIE, set_return_cookie(next))],
+            html,
+        )
+            .into_response(),
+        None => html.into_response(),
+    }
 }
 
 pub async fn post(

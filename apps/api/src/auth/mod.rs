@@ -979,8 +979,11 @@ mod tests {
         );
     }
 
+    /// `deleted` is the defensive case: a purged account no longer holds
+    /// its address (it is rewritten), so registering it again creates a new
+    /// account and never reaches this lookup.
     #[test]
-    fn register_sends_nothing_for_a_deactivated_or_purged_account() {
+    fn register_sends_nothing_for_a_deactivated_or_deleted_account() {
         for verified in [false, true] {
             for (deactivated, deleted) in [(true, false), (false, true), (true, true)] {
                 assert_eq!(
