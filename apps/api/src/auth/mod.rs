@@ -82,9 +82,14 @@ enum RegisterAction {
     /// `resend_verification` does, cooldown included. Its password and name
     /// stay as they were.
     ResendVerification,
-    /// A verified account: tell its holder they already have one.
+    /// A verified account, one awaiting its deletion included (arbitrated
+    /// 2026-10-22): tell its holder they already have one.
     NotifyExisting,
-    /// A deactivated or purged account: nothing is sent.
+    /// A deactivated account: nothing is sent. Also a row marked
+    /// `deleted_at` that still held the address. The purge never leaves
+    /// one: it rewrites the address to `deleted-<id>@deleted.invalid`
+    /// (`jobs/account_purge.rs`), so a purged account's former address is
+    /// found by no lookup and registers as new.
     Nothing,
 }
 
@@ -113,10 +118,11 @@ fn register_action(existing: Option<ExistingAccount>) -> RegisterAction {
 /// exists. What differs only reaches the mailbox (`register_action`): an
 /// unverified account gets a fresh verification link under the cooldown of
 /// `resend_verification` — its password and name are left as they were —,
-/// a verified one an email saying it already has an account, and a
-/// deactivated or purged one nothing. The password is hashed in every case
-/// before the lookup, so the argon2id a new account costs is paid by the
-/// others too (in the spirit of #178).
+/// a verified one an email saying it already has an account (one awaiting
+/// its deletion too), and a deactivated one nothing. A purged account no
+/// longer holds its address, so registering it creates a new account. The
+/// password is hashed in every case before the lookup, so the argon2id a
+/// new account costs is paid by the others too (in the spirit of #178).
 ///
 /// #137: the account is also refused (422 `age_declaration_required`) unless
 /// the request carries the art. 8 GDPR age declaration. The declaration is

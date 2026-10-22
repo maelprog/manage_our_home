@@ -3887,36 +3887,95 @@ async fn registering_a_verified_address_mails_the_holder_and_issues_no_token(db:
     );
 }
 
-/// #460: a deactivated or purged account's address gets the same answer
-/// and no email at all — verified or not.
+/// #460: a deactivated account's address gets the same answer and no email
+/// at all, verified or not.
 #[sqlx::test]
-async fn registering_a_deactivated_or_purged_address_mails_nothing(db: PgPool) {
+async fn registering_a_deactivated_address_mails_nothing(db: PgPool) {
     let (router, outbox) = common::test_router_with_outbox(db.clone());
-    for (email, deactivated) in [("off@example.test", true), ("gone@example.test", false)] {
-        for verified in [false, true] {
-            register_with(&router, email, "some-password1", "Off").await;
-            age_verification_tokens(&db, email, 600).await;
-            let switch_off = if deactivated {
-                "UPDATE users SET deactivated_at = now(), email_verified = $2 WHERE email = $1"
-            } else {
-                "UPDATE users SET deleted_at = now(), email_verified = $2 WHERE email = $1"
-            };
-            sqlx::query(switch_off)
-                .bind(email)
-                .bind(verified)
-                .execute(&db)
-                .await
-                .unwrap();
-            let mails_before = outbox.emails().len();
-            let tokens_before = verification_tokens(&db, email).await;
+    let email = "off@example.test";
+    for verified in [false, true] {
+        register_with(&router, email, "some-password1", "Off").await;
+        age_verification_tokens(&db, email, 600).await;
+        sqlx::query(
+            "UPDATE users SET deactivated_at = now(), email_verified = $2 WHERE email = $1",
+        )
+        .bind(email)
+        .bind(verified)
+        .execute(&db)
+        .await
+        .unwrap();
+        let mails_before = outbox.emails().len();
+        let tokens_before = verification_tokens(&db, email).await;
 
-            let again = register_with(&router, email, "other-password1", "Other").await;
-            assert_status(&again, StatusCode::CREATED);
-            assert!(body_bytes(again).await.is_empty());
-            assert_eq!(outbox.emails().len(), mails_before, "{email} {verified}");
-            assert_eq!(verification_tokens(&db, email).await, tokens_before);
-        }
+        let again = register_with(&router, email, "other-password1", "Other").await;
+        assert_status(&again, StatusCode::CREATED);
+        assert!(body_bytes(again).await.is_empty());
+        assert_eq!(outbox.emails().len(), mails_before, "{verified}");
+        assert_eq!(verification_tokens(&db, email).await, tokens_before);
     }
+}
+
+/// #460, arbitrated 2026-10-22: an account whose deletion was requested is
+/// still an account during its 30 days of grace. Registering its address
+/// mails the "account exists" notice, as for any verified account.
+#[sqlx::test]
+async fn registering_an_address_awaiting_deletion_mails_the_account_exists_notice(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let email = "leaving@example.test";
+    register_verify_login(&router, &db, email, "leaving-password1").await;
+    sqlx::query("UPDATE users SET deletion_requested_at = now() WHERE email = $1")
+        .bind(email)
+        .execute(&db)
+        .await
+        .unwrap();
+    let mails_before = outbox.emails().len();
+
+    let again = register_with(&router, email, "other-password1", "Other").await;
+    assert_status(&again, StatusCode::CREATED);
+    assert!(body_bytes(again).await.is_empty());
+
+    let emails = outbox.emails();
+    assert_eq!(emails.len(), mails_before + 1);
+    assert_eq!(emails.last().unwrap().to, email);
+    assert_eq!(emails.last().unwrap().subject, "Vous avez déjà un compte");
+}
+
+/// #460: a purged account no longer holds its address, which the purge
+/// rewrote to `deleted-<id>@deleted.invalid` (`jobs/account_purge.rs`).
+/// Registering that address again is a new registration: a new account,
+/// and its verification link.
+#[sqlx::test]
+async fn registering_a_purged_accounts_former_address_creates_a_new_account(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let email = "gone@example.test";
+    register_verify_login(&router, &db, email, "gone-password1").await;
+    sqlx::query(
+        "UPDATE users SET email = 'deleted-' || id || '@deleted.invalid', deleted_at = now()
+         WHERE email = $1",
+    )
+    .bind(email)
+    .execute(&db)
+    .await
+    .unwrap();
+    let mails_before = outbox.emails().len();
+
+    let again = register_with(&router, email, "new-password1", "New").await;
+    assert_status(&again, StatusCode::CREATED);
+    assert!(body_bytes(again).await.is_empty());
+
+    let accounts: Vec<(Uuid, bool)> = sqlx::query_as(
+        "SELECT id, email_verified FROM users WHERE email = $1 AND deleted_at IS NULL",
+    )
+    .bind(email)
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(accounts.len(), 1);
+    assert!(!accounts[0].1, "a new, unverified account");
+    let emails = outbox.emails();
+    assert_eq!(emails.len(), mails_before + 1);
+    assert_eq!(emails.last().unwrap().subject, "Vérifiez votre email");
+    assert_eq!(verification_tokens(&db, email).await, (1, 1));
 }
 
 /// #460: registrations of one address that all pass the lookup before any of
