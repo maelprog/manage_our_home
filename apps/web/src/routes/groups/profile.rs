@@ -144,6 +144,19 @@ mod tests {
         );
     }
 
+    /// A profile the API refuses is a 404 page, status included, whatever
+    /// the cause.
+    #[tokio::test]
+    async fn a_missing_profile_is_a_404_page() {
+        let resp = member_not_found_page();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("Membre introuvable"), "{body}");
+    }
+
     #[test]
     fn the_display_name_is_escaped() {
         let body = profile_body(Uuid::from_u128(1), &profile("<b>x</b>", "standard"));
