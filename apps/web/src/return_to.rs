@@ -43,13 +43,23 @@ pub const RETURN_TO_MAX_AGE_SECS: u32 = 24 * 60 * 60;
 /// (`/groups/invitations/{token}/accept`, the token spelled as apps/api
 /// hands them out).
 pub fn safe_return_path(candidate: &str) -> Option<&str> {
-    if !is_same_site_path(candidate) {
-        return None;
-    }
-    let token = candidate
-        .strip_prefix("/groups/invitations/")?
-        .strip_suffix("/accept")?;
-    is_bearer_token(token).then_some(candidate)
+    checked_return_path(candidate, is_invitation_page)
+}
+
+/// `candidate` when it is a same-site path of the `shape` given. Apart from
+/// [`safe_return_path`] so that a test can hold the site-wide filter behind
+/// a shape that lets everything through.
+fn checked_return_path(candidate: &str, shape: impl Fn(&str) -> bool) -> Option<&str> {
+    (is_same_site_path(candidate) && shape(candidate)).then_some(candidate)
+}
+
+/// `/groups/invitations/{token}/accept`, the token spelled as apps/api
+/// hands them out.
+fn is_invitation_page(candidate: &str) -> bool {
+    candidate
+        .strip_prefix("/groups/invitations/")
+        .and_then(|rest| rest.strip_suffix("/accept"))
+        .is_some_and(is_bearer_token)
 }
 
 /// Whether `candidate` is a path of this site, whatever its shape: one `/`,
@@ -251,6 +261,24 @@ mod tests {
     fn the_former_cookie_name_is_not_read() {
         let header = format!("return_to={}", invitation());
         assert_eq!(return_cookie(Some(&header)), None);
+    }
+
+    /// The site-wide filter holds even behind a shape that would let
+    /// anything through: a shape added to the list cannot open a redirect.
+    #[test]
+    fn no_shape_lets_another_site_through() {
+        for evil in [
+            "//evil.example",
+            "/\\evil",
+            "https://evil.example",
+            "javascript:alert(1)",
+            "/a?b",
+            "",
+        ] {
+            assert_eq!(checked_return_path(evil, |_| true), None, "{evil:?}");
+        }
+        assert_eq!(checked_return_path("/groups", |_| true), Some("/groups"));
+        assert_eq!(checked_return_path("/groups", |_| false), None);
     }
 
     #[test]
