@@ -100,8 +100,8 @@ pub async fn create_group(
 /// role apps/api/README.md prescribes, the policies of 0014 apply the same
 /// filter a second time (`app.user_id` alone makes the caller's membership
 /// rows and groups readable). But a role that bypasses RLS — the superuser
-/// the `e2e` job and infra/docker-compose.yml connect as — sees every row
-/// of both tables. The previous shape read every visible group, then opened
+/// the `e2e` job and infra/docker-compose.yml connected as before #311 —
+/// sees every row of both tables. The previous shape read every visible group, then opened
 /// one transaction per group to find the caller's role: there it cost a
 /// few round trips per group *in the database*, on every authenticated page
 /// of apps/web (issue #113).
@@ -157,7 +157,7 @@ pub async fn list_groups(
 /// Group detail: name plus the members' identities. Membership is checked
 /// here, in the query, and not left to RLS (issue #206): under a role that
 /// bypasses RLS — the superuser the `e2e` job and infra/docker-compose.yml
-/// connect as — every group is visible, and under the role
+/// connected as before #311 — every group is visible, and under the role
 /// apps/api/README.md prescribes the policies of 0014 still let the row
 /// through, because `scoped_tx` puts the requested group in `app.family_id`.
 /// A non-member got 200 with the group name and every member's e-mail.

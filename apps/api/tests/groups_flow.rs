@@ -543,9 +543,9 @@ async fn get_group_members_include_identity(db: PgPool) {
 }
 
 /// Issue #206: `GET /groups/:id` answered a caller who is not a member of the
-/// group. The check belongs in the handler, not in RLS alone: this suite
-/// connects as a Postgres superuser, which bypasses every policy of 0014, and
-/// under the role `apps/api/README.md` prescribes `scoped_tx` sets
+/// group. The check belongs in the handler, not in RLS alone: without
+/// `FLOW_TEST_RUNTIME_ROLE` this suite's handlers connect as a Postgres
+/// superuser, which bypasses every policy of 0014, and under the role `apps/api/README.md` prescribes `scoped_tx` sets
 /// `app.family_id` to the very group being read, so the policy lets the row
 /// through there too. A foreign group and an unknown id must answer alike, so
 /// the response never tells the caller whether the group exists.
