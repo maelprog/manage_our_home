@@ -562,7 +562,7 @@ test.describe("Messagerie — replies (#465)", () => {
     await page.getByLabel("Votre message").fill("Réponse orpheline");
     await page.getByRole("button", { name: "Envoyer" }).click();
 
-    await expect(page.getByText("Le message auquel vous répondiez a été supprimé.")).toBeVisible();
+    await expect(page.getByText("Le message auquel vous répondiez est introuvable.")).toBeVisible();
     await expect(page.getByLabel("Votre message")).toHaveValue("Réponse orpheline");
     // The reply is dropped: sending again posts a plain message.
     await expect(page.locator('#composer input[name="reply_to_id"]')).toHaveCount(0);

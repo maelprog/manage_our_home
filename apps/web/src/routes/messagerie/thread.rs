@@ -62,7 +62,7 @@ fn error_message(code: &str) -> &'static str {
         "content_too_long" => "Le message ne peut pas dépasser 4000 caractères.",
         "unavailable" => "Service momentanément indisponible, merci de réessayer.",
         "reply_to_invalid" => {
-            "Le message auquel vous répondiez a été supprimé. Votre message n'a pas été envoyé."
+            "Le message auquel vous répondiez est introuvable. Votre message n'a pas été envoyé."
         }
         _ => "Une erreur est survenue, merci de réessayer.",
     }
@@ -1510,13 +1510,14 @@ mod tests {
         assert!(html.contains(">Salut</textarea>"), "{html}");
     }
 
-    /// The parent was deleted between the click and the send: the API's 422
-    /// gets words of its own instead of "service indisponible".
+    /// The API refuses a parent deleted since the click, unknown, or of
+    /// another family with the same 422 — so the words claim none of the
+    /// three, and are not "service indisponible" either.
     #[test]
     fn a_vanished_parent_has_its_own_error() {
         assert_eq!(
             error_message("reply_to_invalid"),
-            "Le message auquel vous répondiez a été supprimé. Votre message n'a pas été envoyé."
+            "Le message auquel vous répondiez est introuvable. Votre message n'a pas été envoyé."
         );
     }
 }
