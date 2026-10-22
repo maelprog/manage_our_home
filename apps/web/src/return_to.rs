@@ -14,10 +14,21 @@
 //! when it is read: only a same-site path of an allowed shape is ever a
 //! redirect target, so nothing a URL or a cookie carries makes an open
 //! redirect.
+//!
+//! The cookie is `__Host-` prefixed (#576): the browser accepts a cookie of
+//! that name only when it is `Secure`, `Path=/` and has no `Domain`, so a
+//! sibling host (another subdomain, a staging instance) or a plain-HTTP
+//! answer cannot plant one. And `/` never redirects to itself on a cookie it
+//! rejects: it clears it and shows the home page in the same answer, so no
+//! cookie, wherever it came from, can make a redirect loop. The price of the
+//! prefix: over plain HTTP, Chromium and Firefox keep such a cookie only
+//! from `localhost`, and WebKit (Safari) from no origin at all, `localhost`
+//! included — it keeps it over HTTPS only. Where it is not kept, an
+//! invitation opened logged out ends on `/`.
 
 use manage_our_home_shared::validation::auth::is_bearer_token;
 
-pub const RETURN_TO_COOKIE: &str = "return_to";
+pub const RETURN_TO_COOKIE: &str = "__Host-return_to";
 
 /// How long the path is kept: the lifetime of a verification link
 /// (`EMAIL_VERIFICATION_TTL_HOURS`, 24 h), so a new account verified the
@@ -34,13 +45,23 @@ pub const RETURN_TO_MAX_AGE_SECS: u32 = 24 * 60 * 60;
 /// (`/groups/invitations/{token}/accept`, the token spelled as apps/api
 /// hands them out).
 pub fn safe_return_path(candidate: &str) -> Option<&str> {
-    if !is_same_site_path(candidate) {
-        return None;
-    }
-    let token = candidate
-        .strip_prefix("/groups/invitations/")?
-        .strip_suffix("/accept")?;
-    is_bearer_token(token).then_some(candidate)
+    checked_return_path(candidate, is_invitation_page)
+}
+
+/// `candidate` when it is a same-site path of the `shape` given. Apart from
+/// [`safe_return_path`] so that a test can hold the site-wide filter behind
+/// a shape that lets everything through.
+fn checked_return_path(candidate: &str, shape: impl Fn(&str) -> bool) -> Option<&str> {
+    (is_same_site_path(candidate) && shape(candidate)).then_some(candidate)
+}
+
+/// `/groups/invitations/{token}/accept`, the token spelled as apps/api
+/// hands them out.
+fn is_invitation_page(candidate: &str) -> bool {
+    candidate
+        .strip_prefix("/groups/invitations/")
+        .and_then(|rest| rest.strip_suffix("/accept"))
+        .is_some_and(is_bearer_token)
 }
 
 /// Whether `candidate` is a path of this site, whatever its shape: one `/`,
@@ -71,16 +92,18 @@ pub fn return_cookie(cookie_header: Option<&str>) -> Option<&str> {
 /// [`safe_return_path`] (its characters are then valid in a cookie value).
 /// `HttpOnly` and `SameSite=Lax` like the active-family cookie
 /// (`family.rs`): no script reads it, and what lands on `/` after Google's
-/// callback is a top-level navigation.
+/// callback is a top-level navigation. `Secure`, `Path=/` and no `Domain`:
+/// what the `__Host-` prefix demands, or the browser drops the cookie.
 pub fn set_return_cookie(path: &str) -> String {
     format!(
-        "{RETURN_TO_COOKIE}={path}; Path=/; Max-Age={RETURN_TO_MAX_AGE_SECS}; HttpOnly; SameSite=Lax"
+        "{RETURN_TO_COOKIE}={path}; Path=/; Max-Age={RETURN_TO_MAX_AGE_SECS}; Secure; HttpOnly; SameSite=Lax"
     )
 }
 
-/// The `Set-Cookie` value removing the return path.
+/// The `Set-Cookie` value removing the return path, with the attributes of
+/// the one storing it: the `__Host-` prefix applies to it as well.
 pub fn clear_return_cookie() -> String {
-    format!("{RETURN_TO_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
+    format!("{RETURN_TO_COOKIE}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax")
 }
 
 #[cfg(test)]
@@ -209,6 +232,57 @@ mod tests {
         assert_eq!(return_cookie(Some("return_to_x=/")), None);
     }
 
+    /// #576: the `__Host-` prefix makes the browser refuse a cookie of this
+    /// name unless it is `Secure`, has `Path=/` and no `Domain` — so no
+    /// sibling host and no plain-HTTP answer can plant one. The clearing
+    /// cookie must carry the same attributes, or the browser drops it.
+    #[test]
+    fn the_cookie_is_host_prefixed_secure_and_host_only() {
+        assert_eq!(RETURN_TO_COOKIE, "__Host-return_to");
+        for set in [set_return_cookie(&invitation()), clear_return_cookie()] {
+            let mut parts = set.split("; ");
+            assert!(
+                parts.next().unwrap().starts_with("__Host-return_to="),
+                "{set}"
+            );
+            let attributes: Vec<&str> = parts.collect();
+            assert!(attributes.contains(&"Secure"), "{set}");
+            assert!(attributes.contains(&"Path=/"), "{set}");
+            assert!(
+                !attributes
+                    .iter()
+                    .any(|a| a.to_ascii_lowercase().starts_with("domain")),
+                "{set}"
+            );
+        }
+    }
+
+    /// #576: the name the cookie had before is no longer read, so a cookie
+    /// left over from it, or planted under it, leads nowhere.
+    #[test]
+    fn the_former_cookie_name_is_not_read() {
+        let header = format!("return_to={}", invitation());
+        assert_eq!(return_cookie(Some(&header)), None);
+    }
+
+    /// The site-wide filter holds even behind a shape that would let
+    /// anything through: a shape added to the list cannot open a redirect.
+    #[test]
+    fn no_shape_lets_another_site_through() {
+        for evil in [
+            "//evil.example",
+            "/\\evil",
+            "https://evil.example",
+            "javascript:alert(1)",
+            "/a?b",
+            "",
+        ] {
+            assert_eq!(checked_return_path(evil, |_| true), None, "{evil:?}");
+        }
+        assert_eq!(checked_return_path("/groups", |_| true), Some("/groups"));
+        assert_eq!(checked_return_path("/groups", |_| false), None);
+    }
+
     #[test]
     fn the_clearing_cookie_expires_the_same_cookie() {
         let clear = clear_return_cookie();
@@ -306,6 +380,13 @@ mod route_tests {
             .collect()
     }
 
+    async fn body(response: Response) -> String {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
     /// An invitation opened without a session: the visitor goes to the
     /// login, the token in a cookie and not in the login's URL.
     #[tokio::test]
@@ -364,19 +445,48 @@ mod route_tests {
     }
 
     /// A cookie written by hand to point elsewhere is not followed, and is
-    /// cleared rather than left until its `Max-Age`: `/` sends back to
-    /// itself, which then shows the dashboard.
+    /// cleared rather than left until its `Max-Age` — in the same answer,
+    /// which is the home page itself (#576): sending back to `/` looped
+    /// forever on a cookie the clearing did not reach.
     #[tokio::test]
     async fn the_home_page_follows_no_cookie_naming_another_site_and_clears_it() {
-        for value in ["//evil.example", "https://evil.example", "/%5Cevil", ""] {
+        for value in [
+            "//evil.example",
+            "https://evil.example",
+            "/%5Cevil",
+            "/",
+            "",
+        ] {
             let cookie = format!("session=s; {RETURN_TO_COOKIE}={value}");
             let response = send("/", Some(&cookie)).await;
-            assert_eq!(response.status(), StatusCode::SEE_OTHER, "{value}");
-            assert_eq!(location(&response), Some("/"), "{value}");
+            assert_eq!(response.status(), StatusCode::OK, "{value}");
+            assert_eq!(location(&response), None, "{value}");
             assert_eq!(set_cookies(&response), vec![clear_return_cookie()]);
+            assert!(body(response).await.contains("Bienvenue"), "{value}");
         }
         // Without the cookie, `/` is the dashboard and clears nothing.
         let response = send("/", Some("session=s")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(set_cookies(&response).is_empty());
+    }
+
+    /// #576: a cookie under the former name is neither followed nor
+    /// touched: the browser keeps it until its `Max-Age`, harmlessly.
+    #[tokio::test]
+    async fn the_home_page_ignores_the_former_cookie_name() {
+        let cookie = format!("session=s; return_to={}", invitation());
+        let response = send("/", Some(&cookie)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(set_cookies(&response).is_empty());
+    }
+
+    /// An invalid `?next=` stores nothing, and so leaves alone an
+    /// invitation remembered earlier in the same browser: the login then
+    /// ends on that invitation, a checked path, rather than on `/`.
+    #[tokio::test]
+    async fn an_invalid_next_parameter_keeps_a_remembered_invitation() {
+        let cookie = format!("{RETURN_TO_COOKIE}={}", invitation());
+        let response = send("/login?next=%2F%2Fevil.example", Some(&cookie)).await;
         assert_eq!(response.status(), StatusCode::OK);
         assert!(set_cookies(&response).is_empty());
     }
