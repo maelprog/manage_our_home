@@ -512,6 +512,10 @@ dd { margin: var(--s2) 0 0 0; }
    recipe's method. Declared after the child-margin reset above, so that one
    sitting inside a `.list-row` keeps its own spacing. */
 .multiline { white-space: pre-wrap; margin: var(--s1) 0; }
+/* A reply's quote of the message it answers (#465), worn with `.muted`,
+   which gives it its colour and size: its own line above the reply, ruled
+   on the left as a quotation is, and a link to the quoted row. */
+.quote { display: block; border-left: var(--s2) solid var(--border); padding-left: var(--s2x); }
 /* The messagerie's composer, and its live-connection line — which reserves
    its height so that a status appearing does not shove the thread down.
    #72 reworks the thread; these are the values it carried inline. */

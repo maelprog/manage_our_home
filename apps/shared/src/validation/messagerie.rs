@@ -20,6 +20,9 @@
 //!   live script prefixes `location.host`).
 //! - `author_name` resolves a `created_by` id against the family's members,
 //!   falling back for an author who has since left (their messages remain).
+//! - `reply_excerpt` is the one definition of a reply's quote of its parent
+//!   (#464): `apps/api` cuts `reply_to.excerpt` with it, and the composer
+//!   quotes the message being answered with it (#465).
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use chrono_tz::Europe::Paris;
@@ -140,6 +143,23 @@ pub fn author_name(members: &[GroupMember], user_id: Uuid) -> &str {
         .find(|m| m.user_id == user_id)
         .map(|m| m.display_name.as_str())
         .unwrap_or("Membre")
+}
+
+/// How many chars of a parent message a reply quotes (#464) — chars, not
+/// bytes, the unit of `MAX_CONTENT_CHARS`.
+pub const REPLY_EXCERPT_CHARS: usize = 120;
+
+/// The excerpt of a parent message a reply carries (#464): the first
+/// [`REPLY_EXCERPT_CHARS`] *chars* of `content`, followed by `…` when it was
+/// cut, with no whitespace left before it. `apps/api` computes
+/// `reply_to.excerpt` with it from the decrypted parent on each read (never
+/// stored); the composer quotes the message being answered with it (#465),
+/// since the API sends that one whole.
+pub fn reply_excerpt(content: &str) -> String {
+    match content.char_indices().nth(REPLY_EXCERPT_CHARS) {
+        None => content.to_string(),
+        Some((cut, _)) => format!("{}…", content[..cut].trim_end()),
+    }
 }
 
 #[cfg(test)]
@@ -369,5 +389,46 @@ mod tests {
     #[test]
     fn author_name_falls_back_when_the_member_list_is_unavailable() {
         assert_eq!(author_name(&[], uuid(1)), "Membre");
+    }
+
+    // -- reply_excerpt (#465) ----------------------------------------------
+
+    #[test]
+    fn a_short_message_is_quoted_whole() {
+        assert_eq!(reply_excerpt("On part à 8h ?"), "On part à 8h ?");
+    }
+
+    #[test]
+    fn a_message_of_exactly_the_limit_is_not_cut() {
+        let content = "a".repeat(REPLY_EXCERPT_CHARS);
+        assert_eq!(reply_excerpt(&content), content);
+    }
+
+    #[test]
+    fn one_char_over_the_limit_is_cut_with_an_ellipsis() {
+        let content = "a".repeat(REPLY_EXCERPT_CHARS + 1);
+        assert_eq!(
+            reply_excerpt(&content),
+            format!("{}…", "a".repeat(REPLY_EXCERPT_CHARS))
+        );
+    }
+
+    /// Chars, not bytes: a cut by bytes would land inside `é` and panic.
+    #[test]
+    fn the_limit_counts_chars_not_bytes() {
+        let content = "é".repeat(REPLY_EXCERPT_CHARS + 5);
+        assert_eq!(
+            reply_excerpt(&content),
+            format!("{}…", "é".repeat(REPLY_EXCERPT_CHARS))
+        );
+    }
+
+    #[test]
+    fn no_space_is_left_before_the_ellipsis() {
+        let content = format!("{} suite", "a".repeat(REPLY_EXCERPT_CHARS - 1));
+        assert_eq!(
+            reply_excerpt(&content),
+            format!("{}…", "a".repeat(REPLY_EXCERPT_CHARS - 1))
+        );
     }
 }
