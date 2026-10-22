@@ -474,3 +474,102 @@ test.describe("Messagerie — unread badge in the navigation (#463)", () => {
     await expect(tab).toHaveAccessibleName("Messagerie");
   });
 });
+
+test.describe("Messagerie — replies (#465)", () => {
+  test("a reply quotes its parent for its author and, live, for another member", async ({
+    page,
+    browser,
+  }) => {
+    await registerAndLogin(page, "e2e-msgreplyowner", "Reply Owner");
+    await createGroup(page, "Famille Réponses");
+    const href = await createInvitationLink(page, "Famille Réponses");
+
+    const context = await browser.newContext();
+    const member = await context.newPage();
+    await registerAndLogin(member, "e2e-msgreplymember", "Reply Member");
+    await member.goto(href);
+    await member.getByRole("button", { name: "Rejoindre le groupe" }).click();
+
+    await sendMessage(page, "On part à quelle heure ?");
+    await page.goto("/messagerie");
+    const parentId = await page
+      .locator("li[data-message-id]", { hasText: "On part à quelle heure ?" })
+      .getAttribute("data-message-id");
+    if (!parentId) throw new Error("no message id for the parent");
+    const parentRow = page.locator(`li[data-message-id="${parentId}"]`);
+
+    // The member sits on the live thread; "Répondre" is offered to them too,
+    // on a message they may not edit.
+    await watchLiveSocket(member);
+    await member.goto("/messagerie");
+    await expectLiveSocketOpen(member);
+    await expect(
+      member.locator(`li[data-message-id="${parentId}"]`).getByRole("link", { name: "Répondre" }),
+    ).toHaveCount(1);
+
+    // The reply link is a plain link to the composer: no script involved.
+    await parentRow.getByRole("link", { name: "Répondre" }).click();
+    await expect(page).toHaveURL(new RegExp(`/messagerie\\?reply_to=${parentId}#composer$`));
+    const banner = page.locator("#composer .notice");
+    await expect(banner).toContainText("En réponse à Reply Owner");
+    await expect(banner).toContainText("On part à quelle heure ?");
+    await page.getByLabel("Votre message").fill("Vers 8h");
+    await page.getByRole("button", { name: "Envoyer" }).click();
+    await expect(page).toHaveURL(/\/messagerie\?notice=message_sent$/);
+
+    // The author sees the quote above the reply, linking to the parent's row.
+    const reply = page.locator("li[data-message-id]", { hasText: "Vers 8h" });
+    const quote = reply.locator(".quote");
+    await expect(quote).toContainText("En réponse à Reply Owner");
+    await expect(quote).toContainText("On part à quelle heure ?");
+    await expect(quote).toHaveAttribute("href", `#message-${parentId}`);
+    await expect(page.locator(`#message-${parentId}`)).toHaveCount(1);
+
+    // The other member gets it live, quote included.
+    const memberReply = member.locator("#thread li[data-message-id]", { hasText: "Vers 8h" });
+    await expect(memberReply.locator(".quote")).toContainText("On part à quelle heure ?", {
+      timeout: 15000,
+    });
+    await expectPushedLive(member);
+
+    // Deleting the parent keeps the reply, without its quote — live too: the
+    // deletion frame re-renders the member's whole thread, replies included.
+    await parentRow.getByRole("button", { name: "Supprimer" }).click();
+    await expect(page).toHaveURL(/\/messagerie\?notice=message_deleted$/);
+    await expect(
+      page.locator("li[data-message-id]", { hasText: "Vers 8h" }).locator(".quote"),
+    ).toHaveCount(0);
+    await expect(member.locator(`#thread li[data-message-id="${parentId}"]`)).toHaveCount(0, {
+      timeout: 15000,
+    });
+    await expect(memberReply).toHaveCount(1);
+    await expect(memberReply.locator(".quote")).toHaveCount(0);
+    await expectPushedLive(member);
+
+    await context.close();
+  });
+
+  test("a reply whose parent vanished is refused with the text kept", async ({ page }) => {
+    await registerAndLogin(page, "e2e-msgreplygone", "Reply Gone");
+    await createGroup(page, "Famille Parent Disparu");
+
+    // A parent that does not exist stands for one deleted after the
+    // composer was rendered: the API refuses both alike.
+    await page.goto("/messagerie?reply_to=00000000-0000-4000-8000-000000000000");
+    await expect(page.locator("#composer .notice")).toContainText(
+      "En réponse à un message précédent",
+    );
+    await page.getByLabel("Votre message").fill("Réponse orpheline");
+    await page.getByRole("button", { name: "Envoyer" }).click();
+
+    await expect(page.getByText("Le message auquel vous répondiez a été supprimé.")).toBeVisible();
+    await expect(page.getByLabel("Votre message")).toHaveValue("Réponse orpheline");
+    // The reply is dropped: sending again posts a plain message.
+    await expect(page.locator('#composer input[name="reply_to_id"]')).toHaveCount(0);
+    await page.getByRole("button", { name: "Envoyer" }).click();
+    await expect(page).toHaveURL(/\/messagerie\?notice=message_sent$/);
+    const row = page.locator("li[data-message-id]", { hasText: "Réponse orpheline" });
+    await expect(row).toHaveCount(1);
+    await expect(row.locator(".quote")).toHaveCount(0);
+  });
+});

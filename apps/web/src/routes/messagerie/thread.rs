@@ -17,7 +17,7 @@ use manage_our_home_shared::dto::messagerie::{
     CreateMessageRequest, MessageList, MessageResponse, UpdateMessageRequest,
 };
 use manage_our_home_shared::validation::messagerie::{
-    author_name, clamp_limit, format_message_time, message_ws_url, older_page_query,
+    author_name, clamp_limit, format_message_time, message_ws_url, older_page_query, reply_excerpt,
     validate_content,
 };
 use uuid::Uuid;
@@ -34,10 +34,12 @@ use super::{
 
 /// Query params for `GET /messagerie`. All optional: with none it's the live
 /// view; `before_*` make it a history window; `limit` sets the page size.
-/// `notice` is the PRG success banner.
+/// `notice` is the PRG success banner; `reply_to` is the message the composer
+/// answers (#465), set by a row's "Répondre" link.
 #[derive(serde::Deserialize)]
 pub struct ThreadQuery {
     notice: Option<String>,
+    reply_to: Option<Uuid>,
     before_created_at: Option<chrono::DateTime<chrono::Utc>>,
     before_id: Option<Uuid>,
     limit: Option<i64>,
@@ -59,6 +61,9 @@ fn error_message(code: &str) -> &'static str {
         "content_required" => "Le message ne peut pas être vide.",
         "content_too_long" => "Le message ne peut pas dépasser 4000 caractères.",
         "unavailable" => "Service momentanément indisponible, merci de réessayer.",
+        "reply_to_invalid" => {
+            "Le message auquel vous répondiez a été supprimé. Votre message n'a pas été envoyé."
+        }
         _ => "Une erreur est survenue, merci de réessayer.",
     }
 }
@@ -121,9 +126,83 @@ fn message_meta(
     )
 }
 
+/// The parent a reply quotes, above the reply's own content (#465): who wrote
+/// it and the excerpt the API cut from it, as a link to the parent's row
+/// (`#message-{id}`, the `id` every row shape carries). Empty for a plain
+/// message.
+///
+/// Empty too for a reply whose parent was deleted: the link turns NULL in the
+/// base (`0031_message_reply_to.sql`, `ON DELETE SET NULL`) and the API then
+/// answers `reply_to: null`, exactly as for a message that never answered
+/// anything — nothing in the response is left to tell the two apart.
+fn reply_quote(
+    msg: &MessageResponse,
+    members: &[manage_our_home_shared::dto::groups::GroupMember],
+) -> String {
+    let Some(parent) = &msg.reply_to else {
+        return String::new();
+    };
+    format!(
+        r##"<a class="muted quote" href="#message-{id}">En réponse à <strong>{author}</strong>&nbsp;: {excerpt}</a>"##,
+        id = parent.id,
+        author = html_escape(author_name(members, parent.created_by)),
+        excerpt = html_escape(&parent.excerpt),
+    )
+}
+
+/// The link that starts a reply to `id`. A plain link, so it works without
+/// JavaScript: the composer reads the parent back from `?reply_to=`.
+fn reply_link(id: Uuid) -> String {
+    format!(r#"<a class="btn secondary sm" href="/messagerie?reply_to={id}#composer">Répondre</a>"#)
+}
+
+/// The live thread's composer. `id="composer"` is what the reply links land
+/// on. With `reply_to`, the form says which message it answers — its author
+/// and excerpt when that message is in the rendered window, "un message
+/// précédent" when it is not (a reply started from a history page) — carries
+/// the id as a hidden field, and offers to give the reply up. Which messages
+/// may be answered is the API's call (422 `reply_to_invalid`), not this form's.
+fn composer(
+    content: &str,
+    error: Option<&str>,
+    reply_to: Option<Uuid>,
+    list: &MessageList,
+    members: &[manage_our_home_shared::dto::groups::GroupMember],
+) -> String {
+    let error_html = error
+        .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
+        .unwrap_or_default();
+    let reply_html = reply_to
+        .map(|id| {
+            let target = match list.messages.iter().find(|m| m.id == id) {
+                Some(parent) => format!(
+                    "<strong>{author}</strong>&nbsp;: {excerpt}",
+                    author = html_escape(author_name(members, parent.created_by)),
+                    excerpt = html_escape(&reply_excerpt(&parent.content)),
+                ),
+                None => "un message précédent".to_string(),
+            };
+            format!(
+                r#"<p class="notice">En réponse à {target} <a href="/messagerie#composer">Annuler</a></p>
+<input type="hidden" name="reply_to_id" value="{id}">
+"#
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        r#"<form id="composer" method="post" action="/messagerie" class="composer">
+{error_html}{reply_html}<textarea name="content" required rows="3" maxlength="4000" aria-label="Votre message" placeholder="Votre message…">{content}</textarea>
+<button type="submit">Envoyer</button>
+</form>"#,
+        content = html_escape(content),
+    )
+}
+
 /// Renders one message row. `content` is escaped and newlines are preserved
-/// (`white-space:pre-wrap`); the edit/delete controls render only for
-/// `can_edit`. Editing is inline in a `<details>` disclosure — the backend has
+/// (`white-space:pre-wrap`). The actions block is on every row: "Répondre"
+/// for any member (#465), then the edit/delete controls, which render only
+/// for `can_edit`. A reply carries its parent's quote (`reply_quote`) above
+/// its content. Editing is inline in a `<details>` disclosure — the backend has
 /// no single-message GET, and the row already carries the full content.
 ///
 /// `mine` is authorship, and it is deliberately not `can_edit`: an owner may
@@ -137,9 +216,9 @@ fn message_row(
     can_edit: bool,
     mine: bool,
 ) -> String {
-    let controls = if can_edit {
+    let edit_controls = if can_edit {
         format!(
-            r#"<div class="actions">
+            r#"
 <details>
 <summary>Modifier</summary>
 <form method="post" action="/messagerie/{id}/edit" class="composer">
@@ -149,8 +228,7 @@ fn message_row(
 </details>
 <form method="post" action="/messagerie/{id}/delete">
 <button type="submit" class="secondary danger sm">Supprimer</button>
-</form>
-</div>"#,
+</form>"#,
             id = msg.id,
             content = html_escape(&msg.content),
         )
@@ -159,15 +237,19 @@ fn message_row(
     };
 
     format!(
-        r#"<li data-message-id="{id}" class="list-row stacked{mine}">
+        r#"<li id="message-{id}" data-message-id="{id}" class="list-row stacked{mine}">
 {meta}
-<div class="multiline">{content}</div>
-{controls}
+{quote}<div class="multiline">{content}</div>
+<div class="actions">
+{reply}{edit_controls}
+</div>
 </li>"#,
         id = msg.id,
         mine = if mine { " mine" } else { "" },
         meta = message_meta(msg, members),
+        quote = reply_quote(msg, members),
         content = html_escape(&msg.content),
+        reply = reply_link(msg.id),
     )
 }
 
@@ -219,8 +301,8 @@ pub(crate) const LIVE_SCRIPT: &str = r#"
   // <details> is open and its textarea holds unsaved text, so the raw
   // outerHTML never matches the fresh render's closed, server-valued row —
   // compare with the disclosure dropped instead. Everything the server can
-  // change (author, time, the (modifié) marker, the content, the delete
-  // control) sits outside it.
+  // change (author, time, the (modifié) marker, the quoted parent, the
+  // content, the delete control) sits outside it.
   function rowSignature(row) {
     var copy = row.cloneNode(true);
     var forms = copy.querySelectorAll("details");
@@ -410,17 +492,13 @@ fn page(
         r#"<div class="actions"><a class="btn secondary" href="/messagerie">Revenir aux messages récents</a></div>"#.to_string()
     };
 
-    let composer_error_html = composer_error
-        .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
-        .unwrap_or_default();
-
     let composer = if live {
-        format!(
-            r#"<form method="post" action="/messagerie" class="composer">
-{composer_error_html}<textarea name="content" required rows="3" maxlength="4000" aria-label="Votre message" placeholder="Votre message…">{content}</textarea>
-<button type="submit">Envoyer</button>
-</form>"#,
-            content = html_escape(composer_content),
+        composer(
+            composer_content,
+            composer_error,
+            query.reply_to,
+            list,
+            members,
         )
     } else {
         String::new()
@@ -541,22 +619,27 @@ pub async fn get(
     Html(page(&fam, &list, &members, &query, live, "", None)).into_response()
 }
 
-/// The composer / edit textarea form field.
+/// The composer / edit textarea form field, plus the composer's hidden
+/// `reply_to_id` when it answers a message (#465; absent from the edit form).
 #[derive(serde::Deserialize)]
 pub struct MessageForm {
     #[serde(default)]
     content: String,
+    #[serde(default)]
+    reply_to_id: Option<Uuid>,
 }
 
 /// Re-renders the live thread inline (HTTP 200, no PRG) with the composer
 /// pre-filled and an error banner — used when a send is rejected, so a long
 /// message isn't lost to a round trip. The rejected write never happened, so
-/// there is no double-submit for PRG to prevent.
+/// there is no double-submit for PRG to prevent. `reply_to` keeps the reply
+/// in progress, if any.
 async fn rerender_with_composer_error(
     state: &AppState,
     fam: &FamilyContext,
     cookie: Option<&str>,
     content: &str,
+    reply_to: Option<Uuid>,
     code: &str,
 ) -> Response {
     let list: MessageList = match api_request_auth(
@@ -584,6 +667,7 @@ async fn rerender_with_composer_error(
     let members = fetch_members(state, fam.gid, cookie).await;
     let query = ThreadQuery {
         notice: None,
+        reply_to,
         before_created_at: None,
         before_id: None,
         limit: None,
@@ -621,6 +705,7 @@ pub async fn post(
                 &fam,
                 cookie.as_deref(),
                 &form.content,
+                form.reply_to_id,
                 e.code(),
             )
             .await
@@ -629,7 +714,7 @@ pub async fn post(
 
     let req = CreateMessageRequest {
         content,
-        reply_to_id: None,
+        reply_to_id: form.reply_to_id,
     };
     let result = api_request_auth(
         &state,
@@ -651,8 +736,33 @@ pub async fn post(
                 .and_then(|e| e.as_str())
                 .unwrap_or("unavailable")
                 .to_string();
-            rerender_with_composer_error(&state, &fam, cookie.as_deref(), &form.content, &code)
-                .await
+            rerender_with_composer_error(
+                &state,
+                &fam,
+                cookie.as_deref(),
+                &form.content,
+                form.reply_to_id,
+                &code,
+            )
+            .await
+        }
+        // The parent is gone (deleted since the page was rendered) or was
+        // never this family's: the API refuses the reply before writing
+        // anything. The text comes back without the reply, so sending it
+        // again posts it as a plain message.
+        Ok(resp)
+            if resp.status == reqwest::StatusCode::UNPROCESSABLE_ENTITY
+                && resp.body.get("error").and_then(|e| e.as_str()) == Some("reply_to_invalid") =>
+        {
+            rerender_with_composer_error(
+                &state,
+                &fam,
+                cookie.as_deref(),
+                &form.content,
+                None,
+                "reply_to_invalid",
+            )
+            .await
         }
         Ok(resp) if resp.status == reqwest::StatusCode::FORBIDDEN => {
             forbidden_page().into_response()
@@ -663,6 +773,7 @@ pub async fn post(
                 &fam,
                 cookie.as_deref(),
                 &form.content,
+                form.reply_to_id,
                 "unavailable",
             )
             .await
@@ -804,11 +915,9 @@ async fn rerender_with_edit_error(
 <div id="thread" data-group-id="{gid}" data-live="true" data-ws-url="{ws_url}">
 <ul class="list">{rows}</ul>
 </div>
-<form method="post" action="/messagerie" class="composer">
-<textarea name="content" required rows="3" maxlength="4000" aria-label="Votre message" placeholder="Votre message…"></textarea>
-<button type="submit">Envoyer</button>
-</form>
+{composer}
 {script}"#,
+        composer = composer("", None, None, &list, &members),
         gid = fam.gid,
         ws_url = html_escape(&message_ws_url(&fam.api_public_base_url, fam.gid)),
         script = live_script(),
@@ -832,10 +941,11 @@ fn edit_error_row(
     mine: bool,
 ) -> String {
     format!(
-        r#"<li data-message-id="{id}" class="list-row stacked{mine}">
+        r#"<li id="message-{id}" data-message-id="{id}" class="list-row stacked{mine}">
 {meta}
-<div class="multiline">{content}</div>
+{quote}<div class="multiline">{content}</div>
 <div class="actions">
+{reply}
 <details open>
 <summary>Modifier</summary>
 <form method="post" action="/messagerie/{id}/edit" class="composer">
@@ -849,7 +959,9 @@ fn edit_error_row(
         id = msg.id,
         mine = if mine { " mine" } else { "" },
         meta = message_meta(msg, members),
+        quote = reply_quote(msg, members),
         content = html_escape(&msg.content),
+        reply = reply_link(msg.id),
         error = html_escape(error),
         submitted = html_escape(submitted),
     )
@@ -1225,6 +1337,186 @@ mod tests {
                 .expect("rows you may edit carry a delete form")
                 > closed,
             "the delete control has to sit outside the <details> the signature drops"
+        );
+    }
+
+    // -- #465: answering a message ----------------------------------------
+
+    fn alice() -> Vec<manage_our_home_shared::dto::groups::GroupMember> {
+        vec![manage_our_home_shared::dto::groups::GroupMember {
+            user_id: Uuid::from_u128(1),
+            display_name: "Alice".to_string(),
+            email: "alice@example.test".to_string(),
+            role: "member".to_string(),
+        }]
+    }
+
+    fn parent_id() -> Uuid {
+        Uuid::from_u128(7)
+    }
+
+    /// A reply to Alice's message, whose excerpt carries markup to escape.
+    fn reply() -> MessageResponse {
+        MessageResponse {
+            reply_to: Some(manage_our_home_shared::dto::messagerie::ReplyTo {
+                id: parent_id(),
+                created_by: Uuid::from_u128(1),
+                excerpt: "On part <b>à 8h</b> ?".to_string(),
+            }),
+            ..sample("Oui")
+        }
+    }
+
+    /// The three row shapes a message can take.
+    fn every_row_shape(msg: &MessageResponse) -> [String; 3] {
+        let members = alice();
+        [
+            message_row(msg, &members, true, true),
+            message_row(msg, &members, false, false),
+            edit_error_row(msg, &members, "Oui", "Erreur", true),
+        ]
+    }
+
+    /// "Répondre" is on every message for every member: it is not an edit,
+    /// so `can_edit` does not decide it. Without JavaScript it is a link to
+    /// the composer, which reads the parent from the query.
+    #[test]
+    fn every_row_shape_offers_to_reply_whatever_the_permission() {
+        let msg = sample("Bonjour");
+        let href = format!(r#"href="/messagerie?reply_to={}#composer""#, msg.id);
+        for row in every_row_shape(&msg) {
+            assert!(row.contains(&href), "no reply link in {row}");
+            assert!(row.contains(">Répondre</a>"), "no reply label in {row}");
+        }
+        // A member who may not edit still gets the actions block, with the
+        // reply alone in it.
+        let other = message_row(&msg, &[], false, false);
+        assert!(other.contains(r#"<div class="actions">"#));
+        assert!(!other.contains("/edit") && !other.contains("/delete"));
+    }
+
+    /// The quote links to its parent's row: every row shape is a target.
+    #[test]
+    fn every_row_shape_is_an_anchor_a_quote_can_point_at() {
+        let msg = sample("Bonjour");
+        let anchor = format!(r#"id="message-{}""#, msg.id);
+        for row in every_row_shape(&msg) {
+            assert!(row.contains(&anchor), "no anchor on {row}");
+        }
+    }
+
+    /// A reply shows its parent above its own content, on all three shapes
+    /// alike: who wrote it, its excerpt (escaped), and a link to its row.
+    #[test]
+    fn a_reply_quotes_its_parent_on_every_row_shape() {
+        let msg = reply();
+        let quote = reply_quote(&msg, &alice());
+        assert!(quote.contains(r#"class="muted quote""#), "{quote}");
+        assert!(
+            quote.contains(&format!(r##"href="#message-{}""##, parent_id())),
+            "{quote}"
+        );
+        assert!(quote.contains("Alice"), "{quote}");
+        assert!(
+            quote.contains("On part &lt;b&gt;à 8h&lt;/b&gt; ?"),
+            "{quote}"
+        );
+        assert!(
+            !quote.contains("<b>"),
+            "the excerpt is not escaped: {quote}"
+        );
+        for row in every_row_shape(&msg) {
+            let at = row.find(&quote).expect("the quote is on every row shape");
+            assert!(
+                at < row.find(r#"class="multiline""#).unwrap(),
+                "the quote sits above the content: {row}"
+            );
+        }
+    }
+
+    /// A plain message — or a reply whose parent was deleted, which the API
+    /// returns with `reply_to: null` too — quotes nothing.
+    #[test]
+    fn a_plain_message_quotes_nothing() {
+        let msg = sample("Bonjour");
+        assert_eq!(reply_quote(&msg, &alice()), "");
+        for row in every_row_shape(&msg) {
+            assert!(!row.contains("quote"), "{row}");
+        }
+    }
+
+    fn window_with_parent() -> MessageList {
+        MessageList {
+            messages: vec![MessageResponse {
+                id: parent_id(),
+                created_by: Uuid::from_u128(1),
+                ..sample(&format!("Long {}", "x".repeat(200)))
+            }],
+            has_more: false,
+            unread_total: None,
+        }
+    }
+
+    /// The composer answering a message in the window says which one, carries
+    /// it as a hidden field, and offers to give up the reply.
+    #[test]
+    fn the_composer_names_the_message_it_answers() {
+        let html = composer("", None, Some(parent_id()), &window_with_parent(), &alice());
+        assert!(html.contains(r#"id="composer""#), "{html}");
+        assert!(html.contains("En réponse à"), "{html}");
+        assert!(html.contains("Alice"), "{html}");
+        assert!(
+            html.contains(&format!(
+                "Long {}…",
+                "x".repeat(manage_our_home_shared::validation::messagerie::REPLY_EXCERPT_CHARS - 5)
+            )),
+            "the parent is quoted by the API's excerpt rule: {html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"<input type="hidden" name="reply_to_id" value="{}">"#,
+                parent_id()
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"href="/messagerie#composer">Annuler</a>"#),
+            "{html}"
+        );
+    }
+
+    /// A parent outside the rendered window (a reply started from a history
+    /// page) still goes out with the message: the API is what decides whether
+    /// it may be answered.
+    #[test]
+    fn the_composer_keeps_a_parent_it_cannot_show() {
+        let empty = MessageList {
+            messages: Vec::new(),
+            has_more: false,
+            unread_total: None,
+        };
+        let html = composer("", None, Some(parent_id()), &empty, &alice());
+        assert!(html.contains("En réponse à un message précédent"), "{html}");
+        assert!(html.contains(r#"name="reply_to_id""#), "{html}");
+    }
+
+    /// Without `reply_to`, the composer is the plain one it always was.
+    #[test]
+    fn the_plain_composer_answers_nothing() {
+        let html = composer("Salut", None, None, &window_with_parent(), &alice());
+        assert!(html.contains(r#"id="composer""#), "{html}");
+        assert!(!html.contains("reply_to_id"), "{html}");
+        assert!(!html.contains("En réponse"), "{html}");
+        assert!(html.contains(">Salut</textarea>"), "{html}");
+    }
+
+    /// The parent was deleted between the click and the send: the API's 422
+    /// gets words of its own instead of "service indisponible".
+    #[test]
+    fn a_vanished_parent_has_its_own_error() {
+        assert_eq!(
+            error_message("reply_to_invalid"),
+            "Le message auquel vous répondiez a été supprimé. Votre message n'a pas été envoyé."
         );
     }
 }
