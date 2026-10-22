@@ -451,22 +451,27 @@ pub async fn get(
     // #462: where the password login, Google's callback and the age and
     // terms pages land — so where a visitor turned away from an invitation
     // before having a session is sent back to it, once. A cookie that names
-    // no allowed page is cleared too, by sending back to `/` itself.
+    // no allowed page is cleared in the answer that shows the home page:
+    // never by sending back to `/`, which looped on a cookie the clearing
+    // did not reach (#576).
     let cookies = headers
         .get(axum::http::header::COOKIE)
         .and_then(|v| v.to_str().ok());
-    if let Some(value) = crate::return_to::return_cookie(cookies) {
-        let to = crate::return_to::safe_return_path(value).unwrap_or("/");
-        return (
-            [(
-                axum::http::header::SET_COOKIE,
-                crate::return_to::clear_return_cookie(),
-            )],
-            Redirect::to(to),
-        )
-            .into_response();
+    let Some(value) = crate::return_to::return_cookie(cookies) else {
+        return dashboard(me, state, headers).await;
+    };
+    let clear = (
+        axum::http::header::SET_COOKIE,
+        crate::return_to::clear_return_cookie(),
+    );
+    match crate::return_to::safe_return_path(value) {
+        Some(to) => ([clear], Redirect::to(to)).into_response(),
+        None => ([clear], dashboard(me, state, headers).await).into_response(),
     }
+}
 
+/// The home page itself, once `get` has dealt with the return cookie.
+async fn dashboard(me: MeResponse, state: AppState, headers: HeaderMap) -> Response {
     let (fam, groups) = family_context(&state, &headers, &me).await;
 
     let Some(fam) = fam else {
