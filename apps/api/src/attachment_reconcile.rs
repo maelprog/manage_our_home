@@ -2,6 +2,9 @@
 //!
 //! Nothing in the running API can find an object in the attachments bucket
 //! that no `event_attachments` row points at, so nothing can clean one up.
+//! The profile photos (#467) share that bucket, under `avatars/`, each named
+//! by a `users.avatar_key`: a replaced photo whose deletion failed is an
+//! orphan of the same kind, and is found the same way.
 //! This module lists the bucket, diffs it against the table, and deletes
 //! the difference — driven by the `reconcile-attachments` binary
 //! (`src/bin/reconcile_attachments.rs`), dry-run by default, and daily
@@ -58,7 +61,7 @@ pub const DEFAULT_MIN_AGE_HOURS: i64 = 24;
 const MAX_MIN_AGE_HOURS: i64 = 876_000;
 
 pub const HELP: &str = "\
-reconcile-attachments — delete attachment objects no event_attachments row points at (#58)
+reconcile-attachments — delete objects no event_attachments row nor users.avatar_key points at (#58, #467)
 
 USAGE:
     reconcile-attachments [OPTIONS]
@@ -250,11 +253,18 @@ pub async fn ensure_bypasses_rls(conn: &mut sqlx::PgConnection) -> anyhow::Resul
     Ok(())
 }
 
-/// Every storage key the database knows about.
+/// Every storage key the database knows about: the attachments', and the
+/// profile photos' (`users.avatar_key`, #467), which share the bucket under
+/// `avatars/`. Leaving the second out would classify every photo older than
+/// the window as an orphan, and delete it.
 pub async fn known_storage_keys(conn: &mut sqlx::PgConnection) -> anyhow::Result<HashSet<String>> {
-    let keys = sqlx::query_scalar!("SELECT storage_key FROM event_attachments")
-        .fetch_all(&mut *conn)
-        .await?;
+    let keys = sqlx::query_scalar!(
+        r#"SELECT storage_key AS "key!" FROM event_attachments
+           UNION ALL
+           SELECT avatar_key AS "key!" FROM users WHERE avatar_key IS NOT NULL"#
+    )
+    .fetch_all(&mut *conn)
+    .await?;
     Ok(keys.into_iter().collect())
 }
 

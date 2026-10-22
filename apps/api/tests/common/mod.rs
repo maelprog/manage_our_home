@@ -420,6 +420,21 @@ pub async fn call_upload(
     filename: &str,
     bytes: &[u8],
 ) -> Response<Body> {
+    call_multipart(router, Method::POST, uri, cookie, filename, bytes).await
+}
+
+/// [`call_upload`] with another method: `PUT /me/avatar` (#467).
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (see note on test_state above).
+#[allow(dead_code)]
+pub async fn call_multipart(
+    router: &axum::Router,
+    method: Method,
+    uri: &str,
+    cookie: &str,
+    filename: &str,
+    bytes: &[u8],
+) -> Response<Body> {
     const BOUNDARY: &str = "----manageourhometestboundary";
 
     let mut body = Vec::new();
@@ -433,7 +448,7 @@ pub async fn call_upload(
     body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
 
     let request = Request::builder()
-        .method(Method::POST)
+        .method(method)
         .uri(uri)
         .header(header::COOKIE, cookie)
         .header(

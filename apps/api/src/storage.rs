@@ -105,6 +105,21 @@ impl Storage {
         Ok(presigned.uri().to_string())
     }
 
+    /// The bytes stored at `key`, read whole. For the small objects the API
+    /// serves itself rather than through a presigned link: the profile photo
+    /// (`avatar`, #467), a JPEG of a few tens of kilobytes, which the pages'
+    /// CSP would refuse from the storage's origin.
+    pub async fn get_object(&self, key: &str) -> anyhow::Result<bytes::Bytes> {
+        let object = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await?;
+        Ok(object.body.collect().await?.into_bytes())
+    }
+
     /// Every object in the bucket, or under `prefix` when given, walked
     /// through `ListObjectsV2`'s continuation tokens.
     ///

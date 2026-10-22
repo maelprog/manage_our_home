@@ -85,6 +85,7 @@ hmac = "0.13"
 # `recipes::taxonomy`): 205 KB gzipped instead of 932 KB in the binary.
 # The newest release (dependency policy), shared with apps/web.
 flate2 = "1.1.10"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

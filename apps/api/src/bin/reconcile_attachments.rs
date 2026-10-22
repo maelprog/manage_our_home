@@ -1,5 +1,5 @@
-//! `reconcile-attachments` — deletes attachment objects in MinIO that no
-//! `event_attachments` row points at (#58).
+//! `reconcile-attachments` — deletes objects in MinIO that no
+//! `event_attachments` row (#58) nor `users.avatar_key` (#467) points at.
 //!
 //! Dry-run by default; `--apply` deletes. The API also runs this pass
 //! daily with deletion on (`src/jobs/attachment_reconcile.rs`, #215); this
