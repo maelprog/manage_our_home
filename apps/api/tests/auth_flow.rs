@@ -3918,3 +3918,27 @@ async fn registering_a_deactivated_or_purged_address_mails_nothing(db: PgPool) {
         }
     }
 }
+
+/// #460: registrations of one address that all pass the lookup before any of
+/// them inserts still answer like any other: one account, one email, and
+/// every request a 201. The losers of the race on the unique index create
+/// and send nothing, instead of answering 500.
+#[sqlx::test]
+async fn concurrent_registrations_of_one_address_create_one_account(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let burst = 12;
+
+    let responses = futures::future::join_all(
+        (0..burst).map(|_| register_with(&router, "race@example.test", "race-password1", "Race")),
+    )
+    .await;
+
+    let statuses: Vec<StatusCode> = responses.iter().map(|r| r.status()).collect();
+    assert!(
+        statuses.iter().all(|s| *s == StatusCode::CREATED),
+        "{statuses:?}"
+    );
+    assert_eq!(stored_emails(&db).await, ["race@example.test"]);
+    assert_eq!(outbox.emails().len(), 1);
+    assert_eq!(verification_tokens(&db, "race@example.test").await, (1, 1));
+}
