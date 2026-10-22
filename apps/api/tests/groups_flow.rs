@@ -1287,21 +1287,31 @@ async fn a_member_profile_is_shown_only_inside_a_shared_group(db: PgPool) {
         ),
         (&alice, &unknown_group, &bob_id, "unknown group"),
     ];
-    for (cookie, group, target, what) in cases {
-        let res = call(
-            &router,
-            Method::GET,
-            &format!("/groups/{group}/members/{target}"),
-            Some(cookie),
-            None,
-        )
-        .await;
-        assert_status(&res, StatusCode::NOT_FOUND);
-        assert_eq!(
-            json_body(res).await,
-            refusal,
-            "{what}: not the same refusal"
-        );
+    // `router` runs the handlers under `FLOW_TEST_RUNTIME_ROLE` when the job
+    // sets it, where RLS alone would hide carol's row in B. The check has to
+    // hold without RLS too — the superuser the `e2e` job and
+    // infra/docker-compose.yml connect as — so the cases run again on the
+    // harness's own pool, which bypasses every policy.
+    let mut bypass_state = common::test_state(db.clone());
+    bypass_state.db = db.clone();
+    let bypass_router = manage_our_home::build_router(bypass_state);
+    for r in [&router, &bypass_router] {
+        for (cookie, group, target, what) in cases {
+            let res = call(
+                r,
+                Method::GET,
+                &format!("/groups/{group}/members/{target}"),
+                Some(cookie),
+                None,
+            )
+            .await;
+            assert_status(&res, StatusCode::NOT_FOUND);
+            assert_eq!(
+                json_body(res).await,
+                refusal,
+                "{what}: not the same refusal"
+            );
+        }
     }
 
     // Asked through B, where both belong, carol's profile is there.
