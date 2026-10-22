@@ -1340,15 +1340,22 @@ async fn a_member_profile_is_shown_only_inside_a_shared_group(db: PgPool) {
     )
     .await;
     assert_status(&ok, StatusCode::OK);
-    let refused = call(
-        &scoped_router,
-        Method::GET,
-        &format!("/groups/{group_a}/members/{carol_id}"),
-        Some(&alice),
-        None,
-    )
-    .await;
-    assert_status(&refused, StatusCode::NOT_FOUND);
+    for (cookie, group, target, what) in cases {
+        let res = call(
+            &scoped_router,
+            Method::GET,
+            &format!("/groups/{group}/members/{target}"),
+            Some(cookie),
+            None,
+        )
+        .await;
+        assert_status(&res, StatusCode::NOT_FOUND);
+        assert_eq!(
+            json_body(res).await,
+            refusal,
+            "{what}: not the same refusal under the prescribed role"
+        );
+    }
     drop(scoped_router);
     drop_prescribed_role(&db, app_db, &role).await;
 }
