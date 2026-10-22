@@ -20,8 +20,9 @@
 //!   live script prefixes `location.host`).
 //! - `author_name` resolves a `created_by` id against the family's members,
 //!   falling back for an author who has since left (their messages remain).
-//! - `reply_excerpt` mirrors `messages.rs::reply_excerpt` (#464): the start
-//!   of a message as the composer quotes it while you answer it (#465).
+//! - `reply_excerpt` is the one definition of a reply's quote of its parent
+//!   (#464): `apps/api` cuts `reply_to.excerpt` with it, and the composer
+//!   quotes the message being answered with it (#465).
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use chrono_tz::Europe::Paris;
@@ -144,15 +145,16 @@ pub fn author_name(members: &[GroupMember], user_id: Uuid) -> &str {
         .unwrap_or("Membre")
 }
 
-/// How many chars of a parent message a reply quotes, mirroring
-/// `apps/api/src/messagerie/messages.rs`'s `REPLY_EXCERPT_CHARS`.
+/// How many chars of a parent message a reply quotes (#464) — chars, not
+/// bytes, the unit of `MAX_CONTENT_CHARS`.
 pub const REPLY_EXCERPT_CHARS: usize = 120;
 
-/// Mirrors `apps/api/src/messagerie/messages.rs::reply_excerpt`: the first
+/// The excerpt of a parent message a reply carries (#464): the first
 /// [`REPLY_EXCERPT_CHARS`] *chars* of `content`, followed by `…` when it was
-/// cut. The API sends this excerpt with every reply (`reply_to.excerpt`); the
-/// composer needs it for the message being answered, which the API sends
-/// whole, so the cut is made here by the same rule.
+/// cut, with no whitespace left before it. `apps/api` computes
+/// `reply_to.excerpt` with it from the decrypted parent on each read (never
+/// stored); the composer quotes the message being answered with it (#465),
+/// since the API sends that one whole.
 pub fn reply_excerpt(content: &str) -> String {
     match content.char_indices().nth(REPLY_EXCERPT_CHARS) {
         None => content.to_string(),

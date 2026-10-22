@@ -2,6 +2,7 @@ use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
 use chrono::{DateTime, Utc};
+use manage_our_home_shared::validation::messagerie::reply_excerpt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -15,10 +16,6 @@ use crate::AppState;
 const MAX_CONTENT_CHARS: usize = 4000;
 const DEFAULT_PAGE_LIMIT: i64 = 50;
 const MAX_PAGE_LIMIT: i64 = 100;
-/// How much of a parent message a reply carries (#464), in chars — not
-/// bytes, the same unit as `MAX_CONTENT_CHARS`. Longer parents are cut there
-/// and end with `…`.
-pub(crate) const REPLY_EXCERPT_CHARS: usize = 120;
 
 #[derive(Deserialize)]
 pub struct CreateMessageRequest {
@@ -142,17 +139,6 @@ fn check_reply_target(group_id: Uuid, parent_group_id: Option<Uuid>) -> AppResul
         Ok(())
     } else {
         Err(AppError::Unprocessable("reply_to_invalid".into()))
-    }
-}
-
-/// The excerpt of a parent message a reply carries (#464): the first
-/// `REPLY_EXCERPT_CHARS` chars of its decrypted content, ending with `…`
-/// when it was cut. Computed per response from the decrypted parent, never
-/// stored.
-fn reply_excerpt(content: &str) -> String {
-    match content.char_indices().nth(REPLY_EXCERPT_CHARS) {
-        None => content.to_string(),
-        Some((cut, _)) => format!("{}…", content[..cut].trim_end()),
     }
 }
 
@@ -663,46 +649,6 @@ mod tests {
         assert_eq!(
             unprocessable(check_reply_target(GROUP, None)),
             "reply_to_invalid"
-        );
-    }
-
-    // -- reply_excerpt -------------------------------------------------
-
-    #[test]
-    fn a_short_parent_is_carried_whole() {
-        assert_eq!(reply_excerpt("On mange à 20 h ?"), "On mange à 20 h ?");
-    }
-
-    #[test]
-    fn a_parent_of_exactly_the_excerpt_length_is_not_cut() {
-        let content = "a".repeat(REPLY_EXCERPT_CHARS);
-        assert_eq!(reply_excerpt(&content), content);
-    }
-
-    #[test]
-    fn a_longer_parent_is_cut_at_the_excerpt_length_with_an_ellipsis() {
-        let content = "a".repeat(REPLY_EXCERPT_CHARS + 1);
-        let excerpt = reply_excerpt(&content);
-        assert_eq!(excerpt, format!("{}…", "a".repeat(REPLY_EXCERPT_CHARS)));
-    }
-
-    #[test]
-    fn the_excerpt_counts_chars_not_bytes() {
-        // Multi-byte chars: cutting by bytes would either panic on a char
-        // boundary or keep half as many chars.
-        let content = "é".repeat(REPLY_EXCERPT_CHARS + 5);
-        let excerpt = reply_excerpt(&content);
-        assert_eq!(excerpt.chars().count(), REPLY_EXCERPT_CHARS + 1);
-        assert!(excerpt.starts_with(&"é".repeat(REPLY_EXCERPT_CHARS)));
-        assert!(excerpt.ends_with('…'));
-    }
-
-    #[test]
-    fn a_cut_does_not_leave_whitespace_before_the_ellipsis() {
-        let content = format!("{} suite", "a".repeat(REPLY_EXCERPT_CHARS - 1));
-        assert_eq!(
-            reply_excerpt(&content),
-            format!("{}…", "a".repeat(REPLY_EXCERPT_CHARS - 1))
         );
     }
 
