@@ -21,8 +21,10 @@
 //! answer cannot plant one. And `/` never redirects to itself on a cookie it
 //! rejects: it clears it and shows the home page in the same answer, so no
 //! cookie, wherever it came from, can make a redirect loop. The price of the
-//! prefix: a browser keeps no such cookie from a plain-HTTP origin other
-//! than `localhost`, so there an invitation opened logged out ends on `/`.
+//! prefix: over plain HTTP, Chromium and Firefox keep such a cookie only
+//! from `localhost`, and WebKit (Safari) from no origin at all, `localhost`
+//! included — it keeps it over HTTPS only. Where it is not kept, an
+//! invitation opened logged out ends on `/`.
 
 use manage_our_home_shared::validation::auth::is_bearer_token;
 
