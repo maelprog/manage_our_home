@@ -478,6 +478,17 @@ mod route_tests {
         assert!(set_cookies(&response).is_empty());
     }
 
+    /// An invalid `?next=` stores nothing, and so leaves alone an
+    /// invitation remembered earlier in the same browser: the login then
+    /// ends on that invitation, a checked path, rather than on `/`.
+    #[tokio::test]
+    async fn an_invalid_next_parameter_keeps_a_remembered_invitation() {
+        let cookie = format!("{RETURN_TO_COOKIE}={}", invitation());
+        let response = send("/login?next=%2F%2Fevil.example", Some(&cookie)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(set_cookies(&response).is_empty());
+    }
+
     /// Without a session, `/` keeps the cookie for after the login.
     #[tokio::test]
     async fn the_home_page_without_a_session_keeps_the_invitation() {

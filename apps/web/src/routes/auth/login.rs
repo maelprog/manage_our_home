@@ -20,7 +20,9 @@ pub struct LoginForm {
 /// `GET /login`'s query: `?reauth=admin` when an `/admin` page sent the
 /// visitor here (#226); `?next=` a page to come back to once logged in
 /// (#462), kept only when it is a `return_to::safe_return_path` — anything
-/// else is ignored and the login ends on `/`.
+/// else is ignored: nothing is stored, and the login ends on `/` — or, when
+/// an invitation was already remembered in this browser, on that invitation,
+/// a path checked when stored and again when read (#576).
 #[derive(serde::Deserialize)]
 pub struct LoginQuery {
     reauth: Option<String>,
