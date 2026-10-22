@@ -57,14 +57,9 @@ fn is_same_site_path(candidate: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'/'))
 }
 
-/// The return path the request's `Cookie` header carries, if it is still a
+/// The value of the return cookie the request carries, not yet checked: `/`
+/// clears it whenever it is there, and follows it only when it is a
 /// [`safe_return_path`].
-pub fn return_path_from_cookies(cookie_header: Option<&str>) -> Option<&str> {
-    return_cookie(cookie_header).and_then(safe_return_path)
-}
-
-/// The value of the return cookie the request carries, checked or not: `/`
-/// clears it whenever it is there.
 pub fn return_cookie(cookie_header: Option<&str>) -> Option<&str> {
     cookie_header?.split(';').find_map(|pair| {
         let (name, value) = pair.trim().split_once('=')?;
@@ -167,14 +162,18 @@ mod tests {
         );
 
         let header = format!("active_group_id=1; {RETURN_TO_COOKIE}={path}; other=2");
-        assert_eq!(return_path_from_cookies(Some(&header)), Some(path.as_str()));
+        assert_eq!(return_cookie(Some(&header)), Some(path.as_str()));
     }
 
-    /// A cookie is the visitor's to write: what it says is checked again.
     /// The site-wide filter on its own, shapes aside.
     #[test]
     fn a_same_site_path_is_one_slash_then_path_characters() {
-        for path in ["/", "/groups", "/a/b-c_d/E9", "/groups/invitations/x/accept"] {
+        for path in [
+            "/",
+            "/groups",
+            "/a/b-c_d/E9",
+            "/groups/invitations/x/accept",
+        ] {
             assert!(is_same_site_path(path), "{path:?}");
         }
         for path in [
@@ -197,14 +196,17 @@ mod tests {
         }
     }
 
+    /// A cookie is the visitor's to write: it is read as it is, so that `/`
+    /// can clear it, and is no return path unless it passes the check.
     #[test]
-    fn a_cookie_carrying_another_site_is_ignored() {
+    fn a_cookie_carrying_another_site_is_read_but_no_return_path() {
         for value in ["//evil.example", "https://evil.example", "/admin/users", ""] {
             let header = format!("{RETURN_TO_COOKIE}={value}");
-            assert_eq!(return_path_from_cookies(Some(&header)), None, "{value:?}");
+            assert_eq!(return_cookie(Some(&header)), Some(value), "{value:?}");
+            assert_eq!(safe_return_path(value), None, "{value:?}");
         }
-        assert_eq!(return_path_from_cookies(None), None);
-        assert_eq!(return_path_from_cookies(Some("return_to_x=/")), None);
+        assert_eq!(return_cookie(None), None);
+        assert_eq!(return_cookie(Some("return_to_x=/")), None);
     }
 
     #[test]
