@@ -1,7 +1,9 @@
 //! `/verify-email/resend` (#420): the form that asks apps/api for a new
 //! verification email (`POST /auth/verify-email/resend`). An account whose
 //! email never arrived could not log in (the generic 401 of an unverified
-//! account) nor register again (409), and had no other way out.
+//! account) nor register again (then a 409), and had no other way out.
+//! Registering again now mails it a fresh link too (#460); this form stays
+//! the way out the pages show.
 
 use axum::extract::State;
 use axum::response::{Html, IntoResponse};
