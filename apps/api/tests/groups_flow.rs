@@ -76,6 +76,12 @@ async fn full_group_lifecycle(db: PgPool) {
     assert_status(&invite, StatusCode::CREATED);
     let invite_body = json_body(invite).await;
     let invite_token = invite_body["token"].as_str().unwrap().to_string();
+    // #462: the link to share is absolute, on the frontend's base URL
+    // (`common::test_state`), the same as the email's.
+    assert_eq!(
+        invite_body["accept_url"],
+        format!("http://localhost:5173/groups/invitations/{invite_token}/accept")
+    );
 
     let accept = call(
         &router,

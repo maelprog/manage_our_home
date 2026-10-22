@@ -36,7 +36,8 @@ fn cookie_header(parts: &Parts) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// Extracts the authenticated user or redirects to `/login`. Use on every
+/// Extracts the authenticated user or redirects to `/login` (remembering an
+/// invitation's page to come back to, [`to_login`]). Use on every
 /// handler for a route that requires a session (AC #3: "an unauthenticated
 /// visitor hitting any non-auth route is redirected to /login"). A
 /// restricted session (#289) is sent to [`DEACTIVATED_PAGE`] instead, one
@@ -60,8 +61,26 @@ where
             Session::Deactivated => Err(Redirect::to(DEACTIVATED_PAGE).into_response()),
             Session::AgeUndeclared => Err(Redirect::to(AGE_DECLARATION_PAGE).into_response()),
             Session::TermsNotAccepted => Err(Redirect::to(TERMS_ACCEPTANCE_PAGE).into_response()),
-            Session::None => Err(Redirect::to("/login").into_response()),
+            Session::None => Err(to_login(parts.uri.path())),
         }
+    }
+}
+
+/// The way to `/login` of a visitor with no session, who comes back to
+/// `path` once logged in when it is a return path (#462) — an invitation
+/// opened before logging in or registering. Stored in a cookie, not in the
+/// URL of `/login`, so the invitation's token is not written there.
+fn to_login(path: &str) -> Response {
+    match crate::return_to::safe_return_path(path) {
+        Some(path) => (
+            [(
+                axum::http::header::SET_COOKIE,
+                crate::return_to::set_return_cookie(path),
+            )],
+            Redirect::to("/login"),
+        )
+            .into_response(),
+        None => Redirect::to("/login").into_response(),
     }
 }
 

@@ -90,6 +90,9 @@ pub struct CreateInvitationRequest {
 pub struct InvitationCreatedResponse {
     pub id: Uuid,
     pub token: String,
+    /// The link to share, absolute (#462): the same as the email carries,
+    /// built from apps/api's `FRONTEND_BASE_URL`.
+    pub accept_url: String,
 }
 
 /// `POST /groups/invitations/:token/accept` (200) response.

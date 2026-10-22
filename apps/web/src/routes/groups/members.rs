@@ -262,8 +262,17 @@ pub async fn invite(
                 Err(_) => return service_unavailable_page().into_response(),
             };
             let (_groups, header) = header_with_groups(&state, &headers, &me, &members_url).await;
-            let link = format!("/groups/invitations/{}/accept", invitation.token);
-            Html(page(&header, &me, &group, None, None, Some(&link))).into_response()
+            // Absolute (#462): apps/api builds it from its
+            // `FRONTEND_BASE_URL`, as for the email.
+            Html(page(
+                &header,
+                &me,
+                &group,
+                None,
+                None,
+                Some(&invitation.accept_url),
+            ))
+            .into_response()
         }
         Ok(resp) if resp.status == reqwest::StatusCode::FORBIDDEN => {
             Redirect::to(&format!("{members_url}?error=forbidden")).into_response()
