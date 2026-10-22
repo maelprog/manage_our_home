@@ -555,8 +555,10 @@ pub fn member_initial(display_name: &str) -> String {
 
 /// A member's `.avatar`: their initial, in their ramp hue (DESIGN.md →
 /// Composants). The hue is the one thing a class cannot carry, so this is
-/// the one `style=` every avatar of a known member goes through (#466: the
-/// member list and the messagerie each had their own).
+/// the one `style=` the avatars of the member list, the messagerie and a
+/// member's profile go through (#466: the first two each had their own).
+/// The home page's agenda rows keep theirs (`routes/home.rs`): their colour
+/// can be several assignees' mixed, `app::combined_member_colour`.
 ///
 /// `aria-hidden`: the member's name is always right beside it, or names the
 /// link that holds it, and a screen reader would otherwise read the initial

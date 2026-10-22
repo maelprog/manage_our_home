@@ -220,11 +220,14 @@ pub async fn get_group(
 ///
 /// One statement checks both memberships: the caller's (`me`) and the
 /// target's (`gm`), in the same `:id`. Sharing another group with the target
-/// is not enough. As in `get_group`, the check is written in the query, not
-/// left to RLS — the superuser of the `e2e` job sees every row, and under
-/// the prescribed role `scoped_tx` makes the whole of `:id` readable. Every
-/// refusal is `NotFound`, the answer to an unknown id, so the response never
-/// tells the caller who belongs to which group.
+/// is not enough. As in `get_group`, both checks are written in the query.
+/// The caller's is the one that holds: `scoped_tx` puts `:id` in
+/// `app.family_id`, so the policies of 0014 make the whole group readable to
+/// a caller outside it. The target's is defence in depth: under the role
+/// apps/api/README.md prescribes, RLS already hides a membership row of
+/// another group, but a connection that bypassed RLS would not. Every refusal
+/// is `NotFound`, the answer to an unknown id, so the response never tells
+/// the caller who belongs to which group.
 pub async fn get_member(
     State(state): State<AppState>,
     auth: AuthUser,
