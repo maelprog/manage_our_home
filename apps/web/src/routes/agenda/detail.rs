@@ -638,6 +638,17 @@ mod tests {
     }
 
     #[test]
+    fn absent_rid_and_offset_read_as_none() {
+        // Each typed field needs `default` beside `deserialize_with`: without
+        // it a missing parameter is a "missing field" 400.
+        for raw in ["", "notice=updated"] {
+            let q = detail_query(raw);
+            assert!(q.rid.is_none(), "{raw}");
+            assert!(q.offset.is_none(), "{raw}");
+        }
+    }
+
+    #[test]
     fn malformed_rid_or_offset_reads_as_absent() {
         // #580: no banner without a valid rid; an unconvertible offset is 0.
         assert!(detail_query("rid=").rid.is_none());

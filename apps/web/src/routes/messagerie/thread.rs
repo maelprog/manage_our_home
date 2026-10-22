@@ -1058,6 +1058,19 @@ mod tests {
     }
 
     #[test]
+    fn absent_thread_parameters_read_as_none() {
+        // Each typed field needs `default` beside `deserialize_with`: without
+        // it a missing parameter is a "missing field" 400.
+        for raw in ["", "notice=message_sent"] {
+            let q = thread_query(raw);
+            assert!(q.reply_to.is_none(), "{raw}");
+            assert!(q.before_created_at.is_none(), "{raw}");
+            assert!(q.before_id.is_none(), "{raw}");
+            assert!(q.limit.is_none(), "{raw}");
+        }
+    }
+
+    #[test]
     fn malformed_thread_parameters_read_as_absent() {
         // #580: each typed parameter, empty then unconvertible.
         for raw in [
