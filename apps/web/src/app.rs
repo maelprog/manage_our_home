@@ -1843,7 +1843,7 @@ mod tests {
     /// At module level rather than inside the test below because
     /// `budget_report` prints it too, and a report that restated the number
     /// beside the guard would drift from it (#95).
-    const INLINE_STYLE_CEILING: usize = 6;
+    const INLINE_STYLE_CEILING: usize = 5;
 
     #[test]
     fn inline_styles_are_bounded_to_a_justified_residue() {
