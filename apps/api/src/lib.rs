@@ -267,7 +267,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/groups/:id/members/:user_id",
-            delete(groups::remove_member),
+            get(groups::get_member).delete(groups::remove_member),
         )
         .route("/groups/:id/leave", post(groups::leave_group))
         .route(

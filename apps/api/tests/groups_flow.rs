@@ -1172,3 +1172,155 @@ async fn the_invitation_email_carries_a_link_that_joins_the_group(db: PgPool) {
     .unwrap();
     assert_eq!(members, 1);
 }
+
+async fn user_id_of(router: &axum::Router, cookie: &str) -> String {
+    let me = call(router, Method::GET, "/auth/me", Some(cookie), None).await;
+    assert_status(&me, StatusCode::OK);
+    json_body(me).await["user_id"].as_str().unwrap().to_string()
+}
+
+/// `member_cookie` joins `group_id` through an invitation `owner_cookie`
+/// creates.
+async fn join_group(router: &axum::Router, owner_cookie: &str, member_cookie: &str, group_id: &str) {
+    let invite = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/invitations"),
+        Some(owner_cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_status(&invite, StatusCode::CREATED);
+    let token = json_body(invite).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let accept = call(
+        router,
+        Method::POST,
+        &format!("/groups/invitations/{token}/accept"),
+        Some(member_cookie),
+        None,
+    )
+    .await;
+    assert_status(&accept, StatusCode::OK);
+}
+
+/// Issue #466: `GET /groups/:id/members/:user_id` is a member's profile —
+/// display name, role in the group, arrival date — and never their e-mail
+/// (arbitrated in the issue). Both the caller and the target must belong to
+/// `:id`: a caller outside the group, and a target outside it even when the
+/// caller shares *another* group with them, get the same 404 as an unknown
+/// id, so the answer does not reveal who belongs where.
+#[sqlx::test]
+async fn a_member_profile_is_shown_only_inside_a_shared_group(db: PgPool) {
+    let router = test_router(db.clone());
+    let alice = register_verify_login(&router, &db, "alice@example.test", "alice-password1").await;
+    let bob = register_verify_login(&router, &db, "bob@example.test", "bob-password1").await;
+    let carol = register_verify_login(&router, &db, "carol@example.test", "carol-password1").await;
+    let bob_id = user_id_of(&router, &bob).await;
+    let carol_id = user_id_of(&router, &carol).await;
+
+    // A: alice (owner) and bob. B: carol (owner) and alice.
+    let group_a = create_group(&router, &alice, "Foyer A").await;
+    join_group(&router, &alice, &bob, &group_a).await;
+    let group_b = create_group(&router, &carol, "Foyer B").await;
+    join_group(&router, &carol, &alice, &group_b).await;
+
+    let profile = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_a}/members/{bob_id}"),
+        Some(&alice),
+        None,
+    )
+    .await;
+    assert_status(&profile, StatusCode::OK);
+    let body = json_body(profile).await;
+    assert_eq!(body["user_id"], bob_id.as_str());
+    assert_eq!(body["display_name"], "bob@example.test");
+    assert_eq!(body["role"], "standard");
+    let joined_at: chrono::DateTime<Utc> =
+        serde_json::from_value(body["joined_at"].clone()).expect("joined_at is a timestamp");
+    assert!(Utc::now() - joined_at < Duration::minutes(5), "{joined_at}");
+    // The display name defaults to the e-mail in this suite, so the address
+    // is looked for as a field, not as a substring.
+    assert!(body.get("email").is_none(), "the profile leaks the e-mail: {body}");
+    assert_eq!(
+        body.as_object().unwrap().len(),
+        4,
+        "only id, name, role and arrival date: {body}"
+    );
+
+    // Unknown target: the reference refusal.
+    let unknown = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_a}/members/{}", Uuid::new_v4()),
+        Some(&alice),
+        None,
+    )
+    .await;
+    assert_status(&unknown, StatusCode::NOT_FOUND);
+    let refusal = json_body(unknown).await;
+
+    let unknown_group = Uuid::new_v4().to_string();
+    let cases = [
+        // A member of A asks, through B, for a member of B: not in B.
+        (&bob, &group_b, &carol_id, "caller outside the group"),
+        // The same caller asks through A for someone who is only in B.
+        (&bob, &group_a, &carol_id, "target outside the group"),
+        // Alice is in A and B, carol only in B. Asked through A: 404.
+        (&alice, &group_a, &carol_id, "target only in another shared group"),
+        (&alice, &unknown_group, &bob_id, "unknown group"),
+    ];
+    for (cookie, group, target, what) in cases {
+        let res = call(
+            &router,
+            Method::GET,
+            &format!("/groups/{group}/members/{target}"),
+            Some(cookie),
+            None,
+        )
+        .await;
+        assert_status(&res, StatusCode::NOT_FOUND);
+        assert_eq!(json_body(res).await, refusal, "{what}: not the same refusal");
+    }
+
+    // Asked through B, where both belong, carol's profile is there.
+    let shared = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_b}/members/{carol_id}"),
+        Some(&alice),
+        None,
+    )
+    .await;
+    assert_status(&shared, StatusCode::OK);
+    assert_eq!(json_body(shared).await["role"], "owner");
+
+    // Same answers under the NOBYPASSRLS role apps/api/README.md prescribes,
+    // where `scoped_tx` puts the requested group in `app.family_id`.
+    let (role, app_db) = prescribed_role_pool(&db).await;
+    let scoped_router = test_router(app_db.clone());
+    let ok = call(
+        &scoped_router,
+        Method::GET,
+        &format!("/groups/{group_a}/members/{bob_id}"),
+        Some(&alice),
+        None,
+    )
+    .await;
+    assert_status(&ok, StatusCode::OK);
+    let refused = call(
+        &scoped_router,
+        Method::GET,
+        &format!("/groups/{group_a}/members/{carol_id}"),
+        Some(&alice),
+        None,
+    )
+    .await;
+    assert_status(&refused, StatusCode::NOT_FOUND);
+    drop(scoped_router);
+    drop_prescribed_role(&db, app_db, &role).await;
+}
