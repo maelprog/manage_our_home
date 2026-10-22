@@ -7,7 +7,8 @@ le 2026-09-28) et le code de `main` à cette date ; sous-traitant email et
 transferts mis à jour le 2026-10-04 (Scaleway remplace Mailjet, #328) ;
 état de TLS mis à jour le 2026-10-05 (#327) ; responsable désigné par un
 pseudonyme le 2026-10-09 (#379) ; mesure 5 (chiffrement du volume)
-retenue le 2026-10-10 (#380).
+retenue le 2026-10-10 (#380) ; photo de profil prise en compte le
+2026-10-23 (#467).
 
 **Statut : projet.** L'analyse est rédigée ; la conclusion (dernière
 section) est une **proposition**, qui ne vaut décision qu'une fois relue et
@@ -24,7 +25,7 @@ traitement qui en réunit au moins deux requiert en principe une AIPD.
 | Évaluation ou notation | non | Les suggestions de recettes sont un tri par règles sur le contenu du groupe (`apps/api/src/recipes/suggestions.rs`), pas une évaluation de personnes |
 | Décision automatique avec effet juridique | non | Aucune |
 | Surveillance systématique | non | Aucune journalisation des connexions, aucune géolocalisation |
-| Données sensibles ou à caractère hautement personnel | **oui** | Aucun champ ne les nomme, mais le texte libre (`events.title`, `events.description`, `messages.content`, recettes, liste de courses) et les pièces jointes (PNG, JPEG, WebP, **PDF**, 20 Mio au plus) en recevront : un rendez-vous médical, une ordonnance, un régime révélant une conviction. La messagerie est une correspondance privée |
+| Données sensibles ou à caractère hautement personnel | **oui** | Aucun champ ne les nomme, mais le texte libre (`events.title`, `events.description`, `messages.content`, recettes, liste de courses) et les pièces jointes (PNG, JPEG, WebP, **PDF**, 20 Mio au plus) en recevront : un rendez-vous médical, une ordonnance, un régime révélant une conviction. La messagerie est une correspondance privée. La photo de profil (#467) est la photo d'une personne, parfois d'un mineur : elle n'est pas une donnée biométrique au sens de l'art. 4(14) — aucun traitement technique n'en tire de quoi identifier quelqu'un —, mais elle révèle un visage, et parfois un lieu ou une appartenance. Le serveur n'en garde qu'un carré de 256 px ré-encodé, sans métadonnées (ni position GPS, ni date, ni appareil), servi au titulaire et aux membres d'un groupe commun seulement |
 | Collecte à grande échelle | pas aujourd'hui | Cible de premier déploiement : 10 à 15 familles (`docs/v2-deployment.md`). Le critère se réévalue si le service est ouvert largement |
 | Croisement de données | non | Seul l'import iCal fait entrer des données d'ailleurs, à l'initiative d'un membre, sans croisement |
 | Personnes vulnérables | **oui** | Des mineurs de 15 à 17 ans peuvent ouvrir un compte (arbitrage du 2026-09-19, #137), et le contenu d'un foyer parle d'enfants plus jeunes |
@@ -77,7 +78,7 @@ et le service n'est pas à grande échelle (section 1).
 |---|---|---|
 | Finalités déterminées | Une par catégorie, registre | — |
 | Bases légales | Registre ; exécution du contrat pour l'essentiel | — |
-| Minimisation | Pas de date de naissance (déclaration d'âge seule), pas de téléphone, pas d'adresse, pas d'IP ni d'user-agent en base | — |
+| Minimisation | Pas de date de naissance (déclaration d'âge seule), pas de téléphone, pas d'adresse, pas d'IP ni d'user-agent en base ; photo de profil facultative, réduite à 256 px et privée de ses métadonnées avant d'être stockée (#467) | — |
 | Durées de conservation | Purge du compte, purge horaire de conservation (#138, #139, #256) | — |
 | Information | `docs/privacy-policy.md`, notice de l'art. 14 dans l'email d'invitation | Pseudonyme et contact du responsable encore à renseigner (`docs/v2-deployment.md` #16) ; un pseudonyme plutôt que le nom civil, risque résiduel au regard de l'art. 13(1)(a) décrit au registre, à valider (#379) |
 | Droits d'accès et de portabilité | `GET /account/export` | — |
@@ -111,11 +112,14 @@ invitation, réinitialisation, vérification d'adresse) stockés par leur
 seule empreinte SHA-256 (`token_hash`, #222 pour la session, #335 pour les
 trois autres) ; limitation des
 essais de mot de passe ; politique de sécurité du contenu ; `cargo audit`
-en CI ; journal d'audit des actions sensibles.
+en CI ; journal d'audit des actions sensibles ; la photo de profil n'est
+servie qu'au titulaire et aux membres d'un groupe qu'il partage, contrôle
+écrit dans la requête comme celui de la fiche d'un membre (#466), et par
+l'API elle-même, sans lien vers le stockage (#467).
 
 **Ce qui reste exposé.**
-- Les pièces jointes et tout le texte libre hors messagerie ne sont pas
-  chiffrés au repos par l'application. Le chiffrement du volume (mesure 5,
+- Les pièces jointes, les photos de profil et tout le texte libre hors
+  messagerie ne sont pas chiffrés au repos par l'application. Le chiffrement du volume (mesure 5,
   retenue) les couvrira contre le vol du support, pas sur le serveur en
   marche.
 - Les jetons porteurs ne sont plus en base que par leur empreinte (#222,
