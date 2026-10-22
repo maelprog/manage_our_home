@@ -384,6 +384,37 @@ test.describe("Messagerie — permission bar", () => {
   });
 });
 
+test.describe("Messagerie — author profile (#466)", () => {
+  test("clicking a message's author opens their profile, without their e-mail", async ({
+    page,
+    browser,
+  }) => {
+    const ownerEmail = await registerAndLogin(page, "e2e-msgprofile", "Profil Auteur");
+    await createGroup(page, "Famille Fiche");
+    const href = await createInvitationLink(page, "Famille Fiche");
+    await sendMessage(page, "Message à lire");
+
+    const context = await browser.newContext();
+    const member = await context.newPage();
+    await registerAndLogin(member, "e2e-msgprofilereader", "Profil Lecteur");
+    await member.goto(href);
+    await member.getByRole("button", { name: "Rejoindre le groupe" }).click();
+
+    await member.goto("/messagerie");
+    const row = member.locator("li[data-message-id]", { hasText: "Message à lire" });
+    // The link is named by the author: the initial inside it is aria-hidden.
+    await row.getByRole("link", { name: "Profil Auteur", exact: true }).click();
+
+    await expect(member).toHaveURL(/\/groups\/[0-9a-f-]{36}\/members\/[0-9a-f-]{36}$/);
+    await expect(member.getByRole("heading", { level: 1 })).toHaveText(/Profil Auteur/);
+    await expect(member.getByText("Propriétaire")).toBeVisible();
+    await expect(member.getByText("Membre depuis le")).toBeVisible();
+    expect(await member.content()).not.toContain(ownerEmail);
+
+    await context.close();
+  });
+});
+
 test.describe("Messagerie — pagination", () => {
   test("load older messages opens a history window that links back to recent", async ({ page }) => {
     await registerAndLogin(page, "e2e-msgpage", "Msg Pager");

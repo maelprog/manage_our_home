@@ -22,7 +22,7 @@ use manage_our_home_shared::validation::messagerie::{
 };
 use uuid::Uuid;
 
-use crate::app::{html_escape, member_colour, member_initial, shell_with_header, Width};
+use crate::app::{html_escape, member_avatar, member_link, shell_with_header, Width};
 use crate::assets::Script;
 use crate::layout::CurrentUser;
 use crate::lenient_query::{lenient, LenientQuery};
@@ -114,16 +114,26 @@ async fn fetch_members(
 /// have already drifted once: the "(modifié)" marker was on `message_row` and
 /// missing from `edit_error_row`, so a message rejected mid-edit lost the
 /// marker until the next full render.
+///
+/// Initial and name are one link to the author's profile (#466) — unless the
+/// author is no longer in the roster (left, or the roster failed to load):
+/// there is no profile to open then, and the row names "Membre" unlinked.
 fn message_meta(
     msg: &MessageResponse,
     members: &[manage_our_home_shared::dto::groups::GroupMember],
 ) -> String {
     let author = author_name(members, msg.created_by);
+    let identity = if members.iter().any(|m| m.user_id == msg.created_by) {
+        member_link(msg.group_id, msg.created_by, author, true)
+    } else {
+        format!(
+            "{} <strong>{}</strong>",
+            member_avatar(msg.created_by, author),
+            html_escape(author)
+        )
+    };
     format!(
-        r#"<div class="muted"><span class="avatar" style="color:var({colour})" aria-hidden="true">{initial}</span> <strong>{author}</strong> — {time}{edited}</div>"#,
-        colour = member_colour(msg.created_by),
-        initial = html_escape(&member_initial(author)),
-        author = html_escape(author),
+        r#"<div class="muted">{identity} — {time}{edited}</div>"#,
         time = html_escape(&format_message_time(msg.created_at)),
         edited = if msg.edited_at.is_some() {
             " (modifié)"
@@ -1236,6 +1246,54 @@ mod tests {
             assert!(row.contains(">A<"), "the initial is missing from {row}");
             assert!(row.contains("Alice"), "the name is missing from {row}");
         }
+    }
+
+    /// #466: the author's name and icon open their profile in the message's
+    /// group, on every row shape — the link is named by the author, the
+    /// icon inside it staying `aria-hidden`.
+    #[test]
+    fn every_row_shape_links_its_author_to_their_profile() {
+        let mut msg = sample("Bonjour");
+        msg.group_id = Uuid::from_u128(1);
+        msg.created_by = Uuid::from_u128(2);
+        let members = vec![manage_our_home_shared::dto::groups::GroupMember {
+            user_id: msg.created_by,
+            display_name: "Alice".to_string(),
+            email: "alice@example.test".to_string(),
+            role: "standard".to_string(),
+        }];
+        let href = format!(
+            r#"<a class="member" href="/groups/{}/members/{}">"#,
+            msg.group_id, msg.created_by
+        );
+        for row in [
+            message_row(&msg, &members, true, true),
+            message_row(&msg, &members, false, false),
+            edit_error_row(&msg, &members, "Bonjour", "Erreur", true),
+        ] {
+            let at = row
+                .find(&href)
+                .unwrap_or_else(|| panic!("no profile link in {row}"));
+            let link = &row[at..at + row[at..].find("</a>").unwrap()];
+            assert!(
+                link.contains(r#"class="avatar""#),
+                "the icon is outside the link: {link}"
+            );
+            assert!(
+                link.contains("<strong>Alice</strong>"),
+                "the name is outside the link: {link}"
+            );
+        }
+    }
+
+    /// An author who has left the family has no profile left to open: the
+    /// row names them "Membre", with their icon, and links nowhere.
+    #[test]
+    fn an_author_who_left_is_named_without_a_link() {
+        let meta = message_meta(&sample("Bonjour"), &[]);
+        assert!(meta.contains("Membre"), "{meta}");
+        assert!(meta.contains(r#"class="avatar""#), "{meta}");
+        assert!(!meta.contains("<a "), "{meta}");
     }
 
     /// Your own messages are told apart from the rest of the family's. The

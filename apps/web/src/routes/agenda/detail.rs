@@ -24,7 +24,7 @@ use manage_our_home_shared::validation::agenda::{
 use manage_our_home_shared::validation::messagerie::author_name;
 use uuid::Uuid;
 
-use crate::app::{html_escape, shell_with_header, Width};
+use crate::app::{html_escape, member_link, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::lenient_query::{lenient, LenientQuery};
 use crate::routes::groups::members::fetch_group_detail;
@@ -101,18 +101,26 @@ fn error_text(code: &str) -> Option<&'static str> {
 /// the remaining ways in are genuinely historical again; the branch stays
 /// because a detail page that guesses at who an event is for would be worse
 /// than one that says nothing.
-fn assignees_html(assignee_ids: &[Uuid], members: &[GroupMember]) -> String {
+///
+/// Each name is a link to the assignee's profile in the event's group
+/// (#466), still without the avatar. An assignee no longer in the roster has
+/// no profile to open, and keeps the plain fallback name.
+fn assignees_html(group_id: Uuid, assignee_ids: &[Uuid], members: &[GroupMember]) -> String {
     if assignee_ids.is_empty() || members.is_empty() {
         return String::new();
     }
-    let names: Vec<&str> = assignee_ids
+    let names: Vec<String> = assignee_ids
         .iter()
-        .map(|id| author_name(members, *id))
+        .map(|id| {
+            let name = author_name(members, *id);
+            if members.iter().any(|m| m.user_id == *id) {
+                member_link(group_id, *id, name, false)
+            } else {
+                html_escape(name)
+            }
+        })
         .collect();
-    format!(
-        "<p><strong>Assigné à :</strong> {}</p>",
-        html_escape(&names.join(", ")),
-    )
+    format!("<p><strong>Assigné à :</strong> {}</p>", names.join(", "))
 }
 
 /// A human-readable French description of a v1 RRULE (falls back to a
@@ -310,7 +318,7 @@ fn page(
         .filter(|d| !d.is_empty())
         .map(|d| format!("<p>{}</p>", html_escape(d)))
         .unwrap_or_default();
-    let assignees = assignees_html(&event.assignee_ids, members);
+    let assignees = assignees_html(event.group_id, &event.assignee_ids, members);
     let recurrence_html = event
         .rrule
         .as_deref()
@@ -810,7 +818,7 @@ mod tests {
 
     #[test]
     fn a_single_assignee_is_named() {
-        let html = assignees_html(&[uid(1)], &[member(uid(1), "Alice")]);
+        let html = assignees_html(uid(9), &[uid(1)], &[member(uid(1), "Alice")]);
         assert!(html.contains("Assigné à"), "{html}");
         assert!(html.contains("Alice"), "{html}");
     }
@@ -820,24 +828,52 @@ mod tests {
     #[test]
     fn several_assignees_are_all_named_in_order() {
         let members = vec![member(uid(1), "Alice"), member(uid(2), "Bob")];
-        let html = assignees_html(&[uid(2), uid(1)], &members);
-        assert!(html.contains("Bob, Alice"), "{html}");
+        let html = assignees_html(uid(9), &[uid(2), uid(1)], &members);
+        let (bob, alice) = (html.find("Bob"), html.find("Alice"));
+        assert!(bob.is_some() && alice.is_some() && bob < alice, "{html}");
+        assert!(
+            html.contains("</a>, <a "),
+            "names are comma-separated: {html}"
+        );
     }
 
     #[test]
     fn an_event_with_no_assignee_renders_no_line() {
-        assert_eq!(assignees_html(&[], &[member(uid(1), "Alice")]), "");
+        assert_eq!(assignees_html(uid(9), &[], &[member(uid(1), "Alice")]), "");
     }
 
     /// A roster that failed to load must not turn the line into UUIDs.
     #[test]
     fn an_unloadable_roster_renders_no_line() {
-        assert_eq!(assignees_html(&[uid(1)], &[]), "");
+        assert_eq!(assignees_html(uid(9), &[uid(1)], &[]), "");
+    }
+
+    /// #466: each assignee's name opens their profile in the event's group.
+    #[test]
+    fn each_assignee_links_to_their_profile() {
+        let members = vec![member(uid(1), "Alice"), member(uid(2), "Bob")];
+        let html = assignees_html(uid(9), &[uid(2), uid(1)], &members);
+        for (id, name) in [(uid(2), "Bob"), (uid(1), "Alice")] {
+            let link = format!(
+                r#"<a class="member" href="/groups/{}/members/{id}"><strong>{name}</strong></a>"#,
+                uid(9)
+            );
+            assert!(html.contains(&link), "{html}");
+        }
+    }
+
+    /// An assignee who has left the group has no profile to open: their
+    /// fallback name stays plain text rather than a link to a 404.
+    #[test]
+    fn an_assignee_who_left_is_named_without_a_link() {
+        let html = assignees_html(uid(9), &[uid(3)], &[member(uid(1), "Alice")]);
+        assert!(html.contains("Membre"), "{html}");
+        assert!(!html.contains("<a "), "{html}");
     }
 
     #[test]
     fn a_display_name_is_escaped() {
-        let html = assignees_html(&[uid(1)], &[member(uid(1), "<script>")]);
+        let html = assignees_html(uid(9), &[uid(1)], &[member(uid(1), "<script>")]);
         assert!(html.contains("&lt;script&gt;"), "{html}");
         assert!(!html.contains("<script>"), "{html}");
     }

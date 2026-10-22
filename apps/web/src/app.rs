@@ -553,6 +553,39 @@ pub fn member_initial(display_name: &str) -> String {
         .unwrap_or_else(|| "?".to_string())
 }
 
+/// A member's `.avatar`: their initial, in their ramp hue (DESIGN.md →
+/// Composants). The hue is the one thing a class cannot carry, so this is
+/// the one `style=` every avatar of a known member goes through (#466: the
+/// member list and the messagerie each had their own).
+///
+/// `aria-hidden`: the member's name is always right beside it, or names the
+/// link that holds it, and a screen reader would otherwise read the initial
+/// before the name it duplicates. Colour never carries the information on
+/// its own (WCAG 1.4.1).
+pub fn member_avatar(user_id: Uuid, display_name: &str) -> String {
+    format!(
+        r#"<span class="avatar" style="color:var({colour})" aria-hidden="true">{initial}</span>"#,
+        colour = member_colour(user_id),
+        initial = html_escape(&member_initial(display_name)),
+    )
+}
+
+/// A member's name — with their avatar when `avatar` — as a link to their
+/// profile in `group_id` (#466). The link's accessible name is the display
+/// name: the avatar inside it is `aria-hidden`. `.member` gives it the 44px
+/// target DESIGN.md → Espacement asks of anything a finger aims at.
+pub fn member_link(group_id: Uuid, user_id: Uuid, display_name: &str, avatar: bool) -> String {
+    let icon = if avatar {
+        format!("{} ", member_avatar(user_id, display_name))
+    } else {
+        String::new()
+    };
+    format!(
+        r#"<a class="member" href="/groups/{group_id}/members/{user_id}">{icon}<strong>{name}</strong></a>"#,
+        name = html_escape(display_name),
+    )
+}
+
 /// The stylesheet with its `/* … */` comments removed, so prose about a
 /// token is never mistaken for a declaration of one.
 ///
@@ -980,6 +1013,56 @@ mod tests {
         assert_eq!(member_initial(""), "?");
         assert_eq!(member_initial("   "), "?");
         assert_eq!(member_initial("!?"), "?");
+    }
+
+    // -- #466: a member's name or icon opens their profile ---------------
+
+    #[test]
+    fn member_avatar_is_the_initial_in_the_member_hue_hidden_from_readers() {
+        let id = Uuid::from_u128(7);
+        let html = member_avatar(id, "alice");
+        assert!(html.contains(r#"class="avatar""#), "{html}");
+        assert!(
+            html.contains(&format!("color:var({})", member_colour(id))),
+            "{html}"
+        );
+        assert!(html.contains(">A<"), "{html}");
+        // The name is always next to it, or in the link that holds it.
+        assert!(html.contains(r#"aria-hidden="true""#), "{html}");
+    }
+
+    #[test]
+    fn member_link_leads_to_the_profile_in_that_group() {
+        let (g, u) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let html = member_link(g, u, "Alice", true);
+        assert!(
+            html.starts_with(&format!(
+                r#"<a class="member" href="/groups/{g}/members/{u}">"#
+            )),
+            "{html}"
+        );
+        assert!(html.ends_with("</a>"), "{html}");
+    }
+
+    /// The link's accessible name is the member's name: the avatar inside it
+    /// stays `aria-hidden`, so a screen reader does not say the initial
+    /// before the name it duplicates.
+    #[test]
+    fn member_link_is_named_by_the_member_and_holds_the_icon() {
+        let (g, u) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let html = member_link(g, u, "Alice", true);
+        assert!(html.contains(&member_avatar(u, "Alice")), "{html}");
+        assert!(html.contains("<strong>Alice</strong>"), "{html}");
+        let bare = member_link(g, u, "Alice", false);
+        assert!(!bare.contains("avatar"), "{bare}");
+        assert!(bare.contains("Alice"), "{bare}");
+    }
+
+    #[test]
+    fn member_link_escapes_the_display_name() {
+        let html = member_link(Uuid::nil(), Uuid::nil(), "<b>\"x\"</b>", true);
+        assert!(!html.contains("<b>"), "{html}");
+        assert!(html.contains("&lt;b&gt;"), "{html}");
     }
 
     #[test]

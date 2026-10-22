@@ -1181,7 +1181,12 @@ async fn user_id_of(router: &axum::Router, cookie: &str) -> String {
 
 /// `member_cookie` joins `group_id` through an invitation `owner_cookie`
 /// creates.
-async fn join_group(router: &axum::Router, owner_cookie: &str, member_cookie: &str, group_id: &str) {
+async fn join_group(
+    router: &axum::Router,
+    owner_cookie: &str,
+    member_cookie: &str,
+    group_id: &str,
+) {
     let invite = call(
         router,
         Method::POST,
@@ -1245,7 +1250,10 @@ async fn a_member_profile_is_shown_only_inside_a_shared_group(db: PgPool) {
     assert!(Utc::now() - joined_at < Duration::minutes(5), "{joined_at}");
     // The display name defaults to the e-mail in this suite, so the address
     // is looked for as a field, not as a substring.
-    assert!(body.get("email").is_none(), "the profile leaks the e-mail: {body}");
+    assert!(
+        body.get("email").is_none(),
+        "the profile leaks the e-mail: {body}"
+    );
     assert_eq!(
         body.as_object().unwrap().len(),
         4,
@@ -1271,7 +1279,12 @@ async fn a_member_profile_is_shown_only_inside_a_shared_group(db: PgPool) {
         // The same caller asks through A for someone who is only in B.
         (&bob, &group_a, &carol_id, "target outside the group"),
         // Alice is in A and B, carol only in B. Asked through A: 404.
-        (&alice, &group_a, &carol_id, "target only in another shared group"),
+        (
+            &alice,
+            &group_a,
+            &carol_id,
+            "target only in another shared group",
+        ),
         (&alice, &unknown_group, &bob_id, "unknown group"),
     ];
     for (cookie, group, target, what) in cases {
@@ -1284,7 +1297,11 @@ async fn a_member_profile_is_shown_only_inside_a_shared_group(db: PgPool) {
         )
         .await;
         assert_status(&res, StatusCode::NOT_FOUND);
-        assert_eq!(json_body(res).await, refusal, "{what}: not the same refusal");
+        assert_eq!(
+            json_body(res).await,
+            refusal,
+            "{what}: not the same refusal"
+        );
     }
 
     // Asked through B, where both belong, carol's profile is there.

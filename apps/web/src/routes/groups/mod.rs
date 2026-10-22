@@ -10,6 +10,7 @@ pub mod list;
 pub mod members;
 pub mod new;
 pub mod ownership;
+pub mod profile;
 pub mod settings;
 
 use axum::extract::State;
