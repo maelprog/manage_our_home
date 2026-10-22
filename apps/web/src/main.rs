@@ -379,6 +379,10 @@ fn build_router(state: AppState) -> Router {
             post(routes::groups::members::invite),
         )
         .route(
+            "/groups/:id/members/:user_id",
+            get(routes::groups::profile::get),
+        )
+        .route(
             "/groups/:id/members/:user_id/role",
             post(routes::groups::members::change_role),
         )

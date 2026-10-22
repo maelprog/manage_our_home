@@ -23,7 +23,7 @@ use manage_our_home_shared::dto::groups::{
 use manage_our_home_shared::validation::groups::{actor_can_act_on, can_manage_group};
 use uuid::Uuid;
 
-use crate::app::{member_colour, member_initial, shell, shell_with_header, Width};
+use crate::app::{member_link, shell, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -128,19 +128,9 @@ fn page(
             view! {
                 <li class="list-row">
                     <span>
-                        // The hue is `--m1`…`--m8`, picked by a stable hash of
-                        // the user id, and it is the one thing here a class
-                        // cannot carry. `aria-hidden` because the initial is a
-                        // duplicate of the name right next to it.
-                        <span
-                            class="avatar"
-                            style=format!("color:var({})", member_colour(m.user_id))
-                            aria-hidden="true"
-                        >
-                            {member_initial(&m.display_name)}
-                        </span>
-                        " "
-                        <strong>{m.display_name.clone()}</strong>
+                        // Avatar and name, as one link to the member's
+                        // profile (#466).
+                        <span inner_html=member_link(group.id, m.user_id, &m.display_name, true)></span>
                         <span class="muted">{format!(" ({})", m.email)}</span>
                         " — "
                         <span class="muted">{role_label(&m.role)}</span>
@@ -355,4 +345,53 @@ pub async fn remove(
         Ok(_) | Err(_) => format!("{members_url}?error=unavailable"),
     };
     Redirect::to(&target).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use manage_our_home_shared::dto::groups::GroupMember;
+
+    fn me(id: Uuid) -> MeResponse {
+        MeResponse {
+            user_id: id,
+            email: "alice@example.test".into(),
+            display_name: "Alice".into(),
+            email_verified: true,
+            is_superadmin: false,
+            has_password: true,
+            deletion_requested_at: None,
+            terms_accepted_version: None,
+        }
+    }
+
+    fn member(id: Uuid, name: &str, role: &str) -> GroupMember {
+        GroupMember {
+            user_id: id,
+            role: role.to_string(),
+            display_name: name.to_string(),
+            email: format!("{name}@example.test"),
+        }
+    }
+
+    /// #466: each member's icon and name are one link to their profile.
+    #[test]
+    fn each_member_links_to_their_profile() {
+        let (g, alice, bob) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let group = GroupDetailResponse {
+            id: g,
+            name: "Foyer".to_string(),
+            members: vec![
+                member(alice, "Alice", "owner"),
+                member(bob, "Bob", "standard"),
+            ],
+        };
+        let html = page("", &me(alice), &group, None, None, None);
+        for (id, name) in [(alice, "Alice"), (bob, "Bob")] {
+            assert!(
+                html.contains(&crate::app::member_link(g, id, name, true)),
+                "{name} is not a profile link: {html}"
+            );
+        }
+    }
 }

@@ -4,6 +4,7 @@ use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
 use chrono::{Duration, Utc};
+use manage_our_home_shared::dto::groups::GroupMemberProfile;
 use manage_our_home_shared::validation::auth::normalize_email;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -99,8 +100,8 @@ pub async fn create_group(
 /// role apps/api/README.md prescribes, the policies of 0014 apply the same
 /// filter a second time (`app.user_id` alone makes the caller's membership
 /// rows and groups readable). But a role that bypasses RLS — the superuser
-/// the `e2e` job and infra/docker-compose.yml connect as — sees every row
-/// of both tables. The previous shape read every visible group, then opened
+/// the `e2e` job and infra/docker-compose.yml connected as before #311 —
+/// sees every row of both tables. The previous shape read every visible group, then opened
 /// one transaction per group to find the caller's role: there it cost a
 /// few round trips per group *in the database*, on every authenticated page
 /// of apps/web (issue #113).
@@ -156,7 +157,7 @@ pub async fn list_groups(
 /// Group detail: name plus the members' identities. Membership is checked
 /// here, in the query, and not left to RLS (issue #206): under a role that
 /// bypasses RLS — the superuser the `e2e` job and infra/docker-compose.yml
-/// connect as — every group is visible, and under the role
+/// connected as before #311 — every group is visible, and under the role
 /// apps/api/README.md prescribes the policies of 0014 still let the row
 /// through, because `scoped_tx` puts the requested group in `app.family_id`.
 /// A non-member got 200 with the group name and every member's e-mail.
@@ -210,6 +211,52 @@ pub async fn get_group(
             "email": m.email,
         })).collect::<Vec<_>>(),
     })))
+}
+
+/// `GET /groups/:id/members/:user_id` — one member's profile (#466): display
+/// name, role in the group, arrival date. No e-mail, arbitrated in the
+/// issue: apps/web links this from every name on the messagerie and the
+/// agenda, not only from the member list.
+///
+/// One statement checks both memberships: the caller's (`me`) and the
+/// target's (`gm`), in the same `:id`. Sharing another group with the target
+/// is not enough. As in `get_group`, both checks are written in the query.
+/// The caller's is the one that holds: `scoped_tx` puts `:id` in
+/// `app.family_id`, so the policies of 0014 make the whole group readable to
+/// a caller outside it. The target's is defence in depth: under the role
+/// apps/api/README.md prescribes, RLS already hides a membership row of
+/// another group, but a connection that bypassed RLS would not. Every refusal
+/// is `NotFound`, the answer to an unknown id, so the response never tells
+/// the caller who belongs to which group.
+pub async fn get_member(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((group_id, user_id)): Path<(Uuid, Uuid)>,
+) -> AppResult<impl IntoResponse> {
+    let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
+    let member = sqlx::query!(
+        r#"
+        SELECT gm.user_id, u.display_name, gm.role as "role: String", gm.joined_at
+        FROM group_members me
+        JOIN group_members gm ON gm.group_id = me.group_id AND gm.user_id = $3
+        JOIN users u ON u.id = gm.user_id
+        WHERE me.group_id = $1 AND me.user_id = $2
+        "#,
+        group_id,
+        auth.user_id,
+        user_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    tx.commit().await?;
+
+    Ok(Json(GroupMemberProfile {
+        user_id: member.user_id,
+        display_name: member.display_name,
+        role: member.role,
+        joined_at: member.joined_at,
+    }))
 }
 
 /// `POST /groups/:id/ownership-notice/seen` — the caller acknowledges the

@@ -404,6 +404,7 @@ aucune n'introduit de valeur hors des échelles :
 | `.cal`, `.cal-cell`, `.cal-day` | l'agenda : une seule grille, que la vue mois affiche sur six semaines et la vue semaine sur une. `.cal-week`/`.cal-col` ont disparu avec #71 — la bande de semaine était un `flex` séparé, elle est aujourd'hui la même table |
 | `.composer`, `.live-status` | la zone de saisie de la messagerie et sa ligne d'état. Repris par #72 : `.content > .composer` colle au bas du viewport au-dessus de 861 px, et le sélecteur descendant *direct* est le point — la même classe habille le formulaire d'édition d'une ligne, qui ne doit pas coller |
 | `.quote` | la citation du message auquel une réponse répond (#465), au-dessus de son contenu : un lien vers la ligne citée, filet gauche en `--border`, portée avec `.muted` qui lui donne couleur et taille. Le composeur qui répond nomme son message dans un `.notice` nu |
+| `.member` | le nom d'un membre, avec ou sans son `.avatar`, en lien vers sa fiche (#466) : liste des membres, auteur d'un message, assignés d'un événement. Le lien porte le nom accessible, l'avatar qu'il contient reste `aria-hidden`. `--s12` dans les deux sens pour la cible de 44 px ; la couleur est celle de la ligne (`inherit`), le nom se lit comme avant d'être un lien. Construit par une seule fonction, `app::member_link` |
 | `.list-row.mine` | un message que vous avez écrit (#72) : `--surface` plus la barre de 4 px en `--accent` que [Layout](#layout) décrit. Fondé sur l'écriture, jamais sur la permission |
 | `summary` | le déclencheur d'une disclosure (#72) — élément, pas classe. Il portait `btn secondary sm` : une disclosure déguisée en bouton, dont la boîte masquait la pastille native qui est son affordance |
 | `.actions > details[open]` | une disclosure ouverte prend la largeur de sa ligne (#72), ce que le `min-width: 16rem` inline du champ d'édition demandait à sa place |
@@ -429,6 +430,10 @@ plus qu'une — les deux formes de ligne partagent une seule fonction d'identit�
 `inline_styles_are_bounded_to_a_justified_residue` et imprimés par
 [la commande du budget](#où-lire-les-chiffres) ; ce document ne les recopie
 pas.
+
+Depuis #466, la couleur de membre calculée des deux routes n'a plus qu'un
+site : `app::member_avatar`, par lequel passent la liste des membres, la
+messagerie et la fiche d'un membre.
 
 ---
 

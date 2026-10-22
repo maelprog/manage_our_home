@@ -60,6 +60,18 @@ pub struct GroupDetailResponse {
     pub members: Vec<GroupMember>,
 }
 
+/// `GET /groups/:id/members/:user_id` response (#466): another member's
+/// profile, as a member of the same group sees it. No e-mail (arbitrated in
+/// the issue): the profile is reachable from every name on the messagerie
+/// and the agenda, wider than the member list that does show it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupMemberProfile {
+    pub user_id: Uuid,
+    pub display_name: String,
+    pub role: String,
+    pub joined_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenameGroupRequest {
     pub name: String,

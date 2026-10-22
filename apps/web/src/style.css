@@ -417,6 +417,18 @@ summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); padding
   font-weight: 600;
   background: var(--surface);
 }
+/* A member's name, with or without their avatar, as a link to their
+   profile (#466). --s12 both ways: the 44px DESIGN.md → Espacement asks of
+   a target, which a name in a row or an author line is. The colour is the
+   line's own, so the name reads as it did before it became a link. */
+.member {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  min-height: var(--s12);
+  min-width: var(--s12);
+  color: inherit;
+}
 /* An occurrence inside a calendar day. `color` is stated: the sheet has no
    `a { color }`, so a chip fell to the UA's #0000EE — 1.48:1 on --hover. */
 .chip {
