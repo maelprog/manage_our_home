@@ -26,6 +26,7 @@ async function registerAndLogin(page: Page): Promise<void> {
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Nom affiché").fill("Footer Tester");
   await page.getByRole("textbox", { name: "Mot de passe" }).fill(PASSWORD);
+  await page.getByRole("textbox", { name: "Confirmation" }).fill(PASSWORD);
   await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
   await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
   await page.getByRole("button", { name: "Créer mon compte" }).click();

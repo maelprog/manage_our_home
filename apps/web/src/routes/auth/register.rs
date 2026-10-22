@@ -8,7 +8,10 @@ use manage_our_home_shared::validation::auth::{
     validate_password, validate_terms_acceptance, MINIMUM_AGE_YEARS,
 };
 
-use crate::app::{password_error_message, password_field, shell, Width};
+use crate::app::{
+    password_confirmation_error, password_confirmation_field, password_error_message,
+    password_field, shell, Width,
+};
 use crate::layout::RedirectIfAuthenticated;
 use crate::state::{api_post_json, AppState};
 
@@ -16,6 +19,11 @@ use crate::state::{api_post_json, AppState};
 pub struct RegisterForm {
     email: String,
     password: String,
+    /// The second entry of the password (#461). Defaulted, so a form sent
+    /// from a page served before it existed comes back with the
+    /// confirmation error rather than a bare 422.
+    #[serde(default)]
+    password_confirm: String,
     display_name: String,
     /// The art. 8 GDPR age declaration (#137). An unticked checkbox is simply
     /// absent from the POST, so the presence of the field *is* the
@@ -48,11 +56,15 @@ fn page(
     display_name: &str,
     boxes: Boxes,
     field_error: Option<&str>,
+    confirm_error: Option<&str>,
     error: Option<&str>,
     api_public_base_url: &str,
 ) -> String {
     let google_start = format!("{api_public_base_url}/auth/google/start");
     let pw = password_field("Mot de passe", "password", "new-password", true);
+    // #461: asked twice, and a second entry that differs comes back on its
+    // own field.
+    let confirm = password_confirmation_field("password_confirm", confirm_error);
     // #137: the service is not open under MINIMUM_AGE_YEARS, and says so here
     // rather than only in the CGU — a rule nobody is shown is a rule nobody
     // follows. The box keeps its state when the form comes back with an error,
@@ -98,6 +110,7 @@ fn page(
                 <input type="text" name="display_name" required=true value=display_name.to_string() />
             </label>
             <div inner_html=pw></div>
+            <div inner_html=confirm></div>
             <div inner_html=age_field></div>
             <button type="submit">"Créer mon compte"</button>
         </form>
@@ -132,6 +145,7 @@ pub async fn get(
         Boxes::default(),
         None,
         None,
+        None,
         &state.api_public_base_url,
     ))
 }
@@ -154,6 +168,7 @@ pub async fn post(
             boxes,
             Some("Adresse email invalide."),
             None,
+            None,
             &state.api_public_base_url,
         ))
         .into_response();
@@ -163,6 +178,7 @@ pub async fn post(
             &form.email,
             &form.display_name,
             boxes,
+            None,
             None,
             Some("Le nom affiché ne peut pas être vide."),
             &state.api_public_base_url,
@@ -175,7 +191,20 @@ pub async fn post(
             &form.display_name,
             boxes,
             None,
+            None,
             Some(&password_error_message(code)),
+            &state.api_public_base_url,
+        ))
+        .into_response();
+    }
+    if let Some(mismatch) = password_confirmation_error(&form.password, &form.password_confirm) {
+        return Html(page(
+            &form.email,
+            &form.display_name,
+            boxes,
+            None,
+            Some(mismatch),
+            None,
             &state.api_public_base_url,
         ))
         .into_response();
@@ -185,6 +214,7 @@ pub async fn post(
             &form.email,
             &form.display_name,
             boxes,
+            None,
             None,
             Some(&format!(
                 "Le service n'est pas ouvert aux moins de {MINIMUM_AGE_YEARS} ans : \
@@ -199,6 +229,7 @@ pub async fn post(
             &form.email,
             &form.display_name,
             boxes,
+            None,
             None,
             Some(TERMS_REQUIRED),
             &state.api_public_base_url,
@@ -231,6 +262,7 @@ pub async fn post(
             &form.display_name,
             boxes,
             None,
+            None,
             Some("Une erreur est survenue, merci de réessayer."),
             &state.api_public_base_url,
         ))
@@ -239,6 +271,7 @@ pub async fn post(
             &form.email,
             &form.display_name,
             boxes,
+            None,
             None,
             Some("Service momentanément indisponible, merci de réessayer."),
             &state.api_public_base_url,
@@ -295,7 +328,7 @@ mod tests {
     /// `getByRole("link", { name })` would find two.
     #[test]
     fn each_legal_document_is_linked_once_from_the_footer() {
-        let html = page("", "", Boxes::default(), None, None, "http://api");
+        let html = page("", "", Boxes::default(), None, None, None, "http://api");
         for (href, _) in crate::app::LEGAL_DOCUMENTS {
             assert_eq!(
                 html.matches(&format!(r#"href="{href}""#)).count(),
@@ -322,6 +355,7 @@ mod tests {
             Boxes::default(),
             Some("Adresse email invalide."),
             None,
+            None,
             "",
         );
         let email = input_named(&html, "email");
@@ -330,10 +364,18 @@ mod tests {
 
     #[test]
     fn a_field_without_error_claims_no_invalid_state() {
-        let html = page("", "", Boxes::default(), None, None, "");
+        let html = page("", "", Boxes::default(), None, None, None, "");
         assert!(!html.contains("aria-invalid"), "{html}");
         // A banner error is about the form, not about the email field.
-        let html = page("a@b.c", "", Boxes::default(), None, Some("Nom vide."), "");
+        let html = page(
+            "a@b.c",
+            "",
+            Boxes::default(),
+            None,
+            None,
+            Some("Nom vide."),
+            "",
+        );
         assert!(!html.contains("aria-invalid"), "{html}");
     }
 
@@ -353,7 +395,7 @@ mod tests {
     /// form and kept as the visitor left it on a form that comes back.
     #[test]
     fn the_form_asks_for_the_terms_acceptance() {
-        let fresh = page("", "", Boxes::default(), None, None, "");
+        let fresh = page("", "", Boxes::default(), None, None, None, "");
         let terms = input_named(&fresh, "accepts_terms");
         assert!(terms.contains(r#"type="checkbox""#), "{terms}");
         assert!(!terms.contains("checked"), "{terms}");
@@ -370,11 +412,52 @@ mod tests {
                 accepts_terms: true,
             },
             None,
+            None,
             Some(TERMS_REQUIRED),
             "",
         );
         assert!(input_named(&back, "accepts_terms").contains("checked"));
         assert!(!input_named(&back, "minimum_age").contains("checked"));
+    }
+
+    /// #461: the password is asked twice, and only the first entry gets the
+    /// strength gauge.
+    #[test]
+    fn the_form_asks_for_the_password_twice() {
+        let html = page("", "", Boxes::default(), None, None, None, "");
+        assert!(
+            input_named(&html, "password").contains("data-pw-meter"),
+            "{html}"
+        );
+        let confirm = input_named(&html, "password_confirm");
+        assert!(confirm.contains(r#"type="password""#), "{confirm}");
+        assert!(!confirm.contains("data-pw-meter"), "{confirm}");
+        assert!(!confirm.contains("aria-invalid"), "{confirm}");
+    }
+
+    /// #461: a second entry that differs is an error of its own field, told
+    /// by `aria-describedby`, and not a banner.
+    #[test]
+    fn a_confirmation_that_differs_is_described_on_its_field() {
+        let mismatch = crate::app::password_confirmation_error("a", "b");
+        let html = page("a@b.c", "A", Boxes::default(), None, mismatch, None, "");
+        let confirm = input_named(&html, "password_confirm");
+        assert!(confirm.contains(r#"aria-invalid="true""#), "{confirm}");
+        assert!(
+            confirm.contains(r#"aria-describedby="password_confirm-error""#),
+            "{confirm}"
+        );
+        assert!(
+            html.contains(
+                r#"id="password_confirm-error">Les deux mots de passe ne correspondent pas.<"#
+            ),
+            "{html}"
+        );
+        assert!(!html.contains("notice error"), "{html}");
+        assert!(
+            !input_named(&html, "password").contains("aria-invalid"),
+            "{html}"
+        );
     }
 }
 
@@ -385,17 +468,72 @@ mod route_tests {
     use axum::http::{header, Method, Request, StatusCode};
     use axum::routing::post;
     use axum::Router;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use tower::ServiceExt;
 
     use crate::state::AppState;
 
-    /// An apps/api whose registration creates every account it is sent.
-    async fn fake_api() -> String {
-        let app = Router::new().route("/auth/register", post(|| async { StatusCode::CREATED }));
+    /// An apps/api whose registration creates every account it is sent, and
+    /// the count of the registrations it was sent.
+    async fn fake_api() -> (String, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = calls.clone();
+        let app = Router::new().route(
+            "/auth/register",
+            post(move || async move {
+                counted.fetch_add(1, Ordering::SeqCst);
+                StatusCode::CREATED
+            }),
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        format!("http://{addr}")
+        (format!("http://{addr}"), calls)
+    }
+
+    fn router(api: String) -> Router {
+        crate::build_router(AppState {
+            http: reqwest::Client::new(),
+            api_internal_base_url: api,
+            api_public_base_url: "/api".into(),
+            body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
+            upload_gate: manage_our_home_http_guard::UploadGate::production(),
+            shutdown: manage_our_home_http_guard::Shutdown::new(),
+        })
+    }
+
+    fn register(form: &'static str) -> Request<Body> {
+        Request::builder()
+            .method(Method::POST)
+            .uri("/register")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(form))
+            .unwrap()
+    }
+
+    /// #461: two entries that differ never reach apps/api, so nothing is
+    /// created; the form comes back with the error on the confirmation.
+    #[tokio::test]
+    async fn a_confirmation_that_differs_creates_nothing() {
+        let (api, calls) = fake_api().await;
+        let response = router(api)
+            .oneshot(register(
+                "email=alice%40example.com&password=correct+horse+battery+staple\
+                 &password_confirm=correct+horse+battery+stapel\
+                 &display_name=Alice&minimum_age=on&accepts_terms=on",
+            ))
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            body.contains("Les deux mots de passe ne correspondent pas."),
+            "{body}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     /// #459: the form checks the address as apps/api does, once normalised,
@@ -403,24 +541,15 @@ mod route_tests {
     /// here first.
     #[tokio::test]
     async fn a_padded_address_in_capitals_is_not_refused_by_the_form() {
-        let router = crate::build_router(AppState {
-            http: reqwest::Client::new(),
-            api_internal_base_url: fake_api().await,
-            api_public_base_url: "/api".into(),
-            body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
-            upload_gate: manage_our_home_http_guard::UploadGate::production(),
-            shutdown: manage_our_home_http_guard::Shutdown::new(),
-        });
-        let request = Request::builder()
-            .method(Method::POST)
-            .uri("/register")
-            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .body(Body::from(
+        let (api, calls) = fake_api().await;
+        let response = router(api)
+            .oneshot(register(
                 "email=+Alice%40Example.com+&password=correct+horse+battery+staple\
+                 &password_confirm=correct+horse+battery+staple\
                  &display_name=Alice&minimum_age=on&accepts_terms=on",
             ))
+            .await
             .unwrap();
-        let response = router.oneshot(request).await.unwrap();
         let status = response.status();
         let location = response
             .headers()
@@ -431,5 +560,6 @@ mod route_tests {
         assert!(!body.contains("Adresse email invalide."), "{body}");
         assert!(status.is_redirection(), "{status}: {body}");
         assert_eq!(location.as_deref(), Some("/register/check-email"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

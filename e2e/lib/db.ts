@@ -216,6 +216,20 @@ export async function countVerificationTokens(
   }
 }
 
+/** How many accounts hold `email`: 0 or 1. */
+export async function countUsers(email: string): Promise<number> {
+  const client = new Client({ connectionString: requireDatabaseUrl() });
+  await client.connect();
+  try {
+    const { rows } = await client.query(`SELECT count(*)::int AS n FROM users WHERE email = $1`, [
+      email,
+    ]);
+    return rows[0].n;
+  } finally {
+    await client.end();
+  }
+}
+
 /**
  * Leaves the group named `groupName` the way the account purge can (#323):
  * `memberEmail` joins it as a standard member, and its owner's membership

@@ -22,6 +22,7 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("E2E User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
+    await page.getByRole("textbox", { name: "Confirmation" }).fill(password);
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
     await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
@@ -54,6 +55,7 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("Bad Login User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
+    await page.getByRole("textbox", { name: "Confirmation" }).fill(password);
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
     await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
@@ -78,6 +80,7 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("Dup User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill("password-one");
+    await page.getByRole("textbox", { name: "Confirmation" }).fill("password-one");
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
     await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
@@ -87,6 +90,7 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("Dup User 2");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill("password-two");
+    await page.getByRole("textbox", { name: "Confirmation" }).fill("password-two");
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
     await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
@@ -114,6 +118,7 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("No Age User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill("e2e-password-3");
+    await page.getByRole("textbox", { name: "Confirmation" }).fill("e2e-password-3");
     await page.getByRole("button", { name: "Créer mon compte" }).click();
 
     await expect(page).toHaveURL(/\/register$/);
@@ -127,6 +132,7 @@ test.describe("Auth — register → verify → login → logout", () => {
     await expect(page.getByLabel("Email")).toHaveValue(email);
     await expect(page.getByLabel("Nom affiché")).toHaveValue("No Age User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill("e2e-password-3");
+    await page.getByRole("textbox", { name: "Confirmation" }).fill("e2e-password-3");
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
     await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
@@ -144,6 +150,7 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("Age Later User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
+    await page.getByRole("textbox", { name: "Confirmation" }).fill(password);
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
     await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
@@ -192,6 +199,7 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("Age Leave User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
+    await page.getByRole("textbox", { name: "Confirmation" }).fill(password);
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
     await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
@@ -219,6 +227,7 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("No Terms User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill("e2e-password-6");
+    await page.getByRole("textbox", { name: "Confirmation" }).fill("e2e-password-6");
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
 
@@ -231,6 +240,7 @@ test.describe("Auth — register → verify → login → logout", () => {
     ).toBeChecked();
 
     await page.getByRole("textbox", { name: "Mot de passe" }).fill("e2e-password-6");
+    await page.getByRole("textbox", { name: "Confirmation" }).fill("e2e-password-6");
     await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
     await expect(page).toHaveURL(/\/register\/check-email$/);
@@ -246,6 +256,7 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("Terms Later User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
+    await page.getByRole("textbox", { name: "Confirmation" }).fill(password);
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
     await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
@@ -295,6 +306,7 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("Terms Update User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
+    await page.getByRole("textbox", { name: "Confirmation" }).fill(password);
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
     await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
@@ -336,6 +348,7 @@ test.describe("Auth — renvoi de l'email de vérification (#420)", () => {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("Resend User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill("e2e-resend-password-1");
+    await page.getByRole("textbox", { name: "Confirmation" }).fill("e2e-resend-password-1");
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
     await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
@@ -452,6 +465,7 @@ test.describe("Auth — forgot → reset → login with new password", () => {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("Reset User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill(oldPassword);
+    await page.getByRole("textbox", { name: "Confirmation" }).fill(oldPassword);
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
     await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
@@ -474,6 +488,7 @@ test.describe("Auth — forgot → reset → login with new password", () => {
     expect((await landing).url()).not.toContain(resetToken);
     await expect(page).toHaveURL(/\/reset-password$/);
     await page.getByLabel("Nouveau mot de passe").fill(newPassword);
+    await page.getByRole("textbox", { name: "Confirmation" }).fill(newPassword);
     await page.getByRole("button", { name: "Réinitialiser" }).click();
     await expect(page.getByText("Mot de passe mis à jour")).toBeVisible();
 
@@ -511,6 +526,7 @@ test.describe("Auth-gate redirects", () => {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Nom affiché").fill("Redirect User");
     await page.getByRole("textbox", { name: "Mot de passe" }).fill(password);
+    await page.getByRole("textbox", { name: "Confirmation" }).fill(password);
     await page.getByRole("checkbox", { name: "Je déclare avoir 15 ans ou plus." }).check();
     await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
