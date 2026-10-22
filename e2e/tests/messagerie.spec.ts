@@ -598,4 +598,27 @@ test.describe("Messagerie — malformed URL parameters (#580)", () => {
       await expect(page.getByLabel("Votre message")).toBeVisible();
     }
   });
+
+  test("a repeated parameter keeps its first occurrence (#582)", async ({ page }) => {
+    await registerAndLogin(page, "e2e-msgdupquery", "Dup Query");
+    await createGroup(page, "Famille Doublons");
+    await sendMessage(page, "Premier message");
+    const id = await page
+      .locator("li[data-message-id]", { hasText: "Premier message" })
+      .getAttribute("data-message-id");
+    if (!id) throw new Error("no message id");
+    const other = "00000000-0000-4000-8000-000000000000";
+
+    // The first reply_to is a real message: the composer answers it.
+    let response = await page.goto(`/messagerie?reply_to=${id}&reply_to=${other}`);
+    expect(response?.status()).toBe(200);
+    await expect(page.locator("#composer .notice")).toContainText("Premier message");
+    await expect(page.locator('#composer input[name="reply_to_id"]')).toHaveValue(id);
+
+    // The first one does not convert: absent, even though the second would.
+    response = await page.goto(`/messagerie?reply_to=x&reply_to=${id}`);
+    expect(response?.status()).toBe(200);
+    await expect(page.locator('#thread[data-live="true"]')).toHaveCount(1);
+    await expect(page.locator('#composer input[name="reply_to_id"]')).toHaveCount(0);
+  });
 });

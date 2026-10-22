@@ -454,3 +454,41 @@ test.describe("Google Calendar import — disconnect", () => {
     expect(await chipCount(page, "Conseil de classe")).toBe(0);
   });
 });
+
+test.describe("Google Calendar import — malformed URL parameters (#582)", () => {
+  test("an unconvertible or repeated counter reads as absent or first: the page renders", async ({
+    browser,
+  }) => {
+    const page = await owner(browser, "e2e-gcal-badquery");
+
+    for (const query of ["imported=x", "imported=1&deleted="]) {
+      const response = await page.goto(`/agenda/imports?${query}`);
+      expect(response?.status(), query).toBe(200);
+      await expect(page.getByRole("heading", { name: "Agendas Google" }), query).toBeVisible();
+      await expect(page.locator(".notice.success"), query).toHaveCount(0);
+    }
+
+    // With the import notice, an unconvertible counter reads as absent (0),
+    // the others keep their value.
+    let response = await page.goto("/agenda/imports?notice=imported&imported=x&updated=2");
+    expect(response?.status()).toBe(200);
+    await expect(
+      page.getByText("Import terminé : 0 événement importé, 2 mis à jour, 0 inchangé."),
+    ).toBeVisible();
+
+    // An unconvertible `deleted` is the "events kept" sentence.
+    response = await page.goto("/agenda/imports?notice=import_deleted&deleted=");
+    expect(response?.status()).toBe(200);
+    await expect(page.getByText(/restent dans l'agenda/)).toBeVisible();
+
+    // A repeated parameter keeps its first occurrence.
+    response = await page.goto(
+      "/agenda/imports?notice=imported&imported=3&imported=9&skipped=1&skipped=x",
+    );
+    expect(response?.status()).toBe(200);
+    await expect(
+      page.getByText("Import terminé : 3 événements importés, 0 mis à jour, 1 inchangé."),
+    ).toBeVisible();
+    await page.context().close();
+  });
+});

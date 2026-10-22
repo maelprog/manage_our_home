@@ -26,7 +26,7 @@
 //! the handlers match on the code prefix and render fixed copy — the tail of
 //! that message never reaches the page.
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
@@ -47,6 +47,7 @@ use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
+use crate::lenient_query::{lenient, LenientQuery};
 use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
@@ -63,13 +64,18 @@ pub struct ImportsQuery {
     error: Option<String>,
     /// The three counters of the run that just finished, carried through the PRG
     /// so a refresh doesn't re-import. Safe in the URL — unlike the feed URL,
-    /// they are not a credential.
+    /// they are not a credential. Each of the four counters reads as absent
+    /// when it does not convert (#582).
+    #[serde(default, deserialize_with = "lenient")]
     imported: Option<usize>,
+    #[serde(default, deserialize_with = "lenient")]
     updated: Option<usize>,
+    #[serde(default, deserialize_with = "lenient")]
     skipped: Option<usize>,
     /// How many imported events the delete took with the connection (#55).
     /// Present only when that branch ran — absent is "the events were
     /// kept", which is a different sentence, not a count of zero.
+    #[serde(default, deserialize_with = "lenient")]
     deleted: Option<usize>,
 }
 
@@ -185,7 +191,7 @@ pub async fn get(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
     headers: HeaderMap,
-    Query(query): Query<ImportsQuery>,
+    LenientQuery(query): LenientQuery<ImportsQuery>,
 ) -> Response {
     let Some(fam) = family_context(&state, &headers, &me, "/agenda/imports").await else {
         return Redirect::to("/groups/new").into_response();
@@ -688,6 +694,59 @@ mod tests {
             "unavailable"
         );
         assert_eq!(import_error_code(&serde_json::json!({})), "unavailable");
+    }
+
+    // -- ImportsQuery (#582) -------------------------------------------------
+
+    fn imports_query(raw: &str) -> ImportsQuery {
+        crate::lenient_query::from_query_str(raw)
+            .expect("a malformed parameter must not reject the page")
+    }
+
+    fn counters(q: &ImportsQuery) -> [Option<usize>; 4] {
+        [q.imported, q.updated, q.skipped, q.deleted]
+    }
+
+    #[test]
+    fn absent_counters_read_as_none() {
+        // `default` beside `deserialize_with`: a missing parameter is not a
+        // "missing field" 400.
+        for raw in ["", "notice=imported", "notice=import_deleted"] {
+            assert_eq!(counters(&imports_query(raw)), [None; 4], "{raw}");
+        }
+    }
+
+    #[test]
+    fn malformed_counters_read_as_absent() {
+        for raw in [
+            "imported=&updated=&skipped=&deleted=",
+            "imported=x&updated=-1&skipped=1.5&deleted=abc",
+        ] {
+            assert_eq!(counters(&imports_query(raw)), [None; 4], "{raw}");
+        }
+        // One bad counter leaves the others intact.
+        let q = imports_query("notice=imported&imported=1&deleted=&skipped=x&updated=4");
+        assert_eq!(counters(&q), [Some(1), Some(4), None, None]);
+        assert_eq!(
+            notice_text(&q).unwrap(),
+            "Import terminé : 1 événement importé, 4 mis à jour, 0 inchangé."
+        );
+        // An unconvertible `deleted` is the "events kept" sentence, as absent.
+        let q = imports_query("notice=import_deleted&deleted=x");
+        assert!(notice_text(&q).unwrap().contains("restent dans l'agenda"));
+    }
+
+    #[test]
+    fn valid_counters_keep_their_effect() {
+        let q = imports_query("notice=imported&imported=3&updated=1&skipped=12&deleted=2");
+        assert_eq!(counters(&q), [Some(3), Some(1), Some(12), Some(2)]);
+    }
+
+    #[test]
+    fn a_repeated_parameter_keeps_its_first_occurrence() {
+        let q = imports_query("notice=imported&imported=3&imported=9&notice=import_created");
+        assert_eq!(q.notice.as_deref(), Some("imported"));
+        assert_eq!(q.imported, Some(3));
     }
 
     // -- notice_text ---------------------------------------------------------
