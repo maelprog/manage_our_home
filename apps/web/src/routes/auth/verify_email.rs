@@ -73,9 +73,10 @@ pub async fn get(
 mod tests {
     use super::*;
 
-    /// #420: an expired link sent its reader to register again — which
-    /// answers "Un compte existe déjà avec cet email" — or to a support the
-    /// page does not name. The way out is the resend form.
+    /// #420: an expired link sent its reader to register again or to a
+    /// support the page does not name. Registering again now mails a fresh
+    /// link to an unverified account (#460); the way out the page shows is
+    /// still the resend form.
     #[test]
     fn an_expired_link_leads_to_the_resend_form() {
         let (_, html) = expired_link();
