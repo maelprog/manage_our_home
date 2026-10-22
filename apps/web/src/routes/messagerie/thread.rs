@@ -627,7 +627,10 @@ pub async fn post(
         }
     };
 
-    let req = CreateMessageRequest { content };
+    let req = CreateMessageRequest {
+        content,
+        reply_to_id: None,
+    };
     let result = api_request_auth(
         &state,
         reqwest::Method::POST,
@@ -942,6 +945,7 @@ mod tests {
             edited_at: None,
             created_at: now,
             updated_at: now,
+            reply_to: None,
         }
     }
 

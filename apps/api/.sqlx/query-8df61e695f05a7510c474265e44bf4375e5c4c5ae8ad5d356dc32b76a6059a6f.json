@@ -1,0 +1,129 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH m AS (\n            UPDATE messages SET\n                content = pgp_sym_encrypt($3, $4),\n                edited_at = now(),\n                updated_at = now()\n            WHERE id = $1 AND group_id = $2\n            RETURNING *\n        )\n        SELECT m.id as \"id!\", m.group_id as \"group_id!\", m.created_by as \"created_by!\",\n               pgp_sym_decrypt(m.content, $4) as \"content!\",\n               m.edited_at, m.created_at as \"created_at!\", m.updated_at as \"updated_at!\",\n               p.id as \"reply_to_id?\", p.created_by as \"reply_to_created_by?\",\n               pgp_sym_decrypt(p.content, $4) as \"reply_to_content?\"\n        FROM m\n        LEFT JOIN messages p ON p.id = m.reply_to_id AND p.group_id = m.group_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "group_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "group_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "created_by!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "created_by"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "content!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "edited_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "edited_at"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "updated_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "reply_to_id?",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "reply_to_created_by?",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "created_by"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "reply_to_content?",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      true,
+      false,
+      false,
+      true,
+      true,
+      null
+    ]
+  },
+  "hash": "8df61e695f05a7510c474265e44bf4375e5c4c5ae8ad5d356dc32b76a6059a6f"
+}

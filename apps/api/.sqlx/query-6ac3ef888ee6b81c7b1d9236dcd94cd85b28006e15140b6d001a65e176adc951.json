@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, group_id, created_by,\n               pgp_sym_decrypt(content, $3) as \"content!\",\n               edited_at, created_at, updated_at\n        FROM messages\n        WHERE id = $1 AND group_id = $2\n        ",
+  "query": "SELECT id, group_id, pgp_sym_decrypt(content, $3) as \"content!\", reply_to_id,\n                      edited_at, created_at\n               FROM messages WHERE group_id = $1 AND created_by = $2 ORDER BY created_at",
   "describe": {
     "columns": [
       {
@@ -27,20 +27,20 @@
       },
       {
         "ordinal": 2,
-        "name": "created_by",
+        "name": "content!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "reply_to_id",
         "type_info": "Uuid",
         "origin": {
           "Table": {
             "table": "messages",
-            "name": "created_by"
+            "name": "reply_to_id"
           }
         }
-      },
-      {
-        "ordinal": 3,
-        "name": "content!",
-        "type_info": "Text",
-        "origin": "Expression"
       },
       {
         "ordinal": 4,
@@ -63,17 +63,6 @@
             "name": "created_at"
           }
         }
-      },
-      {
-        "ordinal": 6,
-        "name": "updated_at",
-        "type_info": "Timestamptz",
-        "origin": {
-          "Table": {
-            "table": "messages",
-            "name": "updated_at"
-          }
-        }
       }
     ],
     "parameters": {
@@ -86,12 +75,11 @@
     "nullable": [
       false,
       false,
-      false,
       null,
       true,
-      false,
+      true,
       false
     ]
   },
-  "hash": "9d8a6ecde4e6f1237b2a982c7abd040b3cbdd592bda2bef0dcf13f8f911c402b"
+  "hash": "6ac3ef888ee6b81c7b1d9236dcd94cd85b28006e15140b6d001a65e176adc951"
 }

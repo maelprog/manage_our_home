@@ -15,10 +15,18 @@ use crate::AppState;
 const MAX_CONTENT_CHARS: usize = 4000;
 const DEFAULT_PAGE_LIMIT: i64 = 50;
 const MAX_PAGE_LIMIT: i64 = 100;
+/// How much of a parent message a reply carries (#464), in chars — not
+/// bytes, the same unit as `MAX_CONTENT_CHARS`. Longer parents are cut there
+/// and end with `…`.
+pub(crate) const REPLY_EXCERPT_CHARS: usize = 120;
 
 #[derive(Deserialize)]
 pub struct CreateMessageRequest {
     pub content: String,
+    /// The message this one answers (#464): a message of the same family,
+    /// else 422 `reply_to_invalid`. Absent or `null` for a plain message.
+    #[serde(default)]
+    pub reply_to_id: Option<Uuid>,
 }
 
 #[derive(Deserialize)]
@@ -58,8 +66,23 @@ pub struct MessageResponse {
     pub edited_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// The message this one answers (#464), `null` for a plain message and
+    /// for a reply whose parent has since been deleted.
+    pub reply_to: Option<ReplyTo>,
 }
 
+/// The parent of a reply, as a reply carries it (#464).
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct ReplyTo {
+    pub id: Uuid,
+    pub created_by: Uuid,
+    /// `reply_excerpt` of the parent's decrypted content.
+    pub excerpt: String,
+}
+
+/// One message as the queries below read it: the message itself, then its
+/// parent through `LEFT JOIN messages p ON p.id = m.reply_to_id`, whose
+/// columns are all `None` when there is no parent.
 struct MessageRow {
     id: Uuid,
     group_id: Uuid,
@@ -68,6 +91,9 @@ struct MessageRow {
     edited_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    reply_to_id: Option<Uuid>,
+    reply_to_created_by: Option<Uuid>,
+    reply_to_content: Option<String>,
 }
 
 impl From<MessageRow> for MessageResponse {
@@ -80,6 +106,14 @@ impl From<MessageRow> for MessageResponse {
             edited_at: r.edited_at,
             created_at: r.created_at,
             updated_at: r.updated_at,
+            reply_to: match (r.reply_to_id, r.reply_to_created_by, r.reply_to_content) {
+                (Some(id), Some(created_by), Some(content)) => Some(ReplyTo {
+                    id,
+                    created_by,
+                    excerpt: reply_excerpt(&content),
+                }),
+                _ => None,
+            },
         }
     }
 }
@@ -95,6 +129,31 @@ fn validate_content(content: &str) -> AppResult<&str> {
         return Err(AppError::BadRequest("content_too_long".into()));
     }
     Ok(trimmed)
+}
+
+/// Whether a message of `group_id` may reply to the message whose group is
+/// `parent_group_id` (#464). `None` is a parent that could not be found —
+/// it never existed, was deleted, or sits in a family the transaction's RLS
+/// scope hides. Anything but a parent of the same family is 422
+/// `reply_to_invalid`, and the same answer for all three, so the error says
+/// nothing about other families' messages.
+fn check_reply_target(group_id: Uuid, parent_group_id: Option<Uuid>) -> AppResult<()> {
+    if parent_group_id == Some(group_id) {
+        Ok(())
+    } else {
+        Err(AppError::Unprocessable("reply_to_invalid".into()))
+    }
+}
+
+/// The excerpt of a parent message a reply carries (#464): the first
+/// `REPLY_EXCERPT_CHARS` chars of its decrypted content, ending with `…`
+/// when it was cut. Computed per response from the decrypted parent, never
+/// stored.
+fn reply_excerpt(content: &str) -> String {
+    match content.char_indices().nth(REPLY_EXCERPT_CHARS) {
+        None => content.to_string(),
+        Some((cut, _)) => format!("{}…", content[..cut].trim_end()),
+    }
 }
 
 /// Which of `messages` are unread for `caller`, given their `last_read_at`
@@ -139,19 +198,42 @@ pub async fn create_message(
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
 
+    if let Some(parent_id) = body.reply_to_id {
+        // FOR KEY SHARE holds the parent until this transaction ends: it
+        // cannot be deleted between this check and the INSERT, which would
+        // otherwise fail on the foreign key instead of answering 422.
+        let parent_group_id = sqlx::query_scalar!(
+            "SELECT group_id FROM messages WHERE id = $1 FOR KEY SHARE",
+            parent_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        check_reply_target(group_id, parent_group_id)?;
+    }
+
+    // The parent is read in the same statement, from the snapshot taken
+    // before the INSERT: it existed then, and still does (locked above).
     let row = sqlx::query_as!(
         MessageRow,
         r#"
-        INSERT INTO messages (group_id, created_by, content)
-        VALUES ($1, $2, pgp_sym_encrypt($3, $4))
-        RETURNING id, group_id, created_by,
-                  pgp_sym_decrypt(content, $4) as "content!",
-                  edited_at, created_at, updated_at
+        WITH m AS (
+            INSERT INTO messages (group_id, created_by, content, reply_to_id)
+            VALUES ($1, $2, pgp_sym_encrypt($3, $4), $5)
+            RETURNING *
+        )
+        SELECT m.id as "id!", m.group_id as "group_id!", m.created_by as "created_by!",
+               pgp_sym_decrypt(m.content, $4) as "content!",
+               m.edited_at, m.created_at as "created_at!", m.updated_at as "updated_at!",
+               p.id as "reply_to_id?", p.created_by as "reply_to_created_by?",
+               pgp_sym_decrypt(p.content, $4) as "reply_to_content?"
+        FROM m
+        LEFT JOIN messages p ON p.id = m.reply_to_id AND p.group_id = m.group_id
         "#,
         group_id,
         auth.user_id,
         content,
         state.message_encryption_key,
+        body.reply_to_id,
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -192,14 +274,17 @@ pub async fn list_messages(
     let rows = sqlx::query_as!(
         MessageRow,
         r#"
-        SELECT id, group_id, created_by,
-               pgp_sym_decrypt(content, $4) as "content!",
-               edited_at, created_at, updated_at
-        FROM messages
-        WHERE group_id = $1
-          AND ($2::timestamptz IS NULL OR (created_at, id) < ($2, $3))
-          AND (NOT $6 OR created_by <> $7)
-        ORDER BY created_at DESC, id DESC
+        SELECT m.id, m.group_id, m.created_by,
+               pgp_sym_decrypt(m.content, $4) as "content!",
+               m.edited_at, m.created_at, m.updated_at,
+               p.id as "reply_to_id?", p.created_by as "reply_to_created_by?",
+               pgp_sym_decrypt(p.content, $4) as "reply_to_content?"
+        FROM messages m
+        LEFT JOIN messages p ON p.id = m.reply_to_id AND p.group_id = m.group_id
+        WHERE m.group_id = $1
+          AND ($2::timestamptz IS NULL OR (m.created_at, m.id) < ($2, $3))
+          AND (NOT $6 OR m.created_by <> $7)
+        ORDER BY m.created_at DESC, m.id DESC
         LIMIT $5
         "#,
         group_id,
@@ -380,14 +465,21 @@ pub async fn update_message(
     let row = sqlx::query_as!(
         MessageRow,
         r#"
-        UPDATE messages SET
-            content = pgp_sym_encrypt($3, $4),
-            edited_at = now(),
-            updated_at = now()
-        WHERE id = $1 AND group_id = $2
-        RETURNING id, group_id, created_by,
-                  pgp_sym_decrypt(content, $4) as "content!",
-                  edited_at, created_at, updated_at
+        WITH m AS (
+            UPDATE messages SET
+                content = pgp_sym_encrypt($3, $4),
+                edited_at = now(),
+                updated_at = now()
+            WHERE id = $1 AND group_id = $2
+            RETURNING *
+        )
+        SELECT m.id as "id!", m.group_id as "group_id!", m.created_by as "created_by!",
+               pgp_sym_decrypt(m.content, $4) as "content!",
+               m.edited_at, m.created_at as "created_at!", m.updated_at as "updated_at!",
+               p.id as "reply_to_id?", p.created_by as "reply_to_created_by?",
+               pgp_sym_decrypt(p.content, $4) as "reply_to_content?"
+        FROM m
+        LEFT JOIN messages p ON p.id = m.reply_to_id AND p.group_id = m.group_id
         "#,
         message_id,
         group_id,
@@ -475,11 +567,14 @@ pub(crate) async fn load_message(
     let row = sqlx::query_as!(
         MessageRow,
         r#"
-        SELECT id, group_id, created_by,
-               pgp_sym_decrypt(content, $3) as "content!",
-               edited_at, created_at, updated_at
-        FROM messages
-        WHERE id = $1 AND group_id = $2
+        SELECT m.id, m.group_id, m.created_by,
+               pgp_sym_decrypt(m.content, $3) as "content!",
+               m.edited_at, m.created_at, m.updated_at,
+               p.id as "reply_to_id?", p.created_by as "reply_to_created_by?",
+               pgp_sym_decrypt(p.content, $3) as "reply_to_content?"
+        FROM messages m
+        LEFT JOIN messages p ON p.id = m.reply_to_id AND p.group_id = m.group_id
+        WHERE m.id = $1 AND m.group_id = $2
         "#,
         message_id,
         group_id,
@@ -538,6 +633,79 @@ mod tests {
         assert!(validate_content(&content).is_ok());
     }
 
+    // -- check_reply_target --------------------------------------------
+
+    const GROUP: Uuid = Uuid::from_u128(10);
+
+    fn unprocessable(result: AppResult<()>) -> String {
+        match result {
+            Err(AppError::Unprocessable(m)) => m,
+            other => panic!("expected Unprocessable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_parent_of_the_same_family_is_a_valid_reply_target() {
+        assert!(check_reply_target(GROUP, Some(GROUP)).is_ok());
+    }
+
+    #[test]
+    fn a_parent_of_another_family_is_refused() {
+        let other = Uuid::from_u128(11);
+        assert_eq!(
+            unprocessable(check_reply_target(GROUP, Some(other))),
+            "reply_to_invalid"
+        );
+    }
+
+    #[test]
+    fn a_parent_that_cannot_be_found_is_refused() {
+        assert_eq!(
+            unprocessable(check_reply_target(GROUP, None)),
+            "reply_to_invalid"
+        );
+    }
+
+    // -- reply_excerpt -------------------------------------------------
+
+    #[test]
+    fn a_short_parent_is_carried_whole() {
+        assert_eq!(reply_excerpt("On mange à 20 h ?"), "On mange à 20 h ?");
+    }
+
+    #[test]
+    fn a_parent_of_exactly_the_excerpt_length_is_not_cut() {
+        let content = "a".repeat(REPLY_EXCERPT_CHARS);
+        assert_eq!(reply_excerpt(&content), content);
+    }
+
+    #[test]
+    fn a_longer_parent_is_cut_at_the_excerpt_length_with_an_ellipsis() {
+        let content = "a".repeat(REPLY_EXCERPT_CHARS + 1);
+        let excerpt = reply_excerpt(&content);
+        assert_eq!(excerpt, format!("{}…", "a".repeat(REPLY_EXCERPT_CHARS)));
+    }
+
+    #[test]
+    fn the_excerpt_counts_chars_not_bytes() {
+        // Multi-byte chars: cutting by bytes would either panic on a char
+        // boundary or keep half as many chars.
+        let content = "é".repeat(REPLY_EXCERPT_CHARS + 5);
+        let excerpt = reply_excerpt(&content);
+        assert_eq!(excerpt.chars().count(), REPLY_EXCERPT_CHARS + 1);
+        assert!(excerpt.starts_with(&"é".repeat(REPLY_EXCERPT_CHARS)));
+        assert!(excerpt.ends_with('…'));
+    }
+
+    #[test]
+    fn a_cut_does_not_leave_whitespace_before_the_ellipsis() {
+        let content = format!("{} suite", "a".repeat(REPLY_EXCERPT_CHARS - 1));
+        assert_eq!(
+            reply_excerpt(&content),
+            format!("{}…", "a".repeat(REPLY_EXCERPT_CHARS - 1))
+        );
+    }
+
     // -- unread_messages ----------------------------------------------
 
     fn message_at(hour: u32) -> MessageResponse {
@@ -552,6 +720,7 @@ mod tests {
             edited_at: None,
             created_at,
             updated_at: created_at,
+            reply_to: None,
         }
     }
 

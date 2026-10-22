@@ -17,9 +17,15 @@ use uuid::Uuid;
 /// The backend trims and validates (`content_required` / `content_too_long`,
 /// 4000 chars max); `validation::messagerie::validate_content` mirrors both
 /// rules so the form can reject without a round trip.
+///
+/// `reply_to_id` names the message this one answers (#464): it must be a
+/// message of the same family, else 422 `reply_to_invalid`. Left out of the
+/// body when `None`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateMessageRequest {
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to_id: Option<Uuid>,
 }
 
 /// `PATCH /groups/:id/messages/:message_id` request body. Mirrors
@@ -44,6 +50,21 @@ pub struct MessageResponse {
     pub edited_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// The message this one answers (#464): `None` for a plain message, and
+    /// for a reply whose parent has since been deleted.
+    #[serde(default)]
+    pub reply_to: Option<ReplyTo>,
+}
+
+/// The parent of a reply, as `MessageResponse::reply_to` carries it. Mirrors
+/// `apps/api`'s `ReplyTo`. `excerpt` is the start of the parent's content,
+/// decrypted by the backend on each read and cut at
+/// `REPLY_EXCERPT_CHARS` (120) chars, ending with `…` when it was cut.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReplyTo {
+    pub id: Uuid,
+    pub created_by: Uuid,
+    pub excerpt: String,
 }
 
 /// `GET /groups/:id/messages` response envelope

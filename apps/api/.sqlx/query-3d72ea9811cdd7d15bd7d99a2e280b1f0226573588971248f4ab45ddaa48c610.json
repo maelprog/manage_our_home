@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO messages (group_id, created_by, content)\n        VALUES ($1, $2, pgp_sym_encrypt($3, $4))\n        RETURNING id, group_id, created_by,\n                  pgp_sym_decrypt(content, $4) as \"content!\",\n                  edited_at, created_at, updated_at\n        ",
+  "query": "\n        WITH m AS (\n            INSERT INTO messages (group_id, created_by, content, reply_to_id)\n            VALUES ($1, $2, pgp_sym_encrypt($3, $4), $5)\n            RETURNING *\n        )\n        SELECT m.id as \"id!\", m.group_id as \"group_id!\", m.created_by as \"created_by!\",\n               pgp_sym_decrypt(m.content, $4) as \"content!\",\n               m.edited_at, m.created_at as \"created_at!\", m.updated_at as \"updated_at!\",\n               p.id as \"reply_to_id?\", p.created_by as \"reply_to_created_by?\",\n               pgp_sym_decrypt(p.content, $4) as \"reply_to_content?\"\n        FROM m\n        LEFT JOIN messages p ON p.id = m.reply_to_id AND p.group_id = m.group_id\n        ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "id",
+        "name": "id!",
         "type_info": "Uuid",
         "origin": {
           "Table": {
@@ -16,7 +16,7 @@
       },
       {
         "ordinal": 1,
-        "name": "group_id",
+        "name": "group_id!",
         "type_info": "Uuid",
         "origin": {
           "Table": {
@@ -27,7 +27,7 @@
       },
       {
         "ordinal": 2,
-        "name": "created_by",
+        "name": "created_by!",
         "type_info": "Uuid",
         "origin": {
           "Table": {
@@ -55,7 +55,7 @@
       },
       {
         "ordinal": 5,
-        "name": "created_at",
+        "name": "created_at!",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -66,7 +66,7 @@
       },
       {
         "ordinal": 6,
-        "name": "updated_at",
+        "name": "updated_at!",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -74,6 +74,34 @@
             "name": "updated_at"
           }
         }
+      },
+      {
+        "ordinal": 7,
+        "name": "reply_to_id?",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "reply_to_created_by?",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "created_by"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "reply_to_content?",
+        "type_info": "Text",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -81,7 +109,8 @@
         "Uuid",
         "Uuid",
         "Text",
-        "Text"
+        "Text",
+        "Uuid"
       ]
     },
     "nullable": [
@@ -91,8 +120,11 @@
       null,
       true,
       false,
-      false
+      false,
+      true,
+      true,
+      null
     ]
   },
-  "hash": "bdf7e4bf131013cccad7831022481078b90d4b9846cf1228510f0d7bf3e2d2dd"
+  "hash": "3d72ea9811cdd7d15bd7d99a2e280b1f0226573588971248f4ab45ddaa48c610"
 }
