@@ -34,17 +34,27 @@ pub const RETURN_TO_MAX_AGE_SECS: u32 = 24 * 60 * 60;
 /// (`/groups/invitations/{token}/accept`, the token spelled as apps/api
 /// hands them out).
 pub fn safe_return_path(candidate: &str) -> Option<&str> {
-    let rest = candidate.strip_prefix('/')?;
-    let path_chars = rest
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'/'));
-    if rest.starts_with('/') || !path_chars {
+    if !is_same_site_path(candidate) {
         return None;
     }
-    let token = rest
-        .strip_prefix("groups/invitations/")?
+    let token = candidate
+        .strip_prefix("/groups/invitations/")?
         .strip_suffix("/accept")?;
     is_bearer_token(token).then_some(candidate)
+}
+
+/// Whether `candidate` is a path of this site, whatever its shape: one `/`,
+/// then neither `/` nor `\`, and nothing but `[A-Za-z0-9_/-]`. The single
+/// allowed shape of [`safe_return_path`] implies it today; it is checked on
+/// its own so that a shape added to the list cannot open a redirect.
+fn is_same_site_path(candidate: &str) -> bool {
+    let Some(rest) = candidate.strip_prefix('/') else {
+        return false;
+    };
+    !rest.starts_with('/')
+        && rest
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'/'))
 }
 
 /// The return path the request's `Cookie` header carries, if it is still a
@@ -159,6 +169,32 @@ mod tests {
     }
 
     /// A cookie is the visitor's to write: what it says is checked again.
+    /// The site-wide filter on its own, shapes aside.
+    #[test]
+    fn a_same_site_path_is_one_slash_then_path_characters() {
+        for path in ["/", "/groups", "/a/b-c_d/E9", "/groups/invitations/x/accept"] {
+            assert!(is_same_site_path(path), "{path:?}");
+        }
+        for path in [
+            "",
+            "groups",
+            "//evil.example",
+            "/\\evil",
+            "\\\\evil",
+            "https://evil.example",
+            "javascript:alert(1)",
+            "/a/../b",
+            "/a?b",
+            "/a#b",
+            "/a%2F",
+            "/a b",
+            "/a\r\nb",
+            "/é",
+        ] {
+            assert!(!is_same_site_path(path), "{path:?}");
+        }
+    }
+
     #[test]
     fn a_cookie_carrying_another_site_is_ignored() {
         for value in ["//evil.example", "https://evil.example", "/admin/users", ""] {
