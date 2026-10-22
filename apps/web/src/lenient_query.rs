@@ -48,7 +48,7 @@ pub fn from_query_str<T: DeserializeOwned>(raw: &str) -> Result<T, serde_urlenco
         .filter(|(key, _)| seen.insert(key.clone()))
         .collect();
     let deduplicated = serde_urlencoded::to_string(&first)
-        .map_err(|e| <serde_urlencoded::de::Error as serde::de::Error>::custom(e))?;
+        .map_err(<serde_urlencoded::de::Error as serde::de::Error>::custom)?;
     serde_urlencoded::from_str(&deduplicated)
 }
 
