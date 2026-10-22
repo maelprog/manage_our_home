@@ -60,13 +60,15 @@ fn is_same_site_path(candidate: &str) -> bool {
 /// The return path the request's `Cookie` header carries, if it is still a
 /// [`safe_return_path`].
 pub fn return_path_from_cookies(cookie_header: Option<&str>) -> Option<&str> {
+    return_cookie(cookie_header).and_then(safe_return_path)
+}
+
+/// The value of the return cookie the request carries, checked or not: `/`
+/// clears it whenever it is there.
+pub fn return_cookie(cookie_header: Option<&str>) -> Option<&str> {
     cookie_header?.split(';').find_map(|pair| {
         let (name, value) = pair.trim().split_once('=')?;
-        if name == RETURN_TO_COOKIE {
-            safe_return_path(value)
-        } else {
-            None
-        }
+        (name == RETURN_TO_COOKIE).then_some(value)
     })
 }
 
@@ -359,15 +361,22 @@ mod route_tests {
         assert_eq!(set_cookies(&response), vec![clear_return_cookie()]);
     }
 
-    /// A cookie written by hand to point elsewhere is not followed.
+    /// A cookie written by hand to point elsewhere is not followed, and is
+    /// cleared rather than left until its `Max-Age`: `/` sends back to
+    /// itself, which then shows the dashboard.
     #[tokio::test]
-    async fn the_home_page_follows_no_cookie_naming_another_site() {
-        for value in ["//evil.example", "https://evil.example", "/%5Cevil"] {
+    async fn the_home_page_follows_no_cookie_naming_another_site_and_clears_it() {
+        for value in ["//evil.example", "https://evil.example", "/%5Cevil", ""] {
             let cookie = format!("session=s; {RETURN_TO_COOKIE}={value}");
             let response = send("/", Some(&cookie)).await;
-            assert_eq!(response.status(), StatusCode::OK, "{value}");
-            assert_eq!(location(&response), None, "{value}");
+            assert_eq!(response.status(), StatusCode::SEE_OTHER, "{value}");
+            assert_eq!(location(&response), Some("/"), "{value}");
+            assert_eq!(set_cookies(&response), vec![clear_return_cookie()]);
         }
+        // Without the cookie, `/` is the dashboard and clears nothing.
+        let response = send("/", Some("session=s")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(set_cookies(&response).is_empty());
     }
 
     /// Without a session, `/` keeps the cookie for after the login.
