@@ -289,9 +289,10 @@ compris ; ils tournent sous `npm run test:scripts`.
 Creates two accounts, a group, and tops it up to ~40 events, 40 stock
 items, 30 grocery items, 30 expenses, 25 recipes and 50 messages. Every
 row goes through the HTTP API, so it is valid by construction and the
-script survives a schema change; the one direct Postgres read is the
-email-verification token, the same trust boundary `lib/db.ts` documents
-above. Every request declares the statuses it accepts and the first
+script survives a schema change; the direct Postgres accesses are the
+email-verification token and `users.email_verified` (`isVerified`: the
+registration answers the same whether the account exists or not, #460),
+the same trust boundary `lib/db.ts` documents above. Every request declares the statuses it accepts and the first
 unexpected one aborts the run with the method, URL, status and body.
 
 - **Idempotent**: it *tops each collection back up* to its target rather

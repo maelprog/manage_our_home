@@ -157,9 +157,31 @@ async function fetchVerificationToken(email: string): Promise<string> {
 
 // --- comptes et famille ----------------------------------------------------
 
+/** Le compte de `email` a-t-il déjà vérifié son adresse ? Lecture seule. */
+async function isVerified(email: string): Promise<boolean> {
+  const url = process.env.DATABASE_URL;
+  if (!url) {
+    throw new Error(
+      "DATABASE_URL doit pointer sur le Postgres d'apps/api (cf. e2e/README.md) : " +
+        "la réponse de l'inscription ne dit plus si le compte existait (#460).",
+    );
+  }
+  const client = new Client({ connectionString: url });
+  await client.connect();
+  try {
+    const { rows } = await client.query(
+      "SELECT email_verified FROM users WHERE email = $1",
+      [email],
+    );
+    return rows[0]?.email_verified === true;
+  } finally {
+    await client.end();
+  }
+}
+
 async function signIn(who: { email: string; displayName: string }): Promise<HttpSession> {
   const session = new HttpSession(API_BASE_URL);
-  const registered = await session.raw("POST", "/auth/register", {
+  await session.raw("POST", "/auth/register", {
     body: {
       email: who.email,
       password: PASSWORD,
@@ -169,10 +191,12 @@ async function signIn(who: { email: string; displayName: string }): Promise<Http
       // #319: and the acceptance of the CGU.
       accepts_terms: true,
     },
-    expect: [201, 409],
+    // #460 : une adresse déjà inscrite reçoit la même réponse qu'une
+    // nouvelle ; c'est la base qui dit si le compte reste à vérifier.
+    expect: [201],
   });
 
-  if (registered.status === 201) {
+  if (!(await isVerified(who.email))) {
     const token = await fetchVerificationToken(who.email);
     await session.raw("GET", `/auth/verify-email?token=${encodeURIComponent(token)}`, {
       expect: [200, 204, 302, 303],

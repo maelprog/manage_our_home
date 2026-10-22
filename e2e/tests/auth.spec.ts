@@ -68,7 +68,11 @@ test.describe("Auth — register → verify → login → logout", () => {
     await expect(page.getByText("Email ou mot de passe incorrect.")).toBeVisible();
   });
 
-  test("duplicate email registration shows an inline field error", async ({ page }) => {
+  // #460: a taken address gets the same page as a new one — nothing on
+  // screen says the account exists — and the account keeps its password.
+  test("duplicate email registration lands on the same page and keeps the account", async ({
+    page,
+  }) => {
     const email = uniqueEmail("e2e-dup");
     await page.goto("/register");
     await page.getByLabel("Email").fill(email);
@@ -87,7 +91,19 @@ test.describe("Auth — register → verify → login → logout", () => {
     await page.getByRole("checkbox", { name: "J'accepte les conditions générales d'utilisation." }).check();
     await page.getByRole("button", { name: "Créer mon compte" }).click();
 
-    await expect(page.getByText("Un compte existe déjà avec cet email.")).toBeVisible();
+    await expect(page).toHaveURL(/\/register\/check-email$/);
+    await expect(page.getByText("Un email de confirmation vous a été envoyé")).toBeVisible();
+
+    const token = await fetchVerificationToken(email);
+    await page.goto(`/verify-email?token=${token}`);
+    await expect(page.getByText("Email vérifié")).toBeVisible();
+
+    await page.goto("/login");
+    await page.getByLabel("Email").fill(email);
+    await page.getByRole("textbox", { name: "Mot de passe" }).fill("password-one");
+    await page.getByRole("button", { name: "Se connecter" }).click();
+    await expect(page).toHaveURL("/");
+    await expect(page.getByText("Dup User", { exact: true })).toBeVisible();
   });
 
   // #137: art. 8 GDPR — the service is not open under 15, and the form says so

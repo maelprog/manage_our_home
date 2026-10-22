@@ -871,9 +871,11 @@ async fn change_password_rejects_short_new_password(db: PgPool) {
     assert_eq!(json_body(res).await["error"], "password_too_short");
 }
 
-/// AC #1, #2: register, then a duplicate email is rejected generically.
+/// AC #1, #2, #460: registering an address already taken answers exactly as
+/// registering a new one — same status, same (empty) body — and leaves the
+/// existing account as it was.
 #[sqlx::test]
-async fn register_then_duplicate_email_conflicts(db: PgPool) {
+async fn register_then_duplicate_email_answers_like_a_new_address(db: PgPool) {
     let router = test_router(db.clone());
 
     let res = call(
@@ -904,13 +906,17 @@ async fn register_then_duplicate_email_conflicts(db: PgPool) {
         })),
     )
     .await;
-    assert_status(&dup, StatusCode::CONFLICT);
+    assert_status(&dup, StatusCode::CREATED);
+    assert_eq!(body_bytes(res).await, body_bytes(dup).await);
 
-    let user = sqlx::query!("SELECT email_verified FROM users WHERE email = 'alice@example.test'")
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let user = sqlx::query!(
+        "SELECT email_verified, display_name FROM users WHERE email = 'alice@example.test'"
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
     assert!(!user.email_verified);
+    assert_eq!(user.display_name, "Alice");
 }
 
 /// AC #1: login is refused until the verification link is consumed;
@@ -3574,7 +3580,8 @@ async fn an_address_registered_with_capitals_signs_in_whatever_its_case(db: PgPo
 }
 
 /// #459: a second registration of the same address in other capitals is a
-/// registration of an existing account, refused like an exact duplicate.
+/// registration of an existing account, handled like an exact duplicate
+/// (#460: same answer as a new address, no second account).
 #[sqlx::test]
 async fn a_registration_in_other_capitals_is_a_duplicate(db: PgPool) {
     let router = test_router(db.clone());
@@ -3584,7 +3591,7 @@ async fn a_registration_in_other_capitals_is_a_duplicate(db: PgPool) {
     );
     assert_status(
         &register_as(&router, "ALICE@example.com").await,
-        StatusCode::CONFLICT,
+        StatusCode::CREATED,
     );
     assert_eq!(stored_emails(&db).await, ["alice@example.com"]);
 }
@@ -3669,4 +3676,328 @@ async fn a_google_sign_up_stores_the_address_lowercase(db: PgPool) {
     let res = google_callback(&router).await;
     assert!(res.status().is_redirection(), "{}", res.status());
     assert_eq!(stored_emails(&db).await, ["erin@example.test"]);
+}
+
+async fn body_bytes(response: axum::response::Response) -> Vec<u8> {
+    use http_body_util::BodyExt;
+    response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec()
+}
+
+async fn register_with(
+    router: &axum::Router,
+    email: &str,
+    password: &str,
+    display_name: &str,
+) -> axum::response::Response {
+    call(
+        router,
+        Method::POST,
+        "/auth/register",
+        None,
+        Some(serde_json::json!({
+            "email": email,
+            "password": password,
+            "display_name": display_name,
+            "declares_minimum_age": true, "accepts_terms": true
+        })),
+    )
+    .await
+}
+
+async fn verification_tokens(db: &PgPool, email: &str) -> (i64, i64) {
+    let row = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT count(*), count(*) FILTER (WHERE consumed_at IS NULL)
+         FROM email_verification_tokens
+         WHERE user_id = (SELECT id FROM users WHERE email = $1)",
+    )
+    .bind(email)
+    .fetch_one(db)
+    .await
+    .unwrap();
+    row
+}
+
+async fn login_status(router: &axum::Router, email: &str, password: &str) -> StatusCode {
+    call(
+        router,
+        Method::POST,
+        "/auth/login",
+        None,
+        Some(serde_json::json!({"email": email, "password": password})),
+    )
+    .await
+    .status()
+}
+
+/// #460: a new address, an unverified account's and a verified account's
+/// get the same status and the same body.
+#[sqlx::test]
+async fn registration_answers_the_same_whether_the_address_is_new_unverified_or_verified(
+    db: PgPool,
+) {
+    let router = test_router(db.clone());
+    register_verify_login(&router, &db, "verified@example.test", "verified-password1").await;
+    assert_status(
+        &register_with(&router, "unverified@example.test", "first-password1", "U").await,
+        StatusCode::CREATED,
+    );
+    age_verification_tokens(&db, "unverified@example.test", 600).await;
+
+    let new = register_with(&router, "new@example.test", "new-password1", "N").await;
+    let unverified =
+        register_with(&router, "unverified@example.test", "second-password1", "U2").await;
+    let verified = register_with(&router, "verified@example.test", "other-password1", "V2").await;
+
+    for res in [&new, &unverified, &verified] {
+        assert_status(res, StatusCode::CREATED);
+    }
+    let new = body_bytes(new).await;
+    assert_eq!(new, body_bytes(unverified).await);
+    assert_eq!(new, body_bytes(verified).await);
+}
+
+/// #460: registering an unverified account's address again mails a fresh
+/// verification link, consumes the older ones, and keeps the account's
+/// password and name: the old password signs in once verified, the new one
+/// does not.
+#[sqlx::test]
+async fn registering_an_unverified_address_again_resends_the_link_and_keeps_the_password(
+    db: PgPool,
+) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let email = "pending@example.test";
+    register_with(&router, email, "first-password1", "Pending").await;
+    age_verification_tokens(&db, email, 600).await;
+    let first = common::mailed_token(&outbox, email, "http://localhost:5173/verify-email?token=");
+
+    let again = register_with(&router, email, "second-password1", "Someone Else").await;
+    assert_status(&again, StatusCode::CREATED);
+
+    assert_eq!(outbox.emails().len(), 2, "registration, then the new link");
+    assert_eq!(verification_tokens(&db, email).await, (2, 1));
+    let second = common::mailed_token(&outbox, email, "http://localhost:5173/verify-email?token=");
+    assert_ne!(first, second);
+    let stale = call(
+        &router,
+        Method::GET,
+        &format!("/auth/verify-email?token={first}"),
+        None,
+        None,
+    )
+    .await;
+    assert_status(&stale, StatusCode::GONE);
+    let verify = call(
+        &router,
+        Method::GET,
+        &format!("/auth/verify-email?token={second}"),
+        None,
+        None,
+    )
+    .await;
+    assert_status(&verify, StatusCode::OK);
+
+    assert_eq!(
+        login_status(&router, email, "second-password1").await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        login_status(&router, email, "first-password1").await,
+        StatusCode::OK
+    );
+    let name: String = sqlx::query_scalar("SELECT display_name FROM users WHERE email = $1")
+        .bind(email)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(name, "Pending");
+}
+
+/// #460: two registrations of one address in quick succession mail one
+/// link: the second falls inside the resend cooldown.
+#[sqlx::test]
+async fn two_close_registrations_of_an_address_mail_one_link(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let email = "twice@example.test";
+    for password in ["first-password1", "second-password1"] {
+        assert_status(
+            &register_with(&router, email, password, "Twice").await,
+            StatusCode::CREATED,
+        );
+    }
+    assert_eq!(outbox.emails().len(), 1);
+    assert_eq!(verification_tokens(&db, email).await, (1, 1));
+}
+
+/// #460: registering a verified account's address mails its holder that
+/// the account exists, with the forgotten-password page, and issues no
+/// token of any kind.
+#[sqlx::test]
+async fn registering_a_verified_address_mails_the_holder_and_issues_no_token(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let email = "known@example.test";
+    register_verify_login(&router, &db, email, "known-password1").await;
+    sqlx::query("UPDATE users SET display_name = $2 WHERE email = $1")
+        .bind(email)
+        .bind("Known\nInjected line")
+        .execute(&db)
+        .await
+        .unwrap();
+    let mails_before = outbox.emails().len();
+    let tokens_before = verification_tokens(&db, email).await;
+
+    let again = register_with(&router, email, "other-password1", "Other").await;
+    assert_status(&again, StatusCode::CREATED);
+
+    let emails = outbox.emails();
+    assert_eq!(emails.len(), mails_before + 1);
+    let mail = emails.last().unwrap();
+    assert_eq!(mail.to, email);
+    assert_eq!(mail.subject, "Vous avez déjà un compte");
+    assert!(
+        mail.body.starts_with("Bonjour Known Injected line,\n"),
+        "{}",
+        mail.body
+    );
+    assert!(
+        mail.body
+            .contains("\nhttp://localhost:5173/forgot-password\n"),
+        "{}",
+        mail.body
+    );
+    assert!(!mail.body.contains("token"), "{}", mail.body);
+    assert_eq!(verification_tokens(&db, email).await, tokens_before);
+    let resets: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM password_reset_tokens
+         WHERE user_id = (SELECT id FROM users WHERE email = $1)",
+    )
+    .bind(email)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(resets, 0);
+    assert_eq!(
+        login_status(&router, email, "known-password1").await,
+        StatusCode::OK
+    );
+}
+
+/// #460: a deactivated account's address gets the same answer and no email
+/// at all, verified or not.
+#[sqlx::test]
+async fn registering_a_deactivated_address_mails_nothing(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let email = "off@example.test";
+    for verified in [false, true] {
+        register_with(&router, email, "some-password1", "Off").await;
+        age_verification_tokens(&db, email, 600).await;
+        sqlx::query(
+            "UPDATE users SET deactivated_at = now(), email_verified = $2 WHERE email = $1",
+        )
+        .bind(email)
+        .bind(verified)
+        .execute(&db)
+        .await
+        .unwrap();
+        let mails_before = outbox.emails().len();
+        let tokens_before = verification_tokens(&db, email).await;
+
+        let again = register_with(&router, email, "other-password1", "Other").await;
+        assert_status(&again, StatusCode::CREATED);
+        assert!(body_bytes(again).await.is_empty());
+        assert_eq!(outbox.emails().len(), mails_before, "{verified}");
+        assert_eq!(verification_tokens(&db, email).await, tokens_before);
+    }
+}
+
+/// #460, arbitrated 2026-10-22: an account whose deletion was requested is
+/// still an account during its 30 days of grace. Registering its address
+/// mails the "account exists" notice, as for any verified account.
+#[sqlx::test]
+async fn registering_an_address_awaiting_deletion_mails_the_account_exists_notice(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let email = "leaving@example.test";
+    register_verify_login(&router, &db, email, "leaving-password1").await;
+    sqlx::query("UPDATE users SET deletion_requested_at = now() WHERE email = $1")
+        .bind(email)
+        .execute(&db)
+        .await
+        .unwrap();
+    let mails_before = outbox.emails().len();
+
+    let again = register_with(&router, email, "other-password1", "Other").await;
+    assert_status(&again, StatusCode::CREATED);
+    assert!(body_bytes(again).await.is_empty());
+
+    let emails = outbox.emails();
+    assert_eq!(emails.len(), mails_before + 1);
+    assert_eq!(emails.last().unwrap().to, email);
+    assert_eq!(emails.last().unwrap().subject, "Vous avez déjà un compte");
+}
+
+/// #460: a purged account no longer holds its address, which the purge
+/// rewrote to `deleted-<id>@deleted.invalid` (`jobs/account_purge.rs`).
+/// Registering that address again is a new registration: a new account,
+/// and its verification link.
+#[sqlx::test]
+async fn registering_a_purged_accounts_former_address_creates_a_new_account(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let email = "gone@example.test";
+    register_verify_login(&router, &db, email, "gone-password1").await;
+    sqlx::query(
+        "UPDATE users SET email = 'deleted-' || id || '@deleted.invalid', deleted_at = now()
+         WHERE email = $1",
+    )
+    .bind(email)
+    .execute(&db)
+    .await
+    .unwrap();
+    let mails_before = outbox.emails().len();
+
+    let again = register_with(&router, email, "new-password1", "New").await;
+    assert_status(&again, StatusCode::CREATED);
+    assert!(body_bytes(again).await.is_empty());
+
+    let accounts: Vec<(Uuid, bool)> = sqlx::query_as(
+        "SELECT id, email_verified FROM users WHERE email = $1 AND deleted_at IS NULL",
+    )
+    .bind(email)
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(accounts.len(), 1);
+    assert!(!accounts[0].1, "a new, unverified account");
+    let emails = outbox.emails();
+    assert_eq!(emails.len(), mails_before + 1);
+    assert_eq!(emails.last().unwrap().subject, "Vérifiez votre email");
+    assert_eq!(verification_tokens(&db, email).await, (1, 1));
+}
+
+/// #460: registrations of one address that all pass the lookup before any of
+/// them inserts still answer like any other: one account, one email, and
+/// every request a 201. The losers of the race on the unique index create
+/// and send nothing, instead of answering 500.
+#[sqlx::test]
+async fn concurrent_registrations_of_one_address_create_one_account(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let burst = 12;
+
+    let responses = futures::future::join_all(
+        (0..burst).map(|_| register_with(&router, "race@example.test", "race-password1", "Race")),
+    )
+    .await;
+
+    let statuses: Vec<StatusCode> = responses.iter().map(|r| r.status()).collect();
+    assert!(
+        statuses.iter().all(|s| *s == StatusCode::CREATED),
+        "{statuses:?}"
+    );
+    assert_eq!(stored_emails(&db).await, ["race@example.test"]);
+    assert_eq!(outbox.emails().len(), 1);
+    assert_eq!(verification_tokens(&db, "race@example.test").await, (1, 1));
 }

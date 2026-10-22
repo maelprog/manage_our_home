@@ -72,10 +72,57 @@ pub async fn me(auth: AuthUser) -> Json<MeResponse> {
     })
 }
 
+/// What `register` does once it knows which account, if any, already holds
+/// the address (#460). Whatever it does, the response is the same.
+#[derive(Debug, PartialEq, Eq)]
+enum RegisterAction {
+    /// No account: create it and mail its verification link.
+    Create,
+    /// An account waiting for its verification: mail a fresh link, as
+    /// `resend_verification` does, cooldown included. Its password and name
+    /// stay as they were.
+    ResendVerification,
+    /// A verified account, one awaiting its deletion included (arbitrated
+    /// 2026-10-22): tell its holder they already have one.
+    NotifyExisting,
+    /// A deactivated account: nothing is sent. Also a row marked
+    /// `deleted_at` that still held the address. The purge never leaves
+    /// one: it rewrites the address to `deleted-<id>@deleted.invalid`
+    /// (`jobs/account_purge.rs`), so a purged account's former address is
+    /// found by no lookup and registers as new.
+    Nothing,
+}
+
+/// The account already holding an address, as far as `register` cares.
+#[derive(Debug, Clone, Copy)]
+struct ExistingAccount {
+    email_verified: bool,
+    deactivated: bool,
+    deleted: bool,
+}
+
+fn register_action(existing: Option<ExistingAccount>) -> RegisterAction {
+    match existing {
+        None => RegisterAction::Create,
+        Some(account) if account.deactivated || account.deleted => RegisterAction::Nothing,
+        Some(account) if account.email_verified => RegisterAction::NotifyExisting,
+        Some(_) => RegisterAction::ResendVerification,
+    }
+}
+
 /// AC #1, #2: registers an email/password account, always unverified,
-/// sends a verification email. Returns a generic 409 on duplicate email
-/// so the response never reveals whether the existing account uses a
-/// password, Google, or both.
+/// sends a verification email.
+///
+/// #460: the response is the same `201` with an empty body whether the
+/// address is new or already taken, so it never reveals that an account
+/// exists. What differs only reaches the mailbox (`register_action`): an
+/// unverified account gets a fresh verification link under the cooldown of
+/// `resend_verification` — its password and name are left as they were —,
+/// a verified one an email saying it already has an account (one awaiting
+/// its deletion too), and a deactivated one nothing. A purged account no
+/// longer holds its address, so registering it creates a new account. The
+/// password is hashed in every case before the lookup, so the argon2id a
+/// new account costs is paid by the others too (in the spirit of #178).
 ///
 /// #137: the account is also refused (422 `age_declaration_required`) unless
 /// the request carries the art. 8 GDPR age declaration. The declaration is
@@ -96,21 +143,67 @@ pub async fn register(
     validate_age_declaration(body.declares_minimum_age).map_err(unprocessable)?;
     validate_terms_acceptance(body.accepts_terms).map_err(unprocessable)?;
 
-    let existing = sqlx::query_scalar!("SELECT id FROM users WHERE email = $1", body.email)
-        .fetch_optional(&state.db)
-        .await?;
-    if existing.is_some() {
-        return Err(AppError::Conflict("account_already_exists".into()));
-    }
-
     let password_hash = hash_password(&body.password).map_err(AppError::Internal)?;
 
+    let existing = sqlx::query!(
+        r#"SELECT id, email_verified, display_name,
+                  deactivated_at IS NOT NULL AS "deactivated!",
+                  deleted_at IS NOT NULL AS "deleted!"
+           FROM users WHERE email = $1"#,
+        body.email
+    )
+    .fetch_optional(&state.db)
+    .await?;
+    let action = register_action(existing.as_ref().map(|u| ExistingAccount {
+        email_verified: u.email_verified,
+        deactivated: u.deactivated,
+        deleted: u.deleted,
+    }));
+
+    match (action, existing) {
+        (RegisterAction::Create, _) => {
+            create_account(&state, &body, &password_hash).await?;
+        }
+        (RegisterAction::ResendVerification, Some(user)) => {
+            issue_verification(&state, user.id, &body.email).await?;
+        }
+        (RegisterAction::NotifyExisting, Some(user)) => {
+            let link = format!("{}/forgot-password", state.frontend_base_url);
+            if let Err(e) = state
+                .email
+                .send(
+                    &body.email,
+                    "Vous avez déjà un compte",
+                    crate::email::EmailSender::account_exists_body(&user.display_name, &link),
+                )
+                .await
+            {
+                tracing::error!(error = ?e, "failed to send account-exists email");
+            }
+        }
+        _ => {}
+    }
+
+    Ok(StatusCode::CREATED)
+}
+
+/// `register`'s new account, and its verification email. A registration of
+/// the same address that wins the race between `register`'s lookup and this
+/// insert keeps the row (`ON CONFLICT DO NOTHING`, on either of the two
+/// unique indexes on the address): this one then creates and sends nothing,
+/// and answers like any other.
+async fn create_account(
+    state: &AppState,
+    body: &RegisterRequest,
+    password_hash: &str,
+) -> AppResult<()> {
     let mut tx = crate::db::begin(&state.db).await?;
-    let user = sqlx::query!(
+    let Some(user_id) = sqlx::query_scalar!(
         r#"
         INSERT INTO users (email, password_hash, display_name, email_verified, age_declared_at,
                            terms_accepted_version, terms_accepted_at)
         VALUES ($1, $2, $3, false, now(), $4, now())
+        ON CONFLICT DO NOTHING
         RETURNING id
         "#,
         body.email,
@@ -118,8 +211,11 @@ pub async fn register(
         body.display_name,
         terms_acceptance::terms_in_force_now(),
     )
-    .fetch_one(&mut *tx)
-    .await?;
+    .fetch_optional(&mut *tx)
+    .await?
+    else {
+        return Ok(());
+    };
 
     let expires_at = Utc::now() + Duration::hours(EMAIL_VERIFICATION_TTL_HOURS);
     let token = new_token();
@@ -128,7 +224,7 @@ pub async fn register(
         INSERT INTO email_verification_tokens (user_id, expires_at, token_hash)
         VALUES ($1, $2, $3)
         "#,
-        user.id,
+        user_id,
         expires_at,
         &token.hash()[..],
     )
@@ -136,17 +232,22 @@ pub async fn register(
     .await?;
     tx.commit().await?;
 
+    send_verification_email(state, &body.email, token.value()).await;
+    Ok(())
+}
+
+/// Mails the verification link. Best-effort: a refused email is logged, and
+/// the request it serves answers as if it had left.
+async fn send_verification_email(state: &AppState, email: &str, token: &str) {
     // Lands on apps/web's /verify-email page (which consumes the token via
-    // this API's GET /auth/verify-email), not on the API endpoint itself.
-    let link = format!(
-        "{}/verify-email?token={}",
-        state.frontend_base_url,
-        token.value()
-    );
+    // this API's GET /auth/verify-email), not on the API endpoint itself:
+    // that one answers an empty 200 or a bare 410, nothing a person can
+    // read (#420).
+    let link = format!("{}/verify-email?token={token}", state.frontend_base_url);
     if let Err(e) = state
         .email
         .send(
-            &body.email,
+            email,
             "Vérifiez votre email",
             crate::email::EmailSender::verification_email_body(&link),
         )
@@ -154,8 +255,6 @@ pub async fn register(
     {
         tracing::error!(error = ?e, "failed to send verification email");
     }
-
-    Ok((StatusCode::CREATED, Json(json!({ "user_id": user.id }))))
 }
 
 #[derive(Deserialize)]
@@ -521,6 +620,15 @@ pub async fn resend_verification(
         return Ok(StatusCode::OK);
     };
 
+    issue_verification(&state, user.id, &body.email).await?;
+    Ok(StatusCode::OK)
+}
+
+/// Issues a fresh verification token to an unverified account and mails it,
+/// unless one was issued within `VERIFICATION_RESEND_COOLDOWN_SECS`: then it
+/// does nothing at all. Shared by `resend_verification` and by `register`
+/// when the address belongs to an unverified account (#460).
+async fn issue_verification(state: &AppState, user_id: Uuid, email: &str) -> AppResult<()> {
     let expires_at = Utc::now() + Duration::hours(EMAIL_VERIFICATION_TTL_HOURS);
     // Cooldown, invalidation and issuance happen atomically in one
     // statement: the new token is inserted (and old ones consumed) only
@@ -548,7 +656,7 @@ pub async fn resend_verification(
         WHERE NOT EXISTS (SELECT 1 FROM recent)
         RETURNING user_id
         "#,
-        user.id,
+        user_id,
         expires_at,
         VERIFICATION_RESEND_COOLDOWN_SECS,
         &token.hash()[..],
@@ -557,27 +665,9 @@ pub async fn resend_verification(
     .await?;
 
     if issued.is_some() {
-        // apps/web's page, as at registration: the API endpoint answers an
-        // empty 200 or a bare 410, nothing a person can read (#420).
-        let link = format!(
-            "{}/verify-email?token={}",
-            state.frontend_base_url,
-            token.value()
-        );
-        if let Err(e) = state
-            .email
-            .send(
-                &body.email,
-                "Vérifiez votre email",
-                crate::email::EmailSender::verification_email_body(&link),
-            )
-            .await
-        {
-            tracing::error!(error = ?e, "failed to send verification email");
-        }
+        send_verification_email(state, email, token.value()).await;
     }
-
-    Ok(StatusCode::OK)
+    Ok(())
 }
 
 /// AC #4: consuming a valid reset token revokes every active session.
@@ -859,6 +949,48 @@ pub const _ACCOUNT_DELETION_GRACE_DAYS: i64 = ACCOUNT_DELETION_GRACE_DAYS;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn account(email_verified: bool, deactivated: bool, deleted: bool) -> ExistingAccount {
+        ExistingAccount {
+            email_verified,
+            deactivated,
+            deleted,
+        }
+    }
+
+    #[test]
+    fn register_creates_an_account_for_a_new_address() {
+        assert_eq!(register_action(None), RegisterAction::Create);
+    }
+
+    #[test]
+    fn register_resends_the_link_to_an_unverified_account() {
+        assert_eq!(
+            register_action(Some(account(false, false, false))),
+            RegisterAction::ResendVerification
+        );
+    }
+
+    #[test]
+    fn register_notifies_a_verified_account() {
+        assert_eq!(
+            register_action(Some(account(true, false, false))),
+            RegisterAction::NotifyExisting
+        );
+    }
+
+    #[test]
+    fn register_sends_nothing_for_a_deactivated_or_purged_account() {
+        for verified in [false, true] {
+            for (deactivated, deleted) in [(true, false), (false, true), (true, true)] {
+                assert_eq!(
+                    register_action(Some(account(verified, deactivated, deleted))),
+                    RegisterAction::Nothing,
+                    "verified={verified} deactivated={deactivated} deleted={deleted}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn password_reset_link_carries_the_token_in_the_fragment() {
