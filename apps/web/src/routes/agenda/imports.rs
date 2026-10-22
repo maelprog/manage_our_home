@@ -85,16 +85,31 @@ fn notice_text(query: &ImportsQuery) -> Option<String> {
             "Agenda Google connecté. Lancez un import pour récupérer ses événements.".to_string(),
         ),
         "import_deleted" => Some(import_deleted_notice(query.deleted)),
-        "imported" => Some(format!(
-            "Import terminé : {}.",
-            import_run_summary(
-                query.imported.unwrap_or(0),
-                query.updated.unwrap_or(0),
-                query.skipped.unwrap_or(0),
-            )
-        )),
+        "imported" => Some(match present_run_summary(query) {
+            Some(summary) => format!("Import terminé : {summary}."),
+            None => "Import terminé.".to_string(),
+        }),
         _ => None,
     }
+}
+
+/// The run summary of the counters actually in the URL (#582): an absent or
+/// unconvertible one is left out rather than shown as a made-up 0, and with
+/// none there is no summary. With all three it is `import_run_summary`.
+fn present_run_summary(query: &ImportsQuery) -> Option<String> {
+    let counters = [query.imported, query.updated, query.skipped];
+    // Each term keeps `import_run_summary`'s wording: cut it at its commas.
+    let full = import_run_summary(
+        query.imported.unwrap_or(0),
+        query.updated.unwrap_or(0),
+        query.skipped.unwrap_or(0),
+    );
+    let terms: Vec<&str> = full
+        .split(", ")
+        .zip(counters)
+        .filter_map(|(term, n)| n.map(|_| term))
+        .collect();
+    (!terms.is_empty()).then(|| terms.join(", "))
 }
 
 /// Every error the screens surface, mapped to fixed French copy. `apps/api`'s
@@ -729,7 +744,7 @@ mod tests {
         assert_eq!(counters(&q), [Some(1), Some(4), None, None]);
         assert_eq!(
             notice_text(&q).unwrap(),
-            "Import terminé : 1 événement importé, 4 mis à jour, 0 inchangé."
+            "Import terminé : 1 événement importé, 4 mis à jour."
         );
         // An unconvertible `deleted` is the "events kept" sentence, as absent.
         let q = imports_query("notice=import_deleted&deleted=x");
@@ -771,11 +786,38 @@ mod tests {
     }
 
     #[test]
-    fn missing_counters_read_as_zero_rather_than_breaking_the_banner() {
+    fn without_any_counter_the_banner_has_no_summary() {
+        // #582: an absent counter is not a zero — no made-up "0 importé".
         assert_eq!(
             notice_text(&query(Some("imported"), None)).unwrap(),
-            "Import terminé : 0 événement importé, 0 mis à jour, 0 inchangé."
+            "Import terminé."
         );
+    }
+
+    #[test]
+    fn a_missing_counter_is_left_out_of_the_summary() {
+        let mut q = query(Some("imported"), Some((2, 0, 1)));
+        q.updated = None;
+        assert_eq!(
+            notice_text(&q).unwrap(),
+            "Import terminé : 2 événements importés, 1 inchangé."
+        );
+        q.imported = None;
+        assert_eq!(notice_text(&q).unwrap(), "Import terminé : 1 inchangé.");
+        q.skipped = None;
+        q.updated = Some(0);
+        assert_eq!(notice_text(&q).unwrap(), "Import terminé : 0 mis à jour.");
+    }
+
+    #[test]
+    fn three_present_counters_read_as_the_shared_summary() {
+        // Same wording as `import_run_summary`, including zero and plurals.
+        for (i, u, k) in [(0, 0, 0), (1, 1, 1), (3, 1, 12), (0, 0, 4)] {
+            assert_eq!(
+                notice_text(&query(Some("imported"), Some((i, u, k)))).unwrap(),
+                format!("Import terminé : {}.", import_run_summary(i, u, k))
+            );
+        }
     }
 
     #[test]
