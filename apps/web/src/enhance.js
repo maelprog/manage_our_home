@@ -23,6 +23,58 @@
     button.classList.toggle("shown", show);
   });
 
+  // `data-pw-meter` (`app::password_field`, #461): a strength gauge under a
+  // password being chosen, made here and only here — without JavaScript
+  // there is none, and the form works the same. The score follows apps/api's
+  // policy: length first, plus a bonus for variety (lower case, upper case,
+  // digits, anything else). Under the field's `minlength` it stays at "trop
+  // court" whatever else, so it never contradicts the server; the list of
+  // common passwords stays on the server, and the gauge knows nothing of
+  // it. The words carry the level, in a polite live region that speaks only
+  // when the level changes; the bar and its colour repeat them.
+  var STRENGTHS = ["trop court", "faible", "correct", "solide"];
+
+  function strength(value, minimum) {
+    var length = Array.from(value).length;
+    if (length < minimum) return 0;
+    var kinds = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^a-zA-Z0-9]/].filter(function (kind) {
+      return kind.test(value);
+    }).length;
+    var score = length + 2 * (kinds - 1);
+    return score < minimum + 4 ? 1 : score < minimum + 8 ? 2 : 3;
+  }
+
+  function strengthMeters() {
+    var fields = document.querySelectorAll("input[data-pw-meter]");
+    Array.prototype.forEach.call(fields, function (field) {
+      var meter = document.createElement("div");
+      meter.className = "pw-meter";
+      var bar = document.createElement("span");
+      bar.className = "pw-bar";
+      bar.setAttribute("aria-hidden", "true");
+      var fill = document.createElement("span");
+      bar.appendChild(fill);
+      var words = document.createElement("span");
+      words.setAttribute("aria-live", "polite");
+      meter.appendChild(bar);
+      meter.appendChild(words);
+      // After the label, not in it: in it, the words would join the
+      // field's name.
+      (closest(field, "label") || field).insertAdjacentElement("afterend", meter);
+      var minimum = Number(field.getAttribute("minlength")) || 0;
+      var shown = null;
+      field.addEventListener("input", function () {
+        var level = field.value ? strength(field.value, minimum) : null;
+        if (level === shown) return;
+        shown = level;
+        if (level === null) meter.removeAttribute("data-level");
+        else meter.setAttribute("data-level", level);
+        fill.style.width = level === null ? "0" : 25 * (level + 1) + "%";
+        words.textContent = level === null ? "" : "Robustesse : " + STRENGTHS[level];
+      });
+    });
+  }
+
   // `data-confirm="…"` on a form: asks before it is submitted, and stops
   // the submission on a refusal.
   document.addEventListener("submit", function (event) {
@@ -162,6 +214,7 @@
   function ready() {
     expiryShortcuts();
     resendCooldowns();
+    strengthMeters();
     try {
       revealCurrentTab();
     } catch (e) {}

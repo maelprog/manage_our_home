@@ -353,11 +353,15 @@ pub(crate) const ENHANCE_SCRIPT: &str = include_str!("enhance.js");
 /// so browsers reject a too-short password *before* the form round-trips
 /// (a server-rendered error page can't refill the password field without
 /// echoing the password back into the HTML, so avoiding the round trip is
-/// what keeps the field from being wiped).
+/// what keeps the field from being wiped). It also marks a password being
+/// chosen, which `enhance.js` gives a strength gauge (`data-pw-meter`,
+/// #461); the gauge reads its minimum from the `minlength` set here.
 pub fn password_field(label: &str, name: &str, autocomplete: &str, with_rules: bool) -> String {
     let (rules_attr, hint) = if with_rules {
         (
-            format!(r#" minlength="{MIN_PASSWORD_LEN}" maxlength="{MAX_PASSWORD_LEN}""#),
+            format!(
+                r#" minlength="{MIN_PASSWORD_LEN}" maxlength="{MAX_PASSWORD_LEN}" data-pw-meter"#
+            ),
             format!(
                 r#"<span class="muted">Au moins {MIN_PASSWORD_LEN} caractères — une phrase de passe (plusieurs mots) est idéale. Pas de règle de majuscules ou de chiffres.</span>"#
             ),
@@ -365,11 +369,50 @@ pub fn password_field(label: &str, name: &str, autocomplete: &str, with_rules: b
     } else {
         (String::new(), String::new())
     };
+    password_label(label, name, autocomplete, &rules_attr, &hint)
+}
+
+/// The second entry of a password being chosen (#461), named `name`: every
+/// form that sets a password asks for it twice. No rules and no gauge, the
+/// first field has them. An `error` (`password_confirmation_error`) is
+/// shown after the label and joins the field by `aria-describedby`, not by
+/// sitting in the label, so it is not read a second time as part of its
+/// name.
+///
+/// Its name is its visible label and nothing else (`aria-label`). A name
+/// taken from the `<label>` would also hold the toggle's "Afficher le mot de
+/// passe", and the first field is found by "Mot de passe", as a substring,
+/// by the e2e suite on every page that has one.
+pub fn password_confirmation_field(name: &str, error: Option<&str>) -> String {
+    const LABEL: &str = "Confirmation";
+    let named = format!(r#" aria-label="{LABEL}""#);
+    let Some(error) = error else {
+        return password_label(LABEL, name, "new-password", &named, "");
+    };
+    let id = format!("{}-error", html_escape(name));
+    format!(
+        r#"{label}
+<span class="field-error" id="{id}">{error}</span>"#,
+        label = password_label(
+            LABEL,
+            name,
+            "new-password",
+            &format!(r#"{named} aria-invalid="true" aria-describedby="{id}""#),
+            "",
+        ),
+        error = html_escape(error),
+    )
+}
+
+/// The `<label>` of a password field and its show/hide toggle. `attrs` are
+/// appended to the `<input>` as they are; `hint` follows the field inside
+/// the label.
+fn password_label(label: &str, name: &str, autocomplete: &str, attrs: &str, hint: &str) -> String {
     format!(
         r#"<label>
 {label}
 <div class="pw-wrap">
-<input type="password" name="{name}" autocomplete="{autocomplete}" required{rules_attr} />
+<input type="password" name="{name}" autocomplete="{autocomplete}" required{attrs} />
 <button type="button" class="pw-toggle" aria-label="Afficher le mot de passe" data-pw-toggle><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></button>
 </div>
 {hint}
@@ -378,6 +421,13 @@ pub fn password_field(label: &str, name: &str, autocomplete: &str, with_rules: b
         name = html_escape(name),
         autocomplete = html_escape(autocomplete),
     )
+}
+
+/// The error of a confirmation field that does not repeat its password
+/// (#461), `None` when it does. Compared exactly as typed: the second entry
+/// exists to catch a slip of the finger, and a capital or a space is one.
+pub fn password_confirmation_error(password: &str, confirmation: &str) -> Option<&'static str> {
+    (password != confirmation).then_some("Les deux mots de passe ne correspondent pas.")
 }
 
 /// French form message for a `validate_password` error code, shared by
@@ -587,6 +637,102 @@ mod tests {
             let html = password_field("Mot de passe", "password", "new-password", with_rules);
             assert!(html.contains("pw-toggle"));
             assert!(html.contains("Afficher le mot de passe"));
+        }
+    }
+
+    /// #461: a password being chosen gets the gauge, one being typed to log
+    /// in does not.
+    #[test]
+    fn only_a_password_being_chosen_asks_for_the_strength_gauge() {
+        assert!(
+            password_field("Mot de passe", "password", "new-password", true)
+                .contains("data-pw-meter")
+        );
+        assert!(
+            !password_field("Mot de passe", "password", "current-password", false)
+                .contains("data-pw-meter")
+        );
+    }
+
+    #[test]
+    fn the_confirmation_field_is_a_bare_second_entry() {
+        let html = password_confirmation_field("password_confirm", None);
+        assert!(html.contains(r#"name="password_confirm""#), "{html}");
+        assert!(html.contains(r#"type="password""#), "{html}");
+        assert!(html.contains(r#"autocomplete="new-password""#), "{html}");
+        assert!(html.contains("pw-toggle"), "{html}");
+        for absent in [
+            "data-pw-meter",
+            "Au moins",
+            "aria-invalid",
+            "aria-describedby",
+            "field-error",
+        ] {
+            assert!(!html.contains(absent), "{absent}: {html}");
+        }
+        // Its name holds no "mot de passe", the toggle's included: the first
+        // field is found by that name, as a substring.
+        assert!(html.contains("<label>\nConfirmation\n"), "{html}");
+        assert!(
+            html.contains(r#"autocomplete="new-password" required aria-label="Confirmation" />"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_confirmation_in_error_is_described_by_its_message() {
+        let html = password_confirmation_field("password_confirm", Some("Pas <pareil>."));
+        assert!(
+            html.contains(r#"aria-invalid="true" aria-describedby="password_confirm-error""#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<span class="field-error" id="password_confirm-error">Pas &lt;pareil&gt;.</span>"#),
+            "{html}"
+        );
+        // Outside the label: in it, the message would also be read as part
+        // of the field's name.
+        assert!(html.find("</label>") < html.find("field-error"), "{html}");
+    }
+
+    // -- password_confirmation_error (#461) ----------------------------
+    //
+    // Every form that sets a password asks for it twice. The two entries are
+    // compared exactly as typed: what the confirmation catches is a slip of
+    // the finger, and a case or a space is one.
+
+    #[test]
+    fn a_confirmation_that_repeats_the_password_is_accepted() {
+        assert_eq!(
+            password_confirmation_error("correct horse battery", "correct horse battery"),
+            None
+        );
+        assert_eq!(
+            password_confirmation_error("mot de passe épatant 🔑", "mot de passe épatant 🔑"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_confirmation_that_differs_is_refused_with_a_french_message() {
+        assert_eq!(
+            password_confirmation_error("correct horse battery", "correct horse batterie"),
+            Some("Les deux mots de passe ne correspondent pas.")
+        );
+    }
+
+    #[test]
+    fn the_comparison_ignores_neither_case_nor_spaces() {
+        for typo in [
+            "Correct horse battery",
+            "correct horse battery ",
+            " correct horse battery",
+            "",
+        ] {
+            assert!(
+                password_confirmation_error("correct horse battery", typo).is_some(),
+                "{typo:?}"
+            );
         }
     }
 
@@ -1465,7 +1611,13 @@ mod tests {
         ("--accent-fg", "--accent-hover", "button:hover"),
         ("--accent-fg", "--error", "button.danger, .badge.warn"),
         ("--accent-fg", "--error-hover", "button.danger:hover"),
-        ("--error", "--bg", ".field-error, button.secondary.danger"),
+        (
+            "--error",
+            "--bg",
+            ".field-error, button.secondary.danger, .pw-meter",
+        ),
+        ("--warning", "--bg", ".pw-meter (faible)"),
+        ("--success", "--bg", ".pw-meter (correct, solide)"),
         ("--error", "--surface", ".field-error in a card"),
         ("--error", "--error-soft", ".notice.error, .danger:hover"),
         ("--success", "--success-soft", ".notice.success"),

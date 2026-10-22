@@ -468,6 +468,16 @@ dd { margin: var(--s2) 0 0 0; }
 }
 .pw-toggle.shown { color: var(--accent); }
 .field-error { color: var(--error); font-size: var(--t-sm); }
+/* The strength gauge enhance.js puts under a password being chosen (#461).
+   Its words are the signal; the bar, filled in currentColor, repeats them
+   in the semantic colour of the level, which the words wear too. No level
+   while the field is empty: neither colour nor fill. */
+.pw-meter { display: flex; align-items: center; gap: var(--s2x); font-size: var(--t-sm); }
+.pw-bar { flex: 1; height: var(--s1); border-radius: var(--r-sm); background: var(--border); overflow: hidden; }
+.pw-bar > span { display: block; height: 100%; background: currentColor; }
+.pw-meter[data-level="0"] { color: var(--error); }
+.pw-meter[data-level="1"] { color: var(--warning); }
+.pw-meter[data-level="2"], .pw-meter[data-level="3"] { color: var(--success); }
 /* The border is `currentColor`, so each variant is outlined in its own
    semantic colour instead of a grey that means nothing — the same mistake
    the primary button was making. It also gives the bare `.notice` the
