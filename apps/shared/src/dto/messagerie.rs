@@ -1,9 +1,9 @@
 //! Request/response shapes for the Messagerie endpoints
 //! (`apps/api/src/messagerie/`), consumed by `apps/web`'s SSR client. Kept
 //! field-for-field identical to `apps/api`'s wire structs so there is one
-//! documented shape; only the fields `apps/web` needs are declared (serde
-//! ignores extras on deserialize). The backend is *not* modified by this epic
-//! — these mirror it, they don't replace it.
+//! documented shape (serde ignores extras on deserialize). These mirror the
+//! backend, they don't replace it: a change to the wire shape lands in
+//! `apps/api` and here together, as `reply_to` did (#464).
 //!
 //! `content` is plain text on the wire in both directions: the backend stores
 //! it encrypted (`pgp_sym_encrypt` with a dedicated `MESSAGE_ENCRYPTION_KEY`)
