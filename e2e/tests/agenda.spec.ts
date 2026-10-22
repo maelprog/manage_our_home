@@ -105,6 +105,33 @@ test.describe("Agenda — calendar & events", () => {
     await page.goto("/agenda/00000000-0000-4000-8000-000000000000");
     await expect(page.getByRole("heading", { name: "Événement introuvable" })).toBeVisible();
   });
+
+  test("a malformed rid or offset reads as absent: the detail page renders (#580)", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-agbadquery", "Agenda Query");
+    await createGroup(page, "Famille Paramètres");
+    const date = dayThisMonth(16);
+    await createEvent(page, { title: "Dentiste", start: `${date}T09:00`, end: `${date}T10:00` });
+    await openEventDetail(page, "Dentiste");
+    const detail = new URL(page.url()).pathname;
+    const rid = "00000000-0000-4000-8000-000000000000";
+
+    // rid unconvertible: no reminder banner, the page itself unchanged.
+    let response = await page.goto(`${detail}?rid=x`);
+    expect(response?.status()).toBe(200);
+    await expect(page.getByRole("heading", { name: "Dentiste" })).toBeVisible();
+    await expect(page.getByText("Rappel actif")).toHaveCount(0);
+
+    // offset unconvertible: the banner shows, read as offset 0.
+    response = await page.goto(`${detail}?rid=${rid}&offset=abc`);
+    expect(response?.status()).toBe(200);
+    await expect(page.getByText("Rappel actif : à l'heure de l'événement.")).toBeVisible();
+
+    // A valid pair keeps its effect.
+    await page.goto(`${detail}?rid=${rid}&offset=30`);
+    await expect(page.getByText("Rappel actif : 30 min avant.")).toBeVisible();
+  });
 });
 
 test.describe("Agenda — tasks & completion", () => {

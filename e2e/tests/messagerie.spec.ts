@@ -573,3 +573,29 @@ test.describe("Messagerie — replies (#465)", () => {
     await expect(row.locator(".quote")).toHaveCount(0);
   });
 });
+
+test.describe("Messagerie — malformed URL parameters (#580)", () => {
+  test("a parameter that does not convert reads as absent: the live thread renders", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-msgbadquery", "Bad Query");
+    await createGroup(page, "Famille Paramètres");
+    await sendMessage(page, "Toujours là");
+
+    for (const query of [
+      "reply_to=",
+      "reply_to=pas-un-uuid",
+      "before_id=x&before_created_at=y",
+      "limit=abc",
+    ]) {
+      const response = await page.goto(`/messagerie?${query}`);
+      expect(response?.status(), query).toBe(200);
+      // The live view (no history cursor), the message, a plain composer.
+      await expect(page.locator('#thread[data-live="true"]'), query).toHaveCount(1);
+      await expect(page.locator("li[data-message-id]", { hasText: "Toujours là" })).toHaveCount(1);
+      await expect(page.locator("#composer .notice"), query).toHaveCount(0);
+      await expect(page.locator('#composer input[name="reply_to_id"]'), query).toHaveCount(0);
+      await expect(page.getByLabel("Votre message")).toBeVisible();
+    }
+  });
+});
