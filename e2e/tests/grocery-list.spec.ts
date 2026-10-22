@@ -251,3 +251,37 @@ test.describe("Grocery list — permission bar", () => {
     await context.close();
   });
 });
+
+test.describe("Grocery list — malformed URL parameters (#582)", () => {
+  test("an unconvertible or repeated added reads as absent or first: the list renders", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-grocbadquery", "Grocery Query");
+    await createGroup(page, "Famille Paramètres");
+
+    for (const query of ["added=", "added=abc"]) {
+      const response = await page.goto(`/grocery-list?${query}`);
+      expect(response?.status(), query).toBe(200);
+      await expect(page.getByRole("heading", { name: "Liste de courses" }), query).toBeVisible();
+      await expect(page.locator(".notice.success"), query).toHaveCount(0);
+    }
+
+    // With the generate notice, an unconvertible count is a run that added nothing.
+    let response = await page.goto("/grocery-list?notice=generated&added=abc");
+    expect(response?.status()).toBe(200);
+    await expect(page.getByText("Aucun nouvel article à ajouter.")).toBeVisible();
+
+    // A valid count keeps its banner.
+    await page.goto("/grocery-list?notice=generated&added=2");
+    await expect(
+      page.getByText("2 articles ajoutés depuis les recettes et les stocks."),
+    ).toBeVisible();
+
+    // A repeated parameter keeps its first occurrence.
+    response = await page.goto("/grocery-list?notice=generated&added=1&added=5&added=x");
+    expect(response?.status()).toBe(200);
+    await expect(
+      page.getByText("1 article ajouté depuis les recettes et les stocks."),
+    ).toBeVisible();
+  });
+});

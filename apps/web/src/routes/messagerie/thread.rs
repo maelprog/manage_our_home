@@ -7,7 +7,7 @@
 //! thread inline with the submitted text preserved, success PRGs. See
 //! `docs/front-epic-8-messagerie.md`.
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
@@ -25,7 +25,7 @@ use uuid::Uuid;
 use crate::app::{html_escape, member_colour, member_initial, shell_with_header, Width};
 use crate::assets::Script;
 use crate::layout::CurrentUser;
-use crate::lenient_query::lenient;
+use crate::lenient_query::{lenient, LenientQuery};
 use crate::state::{api_request_auth, AppState};
 
 use super::{
@@ -37,7 +37,8 @@ use super::{
 /// view; `before_*` make it a history window; `limit` sets the page size.
 /// `notice` is the PRG success banner; `reply_to` is the message the composer
 /// answers (#465), set by a row's "Répondre" link. A typed parameter that
-/// does not convert reads as absent (#580) rather than failing the page.
+/// does not convert reads as absent (#580) rather than failing the page; a
+/// repeated one keeps its first occurrence (#582, [`LenientQuery`]).
 #[derive(serde::Deserialize)]
 pub struct ThreadQuery {
     notice: Option<String>,
@@ -541,7 +542,7 @@ pub async fn get(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
     headers: HeaderMap,
-    Query(query): Query<ThreadQuery>,
+    LenientQuery(query): LenientQuery<ThreadQuery>,
 ) -> Response {
     let Some(fam) = family_context(&state, &headers, &me, "/messagerie").await else {
         return Redirect::to("/groups/new").into_response();
@@ -1054,7 +1055,8 @@ mod tests {
     use chrono::TimeZone;
 
     fn thread_query(raw: &str) -> ThreadQuery {
-        serde_urlencoded::from_str(raw).expect("a malformed parameter must not reject the page")
+        crate::lenient_query::from_query_str(raw)
+            .expect("a malformed parameter must not reject the page")
     }
 
     #[test]
@@ -1094,6 +1096,21 @@ mod tests {
         assert_eq!(q.reply_to, Some(Uuid::parse_str(id).unwrap()));
         assert!(q.before_created_at.zip(q.before_id).is_some());
         assert_eq!(q.limit, Some(20));
+    }
+
+    #[test]
+    fn a_repeated_thread_parameter_keeps_its_first_occurrence() {
+        // #582: `?reply_to=a&reply_to=b` was a "duplicate field" 400.
+        let (a, b) = (
+            "6f1c1c1e-3b4a-4d2e-9f00-0123456789ab",
+            "0f1c1c1e-3b4a-4d2e-9f00-0123456789ab",
+        );
+        let q = thread_query(&format!("reply_to={a}&reply_to={b}&limit=5&limit=x"));
+        assert_eq!(q.reply_to, Some(Uuid::parse_str(a).unwrap()));
+        assert_eq!(q.limit, Some(5));
+        assert!(thread_query(&format!("reply_to=x&reply_to={b}"))
+            .reply_to
+            .is_none());
     }
 
     fn sample(content: &str) -> MessageResponse {

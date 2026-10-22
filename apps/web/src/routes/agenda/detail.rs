@@ -9,7 +9,7 @@
 //! 400 `completed_only_valid_for_tasks` / `occurrence_at_required_for_recurring_task`
 //! mapped defensively (the UI only renders those forms where valid).
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
@@ -26,7 +26,7 @@ use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
-use crate::lenient_query::lenient;
+use crate::lenient_query::{lenient, LenientQuery};
 use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
@@ -44,7 +44,8 @@ pub struct DetailQuery {
     error: Option<String>,
     /// Set after a reminder is created, so the (non-enumerable) reminder can
     /// be shown once with a delete link. Both read as absent when they do
-    /// not convert (#580): no banner, offset 0.
+    /// not convert (#580): no banner, offset 0. Any repeated parameter keeps
+    /// its first occurrence (#582, [`LenientQuery`]).
     #[serde(default, deserialize_with = "lenient")]
     rid: Option<Uuid>,
     #[serde(default, deserialize_with = "lenient")]
@@ -143,7 +144,7 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(event_id): Path<Uuid>,
-    Query(query): Query<DetailQuery>,
+    LenientQuery(query): LenientQuery<DetailQuery>,
 ) -> Response {
     let Some(fam) = family_context(&state, &headers, &me, &format!("/agenda/{event_id}")).await
     else {
@@ -634,7 +635,8 @@ mod tests {
     }
 
     fn detail_query(raw: &str) -> DetailQuery {
-        serde_urlencoded::from_str(raw).expect("a malformed parameter must not reject the page")
+        crate::lenient_query::from_query_str(raw)
+            .expect("a malformed parameter must not reject the page")
     }
 
     #[test]
@@ -667,6 +669,15 @@ mod tests {
         assert_eq!(q.occ.as_deref(), Some("2026-10-22"));
         assert!(q.rid.is_some());
         assert_eq!(q.offset, Some(30));
+    }
+
+    #[test]
+    fn a_repeated_detail_parameter_keeps_its_first_occurrence() {
+        // #582: a repeated key was a "duplicate field" 400.
+        let q = detail_query("occ=2026-10-22&occ=2026-10-23&offset=30&offset=60&notice=a&notice=b");
+        assert_eq!(q.occ.as_deref(), Some("2026-10-22"));
+        assert_eq!(q.offset, Some(30));
+        assert_eq!(q.notice.as_deref(), Some("a"));
     }
 
     fn member(id: Uuid, name: &str) -> GroupMember {

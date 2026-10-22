@@ -26,7 +26,7 @@
 //! the handlers match on the code prefix and render fixed copy — the tail of
 //! that message never reaches the page.
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
@@ -47,6 +47,7 @@ use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
+use crate::lenient_query::{lenient, LenientQuery};
 use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
@@ -63,13 +64,18 @@ pub struct ImportsQuery {
     error: Option<String>,
     /// The three counters of the run that just finished, carried through the PRG
     /// so a refresh doesn't re-import. Safe in the URL — unlike the feed URL,
-    /// they are not a credential.
+    /// they are not a credential. Each of the four counters reads as absent
+    /// when it does not convert (#582).
+    #[serde(default, deserialize_with = "lenient")]
     imported: Option<usize>,
+    #[serde(default, deserialize_with = "lenient")]
     updated: Option<usize>,
+    #[serde(default, deserialize_with = "lenient")]
     skipped: Option<usize>,
     /// How many imported events the delete took with the connection (#55).
     /// Present only when that branch ran — absent is "the events were
     /// kept", which is a different sentence, not a count of zero.
+    #[serde(default, deserialize_with = "lenient")]
     deleted: Option<usize>,
 }
 
@@ -79,16 +85,31 @@ fn notice_text(query: &ImportsQuery) -> Option<String> {
             "Agenda Google connecté. Lancez un import pour récupérer ses événements.".to_string(),
         ),
         "import_deleted" => Some(import_deleted_notice(query.deleted)),
-        "imported" => Some(format!(
-            "Import terminé : {}.",
-            import_run_summary(
-                query.imported.unwrap_or(0),
-                query.updated.unwrap_or(0),
-                query.skipped.unwrap_or(0),
-            )
-        )),
+        "imported" => Some(match present_run_summary(query) {
+            Some(summary) => format!("Import terminé : {summary}."),
+            None => "Import terminé.".to_string(),
+        }),
         _ => None,
     }
+}
+
+/// The run summary of the counters actually in the URL (#582): an absent or
+/// unconvertible one is left out rather than shown as a made-up 0, and with
+/// none there is no summary. With all three it is `import_run_summary`.
+fn present_run_summary(query: &ImportsQuery) -> Option<String> {
+    let counters = [query.imported, query.updated, query.skipped];
+    // Each term keeps `import_run_summary`'s wording: cut it at its commas.
+    let full = import_run_summary(
+        query.imported.unwrap_or(0),
+        query.updated.unwrap_or(0),
+        query.skipped.unwrap_or(0),
+    );
+    let terms: Vec<&str> = full
+        .split(", ")
+        .zip(counters)
+        .filter_map(|(term, n)| n.map(|_| term))
+        .collect();
+    (!terms.is_empty()).then(|| terms.join(", "))
 }
 
 /// Every error the screens surface, mapped to fixed French copy. `apps/api`'s
@@ -185,7 +206,7 @@ pub async fn get(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
     headers: HeaderMap,
-    Query(query): Query<ImportsQuery>,
+    LenientQuery(query): LenientQuery<ImportsQuery>,
 ) -> Response {
     let Some(fam) = family_context(&state, &headers, &me, "/agenda/imports").await else {
         return Redirect::to("/groups/new").into_response();
@@ -690,6 +711,59 @@ mod tests {
         assert_eq!(import_error_code(&serde_json::json!({})), "unavailable");
     }
 
+    // -- ImportsQuery (#582) -------------------------------------------------
+
+    fn imports_query(raw: &str) -> ImportsQuery {
+        crate::lenient_query::from_query_str(raw)
+            .expect("a malformed parameter must not reject the page")
+    }
+
+    fn counters(q: &ImportsQuery) -> [Option<usize>; 4] {
+        [q.imported, q.updated, q.skipped, q.deleted]
+    }
+
+    #[test]
+    fn absent_counters_read_as_none() {
+        // `default` beside `deserialize_with`: a missing parameter is not a
+        // "missing field" 400.
+        for raw in ["", "notice=imported", "notice=import_deleted"] {
+            assert_eq!(counters(&imports_query(raw)), [None; 4], "{raw}");
+        }
+    }
+
+    #[test]
+    fn malformed_counters_read_as_absent() {
+        for raw in [
+            "imported=&updated=&skipped=&deleted=",
+            "imported=x&updated=-1&skipped=1.5&deleted=abc",
+        ] {
+            assert_eq!(counters(&imports_query(raw)), [None; 4], "{raw}");
+        }
+        // One bad counter leaves the others intact.
+        let q = imports_query("notice=imported&imported=1&deleted=&skipped=x&updated=4");
+        assert_eq!(counters(&q), [Some(1), Some(4), None, None]);
+        assert_eq!(
+            notice_text(&q).unwrap(),
+            "Import terminé : 1 événement importé, 4 mis à jour."
+        );
+        // An unconvertible `deleted` is the "events kept" sentence, as absent.
+        let q = imports_query("notice=import_deleted&deleted=x");
+        assert!(notice_text(&q).unwrap().contains("restent dans l'agenda"));
+    }
+
+    #[test]
+    fn valid_counters_keep_their_effect() {
+        let q = imports_query("notice=imported&imported=3&updated=1&skipped=12&deleted=2");
+        assert_eq!(counters(&q), [Some(3), Some(1), Some(12), Some(2)]);
+    }
+
+    #[test]
+    fn a_repeated_parameter_keeps_its_first_occurrence() {
+        let q = imports_query("notice=imported&imported=3&imported=9&notice=import_created");
+        assert_eq!(q.notice.as_deref(), Some("imported"));
+        assert_eq!(q.imported, Some(3));
+    }
+
     // -- notice_text ---------------------------------------------------------
 
     fn query(notice: Option<&str>, counts: Option<(usize, usize, usize)>) -> ImportsQuery {
@@ -712,11 +786,38 @@ mod tests {
     }
 
     #[test]
-    fn missing_counters_read_as_zero_rather_than_breaking_the_banner() {
+    fn without_any_counter_the_banner_has_no_summary() {
+        // #582: an absent counter is not a zero — no made-up "0 importé".
         assert_eq!(
             notice_text(&query(Some("imported"), None)).unwrap(),
-            "Import terminé : 0 événement importé, 0 mis à jour, 0 inchangé."
+            "Import terminé."
         );
+    }
+
+    #[test]
+    fn a_missing_counter_is_left_out_of_the_summary() {
+        let mut q = query(Some("imported"), Some((2, 0, 1)));
+        q.updated = None;
+        assert_eq!(
+            notice_text(&q).unwrap(),
+            "Import terminé : 2 événements importés, 1 inchangé."
+        );
+        q.imported = None;
+        assert_eq!(notice_text(&q).unwrap(), "Import terminé : 1 inchangé.");
+        q.skipped = None;
+        q.updated = Some(0);
+        assert_eq!(notice_text(&q).unwrap(), "Import terminé : 0 mis à jour.");
+    }
+
+    #[test]
+    fn three_present_counters_read_as_the_shared_summary() {
+        // Same wording as `import_run_summary`, including zero and plurals.
+        for (i, u, k) in [(0, 0, 0), (1, 1, 1), (3, 1, 12), (0, 0, 4)] {
+            assert_eq!(
+                notice_text(&query(Some("imported"), Some((i, u, k)))).unwrap(),
+                format!("Import terminé : {}.", import_run_summary(i, u, k))
+            );
+        }
     }
 
     #[test]

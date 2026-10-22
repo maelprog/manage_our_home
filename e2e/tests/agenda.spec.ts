@@ -131,6 +131,15 @@ test.describe("Agenda — calendar & events", () => {
     // A valid pair keeps its effect.
     await page.goto(`${detail}?rid=${rid}&offset=30`);
     await expect(page.getByText("Rappel actif : 30 min avant.")).toBeVisible();
+
+    // A repeated parameter keeps its first occurrence (#582).
+    response = await page.goto(`${detail}?rid=${rid}&rid=x&offset=30&offset=abc`);
+    expect(response?.status()).toBe(200);
+    await expect(page.getByText("Rappel actif : 30 min avant.")).toBeVisible();
+    response = await page.goto(`${detail}?rid=x&rid=${rid}`);
+    expect(response?.status()).toBe(200);
+    await expect(page.getByRole("heading", { name: "Dentiste" })).toBeVisible();
+    await expect(page.getByText("Rappel actif")).toHaveCount(0);
   });
 });
 

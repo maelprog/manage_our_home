@@ -5,7 +5,7 @@
 //! per-row a "Modifier" link renders only for items the caller may modify.
 //! PRG banners after add/generate/check/update/delete.
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
@@ -21,6 +21,7 @@ use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
+use crate::lenient_query::{lenient, LenientQuery};
 use crate::state::{api_request_auth, AppState};
 
 use super::{family_context, grocery_cookie, item_not_found_page, service_unavailable_page};
@@ -30,7 +31,9 @@ pub struct ListQuery {
     notice: Option<String>,
     error: Option<String>,
     /// Number of items the generate action created (only set with
-    /// `notice=generated`).
+    /// `notice=generated`). Reads as absent when it does not convert (#582):
+    /// the banner then says nothing was added.
+    #[serde(default, deserialize_with = "lenient")]
     added: Option<usize>,
 }
 
@@ -138,7 +141,7 @@ pub async fn get(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
     headers: HeaderMap,
-    Query(query): Query<ListQuery>,
+    LenientQuery(query): LenientQuery<ListQuery>,
 ) -> Response {
     let Some(fam) = family_context(&state, &headers, &me, "/grocery-list").await else {
         return Redirect::to("/groups/new").into_response();
@@ -439,5 +442,57 @@ pub async fn price(
         }
         Ok(resp) if resp.status == reqwest::StatusCode::FORBIDDEN => redirect("forbidden"),
         Ok(_) | Err(_) => redirect("unavailable"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn list_query(raw: &str) -> ListQuery {
+        crate::lenient_query::from_query_str(raw)
+            .expect("a malformed parameter must not reject the page")
+    }
+
+    #[test]
+    fn absent_added_reads_as_none() {
+        // `default` beside `deserialize_with`: a missing parameter is not a
+        // "missing field" 400.
+        for raw in ["", "notice=item_added"] {
+            assert!(list_query(raw).added.is_none(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn malformed_added_reads_as_absent() {
+        // #582: empty, unconvertible, negative.
+        for raw in [
+            "added=",
+            "added=abc",
+            "added=-1",
+            "notice=generated&added=1.5",
+        ] {
+            assert!(list_query(raw).added.is_none(), "{raw}");
+        }
+        // The generate banner then reads as a run that added nothing.
+        let q = list_query("notice=generated&added=abc");
+        assert_eq!(
+            notice_html(q.notice.as_deref(), q.added),
+            r#"<p class="notice success">Aucun nouvel article à ajouter.</p>"#
+        );
+    }
+
+    #[test]
+    fn valid_added_keeps_its_effect() {
+        let q = list_query("notice=generated&added=3");
+        assert_eq!(q.added, Some(3));
+        assert!(notice_html(q.notice.as_deref(), q.added).contains("3 articles ajoutés"));
+    }
+
+    #[test]
+    fn a_repeated_parameter_keeps_its_first_occurrence() {
+        let q = list_query("notice=generated&added=2&added=5&notice=item_added");
+        assert_eq!(q.notice.as_deref(), Some("generated"));
+        assert_eq!(q.added, Some(2));
     }
 }
