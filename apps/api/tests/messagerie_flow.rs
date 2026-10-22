@@ -1997,9 +1997,21 @@ async fn a_reply_carries_its_parent_everywhere(db: PgPool) {
     assert_eq!(event["type"], "message.updated", "{event}");
     assert_eq!(event["message"]["reply_to"], reply["reply_to"], "{event}");
 
-    // Nothing of the excerpt is stored in clear, in any column.
+    // Nothing of the excerpt is stored in clear. `content` is the only
+    // column of `messages` that can hold text at all — every other one is a
+    // uuid or a timestamp — and its bytes never contain the excerpt's.
+    let text_columns: Vec<(String, String)> = sqlx::query_as(
+        "SELECT column_name::text, data_type::text FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'messages'
+           AND data_type NOT IN ('uuid', 'timestamp with time zone')",
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(text_columns, [("content".into(), "bytea".into())]);
     let in_clear: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM messages m WHERE m::text LIKE '%Qui fait les courses%'",
+        "SELECT count(*) FROM messages
+         WHERE position(convert_to('Qui fait les courses', 'UTF8') IN content) > 0",
     )
     .fetch_one(&db)
     .await
