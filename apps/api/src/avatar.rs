@@ -90,8 +90,8 @@ const DECODE_PERMITS: usize = 2;
 /// lossless WebP of 6000 × 4000, 168.0 MB. The two last formats are
 /// decoded whole (`image` has no reduced decode for them), the progressive
 /// JPEG holds every coefficient until its last scan: those are the bounded
-/// peaks, the sequential JPEG of any size within `MAX_JPEG_SIDE` stays far
-/// below. Before #588, a progressive JPEG of 5000 × 5000 in 4:4:4 held
+/// peaks. A sequential JPEG at `MAX_JPEG_SIDE` is reduced to 2048 × 2048,
+/// a frame of 12.6 MB (reckoned, not counted). Before #588, a progressive JPEG of 5000 × 5000 in 4:4:4 held
 /// 233 MB (review of #467).
 pub const DECODE_PEAK_BYTES: usize = 180_000_000;
 
