@@ -69,7 +69,8 @@ pub async fn export_account(
         "reminder_channel": profile.reminder_channel,
     });
     // #467: the profile photo, as the attachments below: its type and a
-    // presigned GET, never its storage key. `null` without a photo.
+    // presigned GET. No `avatar_key` field, though the key is in the
+    // link's path, as for the attachments. `null` without a photo.
     profile_json["avatar"] = match &profile.avatar_key {
         Some(key) => {
             let url = state.storage.presigned_get_url(key).await;
