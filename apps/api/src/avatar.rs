@@ -304,7 +304,9 @@ fn parse_sof(marker: u8, segment: &[u8]) -> Result<JpegFrame, AvatarError> {
         return unreadable;
     };
     let sampling: Vec<(u8, u8)> = components
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|c| (c[1] >> 4, c[1] & 0x0F))
         .collect();
     if sampling.is_empty()
@@ -398,7 +400,9 @@ pub fn check_whole_bounds(
 /// ink: no ink is 0, full ink 255. Each RGB channel is what its ink and
 /// the black leave of the white.
 fn cmyk_to_rgb(cmyk: &[u8]) -> Vec<u8> {
-    cmyk.chunks_exact(4)
+    cmyk.as_chunks::<4>()
+        .0
+        .iter()
         .flat_map(|p| {
             let k = 255 - u16::from(p[3]);
             let leave = |c: u8| ((255 - u16::from(c)) * k / 255) as u8;
@@ -454,7 +458,9 @@ pub(crate) fn decode_jpeg(bytes: &[u8]) -> Result<Decoded, AvatarError> {
     let (width, height) = (u32::from(width), u32::from(height));
     let picture = match info.pixel_format {
         PixelFormat::L8 => GrayImage::from_raw(width, height, pixels).map(DynamicImage::ImageLuma8),
-        PixelFormat::RGB24 => RgbImage::from_raw(width, height, pixels).map(DynamicImage::ImageRgb8),
+        PixelFormat::RGB24 => {
+            RgbImage::from_raw(width, height, pixels).map(DynamicImage::ImageRgb8)
+        }
         PixelFormat::CMYK32 => {
             RgbImage::from_raw(width, height, cmyk_to_rgb(&pixels)).map(DynamicImage::ImageRgb8)
         }
@@ -1051,12 +1057,27 @@ mod tests {
     fn the_progressive_buffer_follows_the_sampling() {
         let prog = JpegCoding::Progressive;
         // 4:2:0, one MCU: 2 × 2 luma blocks and one block per chroma.
-        assert_eq!(progressive_coefficient_bytes(&frame(16, 16, prog, S420)), 6 * 128);
+        assert_eq!(
+            progressive_coefficient_bytes(&frame(16, 16, prog, S420)),
+            6 * 128
+        );
         // One pixel past it: two MCUs across.
-        assert_eq!(progressive_coefficient_bytes(&frame(17, 16, prog, S420)), 12 * 128);
-        assert_eq!(progressive_coefficient_bytes(&frame(8, 8, prog, S444)), 3 * 128);
-        assert_eq!(progressive_coefficient_bytes(&frame(9, 8, prog, GREY)), 2 * 128);
-        assert_eq!(progressive_coefficient_bytes(&frame(8, 8, prog, CMYK444)), 4 * 128);
+        assert_eq!(
+            progressive_coefficient_bytes(&frame(17, 16, prog, S420)),
+            12 * 128
+        );
+        assert_eq!(
+            progressive_coefficient_bytes(&frame(8, 8, prog, S444)),
+            3 * 128
+        );
+        assert_eq!(
+            progressive_coefficient_bytes(&frame(9, 8, prog, GREY)),
+            2 * 128
+        );
+        assert_eq!(
+            progressive_coefficient_bytes(&frame(8, 8, prog, CMYK444)),
+            4 * 128
+        );
     }
 
     #[test]
@@ -1153,7 +1174,10 @@ mod tests {
         // A segment length running past the end.
         let mut lying = whole[..4].to_vec();
         lying.extend_from_slice(&[0xFF, 0xFF]);
-        assert_eq!(scan_jpeg_header(&lying).err(), Some(AvatarError::Unreadable));
+        assert_eq!(
+            scan_jpeg_header(&lying).err(),
+            Some(AvatarError::Unreadable)
+        );
     }
 
     /// `jpeg` with `count` APP2 `ICC_PROFILE` segments of 100 bytes each.

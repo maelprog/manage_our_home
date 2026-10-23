@@ -167,10 +167,7 @@ fn a_decode_holds_at_most_the_documented_peak() {
     let mut worst = 0;
     let mut measure = |label: &str, upload: Vec<u8>| {
         let peak = peak_of(&upload);
-        eprintln!(
-            "avatar decode peak: {label}: {:.1} MiB",
-            peak as f64 / MIB
-        );
+        eprintln!("avatar decode peak: {label}: {:.1} MiB", peak as f64 / MIB);
         worst = worst.max(peak);
     };
 
@@ -178,9 +175,18 @@ fn a_decode_holds_at_most_the_documented_peak() {
     // CMYK, then at `MAX_JPEG_SIDE` — the most rows queued for the
     // decoder's threads.
     let side = MAX_JPEG_SIDE as u16;
-    measure("sequential JPEG 8000x6000 4:2:0", pattern_jpeg(8000, 6000, Ycbcr, false, F_2_2));
-    measure("sequential JPEG 8000x6000 4:4:4", pattern_jpeg(8000, 6000, Ycbcr, false, F_1_1));
-    measure("sequential JPEG 8000x6000 CMYK", pattern_jpeg(8000, 6000, Cmyk, false, F_1_1));
+    measure(
+        "sequential JPEG 8000x6000 4:2:0",
+        pattern_jpeg(8000, 6000, Ycbcr, false, F_2_2),
+    );
+    measure(
+        "sequential JPEG 8000x6000 4:4:4",
+        pattern_jpeg(8000, 6000, Ycbcr, false, F_1_1),
+    );
+    measure(
+        "sequential JPEG 8000x6000 CMYK",
+        pattern_jpeg(8000, 6000, Cmyk, false, F_1_1),
+    );
     measure(
         "sequential JPEG at MAX_JPEG_SIDE square 4:2:0",
         pattern_jpeg(side, side, Ycbcr, false, F_2_2),
@@ -196,9 +202,18 @@ fn a_decode_holds_at_most_the_documented_peak() {
     let icc = with_icc(&progressive, MAX_AVATAR_BYTES - progressive.len() - 400_000);
     measure("progressive JPEG 3200x2400 4:2:0", progressive);
     measure("progressive JPEG 3200x2400 4:2:0 + ICC", icc);
-    measure("progressive JPEG 2240x1712 4:4:4", pattern_jpeg(2240, 1712, Ycbcr, true, F_1_1));
-    measure("progressive JPEG 3900x2940 grey", pattern_jpeg(3900, 2940, Luma, true, F_1_1));
-    measure("progressive JPEG 1952x1468 CMYK", pattern_jpeg(1952, 1468, Cmyk, true, F_1_1));
+    measure(
+        "progressive JPEG 2240x1712 4:4:4",
+        pattern_jpeg(2240, 1712, Ycbcr, true, F_1_1),
+    );
+    measure(
+        "progressive JPEG 3900x2940 grey",
+        pattern_jpeg(3900, 2940, Luma, true, F_1_1),
+    );
+    measure(
+        "progressive JPEG 1952x1468 CMYK",
+        pattern_jpeg(1952, 1468, Cmyk, true, F_1_1),
+    );
 
     // The whole decodes `image` keeps, at their bounds: a PNG whose RGB
     // frame is just under `MAX_PNG_FRAME_BYTES` (3739 × 3739 × 3 =
