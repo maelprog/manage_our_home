@@ -12,7 +12,7 @@ use image::codecs::webp::WebPEncoder;
 use image::{DynamicImage, ImageEncoder, ImageFormat, Rgb, RgbImage};
 use jpeg_encoder::{ImageBuffer, JpegColorType, SamplingFactor};
 use manage_our_home::avatar::{
-    reencode_avatar, DECODE_PEAK_BYTES, MAX_AVATAR_BYTES, MAX_JPEG_SIDE,
+    reencode_avatar, AvatarError, DECODE_PEAK_BYTES, MAX_AVATAR_BYTES, MAX_JPEG_SIDE,
 };
 
 struct Counting;
@@ -69,6 +69,15 @@ fn peak_of(upload: &[u8]) -> usize {
     let before = CURRENT.load(Ordering::SeqCst);
     PEAK.store(before, Ordering::SeqCst);
     reencode_avatar(upload).expect("the upload is accepted");
+    PEAK.load(Ordering::SeqCst) - before
+}
+
+/// As `peak_of`, for an upload refused as `image_too_large`.
+fn refusal_peak_of(upload: &[u8]) -> usize {
+    assert!(upload.len() <= MAX_AVATAR_BYTES, "{}", upload.len());
+    let before = CURRENT.load(Ordering::SeqCst);
+    PEAK.store(before, Ordering::SeqCst);
+    assert_eq!(reencode_avatar(upload), Err(AvatarError::ImageTooLarge));
     PEAK.load(Ordering::SeqCst) - before
 }
 
@@ -217,26 +226,65 @@ fn a_decode_holds_at_most_the_documented_peak() {
 
     // The whole decodes `image` keeps, at their bounds: a PNG whose RGB
     // frame is just under `MAX_PNG_FRAME_BYTES` (3739 × 3739 × 3 =
-    // 41 940 363 bytes), and lossless WebPs of 2645 × 2645, just under
-    // `MAX_WEBP_PIXELS`, in RGB and RGBA.
+    // 41 940 363 bytes), and WebPs of 2097 × 2097, just under
+    // `MAX_WEBP_PIXELS` — lossless in RGB and RGBA, lossy in RGB and with
+    // an alpha channel (cwebp 1.2.4, `-q 50`, in tests/fixtures/avatar:
+    // no lossy encoder here).
     let mut png = Vec::new();
     DynamicImage::ImageRgb8(picture(3739, 3739))
         .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
         .unwrap();
     measure("PNG 3739x3739 RGB", png);
-    let source = picture(2645, 2645);
+    let source = picture(2097, 2097);
     let mut webp = Vec::new();
     WebPEncoder::new_lossless(&mut webp)
-        .write_image(source.as_raw(), 2645, 2645, image::ExtendedColorType::Rgb8)
+        .write_image(source.as_raw(), 2097, 2097, image::ExtendedColorType::Rgb8)
         .unwrap();
-    measure("WebP 2645x2645 RGB lossless", webp);
+    measure("WebP 2097x2097 RGB lossless", webp);
     let rgba = DynamicImage::ImageRgb8(source).to_rgba8();
     let mut webp = Vec::new();
     WebPEncoder::new_lossless(&mut webp)
-        .write_image(rgba.as_raw(), 2645, 2645, image::ExtendedColorType::Rgba8)
+        .write_image(rgba.as_raw(), 2097, 2097, image::ExtendedColorType::Rgba8)
         .unwrap();
     drop(rgba);
-    measure("WebP 2645x2645 RGBA lossless", webp);
+    measure("WebP 2097x2097 RGBA lossless", webp);
+    measure(
+        "WebP 2097x2097 RGB lossy",
+        include_bytes!("fixtures/avatar/avatar-lossy-rgb-2097.webp").to_vec(),
+    );
+    measure(
+        "WebP 2097x2097 lossy + alpha",
+        include_bytes!("fixtures/avatar/avatar-lossy-alpha-2097.webp").to_vec(),
+    );
+
+    // Refused before any decode: ICC segments past the first scan of the
+    // progressive JPEG at the bound, filling the file up to the cap. Its
+    // walk allocates nothing of the file's size.
+    let progressive = pattern_jpeg(3200, 2400, Ycbcr, true, F_2_2);
+    let first_scan = progressive
+        .windows(2)
+        .position(|w| w == [0xFF, 0xDA])
+        .unwrap();
+    let second_scan = first_scan
+        + 2
+        + progressive[first_scan + 2..]
+            .windows(2)
+            .position(|w| w == [0xFF, 0xDA])
+            .unwrap();
+    let segments = with_icc(
+        &[0xFF, 0xD8],
+        MAX_AVATAR_BYTES - progressive.len() - 400_000,
+    );
+    let mut late_icc = progressive[..second_scan].to_vec();
+    late_icc.extend_from_slice(&segments[2..]);
+    late_icc.extend_from_slice(&progressive[second_scan..]);
+    drop(progressive);
+    let refused = refusal_peak_of(&late_icc);
+    eprintln!(
+        "avatar decode peak: progressive JPEG 3200x2400 + ICC past the first scan (refused): {:.1} MiB",
+        refused as f64 / MIB
+    );
+    worst = worst.max(refused);
 
     assert!(worst <= DECODE_PEAK_BYTES, "{worst} > {DECODE_PEAK_BYTES}");
 }

@@ -79,12 +79,12 @@ const MAX_DIMENSION: u32 = 8192;
 /// - 7 attachment bodies, the rest of the upload gate's 8 permits
 ///   (`GLOBAL_UPLOADS`, shared with the photos): 7 × (20.06 MiB of
 ///   `storage::MAX_UPLOAD_BODY_BYTES` + about 0.6 MiB of connection buffer,
-///   measured in #249) = 144.8 MiB;
+///   measured in #249) = 144.6 MiB;
 /// - the one photo body: 32.06 MiB of `MAX_AVATAR_BODY_BYTES` + 0.6 MiB =
 ///   32.7 MiB;
 /// - its decode: `DECODE_PEAK_BYTES`, 50 MiB.
 ///
-/// 8 + 144.8 + 32.7 + 50 = 235.5 MiB, 20.5 MiB under the limit for the
+/// 8 + 144.6 + 32.7 + 50 = 235.3 MiB, 20.7 MiB under the limit for the
 /// rest of the process. A photo upload waiting for the permit holds a gate
 /// permit and its connection buffer only, less than an attachment body.
 const DECODE_PERMITS: usize = 1;
@@ -92,32 +92,35 @@ const DECODE_PERMITS: usize = 1;
 /// What one decode holds at its peak, in bytes, at most: the upload's
 /// bytes aside, the decoders' buffers and the frame — 50 MiB (arbitrage
 /// of 2026-10-23, #588). Each path has its bound, checked on the header
-/// before anything of the picture's size is allocated, and refused as
-/// `image_too_large` past it. Peaks counted by `tests/avatar_memory.rs`,
-/// which fails past this bound, at each bound, in debug and release builds
-/// on 7 cores and on a single one (`--cpuset-cpus 0`); the ranges are over
-/// those four runs:
+/// before anything of the picture's size is allocated, and refused past
+/// it. Peaks counted by `tests/avatar_memory.rs`, which fails past this
+/// bound, at each bound, in debug and release builds on 7 cores and on a
+/// single one (`--cpuset-cpus 0`); the ranges are over two such series of
+/// four runs:
 ///
 /// - sequential JPEG, reduced at decode (`MAX_JPEG_SIDE`): 8000 × 6000,
-///   3.2 to 7.3 MiB in 4:2:0, 4.3 to 11.4 MiB in 4:4:4, 5.7 to 9.4 MiB in
-///   CMYK; 16384 × 16384 in 4:2:0, 18.0 MiB;
+///   3.2 to 7.7 MiB in 4:2:0, 4.3 to 14.1 MiB in 4:4:4, 5.7 to 16.4 MiB
+///   in CMYK; 16384 × 16384 in 4:2:0, 18.0 to 25.6 MiB;
 /// - progressive JPEG (`MAX_PROGRESSIVE_COEFFICIENT_BYTES`), at the bound:
-///   4:2:0 3200 × 2400, 22.5 to 25.8 MiB, 22.5 to 27.9 MiB with ICC
-///   segments filling the file; 4:4:4 2240 × 1712, 23.3 to 30.0 MiB;
-///   greyscale 3900 × 2940, 22.6 to 34.3 MiB; CMYK 1952 × 1468, 23.3 to
-///   28.1 MiB;
+///   4:2:0 3200 × 2400, 22.5 to 28.8 MiB, 22.5 to 27.9 MiB with ICC
+///   segments before the first scan filling the file; 4:4:4 2240 × 1712,
+///   23.3 to 30.0 MiB; greyscale 3900 × 2940, 22.6 to 34.3 MiB (37.0 MiB
+///   on one core in the review of #589); CMYK 1952 × 1468, 23.3 to
+///   28.1 MiB. With ICC segments past the first scan the file is refused
+///   (`scan_jpeg_header`), its walk allocating nothing: 0.0 MiB;
 /// - PNG (`MAX_PNG_FRAME_BYTES`), RGB 3739 × 3739: 40.4 MiB;
-/// - WebP (`MAX_WEBP_PIXELS`), lossless 2645 × 2645: 46.7 MiB in RGB, the
-///   largest, 26.9 MiB in RGBA. A lossy WebP is not counted: the encoder
-///   at hand writes lossless only.
+/// - WebP (`MAX_WEBP_PIXELS`), 2097 × 2097: lossy with an alpha channel
+///   44.1 MiB, the largest; lossless RGB 29.4 MiB, lossless RGBA
+///   17.0 MiB, lossy RGB 20.4 MiB. An animated WebP is refused.
 ///
 /// The JPEG figures vary with scheduling: past a reduced frame 128 pixels
 /// wide, `jpeg_decoder` hands its rows to a thread per component through a
 /// queue it does not bound, and on a single core rows pile up — the high
 /// ends above. For a progressive JPEG that queue is bounded by the
 /// coefficient buffer it copies, hence a bound of half the budget; for a
-/// sequential one it is measured only. Before #588, a progressive 4:4:4
-/// JPEG of 5000 × 5000 held 233 MB (review of #467).
+/// sequential one it is measured only. Before #588, the comment here
+/// counted about 235 MB per decode and about 470 MB for the two permits
+/// (review of #467).
 pub const DECODE_PEAK_BYTES: usize = 50 * 1024 * 1024;
 
 static DECODES: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(DECODE_PERMITS));
@@ -193,14 +196,16 @@ pub const MAX_JPEG_SIDE: u32 = 16384;
 pub const MAX_PROGRESSIVE_COEFFICIENT_BYTES: u64 = 22 * 1024 * 1024;
 
 /// Bound on a WebP's pixels. `image` decodes it whole, and its decoder
-/// holds about 7 bytes a pixel at its peak for a lossless RGB picture
-/// (`DECODE_PEAK_BYTES`): 7 Mpx, a square of 2645, stays within the
-/// decode's budget.
-pub const MAX_WEBP_PIXELS: u64 = 7_000_000;
+/// holds about 10.5 bytes a pixel at its peak for a lossy picture with an
+/// alpha channel, the costliest still WebP (70.2 MiB at 2645 × 2645 in
+/// the review of #589): 4.4 Mpx, a square of 2097, keeps it within the
+/// decode's budget (`DECODE_PEAK_BYTES`). An animated WebP is refused
+/// (`webp_is_animated`).
+pub const MAX_WEBP_PIXELS: u64 = 4_400_000;
 
 /// Bound on a PNG's decoded frame, in bytes, as its header declares it
 /// (`ImageDecoder::total_bytes`): `image` decodes it whole, the frame and
-/// little else. 40 MiB is 3740 × 3740 in 8-bit RGB, 3240 × 3240 in RGBA.
+/// little else. 40 MiB is 3739 × 3739 in 8-bit RGB, 3238 × 3238 in RGBA.
 /// Also handed to `image` as `Limits::max_alloc`, for what its decoders
 /// allocate besides the frame.
 pub const MAX_PNG_FRAME_BYTES: u64 = 40 * 1024 * 1024;
@@ -228,10 +233,11 @@ pub struct JpegFrame {
 
 /// What `scan_jpeg_header` finds before the first scan.
 pub struct JpegHeader<'a> {
-    /// The file with its APP2 segments left out, as slices to read in a
-    /// row: `jpeg_decoder` keeps every ICC segment it reads, and a file
-    /// filled with them would add its whole size to the decode. The avatar
-    /// applies no colour profile, so nothing is lost.
+    /// The file with the APP2 segments of its header left out, as slices
+    /// to read in a row: `jpeg_decoder` keeps every ICC segment it reads,
+    /// and a file filled with them would add its whole size to the decode.
+    /// The avatar applies no colour profile, so nothing is lost. An APP2
+    /// past the first scan refuses the file (`icc_past`).
     pub kept: Vec<&'a [u8]>,
     pub frame: JpegFrame,
 }
@@ -262,8 +268,16 @@ pub fn scan_jpeg_header(bytes: &[u8]) -> Result<JpegHeader<'_>, AvatarError> {
                 pos += 2;
                 continue;
             }
-            // Start of scan, or an end with no scan at all.
-            0xDA | 0xD9 => break,
+            // An end with no scan at all.
+            0xD9 => break,
+            // Start of scan: the header is over, but `jpeg_decoder` reads
+            // the segments between scans as well.
+            0xDA => {
+                if icc_past(bytes, pos) {
+                    return Err(AvatarError::ImageTooLarge);
+                }
+                break;
+            }
             _ => {}
         }
         let length = match bytes.get(pos + 2..pos + 4) {
@@ -292,6 +306,35 @@ pub fn scan_jpeg_header(bytes: &[u8]) -> Result<JpegHeader<'_>, AvatarError> {
         kept,
         frame: frame.ok_or(UNREADABLE)?,
     })
+}
+
+/// Whether an APP2 segment comes after `pos`, the first SOS marker:
+/// `jpeg_decoder` keeps every ICC segment it reads, between scans and
+/// before the end marker too, where `scan_jpeg_header` cannot leave them
+/// out without walking the scans' data for the decoder. So the file is
+/// refused instead; a camera writes its profile before the first scan.
+/// In the entropy-coded data, a 0xFF is followed by a stuffed 0x00 or a
+/// restart marker, never by a segment's marker.
+fn icc_past(bytes: &[u8], mut pos: usize) -> bool {
+    while pos + 1 < bytes.len() {
+        if bytes[pos] != 0xFF {
+            pos += 1;
+            continue;
+        }
+        match bytes[pos + 1] {
+            // Stuffed byte, fill byte, standalone markers.
+            0x00 | 0xFF | 0x01 | 0xD0..=0xD7 => pos += 1,
+            0xD9 => return false,
+            0xE2 => return true,
+            // A segment with a length — for a SOS, its header; its data
+            // follows.
+            _ => match bytes.get(pos + 2..pos + 4) {
+                Some(&[high, low]) => pos += 2 + usize::from(u16::from_be_bytes([high, low])),
+                _ => return false,
+            },
+        }
+    }
+    false
 }
 
 fn parse_sof(marker: u8, segment: &[u8]) -> Result<JpegFrame, AvatarError> {
@@ -470,6 +513,13 @@ pub(crate) fn decode_jpeg(bytes: &[u8]) -> Result<Decoded, AvatarError> {
     Ok((picture.ok_or(AvatarError::Unreadable)?, orientation))
 }
 
+/// Whether a WebP is animated: the animation flag of its VP8X chunk, the
+/// first one of the file when there is one. A simple WebP (a VP8 or VP8L
+/// chunk alone) is a still image.
+pub fn webp_is_animated(bytes: &[u8]) -> bool {
+    bytes.get(12..16) == Some(b"VP8X") && bytes.get(20).is_some_and(|flags| flags & 0x02 != 0)
+}
+
 /// A PNG or a WebP, decoded whole by `image` under `MAX_DIMENSION` and
 /// `check_whole_bounds`.
 fn decode_whole(bytes: &[u8], format: ImageFormat) -> Result<Decoded, AvatarError> {
@@ -482,6 +532,10 @@ fn decode_whole(bytes: &[u8], format: ImageFormat) -> Result<Decoded, AvatarErro
     limits.max_image_width = Some(MAX_DIMENSION);
     limits.max_image_height = Some(MAX_DIMENSION);
     limits.max_alloc = Some(MAX_PNG_FRAME_BYTES);
+    // Not a photo, and its decoder holds frames on top of frames.
+    if format == ImageFormat::WebP && webp_is_animated(bytes) {
+        return Err(AvatarError::UnsupportedType);
+    }
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     reader.limits(limits);
     let mut decoder = reader.into_decoder().map_err(refusal)?;
@@ -1126,9 +1180,9 @@ mod tests {
     /// holds several frames' worth, the frame's bytes for PNG.
     #[test]
     fn the_whole_decode_bounds() {
-        assert_eq!(check_whole_bounds(ImageFormat::WebP, 2645, 2645, 0), Ok(()));
+        assert_eq!(check_whole_bounds(ImageFormat::WebP, 2097, 2097, 0), Ok(()));
         assert_eq!(
-            check_whole_bounds(ImageFormat::WebP, 2700, 2700, 0),
+            check_whole_bounds(ImageFormat::WebP, 2098, 2098, 0),
             Err(AvatarError::ImageTooLarge)
         );
         assert_eq!(
@@ -1258,6 +1312,90 @@ mod tests {
             let p = *red.get_pixel(AVATAR_SIDE / 2, AVATAR_SIDE / 2);
             assert!(is_red(p), "{progressive} {p:?}");
         }
+    }
+
+    /// `jpeg` with one APP2 `ICC_PROFILE` segment of 100 bytes inserted at
+    /// `at`, a marker boundary past the first scan.
+    fn with_icc_at(jpeg: &[u8], at: usize) -> Vec<u8> {
+        let segment = with_icc(&[0xFF, 0xD8], 1);
+        let mut out = jpeg[..at].to_vec();
+        out.extend_from_slice(&segment[2..]);
+        out.extend_from_slice(&jpeg[at..]);
+        out
+    }
+
+    /// `jpeg_decoder` reads the APP segments between scans too, and keeps
+    /// every ICC one: an APP2 past the first scan — between two scans of a
+    /// progressive picture, or before the end marker — is refused, as the
+    /// memory it could take has no bound.
+    #[test]
+    fn an_icc_segment_past_the_first_scan_is_too_large() {
+        let progressive = jpeg_with(&halves(64, 48), true, SamplingFactor::F_2_2);
+        let first_scan = progressive
+            .windows(2)
+            .position(|w| w == [0xFF, 0xDA])
+            .unwrap();
+        let second_scan = first_scan
+            + 2
+            + progressive[first_scan + 2..]
+                .windows(2)
+                .position(|w| w == [0xFF, 0xDA])
+                .unwrap();
+        let before_eoi = progressive.len() - 2;
+        for at in [second_scan, before_eoi] {
+            assert_eq!(
+                reencode_avatar(&with_icc_at(&progressive, at)),
+                Err(AvatarError::ImageTooLarge),
+                "APP2 at {at}"
+            );
+        }
+        let sequential = jpeg(&halves(64, 48));
+        assert_eq!(
+            reencode_avatar(&with_icc_at(&sequential, sequential.len() - 2)),
+            Err(AvatarError::ImageTooLarge)
+        );
+        // The same file, its ICC before the first scan: accepted.
+        assert!(reencode_avatar(&with_icc(&progressive, 1)).is_ok());
+    }
+
+    /// A RIFF WebP with a VP8X chunk carrying `flags`, then nothing more.
+    fn vp8x_webp(flags: u8) -> Vec<u8> {
+        let mut chunk = b"VP8X".to_vec();
+        chunk.extend_from_slice(&10u32.to_le_bytes());
+        chunk.extend_from_slice(&[flags, 0, 0, 0]);
+        chunk.extend_from_slice(&[15, 0, 0, 15, 0, 0]);
+        let mut out = b"RIFF".to_vec();
+        out.extend_from_slice(&((4 + chunk.len()) as u32).to_le_bytes());
+        out.extend_from_slice(b"WEBP");
+        out.extend_from_slice(&chunk);
+        out
+    }
+
+    /// The animation flag of the VP8X chunk; a simple WebP (VP8 or VP8L
+    /// only) is never animated.
+    #[test]
+    fn an_animated_webp_is_told_from_its_header() {
+        assert!(webp_is_animated(&vp8x_webp(0x02)));
+        assert!(webp_is_animated(&vp8x_webp(0x12)));
+        assert!(!webp_is_animated(&vp8x_webp(0x10)));
+        assert!(!webp_is_animated(&vp8x_webp(0x00)));
+        let mut still = Vec::new();
+        WebPEncoder::new_lossless(&mut still)
+            .write_image(halves(8, 8).as_raw(), 8, 8, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        assert!(!webp_is_animated(&still));
+        assert!(!webp_is_animated(b"RIFF"));
+    }
+
+    /// An animated WebP is not a photo: refused as of a type not taken,
+    /// before anything is decoded — its decoder holds frames on top of
+    /// frames.
+    #[test]
+    fn an_animated_webp_is_refused() {
+        assert_eq!(
+            reencode_avatar(&vp8x_webp(0x02)),
+            Err(AvatarError::UnsupportedType)
+        );
     }
 
     /// A JPEG carrying an ICC profile decodes as one without: the profile
