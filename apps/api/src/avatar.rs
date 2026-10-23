@@ -82,18 +82,22 @@ const DECODE_PERMITS: usize = 2;
 
 /// What one decode holds at its peak, in bytes, at most: the upload's
 /// bytes aside, the decoders' buffers and the frame. Peaks counted by
-/// `tests/avatar_memory.rs` (#588), which fails past this bound: a
-/// sequential JPEG of 8000 × 6000, reduced to 1000 × 750, under 6 MB in
-/// 4:2:0 as in 4:4:4 — the 48 Mpx are never held; a progressive 4:4:4 JPEG
-/// of 6000 × 4600, the nearest to `MAX_PROGRESSIVE_COEFFICIENT_BYTES`,
-/// under 169 MB. These two vary by a few hundred kB from run to run: the
-/// decoder's per-component threads end in varying order; a PNG of 5280 × 5280 in RGB, near `MAX_ALLOC`, 84.0 MB; a
-/// lossless WebP of 6000 × 4000, 168.0 MB. The two last formats are
-/// decoded whole (`image` has no reduced decode for them), the progressive
-/// JPEG holds every coefficient until its last scan: those are the bounded
-/// peaks. A sequential JPEG at `MAX_JPEG_SIDE` is reduced to 2048 × 2048,
-/// a frame of 12.6 MB (reckoned, not counted). Before #588, a progressive JPEG of 5000 × 5000 in 4:4:4 held
-/// 233 MB (review of #467).
+/// `tests/avatar_memory.rs` (#588), which fails past this bound:
+///
+/// - a sequential JPEG of 8000 × 6000, reduced to 1000 × 750: 4.5 to
+///   5.6 MB, in 4:2:0 as in 4:4:4 — the 48 Mpx are never held;
+/// - a progressive 4:4:4 JPEG of 6000 × 4600, the nearest to
+///   `MAX_PROGRESSIVE_COEFFICIENT_BYTES`: 168 to 169 MB, every coefficient
+///   held until the last scan;
+/// - a PNG of 5280 × 5280 in RGB, near `MAX_ALLOC`: 84.0 MB;
+/// - a lossless WebP of 6000 × 4000: 168.0 MB.
+///
+/// The two JPEG figures move by up to a megabyte between runs, the decoder
+/// working on threads of its own. PNG and WebP are decoded whole (`image`
+/// has no reduced decode for them). A sequential JPEG at `MAX_JPEG_SIDE`
+/// is reduced to 2048 × 2048, a frame of 12.6 MB (reckoned, not counted).
+/// Before #588, a progressive 4:4:4 JPEG of 5000 × 5000 held 233 MB
+/// (review of #467).
 pub const DECODE_PEAK_BYTES: usize = 180_000_000;
 
 static DECODES: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(DECODE_PERMITS));
