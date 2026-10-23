@@ -88,8 +88,9 @@ flate2 = "1.1.10"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 # The avatar's JPEG decode (#588): `Decoder::scale` reduces a picture in
 # the inverse DCT (1/2, 1/4, 1/8), which `image`'s zune-jpeg cannot, so a
-# 50 Mpx photo never exists at full size in memory. Without `rayon`: one
-# thread per decode.
+# 50 Mpx photo never exists at full size in memory. Without `rayon`: no
+# pool shared with the process — past 128 × 128 the decoder still starts a
+# thread per colour component of its own (`worker/multithreaded.rs`).
 jpeg-decoder = { version = "0.3.2", default-features = false }
 
 [dev-dependencies]
