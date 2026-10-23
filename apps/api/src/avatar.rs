@@ -84,9 +84,10 @@ const DECODE_PERMITS: usize = 2;
 /// bytes aside, the decoders' buffers and the frame. Peaks counted by
 /// `tests/avatar_memory.rs` (#588), which fails past this bound: a
 /// sequential JPEG of 8000 × 6000, reduced to 1000 × 750, 4.5 MB in 4:2:0
-/// and 5.6 MB in 4:4:4 — the 48 Mpx are never held; a progressive 4:4:4
-/// JPEG of 6000 × 4600, the nearest to `MAX_PROGRESSIVE_COEFFICIENT_BYTES`,
-/// 168.3 MB; a PNG of 5280 × 5280 in RGB, near `MAX_ALLOC`, 84.0 MB; a
+/// and 4.5 to 5.6 MB in 4:4:4 (the decoder's per-component threads end in
+/// varying order) — the 48 Mpx are never held; a progressive 4:4:4 JPEG of
+/// 6000 × 4600, the nearest to `MAX_PROGRESSIVE_COEFFICIENT_BYTES`, 168.2
+/// to 168.3 MB; a PNG of 5280 × 5280 in RGB, near `MAX_ALLOC`, 84.0 MB; a
 /// lossless WebP of 6000 × 4000, 168.0 MB. The two last formats are
 /// decoded whole (`image` has no reduced decode for them), the progressive
 /// JPEG holds every coefficient until its last scan: those are the bounded
