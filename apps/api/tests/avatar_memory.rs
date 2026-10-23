@@ -93,6 +93,25 @@ fn jpeg_encoder_jpeg(image: &RgbImage, progressive: bool, sampling: SamplingFact
     out
 }
 
+/// `jpeg` with APP2 `ICC_PROFILE` segments of about `total` bytes in all,
+/// right after its SOI marker.
+fn with_icc(jpeg: &[u8], total: usize) -> Vec<u8> {
+    const CHUNK: usize = 65_000;
+    let count = total.div_ceil(CHUNK);
+    let mut out = jpeg[..2].to_vec();
+    for i in 0..count {
+        let mut payload = b"ICC_PROFILE\0".to_vec();
+        payload.push((i + 1) as u8);
+        payload.push(count as u8);
+        payload.extend(std::iter::repeat_n(0x5A, CHUNK));
+        out.extend_from_slice(&[0xFF, 0xE2]);
+        out.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
+        out.extend_from_slice(&payload);
+    }
+    out.extend_from_slice(&jpeg[2..]);
+    out
+}
+
 const MB: f64 = 1_000_000.0;
 
 #[test]
@@ -123,33 +142,36 @@ fn a_decode_holds_at_most_the_documented_peak() {
         assert!(peak < 16_000_000, "{peak}");
     }
 
-    // The progressive JPEG nearest `MAX_PROGRESSIVE_COEFFICIENT_BYTES`,
-    // in 4:4:4: 6031 × 4631 × 3 × 2 = 167.6 MB reckoned, under the
-    // 167.8 MB bound.
+    // A sequential strip at `MAX_JPEG_SIDE`: the widest rows the reduced
+    // decode hands its threads.
     measure(
-        "progressive JPEG 6000x4600 4:4:4",
-        jpeg_encoder_jpeg(&picture(6000, 4600), true, SamplingFactor::F_1_1),
+        "sequential JPEG 16384x511 4:4:4",
+        jpeg_encoder_jpeg(&picture(16384, 511), false, SamplingFactor::F_1_1),
     );
 
-    // The whole decodes `image` keeps, near their `MAX_ALLOC` frame: a
-    // PNG of 5280 × 5280 in RGB (83.6 MB), a WebP of 6000 × 4000.
+    // The progressive JPEG nearest `MAX_PROGRESSIVE_COEFFICIENT_BYTES`,
+    // in 4:4:4: 6031 × 4631 × 3 × 2 = 167.6 MB reckoned, under the
+    // 167.8 MB bound — then the same with an ICC profile filling the file
+    // up to `MAX_AVATAR_BYTES`, which the decoder keeps.
+    let progressive = jpeg_encoder_jpeg(&picture(6000, 4600), true, SamplingFactor::F_1_1);
+    let icc = with_icc(&progressive, MAX_AVATAR_BYTES - progressive.len() - 400_000);
+    measure("progressive JPEG 6000x4600 4:4:4", progressive);
+    measure("progressive JPEG 6000x4600 4:4:4 + ICC", icc);
+
+    // The whole decodes `image` keeps, at a frame just under `MAX_ALLOC`:
+    // 5280 × 5280 in RGB, 83.6 MB, as a PNG and as a lossless WebP.
+    let source = picture(5280, 5280);
     let mut png = Vec::new();
-    DynamicImage::ImageRgb8(picture(5280, 5280))
+    DynamicImage::ImageRgb8(source.clone())
         .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
         .unwrap();
-    measure("PNG 5280x5280 RGB", png);
-    let webp_source = picture(6000, 4000);
     let mut webp = Vec::new();
     WebPEncoder::new_lossless(&mut webp)
-        .write_image(
-            webp_source.as_raw(),
-            6000,
-            4000,
-            image::ExtendedColorType::Rgb8,
-        )
+        .write_image(source.as_raw(), 5280, 5280, image::ExtendedColorType::Rgb8)
         .unwrap();
-    drop(webp_source);
-    measure("WebP 6000x4000 lossless", webp);
+    drop(source);
+    measure("PNG 5280x5280 RGB", png);
+    measure("WebP 5280x5280 RGB lossless", webp);
 
     assert!(worst <= DECODE_PEAK_BYTES, "{worst} > {DECODE_PEAK_BYTES}");
 }

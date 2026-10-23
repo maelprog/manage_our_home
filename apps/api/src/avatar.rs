@@ -76,29 +76,36 @@ const MAX_ALLOC: u64 = 80 * 1024 * 1024;
 
 /// Decodes running at once in this process, since the upload gate alone
 /// admits more bodies than decodes should multiply. Count
-/// `DECODE_PERMITS × DECODE_PEAK_BYTES`, 360 MB, for the decodes when
+/// `DECODE_PERMITS × DECODE_PEAK_BYTES`, 460 MB, for the decodes when
 /// sizing the api's memory (the pod's limit on k3s).
 const DECODE_PERMITS: usize = 2;
 
 /// What one decode holds at its peak, in bytes, at most: the upload's
-/// bytes aside, the decoders' buffers and the frame. Peaks counted by
-/// `tests/avatar_memory.rs` (#588), which fails past this bound:
+/// bytes aside, the decoders' buffers and the frame. Peaks counted on the
+/// cases of `tests/avatar_memory.rs` (#588), which fails past this bound,
+/// run on 7 cores and on a single one (`--cpuset-cpus 0`), in release and
+/// debug builds — the largest of those runs:
 ///
-/// - a sequential JPEG of 8000 × 6000, reduced to 1000 × 750: 4.5 to
-///   5.6 MB, in 4:2:0 as in 4:4:4 — the 48 Mpx are never held;
+/// - a lossless WebP of 5280 × 5280 in RGB, its frame (83.6 MB) just under
+///   `MAX_ALLOC`: 195.2 MB, the largest — `image` decodes it whole, with
+///   buffers of its own on top of the frame;
 /// - a progressive 4:4:4 JPEG of 6000 × 4600, the nearest to
-///   `MAX_PROGRESSIVE_COEFFICIENT_BYTES`: 168 to 169 MB, every coefficient
-///   held until the last scan;
+///   `MAX_PROGRESSIVE_COEFFICIENT_BYTES`: 168 to 169 MB on 7 cores, up to
+///   180.3 MB on one; with 10.4 MB of ICC profile filling the file up to
+///   `MAX_AVATAR_BYTES`, 178.7 MB on 7 cores, up to 191.0 MB on one;
 /// - a PNG of 5280 × 5280 in RGB, near `MAX_ALLOC`: 84.0 MB;
-/// - a lossless WebP of 6000 × 4000: 168.0 MB.
+/// - a sequential JPEG, reduced: 8000 × 6000, 4.5 to 5.6 MB; 16384 × 511,
+///   12.6 MB on 7 cores, up to 16.8 MB on one; 16384 × 16384, 18.9 MB on
+///   7 cores, up to 22.8 MB on one (counted once, not in the test: its
+///   source frame alone is 805 MB). The full photo is never held.
 ///
-/// The two JPEG figures move by up to a megabyte between runs, the decoder
-/// working on threads of its own. PNG and WebP are decoded whole (`image`
-/// has no reduced decode for them). A sequential JPEG at `MAX_JPEG_SIDE`
-/// is reduced to 2048 × 2048, a frame of 12.6 MB (reckoned, not counted).
-/// Before #588, a progressive 4:4:4 JPEG of 5000 × 5000 held 233 MB
-/// (review of #467).
-pub const DECODE_PEAK_BYTES: usize = 180_000_000;
+/// The JPEG figures vary with scheduling: past 128 × 128, `jpeg_decoder`
+/// hands the rows to a thread per component through a queue it does not
+/// bound, so a core that leaves those threads behind lets rows pile up —
+/// up to 40–42 MB at 16384 × 16384 in the review of #589. The 230 MB here
+/// keep 35 MB over the largest count for that. Before #588, a progressive
+/// 4:4:4 JPEG of 5000 × 5000 held 233 MB (review of #467).
+pub const DECODE_PEAK_BYTES: usize = 230_000_000;
 
 static DECODES: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(DECODE_PERMITS));
 
