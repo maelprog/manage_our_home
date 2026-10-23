@@ -8,11 +8,12 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::io::Cursor;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use image::codecs::jpeg::JpegEncoder;
 use image::codecs::webp::WebPEncoder;
 use image::{DynamicImage, ImageEncoder, ImageFormat, Rgb, RgbImage};
-use jpeg_encoder::SamplingFactor;
-use manage_our_home::avatar::{reencode_avatar, DECODE_PEAK_BYTES, MAX_AVATAR_BYTES};
+use jpeg_encoder::{ImageBuffer, JpegColorType, SamplingFactor};
+use manage_our_home::avatar::{
+    reencode_avatar, DECODE_PEAK_BYTES, MAX_AVATAR_BYTES, MAX_JPEG_SIDE,
+};
 
 struct Counting;
 
@@ -77,18 +78,60 @@ fn picture(width: u32, height: u32) -> RgbImage {
     })
 }
 
-fn jpeg_encoder_jpeg(image: &RgbImage, progressive: bool, sampling: SamplingFactor) -> Vec<u8> {
+/// A picture `jpeg-encoder` draws row by row, so that a fixture of any
+/// size costs no frame of its own: a 16384 × 16384 RGB source would be
+/// 805 MB.
+struct Pattern {
+    width: u16,
+    height: u16,
+    color: JpegColorType,
+}
+
+impl ImageBuffer for Pattern {
+    fn get_jpeg_color_type(&self) -> JpegColorType {
+        self.color
+    }
+
+    fn width(&self) -> u16 {
+        self.width
+    }
+
+    fn height(&self) -> u16 {
+        self.height
+    }
+
+    fn fill_buffers(&self, y: u16, buffers: &mut [Vec<u8>; 4]) {
+        let components = match self.color {
+            JpegColorType::Luma => 1,
+            JpegColorType::Ycbcr => 3,
+            JpegColorType::Cmyk | JpegColorType::Ycck => 4,
+        };
+        for x in 0..self.width {
+            let values = [(x / 16) as u8, (y / 16) as u8, ((x + y) / 32) as u8, 40];
+            for (buffer, value) in buffers.iter_mut().zip(values).take(components) {
+                buffer.push(value);
+            }
+        }
+    }
+}
+
+fn pattern_jpeg(
+    width: u16,
+    height: u16,
+    color: JpegColorType,
+    progressive: bool,
+    sampling: SamplingFactor,
+) -> Vec<u8> {
     let mut out = Vec::new();
     let mut encoder = jpeg_encoder::Encoder::new(&mut out, 90);
     encoder.set_progressive(progressive);
     encoder.set_sampling_factor(sampling);
     encoder
-        .encode(
-            image.as_raw(),
-            image.width() as u16,
-            image.height() as u16,
-            jpeg_encoder::ColorType::Rgb,
-        )
+        .encode_image(Pattern {
+            width,
+            height,
+            color,
+        })
         .unwrap();
     out
 }
@@ -114,66 +157,71 @@ fn with_icc(jpeg: &[u8], total: usize) -> Vec<u8> {
     out
 }
 
-const MB: f64 = 1_000_000.0;
+const MIB: f64 = 1024.0 * 1024.0;
 
 #[test]
 fn a_decode_holds_at_most_the_documented_peak() {
+    use JpegColorType::{Cmyk, Luma, Ycbcr};
+    use SamplingFactor::{F_1_1, F_2_2};
+
     let mut worst = 0;
     let mut measure = |label: &str, upload: Vec<u8>| {
         let peak = peak_of(&upload);
-        eprintln!("avatar decode peak: {label}: {:.1} MB", peak as f64 / MB);
+        eprintln!(
+            "avatar decode peak: {label}: {:.1} MiB",
+            peak as f64 / MIB
+        );
         worst = worst.max(peak);
-        peak
     };
 
-    // The photo of #588, sequential as a phone's camera writes it, in
-    // 4:2:0 (`image`'s encoder) and in 4:4:4: decoded at 1/8, its peak
-    // does not follow its 48 Mpx.
-    let photo = picture(8000, 6000);
-    let mut sequential = Vec::new();
-    JpegEncoder::new_with_quality(&mut sequential, 90)
-        .encode_image(&photo)
-        .unwrap();
-    let sequential_420 = measure("sequential JPEG 8000x6000 4:2:0", sequential);
-    let sequential_444 = measure(
-        "sequential JPEG 8000x6000 4:4:4",
-        jpeg_encoder_jpeg(&photo, false, SamplingFactor::F_1_1),
-    );
-    drop(photo);
-    for peak in [sequential_420, sequential_444] {
-        assert!(peak < 16_000_000, "{peak}");
-    }
-
-    // A sequential strip at `MAX_JPEG_SIDE`: the widest rows the reduced
-    // decode hands its threads.
+    // Sequential, reduced at decode: the photo of #588 in 4:2:0, 4:4:4 and
+    // CMYK, then at `MAX_JPEG_SIDE` — the most rows queued for the
+    // decoder's threads.
+    let side = MAX_JPEG_SIDE as u16;
+    measure("sequential JPEG 8000x6000 4:2:0", pattern_jpeg(8000, 6000, Ycbcr, false, F_2_2));
+    measure("sequential JPEG 8000x6000 4:4:4", pattern_jpeg(8000, 6000, Ycbcr, false, F_1_1));
+    measure("sequential JPEG 8000x6000 CMYK", pattern_jpeg(8000, 6000, Cmyk, false, F_1_1));
     measure(
-        "sequential JPEG 16384x511 4:4:4",
-        jpeg_encoder_jpeg(&picture(16384, 511), false, SamplingFactor::F_1_1),
+        "sequential JPEG at MAX_JPEG_SIDE square 4:2:0",
+        pattern_jpeg(side, side, Ycbcr, false, F_2_2),
     );
 
-    // The progressive JPEG nearest `MAX_PROGRESSIVE_COEFFICIENT_BYTES`,
-    // in 4:4:4: 6031 × 4631 × 3 × 2 = 167.6 MB reckoned, under the
-    // 167.8 MB bound — then the same with an ICC profile filling the file
-    // up to `MAX_AVATAR_BYTES`, which the decoder keeps.
-    let progressive = jpeg_encoder_jpeg(&picture(6000, 4600), true, SamplingFactor::F_1_1);
+    // Progressive, each just under `MAX_PROGRESSIVE_COEFFICIENT_BYTES`
+    // (23 068 672 bytes): 4:2:0 3200 × 2400 (23 040 000), 4:4:4
+    // 2240 × 1712 (23 009 280), greyscale 3900 × 2940 (22 986 752), CMYK
+    // 1952 × 1468 (22 986 752) — then the 4:2:0 one with ICC segments
+    // filling the file up to `MAX_AVATAR_BYTES`, which never reach the
+    // decoder.
+    let progressive = pattern_jpeg(3200, 2400, Ycbcr, true, F_2_2);
     let icc = with_icc(&progressive, MAX_AVATAR_BYTES - progressive.len() - 400_000);
-    measure("progressive JPEG 6000x4600 4:4:4", progressive);
-    measure("progressive JPEG 6000x4600 4:4:4 + ICC", icc);
+    measure("progressive JPEG 3200x2400 4:2:0", progressive);
+    measure("progressive JPEG 3200x2400 4:2:0 + ICC", icc);
+    measure("progressive JPEG 2240x1712 4:4:4", pattern_jpeg(2240, 1712, Ycbcr, true, F_1_1));
+    measure("progressive JPEG 3900x2940 grey", pattern_jpeg(3900, 2940, Luma, true, F_1_1));
+    measure("progressive JPEG 1952x1468 CMYK", pattern_jpeg(1952, 1468, Cmyk, true, F_1_1));
 
-    // The whole decodes `image` keeps, at a frame just under `MAX_ALLOC`:
-    // 5280 × 5280 in RGB, 83.6 MB, as a PNG and as a lossless WebP.
-    let source = picture(5280, 5280);
+    // The whole decodes `image` keeps, at their bounds: a PNG whose RGB
+    // frame is just under `MAX_PNG_FRAME_BYTES` (3739 × 3739 × 3 =
+    // 41 940 363 bytes), and lossless WebPs of 2645 × 2645, just under
+    // `MAX_WEBP_PIXELS`, in RGB and RGBA.
     let mut png = Vec::new();
-    DynamicImage::ImageRgb8(source.clone())
+    DynamicImage::ImageRgb8(picture(3739, 3739))
         .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
         .unwrap();
+    measure("PNG 3739x3739 RGB", png);
+    let source = picture(2645, 2645);
     let mut webp = Vec::new();
     WebPEncoder::new_lossless(&mut webp)
-        .write_image(source.as_raw(), 5280, 5280, image::ExtendedColorType::Rgb8)
+        .write_image(source.as_raw(), 2645, 2645, image::ExtendedColorType::Rgb8)
         .unwrap();
-    drop(source);
-    measure("PNG 5280x5280 RGB", png);
-    measure("WebP 5280x5280 RGB lossless", webp);
+    measure("WebP 2645x2645 RGB lossless", webp);
+    let rgba = DynamicImage::ImageRgb8(source).to_rgba8();
+    let mut webp = Vec::new();
+    WebPEncoder::new_lossless(&mut webp)
+        .write_image(rgba.as_raw(), 2645, 2645, image::ExtendedColorType::Rgba8)
+        .unwrap();
+    drop(rgba);
+    measure("WebP 2645x2645 RGBA lossless", webp);
 
     assert!(worst <= DECODE_PEAK_BYTES, "{worst} > {DECODE_PEAK_BYTES}");
 }
