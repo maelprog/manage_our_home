@@ -302,9 +302,12 @@ async fn a_50_mpx_photo_is_accepted_and_served_as_the_square(db: PgPool) {
     let router = test_router_with_storage(db.clone(), Storage::new(s3, bucket));
     let (_, cookie) = user(&db, "capteur@example.test").await;
 
+    // Smooth gradients: `picture`'s steep ones would weigh past the cap at
+    // this size.
+    let smooth = RgbImage::from_fn(8000, 6000, |x, y| Rgb([(x / 32) as u8, (y / 24) as u8, 90]));
     let mut photo = Vec::new();
     JpegEncoder::new_with_quality(&mut photo, 90)
-        .encode_image(&picture(8000, 6000))
+        .encode_image(&smooth)
         .unwrap();
     assert!(photo.len() <= MAX_AVATAR_BYTES, "{}", photo.len());
     assert_status(
