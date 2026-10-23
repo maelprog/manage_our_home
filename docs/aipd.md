@@ -115,7 +115,8 @@ essais de mot de passe ; politique de sécurité du contenu ; `cargo audit`
 en CI ; journal d'audit des actions sensibles ; la photo de profil n'est
 servie qu'au titulaire et aux membres d'un groupe qu'il partage, contrôle
 écrit dans la requête comme celui de la fiche d'un membre (#466), et par
-l'API elle-même, sans lien vers le stockage (#467).
+l'API elle-même, sans lien vers le stockage hors export — l'export de
+l'art. 15 et 20 en remet un, présigné et valable 5 minutes (#467).
 
 **Ce qui reste exposé.**
 - Les pièces jointes, les photos de profil et tout le texte libre hors
