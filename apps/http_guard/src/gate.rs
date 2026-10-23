@@ -37,9 +37,10 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 /// but by a pool of its own, `routes::stocks::photo::DECODE_PERMITS` in
 /// apps/web (two at once, under 248 MiB), on top of the bodies above.
 /// In apps/api, the profile photo (#588) takes its permits from the same
-/// pool with a larger body, up to 32 MiB plus framing: a full pool of
-/// them holds about 270 MiB of bodies, above the 160 MiB of attachments,
-/// and its decodes come on top, bounded by `avatar::DECODE_PERMITS`.
+/// pool with a larger body, up to 32 MiB plus framing, but reads it only
+/// under `avatar::DECODE_PERMITS`, one photo at a time: a full pool holds
+/// at most 7 attachment bodies and one photo body, about 144.8 + 32.7 MiB,
+/// and that photo's decode on top (the sum is in `avatar::DECODE_PERMITS`).
 pub const GLOBAL_UPLOADS: usize = 8;
 
 /// Uploads one account may have in flight at once.
