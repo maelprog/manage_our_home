@@ -2,8 +2,9 @@
 //! `GET /me/avatar` and `GET /groups/:id/members/:user_id/avatar`.
 //!
 //! The upload is never stored as sent. Its type is sniffed from its bytes
-//! (JPEG, PNG or WebP, whatever its name says), it is decoded under bounds,
-//! the orientation its EXIF records is applied, its centred square is
+//! (JPEG, PNG or WebP, whatever its name says), it is decoded under bounds —
+//! a JPEG reduced in the decode itself, so that a 50 Mpx phone photo is
+//! accepted without ever being held at full size (#588) —, the orientation its EXIF records is applied, its centred square is
 //! reduced to `AVATAR_SIDE` pixels, and that square is encoded afresh as a
 //! JPEG. The new file carries no metadata at all: EXIF, GPS position, camera
 //! model and the like go with the original, which is never written anywhere.
@@ -26,10 +27,12 @@ use axum::extract::{Multipart, Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use image::codecs::jpeg::JpegEncoder;
+use image::metadata::Orientation;
 use image::{
-    imageops, DynamicImage, GenericImageView, ImageDecoder, ImageFormat, ImageReader, Limits, Rgb,
-    RgbImage,
+    imageops, DynamicImage, GenericImageView, GrayImage, ImageDecoder, ImageError, ImageFormat,
+    ImageReader, Limits, Rgb, RgbImage,
 };
+use jpeg_decoder::{CodingProcess, PixelFormat};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
@@ -57,28 +60,40 @@ pub const AVATAR_CONTENT_TYPE: &str = "image/jpeg";
 
 const AVATAR_JPEG_QUALITY: u8 = 85;
 
-/// Decoder bound: no dimension past this, whatever the file declares.
+/// Bound of `image`'s whole decode (PNG, WebP, the JPEGs `decode_jpeg`
+/// leaves): no dimension past this, whatever the file declares.
 const MAX_DIMENSION: u32 = 8192;
 
-/// Bound on the decoded frame, in bytes: a 24 Mpx frame in 8-bit RGB
-/// (6000 × 4000 × 3 = 72 MB) fits; a larger one — more pixels, or more
-/// bytes per pixel, as a 16-bit PNG — is refused as unreadable from what its
-/// header declares (`ImageDecoder::total_bytes`), before anything is
-/// decoded. Also handed to `image` as `Limits::max_alloc`, which does not
+/// Bound on the frame of `image`'s whole decode, in bytes: a 24 Mpx frame
+/// in 8-bit RGB (6000 × 4000 × 3 = 72 MB) fits; a larger one — more pixels,
+/// or more bytes per pixel, as a 16-bit PNG — is refused as too large from
+/// what its header declares (`ImageDecoder::total_bytes`), before anything
+/// is decoded. Also handed to `image` as `Limits::max_alloc`, which does not
 /// bound that frame on the `from_decoder` path: hence the explicit check.
+/// A JPEG reduced at decode is not bound by it, but by `MAX_JPEG_SIDE` and
+/// `MAX_PROGRESSIVE_COEFFICIENT_BYTES`.
 const MAX_ALLOC: u64 = 80 * 1024 * 1024;
 
 /// Decodes running at once in this process, since the upload gate alone
-/// admits more bodies than decodes should multiply.
-///
-/// `MAX_ALLOC` bounds the decoded frame, not what a decode holds at its
-/// peak: the decoders' own buffers come on top. Peaks measured on accepted
-/// images (review of #467): a progressive 4:4:4 JPEG of 5000 × 5000,
-/// 233 MB; a progressive greyscale JPEG of 8192 × 8192, 209 MB; a WebP of
-/// 6000 × 4000, 167 MB. Progressive JPEG and WebP thus go past `MAX_ALLOC`.
-/// Count about 235 MB per decode, about 470 MB for the two permits, when
-/// sizing the process's memory.
+/// admits more bodies than decodes should multiply. Count
+/// `DECODE_PERMITS × DECODE_PEAK_BYTES`, 360 MB, for the decodes when
+/// sizing the api's memory (the pod's limit on k3s).
 const DECODE_PERMITS: usize = 2;
+
+/// What one decode holds at its peak, in bytes, at most: the upload's
+/// bytes aside, the decoders' buffers and the frame. Peaks counted by
+/// `tests/avatar_memory.rs` (#588), which fails past this bound: a
+/// sequential JPEG of 8000 × 6000, reduced to 1000 × 750, 4.5 MB in 4:2:0
+/// and 5.6 MB in 4:4:4 — the 48 Mpx are never held; a progressive 4:4:4
+/// JPEG of 6000 × 4600, the nearest to `MAX_PROGRESSIVE_COEFFICIENT_BYTES`,
+/// 168.2 MB; a PNG of 5280 × 5280 in RGB, near `MAX_ALLOC`, 84.0 MB; a
+/// lossless WebP of 6000 × 4000, 168.0 MB. The two last formats are
+/// decoded whole (`image` has no reduced decode for them), the progressive
+/// JPEG holds every coefficient until its last scan: those are the bounded
+/// peaks, the sequential JPEG of any size within `MAX_JPEG_SIDE` stays far
+/// below. Before #588, a progressive JPEG of 5000 × 5000 in 4:4:4 held
+/// 233 MB (review of #467).
+pub const DECODE_PEAK_BYTES: usize = 180_000_000;
 
 static DECODES: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(DECODE_PERMITS));
 
@@ -89,8 +104,10 @@ pub enum AvatarError {
     TooLarge,
     /// Not a JPEG, PNG or WebP by its bytes.
     UnsupportedType,
-    /// Of an accepted type, but not decodable, or past the decoder bounds.
+    /// Of an accepted type, but not decodable.
     Unreadable,
+    /// Decodable, but past the bounds a decode is allowed (#588).
+    ImageTooLarge,
 }
 
 impl AvatarError {
@@ -101,6 +118,7 @@ impl AvatarError {
             AvatarError::TooLarge => "file_too_large",
             AvatarError::UnsupportedType => "unsupported_file_type",
             AvatarError::Unreadable => "unreadable_image",
+            AvatarError::ImageTooLarge => "image_too_large",
         }
     }
 }
@@ -132,25 +150,149 @@ pub fn center_square(width: u32, height: u32) -> (u32, u32, u32) {
     ((width - side) / 2, (height - side) / 2, side)
 }
 
-/// The JPEG stored for an upload: see the module comment. CPU-bound, run
-/// off the async workers by the handler.
-pub fn reencode_avatar(bytes: &[u8]) -> Result<Vec<u8>, AvatarError> {
-    let format = sniff_avatar_format(bytes)?;
+/// Bound on either side of a JPEG (#588). Its sequential decode is reduced
+/// in the inverse DCT, so what it holds follows the reduced frame, not the
+/// photo: this bound is what keeps that frame small — 16384 × 16384 comes
+/// out at 2048 × 2048 — and the decode's time short. A 200 Mpx phone mode
+/// (16320 × 12240) fits.
+pub const MAX_JPEG_SIDE: u32 = 16384;
 
+/// Bound on a progressive JPEG's coefficient buffer, in bytes, as
+/// `progressive_coefficient_bytes` reckons it from the header. Every
+/// coefficient of a progressive picture is held until its last scan, at
+/// full size whatever the reduction: that is the one decode whose memory
+/// grows with the photo. 160 MiB admits 24 Mpx in colour (6000 × 4000,
+/// 146 MB) and refuses 48 Mpx (8000 × 6000, 291 MB); a phone's camera
+/// writes sequential JPEGs, which this bound does not touch.
+pub const MAX_PROGRESSIVE_COEFFICIENT_BYTES: u64 = 160 * 1024 * 1024;
+
+/// The size handed to `jpeg_decoder::Decoder::scale`, which picks the
+/// smallest scale (1/8, 1/4, 1/2 or 1) reaching the request on *either*
+/// axis. The short side is asked for `AVATAR_SIDE` and the long one for
+/// more than any reduced side can reach, so that the short side decides:
+/// the centred square is never decoded smaller than the avatar.
+pub fn jpeg_scale_request(width: u16, height: u16) -> (u16, u16) {
+    let side = AVATAR_SIDE as u16;
+    if width <= height {
+        (side, u16::MAX)
+    } else {
+        (u16::MAX, side)
+    }
+}
+
+/// An upper bound of a progressive JPEG's coefficient buffer: 64
+/// coefficients of 2 bytes per 8 × 8 block of each component. A component
+/// sampled below the largest factor has fewer blocks, never more, and the
+/// picture is padded to whole MCUs, 32 pixels at most: hence a full plane
+/// per component, of the padded size.
+pub fn progressive_coefficient_bytes(width: u32, height: u32, components: u32) -> u64 {
+    u64::from(components) * (u64::from(width) + 31) * (u64::from(height) + 31) * 2
+}
+
+/// The bounds of a JPEG decoded reduced, checked on what its header
+/// declares, before anything of its size is allocated.
+pub fn check_jpeg_bounds(
+    width: u32,
+    height: u32,
+    components: u32,
+    progressive: bool,
+) -> Result<(), AvatarError> {
+    if width > MAX_JPEG_SIDE || height > MAX_JPEG_SIDE {
+        return Err(AvatarError::ImageTooLarge);
+    }
+    if progressive
+        && progressive_coefficient_bytes(width, height, components)
+            > MAX_PROGRESSIVE_COEFFICIENT_BYTES
+    {
+        return Err(AvatarError::ImageTooLarge);
+    }
+    Ok(())
+}
+
+/// A decoded picture and the orientation its EXIF records.
+type Decoded = (DynamicImage, Option<Orientation>);
+
+/// A JPEG decoded reduced (#588): `jpeg_decoder` scales it in the inverse
+/// DCT to the smallest frame whose short side still holds `AVATAR_SIDE`,
+/// so an 8000 × 6000 photo is decoded straight to 1000 × 750 and never
+/// exists at full size. `None` for what this path leaves to `image`'s
+/// whole decode, under its bounds: CMYK, lossless or more than 8 bits.
+pub(crate) fn decode_jpeg(bytes: &[u8]) -> Result<Option<Decoded>, AvatarError> {
+    let mut decoder = jpeg_decoder::Decoder::new(bytes);
+    decoder.read_info().map_err(|_| AvatarError::Unreadable)?;
+    let info = decoder.info().ok_or(AvatarError::Unreadable)?;
+    let components = match info.pixel_format {
+        PixelFormat::L8 => 1,
+        PixelFormat::RGB24 => 3,
+        PixelFormat::L16 | PixelFormat::CMYK32 => return Ok(None),
+    };
+    let progressive = match info.coding_process {
+        CodingProcess::DctSequential => false,
+        CodingProcess::DctProgressive => true,
+        CodingProcess::Lossless => return Ok(None),
+    };
+    check_jpeg_bounds(
+        info.width.into(),
+        info.height.into(),
+        components,
+        progressive,
+    )?;
+
+    let (request_width, request_height) = jpeg_scale_request(info.width, info.height);
+    let (width, height) = decoder
+        .scale(request_width, request_height)
+        .map_err(|_| AvatarError::Unreadable)?;
+    // Unreachable once reduced under `MAX_JPEG_SIDE`: a second guard.
+    decoder.set_max_decoding_buffer_size(MAX_ALLOC as usize);
+    let pixels = decoder.decode().map_err(|_| AvatarError::Unreadable)?;
+    let orientation = decoder.exif_data().and_then(Orientation::from_exif_chunk);
+
+    let (width, height) = (u32::from(width), u32::from(height));
+    let picture = if components == 1 {
+        GrayImage::from_raw(width, height, pixels).map(DynamicImage::ImageLuma8)
+    } else {
+        RgbImage::from_raw(width, height, pixels).map(DynamicImage::ImageRgb8)
+    };
+    Ok(Some((picture.ok_or(AvatarError::Unreadable)?, orientation)))
+}
+
+/// A picture decoded whole by `image`, under `MAX_DIMENSION` and
+/// `MAX_ALLOC`: PNG, WebP, and the JPEGs `decode_jpeg` leaves.
+fn decode_whole(bytes: &[u8], format: ImageFormat) -> Result<Decoded, AvatarError> {
+    // A bound passed is `ImageError::Limits`; anything else is unreadable.
+    let refusal = |e: ImageError| match e {
+        ImageError::Limits(_) => AvatarError::ImageTooLarge,
+        _ => AvatarError::Unreadable,
+    };
     let mut limits = Limits::default();
     limits.max_image_width = Some(MAX_DIMENSION);
     limits.max_image_height = Some(MAX_DIMENSION);
     limits.max_alloc = Some(MAX_ALLOC);
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     reader.limits(limits);
-    let mut decoder = reader.into_decoder().map_err(|_| AvatarError::Unreadable)?;
+    let mut decoder = reader.into_decoder().map_err(refusal)?;
     if decoder.total_bytes() > MAX_ALLOC {
-        return Err(AvatarError::Unreadable);
+        return Err(AvatarError::ImageTooLarge);
     }
     // An unreadable orientation is no reason to refuse the photo: it is
     // then stored as its pixels lie.
     let orientation = decoder.orientation().ok();
-    let picture = DynamicImage::from_decoder(decoder).map_err(|_| AvatarError::Unreadable)?;
+    let picture = DynamicImage::from_decoder(decoder).map_err(refusal)?;
+    Ok((picture, orientation))
+}
+
+/// The JPEG stored for an upload: see the module comment. CPU-bound, run
+/// off the async workers by the handler.
+pub fn reencode_avatar(bytes: &[u8]) -> Result<Vec<u8>, AvatarError> {
+    let format = sniff_avatar_format(bytes)?;
+    let reduced = match format {
+        ImageFormat::Jpeg => decode_jpeg(bytes)?,
+        _ => None,
+    };
+    let (picture, orientation) = match reduced {
+        Some(decoded) => decoded,
+        None => decode_whole(bytes, format)?,
+    };
 
     let (x, y, side) = center_square(picture.width(), picture.height());
     // `thumbnail` averages integer blocks straight from the view: no copy
@@ -185,8 +327,9 @@ pub fn reencode_avatar(bytes: &[u8]) -> Result<Vec<u8>, AvatarError> {
 
 /// `PUT /me/avatar` — sets or replaces the caller's photo: one `file` field
 /// of `multipart/form-data`, answered 204. Refusals: 422 `file_too_large`,
-/// `unsupported_file_type` or `unreadable_image` (`AvatarError`), 400 for a
-/// body that is not one `file` field, 503 when the upload gate is full.
+/// `unsupported_file_type`, `unreadable_image` or `image_too_large`
+/// (`AvatarError`), 400 for a body that is not one `file` field, 503 when
+/// the upload gate is full.
 ///
 /// The body is read with no transaction open, as `upload_attachment` does
 /// (#216), and reading stops at the first byte past `MAX_AVATAR_BYTES`.
@@ -404,6 +547,7 @@ mod tests {
     use image::codecs::png::PngEncoder;
     use image::codecs::webp::WebPEncoder;
     use image::{ImageEncoder, Rgb, RgbImage, Rgba, RgbaImage};
+    use jpeg_encoder::SamplingFactor;
 
     const RED: Rgb<u8> = Rgb([220, 20, 20]);
     const BLUE: Rgb<u8> = Rgb([20, 20, 220]);
@@ -560,24 +704,197 @@ mod tests {
     }
 
     /// A small file can declare a huge picture: refused at its header,
-    /// before anything of its size is allocated.
+    /// before anything of its size is allocated, with a code of its own —
+    /// the picture is readable, it is too large (#588).
     #[test]
-    fn a_picture_past_the_decoder_bounds_is_unreadable() {
+    fn a_picture_past_the_decoder_bounds_is_too_large() {
         let wide = RgbImage::new(10_000, 1);
-        assert_eq!(reencode_avatar(&png(&wide)), Err(AvatarError::Unreadable));
+        assert_eq!(
+            reencode_avatar(&png(&wide)),
+            Err(AvatarError::ImageTooLarge)
+        );
     }
 
     /// Within the dimension bound, but past `MAX_ALLOC` once decoded: a
     /// 4096 × 4096 RGBA PNG of 16 bits per channel compresses to little,
     /// and decodes to 4096 × 4096 × 8 = 134 MB. Refused before decoding.
     #[test]
-    fn a_picture_past_the_allocation_bound_is_unreadable() {
+    fn a_picture_past_the_allocation_bound_is_too_large() {
         let deep = DynamicImage::ImageRgba16(image::ImageBuffer::new(4096, 4096));
         let mut bytes = Vec::new();
         deep.write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
             .unwrap();
         assert!(bytes.len() < MAX_AVATAR_BYTES, "{}", bytes.len());
-        assert_eq!(reencode_avatar(&bytes), Err(AvatarError::Unreadable));
+        assert_eq!(reencode_avatar(&bytes), Err(AvatarError::ImageTooLarge));
+    }
+
+    #[test]
+    fn each_refusal_has_its_own_code() {
+        assert_eq!(AvatarError::TooLarge.code(), "file_too_large");
+        assert_eq!(AvatarError::UnsupportedType.code(), "unsupported_file_type");
+        assert_eq!(AvatarError::Unreadable.code(), "unreadable_image");
+        assert_eq!(AvatarError::ImageTooLarge.code(), "image_too_large");
+    }
+
+    // --- JPEG reduced at decode (#588) ---
+
+    /// `jpeg-encoder`'s JPEG of `image`, for what `image`'s encoder does
+    /// not write: progressive scans, chosen chroma sampling.
+    fn jpeg_with(image: &RgbImage, progressive: bool, sampling: SamplingFactor) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut encoder = jpeg_encoder::Encoder::new(&mut out, 90);
+        encoder.set_progressive(progressive);
+        encoder.set_sampling_factor(sampling);
+        encoder
+            .encode(
+                image.as_raw(),
+                image.width() as u16,
+                image.height() as u16,
+                jpeg_encoder::ColorType::Rgb,
+            )
+            .unwrap();
+        out
+    }
+
+    /// Criterion of #588: a photo of a 48/50 Mpx phone mode, 8000 × 6000,
+    /// is accepted and comes out the usual square, its middle kept.
+    #[test]
+    fn a_50_mpx_jpeg_is_accepted() {
+        let out = decoded(&reencode_avatar(&jpeg(&halves(8000, 6000))).unwrap());
+        assert_eq!(out.dimensions(), (AVATAR_SIDE, AVATAR_SIDE));
+        assert!(is_red(*out.get_pixel(AVATAR_SIDE / 4, AVATAR_SIDE / 2)));
+        assert!(is_blue(
+            *out.get_pixel(3 * AVATAR_SIDE / 4, AVATAR_SIDE / 2)
+        ));
+    }
+
+    /// Criterion of #588: past the bound, the refusal says so — not
+    /// `unreadable_image`. A strip past `MAX_JPEG_SIDE` costs little to
+    /// encode and is refused at its header.
+    #[test]
+    fn a_jpeg_past_the_side_bound_is_too_large() {
+        let strip = halves(MAX_JPEG_SIDE + 8, 8);
+        assert_eq!(
+            reencode_avatar(&jpeg(&strip)),
+            Err(AvatarError::ImageTooLarge)
+        );
+        let at_bound = halves(MAX_JPEG_SIDE, 8);
+        assert!(reencode_avatar(&jpeg(&at_bound)).is_ok());
+    }
+
+    /// The request handed to `jpeg_decoder::Decoder::scale`, which picks
+    /// the smallest scale reaching it on either axis: the short side is
+    /// asked for the avatar's side, the long one for more than any JPEG
+    /// can reach, so that the short side decides.
+    #[test]
+    fn the_scale_is_decided_by_the_short_side() {
+        let side = AVATAR_SIDE as u16;
+        assert_eq!(jpeg_scale_request(8000, 6000), (u16::MAX, side));
+        assert_eq!(jpeg_scale_request(6000, 8000), (side, u16::MAX));
+        assert_eq!(jpeg_scale_request(512, 512), (side, u16::MAX));
+    }
+
+    /// The decoded frame is the smallest scale keeping the short side at
+    /// `AVATAR_SIDE` or more: 1/8 of 8000 × 6000, 1/2 of a panorama whose
+    /// short side is 600, the full size of a picture already small.
+    #[test]
+    fn a_jpeg_is_decoded_at_the_smallest_scale_that_keeps_the_avatar_side() {
+        let dims = |w, h| {
+            let (picture, _) = decode_jpeg(&jpeg(&halves(w, h))).unwrap().unwrap();
+            picture.dimensions()
+        };
+        assert_eq!(dims(8000, 6000), (1000, 750));
+        assert_eq!(dims(6000, 600), (3000, 300));
+        assert_eq!(dims(300, 200), (300, 200));
+    }
+
+    /// An upper bound of a progressive JPEG's coefficient buffer: 64
+    /// coefficients of 2 bytes per 8 × 8 block of every component, whatever
+    /// its chroma sampling, padding to the MCU included.
+    #[test]
+    fn the_progressive_buffer_bound_covers_every_sampling() {
+        // 4:4:4, the largest: three full planes of 2 bytes per pixel.
+        assert!(progressive_coefficient_bytes(6000, 4000, 3) >= 6000 * 4000 * 3 * 2);
+        // MCU padding: at the largest sampling factor (4), a 1 × 1 picture
+        // still holds 4 × 4 blocks in each of its components.
+        assert!(progressive_coefficient_bytes(1, 1, 3) >= 3 * 16 * 64 * 2);
+        assert!(progressive_coefficient_bytes(1, 1, 1) < progressive_coefficient_bytes(1, 1, 3));
+    }
+
+    #[test]
+    fn the_jpeg_bounds() {
+        // Sequential: the side bound alone; the frame decoded is reduced.
+        assert_eq!(check_jpeg_bounds(8000, 6000, 3, false), Ok(()));
+        assert_eq!(
+            check_jpeg_bounds(MAX_JPEG_SIDE, MAX_JPEG_SIDE, 3, false),
+            Ok(())
+        );
+        assert_eq!(
+            check_jpeg_bounds(MAX_JPEG_SIDE + 1, 8, 3, false),
+            Err(AvatarError::ImageTooLarge)
+        );
+        assert_eq!(
+            check_jpeg_bounds(8, MAX_JPEG_SIDE + 1, 1, false),
+            Err(AvatarError::ImageTooLarge)
+        );
+        // Progressive: every coefficient is held until the last scan, so
+        // the buffer bound applies — 24 Mpx in colour passes, 48 Mpx does
+        // not; 48 Mpx in greyscale, a third of it, passes.
+        assert_eq!(check_jpeg_bounds(6000, 4000, 3, true), Ok(()));
+        assert_eq!(
+            check_jpeg_bounds(8000, 6000, 3, true),
+            Err(AvatarError::ImageTooLarge)
+        );
+        assert_eq!(check_jpeg_bounds(8000, 6000, 1, true), Ok(()));
+        assert_eq!(
+            check_jpeg_bounds(MAX_JPEG_SIDE + 1, 8, 1, true),
+            Err(AvatarError::ImageTooLarge)
+        );
+    }
+
+    /// A progressive JPEG goes through the reduced decode as well, in 4:2:0
+    /// as in 4:4:4.
+    #[test]
+    fn a_progressive_jpeg_is_accepted() {
+        for sampling in [SamplingFactor::F_2_2, SamplingFactor::F_1_1] {
+            let source = jpeg_with(&halves(640, 480), true, sampling);
+            assert!(decode_jpeg(&source).unwrap().is_some());
+            let out = decoded(&reencode_avatar(&source).unwrap());
+            assert_eq!(out.dimensions(), (AVATAR_SIDE, AVATAR_SIDE));
+            assert!(is_red(*out.get_pixel(AVATAR_SIDE / 4, AVATAR_SIDE / 2)));
+            assert!(is_blue(
+                *out.get_pixel(3 * AVATAR_SIDE / 4, AVATAR_SIDE / 2)
+            ));
+        }
+    }
+
+    #[test]
+    fn a_greyscale_jpeg_is_accepted() {
+        let grey = image::GrayImage::from_fn(400, 300, |x, _| {
+            image::Luma([if x < 200 { 30 } else { 220 }])
+        });
+        let mut source = Vec::new();
+        JpegEncoder::new_with_quality(&mut source, 90)
+            .encode_image(&grey)
+            .unwrap();
+        let out = decoded(&reencode_avatar(&source).unwrap());
+        assert_eq!(out.dimensions(), (AVATAR_SIDE, AVATAR_SIDE));
+        assert!(out.get_pixel(AVATAR_SIDE / 4, AVATAR_SIDE / 2)[0] < 80);
+        assert!(out.get_pixel(3 * AVATAR_SIDE / 4, AVATAR_SIDE / 2)[0] > 170);
+    }
+
+    /// A CMYK JPEG, which the reduced decode leaves to `image`, is still
+    /// accepted.
+    #[test]
+    fn a_cmyk_jpeg_is_accepted() {
+        let cmyk = vec![0u8; 64 * 64 * 4];
+        let mut source = Vec::new();
+        jpeg_encoder::Encoder::new(&mut source, 90)
+            .encode(&cmyk, 64, 64, jpeg_encoder::ColorType::Cmyk)
+            .unwrap();
+        assert!(decode_jpeg(&source).unwrap().is_none());
+        let out = decoded(&reencode_avatar(&source).unwrap());
+        assert_eq!(out.dimensions(), (AVATAR_SIDE, AVATAR_SIDE));
     }
 
     // --- dimensioning ---
