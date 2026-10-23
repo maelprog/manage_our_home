@@ -91,27 +91,33 @@ const DECODE_PERMITS: usize = 1;
 
 /// What one decode holds at its peak, in bytes, at most: the upload's
 /// bytes aside, the decoders' buffers and the frame — 50 MiB (arbitrage
-/// of 2026-10-23, #588). Each path has its bound, checked on the header
-/// before anything of the picture's size is allocated, and refused past
-/// it. Peaks counted by `tests/avatar_memory.rs`, which fails past this
-/// bound, at each bound, in debug and release builds on 7 cores and on a
-/// single one (`--cpuset-cpus 0`); the ranges are over two such series of
-/// four runs:
+/// of 2026-10-23, #588). Each path has its bound, checked on the file's
+/// header and chunks before any decode — the frame's dimensions, the
+/// metadata a decoder would inflate or copy — and refused past it. Peaks
+/// counted by `tests/avatar_memory.rs`, which fails past this bound, at
+/// each bound, in debug and release builds on 7 cores and on a single one
+/// (`--cpuset-cpus 0`); the ranges are over three such series of four
+/// runs:
 ///
 /// - sequential JPEG, reduced at decode (`MAX_JPEG_SIDE`): 8000 × 6000,
-///   3.2 to 7.7 MiB in 4:2:0, 4.3 to 14.1 MiB in 4:4:4, 5.7 to 16.4 MiB
+///   3.2 to 8.1 MiB in 4:2:0, 4.3 to 16.2 MiB in 4:4:4, 5.7 to 16.4 MiB
 ///   in CMYK; 16384 × 16384 in 4:2:0, 18.0 to 25.6 MiB;
 /// - progressive JPEG (`MAX_PROGRESSIVE_COEFFICIENT_BYTES`), at the bound:
-///   4:2:0 3200 × 2400, 22.5 to 28.8 MiB, 22.5 to 27.9 MiB with ICC
+///   4:2:0 3200 × 2400, 22.5 to 29.2 MiB, 22.5 to 27.9 MiB with ICC
 ///   segments before the first scan filling the file; 4:4:4 2240 × 1712,
 ///   23.3 to 30.0 MiB; greyscale 3900 × 2940, 22.6 to 34.3 MiB (37.0 MiB
 ///   on one core in the review of #589); CMYK 1952 × 1468, 23.3 to
 ///   28.1 MiB. With ICC segments past the first scan the file is refused
 ///   (`scan_jpeg_header`), its walk allocating nothing: 0.0 MiB;
-/// - PNG (`MAX_PNG_FRAME_BYTES`), RGB 3739 × 3739: 40.4 MiB;
+/// - PNG (`MAX_PNG_FRAME_BYTES`), RGB 3739 × 3739: 40.4 MiB, 41.4 MiB with
+///   an iCCP profile of `MAX_METADATA_BYTES` once inflated; a profile
+///   inflating to 100 MiB is refused at 0.1 MiB;
 /// - WebP (`MAX_WEBP_PIXELS`), 2097 × 2097: lossy with an alpha channel
-///   44.1 MiB, the largest; lossless RGB 29.4 MiB, lossless RGBA
-///   17.0 MiB, lossy RGB 20.4 MiB. An animated WebP is refused.
+///   44.1 MiB, the largest, also with an EXIF chunk of
+///   `MAX_METADATA_BYTES`; lossless RGB 29.4 MiB, lossless RGBA 17.0 MiB,
+///   lossy RGB 20.4 MiB. An animated WebP is refused, and so is a frame
+///   other than its canvas (`webp_frame`): 0.0 MiB for a VP8 or VP8L
+///   frame of 16383 × 16383 under a canvas of 100 × 100.
 ///
 /// The JPEG figures vary with scheduling: past a reduced frame 128 pixels
 /// wide, `jpeg_decoder` hands its rows to a thread per component through a
@@ -204,8 +210,9 @@ pub const MAX_PROGRESSIVE_COEFFICIENT_BYTES: u64 = 22 * 1024 * 1024;
 pub const MAX_WEBP_PIXELS: u64 = 4_400_000;
 
 /// Bound on a PNG's decoded frame, in bytes, as its header declares it
-/// (`ImageDecoder::total_bytes`): `image` decodes it whole, the frame and
-/// little else. 40 MiB is 3739 × 3739 in 8-bit RGB, 3238 × 3238 in RGBA.
+/// (`ImageDecoder::total_bytes`): `image` decodes it whole, the frame,
+/// its metadata (`MAX_METADATA_BYTES`) and little else. 40 MiB is
+/// 3739 × 3739 in 8-bit RGB, 3238 × 3238 in RGBA.
 /// Also handed to `image` as `Limits::max_alloc`, for what its decoders
 /// allocate besides the frame.
 pub const MAX_PNG_FRAME_BYTES: u64 = 40 * 1024 * 1024;
@@ -513,6 +520,102 @@ pub(crate) fn decode_jpeg(bytes: &[u8]) -> Result<Decoded, AvatarError> {
     Ok((picture.ok_or(AvatarError::Unreadable)?, orientation))
 }
 
+/// Bound on the metadata a whole decode holds besides the picture, in
+/// bytes (review of #589): a PNG's iCCP profile once inflated — `png`
+/// inflates it whatever the caller asks — and its eXIf chunk, which it
+/// copies; a WebP's EXIF chunk, which `image` reads whole for the
+/// orientation. A real profile is a few kilobytes (Display P3, about half
+/// a kilobyte), a camera's EXIF some tens. Past it: `image_too_large`.
+pub const MAX_METADATA_BYTES: usize = 1024 * 1024;
+
+/// A WebP's frame, as its VP8 or VP8L chunk declares it, and the bound on
+/// its EXIF chunk. `image-webp` decodes a frame at its own dimensions and
+/// only then compares them with a VP8X canvas: a frame other than its
+/// canvas is refused as unreadable here, before any decode, and the pixel
+/// bound applies to the frame.
+pub fn webp_frame(bytes: &[u8]) -> Result<(u32, u32), AvatarError> {
+    const UNREADABLE: AvatarError = AvatarError::Unreadable;
+    if bytes.get(..4) != Some(b"RIFF") || bytes.get(8..12) != Some(b"WEBP") {
+        return Err(UNREADABLE);
+    }
+    let le24 = |b: &[u8]| u32::from(b[0]) | u32::from(b[1]) << 8 | u32::from(b[2]) << 16;
+    let mut canvas = None;
+    let mut frame = None;
+    let mut exif = 0;
+    let mut pos = 12;
+    while let Some(header) = bytes.get(pos..pos + 8) {
+        let size = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
+        let data = bytes.get(pos + 8..pos + 8 + size).ok_or(UNREADABLE)?;
+        match &header[..4] {
+            b"VP8X" => {
+                let canvas_bytes = data.get(4..10).ok_or(UNREADABLE)?;
+                canvas = Some((le24(&canvas_bytes[..3]) + 1, le24(&canvas_bytes[3..]) + 1));
+            }
+            b"VP8 " if frame.is_none() => {
+                // Frame tag (3 bytes), start code, then 14 bits a side.
+                let Some(&[0x9D, 0x01, 0x2A, w0, w1, h0, h1]) = data.get(3..10) else {
+                    return Err(UNREADABLE);
+                };
+                let side = |low: u8, high: u8| u32::from(u16::from_le_bytes([low, high]) & 0x3FFF);
+                frame = Some((side(w0, w1), side(h0, h1)));
+            }
+            b"VP8L" if frame.is_none() => {
+                // Signature, then 14 bits a side, minus one.
+                let Some(&[0x2F, b0, b1, b2, b3]) = data.get(..5) else {
+                    return Err(UNREADABLE);
+                };
+                let bits = u32::from_le_bytes([b0, b1, b2, b3]);
+                frame = Some(((bits & 0x3FFF) + 1, (bits >> 14 & 0x3FFF) + 1));
+            }
+            b"EXIF" => exif += size,
+            _ => {}
+        }
+        pos += 8 + size + size % 2;
+    }
+    if exif > MAX_METADATA_BYTES {
+        return Err(AvatarError::ImageTooLarge);
+    }
+    let frame = frame.ok_or(UNREADABLE)?;
+    match canvas {
+        Some(canvas) if canvas != frame => Err(UNREADABLE),
+        _ => Ok(frame),
+    }
+}
+
+/// The bound on a PNG's metadata (`MAX_METADATA_BYTES`), on its chunks:
+/// the eXIf chunk's size, the iCCP profile's once inflated — counted in
+/// a sink, never held. A chunk cut short or a broken profile is left to
+/// `png`, which refuses the one and ignores the other.
+fn check_png_metadata(bytes: &[u8]) -> Result<(), AvatarError> {
+    use std::io::Read;
+    let mut pos = 8;
+    while let Some(header) = bytes.get(pos..pos + 8) {
+        let length = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
+        let Some(data) = bytes.get(pos + 8..pos + 8 + length) else {
+            return Ok(());
+        };
+        match &header[4..] {
+            b"eXIf" if length > MAX_METADATA_BYTES => return Err(AvatarError::ImageTooLarge),
+            b"iCCP" => {
+                // A name of 1 to 79 bytes, its NUL, the compression method.
+                if let Some(nul) = data.iter().take(81).position(|&b| b == 0) {
+                    let deflated = data.get(nul + 2..).unwrap_or_default();
+                    let mut inflated = flate2::read::ZlibDecoder::new(deflated)
+                        .take(MAX_METADATA_BYTES as u64 + 1);
+                    let size = std::io::copy(&mut inflated, &mut std::io::sink()).unwrap_or(0);
+                    if size > MAX_METADATA_BYTES as u64 {
+                        return Err(AvatarError::ImageTooLarge);
+                    }
+                }
+            }
+            b"IEND" => break,
+            _ => {}
+        }
+        pos += 12 + length;
+    }
+    Ok(())
+}
+
 /// Whether a WebP is animated: the animation flag of its VP8X chunk, the
 /// first one of the file when there is one. A simple WebP (a VP8 or VP8L
 /// chunk alone) is a still image.
@@ -520,8 +623,8 @@ pub fn webp_is_animated(bytes: &[u8]) -> bool {
     bytes.get(12..16) == Some(b"VP8X") && bytes.get(20).is_some_and(|flags| flags & 0x02 != 0)
 }
 
-/// A PNG or a WebP, decoded whole by `image` under `MAX_DIMENSION` and
-/// `check_whole_bounds`.
+/// A PNG or a WebP, decoded whole by `image` under `MAX_DIMENSION`,
+/// `check_whole_bounds` and `MAX_METADATA_BYTES`.
 fn decode_whole(bytes: &[u8], format: ImageFormat) -> Result<Decoded, AvatarError> {
     // A bound passed is `ImageError::Limits`; anything else is unreadable.
     let refusal = |e: ImageError| match e {
@@ -532,9 +635,21 @@ fn decode_whole(bytes: &[u8], format: ImageFormat) -> Result<Decoded, AvatarErro
     limits.max_image_width = Some(MAX_DIMENSION);
     limits.max_image_height = Some(MAX_DIMENSION);
     limits.max_alloc = Some(MAX_PNG_FRAME_BYTES);
-    // Not a photo, and its decoder holds frames on top of frames.
-    if format == ImageFormat::WebP && webp_is_animated(bytes) {
-        return Err(AvatarError::UnsupportedType);
+    // The bounds a decoder would only check once it has allocated: on
+    // the chunks first.
+    match format {
+        ImageFormat::WebP => {
+            // Not a photo, and its decoder holds frames on top of frames.
+            if webp_is_animated(bytes) {
+                return Err(AvatarError::UnsupportedType);
+            }
+            let (width, height) = webp_frame(bytes)?;
+            if width > MAX_DIMENSION || height > MAX_DIMENSION {
+                return Err(AvatarError::ImageTooLarge);
+            }
+            check_whole_bounds(format, width, height, 0)?;
+        }
+        _ => check_png_metadata(bytes)?,
     }
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     reader.limits(limits);
@@ -1396,6 +1511,190 @@ mod tests {
             reencode_avatar(&vp8x_webp(0x02)),
             Err(AvatarError::UnsupportedType)
         );
+    }
+
+    // --- WebP frame and metadata, PNG metadata (#588, review of #589) ---
+
+    /// A RIFF WebP of the given chunks, each `(fourcc, data)`.
+    fn riff_webp(chunks: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut body = b"WEBP".to_vec();
+        for (fourcc, data) in chunks {
+            body.extend_from_slice(*fourcc);
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(data);
+            if data.len() % 2 == 1 {
+                body.push(0);
+            }
+        }
+        let mut out = b"RIFF".to_vec();
+        out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        out.extend_from_slice(&body);
+        out
+    }
+
+    /// A VP8X chunk's data: `flags`, then the canvas.
+    fn vp8x(flags: u8, width: u32, height: u32) -> Vec<u8> {
+        let mut data = vec![flags, 0, 0, 0];
+        data.extend_from_slice(&(width - 1).to_le_bytes()[..3]);
+        data.extend_from_slice(&(height - 1).to_le_bytes()[..3]);
+        data
+    }
+
+    /// The header of a VP8 key frame of `width` × `height`, no data.
+    fn vp8_header(width: u16, height: u16) -> Vec<u8> {
+        let mut data = vec![0x50, 0x00, 0x00, 0x9D, 0x01, 0x2A];
+        data.extend_from_slice(&width.to_le_bytes());
+        data.extend_from_slice(&height.to_le_bytes());
+        data
+    }
+
+    /// The header of a VP8L picture of `width` × `height`, no data.
+    fn vp8l_header(width: u32, height: u32) -> Vec<u8> {
+        let mut data = vec![0x2F];
+        data.extend_from_slice(&((width - 1) | (height - 1) << 14).to_le_bytes());
+        data
+    }
+
+    /// The VP8L chunk data of `image`'s lossless WebP of `width` × `height`.
+    fn vp8l_of(width: u32, height: u32) -> Vec<u8> {
+        let mut webp = Vec::new();
+        WebPEncoder::new_lossless(&mut webp)
+            .write_image(
+                halves(width, height).as_raw(),
+                width,
+                height,
+                image::ExtendedColorType::Rgb8,
+            )
+            .unwrap();
+        assert_eq!(&webp[12..16], b"VP8L");
+        let size = u32::from_le_bytes(webp[16..20].try_into().unwrap()) as usize;
+        webp[20..20 + size].to_vec()
+    }
+
+    /// The frame's own dimensions are read from its chunk, VP8 or VP8L,
+    /// simple or under a VP8X canvas of the same size.
+    #[test]
+    fn the_webp_frame_is_read_from_its_chunk() {
+        assert_eq!(
+            webp_frame(&riff_webp(&[(b"VP8L", vp8l_of(8, 6))])),
+            Ok((8, 6))
+        );
+        assert_eq!(
+            webp_frame(&riff_webp(&[(b"VP8 ", vp8_header(3000, 2000))])),
+            Ok((3000, 2000))
+        );
+        assert_eq!(
+            webp_frame(&riff_webp(&[
+                (b"VP8X", vp8x(0, 8, 6)),
+                (b"VP8L", vp8l_of(8, 6))
+            ])),
+            Ok((8, 6))
+        );
+        assert_eq!(
+            webp_frame(&riff_webp(&[(b"VP8X", vp8x(0, 8, 6))])),
+            Err(AvatarError::Unreadable)
+        );
+    }
+
+    /// `image-webp` decodes a frame at its own dimensions before it looks at
+    /// the canvas: a frame larger than its canvas is refused before any
+    /// decode, in VP8 as in VP8L.
+    #[test]
+    fn a_webp_frame_other_than_its_canvas_is_unreadable() {
+        for frame in [
+            (b"VP8 ", vp8_header(16383, 16383)),
+            (b"VP8L", vp8l_header(16383, 16383)),
+        ] {
+            let lying = riff_webp(&[(b"VP8X", vp8x(0, 100, 100)), frame]);
+            assert_eq!(webp_frame(&lying), Err(AvatarError::Unreadable));
+            assert_eq!(reencode_avatar(&lying), Err(AvatarError::Unreadable));
+        }
+    }
+
+    /// The pixel bound is checked on the frame, before any decode.
+    #[test]
+    fn a_webp_frame_past_the_bound_is_too_large() {
+        let large = riff_webp(&[(b"VP8 ", vp8_header(3000, 3000))]);
+        assert_eq!(reencode_avatar(&large), Err(AvatarError::ImageTooLarge));
+    }
+
+    /// The EXIF a decoder reads for the orientation is held whole: past
+    /// `MAX_METADATA_BYTES`, refused.
+    #[test]
+    fn a_webp_exif_past_the_metadata_bound_is_too_large() {
+        let with_exif = |size: usize| {
+            riff_webp(&[
+                (b"VP8X", vp8x(0x08, 8, 6)),
+                (b"VP8L", vp8l_of(8, 6)),
+                (b"EXIF", vec![0; size]),
+            ])
+        };
+        assert!(reencode_avatar(&with_exif(64)).is_ok());
+        assert_eq!(
+            reencode_avatar(&with_exif(MAX_METADATA_BYTES + 1)),
+            Err(AvatarError::ImageTooLarge)
+        );
+    }
+
+    /// CRC-32 of the PNG chunks (ISO 3309), bit by bit.
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = !0u32;
+        for &byte in bytes {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    crc >> 1 ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
+    /// `png` with a chunk of `kind` and `data` right after its IHDR.
+    fn png_with_chunk(png: &[u8], kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut chunk = (data.len() as u32).to_be_bytes().to_vec();
+        let mut typed = kind.to_vec();
+        typed.extend_from_slice(data);
+        chunk.extend_from_slice(&typed);
+        chunk.extend_from_slice(&crc32(&typed).to_be_bytes());
+        let after_ihdr = 8 + 4 + 4 + 13 + 4;
+        let mut out = png[..after_ihdr].to_vec();
+        out.extend_from_slice(&chunk);
+        out.extend_from_slice(&png[after_ihdr..]);
+        out
+    }
+
+    /// An iCCP chunk's data: a profile name, the compression method, then
+    /// `profile` deflated.
+    fn iccp(profile: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut data = b"icc\0\0".to_vec();
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        z.write_all(profile).unwrap();
+        data.extend_from_slice(&z.finish().unwrap());
+        data
+    }
+
+    /// `png` decompresses an iCCP profile with no bound of ours: a profile
+    /// past `MAX_METADATA_BYTES` once inflated is refused, a real one — a
+    /// Display P3 profile is about half a kilobyte — accepted. A large eXIf
+    /// is refused the same way: `png` copies it whole.
+    #[test]
+    fn png_metadata_past_the_bound_is_too_large() {
+        let base = png(&halves(64, 64));
+        let real: Vec<u8> = (0..548u32).map(|i| (i * 37 % 251) as u8).collect();
+        assert!(reencode_avatar(&png_with_chunk(&base, b"iCCP", &iccp(&real))).is_ok());
+
+        let bomb = png_with_chunk(&base, b"iCCP", &iccp(&vec![0; MAX_METADATA_BYTES + 1]));
+        assert!(bomb.len() < 10_000, "{}", bomb.len());
+        assert_eq!(reencode_avatar(&bomb), Err(AvatarError::ImageTooLarge));
+        let at_bound = png_with_chunk(&base, b"iCCP", &iccp(&vec![0; MAX_METADATA_BYTES]));
+        assert!(reencode_avatar(&at_bound).is_ok());
+
+        let exif = png_with_chunk(&base, b"eXIf", &vec![0; MAX_METADATA_BYTES + 1]);
+        assert_eq!(reencode_avatar(&exif), Err(AvatarError::ImageTooLarge));
     }
 
     /// A JPEG carrying an ICC profile decodes as one without: the profile

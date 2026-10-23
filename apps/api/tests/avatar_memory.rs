@@ -13,6 +13,7 @@ use image::{DynamicImage, ImageEncoder, ImageFormat, Rgb, RgbImage};
 use jpeg_encoder::{ImageBuffer, JpegColorType, SamplingFactor};
 use manage_our_home::avatar::{
     reencode_avatar, AvatarError, DECODE_PEAK_BYTES, MAX_AVATAR_BYTES, MAX_JPEG_SIDE,
+    MAX_METADATA_BYTES,
 };
 
 struct Counting;
@@ -72,13 +73,87 @@ fn peak_of(upload: &[u8]) -> usize {
     PEAK.load(Ordering::SeqCst) - before
 }
 
-/// As `peak_of`, for an upload refused as `image_too_large`.
-fn refusal_peak_of(upload: &[u8]) -> usize {
+/// As `peak_of`, for an upload refused with `refusal`.
+fn refusal_peak_of(upload: &[u8], refusal: AvatarError) -> usize {
     assert!(upload.len() <= MAX_AVATAR_BYTES, "{}", upload.len());
     let before = CURRENT.load(Ordering::SeqCst);
     PEAK.store(before, Ordering::SeqCst);
-    assert_eq!(reencode_avatar(upload), Err(AvatarError::ImageTooLarge));
+    assert_eq!(reencode_avatar(upload), Err(refusal));
     PEAK.load(Ordering::SeqCst) - before
+}
+
+/// CRC-32 of the PNG chunks (ISO 3309), bit by bit.
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &byte in bytes {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                crc >> 1 ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+/// `png` with an iCCP chunk right after its IHDR, holding `profile`.
+fn png_with_iccp(png: &[u8], profile: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut typed = b"iCCPicc\0\0".to_vec();
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+    z.write_all(profile).unwrap();
+    typed.extend_from_slice(&z.finish().unwrap());
+    let mut chunk = ((typed.len() - 4) as u32).to_be_bytes().to_vec();
+    chunk.extend_from_slice(&typed);
+    chunk.extend_from_slice(&crc32(&typed).to_be_bytes());
+    let after_ihdr = 8 + 4 + 4 + 13 + 4;
+    let mut out = png[..after_ihdr].to_vec();
+    out.extend_from_slice(&chunk);
+    out.extend_from_slice(&png[after_ihdr..]);
+    out
+}
+
+/// A VP8X `webp` with an EXIF chunk of `size` bytes appended, its flag set.
+fn webp_with_exif(webp: &[u8], size: usize) -> Vec<u8> {
+    assert_eq!(&webp[12..16], b"VP8X");
+    let mut out = webp.to_vec();
+    out[20] |= 0x08;
+    out.extend_from_slice(b"EXIF");
+    out.extend_from_slice(&(size as u32).to_le_bytes());
+    out.extend(std::iter::repeat_n(0, size + size % 2));
+    let riff = (out.len() - 8) as u32;
+    out[4..8].copy_from_slice(&riff.to_le_bytes());
+    out
+}
+
+/// A WebP whose VP8X canvas is 100 × 100 and whose `fourcc` frame chunk,
+/// header only, declares 16383 × 16383.
+fn webp_frame_past_canvas(fourcc: &[u8; 4]) -> Vec<u8> {
+    let frame: Vec<u8> = if fourcc == b"VP8 " {
+        let mut data = vec![0x50, 0x00, 0x00, 0x9D, 0x01, 0x2A];
+        data.extend_from_slice(&16383u16.to_le_bytes());
+        data.extend_from_slice(&16383u16.to_le_bytes());
+        data
+    } else {
+        let mut data = vec![0x2F];
+        data.extend_from_slice(&(16382u32 | 16382 << 14).to_le_bytes());
+        data
+    };
+    let mut body = b"WEBPVP8X".to_vec();
+    body.extend_from_slice(&10u32.to_le_bytes());
+    body.extend_from_slice(&[0, 0, 0, 0, 99, 0, 0, 99, 0, 0]);
+    body.extend_from_slice(fourcc);
+    body.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+    body.extend_from_slice(&frame);
+    if frame.len() % 2 == 1 {
+        body.push(0);
+    }
+    let mut out = b"RIFF".to_vec();
+    out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    out.extend_from_slice(&body);
+    out
 }
 
 fn picture(width: u32, height: u32) -> RgbImage {
@@ -234,7 +309,11 @@ fn a_decode_holds_at_most_the_documented_peak() {
     DynamicImage::ImageRgb8(picture(3739, 3739))
         .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
         .unwrap();
+    // The same with an iCCP profile of `MAX_METADATA_BYTES` once inflated,
+    // which `png` inflates and keeps.
+    let png_iccp = png_with_iccp(&png, &vec![0; MAX_METADATA_BYTES]);
     measure("PNG 3739x3739 RGB", png);
+    measure("PNG 3739x3739 RGB + iCCP at MAX_METADATA_BYTES", png_iccp);
     let source = picture(2097, 2097);
     let mut webp = Vec::new();
     WebPEncoder::new_lossless(&mut webp)
@@ -252,9 +331,11 @@ fn a_decode_holds_at_most_the_documented_peak() {
         "WebP 2097x2097 RGB lossy",
         include_bytes!("fixtures/avatar/avatar-lossy-rgb-2097.webp").to_vec(),
     );
+    let lossy_alpha = include_bytes!("fixtures/avatar/avatar-lossy-alpha-2097.webp");
+    measure("WebP 2097x2097 lossy + alpha", lossy_alpha.to_vec());
     measure(
-        "WebP 2097x2097 lossy + alpha",
-        include_bytes!("fixtures/avatar/avatar-lossy-alpha-2097.webp").to_vec(),
+        "WebP 2097x2097 lossy + alpha + EXIF at MAX_METADATA_BYTES",
+        webp_with_exif(lossy_alpha, MAX_METADATA_BYTES),
     );
 
     // Refused before any decode: ICC segments past the first scan of the
@@ -279,12 +360,40 @@ fn a_decode_holds_at_most_the_documented_peak() {
     late_icc.extend_from_slice(&segments[2..]);
     late_icc.extend_from_slice(&progressive[second_scan..]);
     drop(progressive);
-    let refused = refusal_peak_of(&late_icc);
-    eprintln!(
-        "avatar decode peak: progressive JPEG 3200x2400 + ICC past the first scan (refused): {:.1} MiB",
-        refused as f64 / MIB
+    let mut refused = |label: &str, upload: &[u8], refusal: AvatarError| {
+        let peak = refusal_peak_of(upload, refusal);
+        eprintln!(
+            "avatar decode peak: {label} (refused): {:.1} MiB",
+            peak as f64 / MIB
+        );
+        worst = worst.max(peak);
+    };
+    refused(
+        "progressive JPEG 3200x2400 + ICC past the first scan",
+        &late_icc,
+        AvatarError::ImageTooLarge,
     );
-    worst = worst.max(refused);
+    // A WebP frame other than its canvas, which `image-webp` would decode
+    // at the frame's size; a PNG whose profile inflates past the bound.
+    refused(
+        "WebP canvas 100x100, VP8 frame 16383x16383",
+        &webp_frame_past_canvas(b"VP8 "),
+        AvatarError::Unreadable,
+    );
+    refused(
+        "WebP canvas 100x100, VP8L frame 16383x16383",
+        &webp_frame_past_canvas(b"VP8L"),
+        AvatarError::Unreadable,
+    );
+    let mut small = Vec::new();
+    DynamicImage::ImageRgb8(picture(64, 64))
+        .write_to(&mut Cursor::new(&mut small), ImageFormat::Png)
+        .unwrap();
+    refused(
+        "PNG 64x64 + iCCP of 100 MiB inflated",
+        &png_with_iccp(&small, &vec![0; 100 * 1024 * 1024]),
+        AvatarError::ImageTooLarge,
+    );
 
     assert!(worst <= DECODE_PEAK_BYTES, "{worst} > {DECODE_PEAK_BYTES}");
 }
