@@ -38,7 +38,7 @@ données sont-elles conservées ? ».
 
 | Catégorie | Exemples | Base légale |
 |---|---|---|
-| Compte | email, mot de passe (haché), nom affiché | Exécution du contrat (fournir le service) |
+| Compte | email, mot de passe (haché), nom affiché ; votre photo de profil si vous en ajoutez une — le fichier envoyé n'est pas conservé : le serveur en garde un petit carré (256 pixels de côté) ré-encodé, sans les métadonnées du fichier (ni position GPS, ni date de prise de vue, ni appareil), que seuls vous et les membres de vos groupes peuvent voir | Exécution du contrat (fournir le service) |
 | Âge | la déclaration d'avoir 15 ans ou plus, faite à l'inscription (à la première connexion pour un compte ouvert avec Google), et sa date — aucune date de naissance n'est demandée ni conservée | Exécution du contrat (les conditions générales réservent le service aux 15 ans et plus) |
 | Conditions d'utilisation | la version des conditions générales que vous avez acceptée — à l'inscription, ou à la première connexion pour un compte ouvert avec Google — ou dont vous avez indiqué avoir pris connaissance après un changement, et sa date | Exécution du contrat (garder trace des conditions qui régissent votre usage du service) |
 | Connexion avec Google | identifiant de votre compte Google, email et nom de votre profil Google, jeton de rafraîchissement délivré par Google (chiffré) | Exécution du contrat (vous choisissez ce mode de connexion) |
@@ -231,6 +231,10 @@ de la purge dépasserait.
   purgé : l'email et le nom sont remplacés, le mot de passe haché est
   effacé, et l'appartenance aux groupes et le rôle sont supprimés (voir
   ci-dessous).
+- **Photo de profil** : jusqu'à ce que vous la remplaciez ou la
+  supprimiez, et au plus tard jusqu'à la purge du compte, qui la supprime.
+  Le fichier d'une photo remplacée ou supprimée est effacé aussitôt ; si
+  cet effacement échoue, un balayage quotidien du stockage le rattrape.
 - **Compte désactivé par l'administrateur du service** : la désactivation
   révoque les sessions, sans rien effacer ; l'administrateur peut
   réactiver le compte. Une connexion avec les bons identifiants n'ouvre
@@ -376,7 +380,7 @@ de la purge dépasserait.
   s'applique (annulable via `POST /account/delete/cancel`), après quoi
   votre compte est purgé au premier passage de purge qui suit.
 - **Ce que la purge supprime** : vos identifiants de connexion (mot de
-  passe haché, connexion avec Google), vos sessions, vos appareils abonnés
+  passe haché, connexion avec Google), votre photo de profil, vos sessions, vos appareils abonnés
   aux notifications, vos jetons de
   vérification et de réinitialisation, votre appartenance aux groupes et
   votre rôle, votre date de dernière lecture de la messagerie, vos
@@ -471,8 +475,9 @@ de la purge dépasserait.
   de mot de passe ; les entrées du journal d'audit de vos propres actions
   et de celles qui visent votre compte, sans l'identité de leur auteur. Les
   pièces jointes y figurent par leurs métadonnées (nom, type, taille, date)
-  et un lien de téléchargement valable 5 minutes : relancez l'export pour
-  en obtenir un nouveau. N'y figurent ni le contenu créé par les autres
+  et un lien de téléchargement valable 5 minutes, votre photo de profil
+  par son type et un lien de même durée : relancez l'export pour en
+  obtenir un nouveau. N'y figurent ni le contenu créé par les autres
   membres, ni les secrets d'accès (identifiant de session, jeton
   d'invitation ou de vérification, jeton Google, URL de flux calendrier).
 - **Droit à l'effacement (Art. 17)** : voir « Suppression de votre

@@ -2,6 +2,7 @@ pub mod agenda;
 pub mod attachment_reconcile;
 pub mod audit;
 pub mod auth;
+pub mod avatar;
 pub mod budget;
 pub mod client_ip;
 pub mod crypto;
@@ -29,7 +30,7 @@ pub mod storage;
 pub mod user_admin;
 
 use axum::extract::DefaultBodyLimit;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::Router;
 use oauth2::{basic::BasicClient, EndpointNotSet, EndpointSet};
 use sqlx::PgPool;
@@ -117,7 +118,7 @@ pub struct AppState {
     pub body_read_limits: manage_our_home_http_guard::BodyReadLimits,
     /// Uploads this process holds in memory at once, per account and in
     /// all (#219). Taken by `agenda::attachments::upload_attachment` before
-    /// it reads the body.
+    /// it reads the body, and by `avatar::put_avatar` (#467).
     pub upload_gate: std::sync::Arc<manage_our_home_http_guard::UploadGate<uuid::Uuid>>,
     /// The server's VAPID identity for reminders sent as a notification
     /// (#306), from `VAPID_PRIVATE_KEY`/`VAPID_SUBJECT`. `None`: no key
@@ -219,6 +220,15 @@ pub fn build_router(state: AppState) -> Router {
         .route("/account/delete/cancel", post(auth::cancel_delete_account))
         .route("/account/export", get(rgpd::export_account))
         .route(
+            "/me/avatar",
+            // The body limit on `PUT` only: `MethodRouter::layer` applies to
+            // the methods registered before it.
+            put(avatar::put_avatar)
+                .layer(DefaultBodyLimit::max(avatar::MAX_AVATAR_BODY_BYTES))
+                .get(avatar::get_own_avatar)
+                .delete(avatar::delete_avatar),
+        )
+        .route(
             "/account/notifications",
             get(notifications::preferences::get_settings)
                 .put(notifications::preferences::update_settings),
@@ -268,6 +278,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/groups/:id/members/:user_id",
             get(groups::get_member).delete(groups::remove_member),
+        )
+        .route(
+            "/groups/:id/members/:user_id/avatar",
+            get(avatar::get_member_avatar),
         )
         .route("/groups/:id/leave", post(groups::leave_group))
         .route(

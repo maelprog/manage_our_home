@@ -19,7 +19,8 @@
 //!   personal rows among the others: the account's own `audit_log`
 //!   entries, the `invitations` it sent (with the third-party addresses
 //!   they hold) and its `calendar_imports` (with their `feed_url`, a
-//!   bearer credential to an external calendar);
+//!   bearer credential to an external calendar); and its profile photo
+//!   (#467), the `users.avatar_key` cleared and the object deleted;
 //! - kept, attributed to the anonymised row — the content shared with the
 //!   group: `events`, `event_attachments` and their objects,
 //!   `event_occurrence_completions`, `messages`, `stock_items`, `recipes`,
@@ -56,9 +57,9 @@ pub const DEACTIVATION_NOTICE_SUBJECT: &str =
 /// (`AppState.admin_db`): five of the tables it deletes from are under
 /// forced RLS policies, and on any other role the pass refuses rather than
 /// stamp an account purged with its memberships left in place. Each pass
-/// sends the due warnings first, then purges — deleting the objects of the
-/// attachments of the groups it deleted for being left with no member
-/// (#323) — then tells the members who became owners of a group, by this
+/// sends the due warnings first, then purges — deleting the profile photos
+/// of the purged accounts (#467) and the objects of the attachments of the
+/// groups it deleted for being left with no member (#323) — then tells the members who became owners of a group, by this
 /// pass or since the last one (`groups::succession`).
 pub async fn run(pool: PgPool, email: EmailSender, storage: Storage, frontend_base_url: String) {
     let privacy_policy_url = format!("{frontend_base_url}/privacy-policy");
@@ -77,15 +78,8 @@ pub async fn run(pool: PgPool, email: EmailSender, storage: Storage, frontend_ba
             if let Err(e) = send_deactivation_notices(&pool, &privacy_policy_url, send).await {
                 tracing::error!(error = ?e, "deactivation notice job failed");
             }
-            match purge_due_accounts(&pool).await {
-                // A failure leaves orphans for the daily reconcile pass.
-                Ok(keys) if !keys.is_empty() => {
-                    if let Err(e) = storage.delete_objects(&keys).await {
-                        tracing::error!(error = ?e, "account purge: attachment objects not deleted");
-                    }
-                }
-                Ok(_) => {}
-                Err(e) => tracing::error!(error = ?e, "account purge job failed"),
+            if let Err(e) = purge_due_accounts_and_objects(&pool, &storage).await {
+                tracing::error!(error = ?e, "account purge job failed");
             }
             if let Err(e) =
                 succession::send_ownership_notices(&pool, &groups_url, &privacy_policy_url, send)
@@ -189,6 +183,23 @@ where
     Ok(())
 }
 
+/// The purge step of [`run`]: [`purge_due_accounts`], then the objects of
+/// the keys it hands back — the purged accounts' profile photos (#467) and
+/// the attachments of the groups deleted with no member left (#323). The
+/// objects go once every row is committed; a failure to delete them is
+/// logged and leaves orphans for the daily reconcile pass
+/// (`jobs::attachment_reconcile`).
+pub async fn purge_due_accounts_and_objects(
+    pool: &PgPool,
+    storage: &Storage,
+) -> anyhow::Result<()> {
+    let keys = purge_due_accounts(pool).await?;
+    if let Err(e) = storage.delete_objects(&keys).await {
+        tracing::error!(error = ?e, "account purge: objects not deleted");
+    }
+    Ok(())
+}
+
 /// One pass: every account [`purge_due`] names, each in its own
 /// transaction. Returns the storage keys [`purge_account`] hands back, for
 /// the caller to delete their objects.
@@ -236,9 +247,10 @@ pub async fn purge_due_accounts(pool: &PgPool) -> anyhow::Result<Vec<String>> {
 /// lock also makes a concurrent cancellation or reactivation wait for this
 /// transaction, or this transaction wait for it.
 ///
-/// Returns the storage keys of the attachments of the groups the purge
-/// deleted for being left with no member ([`delete_if_abandoned`]): their
-/// objects are the caller's to delete, the rows being gone.
+/// Returns the storage keys of the account's profile photo (#467) and of
+/// the attachments of the groups the purge deleted for being left with no
+/// member ([`delete_if_abandoned`]): their objects are the caller's to
+/// delete, the rows naming them being gone.
 pub async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<Vec<String>> {
     let mut tx = crate::db::begin(pool).await?;
 
@@ -344,10 +356,18 @@ pub async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<Vec<S
     .execute(&mut *tx)
     .await?;
 
+    // The photo is personal data, not content shared with a group: the key
+    // is cleared below and the object handed to the caller (#467).
+    let avatar_key = sqlx::query_scalar!("SELECT avatar_key FROM users WHERE id = $1", user_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    storage_keys.extend(avatar_key);
+
     sqlx::query!(
         r#"
         UPDATE users
         SET email = 'deleted-' || id || '@deleted.invalid',
+            avatar_key = NULL,
             password_hash = NULL,
             display_name = 'Utilisateur supprimé',
             age_declared_at = NULL,

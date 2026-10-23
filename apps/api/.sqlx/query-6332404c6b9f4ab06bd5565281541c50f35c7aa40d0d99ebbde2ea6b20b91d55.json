@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT storage_key AS \"key!\" FROM event_attachments\n           UNION ALL\n           SELECT avatar_key AS \"key!\" FROM users WHERE avatar_key IS NOT NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "6332404c6b9f4ab06bd5565281541c50f35c7aa40d0d99ebbde2ea6b20b91d55"
+}

@@ -30,8 +30,9 @@ use crate::AppState;
 /// (RLS-enforced) and filtered at the SQL layer on the column that names the
 /// caller, so this is never a "dump my whole family's data" endpoint. Secrets
 /// are left out: session ids (they are the session cookie), invitation and
-/// email tokens, OAuth refresh tokens, attachment storage keys and ICS feed
-/// URLs. Attachments come as metadata plus a short-lived presigned URL.
+/// email tokens, OAuth refresh tokens, attachment and profile photo storage
+/// keys and ICS feed URLs. Attachments and the profile photo come as
+/// metadata plus a short-lived presigned URL.
 pub async fn export_account(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -39,13 +40,13 @@ pub async fn export_account(
     let profile = sqlx::query!(
         r#"SELECT id, email, email_verified, display_name, created_at, age_declared_at,
                   terms_accepted_version, terms_accepted_at, deletion_requested_at, is_superadmin, reminder_channel,
-                  (password_hash IS NOT NULL) AS "has_password!"
+                  avatar_key, (password_hash IS NOT NULL) AS "has_password!"
            FROM users WHERE id = $1"#,
         auth.user_id
     )
     .fetch_one(&state.db)
     .await?;
-    let profile_json = json!({
+    let mut profile_json = json!({
         "id": profile.id,
         "email": profile.email,
         "email_verified": profile.email_verified,
@@ -67,6 +68,22 @@ pub async fn export_account(
         // #306: how their reminders reach them — `push`, `email` or `both`.
         "reminder_channel": profile.reminder_channel,
     });
+    // #467: the profile photo, as the attachments below: its type and a
+    // presigned GET. No `avatar_key` field, though the key is in the
+    // link's path, as for the attachments. `null` without a photo.
+    profile_json["avatar"] = match &profile.avatar_key {
+        Some(key) => {
+            let url = state.storage.presigned_get_url(key).await;
+            if let Err(error) = &url {
+                tracing::warn!(%error, "export: avatar link not signed");
+            }
+            export::with_download_url(
+                json!({ "content_type": crate::avatar::AVATAR_CONTENT_TYPE }),
+                url,
+            )
+        }
+        None => Value::Null,
+    };
 
     // "My groups" are read from the caller's own `group_members` rows, with
     // role and joined_at in the same query (issue #209, as `list_groups` since

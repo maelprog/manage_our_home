@@ -277,7 +277,8 @@ deployments should always set both to the distinct roles above.
 ## Ops: `reconcile-attachments` (#58)
 
 Second binary in this crate. Finds objects in the MinIO attachments bucket
-that no `event_attachments` row points at, and — only with `--apply` —
+that no `event_attachments` row points at, nor any `users.avatar_key` (the
+profile photos, under `avatars/`, #467), and — only with `--apply` —
 deletes them.
 
 ```
