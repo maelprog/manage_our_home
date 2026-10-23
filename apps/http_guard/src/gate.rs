@@ -39,7 +39,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 /// In apps/api, the profile photo (#588) takes its permits from the same
 /// pool with a larger body, up to 32 MiB plus framing, but reads it only
 /// under `avatar::DECODE_PERMITS`, one photo at a time: a full pool holds
-/// at most 7 attachment bodies and one photo body, about 144.8 + 32.7 MiB,
+/// at most 7 attachment bodies and one photo body, about 144.6 + 32.7 MiB,
 /// and that photo's decode on top (the sum is in `avatar::DECODE_PERMITS`).
 pub const GLOBAL_UPLOADS: usize = 8;
 
