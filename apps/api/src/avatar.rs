@@ -41,10 +41,12 @@ use crate::error::{AppError, AppResult};
 use crate::storage::UPLOAD_FRAMING_MARGIN_BYTES;
 use crate::AppState;
 
-/// The largest photo accepted, in bytes. A phone's full-resolution JPEG is
-/// a few megabytes; 12 MiB leaves room for the larger sensors, as the
-/// barcode photo of apps/web does (`routes/stocks/photo.rs`).
-pub const MAX_AVATAR_BYTES: usize = 12 * 1024 * 1024;
+/// The largest photo accepted, in bytes. A phone's JPEG in its 48/50 Mpx
+/// mode weighs about 15 to 30 MB (a Galaxy S25 Ultra's 50 Mpx JPEG, 21 MB);
+/// 32 MiB admits them (arbitrage of 2026-10-23, #588). The services that
+/// cap an avatar at 2 to 10 MB shrink the photo in the client before
+/// sending it, which apps/web does not.
+pub const MAX_AVATAR_BYTES: usize = 32 * 1024 * 1024;
 
 /// The route's body limit: the photo plus the multipart framing, as
 /// `storage::MAX_UPLOAD_BODY_BYTES` does for the attachments. Above the cap
@@ -75,37 +77,45 @@ const MAX_DIMENSION: u32 = 8192;
 const MAX_ALLOC: u64 = 80 * 1024 * 1024;
 
 /// Decodes running at once in this process, since the upload gate alone
-/// admits more bodies than decodes should multiply. Count
-/// `DECODE_PERMITS × DECODE_PEAK_BYTES`, 460 MB, for the decodes when
-/// sizing the api's memory (the pod's limit on k3s).
+/// admits more bodies than decodes should multiply.
+///
+/// Sizing the api's memory (the pod's limit on k3s): `put_avatar` reads
+/// the whole body under its upload permit, before it waits for a decode
+/// permit, and the body stays held through the decode. So a request that
+/// decodes holds its body, up to `MAX_AVATAR_BYTES` (33.6 MB), plus
+/// `DECODE_PEAK_BYTES`; the two permits, twice that. The other uploads the
+/// gate admits (`GLOBAL_UPLOADS`, 8 in all, attachments included) each
+/// hold their body meanwhile: 8 avatar bodies at the cap are 268 MB, of
+/// which the two decoding ones. Count `8 × MAX_AVATAR_BYTES +
+/// DECODE_PERMITS × DECODE_PEAK_BYTES`, 788 MB, for avatars alone.
 const DECODE_PERMITS: usize = 2;
 
 /// What one decode holds at its peak, in bytes, at most: the upload's
 /// bytes aside, the decoders' buffers and the frame. Peaks counted on the
 /// cases of `tests/avatar_memory.rs` (#588), which fails past this bound,
-/// run on 7 cores and on a single one (`--cpuset-cpus 0`), in release and
-/// debug builds — the largest of those runs:
+/// run in debug and release builds, on 7 cores and on a single one
+/// (`--cpuset-cpus 0`); the range is over those four runs:
 ///
-/// - a lossless WebP of 5280 × 5280 in RGB, its frame (83.6 MB) just under
-///   `MAX_ALLOC`: 195.2 MB, the largest — `image` decodes it whole, with
-///   buffers of its own on top of the frame;
 /// - a progressive 4:4:4 JPEG of 6000 × 4600, the nearest to
-///   `MAX_PROGRESSIVE_COEFFICIENT_BYTES`: 168 to 169 MB on 7 cores, up to
-///   180.3 MB on one; with 10.4 MB of ICC profile filling the file up to
-///   `MAX_AVATAR_BYTES`, 178.7 MB on 7 cores, up to 191.0 MB on one;
-/// - a PNG of 5280 × 5280 in RGB, near `MAX_ALLOC`: 84.0 MB;
-/// - a sequential JPEG, reduced: 8000 × 6000, 4.5 to 5.6 MB; 16384 × 511,
-///   12.6 MB on 7 cores, up to 16.8 MB on one; 16384 × 16384, 18.9 MB on
-///   7 cores, up to 22.8 MB on one (counted once, not in the test: its
-///   source frame alone is 805 MB). The full photo is never held.
+///   `MAX_PROGRESSIVE_COEFFICIENT_BYTES`: 168.2 to 188.2 MB; with ICC
+///   segments filling the file up to `MAX_AVATAR_BYTES`, which the decoder
+///   keeps, 199.6 to 214.7 MB — the largest;
+/// - a lossless WebP of 5280 × 5280 in RGB, its frame (83.6 MB) just under
+///   `MAX_ALLOC`: 195.2 MB — `image` decodes it whole, with buffers of its
+///   own on top of the frame;
+/// - a PNG of 5280 × 5280 in RGB: 84.0 MB;
+/// - a sequential JPEG, reduced: 8000 × 6000, 4.5 to 10.7 MB; 16384 × 511,
+///   12.6 to 14.2 MB. At 16384 × 16384 (counted apart, not in the test:
+///   its source frame alone is 805 MB), 18.9 MB on 7 cores, 22.8 MB on
+///   one, 40 to 42 MB in the review of #589. The photo is never held whole.
 ///
 /// The JPEG figures vary with scheduling: past 128 × 128, `jpeg_decoder`
 /// hands the rows to a thread per component through a queue it does not
 /// bound, so a core that leaves those threads behind lets rows pile up —
-/// up to 40–42 MB at 16384 × 16384 in the review of #589. The 230 MB here
-/// keep 35 MB over the largest count for that. Before #588, a progressive
+/// the single-core runs are the high ends above. The 260 MB here keep
+/// 45 MB over the largest count for that. Before #588, a progressive
 /// 4:4:4 JPEG of 5000 × 5000 held 233 MB (review of #467).
-pub const DECODE_PEAK_BYTES: usize = 230_000_000;
+pub const DECODE_PEAK_BYTES: usize = 260_000_000;
 
 static DECODES: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(DECODE_PERMITS));
 
@@ -704,6 +714,24 @@ mod tests {
         let mut at_cap = jpeg(&halves(8, 8));
         at_cap.resize(MAX_AVATAR_BYTES, 0);
         assert_eq!(sniff_avatar_format(&at_cap), Ok(ImageFormat::Jpeg));
+    }
+
+    /// Arbitrage of 2026-10-23 (#588): a 48/50 Mpx phone JPEG, 15 to
+    /// 30 MB, fits under the cap.
+    #[test]
+    fn the_cap_is_32_mib() {
+        assert_eq!(MAX_AVATAR_BYTES, 32 * 1024 * 1024);
+    }
+
+    /// A valid JPEG at exactly the cap — padded past its end marker — is
+    /// re-encoded; one byte more is refused as too large.
+    #[test]
+    fn a_photo_at_the_cap_is_accepted() {
+        let mut at_cap = jpeg(&halves(64, 64));
+        at_cap.resize(MAX_AVATAR_BYTES, 0);
+        assert!(reencode_avatar(&at_cap).is_ok());
+        at_cap.push(0);
+        assert_eq!(reencode_avatar(&at_cap), Err(AvatarError::TooLarge));
     }
 
     #[test]

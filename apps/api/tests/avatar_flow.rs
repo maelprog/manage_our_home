@@ -289,7 +289,8 @@ async fn a_refused_upload_stores_nothing(db: PgPool) {
 }
 
 /// Criterion of #588: the photo of a 48/50 Mpx phone mode, 8000 × 6000, is
-/// accepted (204, as every upload) and served as the usual square.
+/// accepted (204, as every upload) and served as the usual square — sent
+/// at exactly `MAX_AVATAR_BYTES`, the largest body the route lets through.
 #[sqlx::test]
 async fn a_50_mpx_photo_is_accepted_and_served_as_the_square(db: PgPool) {
     let Some((s3, bucket)) = real_minio_from_env() else {
@@ -310,6 +311,9 @@ async fn a_50_mpx_photo_is_accepted_and_served_as_the_square(db: PgPool) {
         .encode_image(&smooth)
         .unwrap();
     assert!(photo.len() <= MAX_AVATAR_BYTES, "{}", photo.len());
+    // Padded past its end marker to exactly the cap: the route's body
+    // limit lets the largest accepted file through.
+    photo.resize(MAX_AVATAR_BYTES, 0);
     assert_status(
         &put_avatar(&router, &cookie, "capteur-50mpx.jpg", &photo).await,
         StatusCode::NO_CONTENT,

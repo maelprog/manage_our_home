@@ -94,15 +94,17 @@ fn jpeg_encoder_jpeg(image: &RgbImage, progressive: bool, sampling: SamplingFact
 }
 
 /// `jpeg` with APP2 `ICC_PROFILE` segments of about `total` bytes in all,
-/// right after its SOI marker.
+/// right after its SOI marker. Past 255 segments the numbering wraps: the
+/// profile is then invalid, but the decoder holds every segment all the
+/// same, which is what is measured.
 fn with_icc(jpeg: &[u8], total: usize) -> Vec<u8> {
     const CHUNK: usize = 65_000;
     let count = total.div_ceil(CHUNK);
     let mut out = jpeg[..2].to_vec();
     for i in 0..count {
         let mut payload = b"ICC_PROFILE\0".to_vec();
-        payload.push((i + 1) as u8);
-        payload.push(count as u8);
+        payload.push((i % 255 + 1) as u8);
+        payload.push(count.min(255) as u8);
         payload.extend(std::iter::repeat_n(0x5A, CHUNK));
         out.extend_from_slice(&[0xFF, 0xE2]);
         out.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
