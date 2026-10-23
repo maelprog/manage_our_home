@@ -68,8 +68,16 @@ const MAX_DIMENSION: u32 = 8192;
 /// bound that frame on the `from_decoder` path: hence the explicit check.
 const MAX_ALLOC: u64 = 80 * 1024 * 1024;
 
-/// Decodes running at once in this process: each may hold `MAX_ALLOC`, and
-/// the upload gate alone admits more bodies than that should multiply.
+/// Decodes running at once in this process, since the upload gate alone
+/// admits more bodies than decodes should multiply.
+///
+/// `MAX_ALLOC` bounds the decoded frame, not what a decode holds at its
+/// peak: the decoders' own buffers come on top. Peaks measured on accepted
+/// images (review of #467): a progressive 4:4:4 JPEG of 5000 × 5000,
+/// 233 MB; a progressive greyscale JPEG of 8192 × 8192, 209 MB; a WebP of
+/// 6000 × 4000, 167 MB. Progressive JPEG and WebP thus go past `MAX_ALLOC`.
+/// Count about 235 MB per decode, about 470 MB for the two permits, when
+/// sizing the process's memory.
 const DECODE_PERMITS: usize = 2;
 
 static DECODES: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(DECODE_PERMITS));
