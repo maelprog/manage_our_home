@@ -60,9 +60,12 @@ const AVATAR_JPEG_QUALITY: u8 = 85;
 /// Decoder bound: no dimension past this, whatever the file declares.
 const MAX_DIMENSION: u32 = 8192;
 
-/// Bound on what decoding may allocate, `image`'s output buffer included: a
-/// 24 Mpx frame in RGB (6000 × 4000 × 3 = 72 MB) fits; a larger one is
-/// refused as unreadable.
+/// Bound on the decoded frame, in bytes: a 24 Mpx frame in 8-bit RGB
+/// (6000 × 4000 × 3 = 72 MB) fits; a larger one — more pixels, or more
+/// bytes per pixel, as a 16-bit PNG — is refused as unreadable from what its
+/// header declares (`ImageDecoder::total_bytes`), before anything is
+/// decoded. Also handed to `image` as `Limits::max_alloc`, which does not
+/// bound that frame on the `from_decoder` path: hence the explicit check.
 const MAX_ALLOC: u64 = 80 * 1024 * 1024;
 
 /// Decodes running at once in this process: each may hold `MAX_ALLOC`, and
@@ -133,6 +136,9 @@ pub fn reencode_avatar(bytes: &[u8]) -> Result<Vec<u8>, AvatarError> {
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     reader.limits(limits);
     let mut decoder = reader.into_decoder().map_err(|_| AvatarError::Unreadable)?;
+    if decoder.total_bytes() > MAX_ALLOC {
+        return Err(AvatarError::Unreadable);
+    }
     // An unreadable orientation is no reason to refuse the photo: it is
     // then stored as its pixels lie.
     let orientation = decoder.orientation().ok();
@@ -545,6 +551,19 @@ mod tests {
     fn a_picture_past_the_decoder_bounds_is_unreadable() {
         let wide = RgbImage::new(10_000, 1);
         assert_eq!(reencode_avatar(&png(&wide)), Err(AvatarError::Unreadable));
+    }
+
+    /// Within the dimension bound, but past `MAX_ALLOC` once decoded: a
+    /// 4096 × 4096 RGBA PNG of 16 bits per channel compresses to little,
+    /// and decodes to 4096 × 4096 × 8 = 134 MB. Refused before decoding.
+    #[test]
+    fn a_picture_past_the_allocation_bound_is_unreadable() {
+        let deep = DynamicImage::ImageRgba16(image::ImageBuffer::new(4096, 4096));
+        let mut bytes = Vec::new();
+        deep.write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
+            .unwrap();
+        assert!(bytes.len() < MAX_AVATAR_BYTES, "{}", bytes.len());
+        assert_eq!(reencode_avatar(&bytes), Err(AvatarError::Unreadable));
     }
 
     // --- dimensioning ---
