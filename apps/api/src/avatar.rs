@@ -185,8 +185,9 @@ pub fn reencode_avatar(bytes: &[u8]) -> Result<Vec<u8>, AvatarError> {
 /// Nothing is written before the photo has been re-encoded: a refused
 /// upload stores nothing.
 ///
-/// Then the `users` row is locked, the new key written, the object put and
-/// the transaction committed, in that order: a storage failure rolls the
+/// Then the `users` row is locked (401 if the account was purged since the
+/// session was checked), the new key written, the object put and the
+/// transaction committed, in that order: a storage failure rolls the
 /// key back, and the previous photo stays. The previous object is deleted
 /// after the commit; if that fails, it is an orphan the reconciliation pass
 /// removes.
@@ -235,14 +236,19 @@ pub async fn put_avatar(
 
     let key = format!("avatars/{}/{}", auth.user_id, Uuid::new_v4());
     let mut tx = crate::db::begin(&state.db).await?;
+    // `deleted_at IS NULL`: a request authenticated before the account's
+    // purge, and reaching this lock after it, must not write a key on the
+    // anonymised row — the photo would outlive the purge. It is answered
+    // 401, as the session it came with now would be.
     let previous = sqlx::query_scalar!(
-        "SELECT avatar_key FROM users WHERE id = $1 FOR UPDATE",
+        "SELECT avatar_key FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
         auth.user_id
     )
-    .fetch_one(&mut *tx)
-    .await?;
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::Unauthorized)?;
     sqlx::query!(
-        "UPDATE users SET avatar_key = $2 WHERE id = $1",
+        "UPDATE users SET avatar_key = $2 WHERE id = $1 AND deleted_at IS NULL",
         auth.user_id,
         key
     )
