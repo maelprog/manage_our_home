@@ -1,4 +1,5 @@
 pub mod items;
+pub(crate) mod planned;
 
 /// Same permission bar as Stocks/Recipes/Agenda: any member may create,
 /// read, or check off a grocery item, but only the item's creator or a

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO recipes (group_id, created_by, name, instructions, source_url)\n        VALUES ($1, $2, $3, $4, $5)\n        RETURNING id, group_id, created_by, name, instructions, source_url, created_at, updated_at\n        ",
+  "query": "SELECT id, group_id, name, instructions, source_url, servings, created_at\n               FROM recipes WHERE group_id = $1 AND created_by = $2 ORDER BY created_at",
   "describe": {
     "columns": [
       {
@@ -27,17 +27,6 @@
       },
       {
         "ordinal": 2,
-        "name": "created_by",
-        "type_info": "Uuid",
-        "origin": {
-          "Table": {
-            "table": "recipes",
-            "name": "created_by"
-          }
-        }
-      },
-      {
-        "ordinal": 3,
         "name": "name",
         "type_info": "Text",
         "origin": {
@@ -48,7 +37,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 3,
         "name": "instructions",
         "type_info": "Text",
         "origin": {
@@ -59,13 +48,24 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 4,
         "name": "source_url",
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "recipes",
             "name": "source_url"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "servings",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "servings"
           }
         }
       },
@@ -79,38 +79,23 @@
             "name": "created_at"
           }
         }
-      },
-      {
-        "ordinal": 7,
-        "name": "updated_at",
-        "type_info": "Timestamptz",
-        "origin": {
-          "Table": {
-            "table": "recipes",
-            "name": "updated_at"
-          }
-        }
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid",
-        "Text",
-        "Text",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
       false,
       false,
       false,
-      false,
       true,
       true,
-      false,
+      true,
       false
     ]
   },
-  "hash": "c0f9b9a291f931eb83fdd2b59579eab821e293fc7c3b6bfe87afb1a70922a998"
+  "hash": "3ab0888c8a603c9c569327b7ba06124751df3aeba7de53bb8812628132780730"
 }

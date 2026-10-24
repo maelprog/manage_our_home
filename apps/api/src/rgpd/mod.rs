@@ -325,7 +325,7 @@ pub async fn export_account(
         }));
 
         let recipe_rows = sqlx::query!(
-            r#"SELECT id, group_id, name, instructions, source_url, created_at
+            r#"SELECT id, group_id, name, instructions, source_url, servings, created_at
                FROM recipes WHERE group_id = $1 AND created_by = $2 ORDER BY created_at"#,
             group_id,
             auth.user_id
@@ -349,6 +349,7 @@ pub async fn export_account(
                 json!({
                     "id": r.id, "group_id": r.group_id, "name": r.name,
                     "instructions": r.instructions, "source_url": r.source_url,
+                    "servings": r.servings,
                     "created_at": r.created_at,
                 })
             })
