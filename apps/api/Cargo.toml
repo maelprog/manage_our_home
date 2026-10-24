@@ -85,7 +85,8 @@ hmac = "0.13"
 # `recipes::taxonomy`): 205 KB gzipped instead of 932 KB in the binary.
 # The newest release (dependency policy), shared with apps/web.
 flate2 = "1.1.10"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+# JPEG and PNG only: the avatar refuses WebP (#588), the one user here.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 # The avatar's JPEG decode (#588): `Decoder::scale` reduces a picture in
 # the inverse DCT (1/2, 1/4, 1/8), which `image`'s zune-jpeg cannot, so a
 # 50 Mpx photo never exists at full size in memory. Without `rayon`: no

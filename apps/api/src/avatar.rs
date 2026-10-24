@@ -2,10 +2,12 @@
 //! `GET /me/avatar` and `GET /groups/:id/members/:user_id/avatar`.
 //!
 //! The upload is never stored as sent. Its type is sniffed from its bytes
-//! (JPEG, PNG or WebP, whatever its name says), it is decoded under bounds —
-//! a JPEG reduced in the decode itself, so that a 50 Mpx phone photo is
-//! accepted without ever being held at full size (#588) —, the orientation its EXIF records is applied, its centred square is
-//! reduced to `AVATAR_SIDE` pixels, and that square is encoded afresh as a
+//! (JPEG or PNG, whatever its name says; WebP no longer, #588), it is
+//! decoded under bounds — a JPEG reduced in the decode itself, so that a
+//! 50 Mpx phone photo is accepted without ever being held at full size
+//! (#588) —, the orientation its EXIF records is applied, its centred
+//! square is reduced to `AVATAR_SIDE` pixels, and that square is encoded
+//! afresh as a
 //! JPEG. The new file carries no metadata at all: EXIF, GPS position, camera
 //! model and the like go with the original, which is never written anywhere.
 //!
@@ -62,7 +64,7 @@ pub const AVATAR_CONTENT_TYPE: &str = "image/jpeg";
 
 const AVATAR_JPEG_QUALITY: u8 = 85;
 
-/// Bound of `image`'s whole decode (PNG, WebP): no dimension past this,
+/// Bound of `image`'s whole decode of a PNG: no dimension past this,
 /// whatever the file declares.
 const MAX_DIMENSION: u32 = 8192;
 
@@ -85,7 +87,8 @@ const MAX_DIMENSION: u32 = 8192;
 /// - its decode: `DECODE_PEAK_BYTES`, 50 MiB.
 ///
 /// 8 + 144.6 + 32.7 + 50 = 235.3 MiB, 20.7 MiB under the limit for the
-/// rest of the process. A photo upload waiting for the permit holds a gate
+/// rest of the process; 226.7 MiB with the largest decode counted
+/// (41.4 MiB, see `DECODE_PEAK_BYTES`). A photo upload waiting for the permit holds a gate
 /// permit and its connection buffer only, less than an attachment body.
 const DECODE_PERMITS: usize = 1;
 
@@ -109,15 +112,12 @@ const DECODE_PERMITS: usize = 1;
 ///   on one core in the review of #589); CMYK 1952 × 1468, 23.3 to
 ///   28.1 MiB. With ICC segments past the first scan the file is refused
 ///   (`scan_jpeg_header`), its walk allocating nothing: 0.0 MiB;
-/// - PNG (`MAX_PNG_FRAME_BYTES`), RGB 3739 × 3739: 40.4 MiB, 41.4 MiB with
+/// - PNG (`MAX_PNG_FRAME_BYTES`), RGB 3739 × 3739: 40.4 MiB; 41.4 MiB with
 ///   an iCCP profile of `MAX_METADATA_BYTES` once inflated; a profile
 ///   inflating to 100 MiB is refused at 0.1 MiB;
-/// - WebP (`MAX_WEBP_PIXELS`), 2097 × 2097: lossy with an alpha channel
-///   44.1 MiB, the largest, also with an EXIF chunk of
-///   `MAX_METADATA_BYTES`; lossless RGB 29.4 MiB, lossless RGBA 17.0 MiB,
-///   lossy RGB 20.4 MiB. An animated WebP is refused, and so is a frame
-///   other than its canvas (`webp_frame`): 0.0 MiB for a VP8 or VP8L
-///   frame of 16383 × 16383 under a canvas of 100 × 100.
+/// - WebP: refused by its bytes, before any decode (`sniff_avatar_format`).
+///
+/// The largest count is the PNG with its profile, 41.4 MiB.
 ///
 /// The JPEG figures vary with scheduling: past a reduced frame 128 pixels
 /// wide, `jpeg_decoder` hands its rows to a thread per component through a
@@ -136,7 +136,7 @@ static DECODES: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(DECODE_PER
 pub enum AvatarError {
     /// Over `MAX_AVATAR_BYTES`.
     TooLarge,
-    /// Not a JPEG, PNG or WebP by its bytes.
+    /// Not a JPEG or a PNG by its bytes.
     UnsupportedType,
     /// Of an accepted type, but not decodable.
     Unreadable,
@@ -165,6 +165,11 @@ impl From<AvatarError> for AppError {
 
 /// The format of an accepted upload: the size first, then the type sniffed
 /// from the bytes. The filename and the declared type are never looked at.
+/// A WebP is refused here (arbitrage of 2026-10-23, review of #589): its
+/// decoder reads a frame's data whole and copies it, and decodes a frame
+/// at its own dimensions before it looks at the canvas — two costs no
+/// check on the file bounds without decoding it. A phone's camera writes
+/// JPEG (or HEIC, refused as well).
 pub fn sniff_avatar_format(bytes: &[u8]) -> Result<ImageFormat, AvatarError> {
     if bytes.len() > MAX_AVATAR_BYTES {
         return Err(AvatarError::TooLarge);
@@ -172,7 +177,6 @@ pub fn sniff_avatar_format(bytes: &[u8]) -> Result<ImageFormat, AvatarError> {
     match infer::get(bytes).map(|kind| kind.mime_type()) {
         Some("image/jpeg") => Ok(ImageFormat::Jpeg),
         Some("image/png") => Ok(ImageFormat::Png),
-        Some("image/webp") => Ok(ImageFormat::WebP),
         _ => Err(AvatarError::UnsupportedType),
     }
 }
@@ -200,14 +204,6 @@ pub const MAX_JPEG_SIDE: u32 = 16384;
 /// greyscale, 2.9 Mpx in CMYK. A phone's camera writes sequential JPEGs,
 /// which this bound does not touch.
 pub const MAX_PROGRESSIVE_COEFFICIENT_BYTES: u64 = 22 * 1024 * 1024;
-
-/// Bound on a WebP's pixels. `image` decodes it whole, and its decoder
-/// holds about 10.5 bytes a pixel at its peak for a lossy picture with an
-/// alpha channel, the costliest still WebP (70.2 MiB at 2645 × 2645 in
-/// the review of #589): 4.4 Mpx, a square of 2097, keeps it within the
-/// decode's budget (`DECODE_PEAK_BYTES`). An animated WebP is refused
-/// (`webp_is_animated`).
-pub const MAX_WEBP_PIXELS: u64 = 4_400_000;
 
 /// Bound on a PNG's decoded frame, in bytes, as its header declares it
 /// (`ImageDecoder::total_bytes`): `image` decodes it whole, the frame,
@@ -428,18 +424,10 @@ pub fn check_jpeg_bounds(frame: &JpegFrame) -> Result<(), AvatarError> {
     Ok(())
 }
 
-/// The bounds of `image`'s whole decode, on what the header declares.
-pub fn check_whole_bounds(
-    format: ImageFormat,
-    width: u32,
-    height: u32,
-    total_bytes: u64,
-) -> Result<(), AvatarError> {
-    let past = match format {
-        ImageFormat::WebP => u64::from(width) * u64::from(height) > MAX_WEBP_PIXELS,
-        _ => total_bytes > MAX_PNG_FRAME_BYTES,
-    };
-    if past {
+/// The bound of a PNG's whole decode, on the frame's bytes its header
+/// declares.
+pub fn check_png_frame(total_bytes: u64) -> Result<(), AvatarError> {
+    if total_bytes > MAX_PNG_FRAME_BYTES {
         Err(AvatarError::ImageTooLarge)
     } else {
         Ok(())
@@ -523,64 +511,9 @@ pub(crate) fn decode_jpeg(bytes: &[u8]) -> Result<Decoded, AvatarError> {
 /// Bound on the metadata a whole decode holds besides the picture, in
 /// bytes (review of #589): a PNG's iCCP profile once inflated — `png`
 /// inflates it whatever the caller asks — and its eXIf chunk, which it
-/// copies; a WebP's EXIF chunk, which `image` reads whole for the
-/// orientation. A real profile is a few kilobytes (Display P3, about half
-/// a kilobyte), a camera's EXIF some tens. Past it: `image_too_large`.
+/// copies. A real profile is a few kilobytes (Display P3, about half a
+/// kilobyte), a camera's EXIF some tens. Past it: `image_too_large`.
 pub const MAX_METADATA_BYTES: usize = 1024 * 1024;
-
-/// A WebP's frame, as its VP8 or VP8L chunk declares it, and the bound on
-/// its EXIF chunk. `image-webp` decodes a frame at its own dimensions and
-/// only then compares them with a VP8X canvas: a frame other than its
-/// canvas is refused as unreadable here, before any decode, and the pixel
-/// bound applies to the frame.
-pub fn webp_frame(bytes: &[u8]) -> Result<(u32, u32), AvatarError> {
-    const UNREADABLE: AvatarError = AvatarError::Unreadable;
-    if bytes.get(..4) != Some(b"RIFF") || bytes.get(8..12) != Some(b"WEBP") {
-        return Err(UNREADABLE);
-    }
-    let le24 = |b: &[u8]| u32::from(b[0]) | u32::from(b[1]) << 8 | u32::from(b[2]) << 16;
-    let mut canvas = None;
-    let mut frame = None;
-    let mut exif = 0;
-    let mut pos = 12;
-    while let Some(header) = bytes.get(pos..pos + 8) {
-        let size = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
-        let data = bytes.get(pos + 8..pos + 8 + size).ok_or(UNREADABLE)?;
-        match &header[..4] {
-            b"VP8X" => {
-                let canvas_bytes = data.get(4..10).ok_or(UNREADABLE)?;
-                canvas = Some((le24(&canvas_bytes[..3]) + 1, le24(&canvas_bytes[3..]) + 1));
-            }
-            b"VP8 " if frame.is_none() => {
-                // Frame tag (3 bytes), start code, then 14 bits a side.
-                let Some(&[0x9D, 0x01, 0x2A, w0, w1, h0, h1]) = data.get(3..10) else {
-                    return Err(UNREADABLE);
-                };
-                let side = |low: u8, high: u8| u32::from(u16::from_le_bytes([low, high]) & 0x3FFF);
-                frame = Some((side(w0, w1), side(h0, h1)));
-            }
-            b"VP8L" if frame.is_none() => {
-                // Signature, then 14 bits a side, minus one.
-                let Some(&[0x2F, b0, b1, b2, b3]) = data.get(..5) else {
-                    return Err(UNREADABLE);
-                };
-                let bits = u32::from_le_bytes([b0, b1, b2, b3]);
-                frame = Some(((bits & 0x3FFF) + 1, (bits >> 14 & 0x3FFF) + 1));
-            }
-            b"EXIF" => exif += size,
-            _ => {}
-        }
-        pos += 8 + size + size % 2;
-    }
-    if exif > MAX_METADATA_BYTES {
-        return Err(AvatarError::ImageTooLarge);
-    }
-    let frame = frame.ok_or(UNREADABLE)?;
-    match canvas {
-        Some(canvas) if canvas != frame => Err(UNREADABLE),
-        _ => Ok(frame),
-    }
-}
 
 /// The bound on a PNG's metadata (`MAX_METADATA_BYTES`), on its chunks:
 /// the eXIf chunk's size, the iCCP profile's once inflated — counted in
@@ -616,16 +549,9 @@ fn check_png_metadata(bytes: &[u8]) -> Result<(), AvatarError> {
     Ok(())
 }
 
-/// Whether a WebP is animated: the animation flag of its VP8X chunk, the
-/// first one of the file when there is one. A simple WebP (a VP8 or VP8L
-/// chunk alone) is a still image.
-pub fn webp_is_animated(bytes: &[u8]) -> bool {
-    bytes.get(12..16) == Some(b"VP8X") && bytes.get(20).is_some_and(|flags| flags & 0x02 != 0)
-}
-
-/// A PNG or a WebP, decoded whole by `image` under `MAX_DIMENSION`,
-/// `check_whole_bounds` and `MAX_METADATA_BYTES`.
-fn decode_whole(bytes: &[u8], format: ImageFormat) -> Result<Decoded, AvatarError> {
+/// A PNG, decoded whole by `image` under `MAX_DIMENSION`,
+/// `check_png_frame` and `MAX_METADATA_BYTES`.
+fn decode_png(bytes: &[u8]) -> Result<Decoded, AvatarError> {
     // A bound passed is `ImageError::Limits`; anything else is unreadable.
     let refusal = |e: ImageError| match e {
         ImageError::Limits(_) => AvatarError::ImageTooLarge,
@@ -635,27 +561,12 @@ fn decode_whole(bytes: &[u8], format: ImageFormat) -> Result<Decoded, AvatarErro
     limits.max_image_width = Some(MAX_DIMENSION);
     limits.max_image_height = Some(MAX_DIMENSION);
     limits.max_alloc = Some(MAX_PNG_FRAME_BYTES);
-    // The bounds a decoder would only check once it has allocated: on
-    // the chunks first.
-    match format {
-        ImageFormat::WebP => {
-            // Not a photo, and its decoder holds frames on top of frames.
-            if webp_is_animated(bytes) {
-                return Err(AvatarError::UnsupportedType);
-            }
-            let (width, height) = webp_frame(bytes)?;
-            if width > MAX_DIMENSION || height > MAX_DIMENSION {
-                return Err(AvatarError::ImageTooLarge);
-            }
-            check_whole_bounds(format, width, height, 0)?;
-        }
-        _ => check_png_metadata(bytes)?,
-    }
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+    // The metadata `png` would inflate or copy, on the chunks first.
+    check_png_metadata(bytes)?;
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), ImageFormat::Png);
     reader.limits(limits);
     let mut decoder = reader.into_decoder().map_err(refusal)?;
-    let (width, height) = decoder.dimensions();
-    check_whole_bounds(format, width, height, decoder.total_bytes())?;
+    check_png_frame(decoder.total_bytes())?;
     // An unreadable orientation is no reason to refuse the photo: it is
     // then stored as its pixels lie.
     let orientation = decoder.orientation().ok();
@@ -669,7 +580,7 @@ pub fn reencode_avatar(bytes: &[u8]) -> Result<Vec<u8>, AvatarError> {
     let format = sniff_avatar_format(bytes)?;
     let (picture, orientation) = match format {
         ImageFormat::Jpeg => decode_jpeg(bytes)?,
-        _ => decode_whole(bytes, format)?,
+        _ => decode_png(bytes)?,
     };
 
     let (x, y, side) = center_square(picture.width(), picture.height());
@@ -923,7 +834,6 @@ mod tests {
     use super::*;
     use image::codecs::jpeg::JpegEncoder;
     use image::codecs::png::PngEncoder;
-    use image::codecs::webp::WebPEncoder;
     use image::{ImageEncoder, Rgb, RgbImage, Rgba, RgbaImage};
     use jpeg_encoder::SamplingFactor;
 
@@ -1025,15 +935,10 @@ mod tests {
     // --- validation ---
 
     #[test]
-    fn jpeg_png_and_webp_are_accepted() {
+    fn jpeg_and_png_are_accepted() {
         let image = halves(8, 8);
         assert_eq!(sniff_avatar_format(&jpeg(&image)), Ok(ImageFormat::Jpeg));
         assert_eq!(sniff_avatar_format(&png(&image)), Ok(ImageFormat::Png));
-        let mut webp = Vec::new();
-        WebPEncoder::new_lossless(&mut webp)
-            .write_image(image.as_raw(), 8, 8, image::ExtendedColorType::Rgb8)
-            .unwrap();
-        assert_eq!(sniff_avatar_format(&webp), Ok(ImageFormat::WebP));
     }
 
     /// Criterion of #467: a PDF renamed `.jpg` is refused. The name never
@@ -1291,21 +1196,13 @@ mod tests {
         );
     }
 
-    /// The bounds of the whole decodes: pixels for WebP, whose decoder
-    /// holds several frames' worth, the frame's bytes for PNG.
+    /// The bound of the PNG's whole decode: its frame's bytes, as the
+    /// header declares them.
     #[test]
-    fn the_whole_decode_bounds() {
-        assert_eq!(check_whole_bounds(ImageFormat::WebP, 2097, 2097, 0), Ok(()));
+    fn the_png_frame_bound() {
+        assert_eq!(check_png_frame(MAX_PNG_FRAME_BYTES), Ok(()));
         assert_eq!(
-            check_whole_bounds(ImageFormat::WebP, 2098, 2098, 0),
-            Err(AvatarError::ImageTooLarge)
-        );
-        assert_eq!(
-            check_whole_bounds(ImageFormat::Png, 1, 1, MAX_PNG_FRAME_BYTES),
-            Ok(())
-        );
-        assert_eq!(
-            check_whole_bounds(ImageFormat::Png, 1, 1, MAX_PNG_FRAME_BYTES + 1),
+            check_png_frame(MAX_PNG_FRAME_BYTES + 1),
             Err(AvatarError::ImageTooLarge)
         );
     }
@@ -1473,47 +1370,7 @@ mod tests {
         assert!(reencode_avatar(&with_icc(&progressive, 1)).is_ok());
     }
 
-    /// A RIFF WebP with a VP8X chunk carrying `flags`, then nothing more.
-    fn vp8x_webp(flags: u8) -> Vec<u8> {
-        let mut chunk = b"VP8X".to_vec();
-        chunk.extend_from_slice(&10u32.to_le_bytes());
-        chunk.extend_from_slice(&[flags, 0, 0, 0]);
-        chunk.extend_from_slice(&[15, 0, 0, 15, 0, 0]);
-        let mut out = b"RIFF".to_vec();
-        out.extend_from_slice(&((4 + chunk.len()) as u32).to_le_bytes());
-        out.extend_from_slice(b"WEBP");
-        out.extend_from_slice(&chunk);
-        out
-    }
-
-    /// The animation flag of the VP8X chunk; a simple WebP (VP8 or VP8L
-    /// only) is never animated.
-    #[test]
-    fn an_animated_webp_is_told_from_its_header() {
-        assert!(webp_is_animated(&vp8x_webp(0x02)));
-        assert!(webp_is_animated(&vp8x_webp(0x12)));
-        assert!(!webp_is_animated(&vp8x_webp(0x10)));
-        assert!(!webp_is_animated(&vp8x_webp(0x00)));
-        let mut still = Vec::new();
-        WebPEncoder::new_lossless(&mut still)
-            .write_image(halves(8, 8).as_raw(), 8, 8, image::ExtendedColorType::Rgb8)
-            .unwrap();
-        assert!(!webp_is_animated(&still));
-        assert!(!webp_is_animated(b"RIFF"));
-    }
-
-    /// An animated WebP is not a photo: refused as of a type not taken,
-    /// before anything is decoded — its decoder holds frames on top of
-    /// frames.
-    #[test]
-    fn an_animated_webp_is_refused() {
-        assert_eq!(
-            reencode_avatar(&vp8x_webp(0x02)),
-            Err(AvatarError::UnsupportedType)
-        );
-    }
-
-    // --- WebP frame and metadata, PNG metadata (#588, review of #589) ---
+    // --- WebP refused (arbitrage of 2026-10-23, review of #589) ---
 
     /// A RIFF WebP of the given chunks, each `(fourcc, data)`.
     fn riff_webp(chunks: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
@@ -1555,85 +1412,36 @@ mod tests {
         data
     }
 
-    /// The VP8L chunk data of `image`'s lossless WebP of `width` × `height`.
-    fn vp8l_of(width: u32, height: u32) -> Vec<u8> {
-        let mut webp = Vec::new();
-        WebPEncoder::new_lossless(&mut webp)
-            .write_image(
-                halves(width, height).as_raw(),
-                width,
-                height,
-                image::ExtendedColorType::Rgb8,
-            )
-            .unwrap();
-        assert_eq!(&webp[12..16], b"VP8L");
-        let size = u32::from_le_bytes(webp[16..20].try_into().unwrap()) as usize;
-        webp[20..20 + size].to_vec()
-    }
-
-    /// The frame's own dimensions are read from its chunk, VP8 or VP8L,
-    /// simple or under a VP8X canvas of the same size.
+    /// WebP is no longer taken: still or animated, lossy or lossless, a
+    /// frame other than its canvas, a VP8 chunk stuffed with data
+    /// `image-webp` would read whole and copy — every WebP is refused by
+    /// its bytes, before any decode.
     #[test]
-    fn the_webp_frame_is_read_from_its_chunk() {
-        assert_eq!(
-            webp_frame(&riff_webp(&[(b"VP8L", vp8l_of(8, 6))])),
-            Ok((8, 6))
-        );
-        assert_eq!(
-            webp_frame(&riff_webp(&[(b"VP8 ", vp8_header(3000, 2000))])),
-            Ok((3000, 2000))
-        );
-        assert_eq!(
-            webp_frame(&riff_webp(&[
-                (b"VP8X", vp8x(0, 8, 6)),
-                (b"VP8L", vp8l_of(8, 6))
-            ])),
-            Ok((8, 6))
-        );
-        assert_eq!(
-            webp_frame(&riff_webp(&[(b"VP8X", vp8x(0, 8, 6))])),
-            Err(AvatarError::Unreadable)
-        );
-    }
-
-    /// `image-webp` decodes a frame at its own dimensions before it looks at
-    /// the canvas: a frame larger than its canvas is refused before any
-    /// decode, in VP8 as in VP8L.
-    #[test]
-    fn a_webp_frame_other_than_its_canvas_is_unreadable() {
-        for frame in [
-            (b"VP8 ", vp8_header(16383, 16383)),
-            (b"VP8L", vp8l_header(16383, 16383)),
-        ] {
-            let lying = riff_webp(&[(b"VP8X", vp8x(0, 100, 100)), frame]);
-            assert_eq!(webp_frame(&lying), Err(AvatarError::Unreadable));
-            assert_eq!(reencode_avatar(&lying), Err(AvatarError::Unreadable));
-        }
-    }
-
-    /// The pixel bound is checked on the frame, before any decode.
-    #[test]
-    fn a_webp_frame_past_the_bound_is_too_large() {
-        let large = riff_webp(&[(b"VP8 ", vp8_header(3000, 3000))]);
-        assert_eq!(reencode_avatar(&large), Err(AvatarError::ImageTooLarge));
-    }
-
-    /// The EXIF a decoder reads for the orientation is held whole: past
-    /// `MAX_METADATA_BYTES`, refused.
-    #[test]
-    fn a_webp_exif_past_the_metadata_bound_is_too_large() {
-        let with_exif = |size: usize| {
+    fn a_webp_is_refused_before_any_decode() {
+        let mut stuffed = vp8_header(64, 64);
+        stuffed.resize(30 * 1024 * 1024, 0);
+        let cases = [
+            riff_webp(&[(b"VP8L", vp8l_header(8, 6))]),
+            riff_webp(&[(b"VP8 ", vp8_header(64, 48))]),
+            riff_webp(&[(b"VP8X", vp8x(0x02, 8, 6))]),
             riff_webp(&[
-                (b"VP8X", vp8x(0x08, 8, 6)),
-                (b"VP8L", vp8l_of(8, 6)),
-                (b"EXIF", vec![0; size]),
-            ])
-        };
-        assert!(reencode_avatar(&with_exif(64)).is_ok());
-        assert_eq!(
-            reencode_avatar(&with_exif(MAX_METADATA_BYTES + 1)),
-            Err(AvatarError::ImageTooLarge)
-        );
+                (b"VP8X", vp8x(0, 100, 100)),
+                (b"VP8 ", vp8_header(16383, 16383)),
+            ]),
+            riff_webp(&[(b"VP8 ", stuffed)]),
+        ];
+        for webp in cases {
+            // Told from its bytes as a WebP, not as unknown bytes.
+            assert_eq!(
+                infer::get(&webp).map(|kind| kind.mime_type()),
+                Some("image/webp")
+            );
+            assert_eq!(
+                sniff_avatar_format(&webp),
+                Err(AvatarError::UnsupportedType)
+            );
+            assert_eq!(reencode_avatar(&webp), Err(AvatarError::UnsupportedType));
+        }
     }
 
     /// CRC-32 of the PNG chunks (ISO 3309), bit by bit.

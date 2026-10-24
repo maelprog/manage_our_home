@@ -8,8 +8,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::io::Cursor;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use image::codecs::webp::WebPEncoder;
-use image::{DynamicImage, ImageEncoder, ImageFormat, Rgb, RgbImage};
+use image::{DynamicImage, ImageFormat, Rgb, RgbImage};
 use jpeg_encoder::{ImageBuffer, JpegColorType, SamplingFactor};
 use manage_our_home::avatar::{
     reencode_avatar, AvatarError, DECODE_PEAK_BYTES, MAX_AVATAR_BYTES, MAX_JPEG_SIDE,
@@ -115,41 +114,15 @@ fn png_with_iccp(png: &[u8], profile: &[u8]) -> Vec<u8> {
     out
 }
 
-/// A VP8X `webp` with an EXIF chunk of `size` bytes appended, its flag set.
-fn webp_with_exif(webp: &[u8], size: usize) -> Vec<u8> {
-    assert_eq!(&webp[12..16], b"VP8X");
-    let mut out = webp.to_vec();
-    out[20] |= 0x08;
-    out.extend_from_slice(b"EXIF");
-    out.extend_from_slice(&(size as u32).to_le_bytes());
-    out.extend(std::iter::repeat_n(0, size + size % 2));
-    let riff = (out.len() - 8) as u32;
-    out[4..8].copy_from_slice(&riff.to_le_bytes());
-    out
-}
-
-/// A WebP whose VP8X canvas is 100 × 100 and whose `fourcc` frame chunk,
-/// header only, declares 16383 × 16383.
-fn webp_frame_past_canvas(fourcc: &[u8; 4]) -> Vec<u8> {
-    let frame: Vec<u8> = if fourcc == b"VP8 " {
-        let mut data = vec![0x50, 0x00, 0x00, 0x9D, 0x01, 0x2A];
-        data.extend_from_slice(&16383u16.to_le_bytes());
-        data.extend_from_slice(&16383u16.to_le_bytes());
-        data
-    } else {
-        let mut data = vec![0x2F];
-        data.extend_from_slice(&(16382u32 | 16382 << 14).to_le_bytes());
-        data
-    };
-    let mut body = b"WEBPVP8X".to_vec();
-    body.extend_from_slice(&10u32.to_le_bytes());
-    body.extend_from_slice(&[0, 0, 0, 0, 99, 0, 0, 99, 0, 0]);
-    body.extend_from_slice(fourcc);
+/// A WebP whose VP8 chunk declares a 64 × 64 frame and is stuffed to
+/// `size` bytes: `image-webp` would read the chunk whole and copy it
+/// (review of #589). Refused by its bytes now.
+fn stuffed_webp(size: usize) -> Vec<u8> {
+    let mut frame = vec![0x50, 0x00, 0x00, 0x9D, 0x01, 0x2A, 64, 0, 64, 0];
+    frame.resize(size, 0);
+    let mut body = b"WEBPVP8 ".to_vec();
     body.extend_from_slice(&(frame.len() as u32).to_le_bytes());
     body.extend_from_slice(&frame);
-    if frame.len() % 2 == 1 {
-        body.push(0);
-    }
     let mut out = b"RIFF".to_vec();
     out.extend_from_slice(&(body.len() as u32).to_le_bytes());
     out.extend_from_slice(&body);
@@ -299,12 +272,8 @@ fn a_decode_holds_at_most_the_documented_peak() {
         pattern_jpeg(1952, 1468, Cmyk, true, F_1_1),
     );
 
-    // The whole decodes `image` keeps, at their bounds: a PNG whose RGB
-    // frame is just under `MAX_PNG_FRAME_BYTES` (3739 × 3739 × 3 =
-    // 41 940 363 bytes), and WebPs of 2097 × 2097, just under
-    // `MAX_WEBP_PIXELS` — lossless in RGB and RGBA, lossy in RGB and with
-    // an alpha channel (cwebp 1.2.4, `-q 50`, in tests/fixtures/avatar:
-    // no lossy encoder here).
+    // The PNG `image` decodes whole, at its bound: an RGB frame just under
+    // `MAX_PNG_FRAME_BYTES` (3739 × 3739 × 3 = 41 940 363 bytes).
     let mut png = Vec::new();
     DynamicImage::ImageRgb8(picture(3739, 3739))
         .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
@@ -314,30 +283,6 @@ fn a_decode_holds_at_most_the_documented_peak() {
     let png_iccp = png_with_iccp(&png, &vec![0; MAX_METADATA_BYTES]);
     measure("PNG 3739x3739 RGB", png);
     measure("PNG 3739x3739 RGB + iCCP at MAX_METADATA_BYTES", png_iccp);
-    let source = picture(2097, 2097);
-    let mut webp = Vec::new();
-    WebPEncoder::new_lossless(&mut webp)
-        .write_image(source.as_raw(), 2097, 2097, image::ExtendedColorType::Rgb8)
-        .unwrap();
-    measure("WebP 2097x2097 RGB lossless", webp);
-    let rgba = DynamicImage::ImageRgb8(source).to_rgba8();
-    let mut webp = Vec::new();
-    WebPEncoder::new_lossless(&mut webp)
-        .write_image(rgba.as_raw(), 2097, 2097, image::ExtendedColorType::Rgba8)
-        .unwrap();
-    drop(rgba);
-    measure("WebP 2097x2097 RGBA lossless", webp);
-    measure(
-        "WebP 2097x2097 RGB lossy",
-        include_bytes!("fixtures/avatar/avatar-lossy-rgb-2097.webp").to_vec(),
-    );
-    let lossy_alpha = include_bytes!("fixtures/avatar/avatar-lossy-alpha-2097.webp");
-    measure("WebP 2097x2097 lossy + alpha", lossy_alpha.to_vec());
-    measure(
-        "WebP 2097x2097 lossy + alpha + EXIF at MAX_METADATA_BYTES",
-        webp_with_exif(lossy_alpha, MAX_METADATA_BYTES),
-    );
-
     // Refused before any decode: ICC segments past the first scan of the
     // progressive JPEG at the bound, filling the file up to the cap. Its
     // walk allocates nothing of the file's size.
@@ -373,18 +318,13 @@ fn a_decode_holds_at_most_the_documented_peak() {
         &late_icc,
         AvatarError::ImageTooLarge,
     );
-    // A WebP frame other than its canvas, which `image-webp` would decode
-    // at the frame's size; a PNG whose profile inflates past the bound.
+    // A WebP, whatever it holds — here a VP8 chunk stuffed up to the cap.
     refused(
-        "WebP canvas 100x100, VP8 frame 16383x16383",
-        &webp_frame_past_canvas(b"VP8 "),
-        AvatarError::Unreadable,
+        "WebP with a VP8 chunk stuffed to 31 MiB",
+        &stuffed_webp(31 * 1024 * 1024),
+        AvatarError::UnsupportedType,
     );
-    refused(
-        "WebP canvas 100x100, VP8L frame 16383x16383",
-        &webp_frame_past_canvas(b"VP8L"),
-        AvatarError::Unreadable,
-    );
+    // A PNG whose profile inflates past the bound.
     let mut small = Vec::new();
     DynamicImage::ImageRgb8(picture(64, 64))
         .write_to(&mut Cursor::new(&mut small), ImageFormat::Png)
