@@ -41,7 +41,10 @@ single screen. Only the name is required; quantity and unit are optional
 ### Generate is idempotent — safe re-run, no confirmation
 
 The "Générer depuis les recettes et les stocks" button posts to
-`POST /grocery-list/generate`, which the backend deduplicates by name
+`POST /grocery-list/generate`. Since #470 it takes the recipes « À
+réaliser » only, and its label counts them ("Générer depuis 2 recettes et
+les stocks"); with none it reads "Générer depuis les stocks", beside a link
+to `/recipes#a-realiser`. The backend the backend deduplicates by name
 (case-insensitive, trimmed) against existing **unchecked** items, so
 re-running it never creates duplicates. Because it is idempotent, the UI
 offers it as a plain button with **no confirmation dialog** and a

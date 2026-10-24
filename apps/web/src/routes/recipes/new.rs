@@ -15,7 +15,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use manage_our_home_shared::dto::recipes::{CreateRecipeRequest, RecipeResponse};
 use manage_our_home_shared::validation::recipes::{
-    parse_ingredients, validate_recipe_name, RecipeFormError,
+    parse_ingredients, parse_servings, validate_recipe_name, RecipeFormError, SERVINGS_MAX,
 };
 
 use crate::app::{html_escape, shell_with_header, Width};
@@ -36,6 +36,10 @@ pub struct RecipeForm {
     /// The page an imported recipe comes from (#405); empty otherwise.
     #[serde(default)]
     pub source_url: String,
+    /// The number of people the recipe is written for (#470); blank when
+    /// it does not say. Parsed by `parse_servings`.
+    #[serde(default)]
+    pub servings: String,
 }
 
 /// French copy for a recipe form error code.
@@ -49,6 +53,7 @@ pub(crate) fn error_message(code: &str) -> &'static str {
         }
         "invalid_seasonal_month" => "Les mois de saison doivent être compris entre 1 et 12.",
         "invalid_source_url" => "L'adresse de la page d'origine n'est pas valide.",
+        "invalid_servings" => "Le nombre de personnes doit être un nombre entier de 1 à 50.",
         "unavailable" => "Service momentanément indisponible, merci de réessayer.",
         _ => "Une erreur est survenue, merci de réessayer.",
     }
@@ -63,8 +68,14 @@ pub(crate) fn name_error_code(err: RecipeFormError) -> &'static str {
 
 /// Renders the recipe form fields (shared markup, pre-filled). Used by create
 /// (empty defaults) and edit (existing values, ingredients pre-filled via
-/// `format_ingredients`).
-pub(crate) fn form_fields(name: &str, instructions: &str, ingredients: &str) -> String {
+/// `format_ingredients`). The number of people (#470) is the base the
+/// grocery list scales the quantities from.
+pub(crate) fn form_fields(
+    name: &str,
+    instructions: &str,
+    ingredients: &str,
+    servings: &str,
+) -> String {
     format!(
         r#"<label>Nom <input type="text" name="name" required value="{name}"/></label>
 <label>Instructions
@@ -73,10 +84,15 @@ pub(crate) fn form_fields(name: &str, instructions: &str, ingredients: &str) -> 
 <label>Ingrédients
 <textarea name="ingredients" rows="6" placeholder="Un ingrédient par ligne :&#10;Farine | 2 | kg&#10;Tomate | 4 | pièce | 6,7,8&#10;Basilic |  |  |  | optionnel">{ingredients}</textarea>
 <span class="muted">Un ingrédient par ligne, champs séparés par des barres verticales : <code>intitulé | quantité | unité | mois de saison | optionnel</code>. Seul l'intitulé est obligatoire ; les champs suivants sont facultatifs. Les mois de saison sont des numéros séparés par des virgules (1 à 12). Terminez la ligne par <code>optionnel</code> pour un ingrédient facultatif (exclu du calcul « en stock »).</span>
+</label>
+<label>Personnes
+<input type="number" name="servings" min="1" max="{SERVINGS_MAX}" step="1" value="{servings}" placeholder="Optionnel"/>
+<span class="muted">Pour combien de personnes les quantités sont écrites. La liste de courses les recalcule pour les personnes indiquées en mettant la recette « À réaliser ».</span>
 </label>"#,
         name = html_escape(name),
         instructions = html_escape(instructions),
         ingredients = html_escape(ingredients),
+        servings = html_escape(servings),
     )
 }
 
@@ -100,7 +116,12 @@ pub(crate) fn page(header: &str, form: &RecipeForm, error: Option<&str>) -> Stri
             url = html_escape(source_url),
         )
     };
-    let fields = form_fields(&form.name, &form.instructions, &form.ingredients);
+    let fields = form_fields(
+        &form.name,
+        &form.instructions,
+        &form.ingredients,
+        &form.servings,
+    );
     let body = format!(
         r#"<h1>Nouvelle recette</h1>
 {error_html}
@@ -145,6 +166,10 @@ pub async fn post(
         Ok(list) => list,
         Err(e) => return render_error(e.code()),
     };
+    let servings = match parse_servings(&form.servings) {
+        Ok(s) => s,
+        Err(code) => return render_error(code),
+    };
 
     let instructions = {
         let i = form.instructions.trim();
@@ -159,6 +184,7 @@ pub async fn post(
         instructions,
         ingredients,
         source_url,
+        servings,
     };
 
     let cookie = recipes_cookie(&headers);

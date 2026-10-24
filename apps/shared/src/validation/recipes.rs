@@ -216,10 +216,67 @@ pub fn stock_summary(matched: usize, total_required: usize) -> String {
     }
 }
 
+/// The most people a recipe or a selection may be counted for. Mirrors
+/// `apps/api/src/recipes/selections.rs::SERVINGS_MAX` and the `CHECK` of
+/// `recipes.servings` (0034) and `recipe_selections.servings` (0033).
+pub const SERVINGS_MAX: i32 = 50;
+
+/// The "Nombre de personnes" field of the recipe form and of the
+/// « À réaliser » form (#470): blank → `None` (not said), a whole number
+/// from 1 to [`SERVINGS_MAX`] → `Some`, anything else → `Err` carrying the
+/// backend's `invalid_servings` code.
+pub fn parse_servings(input: &str) -> Result<Option<i32>, &'static str> {
+    let t = input.trim();
+    if t.is_empty() {
+        return Ok(None);
+    }
+    match t.parse::<i32>() {
+        Ok(n) if (1..=SERVINGS_MAX).contains(&n) => Ok(Some(n)),
+        _ => Err("invalid_servings"),
+    }
+}
+
+/// "1 personne", "4 personnes".
+pub fn servings_label(servings: i32) -> String {
+    if servings == 1 {
+        "1 personne".to_string()
+    } else {
+        format!("{servings} personnes")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use uuid::Uuid;
+
+    // -- parse_servings ------------------------------------------------------
+
+    #[test]
+    fn blank_servings_are_not_said() {
+        assert_eq!(parse_servings(""), Ok(None));
+        assert_eq!(parse_servings("   "), Ok(None));
+    }
+
+    #[test]
+    fn servings_from_one_to_the_maximum_are_accepted() {
+        assert_eq!(parse_servings("1"), Ok(Some(1)));
+        assert_eq!(parse_servings(" 4 "), Ok(Some(4)));
+        assert_eq!(parse_servings("50"), Ok(Some(SERVINGS_MAX)));
+    }
+
+    #[test]
+    fn servings_out_of_bounds_or_not_whole_are_refused() {
+        for input in ["0", "-2", "51", "2.5", "quatre", "4 personnes"] {
+            assert_eq!(parse_servings(input), Err("invalid_servings"), "{input}");
+        }
+    }
+
+    #[test]
+    fn servings_label_agrees_in_number() {
+        assert_eq!(servings_label(1), "1 personne");
+        assert_eq!(servings_label(4), "4 personnes");
+    }
 
     // -- validate_recipe_name ------------------------------------------------
 

@@ -213,6 +213,51 @@ test.describe("Recipes — edit & delete", () => {
   });
 });
 
+test.describe("Recipes — à réaliser (#470)", () => {
+  test("the detail plans the recipe for its number of people, then takes it out", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-rcplan", "Recipe Planner");
+    await createGroup(page, "Famille Planning");
+
+    await page.goto("/recipes/new");
+    await page.getByLabel("Nom").fill("Ratatouille");
+    await page.getByLabel("Ingrédients").fill("Courgette | 2 | pièce");
+    await page.getByLabel("Personnes").fill("4");
+    await page.getByRole("button", { name: "Créer la recette" }).click();
+    await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\?notice=recipe_created$/);
+    await expect(page.getByText("Pour 4 personnes.")).toBeVisible();
+
+    // The form proposes the recipe's own base.
+    await expect(page.getByLabel("Personnes")).toHaveValue("4");
+    await page.getByLabel("Personnes").fill("2");
+    await page.getByRole("button", { name: "À réaliser" }).click();
+    await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\?notice=recipe_selected$/);
+    await expect(page.getByText("À réaliser · 2 personnes")).toBeVisible();
+
+    // The list says so too.
+    await page.goto("/recipes");
+    await expect(page.getByText("1 recette prévue pour la liste de courses")).toBeVisible();
+
+    await page.getByRole("link", { name: "Ratatouille" }).first().click();
+    await page.getByRole("button", { name: "Retirer" }).click();
+    await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\?notice=recipe_deselected$/);
+    await expect(page.getByRole("button", { name: "À réaliser" })).toBeVisible();
+
+    // The edit form keeps the number of people; out of bounds is refused.
+    await page.getByRole("link", { name: "Modifier la recette" }).click();
+    await expect(page.getByLabel("Personnes")).toHaveValue("4");
+    await page.getByLabel("Personnes").evaluate((el) => {
+      el.removeAttribute("max");
+    });
+    await page.getByLabel("Personnes").fill("51");
+    await page.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(
+      page.getByText("Le nombre de personnes doit être un nombre entier de 1 à 50."),
+    ).toBeVisible();
+  });
+});
+
 test.describe("Recipes — permission bar", () => {
   test("a standard member cannot edit or delete another member's recipe but can log a meal", async ({
     page,

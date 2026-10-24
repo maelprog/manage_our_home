@@ -13,7 +13,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use manage_our_home_shared::dto::recipes::{RecipeResponse, UpdateRecipeRequest};
 use manage_our_home_shared::validation::recipes::{
-    format_ingredients, parse_ingredients, validate_recipe_name,
+    format_ingredients, parse_ingredients, parse_servings, validate_recipe_name,
 };
 use uuid::Uuid;
 
@@ -31,7 +31,12 @@ fn page(header: &str, id: Uuid, name: &str, form: &RecipeForm, error: Option<&st
     let error_html = error
         .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
         .unwrap_or_default();
-    let fields = form_fields(&form.name, &form.instructions, &form.ingredients);
+    let fields = form_fields(
+        &form.name,
+        &form.instructions,
+        &form.ingredients,
+        &form.servings,
+    );
     let body = format!(
         r#"<h1>Modifier — {name_esc}</h1>
 {error_html}
@@ -98,6 +103,7 @@ pub async fn get(
         instructions: recipe.instructions.clone().unwrap_or_default(),
         ingredients: format_ingredients(&recipe.ingredients),
         source_url: String::new(),
+        servings: recipe.servings.map(|s| s.to_string()).unwrap_or_default(),
     };
     Html(page(&fam.header, recipe_id, &recipe.name, &form, None)).into_response()
 }
@@ -133,6 +139,11 @@ pub async fn post(
         Ok(list) => list,
         Err(e) => return render_error(e.code()),
     };
+    // A blank number of people clears it, like the instructions below.
+    let servings = match parse_servings(&form.servings) {
+        Ok(s) => s,
+        Err(code) => return render_error(code),
+    };
 
     // A blank instructions field clears it (`Some(None)`); the edit form
     // always sends every field, so each is `Some(...)`.
@@ -144,6 +155,7 @@ pub async fn post(
         name: Some(form.name.trim().to_string()),
         instructions,
         ingredients: Some(ingredients),
+        servings: Some(servings),
     };
 
     let cookie = recipes_cookie(&headers);

@@ -8,6 +8,8 @@ import { fetchVerificationToken } from "../lib/db";
 // may add/read/check off, so every member sees the check control; the per-row
 // "Modifier" link and the edit/delete screen stay behind can_modify
 // (creator/admin/owner). Generate is idempotent — a re-run adds nothing.
+// It takes the recipes « À réaliser » only (#470), scaled to their number of
+// people.
 
 function uniqueEmail(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.test`;
@@ -72,12 +74,29 @@ async function createStockItem(
 }
 
 /** Creates a recipe with a single required ingredient line. */
-async function createRecipe(page: Page, name: string, ingredients: string): Promise<void> {
+async function createRecipe(
+  page: Page,
+  name: string,
+  ingredients: string,
+  servings?: string,
+): Promise<void> {
   await page.goto("/recipes/new");
   await page.getByLabel("Nom").fill(name);
   await page.getByLabel("Ingrédients").fill(ingredients);
+  if (servings !== undefined) await page.getByLabel("Personnes").fill(servings);
   await page.getByRole("button", { name: "Créer la recette" }).click();
   await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\?notice=recipe_created$/);
+}
+
+/** Plans a recipe from its row on /recipes (#470), for `servings` people. */
+async function planRecipe(page: Page, name: string, servings?: string): Promise<void> {
+  await page.goto("/recipes");
+  const row = page.locator("li", { hasText: name }).filter({
+    has: page.getByRole("button", { name: "À réaliser" }),
+  });
+  if (servings !== undefined) await row.getByLabel("Personnes").fill(servings);
+  await row.getByRole("button", { name: "À réaliser" }).click();
+  await expect(page).toHaveURL(/\/recipes\?notice=recipe_selected$/);
 }
 
 /** Adds a manual item via the inline form on /grocery-list. */
@@ -132,11 +151,13 @@ test.describe("Grocery list — generate", () => {
 
     // A low-stock item (qty 0, threshold 1) → 'low_stock' source.
     await createStockItem(page, "Beurre", "0", "kg", "1");
-    // A recipe whose required ingredient isn't in stock → 'recipe' source.
+    // A planned recipe whose required ingredient isn't in stock → 'recipe'
+    // source.
     await createRecipe(page, "Gâteau", "Chocolat | 200 | g");
+    await planRecipe(page, "Gâteau");
 
     await page.goto("/grocery-list");
-    await page.getByRole("button", { name: "Générer depuis les recettes et les stocks" }).click();
+    await page.getByRole("button", { name: "Générer depuis 1 recette et les stocks" }).click();
     await expect(page).toHaveURL(/\/grocery-list\?notice=generated&added=2$/);
     await expect(page.getByText("2 articles ajoutés depuis les recettes et les stocks.")).toBeVisible();
 
@@ -147,10 +168,54 @@ test.describe("Grocery list — generate", () => {
     await expect(beurre.getByText("Stock bas")).toBeVisible();
 
     // Re-run: nothing new qualifies (idempotent).
-    await page.getByRole("button", { name: "Générer depuis les recettes et les stocks" }).click();
+    await page.getByRole("button", { name: "Générer depuis 1 recette et les stocks" }).click();
     await expect(page).toHaveURL(/\/grocery-list\?notice=generated&added=0$/);
     await expect(page.getByText("Aucun nouvel article à ajouter.")).toBeVisible();
     await expect(page.locator("li", { hasText: "Chocolat" })).toHaveCount(1);
+  });
+});
+
+test.describe("Grocery list — recipes to cook (#470)", () => {
+  test("only the recipes « À réaliser » count, scaled to their number of people", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-glplan", "Grocery Planner");
+    await createGroup(page, "Famille Menus");
+
+    // Nothing planned yet: the button says so and leads to the recipes.
+    await page.goto("/grocery-list");
+    await expect(page.getByRole("button", { name: "Générer depuis les stocks" })).toBeVisible();
+    await page.getByRole("link", { name: "Choisir les recettes à réaliser" }).click();
+    await expect(page).toHaveURL(/\/recipes#a-realiser$/);
+    await expect(page.getByText("Aucune recette à réaliser.")).toBeVisible();
+
+    // Written for 4, planned for 6: 200 g × 6 / 4 = 300 g.
+    await createRecipe(page, "Crêpes", "Farine | 200 | g", "4");
+    await createRecipe(page, "Soupe", "Poireau | 2 | pièce");
+    await planRecipe(page, "Crêpes", "6");
+    await expect(page.getByText("Recette à réaliser pour les prochaines courses.")).toBeVisible();
+    await expect(page.getByText("1 recette prévue pour la liste de courses")).toBeVisible();
+    await expect(
+      page.locator("li", { hasText: "Crêpes" }).getByText("À réaliser · 6 personnes"),
+    ).toBeVisible();
+
+    await page.goto("/grocery-list");
+    await page.getByRole("button", { name: "Générer depuis 1 recette et les stocks" }).click();
+    await expect(page).toHaveURL(/\/grocery-list\?notice=generated&added=1$/);
+    const farine = page.locator("li", { hasText: "Farine" });
+    await expect(farine.getByText("300 g")).toBeVisible();
+    await expect(farine.getByText("Recette")).toBeVisible();
+    await expect(page.locator("li", { hasText: "Poireau" })).toHaveCount(0);
+
+    // Taken out again: the next generation is back to the stocks alone.
+    await page.goto("/recipes");
+    await page
+      .locator("li", { hasText: "Crêpes" })
+      .getByRole("button", { name: "Retirer" })
+      .click();
+    await expect(page).toHaveURL(/\/recipes\?notice=recipe_deselected$/);
+    await page.goto("/grocery-list");
+    await expect(page.getByRole("button", { name: "Générer depuis les stocks" })).toBeVisible();
   });
 });
 
