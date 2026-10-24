@@ -1254,10 +1254,11 @@ async fn a_member_profile_is_shown_only_inside_a_shared_group(db: PgPool) {
         body.get("email").is_none(),
         "the profile leaks the e-mail: {body}"
     );
+    assert_eq!(body["has_avatar"], false);
     assert_eq!(
         body.as_object().unwrap().len(),
-        4,
-        "only id, name, role and arrival date: {body}"
+        5,
+        "only id, name, role, arrival date and whether there is a photo (#468): {body}"
     );
 
     // Unknown target: the reference refusal.

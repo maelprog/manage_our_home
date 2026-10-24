@@ -24,7 +24,7 @@ use manage_our_home_shared::validation::agenda::{
 use manage_our_home_shared::validation::messagerie::author_name;
 use uuid::Uuid;
 
-use crate::app::{html_escape, member_link, shell_with_header, Width};
+use crate::app::{html_escape, member_link, shell_with_header, Icon, Width};
 use crate::layout::CurrentUser;
 use crate::lenient_query::{lenient, LenientQuery};
 use crate::routes::groups::members::fetch_group_detail;
@@ -114,7 +114,7 @@ fn assignees_html(group_id: Uuid, assignee_ids: &[Uuid], members: &[GroupMember]
         .map(|id| {
             let name = author_name(members, *id);
             if members.iter().any(|m| m.user_id == *id) {
-                member_link(group_id, *id, name, false)
+                member_link(group_id, *id, name, Icon::None)
             } else {
                 html_escape(name)
             }
@@ -693,6 +693,7 @@ mod tests {
             user_id: id,
             display_name: name.to_string(),
             email: format!("{name}@example.test"),
+            has_avatar: false,
             role: "member".to_string(),
         }
     }

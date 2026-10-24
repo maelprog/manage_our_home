@@ -139,6 +139,17 @@ fn build_router(state: AppState) -> Router {
             get(routes::legal::announced_terms_of_service),
         )
         .route("/account", get(routes::account::get))
+        // The profile photo (#468). The upload streams the body to apps/api
+        // without holding it, so it takes no `DefaultBodyLimit`: apps/api
+        // bounds it (`routes::account::avatar::upload`).
+        .route(
+            "/account/avatar",
+            get(routes::account::avatar::get).post(routes::account::avatar::upload),
+        )
+        .route(
+            "/account/avatar/delete",
+            post(routes::account::avatar::delete),
+        )
         .route("/account/export", get(routes::account::export::get))
         .route(
             "/account/export/download",
@@ -381,6 +392,11 @@ fn build_router(state: AppState) -> Router {
         .route(
             "/groups/:id/members/:user_id",
             get(routes::groups::profile::get),
+        )
+        // A member's photo (#468), under the rule of their profile.
+        .route(
+            "/groups/:id/members/:user_id/avatar",
+            get(routes::groups::avatar::get),
         )
         .route(
             "/groups/:id/members/:user_id/role",

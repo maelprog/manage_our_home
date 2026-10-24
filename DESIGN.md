@@ -435,6 +435,15 @@ Depuis #466, la couleur de membre calculée des deux routes n'a plus qu'un
 site : `app::member_avatar`, par lequel passent la liste des membres, la
 messagerie et la fiche d'un membre.
 
+Depuis #468, la photo d'un membre, quand il en a une, prend la place de son
+initiale dans ce même `.avatar` : la teinte reste sur la bordure
+(`currentColor`), l'initiale reste le repli sans photo. L'image est
+décorative (`alt=""`, le nom est à côté) et ses dimensions sont écrites dans
+le balisage, la boîte de `--s6` moins sa bordure, pour que la ligne ne bouge
+pas à son arrivée. Elle est servie par `apps/web` lui-même, comme tout ce que
+charge une page. Une ligne de l'accueil assignée à plusieurs membres garde
+l'initiale et la teinte mélangée : une photo n'en nommerait qu'un.
+
 ---
 
 ## Interaction et motion

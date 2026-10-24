@@ -2606,6 +2606,7 @@ dependencies = [
  "cookie",
  "dotenvy",
  "flate2",
+ "http-body 1.0.1",
  "http-body-util",
  "image",
  "jpeg-encoder",

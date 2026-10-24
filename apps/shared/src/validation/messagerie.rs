@@ -177,6 +177,7 @@ mod tests {
             role: role.to_string(),
             display_name: display_name.to_string(),
             email: format!("{display_name}@example.test"),
+            has_avatar: false,
         }
     }
 

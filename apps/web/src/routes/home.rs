@@ -15,8 +15,8 @@ use manage_our_home_shared::validation::messagerie::author_name;
 use uuid::Uuid;
 
 use crate::app::{
-    combined_member_colour, html_escape, member_colour, member_initial, shell, shell_with_header,
-    Width,
+    avatar_photo, combined_member_colour, html_escape, member_colour, member_initial,
+    member_photo_url, shell, shell_with_header, Width,
 };
 use crate::family::{active_group_id_from_headers, resolve_active_group};
 use crate::layout::CurrentUser;
@@ -248,6 +248,14 @@ fn agenda_row(occ: &OccurrenceResponse, members: &[GroupMember]) -> String {
     // `shown` is never empty, so this always names somebody; `member_initial`
     // keeps its own `?` for a name with no usable letter in it.
     let initial = member_initial(assignee_names.first().copied().unwrap_or_default());
+    // #468: one assignee's photo, when they have one, takes the initial's
+    // place. Several keep the initial: one photo would name only one of them.
+    let icon = match shown {
+        [only] if members.iter().any(|m| m.user_id == *only && m.has_avatar) => {
+            avatar_photo(&member_photo_url(e.group_id, *only))
+        }
+        _ => html_escape(&initial),
+    };
     let time = if e.all_day {
         "journée".to_string()
     } else {
@@ -258,9 +266,8 @@ fn agenda_row(occ: &OccurrenceResponse, members: &[GroupMember]) -> String {
         fmt_paris(occ.occurrence_starts_at, "%d/%m %H:%M")
     };
     format!(
-        r#"<li class="list-row"><span><span class="avatar" style="color:{colour}" aria-hidden="true">{initial}</span> <strong>{time}</strong> {title} <span class="muted">— {assignees}</span></span></li>"#,
+        r#"<li class="list-row"><span><span class="avatar" style="color:{colour}" aria-hidden="true">{icon}</span> <strong>{time}</strong> {title} <span class="muted">— {assignees}</span></span></li>"#,
         colour = colour,
-        initial = html_escape(&initial),
         time = html_escape(&time),
         title = html_escape(&e.title),
         assignees = html_escape(&assignees),
@@ -1150,6 +1157,7 @@ mod pure_logic_tests {
             role: "member".to_string(),
             display_name: display_name.to_string(),
             email: format!("{display_name}@example.test").to_lowercase(),
+            has_avatar: false,
         }
     }
 
@@ -1213,5 +1221,39 @@ mod pure_logic_tests {
         let html = agenda_row(&occurrence_assigned_to(creator, &[other]), &members);
         assert!(html.contains("Robin"), "{html}");
         assert!(!html.contains("Camille"), "{html}");
+    }
+
+    /// #468: a row assigned to one member who has a photo shows it in place
+    /// of their initial, in their own hue.
+    #[test]
+    fn a_row_with_one_assignee_shows_their_photo() {
+        let robin = Uuid::from_u128(8);
+        let mut with_photo = member(robin, "Robin");
+        with_photo.has_avatar = true;
+        let occ = occurrence_assigned_to(robin, &[robin]);
+        let html = agenda_row(&occ, &[with_photo]);
+        let photo = crate::app::member_photo_url(occ.event.group_id, robin);
+        assert!(html.contains(&crate::app::avatar_photo(&photo)), "{html}");
+        assert!(!html.contains(">R</span>"), "{html}");
+        assert!(
+            html.contains(&format!("color:var({})", member_colour(robin))),
+            "{html}"
+        );
+    }
+
+    /// Several assignees keep the mixed hue and the first one's initial:
+    /// one member's photo would name only one of them.
+    #[test]
+    fn a_row_with_several_assignees_keeps_the_initial() {
+        let (camille, robin) = (Uuid::from_u128(7), Uuid::from_u128(8));
+        let mut with_photo = member(robin, "Robin");
+        with_photo.has_avatar = true;
+        let members = vec![member(camille, "Camille"), with_photo];
+        let html = agenda_row(
+            &occurrence_assigned_to(camille, &[robin, camille]),
+            &members,
+        );
+        assert!(!html.contains("<img"), "{html}");
+        assert!(html.contains(">R</span>"), "{html}");
     }
 }

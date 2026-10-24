@@ -188,9 +188,13 @@ pub async fn get_group(
     // Enrich members with identity (display_name + email) via a JOIN on
     // `users` (no RLS on `users`). Same-family email exposure is acceptable
     // per the epic spec — members already share a household.
+    // `has_avatar` (#468): whether apps/web shows the member's photo, served
+    // by `avatar::get_member_avatar`, in place of their initial. The key
+    // itself stays here.
     let members = sqlx::query!(
         r#"
-        SELECT gm.user_id, gm.role as "role: String", u.display_name, u.email
+        SELECT gm.user_id, gm.role as "role: String", u.display_name, u.email,
+               (u.avatar_key IS NOT NULL) AS "has_avatar!"
         FROM group_members gm
         JOIN users u ON u.id = gm.user_id
         WHERE gm.group_id = $1
@@ -209,6 +213,7 @@ pub async fn get_group(
             "role": m.role,
             "display_name": m.display_name,
             "email": m.email,
+            "has_avatar": m.has_avatar,
         })).collect::<Vec<_>>(),
     })))
 }
@@ -236,7 +241,8 @@ pub async fn get_member(
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let member = sqlx::query!(
         r#"
-        SELECT gm.user_id, u.display_name, gm.role as "role: String", gm.joined_at
+        SELECT gm.user_id, u.display_name, gm.role as "role: String", gm.joined_at,
+               (u.avatar_key IS NOT NULL) AS "has_avatar!"
         FROM group_members me
         JOIN group_members gm ON gm.group_id = me.group_id AND gm.user_id = $3
         JOIN users u ON u.id = gm.user_id
@@ -256,6 +262,7 @@ pub async fn get_member(
         display_name: member.display_name,
         role: member.role,
         joined_at: member.joined_at,
+        has_avatar: member.has_avatar,
     }))
 }
 
