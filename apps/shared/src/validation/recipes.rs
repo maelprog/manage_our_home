@@ -221,7 +221,7 @@ pub fn stock_summary(matched: usize, total_required: usize) -> String {
 /// `recipes.servings` (0034) and `recipe_selections.servings` (0033).
 pub const SERVINGS_MAX: i32 = 50;
 
-/// The "Nombre de personnes" field of the recipe form and of the
+/// The "Personnes" field of the recipe form and of the
 /// « À réaliser » form (#470): blank → `None` (not said), a whole number
 /// from 1 to [`SERVINGS_MAX`] → `Some`, anything else → `Err` carrying the
 /// backend's `invalid_servings` code.
