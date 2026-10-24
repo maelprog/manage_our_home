@@ -382,6 +382,91 @@ async fn export_covers_the_groups_the_caller_left(db: PgPool) {
     drop_prescribed_role(&db, app_db, &role).await;
 }
 
+/// Issue #469: a recipe a member selected stays theirs to export after they
+/// leave the group. The selection is the only row of the left group that
+/// names them, so only the `recipe_selections` branch of
+/// `account_export_group_ids()` (0033) can bring the group back into the
+/// export. Another member's selection never comes out.
+#[sqlx::test]
+async fn export_covers_the_recipe_selections_of_a_group_the_caller_left(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "sel-owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer Selection").await;
+    let member_cookie =
+        register_verify_login(&router, &db, "sel-member@example.test", "member-password1").await;
+    join_group(&router, &owner_cookie, &member_cookie, &group_id).await;
+
+    let mut recipe_ids = Vec::new();
+    for name in ["Gratin", "Soupe"] {
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/recipes"),
+            Some(&owner_cookie),
+            Some(serde_json::json!({"name": name, "ingredients": []})),
+        )
+        .await;
+        assert_status(&res, StatusCode::CREATED);
+        recipe_ids.push(json_body(res).await["id"].as_str().unwrap().to_string());
+    }
+    for (recipe_id, cookie, body) in [
+        (
+            &recipe_ids[0],
+            &member_cookie,
+            serde_json::json!({"servings": 6}),
+        ),
+        (&recipe_ids[1], &owner_cookie, serde_json::json!({})),
+    ] {
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/recipes/{recipe_id}/selection"),
+            Some(cookie),
+            Some(body),
+        )
+        .await;
+        assert_status(&res, StatusCode::CREATED);
+    }
+
+    let leave = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/leave"),
+        Some(&member_cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_status(&leave, StatusCode::OK);
+
+    let (role, app_db) = prescribed_role_pool(&db).await;
+    let scoped_router = test_router(app_db.clone());
+    for (label, r) in [("superuser", &router), ("prescribed role", &scoped_router)] {
+        let export = call(
+            r,
+            Method::GET,
+            "/account/export",
+            Some(&member_cookie),
+            None,
+        )
+        .await;
+        assert_status(&export, StatusCode::OK);
+        let doc = json_body(export).await;
+        let selections = doc["recipe_selections"].as_array().unwrap();
+        assert_eq!(selections.len(), 1, "{label}: {selections:?}");
+        assert_eq!(
+            selections[0]["recipe_id"],
+            recipe_ids[0].as_str(),
+            "{label}"
+        );
+        assert_eq!(selections[0]["group_id"], group_id.as_str(), "{label}");
+        assert_eq!(selections[0]["status"], "planned", "{label}");
+        assert_eq!(selections[0]["servings"], 6, "{label}");
+    }
+    drop(scoped_router);
+    drop_prescribed_role(&db, app_db, &role).await;
+}
+
 /// Issue #140: art. 15 covers everything held that concerns the person, not
 /// only what they typed. An event someone else assigned them to, a role
 /// someone else gave them, their reminders, attachments, completions, read
@@ -978,6 +1063,7 @@ async fn export_accounts_for_every_table(db: PgPool) {
         ("recipes", "recipes"),
         ("recipe_ingredients", "recipes"),
         ("meal_history", "meal_history"),
+        ("recipe_selections", "recipe_selections"),
         ("grocery_items", "grocery_items"),
         ("budget_entries", "budget_entries"),
         ("messages", "messages"),
@@ -1076,6 +1162,7 @@ async fn export_accounts_for_every_column_referencing_users(db: PgPool) {
         ("stock_items", "created_by"),
         ("recipes", "created_by"),
         ("meal_history", "created_by"),
+        ("recipe_selections", "created_by"),
         ("grocery_items", "created_by"),
         ("budget_entries", "created_by"),
         ("messages", "created_by"),

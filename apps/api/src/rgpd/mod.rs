@@ -383,6 +383,23 @@ pub async fn export_account(
             })
         }));
 
+        let selections = sqlx::query!(
+            r#"SELECT id, group_id, recipe_id, status, servings, created_at, updated_at
+               FROM recipe_selections WHERE group_id = $1 AND created_by = $2
+               ORDER BY created_at, id"#,
+            group_id,
+            auth.user_id
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        c.recipe_selections.extend(selections.into_iter().map(|s| {
+            json!({
+                "id": s.id, "group_id": s.group_id, "recipe_id": s.recipe_id,
+                "status": s.status, "servings": s.servings,
+                "created_at": s.created_at, "updated_at": s.updated_at,
+            })
+        }));
+
         let groceries = sqlx::query!(
             r#"SELECT id, group_id, name, quantity, unit, checked, source, created_at
                FROM grocery_items WHERE group_id = $1 AND created_by = $2 ORDER BY created_at"#,

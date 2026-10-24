@@ -539,6 +539,103 @@ async fn recipes_isolated_without_scoping(db: PgPool) {
         .unwrap();
 }
 
+/// Issue #469: `recipe_selections` isolation holds without a `WHERE
+/// group_id` in the query, for reads and for writes.
+#[sqlx::test]
+async fn recipe_selections_isolated_without_scoping(db: PgPool) {
+    let mut ids = Vec::new();
+    for tag in ["sa", "sb"] {
+        let user: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (email, password_hash, display_name, email_verified)
+             VALUES ($1, 'x', $2, true) RETURNING id",
+        )
+        .bind(format!("{tag}@example.test"))
+        .bind(tag)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let group: Uuid = sqlx::query_scalar(
+            "INSERT INTO groups (name, created_by) VALUES ($1, $2) RETURNING id",
+        )
+        .bind(tag)
+        .bind(user)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        ids.push((user, group));
+    }
+    let (owner_b, group_b) = ids[1];
+    let group_a = ids[0].1;
+    sqlx::query(
+        "WITH r AS (INSERT INTO recipes (group_id, created_by, name) VALUES ($1, $2, 'B') RETURNING id)
+         INSERT INTO recipe_selections (group_id, recipe_id, servings, created_by)
+         SELECT $1, r.id, 4, $2 FROM r",
+    )
+    .bind(group_b)
+    .bind(owner_b)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let role = format!("app_test_role_{}", Uuid::new_v4().simple());
+    for statement in [
+        format!("CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"),
+        format!("GRANT SELECT, UPDATE, DELETE ON recipe_selections TO {role}"),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    let mut tx = db.begin().await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+        .bind(group_a.to_string())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM recipe_selections")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(
+        visible, 0,
+        "group A's scope must not see group B's selections"
+    );
+    let updated = sqlx::query("UPDATE recipe_selections SET servings = 1")
+        .execute(&mut *tx)
+        .await
+        .unwrap()
+        .rows_affected();
+    let deleted = sqlx::query("DELETE FROM recipe_selections")
+        .execute(&mut *tx)
+        .await
+        .unwrap()
+        .rows_affected();
+    assert_eq!((updated, deleted), (0, 0));
+    tx.commit().await.unwrap();
+
+    let servings: i32 = sqlx::query_scalar("SELECT servings FROM recipe_selections")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(servings, 4);
+    for statement in [
+        format!("REVOKE ALL ON recipe_selections FROM {role}"),
+        format!("DROP ROLE {role}"),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+}
+
 /// AC #15 analog for the Grocery-list epic: `grocery_items` isolation must
 /// hold even against a bug that forgets `WHERE group_id = ...` in
 /// application code.

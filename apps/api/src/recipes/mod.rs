@@ -3,6 +3,7 @@ pub mod import;
 pub mod ingredient_line;
 pub mod jsonld;
 pub mod meal_history;
+pub mod selections;
 pub mod suggestions;
 pub mod taxonomy;
 

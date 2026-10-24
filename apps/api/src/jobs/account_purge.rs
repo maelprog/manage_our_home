@@ -24,7 +24,8 @@
 //! - kept, attributed to the anonymised row — the content shared with the
 //!   group: `events`, `event_attachments` and their objects,
 //!   `event_occurrence_completions`, `messages`, `stock_items`, `recipes`,
-//!   `meal_history`, `grocery_items`, `budget_entries`, `groups`. That
+//!   `meal_history`, `recipe_selections` (#469), `grocery_items`,
+//!   `budget_entries`, `groups`. That
 //!   survival is written into the terms of service. A group the purge
 //!   leaves with no member at all is the exception: nobody is left to see
 //!   its content, and it is deleted with it (controller's decision of
