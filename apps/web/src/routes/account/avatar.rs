@@ -498,6 +498,7 @@ mod relay_tests {
         uploads: AtomicUsize,
         received: AtomicUsize,
         content_type: Mutex<Option<String>>,
+        content_length: Mutex<Option<String>>,
         cookie: Mutex<Option<String>>,
     }
 
@@ -532,6 +533,9 @@ mod relay_tests {
                     seen.uploads.fetch_add(1, Ordering::SeqCst);
                     *seen.content_type.lock().unwrap() = headers
                         .get(header::CONTENT_TYPE)
+                        .map(|v| v.to_str().unwrap().to_string());
+                    *seen.content_length.lock().unwrap() = headers
+                        .get(header::CONTENT_LENGTH)
                         .map(|v| v.to_str().unwrap().to_string());
                     *seen.cookie.lock().unwrap() = headers
                         .get(header::COOKIE)
@@ -609,8 +613,11 @@ mod relay_tests {
     }
 
     /// The whole form reaches apps/api as the browser sent it: its
-    /// boundary, its session, every byte — 5 MiB here, past the 2 MiB axum
-    /// allows a route that sets no limit of its own.
+    /// boundary, its session, its declared length, every byte — 5 MiB
+    /// here, past the 2 MiB axum allows a route that sets no limit of its
+    /// own. The body comes in chunks, its size known by its header only,
+    /// so the length apps/api receives is the one relayed, not one hyper
+    /// could have read from a body of known size.
     #[tokio::test]
     async fn the_form_reaches_the_api_whole_and_a_stored_photo_is_announced() {
         let (router, seen) = web(204, "", None).await;
@@ -618,11 +625,23 @@ mod relay_tests {
         body.resize(body.len() + 5 * 1024 * 1024, 0xAB);
         body.extend(multipart_tail());
         let length = body.len();
+        let (mut tx, rx) = Channel::<Bytes>::new(4);
+        tokio::spawn(async move {
+            for chunk in Bytes::from(body).chunks(64 * 1024) {
+                tx.send_data(Bytes::copy_from_slice(chunk)).await.unwrap();
+            }
+        });
 
-        let resp = send(&router, upload(Body::from(body), Some(length))).await;
+        let resp = send(&router, upload(Body::new(rx), Some(length))).await;
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         assert_eq!(location(&resp), "/account?notice=avatar_updated");
         assert_eq!(seen.received.load(Ordering::SeqCst), length);
+        // apps/api sizes its buffer from the declared length: it must
+        // arrive, though the body itself goes on as a stream.
+        assert_eq!(
+            seen.content_length.lock().unwrap().as_deref(),
+            Some(length.to_string().as_str())
+        );
         assert_eq!(
             seen.content_type.lock().unwrap().as_deref(),
             Some(format!("multipart/form-data; boundary={BOUNDARY}").as_str())
