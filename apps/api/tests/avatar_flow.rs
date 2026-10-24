@@ -16,7 +16,7 @@ use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
 use image::{ImageEncoder, Rgb, RgbImage};
 use manage_our_home::attachment_reconcile::{reconcile, Options};
-use manage_our_home::avatar::{AVATAR_SIDE, MAX_AVATAR_BYTES};
+use manage_our_home::avatar::{AVATAR_SIDE, MAX_AVATAR_BYTES, MAX_JPEG_SIDE};
 use manage_our_home::jobs::account_purge::{purge_account, purge_due_accounts_and_objects};
 use manage_our_home::storage::Storage;
 use sqlx::PgPool;
@@ -271,11 +271,60 @@ async fn a_refused_upload_stores_nothing(db: PgPool) {
     assert_status(&response, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(json_body(response).await["error"], "unreadable_image");
 
+    // Criterion of #588: a readable picture past the bounds says so.
+    let mut strip = Vec::new();
+    JpegEncoder::new_with_quality(&mut strip, 90)
+        .encode_image(&picture(MAX_JPEG_SIDE + 8, 8))
+        .unwrap();
+    let response = put_avatar(&router, &cookie, "bandeau.jpg", &strip).await;
+    assert_status(&response, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json_body(response).await["error"], "image_too_large");
+
     // The storage behind `test_router` is unreachable: had any of these
     // reached it, the answer would have been 500.
     assert_eq!(
         avatar_key(&db, me).await.as_deref(),
         Some("avatars/previous")
+    );
+}
+
+/// Criterion of #588: the photo of a 48/50 Mpx phone mode, 8000 × 6000, is
+/// accepted (204, as every upload) and served as the usual square — sent
+/// at exactly `MAX_AVATAR_BYTES`, the largest body the route lets through.
+#[sqlx::test]
+async fn a_50_mpx_photo_is_accepted_and_served_as_the_square(db: PgPool) {
+    let Some((s3, bucket)) = real_minio_from_env() else {
+        eprintln!(
+            "skipping a_50_mpx_photo_is_accepted_and_served_as_the_square: \
+             no MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY/BUCKET in the environment"
+        );
+        return;
+    };
+    let router = test_router_with_storage(db.clone(), Storage::new(s3, bucket));
+    let (_, cookie) = user(&db, "capteur@example.test").await;
+
+    // Smooth gradients: `picture`'s steep ones would weigh past the cap at
+    // this size.
+    let smooth = RgbImage::from_fn(8000, 6000, |x, y| Rgb([(x / 32) as u8, (y / 24) as u8, 90]));
+    let mut photo = Vec::new();
+    JpegEncoder::new_with_quality(&mut photo, 90)
+        .encode_image(&smooth)
+        .unwrap();
+    assert!(photo.len() <= MAX_AVATAR_BYTES, "{}", photo.len());
+    // Padded past its end marker to exactly the cap: the route's body
+    // limit lets the largest accepted file through.
+    photo.resize(MAX_AVATAR_BYTES, 0);
+    assert_status(
+        &put_avatar(&router, &cookie, "capteur-50mpx.jpg", &photo).await,
+        StatusCode::NO_CONTENT,
+    );
+
+    let served = call(&router, Method::GET, "/me/avatar", Some(&cookie), None).await;
+    assert_status(&served, StatusCode::OK);
+    let decoded = image::load_from_memory(&body_bytes(served).await).unwrap();
+    assert_eq!(
+        (decoded.width(), decoded.height()),
+        (AVATAR_SIDE, AVATAR_SIDE)
     );
 }
 

@@ -85,7 +85,15 @@ hmac = "0.13"
 # `recipes::taxonomy`): 205 KB gzipped instead of 932 KB in the binary.
 # The newest release (dependency policy), shared with apps/web.
 flate2 = "1.1.10"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+# JPEG and PNG only: the avatar refuses WebP (#588), the one user here.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# The avatar's JPEG decode (#588): `Decoder::scale` reduces a picture in
+# the inverse DCT (1/2, 1/4, 1/8), which `image`'s zune-jpeg cannot, so a
+# 50 Mpx photo never exists at full size in memory. Without `rayon`: no
+# pool shared with the process — the decoder still starts a thread per
+# colour component of its own (`worker/multithreaded.rs`) once the reduced
+# frame is over 128 pixels wide (it squares the width, not width × height).
+jpeg-decoder = { version = "0.3.2", default-features = false }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
@@ -94,3 +102,6 @@ hyper = { version = "1", features = ["full"] }
 http-body-util = "0.1"
 tower = { version = "0.4", features = ["util"] }
 tokio-tungstenite = "0.21"
+# Progressive and CMYK JPEG fixtures for the avatar's decode (#588), which
+# `image`'s encoder does not write. The release `image` already pulls.
+jpeg-encoder = "0.7.1"

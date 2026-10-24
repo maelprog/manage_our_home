@@ -2,9 +2,12 @@
 //! `GET /me/avatar` and `GET /groups/:id/members/:user_id/avatar`.
 //!
 //! The upload is never stored as sent. Its type is sniffed from its bytes
-//! (JPEG, PNG or WebP, whatever its name says), it is decoded under bounds,
-//! the orientation its EXIF records is applied, its centred square is
-//! reduced to `AVATAR_SIDE` pixels, and that square is encoded afresh as a
+//! (JPEG or PNG, whatever its name says; WebP no longer, #588), it is
+//! decoded under bounds — a JPEG reduced in the decode itself, so that a
+//! 50 Mpx phone photo is accepted without ever being held at full size
+//! (#588) —, the orientation its EXIF records is applied, its centred
+//! square is reduced to `AVATAR_SIDE` pixels, and that square is encoded
+//! afresh as a
 //! JPEG. The new file carries no metadata at all: EXIF, GPS position, camera
 //! model and the like go with the original, which is never written anywhere.
 //!
@@ -26,10 +29,12 @@ use axum::extract::{Multipart, Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use image::codecs::jpeg::JpegEncoder;
+use image::metadata::Orientation;
 use image::{
-    imageops, DynamicImage, GenericImageView, ImageDecoder, ImageFormat, ImageReader, Limits, Rgb,
-    RgbImage,
+    imageops, DynamicImage, GenericImageView, GrayImage, ImageDecoder, ImageError, ImageFormat,
+    ImageReader, Limits, Rgb, RgbImage,
 };
+use jpeg_decoder::PixelFormat;
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
@@ -38,10 +43,12 @@ use crate::error::{AppError, AppResult};
 use crate::storage::UPLOAD_FRAMING_MARGIN_BYTES;
 use crate::AppState;
 
-/// The largest photo accepted, in bytes. A phone's full-resolution JPEG is
-/// a few megabytes; 12 MiB leaves room for the larger sensors, as the
-/// barcode photo of apps/web does (`routes/stocks/photo.rs`).
-pub const MAX_AVATAR_BYTES: usize = 12 * 1024 * 1024;
+/// The largest photo accepted, in bytes. A phone's JPEG in its 48/50 Mpx
+/// mode weighs about 15 to 30 MB (a Galaxy S25 Ultra's 50 Mpx JPEG, 21 MB);
+/// 32 MiB admits them (arbitrage of 2026-10-23, #588). The services that
+/// cap an avatar at 2 to 10 MB shrink the photo in the client before
+/// sending it, which apps/web does not.
+pub const MAX_AVATAR_BYTES: usize = 32 * 1024 * 1024;
 
 /// The route's body limit: the photo plus the multipart framing, as
 /// `storage::MAX_UPLOAD_BODY_BYTES` does for the attachments. Above the cap
@@ -57,28 +64,70 @@ pub const AVATAR_CONTENT_TYPE: &str = "image/jpeg";
 
 const AVATAR_JPEG_QUALITY: u8 = 85;
 
-/// Decoder bound: no dimension past this, whatever the file declares.
+/// Bound of `image`'s whole decode of a PNG: no dimension past this,
+/// whatever the file declares.
 const MAX_DIMENSION: u32 = 8192;
 
-/// Bound on the decoded frame, in bytes: a 24 Mpx frame in 8-bit RGB
-/// (6000 × 4000 × 3 = 72 MB) fits; a larger one — more pixels, or more
-/// bytes per pixel, as a 16-bit PNG — is refused as unreadable from what its
-/// header declares (`ImageDecoder::total_bytes`), before anything is
-/// decoded. Also handed to `image` as `Limits::max_alloc`, which does not
-/// bound that frame on the `from_decoder` path: hence the explicit check.
-const MAX_ALLOC: u64 = 80 * 1024 * 1024;
-
-/// Decodes running at once in this process, since the upload gate alone
-/// admits more bodies than decodes should multiply.
+/// Photos decoded at once in this process: one (arbitrage of 2026-10-23,
+/// #588). The permit is taken before the body is read and held to the end
+/// of the decode, so that one photo body at most is in memory, with its
+/// decode. Another photo upload waits for it, its body unread.
 ///
-/// `MAX_ALLOC` bounds the decoded frame, not what a decode holds at its
-/// peak: the decoders' own buffers come on top. Peaks measured on accepted
-/// images (review of #467): a progressive 4:4:4 JPEG of 5000 × 5000,
-/// 233 MB; a progressive greyscale JPEG of 8192 × 8192, 209 MB; a WebP of
-/// 6000 × 4000, 167 MB. Progressive JPEG and WebP thus go past `MAX_ALLOC`.
-/// Count about 235 MB per decode, about 470 MB for the two permits, when
-/// sizing the process's memory.
-const DECODE_PERMITS: usize = 2;
+/// Worst case of the api's memory, against the pod's limit of 256 MiB on
+/// k3s (`apps/manage-our-home/base/api.yaml` on the `k3s` branch), in MiB
+/// (1 MiB = 1 048 576 bytes):
+///
+/// - the process at rest: 7 to 8 MiB (`kubectl top`, PR of #431);
+/// - 7 attachment bodies, the rest of the upload gate's 8 permits
+///   (`GLOBAL_UPLOADS`, shared with the photos): 7 × (20.06 MiB of
+///   `storage::MAX_UPLOAD_BODY_BYTES` + about 0.6 MiB of connection buffer,
+///   measured in #249) = 144.6 MiB;
+/// - the one photo body: 32.06 MiB of `MAX_AVATAR_BODY_BYTES` + 0.6 MiB =
+///   32.7 MiB;
+/// - its decode: `DECODE_PEAK_BYTES`, 50 MiB.
+///
+/// 8 + 144.6 + 32.7 + 50 = 235.3 MiB, 20.7 MiB under the limit for the
+/// rest of the process; 226.7 MiB with the largest decode counted
+/// (41.4 MiB, see `DECODE_PEAK_BYTES`). A photo upload waiting for the permit holds a gate
+/// permit and its connection buffer only, less than an attachment body.
+const DECODE_PERMITS: usize = 1;
+
+/// What one decode holds at its peak, in bytes, at most: the upload's
+/// bytes aside, the decoders' buffers and the frame — 50 MiB (arbitrage
+/// of 2026-10-23, #588). Each path has its bound, checked on the file's
+/// header and chunks before any decode — the frame's dimensions, the
+/// metadata a decoder would inflate or copy — and refused past it. Peaks
+/// counted by `tests/avatar_memory.rs`, which fails past this bound, at
+/// each bound, in debug and release builds on 7 cores and on a single one
+/// (`--cpuset-cpus 0`); the ranges are over three such series of four
+/// runs:
+///
+/// - sequential JPEG, reduced at decode (`MAX_JPEG_SIDE`): 8000 × 6000,
+///   3.2 to 8.1 MiB in 4:2:0, 4.3 to 16.2 MiB in 4:4:4, 5.7 to 16.4 MiB
+///   in CMYK; 16384 × 16384 in 4:2:0, 18.0 to 25.6 MiB;
+/// - progressive JPEG (`MAX_PROGRESSIVE_COEFFICIENT_BYTES`), at the bound:
+///   4:2:0 3200 × 2400, 22.5 to 29.2 MiB, 22.5 to 27.9 MiB with ICC
+///   segments before the first scan filling the file; 4:4:4 2240 × 1712,
+///   23.3 to 30.0 MiB; greyscale 3900 × 2940, 22.6 to 34.3 MiB (37.0 MiB
+///   on one core in the review of #589); CMYK 1952 × 1468, 23.3 to
+///   28.1 MiB. With ICC segments past the first scan the file is refused
+///   (`scan_jpeg_header`), its walk allocating nothing: 0.0 MiB;
+/// - PNG (`MAX_PNG_FRAME_BYTES`), RGB 3739 × 3739: 40.4 MiB; 41.4 MiB with
+///   an iCCP profile of `MAX_METADATA_BYTES` once inflated; a profile
+///   inflating to 100 MiB is refused at 0.1 MiB;
+/// - WebP: refused by its bytes, before any decode (`sniff_avatar_format`).
+///
+/// The largest count is the PNG with its profile, 41.4 MiB.
+///
+/// The JPEG figures vary with scheduling: past a reduced frame 128 pixels
+/// wide, `jpeg_decoder` hands its rows to a thread per component through a
+/// queue it does not bound, and on a single core rows pile up — the high
+/// ends above. For a progressive JPEG that queue is bounded by the
+/// coefficient buffer it copies, hence a bound of half the budget; for a
+/// sequential one it is measured only. Before #588, the comment here
+/// counted about 235 MB per decode and about 470 MB for the two permits
+/// (review of #467).
+pub const DECODE_PEAK_BYTES: usize = 50 * 1024 * 1024;
 
 static DECODES: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(DECODE_PERMITS));
 
@@ -87,10 +136,12 @@ static DECODES: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(DECODE_PER
 pub enum AvatarError {
     /// Over `MAX_AVATAR_BYTES`.
     TooLarge,
-    /// Not a JPEG, PNG or WebP by its bytes.
+    /// Not a JPEG or a PNG by its bytes.
     UnsupportedType,
-    /// Of an accepted type, but not decodable, or past the decoder bounds.
+    /// Of an accepted type, but not decodable.
     Unreadable,
+    /// Decodable, but past the bounds a decode is allowed (#588).
+    ImageTooLarge,
 }
 
 impl AvatarError {
@@ -101,6 +152,7 @@ impl AvatarError {
             AvatarError::TooLarge => "file_too_large",
             AvatarError::UnsupportedType => "unsupported_file_type",
             AvatarError::Unreadable => "unreadable_image",
+            AvatarError::ImageTooLarge => "image_too_large",
         }
     }
 }
@@ -113,6 +165,11 @@ impl From<AvatarError> for AppError {
 
 /// The format of an accepted upload: the size first, then the type sniffed
 /// from the bytes. The filename and the declared type are never looked at.
+/// A WebP is refused here (arbitrage of 2026-10-23, review of #589): its
+/// decoder reads a frame's data whole and copies it, and decodes a frame
+/// at its own dimensions before it looks at the canvas — two costs no
+/// check on the file bounds without decoding it. A phone's camera writes
+/// JPEG (or HEIC, refused as well).
 pub fn sniff_avatar_format(bytes: &[u8]) -> Result<ImageFormat, AvatarError> {
     if bytes.len() > MAX_AVATAR_BYTES {
         return Err(AvatarError::TooLarge);
@@ -120,7 +177,6 @@ pub fn sniff_avatar_format(bytes: &[u8]) -> Result<ImageFormat, AvatarError> {
     match infer::get(bytes).map(|kind| kind.mime_type()) {
         Some("image/jpeg") => Ok(ImageFormat::Jpeg),
         Some("image/png") => Ok(ImageFormat::Png),
-        Some("image/webp") => Ok(ImageFormat::WebP),
         _ => Err(AvatarError::UnsupportedType),
     }
 }
@@ -132,25 +188,400 @@ pub fn center_square(width: u32, height: u32) -> (u32, u32, u32) {
     ((width - side) / 2, (height - side) / 2, side)
 }
 
+/// Bound on either side of a JPEG (#588). Its decode is reduced in the
+/// inverse DCT, so its frame follows the reduced size, not the photo's:
+/// 16384 × 16384 comes out at 2048 × 2048. What this bound keeps short is
+/// the decode's time, and the rows `jpeg_decoder` may queue for its
+/// threads (see `DECODE_PEAK_BYTES`).
+pub const MAX_JPEG_SIDE: u32 = 16384;
+
+/// Bound on a progressive JPEG's coefficient buffer, in bytes, as
+/// `progressive_coefficient_bytes` reckons it from the header. Every
+/// coefficient of a progressive picture is held until its last scan, at
+/// full size whatever the reduction, and `jpeg_decoder` copies them row by
+/// row to its threads at the end: up to twice the buffer. 22 MiB admits
+/// 7.7 Mpx in 4:2:0 (3200 × 2400, 23.0 MB), 3.8 Mpx in 4:4:4, 11.5 Mpx in
+/// greyscale, 2.9 Mpx in CMYK. A phone's camera writes sequential JPEGs,
+/// which this bound does not touch.
+pub const MAX_PROGRESSIVE_COEFFICIENT_BYTES: u64 = 22 * 1024 * 1024;
+
+/// Bound on a PNG's decoded frame, in bytes, as its header declares it
+/// (`ImageDecoder::total_bytes`): `image` decodes it whole, the frame,
+/// its metadata (`MAX_METADATA_BYTES`) and little else. 40 MiB is
+/// 3739 × 3739 in 8-bit RGB, 3238 × 3238 in RGBA.
+/// Also handed to `image` as `Limits::max_alloc`, for what its decoders
+/// allocate besides the frame.
+pub const MAX_PNG_FRAME_BYTES: u64 = 40 * 1024 * 1024;
+
+/// How a JPEG is coded, as its SOF marker says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JpegCoding {
+    /// Baseline or extended sequential: decoded row by row, reduced.
+    Sequential,
+    /// Progressive: every coefficient held until the last scan.
+    Progressive,
+    /// Lossless: refused, `jpeg_decoder` cannot reduce it.
+    Lossless,
+}
+
+/// A JPEG's frame, from its SOF segment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JpegFrame {
+    pub width: u16,
+    pub height: u16,
+    pub coding: JpegCoding,
+    /// Horizontal and vertical sampling factors of each component.
+    pub sampling: Vec<(u8, u8)>,
+}
+
+/// What `scan_jpeg_header` finds before the first scan.
+pub struct JpegHeader<'a> {
+    /// The file with the APP2 segments of its header left out, as slices
+    /// to read in a row: `jpeg_decoder` keeps every ICC segment it reads,
+    /// and a file filled with them would add its whole size to the decode.
+    /// The avatar applies no colour profile, so nothing is lost. An APP2
+    /// past the first scan refuses the file (`icc_past`).
+    pub kept: Vec<&'a [u8]>,
+    pub frame: JpegFrame,
+}
+
+/// Walks a JPEG's markers up to its first scan: the frame its SOF
+/// declares, and the file without its ICC profile.
+pub fn scan_jpeg_header(bytes: &[u8]) -> Result<JpegHeader<'_>, AvatarError> {
+    const UNREADABLE: AvatarError = AvatarError::Unreadable;
+    if !bytes.starts_with(&[0xFF, 0xD8]) {
+        return Err(UNREADABLE);
+    }
+    let mut kept = Vec::new();
+    let mut kept_from = 0;
+    let mut frame = None;
+    let mut pos = 2;
+    loop {
+        let marker = loop {
+            match bytes.get(pos..pos + 2) {
+                // Fill bytes before a marker.
+                Some(&[0xFF, 0xFF]) => pos += 1,
+                Some(&[0xFF, marker]) => break marker,
+                _ => return Err(UNREADABLE),
+            }
+        };
+        match marker {
+            // Standalone markers: no length.
+            0x01 | 0xD0..=0xD7 => {
+                pos += 2;
+                continue;
+            }
+            // An end with no scan at all.
+            0xD9 => break,
+            // Start of scan: the header is over, but `jpeg_decoder` reads
+            // the segments between scans as well.
+            0xDA => {
+                if icc_past(bytes, pos) {
+                    return Err(AvatarError::ImageTooLarge);
+                }
+                break;
+            }
+            _ => {}
+        }
+        let length = match bytes.get(pos + 2..pos + 4) {
+            Some(&[high, low]) => usize::from(u16::from_be_bytes([high, low])),
+            _ => return Err(UNREADABLE),
+        };
+        let end = pos + 2 + length;
+        if length < 2 || end > bytes.len() {
+            return Err(UNREADABLE);
+        }
+        match marker {
+            0xE2 => {
+                kept.push(&bytes[kept_from..pos]);
+                kept_from = end;
+            }
+            // SOF0 to SOF15, but DHT (C4), JPG (C8) and DAC (CC).
+            0xC0..=0xCF if !matches!(marker, 0xC4 | 0xC8 | 0xCC) => {
+                frame = Some(parse_sof(marker, &bytes[pos + 4..end])?);
+            }
+            _ => {}
+        }
+        pos = end;
+    }
+    kept.push(&bytes[kept_from..]);
+    Ok(JpegHeader {
+        kept,
+        frame: frame.ok_or(UNREADABLE)?,
+    })
+}
+
+/// Whether an APP2 segment comes after `pos`, the first SOS marker:
+/// `jpeg_decoder` keeps every ICC segment it reads, between scans and
+/// before the end marker too, where `scan_jpeg_header` cannot leave them
+/// out without walking the scans' data for the decoder. So the file is
+/// refused instead; a camera writes its profile before the first scan.
+/// In the entropy-coded data, a 0xFF is followed by a stuffed 0x00 or a
+/// restart marker, never by a segment's marker.
+fn icc_past(bytes: &[u8], mut pos: usize) -> bool {
+    while pos + 1 < bytes.len() {
+        if bytes[pos] != 0xFF {
+            pos += 1;
+            continue;
+        }
+        match bytes[pos + 1] {
+            // Stuffed byte, fill byte, standalone markers.
+            0x00 | 0xFF | 0x01 | 0xD0..=0xD7 => pos += 1,
+            0xD9 => return false,
+            0xE2 => return true,
+            // A segment with a length — for a SOS, its header; its data
+            // follows.
+            _ => match bytes.get(pos + 2..pos + 4) {
+                Some(&[high, low]) => pos += 2 + usize::from(u16::from_be_bytes([high, low])),
+                _ => return false,
+            },
+        }
+    }
+    false
+}
+
+fn parse_sof(marker: u8, segment: &[u8]) -> Result<JpegFrame, AvatarError> {
+    let unreadable = Err(AvatarError::Unreadable);
+    let Some(&[_precision, h1, h0, w1, w0, count]) = segment.get(..6) else {
+        return unreadable;
+    };
+    let count = usize::from(count);
+    let Some(components) = segment.get(6..6 + 3 * count) else {
+        return unreadable;
+    };
+    let sampling: Vec<(u8, u8)> = components
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|c| (c[1] >> 4, c[1] & 0x0F))
+        .collect();
+    if sampling.is_empty()
+        || sampling
+            .iter()
+            .any(|&(h, v)| !(1..=4).contains(&h) || !(1..=4).contains(&v))
+    {
+        return unreadable;
+    }
+    let coding = match marker {
+        0xC2 | 0xC6 | 0xCA | 0xCE => JpegCoding::Progressive,
+        0xC3 | 0xC7 | 0xCB | 0xCF => JpegCoding::Lossless,
+        _ => JpegCoding::Sequential,
+    };
+    Ok(JpegFrame {
+        width: u16::from_be_bytes([w1, w0]),
+        height: u16::from_be_bytes([h1, h0]),
+        coding,
+        sampling,
+    })
+}
+
+/// The size handed to `jpeg_decoder::Decoder::scale`, which picks the
+/// smallest scale (1/8, 1/4, 1/2 or 1) reaching the request on *either*
+/// axis. The short side is asked for `AVATAR_SIDE` and the long one for
+/// more than any reduced side can reach, so that the short side decides:
+/// the centred square is never decoded smaller than the avatar.
+pub fn jpeg_scale_request(width: u16, height: u16) -> (u16, u16) {
+    let side = AVATAR_SIDE as u16;
+    if width <= height {
+        (side, u16::MAX)
+    } else {
+        (u16::MAX, side)
+    }
+}
+
+/// The coefficient buffer `jpeg_decoder` allocates for a progressive JPEG:
+/// 64 coefficients of 2 bytes per 8 × 8 block of each component, every
+/// component padded to whole MCUs, as its `block_size` is.
+pub fn progressive_coefficient_bytes(frame: &JpegFrame) -> u64 {
+    let h_max = frame.sampling.iter().map(|&(h, _)| u64::from(h)).max();
+    let v_max = frame.sampling.iter().map(|&(_, v)| u64::from(v)).max();
+    let (Some(h_max), Some(v_max)) = (h_max, v_max) else {
+        return 0;
+    };
+    let mcus_x = u64::from(frame.width).div_ceil(8 * h_max);
+    let mcus_y = u64::from(frame.height).div_ceil(8 * v_max);
+    frame
+        .sampling
+        .iter()
+        .map(|&(h, v)| mcus_x * u64::from(h) * mcus_y * u64::from(v) * 64 * 2)
+        .sum()
+}
+
+/// The bounds of a JPEG, checked on what its header declares, before
+/// anything of its size is allocated.
+pub fn check_jpeg_bounds(frame: &JpegFrame) -> Result<(), AvatarError> {
+    if frame.coding == JpegCoding::Lossless {
+        return Err(AvatarError::Unreadable);
+    }
+    if u32::from(frame.width) > MAX_JPEG_SIDE || u32::from(frame.height) > MAX_JPEG_SIDE {
+        return Err(AvatarError::ImageTooLarge);
+    }
+    if frame.coding == JpegCoding::Progressive
+        && progressive_coefficient_bytes(frame) > MAX_PROGRESSIVE_COEFFICIENT_BYTES
+    {
+        return Err(AvatarError::ImageTooLarge);
+    }
+    Ok(())
+}
+
+/// The bound of a PNG's whole decode, on the frame's bytes its header
+/// declares.
+pub fn check_png_frame(total_bytes: u64) -> Result<(), AvatarError> {
+    if total_bytes > MAX_PNG_FRAME_BYTES {
+        Err(AvatarError::ImageTooLarge)
+    } else {
+        Ok(())
+    }
+}
+
+/// The JPEG's colours from `jpeg_decoder`'s CMYK, which it hands over as
+/// ink: no ink is 0, full ink 255. Each RGB channel is what its ink and
+/// the black leave of the white.
+fn cmyk_to_rgb(cmyk: &[u8]) -> Vec<u8> {
+    cmyk.as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|p| {
+            let k = 255 - u16::from(p[3]);
+            let leave = |c: u8| ((255 - u16::from(c)) * k / 255) as u8;
+            [leave(p[0]), leave(p[1]), leave(p[2])]
+        })
+        .collect()
+}
+
+/// The slices of `JpegHeader::kept`, read in a row.
+struct Pieces<'a> {
+    pieces: std::vec::IntoIter<&'a [u8]>,
+    current: &'a [u8],
+}
+
+impl std::io::Read for Pieces<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        while self.current.is_empty() {
+            match self.pieces.next() {
+                Some(next) => self.current = next,
+                None => return Ok(0),
+            }
+        }
+        self.current.read(buf)
+    }
+}
+
+/// A decoded picture and the orientation its EXIF records.
+type Decoded = (DynamicImage, Option<Orientation>);
+
+/// A JPEG decoded reduced (#588): `jpeg_decoder` scales it in the inverse
+/// DCT to the smallest frame whose short side still holds `AVATAR_SIDE`,
+/// so an 8000 × 6000 photo is decoded straight to 1000 × 750 and never
+/// exists at full size. Greyscale, colour and CMYK alike; the bounds of
+/// `check_jpeg_bounds` first, on the header.
+pub(crate) fn decode_jpeg(bytes: &[u8]) -> Result<Decoded, AvatarError> {
+    let header = scan_jpeg_header(bytes)?;
+    check_jpeg_bounds(&header.frame)?;
+    let mut pieces = header.kept.into_iter();
+    let current = pieces.next().unwrap_or_default();
+    let mut decoder = jpeg_decoder::Decoder::new(Pieces { pieces, current });
+    decoder.read_info().map_err(|_| AvatarError::Unreadable)?;
+    let info = decoder.info().ok_or(AvatarError::Unreadable)?;
+
+    let (request_width, request_height) = jpeg_scale_request(info.width, info.height);
+    let (width, height) = decoder
+        .scale(request_width, request_height)
+        .map_err(|_| AvatarError::Unreadable)?;
+    // Unreachable once reduced under `MAX_JPEG_SIDE`: a second guard.
+    decoder.set_max_decoding_buffer_size(MAX_PNG_FRAME_BYTES as usize);
+    let pixels = decoder.decode().map_err(|_| AvatarError::Unreadable)?;
+    let orientation = decoder.exif_data().and_then(Orientation::from_exif_chunk);
+
+    let (width, height) = (u32::from(width), u32::from(height));
+    let picture = match info.pixel_format {
+        PixelFormat::L8 => GrayImage::from_raw(width, height, pixels).map(DynamicImage::ImageLuma8),
+        PixelFormat::RGB24 => {
+            RgbImage::from_raw(width, height, pixels).map(DynamicImage::ImageRgb8)
+        }
+        PixelFormat::CMYK32 => {
+            RgbImage::from_raw(width, height, cmyk_to_rgb(&pixels)).map(DynamicImage::ImageRgb8)
+        }
+        // More than 8 bits: only lossless, refused above.
+        PixelFormat::L16 => None,
+    };
+    Ok((picture.ok_or(AvatarError::Unreadable)?, orientation))
+}
+
+/// Bound on the metadata a whole decode holds besides the picture, in
+/// bytes (review of #589): a PNG's iCCP profile once inflated — `png`
+/// inflates it whatever the caller asks — and its eXIf chunk, which it
+/// copies. A real profile is a few kilobytes (Display P3, about half a
+/// kilobyte), a camera's EXIF some tens. Past it: `image_too_large`.
+pub const MAX_METADATA_BYTES: usize = 1024 * 1024;
+
+/// The bound on a PNG's metadata (`MAX_METADATA_BYTES`), on its chunks:
+/// the eXIf chunk's size, the iCCP profile's once inflated — counted in
+/// a sink, never held. A chunk cut short or a broken profile is left to
+/// `png`, which refuses the one and ignores the other.
+fn check_png_metadata(bytes: &[u8]) -> Result<(), AvatarError> {
+    use std::io::Read;
+    let mut pos = 8;
+    while let Some(header) = bytes.get(pos..pos + 8) {
+        let length = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
+        let Some(data) = bytes.get(pos + 8..pos + 8 + length) else {
+            return Ok(());
+        };
+        match &header[4..] {
+            b"eXIf" if length > MAX_METADATA_BYTES => return Err(AvatarError::ImageTooLarge),
+            b"iCCP" => {
+                // A name of 1 to 79 bytes, its NUL, the compression method.
+                if let Some(nul) = data.iter().take(81).position(|&b| b == 0) {
+                    let deflated = data.get(nul + 2..).unwrap_or_default();
+                    let mut inflated = flate2::read::ZlibDecoder::new(deflated)
+                        .take(MAX_METADATA_BYTES as u64 + 1);
+                    let size = std::io::copy(&mut inflated, &mut std::io::sink()).unwrap_or(0);
+                    if size > MAX_METADATA_BYTES as u64 {
+                        return Err(AvatarError::ImageTooLarge);
+                    }
+                }
+            }
+            b"IEND" => break,
+            _ => {}
+        }
+        pos += 12 + length;
+    }
+    Ok(())
+}
+
+/// A PNG, decoded whole by `image` under `MAX_DIMENSION`,
+/// `check_png_frame` and `MAX_METADATA_BYTES`.
+fn decode_png(bytes: &[u8]) -> Result<Decoded, AvatarError> {
+    // A bound passed is `ImageError::Limits`; anything else is unreadable.
+    let refusal = |e: ImageError| match e {
+        ImageError::Limits(_) => AvatarError::ImageTooLarge,
+        _ => AvatarError::Unreadable,
+    };
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_DIMENSION);
+    limits.max_image_height = Some(MAX_DIMENSION);
+    limits.max_alloc = Some(MAX_PNG_FRAME_BYTES);
+    // The metadata `png` would inflate or copy, on the chunks first.
+    check_png_metadata(bytes)?;
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), ImageFormat::Png);
+    reader.limits(limits);
+    let mut decoder = reader.into_decoder().map_err(refusal)?;
+    check_png_frame(decoder.total_bytes())?;
+    // An unreadable orientation is no reason to refuse the photo: it is
+    // then stored as its pixels lie.
+    let orientation = decoder.orientation().ok();
+    let picture = DynamicImage::from_decoder(decoder).map_err(refusal)?;
+    Ok((picture, orientation))
+}
+
 /// The JPEG stored for an upload: see the module comment. CPU-bound, run
 /// off the async workers by the handler.
 pub fn reencode_avatar(bytes: &[u8]) -> Result<Vec<u8>, AvatarError> {
     let format = sniff_avatar_format(bytes)?;
-
-    let mut limits = Limits::default();
-    limits.max_image_width = Some(MAX_DIMENSION);
-    limits.max_image_height = Some(MAX_DIMENSION);
-    limits.max_alloc = Some(MAX_ALLOC);
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
-    reader.limits(limits);
-    let mut decoder = reader.into_decoder().map_err(|_| AvatarError::Unreadable)?;
-    if decoder.total_bytes() > MAX_ALLOC {
-        return Err(AvatarError::Unreadable);
-    }
-    // An unreadable orientation is no reason to refuse the photo: it is
-    // then stored as its pixels lie.
-    let orientation = decoder.orientation().ok();
-    let picture = DynamicImage::from_decoder(decoder).map_err(|_| AvatarError::Unreadable)?;
+    let (picture, orientation) = match format {
+        ImageFormat::Jpeg => decode_jpeg(bytes)?,
+        _ => decode_png(bytes)?,
+    };
 
     let (x, y, side) = center_square(picture.width(), picture.height());
     // `thumbnail` averages integer blocks straight from the view: no copy
@@ -185,8 +616,9 @@ pub fn reencode_avatar(bytes: &[u8]) -> Result<Vec<u8>, AvatarError> {
 
 /// `PUT /me/avatar` — sets or replaces the caller's photo: one `file` field
 /// of `multipart/form-data`, answered 204. Refusals: 422 `file_too_large`,
-/// `unsupported_file_type` or `unreadable_image` (`AvatarError`), 400 for a
-/// body that is not one `file` field, 503 when the upload gate is full.
+/// `unsupported_file_type`, `unreadable_image` or `image_too_large`
+/// (`AvatarError`), 400 for a body that is not one `file` field, 503 when
+/// the upload gate is full.
 ///
 /// The body is read with no transaction open, as `upload_attachment` does
 /// (#216), and reading stops at the first byte past `MAX_AVATAR_BYTES`.
@@ -212,6 +644,11 @@ pub async fn put_avatar(
             tracing::info!(?busy, "avatar upload turned away");
             AppError::UploadsBusy
         })?;
+    // Before the body is read: see `DECODE_PERMITS`.
+    let _decode = DECODES
+        .acquire()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
 
     let mut bytes = None;
     while let Some(mut field) = multipart.next_field().await.map_err(multipart_error)? {
@@ -232,15 +669,10 @@ pub async fn put_avatar(
     drop(multipart);
     let bytes = bytes.ok_or(AppError::BadRequest("missing_file".into()))?;
 
-    let jpeg = {
-        let _decode = DECODES
-            .acquire()
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
-        tokio::task::spawn_blocking(move || reencode_avatar(&bytes))
-            .await
-            .map_err(|e| AppError::Internal(e.into()))??
-    };
+    let jpeg = tokio::task::spawn_blocking(move || reencode_avatar(&bytes))
+        .await
+        .map_err(|e| AppError::Internal(e.into()))??;
+    drop(_decode);
 
     let key = format!("avatars/{}/{}", auth.user_id, Uuid::new_v4());
     let mut tx = crate::db::begin(&state.db).await?;
@@ -402,8 +834,8 @@ mod tests {
     use super::*;
     use image::codecs::jpeg::JpegEncoder;
     use image::codecs::png::PngEncoder;
-    use image::codecs::webp::WebPEncoder;
     use image::{ImageEncoder, Rgb, RgbImage, Rgba, RgbaImage};
+    use jpeg_encoder::SamplingFactor;
 
     const RED: Rgb<u8> = Rgb([220, 20, 20]);
     const BLUE: Rgb<u8> = Rgb([20, 20, 220]);
@@ -503,15 +935,10 @@ mod tests {
     // --- validation ---
 
     #[test]
-    fn jpeg_png_and_webp_are_accepted() {
+    fn jpeg_and_png_are_accepted() {
         let image = halves(8, 8);
         assert_eq!(sniff_avatar_format(&jpeg(&image)), Ok(ImageFormat::Jpeg));
         assert_eq!(sniff_avatar_format(&png(&image)), Ok(ImageFormat::Png));
-        let mut webp = Vec::new();
-        WebPEncoder::new_lossless(&mut webp)
-            .write_image(image.as_raw(), 8, 8, image::ExtendedColorType::Rgb8)
-            .unwrap();
-        assert_eq!(sniff_avatar_format(&webp), Ok(ImageFormat::WebP));
     }
 
     /// Criterion of #467: a PDF renamed `.jpg` is refused. The name never
@@ -550,6 +977,24 @@ mod tests {
         assert_eq!(sniff_avatar_format(&at_cap), Ok(ImageFormat::Jpeg));
     }
 
+    /// Arbitrage of 2026-10-23 (#588): a 48/50 Mpx phone JPEG, 15 to
+    /// 30 MB, fits under the cap.
+    #[test]
+    fn the_cap_is_32_mib() {
+        assert_eq!(MAX_AVATAR_BYTES, 32 * 1024 * 1024);
+    }
+
+    /// A valid JPEG at exactly the cap — padded past its end marker — is
+    /// re-encoded; one byte more is refused as too large.
+    #[test]
+    fn a_photo_at_the_cap_is_accepted() {
+        let mut at_cap = jpeg(&halves(64, 64));
+        at_cap.resize(MAX_AVATAR_BYTES, 0);
+        assert!(reencode_avatar(&at_cap).is_ok());
+        at_cap.push(0);
+        assert_eq!(reencode_avatar(&at_cap), Err(AvatarError::TooLarge));
+    }
+
     #[test]
     fn a_truncated_image_is_unreadable() {
         let whole = png(&halves(64, 64));
@@ -560,24 +1005,513 @@ mod tests {
     }
 
     /// A small file can declare a huge picture: refused at its header,
-    /// before anything of its size is allocated.
+    /// before anything of its size is allocated, with a code of its own —
+    /// the picture is readable, it is too large (#588).
     #[test]
-    fn a_picture_past_the_decoder_bounds_is_unreadable() {
+    fn a_picture_past_the_decoder_bounds_is_too_large() {
         let wide = RgbImage::new(10_000, 1);
-        assert_eq!(reencode_avatar(&png(&wide)), Err(AvatarError::Unreadable));
+        assert_eq!(
+            reencode_avatar(&png(&wide)),
+            Err(AvatarError::ImageTooLarge)
+        );
     }
 
-    /// Within the dimension bound, but past `MAX_ALLOC` once decoded: a
+    /// Within the dimension bound, but past `MAX_PNG_FRAME_BYTES` once decoded: a
     /// 4096 × 4096 RGBA PNG of 16 bits per channel compresses to little,
     /// and decodes to 4096 × 4096 × 8 = 134 MB. Refused before decoding.
     #[test]
-    fn a_picture_past_the_allocation_bound_is_unreadable() {
+    fn a_picture_past_the_allocation_bound_is_too_large() {
         let deep = DynamicImage::ImageRgba16(image::ImageBuffer::new(4096, 4096));
         let mut bytes = Vec::new();
         deep.write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
             .unwrap();
         assert!(bytes.len() < MAX_AVATAR_BYTES, "{}", bytes.len());
-        assert_eq!(reencode_avatar(&bytes), Err(AvatarError::Unreadable));
+        assert_eq!(reencode_avatar(&bytes), Err(AvatarError::ImageTooLarge));
+    }
+
+    #[test]
+    fn each_refusal_has_its_own_code() {
+        assert_eq!(AvatarError::TooLarge.code(), "file_too_large");
+        assert_eq!(AvatarError::UnsupportedType.code(), "unsupported_file_type");
+        assert_eq!(AvatarError::Unreadable.code(), "unreadable_image");
+        assert_eq!(AvatarError::ImageTooLarge.code(), "image_too_large");
+    }
+
+    // --- JPEG reduced at decode (#588) ---
+
+    /// `jpeg-encoder`'s JPEG of `image`, for what `image`'s encoder does
+    /// not write: progressive scans, chosen chroma sampling.
+    fn jpeg_with(image: &RgbImage, progressive: bool, sampling: SamplingFactor) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut encoder = jpeg_encoder::Encoder::new(&mut out, 90);
+        encoder.set_progressive(progressive);
+        encoder.set_sampling_factor(sampling);
+        encoder
+            .encode(
+                image.as_raw(),
+                image.width() as u16,
+                image.height() as u16,
+                jpeg_encoder::ColorType::Rgb,
+            )
+            .unwrap();
+        out
+    }
+
+    /// Criterion of #588: a photo of a 48/50 Mpx phone mode, 8000 × 6000,
+    /// is accepted and comes out the usual square, its middle kept.
+    #[test]
+    fn a_50_mpx_jpeg_is_accepted() {
+        let out = decoded(&reencode_avatar(&jpeg(&halves(8000, 6000))).unwrap());
+        assert_eq!(out.dimensions(), (AVATAR_SIDE, AVATAR_SIDE));
+        assert!(is_red(*out.get_pixel(AVATAR_SIDE / 4, AVATAR_SIDE / 2)));
+        assert!(is_blue(
+            *out.get_pixel(3 * AVATAR_SIDE / 4, AVATAR_SIDE / 2)
+        ));
+    }
+
+    /// Criterion of #588: past the bound, the refusal says so — not
+    /// `unreadable_image`. A strip past `MAX_JPEG_SIDE` costs little to
+    /// encode and is refused at its header.
+    #[test]
+    fn a_jpeg_past_the_side_bound_is_too_large() {
+        let strip = halves(MAX_JPEG_SIDE + 8, 8);
+        assert_eq!(
+            reencode_avatar(&jpeg(&strip)),
+            Err(AvatarError::ImageTooLarge)
+        );
+        let at_bound = halves(MAX_JPEG_SIDE, 8);
+        assert!(reencode_avatar(&jpeg(&at_bound)).is_ok());
+    }
+
+    /// The request handed to `jpeg_decoder::Decoder::scale`, which picks
+    /// the smallest scale reaching it on either axis: the short side is
+    /// asked for the avatar's side, the long one for more than any JPEG
+    /// can reach, so that the short side decides.
+    #[test]
+    fn the_scale_is_decided_by_the_short_side() {
+        let side = AVATAR_SIDE as u16;
+        assert_eq!(jpeg_scale_request(8000, 6000), (u16::MAX, side));
+        assert_eq!(jpeg_scale_request(6000, 8000), (side, u16::MAX));
+        assert_eq!(jpeg_scale_request(512, 512), (side, u16::MAX));
+    }
+
+    /// The decoded frame is the smallest scale keeping the short side at
+    /// `AVATAR_SIDE` or more: 1/8 of 8000 × 6000, 1/2 of a panorama whose
+    /// short side is 600, the full size of a picture already small.
+    #[test]
+    fn a_jpeg_is_decoded_at_the_smallest_scale_that_keeps_the_avatar_side() {
+        let dims = |w, h| {
+            let (picture, _) = decode_jpeg(&jpeg(&halves(w, h))).unwrap();
+            picture.dimensions()
+        };
+        assert_eq!(dims(8000, 6000), (1000, 750));
+        assert_eq!(dims(6000, 600), (3000, 300));
+        assert_eq!(dims(300, 200), (300, 200));
+    }
+
+    /// `JpegFrame` of `width` × `height` with the given sampling factors.
+    fn frame(width: u16, height: u16, coding: JpegCoding, sampling: &[(u8, u8)]) -> JpegFrame {
+        JpegFrame {
+            width,
+            height,
+            coding,
+            sampling: sampling.to_vec(),
+        }
+    }
+
+    const S420: &[(u8, u8)] = &[(2, 2), (1, 1), (1, 1)];
+    const S444: &[(u8, u8)] = &[(1, 1), (1, 1), (1, 1)];
+    const GREY: &[(u8, u8)] = &[(1, 1)];
+    const CMYK444: &[(u8, u8)] = &[(1, 1), (1, 1), (1, 1), (1, 1)];
+
+    /// The coefficient buffer `jpeg_decoder` allocates for a progressive
+    /// picture: 64 coefficients of 2 bytes per block, each component padded
+    /// to whole MCUs.
+    #[test]
+    fn the_progressive_buffer_follows_the_sampling() {
+        let prog = JpegCoding::Progressive;
+        // 4:2:0, one MCU: 2 × 2 luma blocks and one block per chroma.
+        assert_eq!(
+            progressive_coefficient_bytes(&frame(16, 16, prog, S420)),
+            6 * 128
+        );
+        // One pixel past it: two MCUs across.
+        assert_eq!(
+            progressive_coefficient_bytes(&frame(17, 16, prog, S420)),
+            12 * 128
+        );
+        assert_eq!(
+            progressive_coefficient_bytes(&frame(8, 8, prog, S444)),
+            3 * 128
+        );
+        assert_eq!(
+            progressive_coefficient_bytes(&frame(9, 8, prog, GREY)),
+            2 * 128
+        );
+        assert_eq!(
+            progressive_coefficient_bytes(&frame(8, 8, prog, CMYK444)),
+            4 * 128
+        );
+    }
+
+    #[test]
+    fn the_jpeg_bounds() {
+        let seq = JpegCoding::Sequential;
+        let prog = JpegCoding::Progressive;
+        let side = MAX_JPEG_SIDE as u16;
+        // Sequential: the side bound alone, in colour, grey or CMYK.
+        for sampling in [S420, S444, GREY, CMYK444] {
+            assert_eq!(check_jpeg_bounds(&frame(8000, 6000, seq, sampling)), Ok(()));
+            assert_eq!(check_jpeg_bounds(&frame(side, side, seq, sampling)), Ok(()));
+            assert_eq!(
+                check_jpeg_bounds(&frame(side + 1, 8, seq, sampling)),
+                Err(AvatarError::ImageTooLarge)
+            );
+            assert_eq!(
+                check_jpeg_bounds(&frame(8, side + 1, seq, sampling)),
+                Err(AvatarError::ImageTooLarge)
+            );
+        }
+        // Progressive: the coefficient buffer. 3200 × 2400 in 4:2:0 (7.7 Mpx,
+        // 23.0 MB) passes, 4000 × 3000 does not; 4:4:4 doubles the buffer,
+        // CMYK more; greyscale holds two thirds of 4:2:0.
+        assert_eq!(check_jpeg_bounds(&frame(3200, 2400, prog, S420)), Ok(()));
+        assert_eq!(
+            check_jpeg_bounds(&frame(4000, 3000, prog, S420)),
+            Err(AvatarError::ImageTooLarge)
+        );
+        assert_eq!(
+            check_jpeg_bounds(&frame(3200, 2400, prog, S444)),
+            Err(AvatarError::ImageTooLarge)
+        );
+        assert_eq!(
+            check_jpeg_bounds(&frame(3200, 2400, prog, CMYK444)),
+            Err(AvatarError::ImageTooLarge)
+        );
+        assert_eq!(check_jpeg_bounds(&frame(3200, 2400, prog, GREY)), Ok(()));
+        // Lossless: not decoded at all.
+        assert_eq!(
+            check_jpeg_bounds(&frame(64, 64, JpegCoding::Lossless, GREY)),
+            Err(AvatarError::Unreadable)
+        );
+    }
+
+    /// The bound of the PNG's whole decode: its frame's bytes, as the
+    /// header declares them.
+    #[test]
+    fn the_png_frame_bound() {
+        assert_eq!(check_png_frame(MAX_PNG_FRAME_BYTES), Ok(()));
+        assert_eq!(
+            check_png_frame(MAX_PNG_FRAME_BYTES + 1),
+            Err(AvatarError::ImageTooLarge)
+        );
+    }
+
+    /// The header walk: the frame read from the SOF, the ICC profile left
+    /// out of what the decoder is handed, the EXIF kept.
+    #[test]
+    fn the_header_walk_reads_the_frame_and_leaves_the_icc_out() {
+        let base = jpeg_with(&halves(64, 48), true, SamplingFactor::F_2_2);
+        let source = with_exif(&with_icc(&base, 3), 6);
+        assert!(contains(&source, b"ICC_PROFILE"));
+
+        let header = scan_jpeg_header(&source).unwrap();
+        assert_eq!(header.frame, frame(64, 48, JpegCoding::Progressive, S420));
+        let kept: Vec<u8> = header.kept.concat();
+        assert!(!contains(&kept, b"ICC_PROFILE"));
+        assert!(contains(&kept, b"Exif\0\0"));
+        assert_eq!(kept.len(), source.len() - 3 * (4 + 14 + 100));
+
+        let sequential = jpeg_with(&halves(17, 9), false, SamplingFactor::F_1_1);
+        let header = scan_jpeg_header(&sequential).unwrap();
+        assert_eq!(header.frame, frame(17, 9, JpegCoding::Sequential, S444));
+        assert_eq!(header.kept.concat(), sequential);
+    }
+
+    #[test]
+    fn a_broken_header_is_unreadable() {
+        let whole = jpeg(&halves(16, 16));
+        assert!(scan_jpeg_header(b"not a jpeg").is_err());
+        // Cut inside the header: no SOF reached.
+        assert_eq!(
+            scan_jpeg_header(&whole[..20]).err(),
+            Some(AvatarError::Unreadable)
+        );
+        // A segment length running past the end.
+        let mut lying = whole[..4].to_vec();
+        lying.extend_from_slice(&[0xFF, 0xFF]);
+        assert_eq!(
+            scan_jpeg_header(&lying).err(),
+            Some(AvatarError::Unreadable)
+        );
+    }
+
+    /// `jpeg` with `count` APP2 `ICC_PROFILE` segments of 100 bytes each.
+    fn with_icc(jpeg: &[u8], count: u8) -> Vec<u8> {
+        let mut out = jpeg[..2].to_vec();
+        for i in 0..count {
+            let mut payload = b"ICC_PROFILE\0".to_vec();
+            payload.push(i + 1);
+            payload.push(count);
+            payload.extend(std::iter::repeat_n(0x5A, 100));
+            out.extend_from_slice(&[0xFF, 0xE2]);
+            out.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
+            out.extend_from_slice(&payload);
+        }
+        out.extend_from_slice(&jpeg[2..]);
+        out
+    }
+
+    /// A progressive JPEG goes through the reduced decode as well, in 4:2:0
+    /// as in 4:4:4.
+    #[test]
+    fn a_progressive_jpeg_is_accepted() {
+        for sampling in [SamplingFactor::F_2_2, SamplingFactor::F_1_1] {
+            let source = jpeg_with(&halves(640, 480), true, sampling);
+            let out = decoded(&reencode_avatar(&source).unwrap());
+            assert_eq!(out.dimensions(), (AVATAR_SIDE, AVATAR_SIDE));
+            assert!(is_red(*out.get_pixel(AVATAR_SIDE / 4, AVATAR_SIDE / 2)));
+            assert!(is_blue(
+                *out.get_pixel(3 * AVATAR_SIDE / 4, AVATAR_SIDE / 2)
+            ));
+        }
+    }
+
+    #[test]
+    fn a_greyscale_jpeg_is_accepted() {
+        let grey = image::GrayImage::from_fn(400, 300, |x, _| {
+            image::Luma([if x < 200 { 30 } else { 220 }])
+        });
+        let mut source = Vec::new();
+        JpegEncoder::new_with_quality(&mut source, 90)
+            .encode_image(&grey)
+            .unwrap();
+        let out = decoded(&reencode_avatar(&source).unwrap());
+        assert_eq!(out.dimensions(), (AVATAR_SIDE, AVATAR_SIDE));
+        assert!(out.get_pixel(AVATAR_SIDE / 4, AVATAR_SIDE / 2)[0] < 80);
+        assert!(out.get_pixel(3 * AVATAR_SIDE / 4, AVATAR_SIDE / 2)[0] > 170);
+    }
+
+    /// `jpeg-encoder`'s CMYK JPEG of a `width` × `height` picture of one
+    /// colour.
+    fn cmyk_jpeg(width: u16, height: u16, cmyk: [u8; 4], progressive: bool) -> Vec<u8> {
+        let pixels: Vec<u8> = (0..usize::from(width) * usize::from(height))
+            .flat_map(|_| cmyk)
+            .collect();
+        let mut out = Vec::new();
+        let mut encoder = jpeg_encoder::Encoder::new(&mut out, 95);
+        encoder.set_progressive(progressive);
+        encoder
+            .encode(&pixels, width, height, jpeg_encoder::ColorType::Cmyk)
+            .unwrap();
+        out
+    }
+
+    /// A CMYK JPEG goes through the reduced decode too, sequential or
+    /// progressive, and keeps its colours: no ink is white, full magenta
+    /// and yellow are red.
+    #[test]
+    fn a_cmyk_jpeg_is_accepted_with_its_colours() {
+        for progressive in [false, true] {
+            let white = cmyk_jpeg(640, 480, [0, 0, 0, 0], progressive);
+            let white = decoded(&reencode_avatar(&white).unwrap());
+            assert_eq!(white.dimensions(), (AVATAR_SIDE, AVATAR_SIDE));
+            let p = white.get_pixel(AVATAR_SIDE / 2, AVATAR_SIDE / 2);
+            assert!(p.0.iter().all(|&c| c > 240), "{progressive} {p:?}");
+
+            let red = cmyk_jpeg(640, 480, [0, 255, 255, 0], progressive);
+            let red = decoded(&reencode_avatar(&red).unwrap());
+            let p = *red.get_pixel(AVATAR_SIDE / 2, AVATAR_SIDE / 2);
+            assert!(is_red(p), "{progressive} {p:?}");
+        }
+    }
+
+    /// `jpeg` with one APP2 `ICC_PROFILE` segment of 100 bytes inserted at
+    /// `at`, a marker boundary past the first scan.
+    fn with_icc_at(jpeg: &[u8], at: usize) -> Vec<u8> {
+        let segment = with_icc(&[0xFF, 0xD8], 1);
+        let mut out = jpeg[..at].to_vec();
+        out.extend_from_slice(&segment[2..]);
+        out.extend_from_slice(&jpeg[at..]);
+        out
+    }
+
+    /// `jpeg_decoder` reads the APP segments between scans too, and keeps
+    /// every ICC one: an APP2 past the first scan — between two scans of a
+    /// progressive picture, or before the end marker — is refused, as the
+    /// memory it could take has no bound.
+    #[test]
+    fn an_icc_segment_past_the_first_scan_is_too_large() {
+        let progressive = jpeg_with(&halves(64, 48), true, SamplingFactor::F_2_2);
+        let first_scan = progressive
+            .windows(2)
+            .position(|w| w == [0xFF, 0xDA])
+            .unwrap();
+        let second_scan = first_scan
+            + 2
+            + progressive[first_scan + 2..]
+                .windows(2)
+                .position(|w| w == [0xFF, 0xDA])
+                .unwrap();
+        let before_eoi = progressive.len() - 2;
+        for at in [second_scan, before_eoi] {
+            assert_eq!(
+                reencode_avatar(&with_icc_at(&progressive, at)),
+                Err(AvatarError::ImageTooLarge),
+                "APP2 at {at}"
+            );
+        }
+        let sequential = jpeg(&halves(64, 48));
+        assert_eq!(
+            reencode_avatar(&with_icc_at(&sequential, sequential.len() - 2)),
+            Err(AvatarError::ImageTooLarge)
+        );
+        // The same file, its ICC before the first scan: accepted.
+        assert!(reencode_avatar(&with_icc(&progressive, 1)).is_ok());
+    }
+
+    // --- WebP refused (arbitrage of 2026-10-23, review of #589) ---
+
+    /// A RIFF WebP of the given chunks, each `(fourcc, data)`.
+    fn riff_webp(chunks: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut body = b"WEBP".to_vec();
+        for (fourcc, data) in chunks {
+            body.extend_from_slice(*fourcc);
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(data);
+            if data.len() % 2 == 1 {
+                body.push(0);
+            }
+        }
+        let mut out = b"RIFF".to_vec();
+        out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        out.extend_from_slice(&body);
+        out
+    }
+
+    /// A VP8X chunk's data: `flags`, then the canvas.
+    fn vp8x(flags: u8, width: u32, height: u32) -> Vec<u8> {
+        let mut data = vec![flags, 0, 0, 0];
+        data.extend_from_slice(&(width - 1).to_le_bytes()[..3]);
+        data.extend_from_slice(&(height - 1).to_le_bytes()[..3]);
+        data
+    }
+
+    /// The header of a VP8 key frame of `width` × `height`, no data.
+    fn vp8_header(width: u16, height: u16) -> Vec<u8> {
+        let mut data = vec![0x50, 0x00, 0x00, 0x9D, 0x01, 0x2A];
+        data.extend_from_slice(&width.to_le_bytes());
+        data.extend_from_slice(&height.to_le_bytes());
+        data
+    }
+
+    /// The header of a VP8L picture of `width` × `height`, no data.
+    fn vp8l_header(width: u32, height: u32) -> Vec<u8> {
+        let mut data = vec![0x2F];
+        data.extend_from_slice(&((width - 1) | (height - 1) << 14).to_le_bytes());
+        data
+    }
+
+    /// WebP is no longer taken: still or animated, lossy or lossless, a
+    /// frame other than its canvas, a VP8 chunk stuffed with data
+    /// `image-webp` would read whole and copy — every WebP is refused by
+    /// its bytes, before any decode.
+    #[test]
+    fn a_webp_is_refused_before_any_decode() {
+        let mut stuffed = vp8_header(64, 64);
+        stuffed.resize(30 * 1024 * 1024, 0);
+        let cases = [
+            riff_webp(&[(b"VP8L", vp8l_header(8, 6))]),
+            riff_webp(&[(b"VP8 ", vp8_header(64, 48))]),
+            riff_webp(&[(b"VP8X", vp8x(0x02, 8, 6))]),
+            riff_webp(&[
+                (b"VP8X", vp8x(0, 100, 100)),
+                (b"VP8 ", vp8_header(16383, 16383)),
+            ]),
+            riff_webp(&[(b"VP8 ", stuffed)]),
+        ];
+        for webp in cases {
+            // Told from its bytes as a WebP, not as unknown bytes.
+            assert_eq!(
+                infer::get(&webp).map(|kind| kind.mime_type()),
+                Some("image/webp")
+            );
+            assert_eq!(
+                sniff_avatar_format(&webp),
+                Err(AvatarError::UnsupportedType)
+            );
+            assert_eq!(reencode_avatar(&webp), Err(AvatarError::UnsupportedType));
+        }
+    }
+
+    /// CRC-32 of the PNG chunks (ISO 3309), bit by bit.
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = !0u32;
+        for &byte in bytes {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    crc >> 1 ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
+    /// `png` with a chunk of `kind` and `data` right after its IHDR.
+    fn png_with_chunk(png: &[u8], kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut chunk = (data.len() as u32).to_be_bytes().to_vec();
+        let mut typed = kind.to_vec();
+        typed.extend_from_slice(data);
+        chunk.extend_from_slice(&typed);
+        chunk.extend_from_slice(&crc32(&typed).to_be_bytes());
+        let after_ihdr = 8 + 4 + 4 + 13 + 4;
+        let mut out = png[..after_ihdr].to_vec();
+        out.extend_from_slice(&chunk);
+        out.extend_from_slice(&png[after_ihdr..]);
+        out
+    }
+
+    /// An iCCP chunk's data: a profile name, the compression method, then
+    /// `profile` deflated.
+    fn iccp(profile: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut data = b"icc\0\0".to_vec();
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        z.write_all(profile).unwrap();
+        data.extend_from_slice(&z.finish().unwrap());
+        data
+    }
+
+    /// `png` decompresses an iCCP profile with no bound of ours: a profile
+    /// past `MAX_METADATA_BYTES` once inflated is refused, a real one — a
+    /// Display P3 profile is about half a kilobyte — accepted. A large eXIf
+    /// is refused the same way: `png` copies it whole.
+    #[test]
+    fn png_metadata_past_the_bound_is_too_large() {
+        let base = png(&halves(64, 64));
+        let real: Vec<u8> = (0..548u32).map(|i| (i * 37 % 251) as u8).collect();
+        assert!(reencode_avatar(&png_with_chunk(&base, b"iCCP", &iccp(&real))).is_ok());
+
+        let bomb = png_with_chunk(&base, b"iCCP", &iccp(&vec![0; MAX_METADATA_BYTES + 1]));
+        assert!(bomb.len() < 10_000, "{}", bomb.len());
+        assert_eq!(reencode_avatar(&bomb), Err(AvatarError::ImageTooLarge));
+        let at_bound = png_with_chunk(&base, b"iCCP", &iccp(&vec![0; MAX_METADATA_BYTES]));
+        assert!(reencode_avatar(&at_bound).is_ok());
+
+        let exif = png_with_chunk(&base, b"eXIf", &vec![0; MAX_METADATA_BYTES + 1]);
+        assert_eq!(reencode_avatar(&exif), Err(AvatarError::ImageTooLarge));
+    }
+
+    /// A JPEG carrying an ICC profile decodes as one without: the profile
+    /// is never handed to the decoder.
+    #[test]
+    fn a_jpeg_with_an_icc_profile_is_accepted() {
+        let source = with_icc(&jpeg(&halves(640, 480)), 4);
+        let out = decoded(&reencode_avatar(&source).unwrap());
+        assert!(is_red(*out.get_pixel(AVATAR_SIDE / 4, AVATAR_SIDE / 2)));
     }
 
     // --- dimensioning ---
