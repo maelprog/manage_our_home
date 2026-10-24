@@ -61,6 +61,16 @@ fn notice_html(notice: Option<&str>, added: Option<usize>) -> String {
     format!(r#"<p class="notice success">{}</p>"#, html_escape(&text))
 }
 
+/// How many recipes « À réaliser » the generation would take; `None` when
+/// the count cannot be read (transport failure or any status but `200`), so
+/// the button keeps its generic label rather than claiming there are none.
+async fn planned_count(state: &AppState, gid: Uuid, cookie: Option<&str>) -> Option<usize> {
+    planned_selections(state, gid, cookie)
+        .await
+        .ok()
+        .map(|s| s.len())
+}
+
 /// The generate button (#470), which names how many recipes « À réaliser »
 /// it takes. With none, it is the stocks alone, and a link leads to the
 /// recipes to choose some. `None` (the count could not be read) keeps the
@@ -197,10 +207,7 @@ pub async fn get(
         Ok(_) => Vec::new(),
         Err(_) => return service_unavailable_page().into_response(),
     };
-    let planned = planned_selections(&state, fam.gid, cookie.as_deref())
-        .await
-        .ok()
-        .map(|s| s.len());
+    let planned = planned_count(&state, fam.gid, cookie.as_deref()).await;
 
     let notice = notice_html(query.notice.as_deref(), query.added);
     let error = error_html(query.error.as_deref());
@@ -566,6 +573,58 @@ mod tests {
             "{html}"
         );
         assert!(!html.contains("/recipes#a-realiser"), "{html}");
+    }
+
+    /// A stand-in for apps/api answering the selections read with
+    /// `status` and `body`.
+    async fn fake_selections_api(status: u16, body: &'static str) -> AppState {
+        use axum::routing::get;
+        let app = axum::Router::new().route(
+            "/groups/:gid/recipes/selections",
+            get(move || async move {
+                (
+                    axum::http::StatusCode::from_u16(status).unwrap(),
+                    [(axum::http::header::CONTENT_TYPE, "application/json")],
+                    body,
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        AppState {
+            http: reqwest::Client::new(),
+            api_internal_base_url: format!("http://{addr}"),
+            api_public_base_url: "/api".into(),
+            body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
+            upload_gate: manage_our_home_http_guard::UploadGate::new(8, 2),
+            shutdown: manage_our_home_http_guard::Shutdown::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unread_selection_count_keeps_the_generic_button() {
+        // A status other than 200 is not « no recipe to cook »: the button
+        // must not say « Générer depuis les stocks » nor link to the choice.
+        for status in [403, 404, 500, 503] {
+            let state = fake_selections_api(status, r#"{"error":"x"}"#).await;
+            let planned = planned_count(&state, Uuid::from_u128(1), Some("session=s")).await;
+            assert_eq!(planned, None, "{status}");
+            let html = generate_html(planned);
+            assert!(
+                html.contains(">Générer depuis les recettes et les stocks</button>"),
+                "{status}: {html}"
+            );
+            assert!(!html.contains("/recipes#a-realiser"), "{status}: {html}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_empty_selection_read_counts_no_recipe() {
+        let state = fake_selections_api(200, r#"{"selections":[]}"#).await;
+        let planned = planned_count(&state, Uuid::from_u128(1), Some("session=s")).await;
+        assert_eq!(planned, Some(0));
+        assert!(generate_html(planned).contains(">Générer depuis les stocks</button>"));
     }
 
     #[test]

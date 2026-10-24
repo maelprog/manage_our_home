@@ -83,8 +83,8 @@ pub(crate) fn recipes_cookie(headers: &HeaderMap) -> Option<String> {
 // -- recipes to cook (#470) --------------------------------------------------
 
 /// The family's `planned` selections (#469), which the grocery list is
-/// generated from. `Err` only on a transport failure; any other status
-/// reads as no selection, as the other lists of these pages do.
+/// generated from. `Err` on a transport failure and on any status but
+/// `200`: the selections are then unknown, not empty.
 pub(crate) async fn planned_selections(
     state: &AppState,
     gid: Uuid,
@@ -104,8 +104,9 @@ pub(crate) async fn planned_selections(
                 .map(|l| l.selections)
                 .unwrap_or_default())
         }
-        Ok(_) => Ok(Vec::new()),
-        Err(_) => Err(()),
+        // Any other status is not « no selection »: read as unknown, like a
+        // transport failure, rather than offering the stocks alone.
+        Ok(_) | Err(_) => Err(()),
     }
 }
 
