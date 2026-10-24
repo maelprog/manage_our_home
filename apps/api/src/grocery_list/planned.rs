@@ -37,13 +37,36 @@ pub(crate) struct PlannedLine {
     pub unit: Option<String>,
 }
 
-/// Rounds a computed quantity to the hundredth, so that `1 × 5 / 3` reads
-/// `1.67` and `0.1 + 0.2` reads `0.3` rather than their binary noise.
-fn round_hundredth(q: f64) -> f64 {
-    (q * 100.0).round() / 100.0
+/// Keeps `significant` significant digits of `q`: `0.0033` for
+/// `0.003333…` at 2. Never turns a non-zero quantity into 0.
+fn round_significant(q: f64, significant: usize) -> f64 {
+    format!("{:.*e}", significant.saturating_sub(1), q)
+        .parse()
+        .unwrap_or(q)
 }
 
-/// `quantity × target / base`, rounded to the hundredth; the quantity as
+/// Rounds a scaled quantity to the hundredth, so that `1 × 5 / 3` reads
+/// `1.67`. Below the hundredth, where that would read 0 (`0.004 × 1 / 4`),
+/// it keeps two significant digits instead: `0.001`.
+fn round_scaled(q: f64) -> f64 {
+    let hundredth = (q * 100.0).round() / 100.0;
+    if hundredth == 0.0 && q != 0.0 {
+        round_significant(q, 2)
+    } else {
+        hundredth
+    }
+}
+
+/// A sum of quantities, without rounding it: only the binary noise of the
+/// addition goes (`0.1 + 0.2` reads `0.3`, not `0.30000000000000004`),
+/// while `0.125 + 0.0625` keeps its `0.1875`. Twelve significant digits is
+/// more than any quantity typed or scaled here carries.
+fn add_quantities(a: f64, b: f64) -> f64 {
+    round_significant(a + b, 12)
+}
+
+/// `quantity × target / base`, rounded to the hundredth (two significant
+/// digits below it, never 0 for a non-zero quantity); the quantity as
 /// written when it, the base or the target is missing.
 pub(crate) fn scale_quantity(
     quantity: Option<f64>,
@@ -51,9 +74,7 @@ pub(crate) fn scale_quantity(
     target: Option<i32>,
 ) -> Option<f64> {
     match (quantity, base, target) {
-        (Some(q), Some(b), Some(t)) if b > 0 => {
-            Some(round_hundredth(q * f64::from(t) / f64::from(b)))
-        }
+        (Some(q), Some(b), Some(t)) if b > 0 => Some(round_scaled(q * f64::from(t) / f64::from(b))),
         _ => quantity,
     }
 }
@@ -85,7 +106,7 @@ pub(crate) fn plan_lines(
             Some((_, line)) => {
                 if let (Some(sum), Some(q)) = (line.quantity, quantity) {
                     if same_unit(line.unit.as_deref(), unit.as_deref()) {
-                        line.quantity = Some(round_hundredth(sum + q));
+                        line.quantity = Some(add_quantities(sum, q));
                     }
                 }
             }
@@ -147,6 +168,20 @@ mod tests {
     fn a_computed_quantity_is_rounded_to_the_hundredth() {
         assert_eq!(scale_quantity(Some(1.0), Some(3), Some(5)), Some(1.67));
         assert_eq!(scale_quantity(Some(0.1), Some(1), Some(3)), Some(0.3));
+    }
+
+    #[test]
+    fn a_scaled_quantity_that_is_not_zero_never_rounds_to_zero() {
+        // 0.004 kg for 4, cooked for 1: 0.001 kg, not « 0 kg ».
+        assert_eq!(scale_quantity(Some(0.004), Some(4), Some(1)), Some(0.001));
+        // Below the hundredth it keeps two significant digits.
+        assert_eq!(scale_quantity(Some(0.01), Some(3), Some(1)), Some(0.0033));
+        assert_eq!(
+            scale_quantity(Some(0.0001), Some(50), Some(1)),
+            Some(0.000002)
+        );
+        // A written 0 stays 0.
+        assert_eq!(scale_quantity(Some(0.0), Some(4), Some(1)), Some(0.0));
     }
 
     #[test]
@@ -221,12 +256,38 @@ mod tests {
     }
 
     #[test]
-    fn a_sum_is_rounded_to_the_hundredth() {
+    fn a_sum_carries_no_binary_noise() {
+        // 0.1 + 0.2 is 0.30000000000000004 in f64.
         let lines = plan_lines([
             ing(1, "Huile", Some(0.1), Some("L"), None, None),
             ing(2, "Huile", Some(0.2), Some("L"), None, None),
         ]);
         assert_eq!(lines, vec![line(1, "Huile", Some(0.3), Some("L"))]);
+    }
+
+    #[test]
+    fn a_sum_of_written_quantities_is_not_rounded() {
+        let lines = plan_lines([
+            ing(1, "Beurre", Some(0.125), Some("kg"), None, None),
+            ing(2, "Beurre", Some(0.0625), Some("kg"), None, None),
+        ]);
+        assert_eq!(lines, vec![line(1, "Beurre", Some(0.1875), Some("kg"))]);
+        // A scaled quantity (1 × 5 / 3 → 1.67) plus a written one keeps
+        // every digit of the written one.
+        let lines = plan_lines([
+            ing(1, "Sucre", Some(1.0), Some("kg"), Some(3), Some(5)),
+            ing(2, "Sucre", Some(0.125), Some("kg"), None, None),
+        ]);
+        assert_eq!(lines, vec![line(1, "Sucre", Some(1.795), Some("kg"))]);
+    }
+
+    #[test]
+    fn a_sum_of_tiny_quantities_is_not_zero() {
+        let lines = plan_lines([
+            ing(1, "Safran", Some(0.001), Some("g"), None, None),
+            ing(2, "Safran", Some(0.002), Some("g"), None, None),
+        ]);
+        assert_eq!(lines, vec![line(1, "Safran", Some(0.003), Some("g"))]);
     }
 
     #[test]
