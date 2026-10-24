@@ -26,7 +26,9 @@
 //!   `event_occurrence_completions`, `messages`, `stock_items`, `recipes`,
 //!   `meal_history`, `recipe_selections` (#469), `grocery_items`,
 //!   `budget_entries`, `groups`. That
-//!   survival is written into the terms of service. A group the purge
+//!   survival is written into the terms of service; they name the recipes,
+//!   which a recipe's selections are part of (controller's decision of
+//!   2026-10-24: recipes do not depend on their author). A group the purge
 //!   leaves with no member at all is the exception: nobody is left to see
 //!   its content, and it is deleted with it (controller's decision of
 //!   2026-10-04, #323).
