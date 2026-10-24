@@ -48,7 +48,12 @@ anyhow = "1"
 lettre = { version = "0.11", default-features = false, features = ["tokio1", "tokio1-rustls-tls", "smtp-transport", "builder"] }
 dotenvy = "0.15"
 rrule = "0.14.0"
-aws-sdk-s3 = { version = "1.137.0", default-features = false, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
+# No `sigv4a` (#591): the SDK signs with SigV4a only for S3 Multi-Region
+# Access Points, an AWS-only resource this app never addresses (it talks to
+# one bucket on an S3-compatible endpoint). The feature pulled `crypto-bigint` 0.5 through `aws-sigv4`, still
+# on that line in its newest release, and 0.5 has no fix for
+# RUSTSEC-2026-0387.
+aws-sdk-s3 = { version = "1.137.0", default-features = false, features = ["http-1x", "default-https-client", "rt-tokio"] }
 aws-config = "1.8.18"
 aws-credential-types = "1.2.14"
 infer = "0.19.0"
@@ -66,10 +71,8 @@ icalendar = { version = "0.17.12", default-features = false, features = ["chrono
 # VAPID (RFC 8292) for the reminders sent as a notification (#306): each
 # push carries an ES256 token signed with the server's P-256 key. Pushes
 # carry no payload, so no message encryption (RFC 8291) is needed — only
-# this signature. The newest release (dependency policy): `aws-sdk-s3`'s
-# `sigv4a` feature still resolves 0.13, so the lock carries both lines of
-# the RustCrypto elliptic-curve stack until it moves up. `ecdsa` and `std`
-# only: no PEM, no PKCS#8.
+# this signature. The newest release (dependency policy). `ecdsa` and
+# `std` only: no PEM, no PKCS#8.
 p256 = { version = "0.14", default-features = false, features = ["ecdsa", "std"] }
 # The token's parts and the public key are unpadded base64url. The newest
 # release, next to the 0.22 that axum, reqwest and the others still pull.
