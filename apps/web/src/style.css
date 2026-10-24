@@ -407,8 +407,7 @@ summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); padding
    (WCAG 1.4.1).
 
    A photo (#468) fills the box square: `clip` holds it to the rounded
-   corners without making the box a scroll container, whose baseline
-   would move. */
+   corners. */
 .avatar {
   display: inline-flex;
   align-items: center;
