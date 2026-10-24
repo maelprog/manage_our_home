@@ -422,7 +422,7 @@ async fn generate_pulls_missing_ingredients_and_low_stock(db: PgPool) {
             "name": "Crepes",
             "ingredients": [
                 {"name": "Farine", "is_optional": false},
-                {"name": "Oeufs", "is_optional": false}
+                {"name": "Oeufs", "quantity": 3.0, "is_optional": false}
             ]
         })),
     )
@@ -453,6 +453,11 @@ async fn generate_pulls_missing_ingredients_and_low_stock(db: PgPool) {
         !names.contains(&"Farine"),
         "in-stock ingredient must not be pulled in: {names:?}"
     );
+    // #458: a recipe quantity without a unit gets the default one, as on a
+    // manual add.
+    let eggs = items.iter().find(|i| i["name"] == "Oeufs").unwrap();
+    assert_eq!(eggs["quantity"], 3.0);
+    assert_eq!(eggs["unit"], "unité");
 
     // Running generate again must not duplicate the already-present items.
     let regenerate = call(

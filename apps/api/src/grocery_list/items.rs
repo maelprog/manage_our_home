@@ -400,6 +400,9 @@ pub async fn generate_grocery_items(
         if !seen.insert(key) {
             continue;
         }
+        // A quantity without a unit gets the default one, as on a manual
+        // add (#458).
+        let unit = normalize_unit(ing.quantity, ing.unit.as_deref());
         let item = sqlx::query_as!(
             GroceryItemRow,
             r#"
@@ -411,7 +414,7 @@ pub async fn generate_grocery_items(
             auth.user_id,
             ing.name.trim(),
             ing.quantity,
-            ing.unit,
+            unit,
         )
         .fetch_one(&mut *tx)
         .await?;
