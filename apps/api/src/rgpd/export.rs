@@ -28,6 +28,7 @@ pub struct ExportCategories {
     pub stock_items: Vec<Value>,
     pub recipes: Vec<Value>,
     pub meal_history: Vec<Value>,
+    pub recipe_selections: Vec<Value>,
     pub grocery_items: Vec<Value>,
     pub budget_entries: Vec<Value>,
     pub messages: Vec<Value>,
@@ -60,6 +61,7 @@ pub fn build_export(profile: Value, categories: ExportCategories) -> Value {
         "stock_items": categories.stock_items,
         "recipes": categories.recipes,
         "meal_history": categories.meal_history,
+        "recipe_selections": categories.recipe_selections,
         "grocery_items": categories.grocery_items,
         "budget_entries": categories.budget_entries,
         "messages": categories.messages,
@@ -152,6 +154,7 @@ mod tests {
                 stock_items: vec![json!({"id": "si"})],
                 recipes: vec![json!({"id": "re"})],
                 meal_history: vec![json!({"id": "mh"})],
+                recipe_selections: vec![json!({"id": "rs"})],
                 grocery_items: vec![json!({"id": "gi"})],
                 budget_entries: vec![json!({"id": "be"})],
                 messages: vec![json!({"id": "ms"})],
@@ -181,6 +184,7 @@ mod tests {
             ("stock_items", "si"),
             ("recipes", "re"),
             ("meal_history", "mh"),
+            ("recipe_selections", "rs"),
             ("grocery_items", "gi"),
             ("budget_entries", "be"),
             ("messages", "ms"),
@@ -197,15 +201,15 @@ mod tests {
         ] {
             assert_eq!(doc[key][0]["id"], id, "{key}");
         }
-        // The profile and the 24 categories, nothing else.
-        assert_eq!(doc.as_object().unwrap().len(), 25);
+        // The profile and the 25 categories, nothing else.
+        assert_eq!(doc.as_object().unwrap().len(), 26);
     }
 
     #[test]
     fn build_export_keeps_every_key_when_empty() {
         let doc = build_export(json!({"id": "u1"}), ExportCategories::default());
         let object = doc.as_object().unwrap();
-        assert_eq!(object.len(), 25);
+        assert_eq!(object.len(), 26);
         for (key, value) in object {
             if key != "profile" {
                 assert_eq!(value.as_array().map(Vec::len), Some(0), "{key}");

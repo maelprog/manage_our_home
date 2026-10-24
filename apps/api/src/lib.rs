@@ -354,6 +354,10 @@ pub fn build_router(state: AppState) -> Router {
             get(recipes::meal_history::list_meal_history),
         )
         .route(
+            "/groups/:id/recipes/selections",
+            get(recipes::selections::list_selections),
+        )
+        .route(
             "/groups/:id/recipes/:recipe_id",
             get(recipes::crud::get_recipe)
                 .patch(recipes::crud::update_recipe)
@@ -362,6 +366,12 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/groups/:id/recipes/:recipe_id/meal-history",
             post(recipes::meal_history::log_meal),
+        )
+        .route(
+            "/groups/:id/recipes/:recipe_id/selection",
+            post(recipes::selections::select_recipe)
+                .patch(recipes::selections::update_selection)
+                .delete(recipes::selections::deselect_recipe),
         )
         .route(
             "/groups/:id/grocery-items",

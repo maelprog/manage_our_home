@@ -193,3 +193,41 @@ pub struct MealHistoryEntryResponse {
 pub struct MealHistoryList {
     pub entries: Vec<MealHistoryEntryResponse>,
 }
+
+/// `POST /groups/:id/recipes/:recipe_id/selection` request body (#469).
+/// Mirrors `apps/api/src/recipes/selections.rs::SelectRecipeRequest`.
+/// `servings` (1 to 50 people) is left as it is when omitted.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SelectRecipeRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub servings: Option<i32>,
+}
+
+/// `PATCH /groups/:id/recipes/:recipe_id/selection` request body (#469).
+/// Mirrors `UpdateSelectionRequest`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateSelectionRequest {
+    pub servings: i32,
+}
+
+/// One recipe selection (#469). Mirrors `SelectionResponse`. `status` is
+/// `planned`, `done` or `abandoned`; `servings` is `None` until someone
+/// sets it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecipeSelectionResponse {
+    pub id: Uuid,
+    pub recipe_id: Uuid,
+    pub recipe_name: String,
+    pub status: String,
+    pub servings: Option<i32>,
+    pub created_by: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// `GET /groups/:id/recipes/selections` response envelope: the group's
+/// `planned` selections.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecipeSelectionList {
+    pub selections: Vec<RecipeSelectionResponse>,
+}

@@ -552,3 +552,447 @@ async fn suggestions_match_stock_through_the_category_taxonomy(db: PgPool) {
         .collect();
     assert_eq!(missing, ["Lait de coco"]);
 }
+
+/// Owner and member of one group, joined through an invitation.
+async fn group_with_member(
+    router: &axum::Router,
+    db: &PgPool,
+    prefix: &str,
+) -> (String, String, String) {
+    let owner_cookie = register_verify_login(
+        router,
+        db,
+        &format!("{prefix}-owner@example.test"),
+        "owner-password1",
+    )
+    .await;
+    let member_cookie = register_verify_login(
+        router,
+        db,
+        &format!("{prefix}-member@example.test"),
+        "member-password1",
+    )
+    .await;
+    let group_id = create_group(router, &owner_cookie, "Foyer").await;
+    let invite = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/invitations"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    let token = json_body(invite).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let accept = call(
+        router,
+        Method::POST,
+        &format!("/groups/invitations/{token}/accept"),
+        Some(&member_cookie),
+        None,
+    )
+    .await;
+    assert_status(&accept, StatusCode::OK);
+    (owner_cookie, member_cookie, group_id)
+}
+
+async fn create_recipe(router: &axum::Router, cookie: &str, group_id: &str, name: &str) -> String {
+    let res = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes"),
+        Some(cookie),
+        Some(serde_json::json!({"name": name, "ingredients": []})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    json_body(res).await["id"].as_str().unwrap().to_string()
+}
+
+async fn planned_selections(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+) -> Vec<serde_json::Value> {
+    let res = call(
+        router,
+        Method::GET,
+        &format!("/groups/{group_id}/recipes/selections"),
+        Some(cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    json_body(res).await["selections"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+/// Issue #469: selecting a recipe creates one `planned` selection; selecting
+/// it again — from another member too — returns that same selection with
+/// 200, and changes its number of people only when the request carries one.
+#[sqlx::test]
+async fn selecting_a_recipe_twice_keeps_one_planned_selection(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner_cookie, member_cookie, group_id) =
+        group_with_member(&router, &db, "sel-twice").await;
+    let recipe_id = create_recipe(&router, &owner_cookie, &group_id, "Lasagnes").await;
+    let other_id = create_recipe(&router, &owner_cookie, &group_id, "Salade").await;
+    let path = format!("/groups/{group_id}/recipes/{recipe_id}/selection");
+
+    let first = call(
+        &router,
+        Method::POST,
+        &path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"servings": 4})),
+    )
+    .await;
+    assert_status(&first, StatusCode::CREATED);
+    let first = json_body(first).await;
+    assert_eq!(first["status"], "planned");
+    assert_eq!(first["servings"], 4);
+    assert_eq!(first["recipe_name"], "Lasagnes");
+
+    let again = call(
+        &router,
+        Method::POST,
+        &path,
+        Some(&member_cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_status(&again, StatusCode::OK);
+    let again = json_body(again).await;
+    assert_eq!(again["id"], first["id"]);
+    assert_eq!(
+        again["servings"], 4,
+        "no servings in the request: unchanged"
+    );
+    assert_eq!(again["created_by"], first["created_by"]);
+    assert_eq!(again["updated_at"], first["updated_at"]);
+
+    let resized = call(
+        &router,
+        Method::POST,
+        &path,
+        Some(&member_cookie),
+        Some(serde_json::json!({"servings": 6})),
+    )
+    .await;
+    assert_status(&resized, StatusCode::OK);
+    let resized = json_body(resized).await;
+    assert_eq!(resized["id"], first["id"]);
+    assert_eq!(resized["servings"], 6);
+
+    let unsized_new = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes/{other_id}/selection"),
+        Some(&member_cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_status(&unsized_new, StatusCode::CREATED);
+    assert!(json_body(unsized_new).await["servings"].is_null());
+
+    let listed = planned_selections(&router, &member_cookie, &group_id).await;
+    let listed: Vec<(&str, Option<i64>)> = listed
+        .iter()
+        .map(|s| (s["recipe_id"].as_str().unwrap(), s["servings"].as_i64()))
+        .collect();
+    assert_eq!(
+        listed,
+        [(recipe_id.as_str(), Some(6)), (other_id.as_str(), None)]
+    );
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM recipe_selections")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(rows, 2);
+}
+
+/// Issue #469: any member changes the number of people of a selection or
+/// deselects it, whoever selected it (controller's decision of
+/// 2026-10-24). Deselecting deletes the row; a recipe without a planned
+/// selection answers 404 to both.
+#[sqlx::test]
+async fn any_member_resizes_or_deselects_a_planned_selection(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner_cookie, member_cookie, group_id) = group_with_member(&router, &db, "sel-any").await;
+    let recipe_id = create_recipe(&router, &owner_cookie, &group_id, "Curry").await;
+    let path = format!("/groups/{group_id}/recipes/{recipe_id}/selection");
+
+    for (method, body) in [
+        (Method::PATCH, Some(serde_json::json!({"servings": 2}))),
+        (Method::DELETE, None),
+    ] {
+        let res = call(&router, method, &path, Some(&member_cookie), body).await;
+        assert_status(&res, StatusCode::NOT_FOUND);
+    }
+
+    let select = call(
+        &router,
+        Method::POST,
+        &path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"servings": 2})),
+    )
+    .await;
+    assert_status(&select, StatusCode::CREATED);
+
+    let resize = call(
+        &router,
+        Method::PATCH,
+        &path,
+        Some(&member_cookie),
+        Some(serde_json::json!({"servings": 8})),
+    )
+    .await;
+    assert_status(&resize, StatusCode::OK);
+    assert_eq!(json_body(resize).await["servings"], 8);
+
+    let deselect = call(&router, Method::DELETE, &path, Some(&member_cookie), None).await;
+    assert_status(&deselect, StatusCode::NO_CONTENT);
+    assert!(planned_selections(&router, &owner_cookie, &group_id)
+        .await
+        .is_empty());
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM recipe_selections")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+
+    let again = call(&router, Method::DELETE, &path, Some(&member_cookie), None).await;
+    assert_status(&again, StatusCode::NOT_FOUND);
+
+    // Selectable again once deselected.
+    let reselect = call(
+        &router,
+        Method::POST,
+        &path,
+        Some(&member_cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_status(&reselect, StatusCode::CREATED);
+}
+
+/// Issue #469: deselecting only deletes a `planned` selection. A `done` or
+/// `abandoned` one (#473) is history: it is neither listed, nor deleted, nor
+/// resized, and it does not stop the recipe from being planned again.
+#[sqlx::test]
+async fn only_the_planned_selection_is_listed_resized_or_deleted(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner_cookie, _member_cookie, group_id) =
+        group_with_member(&router, &db, "sel-done").await;
+    let recipe_id = create_recipe(&router, &owner_cookie, &group_id, "Tajine").await;
+    let path = format!("/groups/{group_id}/recipes/{recipe_id}/selection");
+    let select = call(
+        &router,
+        Method::POST,
+        &path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"servings": 3})),
+    )
+    .await;
+    assert_status(&select, StatusCode::CREATED);
+    sqlx::query("UPDATE recipe_selections SET status = 'done'")
+        .execute(&db)
+        .await
+        .unwrap();
+
+    assert!(planned_selections(&router, &owner_cookie, &group_id)
+        .await
+        .is_empty());
+    let resize = call(
+        &router,
+        Method::PATCH,
+        &path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"servings": 5})),
+    )
+    .await;
+    assert_status(&resize, StatusCode::NOT_FOUND);
+    let deselect = call(&router, Method::DELETE, &path, Some(&owner_cookie), None).await;
+    assert_status(&deselect, StatusCode::NOT_FOUND);
+
+    let plan_again = call(
+        &router,
+        Method::POST,
+        &path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_status(&plan_again, StatusCode::CREATED);
+    let statuses: Vec<(String, Option<i32>)> =
+        sqlx::query_as("SELECT status, servings FROM recipe_selections ORDER BY created_at")
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        statuses,
+        [("done".to_string(), Some(3)), ("planned".to_string(), None)]
+    );
+}
+
+/// Issue #469: the number of people is bounded, on selection and on resize;
+/// a refused request changes nothing.
+#[sqlx::test]
+async fn selection_servings_out_of_bounds_are_refused(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner_cookie, _member_cookie, group_id) =
+        group_with_member(&router, &db, "sel-bounds").await;
+    let recipe_id = create_recipe(&router, &owner_cookie, &group_id, "Paella").await;
+    let path = format!("/groups/{group_id}/recipes/{recipe_id}/selection");
+
+    for servings in [0, -2, 51] {
+        let res = call(
+            &router,
+            Method::POST,
+            &path,
+            Some(&owner_cookie),
+            Some(serde_json::json!({"servings": servings})),
+        )
+        .await;
+        assert_status(&res, StatusCode::BAD_REQUEST);
+    }
+    assert!(planned_selections(&router, &owner_cookie, &group_id)
+        .await
+        .is_empty());
+
+    let select = call(
+        &router,
+        Method::POST,
+        &path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"servings": 50})),
+    )
+    .await;
+    assert_status(&select, StatusCode::CREATED);
+    for servings in [0, 51] {
+        for method in [Method::PATCH, Method::POST] {
+            let res = call(
+                &router,
+                method,
+                &path,
+                Some(&owner_cookie),
+                Some(serde_json::json!({"servings": servings})),
+            )
+            .await;
+            assert_status(&res, StatusCode::BAD_REQUEST);
+        }
+    }
+    let listed = planned_selections(&router, &owner_cookie, &group_id).await;
+    assert_eq!(listed[0]["servings"], 50);
+}
+
+/// Issue #469: a member of another group neither sees nor changes anything.
+/// Through the other group's path the membership check refuses (403, as for
+/// every recipe route); through their own group's path, the other group's
+/// recipe does not exist (404) and the other group's selections are not
+/// listed.
+#[sqlx::test]
+async fn selections_are_isolated_between_groups(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner_cookie, _member_cookie, group_id) =
+        group_with_member(&router, &db, "sel-iso-a").await;
+    let outsider_cookie = register_verify_login(
+        &router,
+        &db,
+        "sel-iso-outsider@example.test",
+        "outsider-password1",
+    )
+    .await;
+    let outsider_group = create_group(&router, &outsider_cookie, "Autre foyer").await;
+    let recipe_id = create_recipe(&router, &owner_cookie, &group_id, "Couscous").await;
+    let select = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes/{recipe_id}/selection"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"servings": 4})),
+    )
+    .await;
+    assert_status(&select, StatusCode::CREATED);
+
+    let foreign = format!("/groups/{group_id}/recipes/{recipe_id}/selection");
+    for (method, body) in [
+        (Method::POST, Some(serde_json::json!({"servings": 9}))),
+        (Method::PATCH, Some(serde_json::json!({"servings": 9}))),
+        (Method::DELETE, None),
+    ] {
+        let res = call(&router, method, &foreign, Some(&outsider_cookie), body).await;
+        assert_status(&res, StatusCode::FORBIDDEN);
+    }
+    let list = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/recipes/selections"),
+        Some(&outsider_cookie),
+        None,
+    )
+    .await;
+    assert_status(&list, StatusCode::FORBIDDEN);
+
+    let smuggled = format!("/groups/{outsider_group}/recipes/{recipe_id}/selection");
+    for (method, body) in [
+        (Method::POST, Some(serde_json::json!({"servings": 9}))),
+        (Method::PATCH, Some(serde_json::json!({"servings": 9}))),
+        (Method::DELETE, None),
+    ] {
+        let res = call(&router, method, &smuggled, Some(&outsider_cookie), body).await;
+        assert_status(&res, StatusCode::NOT_FOUND);
+    }
+    assert!(
+        planned_selections(&router, &outsider_cookie, &outsider_group)
+            .await
+            .is_empty()
+    );
+
+    let listed = planned_selections(&router, &owner_cookie, &group_id).await;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["servings"], 4);
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM recipe_selections")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(rows, 1);
+}
+
+/// Issue #469: deleting a recipe deletes its selections with it
+/// (`ON DELETE CASCADE`).
+#[sqlx::test]
+async fn deleting_a_recipe_drops_its_selection(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner_cookie, _member_cookie, group_id) =
+        group_with_member(&router, &db, "sel-cascade").await;
+    let recipe_id = create_recipe(&router, &owner_cookie, &group_id, "Quiche").await;
+    let select = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes/{recipe_id}/selection"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_status(&select, StatusCode::CREATED);
+    let delete = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}/recipes/{recipe_id}"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&delete, StatusCode::NO_CONTENT);
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM recipe_selections")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+}
