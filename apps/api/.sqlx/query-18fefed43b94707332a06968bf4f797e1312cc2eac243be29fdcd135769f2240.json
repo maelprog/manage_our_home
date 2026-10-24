@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT gm.user_id, gm.role as \"role: String\", u.display_name, u.email\n        FROM group_members gm\n        JOIN users u ON u.id = gm.user_id\n        WHERE gm.group_id = $1\n        ",
+  "query": "\n        SELECT gm.user_id, gm.role as \"role: String\", u.display_name, u.email,\n               (u.avatar_key IS NOT NULL) AS \"has_avatar!\"\n        FROM group_members gm\n        JOIN users u ON u.id = gm.user_id\n        WHERE gm.group_id = $1\n        ",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,12 @@
             "name": "email"
           }
         }
+      },
+      {
+        "ordinal": 4,
+        "name": "has_avatar!",
+        "type_info": "Bool",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -68,8 +74,9 @@
       false,
       false,
       false,
-      false
+      false,
+      null
     ]
   },
-  "hash": "7a0de4b72075a73e72b1ffe8f36ce1f78adda509894f2c511cc7dba7ea8b144c"
+  "hash": "18fefed43b94707332a06968bf4f797e1312cc2eac243be29fdcd135769f2240"
 }

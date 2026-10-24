@@ -668,6 +668,7 @@ mod tests {
             user_id: Uuid::from_u128(n),
             display_name: name.to_string(),
             email: format!("{name}@example.test"),
+            has_avatar: false,
             role: "member".to_string(),
         }
     }

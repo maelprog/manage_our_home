@@ -404,7 +404,10 @@ summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); padding
    app.rs computes all eight on `--surface`, alone and mixed as
    `combined_member_colour` mixes them, in both themes. The letter is never
    the only carrier of the information: the member's name sits next to it
-   (WCAG 1.4.1). */
+   (WCAG 1.4.1).
+
+   A photo (#468) fills the box square: `clip` holds it to the rounded
+   corners. */
 .avatar {
   display: inline-flex;
   align-items: center;
@@ -416,6 +419,7 @@ summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); padding
   font-size: var(--t-xs);
   font-weight: 600;
   background: var(--surface);
+  overflow: clip;
 }
 /* A member's name, with or without their avatar, as a link to their
    profile (#466). --s12 both ways: the 44px DESIGN.md → Espacement asks of

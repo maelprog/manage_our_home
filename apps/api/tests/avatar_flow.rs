@@ -413,6 +413,48 @@ async fn refusals_outside_a_shared_group(db: &PgPool, router: &axum::Router, tag
     assert_status(&response, StatusCode::NOT_FOUND);
 }
 
+/// #468: the member list and a member's profile say who has a photo, so
+/// that apps/web shows it in place of the initial — and never the key.
+#[sqlx::test]
+async fn the_member_list_and_profile_say_who_has_a_photo(db: PgPool) {
+    let router = test_router(db.clone());
+    let (alice, alice_cookie) = user(&db, "alice-has@example.test").await;
+    let (bob, _) = user(&db, "bob-has@example.test").await;
+    let group = group_of(&db, &[alice, bob]).await;
+    set_avatar_key(&db, alice, &format!("avatars/{alice}/{}", Uuid::new_v4())).await;
+
+    let response = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group}"),
+        Some(&alice_cookie),
+        None,
+    )
+    .await;
+    assert_status(&response, StatusCode::OK);
+    let detail = json_body(response).await;
+    assert!(!detail.to_string().contains("avatars/"), "{detail}");
+    for member in detail["members"].as_array().unwrap() {
+        let expected = member["user_id"] == alice.to_string();
+        assert_eq!(member["has_avatar"], expected, "{member}");
+    }
+
+    for (target, expected) in [(alice, true), (bob, false)] {
+        let response = call(
+            &router,
+            Method::GET,
+            &format!("/groups/{group}/members/{target}"),
+            Some(&alice_cookie),
+            None,
+        )
+        .await;
+        assert_status(&response, StatusCode::OK);
+        let profile = json_body(response).await;
+        assert_eq!(profile["has_avatar"], expected, "{profile}");
+        assert!(!profile.to_string().contains("avatars/"), "{profile}");
+    }
+}
+
 /// The positive side of the rule: a member reads another member's photo,
 /// and their own, through the group they share.
 #[sqlx::test]
@@ -447,6 +489,16 @@ async fn a_member_photo_is_served_inside_a_shared_group(db: PgPool) {
         assert_status(&response, StatusCode::OK);
         assert_eq!(response.headers()[header::CONTENT_TYPE], "image/jpeg");
         assert_eq!(body_bytes(response).await, object);
+    }
+
+    // #468: apps/web asks `HEAD /me/avatar` whether the caller has a photo,
+    // for `/account`.
+    for (cookie, status) in [
+        (&alice_cookie, StatusCode::OK),
+        (&bob_cookie, StatusCode::NOT_FOUND),
+    ] {
+        let response = call(&router, Method::HEAD, "/me/avatar", Some(cookie), None).await;
+        assert_status(&response, status);
     }
 
     s3.delete_object()

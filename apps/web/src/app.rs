@@ -560,27 +560,86 @@ pub fn member_initial(display_name: &str) -> String {
 /// The home page's agenda rows keep theirs (`routes/home.rs`): their colour
 /// can be several assignees' mixed, `app::combined_member_colour`.
 ///
+/// With `photo`, the URL of the member's profile photo (#468), the photo
+/// takes the initial's place and the hue stays on the border, the
+/// `currentColor` of `.avatar`. Its `alt` is empty, and its size is fixed
+/// in the markup (`AVATAR_PHOTO_SIDE`) so that nothing moves when it loads.
+///
 /// `aria-hidden`: the member's name is always right beside it, or names the
 /// link that holds it, and a screen reader would otherwise read the initial
 /// before the name it duplicates. Colour never carries the information on
 /// its own (WCAG 1.4.1).
-pub fn member_avatar(user_id: Uuid, display_name: &str) -> String {
+pub fn member_avatar(user_id: Uuid, display_name: &str, photo: Option<&str>) -> String {
+    let content = match photo {
+        Some(src) => avatar_photo(src),
+        None => html_escape(&member_initial(display_name)),
+    };
     format!(
-        r#"<span class="avatar" style="color:var({colour})" aria-hidden="true">{initial}</span>"#,
+        r#"<span class="avatar" style="color:var({colour})" aria-hidden="true">{content}</span>"#,
         colour = member_colour(user_id),
-        initial = html_escape(&member_initial(display_name)),
     )
 }
 
-/// A member's name — with their avatar when `avatar` — as a link to their
+/// Side, in CSS pixels, of a photo inside a `.avatar`: the `--s6` box less
+/// its 1px border on each side (`box-sizing: border-box`).
+pub const AVATAR_PHOTO_SIDE: u32 = 22;
+
+/// The photo at `src` as the content of a `.avatar` (#468): decorative,
+/// `alt=""`, the member's name being beside it, and sized in the markup so
+/// that the row does not move when it loads.
+pub fn avatar_photo(src: &str) -> String {
+    format!(
+        r#"<img src="{src}" alt="" width="{side}" height="{side}">"#,
+        src = html_escape(src),
+        side = AVATAR_PHOTO_SIDE,
+    )
+}
+
+/// The page that serves a member's photo to a member of `group_id`
+/// (`routes::groups::avatar`, #468).
+pub fn member_photo_url(group_id: Uuid, user_id: Uuid) -> String {
+    format!("/groups/{group_id}/members/{user_id}/avatar")
+}
+
+/// What a `member_link` shows before the name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Icon {
+    /// The name alone.
+    None,
+    /// The member's `.avatar` with their initial.
+    Initial,
+    /// The member's `.avatar` with their photo (#468).
+    Photo,
+}
+
+impl Icon {
+    /// A member's `.avatar`: their photo when they have one (`has_avatar`
+    /// in the API's answers, #468), their initial otherwise.
+    pub fn avatar(has_photo: bool) -> Self {
+        if has_photo {
+            Icon::Photo
+        } else {
+            Icon::Initial
+        }
+    }
+}
+
+/// A member's name — after the `icon` it asks for — as a link to their
 /// profile in `group_id` (#466). The link's accessible name is the display
 /// name: the avatar inside it is `aria-hidden`. `.member` gives it the 44px
 /// target DESIGN.md → Espacement asks of anything a finger aims at.
-pub fn member_link(group_id: Uuid, user_id: Uuid, display_name: &str, avatar: bool) -> String {
-    let icon = if avatar {
-        format!("{} ", member_avatar(user_id, display_name))
-    } else {
-        String::new()
+pub fn member_link(group_id: Uuid, user_id: Uuid, display_name: &str, icon: Icon) -> String {
+    let icon = match icon {
+        Icon::None => String::new(),
+        Icon::Initial => format!("{} ", member_avatar(user_id, display_name, None)),
+        Icon::Photo => format!(
+            "{} ",
+            member_avatar(
+                user_id,
+                display_name,
+                Some(&member_photo_url(group_id, user_id))
+            )
+        ),
     };
     format!(
         r#"<a class="member" href="/groups/{group_id}/members/{user_id}">{icon}<strong>{name}</strong></a>"#,
@@ -1022,21 +1081,94 @@ mod tests {
     #[test]
     fn member_avatar_is_the_initial_in_the_member_hue_hidden_from_readers() {
         let id = Uuid::from_u128(7);
-        let html = member_avatar(id, "alice");
+        let html = member_avatar(id, "alice", None);
         assert!(html.contains(r#"class="avatar""#), "{html}");
         assert!(
             html.contains(&format!("color:var({})", member_colour(id))),
             "{html}"
         );
         assert!(html.contains(">A<"), "{html}");
+        assert!(!html.contains("<img"), "no photo, no image: {html}");
         // The name is always next to it, or in the link that holds it.
         assert!(html.contains(r#"aria-hidden="true""#), "{html}");
+    }
+
+    // -- #468: a member's photo in place of their initial -----------------
+
+    /// The photo replaces the letter; the box, its hue (on the border, as
+    /// `currentColor`) and `aria-hidden` stay. The image is decorative, the
+    /// name being beside it, and sized in the markup so that nothing moves
+    /// when it loads.
+    #[test]
+    fn member_avatar_with_a_photo_shows_it_in_place_of_the_initial() {
+        let id = Uuid::from_u128(7);
+        let html = member_avatar(id, "alice", Some("/photo"));
+        assert_eq!(
+            avatar_photo("/photo"),
+            r#"<img src="/photo" alt="" width="22" height="22">"#
+        );
+        // The same span as the initial's, the photo in the letter's place.
+        let initial = member_avatar(id, "alice", None);
+        assert_eq!(
+            html,
+            initial.replace(">A<", &format!(">{}<", avatar_photo("/photo")))
+        );
+        assert!(!html.contains(">A<"), "{html}");
+    }
+
+    #[test]
+    fn member_avatar_escapes_the_photo_url() {
+        let html = member_avatar(Uuid::nil(), "alice", Some("/a\"><script>"));
+        assert!(!html.contains("<script>"), "{html}");
+        assert!(html.contains("/a&quot;&gt;&lt;script&gt;"), "{html}");
+    }
+
+    /// The fixed size is the box inside the border: `.avatar` is `--s6`
+    /// wide with a 1px border, under `box-sizing: border-box`.
+    #[test]
+    fn the_photo_fills_the_avatar_inside_its_border() {
+        let sheet = css_without_comments();
+        assert!(sheet.contains("--s6: 24px"), "the avatar box changed");
+        let (avatar, _) = block_after(&sheet, "\n.avatar {", 0);
+        assert!(avatar.contains("width: var(--s6)"), "{avatar}");
+        assert!(avatar.contains("border: 1px solid"), "{avatar}");
+        assert!(sheet.contains("* { box-sizing: border-box; }"));
+        assert_eq!(AVATAR_PHOTO_SIDE, 24 - 2);
+    }
+
+    #[test]
+    fn a_member_photo_is_served_under_their_profile() {
+        let (g, u) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        assert_eq!(
+            member_photo_url(g, u),
+            format!("/groups/{g}/members/{u}/avatar")
+        );
+    }
+
+    #[test]
+    fn the_avatar_icon_is_the_photo_only_for_a_member_who_has_one() {
+        assert_eq!(Icon::avatar(true), Icon::Photo);
+        assert_eq!(Icon::avatar(false), Icon::Initial);
+    }
+
+    /// With a photo, the link's icon is the member's photo as that group
+    /// serves it; the name still names the link.
+    #[test]
+    fn member_link_with_a_photo_holds_the_photo_of_that_group() {
+        let (g, u) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let html = member_link(g, u, "Alice", Icon::Photo);
+        let photo = member_photo_url(g, u);
+        assert!(
+            html.contains(&member_avatar(u, "Alice", Some(&photo))),
+            "{html}"
+        );
+        assert!(html.contains("<strong>Alice</strong>"), "{html}");
     }
 
     #[test]
     fn member_link_leads_to_the_profile_in_that_group() {
         let (g, u) = (Uuid::from_u128(1), Uuid::from_u128(2));
-        let html = member_link(g, u, "Alice", true);
+        let html = member_link(g, u, "Alice", Icon::Initial);
         assert!(
             html.starts_with(&format!(
                 r#"<a class="member" href="/groups/{g}/members/{u}">"#
@@ -1052,17 +1184,17 @@ mod tests {
     #[test]
     fn member_link_is_named_by_the_member_and_holds_the_icon() {
         let (g, u) = (Uuid::from_u128(1), Uuid::from_u128(2));
-        let html = member_link(g, u, "Alice", true);
-        assert!(html.contains(&member_avatar(u, "Alice")), "{html}");
+        let html = member_link(g, u, "Alice", Icon::Initial);
+        assert!(html.contains(&member_avatar(u, "Alice", None)), "{html}");
         assert!(html.contains("<strong>Alice</strong>"), "{html}");
-        let bare = member_link(g, u, "Alice", false);
+        let bare = member_link(g, u, "Alice", Icon::None);
         assert!(!bare.contains("avatar"), "{bare}");
         assert!(bare.contains("Alice"), "{bare}");
     }
 
     #[test]
     fn member_link_escapes_the_display_name() {
-        let html = member_link(Uuid::nil(), Uuid::nil(), "<b>\"x\"</b>", true);
+        let html = member_link(Uuid::nil(), Uuid::nil(), "<b>\"x\"</b>", Icon::Initial);
         assert!(!html.contains("<b>"), "{html}");
         assert!(html.contains("&lt;b&gt;"), "{html}");
     }
