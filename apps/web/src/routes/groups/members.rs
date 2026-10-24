@@ -23,7 +23,7 @@ use manage_our_home_shared::dto::groups::{
 use manage_our_home_shared::validation::groups::{actor_can_act_on, can_manage_group};
 use uuid::Uuid;
 
-use crate::app::{member_link, shell, shell_with_header, Width};
+use crate::app::{member_link, shell, shell_with_header, Icon, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -130,7 +130,7 @@ fn page(
                     <span>
                         // Avatar and name, as one link to the member's
                         // profile (#466).
-                        <span inner_html=member_link(group.id, m.user_id, &m.display_name, true)></span>
+                        <span inner_html=member_link(group.id, m.user_id, &m.display_name, Icon::avatar(m.has_avatar))></span>
                         <span class="muted">{format!(" ({})", m.email)}</span>
                         " — "
                         <span class="muted">{role_label(&m.role)}</span>
@@ -371,6 +371,7 @@ mod tests {
             role: role.to_string(),
             display_name: name.to_string(),
             email: format!("{name}@example.test"),
+            has_avatar: false,
         }
     }
 
@@ -389,9 +390,32 @@ mod tests {
         let html = page("", &me(alice), &group, None, None, None);
         for (id, name) in [(alice, "Alice"), (bob, "Bob")] {
             assert!(
-                html.contains(&crate::app::member_link(g, id, name, true)),
+                html.contains(&crate::app::member_link(g, id, name, Icon::Initial)),
                 "{name} is not a profile link: {html}"
             );
         }
+    }
+
+    /// #468: a member with a photo is shown with it, one without keeps
+    /// their initial.
+    #[test]
+    fn a_member_with_a_photo_is_listed_with_it() {
+        let (g, alice, bob) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let mut with_photo = member(bob, "Bob", "standard");
+        with_photo.has_avatar = true;
+        let group = GroupDetailResponse {
+            id: g,
+            name: "Foyer".to_string(),
+            members: vec![member(alice, "Alice", "owner"), with_photo],
+        };
+        let html = page("", &me(alice), &group, None, None, None);
+        assert!(
+            html.contains(&crate::app::member_link(g, bob, "Bob", Icon::Photo)),
+            "{html}"
+        );
+        assert!(
+            html.contains(&crate::app::member_link(g, alice, "Alice", Icon::Initial)),
+            "{html}"
+        );
     }
 }

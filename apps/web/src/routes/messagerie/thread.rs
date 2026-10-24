@@ -22,7 +22,7 @@ use manage_our_home_shared::validation::messagerie::{
 };
 use uuid::Uuid;
 
-use crate::app::{html_escape, member_avatar, member_link, shell_with_header, Width};
+use crate::app::{html_escape, member_avatar, member_link, shell_with_header, Icon, Width};
 use crate::assets::Script;
 use crate::layout::CurrentUser;
 use crate::lenient_query::{lenient, LenientQuery};
@@ -123,14 +123,18 @@ fn message_meta(
     members: &[manage_our_home_shared::dto::groups::GroupMember],
 ) -> String {
     let author = author_name(members, msg.created_by);
-    let identity = if members.iter().any(|m| m.user_id == msg.created_by) {
-        member_link(msg.group_id, msg.created_by, author, true)
-    } else {
-        format!(
+    let identity = match members.iter().find(|m| m.user_id == msg.created_by) {
+        Some(m) => member_link(
+            msg.group_id,
+            msg.created_by,
+            author,
+            Icon::avatar(m.has_avatar),
+        ),
+        None => format!(
             "{} <strong>{}</strong>",
-            member_avatar(msg.created_by, author),
+            member_avatar(msg.created_by, author, None),
             html_escape(author)
-        )
+        ),
     };
     format!(
         r#"<div class="muted">{identity} — {time}{edited}</div>"#,
@@ -1227,6 +1231,7 @@ mod tests {
             user_id: Uuid::nil(),
             display_name: "Alice".to_string(),
             email: "alice@example.test".to_string(),
+            has_avatar: false,
             role: "owner".to_string(),
         }];
         let msg = sample("Bonjour");
@@ -1248,6 +1253,32 @@ mod tests {
         }
     }
 
+    /// #468: an author with a photo is shown with it, in the message's
+    /// group, on every row shape; the hue stays on the avatar's border.
+    #[test]
+    fn every_row_shape_shows_the_photo_of_an_author_who_has_one() {
+        let members = vec![manage_our_home_shared::dto::groups::GroupMember {
+            user_id: Uuid::nil(),
+            display_name: "Alice".to_string(),
+            email: "alice@example.test".to_string(),
+            has_avatar: true,
+            role: "owner".to_string(),
+        }];
+        let msg = sample("Bonjour");
+        let photo = crate::app::member_photo_url(msg.group_id, msg.created_by);
+        for row in [
+            message_row(&msg, &members, true, true),
+            message_row(&msg, &members, false, false),
+            edit_error_row(&msg, &members, "Bonjour", "Erreur", true),
+        ] {
+            assert!(
+                row.contains(&member_avatar(msg.created_by, "Alice", Some(&photo))),
+                "no photo in {row}"
+            );
+            assert!(!row.contains(">A<"), "the initial is still there: {row}");
+        }
+    }
+
     /// #466: the author's name and icon open their profile in the message's
     /// group, on every row shape — the link is named by the author, the
     /// icon inside it staying `aria-hidden`.
@@ -1260,6 +1291,7 @@ mod tests {
             user_id: msg.created_by,
             display_name: "Alice".to_string(),
             email: "alice@example.test".to_string(),
+            has_avatar: false,
             role: "standard".to_string(),
         }];
         let href = format!(
@@ -1471,6 +1503,7 @@ mod tests {
             user_id: Uuid::from_u128(1),
             display_name: "Alice".to_string(),
             email: "alice@example.test".to_string(),
+            has_avatar: false,
             role: "member".to_string(),
         }]
     }

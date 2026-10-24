@@ -14,7 +14,7 @@ use axum::response::{Html, IntoResponse, Response};
 use manage_our_home_shared::dto::groups::GroupMemberProfile;
 use uuid::Uuid;
 
-use crate::app::{html_escape, member_avatar, shell, shell_with_header, Width};
+use crate::app::{html_escape, member_avatar, member_photo_url, shell, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -36,6 +36,10 @@ fn member_not_found_page() -> Response {
 /// The page's content, without the shell. The arrival date is a Paris
 /// calendar date, written as the account screens write theirs.
 fn profile_body(group_id: Uuid, profile: &GroupMemberProfile) -> String {
+    // #468: their photo, when they have one, in place of the initial.
+    let photo = profile
+        .has_avatar
+        .then(|| member_photo_url(group_id, profile.user_id));
     format!(
         r#"<h1>{avatar} {name}</h1>
 <p><strong>Rôle :</strong> {role}</p>
@@ -43,7 +47,7 @@ fn profile_body(group_id: Uuid, profile: &GroupMemberProfile) -> String {
 <div class="links">
 <a href="/groups/{group_id}/members">Retour aux membres</a>
 </div>"#,
-        avatar = member_avatar(profile.user_id, &profile.display_name),
+        avatar = member_avatar(profile.user_id, &profile.display_name, photo.as_deref()),
         name = html_escape(&profile.display_name),
         role = role_label(&profile.role),
         joined = fmt_paris(profile.joined_at, "%d/%m/%Y"),
@@ -100,6 +104,7 @@ mod tests {
             role: role.to_string(),
             // 23:30 UTC on 4 March is already 5 March in Paris (UTC+1).
             joined_at: chrono::Utc.with_ymd_and_hms(2026, 3, 4, 23, 30, 0).unwrap(),
+            has_avatar: false,
         }
     }
 
@@ -109,8 +114,26 @@ mod tests {
         assert!(body.contains("<h1>"), "{body}");
         assert!(body.contains("Alice"), "{body}");
         assert!(
-            body.contains(&crate::app::member_avatar(Uuid::from_u128(2), "Alice")),
+            body.contains(&crate::app::member_avatar(
+                Uuid::from_u128(2),
+                "Alice",
+                None
+            )),
             "the icon is the member's own avatar: {body}"
+        );
+    }
+
+    /// #468: a member with a photo is shown with it, as this group serves it.
+    #[test]
+    fn the_profile_shows_the_photo_of_a_member_who_has_one() {
+        let (g, u) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let mut alice = profile("Alice", "standard");
+        alice.has_avatar = true;
+        let body = profile_body(g, &alice);
+        let photo = crate::app::member_photo_url(g, u);
+        assert!(
+            body.contains(&crate::app::member_avatar(u, "Alice", Some(&photo))),
+            "{body}"
         );
     }
 

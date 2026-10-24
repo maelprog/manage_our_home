@@ -329,6 +329,7 @@ mod tests {
             role: "member".to_string(),
             display_name: display_name.to_string(),
             email: "camille@example.test".to_string(),
+            has_avatar: false,
         }
     }
 

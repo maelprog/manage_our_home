@@ -50,6 +50,11 @@ pub struct GroupMember {
     pub role: String,
     pub display_name: String,
     pub email: String,
+    /// Whether the member has a profile photo (#468), served by
+    /// `GET /groups/:id/members/:user_id/avatar`. `false` when an older API
+    /// omits it: the initial is then shown, as before photos existed.
+    #[serde(default)]
+    pub has_avatar: bool,
 }
 
 /// `GET /groups/:id` response.
@@ -70,6 +75,9 @@ pub struct GroupMemberProfile {
     pub display_name: String,
     pub role: String,
     pub joined_at: DateTime<Utc>,
+    /// Whether the member has a profile photo (#468), as in `GroupMember`.
+    #[serde(default)]
+    pub has_avatar: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

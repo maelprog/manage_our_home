@@ -24,6 +24,7 @@
 //! copy on both sides keeps them apart.
 
 pub mod age;
+pub mod avatar;
 pub mod deactivated;
 pub mod delete;
 pub mod export;
@@ -102,7 +103,11 @@ fn notice_html(notice: Option<&str>) -> String {
             "Demande de suppression enregistrée. Vous pouvez encore l'annuler ci-dessous."
         }
         Some("deletion_cancelled") => "Demande de suppression annulée : votre compte reste actif.",
-        _ => return String::new(),
+        Some(code) => match avatar::notice_message(code) {
+            Some(text) => text,
+            None => return String::new(),
+        },
+        None => return String::new(),
     };
     format!(r#"<p class="notice success">{}</p>"#, html_escape(text))
 }
@@ -113,7 +118,11 @@ fn error_html(error: Option<&str>) -> String {
             "Aucune demande de suppression en cours : il n'y a rien à annuler."
         }
         Some("unavailable") => "Service momentanément indisponible, merci de réessayer.",
-        _ => return String::new(),
+        Some(code) => match avatar::error_message(code) {
+            Some(text) => text,
+            None => return String::new(),
+        },
+        None => return String::new(),
     };
     format!(r#"<p class="notice error">{}</p>"#, html_escape(text))
 }
@@ -129,6 +138,7 @@ pub async fn get(
     Query(query): Query<HubQuery>,
 ) -> Response {
     let header = account_header(&state, &headers, &me, "/account").await;
+    let has_photo = avatar::has_own_photo(&state, account_cookie(&headers).as_deref()).await;
 
     let deletion_section = if can_request_deletion(me.deletion_requested_at) {
         r#"<section class="card">
@@ -148,6 +158,7 @@ pub async fn get(
 <dt>Email</dt><dd>{email}</dd>
 </dl>
 {notice}{error}{terms}
+{photo}
 <section class="card">
 <h2>Notifications de rappel</h2>
 <p class="muted">Recevoir les rappels de vos événements par notification, par email, ou les deux.</p>
@@ -171,6 +182,8 @@ pub async fn get(
         // #319: a new version of the CGU is announced here as on the home
         // page, until acknowledged.
         terms = terms::update_notice(&me),
+        // #468: the profile photo, first of the account's settings.
+        photo = avatar::section(&me, has_photo),
     );
     Html(shell_with_header(Width::Read, "Mon compte", &header, &body)).into_response()
 }
