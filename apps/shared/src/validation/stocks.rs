@@ -22,6 +22,7 @@
 
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 /// Why a stock-item create/edit form was rejected. Ordered to match the
 /// backend's check order (`create_stock_item` / `update_stock_item`).
@@ -115,6 +116,66 @@ pub fn expiry_status(expires_on: Option<NaiveDate>, today: NaiveDate) -> ExpiryS
     } else {
         ExpiryStatus::Ok
     }
+}
+
+/// How a received grocery item enters the stock (#471): added to an existing
+/// line (`merge`) or as a line of its own (`new`). On the wire: `"merge"`,
+/// `"new"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceptionMode {
+    Merge,
+    New,
+}
+
+/// A stock line a received article could be merged into: the fields the
+/// proposal rule reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StockCandidate<'a> {
+    pub id: Uuid,
+    pub name: &'a str,
+    pub unit: &'a str,
+    pub expires_on: Option<NaiveDate>,
+}
+
+/// The key two article names (or two units) are compared on: trimmed and
+/// lowercased, the heuristic the grocery-list generation already matches
+/// stock names with.
+pub fn article_key(raw: &str) -> String {
+    raw.trim().to_lowercase()
+}
+
+/// The stock line a received article merges into by default, or `None` when
+/// it makes a new line (#471, « choix par article »).
+///
+/// A line is eligible when its name and its unit match the article's
+/// (`article_key`) and no date different from its own is typed: the article
+/// has no date, or the same date as the line. Among several eligible lines
+/// the choice is deterministic: the line whose date equals the article's
+/// (an undated article prefers an undated line), then the soonest date,
+/// undated lines last, then the smallest id.
+pub fn merge_target(
+    name: &str,
+    unit: &str,
+    expires_on: Option<NaiveDate>,
+    candidates: &[StockCandidate<'_>],
+) -> Option<Uuid> {
+    let (name, unit) = (article_key(name), article_key(unit));
+    candidates
+        .iter()
+        .filter(|c| article_key(c.name) == name && article_key(c.unit) == unit)
+        .filter(|c| expires_on.is_none() || c.expires_on == expires_on)
+        // `false` sorts first: same date, then dated before undated, then
+        // the soonest date, then the smallest id.
+        .min_by_key(|c| {
+            (
+                c.expires_on != expires_on,
+                c.expires_on.is_none(),
+                c.expires_on,
+                c.id,
+            )
+        })
+        .map(|c| c.id)
 }
 
 #[cfg(test)]
@@ -261,5 +322,127 @@ mod tests {
             expiry_status(Some(d(2026, 11, 3)), d(2026, 10, 30)),
             ExpiryStatus::Ok
         );
+    }
+
+    // -- merge_target (#471) -------------------------------------------------
+
+    fn id(n: u128) -> Uuid {
+        Uuid::from_u128(n)
+    }
+
+    fn line(
+        n: u128,
+        name: &'static str,
+        unit: &'static str,
+        expires_on: Option<NaiveDate>,
+    ) -> StockCandidate<'static> {
+        StockCandidate {
+            id: id(n),
+            name,
+            unit,
+            expires_on,
+        }
+    }
+
+    #[test]
+    fn an_undated_article_merges_into_the_undated_line_of_the_same_name_and_unit() {
+        let stock = [line(1, "Lait", "L", None)];
+        assert_eq!(merge_target("lait", "L", None, &stock), Some(id(1)));
+    }
+
+    #[test]
+    fn names_and_units_compare_trimmed_and_case_insensitively() {
+        let stock = [line(1, "  Lait ", "l", None)];
+        assert_eq!(merge_target("LAIT", " L ", None, &stock), Some(id(1)));
+    }
+
+    #[test]
+    fn a_different_unit_makes_a_new_line() {
+        let stock = [line(1, "Lait", "bouteille", None)];
+        assert_eq!(merge_target("lait", "L", None, &stock), None);
+    }
+
+    #[test]
+    fn a_different_name_makes_a_new_line() {
+        let stock = [line(1, "Lait d'avoine", "L", None)];
+        assert_eq!(merge_target("lait", "L", None, &stock), None);
+    }
+
+    #[test]
+    fn no_stock_at_all_makes_a_new_line() {
+        assert_eq!(merge_target("lait", "L", None, &[]), None);
+    }
+
+    #[test]
+    fn a_date_different_from_the_line_makes_a_new_line() {
+        let stock = [line(1, "Lait", "L", Some(d(2026, 11, 1)))];
+        assert_eq!(
+            merge_target("lait", "L", Some(d(2026, 11, 5)), &stock),
+            None
+        );
+    }
+
+    #[test]
+    fn a_date_typed_against_an_undated_line_makes_a_new_line() {
+        let stock = [line(1, "Lait", "L", None)];
+        assert_eq!(
+            merge_target("lait", "L", Some(d(2026, 11, 5)), &stock),
+            None
+        );
+    }
+
+    #[test]
+    fn the_same_date_as_the_line_merges() {
+        let stock = [line(1, "Lait", "L", Some(d(2026, 11, 5)))];
+        assert_eq!(
+            merge_target("lait", "L", Some(d(2026, 11, 5)), &stock),
+            Some(id(1))
+        );
+    }
+
+    #[test]
+    fn an_undated_article_merges_into_a_dated_line() {
+        let stock = [line(1, "Lait", "L", Some(d(2026, 11, 5)))];
+        assert_eq!(merge_target("lait", "L", None, &stock), Some(id(1)));
+    }
+
+    #[test]
+    fn a_dated_article_picks_the_line_with_its_date_among_several() {
+        let stock = [
+            line(1, "Lait", "L", Some(d(2026, 11, 1))),
+            line(2, "Lait", "L", None),
+            line(3, "Lait", "L", Some(d(2026, 11, 5))),
+        ];
+        assert_eq!(
+            merge_target("lait", "L", Some(d(2026, 11, 5)), &stock),
+            Some(id(3))
+        );
+    }
+
+    #[test]
+    fn an_undated_article_prefers_the_undated_line() {
+        let stock = [
+            line(1, "Lait", "L", Some(d(2026, 11, 1))),
+            line(2, "Lait", "L", None),
+        ];
+        assert_eq!(merge_target("lait", "L", None, &stock), Some(id(2)));
+    }
+
+    #[test]
+    fn without_an_undated_line_an_undated_article_takes_the_soonest_date() {
+        let stock = [
+            line(1, "Lait", "L", Some(d(2026, 11, 9))),
+            line(2, "Lait", "L", Some(d(2026, 11, 1))),
+            line(3, "Lait", "L", Some(d(2026, 11, 5))),
+        ];
+        assert_eq!(merge_target("lait", "L", None, &stock), Some(id(2)));
+    }
+
+    #[test]
+    fn equal_lines_are_broken_by_the_smallest_id_whatever_their_order() {
+        let a = line(7, "Lait", "L", None);
+        let b = line(3, "Lait", "L", None);
+        assert_eq!(merge_target("lait", "L", None, &[a, b]), Some(id(3)));
+        assert_eq!(merge_target("lait", "L", None, &[b, a]), Some(id(3)));
     }
 }
