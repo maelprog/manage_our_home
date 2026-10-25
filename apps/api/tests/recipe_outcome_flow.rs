@@ -849,7 +849,10 @@ async fn what_is_left_carries_no_binary_noise(db: PgPool) {
     )
     .await;
     assert_status(&res, StatusCode::OK);
-    assert_eq!(stock_quantity(&router, &cookie, &group_id, &lait).await, 0.1);
+    assert_eq!(
+        stock_quantity(&router, &cookie, &group_id, &lait).await,
+        0.1
+    );
 
     let res = post(
         &router,
@@ -869,5 +872,62 @@ async fn what_is_left_carries_no_binary_noise(db: PgPool) {
     )
     .await;
     assert_status(&res, StatusCode::OK);
-    assert_eq!(stock_quantity(&router, &cookie, &group_id, &lait).await, 0.0);
+    assert_eq!(
+        stock_quantity(&router, &cookie, &group_id, &lait).await,
+        0.0
+    );
+}
+
+/// An outsider cannot apply either action through the group's path (403),
+/// and nothing is applied.
+#[sqlx::test]
+async fn an_outsider_cannot_apply_either_action(db: PgPool) {
+    let router = test_router(db.clone());
+    let alice = register_verify_login(&router, &db, "out-a@example.test").await;
+    let bob = register_verify_login(&router, &db, "out-b@example.test").await;
+    let group_id = create_group(&router, &alice).await;
+    let (recipe, farine, _, _) = crepes(&router, &alice, &group_id).await;
+
+    let res = post(
+        &router,
+        &bob,
+        &done_path(&group_id, &recipe),
+        json!({"removals": [{"stock_item_id": farine, "quantity": 100.0}]}),
+    )
+    .await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+    let res = post(
+        &router,
+        &bob,
+        &abandoned_path(&group_id, &recipe),
+        json!({"remove": []}),
+    )
+    .await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+    assert_eq!(
+        stock_quantity(&router, &alice, &group_id, &farine).await,
+        500.0
+    );
+    assert_eq!(meals(&router, &alice, &group_id).await, 0);
+    assert_eq!(planned_count(&router, &alice, &group_id).await, 1);
+}
+
+/// `remove` is required: an abandon without it is refused by the body's
+/// deserialization (422) instead of keeping every item silently.
+#[sqlx::test]
+async fn an_abandon_without_remove_is_refused(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "abandon-422@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+    let (recipe, _, _, _) = crepes(&router, &cookie, &group_id).await;
+
+    let res = post(
+        &router,
+        &cookie,
+        &abandoned_path(&group_id, &recipe),
+        json!({}),
+    )
+    .await;
+    assert_status(&res, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(planned_count(&router, &cookie, &group_id).await, 1);
 }
