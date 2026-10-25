@@ -499,3 +499,40 @@ async fn any_member_receives_and_an_outsider_is_refused(db: PgPool) {
     assert!(grocery_ids(&router, &owner, &group_id).await.is_empty());
     assert_eq!(stock_items(&router, &owner, &group_id).await.len(), 1);
 }
+
+/// Two receptions of the same lot at once: the second waits on the first's
+/// lock on the grocery items, then finds them gone. The stock is incremented
+/// once.
+#[sqlx::test]
+async fn a_lot_received_twice_at_once_is_received_once(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "rcv-race@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let milk = stock(&router, &cookie, &group_id, json!({"name": "Lait", "quantity": 1.0, "unit": "L"})).await;
+    let item = checked(&router, &cookie, &group_id, json!({"name": "Lait", "quantity": 2.0, "unit": "L"})).await;
+
+    // Hold the stock line, so that both receptions are parked on a lock
+    // before either can commit.
+    let mut hold = db.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM stock_items WHERE id = $1 FOR UPDATE")
+        .bind(milk.parse::<uuid::Uuid>().unwrap())
+        .execute(&mut *hold)
+        .await
+        .unwrap();
+
+    let spawn = || {
+        let (router, cookie, group_id) = (router.clone(), cookie.clone(), group_id.clone());
+        let lot = json!([{"grocery_item_id": item}]);
+        tokio::spawn(async move { receive(&router, &cookie, &group_id, lot).await.status() })
+    };
+    let (a, b) = (spawn(), spawn());
+    common::wait_for_lock_waiters(&db, None, 2).await;
+    hold.commit().await.unwrap();
+
+    let mut statuses = vec![a.await.unwrap(), b.await.unwrap()];
+    statuses.sort();
+    assert_eq!(statuses, [StatusCode::OK, StatusCode::NOT_FOUND]);
+    let stock = stock_items(&router, &cookie, &group_id).await;
+    assert_eq!(stock.len(), 1);
+    assert_eq!(stock[0]["quantity"], 3.0, "incremented once");
+}
