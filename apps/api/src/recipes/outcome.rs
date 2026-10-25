@@ -7,13 +7,17 @@
 //!
 //! **Done.** The preview lists every ingredient of the recipe, its quantity
 //! scaled to the selection's number of people as the grocery list scales it
-//! (`grocery_list::planned::scale_quantity`), the stock line it matches by
-//! name (`match_stock`), and the quantity proposed for removal: the
-//! ingredient's, capped at what the line holds (`propose`). Without a line,
-//! without a quantity or in another unit (no conversion), 0 is proposed with
-//! a warning. The application takes one quantity per stock line, in that
-//! line's unit, and may exceed the recipe's (user precision of 2026-10-21):
-//! 0 or `exclude` removes nothing. A quantity above what the line holds now
+//! (`grocery_list::planned::scale_quantity`), and the stock lines (`lots`)
+//! the quantity is proposed from (`propose`): every line of its name and
+//! unit, the one expiring first first (`lots_in_order`), as many as needed,
+//! so 100 g + 500 g cover 400 g. The proposal is capped only when they all
+//! together hold less. Without a line of that name, without a quantity or
+//! in another unit (no conversion), 0 is proposed with a warning, from the
+//! line `match_stock` picks. The application takes one quantity per stock
+//! line, in that line's unit, so an ingredient spread over several lots is
+//! several lines, each checked against its own lot. A quantity may exceed
+//! the recipe's (user precision of 2026-10-21); 0 or `exclude` removes
+//! nothing. A quantity above what the line holds now
 //! is **refused** (409 `insufficient_stock`), never capped: the preview
 //! already capped, so a larger quantity means the stock changed since, or a
 //! request asking for more than there is. A line gone since is 409
@@ -86,10 +90,18 @@ pub enum RemovalWarning {
     Capped,
 }
 
-/// What the preview proposes to take from the stock for one ingredient.
+/// What the preview proposes to take from one stock line.
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Take {
+    pub stock_item_id: Uuid,
+    pub quantity: f64,
+}
+
+/// What the preview proposes to take from the stock for one ingredient:
+/// one or several lines (`lots`) and their total (`quantity`).
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Proposal {
-    pub stock_item_id: Option<Uuid>,
+    pub lots: Vec<Take>,
     pub quantity: f64,
     pub warning: Option<RemovalWarning>,
 }
@@ -105,10 +117,11 @@ pub struct Removal {
     pub exclude: bool,
 }
 
-/// The stock line an ingredient is taken from: one of the same name
+/// The stock line an ingredient matches: one of the same name
 /// (`article_key`), preferring the ingredient's unit, then a line that is
 /// not empty, then the earliest expiry date (undated lines last), then the
-/// smallest id. `unit` is the
+/// smallest id. It decides the warning, and is the line shown when nothing
+/// is proposed; the quantity is spread by `lots_in_order`. `unit` is the
 /// ingredient's, already normalized.
 pub(crate) fn match_stock<'a, 's>(
     name: &str,
@@ -146,9 +159,30 @@ pub(crate) fn remaining_after(available: f64, removed: f64) -> Option<f64> {
     (removed <= available).then(|| without_binary_noise(available - removed).max(0.0))
 }
 
-/// The proposal for each ingredient, in order. Two ingredients matching the
-/// same line share what it holds: the second is capped at what the first
-/// left.
+/// The lines of the ingredient's name and unit, in the order they are taken
+/// from: the earliest expiry date first, undated lines last, then the
+/// smallest id. What expires first is used first, so the lot left over is
+/// the one that keeps longest. `unit` is the ingredient's, already
+/// normalized.
+pub(crate) fn lots_in_order<'a, 's>(
+    name: &str,
+    unit: &str,
+    stock: &'a [StockLine<'s>],
+) -> Vec<&'a StockLine<'s>> {
+    let (name, unit) = (article_key(name), article_key(unit));
+    let mut lots: Vec<_> = stock
+        .iter()
+        .filter(|s| article_key(s.name) == name && article_key(s.unit) == unit)
+        .collect();
+    lots.sort_by_key(|s| (s.expires_on.is_none(), s.expires_on, s.id));
+    lots
+}
+
+/// The proposal for each ingredient, in order. An ingredient is taken from
+/// as many lines of its name and unit as it needs, in `lots_in_order`; it
+/// is capped only when they all together hold less. Two ingredients
+/// matching the same lines share what they hold: the second is capped at
+/// what the first left.
 pub(crate) fn propose(ingredients: &[Ingredient<'_>], stock: &[StockLine<'_>]) -> Vec<Proposal> {
     let mut remaining: Vec<(Uuid, f64)> = stock.iter().map(|s| (s.id, s.quantity)).collect();
     ingredients
@@ -157,13 +191,19 @@ pub(crate) fn propose(ingredients: &[Ingredient<'_>], stock: &[StockLine<'_>]) -
             let unit = normalize_unit(ing.unit.unwrap_or(""));
             let Some(line) = match_stock(ing.name, &unit, stock) else {
                 return Proposal {
-                    stock_item_id: None,
+                    lots: vec![],
                     quantity: 0.0,
                     warning: Some(RemovalWarning::NoStock),
                 };
             };
+            let nothing_from_line = || {
+                vec![Take {
+                    stock_item_id: line.id,
+                    quantity: 0.0,
+                }]
+            };
             let nothing = |warning| Proposal {
-                stock_item_id: Some(line.id),
+                lots: nothing_from_line(),
                 quantity: 0.0,
                 warning: Some(warning),
             };
@@ -173,17 +213,37 @@ pub(crate) fn propose(ingredients: &[Ingredient<'_>], stock: &[StockLine<'_>]) -
             let Some(wanted) = ing.quantity else {
                 return nothing(RemovalWarning::NoQuantity);
             };
-            let left = remaining
-                .iter_mut()
-                .find(|(id, _)| *id == line.id)
-                .map(|(_, q)| q)
-                .expect("every matched line is in `remaining`");
-            let quantity = cap(wanted, without_binary_noise(*left));
-            *left = remaining_after(*left, quantity).unwrap_or(0.0);
+            let mut lots = Vec::new();
+            let mut still = wanted;
+            let mut total = 0.0;
+            for lot in lots_in_order(ing.name, &unit, stock) {
+                if still <= 0.0 {
+                    break;
+                }
+                let left = remaining
+                    .iter_mut()
+                    .find(|(id, _)| *id == lot.id)
+                    .map(|(_, q)| q)
+                    .expect("every stock line is in `remaining`");
+                let quantity = cap(still, without_binary_noise(*left));
+                if quantity <= 0.0 {
+                    continue;
+                }
+                *left = remaining_after(*left, quantity).unwrap_or(0.0);
+                still = without_binary_noise(still - quantity);
+                total = without_binary_noise(total + quantity);
+                lots.push(Take {
+                    stock_item_id: lot.id,
+                    quantity,
+                });
+            }
+            if lots.is_empty() {
+                lots = nothing_from_line();
+            }
             Proposal {
-                stock_item_id: Some(line.id),
-                quantity,
-                warning: (quantity < wanted).then_some(RemovalWarning::Capped),
+                lots,
+                quantity: total,
+                warning: (total < wanted).then_some(RemovalWarning::Capped),
             }
         })
         .collect()
@@ -353,11 +413,21 @@ pub struct DoneLineResponse {
     pub quantity: Option<f64>,
     pub unit: Option<String>,
     pub is_optional: bool,
-    /// The matched stock line, `null` when none has the ingredient's name.
-    pub stock_item: Option<StockItemResponse>,
-    /// In the stock line's unit.
+    /// The stock lines proposed, in the order they are taken from; empty
+    /// when no line has the ingredient's name. A line at 0 (`unit_mismatch`,
+    /// `no_quantity`, or only empty lines) shows the matched line.
+    pub lots: Vec<DoneLotResponse>,
+    /// The lots' total, in their unit.
     pub proposed_quantity: f64,
     pub warning: Option<RemovalWarning>,
+}
+
+/// One stock line of a `done` preview, and what is proposed from it.
+#[derive(Serialize)]
+pub struct DoneLotResponse {
+    pub stock_item: StockItemResponse,
+    /// In the stock line's unit.
+    pub quantity: f64,
 }
 
 /// `GET …/selection/done`: what marking the recipe done would remove.
@@ -416,12 +486,19 @@ pub async fn preview_done(
             quantity,
             unit: r.unit.clone(),
             is_optional: r.is_optional,
-            stock_item: p.stock_item_id.and_then(|id| {
-                stock
-                    .iter()
-                    .find(|s| s.id == id)
-                    .map(|s| StockItemResponse::from_row(s.clone(), today))
-            }),
+            lots: p
+                .lots
+                .iter()
+                .filter_map(|t| {
+                    stock
+                        .iter()
+                        .find(|s| s.id == t.stock_item_id)
+                        .map(|s| DoneLotResponse {
+                            stock_item: StockItemResponse::from_row(s.clone(), today),
+                            quantity: t.quantity,
+                        })
+                })
+                .collect(),
             proposed_quantity: p.quantity,
             warning: p.warning,
         })
@@ -676,6 +753,13 @@ mod tests {
         }
     }
 
+    fn take(n: u128, quantity: f64) -> Take {
+        Take {
+            stock_item_id: id(n),
+            quantity,
+        }
+    }
+
     fn date(d: u32) -> Option<NaiveDate> {
         NaiveDate::from_ymd_opt(2026, 11, d)
     }
@@ -823,7 +907,7 @@ mod tests {
         assert_eq!(
             got,
             vec![Proposal {
-                stock_item_id: Some(id(1)),
+                lots: vec![take(1, 200.0)],
                 quantity: 200.0,
                 warning: None
             }]
@@ -837,7 +921,7 @@ mod tests {
         assert_eq!(
             got,
             vec![Proposal {
-                stock_item_id: Some(id(1)),
+                lots: vec![take(1, 150.0)],
                 quantity: 150.0,
                 warning: Some(RemovalWarning::Capped)
             }]
@@ -850,7 +934,7 @@ mod tests {
         assert_eq!(
             got,
             vec![Proposal {
-                stock_item_id: None,
+                lots: vec![],
                 quantity: 0.0,
                 warning: Some(RemovalWarning::NoStock)
             }]
@@ -864,7 +948,7 @@ mod tests {
         assert_eq!(
             got,
             vec![Proposal {
-                stock_item_id: Some(id(1)),
+                lots: vec![take(1, 0.0)],
                 quantity: 0.0,
                 warning: Some(RemovalWarning::UnitMismatch)
             }]
@@ -888,7 +972,7 @@ mod tests {
         assert_eq!(
             got,
             vec![Proposal {
-                stock_item_id: Some(id(1)),
+                lots: vec![take(1, 0.0)],
                 quantity: 0.0,
                 warning: Some(RemovalWarning::NoQuantity)
             }]
@@ -924,8 +1008,142 @@ mod tests {
             ],
             &stock,
         );
-        let ids: Vec<_> = got.iter().map(|p| p.stock_item_id).collect();
-        assert_eq!(ids, vec![Some(id(2)), Some(id(1))]);
+        assert_eq!(got[0].lots, vec![take(2, 0.5)]);
+        assert_eq!(got[1].lots, vec![take(1, 250.0)]);
+    }
+
+    // -- propose, over several lots -------------------------------------------
+
+    #[test]
+    fn spreads_over_lots_when_the_first_holds_too_little() {
+        // 100 g + 500 g of flour, 400 g wanted: not capped at the first lot.
+        let stock = [
+            line(1, "Farine", "g", 100.0, None),
+            line(2, "Farine", "g", 500.0, None),
+        ];
+        let got = propose(&[ing("Farine", Some(400.0), Some("g"))], &stock);
+        assert_eq!(
+            got,
+            vec![Proposal {
+                lots: vec![take(1, 100.0), take(2, 300.0)],
+                quantity: 400.0,
+                warning: None
+            }]
+        );
+    }
+
+    #[test]
+    fn the_lot_expiring_first_is_taken_first_and_undated_last() {
+        let stock = [
+            line(1, "Lait", "L", 1.0, None),
+            line(2, "Lait", "L", 1.0, date(9)),
+            line(3, "Lait", "L", 1.0, date(3)),
+        ];
+        let got = propose(&[ing("Lait", Some(2.5), Some("L"))], &stock);
+        assert_eq!(got[0].lots, vec![take(3, 1.0), take(2, 1.0), take(1, 0.5)]);
+        assert_eq!(got[0].quantity, 2.5);
+        assert_eq!(got[0].warning, None);
+    }
+
+    #[test]
+    fn a_lot_not_needed_is_not_proposed() {
+        let stock = [
+            line(1, "Farine", "g", 100.0, date(9)),
+            line(2, "Farine", "g", 500.0, date(3)),
+        ];
+        let got = propose(&[ing("Farine", Some(200.0), Some("g"))], &stock);
+        assert_eq!(got[0].lots, vec![take(2, 200.0)]);
+    }
+
+    #[test]
+    fn capped_only_when_all_lots_together_hold_less() {
+        let stock = [
+            line(1, "Farine", "g", 100.0, None),
+            line(2, "Farine", "g", 500.0, None),
+        ];
+        let got = propose(&[ing("Farine", Some(700.0), Some("g"))], &stock);
+        assert_eq!(
+            got,
+            vec![Proposal {
+                lots: vec![take(1, 100.0), take(2, 500.0)],
+                quantity: 600.0,
+                warning: Some(RemovalWarning::Capped)
+            }]
+        );
+    }
+
+    #[test]
+    fn empty_lots_and_lots_in_another_unit_are_not_spread_over() {
+        let stock = [
+            line(1, "Farine", "g", 0.0, date(1)),
+            line(2, "Farine", "kg", 1.0, date(2)),
+            line(3, "Farine", "g", 150.0, date(9)),
+        ];
+        let got = propose(&[ing("Farine", Some(200.0), Some("g"))], &stock);
+        assert_eq!(
+            got,
+            vec![Proposal {
+                lots: vec![take(3, 150.0)],
+                quantity: 150.0,
+                warning: Some(RemovalWarning::Capped)
+            }]
+        );
+    }
+
+    #[test]
+    fn only_empty_lots_propose_zero_from_the_first() {
+        let stock = [
+            line(1, "Oeufs", "unité", 0.0, date(9)),
+            line(2, "Oeufs", "unité", 0.0, date(3)),
+        ];
+        let got = propose(&[ing("Oeufs", Some(3.0), None)], &stock);
+        assert_eq!(
+            got,
+            vec![Proposal {
+                lots: vec![take(2, 0.0)],
+                quantity: 0.0,
+                warning: Some(RemovalWarning::Capped)
+            }]
+        );
+    }
+
+    #[test]
+    fn two_ingredients_share_the_lots_in_order() {
+        let stock = [
+            line(1, "Beurre", "g", 100.0, None),
+            line(2, "Beurre", "g", 500.0, None),
+        ];
+        let got = propose(
+            &[
+                ing("Beurre", Some(300.0), Some("g")),
+                ing("beurre", Some(400.0), Some("g")),
+            ],
+            &stock,
+        );
+        assert_eq!(got[0].lots, vec![take(1, 100.0), take(2, 200.0)]);
+        assert_eq!(got[0].warning, None);
+        assert_eq!(got[1].lots, vec![take(2, 300.0)]);
+        assert_eq!(got[1].quantity, 300.0);
+        assert_eq!(got[1].warning, Some(RemovalWarning::Capped));
+    }
+
+    #[test]
+    fn spreading_over_lots_carries_no_binary_noise() {
+        // 0.3 - 0.1 is 0.19999999999999998 and 0.1 + 0.2 is
+        // 0.30000000000000004 in binary.
+        let stock = [
+            line(1, "Lait", "L", 0.1, date(1)),
+            line(2, "Lait", "L", 0.2, date(2)),
+        ];
+        let got = propose(&[ing("Lait", Some(0.3), Some("L"))], &stock);
+        assert_eq!(
+            got,
+            vec![Proposal {
+                lots: vec![take(1, 0.1), take(2, 0.2)],
+                quantity: 0.3,
+                warning: None
+            }]
+        );
     }
 
     // -- removals_to_apply ---------------------------------------------------

@@ -266,18 +266,19 @@ async fn done_with_a_zero_correction_leaves_that_stock_untouched(db: PgPool) {
     assert_eq!(lines.len(), 4);
     let f = by_name(&lines, "Farine");
     assert_eq!(f["quantity"], 400.0, "200 g for 2, cooked for 4");
-    assert_eq!(f["stock_item"]["id"], farine.as_str());
+    assert_eq!(f["lots"][0]["stock_item"]["id"], farine.as_str());
+    assert_eq!(f["lots"][0]["quantity"], 400.0);
     assert_eq!(f["proposed_quantity"], 400.0);
     assert_eq!(f["warning"], Value::Null);
     let b = by_name(&lines, "Beurre");
-    assert_eq!(b["stock_item"]["id"], beurre.as_str());
+    assert_eq!(b["lots"][0]["stock_item"]["id"], beurre.as_str());
     assert_eq!(b["proposed_quantity"], 100.0);
     let s = by_name(&lines, "Sucre");
-    assert_eq!(s["stock_item"]["id"], sucre.as_str());
+    assert_eq!(s["lots"][0]["stock_item"]["id"], sucre.as_str());
     assert_eq!(s["proposed_quantity"], 0.0);
     assert_eq!(s["warning"], "unit_mismatch");
     let sel = by_name(&lines, "Sel");
-    assert_eq!(sel["stock_item"], Value::Null);
+    assert_eq!(sel["lots"], json!([]));
     assert_eq!(sel["warning"], "no_stock");
 
     let res = post(
@@ -341,7 +342,7 @@ async fn more_than_the_stock_is_refused(db: PgPool) {
 
     let lines = done_preview(&router, &cookie, &group_id, &recipe).await;
     let sel = by_name(&lines, "Sel");
-    assert_eq!(sel["stock_item"]["id"], small.as_str());
+    assert_eq!(sel["lots"][0]["stock_item"]["id"], small.as_str());
     assert_eq!(sel["proposed_quantity"], 0.5, "2 pincées capped at 0.5");
     assert_eq!(sel["warning"], "capped");
 
@@ -875,6 +876,122 @@ async fn what_is_left_carries_no_binary_noise(db: PgPool) {
     assert_eq!(
         stock_quantity(&router, &cookie, &group_id, &lait).await,
         0.0
+    );
+}
+
+/// An ingredient is spread over several lots of its name and unit, the one
+/// expiring first first: 100 g + 500 g cover 400 g instead of capping at
+/// 100 g. The application takes from each lot, and refuses (nothing
+/// applied) when one of them was lowered since the preview.
+#[sqlx::test]
+async fn an_ingredient_is_taken_from_several_lots(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "done-lots@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+    let later = stock(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Farine", "quantity": 500.0, "unit": "g", "expires_on": "2026-12-20"}),
+    )
+    .await;
+    let undated = stock(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "farine", "quantity": 300.0, "unit": "g"}),
+    )
+    .await;
+    let sooner = stock(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Farine", "quantity": 100.0, "unit": "g", "expires_on": "2026-12-03"}),
+    )
+    .await;
+    let recipe = planned_recipe(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Pain", "ingredients": [{"name": "Farine", "quantity": 400.0, "unit": "g"}]}),
+        json!({}),
+    )
+    .await;
+
+    let lines = done_preview(&router, &cookie, &group_id, &recipe).await;
+    let f = by_name(&lines, "Farine");
+    assert_eq!(f["proposed_quantity"], 400.0);
+    assert_eq!(f["warning"], Value::Null);
+    let lots = f["lots"].as_array().unwrap();
+    assert_eq!(lots.len(), 2, "{lots:?}");
+    assert_eq!(lots[0]["stock_item"]["id"], sooner.as_str());
+    assert_eq!(lots[0]["quantity"], 100.0);
+    assert_eq!(lots[1]["stock_item"]["id"], later.as_str());
+    assert_eq!(lots[1]["quantity"], 300.0);
+    let removals = json!({"removals": [
+        {"stock_item_id": sooner, "quantity": 100.0},
+        {"stock_item_id": later, "quantity": 300.0}
+    ]});
+
+    // The later lot is lowered meanwhile: refused, nothing applied.
+    let patch = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/stock-items/{later}"),
+        Some(&cookie),
+        Some(json!({"quantity": 200.0})),
+    )
+    .await;
+    assert_status(&patch, StatusCode::OK);
+    let res = post(
+        &router,
+        &cookie,
+        &done_path(&group_id, &recipe),
+        removals.clone(),
+    )
+    .await;
+    assert_status(&res, StatusCode::CONFLICT);
+    let body = json_body(res).await;
+    assert_eq!(body["error"], "insufficient_stock");
+    assert_eq!(body["stock_item_id"], later.as_str());
+    assert_eq!(body["available"], 200.0);
+    assert_eq!(
+        stock_quantity(&router, &cookie, &group_id, &sooner).await,
+        100.0
+    );
+    assert_eq!(meals(&router, &cookie, &group_id).await, 0);
+    assert_eq!(planned_count(&router, &cookie, &group_id).await, 1);
+
+    // Restored: both lots are taken from, the undated one untouched.
+    let patch = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/stock-items/{later}"),
+        Some(&cookie),
+        Some(json!({"quantity": 500.0})),
+    )
+    .await;
+    assert_status(&patch, StatusCode::OK);
+    let res = post(&router, &cookie, &done_path(&group_id, &recipe), removals).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(
+        json_body(res).await["stock_items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        stock_quantity(&router, &cookie, &group_id, &sooner).await,
+        0.0
+    );
+    assert_eq!(
+        stock_quantity(&router, &cookie, &group_id, &later).await,
+        200.0
+    );
+    assert_eq!(
+        stock_quantity(&router, &cookie, &group_id, &undated).await,
+        300.0
     );
 }
 
