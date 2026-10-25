@@ -7,6 +7,9 @@
 //!
 //! The generation takes the recipes « À réaliser » only (#470): its button
 //! says how many, and links to the recipes when there are none.
+//!
+//! Once an item is checked, a link under the list leads to the reception
+//! (`reception.rs`, #472), which puts the checked items in the stock.
 
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
@@ -39,11 +42,16 @@ pub struct ListQuery {
     /// the banner then says nothing was added.
     #[serde(default, deserialize_with = "lenient")]
     added: Option<usize>,
+    /// Number of articles a reception put in the stock (only set with
+    /// `notice=received`, #472). Read like `added`.
+    #[serde(default, deserialize_with = "lenient")]
+    received: Option<usize>,
 }
 
 /// Success-banner copy. `generated` is special-cased on the count so a
-/// re-run that added nothing reads honestly (idempotent).
-fn notice_html(notice: Option<&str>, added: Option<usize>) -> String {
+/// re-run that added nothing reads honestly (idempotent); `received` counts
+/// the articles a reception put in the stock (#472).
+fn notice_html(notice: Option<&str>, added: Option<usize>, received: Option<usize>) -> String {
     let text = match notice {
         Some("item_added") => "Article ajouté.".to_string(),
         Some("item_updated") => "Article mis à jour.".to_string(),
@@ -55,6 +63,12 @@ fn notice_html(notice: Option<&str>, added: Option<usize>) -> String {
             0 => "Aucun nouvel article à ajouter.".to_string(),
             1 => "1 article ajouté depuis les recettes et les stocks.".to_string(),
             n => format!("{n} articles ajoutés depuis les recettes et les stocks."),
+        },
+        Some("received") => match received {
+            None => "Articles entrés en stock.".to_string(),
+            Some(0) => "Aucun article entré en stock.".to_string(),
+            Some(1) => "1 article entré en stock.".to_string(),
+            Some(n) => format!("{n} articles entrés en stock."),
         },
         _ => return String::new(),
     };
@@ -95,6 +109,17 @@ fn generate_html(planned: Option<usize>) -> String {
 </form>
 </div>"#
     )
+}
+
+/// The way to the reception (#472), under the list once an item is checked.
+fn reception_html(checked: usize) -> String {
+    if checked == 0 {
+        return String::new();
+    }
+    r#"<div class="actions">
+<a class="btn" href="/grocery-list/reception">Réceptionner les articles cochés</a>
+</div>"#
+        .to_string()
 }
 
 fn error_html(error: Option<&str>) -> String {
@@ -209,7 +234,7 @@ pub async fn get(
     };
     let planned = planned_count(&state, fam.gid, cookie.as_deref()).await;
 
-    let notice = notice_html(query.notice.as_deref(), query.added);
+    let notice = notice_html(query.notice.as_deref(), query.added, query.received);
     let error = error_html(query.error.as_deref());
 
     let list_html = if items.is_empty() {
@@ -219,7 +244,12 @@ pub async fn get(
             .iter()
             .map(|item| item_row(item, can_modify(&fam.role, item.created_by == me.user_id)))
             .collect::<String>();
-        format!(r#"<ul class="list">{rows}</ul>"#)
+        let checked = items.iter().filter(|item| item.checked).count();
+        format!(
+            r#"<ul class="list">{rows}</ul>
+{reception}"#,
+            reception = reception_html(checked)
+        )
     };
 
     let body = format!(
@@ -517,7 +547,7 @@ mod tests {
         // The generate banner then reads as a run that added nothing.
         let q = list_query("notice=generated&added=abc");
         assert_eq!(
-            notice_html(q.notice.as_deref(), q.added),
+            notice_html(q.notice.as_deref(), q.added, None),
             r#"<p class="notice success">Aucun nouvel article à ajouter.</p>"#
         );
     }
@@ -526,7 +556,7 @@ mod tests {
     fn valid_added_keeps_its_effect() {
         let q = list_query("notice=generated&added=3");
         assert_eq!(q.added, Some(3));
-        assert!(notice_html(q.notice.as_deref(), q.added).contains("3 articles ajoutés"));
+        assert!(notice_html(q.notice.as_deref(), q.added, None).contains("3 articles ajoutés"));
     }
 
     #[test]
@@ -625,6 +655,40 @@ mod tests {
         let planned = planned_count(&state, Uuid::from_u128(1), Some("session=s")).await;
         assert_eq!(planned, Some(0));
         assert!(generate_html(planned).contains(">Générer depuis les stocks</button>"));
+    }
+
+    #[test]
+    fn the_reception_notice_counts_the_articles_received() {
+        let q = list_query("notice=received&received=1");
+        assert_eq!(
+            notice_html(q.notice.as_deref(), None, q.received),
+            r#"<p class="notice success">1 article entré en stock.</p>"#
+        );
+        let q = list_query("notice=received&received=3");
+        assert_eq!(
+            notice_html(q.notice.as_deref(), None, q.received),
+            r#"<p class="notice success">3 articles entrés en stock.</p>"#
+        );
+        // A count that does not convert reads as absent (#582).
+        let q = list_query("notice=received&received=abc");
+        assert_eq!(
+            notice_html(q.notice.as_deref(), None, q.received),
+            r#"<p class="notice success">Articles entrés en stock.</p>"#
+        );
+    }
+
+    #[test]
+    fn the_reception_link_shows_only_with_checked_items() {
+        assert_eq!(reception_html(0), "");
+        for n in [1, 4] {
+            let html = reception_html(n);
+            assert!(
+                html.contains(
+                    r#"<a class="btn" href="/grocery-list/reception">Réceptionner les articles cochés</a>"#
+                ),
+                "{html}"
+            );
+        }
     }
 
     #[test]

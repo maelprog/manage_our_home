@@ -314,6 +314,10 @@ fn build_router(state: AppState) -> Router {
             "/grocery-list/generate",
             post(routes::grocery_list::list::generate),
         )
+        .route(
+            "/grocery-list/reception",
+            get(routes::grocery_list::reception::get).post(routes::grocery_list::reception::post),
+        )
         .route("/grocery-list/:id", get(routes::grocery_list::edit::get))
         .route(
             "/grocery-list/:id/check",
