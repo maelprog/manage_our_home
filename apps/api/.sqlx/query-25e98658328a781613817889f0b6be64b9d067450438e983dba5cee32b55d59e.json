@@ -1,0 +1,141 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO stock_items (group_id, created_by, name, quantity, unit, expires_on)\n                VALUES ($1, $2, $3, $4, $5, $6)\n                RETURNING id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on, barcode\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "stock_items",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "group_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "stock_items",
+            "name": "group_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "created_by",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "stock_items",
+            "name": "created_by"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stock_items",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "category",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stock_items",
+            "name": "category"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "quantity",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "stock_items",
+            "name": "quantity"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "unit",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stock_items",
+            "name": "unit"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "reorder_threshold",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "stock_items",
+            "name": "reorder_threshold"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "expires_on",
+        "type_info": "Date",
+        "origin": {
+          "Table": {
+            "table": "stock_items",
+            "name": "expires_on"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "barcode",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stock_items",
+            "name": "barcode"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Float8",
+        "Text",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "25e98658328a781613817889f0b6be64b9d067450438e983dba5cee32b55d59e"
+}

@@ -332,6 +332,10 @@ pub fn build_router(state: AppState) -> Router {
             post(stocks::scan::scan_stock_item),
         )
         .route(
+            "/groups/:id/stock-items/reception",
+            get(stocks::reception::get_reception).post(stocks::reception::receive),
+        )
+        .route(
             "/groups/:id/stock-items/:item_id",
             get(stocks::items::get_stock_item)
                 .patch(stocks::items::update_stock_item)

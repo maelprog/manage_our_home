@@ -117,29 +117,30 @@ pub struct StockItemResponse {
     pub barcode: Option<String>,
 }
 
-struct StockItemRow {
-    id: Uuid,
-    group_id: Uuid,
-    created_by: Uuid,
-    name: String,
-    category: Option<String>,
-    quantity: f64,
-    unit: String,
-    reorder_threshold: Option<f64>,
-    expires_on: Option<NaiveDate>,
-    barcode: Option<String>,
+#[derive(Clone)]
+pub(crate) struct StockItemRow {
+    pub(crate) id: Uuid,
+    pub(crate) group_id: Uuid,
+    pub(crate) created_by: Uuid,
+    pub(crate) name: String,
+    pub(crate) category: Option<String>,
+    pub(crate) quantity: f64,
+    pub(crate) unit: String,
+    pub(crate) reorder_threshold: Option<f64>,
+    pub(crate) expires_on: Option<NaiveDate>,
+    pub(crate) barcode: Option<String>,
 }
 
 /// "Today" for the expiry status: the civil day in Europe/Paris, the fixed v1
 /// display timezone the web pages already judge dates in (`today_paris`). The
 /// database's `current_date` would be the server's UTC day, wrong between
 /// midnight and 1–2 a.m. in Paris.
-fn today() -> NaiveDate {
+pub(crate) fn today() -> NaiveDate {
     paris_day(Utc::now())
 }
 
 impl StockItemResponse {
-    fn from_row(r: StockItemRow, today: NaiveDate) -> Self {
+    pub(crate) fn from_row(r: StockItemRow, today: NaiveDate) -> Self {
         let low_stock = r
             .reorder_threshold
             .map(|t| r.quantity <= t)

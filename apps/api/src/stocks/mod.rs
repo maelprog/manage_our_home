@@ -2,6 +2,7 @@ pub mod barcode;
 pub mod gs1;
 pub mod items;
 pub mod openfoodfacts;
+pub mod reception;
 pub mod scan;
 pub mod shelf_life;
 
