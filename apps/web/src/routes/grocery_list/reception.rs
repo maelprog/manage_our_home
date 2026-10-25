@@ -79,7 +79,7 @@ impl LineError {
             LineError::QuantityTooLarge => "La quantité ne peut pas dépasser 1 000 000 000.",
             LineError::InvalidDate => "La date de péremption n'est pas une date valide.",
             LineError::NoStockToMerge => {
-                "Aucun stock existant de ce nom et de cette unité n'a cette date de péremption : choisissez « Nouvelle ligne de stock », ou laissez la date vide."
+                "Aucune ligne de stock de ce nom et de cette unité ne peut recevoir cet article (vérifiez l'unité, la date de péremption, et que la ligne créée plus haut est réceptionnée) : choisissez sinon « Nouvelle ligne de stock »."
             }
         }
     }
@@ -1108,6 +1108,15 @@ mod tests {
         ] {
             assert!(!e.text().is_empty(), "{e:?}");
         }
+    }
+
+    #[test]
+    fn nothing_to_merge_into_does_not_speak_only_of_the_date() {
+        // Also met without a date: the unit changed, the line made above
+        // left out.
+        let text = LineError::NoStockToMerge.text();
+        assert!(text.contains("unité"), "{text}");
+        assert!(!text.contains("n'a cette date"), "{text}");
     }
 
     #[test]

@@ -440,7 +440,7 @@ test.describe("Grocery list — reception (#472)", () => {
 
     await expect(page).toHaveURL(/\/grocery-list\/reception$/);
     await expect(page.locator(".notice.error")).toContainText("corrigez les lignes signalées");
-    await expect(lait.locator(".field-error")).toContainText("Aucun stock existant");
+    await expect(lait.locator(".field-error")).toContainText("Aucune ligne de stock");
     await expect(pain.locator(".field-error")).toHaveCount(0);
     await expect(lait.getByLabel("Quantité")).toHaveValue("3");
     await expect(lait.getByLabel("Date de péremption")).toHaveValue(otherDate);
