@@ -378,6 +378,14 @@ pub fn build_router(state: AppState) -> Router {
                 .delete(recipes::selections::deselect_recipe),
         )
         .route(
+            "/groups/:id/recipes/:recipe_id/selection/done",
+            get(recipes::outcome::preview_done).post(recipes::outcome::apply_done),
+        )
+        .route(
+            "/groups/:id/recipes/:recipe_id/selection/abandoned",
+            get(recipes::outcome::preview_abandoned).post(recipes::outcome::apply_abandoned),
+        )
+        .route(
             "/groups/:id/grocery-items",
             post(grocery_list::items::create_grocery_item)
                 .get(grocery_list::items::list_grocery_items),
