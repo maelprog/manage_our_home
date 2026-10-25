@@ -37,44 +37,32 @@ pub(crate) struct PlannedLine {
     pub unit: Option<String>,
 }
 
-/// Keeps `significant` significant digits of `q`: `0.0033` for
-/// `0.003333…` at 2. Never turns a non-zero quantity into 0.
-fn round_significant(q: f64, significant: usize) -> f64 {
-    format!("{:.*e}", significant.saturating_sub(1), q)
-        .parse()
-        .unwrap_or(q)
+/// Drops the binary noise of a computed quantity, without rounding it
+/// (decision of 2026-10-25): `0.1 + 0.2` reads `0.3`, not
+/// `0.30000000000000004`, while `0.125 + 0.0625` keeps its `0.1875` and
+/// `200 × 5 / 3` reads `333.333333333`. It keeps twelve significant digits,
+/// more than any quantity typed here carries, so a non-zero quantity never
+/// becomes 0.
+fn without_binary_noise(q: f64) -> f64 {
+    format!("{q:.11e}").parse().unwrap_or(q)
 }
 
-/// Rounds a scaled quantity to the hundredth, so that `1 × 5 / 3` reads
-/// `1.67`. Below the hundredth, where that would read 0 (`0.004 × 1 / 4`),
-/// it keeps two significant digits instead: `0.001`.
-fn round_scaled(q: f64) -> f64 {
-    let hundredth = (q * 100.0).round() / 100.0;
-    if hundredth == 0.0 && q != 0.0 {
-        round_significant(q, 2)
-    } else {
-        hundredth
-    }
-}
-
-/// A sum of quantities, without rounding it: only the binary noise of the
-/// addition goes (`0.1 + 0.2` reads `0.3`, not `0.30000000000000004`),
-/// while `0.125 + 0.0625` keeps its `0.1875`. Twelve significant digits is
-/// more than any quantity typed or scaled here carries.
+/// A sum of quantities, without its binary noise.
 fn add_quantities(a: f64, b: f64) -> f64 {
-    round_significant(a + b, 12)
+    without_binary_noise(a + b)
 }
 
-/// `quantity × target / base`, rounded to the hundredth (two significant
-/// digits below it, never 0 for a non-zero quantity); the quantity as
-/// written when it, the base or the target is missing.
+/// `quantity × target / base`, not rounded, only without its binary noise;
+/// the quantity as written when it, the base or the target is missing.
 pub(crate) fn scale_quantity(
     quantity: Option<f64>,
     base: Option<i32>,
     target: Option<i32>,
 ) -> Option<f64> {
     match (quantity, base, target) {
-        (Some(q), Some(b), Some(t)) if b > 0 => Some(round_scaled(q * f64::from(t) / f64::from(b))),
+        (Some(q), Some(b), Some(t)) if b > 0 => {
+            Some(without_binary_noise(q * f64::from(t) / f64::from(b)))
+        }
         _ => quantity,
     }
 }
@@ -165,23 +153,37 @@ mod tests {
     }
 
     #[test]
-    fn a_computed_quantity_is_rounded_to_the_hundredth() {
-        assert_eq!(scale_quantity(Some(1.0), Some(3), Some(5)), Some(1.67));
-        assert_eq!(scale_quantity(Some(0.1), Some(1), Some(3)), Some(0.3));
+    fn a_scaled_quantity_is_not_rounded() {
+        // Decision of 2026-10-25: no rounding, 200 g × 5 / 3 keeps its digits.
+        assert_eq!(
+            scale_quantity(Some(200.0), Some(3), Some(5)),
+            Some(333.333333333)
+        );
+        assert_eq!(
+            scale_quantity(Some(1.0), Some(3), Some(5)),
+            Some(1.66666666667)
+        );
     }
 
     #[test]
-    fn a_scaled_quantity_that_is_not_zero_never_rounds_to_zero() {
+    fn a_small_scaled_quantity_keeps_every_digit() {
+        // Neither the hundredth nor two significant digits.
+        assert_eq!(scale_quantity(Some(0.0075), Some(2), Some(2)), Some(0.0075));
+        assert_eq!(scale_quantity(Some(0.005), Some(4), Some(4)), Some(0.005));
+        assert_eq!(
+            scale_quantity(Some(0.01), Some(3), Some(1)),
+            Some(0.00333333333333)
+        );
         // 0.004 kg for 4, cooked for 1: 0.001 kg, not « 0 kg ».
         assert_eq!(scale_quantity(Some(0.004), Some(4), Some(1)), Some(0.001));
-        // Below the hundredth it keeps two significant digits.
-        assert_eq!(scale_quantity(Some(0.01), Some(3), Some(1)), Some(0.0033));
-        assert_eq!(
-            scale_quantity(Some(0.0001), Some(50), Some(1)),
-            Some(0.000002)
-        );
         // A written 0 stays 0.
         assert_eq!(scale_quantity(Some(0.0), Some(4), Some(1)), Some(0.0));
+    }
+
+    #[test]
+    fn a_scaled_quantity_carries_no_binary_noise() {
+        // 0.1 × 3 is 0.30000000000000004 in f64.
+        assert_eq!(scale_quantity(Some(0.1), Some(1), Some(3)), Some(0.3));
     }
 
     #[test]
@@ -272,13 +274,16 @@ mod tests {
             ing(2, "Beurre", Some(0.0625), Some("kg"), None, None),
         ]);
         assert_eq!(lines, vec![line(1, "Beurre", Some(0.1875), Some("kg"))]);
-        // A scaled quantity (1 × 5 / 3 → 1.67) plus a written one keeps
-        // every digit of the written one.
+        // A scaled quantity (1 × 5 / 3) plus a written one keeps the digits
+        // of both.
         let lines = plan_lines([
             ing(1, "Sucre", Some(1.0), Some("kg"), Some(3), Some(5)),
             ing(2, "Sucre", Some(0.125), Some("kg"), None, None),
         ]);
-        assert_eq!(lines, vec![line(1, "Sucre", Some(1.795), Some("kg"))]);
+        assert_eq!(
+            lines,
+            vec![line(1, "Sucre", Some(1.79166666667), Some("kg"))]
+        );
     }
 
     #[test]
