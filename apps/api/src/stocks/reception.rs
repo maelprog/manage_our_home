@@ -86,6 +86,11 @@ struct Line {
     expires_on: Option<NaiveDate>,
 }
 
+/// The largest quantity a received article may carry, and a merged line
+/// reach: far above any household stock, far below where `float8` overflows
+/// (a sum of two huge quantities used to end in a 500).
+const MAX_QUANTITY: f64 = 1_000_000_000.0;
+
 /// The lot must name at least one item, and each item once.
 fn check_lot(ids: &[Uuid]) -> AppResult<()> {
     if ids.is_empty() {
@@ -101,13 +106,16 @@ fn check_lot(ids: &[Uuid]) -> AppResult<()> {
 /// Applies the grocery item's values to the fields the article leaves out:
 /// its name, its quantity (1 when the list had none), its unit (normalized
 /// like a stock creation, #458). The name must not be blank and the
-/// quantity must be positive.
+/// quantity must be positive and at most `MAX_QUANTITY`.
 fn received_line(item: &ReceivedItem, grocery: &GroceryLine) -> AppResult<Line> {
     let name = item.name.as_deref().unwrap_or(&grocery.name).trim();
     if name.is_empty() {
         return Err(AppError::BadRequest("name_required".into()));
     }
     let quantity = item.quantity.or(grocery.quantity).unwrap_or(1.0);
+    if !quantity.is_finite() || quantity > MAX_QUANTITY {
+        return Err(AppError::BadRequest("quantity_too_large".into()));
+    }
     if quantity <= 0.0 {
         return Err(AppError::BadRequest("quantity_must_be_positive".into()));
     }
@@ -234,8 +242,8 @@ pub async fn get_reception(
     .await?;
     tx.commit().await?;
 
-    // A checked item the list holds with a zero quantity cannot be
-    // pre-filled; the POST refuses it the same way.
+    // A checked item the list holds with a zero quantity (or one above
+    // `MAX_QUANTITY`) cannot be pre-filled; the POST refuses it the same way.
     let received: Vec<(Uuid, Line)> = checked
         .iter()
         .filter_map(|grocery| {
@@ -346,21 +354,40 @@ pub async fn receive(
         };
         let row = match merge_into {
             // The increment is done by the database, so a concurrent
-            // quantity adjustment is not lost.
-            Some(stock_id) => sqlx::query_as!(
+            // quantity adjustment is not lost; the guard keeps the sum under
+            // `MAX_QUANTITY` (and `float8` from overflowing) without
+            // computing it first.
+            Some(stock_id) => match sqlx::query_as!(
                 StockItemRow,
                 r#"
                 UPDATE stock_items SET quantity = quantity + $3, updated_at = now()
-                WHERE id = $1 AND group_id = $2
+                WHERE id = $1 AND group_id = $2 AND quantity <= $4::float8 - $3::float8
                 RETURNING id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on, barcode
                 "#,
                 stock_id,
                 group_id,
                 line.quantity,
+                MAX_QUANTITY,
             )
             .fetch_optional(&mut *tx)
             .await?
-            .ok_or(AppError::NotFound)?,
+            {
+                Some(row) => row,
+                None => {
+                    let exists = sqlx::query_scalar!(
+                        r#"SELECT EXISTS (SELECT 1 FROM stock_items WHERE id = $1 AND group_id = $2) AS "exists!""#,
+                        stock_id,
+                        group_id,
+                    )
+                    .fetch_one(&mut *tx)
+                    .await?;
+                    return Err(if exists {
+                        AppError::BadRequest("quantity_too_large".into())
+                    } else {
+                        AppError::NotFound
+                    });
+                }
+            },
             None => sqlx::query_as!(
                 StockItemRow,
                 r#"
@@ -540,6 +567,45 @@ mod tests {
             bad_request(received_line(&bare(), &grocery(Some(0.0), None))),
             "quantity_must_be_positive"
         );
+    }
+
+    #[test]
+    fn a_quantity_above_the_bound_is_refused() {
+        let item = ReceivedItem {
+            quantity: Some(MAX_QUANTITY * 2.0),
+            ..bare()
+        };
+        assert_eq!(
+            bad_request(received_line(&item, &grocery(None, None))),
+            "quantity_too_large"
+        );
+        // A list item saved with a huge quantity cannot be received as is.
+        assert_eq!(
+            bad_request(received_line(&bare(), &grocery(Some(1e308), None))),
+            "quantity_too_large"
+        );
+        let at_bound = ReceivedItem {
+            quantity: Some(MAX_QUANTITY),
+            ..bare()
+        };
+        assert!(received_line(&at_bound, &grocery(None, None)).is_ok());
+    }
+
+    #[test]
+    fn a_non_finite_quantity_is_refused() {
+        for q in [f64::INFINITY, f64::NAN] {
+            let item = ReceivedItem {
+                quantity: Some(q),
+                ..bare()
+            };
+            assert!(
+                matches!(
+                    received_line(&item, &grocery(None, None)),
+                    Err(AppError::BadRequest(_))
+                ),
+                "{q}"
+            );
+        }
     }
 
     fn article(name: &str, unit: &str, expires_on: Option<NaiveDate>) -> Line {

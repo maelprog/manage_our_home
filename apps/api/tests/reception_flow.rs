@@ -506,10 +506,23 @@ async fn any_member_receives_and_an_outsider_is_refused(db: PgPool) {
 #[sqlx::test]
 async fn a_lot_received_twice_at_once_is_received_once(db: PgPool) {
     let router = test_router(db.clone());
-    let cookie = register_verify_login(&router, &db, "rcv-race@example.test", "owner-password1").await;
+    let cookie =
+        register_verify_login(&router, &db, "rcv-race@example.test", "owner-password1").await;
     let group_id = create_group(&router, &cookie, "Foyer").await;
-    let milk = stock(&router, &cookie, &group_id, json!({"name": "Lait", "quantity": 1.0, "unit": "L"})).await;
-    let item = checked(&router, &cookie, &group_id, json!({"name": "Lait", "quantity": 2.0, "unit": "L"})).await;
+    let milk = stock(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Lait", "quantity": 1.0, "unit": "L"}),
+    )
+    .await;
+    let item = checked(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Lait", "quantity": 2.0, "unit": "L"}),
+    )
+    .await;
 
     // Hold the stock line, so that both receptions are parked on a lock
     // before either can commit.
@@ -543,15 +556,34 @@ async fn a_lot_received_twice_at_once_is_received_once(db: PgPool) {
 #[sqlx::test]
 async fn the_get_proposes_what_the_post_applies(db: PgPool) {
     let router = test_router(db.clone());
-    let cookie = register_verify_login(&router, &db, "rcv-plan@example.test", "owner-password1").await;
+    let cookie =
+        register_verify_login(&router, &db, "rcv-plan@example.test", "owner-password1").await;
     let group_id = create_group(&router, &cookie, "Foyer").await;
-    checked(&router, &cookie, &group_id, json!({"name": "Lait", "quantity": 1.0, "unit": "L"})).await;
-    checked(&router, &cookie, &group_id, json!({"name": "lait", "quantity": 2.0, "unit": "L"})).await;
+    checked(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Lait", "quantity": 1.0, "unit": "L"}),
+    )
+    .await;
+    checked(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "lait", "quantity": 2.0, "unit": "L"}),
+    )
+    .await;
 
     let proposed = proposals(&router, &cookie, &group_id).await;
-    let modes: Vec<&str> = proposed.iter().map(|p| p["mode"].as_str().unwrap()).collect();
+    let modes: Vec<&str> = proposed
+        .iter()
+        .map(|p| p["mode"].as_str().unwrap())
+        .collect();
     assert_eq!(modes, ["new", "merge"]);
-    assert!(proposed.iter().all(|p| p["stock_item"].is_null()), "{proposed:?}");
+    assert!(
+        proposed.iter().all(|p| p["stock_item"].is_null()),
+        "{proposed:?}"
+    );
 
     let lot: Vec<Value> = proposed
         .iter()
@@ -560,11 +592,72 @@ async fn the_get_proposes_what_the_post_applies(db: PgPool) {
     let res = receive(&router, &cookie, &group_id, Value::Array(lot)).await;
     assert_status(&res, StatusCode::OK);
     let applied = json_body(res).await["items"].as_array().unwrap().clone();
-    let applied_modes: Vec<&str> = applied.iter().map(|p| p["mode"].as_str().unwrap()).collect();
+    let applied_modes: Vec<&str> = applied
+        .iter()
+        .map(|p| p["mode"].as_str().unwrap())
+        .collect();
     assert_eq!(applied_modes, modes);
-    assert_eq!(applied[1]["stock_item"]["id"], applied[0]["stock_item"]["id"]);
+    assert_eq!(
+        applied[1]["stock_item"]["id"],
+        applied[0]["stock_item"]["id"]
+    );
 
     let stock = stock_items(&router, &cookie, &group_id).await;
     assert_eq!(stock.len(), 1, "{stock:?}");
     assert_eq!(stock[0]["quantity"], 3.0);
+}
+
+/// A received quantity, or the sum of a merge, above the bound is a 400, not
+/// a `float8` overflow; nothing is applied.
+#[sqlx::test]
+async fn a_quantity_out_of_bounds_is_refused(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie =
+        register_verify_login(&router, &db, "rcv-bound@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    stock(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Sel", "quantity": 1e308, "unit": "kg"}),
+    )
+    .await;
+    stock(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Riz", "quantity": 9e8, "unit": "kg"}),
+    )
+    .await;
+    let salt = checked(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Sel", "quantity": 1e308, "unit": "kg"}),
+    )
+    .await;
+    let rice = checked(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Riz", "quantity": 1.0, "unit": "kg"}),
+    )
+    .await;
+
+    for lot in [
+        json!([{"grocery_item_id": salt}]),
+        json!([{"grocery_item_id": salt, "quantity": 1.0}]),
+        json!([{"grocery_item_id": rice, "quantity": 2e8}]),
+        json!([{"grocery_item_id": rice, "quantity": 2e9, "mode": "new"}]),
+    ] {
+        let res = receive(&router, &cookie, &group_id, lot.clone()).await;
+        assert_status(&res, StatusCode::BAD_REQUEST);
+        assert_eq!(error_code(res).await, "quantity_too_large", "{lot}");
+    }
+
+    let stock = stock_items(&router, &cookie, &group_id).await;
+    let rice_line = stock.iter().find(|s| s["name"] == "Riz").unwrap();
+    assert_eq!(rice_line["quantity"], 9e8);
+    assert_eq!(stock.len(), 2);
+    assert_eq!(grocery_ids(&router, &cookie, &group_id).await.len(), 2);
 }

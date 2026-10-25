@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                UPDATE stock_items SET quantity = quantity + $3, updated_at = now()\n                WHERE id = $1 AND group_id = $2\n                RETURNING id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on, barcode\n                ",
+  "query": "\n                UPDATE stock_items SET quantity = quantity + $3, updated_at = now()\n                WHERE id = $1 AND group_id = $2 AND quantity <= $4::float8 - $3::float8\n                RETURNING id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on, barcode\n                ",
   "describe": {
     "columns": [
       {
@@ -118,6 +118,7 @@
       "Left": [
         "Uuid",
         "Uuid",
+        "Float8",
         "Float8"
       ]
     },
@@ -134,5 +135,5 @@
       true
     ]
   },
-  "hash": "45deebd5476625c5e5dab7f7166c4ae3dde1c67dba405cc70371645117165efb"
+  "hash": "8b128c04cfa28a7dadad1694ab82cc3da9028914923519e454f63687fb5af460"
 }
