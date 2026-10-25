@@ -152,8 +152,9 @@ pub fn article_key(raw: &str) -> String {
 /// (`article_key`) and no date different from its own is typed: the article
 /// has no date, or the same date as the line. Among several eligible lines
 /// the choice is deterministic: the line whose date equals the article's
-/// (an undated article prefers an undated line), then the soonest date,
-/// undated lines last, then the smallest id.
+/// (an undated article prefers an undated line), then the earliest date —
+/// even one already past: the rule does not read today — then the smallest
+/// id.
 pub fn merge_target(
     name: &str,
     unit: &str,
@@ -165,16 +166,11 @@ pub fn merge_target(
         .iter()
         .filter(|c| article_key(c.name) == name && article_key(c.unit) == unit)
         .filter(|c| expires_on.is_none() || c.expires_on == expires_on)
-        // `false` sorts first: same date, then dated before undated, then
-        // the soonest date, then the smallest id.
-        .min_by_key(|c| {
-            (
-                c.expires_on != expires_on,
-                c.expires_on.is_none(),
-                c.expires_on,
-                c.id,
-            )
-        })
+        // `false` sorts first: the same date, then the earliest date, then
+        // the smallest id. Past the first key the remaining lines all share
+        // one date (a dated article) or are all dated (an undated article
+        // whose undated lines won), so `None` never meets `Some` there.
+        .min_by_key(|c| (c.expires_on != expires_on, c.expires_on, c.id))
         .map(|c| c.id)
 }
 
@@ -429,11 +425,22 @@ mod tests {
     }
 
     #[test]
-    fn without_an_undated_line_an_undated_article_takes_the_soonest_date() {
+    fn without_an_undated_line_an_undated_article_takes_the_earliest_date() {
         let stock = [
             line(1, "Lait", "L", Some(d(2026, 11, 9))),
             line(2, "Lait", "L", Some(d(2026, 11, 1))),
             line(3, "Lait", "L", Some(d(2026, 11, 5))),
+        ];
+        assert_eq!(merge_target("lait", "L", None, &stock), Some(id(2)));
+    }
+
+    #[test]
+    fn the_earliest_date_wins_even_when_it_is_past() {
+        // The rule has no "today": a line already expired is still the
+        // earliest one.
+        let stock = [
+            line(1, "Lait", "L", Some(d(2026, 11, 5))),
+            line(2, "Lait", "L", Some(d(2020, 1, 1))),
         ];
         assert_eq!(merge_target("lait", "L", None, &stock), Some(id(2)));
     }
