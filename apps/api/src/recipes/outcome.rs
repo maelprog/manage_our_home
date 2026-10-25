@@ -43,7 +43,7 @@ use uuid::Uuid;
 
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
-use crate::grocery_list::planned::scale_quantity;
+use crate::grocery_list::planned::{scale_quantity, without_binary_noise};
 use crate::groups::require_role;
 use crate::recipes::meal_history::MealHistoryEntryResponse;
 use crate::recipes::selections::SelectionResponse;
@@ -106,8 +106,9 @@ pub struct Removal {
 }
 
 /// The stock line an ingredient is taken from: one of the same name
-/// (`article_key`), preferring the ingredient's unit, then the earliest
-/// expiry date (undated lines last), then the smallest id. `unit` is the
+/// (`article_key`), preferring the ingredient's unit, then a line that is
+/// not empty, then the earliest expiry date (undated lines last), then the
+/// smallest id. `unit` is the
 /// ingredient's, already normalized.
 pub(crate) fn match_stock<'a, 's>(
     name: &str,
@@ -122,6 +123,7 @@ pub(crate) fn match_stock<'a, 's>(
         .min_by_key(|s| {
             (
                 article_key(s.unit) != unit,
+                s.quantity <= 0.0,
                 s.expires_on.is_none(),
                 s.expires_on,
                 s.id,
@@ -133,6 +135,15 @@ pub(crate) fn match_stock<'a, 's>(
 /// more than it holds, never below 0.
 pub(crate) fn cap(wanted: f64, available: f64) -> f64 {
     wanted.min(available).max(0.0)
+}
+
+/// What a line holding `available` keeps once `removed` is taken, or `None`
+/// when it holds less. Both the stock and the result are read without their
+/// binary noise (`without_binary_noise`): `1.0 - 0.9` keeps `0.1`, not
+/// `0.09999999999999998`, from which a later `0.1` could not be taken.
+pub(crate) fn remaining_after(available: f64, removed: f64) -> Option<f64> {
+    let available = without_binary_noise(available);
+    (removed <= available).then(|| without_binary_noise(available - removed).max(0.0))
 }
 
 /// The proposal for each ingredient, in order. Two ingredients matching the
@@ -167,8 +178,8 @@ pub(crate) fn propose(ingredients: &[Ingredient<'_>], stock: &[StockLine<'_>]) -
                 .find(|(id, _)| *id == line.id)
                 .map(|(_, q)| q)
                 .expect("every matched line is in `remaining`");
-            let quantity = cap(wanted, *left);
-            *left -= quantity;
+            let quantity = cap(wanted, without_binary_noise(*left));
+            *left = remaining_after(*left, quantity).unwrap_or(0.0);
             Proposal {
                 stock_item_id: Some(line.id),
                 quantity,
@@ -467,6 +478,7 @@ pub async fn apply_done(
     )
     .fetch_all(&mut *tx)
     .await?;
+    let mut remaining = Vec::with_capacity(to_apply.len());
     for (id, quantity) in &to_apply {
         let Some(line) = locked.iter().find(|s| s.id == *id) else {
             return Err(AppError::ConflictJson(
@@ -476,35 +488,34 @@ pub async fn apply_done(
         if !names_an_ingredient(&line.name, &recipe) {
             return Err(AppError::BadRequest("stock_item_not_in_recipe".into()));
         }
-        if *quantity > line.quantity {
+        let Some(left) = remaining_after(line.quantity, *quantity) else {
             return Err(AppError::ConflictJson(json!({
                 "error": "insufficient_stock",
                 "stock_item_id": id,
                 "available": line.quantity,
             })));
-        }
+        };
+        remaining.push((*id, left));
     }
 
     let mut updated = Vec::with_capacity(to_apply.len());
-    for (id, quantity) in &to_apply {
-        // The lines are locked and checked above; the guard keeps the
-        // quantity from going below 0 all the same.
+    for (id, left) in &remaining {
+        // The lines are locked since they were read, so the quantity they
+        // keep is computed here (`remaining_after`: never below 0, without
+        // its binary noise) rather than as `quantity - $3` in SQL.
         let row = sqlx::query_as!(
             StockItemRow,
             r#"
-            UPDATE stock_items SET quantity = quantity - $3, updated_at = now()
-            WHERE id = $1 AND group_id = $2 AND quantity >= $3
+            UPDATE stock_items SET quantity = $3, updated_at = now()
+            WHERE id = $1 AND group_id = $2
             RETURNING id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on, barcode
             "#,
             id,
             group_id,
-            quantity,
+            left,
         )
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| {
-            AppError::ConflictJson(json!({ "error": "insufficient_stock", "stock_item_id": id }))
-        })?;
+        .fetch_one(&mut *tx)
+        .await?;
         updated.push(row);
     }
 
@@ -734,6 +745,57 @@ mod tests {
             match_stock("Lait", "L", &undated).map(|s| s.id),
             Some(id(4))
         );
+    }
+
+    #[test]
+    fn a_line_with_stock_goes_before_an_empty_one() {
+        let stock = [
+            line(1, "Oeufs", "unité", 0.0, date(1)),
+            line(2, "Oeufs", "unité", 6.0, date(9)),
+        ];
+        assert_eq!(
+            match_stock("Oeufs", "unité", &stock).map(|s| s.id),
+            Some(id(2))
+        );
+        // The unit still comes first: an empty line in the unit beats a
+        // full one in another.
+        let units = [
+            line(1, "Oeufs", "unité", 0.0, None),
+            line(2, "Oeufs", "boîte", 1.0, None),
+        ];
+        assert_eq!(
+            match_stock("Oeufs", "unité", &units).map(|s| s.id),
+            Some(id(1))
+        );
+    }
+
+    // -- remaining_after -----------------------------------------------------
+
+    #[test]
+    fn remaining_after_drops_the_binary_noise() {
+        assert_eq!(remaining_after(1.0, 0.9), Some(0.1));
+        assert_eq!(remaining_after(0.3, 0.1), Some(0.2));
+        assert_eq!(remaining_after(2.0, 2.0), Some(0.0));
+    }
+
+    #[test]
+    fn remaining_after_reads_a_noisy_stock_as_its_value() {
+        // 1.0 - 0.9 as `float8` computes it.
+        assert_eq!(remaining_after(0.09999999999999998, 0.1), Some(0.0));
+    }
+
+    #[test]
+    fn remaining_after_refuses_more_than_the_stock() {
+        assert_eq!(remaining_after(0.5, 0.6), None);
+        assert_eq!(remaining_after(0.0, 0.1), None);
+    }
+
+    #[test]
+    fn a_noisy_stock_is_proposed_as_its_value() {
+        let stock = [line(1, "Lait", "L", 0.09999999999999998, None)];
+        let got = propose(&[ing("Lait", Some(0.1), Some("L"))], &stock);
+        assert_eq!(got[0].quantity, 0.1);
+        assert_eq!(got[0].warning, None);
     }
 
     // -- cap -----------------------------------------------------------------

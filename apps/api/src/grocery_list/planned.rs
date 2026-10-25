@@ -43,7 +43,7 @@ pub(crate) struct PlannedLine {
 /// `200 × 5 / 3` reads `333.333333333`. It keeps twelve significant digits,
 /// more than any quantity typed here carries, so a non-zero quantity never
 /// becomes 0.
-fn without_binary_noise(q: f64) -> f64 {
+pub(crate) fn without_binary_noise(q: f64) -> f64 {
     format!("{q:.11e}").parse().unwrap_or(q)
 }
 

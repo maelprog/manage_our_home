@@ -818,3 +818,56 @@ async fn malformed_corrections_are_refused(db: PgPool) {
     );
     assert_eq!(planned_count(&router, &cookie, &group_id).await, 1);
 }
+
+/// 1.0 − 0.9 leaves 0.1 in the stock, not `float8`'s 0.09999999999999998:
+/// the 0.1 left can then be taken.
+#[sqlx::test]
+async fn what_is_left_carries_no_binary_noise(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "done-noise@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+    let lait = stock(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Lait", "quantity": 1.0, "unit": "L"}),
+    )
+    .await;
+    let recipe = planned_recipe(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Flan", "ingredients": [{"name": "Lait", "quantity": 0.9, "unit": "L"}]}),
+        json!({}),
+    )
+    .await;
+    let res = post(
+        &router,
+        &cookie,
+        &done_path(&group_id, &recipe),
+        json!({"removals": [{"stock_item_id": lait, "quantity": 0.9}]}),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(stock_quantity(&router, &cookie, &group_id, &lait).await, 0.1);
+
+    let res = post(
+        &router,
+        &cookie,
+        &format!("/groups/{group_id}/recipes/{recipe}/selection"),
+        json!({}),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let lines = done_preview(&router, &cookie, &group_id, &recipe).await;
+    assert_eq!(lines[0]["proposed_quantity"], 0.1);
+    let res = post(
+        &router,
+        &cookie,
+        &done_path(&group_id, &recipe),
+        json!({"removals": [{"stock_item_id": lait, "quantity": 0.1}]}),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(stock_quantity(&router, &cookie, &group_id, &lait).await, 0.0);
+}
