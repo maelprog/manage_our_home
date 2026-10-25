@@ -32,8 +32,14 @@
 //!
 //! Each application is one transaction that first locks the selection, so
 //! two applications at once end with one 200 and one 404. Any member may
-//! apply either action, like logging a meal: removing from the stock is a
-//! quantity-only adjustment, already open to any member (#39).
+//! apply either action, like logging a meal. Removing from the stock is a
+//! quantity-only adjustment, already open to any member (#39). Removing
+//! grocery items is not otherwise: deleting one directly is for its creator,
+//! an admin or the owner (`grocery_list::can_modify`). Through an abandon it
+//! is open to any member, by user arbitration of 2026-10-25, as for the
+//! reception of the groceries (#471), and `can_modify` is deliberately not
+//! called: only unchecked items generated for the abandoned recipe can go,
+//! and only those the request names.
 
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
