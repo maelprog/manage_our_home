@@ -526,7 +526,7 @@ async fn a_lot_received_twice_at_once_is_received_once(db: PgPool) {
 
     // Hold the stock line, so that both receptions are parked on a lock
     // before either can commit.
-    let mut hold = db.begin().await.unwrap();
+    let mut hold = manage_our_home::db::begin(&db).await.unwrap();
     sqlx::query("SELECT 1 FROM stock_items WHERE id = $1 FOR UPDATE")
         .bind(milk.parse::<uuid::Uuid>().unwrap())
         .execute(&mut *hold)
