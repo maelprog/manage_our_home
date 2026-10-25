@@ -347,6 +347,9 @@ fn banner(code: &str) -> String {
         "not_found" => "Un des articles n'est plus sur la liste : rechargez la page de réception.",
         "no_stock_to_merge" => "Un article ne peut plus être ajouté au stock existant : choisissez « Nouvelle ligne de stock » pour lui.",
         "quantity_too_large" => "Une quantité, ou le stock qu'elle complète, dépasserait 1 000 000 000.",
+        "quantity_must_be_positive" => "Chaque quantité doit être supérieure à zéro.",
+        "name_required" => "Un des articles n'a pas de nom : renommez-le sur la liste de courses.",
+        "duplicate_grocery_item" => "Un article figure deux fois dans le formulaire : rechargez la page de réception.",
         "forbidden" => "Vous n'avez pas les droits nécessaires pour cette action.",
         _ => "Service momentanément indisponible, merci de réessayer.",
     };
@@ -387,6 +390,9 @@ pub async fn get(
                 Ok(list) => list.items,
                 Err(_) => return service_unavailable_page().into_response(),
             }
+        }
+        Ok(resp) if resp.status == reqwest::StatusCode::UNAUTHORIZED => {
+            return Redirect::to("/login").into_response()
         }
         Ok(_) | Err(_) => return service_unavailable_page().into_response(),
     };
@@ -489,6 +495,10 @@ pub async fn post(
                 Err(_) => "/grocery-list?notice=received".to_string(),
             };
             Redirect::to(&target).into_response()
+        }
+        // The session ended between the form and its sending.
+        Ok(resp) if resp.status == reqwest::StatusCode::UNAUTHORIZED => {
+            Redirect::to("/login").into_response()
         }
         Ok(resp) => {
             let status = if resp.status.is_server_error() {
@@ -1134,5 +1144,25 @@ mod tests {
         assert!(html.contains("Aucun article coché"), "{html}");
         assert!(!html.contains("<form"), "{html}");
         assert!(html.contains(r#"href="/grocery-list""#), "{html}");
+    }
+
+    // -- banner ---------------------------------------------------------------
+
+    #[test]
+    fn each_refusal_of_the_lot_has_its_own_words() {
+        let unavailable = banner("unavailable");
+        for code in [
+            "lines",
+            "items_required",
+            "not_found",
+            "no_stock_to_merge",
+            "quantity_too_large",
+            "quantity_must_be_positive",
+            "name_required",
+            "duplicate_grocery_item",
+            "forbidden",
+        ] {
+            assert_ne!(banner(code), unavailable, "{code}");
+        }
     }
 }
