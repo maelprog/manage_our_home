@@ -24,6 +24,7 @@
 
 pub mod edit;
 pub mod list;
+pub mod reception;
 
 use axum::http::HeaderMap;
 use axum::response::Html;

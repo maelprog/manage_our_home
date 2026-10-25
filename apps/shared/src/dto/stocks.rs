@@ -1,5 +1,6 @@
 //! Request/response shapes for the Stocks endpoints
-//! (`apps/api/src/stocks/items.rs`), consumed by `apps/web`'s SSR client.
+//! (`apps/api/src/stocks/items.rs`, and `stocks/reception.rs` since #472),
+//! consumed by `apps/web`'s SSR client.
 //! Kept field-for-field identical to `apps/api`'s wire structs so there is one
 //! documented shape; only the fields `apps/web` needs are declared (serde
 //! ignores extras on deserialize). The backend is *not* modified by this epic
@@ -9,7 +10,7 @@ use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::validation::stocks::ExpiryStatus;
+use crate::validation::stocks::{ExpiryStatus, ReceptionMode};
 
 /// `POST /groups/:id/stock-items` request body. Mirrors
 /// `CreateStockItemRequest`. `category`/`reorder_threshold` are omitted from
@@ -180,4 +181,56 @@ pub struct ScanResult {
     /// The French name of the category that gave `expires_on`, `Some`
     /// exactly when `expires_on_source` is `Category`.
     pub expires_on_category: Option<String>,
+}
+
+/// One article of `POST /groups/:id/stock-items/reception` (#471). Mirrors
+/// apps/api's `ReceivedItem`: every field but the grocery item's id is
+/// optional, and an absent one takes the grocery item's value (an absent
+/// `mode`, the default proposal). Omitted from the wire when `None`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReceivedItemRequest {
+    pub grocery_item_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantity: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_on: Option<NaiveDate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ReceptionMode>,
+}
+
+/// `POST /groups/:id/stock-items/reception` request body (#471): the lot,
+/// applied in its order and in one transaction.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReceiveRequest {
+    pub items: Vec<ReceivedItemRequest>,
+}
+
+/// One line of `GET`/`POST /groups/:id/stock-items/reception` (#471).
+/// Mirrors apps/api's `ReceptionLineResponse`: the article as it enters the
+/// stock, its mode, and the stock line concerned — on `GET` the existing
+/// line a merge would add to (`None` for `new`, and for a merge into the
+/// line an earlier article of the lot creates), on `POST` the line as the
+/// reception left it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReceptionLine {
+    pub grocery_item_id: Uuid,
+    pub name: String,
+    pub quantity: f64,
+    pub unit: String,
+    #[serde(default)]
+    pub expires_on: Option<NaiveDate>,
+    pub mode: ReceptionMode,
+    #[serde(default)]
+    pub stock_item: Option<StockItemResponse>,
+}
+
+/// `GET`/`POST /groups/:id/stock-items/reception` response envelope
+/// (`{ "items": [...] }`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReceptionList {
+    pub items: Vec<ReceptionLine>,
 }
