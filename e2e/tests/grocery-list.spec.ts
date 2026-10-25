@@ -459,4 +459,35 @@ test.describe("Grocery list — reception (#472)", () => {
     await expect(rows.filter({ hasText: `1 L · péremption le ${frDate(stockDate)}` })).toHaveCount(1);
     await expect(rows.filter({ hasText: `3 L · péremption le ${frDate(otherDate)}` })).toHaveCount(1);
   });
+
+  test("a checked item adds to the existing stock line; a left-out one with its quantity emptied does not block", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-glrecvmerge", "Grocery Receiver Merge");
+    await createGroup(page, "Famille Réception Fusion");
+    await createStockItem(page, "Lait", "1", "L");
+
+    await addItem(page, "Lait", "2", "L");
+    await addItem(page, "Pain");
+    await check(page, "Lait");
+    await check(page, "Pain");
+    await page.getByRole("link", { name: "Réceptionner les articles cochés" }).click();
+
+    const lait = page.getByRole("group", { name: "Lait" });
+    const pain = page.getByRole("group", { name: "Pain" });
+    await expect(lait.getByRole("radio", { name: "Ajouter au stock existant (1 L)" })).toBeChecked();
+    // Left out, its quantity emptied: the browser still sends the form.
+    await pain.getByLabel("Quantité").fill("");
+    await pain.getByLabel("Ne pas réceptionner").check();
+    await page.getByRole("button", { name: "Réceptionner", exact: true }).click();
+
+    await expect(page).toHaveURL(/\/grocery-list\?notice=received&received=1$/);
+    await expect(page.locator("li", { hasText: "Lait" })).toHaveCount(0);
+    await expect(page.locator("li", { hasText: "Pain" })).toHaveCount(1);
+
+    await page.goto("/stocks");
+    const rows = page.locator("li", { hasText: "Lait" });
+    await expect(rows).toHaveCount(1);
+    await expect(rows).toContainText("3 L");
+  });
 });
