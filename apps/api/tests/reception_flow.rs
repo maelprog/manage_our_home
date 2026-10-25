@@ -536,3 +536,35 @@ async fn a_lot_received_twice_at_once_is_received_once(db: PgPool) {
     assert_eq!(stock.len(), 1);
     assert_eq!(stock[0]["quantity"], 3.0, "incremented once");
 }
+
+/// Arbitration of 2026-10-25: `GET` plans the lot like `POST`. Two checked
+/// « lait » without stock are proposed `new` then `merge`, and sending the
+/// proposal back applies exactly that.
+#[sqlx::test]
+async fn the_get_proposes_what_the_post_applies(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "rcv-plan@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    checked(&router, &cookie, &group_id, json!({"name": "Lait", "quantity": 1.0, "unit": "L"})).await;
+    checked(&router, &cookie, &group_id, json!({"name": "lait", "quantity": 2.0, "unit": "L"})).await;
+
+    let proposed = proposals(&router, &cookie, &group_id).await;
+    let modes: Vec<&str> = proposed.iter().map(|p| p["mode"].as_str().unwrap()).collect();
+    assert_eq!(modes, ["new", "merge"]);
+    assert!(proposed.iter().all(|p| p["stock_item"].is_null()), "{proposed:?}");
+
+    let lot: Vec<Value> = proposed
+        .iter()
+        .map(|p| json!({"grocery_item_id": p["grocery_item_id"]}))
+        .collect();
+    let res = receive(&router, &cookie, &group_id, Value::Array(lot)).await;
+    assert_status(&res, StatusCode::OK);
+    let applied = json_body(res).await["items"].as_array().unwrap().clone();
+    let applied_modes: Vec<&str> = applied.iter().map(|p| p["mode"].as_str().unwrap()).collect();
+    assert_eq!(applied_modes, modes);
+    assert_eq!(applied[1]["stock_item"]["id"], applied[0]["stock_item"]["id"]);
+
+    let stock = stock_items(&router, &cookie, &group_id).await;
+    assert_eq!(stock.len(), 1, "{stock:?}");
+    assert_eq!(stock[0]["quantity"], 3.0);
+}

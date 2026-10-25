@@ -8,11 +8,14 @@
 //! article merges into a line of the same name and unit unless a date
 //! different from that line's is typed. `GET` returns that proposal for the
 //! checked items so the web can pre-fill its form; `POST` applies a lot,
-//! falling back to the same rule for an item sent without a mode.
+//! falling back to the same rule for an item sent without a mode. Both plan
+//! the lot with the same function (`plan`), so a lot sent back as `GET`
+//! proposed it is applied exactly as proposed.
 //!
-//! Permissions are those of stock creation: any group member. Receiving an
-//! item removes it from the list whoever added it, and a merge is a
-//! quantity-only adjustment, which any member may already make.
+//! Permissions (user arbitration of 2026-10-25): those of stock creation,
+//! any group member — `can_modify` is deliberately not called. A member
+//! receives, and so removes from the list, items another member added; a
+//! merge is a quantity-only adjustment, which any member may already make.
 
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
@@ -52,8 +55,9 @@ pub struct ReceivedItem {
 }
 
 /// One line of the reception: the article as it enters the stock, its mode,
-/// and the stock line concerned — on `GET` the line a merge would add to
-/// (`null` for `new`), on `POST` the line as the reception left it.
+/// and the stock line concerned — on `GET` the existing line a merge would
+/// add to (`null` for `new`, and for a merge into the line an earlier
+/// article of the lot creates), on `POST` the line as the reception left it.
 #[derive(Serialize)]
 pub struct ReceptionLineResponse {
     pub grocery_item_id: Uuid,
@@ -133,6 +137,63 @@ fn resolve_target(mode: Option<ReceptionMode>, proposal: Option<Uuid>) -> AppRes
     }
 }
 
+/// Where an article of a lot goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target {
+    /// A line of its own.
+    New,
+    /// An existing stock line.
+    Stock(Uuid),
+    /// The line an earlier article of the same lot creates (its index in
+    /// the lot).
+    Lot(usize),
+}
+
+impl Target {
+    fn mode(self) -> ReceptionMode {
+        match self {
+            Target::New => ReceptionMode::New,
+            Target::Stock(_) | Target::Lot(_) => ReceptionMode::Merge,
+        }
+    }
+}
+
+/// Plans a lot, article by article in its order, so that `GET` proposes
+/// exactly what `POST` applies. An article that makes a new line is, for the
+/// articles after it, a candidate like any stock line, under its grocery
+/// item's id: two « lait » of one lot give `new` then `merge`.
+fn plan<'a>(
+    articles: &[(Uuid, &'a Line, Option<ReceptionMode>)],
+    stock: &[StockCandidate<'a>],
+) -> AppResult<Vec<Target>> {
+    let mut candidates = stock.to_vec();
+    // The grocery item id each new line of the lot is a candidate under,
+    // and the index of the article that creates it.
+    let mut created: Vec<(Uuid, usize)> = Vec::new();
+    let mut targets = Vec::with_capacity(articles.len());
+    for (index, (grocery_item_id, line, mode)) in articles.iter().enumerate() {
+        let proposal = merge_target(&line.name, &line.unit, line.expires_on, &candidates);
+        let target = match resolve_target(*mode, proposal)? {
+            Some(id) => match created.iter().find(|(c, _)| *c == id) {
+                Some(&(_, creator)) => Target::Lot(creator),
+                None => Target::Stock(id),
+            },
+            None => {
+                candidates.push(StockCandidate {
+                    id: *grocery_item_id,
+                    name: &line.name,
+                    unit: &line.unit,
+                    expires_on: line.expires_on,
+                });
+                created.push((*grocery_item_id, index));
+                Target::New
+            }
+        };
+        targets.push(target);
+    }
+    Ok(targets)
+}
+
 fn candidates(stock: &[StockItemRow]) -> Vec<StockCandidate<'_>> {
     stock
         .iter()
@@ -143,14 +204,6 @@ fn candidates(stock: &[StockItemRow]) -> Vec<StockCandidate<'_>> {
             expires_on: s.expires_on,
         })
         .collect()
-}
-
-fn mode_of(target: Option<Uuid>) -> ReceptionMode {
-    if target.is_some() {
-        ReceptionMode::Merge
-    } else {
-        ReceptionMode::New
-    }
 }
 
 /// The default proposal for each checked item of the list, pre-filled with
@@ -181,43 +234,54 @@ pub async fn get_reception(
     .await?;
     tx.commit().await?;
 
+    // A checked item the list holds with a zero quantity cannot be
+    // pre-filled; the POST refuses it the same way.
+    let received: Vec<(Uuid, Line)> = checked
+        .iter()
+        .filter_map(|grocery| {
+            let item = ReceivedItem {
+                grocery_item_id: grocery.id,
+                name: None,
+                quantity: None,
+                unit: None,
+                expires_on: None,
+                mode: None,
+            };
+            received_line(&item, grocery).ok().map(|l| (grocery.id, l))
+        })
+        .collect();
+    // The lot as the web would send it back unchanged, in this order.
+    let articles: Vec<_> = received.iter().map(|(id, l)| (*id, l, None)).collect();
+    let targets = plan(&articles, &candidates(&stock))?;
+
     let today = today();
-    let mut lines = Vec::with_capacity(checked.len());
-    for grocery in &checked {
-        let item = ReceivedItem {
-            grocery_item_id: grocery.id,
-            name: None,
-            quantity: None,
-            unit: None,
-            expires_on: None,
-            mode: None,
-        };
-        // A checked item the list holds with a blank name or a zero
-        // quantity cannot be pre-filled; the POST will refuse it the same way.
-        let Ok(line) = received_line(&item, grocery) else {
-            continue;
-        };
-        let target = merge_target(&line.name, &line.unit, None, &candidates(&stock));
-        let stock_item = target
-            .and_then(|id| stock.iter().find(|s| s.id == id))
-            .map(|s| StockItemResponse::from_row(s.clone(), today));
-        lines.push(ReceptionLineResponse {
-            grocery_item_id: grocery.id,
+    let lines: Vec<ReceptionLineResponse> = received
+        .into_iter()
+        .zip(targets)
+        .map(|((grocery_item_id, line), target)| ReceptionLineResponse {
+            grocery_item_id,
             name: line.name,
             quantity: line.quantity,
             unit: line.unit,
             expires_on: None,
-            mode: mode_of(target),
-            stock_item,
-        });
-    }
+            mode: target.mode(),
+            stock_item: match target {
+                Target::Stock(id) => stock
+                    .iter()
+                    .find(|s| s.id == id)
+                    .map(|s| StockItemResponse::from_row(s.clone(), today)),
+                Target::New | Target::Lot(_) => None,
+            },
+        })
+        .collect();
 
     Ok(Json(json!({ "items": lines })))
 }
 
 /// Receives a lot of grocery items into the stock, in one transaction: an
 /// item of another group (or already gone) is a 404 and an invalid one a
-/// 400/409, and either leaves the list and the stock untouched.
+/// 400/409, and either leaves the list and the stock untouched. Open to any
+/// group member, whoever added the items (see the module doc).
 pub async fn receive(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -245,7 +309,7 @@ pub async fn receive(
         return Err(AppError::NotFound);
     }
 
-    let mut stock = sqlx::query_as!(
+    let stock = sqlx::query_as!(
         StockItemRow,
         r#"SELECT id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on, barcode
            FROM stock_items WHERE group_id = $1"#,
@@ -254,17 +318,33 @@ pub async fn receive(
     .fetch_all(&mut *tx)
     .await?;
 
-    let mut received = Vec::with_capacity(body.items.len());
+    let mut lines = Vec::with_capacity(body.items.len());
     for item in &body.items {
         let grocery = groceries
             .iter()
             .find(|g| g.id == item.grocery_item_id)
             .ok_or(AppError::NotFound)?;
-        let line = received_line(item, grocery)?;
-        let proposal = merge_target(&line.name, &line.unit, line.expires_on, &candidates(&stock));
-        let target = resolve_target(item.mode, proposal)?;
+        lines.push(received_line(item, grocery)?);
+    }
+    let articles: Vec<_> = body
+        .items
+        .iter()
+        .zip(&lines)
+        .map(|(item, line)| (item.grocery_item_id, line, item.mode))
+        .collect();
+    let targets = plan(&articles, &candidates(&stock))?;
 
-        let row = match target {
+    // The id of the line each article of the lot ended on, for the
+    // articles that merge into a line an earlier one created.
+    let mut landed: Vec<Uuid> = Vec::with_capacity(lines.len());
+    let mut received = Vec::with_capacity(lines.len());
+    for ((item, line), target) in body.items.iter().zip(lines).zip(targets) {
+        let merge_into = match target {
+            Target::Stock(id) => Some(id),
+            Target::Lot(creator) => Some(landed[creator]),
+            Target::New => None,
+        };
+        let row = match merge_into {
             // The increment is done by the database, so a concurrent
             // quantity adjustment is not lost.
             Some(stock_id) => sqlx::query_as!(
@@ -299,13 +379,8 @@ pub async fn receive(
             .await?,
         };
 
-        // Later items of the same lot see this line as it now stands: two
-        // received « lait » merge into the line the first one created.
-        match stock.iter_mut().find(|s| s.id == row.id) {
-            Some(s) => *s = row.clone(),
-            None => stock.push(row.clone()),
-        }
-        received.push((item.grocery_item_id, line, mode_of(target), row));
+        landed.push(row.id);
+        received.push((item.grocery_item_id, line, target.mode(), row));
     }
 
     sqlx::query!(
@@ -465,6 +540,87 @@ mod tests {
             bad_request(received_line(&bare(), &grocery(Some(0.0), None))),
             "quantity_must_be_positive"
         );
+    }
+
+    fn article(name: &str, unit: &str, expires_on: Option<NaiveDate>) -> Line {
+        Line {
+            name: name.into(),
+            quantity: 1.0,
+            unit: unit.into(),
+            expires_on,
+        }
+    }
+
+    fn gid(n: u128) -> Uuid {
+        Uuid::from_u128(1000 + n)
+    }
+
+    #[test]
+    fn two_articles_of_one_lot_without_stock_give_new_then_merge() {
+        let a = article("Lait", "L", None);
+        let b = article("lait", "L", None);
+        let lot = [(gid(1), &a, None), (gid(2), &b, None)];
+        assert_eq!(plan(&lot, &[]).unwrap(), vec![Target::New, Target::Lot(0)]);
+    }
+
+    #[test]
+    fn an_article_matching_the_stock_merges_into_it() {
+        let milk = Uuid::from_u128(1);
+        let stock = [StockCandidate {
+            id: milk,
+            name: "Lait",
+            unit: "L",
+            expires_on: None,
+        }];
+        let a = article("lait", "L", None);
+        let b = article("lait", "L", None);
+        let lot = [(gid(1), &a, None), (gid(2), &b, None)];
+        assert_eq!(
+            plan(&lot, &stock).unwrap(),
+            vec![Target::Stock(milk), Target::Stock(milk)]
+        );
+    }
+
+    #[test]
+    fn a_forced_new_line_is_a_candidate_for_the_articles_after_it() {
+        let date = NaiveDate::from_ymd_opt(2026, 11, 5);
+        let a = article("Lait", "L", date);
+        let b = article("Lait", "L", date);
+        let c = article("Lait", "L", None);
+        let lot = [
+            (gid(1), &a, Some(ReceptionMode::New)),
+            (gid(2), &b, None),
+            (gid(3), &c, Some(ReceptionMode::Merge)),
+        ];
+        assert_eq!(
+            plan(&lot, &[]).unwrap(),
+            vec![Target::New, Target::Lot(0), Target::Lot(0)]
+        );
+    }
+
+    #[test]
+    fn a_lot_line_dated_differently_is_not_merged_into() {
+        let a = article("Lait", "L", NaiveDate::from_ymd_opt(2026, 11, 1));
+        let b = article("Lait", "L", NaiveDate::from_ymd_opt(2026, 11, 5));
+        let lot = [(gid(1), &a, None), (gid(2), &b, None)];
+        assert_eq!(plan(&lot, &[]).unwrap(), vec![Target::New, Target::New]);
+    }
+
+    #[test]
+    fn a_forced_merge_with_nothing_to_merge_into_refuses_the_plan() {
+        let a = article("Lait", "L", None);
+        let lot = [(gid(1), &a, Some(ReceptionMode::Merge))];
+        assert!(matches!(
+            plan(&lot, &[]),
+            Err(AppError::Conflict(ref c)) if c == "no_stock_to_merge"
+        ));
+    }
+
+    #[test]
+    fn the_target_gives_the_mode() {
+        assert_eq!(Target::New.mode(), ReceptionMode::New);
+        assert_eq!(Target::Stock(Uuid::nil()).mode(), ReceptionMode::Merge);
+        assert_eq!(Target::Lot(0).mode(), ReceptionMode::Merge);
     }
 
     #[test]
