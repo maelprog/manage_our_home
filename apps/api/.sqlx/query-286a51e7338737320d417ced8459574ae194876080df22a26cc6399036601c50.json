@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, group_id, created_by, name, instructions, source_url, created_at, updated_at\n           FROM recipes WHERE id = $1 AND group_id = $2",
+  "query": "\n        SELECT id, group_id, created_by, name, instructions, source_url, servings, created_at, updated_at\n        FROM recipes\n        WHERE group_id = $1\n        ORDER BY name\n        ",
   "describe": {
     "columns": [
       {
@@ -71,6 +71,17 @@
       },
       {
         "ordinal": 6,
+        "name": "servings",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "servings"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -81,7 +92,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -94,7 +105,6 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid",
         "Uuid"
       ]
     },
@@ -105,9 +115,10 @@
       false,
       true,
       true,
+      true,
       false,
       false
     ]
   },
-  "hash": "cba9f42974c2588e8667e1be6a128b0b5112171d66fb2950f95dca0dee003dad"
+  "hash": "286a51e7338737320d417ced8459574ae194876080df22a26cc6399036601c50"
 }

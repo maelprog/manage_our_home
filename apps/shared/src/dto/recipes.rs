@@ -39,6 +39,10 @@ pub struct CreateRecipeRequest {
     /// not editable afterwards.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_url: Option<String>,
+    /// The number of people the recipe is written for (#470), 1 to
+    /// `validation::recipes::SERVINGS_MAX`; omitted when not said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub servings: Option<i32>,
 }
 
 /// The longest `source_url` a recipe may carry, in characters.
@@ -76,6 +80,14 @@ pub struct UpdateRecipeRequest {
     pub instructions: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ingredients: Option<Vec<IngredientInput>>,
+    /// Same three states as `instructions` (#470): omitted leaves the
+    /// number of people as it is, `null` clears it.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_some",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub servings: Option<Option<i32>>,
 }
 
 /// One ingredient on a recipe response. Mirrors `IngredientResponse`.
@@ -102,6 +114,9 @@ pub struct RecipeResponse {
     /// The page the recipe was imported from (#405), if it was.
     #[serde(default)]
     pub source_url: Option<String>,
+    /// The number of people it is written for (#470), if it says.
+    #[serde(default)]
+    pub servings: Option<i32>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

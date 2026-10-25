@@ -996,3 +996,87 @@ async fn deleting_a_recipe_drops_its_selection(db: PgPool) {
         .unwrap();
     assert_eq!(rows, 0);
 }
+
+/// #470: a recipe carries the number of people it is written for, from 1
+/// to 50 or unset; the update changes or clears it, and leaves it alone
+/// when the field is absent.
+#[sqlx::test]
+async fn recipe_servings_are_set_changed_and_cleared(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "recipe-servings@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+
+    for servings in [0, 51] {
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/recipes"),
+            Some(&cookie),
+            Some(serde_json::json!({"name": "Crepes", "servings": servings})),
+        )
+        .await;
+        assert_status(&res, StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(res).await["error"], "invalid_servings");
+    }
+
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes"),
+        Some(&cookie),
+        Some(serde_json::json!({"name": "Crepes", "servings": 4})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let recipe = json_body(res).await;
+    assert_eq!(recipe["servings"], 4);
+    let id = recipe["id"].as_str().unwrap().to_string();
+    let path = format!("/groups/{group_id}/recipes/{id}");
+
+    let patch = |body: serde_json::Value| {
+        let router = router.clone();
+        let cookie = cookie.clone();
+        let path = path.clone();
+        async move { call(&router, Method::PATCH, &path, Some(&cookie), Some(body)).await }
+    };
+
+    let res = patch(serde_json::json!({"servings": 51})).await;
+    assert_status(&res, StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(res).await["error"], "invalid_servings");
+
+    let res = patch(serde_json::json!({"name": "Crêpes"})).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(json_body(res).await["servings"], 4, "absent: left alone");
+
+    let res = patch(serde_json::json!({"servings": 6})).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(json_body(res).await["servings"], 6);
+
+    let res = call(&router, Method::GET, &path, Some(&cookie), None).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(json_body(res).await["servings"], 6);
+
+    let res = patch(serde_json::json!({"servings": null})).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(json_body(res).await["servings"], serde_json::Value::Null);
+
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/recipes"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(
+        json_body(res).await["recipes"][0]["servings"],
+        serde_json::Value::Null
+    );
+}

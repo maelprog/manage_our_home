@@ -79,6 +79,7 @@ pub(crate) fn draft_form(draft: &RecipeDraft) -> RecipeForm {
         instructions,
         ingredients,
         source_url: draft.source_url.clone(),
+        servings: String::new(),
     }
 }
 

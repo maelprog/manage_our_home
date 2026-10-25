@@ -6,33 +6,87 @@
 //! under the grocery-list marker (the cross-epic generate action is F6, out
 //! of scope — see `docs/front-epic-5-recipes.md`). PRG banners after
 //! create/delete.
+//!
+//! Since #470 the page opens on the recipes « À réaliser », the ones the
+//! grocery list is generated from, and each row of the full list carries
+//! the « À réaliser » / « Retirer » form.
 
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use manage_our_home_shared::dto::recipes::{
-    MissingIngredient, RecipeList, RecipeResponse, RecipeSuggestion, SuggestionList,
+    MissingIngredient, RecipeList, RecipeResponse, RecipeSelectionResponse, RecipeSuggestion,
+    SuggestionList,
 };
-use manage_our_home_shared::validation::recipes::stock_summary;
+use manage_our_home_shared::validation::recipes::{servings_label, stock_summary};
 
 use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::routes::stocks::new::OFF_ATTRIBUTION;
 use crate::state::{api_request_auth, AppState};
 
-use super::{family_context, recipes_cookie, service_unavailable_page};
+use super::{
+    deselect_form, family_context, planned_badge, planned_selections, recipes_cookie, select_form,
+    service_unavailable_page,
+};
 
 #[derive(serde::Deserialize)]
 pub struct ListQuery {
     notice: Option<String>,
+    error: Option<String>,
 }
 
 fn notice_text(code: &str) -> Option<&'static str> {
     match code {
         "recipe_created" => Some("Recette créée."),
         "recipe_deleted" => Some("Recette supprimée."),
+        "recipe_selected" => Some("Recette à réaliser pour les prochaines courses."),
+        "recipe_deselected" => Some("Recette retirée des recettes à réaliser."),
         _ => None,
     }
+}
+
+fn error_text(code: &str) -> Option<&'static str> {
+    match code {
+        "invalid_servings" => Some("Le nombre de personnes doit être un nombre entier de 1 à 50."),
+        "forbidden" => Some("Vous n'avez pas les droits nécessaires pour cette action."),
+        "unavailable" => Some("Service momentanément indisponible, merci de réessayer."),
+        _ => None,
+    }
+}
+
+/// The recipes « À réaliser » (#470), at the top of the page: the ones the
+/// next grocery list is generated from, with their number of people. The
+/// heading's `id` is what the grocery list links to when there are none.
+fn planned_section(planned: &[RecipeSelectionResponse]) -> String {
+    let summary = if planned.is_empty() {
+        r#"<p class="muted">Aucune recette à réaliser. Le bouton « À réaliser » d'une recette la fait entrer dans la prochaine génération de la liste de courses.</p>"#.to_string()
+    } else {
+        let names = planned
+            .iter()
+            .map(|s| {
+                let people = s
+                    .servings
+                    .map(|n| format!(" ({})", servings_label(n)))
+                    .unwrap_or_default();
+                format!(
+                    r#"<a href="/recipes/{id}">{name}</a>{people}"#,
+                    id = s.recipe_id,
+                    name = html_escape(&s.recipe_name),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let count = match planned.len() {
+            1 => "1 recette prévue".to_string(),
+            n => format!("{n} recettes prévues"),
+        };
+        format!(r#"<p>{count} pour la <a href="/grocery-list">liste de courses</a> : {names}.</p>"#)
+    };
+    format!(
+        r#"<h2 id="a-realiser">À réaliser</h2>
+{summary}"#
+    )
 }
 
 /// Renders a suggestion's missing required ingredients, or nothing when it's
@@ -89,17 +143,29 @@ fn suggestion_html(s: &RecipeSuggestion) -> String {
     )
 }
 
-fn recipe_row_html(r: &RecipeResponse) -> String {
+/// One recipe of the full list. `planned` is its selection's number of
+/// people when it is « À réaliser » (`Some(None)`: the selection does not
+/// say), `None` when it is not.
+fn recipe_row_html(r: &RecipeResponse, planned: Option<Option<i32>>) -> String {
     let count = r.ingredients.len();
     let count_label = match count {
         0 => "aucun ingrédient".to_string(),
         1 => "1 ingrédient".to_string(),
         n => format!("{n} ingrédients"),
     };
+    let selection = match planned {
+        Some(servings) => format!(
+            r#"<span class="actions">{badge}{deselect}</span>"#,
+            badge = planned_badge(servings),
+            deselect = deselect_form(r.id, "list"),
+        ),
+        None => select_form(r.id, r.servings, "list", "actions"),
+    };
     format!(
         r#"<li class="list-row">
 <a href="/recipes/{id}"><strong>{name}</strong></a>
 <span class="muted">{count_label}</span>
+{selection}
 </li>"#,
         id = r.id,
         name = html_escape(&r.name),
@@ -156,11 +222,21 @@ pub async fn get(
         Err(_) => return service_unavailable_page().into_response(),
     };
 
+    let Ok(planned) = planned_selections(&state, fam.gid, cookie.as_deref()).await else {
+        return service_unavailable_page().into_response();
+    };
+
     let notice = query
         .notice
         .as_deref()
         .and_then(notice_text)
         .map(|n| format!(r#"<p class="notice success">{}</p>"#, html_escape(n)))
+        .unwrap_or_default();
+    let error = query
+        .error
+        .as_deref()
+        .and_then(error_text)
+        .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
         .unwrap_or_default();
 
     let suggestions_section = if suggestions.is_empty() {
@@ -178,7 +254,13 @@ pub async fn get(
     let list_section = if recipes.is_empty() {
         r#"<p class="muted">Aucune recette pour le moment.</p>"#.to_string()
     } else {
-        let rows = recipes.iter().map(recipe_row_html).collect::<String>();
+        let rows = recipes
+            .iter()
+            .map(|r| {
+                let selection = planned.iter().find(|s| s.recipe_id == r.id);
+                recipe_row_html(r, selection.map(|s| s.servings))
+            })
+            .collect::<String>();
         format!(r#"<ul class="list">{rows}</ul>"#)
     };
 
@@ -190,10 +272,12 @@ pub async fn get(
 <a class="btn" href="/recipes/new">Nouvelle recette</a>
 </div>
 </div>
-{notice}
+{notice}{error}
+{planned_section}
 {suggestions_section}
 <h2>Toutes les recettes</h2>
 {list_section}"#,
+        planned_section = planned_section(&planned),
     );
     Html(shell_with_header(
         Width::Full,
@@ -202,4 +286,94 @@ pub async fn get(
         &body,
     ))
     .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    fn recipe(id: u128, name: &str, servings: Option<i32>) -> RecipeResponse {
+        RecipeResponse {
+            id: Uuid::from_u128(id),
+            group_id: Uuid::from_u128(100),
+            created_by: Uuid::from_u128(200),
+            name: name.into(),
+            instructions: None,
+            ingredients: Vec::new(),
+            source_url: None,
+            servings,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    fn selection(recipe_id: u128, name: &str, servings: Option<i32>) -> RecipeSelectionResponse {
+        RecipeSelectionResponse {
+            id: Uuid::from_u128(recipe_id + 1000),
+            recipe_id: Uuid::from_u128(recipe_id),
+            recipe_name: name.into(),
+            status: "planned".into(),
+            servings,
+            created_by: Uuid::from_u128(200),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn a_recipe_not_planned_offers_a_realiser_with_its_base() {
+        let html = recipe_row_html(&recipe(1, "Crêpes", Some(4)), None);
+        let id = Uuid::from_u128(1);
+        assert!(
+            html.contains(&format!(r#"action="/recipes/{id}/select""#)),
+            "{html}"
+        );
+        assert!(html.contains(r#"name="back" value="list""#), "{html}");
+        assert!(html.contains(r#"value="4""#), "{html}");
+        assert!(!html.contains("Retirer"), "{html}");
+        assert!(!html.contains(r#"class="badge""#), "{html}");
+    }
+
+    #[test]
+    fn a_planned_recipe_shows_its_badge_and_retirer() {
+        let html = recipe_row_html(&recipe(1, "Crêpes", Some(4)), Some(Some(6)));
+        let id = Uuid::from_u128(1);
+        assert!(html.contains("À réaliser · 6 personnes"), "{html}");
+        assert!(
+            html.contains(&format!(r#"action="/recipes/{id}/deselect""#)),
+            "{html}"
+        );
+        assert!(!html.contains("/select\""), "{html}");
+    }
+
+    #[test]
+    fn the_planned_section_names_the_recipes_and_their_people() {
+        let html = planned_section(&[
+            selection(1, "Crêpes", Some(6)),
+            selection(2, "Soupe <du jour>", None),
+        ]);
+        assert!(
+            html.contains(r#"<h2 id="a-realiser">À réaliser</h2>"#),
+            "{html}"
+        );
+        assert!(html.contains("2 recettes prévues"), "{html}");
+        assert!(
+            html.contains(&format!(
+                r#"<a href="/recipes/{}">Crêpes</a> (6 personnes)"#,
+                Uuid::from_u128(1)
+            )),
+            "{html}"
+        );
+        assert!(html.contains("Soupe &lt;du jour&gt;</a>."), "{html}");
+        assert!(planned_section(&[selection(1, "Crêpes", None)]).contains("1 recette prévue pour"),);
+    }
+
+    #[test]
+    fn an_empty_planned_section_says_how_to_plan_one() {
+        let html = planned_section(&[]);
+        assert!(html.contains(r#"id="a-realiser""#), "{html}");
+        assert!(html.contains("Aucune recette à réaliser."), "{html}");
+    }
 }

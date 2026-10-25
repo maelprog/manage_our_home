@@ -41,7 +41,10 @@ single screen. Only the name is required; quantity and unit are optional
 ### Generate is idempotent — safe re-run, no confirmation
 
 The "Générer depuis les recettes et les stocks" button posts to
-`POST /grocery-list/generate`, which the backend deduplicates by name
+`POST /grocery-list/generate`. Since #470 it takes the recipes « À
+réaliser » only, and its label counts them ("Générer depuis 2 recettes et
+les stocks"); with none it reads "Générer depuis les stocks", beside a link
+to `/recipes#a-realiser`. The backend deduplicates by name
 (case-insensitive, trimmed) against existing **unchecked** items, so
 re-running it never creates duplicates. Because it is idempotent, the UI
 offers it as a plain button with **no confirmation dialog** and a
@@ -223,9 +226,11 @@ mapped defensively per the tables above.
 
 1. A member can add an item manually inline (name + optional quantity/unit)
    and it appears on the shared list with a success banner.
-2. "Générer depuis les recettes et les stocks" pulls a recipe's missing
-   required ingredient and a low-stock item onto the list; re-running it
-   adds nothing (idempotent) and the banner says so.
+2. "Générer depuis n recettes et les stocks" pulls the missing required
+   ingredients of the recipes « À réaliser » only, and a low-stock item,
+   onto the list; with none planned, "Générer depuis les stocks" adds the
+   low-stock items alone. Re-running it adds nothing (idempotent) and the
+   banner says so.
 3. Checking an item off marks it done (strikethrough, sunk to the bottom);
    unchecking restores it. Any member can check any item.
 4. The item's creator (or an admin/owner) can edit its name/quantity/unit

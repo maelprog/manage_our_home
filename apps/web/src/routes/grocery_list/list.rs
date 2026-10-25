@@ -4,6 +4,9 @@
 //! carries the inline manual-add form and the idempotent generate button;
 //! per-row a "Modifier" link renders only for items the caller may modify.
 //! PRG banners after add/generate/check/update/delete.
+//!
+//! The generation takes the recipes « À réaliser » only (#470): its button
+//! says how many, and links to the recipes when there are none.
 
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
@@ -22,6 +25,7 @@ use uuid::Uuid;
 use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::lenient_query::{lenient, LenientQuery};
+use crate::routes::recipes::planned_selections;
 use crate::state::{api_request_auth, AppState};
 
 use super::{family_context, grocery_cookie, item_not_found_page, service_unavailable_page};
@@ -55,6 +59,42 @@ fn notice_html(notice: Option<&str>, added: Option<usize>) -> String {
         _ => return String::new(),
     };
     format!(r#"<p class="notice success">{}</p>"#, html_escape(&text))
+}
+
+/// How many recipes « À réaliser » the generation would take; `None` when
+/// the count cannot be read (transport failure or any status but `200`), so
+/// the button keeps its generic label rather than claiming there are none.
+async fn planned_count(state: &AppState, gid: Uuid, cookie: Option<&str>) -> Option<usize> {
+    planned_selections(state, gid, cookie)
+        .await
+        .ok()
+        .map(|s| s.len())
+}
+
+/// The generate button (#470), which names how many recipes « À réaliser »
+/// it takes. With none, it is the stocks alone, and a link leads to the
+/// recipes to choose some. `None` (the count could not be read) keeps the
+/// generic label.
+fn generate_html(planned: Option<usize>) -> String {
+    let label = match planned {
+        None => "Générer depuis les recettes et les stocks".to_string(),
+        Some(0) => "Générer depuis les stocks".to_string(),
+        Some(1) => "Générer depuis 1 recette et les stocks".to_string(),
+        Some(n) => format!("Générer depuis {n} recettes et les stocks"),
+    };
+    let choose = if planned == Some(0) {
+        r#"<a class="btn secondary" href="/recipes#a-realiser">Choisir les recettes à réaliser</a>
+"#
+    } else {
+        ""
+    };
+    format!(
+        r#"<div class="actions">
+{choose}<form method="post" action="/grocery-list/generate">
+<button type="submit">{label}</button>
+</form>
+</div>"#
+    )
 }
 
 fn error_html(error: Option<&str>) -> String {
@@ -167,6 +207,7 @@ pub async fn get(
         Ok(_) => Vec::new(),
         Err(_) => return service_unavailable_page().into_response(),
     };
+    let planned = planned_count(&state, fam.gid, cookie.as_deref()).await;
 
     let notice = notice_html(query.notice.as_deref(), query.added);
     let error = error_html(query.error.as_deref());
@@ -184,11 +225,9 @@ pub async fn get(
     let body = format!(
         r#"<div class="page-header">
 <h1>Liste de courses</h1>
-<form method="post" action="/grocery-list/generate">
-<button type="submit">Générer depuis les recettes et les stocks</button>
-</form>
+{generate}
 </div>
-<p class="muted">Une seule liste partagée par famille. La génération est sans risque à relancer : les articles déjà présents ne sont pas dupliqués.</p>
+<p class="muted">Une seule liste partagée par famille. La génération reprend les ingrédients manquants des recettes à réaliser, pour leur nombre de personnes, et les stocks sous leur seuil. Elle est sans risque à relancer : les articles déjà présents ne sont pas dupliqués.</p>
 {notice}{error}
 <form method="post" action="/grocery-list/add" class="card inline">
 <label>Article <input type="text" name="name" required placeholder="ex. Lait"/></label>
@@ -197,6 +236,7 @@ pub async fn get(
 <button type="submit">Ajouter</button>
 </form>
 {list_html}"#,
+        generate = generate_html(planned),
     );
     Html(shell_with_header(
         Width::Full,
@@ -487,6 +527,104 @@ mod tests {
         let q = list_query("notice=generated&added=3");
         assert_eq!(q.added, Some(3));
         assert!(notice_html(q.notice.as_deref(), q.added).contains("3 articles ajoutés"));
+    }
+
+    #[test]
+    fn the_generate_button_counts_the_recipes_to_cook() {
+        let one = generate_html(Some(1));
+        assert!(
+            one.contains(">Générer depuis 1 recette et les stocks</button>"),
+            "{one}"
+        );
+        let three = generate_html(Some(3));
+        assert!(
+            three.contains(">Générer depuis 3 recettes et les stocks</button>"),
+            "{three}"
+        );
+        for html in [&one, &three] {
+            assert!(!html.contains("/recipes#a-realiser"), "{html}");
+            assert!(
+                html.contains(r#"<form method="post" action="/grocery-list/generate">"#),
+                "{html}"
+            );
+        }
+    }
+
+    #[test]
+    fn without_recipes_to_cook_the_button_links_to_the_selection() {
+        let html = generate_html(Some(0));
+        assert!(
+            html.contains(">Générer depuis les stocks</button>"),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                r#"<a class="btn secondary" href="/recipes#a-realiser">Choisir les recettes à réaliser</a>"#
+            ),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_count_keeps_the_generic_label() {
+        let html = generate_html(None);
+        assert!(
+            html.contains(">Générer depuis les recettes et les stocks</button>"),
+            "{html}"
+        );
+        assert!(!html.contains("/recipes#a-realiser"), "{html}");
+    }
+
+    /// A stand-in for apps/api answering the selections read with
+    /// `status` and `body`.
+    async fn fake_selections_api(status: u16, body: &'static str) -> AppState {
+        use axum::routing::get;
+        let app = axum::Router::new().route(
+            "/groups/:gid/recipes/selections",
+            get(move || async move {
+                (
+                    axum::http::StatusCode::from_u16(status).unwrap(),
+                    [(axum::http::header::CONTENT_TYPE, "application/json")],
+                    body,
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        AppState {
+            http: reqwest::Client::new(),
+            api_internal_base_url: format!("http://{addr}"),
+            api_public_base_url: "/api".into(),
+            body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
+            upload_gate: manage_our_home_http_guard::UploadGate::new(8, 2),
+            shutdown: manage_our_home_http_guard::Shutdown::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unread_selection_count_keeps_the_generic_button() {
+        // A status other than 200 is not « no recipe to cook »: the button
+        // must not say « Générer depuis les stocks » nor link to the choice.
+        for status in [403, 404, 500, 503] {
+            let state = fake_selections_api(status, r#"{"error":"x"}"#).await;
+            let planned = planned_count(&state, Uuid::from_u128(1), Some("session=s")).await;
+            assert_eq!(planned, None, "{status}");
+            let html = generate_html(planned);
+            assert!(
+                html.contains(">Générer depuis les recettes et les stocks</button>"),
+                "{status}: {html}"
+            );
+            assert!(!html.contains("/recipes#a-realiser"), "{status}: {html}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_empty_selection_read_counts_no_recipe() {
+        let state = fake_selections_api(200, r#"{"selections":[]}"#).await;
+        let planned = planned_count(&state, Uuid::from_u128(1), Some("session=s")).await;
+        assert_eq!(planned, Some(0));
+        assert!(generate_html(planned).contains(">Générer depuis les stocks</button>"));
     }
 
     #[test]

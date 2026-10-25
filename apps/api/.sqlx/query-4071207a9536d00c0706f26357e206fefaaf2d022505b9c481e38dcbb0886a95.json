@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        UPDATE recipes SET\n            name = COALESCE($3, name),\n            instructions = $4,\n            updated_at = now()\n        WHERE id = $1 AND group_id = $2\n        RETURNING id, group_id, created_by, name, instructions, source_url, created_at, updated_at\n        ",
+  "query": "\n            INSERT INTO grocery_items (group_id, created_by, name, quantity, unit, source, source_recipe_id)\n            VALUES ($1, $2, $3, $4, $5, 'recipe', $6)\n            RETURNING id, group_id, created_by, name, quantity, unit, checked, source, source_recipe_id, created_at, updated_at\n            ",
   "describe": {
     "columns": [
       {
@@ -9,7 +9,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "recipes",
+            "table": "grocery_items",
             "name": "id"
           }
         }
@@ -20,7 +20,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "recipes",
+            "table": "grocery_items",
             "name": "group_id"
           }
         }
@@ -31,7 +31,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "recipes",
+            "table": "grocery_items",
             "name": "created_by"
           }
         }
@@ -42,51 +42,84 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "recipes",
+            "table": "grocery_items",
             "name": "name"
           }
         }
       },
       {
         "ordinal": 4,
-        "name": "instructions",
-        "type_info": "Text",
+        "name": "quantity",
+        "type_info": "Float8",
         "origin": {
           "Table": {
-            "table": "recipes",
-            "name": "instructions"
+            "table": "grocery_items",
+            "name": "quantity"
           }
         }
       },
       {
         "ordinal": 5,
-        "name": "source_url",
+        "name": "unit",
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "recipes",
-            "name": "source_url"
+            "table": "grocery_items",
+            "name": "unit"
           }
         }
       },
       {
         "ordinal": 6,
-        "name": "created_at",
-        "type_info": "Timestamptz",
+        "name": "checked",
+        "type_info": "Bool",
         "origin": {
           "Table": {
-            "table": "recipes",
-            "name": "created_at"
+            "table": "grocery_items",
+            "name": "checked"
           }
         }
       },
       {
         "ordinal": 7,
+        "name": "source",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "grocery_items",
+            "name": "source"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "source_recipe_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grocery_items",
+            "name": "source_recipe_id"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "grocery_items",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
-            "table": "recipes",
+            "table": "grocery_items",
             "name": "updated_at"
           }
         }
@@ -97,7 +130,9 @@
         "Uuid",
         "Uuid",
         "Text",
-        "Text"
+        "Float8",
+        "Text",
+        "Uuid"
       ]
     },
     "nullable": [
@@ -108,8 +143,11 @@
       true,
       true,
       false,
+      false,
+      true,
+      false,
       false
     ]
   },
-  "hash": "55b543bfbe2b354f7009fd396af6524b78e54d0763188a49650ea0cfe5d12829"
+  "hash": "4071207a9536d00c0706f26357e206fefaaf2d022505b9c481e38dcbb0886a95"
 }

@@ -11,6 +11,7 @@ use uuid::Uuid;
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::grocery_list::can_modify;
+use crate::grocery_list::planned::{plan_lines, PlannedIngredient};
 use crate::groups::require_role;
 use crate::AppState;
 
@@ -322,23 +323,22 @@ pub async fn delete_grocery_item(
     Ok(StatusCode::NO_CONTENT)
 }
 
-struct RequiredIngredientRow {
-    name: String,
-    quantity: Option<f64>,
-    unit: Option<String>,
-}
-
 struct LowStockRow {
     name: String,
 }
 
 /// Generates new grocery items from the two automated sources named in
-/// docs/v1-scope.md epic #5: recipes' missing (required, not-in-stock)
-/// ingredients, and stock items at/below their reorder threshold. Matching
-/// against existing rows is name-based (case-insensitive, trimmed), same
-/// heuristic as recipes::suggestions and stocks' low_stock — an item
-/// already present and unchecked is not duplicated, so re-running this is
-/// idempotent. Any group member may trigger it (same bar as manual add).
+/// docs/v1-scope.md epic #5: the required, not-in-stock ingredients of the
+/// recipes planned for the next shopping (#470), and stock items at/below
+/// their reorder threshold. A recipe counts only while it has a `planned`
+/// selection (`recipe_selections`, #469); its quantities are scaled to the
+/// selection's number of people, and an ingredient several planned recipes
+/// share makes one line (`planned::plan_lines`). Each recipe line names the
+/// first recipe that calls for it in `source_recipe_id`. Matching against
+/// existing rows is name-based (case-insensitive, trimmed), same heuristic
+/// as recipes::suggestions and stocks' low_stock — an item already present
+/// and unchecked is not duplicated, so re-running this is idempotent. Any
+/// group member may trigger it (same bar as manual add).
 pub async fn generate_grocery_items(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -357,12 +357,18 @@ pub async fn generate_grocery_items(
     .map(|n| n.trim().to_lowercase())
     .collect();
 
-    let missing_ingredients = sqlx::query_as!(
-        RequiredIngredientRow,
+    // Oldest selection first, so the "first recipe" a shared ingredient is
+    // attributed to is the one planned first.
+    let planned_ingredients = sqlx::query_as!(
+        PlannedIngredient,
         r#"
-        SELECT ri.name, ri.quantity, ri.unit
-        FROM recipe_ingredients ri
-        WHERE ri.group_id = $1 AND ri.is_optional = false
+        SELECT s.recipe_id, ri.name, ri.quantity, ri.unit,
+               r.servings AS recipe_servings, s.servings AS selection_servings
+        FROM recipe_selections s
+        JOIN recipes r ON r.id = s.recipe_id
+        JOIN recipe_ingredients ri ON ri.recipe_id = s.recipe_id
+        WHERE s.group_id = $1 AND s.status = 'planned' AND ri.is_optional = false
+        ORDER BY s.created_at, s.id, ri.name, ri.id
         "#,
         group_id,
     )
@@ -370,6 +376,7 @@ pub async fn generate_grocery_items(
     .await?
     .into_iter()
     .filter(|i| !stock_names.contains(&i.name.trim().to_lowercase()));
+    let missing_lines = plan_lines(planned_ingredients);
 
     let low_stock_items = sqlx::query_as!(
         LowStockRow,
@@ -395,23 +402,24 @@ pub async fn generate_grocery_items(
     let mut seen: HashSet<String> = existing_unchecked;
     let mut created: Vec<GroceryItemResponse> = Vec::new();
 
-    for ing in missing_ingredients {
-        let key = ing.name.trim().to_lowercase();
+    for line in missing_lines {
+        let key = line.name.to_lowercase();
         if !seen.insert(key) {
             continue;
         }
         let item = sqlx::query_as!(
             GroceryItemRow,
             r#"
-            INSERT INTO grocery_items (group_id, created_by, name, quantity, unit, source)
-            VALUES ($1, $2, $3, $4, $5, 'recipe')
+            INSERT INTO grocery_items (group_id, created_by, name, quantity, unit, source, source_recipe_id)
+            VALUES ($1, $2, $3, $4, $5, 'recipe', $6)
             RETURNING id, group_id, created_by, name, quantity, unit, checked, source, source_recipe_id, created_at, updated_at
             "#,
             group_id,
             auth.user_id,
-            ing.name.trim(),
-            ing.quantity,
-            ing.unit,
+            line.name,
+            line.quantity,
+            line.unit,
+            line.recipe_id,
         )
         .fetch_one(&mut *tx)
         .await?;

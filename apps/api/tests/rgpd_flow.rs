@@ -836,6 +836,8 @@ async fn export_nests_the_ingredients_under_their_recipe(db: PgPool) {
                 "ingredients": ingredients,
                 // #405: the page an imported recipe came from.
                 "source_url": (name == "Crepes").then_some("https://www.marmiton.org/recettes/crepes.aspx"),
+                // #470: the number of people it is written for.
+                "servings": (name == "Crepes").then_some(4),
             })),
         )
         .await;
@@ -862,6 +864,8 @@ async fn export_nests_the_ingredients_under_their_recipe(db: PgPool) {
     let eau = recipes.iter().find(|r| r["name"] == "Eau").unwrap();
     assert_eq!(eau["ingredients"], serde_json::json!([]));
     assert_eq!(eau["source_url"], serde_json::Value::Null);
+    assert_eq!(crepes["servings"], 4);
+    assert_eq!(eau["servings"], serde_json::Value::Null);
 
     let held: i64 = sqlx::query_scalar("SELECT count(*) FROM recipe_ingredients")
         .fetch_one(&db)

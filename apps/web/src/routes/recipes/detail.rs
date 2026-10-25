@@ -1,6 +1,8 @@
 //! `/recipes/:id` — recipe detail: ingredients (with optional/seasonal
 //! markers), instructions, the last-cooked state, plus the log-a-meal action
-//! and the delete action; full edit lives in `edit.rs`.
+//! and the delete action; full edit lives in `edit.rs`. The « À réaliser » /
+//! « Retirer » forms (#470) plan the recipe for the next grocery list, open
+//! to any member like the selection API.
 //!
 //! Permission bar: the log-a-meal form renders for **any** family member
 //! (feeding the shared variety history); the edit link and delete button
@@ -28,9 +30,11 @@ use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
+use manage_our_home_shared::validation::recipes::servings_label;
+
 use super::{
-    can_modify, family_context, forbidden_page, recipe_not_found_page, recipes_cookie,
-    service_unavailable_page,
+    can_modify, deselect_form, family_context, forbidden_page, planned_badge, planned_selections,
+    recipe_not_found_page, recipes_cookie, select_form, service_unavailable_page,
 };
 
 /// Formats an `f64` quantity for display without a trailing `.0` on whole
@@ -81,6 +85,8 @@ fn notice_text(code: &str) -> Option<&'static str> {
         "recipe_created" => Some("Recette créée."),
         "recipe_updated" => Some("Recette mise à jour."),
         "meal_logged" => Some("Repas enregistré."),
+        "recipe_selected" => Some("Recette à réaliser pour les prochaines courses."),
+        "recipe_deselected" => Some("Recette retirée des recettes à réaliser."),
         _ => None,
     }
 }
@@ -89,6 +95,7 @@ fn error_text(code: &str) -> Option<&'static str> {
     match code {
         "forbidden" => Some("Vous n'avez pas les droits nécessaires pour cette action."),
         "unavailable" => Some("Service momentanément indisponible, merci de réessayer."),
+        "invalid_servings" => Some("Le nombre de personnes doit être un nombre entier de 1 à 50."),
         _ => None,
     }
 }
@@ -188,16 +195,50 @@ pub async fn get(
     };
 
     let last = last_eaten(&state, fam.gid, recipe_id, cookie.as_deref()).await;
+    let planned = planned_selections(&state, fam.gid, cookie.as_deref())
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .find(|s| s.recipe_id == recipe_id)
+        .map(|s| s.servings);
     let can_edit = can_modify(&fam.role, recipe.created_by == me.user_id);
     let notice = query.notice.as_deref().and_then(notice_text);
     let error = query.error.as_deref().and_then(error_text);
-    Html(page(&fam.header, &recipe, last, can_edit, notice, error)).into_response()
+    Html(page(
+        &fam.header,
+        &recipe,
+        last,
+        planned,
+        can_edit,
+        notice,
+        error,
+    ))
+    .into_response()
+}
+
+/// The recipe's place in the next shopping (#470): « À réaliser » with the
+/// number of people when it is not planned, the badge and « Retirer » when
+/// it is. `planned` is the selection's number of people, `Some(None)` for a
+/// selection that does not say.
+fn selection_html(id: Uuid, base: Option<i32>, planned: Option<Option<i32>>) -> String {
+    match planned {
+        Some(servings) => format!(
+            r#"<div class="notice split">
+<span>{badge} Cette recette est prise en compte par la <a href="/grocery-list">liste de courses</a>.</span>
+{deselect}
+</div>"#,
+            badge = planned_badge(servings),
+            deselect = deselect_form(id, "detail"),
+        ),
+        None => select_form(id, base, "detail", "card inline"),
+    }
 }
 
 fn page(
     header: &str,
     recipe: &RecipeResponse,
     last_eaten: Option<NaiveDate>,
+    planned: Option<Option<i32>>,
     can_edit: bool,
     notice: Option<&str>,
     error: Option<&str>,
@@ -265,11 +306,18 @@ fn page(
     };
 
     let source_html = source_html(recipe.source_url.as_deref());
+    let servings_html = recipe
+        .servings
+        .map(|s| format!(r#"<p class="muted">Pour {}.</p>"#, servings_label(s)))
+        .unwrap_or_default();
+    let selection_html = selection_html(id, recipe.servings, planned);
     let body = format!(
         r#"<h1>{name}</h1>
 {source_html}
 {notice_html}{error_html}
+{selection_html}
 <h2>Ingrédients</h2>
+{servings_html}
 {ingredients_html}
 {instructions_html}
 {last_eaten_html}
@@ -404,5 +452,36 @@ mod tests {
         assert_eq!(source_html(None), "");
         assert_eq!(source_html(Some("javascript:alert(1)")), "");
         assert_eq!(source_html(Some("data:text/html,x")), "");
+    }
+
+    #[test]
+    fn an_unplanned_recipe_offers_a_realiser_for_its_base() {
+        let id = Uuid::from_u128(1);
+        let html = selection_html(id, Some(4), None);
+        assert!(
+            html.contains(&format!(
+                r#"action="/recipes/{id}/select" class="card inline""#
+            )),
+            "{html}"
+        );
+        assert!(html.contains(r#"name="back" value="detail""#), "{html}");
+        assert!(html.contains(r#"value="4""#), "{html}");
+    }
+
+    #[test]
+    fn a_planned_recipe_shows_its_people_and_retirer() {
+        let id = Uuid::from_u128(1);
+        let html = selection_html(id, Some(4), Some(Some(6)));
+        assert!(html.contains("À réaliser · 6 personnes"), "{html}");
+        assert!(html.contains(r#"href="/grocery-list""#), "{html}");
+        assert!(
+            html.contains(&format!(r#"action="/recipes/{id}/deselect""#)),
+            "{html}"
+        );
+        let html = selection_html(id, None, Some(None));
+        assert!(
+            html.contains(r#"<span class="badge">À réaliser</span>"#),
+            "{html}"
+        );
     }
 }
