@@ -179,6 +179,10 @@ pub(crate) fn validate_lines(
     // can be borrowed as candidates below.
     let units: Vec<String> = lines.iter().map(|l| normalize_unit(&l.unit)).collect();
     let mut candidates = stock.to_vec();
+    // The lines in error whose date does not read and which would make a
+    // new line once corrected: a merge that could go into one of them is
+    // not refused, it is checked again with the corrected form.
+    let mut undated_in_error: Vec<StockCandidate<'_>> = Vec::new();
     let mut errors = Vec::with_capacity(lines.len());
     let mut lot = Vec::new();
     for (line, unit) in lines.iter().zip(&units) {
@@ -198,32 +202,45 @@ pub(crate) fn validate_lines(
                 .map(Some)
                 .map_err(|_| LineError::InvalidDate),
         };
-        let (quantity, expires_on) = match (quantity, expires_on) {
-            (Ok(q), Ok(d)) => (q, d),
-            (Err(e), _) | (_, Err(e)) => {
-                errors.push(Some(e));
+        let candidate = |expires_on| StockCandidate {
+            id: line.grocery_item_id,
+            name: &line.name,
+            unit,
+            expires_on,
+        };
+        let expires_on = match expires_on {
+            Ok(d) => d,
+            Err(e) => {
+                if line.mode != Some(ReceptionMode::Merge) {
+                    undated_in_error.push(candidate(None));
+                }
+                errors.push(Some(quantity.err().unwrap_or(e)));
                 continue;
             }
         };
         // apps/api's rule (`plan`): a merge needs an eligible line, and an
-        // article that makes a new line is one for the articles after it.
+        // article that makes a new line is one for the articles after it —
+        // in error here or not, since the lot goes once it is corrected.
         let target = merge_target(&line.name, unit, expires_on, &candidates);
         let new_line = match line.mode {
-            Some(ReceptionMode::Merge) if target.is_none() => {
-                errors.push(Some(LineError::NoStockToMerge));
-                continue;
-            }
             Some(ReceptionMode::Merge) => false,
             Some(ReceptionMode::New) => true,
             None => target.is_none(),
         };
         if new_line {
-            candidates.push(StockCandidate {
-                id: line.grocery_item_id,
-                name: &line.name,
-                unit,
-                expires_on,
-            });
+            candidates.push(candidate(expires_on));
+        }
+        let quantity = match quantity {
+            Ok(q) => q,
+            Err(e) => {
+                errors.push(Some(e));
+                continue;
+            }
+        };
+        if line.mode == Some(ReceptionMode::Merge) && target.is_none() {
+            let pending = merge_target(&line.name, unit, None, &undated_in_error).is_some();
+            errors.push((!pending).then_some(LineError::NoStockToMerge));
+            continue;
         }
         errors.push(None);
         lot.push(ReceivedItemRequest {
@@ -890,6 +907,68 @@ mod tests {
         l.excluded = true;
         let ok = line(2, "Riz", ReceptionMode::New);
         assert_eq!(validate_lines(&[l, ok], &[]).map(|lot| lot.len()), Ok(1));
+    }
+
+    #[test]
+    fn a_merge_into_a_line_made_above_that_is_in_error_is_not_refused() {
+        // Two « Lait » without stock: the first makes the line, the second
+        // adds to it. An error on the first is its own, not the second's.
+        let mut first = line(1, "Lait", ReceptionMode::New);
+        first.quantity = "0".into();
+        let second = line(2, "Lait", ReceptionMode::Merge);
+        assert_eq!(
+            validate_lines(&[first, second.clone()], &[]),
+            Err(LotError::Lines(vec![
+                Some(LineError::QuantityMustBePositive),
+                None
+            ]))
+        );
+        // Its date unreadable, the first may still make the line.
+        let mut first = line(1, "Lait", ReceptionMode::New);
+        first.expires_on = "demain".into();
+        assert_eq!(
+            validate_lines(&[first, second.clone()], &[]),
+            Err(LotError::Lines(vec![Some(LineError::InvalidDate), None]))
+        );
+        // Without a mode, the first would make the line too.
+        let mut first = line(1, "Lait", ReceptionMode::New);
+        first.mode = None;
+        first.quantity = "".into();
+        assert_eq!(
+            validate_lines(&[first, second], &[]),
+            Err(LotError::Lines(vec![
+                Some(LineError::QuantityMustBePositive),
+                None
+            ]))
+        );
+    }
+
+    #[test]
+    fn a_line_in_error_makes_no_line_for_another_date_or_when_it_merges() {
+        // Its date read, the first in error makes a line of that date only.
+        let mut first = line(1, "Lait", ReceptionMode::New);
+        first.quantity = "0".into();
+        first.expires_on = "2026-11-12".into();
+        let mut second = line(2, "Lait", ReceptionMode::Merge);
+        second.expires_on = "2026-11-20".into();
+        assert_eq!(
+            validate_lines(&[first, second], &[]),
+            Err(LotError::Lines(vec![
+                Some(LineError::QuantityMustBePositive),
+                Some(LineError::NoStockToMerge)
+            ]))
+        );
+        // A first that adds to a stock line makes none.
+        let mut first = line(1, "Lait", ReceptionMode::Merge);
+        first.quantity = "0".into();
+        let second = line(2, "Lait", ReceptionMode::Merge);
+        assert_eq!(
+            validate_lines(&[first, second], &[]),
+            Err(LotError::Lines(vec![
+                Some(LineError::QuantityMustBePositive),
+                Some(LineError::NoStockToMerge)
+            ]))
+        );
     }
 
     #[test]
