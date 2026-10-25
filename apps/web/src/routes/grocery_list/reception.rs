@@ -319,7 +319,7 @@ fn line_fieldset(i: usize, line: &FormLine, error: Option<LineError>) -> String 
 {error}<input type="hidden" name="id.{i}" value="{id}"/>
 <input type="hidden" name="name.{i}" value="{name}"/>
 <input type="hidden" name="merge_label.{i}" value="{merge_label}"/>
-<label>Quantité <input type="number" name="quantity.{i}" step="any" min="0" required value="{quantity}"/></label>
+<label>Quantité <input type="number" name="quantity.{i}" step="any" value="{quantity}"/></label>
 <label>Unité <input type="text" name="unit.{i}" value="{unit}" placeholder="unité si vide (ex. kg, L)"/></label>
 <label>Date de péremption
 <input type="date" name="expires_on.{i}" value="{expires_on}" data-expiry-shortcuts/>
@@ -1028,7 +1028,7 @@ mod tests {
         for field in [
             format!(r#"<input type="hidden" name="id.0" value="{a}"/>"#),
             r#"<input type="hidden" name="name.0" value="Lait &lt;bio&gt;"/>"#.to_string(),
-            r#"<input type="number" name="quantity.0" step="any" min="0" required value="2"/>"#
+            r#"<input type="number" name="quantity.0" step="any" value="2"/>"#
                 .to_string(),
             r#"<input type="text" name="unit.0" value="L" placeholder="unité si vide (ex. kg, L)"/>"#
                 .to_string(),
@@ -1079,7 +1079,7 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains(r#"name="quantity.0" step="any" min="0" required value="abc""#),
+            html.contains(r#"name="quantity.0" step="any" value="abc""#),
             "{html}"
         );
         assert!(
@@ -1108,6 +1108,15 @@ mod tests {
         ] {
             assert!(!e.text().is_empty(), "{e:?}");
         }
+    }
+
+    #[test]
+    fn a_line_left_out_does_not_block_the_form() {
+        // No browser check on the quantity: a line left out with its field
+        // emptied still sends the form; the server checks the others.
+        let html = page_body(&[line(1, "Pain", ReceptionMode::New)], &[], "");
+        assert!(!html.contains("required"), "{html}");
+        assert!(!html.contains("min="), "{html}");
     }
 
     #[test]
