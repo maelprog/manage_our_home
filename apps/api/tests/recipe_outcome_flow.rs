@@ -995,6 +995,41 @@ async fn an_ingredient_is_taken_from_several_lots(db: PgPool) {
     );
 }
 
+/// The `available` of a 409 is the quantity the refusal compared, without
+/// its binary noise: 0.1, not 0.09999999999999998.
+#[sqlx::test]
+async fn the_available_quantity_of_a_refusal_carries_no_binary_noise(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "done-avail@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+    let lait = stock(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Lait", "quantity": 0.09999999999999998, "unit": "L"}),
+    )
+    .await;
+    let recipe = planned_recipe(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Flan", "ingredients": [{"name": "Lait", "quantity": 0.2, "unit": "L"}]}),
+        json!({}),
+    )
+    .await;
+    let res = post(
+        &router,
+        &cookie,
+        &done_path(&group_id, &recipe),
+        json!({"removals": [{"stock_item_id": lait, "quantity": 0.2}]}),
+    )
+    .await;
+    assert_status(&res, StatusCode::CONFLICT);
+    let body = json_body(res).await;
+    assert_eq!(body["error"], "insufficient_stock");
+    assert_eq!(body["available"], 0.1);
+}
+
 /// An outsider cannot apply either action through the group's path (403),
 /// and nothing is applied.
 #[sqlx::test]

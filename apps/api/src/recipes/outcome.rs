@@ -569,7 +569,8 @@ pub async fn apply_done(
             return Err(AppError::ConflictJson(json!({
                 "error": "insufficient_stock",
                 "stock_item_id": id,
-                "available": line.quantity,
+                // As `remaining_after` compared it: without its binary noise.
+                "available": without_binary_noise(line.quantity),
             })));
         };
         remaining.push((*id, left));
