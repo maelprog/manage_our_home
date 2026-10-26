@@ -246,3 +246,88 @@ pub struct RecipeSelectionResponse {
 pub struct RecipeSelectionList {
     pub selections: Vec<RecipeSelectionResponse>,
 }
+
+// -- done / abandoned (#473) -------------------------------------------------
+
+/// Why a `done` preview proposes 0, or less than the recipe. Mirrors
+/// `apps/api/src/recipes/outcome.rs::RemovalWarning`; a code this mirror
+/// does not know reads as `Other` rather than failing the whole preview.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemovalWarning {
+    NoStock,
+    UnitMismatch,
+    NoQuantity,
+    Capped,
+    #[serde(other)]
+    Other,
+}
+
+/// One stock line of a `done` preview, and what is proposed from it, in
+/// the line's unit. Mirrors `DoneLotResponse`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DoneLot {
+    pub stock_item: crate::dto::stocks::StockItemResponse,
+    pub quantity: f64,
+}
+
+/// One ingredient of a `done` preview. Mirrors `DoneLineResponse`:
+/// `quantity` is the recipe's, scaled to the selection's number of people.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DoneIngredient {
+    pub ingredient_id: Uuid,
+    pub name: String,
+    pub quantity: Option<f64>,
+    pub unit: Option<String>,
+    pub is_optional: bool,
+    pub lots: Vec<DoneLot>,
+    pub proposed_quantity: f64,
+    pub warning: Option<RemovalWarning>,
+}
+
+/// `GET /groups/:id/recipes/:recipe_id/selection/done` response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DonePreview {
+    pub selection: RecipeSelectionResponse,
+    pub ingredients: Vec<DoneIngredient>,
+}
+
+/// One line of a `done` request: the quantity to take from a stock line,
+/// in its unit. Mirrors `Removal`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DoneRemoval {
+    pub stock_item_id: Uuid,
+    pub quantity: f64,
+    pub exclude: bool,
+}
+
+/// `POST …/selection/done` request body. Mirrors `DoneRequest`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DoneRequest {
+    pub removals: Vec<DoneRemoval>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eaten_on: Option<NaiveDate>,
+}
+
+/// One grocery item of an `abandoned` preview. Mirrors
+/// `AbandonLineResponse`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AbandonItem {
+    pub id: Uuid,
+    pub name: String,
+    pub quantity: Option<f64>,
+    pub unit: Option<String>,
+}
+
+/// `GET /groups/:id/recipes/:recipe_id/selection/abandoned` response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AbandonPreview {
+    pub selection: RecipeSelectionResponse,
+    pub items: Vec<AbandonItem>,
+}
+
+/// `POST …/selection/abandoned` request body. Mirrors `AbandonRequest`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AbandonRequest {
+    pub remove: Vec<Uuid>,
+}

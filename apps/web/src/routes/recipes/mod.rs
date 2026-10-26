@@ -19,6 +19,7 @@ pub mod edit;
 pub mod import;
 pub mod list;
 pub mod new;
+pub mod outcome;
 
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
@@ -145,6 +146,16 @@ pub(crate) fn deselect_form(recipe_id: Uuid, back: &str) -> String {
 <button type="submit" class="secondary">Retirer</button>
 </form>"#,
         back = html_escape(back),
+    )
+}
+
+/// The « Faite » and « Abandonner » links of a planned recipe (#474): each
+/// opens its confirmation page (`outcome.rs`), which comes back to `back`.
+pub(crate) fn outcome_links(recipe_id: Uuid, back: &str) -> String {
+    let back = if back == "list" { "list" } else { "detail" };
+    format!(
+        r#"<a class="btn secondary" href="/recipes/{recipe_id}/done?back={back}">Faite</a>
+<a class="btn secondary" href="/recipes/{recipe_id}/abandon?back={back}">Abandonner</a>"#
     )
 }
 
@@ -342,6 +353,20 @@ mod tests {
         assert!(html.contains(&format!(r#"action="/recipes/{id}/deselect""#)));
         assert!(html.contains(r#"name="back" value="detail""#));
         assert!(html.contains(r#"class="secondary">Retirer</button>"#));
+    }
+
+    #[test]
+    fn the_outcome_links_open_the_confirmation_pages() {
+        let id = Uuid::from_u128(7);
+        assert_eq!(
+            outcome_links(id, "list"),
+            format!(
+                r#"<a class="btn secondary" href="/recipes/{id}/done?back=list">Faite</a>
+<a class="btn secondary" href="/recipes/{id}/abandon?back=list">Abandonner</a>"#
+            )
+        );
+        // Anything but `list` is the recipe.
+        assert!(outcome_links(id, "https://evil.test").contains("?back=detail\""));
     }
 
     #[test]

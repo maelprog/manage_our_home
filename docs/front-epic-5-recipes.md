@@ -98,6 +98,10 @@ surfaces is the one a forged request would hit.
 | GET | `/recipes/:id/edit` | `recipes::edit::get` | Edit form (creator/admin/owner only) | `GET /groups/:id/recipes/:rid` |
 | POST | `/recipes/:id/edit` | `recipes::edit::post` | Update a recipe | `PATCH /groups/:id/recipes/:rid` |
 | POST | `/recipes/:id/log` | `recipes::detail::log` | Log this meal (feeds the variety penalty) | `POST /groups/:id/recipes/:rid/meal-history` |
+| GET | `/recipes/:id/done` | `recipes::outcome::done_get` | « Faite » confirmation (#474): one line per stock line proposed, quantity editable, « Retirer du stock » checked | `GET /groups/:id/recipes/:rid/selection/done` |
+| POST | `/recipes/:id/done` | `recipes::outcome::done_post` | Checked against a fresh preview (a line in error re-renders as typed, 422), then PRG → `?notice=recipe_done`; a change since the page was shown re-renders the updated preview (409) | `GET`, `POST /groups/:id/recipes/:rid/selection/done` |
+| GET | `/recipes/:id/abandon` | `recipes::outcome::abandon_get` | « Abandonner » confirmation (#474): the unchecked grocery items generated for the recipe, « Retirer » checked | `GET /groups/:id/recipes/:rid/selection/abandoned` |
+| POST | `/recipes/:id/abandon` | `recipes::outcome::abandon_post` | PRG → `?notice=recipe_abandoned`; an item checked or deleted since re-renders the updated preview (409) | `POST /groups/:id/recipes/:rid/selection/abandoned` |
 | POST | `/recipes/:id/delete` | `recipes::detail::delete` | Delete a recipe (creator/admin/owner only) | `DELETE /groups/:id/recipes/:rid` |
 
 No active family → every route redirects to `/groups/new` (same as Stocks).

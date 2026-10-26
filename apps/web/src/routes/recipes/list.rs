@@ -26,8 +26,8 @@ use crate::routes::stocks::new::OFF_ATTRIBUTION;
 use crate::state::{api_request_auth, AppState};
 
 use super::{
-    deselect_form, family_context, planned_badge, planned_selections, recipes_cookie, select_form,
-    service_unavailable_page,
+    deselect_form, family_context, outcome_links, planned_badge, planned_selections,
+    recipes_cookie, select_form, service_unavailable_page,
 };
 
 #[derive(serde::Deserialize)]
@@ -42,12 +42,15 @@ fn notice_text(code: &str) -> Option<&'static str> {
         "recipe_deleted" => Some("Recette supprimée."),
         "recipe_selected" => Some("Recette à réaliser pour les prochaines courses."),
         "recipe_deselected" => Some("Recette retirée des recettes à réaliser."),
+        "recipe_done" => Some(super::outcome::DONE_NOTICE),
+        "recipe_abandoned" => Some(super::outcome::ABANDONED_NOTICE),
         _ => None,
     }
 }
 
 fn error_text(code: &str) -> Option<&'static str> {
     match code {
+        "selection_gone" => Some(super::outcome::SELECTION_GONE),
         "invalid_servings" => Some("Le nombre de personnes doit être un nombre entier de 1 à 50."),
         "forbidden" => Some("Vous n'avez pas les droits nécessaires pour cette action."),
         "unavailable" => Some("Service momentanément indisponible, merci de réessayer."),
@@ -155,8 +158,9 @@ fn recipe_row_html(r: &RecipeResponse, planned: Option<Option<i32>>) -> String {
     };
     let selection = match planned {
         Some(servings) => format!(
-            r#"<span class="actions">{badge}{deselect}</span>"#,
+            r#"<span class="actions">{badge}{outcome}{deselect}</span>"#,
             badge = planned_badge(servings),
+            outcome = outcome_links(r.id, "list"),
             deselect = deselect_form(r.id, "list"),
         ),
         None => select_form(r.id, r.servings, "list", "actions"),
@@ -346,6 +350,15 @@ mod tests {
             "{html}"
         );
         assert!(!html.contains("/select\""), "{html}");
+        // Faite and Abandonner (#474), back to the list.
+        assert!(
+            html.contains(&format!(r#"href="/recipes/{id}/done?back=list""#)),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(r#"href="/recipes/{id}/abandon?back=list""#)),
+            "{html}"
+        );
     }
 
     #[test]
