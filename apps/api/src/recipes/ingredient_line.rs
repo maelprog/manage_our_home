@@ -13,13 +13,21 @@ use manage_our_home_shared::dto::recipes::DraftIngredient;
 /// from `UNITS` or a spoon (`c. à soupe`, `c. à café`), then an optional
 /// `de` / `d'`, then the name. Anything else — no quantity, `un peu`, a range
 /// (`2 à 3`, `2-3`), nothing left for the name — is kept whole as the name.
+///
+/// A line written the other way round, name first (`Ail : 3 gousses
+/// (hachées)`, #475), takes its name from the left of the colon and its
+/// quantity and unit from the right; what follows them on the right is a
+/// note, left out of the name. When the right side reads as a whole line
+/// (`Pâte : 200 g de farine`), it is that line that is read.
 pub fn parse_line(line: &str) -> DraftIngredient {
     let line = line.trim();
-    understood(line).unwrap_or_else(|| DraftIngredient {
-        quantity: None,
-        unit: None,
-        name: line.to_string(),
-    })
+    understood(line)
+        .or_else(|| name_first(line))
+        .unwrap_or_else(|| DraftIngredient {
+            quantity: None,
+            unit: None,
+            name: line.to_string(),
+        })
 }
 
 fn understood(line: &str) -> Option<DraftIngredient> {
@@ -39,6 +47,36 @@ fn understood(line: &str) -> Option<DraftIngredient> {
         .trim();
     if name.is_empty() {
         return None;
+    }
+    Some(DraftIngredient {
+        quantity: Some((quantity * 1000.0).round() / 1000.0),
+        unit,
+        name: name.to_string(),
+    })
+}
+
+/// `nom : quantité [unité] [note]`, or `None`.
+fn name_first(line: &str) -> Option<DraftIngredient> {
+    let (name, measure) = line.split_once(':')?;
+    let name = name.trim();
+    let measure = measure.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let (quantity, rest) = quantity(measure)?;
+    let rest = rest.trim_start();
+    if is_range(rest) || is_vague(rest) {
+        return None;
+    }
+    let (unit, rest) = match unit(rest) {
+        Some((unit, rest)) => (Some(unit.to_string()), rest.trim_start()),
+        None => (None, rest),
+    };
+    if ["de ", "d'", "d’"]
+        .iter()
+        .any(|of| strip_prefix_ci(rest, of).is_some())
+    {
+        return understood(measure);
     }
     Some(DraftIngredient {
         quantity: Some((quantity * 1000.0).round() / 1000.0),
@@ -139,7 +177,7 @@ fn is_vague(rest: &str) -> bool {
 
 /// Units read after a quantity: spellings, the unit written in the draft,
 /// and whether a plural ending (`s`, `x`, `(s)`) may follow.
-const UNITS: [(&[&str], &str, bool); 24] = [
+const UNITS: [(&[&str], &str, bool); 25] = [
     (
         &["kilogrammes", "kilogramme", "kilos", "kilo", "kg"],
         "kg",
@@ -151,6 +189,17 @@ const UNITS: [(&[&str], &str, bool); 24] = [
     (&["décilitres", "décilitre", "dl"], "dl", false),
     (&["centilitres", "centilitre", "cl"], "cl", false),
     (&["millilitres", "millilitre", "ml"], "ml", false),
+    (
+        &[
+            "centimètres",
+            "centimètre",
+            "centimetres",
+            "centimetre",
+            "cm",
+        ],
+        "cm",
+        false,
+    ),
     (&["pincée", "pincee"], "pincée", true),
     (&["sachet"], "sachet", true),
     (&["tranche"], "tranche", true),
@@ -370,6 +419,10 @@ mod tests {
             ("2 morceaux de pommes de terre", "morceau"),
             ("2 pincées de pommes de terre", "pincée"),
             ("2 Pincées de pommes de terre", "pincée"),
+            ("3 gousses de pommes de terre", "gousse"),
+            ("1 cuillère à soupe de pommes de terre", "c. à soupe"),
+            ("1 cuillères à café de pommes de terre", "c. à café"),
+            ("2 cm de pommes de terre", "cm"),
         ] {
             is(
                 line,
@@ -405,6 +458,82 @@ mod tests {
         is("une pincée de sel", Some(1.0), Some("pincée"), "sel");
         is("un oignon", Some(1.0), None, "oignon");
         is("2 d’échalotes", Some(2.0), None, "échalotes");
+    }
+
+    /// The lines of the prose page of #475, written « nom : quantité ».
+    #[test]
+    fn name_then_quantity_lines() {
+        is(
+            "Poulet entier ou morceaux : 1,2 kg (cuisses, pilons ou blanc selon préférence)",
+            Some(1.2),
+            Some("kg"),
+            "Poulet entier ou morceaux",
+        );
+        is(
+            "Bouillon de volaille : 250 ml",
+            Some(250.0),
+            Some("ml"),
+            "Bouillon de volaille",
+        );
+        is(
+            "Oignons : 2 gros (finement émincés)",
+            Some(2.0),
+            None,
+            "Oignons",
+        );
+        is(
+            "Ail : 3 gousses (hachées)",
+            Some(3.0),
+            Some("gousse"),
+            "Ail",
+        );
+        is(
+            "Gingembre frais : 2 cm (râpé)",
+            Some(2.0),
+            Some("cm"),
+            "Gingembre frais",
+        );
+        is(
+            "Curcuma : 1 cuillère à café",
+            Some(1.0),
+            Some("c. à café"),
+            "Curcuma",
+        );
+        is(
+            "Cannelle : ½ cuillère à café",
+            Some(0.5),
+            Some("c. à café"),
+            "Cannelle",
+        );
+        is(
+            "Huile d’olive : 3 cuillères à soupe",
+            Some(3.0),
+            Some("c. à soupe"),
+            "Huile d’olive",
+        );
+        is(
+            "Coriandre fraîche et persil : 15 g chacun (ciselés)",
+            Some(15.0),
+            Some("g"),
+            "Coriandre fraîche et persil",
+        );
+        is("Beurre: 20 g", Some(20.0), Some("g"), "Beurre");
+        is("Beurre\u{a0}: 20 g", Some(20.0), Some("g"), "Beurre");
+        // The right side is a whole line of its own: it names the
+        // ingredient.
+        is("Pâte : 200 g de farine", Some(200.0), Some("g"), "farine");
+        // No quantity, a range or nothing on one side: kept whole.
+        for line in [
+            "Sel et poivre : selon goût",
+            "Safran : quelques filaments ou ½ cuillère à café de safran en poudre",
+            "Optionnel : légumes comme carottes, courgettes ou navets",
+            "Tomates : 2 à 3",
+            " : 20 g",
+            "Beurre :",
+            "Préparation : 20-30 minutes",
+        ] {
+            is(line, None, None, line.trim());
+        }
     }
 
     #[test]
