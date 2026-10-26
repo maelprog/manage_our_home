@@ -135,10 +135,12 @@ pub(crate) fn parse_done_form(pairs: &[(String, String)]) -> DoneForm {
     }
 }
 
-/// `x` without the binary noise of a sum (0.1 + 0.2 is 0.3), at the
-/// billionth of a unit: finer than any quantity typed in a kitchen.
+/// `x` without the binary noise of a sum (0.1 + 0.2 is 0.3), not rounded:
+/// twelve significant digits, the rule apps/api compares the stock with
+/// (`grocery_list::planned::without_binary_noise`, decision of 2026-10-25).
+/// A coarser rule would accept here what apps/api refuses.
 fn without_noise(x: f64) -> f64 {
-    (x * 1e9).round() / 1e9
+    format!("{x:.11e}").parse().unwrap_or(x)
 }
 
 /// A typed quantity: 0 or more, a comma read as a decimal point.
@@ -1228,6 +1230,37 @@ mod tests {
                 None,
                 Some(LineError::TooMuch { available: 0.3 })
             ]))
+        );
+    }
+
+    #[test]
+    fn the_stock_is_compared_as_apps_api_compares_it_twelve_significant_digits() {
+        // One line holding 0.1234567891 L: apps/api refuses 0.1234567891234
+        // (more than it holds), even though both read 0.123456789 at the
+        // billionth.
+        let p = DonePreview {
+            selection: selection("Sauce"),
+            ingredients: vec![ingredient(
+                1,
+                "Vinaigre",
+                Some(0.1),
+                Some("L"),
+                vec![(stock(10, "Vinaigre", 0.1234567891, "L"), 0.1)],
+                None,
+            )],
+        };
+        assert_eq!(
+            validate_done(&form(vec![line(10, "0.1234567891234", true)]), &p),
+            Err(DoneError::Lines(vec![Some(LineError::TooMuch {
+                available: 0.1234567891
+            })]))
+        );
+        // Exactly what it holds is accepted, and sent as typed.
+        assert_eq!(
+            validate_done(&form(vec![line(10, "0.1234567891", true)]), &p)
+                .unwrap()
+                .removals,
+            vec![removal(10, 0.1234567891, false)]
         );
     }
 
