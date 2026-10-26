@@ -285,6 +285,36 @@ jobs:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
+      # The Playwright suite runs in Playwright's own image (#610), which
+      # carries Node, Chromium and every system library Chromium needs.
+      # Until #610 this job ran `npx playwright install --with-deps chromium`
+      # on the runner, and `--with-deps` fetches fonts and Xvfb through apt
+      # from the runner's Ubuntu mirror: 18 to 37 s on most runs, 526 to
+      # 686 s on three runs of 2026-10-26 (`Fetched 24.9 MB in 8min 26s`),
+      # whatever the PR. The image comes from mcr.microsoft.com instead, and
+      # its pull (about 930 MB compressed) starts here, in the background,
+      # to overlap the cargo build; "Wait for the Playwright image" joins it
+      # before the first test step.
+      #
+      # Its tag is the version of `@playwright/test` in e2e/package-lock.json:
+      # an image of another version carries other browser builds, and the
+      # suite would look for an executable the image does not have. Pinned
+      # by digest like every image here. No bot moves the two together
+      # (renovate.json reads neither npm nor `docker run`), so
+      # e2e/scripts/lib/playwright-pin.ts, run by `npm run test:scripts`
+      # below, fails a PR that moves one without the other. The same
+      # reference appears three times in this job, on purpose literal: the
+      # gates of image-pins.ts and playwright-pin.ts read it in the text.
+      - name: Pull the Playwright image, in the background
+        run: |
+          (
+            start=$(date +%s) status=0
+            docker pull mcr.microsoft.com/playwright:v1.61.1-noble@sha256:5b8f294aff9041b7191c34a4bab3ac270157a28774d4b0660e9743297b697e48 \
+              > "$RUNNER_TEMP/playwright-pull.log" 2>&1 || status=$?
+            echo "docker pull: exit $status after $(( $(date +%s) - start )) s" \
+              >> "$RUNNER_TEMP/playwright-pull.log"
+            echo "$status" > "$RUNNER_TEMP/playwright-pull.status"
+          ) > /dev/null 2>&1 &
       - uses: dtolnay/rust-toolchain@stable
       # The cache key rust-cache computes leaves out Cargo.toml's profiles:
       # after a change of `opt-level` it restores the old build in full,
@@ -467,10 +497,33 @@ jobs:
           done
           echo "stack did not come up in 60s" >&2
           exit 1
-      - run: npx playwright install --with-deps chromium
-        working-directory: e2e
-      - run: npx playwright test
-        working-directory: e2e
+      # Joins the pull started after the checkout. Five minutes at most:
+      # past that the step fails instead of holding the job.
+      - name: Wait for the Playwright image
+        run: |
+          for i in $(seq 1 300); do
+            [ -f "$RUNNER_TEMP/playwright-pull.status" ] && break
+            [ "$i" = 300 ] && { echo "docker pull still running after 300 s" >&2; cat "$RUNNER_TEMP/playwright-pull.log"; exit 1; }
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/playwright-pull.log"
+          [ "$(cat "$RUNNER_TEMP/playwright-pull.status")" = 0 ]
+      # `--network host`: the stack listens on the runner's localhost, and
+      # apps/api fetches the ICS fixtures from the Playwright process at
+      # 127.0.0.1 (e2e/lib/ics-server.ts) — one network namespace for both.
+      # The workspace is mounted at its own path, so e2e/node_modules from
+      # `npm ci` above and the specs' relative reads (infra/Caddyfile) resolve
+      # as on the runner; the runner's uid keeps test-results/ deletable,
+      # with a HOME it can write. `--ipc host`: Chromium's shared memory
+      # outgrows Docker's 64 MB /dev/shm.
+      - name: Run the Playwright suite
+        run: |
+          ids="$(id -u):$(id -g)"
+          docker run --rm --network host --ipc host --user "$ids" \
+            -e HOME=/tmp -e DATABASE_URL -e WEB_BASE_URL \
+            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" -w "$GITHUB_WORKSPACE/e2e" \
+            mcr.microsoft.com/playwright:v1.61.1-noble@sha256:5b8f294aff9041b7191c34a4bab3ac270157a28774d4b0660e9743297b697e48 \
+            npx playwright test
         env:
           WEB_BASE_URL: http://localhost:3000
       # #381: until here the suite drives apps/web directly, over plain HTTP;
@@ -523,8 +576,17 @@ jobs:
           docker logs "${{ job.services.caddy.id }}"
           cat "$RUNNER_TEMP/api-https.log"
           exit 1
-      - run: npx playwright test caddy-https.spec.ts sessions.spec.ts
-        working-directory: e2e
+      # Same container as "Run the Playwright suite", plus apps/api's log,
+      # which caddy-https.spec.ts reads (API_LOG_PATH).
+      - name: Run the HTTPS specs behind Caddy
+        run: |
+          ids="$(id -u):$(id -g)"
+          docker run --rm --network host --ipc host --user "$ids" \
+            -e HOME=/tmp -e DATABASE_URL -e WEB_BASE_URL -e API_LOG_PATH \
+            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" -w "$GITHUB_WORKSPACE/e2e" \
+            -v "$RUNNER_TEMP:$RUNNER_TEMP:ro" \
+            mcr.microsoft.com/playwright:v1.61.1-noble@sha256:5b8f294aff9041b7191c34a4bab3ac270157a28774d4b0660e9743297b697e48 \
+            npx playwright test caddy-https.spec.ts sessions.spec.ts
         env:
           WEB_BASE_URL: https://localhost
           API_LOG_PATH: ${{ runner.temp }}/api-https.log
