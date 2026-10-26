@@ -19,11 +19,11 @@ clippy --workspace --all-targets -- -D warnings` (attrape un `.sqlx` périmé) ;
 de la zone touchée (`cargo test -p <crate> --lib <module>` / `--test <binaire>`,
 Postgres migré + MinIO si besoin) ; e2e local seulement pour un spec ajouté ou modifié.
 **CI = référence** (A attend `gh pr checks --watch` et cite le run) : jobs `fmt-clippy`,
-`audit`, `test` (suite complète, API sous rôle `NOSUPERUSER NOBYPASSRLS` via
-`FLOW_TEST_RUNTIME_ROLE`), `e2e` (Playwright api+web+Postgres+MinIO).
+`audit`, `test` (`cargo nextest run --workspace --profile ci` + `cargo test --doc`,
+API sous rôle `NOSUPERUSER NOBYPASSRLS` via `FLOW_TEST_RUNTIME_ROLE`), `e2e`.
 
 - CI en `SQLX_OFFLINE=true` ; en local, `DATABASE_URL` valide les `query!` contre une base **migrée**.
-- Des tests MinIO se sautent **en silence** (`return`, pas `#[ignore]`) sans `MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY/BUCKET` : « 0 ignoré » ne prouve rien. Preuve : `-- --nocapture` + `grep 'skipping '`. Tout compte de tests se recompte, jamais de mémoire.
+- Des tests MinIO se sautent **en silence** (`return`, pas `#[ignore]`) sans `MINIO_*` : « 0 ignoré » ne prouve rien. Preuve : `grep 'skipping '` sur la sortie `--nocapture` ou le JUnit nextest (job `test`). Tout compte de tests se recompte, jamais de mémoire.
 - `cargo audit` sans index crates.io saute les avis yanked sans le dire : vérifier que l'index s'est mis à jour.
 
 ## Sources de vérité
