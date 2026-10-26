@@ -527,10 +527,12 @@ fn field_error(name: &str, message: Option<String>) -> (String, String) {
 }
 
 /// The `abandon` page: the grocery items generated for the recipe, each
-/// with a « Retirer » box checked by default.
+/// with a « Retirer » box checked by default, or as `checked` says when the
+/// form comes back.
 pub(crate) fn abandon_body(
     recipe_id: Uuid,
     preview: &AbandonPreview,
+    checked: Option<&[Uuid]>,
     banner: &str,
     back: &str,
 ) -> String {
@@ -540,7 +542,11 @@ pub(crate) fn abandon_body(
         "<p>Aucun article de la liste de courses n'a été généré pour cette recette.</p>\n"
             .to_string()
     } else {
-        let boxes: String = preview.items.iter().map(item_checkbox).collect();
+        let boxes: String = preview
+            .items
+            .iter()
+            .map(|item| item_checkbox(item, checked.is_none_or(|c| c.contains(&item.id))))
+            .collect();
         format!(
             r#"<fieldset class="card">
 <legend>Articles de la liste de courses</legend>
@@ -563,16 +569,17 @@ pub(crate) fn abandon_body(
     )
 }
 
-/// One grocery item of the `abandon` form, checked for removal.
-fn item_checkbox(item: &AbandonItem) -> String {
+/// One grocery item of the `abandon` form, `checked` for removal or not.
+fn item_checkbox(item: &AbandonItem, checked: bool) -> String {
     let what = match amount(item.quantity, item.unit.as_deref()) {
         Some(a) => format!("{} ({a})", item.name),
         None => item.name.clone(),
     };
     format!(
-        "<label class=\"field inline\"><input type=\"checkbox\" name=\"remove\" value=\"{id}\" checked/> Retirer « {what} » de la liste</label>\n",
+        "<label class=\"field inline\"><input type=\"checkbox\" name=\"remove\" value=\"{id}\"{checked}/> Retirer « {what} » de la liste</label>\n",
         id = item.id,
         what = html_escape(&what),
+        checked = if checked { " checked" } else { "" },
     )
 }
 
@@ -853,7 +860,7 @@ pub async fn abandon_get(
         Preview::Ok(p) => render(
             &fam.header,
             "Abandonner une recette",
-            &abandon_body(recipe_id, &p, "", &query.back),
+            &abandon_body(recipe_id, &p, None, "", &query.back),
         )
         .into_response(),
         other => not_shown(other, &query.back, recipe_id),
@@ -890,7 +897,12 @@ pub async fn abandon_post(
             fam.gid, recipe_id
         ),
         cookie.as_deref(),
-        Some(serde_json::to_value(AbandonRequest { remove }).unwrap()),
+        Some(
+            serde_json::to_value(AbandonRequest {
+                remove: remove.clone(),
+            })
+            .unwrap(),
+        ),
     )
     .await;
     let (status, code) = match result {
@@ -929,7 +941,15 @@ pub async fn abandon_post(
             render(
                 &fam.header,
                 "Abandonner une recette",
-                &abandon_body(recipe_id, &p, &banner(code), back),
+                // The items as they are now after a change, otherwise the
+                // choices just made.
+                &abandon_body(
+                    recipe_id,
+                    &p,
+                    (code != "list_changed").then_some(remove.as_slice()),
+                    &banner(code),
+                    back,
+                ),
             ),
         )
             .into_response(),
@@ -1852,7 +1872,7 @@ mod tests {
                 },
             ],
         };
-        let html = abandon_body(id(901), &p, "", "detail");
+        let html = abandon_body(id(901), &p, None, "", "detail");
         assert!(html.contains("<h1>Abandonner : Crêpes</h1>"), "{html}");
         assert!(html.contains(&format!(r#"action="/recipes/{}/abandon""#, id(901))));
         assert!(html.contains(r#"name="back" value="detail""#));
@@ -1866,12 +1886,41 @@ mod tests {
     }
 
     #[test]
+    fn the_abandon_page_shown_again_keeps_the_choices_made() {
+        let item = |n: u128, name: &str| AbandonItem {
+            id: id(n),
+            name: name.into(),
+            quantity: None,
+            unit: None,
+        };
+        let p = AbandonPreview {
+            selection: selection("Crêpes"),
+            items: vec![item(1, "Farine"), item(2, "Lait")],
+        };
+        let html = abandon_body(id(901), &p, Some(&[id(1)]), "", "list");
+        assert!(
+            html.contains(&format!(
+                r#"name="remove" value="{}" checked/> Retirer « Farine »"#,
+                id(1)
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"name="remove" value="{}"/> Retirer « Lait »"#,
+                id(2)
+            )),
+            "{html}"
+        );
+    }
+
+    #[test]
     fn the_abandon_page_without_items_says_so() {
         let p = AbandonPreview {
             selection: selection("Crêpes"),
             items: vec![],
         };
-        let html = abandon_body(id(901), &p, "", "list");
+        let html = abandon_body(id(901), &p, None, "", "list");
         assert!(html
             .contains("Aucun article de la liste de courses n'a été généré pour cette recette."));
         assert!(!html.contains(r#"name="remove""#));
