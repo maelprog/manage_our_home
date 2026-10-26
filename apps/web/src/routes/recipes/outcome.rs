@@ -700,8 +700,9 @@ fn render(header: &str, title: &str, body: &str) -> Html<String> {
     Html(shell_with_header(Width::Form, title, header, body))
 }
 
-/// Today in Paris, as apps/api dates the meal: the UTC day is still the
-/// day before between midnight and 1 or 2 a.m.
+/// Today in Paris, the day the pages judge dates in: the UTC day is still
+/// the day before between midnight and 1 or 2 a.m. A meal date left empty
+/// is dated by apps/api (`CURRENT_DATE`, the UTC day).
 fn today() -> NaiveDate {
     crate::routes::agenda::today_paris()
 }
