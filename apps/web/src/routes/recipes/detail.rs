@@ -285,9 +285,9 @@ fn page(
     };
 
     // Log-a-meal is open to any member (feeds the shared variety history);
-    // the date defaults to today and can be backdated.
-    let today = chrono::Utc::now()
-        .date_naive()
+    // the date defaults to today, in Paris as apps/api counts it, and can
+    // be backdated.
+    let today = crate::routes::agenda::today_paris()
         .format("%Y-%m-%d")
         .to_string();
     let log_form = format!(

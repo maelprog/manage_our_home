@@ -11,7 +11,7 @@
 //!   quantity editable and a « Retirer du stock » box checked: every
 //!   ingredient is proposed for removal, the member unchecks those not
 //!   used (user precision of 2026-10-21). 0 removes nothing either. The
-//!   meal date defaults to today.
+//!   meal date defaults to today in Paris.
 //! - **Abandonner**: the unchecked grocery items generated for the recipe,
 //!   each with a « Retirer » box checked by default.
 //!
@@ -537,8 +537,10 @@ fn render(header: &str, title: &str, body: &str) -> Html<String> {
     Html(shell_with_header(Width::Form, title, header, body))
 }
 
+/// Today in Paris, as apps/api dates the meal: the UTC day is still the
+/// day before between midnight and 1 or 2 a.m.
 fn today() -> NaiveDate {
-    chrono::Utc::now().date_naive()
+    crate::routes::agenda::today_paris()
 }
 
 /// The form fields of a `POST`, or the status refusing them.
