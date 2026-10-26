@@ -7,8 +7,8 @@
 //! selected it (controller's decision of 2026-10-24). Selecting a recipe
 //! already planned is idempotent: 200 with the existing selection, its
 //! `servings` updated when the request carries one. Moving a selection to
-//! `done` or `abandoned` is #473; generating the grocery list from the
-//! selections is #470.
+//! `done` or `abandoned` is `recipes::outcome` (#473); generating the
+//! grocery list from the selections is #470.
 
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
