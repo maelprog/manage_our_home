@@ -16,6 +16,17 @@ on:
   # 2026-08-29, et #121 ne rouvre pas cette décision.
   workflow_dispatch:
 
+# A new push to a pull request cancels the run still going on its previous
+# head (#606): nobody reads its result, and it holds runners the new one
+# waits for. Every other run — a push to `main`, a manual one — is a group
+# of its own and is never cancelled: one group shared by the pushes to
+# `main` would not cancel the run in progress, but would still cancel a
+# run waiting behind it when a third one arrives, and each push to `main`
+# has to keep its gates.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   SQLX_OFFLINE: "true"
@@ -168,7 +179,11 @@ jobs:
             "mc alias set local http://localhost:9000 ci-dummy ci-dummy-secret && \
              mc mb -p local/manage-our-home"
       - run: cargo build --workspace --all-targets
-      - run: cargo test --workspace
+      # cargo-nextest rather than `cargo test` (#606): the same tests, each
+      # in a process of its own, the binaries running side by side instead
+      # of one after the other. Its `ci` profile is in .config/nextest.toml.
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --workspace --profile ci
         env:
           FLOW_TEST_RUNTIME_ROLE: app_role
           FLOW_TEST_RUNTIME_ROLE_PASSWORD: app_role
@@ -176,6 +191,18 @@ jobs:
           MINIO_ACCESS_KEY: ci-dummy
           MINIO_SECRET_KEY: ci-dummy-secret
           MINIO_BUCKET: manage-our-home
+      # A MinIO test that does not find the variables above returns early,
+      # green, after printing `skipping <its name>`: a green run says
+      # nothing about them. nextest shows no output of a passing test; its
+      # JUnit report keeps it (.config/nextest.toml), and one such line in
+      # it fails the job. A missing report fails it too.
+      - name: Check that no MinIO test skipped itself
+        run: |
+          report=target/nextest/ci/junit.xml
+          test -s "$report"
+          if grep -n 'skipping ' "$report"; then exit 1; fi
+      # nextest does not run doctests.
+      - run: cargo test --doc --workspace
 
   # Playwright E2E against a live apps/web + apps/api + Postgres + MinIO
   # stack — merge gate per docs/v1-scope.md's "Playwright policy" (every

@@ -1,0 +1,17 @@
+# cargo-nextest, the runner of ci.yml's `test` job (#606). It runs each
+# test in a process of its own and the test binaries side by side, where
+# `cargo test` ran the binaries one after the other: the job lasted as
+# long as their sum.
+
+# The profile of the `test` job.
+[profile.ci]
+# Every failure of the run is reported, not only the first.
+fail-fast = false
+
+# The JUnit report keeps what the passing tests printed, which the job
+# reads: a MinIO test without its environment returns early, green, after
+# printing `skipping <its name>` (apps/api/tests/*_flow.rs), and the step
+# after the run fails on that line.
+[profile.ci.junit]
+path = "junit.xml"
+store-success-output = true
