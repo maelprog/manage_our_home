@@ -1,3 +1,32 @@
 [workspace]
 resolver = "2"
 members = ["apps/api", "apps/web", "apps/shared", "apps/http_guard"]
+
+# The picture codecs, optimised in the dev profile that `cargo test` and
+# `cargo nextest` build with (the test profile inherits it), and in that
+# profile only: apps/api's avatar and apps/web's barcode photo decode and
+# encode full camera frames in their tests, and at `opt-level = 0` those
+# few tests took most of the `test` job (#606 — 161 s for
+# `avatar_memory`'s one test on CI). An override per package changes how
+# these crates are compiled, not what they do: no line of the apps, and
+# no memory bound their tests assert, moves. `release` is untouched.
+[profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+[profile.dev.package.zune-core]
+opt-level = 3
+[profile.dev.package.jpeg-decoder]
+opt-level = 3
+[profile.dev.package.jpeg-encoder]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.crc32fast]
+opt-level = 3
+[profile.dev.package.simd-adler32]
+opt-level = 3
