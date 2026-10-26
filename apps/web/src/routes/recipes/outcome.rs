@@ -232,6 +232,30 @@ pub(crate) fn validate_done(
     })
 }
 
+/// What a 400 or 409 of apps/api to a sent form means for the page.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Refusal {
+    /// Something changed since the preview the form was checked against:
+    /// the updated preview is shown.
+    Changed,
+    /// The request itself is refused: a fault of this page, which showing
+    /// the same form again as « changed » would never clear.
+    Rejected,
+}
+
+/// The refusal of a `done`: a 409 (a stock line lowered or gone), or the
+/// 400 `stock_item_not_in_recipe` (an ingredient renamed or removed since
+/// the fresh preview), is a change; any other 400 is a rejected request.
+pub(crate) fn done_refusal(status: reqwest::StatusCode, body: &serde_json::Value) -> Refusal {
+    let changed = status == reqwest::StatusCode::CONFLICT
+        || body.get("error").and_then(|e| e.as_str()) == Some("stock_item_not_in_recipe");
+    if changed {
+        Refusal::Changed
+    } else {
+        Refusal::Rejected
+    }
+}
+
 /// Reads the `abandon` form back: the grocery items to remove (`remove`,
 /// once each) and `back`. `None` when an id does not read.
 pub(crate) fn parse_abandon_form(pairs: &[(String, String)]) -> Option<(Vec<Uuid>, String)> {
@@ -558,6 +582,7 @@ fn banner(code: &str) -> String {
         "stock_changed" => "Le stock a changé depuis l'affichage de cette page : voici l'aperçu à jour. Vérifiez les quantités, puis validez à nouveau.",
         "list_changed" => "La liste de courses a changé depuis l'affichage de cette page : voici les articles à jour. Vérifiez-les, puis validez à nouveau.",
         "invalid" => "Le formulaire ne peut pas être enregistré tel quel : corrigez les champs signalés.",
+        "rejected" => "Ce formulaire n'a pas pu être enregistré, à cause d'une erreur de l'application. Rechargez la page, puis réessayez ; si l'erreur revient, signalez-la.",
         _ => "Service momentanément indisponible, merci de réessayer.",
     };
     format!("<p class=\"notice error\">{}</p>\n", html_escape(text))
@@ -761,24 +786,42 @@ pub async fn done_post(
         Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
             not_shown(Preview::<()>::Gone, back, recipe_id)
         }
-        // A stock line lowered or gone since the fresh preview, or the
-        // recipe's ingredients changed: the updated preview, not the typed
-        // corrections of another one.
         Ok(resp)
             if resp.status == reqwest::StatusCode::CONFLICT
                 || resp.status == reqwest::StatusCode::BAD_REQUEST =>
         {
-            match preview::<DonePreview>(&state, fam.gid, recipe_id, "done", cookie.as_deref())
+            match done_refusal(resp.status, &resp.body) {
+                // A stock line lowered or gone since the fresh preview, or
+                // the recipe's ingredients changed: the updated preview,
+                // not the typed corrections of another one.
+                Refusal::Changed => match preview::<DonePreview>(
+                    &state,
+                    fam.gid,
+                    recipe_id,
+                    "done",
+                    cookie.as_deref(),
+                )
                 .await
-            {
-                Preview::Ok(p) => show(
-                    StatusCode::CONFLICT,
-                    &p,
-                    None,
-                    &Invalid::default(),
-                    "stock_changed",
-                ),
-                other => not_shown(other, back, recipe_id),
+                {
+                    Preview::Ok(p) => show(
+                        StatusCode::CONFLICT,
+                        &p,
+                        None,
+                        &Invalid::default(),
+                        "stock_changed",
+                    ),
+                    other => not_shown(other, back, recipe_id),
+                },
+                Refusal::Rejected => {
+                    tracing::error!(%recipe_id, body = %resp.body, "apps/api rejected the done request this page built");
+                    show(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        &current,
+                        Some(&form),
+                        &Invalid::default(),
+                        "rejected",
+                    )
+                }
             }
         }
         Ok(_) | Err(_) => show(
@@ -868,11 +911,13 @@ pub async fn abandon_post(
             return not_shown(Preview::<()>::Gone, back, recipe_id)
         }
         // An item checked or deleted since the page was shown.
-        Ok(resp)
-            if resp.status == reqwest::StatusCode::CONFLICT
-                || resp.status == reqwest::StatusCode::BAD_REQUEST =>
-        {
+        Ok(resp) if resp.status == reqwest::StatusCode::CONFLICT => {
             (StatusCode::CONFLICT, "list_changed")
+        }
+        // A request this page should never have built (an item twice).
+        Ok(resp) if resp.status == reqwest::StatusCode::BAD_REQUEST => {
+            tracing::error!(%recipe_id, body = %resp.body, "apps/api rejected the abandon request this page built");
+            (StatusCode::INTERNAL_SERVER_ERROR, "rejected")
         }
         Ok(_) | Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     };
@@ -1418,6 +1463,40 @@ mod tests {
             &p,
         );
         assert_eq!(got.unwrap().removals.len(), 3);
+    }
+
+    // -- done_refusal --------------------------------------------------------
+
+    #[test]
+    fn a_refusal_for_a_change_made_since_is_told_from_a_rejected_form() {
+        use reqwest::StatusCode as S;
+        let body = |code: &str| serde_json::json!({ "error": code });
+        // A stock line lowered or gone, or an ingredient renamed or removed
+        // since the fresh preview.
+        for (status, code) in [
+            (S::CONFLICT, "insufficient_stock"),
+            (S::CONFLICT, "stock_item_gone"),
+            (S::BAD_REQUEST, "stock_item_not_in_recipe"),
+        ] {
+            assert_eq!(
+                done_refusal(status, &body(code)),
+                Refusal::Changed,
+                "{code}"
+            );
+        }
+        // A request the page should never have built: not a change, which
+        // another try would not fix.
+        for code in ["duplicate_stock_item", "invalid_quantity", "anything"] {
+            assert_eq!(
+                done_refusal(S::BAD_REQUEST, &body(code)),
+                Refusal::Rejected,
+                "{code}"
+            );
+        }
+        assert_eq!(
+            done_refusal(S::BAD_REQUEST, &serde_json::Value::Null),
+            Refusal::Rejected
+        );
     }
 
     // -- parse_abandon_form --------------------------------------------------
