@@ -18,8 +18,8 @@ sur `/workspace`. Le reste porte ton préfixe ; `docker rm -f -v` à la fin.
 clippy --workspace --all-targets -- -D warnings` (attrape un `.sqlx` périmé) ; tests
 de la zone touchée (`cargo test -p <crate> --lib <module>` / `--test <binaire>`,
 Postgres migré + MinIO si besoin) ; e2e local seulement pour un spec ajouté ou modifié.
-**CI = référence** (A attend `gh pr checks --watch` et cite le run) : jobs `fmt-clippy`,
-`audit`, `test` (`cargo nextest run --workspace --profile ci` + `cargo test --doc`,
+**CI = référence** (A attend `gh pr checks --watch`, cite le run) : jobs `fmt-clippy`,
+`audit`, `test` (`cargo nextest run --workspace --profile ci` ; doctests : `fmt-clippy` ;
 API sous rôle `NOSUPERUSER NOBYPASSRLS` via `FLOW_TEST_RUNTIME_ROLE`), `e2e`.
 
 - CI en `SQLX_OFFLINE=true` ; en local, `DATABASE_URL` valide les `query!` contre une base **migrée**.
