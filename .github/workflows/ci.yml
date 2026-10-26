@@ -39,7 +39,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # The cache key rust-cache computes leaves out Cargo.toml's profiles:
+      # after a change of `opt-level` it restores the old build in full,
+      # recompiles every dependency, and never saves the new one (#606).
+      # This key names the dev profile's dependency settings; it changes
+      # with them.
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: dev-deps-opt-level-1
       - run: cargo fmt --all -- --check
       # --all-targets so the lint gate also covers `cfg(test)` code: the
       # `mod tests` blocks and the `tests/*.rs` binaries. Without it clippy
@@ -113,7 +120,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # The cache key rust-cache computes leaves out Cargo.toml's profiles:
+      # after a change of `opt-level` it restores the old build in full,
+      # recompiles every dependency, and never saves the new one (#606).
+      # This key names the dev profile's dependency settings; it changes
+      # with them.
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: dev-deps-opt-level-1
       # Every test database is created from `template1` after this step, by
       # `postgres`, which then applies the migrations: default privileges
       # declared here are copied into each of them, and cover every table
@@ -272,7 +286,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # The cache key rust-cache computes leaves out Cargo.toml's profiles:
+      # after a change of `opt-level` it restores the old build in full,
+      # recompiles every dependency, and never saves the new one (#606).
+      # This key names the dev profile's dependency settings; it changes
+      # with them.
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: dev-deps-opt-level-1
       # e2e/package.json has declared `engines: {"node": ">=22.18.0"}` since
       # #85 (2026-07-31): the scripts under e2e/scripts/ are TypeScript
       # executed straight by node (needs >= 22.18) and use
