@@ -428,18 +428,15 @@ pub(crate) fn done_body(
                 Some(t) => (t.quantity.clone(), t.remove),
                 None => (fmt_num(lot.quantity), true),
             };
-            let error = invalid
-                .lines
-                .get(i)
-                .copied()
-                .flatten()
-                .map(|e| {
-                    format!(
-                        "<p class=\"field-error\">{}</p>\n",
-                        html_escape(&line_error_text(e, &stock.unit, &users(stock.id)))
-                    )
-                })
-                .unwrap_or_default();
+            let (error, aria) = field_error(
+                &format!("quantity.{i}"),
+                invalid
+                    .lines
+                    .get(i)
+                    .copied()
+                    .flatten()
+                    .map(|e| line_error_text(e, &stock.unit, &users(stock.id))),
+            );
             let lot_label = if several {
                 format!(" (lot de {})", html_escape(&held(stock)))
             } else {
@@ -448,7 +445,7 @@ pub(crate) fn done_body(
             lines.push_str(&format!(
                 r#"<input type="hidden" name="stock.{i}" value="{id}"/>
 {error}<label>Quantité de {name} à retirer, en {unit} (stock : {held})
-<input type="number" name="quantity.{i}" step="any" min="0" value="{quantity}"/></label>
+<input type="number" name="quantity.{i}" step="any" min="0" value="{quantity}"{aria}/></label>
 <label class="field inline"><input type="checkbox" name="remove.{i}"{checked}/> Retirer {name} du stock{lot_label}</label>
 "#,
                 id = stock.id,
@@ -467,13 +464,19 @@ pub(crate) fn done_body(
         fieldsets =
             "<p>Cette recette n'a aucun ingrédient : rien ne sera retiré du stock.</p>\n".into();
     }
+    let (date_error, date_aria) = field_error(
+        "eaten_on",
+        invalid
+            .date
+            .then(|| "La date du repas n'est pas une date valide.".to_string()),
+    );
     format!(
         r#"<h1>Recette faite : {name}</h1>
 {banner}<p class="muted">À la validation, les quantités cochées sont retirées du stock et le repas est enregistré. Décochez un ingrédient que vous n'avez pas utilisé ; une quantité à 0 ne retire rien non plus.</p>
 <form method="post" action="/recipes/{recipe_id}/done">
 <input type="hidden" name="back" value="{back}"/>
 {date_error}<label>Date du repas
-<input type="date" name="eaten_on" value="{eaten_on}"/></label>
+<input type="date" name="eaten_on" value="{eaten_on}"{date_aria}/></label>
 {fieldsets}<div class="actions">
 <button type="submit">Marquer comme faite</button>
 <a class="btn secondary" href="{cancel}">Annuler</a>
@@ -481,12 +484,22 @@ pub(crate) fn done_body(
 </form>"#,
         name = html_escape(&preview.selection.recipe_name),
         eaten_on = html_escape(&eaten_on),
-        date_error = if invalid.date {
-            "<p class=\"field-error\">La date du repas n'est pas une date valide.</p>\n"
-        } else {
-            ""
-        },
     )
+}
+
+/// The message of a field in error and the attributes tying the field to
+/// it (`aria-invalid`, `aria-describedby`), or nothing.
+fn field_error(name: &str, message: Option<String>) -> (String, String) {
+    match message {
+        Some(m) => (
+            format!(
+                "<p class=\"field-error\" id=\"{name}-error\">{}</p>\n",
+                html_escape(&m)
+            ),
+            format!(r#" aria-invalid="true" aria-describedby="{name}-error""#),
+        ),
+        None => (String::new(), String::new()),
+    }
 }
 
 /// The `abandon` page: the grocery items generated for the recipe, each
@@ -1253,6 +1266,49 @@ mod tests {
             html.contains("La date du repas n'est pas une date valide."),
             "{html}"
         );
+    }
+
+    #[test]
+    fn a_field_in_error_is_tied_to_its_message() {
+        let typed = form(vec![
+            line(10, "abc", true),
+            line(11, "300", true),
+            line(20, "1", true),
+        ]);
+        let html = done_body(
+            id(901),
+            &preview(),
+            Some(&typed),
+            &Invalid {
+                lines: vec![Some(LineError::InvalidQuantity), None, None],
+                date: true,
+            },
+            "",
+            "list",
+            today(),
+        );
+        assert!(
+            html.contains(r#"<p class="field-error" id="quantity.0-error">"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"name="quantity.0" step="any" min="0" value="abc" aria-invalid="true" aria-describedby="quantity.0-error"/>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<p class="field-error" id="eaten_on-error">"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"name="eaten_on" value="" aria-invalid="true" aria-describedby="eaten_on-error"/>"#),
+            "{html}"
+        );
+        // A line without error is not marked.
+        assert!(
+            html.contains(r#"name="quantity.1" step="any" min="0" value="300"/>"#),
+            "{html}"
+        );
+        assert_eq!(html.matches("aria-invalid").count(), 2, "{html}");
     }
 
     #[test]
