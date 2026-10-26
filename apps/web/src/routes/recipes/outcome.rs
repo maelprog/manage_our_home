@@ -41,7 +41,10 @@ use crate::routes::agenda::new::is_form_urlencoded;
 use crate::routes::stocks::{fmt_date, fmt_num};
 use crate::state::{api_request_auth, AppState};
 
-use super::{back_path, family_context, forbidden_page, recipes_cookie, service_unavailable_page};
+use super::{
+    back_path, family_context, forbidden_page, recipe_not_found_page, recipes_cookie,
+    service_unavailable_page,
+};
 
 /// The notice of the list and of the recipe after a `done`.
 pub(crate) const DONE_NOTICE: &str =
@@ -643,19 +646,54 @@ async fn preview<T: serde::de::DeserializeOwned>(
     }
 }
 
-/// The answer to a preview that could not be shown: back to where the
-/// member came from when the recipe is no longer « À réaliser ».
-fn not_shown<T>(p: Preview<T>, back: &str, recipe_id: Uuid) -> Response {
+/// The answer to a preview that could not be shown (`gone` when there is
+/// no selection).
+async fn not_shown<T>(
+    p: Preview<T>,
+    state: &AppState,
+    gid: Uuid,
+    cookie: Option<&str>,
+    back: &str,
+    recipe_id: Uuid,
+) -> Response {
     match p {
-        Preview::Gone => Redirect::to(&format!(
-            "{}?error=selection_gone",
-            back_path(back, recipe_id)
-        ))
-        .into_response(),
+        Preview::Gone => gone(state, gid, recipe_id, cookie, back).await,
         Preview::Login => Redirect::to("/login").into_response(),
         Preview::Forbidden => forbidden_page().into_response(),
         Preview::Ok(_) | Preview::Unavailable => service_unavailable_page().into_response(),
     }
+}
+
+/// The answer when apps/api finds no « À réaliser » selection for the
+/// recipe: back to where the member came from, which says so; or, when the
+/// recipe itself does not exist (any more), the « Recette introuvable »
+/// page, which leads to the list rather than to a recipe that would answer
+/// 404 too.
+async fn gone(
+    state: &AppState,
+    gid: Uuid,
+    recipe_id: Uuid,
+    cookie: Option<&str>,
+    back: &str,
+) -> Response {
+    let recipe = api_request_auth(
+        state,
+        reqwest::Method::GET,
+        &format!("/groups/{gid}/recipes/{recipe_id}"),
+        cookie,
+        None,
+    )
+    .await;
+    // Only a definite 404 is « no such recipe »; a failed read keeps the
+    // way back.
+    if matches!(&recipe, Ok(r) if r.status == reqwest::StatusCode::NOT_FOUND) {
+        return (StatusCode::NOT_FOUND, recipe_not_found_page()).into_response();
+    }
+    Redirect::to(&format!(
+        "{}?error=selection_gone",
+        back_path(back, recipe_id)
+    ))
+    .into_response()
 }
 
 fn render(header: &str, title: &str, body: &str) -> Html<String> {
@@ -705,7 +743,17 @@ pub async fn done_get(
             ),
         )
         .into_response(),
-        other => not_shown(other, &query.back, recipe_id),
+        other => {
+            not_shown(
+                other,
+                &state,
+                fam.gid,
+                cookie.as_deref(),
+                &query.back,
+                recipe_id,
+            )
+            .await
+        }
     }
 }
 
@@ -747,7 +795,9 @@ pub async fn done_post(
     let current =
         match preview::<DonePreview>(&state, fam.gid, recipe_id, "done", cookie.as_deref()).await {
             Preview::Ok(p) => p,
-            other => return not_shown(other, back, recipe_id),
+            other => {
+                return not_shown(other, &state, fam.gid, cookie.as_deref(), back, recipe_id).await
+            }
         };
     let request = match validate_done(&form, &current) {
         Ok(r) => r,
@@ -791,7 +841,15 @@ pub async fn done_post(
             forbidden_page().into_response()
         }
         Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
-            not_shown(Preview::<()>::Gone, back, recipe_id)
+            not_shown(
+                Preview::<()>::Gone,
+                &state,
+                fam.gid,
+                cookie.as_deref(),
+                back,
+                recipe_id,
+            )
+            .await
         }
         Ok(resp)
             if resp.status == reqwest::StatusCode::CONFLICT
@@ -817,7 +875,9 @@ pub async fn done_post(
                         &Invalid::default(),
                         "stock_changed",
                     ),
-                    other => not_shown(other, back, recipe_id),
+                    other => {
+                        not_shown(other, &state, fam.gid, cookie.as_deref(), back, recipe_id).await
+                    }
                 },
                 Refusal::Rejected => {
                     tracing::error!(%recipe_id, body = %resp.body, "apps/api rejected the done request this page built");
@@ -863,7 +923,17 @@ pub async fn abandon_get(
             &abandon_body(recipe_id, &p, None, "", &query.back),
         )
         .into_response(),
-        other => not_shown(other, &query.back, recipe_id),
+        other => {
+            not_shown(
+                other,
+                &state,
+                fam.gid,
+                cookie.as_deref(),
+                &query.back,
+                recipe_id,
+            )
+            .await
+        }
     }
 }
 
@@ -920,7 +990,15 @@ pub async fn abandon_post(
             return forbidden_page().into_response()
         }
         Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
-            return not_shown(Preview::<()>::Gone, back, recipe_id)
+            return not_shown(
+                Preview::<()>::Gone,
+                &state,
+                fam.gid,
+                cookie.as_deref(),
+                back,
+                recipe_id,
+            )
+            .await
         }
         // An item checked or deleted since the page was shown.
         Ok(resp) if resp.status == reqwest::StatusCode::CONFLICT => {
@@ -953,7 +1031,7 @@ pub async fn abandon_post(
             ),
         )
             .into_response(),
-        other => not_shown(other, back, recipe_id),
+        other => not_shown(other, &state, fam.gid, cookie.as_deref(), back, recipe_id).await,
     }
 }
 
@@ -1516,6 +1594,68 @@ mod tests {
         assert_eq!(
             done_refusal(S::BAD_REQUEST, &serde_json::Value::Null),
             Refusal::Rejected
+        );
+    }
+
+    // -- gone ----------------------------------------------------------------
+
+    /// A stand-in for apps/api answering the recipe's read with `status`.
+    async fn fake_recipe_api(status: u16) -> AppState {
+        use axum::routing::get;
+        let app = axum::Router::new().route(
+            "/groups/:gid/recipes/:id",
+            get(move || async move {
+                (
+                    axum::http::StatusCode::from_u16(status).unwrap(),
+                    [(axum::http::header::CONTENT_TYPE, "application/json")],
+                    r#"{"error":"x"}"#,
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        AppState {
+            http: reqwest::Client::new(),
+            api_internal_base_url: format!("http://{addr}"),
+            api_public_base_url: "/api".into(),
+            body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
+            upload_gate: manage_our_home_http_guard::UploadGate::new(8, 2),
+            shutdown: manage_our_home_http_guard::Shutdown::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_recipe_that_does_not_exist_is_not_sent_back_to() {
+        let state = fake_recipe_api(404).await;
+        let resp = gone(&state, id(1), id(901), Some("session=s"), "detail").await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("Recette introuvable"), "{html}");
+        assert!(html.contains(r#"href="/recipes""#), "{html}");
+        assert!(!html.contains("n'est plus à réaliser"), "{html}");
+    }
+
+    #[tokio::test]
+    async fn a_recipe_no_longer_to_cook_goes_back_where_the_member_came_from() {
+        // The recipe reads (200), or its read fails: back with the notice.
+        for status in [200, 503] {
+            let state = fake_recipe_api(status).await;
+            let resp = gone(&state, id(1), id(901), Some("session=s"), "detail").await;
+            assert_eq!(
+                resp.headers()[axum::http::header::LOCATION],
+                format!("/recipes/{}?error=selection_gone", id(901)),
+                "{status}"
+            );
+        }
+        let state = fake_recipe_api(200).await;
+        let resp = gone(&state, id(1), id(901), None, "list").await;
+        assert_eq!(
+            resp.headers()[axum::http::header::LOCATION],
+            "/recipes?error=selection_gone"
         );
     }
 
