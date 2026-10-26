@@ -1,7 +1,7 @@
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use axum::Json;
-use chrono::{Datelike, NaiveDate, Utc};
+use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
@@ -153,7 +153,9 @@ pub async fn suggest_recipes(
             .push(ing);
     }
 
-    let current_month = Utc::now().month() as i32;
+    // The month of today in Paris, like the variety window: on the first
+    // day of a month, the UTC month is still the previous one until 1–2 a.m.
+    let current_month = today().month() as i32;
 
     let mut suggestions: Vec<RecipeSuggestion> = recipe_rows
         .into_iter()
