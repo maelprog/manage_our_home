@@ -14,11 +14,13 @@ use manage_our_home_shared::dto::recipes::DraftIngredient;
 /// `de` / `d'`, then the name. Anything else — no quantity, `un peu`, a range
 /// (`2 à 3`, `2-3`), nothing left for the name — is kept whole as the name.
 ///
-/// A line written the other way round, name first (`Ail : 3 gousses
-/// (hachées)`, #475), takes its name from the left of the colon and its
-/// quantity and unit from the right; what follows them on the right is a
-/// note, left out of the name. When the right side reads as a whole line
-/// (`Pâte : 200 g de farine`), it is that line that is read.
+/// A line written the other way round, name first (#475), takes its name
+/// from the left of the colon when the right side is a measure — quantity
+/// and optional unit — followed by nothing or by a note in brackets or
+/// after a comma, left out of the name: `Ail : 3 gousses (hachées)`. When the measure is followed by `de` / `d'` (`Pâte : 200 g de
+/// farine`), the right side is read as a line of its own. Any other word
+/// after the measure (`Pour la sauce : 2 tomates`, `Oignons : 2 gros`)
+/// leaves the name on either side: the line is kept whole.
 pub fn parse_line(line: &str) -> DraftIngredient {
     let line = line.trim();
     understood(line)
@@ -55,7 +57,7 @@ fn understood(line: &str) -> Option<DraftIngredient> {
     })
 }
 
-/// `nom : quantité [unité] [note]`, or `None`.
+/// `nom : mesure [note]`, or `None` (see `parse_line`).
 fn name_first(line: &str) -> Option<DraftIngredient> {
     let (name, measure) = line.split_once(':')?;
     let name = name.trim();
@@ -77,6 +79,10 @@ fn name_first(line: &str) -> Option<DraftIngredient> {
         .any(|of| strip_prefix_ci(rest, of).is_some())
     {
         return understood(measure);
+    }
+    let note = rest.is_empty() || rest.starts_with(['(', ',', ';']);
+    if !note {
+        return None;
     }
     Some(DraftIngredient {
         quantity: Some((quantity * 1000.0).round() / 1000.0),
@@ -476,10 +482,10 @@ mod tests {
             "Bouillon de volaille",
         );
         is(
-            "Oignons : 2 gros (finement émincés)",
-            Some(2.0),
+            "Citron confit : 1 (coupé en quartiers)",
+            Some(1.0),
             None,
-            "Oignons",
+            "Citron confit",
         );
         is(
             "Ail : 3 gousses (hachées)",
@@ -511,19 +517,18 @@ mod tests {
             Some("c. à soupe"),
             "Huile d’olive",
         );
-        is(
-            "Coriandre fraîche et persil : 15 g chacun (ciselés)",
-            Some(15.0),
-            Some("g"),
-            "Coriandre fraîche et persil",
-        );
         is("Beurre: 20 g", Some(20.0), Some("g"), "Beurre");
         is("Beurre\u{a0}: 20 g", Some(20.0), Some("g"), "Beurre");
         // The right side is a whole line of its own: it names the
         // ingredient.
         is("Pâte : 200 g de farine", Some(200.0), Some("g"), "farine");
-        // No quantity, a range or nothing on one side: kept whole.
+        // No quantity, a range, nothing on one side, or words
+        // after the measure that are not a note — the name could be on
+        // either side: kept whole.
         for line in [
+            "Pour la sauce : 2 tomates",
+            "Oignons : 2 gros (finement émincés)",
+            "Coriandre fraîche et persil : 15 g chacun (ciselés)",
             "Sel et poivre : selon goût",
             "Safran : quelques filaments ou ½ cuillère à café de safran en poudre",
             "Optionnel : légumes comme carottes, courgettes ou navets",
