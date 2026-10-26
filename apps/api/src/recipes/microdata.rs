@@ -182,18 +182,30 @@ mod tests {
         assert_eq!(extract_recipe(html), None);
     }
 
-    /// Recipe items nested as deep as a page at the size limit allows.
+    /// Recipe items nested as deep as a page at the size limit allows,
+    /// bare or each inside an empty property of the one around it: every
+    /// property reads the rest of the page, so reading it again for each
+    /// item would be quadratic.
     #[test]
     fn nested_items_are_read_in_linear_time() {
-        let unit = r#"<div itemscope itemtype="https://schema.org/Recipe">"#;
-        let html = unit.repeat(crate::recipes::import::MAX_PAGE_BYTES / unit.len());
-        let (done, finished) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            assert_eq!(extract_recipe(&html), None);
-            let _ = done.send(());
-        });
-        finished
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("still running past the limit: not linear");
+        let item = r#"<div itemscope itemtype="https://schema.org/Recipe">"#;
+        for property in ["", "recipeInstructions", "recipeIngredient", "name"] {
+            let unit = if property.is_empty() {
+                item.to_string()
+            } else {
+                format!(r#"{item}<div itemprop="{property}">"#)
+            };
+            let html = unit.repeat(crate::recipes::import::MAX_PAGE_BYTES / unit.len());
+            let (done, finished) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                assert_eq!(extract_recipe(&html), None);
+                let _ = done.send(());
+            });
+            finished
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or_else(|_| {
+                    panic!("{property:?}: still running past the limit: not linear")
+                });
+        }
     }
 }
