@@ -8,9 +8,9 @@
 # Every failure of the run is reported, not only the first.
 fail-fast = false
 # Tests at a time: nextest's default, one per CPU. Eight on the 4 vCPUs of
-# the runner made the run slower, not faster — 672 s against 392 s (runs
-# 40332203719 and 40329040151): the suite is CPU-bound there, Postgres
-# sharing the same vCPUs.
+# the runner gained nothing: 672 s for the run (40332203719), against 392 s
+# and 687 s at the default (40329040151, 40334689551) — the gap between
+# two runners is larger than any gain.
 
 # The JUnit report keeps what the passing tests printed, which the job
 # reads: a MinIO test without its environment returns early, green, after
