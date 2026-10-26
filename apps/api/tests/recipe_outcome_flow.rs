@@ -4,7 +4,9 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
+use chrono::{NaiveDate, Utc};
 use common::{assert_status, call, json_body, set_cookie, test_router};
+use manage_our_home_shared::validation::auth::paris_day;
 use serde_json::{json, Value};
 use sqlx::PgPool;
 
@@ -253,8 +255,8 @@ async fn crepes(
 
 /// AC: done with a correction at 0 on one ingredient leaves that stock
 /// unchanged and decrements the others; the meal is logged and the
-/// selection closed. The preview scales the recipe to the selection and
-/// warns where it proposes 0.
+/// selection closed, without a date today in Paris (#608). The preview
+/// scales the recipe to the selection and warns where it proposes 0.
 #[sqlx::test]
 async fn done_with_a_zero_correction_leaves_that_stock_untouched(db: PgPool) {
     let router = test_router(db.clone());
@@ -281,6 +283,7 @@ async fn done_with_a_zero_correction_leaves_that_stock_untouched(db: PgPool) {
     assert_eq!(sel["lots"], json!([]));
     assert_eq!(sel["warning"], "no_stock");
 
+    let before = paris_day(Utc::now());
     let res = post(
         &router,
         &cookie,
@@ -292,10 +295,16 @@ async fn done_with_a_zero_correction_leaves_that_stock_untouched(db: PgPool) {
         ]}),
     )
     .await;
+    let after = paris_day(Utc::now());
     assert_status(&res, StatusCode::OK);
     let body = json_body(res).await;
     assert_eq!(body["selection"]["status"], "done");
     assert_eq!(body["meal"]["recipe_id"], recipe.as_str());
+    let eaten_on: NaiveDate = body["meal"]["eaten_on"].as_str().unwrap().parse().unwrap();
+    assert!(
+        eaten_on == before || eaten_on == after,
+        "a meal done without a date is dated today in Paris, got {eaten_on}"
+    );
     assert_eq!(body["stock_items"].as_array().unwrap().len(), 1);
 
     assert_eq!(

@@ -11,6 +11,7 @@ use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::AppResult;
 use crate::groups::require_role;
 use crate::recipes::taxonomy::{taxonomy, TagId, Taxonomy};
+use crate::stocks::items::today;
 use crate::AppState;
 
 /// Rule-based suggestion algorithm (architecture.md: "a concrete v1 rule,
@@ -128,11 +129,12 @@ pub async fn suggest_recipes(
         r#"
         SELECT recipe_id, MAX(eaten_on) as "last_eaten_on!"
         FROM meal_history
-        WHERE group_id = $1 AND eaten_on >= CURRENT_DATE - $2::bigint * INTERVAL '1 day'
+        WHERE group_id = $1 AND eaten_on >= $3::date - $2::bigint * INTERVAL '1 day'
         GROUP BY recipe_id
         "#,
         group_id,
         VARIETY_WINDOW_DAYS,
+        today(),
     )
     .fetch_all(&mut *tx)
     .await?

@@ -9,11 +9,12 @@ use uuid::Uuid;
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::groups::require_role;
+use crate::stocks::items::{day_or_today, today};
 use crate::AppState;
 
 #[derive(Deserialize)]
 pub struct LogMealRequest {
-    /// Defaults to today when omitted.
+    /// Defaults to today, the Paris day (`day_or_today`), when omitted.
     pub eaten_on: Option<NaiveDate>,
 }
 
@@ -54,12 +55,12 @@ pub async fn log_meal(
         MealHistoryEntryResponse,
         r#"
         INSERT INTO meal_history (group_id, recipe_id, eaten_on, created_by)
-        VALUES ($1, $2, COALESCE($3, CURRENT_DATE), $4)
+        VALUES ($1, $2, $3, $4)
         RETURNING id, recipe_id, eaten_on, created_by, created_at
         "#,
         group_id,
         recipe_id,
-        body.eaten_on,
+        day_or_today(body.eaten_on, Utc::now()),
         auth.user_id,
     )
     .fetch_one(&mut *tx)
@@ -72,7 +73,8 @@ pub async fn log_meal(
 #[derive(Deserialize)]
 pub struct ListMealHistoryQuery {
     /// Only entries eaten in the last `days_back` days. Defaults to 14 to
-    /// match the variety window used by the suggestion algorithm.
+    /// match the variety window used by the suggestion algorithm. Counted
+    /// back from today, the Paris day (`today`).
     pub days_back: Option<i64>,
 }
 
@@ -91,11 +93,12 @@ pub async fn list_meal_history(
         r#"
         SELECT id, recipe_id, eaten_on, created_by, created_at
         FROM meal_history
-        WHERE group_id = $1 AND eaten_on >= CURRENT_DATE - $2::bigint * INTERVAL '1 day'
+        WHERE group_id = $1 AND eaten_on >= $3::date - $2::bigint * INTERVAL '1 day'
         ORDER BY eaten_on DESC
         "#,
         group_id,
         days_back,
+        today(),
     )
     .fetch_all(&mut *tx)
     .await?;

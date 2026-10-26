@@ -57,7 +57,7 @@ use crate::grocery_list::planned::{scale_quantity, without_binary_noise};
 use crate::groups::require_role;
 use crate::recipes::meal_history::MealHistoryEntryResponse;
 use crate::recipes::selections::SelectionResponse;
-use crate::stocks::items::{today, StockItemResponse, StockItemRow};
+use crate::stocks::items::{day_or_today, today, StockItemResponse, StockItemRow};
 use crate::AppState;
 
 // -- Pure part ----------------------------------------------------------------
@@ -607,12 +607,12 @@ pub async fn apply_done(
         MealHistoryEntryResponse,
         r#"
         INSERT INTO meal_history (group_id, recipe_id, eaten_on, created_by)
-        VALUES ($1, $2, COALESCE($3, CURRENT_DATE), $4)
+        VALUES ($1, $2, $3, $4)
         RETURNING id, recipe_id, eaten_on, created_by, created_at
         "#,
         group_id,
         recipe_id,
-        body.eaten_on,
+        day_or_today(body.eaten_on, Utc::now()),
         auth.user_id,
     )
     .fetch_one(&mut *tx)
