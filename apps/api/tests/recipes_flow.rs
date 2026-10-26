@@ -367,8 +367,13 @@ async fn log_meal_records_history(db: PgPool) {
 #[sqlx::test]
 async fn meal_history_window_counts_back_from_the_paris_day(db: PgPool) {
     let router = test_router(db.clone());
-    let owner_cookie =
-        register_verify_login(&router, &db, "recipe-window@example.test", "owner-password1").await;
+    let owner_cookie = register_verify_login(
+        &router,
+        &db,
+        "recipe-window@example.test",
+        "owner-password1",
+    )
+    .await;
     let group_id = create_group(&router, &owner_cookie, "Foyer").await;
 
     let create = call(

@@ -447,22 +447,37 @@ mod tests {
     /// day, not the UTC one (#608).
     #[test]
     fn an_undated_record_takes_the_paris_day_not_the_utc_eve() {
-        assert_eq!(day_or_today(None, utc("2026-11-30T23:30:00Z")), day(2026, 12, 1));
-        assert_eq!(day_or_today(None, utc("2026-06-30T22:30:00Z")), day(2026, 7, 1));
+        assert_eq!(
+            day_or_today(None, utc("2026-11-30T23:30:00Z")),
+            day(2026, 12, 1)
+        );
+        assert_eq!(
+            day_or_today(None, utc("2026-06-30T22:30:00Z")),
+            day(2026, 7, 1)
+        );
     }
 
     /// Before midnight in Paris the two days agree; the UTC day is not
     /// shifted forward either.
     #[test]
     fn an_undated_record_before_paris_midnight_keeps_its_day() {
-        assert_eq!(day_or_today(None, utc("2026-11-30T22:59:59Z")), day(2026, 11, 30));
-        assert_eq!(day_or_today(None, utc("2026-06-30T21:59:59Z")), day(2026, 6, 30));
+        assert_eq!(
+            day_or_today(None, utc("2026-11-30T22:59:59Z")),
+            day(2026, 11, 30)
+        );
+        assert_eq!(
+            day_or_today(None, utc("2026-06-30T21:59:59Z")),
+            day(2026, 6, 30)
+        );
     }
 
     #[test]
     fn a_dated_record_keeps_the_day_it_names() {
         let named = day(2026, 3, 14);
-        assert_eq!(day_or_today(Some(named), utc("2026-11-30T23:30:00Z")), named);
+        assert_eq!(
+            day_or_today(Some(named), utc("2026-11-30T23:30:00Z")),
+            named
+        );
     }
 
     fn empty_update() -> UpdateStockItemRequest {
