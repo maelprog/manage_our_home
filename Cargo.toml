@@ -10,6 +10,13 @@ members = ["apps/api", "apps/web", "apps/shared", "apps/http_guard"]
 # `avatar_memory`'s one test on CI). An override per package changes how
 # these crates are compiled, not what they do: no line of the apps, and
 # no memory bound their tests assert, moves. `release` is untouched.
+#
+# Every other dependency at `opt-level = 1` (argon2 and blake2 among
+# them, which the sign-in tests hash with on every call), the crates
+# named below at 3: Cargo applies the override that names a package
+# over the `"*"` one, and neither reaches the workspace's own crates.
+[profile.dev.package."*"]
+opt-level = 1
 [profile.dev.package.image]
 opt-level = 3
 [profile.dev.package.zune-jpeg]
