@@ -491,3 +491,100 @@ test.describe("Grocery list — reception (#472)", () => {
     await expect(rows).toContainText("3 L");
   });
 });
+
+// A recipe « À réaliser » marked done or abandoned (#474), through the
+// confirmation pages of apps/api's preview (#473).
+test.describe("Recipes to cook — done or abandoned (#474)", () => {
+  test("abandoning with one item unchecked removes only the other from the list", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-glabandon", "Grocery Abandoner");
+    await createGroup(page, "Famille Abandon");
+    await createRecipe(page, "Crêpes", "Farine | 400 | g\nLait | 1 | L");
+    await planRecipe(page, "Crêpes");
+
+    await page.goto("/grocery-list");
+    await page.getByRole("button", { name: "Générer depuis 1 recette et les stocks" }).click();
+    await expect(page).toHaveURL(/\/grocery-list\?notice=generated&added=2$/);
+
+    await page.goto("/recipes");
+    await page
+      .locator("li", { hasText: "Crêpes" })
+      .filter({ has: page.getByRole("link", { name: "Abandonner" }) })
+      .getByRole("link", { name: "Abandonner" })
+      .click();
+    await expect(page.getByRole("heading", { name: "Abandonner : Crêpes" })).toBeVisible();
+    // Both items are proposed, checked; Lait is kept.
+    const farine = page.getByRole("checkbox", { name: "Retirer « Farine (400 g) » de la liste" });
+    const lait = page.getByRole("checkbox", { name: "Retirer « Lait (1 L) » de la liste" });
+    await expect(farine).toBeChecked();
+    await expect(lait).toBeChecked();
+    await lait.uncheck();
+    await page.getByRole("button", { name: "Abandonner la recette" }).click();
+    await expect(page).toHaveURL(/\/recipes\?notice=recipe_abandoned$/);
+    await expect(page.getByText("Recette abandonnée : elle n'est plus à réaliser.")).toBeVisible();
+    await expect(page.getByText("Aucune recette à réaliser.")).toBeVisible();
+
+    await page.goto("/grocery-list");
+    await expect(page.locator("li", { hasText: "Lait" })).toHaveCount(1);
+    await expect(page.locator("li", { hasText: "Farine" })).toHaveCount(0);
+  });
+
+  test("marking done with an ingredient at 0 leaves its stock unchanged", async ({ page }) => {
+    await registerAndLogin(page, "e2e-gldone", "Grocery Cook");
+    await createGroup(page, "Famille Cuisine");
+    await createStockItem(page, "Farine", "1000", "g");
+    await createStockItem(page, "Lait", "2", "L");
+    await createRecipe(page, "Gâteau", "Farine | 400 | g\nLait | 1 | L");
+    await planRecipe(page, "Gâteau");
+
+    await page.goto("/recipes");
+    await page
+      .locator("li", { hasText: "Gâteau" })
+      .filter({ has: page.getByRole("link", { name: "Faite" }) })
+      .getByRole("link", { name: "Faite" })
+      .click();
+    await expect(page.getByRole("heading", { name: "Recette faite : Gâteau" })).toBeVisible();
+    // Every ingredient is proposed for removal, at the recipe's quantity.
+    const farine = page.getByLabel("Quantité de Farine à retirer");
+    const lait = page.getByLabel("Quantité de Lait à retirer");
+    await expect(farine).toHaveValue("400");
+    await expect(lait).toHaveValue("1");
+    await expect(page.getByRole("checkbox", { name: "Retirer Farine du stock" })).toBeChecked();
+    await expect(page.getByRole("checkbox", { name: "Retirer Lait du stock" })).toBeChecked();
+    await lait.fill("0");
+    await page.getByRole("button", { name: "Marquer comme faite" }).click();
+    await expect(page).toHaveURL(/\/recipes\?notice=recipe_done$/);
+    await expect(
+      page.getByText("Recette faite : le stock est mis à jour et le repas enregistré."),
+    ).toBeVisible();
+
+    await page.goto("/stocks");
+    await expect(page.locator("li", { hasText: "Lait" })).toContainText("2 L");
+    await expect(page.locator("li", { hasText: "Farine" })).toContainText("600 g");
+  });
+
+  test("a quantity above the stock comes back on its line, with what was typed", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-gldonebad", "Grocery Overcook");
+    await createGroup(page, "Famille Excès");
+    await createStockItem(page, "Lait", "2", "L");
+    await createRecipe(page, "Flan", "Lait | 1 | L");
+    await planRecipe(page, "Flan");
+
+    await page.goto("/recipes");
+    await page
+      .locator("li", { hasText: "Flan" })
+      .filter({ has: page.getByRole("link", { name: "Faite" }) })
+      .getByRole("link", { name: "Faite" })
+      .click();
+    await page.getByLabel("Quantité de Lait à retirer").fill("3");
+    await page.getByRole("button", { name: "Marquer comme faite" }).click();
+    await expect(page.getByText("Le stock n'en contient que 2 L.")).toBeVisible();
+    await expect(page.getByLabel("Quantité de Lait à retirer")).toHaveValue("3");
+
+    await page.goto("/stocks");
+    await expect(page.locator("li", { hasText: "Lait" })).toContainText("2 L");
+  });
+});

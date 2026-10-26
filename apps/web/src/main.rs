@@ -307,6 +307,14 @@ fn build_router(state: AppState) -> Router {
         .route("/recipes/:id/log", post(routes::recipes::detail::log))
         .route("/recipes/:id/select", post(routes::recipes::select))
         .route("/recipes/:id/deselect", post(routes::recipes::deselect))
+        .route(
+            "/recipes/:id/done",
+            get(routes::recipes::outcome::done_get).post(routes::recipes::outcome::done_post),
+        )
+        .route(
+            "/recipes/:id/abandon",
+            get(routes::recipes::outcome::abandon_get).post(routes::recipes::outcome::abandon_post),
+        )
         .route("/recipes/:id/delete", post(routes::recipes::detail::delete))
         .route("/grocery-list", get(routes::grocery_list::list::get))
         .route("/grocery-list/add", post(routes::grocery_list::list::add))

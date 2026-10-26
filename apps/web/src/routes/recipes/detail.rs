@@ -33,8 +33,9 @@ use crate::state::{api_request_auth, AppState};
 use manage_our_home_shared::validation::recipes::servings_label;
 
 use super::{
-    can_modify, deselect_form, family_context, forbidden_page, planned_badge, planned_selections,
-    recipe_not_found_page, recipes_cookie, select_form, service_unavailable_page,
+    can_modify, deselect_form, family_context, forbidden_page, outcome_links, planned_badge,
+    planned_selections, recipe_not_found_page, recipes_cookie, select_form,
+    service_unavailable_page,
 };
 
 /// Formats an `f64` quantity for display without a trailing `.0` on whole
@@ -87,12 +88,15 @@ fn notice_text(code: &str) -> Option<&'static str> {
         "meal_logged" => Some("Repas enregistré."),
         "recipe_selected" => Some("Recette à réaliser pour les prochaines courses."),
         "recipe_deselected" => Some("Recette retirée des recettes à réaliser."),
+        "recipe_done" => Some(super::outcome::DONE_NOTICE),
+        "recipe_abandoned" => Some(super::outcome::ABANDONED_NOTICE),
         _ => None,
     }
 }
 
 fn error_text(code: &str) -> Option<&'static str> {
     match code {
+        "selection_gone" => Some(super::outcome::SELECTION_GONE),
         "forbidden" => Some("Vous n'avez pas les droits nécessaires pour cette action."),
         "unavailable" => Some("Service momentanément indisponible, merci de réessayer."),
         "invalid_servings" => Some("Le nombre de personnes doit être un nombre entier de 1 à 50."),
@@ -225,9 +229,11 @@ fn selection_html(id: Uuid, base: Option<i32>, planned: Option<Option<i32>>) -> 
         Some(servings) => format!(
             r#"<div class="notice split">
 <span>{badge} Cette recette est prise en compte par la <a href="/grocery-list">liste de courses</a>.</span>
-{deselect}
+<span class="actions">{outcome}
+{deselect}</span>
 </div>"#,
             badge = planned_badge(servings),
+            outcome = outcome_links(id, "detail"),
             deselect = deselect_form(id, "detail"),
         ),
         None => select_form(id, base, "detail", "card inline"),
@@ -279,9 +285,10 @@ fn page(
     };
 
     // Log-a-meal is open to any member (feeds the shared variety history);
-    // the date defaults to today and can be backdated.
-    let today = chrono::Utc::now()
-        .date_naive()
+    // the date defaults to today in Paris, the day the pages judge dates
+    // in, and can be backdated. A field left empty is dated by apps/api
+    // (`CURRENT_DATE`, the UTC day).
+    let today = crate::routes::agenda::today_paris()
         .format("%Y-%m-%d")
         .to_string();
     let log_form = format!(
@@ -476,6 +483,15 @@ mod tests {
         assert!(html.contains(r#"href="/grocery-list""#), "{html}");
         assert!(
             html.contains(&format!(r#"action="/recipes/{id}/deselect""#)),
+            "{html}"
+        );
+        // Faite and Abandonner (#474), back to the recipe.
+        assert!(
+            html.contains(&format!(r#"href="/recipes/{id}/done?back=detail""#)),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(r#"href="/recipes/{id}/abandon?back=detail""#)),
             "{html}"
         );
         let html = selection_html(id, None, Some(None));
