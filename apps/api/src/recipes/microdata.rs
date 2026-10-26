@@ -8,12 +8,23 @@ use crate::recipes::html::{attribute, Document, Token};
 use crate::recipes::jsonld::{names_recipe, ExtractedRecipe};
 
 /// The first `Recipe` item of the page that has a name, an ingredient or a
-/// step, or `None` when there is none.
+/// step, or `None` when there is none. An item inside another one is not
+/// read on its own: the page is walked once, each item's extent skipped
+/// once read, so that items nested in each other's properties are not
+/// read again for each of them.
 pub fn extract_recipe(html: &str) -> Option<ExtractedRecipe> {
     let document = Document::parse(html);
-    (0..document.tokens.len())
-        .filter(|&at| is_recipe_item(&document.tokens[at]))
-        .find_map(|at| read_item(&document, at))
+    let mut at = 0;
+    while at < document.tokens.len() {
+        if is_recipe_item(&document.tokens[at]) {
+            if let Some(recipe) = read_item(&document, at) {
+                return Some(recipe);
+            }
+            at = document.end_of(at).max(at);
+        }
+        at += 1;
+    }
+    None
 }
 
 /// An element `itemscope` whose `itemtype` lists `Recipe`.
