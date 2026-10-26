@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 /// `POST /groups/:id/budget-entries` request body. Mirrors
 /// `CreateBudgetEntryRequest`. `spent_at` is omitted from the wire when `None`
-/// (the backend defaults it to `current_date`); `grocery_item_id` is only ever
+/// (the backend defaults it to today, the Paris day); `grocery_item_id` is only ever
 /// set by the price-on-checkout path, never by the manual `/budget/new` form.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateBudgetEntryRequest {
