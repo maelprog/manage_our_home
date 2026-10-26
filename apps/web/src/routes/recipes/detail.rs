@@ -286,8 +286,8 @@ fn page(
 
     // Log-a-meal is open to any member (feeds the shared variety history);
     // the date defaults to today in Paris, the day the pages judge dates
-    // in, and can be backdated. A field left empty is dated by apps/api
-    // (`CURRENT_DATE`, the UTC day).
+    // in, and can be backdated. A field left empty is dated by apps/api,
+    // on the same Paris day (#608).
     let today = crate::routes::agenda::today_paris()
         .format("%Y-%m-%d")
         .to_string();

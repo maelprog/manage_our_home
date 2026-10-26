@@ -1,8 +1,20 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
+use chrono::{NaiveDate, Utc};
 use common::{assert_status, call, json_body, set_cookie, test_router};
+use manage_our_home_shared::validation::auth::paris_day;
 use sqlx::PgPool;
+
+/// `day` is today in Paris, read before and after the request (#608): the
+/// undated entry takes the Paris day, not the database's UTC one.
+fn assert_paris_today(day: &serde_json::Value, before: NaiveDate, after: NaiveDate) {
+    let day: NaiveDate = day.as_str().unwrap().parse().unwrap();
+    assert!(
+        day == before || day == after,
+        "an undated entry is dated today in Paris, got {day}"
+    );
+}
 
 async fn register_verify_login(
     router: &axum::Router,
@@ -59,6 +71,7 @@ async fn full_budget_entry_lifecycle(db: PgPool) {
         register_verify_login(&router, &db, "budget-owner@example.test", "owner-password1").await;
     let group_id = create_group(&router, &owner_cookie, "Foyer").await;
 
+    let before = paris_day(Utc::now());
     let create = call(
         &router,
         Method::POST,
@@ -67,11 +80,13 @@ async fn full_budget_entry_lifecycle(db: PgPool) {
         Some(serde_json::json!({"name": "Farine", "amount": 2.5})),
     )
     .await;
+    let after = paris_day(Utc::now());
     assert_status(&create, StatusCode::CREATED);
     let entry = json_body(create).await;
     let entry_id = entry["id"].as_str().unwrap().to_string();
     assert_eq!(entry["name"], "Farine");
     assert_eq!(entry["amount"], 2.5);
+    assert_paris_today(&entry["spent_at"], before, after);
 
     let get = call(
         &router,
@@ -324,6 +339,7 @@ async fn price_can_be_set_on_grocery_item(db: PgPool) {
     )
     .await;
 
+    let before = paris_day(Utc::now());
     let set_price = call(
         &router,
         Method::POST,
@@ -332,11 +348,13 @@ async fn price_can_be_set_on_grocery_item(db: PgPool) {
         Some(serde_json::json!({"amount": 2.35})),
     )
     .await;
+    let after = paris_day(Utc::now());
     assert_status(&set_price, StatusCode::CREATED);
     let entry = json_body(set_price).await;
     assert_eq!(entry["name"], "Farine");
     assert_eq!(entry["amount"], 2.35);
     assert_eq!(entry["grocery_item_id"], item_id);
+    assert_paris_today(&entry["spent_at"], before, after);
 
     let list = call(
         &router,

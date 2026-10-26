@@ -1,7 +1,9 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
+use chrono::{Days, NaiveDate, Utc};
 use common::{assert_status, call, json_body, set_cookie, test_router};
+use manage_our_home_shared::validation::auth::paris_day;
 use sqlx::PgPool;
 
 async fn register_verify_login(
@@ -305,7 +307,8 @@ async fn negative_ingredient_quantity_is_rejected(db: PgPool) {
 }
 
 /// AC: logging a meal records it in meal_history, retrievable via the
-/// group's meal-history listing.
+/// group's meal-history listing. Without a date it is dated today in
+/// Paris, not on the database's UTC day (#608).
 #[sqlx::test]
 async fn log_meal_records_history(db: PgPool) {
     let router = test_router(db.clone());
@@ -323,6 +326,7 @@ async fn log_meal_records_history(db: PgPool) {
     .await;
     let recipe_id = json_body(create).await["id"].as_str().unwrap().to_string();
 
+    let before = paris_day(Utc::now());
     let log = call(
         &router,
         Method::POST,
@@ -331,7 +335,17 @@ async fn log_meal_records_history(db: PgPool) {
         Some(serde_json::json!({})),
     )
     .await;
+    let after = paris_day(Utc::now());
     assert_status(&log, StatusCode::CREATED);
+    let eaten_on: NaiveDate = json_body(log).await["eaten_on"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(
+        eaten_on == before || eaten_on == after,
+        "an undated meal is dated today in Paris, got {eaten_on}"
+    );
 
     let history = call(
         &router,
@@ -346,6 +360,68 @@ async fn log_meal_records_history(db: PgPool) {
     let entries = entries["entries"].as_array().unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["recipe_id"], recipe_id);
+}
+
+/// AC: the history's default 14-day window counts back from today in
+/// Paris (#608): a meal 14 days ago is in it, one 15 days ago is not.
+#[sqlx::test]
+async fn meal_history_window_counts_back_from_the_paris_day(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie = register_verify_login(
+        &router,
+        &db,
+        "recipe-window@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"name": "Omelette", "ingredients": []})),
+    )
+    .await;
+    let recipe_id = json_body(create).await["id"].as_str().unwrap().to_string();
+
+    let today = paris_day(Utc::now());
+    for days in [14, 15] {
+        let eaten_on = today.checked_sub_days(Days::new(days)).unwrap();
+        let log = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/recipes/{recipe_id}/meal-history"),
+            Some(&owner_cookie),
+            Some(serde_json::json!({"eaten_on": eaten_on})),
+        )
+        .await;
+        assert_status(&log, StatusCode::CREATED);
+    }
+
+    let history = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/recipes/meal-history"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&history, StatusCode::OK);
+    if paris_day(Utc::now()) != today {
+        // Midnight in Paris passed during the test: the window moved.
+        return;
+    }
+    let entries = json_body(history).await;
+    let days: Vec<&str> = entries["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["eaten_on"].as_str().unwrap())
+        .collect();
+    let fourteen = today.checked_sub_days(Days::new(14)).unwrap().to_string();
+    assert_eq!(days, vec![fourteen.as_str()]);
 }
 
 /// AC: suggestions rank a fully-in-stock recipe above one missing

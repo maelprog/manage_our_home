@@ -10,6 +10,7 @@ use crate::auth::session::{scoped_tx, AuthUser};
 use crate::budget::can_modify;
 use crate::error::{AppError, AppResult};
 use crate::groups::require_role;
+use crate::stocks::items::day_or_today;
 use crate::AppState;
 
 #[derive(Deserialize)]
@@ -132,7 +133,7 @@ pub async fn create_budget_entry(
         BudgetEntryRow,
         r#"
         INSERT INTO budget_entries (group_id, created_by, grocery_item_id, name, amount_cents, spent_at)
-        VALUES ($1, $2, $3, $4, $5, COALESCE($6, current_date))
+        VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING id, group_id, created_by, grocery_item_id, name, amount_cents, spent_at, created_at, updated_at
         "#,
         group_id,
@@ -140,7 +141,7 @@ pub async fn create_budget_entry(
         body.grocery_item_id,
         name,
         amount_cents,
-        body.spent_at,
+        day_or_today(body.spent_at, Utc::now()),
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -179,7 +180,7 @@ pub async fn set_grocery_item_price(
         BudgetEntryRow,
         r#"
         INSERT INTO budget_entries (group_id, created_by, grocery_item_id, name, amount_cents, spent_at)
-        VALUES ($1, $2, $3, $4, $5, COALESCE($6, current_date))
+        VALUES ($1, $2, $3, $4, $5, $6)
         ON CONFLICT (grocery_item_id) WHERE grocery_item_id IS NOT NULL
         DO UPDATE SET
             name = EXCLUDED.name,
@@ -193,7 +194,7 @@ pub async fn set_grocery_item_price(
         item_id,
         item.name,
         amount_cents,
-        body.spent_at,
+        day_or_today(body.spent_at, Utc::now()),
     )
     .fetch_one(&mut *tx)
     .await?;
