@@ -32,6 +32,7 @@ use manage_our_home_shared::dto::recipes::{
     DoneRequest, RemovalWarning,
 };
 use manage_our_home_shared::dto::stocks::StockItemResponse;
+use manage_our_home_shared::validation::stocks::article_key;
 use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
@@ -266,8 +267,10 @@ fn held(stock: &StockItemResponse) -> String {
     }
 }
 
-/// Why the preview proposes 0, or less than the recipe.
-fn warning_text(ingredient: &DoneIngredient) -> Option<String> {
+/// Why the preview proposes 0, or less than the recipe. `first_user` is
+/// the label of an earlier ingredient taking from the same stock line:
+/// apps/api serves it first, so a capped proposal here is what it left.
+fn warning_text(ingredient: &DoneIngredient, first_user: Option<&str>) -> Option<String> {
     let stock_unit = ingredient
         .lots
         .first()
@@ -289,24 +292,62 @@ fn warning_text(ingredient: &DoneIngredient) -> Option<String> {
         RemovalWarning::NoQuantity => {
             Some("La recette ne donne pas de quantité : saisissez-la.".to_string())
         }
-        RemovalWarning::Capped => Some(format!(
-            "Le stock n'en contient que {} {stock_unit} : tout est proposé.",
-            fmt_num(ingredient.proposed_quantity)
-        )),
+        RemovalWarning::Capped => Some(match first_user {
+            Some(first) if ingredient.proposed_quantity > 0.0 => format!(
+                "Ce stock sert d'abord à {first} : il en reste {} {stock_unit} pour cet ingrédient.",
+                fmt_num(ingredient.proposed_quantity)
+            ),
+            Some(first) => {
+                format!("Ce stock sert d'abord à {first} : il n'en reste rien pour cet ingrédient.")
+            }
+            None => format!(
+                "Le stock n'en contient que {} {stock_unit} : tout est proposé.",
+                fmt_num(ingredient.proposed_quantity)
+            ),
+        }),
         RemovalWarning::Other => None,
     }
 }
 
 /// The message of a line in error, in the unit of its stock line.
-fn line_error_text(error: LineError, unit: &str) -> String {
+/// `sharing` are the labels of the ingredients taking from that line, when
+/// there are several: what it holds is for them together.
+fn line_error_text(error: LineError, unit: &str, sharing: &[&str]) -> String {
     match error {
         LineError::InvalidQuantity => {
             "Saisissez une quantité de 0 ou plus, ou décochez « Retirer du stock ».".to_string()
+        }
+        LineError::TooMuch { available } if sharing.len() > 1 => {
+            let (last, others) = sharing.split_last().expect("several labels");
+            format!(
+                "Le stock n'en contient que {} {unit} pour {} et {last} ensemble.",
+                fmt_num(available),
+                others.join(", ")
+            )
         }
         LineError::TooMuch { available } => {
             format!("Le stock n'en contient que {} {unit}.", fmt_num(available))
         }
     }
+}
+
+/// How each ingredient is named on the page: its name, numbered (« n° 2 »)
+/// when the recipe has several of that name, so that their fields do not
+/// carry the same label.
+fn ingredient_labels(ingredients: &[DoneIngredient]) -> Vec<String> {
+    let keys: Vec<String> = ingredients.iter().map(|i| article_key(&i.name)).collect();
+    ingredients
+        .iter()
+        .enumerate()
+        .map(|(n, ingredient)| {
+            if keys.iter().filter(|k| **k == keys[n]).count() > 1 {
+                let rank = keys[..=n].iter().filter(|k| **k == keys[n]).count();
+                format!("{} (n° {rank})", ingredient.name)
+            } else {
+                ingredient.name.clone()
+            }
+        })
+        .collect()
 }
 
 /// The `done` page: the preview as a form, with what was typed (`typed`)
@@ -330,10 +371,21 @@ pub(crate) fn done_body(
     let eaten_on = typed
         .map(|t| t.eaten_on.clone())
         .unwrap_or_else(|| today.to_string());
+    let labels = ingredient_labels(&preview.ingredients);
+    // The ingredients taking from a stock line, in the recipe's order.
+    let users = |stock_item_id: Uuid| -> Vec<&str> {
+        preview
+            .ingredients
+            .iter()
+            .zip(&labels)
+            .filter(|(i, _)| i.lots.iter().any(|l| l.stock_item.id == stock_item_id))
+            .map(|(_, label)| label.as_str())
+            .collect()
+    };
     let mut i = 0;
     let mut fieldsets = String::new();
-    for ingredient in &preview.ingredients {
-        let name = html_escape(&ingredient.name);
+    for (ingredient, label) in preview.ingredients.iter().zip(&labels) {
+        let name = html_escape(label);
         let mut legend = name.clone();
         if let Some(a) = amount(ingredient.quantity, ingredient.unit.as_deref()) {
             legend.push_str(&format!(" · {} pour la recette", html_escape(&a)));
@@ -341,7 +393,13 @@ pub(crate) fn done_body(
         if ingredient.is_optional {
             legend.push_str(" · optionnel");
         }
-        let warning = warning_text(ingredient)
+        // An earlier ingredient taking from one of the same lines.
+        let first_user = ingredient
+            .lots
+            .iter()
+            .filter_map(|l| users(l.stock_item.id).into_iter().next())
+            .find(|first| *first != label.as_str());
+        let warning = warning_text(ingredient, first_user)
             .map(|w| format!("<p class=\"notice warning\">{}</p>\n", html_escape(&w)))
             .unwrap_or_default();
         // Two lots of one ingredient would otherwise carry the same label.
@@ -360,7 +418,7 @@ pub(crate) fn done_body(
                 .map(|e| {
                     format!(
                         "<p class=\"field-error\">{}</p>\n",
-                        html_escape(&line_error_text(e, &stock.unit))
+                        html_escape(&line_error_text(e, &stock.unit, &users(stock.id)))
                     )
                 })
                 .unwrap_or_default();
@@ -1312,6 +1370,134 @@ mod tests {
         assert!(html.contains(&format!(r#"name="stock.0" value="{}""#, id(20))));
         assert!(html.contains(&format!(r#"name="stock.2" value="{}""#, id(40))));
         assert!(!html.contains("stock.3"));
+    }
+
+    /// « Farine » twice in the recipe (400 g, then 200 g), from one stock
+    /// line holding `held` g, as apps/api proposes it: the first takes what
+    /// it needs, the second what is left.
+    fn shared_preview(held: f64) -> DonePreview {
+        let first = held.min(400.0);
+        let second = (held - first).min(200.0);
+        DonePreview {
+            selection: selection("Tarte"),
+            ingredients: vec![
+                ingredient(
+                    1,
+                    "Farine",
+                    Some(400.0),
+                    Some("g"),
+                    vec![(stock(10, "Farine", held, "g"), first)],
+                    (first < 400.0).then_some(RemovalWarning::Capped),
+                ),
+                ingredient(
+                    2,
+                    "farine",
+                    Some(200.0),
+                    Some("g"),
+                    vec![(stock(10, "Farine", held, "g"), second)],
+                    (second < 200.0).then_some(RemovalWarning::Capped),
+                ),
+            ],
+        }
+    }
+
+    #[test]
+    fn two_ingredients_of_one_name_have_distinct_labels() {
+        let html = done_body(
+            id(901),
+            &shared_preview(1000.0),
+            None,
+            &[],
+            "",
+            "list",
+            today(),
+        );
+        for n in [1, 2] {
+            let name = if n == 1 { "Farine" } else { "farine" };
+            assert!(
+                html.contains(&format!(
+                    "Quantité de {name} (n° {n}) à retirer, en g (stock : 1000 g)"
+                )),
+                "{html}"
+            );
+            assert!(
+                html.contains(&format!("Retirer {name} (n° {n}) du stock")),
+                "{html}"
+            );
+        }
+        assert!(
+            html.contains("<legend>Farine (n° 1) · 400 g pour la recette</legend>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<legend>farine (n° 2) · 200 g pour la recette</legend>"),
+            "{html}"
+        );
+        // A name used once keeps its label as it is.
+        let html = done_body(id(901), &preview(), None, &[], "", "list", today());
+        assert!(!html.contains("n° "), "{html}");
+    }
+
+    #[test]
+    fn a_stock_line_shared_by_two_ingredients_says_what_is_left_for_the_second() {
+        // 250 g: all for the first, nothing left for the second.
+        let html = done_body(
+            id(901),
+            &shared_preview(250.0),
+            None,
+            &[],
+            "",
+            "list",
+            today(),
+        );
+        assert!(
+            html.contains("Le stock n'en contient que 250 g : tout est proposé."),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                "Ce stock sert d'abord à Farine (n° 1) : il n'en reste rien pour cet ingrédient."
+            ),
+            "{html}"
+        );
+        assert!(!html.contains("que 0 g"), "{html}");
+        // 500 g: 100 g left for the second.
+        let html = done_body(
+            id(901),
+            &shared_preview(500.0),
+            None,
+            &[],
+            "",
+            "list",
+            today(),
+        );
+        assert!(
+            html.contains(
+                "Ce stock sert d'abord à Farine (n° 1) : il en reste 100 g pour cet ingrédient."
+            ),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn too_much_on_a_shared_stock_line_names_the_ingredients_sharing_it() {
+        let typed = form(vec![line(10, "200", true), line(10, "100", true)]);
+        let errors = [None, Some(LineError::TooMuch { available: 250.0 })];
+        let html = done_body(
+            id(901),
+            &shared_preview(250.0),
+            Some(&typed),
+            &errors,
+            "",
+            "list",
+            today(),
+        );
+        assert!(
+            html.contains(
+                "Le stock n'en contient que 250 g pour Farine (n° 1) et farine (n° 2) ensemble."
+            ),
+            "{html}"
+        );
     }
 
     #[test]
