@@ -12,12 +12,15 @@ use manage_our_home_shared::dto::recipes::DraftIngredient;
 /// `0.5`, `1/2`, `1 1/2`, `½`, `1½`, `un`, `une`), then an optional unit
 /// from `UNITS` or a spoon (`c. à soupe`, `c. à café`), then an optional
 /// `de` / `d'`, then the name. Anything else — no quantity, `un peu`, a range
-/// (`2 à 3`, `2-3`), nothing left for the name — is kept whole as the name.
+/// (`2 à 3`, `2-3`), a duration (`45 minutes`, `2 h`), nothing left for
+/// the name — is kept whole as the name.
 ///
 /// A line written the other way round, name first (#475), takes its name
 /// from the left of the colon when the right side is a measure — quantity
-/// and optional unit — followed by nothing or by a note in brackets or
-/// after a comma, left out of the name: `Ail : 3 gousses (hachées)`. When the measure is followed by `de` / `d'` (`Pâte : 200 g de
+/// and optional unit, or a count of measures (`2 x 250 ml`, read as their
+/// total) — followed by nothing or by a note in brackets or after a comma,
+/// left out of the name: `Ail : 3 gousses (hachées)`, `Beurre : 20 g,
+/// mou`. When the measure is followed by `de` / `d'` (`Pâte : 200 g de
 /// farine`), the right side is read as a line of its own. Any other word
 /// after the measure (`Pour la sauce : 2 tomates`, `Oignons : 2 gros`)
 /// leaves the name on either side: the line is kept whole.
@@ -35,7 +38,7 @@ pub fn parse_line(line: &str) -> DraftIngredient {
 fn understood(line: &str) -> Option<DraftIngredient> {
     let (quantity, rest) = quantity(line)?;
     let rest = rest.trim_start();
-    if is_range(rest) || is_vague(rest) {
+    if is_range(rest) || is_vague(rest) || is_duration(rest) {
         return None;
     }
     let (unit, rest) = match unit(rest) {
@@ -65,20 +68,28 @@ fn name_first(line: &str) -> Option<DraftIngredient> {
     if name.is_empty() {
         return None;
     }
-    let (quantity, rest) = quantity(measure)?;
-    let rest = rest.trim_start();
-    if is_range(rest) || is_vague(rest) {
+    let (mut quantity, rest) = quantity(measure)?;
+    let mut rest = rest.trim_start();
+    let mut counted = false;
+    if let Some(each) = rest.strip_prefix(['x', 'X', '×']) {
+        let (size, after) = self::quantity(each.trim_start())?;
+        quantity *= size;
+        rest = after.trim_start();
+        counted = true;
+    }
+    if is_range(rest) || is_vague(rest) || is_duration(rest) {
         return None;
     }
     let (unit, rest) = match unit(rest) {
         Some((unit, rest)) => (Some(unit.to_string()), rest.trim_start()),
+        None if counted => return None,
         None => (None, rest),
     };
     if ["de ", "d'", "d’"]
         .iter()
         .any(|of| strip_prefix_ci(rest, of).is_some())
     {
-        return understood(measure);
+        return (!counted).then(|| understood(measure)).flatten();
     }
     let note = rest.is_empty() || rest.starts_with(['(', ',', ';']);
     if !note {
@@ -173,6 +184,20 @@ fn is_range(rest: &str) -> bool {
         .iter()
         .find_map(|sep| strip_prefix_ci(rest, sep));
     after.is_some_and(|a| a.trim_start().starts_with(|c: char| c.is_ascii_digit()))
+}
+
+/// Units of time: `45 minutes`, `2 h` are how long, not how much.
+const DURATIONS: [&str; 14] = [
+    "minutes", "minute", "min", "mn", "heures", "heure", "h", "secondes", "seconde", "sec",
+    "jours", "jour", "nuits", "nuit",
+];
+
+/// Whether `rest` starts with a unit of time, as a word.
+fn is_duration(rest: &str) -> bool {
+    DURATIONS.iter().any(|word| {
+        strip_prefix_ci(rest, word)
+            .is_some_and(|after| !after.starts_with(|c: char| c.is_alphanumeric()))
+    })
 }
 
 /// `peu`: `1 peu de beurre`, `un peu de sel` give no quantity.
@@ -278,8 +303,9 @@ fn unit(rest: &str) -> Option<(&'static str, &str)> {
                 .find_map(|ending| after.strip_prefix(ending))
                 .unwrap_or(after);
         }
-        let ends =
-            spelling.ends_with('.') || after.is_empty() || after.starts_with(char::is_whitespace);
+        let ends = spelling.ends_with('.')
+            || after.is_empty()
+            || after.starts_with(|c: char| c.is_whitespace() || c == ',' || c == ';');
         let length = rest.len() - after.len();
         if ends && best.is_none_or(|(l, _, _)| length > l) {
             best = Some((length, unit, after));
@@ -518,17 +544,27 @@ mod tests {
             "Huile d’olive",
         );
         is("Beurre: 20 g", Some(20.0), Some("g"), "Beurre");
+        // A note after a comma; a unit ends at a comma.
+        is("Beurre : 20 g, mou", Some(20.0), Some("g"), "Beurre");
+        // A count of measures is their total.
+        is("Eau : 2 x 250 ml", Some(500.0), Some("ml"), "Eau");
+        is("Eau : 2 × 250 ml (tiède)", Some(500.0), Some("ml"), "Eau");
         is("Beurre\u{a0}: 20 g", Some(20.0), Some("g"), "Beurre");
         // The right side is a whole line of its own: it names the
         // ingredient.
         is("Pâte : 200 g de farine", Some(200.0), Some("g"), "farine");
-        // No quantity, a range, nothing on one side, or words
+        // No quantity, a range, a duration, nothing on one side, or words
         // after the measure that are not a note — the name could be on
         // either side: kept whole.
         for line in [
             "Pour la sauce : 2 tomates",
             "Oignons : 2 gros (finement émincés)",
             "Coriandre fraîche et persil : 15 g chacun (ciselés)",
+            "Temps de cuisson : 45 minutes",
+            "Note : 2 heures de repos",
+            "Repos : 1 h",
+            "Marinade : 1 nuit",
+            "Eau : 2 x",
             "Sel et poivre : selon goût",
             "Safran : quelques filaments ou ½ cuillère à café de safran en poudre",
             "Optionnel : légumes comme carottes, courgettes ou navets",
@@ -544,6 +580,9 @@ mod tests {
     #[test]
     fn a_line_that_is_not_understood_is_kept_whole() {
         for line in [
+            "45 minutes de cuisson",
+            "2 h de marinade",
+            "1 nuit au frais",
             "2 à 3 tomates",
             "2-3 tomates",
             "200 g",

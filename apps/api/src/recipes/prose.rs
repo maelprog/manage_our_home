@@ -230,7 +230,7 @@ mod tests {
             "<html><head><meta property=\"og:title\" content=\"Pâtes au beurre\"></head><body>\
             <p>Une recette rapide.</p>\
             <p><strong>Ingrédients :</strong></p>\
-            <p>Pour deux personnes :<br>200 g de pâtes<br>Beurre : 20 g<br>sel</p>\
+            <p>Pour deux personnes :<br>200 g de pâtes<br>Beurre : 20 g<br>sel<br>Temps de cuisson : 45 minutes</p>\
             <p><b>Préparation</b></p>\
             <p>Cuire les pâtes.</p><p>Ajouter le beurre.</p>\
             </body></html>";
