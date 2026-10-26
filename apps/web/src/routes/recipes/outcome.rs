@@ -80,13 +80,20 @@ pub(crate) enum LineError {
     TooMuch { available: f64 },
 }
 
+/// The fields of a `done` form in error, all of them at once.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct Invalid {
+    /// One entry per line, `Some` on the lines in error; empty when none.
+    pub lines: Vec<Option<LineError>>,
+    /// The meal date does not read.
+    pub date: bool,
+}
+
 /// Why a `done` form is not sent.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum DoneError {
-    /// One entry per line, `Some` on the lines in error.
-    Lines(Vec<Option<LineError>>),
-    /// The meal date does not read.
-    InvalidDate,
+    /// Fields to correct.
+    Invalid(Invalid),
     /// The form's lines are not the preview's any more: the stock or the
     /// recipe changed since the page was shown.
     Stale,
@@ -197,12 +204,20 @@ pub(crate) fn validate_done(
         let available = without_noise(lot.stock_item.quantity);
         errors.push((entry.1 > available).then_some(LineError::TooMuch { available }));
     }
-    if errors.iter().any(Option::is_some) {
-        return Err(DoneError::Lines(errors));
-    }
     let eaten_on = match form.eaten_on.trim() {
-        "" => None,
-        d => Some(d.parse::<NaiveDate>().map_err(|_| DoneError::InvalidDate)?),
+        "" => Ok(None),
+        d => d.parse::<NaiveDate>().map(Some),
+    };
+    // Every field in error at once, the date with the lines.
+    let lines_ok = errors.iter().all(Option::is_none);
+    let eaten_on = match eaten_on {
+        Ok(d) if lines_ok => d,
+        date => {
+            return Err(DoneError::Invalid(Invalid {
+                lines: if lines_ok { vec![] } else { errors },
+                date: date.is_err(),
+            }))
+        }
     };
     Ok(DoneRequest {
         removals: taken
@@ -353,12 +368,12 @@ fn ingredient_labels(ingredients: &[DoneIngredient]) -> Vec<String> {
 }
 
 /// The `done` page: the preview as a form, with what was typed (`typed`)
-/// and the errors on their lines when the form comes back.
+/// and the fields in error (`invalid`) when the form comes back.
 pub(crate) fn done_body(
     recipe_id: Uuid,
     preview: &DonePreview,
     typed: Option<&DoneForm>,
-    errors: &[Option<LineError>],
+    invalid: &Invalid,
     banner: &str,
     back: &str,
     today: NaiveDate,
@@ -413,7 +428,8 @@ pub(crate) fn done_body(
                 Some(t) => (t.quantity.clone(), t.remove),
                 None => (fmt_num(lot.quantity), true),
             };
-            let error = errors
+            let error = invalid
+                .lines
                 .get(i)
                 .copied()
                 .flatten()
@@ -456,7 +472,7 @@ pub(crate) fn done_body(
 {banner}<p class="muted">À la validation, les quantités cochées sont retirées du stock et le repas est enregistré. Décochez un ingrédient que vous n'avez pas utilisé ; une quantité à 0 ne retire rien non plus.</p>
 <form method="post" action="/recipes/{recipe_id}/done">
 <input type="hidden" name="back" value="{back}"/>
-<label>Date du repas
+{date_error}<label>Date du repas
 <input type="date" name="eaten_on" value="{eaten_on}"/></label>
 {fieldsets}<div class="actions">
 <button type="submit">Marquer comme faite</button>
@@ -465,6 +481,11 @@ pub(crate) fn done_body(
 </form>"#,
         name = html_escape(&preview.selection.recipe_name),
         eaten_on = html_escape(&eaten_on),
+        date_error = if invalid.date {
+            "<p class=\"field-error\">La date du repas n'est pas une date valide.</p>\n"
+        } else {
+            ""
+        },
     )
 }
 
@@ -523,8 +544,7 @@ fn banner(code: &str) -> String {
     let text = match code {
         "stock_changed" => "Le stock a changé depuis l'affichage de cette page : voici l'aperçu à jour. Vérifiez les quantités, puis validez à nouveau.",
         "list_changed" => "La liste de courses a changé depuis l'affichage de cette page : voici les articles à jour. Vérifiez-les, puis validez à nouveau.",
-        "lines" => "Certaines quantités ne peuvent pas être retirées telles quelles : corrigez les lignes signalées.",
-        "invalid_date" => "La date du repas n'est pas une date valide.",
+        "invalid" => "Le formulaire ne peut pas être enregistré tel quel : corrigez les champs signalés.",
         _ => "Service momentanément indisponible, merci de réessayer.",
     };
     format!("<p class=\"notice error\">{}</p>\n", html_escape(text))
@@ -629,7 +649,15 @@ pub async fn done_get(
         Preview::Ok(p) => render(
             &fam.header,
             "Recette faite",
-            &done_body(recipe_id, &p, None, &[], "", &query.back, today()),
+            &done_body(
+                recipe_id,
+                &p,
+                None,
+                &Invalid::default(),
+                "",
+                &query.back,
+                today(),
+            ),
         )
         .into_response(),
         other => not_shown(other, &query.back, recipe_id),
@@ -659,14 +687,14 @@ pub async fn done_post(
     let show = |status: StatusCode,
                 p: &DonePreview,
                 typed: Option<&DoneForm>,
-                errors: &[Option<LineError>],
+                invalid: &Invalid,
                 code: &str| {
         (
             status,
             render(
                 &fam.header,
                 "Recette faite",
-                &done_body(recipe_id, p, typed, errors, &banner(code), back, today()),
+                &done_body(recipe_id, p, typed, invalid, &banner(code), back, today()),
             ),
         )
             .into_response()
@@ -679,24 +707,21 @@ pub async fn done_post(
     let request = match validate_done(&form, &current) {
         Ok(r) => r,
         Err(DoneError::Stale) => {
-            return show(StatusCode::CONFLICT, &current, None, &[], "stock_changed")
-        }
-        Err(DoneError::Lines(errors)) => {
             return show(
-                StatusCode::UNPROCESSABLE_ENTITY,
+                StatusCode::CONFLICT,
                 &current,
-                Some(&form),
-                &errors,
-                "lines",
+                None,
+                &Invalid::default(),
+                "stock_changed",
             )
         }
-        Err(DoneError::InvalidDate) => {
+        Err(DoneError::Invalid(invalid)) => {
             return show(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 &current,
                 Some(&form),
-                &[],
-                "invalid_date",
+                &invalid,
+                "invalid",
             )
         }
     };
@@ -733,7 +758,13 @@ pub async fn done_post(
             match preview::<DonePreview>(&state, fam.gid, recipe_id, "done", cookie.as_deref())
                 .await
             {
-                Preview::Ok(p) => show(StatusCode::CONFLICT, &p, None, &[], "stock_changed"),
+                Preview::Ok(p) => show(
+                    StatusCode::CONFLICT,
+                    &p,
+                    None,
+                    &Invalid::default(),
+                    "stock_changed",
+                ),
                 other => not_shown(other, back, recipe_id),
             }
         }
@@ -741,7 +772,7 @@ pub async fn done_post(
             StatusCode::SERVICE_UNAVAILABLE,
             &current,
             Some(&form),
-            &[],
+            &Invalid::default(),
             "unavailable",
         ),
     }
@@ -977,6 +1008,10 @@ mod tests {
         "2026-10-26".parse().unwrap()
     }
 
+    fn invalid_lines(lines: Vec<Option<LineError>>) -> DoneError {
+        DoneError::Invalid(Invalid { lines, date: false })
+    }
+
     // -- parse_done_form -----------------------------------------------------
 
     #[test]
@@ -1090,7 +1125,7 @@ mod tests {
             );
             assert_eq!(
                 got,
-                Err(DoneError::Lines(vec![
+                Err(invalid_lines(vec![
                     None,
                     Some(LineError::InvalidQuantity),
                     None
@@ -1122,7 +1157,7 @@ mod tests {
         );
         assert_eq!(
             got,
-            Err(DoneError::Lines(vec![
+            Err(invalid_lines(vec![
                 None,
                 Some(LineError::TooMuch { available: 500.0 }),
                 Some(LineError::TooMuch { available: 2.0 }),
@@ -1174,7 +1209,50 @@ mod tests {
             Some("2026-10-24".parse().unwrap())
         );
         f.eaten_on = "24/10/2026".into();
-        assert_eq!(validate_done(&f, &preview()), Err(DoneError::InvalidDate));
+        assert_eq!(
+            validate_done(&f, &preview()),
+            Err(DoneError::Invalid(Invalid {
+                lines: vec![],
+                date: true
+            }))
+        );
+    }
+
+    #[test]
+    fn a_wrong_date_is_reported_with_the_lines_in_error() {
+        let mut f = form(vec![
+            line(10, "abc", true),
+            line(11, "300", true),
+            line(20, "1", true),
+        ]);
+        f.eaten_on = "24/10/2026".into();
+        assert_eq!(
+            validate_done(&f, &preview()),
+            Err(DoneError::Invalid(Invalid {
+                lines: vec![Some(LineError::InvalidQuantity), None, None],
+                date: true,
+            }))
+        );
+    }
+
+    #[test]
+    fn the_done_page_says_on_the_field_that_the_date_does_not_read() {
+        let html = done_body(
+            id(901),
+            &preview(),
+            None,
+            &Invalid {
+                lines: vec![],
+                date: true,
+            },
+            "",
+            "list",
+            today(),
+        );
+        assert!(
+            html.contains("La date du repas n'est pas une date valide."),
+            "{html}"
+        );
     }
 
     #[test]
@@ -1226,7 +1304,7 @@ mod tests {
         );
         assert_eq!(
             got,
-            Err(DoneError::Lines(vec![
+            Err(invalid_lines(vec![
                 None,
                 Some(LineError::TooMuch { available: 0.3 })
             ]))
@@ -1251,7 +1329,7 @@ mod tests {
         };
         assert_eq!(
             validate_done(&form(vec![line(10, "0.1234567891234", true)]), &p),
-            Err(DoneError::Lines(vec![Some(LineError::TooMuch {
+            Err(invalid_lines(vec![Some(LineError::TooMuch {
                 available: 0.1234567891
             })]))
         );
@@ -1310,7 +1388,15 @@ mod tests {
 
     #[test]
     fn the_done_page_proposes_every_lot_checked_for_removal() {
-        let html = done_body(id(901), &preview(), None, &[], "", "list", today());
+        let html = done_body(
+            id(901),
+            &preview(),
+            None,
+            &Invalid::default(),
+            "",
+            "list",
+            today(),
+        );
         assert!(html.contains("<h1>Recette faite : Crêpes</h1>"), "{html}");
         assert!(
             html.contains(&format!(r#"action="/recipes/{}/done""#, id(901))),
@@ -1390,7 +1476,15 @@ mod tests {
                 ),
             ],
         };
-        let html = done_body(id(901), &p, None, &[], "", "detail", today());
+        let html = done_body(
+            id(901),
+            &p,
+            None,
+            &Invalid::default(),
+            "",
+            "detail",
+            today(),
+        );
         assert!(html.contains("<legend>Sucre · 50 g pour la recette</legend>"));
         assert!(html.contains("Aucun article de ce nom en stock : rien à retirer."));
         assert!(
@@ -1440,7 +1534,7 @@ mod tests {
             id(901),
             &shared_preview(1000.0),
             None,
-            &[],
+            &Invalid::default(),
             "",
             "list",
             today(),
@@ -1467,7 +1561,15 @@ mod tests {
             "{html}"
         );
         // A name used once keeps its label as it is.
-        let html = done_body(id(901), &preview(), None, &[], "", "list", today());
+        let html = done_body(
+            id(901),
+            &preview(),
+            None,
+            &Invalid::default(),
+            "",
+            "list",
+            today(),
+        );
         assert!(!html.contains("n° "), "{html}");
     }
 
@@ -1478,7 +1580,7 @@ mod tests {
             id(901),
             &shared_preview(250.0),
             None,
-            &[],
+            &Invalid::default(),
             "",
             "list",
             today(),
@@ -1499,7 +1601,7 @@ mod tests {
             id(901),
             &shared_preview(500.0),
             None,
-            &[],
+            &Invalid::default(),
             "",
             "list",
             today(),
@@ -1520,7 +1622,10 @@ mod tests {
             id(901),
             &shared_preview(250.0),
             Some(&typed),
-            &errors,
+            &Invalid {
+                lines: errors.to_vec(),
+                date: false,
+            },
             "",
             "list",
             today(),
@@ -1537,7 +1642,7 @@ mod tests {
     fn the_done_page_marks_an_optional_ingredient() {
         let mut p = preview();
         p.ingredients[1].is_optional = true;
-        let html = done_body(id(901), &p, None, &[], "", "list", today());
+        let html = done_body(id(901), &p, None, &Invalid::default(), "", "list", today());
         assert!(
             html.contains("<legend>Lait · 1 L pour la recette · optionnel</legend>"),
             "{html}"
@@ -1561,7 +1666,10 @@ mod tests {
             id(901),
             &preview(),
             Some(&typed),
-            &errors,
+            &Invalid {
+                lines: errors.to_vec(),
+                date: false,
+            },
             "<p class=\"notice error\">x</p>",
             "list",
             today(),
@@ -1585,7 +1693,7 @@ mod tests {
         let mut p = preview();
         p.selection.recipe_name = "<b>Crêpes</b>".into();
         p.ingredients[0].name = "Farine & <i>".into();
-        let html = done_body(id(901), &p, None, &[], "", "list", today());
+        let html = done_body(id(901), &p, None, &Invalid::default(), "", "list", today());
         assert!(!html.contains("<b>") && !html.contains("<i>"), "{html}");
         assert!(html.contains("&lt;b&gt;Crêpes&lt;/b&gt;"));
     }
