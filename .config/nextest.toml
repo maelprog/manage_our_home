@@ -7,6 +7,11 @@
 [profile.ci]
 # Every failure of the run is reported, not only the first.
 fail-fast = false
+# Twice the 4 vCPUs of a GitHub-hosted runner: the flow tests spend much
+# of their time waiting on Postgres — which runs on the same 4 vCPUs —
+# and on their own timers, not computing. Measured locally (#606), with
+# the whole suite on 7 CPUs: 480 s at 7 tests at a time, 308 s at 14.
+test-threads = 8
 
 # The JUnit report keeps what the passing tests printed, which the job
 # reads: a MinIO test without its environment returns early, green, after

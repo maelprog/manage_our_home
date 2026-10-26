@@ -48,6 +48,13 @@ jobs:
       # a test module` that this gate reported clean. It was caught in review
       # before merge, by running the command by hand, not by CI (issue #102).
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # The doctests, which the `test` job's runner, cargo-nextest, does not
+      # run (#606). They are here, not after it: `--doc` does not reuse the
+      # `--all-targets` build and recompiles the dependency graph, which
+      # took 72 s at the end of the `test` job, the critical path of the
+      # workflow, on run 40329040151; this job ends well before `test`. The
+      # workspace has no doctest today, so none needs Postgres or MinIO.
+      - run: cargo test --doc --workspace
 
   audit:
     runs-on: ubuntu-latest
@@ -201,8 +208,8 @@ jobs:
           report=target/nextest/ci/junit.xml
           test -s "$report"
           if grep -n 'skipping ' "$report"; then exit 1; fi
-      # nextest does not run doctests.
-      - run: cargo test --doc --workspace
+      # nextest does not run doctests: `cargo test --doc` runs them in the
+      # `fmt-clippy` job.
 
   # Playwright E2E against a live apps/web + apps/api + Postgres + MinIO
   # stack — merge gate per docs/v1-scope.md's "Playwright policy" (every
