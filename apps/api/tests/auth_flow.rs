@@ -2401,9 +2401,11 @@ async fn the_lock_survives_a_restart_of_the_api(db: PgPool) {
 /// `verify_password`, the 429 would cost what a 401 costs.
 ///
 /// Compared against a refused attempt measured in the same test, with a
-/// loose factor, because this is wall time on a shared runner: on the
-/// debug profile a hash is a couple of hundred milliseconds and a locked
-/// answer a few.
+/// loose factor, because this is wall time on a shared runner. Since the
+/// dev profile compiles argon2 at `opt-level = 1` (#606) a hash is a few
+/// tens of milliseconds, a locked answer a few: each side keeps the
+/// fastest of as many attempts, so one slow sample (a runner busy with
+/// the tests beside this one) decides neither.
 #[sqlx::test]
 async fn a_locked_attempt_answers_without_hashing(db: PgPool) {
     let router = router_trusting_10_0_0_0_8(db.clone());
@@ -2424,20 +2426,23 @@ async fn a_locked_attempt_answers_without_hashing(db: PgPool) {
         assert_status(&response, StatusCode::UNAUTHORIZED);
     }
 
-    let started = std::time::Instant::now();
-    let locked = login_from(
-        &router,
-        proxy,
-        Some("192.168.1.42"),
-        "nobody@example.test",
-        "wrong-password1",
-    )
-    .await;
-    let locked_elapsed = started.elapsed();
-    assert_status(&locked, StatusCode::TOO_MANY_REQUESTS);
+    let mut locked_elapsed = std::time::Duration::MAX;
+    for _ in 0..manage_our_home::auth::throttle::MAX_FAILURES {
+        let started = std::time::Instant::now();
+        let locked = login_from(
+            &router,
+            proxy,
+            Some("192.168.1.42"),
+            "nobody@example.test",
+            "wrong-password1",
+        )
+        .await;
+        locked_elapsed = locked_elapsed.min(started.elapsed());
+        assert_status(&locked, StatusCode::TOO_MANY_REQUESTS);
+    }
     assert!(
         locked_elapsed * 4 < refused,
-        "a locked attempt took {locked_elapsed:?}, the fastest refusal {refused:?}"
+        "the fastest locked attempt took {locked_elapsed:?}, the fastest refusal {refused:?}"
     );
 }
 
