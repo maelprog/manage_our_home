@@ -326,9 +326,10 @@ disait pas.
 - **Six onglets sur téléphone (#523)**, chacun son icône au-dessus de son
   libellé court : Accueil, Agenda, Courses, Cuisine, Messages, Profil. Ils
   se partagent la barre et tiennent sur 390 px ; les huit onglets d'avant
-  (neuf pour le superadmin) n'y tenaient pas — 670 px de contenu à 390 px,
-  relevé lors de #463 : Messagerie, septième, et sa pastille étaient hors
-  de la vue au chargement. L'icône est `aria-hidden` : l'onglet se lit
+  (neuf pour le superadmin) n'y tenaient pas — 678 px de contenu à 390 px
+  avec la pastille de Messagerie, 647 px sans, soit 288 px au-delà de
+  l'écran (`scrollWidth` de la barre, mesuré le 2026-10-28 sur `main` à
+  92accf4, compte membre, Chromium de l'image Playwright 1.61.1). L'icône est `aria-hidden` : l'onglet se lit
   toujours par son libellé. Recettes passe par le segment Stocks | Recettes en tête des deux
   pages (`.segment`, téléphone seulement), Budget par sa carte de
   l'accueil, les familles et le compte par Profil. L'onglet Cuisine est
