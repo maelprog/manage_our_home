@@ -317,13 +317,16 @@ const ROUTES: RouteSpec[] = [
       pageSize: 50,
     },
   },
+  // Le profil (onglet Profil, bloc du pied de la colonne) depuis #523 : les
+  // familles y sont passées, `/groups` n'est plus une entrée de la nav. Une
+  // ligne par famille, comme `/groups` les comptait.
   {
-    path: "/groups",
+    path: "/account",
     floor: 500,
     items: {
       label: "familles",
       minStoredKey: "groups",
-      pattern: new RegExp(`href="/groups/${UUID}/`),
+      pattern: new RegExp(`name="group_id" value="${UUID}"`),
       count: () => ({ path: "/groups", key: "" }),
     },
   },
@@ -510,13 +513,15 @@ async function fetchPage(session: HttpSession, route: string): Promise<string> {
   // Une session expirée ou absente ne donne pas une erreur : apps/web renvoie
   // 200 avec l'écran de connexion. Sans ce contrôle on pèserait /login huit fois.
   //
-  // Le témoin est le formulaire de déconnexion et non la classe du `<nav>` :
-  // il n'existe que pour une session ouverte, et c'est une *route*, pas un
+  // Le témoin est le lien du profil et non la classe du `<nav>` : il
+  // n'existe que pour une session ouverte, et c'est une *route*, pas un
   // crochet de style. La version précédente cherchait `<nav class="actions">`
   // et a cessé de reconnaître une page authentifiée dès que #70 a renommé
   // cette classe en `tabs` — un renommage de CSS ne doit pas pouvoir arrêter
   // le mesureur, ni (pire) le laisser peser huit fois l'écran de connexion.
-  if (!text.includes('action="/logout"')) {
+  // Le formulaire de déconnexion, témoin jusqu'à #523, a quitté l'en-tête
+  // pour la seule page du profil.
+  if (!text.includes('href="/account"')) {
     throw new Error(
       `${route} : la réponse ne contient pas la nav authentifiée — c'est probablement ` +
         "l'écran de connexion servi en 200. Mesure refusée.",

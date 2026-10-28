@@ -43,6 +43,8 @@ test.describe("Auth — register → verify → login → logout", () => {
     await expect(page.getByText("Bienvenue")).toBeVisible();
     await expect(page.getByText("E2E User")).toBeVisible();
 
+    // Logging out is on the profile since #523.
+    await page.getByRole("link", { name: /^Profil/ }).click();
     await page.getByRole("button", { name: "Se déconnecter" }).click();
     await expect(page).toHaveURL(/\/login$/);
   });

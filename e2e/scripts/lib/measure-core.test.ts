@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   budgetViolations,
@@ -76,6 +79,84 @@ test("parseNavRoutes throws when the nav table cannot be found", () => {
 
 test("parseNavRoutes throws when several nav tables match", () => {
   assert.throws(() => parseNavRoutes(APP_RS_NAV + APP_RS_NAV), /2 /);
+});
+
+// Since #523 an entry carries four fields, and rustfmt splits the widest
+// ones — and the `.chain(…)` — over several lines.
+const APP_RS_NAV_WRAPPED = `
+const NAV: [(&str, &str, Option<&str>, Glyph); 3] = [
+    ("/", "Accueil", Some("Accueil"), Glyph::Home),
+    (
+        "/grocery-list",
+        "Courses",
+        Some("Courses"),
+        Glyph::Groceries,
+    ),
+    ("/recipes", "Recettes", None, Glyph::Recipes),
+];
+
+pub fn app_header(me: &MeResponse) -> String {
+    let links: String = NAV
+        .iter()
+        .copied()
+        .chain(
+            me.is_superadmin
+                .then_some(("/admin/users", "Admin", None, Glyph::Settings)),
+        )
+        .collect();
+}
+`;
+
+test("parseNavRoutes reads entries rustfmt wrapped over several lines", () => {
+  const parsed = parseNavRoutes(APP_RS_NAV_WRAPPED);
+  assert.deepEqual(parsed.hrefs, ["/", "/grocery-list", "/recipes"]);
+  assert.deepEqual(parsed.conditional, ["/admin/users"]);
+});
+
+// The profile closes the navigation outside the table (#523), through the
+// same `navlink` call; and the phone's Cuisine tab and the PC's Stocks link
+// are two entries for one page.
+const APP_RS_NAV_PROFILE = `
+const NAV: [(&str, Option<&str>, Option<&str>, Glyph); 3] = [
+    ("/", Some("Accueil"), Some("Accueil"), Glyph::Home),
+    ("/stocks", None, Some("Cuisine"), Glyph::Stocks),
+    ("/stocks", Some("Stocks"), None, Glyph::Stocks),
+];
+
+fn navlink(href: &str, class: &str, current: bool, inner: &str) -> String {
+    format!(r#"<a class="{class}" href="{href}">{inner}</a>"#)
+}
+
+pub fn app_header(me: &MeResponse) -> String {
+    let links: String = NAV.iter().map(|(href, ..)| navlink(href, "", false, "")).collect();
+    let profile = navlink(
+        "/account",
+        "profile",
+        false,
+        "",
+    );
+}
+`;
+
+test("parseNavRoutes reads the profile link and counts a page once", () => {
+  const parsed = parseNavRoutes(APP_RS_NAV_PROFILE);
+  assert.deepEqual(parsed.hrefs, ["/", "/stocks", "/account"]);
+});
+
+test("parseNavRoutes reads the real nav of apps/web/src/app.rs", () => {
+  const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+  const parsed = parseNavRoutes(readFileSync(join(repo, "apps/web/src/app.rs"), "utf8"));
+  assert.deepEqual(parsed.hrefs, [
+    "/",
+    "/agenda",
+    "/grocery-list",
+    "/stocks",
+    "/recipes",
+    "/budget",
+    "/messagerie",
+    "/account",
+  ]);
+  assert.deepEqual(parsed.conditional, ["/admin/users"]);
 });
 
 // ---------------------------------------------------------------------------

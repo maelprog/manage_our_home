@@ -156,7 +156,7 @@ body {
   padding-bottom: var(--s16);
 }
 /* Titles only, per DESIGN.md — Fraunces never carries body text. */
-h1, h2, h3 { font-family: "Fraunces", Georgia, serif; font-weight: 600; line-height: 1.25; }
+h1, h2, h3, .brand { font-family: "Fraunces", Georgia, serif; font-weight: 600; line-height: 1.25; }
 /* One size per level, taken from the scale. Fourteen section subtitles used
    to carry an inline font-size — in two different values for the same level
    (1.05rem in the account sections, 1.1rem in the agenda's) — plus an inline
@@ -176,22 +176,34 @@ h3 { font-size: var(--t-lg); margin: var(--s4) 0 var(--s1); }
 .content { margin: 0 auto; padding: var(--s6) var(--s4); }
 .w-form { max-width: var(--w-form); }
 .w-read { max-width: var(--w-read); }
-/* The tab bar scrolls sideways rather than shrinking: nine labels do not fit
-   across a 390px phone, and replacing them with icons is not free either —
-   an icon inside the link changes its accessible name, which is what the
-   e2e suite reads to know which page it is on. */
+/* Six tabs on a phone (#523), each its icon over its short label. They
+   share the bar evenly and fit it at 390px; on a narrower screen a tab
+   keeps its label's width and the bar scrolls sideways, as the nine tabs
+   before #523 did. The icon is `aria-hidden`, so a tab is still read by its
+   label. */
 .tabs {
   position: fixed;
   inset: auto 0 0 0;
   z-index: 1;
   display: flex;
-  gap: var(--s1);
   overflow-x: auto;
   background: var(--surface);
   border-top: 1px solid var(--border);
 }
-/* A tab stretches to share the bar; its height is every nav link's, below. */
-.tabs .navlink { flex: 1 0 auto; justify-content: center; }
+/* A tab shares the bar; its height is every nav link's, below. Positioned
+   for the unread pastille, which sits on the icon's corner. */
+.tabs .navlink { position: relative; flex: 1 0 0; flex-direction: column; justify-content: center; gap: var(--s1); padding: var(--s1); font-size: var(--t-xs); }
+.tabs .icon { width: var(--s6); height: var(--s6); }
+.tabs .badge { position: absolute; top: 0; left: 50%; margin-left: var(--s2x); }
+/* The phone's Cuisine tab opens the stocks, and this segment at the head of
+   the stocks and the recipes goes from one to the other. A PC has both in
+   its sidebar: the 861px query below hides it. */
+.segment { display: flex; padding: var(--s1); margin-bottom: var(--s4); border-radius: var(--r-sm); background: var(--border); }
+.segment a { flex: 1; display: flex; align-items: center; justify-content: center; min-height: var(--s12); border-radius: var(--r-sm); color: var(--fg); text-decoration: none; }
+.segment [aria-current] { background: var(--surface); font-weight: 600; }
+/* The brand at the head of the sidebar (#521's name). */
+.brand { display: flex; align-items: center; gap: var(--s2x); margin: 0 0 var(--s4); font-size: var(--t-xl); }
+.brand .icon { color: var(--accent); }
 /* The sidebar is the override and not the other way round: a `min-width` /
    `max-width` pair leaves a hole between 860 and 861 CSS pixels, which a
    zoomed viewport lands in. */
@@ -205,18 +217,33 @@ h3 { font-size: var(--t-lg); margin: var(--s4) 0 var(--s1); }
      content's min-content width, so one wide table would push the content
      column past the viewport and take the sidebar with it. */
   .app { display: grid; grid-template-columns: var(--w-sidebar) minmax(0, 1fr); }
+  /* The full height, and a column, so that the profile block can sit at
+     its foot (#523). */
   header {
     position: sticky;
     top: 0;
     align-self: start;
-    max-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
     overflow-y: auto;
     padding: var(--s4);
     background: var(--surface);
     border-right: 1px solid var(--border);
   }
-  .tabs { position: static; flex-direction: column; border-top: 0; }
-  .tabs .navlink { justify-content: flex-start; }
+  .tabs { position: static; flex: 1; flex-direction: column; border-top: 0; }
+  /* A link of the sidebar: its icon then its label, at the body size. */
+  .tabs .navlink { flex: none; flex-direction: row; justify-content: flex-start; gap: var(--s3); padding: var(--s1) var(--s3); font-size: var(--t-base); }
+  /* The unread count at the end of the row, as the mock-up draws it. */
+  .tabs .badge { position: static; margin-left: auto; }
+  /* The caller's name over the active family, at the foot of the column. */
+  .profile { margin-top: auto; }
+  .profile .pc { display: grid; }
+  /* The PC side of the one markup (`app::app_header`): what only a phone
+     shows, and the kitchen segment the sidebar makes redundant. The Cuisine
+     tab is a `.navlink`, declared further down: `.navlink.phone` outranks
+     it. */
+  .phone, .navlink.phone, .segment { display: none; }
   .cal tbody tr { height: 6.5rem; }
   /* The messagerie's send box, kept in reach at the foot of a long thread
      instead of sitting past the end of it (audit §5). `.content >` is the
@@ -663,10 +690,9 @@ caption, .skip-link:not(:focus) { clip-path: inset(50%); }
 .navlink { display: inline-flex; align-items: center; min-height: var(--s12); padding: var(--s1) var(--s2x); border-radius: var(--r-sm); color: var(--fg); text-decoration: none; }
 .navlink[aria-current="page"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 /* The Messagerie tab's unread count (#463) is a `.badge.warn` — its own
-   ground and text, so it reads the same on a current tab — set off from the
-   label. The words it stands for ("(3 non lus)") are in `.sr-only` beside
-   it, the usual visually-hidden pattern. */
-.navlink .badge { margin-left: var(--s2x); }
+   ground and text, so it reads the same on a current tab — placed with the
+   tab bar above. The words it stands for ("(3 non lus)") are in `.sr-only`
+   beside it, the usual visually-hidden pattern. */
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 /* -- The agenda below the breakpoint (#71) --------------------------------
    Seven columns on 390px give ~50px a day, so the agenda stops being a grid:
@@ -682,7 +708,16 @@ caption, .skip-link:not(:focus) { clip-path: inset(50%); }
   .cal-day { font-size: var(--t-lg); }
   /* --s12 is 48px, over Espacement's 44px; flex centres the text in it. */
   .chip { display: flex; align-items: center; gap: var(--s1); min-height: var(--s12); font-size: var(--t-base); }
+  /* The phone side of the one markup (`app::app_header`, #523): what only
+     a PC shows. Here, after `.navlink`, which it has to override. */
+  .pc { display: none; }
 }
+/* Page transitions without JavaScript (#523): a cross-fade from one page to
+   the next, for whoever has not asked for less motion. Asked for in the
+   `no-preference` query rather than undone in `reduce`: one rule. A
+   browser without cross-document view transitions loads the page as
+   before. */
+@media (prefers-reduced-motion: no-preference) { @view-transition { navigation: auto; } }
 /* Reduced motion, in one declaration: every transition above is timed by
    `--dur`, so zeroing the token neutralises all of them — no sweep of
    `* { transition: none !important }`, and nothing to keep in sync. */

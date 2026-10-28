@@ -56,6 +56,11 @@ async function createInviteLink(page: Page, groupName: string): Promise<string> 
   return href;
 }
 
+/** The active family, as the sidebar's profile block names it (#523). */
+function activeFamily(page: Page) {
+  return page.locator('header a[href="/account"] .muted');
+}
+
 /** A second, independently authenticated user in its own browser context. */
 async function secondUser(
   browser: Browser,
@@ -76,11 +81,10 @@ test.describe("Groups — create", () => {
     const row = page.locator("li", { hasText: "Famille Création" });
     await expect(row.getByText("Propriétaire")).toBeVisible();
 
-    // The new group is the active family in the root-layout switcher.
+    // The new group is the active family, named in the sidebar's profile
+    // block.
     await page.goto("/");
-    await expect(page.locator("select[name=group_id] option[selected]")).toHaveText(
-      "Famille Création",
-    );
+    await expect(activeFamily(page)).toHaveText("Famille Création");
   });
 
   test("empty group name is rejected inline", async ({ page }) => {
@@ -392,27 +396,24 @@ test.describe("Groups — active-family switcher", () => {
     await createGroup(page, "Famille Une");
     await createGroup(page, "Famille Deux");
 
-    // The most recently created group is active; switch back to the first.
+    // The most recently created group is active; switch back to the first,
+    // from the profile the sidebar's block leads to (#523).
     await page.goto("/");
-    await expect(page.locator("select[name=group_id] option[selected]")).toHaveText(
-      "Famille Deux",
-    );
-    await page.locator("select[name=group_id]").selectOption({ label: "Famille Une" });
-    await page.getByRole("button", { name: "Changer" }).click();
-    await expect(page).toHaveURL("/");
-    await expect(page.locator("select[name=group_id] option[selected]")).toHaveText(
-      "Famille Une",
-    );
+    await expect(activeFamily(page)).toHaveText("Famille Deux");
+    await page.getByRole("link", { name: /^Profil/ }).click();
+    await expect(page).toHaveURL("/account");
+    await page.getByRole("radio", { name: /Famille Une/ }).check();
+    await page.getByRole("button", { name: "Utiliser cette famille" }).click();
+    await expect(page).toHaveURL("/account");
+    await expect(activeFamily(page)).toHaveText("Famille Une");
 
     // Persists on another page load (cookie, not per-request state).
     await page.goto("/groups");
-    await expect(page.locator("select[name=group_id] option[selected]")).toHaveText(
-      "Famille Une",
-    );
+    await expect(activeFamily(page)).toHaveText("Famille Une");
   });
 
-  // #529: the profile lists the families as radio buttons, posting to the
-  // same `POST /groups/switch` as the header's switcher.
+  // #529: the profile lists the families as radio buttons, posting to
+  // `POST /groups/switch` — the one switcher since #523.
   test("the profile picks the active family, which the header then shows", async ({ page }) => {
     await registerAndLogin(page, "e2e-profile-switch", "Profil User");
     await createGroup(page, "Famille Une");
@@ -430,24 +431,20 @@ test.describe("Groups — active-family switcher", () => {
     await one.check();
     await page.getByRole("button", { name: "Utiliser cette famille" }).click();
     await expect(page).toHaveURL("/account");
-    await expect(page.locator("select[name=group_id] option[selected]")).toHaveText(
-      "Famille Une",
-    );
+    await expect(activeFamily(page)).toHaveText("Famille Une");
     await expect(one).toBeChecked();
 
     // The header keeps it on the next page.
     await page.goto("/");
-    await expect(page.locator("select[name=group_id] option[selected]")).toHaveText(
-      "Famille Une",
-    );
+    await expect(activeFamily(page)).toHaveText("Famille Une");
 
-    // The RGPD rights stay two clicks away from any page: "Mon compte",
+    // The RGPD rights stay two clicks away from any page: the profile,
     // then the row.
-    await page.getByRole("link", { name: "Mon compte", exact: true }).click();
+    await page.getByRole("link", { name: /^Profil/ }).click();
     await expect(page).toHaveURL("/account");
     await page.getByRole("link", { name: "Supprimer mon compte" }).click();
     await expect(page).toHaveURL("/account/delete");
-    await page.getByRole("link", { name: "Mon compte", exact: true }).click();
+    await page.getByRole("link", { name: /^Profil/ }).click();
     await expect(page.getByRole("link", { name: "Exporter mes données" })).toHaveAttribute(
       "href",
       "/account/export",

@@ -2,8 +2,10 @@ import { expect, Page, test } from "@playwright/test";
 import { fetchVerificationToken } from "../lib/db";
 
 // Issue #456: a full-page navigation must not lose the reader's place.
-// - The phone tab bar scrolls sideways; after following a tab, the tab of
+// - The phone tab bar scrolled sideways; after following a tab, the tab of
 //   the page now shown is brought into the bar (`enhance.js`, `.tabs`).
+//   Since #523 its six tabs fit a 390px phone, so the test below checks
+//   that no tab is left past the bar's edge in the first place.
 // - Ticking a grocery item posts its form and redirects back to the list;
 //   `data-keep-scroll` on that form puts the page back where it was.
 
@@ -43,21 +45,21 @@ async function createGroup(page: Page, name: string): Promise<void> {
 test.describe("keep scroll — phone tab bar", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
-  test("following the Messagerie tab leaves that tab entirely visible in the bar", async ({ page }) => {
+  test("following the Messages tab leaves that tab entirely visible in the bar", async ({ page }) => {
     await registerAndLogin(page, "e2e-tabscroll", "Tab Scroll");
     await createGroup(page, "Famille Défilement");
 
     await page.goto("/");
-    await page.locator(".tabs").getByRole("link", { name: "Messagerie" }).click();
+    await page.locator(".tabs").getByRole("link", { name: "Messages" }).click();
     await expect(page).toHaveURL(/\/messagerie$/);
 
     const bar = page.locator("nav.tabs");
-    // The bar has to overflow for the test to mean anything.
+    // Six tabs fit across the phone (#523): nothing to scroll to.
     const overflow = await bar.evaluate((nav) => nav.scrollWidth - nav.clientWidth);
-    expect(overflow).toBeGreaterThan(0);
+    expect(overflow).toBeLessThanOrEqual(0);
 
     const tab = bar.locator('[aria-current="page"]');
-    await expect(tab).toHaveText("Messagerie");
+    await expect(tab).toHaveAccessibleName("Messages");
     const barBox = await bar.boundingBox();
     const tabBox = await tab.boundingBox();
     if (!barBox || !tabBox) throw new Error("tab bar or active tab not rendered");

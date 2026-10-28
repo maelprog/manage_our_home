@@ -121,15 +121,18 @@ async function walkWithTheKeyboard(page: Page, steps: number): Promise<number> {
   return stops;
 }
 
+// The sidebar's destinations (#523) — the default viewport is a PC's — and
+// the link each page lights. The families have no entry of their own: they
+// are under the profile, which their pages light.
 const NAV: ReadonlyArray<readonly [string, string]> = [
-  ["/", "Accueil"],
-  ["/agenda", "Agenda"],
-  ["/stocks", "Stocks"],
-  ["/recipes", "Recettes"],
-  ["/grocery-list", "Liste de courses"],
-  ["/budget", "Budget"],
-  ["/messagerie", "Messagerie"],
-  ["/groups", "Groupes"],
+  ["/", "/"],
+  ["/agenda", "/agenda"],
+  ["/stocks", "/stocks"],
+  ["/recipes", "/recipes"],
+  ["/grocery-list", "/grocery-list"],
+  ["/budget", "/budget"],
+  ["/messagerie", "/messagerie"],
+  ["/groups", "/account"],
 ];
 
 test.describe("Interaction states (#69)", () => {
@@ -139,21 +142,25 @@ test.describe("Interaction states (#69)", () => {
   });
 
   test("the navigation says which page you are on, and only one", async ({ page }) => {
-    for (const [path, label] of NAV) {
+    // Scoped to the header: the kitchen segment at the head of the stocks
+    // and the recipes (#523) is a navigation of its own, which names the
+    // same page. Drawn links only: on those two pages the phone's Cuisine
+    // tab, which a PC does not draw, is current too.
+    const current = page.locator('header [aria-current="page"]').filter({ visible: true });
+    for (const [path, href] of NAV) {
       await page.goto(path);
-      const current = page.locator('[aria-current="page"]');
       await expect(current, `on ${path}`).toHaveCount(1);
-      await expect(current, `on ${path}`).toHaveText(label);
+      await expect(current, `on ${path}`).toHaveAttribute("href", href);
     }
 
     // A page below a section keeps its section lit, so you never lose the
     // thread by opening a form.
     await page.goto("/agenda/new");
-    await expect(page.locator('[aria-current="page"]')).toHaveText("Agenda");
+    await expect(current).toHaveAttribute("href", "/agenda");
 
-    // "Mon compte" is a destination too.
+    // The profile is a destination too.
     await page.goto("/account");
-    await expect(page.locator('[aria-current="page"]')).toHaveText("Mon compte");
+    await expect(current).toHaveAttribute("href", "/account");
 
     // …and a page that is in no tab lights none of them rather than guessing.
     await page.goto("/privacy-policy");
@@ -163,7 +170,7 @@ test.describe("Interaction states (#69)", () => {
   test("the current tab is told apart by its ground and its weight", async ({ page }) => {
     await page.goto("/agenda");
     const current = page.locator('.navlink[aria-current="page"]');
-    const other = page.locator('.navlink[href="/stocks"]');
+    const other = page.locator('.navlink[href="/grocery-list"]');
     const read = (locator: typeof current) =>
       locator.evaluate((node) => {
         const style = getComputedStyle(node);
@@ -192,6 +199,12 @@ test.describe("Interaction states (#69)", () => {
     // timeout said nothing about focus rings. The ceiling is raised against
     // that contention: a real slowdown would show in an isolated run first.
     test.setTimeout(60_000);
+    // Full motion, as before #523 set the suite to reduced motion: this
+    // walk reaches the date field of /stocks/new since the header lost its
+    // form, and under reduced motion that field showed no ring in Chromium
+    // (on `main` as well). Only `goto` and Tab here: no navigation a view
+    // transition would follow.
+    await page.emulateMedia({ reducedMotion: "no-preference" });
     for (const colorScheme of ["light", "dark"] as const) {
       await page.emulateMedia({ colorScheme });
       for (const path of ["/", "/agenda", "/stocks/new", "/groups"]) {
@@ -266,7 +279,7 @@ test.describe("Interaction states (#69)", () => {
     const background = (selector: string) =>
       page.locator(selector).first().evaluate((node) => getComputedStyle(node).backgroundColor);
 
-    for (const selector of ['.navlink[href="/stocks"]', ".list-row", "form .btn, form button"]) {
+    for (const selector of ['.navlink[href="/grocery-list"]', ".list-row", "form .btn, form button"]) {
       const before = await background(selector);
       await page.locator(selector).first().hover();
       await expect
@@ -281,13 +294,19 @@ test.describe("Interaction states (#69)", () => {
   });
 
   test("a visitor who asked for no motion gets none", async ({ page }) => {
-    await page.emulateMedia({ reducedMotion: "reduce" });
+    // The suite browses under `reducedMotion: "reduce"` (playwright.config.ts,
+    // #523), so the full-motion side is emulated here, on a page already
+    // loaded — no navigation, hence no view transition for the suite's
+    // browser to freeze on.
     await page.goto("/groups");
-    const durations = await page
-      .locator("button")
-      .first()
-      .evaluate((node) => getComputedStyle(node).transitionDuration);
-    expect(durations.split(",").map((d) => d.trim())).toEqual(["0s", "0s", "0s"]);
+    const durations = () =>
+      page
+        .locator("button")
+        .first()
+        .evaluate((node) => getComputedStyle(node).transitionDuration.split(",").map((d) => d.trim()));
     await page.emulateMedia({ reducedMotion: "no-preference" });
+    expect(await durations()).toEqual(["0.15s", "0.15s", "0.15s"]);
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    expect(await durations()).toEqual(["0s", "0s", "0s"]);
   });
 });

@@ -115,12 +115,21 @@ Les deux dernières valeurs sont celles d'un écran large : sous 861 px,
 `--t-sm` monte à 0.9375rem et `--t-xs` à 0.875rem
 (voir [Layout](#layout) → plancher typographique).
 
-Interlignage : 1.5 pour le corps, 1.25 pour les titres.
+Interlignage : le corps n'en déclare aucun — `body` ne porte pas de
+`line-height` — et garde donc `normal`, celui que fixent les métriques de
+Source Sans 3 ; 1.25 pour les titres (`h1, h2, h3`) ; 1.55 pour `.prose`,
+le texte des documents légaux.
 
 Graisses : 600 pour les titres et, depuis #521, pour les boutons et les
 badges ; 600 aussi pour les en-têtes de tableau, le jour d'une case de
-l'agenda, l'initiale d'un avatar et le lien de navigation de la page
-courante. Le reste du texte garde la graisse par défaut.
+l'agenda, l'initiale d'un avatar, le lien de navigation de la page
+courante et, depuis #523, celui du segment de la cuisine. Le reste du
+texte garde la graisse par défaut, 400, à une exception que la feuille ne
+pose pas : `<strong>` et `<b>`, qu'aucune règle ne restyle, sont rendus
+par le navigateur en `bolder`, soit 700 sur un corps à 400 (Chromium,
+mesuré le 2026-10-28). Les sources Rust d'`apps/web/src` en écrivent 61
+et 24, tests compris (comptés le même jour). `<dt>` n'en est pas : 400
+dans Chromium, et la feuille le met en `--muted` et `--t-xs`.
 `letter-spacing: -0.01em` sur les titres, `0.04em` sur les micro-libellés
 capitalisés.
 
@@ -296,6 +305,16 @@ disait pas.
   colonne latérale au-dessus de 861 px et la barre basse en dessous ; c'est
   le CSS qui les déplace. Deux navigations rendues côte à côte donneraient
   deux `aria-current="page"` sur la même page, ce qui est pire qu'aucun.
+  Depuis #523, les deux dispositions ne montrent plus les mêmes liens, et
+  c'est encore le CSS qui trie : un élément de classe `.pc` n'existe que
+  dans la colonne latérale, un `.phone` que dans la barre basse, et
+  `display: none` les sort aussi de l'arbre d'accessibilité. Un lien dont
+  le libellé change porte les deux (`Messagerie` / `Messages`) et se lit
+  par celui qui est dessiné. Cuisine, lui, est un lien à part (`.phone`)
+  à côté de Stocks (`.pc`), vers la même page : il tient lieu des stocks
+  et des recettes, donc porte `aria-current` sur les deux, là où le PC
+  allume Stocks ou Recettes. Le balisage peut alors porter deux
+  `aria-current` dans l'en-tête ; chaque disposition n'en dessine qu'un.
 - **La feuille est écrite mobile first**, la barre d'onglets dans le corps du
   document et la sidebar dans un `@media (min-width: 861px)`. Une paire
   `min-width` / `max-width` laisserait un trou entre 860 et 861 px CSS, où
@@ -304,15 +323,34 @@ disait pas.
   non son premier enfant : une colonne de grille ne peut pas se placer à côté
   d'un contenu qui la contient. C'est aussi ce qui sort `<header>` de
   `<main>`, où il n'avait jamais eu sa place.
-- **La barre d'onglets défile latéralement** plutôt que de comprimer ses
-  libellés : neuf onglets ne tiennent pas sur 390 px. Les remplacer par des
-  icônes n'est pas gratuit non plus — une icône dans le lien change son nom
-  accessible, et c'est par ce nom que la suite Playwright sait sur quelle
-  page elle est. Les onglets font 48 px de haut (`--s12`), au-dessus des
-  44 px que demande [Espacement](#espacement). Chaque onglet recharge la
-  page, et la barre repartirait de son début : au chargement,
-  `apps/web/src/enhance.js` amène l'onglet courant au milieu de la barre,
-  sans animation (#456). Sans JavaScript, la barre repart de son début.
+- **Six onglets sur téléphone (#523)**, chacun son icône au-dessus de son
+  libellé court : Accueil, Agenda, Courses, Cuisine, Messages, Profil. Ils
+  se partagent la barre et tiennent sur 390 px ; les huit onglets d'avant
+  (neuf pour le superadmin) n'y tenaient pas — 678 px de contenu à 390 px
+  avec la pastille de Messagerie, 647 px sans, soit 288 px au-delà de
+  l'écran (`scrollWidth` de la barre, mesuré le 2026-10-28 sur `main` à
+  92accf4, compte membre, Chromium de l'image Playwright 1.61.1). L'icône est `aria-hidden` : l'onglet se lit
+  toujours par son libellé. Recettes passe par le segment Stocks | Recettes en tête des deux
+  pages (`.segment`, téléphone seulement), Budget par sa carte de
+  l'accueil, les familles et le compte par Profil. L'onglet Cuisine est
+  l'onglet courant sur les stocks comme sur les recettes, `aria-current`
+  compris. Si les onglets ne tiennent
+  plus — un écran plus étroit —, la barre défile latéralement, et
+  `apps/web/src/enhance.js` amène l'onglet courant au milieu de la barre
+  au chargement, sans animation (#456). Les onglets font au moins 48 px de
+  haut (`--s12`), au-dessus des 44 px que demande
+  [Espacement](#espacement).
+- **La colonne latérale sur PC (#523)** : la marque « MHome », puis
+  Accueil, Agenda, Courses, Stocks, Recettes, Budget, Messagerie — Admin
+  pour le seul superadmin technique —, chacun son icône devant son
+  libellé ; Notifications y prendra place avec #535, et Budget y est
+  montré à tout membre jusqu'à #531, qui ajoutera la condition de rôle.
+  Au pied de la colonne, haute comme le viewport, le bloc du profil :
+  l'initiale, le nom et la famille active, vers `/account`. C'est là que
+  se choisit la famille active (un formulaire `POST /groups/switch` qui
+  marche sans JavaScript, #529) et que l'on se déconnecte : l'en-tête ne
+  porte plus aucun formulaire. Le profil est allumé aussi sur les pages
+  des familles (`/groups/…`), qui n'ont pas d'entrée à elles.
 - **Une page sans session ne rend aucune navigation** (authentification,
   politique de confidentialité vue déconnecté) : pas de grille, pas de
   colonne latérale de 15 rem tenant un seul lien.
@@ -465,6 +503,10 @@ aucune n'introduit de valeur hors des échelles :
 | `summary` | le déclencheur d'une disclosure (#72) — élément, pas classe. Il portait `btn secondary sm` : une disclosure déguisée en bouton, dont la boîte masquait la pastille native qui est son affordance |
 | `.actions > details[open]` | une disclosure ouverte prend la largeur de sa ligne (#72), ce que le `min-width: 16rem` inline du champ d'édition demandait à sa place |
 | `.app`, `.content`, `.w-form`, `.w-read`, `.tabs` | la coque responsive de #70 : la grille sidebar + contenu, la colonne de contenu et ses deux largeurs bornées, la barre d'onglets qui devient la sidebar |
+| `.pc`, `.phone` | ce qu'une seule des deux dispositions de la navigation dessine (#523) : `.pc` disparaît sous 861 px, `.phone` au-dessus. `display: none`, donc hors de l'arbre d'accessibilité aussi — c'est ce qui donne à un même lien deux libellés et un seul nom à la fois |
+| `.brand` | la marque « MHome » en tête de la colonne latérale (#523) : l'icône de l'accueil en `--accent`, le mot dans la police et la graisse des titres. Un paragraphe, pas un lien : Accueil est juste en dessous |
+| `.profile` | le dernier lien de la navigation (#523), vers `/account` : l'initiale et « Profil » sur téléphone ; sur PC, au pied de la colonne, l'initiale, le nom et la famille active en `.muted` |
+| `.segment` | Stocks \| Recettes en tête de ces deux pages, sur téléphone seulement (#523) : deux liens qui se partagent la ligne, celui de la page courante sur `--surface` et en 600, le tout sur `--border`. Une `<nav aria-label="Cuisine">` |
 | `.skip-link` | le lien d'évitement (#144, WCAG 2.4.1) : premier élément de `<body>` sur les deux coques, vers `<main id="main">`. Rogné par `clip-path` tant qu'il n'a pas le focus — ni `display: none` ni `visibility`, qui le sortiraient de l'ordre de tabulation — puis posé au-dessus de la sidebar collante avec l'anneau de focus des liens |
 | `footer.links.centered` | le pied de page de toute page (#419) : les trois documents légaux, en une ligne centrée qui revient à la ligne quand elle est pleine, en `--t-sm` et en `--accent` comme tout lien `.links`. Ni fond ni filet. Il ne porte aucune règle propre : c'est `.links.centered`, la même ligne que les liens de compte sous le formulaire de connexion |
 | `.actions.stacked` | un groupe de contrôles empilés, chacun étiré sur toute la largeur (#419) : « Continuer avec Google » sous les formulaires de connexion et d'inscription, à la largeur du bouton du formulaire et non à celle de son libellé. Même sélecteur que `.list-row.stacked` |
@@ -523,9 +565,11 @@ Livré par #522 : un jeu d'icônes en SVG inline, `apps/web/src/icons.rs`.
   balisage à chaque page vue. Le `<svg>` ne porte que sa classe, son
   `viewBox` et `aria-hidden="true"` ; jamais d'attribut `style`.
 - **Taille : `1.25em`,** ce que tient la ligne de Source Sans 3 à son
-  interlignage `normal` : un bouton qui ne tient qu'une icône a la hauteur
-  d'un bouton qui tient un mot (48 px l'un et l'autre dans Chromium, mesuré
-  le 2026-10-28).
+  interlignage `normal` : un lien `.btn` qui ne tient qu'une icône a la
+  hauteur d'un lien `.btn` qui tient un mot (48 px l'un et l'autre dans
+  Chromium, mesuré par #522 le 2026-10-28 sur les flèches de l'agenda et
+  « Aujourd'hui »). Un `<button>` qui ne tiendrait qu'une icône n'a pas été
+  mesuré : il n'en existe aucun.
 - **Une icône n'est jamais le nom accessible de ce qui la porte.** À côté
   d'un libellé visible, elle le répéterait ; seule dans une commande, le nom
   va sur la commande. `icon_link(class, href, label, icon)` est la façon
@@ -537,6 +581,12 @@ Livré par #522 : un jeu d'icônes en SVG inline, `apps/web/src/icons.rs`.
 - **#522 ne pose d'icône nulle part ailleurs.** Les onglets n'en portent
   toujours pas (journal, 2026-07-31, #70) ; les écrans repris (#524 et
   suivantes) posent chacun les leurs.
+- **Depuis #523, chaque entrée de la navigation porte la sienne**, devant
+  son libellé et `aria-hidden` comme toutes : l'objection du 2026-07-31
+  portait sur une icône *à la place* du libellé, qui aurait changé le nom
+  du lien. Le profil porte l'initiale du compte (`.avatar`), la marque
+  « MHome » l'icône de l'accueil. Dans la barre basse, l'icône passe à
+  `--s6`.
 
 ---
 
@@ -549,6 +599,25 @@ ni `transition`, et `aria-current` n'apparaissait nulle part.
 - **Approche :** minimal-fonctionnel. Aucune animation d'entrée : l'application
   fait un rechargement complet à chaque navigation, une animation au chargement
   deviendrait pénible dès la troisième page.
+- **Transition de page (#523) :** `@view-transition { navigation: auto; }`,
+  le fondu enchaîné que le navigateur fait lui-même d'une page à la
+  suivante — ce n'est pas une animation d'entrée, elle ne se rejoue pas sur
+  la page qu'on recharge seule, et elle ne demande aucun JavaScript. Elle
+  est demandée dans `@media (prefers-reduced-motion: no-preference)` et non
+  annulée dans `reduce` : une seule règle, et rien pour qui a demandé moins
+  de mouvement (`page_transitions_are_only_asked_for_without_a_reduced_motion_preference`).
+  Un navigateur qui ne connaît pas les transitions entre documents charge
+  la page comme avant. La suite Playwright, elle, navigue sous
+  `reducedMotion: "reduce"` (`e2e/playwright.config.ts`) : Playwright
+  lance Chromium avec `--disable-back-forward-cache`, et avec cet argument
+  la page atteinte par une transition entre documents ne reçoit plus
+  d'image — aucun `requestAnimationFrame`, chaque clic attend jusqu'à
+  l'échec du test, sans affichage comme affiché sous Xvfb.
+  `e2e/tests/page-transition.spec.ts` retire l'argument
+  (`ignoreDefaultArgs`) sur le Chromium complet (`channel: "chromium"`) et
+  suit des liens en mouvement complet : la transition a lieu et la page
+  atteinte répond. Le headless shell, navigateur par défaut de la suite,
+  reste figé même sans l'argument.
 - **Durée :** `--dur: 150ms`, courbe `--ease: cubic-bezier(0.2, 0, 0.2, 1)`.
   Les deux moitiés sont des jetons parce que la neutralisation sous
   `prefers-reduced-motion` passe par eux (voir plus bas) : une durée écrite en
@@ -574,11 +643,18 @@ ni `transition`, et `aria-current` n'apparaissait nulle part.
   (`app::nav_link_is_current`), pas sur un préfixe : `/` préfixe toute
   l'application et allumerait « Accueil » partout, et le segment garde le lien
   Admin — qui pointe vers l'un des deux écrans — allumé sur l'autre.
+  Depuis #523, le profil couvre deux segments, `account` et `groups`.
+  Le segment de la cuisine (`.segment`) est une navigation à part, qui
+  porte aussi `aria-current="page"` sur la page où il est : l'unicité se
+  compte dans `<header>`, parmi les liens que la disposition dessine.
   Le traitement visuel est le fond `--accent-soft` (une des paires que
   calcule le garde-fou de contraste) **plus** la graisse 600, pour que la
   couleur ne soit pas le seul porteur d'information (WCAG 1.4.1).
 - **La navigation n'est pas du contenu secondaire.** Elle est sortie de
-  `.muted` : taille de base et `--fg`, pas 0,875 rem en gris.
+  `.muted` : taille de base et `--fg`, pas 0,875 rem en gris. Deux
+  exceptions depuis #523 : le libellé d'un onglet de la barre basse, en
+  `--t-xs` sous son icône, et la famille active sous le nom dans le bloc
+  du profil, en `.muted`.
 - **`prefers-reduced-motion: reduce`** neutralise toutes les transitions, en
   une déclaration : `:root { --dur: 0s; }`. Toutes les transitions étant
   minutées par ce jeton, il n'y a ni balayage `* { transition: none !important }`
@@ -589,7 +665,8 @@ ni `transition`, et `aria-current` n'apparaissait nulle part.
 `e2e/tests/interaction.spec.ts` : Tab sur quatre pages × deux thèmes en
 vérifiant l'indicateur sur chaque arrêt, l'unicité de l'onglet actif sur les
 huit routes de la nav, la réaction au pointeur, et `transition-duration: 0s`
-sous `prefers-reduced-motion`.
+sous `prefers-reduced-motion`. Depuis #523, `e2e/tests/navigation.spec.ts`
+parcourt chaque destination depuis la navigation, à 390 px et à 1440 px.
 
 ---
 
@@ -1490,3 +1567,4 @@ quatre tours de vérification à #72.
 | 2026-10-20 | `DECLARATIONS_CEILING` supprimé, la redondance est tenue par trois tests | Arbitrage utilisateur du 2026-10-20, après le relèvement de `SHEET_CEILING` le même jour. Le plafond ne laissait plus que 2 o (3 134 sur 3 136, flate2 niveau 6), et une passe de chasse aux doublons faite à la main n'a rendu que 7 o — un `font-weight: 400` resté de l'extraction des styles inline (#68), retiré. La feuille était propre et le garde-fou bloquait quand même : il comptait des **octets**, pas des **répétitions**, et ne parlait qu'une fois le total débordé. Remplacé par ce qu'il prétendait tenir, chaque test nommant la ligne fautive : un même sélecteur ouvert deux fois dans le même contexte (`@media` compris), une même propriété posée deux fois dans un bloc, une classe stylée que plus aucune source n'émet — le sens inverse de `every_class_a_source_references_exists_in_the_stylesheet`, qui manquait. Les trois ont été vérifiés rouges sur une classe morte et deux doublons injectés. **Ce que ça abandonne** : toute borne sur le volume des déclarations, et la contrainte d'ordre des deux garde-fous, qui était la borne basse de `SHEET_CEILING`. **Pas couvert, dit plutôt que laissé à trouver** : une valeur en dur là où un token existe (les `rem` de `.prose`) — c'est une décision de design, pas un doublon, à traiter à part. Rapport `budget_report` allégé de la section d'ordre |
 | 2026-10-28 | Direction « chaleureux, aéré, tactile », et l'application s'appelle MHome (#521) | Demande du 2026-10-21, « rendre l'application plus esthétique, agréable à utiliser, interactive et moderne », avec ses maquettes ; rangée sombre ajoutée le 2026-10-22. Elle renverse un point de la direction « utilitaire chaleureux » posée avec le système initial : les ombres portées et les cartes flottantes, que la section Direction esthétique refusait, deviennent l'unique élévation. Une seule ombre, celle de `.card`, portée par un jeton à deux valeurs, `--shadow` — deux couches douces en clair, un liseré `--hover` plus une ombre portée en sombre, où une ombre seule ne se voit pas. Le garde-fou de redéclaration sombre ne lisait une couleur qu'en tête de valeur et aurait laissé passer une ombre déclarée en clair seulement : il la lit désormais n'importe où dans la valeur. Rayons 12 / 16 / 20 px au lieu de 4 / 8 / 12, mêmes trois jetons ; boutons et champs passent sur `--r-sm`, comme dans les maquettes. Nouveau jeton `--line` pour les lignes fines (séparateurs de liste, piste de la jauge de mot de passe), `--border` restant le bord d'un contrôle. Titres en Fraunces 600, champs et bouton secondaire sur `--surface`. Les neutres de la demande (`#FBFAF7`, `#1C1A17`, `#6B655C`, `#E3DFD7`) étaient déjà ceux de la feuille et ne bougent pas, ni aucun jeton sombre existant. Le markup des routes ne change pas : les écrans sont repris un par un ensuite. Le nom **MHome** entre dans le titre de chaque page ; les courriels, les documents légaux et le README gardent « Manage Our Home » dans ce lot |
 | 2026-10-28 | Un jeu d'icônes en SVG inline, tracés Lucide, trait porté par la feuille (#522) | Demande du 2026-10-21 (maquettes). Inline plutôt qu'un sprite ou une `<img>` : rien de plus à charger, rien qui sorte du site, et le trait suit `currentColor`, donc le thème et les contrastes forcés. Le trait (`currentColor`, épaisseur 2, extrémités et jointures arrondies) et l'absence de remplissage sont une règle `.icon` de la feuille plutôt que des attributs de chaque `<svg>` : ces attributs pèseraient 98 o bruts par icône dans le document, à chaque page vue, quand la règle se paie une fois par déploiement. Taille `1.25em`, que tient la ligne de Source Sans 3 : une flèche de l'agenda et le bouton « Aujourd'hui » mesurent 48 px de haut l'un et l'autre dans Chromium. L'icône est toujours `aria-hidden` ; seule dans un lien, elle passe par `icon_link`, dont le libellé est un paramètre. Les premières posées sont les flèches de l'agenda, à la place de ◀ et ▶ : 171 o bruts de plus par page de l'agenda, deux `<svg>` de 89 et 88 o à la place de deux glyphes de 3 o. Les onglets restent sans icône (entrée du 2026-07-31) |
+| 2026-10-28 | Six onglets sur téléphone, une colonne latérale avec la marque et le profil sur PC, transition de page sans JavaScript (#523) | Demande du 2026-10-21 (maquettes « Mobile — Accueil », « PC — Accueil »). Elle renverse deux points posés plus haut. Les onglets portent une icône (entrée du 2026-07-31) : devant le libellé, `aria-hidden`, donc sans toucher au nom du lien, qui était l'objection. Et une transition accompagne le changement de page, là où Interaction et motion n'en voulait aucune : c'est le fondu que le navigateur fait d'un document au suivant, `@view-transition`, pas une animation rejouée au chargement, et elle n'est demandée que sous `prefers-reduced-motion: no-preference`. Un seul markup reste la règle : ce qu'une disposition ne dessine pas est `display: none` (`.pc`, `.phone`), donc absent de l'arbre d'accessibilité, et `aria-current` reste sur un seul lien dessiné de l'en-tête — l'onglet Cuisine du téléphone sur les stocks et les recettes, Stocks ou Recettes sur PC. Le sélecteur de famille et la déconnexion quittent l'en-tête pour le profil de #529, qui poste au même `POST /groups/switch`. Budget est montré à tout membre sur PC jusqu'à #531 (arbitrage utilisateur du 2026-10-28), Notifications attend #535 |

@@ -20,7 +20,7 @@ use manage_our_home_shared::dto::recipes::{
 };
 use manage_our_home_shared::validation::recipes::{servings_label, stock_summary};
 
-use crate::app::{html_escape, shell_with_header, Width};
+use crate::app::{html_escape, kitchen_segment, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::routes::stocks::new::OFF_ATTRIBUTION;
 use crate::state::{api_request_auth, AppState};
@@ -269,7 +269,7 @@ pub async fn get(
     };
 
     let body = format!(
-        r#"<div class="page-header">
+        r#"{segment}<div class="page-header">
 <h1>Recettes</h1>
 <div class="actions">
 <a class="btn secondary" href="/recipes/import">Importer depuis une URL</a>
@@ -281,6 +281,7 @@ pub async fn get(
 {suggestions_section}
 <h2>Toutes les recettes</h2>
 {list_section}"#,
+        segment = kitchen_segment("/recipes"),
         planned_section = planned_section(&planned),
     );
     Html(shell_with_header(

@@ -457,9 +457,10 @@ test.describe("Messagerie — unread badge in the navigation (#463)", () => {
     await createGroup(page, "Famille Pastille");
     const href = await createInvitationLink(page, "Famille Pastille");
 
-    // Nothing posted yet: no badge, the tab is plain "Messagerie".
+    // Nothing posted yet: no badge, the tab is plain "Messagerie". Found by
+    // its href: on a phone the same link reads "Messages" (#523).
     await page.goto("/");
-    const tab = page.locator(".tabs").getByRole("link", { name: "Messagerie" });
+    const tab = page.locator('.tabs a[href="/messagerie"]');
     await expect(tab).toHaveAccessibleName("Messagerie");
     await expect(tab.locator(".badge")).toHaveCount(0);
 
@@ -491,9 +492,12 @@ test.describe("Messagerie — unread badge in the navigation (#463)", () => {
     await expect(tab.locator(".badge")).toHaveText("3");
     await expect(tab).toHaveAccessibleName("Messagerie (3 non lus)");
 
-    // Same tab in the phone's bottom bar.
+    // Same tab in the phone's bottom bar, under its short label — and in
+    // view as the page loads: with six tabs the bar no longer scrolls, so
+    // the count is not past its edge (#523; under #463 it was the 7th of 8).
     await page.setViewportSize({ width: 390, height: 844 });
-    await expect(tab.locator(".badge")).toBeVisible();
+    await expect(tab).toHaveAccessibleName("Messages (3 non lus)");
+    await expect(tab.locator(".badge")).toBeInViewport({ ratio: 1 });
     await page.setViewportSize({ width: 1280, height: 720 });
 
     // Opening the thread reads them: no badge there, none afterwards.

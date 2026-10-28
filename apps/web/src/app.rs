@@ -12,6 +12,8 @@ use manage_our_home_shared::dto::groups::GroupSummary;
 use manage_our_home_shared::validation::auth::{MAX_PASSWORD_LEN, MIN_PASSWORD_LEN};
 use uuid::Uuid;
 
+use crate::icons::{icon, Icon as Glyph};
+
 /// The content width a page asks for — DESIGN.md → Layout names three, and
 /// `shell` takes one instead of imposing the single 28rem column that used
 /// to wrap the month grid, the admin tables and the messagerie alike
@@ -187,19 +189,21 @@ pub fn nav_link_is_current(href: &str, current_path: &str) -> bool {
     first_segment(href) == first_segment(current_path)
 }
 
-/// One `<a class="navlink">`, carrying `aria-current="page"` when it leads to
-/// the page being rendered. `href` and `label` are literals from the nav
-/// table below, so only the path needs escaping.
-///
-/// `badge` follows the label inside the link: `unread_badge`'s markup, or
-/// empty.
-fn navlink(href: &str, label: &str, current_path: &str, badge: &str) -> String {
-    let current = if nav_link_is_current(href, current_path) {
+/// One `<a class="navlink">`, carrying `aria-current="page"` when `current`.
+/// `class` follows `navlink` in the class list (`pc`, `profile`) or is
+/// empty; `inner` is the link's whole content, already escaped.
+fn navlink(href: &str, class: &str, current: bool, inner: &str) -> String {
+    let class = if class.is_empty() {
+        "navlink".to_string()
+    } else {
+        format!("navlink {class}")
+    };
+    let current = if current {
         r#" aria-current="page""#
     } else {
         ""
     };
-    format!(r#"<a class="navlink" href="{href}"{current}>{label}{badge}</a>"#)
+    format!(r#"<a class="{class}" href="{href}"{current}>{inner}</a>"#)
 }
 
 /// The red count the Messagerie tab wears when the active family has unread
@@ -208,8 +212,8 @@ fn navlink(href: &str, label: &str, current_path: &str, badge: &str) -> String {
 /// The figure is drawn for the eye and said for the ear separately: the
 /// visible pastille is `aria-hidden` and stops at "99+", and a visually
 /// hidden " (3 non lus)" carries the exact count into the link's accessible
-/// name — "Messagerie (3 non lus)", which still holds "Messagerie" for the
-/// e2e suite that finds the tab by name.
+/// name — "Messagerie (3 non lus)" on a PC, "Messages (3 non lus)" on a
+/// phone.
 pub(crate) fn unread_badge(unread: u64) -> String {
     if unread == 0 {
         return String::new();
@@ -225,115 +229,151 @@ pub(crate) fn unread_badge(unread: u64) -> String {
     )
 }
 
-/// The main navigation, in order. `/admin/users` is appended for the single
-/// technical superadmin only — everyone else never sees the door.
-const NAV: [(&str, &str); 8] = [
-    ("/", "Accueil"),
-    ("/agenda", "Agenda"),
-    ("/stocks", "Stocks"),
-    ("/recipes", "Recettes"),
-    ("/grocery-list", "Liste de courses"),
-    ("/budget", "Budget"),
-    ("/messagerie", "Messagerie"),
-    ("/groups", "Groupes"),
+/// The main navigation, in order (#523): `href`, the label on a PC, the
+/// label on a phone, the icon.
+///
+/// A label of `None` keeps the destination off that layout. On a phone,
+/// Recettes is reached through Cuisine's segment (`kitchen_segment`), Budget
+/// through its card on the home page. Cuisine is a link of its own rather
+/// than a second label of Stocks: it stands for the stocks and the recipes
+/// both, so it is the current tab on either (`app_header`), where the PC
+/// lights Stocks or Recettes. Budget is shown to every member on a PC until
+/// #531 adds its role condition (arbitrage of 2026-10-28); the
+/// Notifications entry waits for #535.
+///
+/// `/admin/users` is appended for the single technical superadmin only,
+/// on a PC — everyone else never sees the door. The profile closes the list,
+/// outside the table: its content is the caller's, not a literal.
+const NAV: [(&str, Option<&str>, Option<&str>, Glyph); 8] = [
+    ("/", Some("Accueil"), Some("Accueil"), Glyph::Home),
+    ("/agenda", Some("Agenda"), Some("Agenda"), Glyph::Calendar),
+    (
+        "/grocery-list",
+        Some("Courses"),
+        Some("Courses"),
+        Glyph::Groceries,
+    ),
+    ("/stocks", None, Some("Cuisine"), Glyph::Stocks),
+    ("/stocks", Some("Stocks"), None, Glyph::Stocks),
+    ("/recipes", Some("Recettes"), None, Glyph::Recipes),
+    ("/budget", Some("Budget"), None, Glyph::Budget),
+    (
+        "/messagerie",
+        Some("Messagerie"),
+        Some("Messages"),
+        Glyph::Messages,
+    ),
 ];
 
-/// The application's navigation, rendered once and laid out twice (#70): a
-/// persistent sidebar from 861 px up, the same links as a bottom tab bar
+/// The application's navigation, rendered once and laid out twice (#70,
+/// #523): a persistent sidebar from 861 px up, a bottom tab bar of six
 /// below. One markup for both, so `aria-current="page"` lands on exactly
-/// one element whatever the viewport — two navs would light two tabs.
+/// one drawn element whatever the viewport — two navs would light two tabs.
 ///
-/// It carries the nav proper, then issue #17's active-family switcher — a
-/// plain `<form>` posting to `POST /groups/switch` (persists the choice in
-/// the `active_group_id` cookie, see `crate::family`) then bouncing back to
-/// `redirect_to` — then the account block: the caller's name, "Mon compte"
-/// (the RGPD self-service hub, front epic F10) and logout. With no groups
-/// yet, the switcher gives way to a "create a family" link.
+/// What differs between the two is said by two classes the stylesheet
+/// hides on the other layout: `pc` (the brand, Stocks, Recettes, Budget,
+/// Admin, the caller's name and family) and `phone` (the Cuisine tab, a
+/// tab's short label). A link that keeps the same label on both carries
+/// neither. What is hidden leaves the accessibility tree too, so a link is
+/// read by the label it shows, and on the stocks and the recipes each
+/// layout has its own current link: Cuisine on a phone, Stocks or Recettes
+/// on a PC.
 ///
-/// The switcher moved out of a full-width strip under the nav and into the
-/// sidebar, which is DESIGN.md → Layout's structure and what makes the
-/// active family visible on every page rather than a line above the title.
+/// The last link is the profile (`/account`, #529): the caller's initial
+/// and "Profil" on a phone; the initial, the name and the active family on
+/// a PC, where a visually hidden "Profil : " keeps the word the phone shows
+/// in its name. The profile is where the active family is chosen (a
+/// `POST /groups/switch` form that works without JS), where the families
+/// are managed and where one logs out — none of which the header carries
+/// any more. It is lit on the families' pages too (`/groups/…`), which have
+/// no tab of their own.
 ///
-/// `redirect_to` doubles as the current path, which is what decides the nav
-/// link that carries `aria-current="page"` (#69): every caller already passes
-/// the path of the page it is rendering, because that is where the family
-/// switcher has to come back to. A caller that ever passes something else
-/// would mislead the nav, not the switcher — the failure is cosmetic and
-/// visible on the page itself.
+/// `redirect_to` is the current path, which decides the link that carries
+/// `aria-current="page"` (#69). It kept its name from when the header held
+/// the family switcher, which came back to it.
 ///
 /// `unread_messages` is the active family's unread count, which the
 /// Messagerie tab shows as a pastille (`unread_badge`, #463); 0 shows none.
 pub fn app_header(
     me: &MeResponse,
-    groups: &[GroupSummary],
     active: Option<&GroupSummary>,
     redirect_to: &str,
     unread_messages: u64,
 ) -> String {
-    let switcher = if groups.is_empty() {
-        r#"<a href="/groups/new">Créer une famille</a>"#.to_string()
-    } else {
-        let options: String = groups
-            .iter()
-            .map(|g| {
-                let selected = if active.is_some_and(|a| a.group_id == g.group_id) {
-                    " selected"
-                } else {
-                    ""
-                };
-                format!(
-                    r#"<option value="{id}"{selected}>{name}</option>"#,
-                    id = g.group_id,
-                    name = html_escape(&g.name),
-                )
-            })
-            .collect();
-        format!(
-            r#"<form method="post" action="/groups/switch" class="actions">
-<label class="field inline">Famille active
-<select name="group_id">{options}</select>
-</label>
-<input type="hidden" name="redirect_to" value="{redirect_to}"/>
-<button type="submit" class="secondary">Changer</button>
-</form>"#,
-            options = options,
-            redirect_to = html_escape(redirect_to),
-        )
-    };
-    // The superadmin support screens (front epic F9) are only linked for the
-    // single technical superadmin — everyone else never sees the door.
     let links: String = NAV
         .iter()
         .copied()
-        .chain(me.is_superadmin.then_some(("/admin/users", "Admin")))
-        .map(|(href, label)| {
+        .chain(
+            me.is_superadmin
+                .then_some(("/admin/users", Some("Admin"), None, Glyph::Settings)),
+        )
+        .map(|(href, pc, phone, glyph)| {
+            let (class, label) = match (pc, phone) {
+                (Some(pc), None) => ("pc", pc.to_string()),
+                (None, Some(phone)) => ("phone", phone.to_string()),
+                (Some(pc), Some(phone)) if pc == phone => ("", pc.to_string()),
+                (Some(pc), Some(phone)) => (
+                    "",
+                    format!(r#"<span class="pc">{pc}</span><span class="phone">{phone}</span>"#),
+                ),
+                (None, None) => unreachable!("a navigation entry drawn on no layout"),
+            };
             let badge = if href == "/messagerie" {
                 unread_badge(unread_messages)
             } else {
                 String::new()
             };
-            navlink(href, label, redirect_to, &badge)
+            // The phone's Cuisine tab stands for the recipes as well.
+            let current = nav_link_is_current(href, redirect_to)
+                || (pc.is_none()
+                    && href == "/stocks"
+                    && nav_link_is_current("/recipes", redirect_to));
+            navlink(
+                href,
+                class,
+                current,
+                &format!("{}{label}{badge}", icon(glyph)),
+            )
         })
         .collect();
+    let profile = navlink(
+        "/account",
+        "profile",
+        nav_link_is_current("/account", redirect_to) || nav_link_is_current("/groups", redirect_to),
+        &format!(
+            r#"{avatar}<span class="phone">Profil</span><span class="pc"><span class="sr-only">Profil : </span><span>{name}</span> <span class="muted">{family}</span></span>"#,
+            avatar = member_avatar(me.user_id, &me.display_name, None),
+            name = html_escape(&me.display_name),
+            family = html_escape(active.map_or("Aucune famille", |g| g.name.as_str())),
+        ),
+    );
     format!(
         r#"<header>
-<nav class="tabs">{links}</nav>
-<div class="muted">{switcher}</div>
-<div class="actions">
-<span class="muted">{name}</span>
-{account}
-<form method="post" action="/logout">
-<button type="submit" class="secondary">Se déconnecter</button>
-</form>
-</div>
+<p class="brand pc">{brand}MHome</p>
+<nav class="tabs" aria-label="Navigation principale">{links}{profile}</nav>
 </header>"#,
-        name = html_escape(&me.display_name),
-        switcher = switcher,
-        links = links,
-        // "Mon compte" is a destination like any other, so it goes through
-        // the same helper rather than restating its conditional (#69's
-        // leftover nit, in this diff anyway because the link moves).
-        account = navlink("/account", "Mon compte", redirect_to, ""),
+        brand = icon(Glyph::Home),
+    )
+}
+
+/// The segment at the head of the stocks and the recipes (#523): the
+/// phone's Cuisine tab opens the stocks, and this is how it reaches the
+/// recipes. A PC has both in its sidebar, so the stylesheet keeps the
+/// segment to phones. The link of the page it is on carries
+/// `aria-current="page"`.
+pub fn kitchen_segment(current_path: &str) -> String {
+    let link = |href: &str, label: &str| {
+        let current = if nav_link_is_current(href, current_path) {
+            r#" aria-current="page""#
+        } else {
+            ""
+        };
+        format!(r#"<a href="{href}"{current}>{label}</a>"#)
+    };
+    format!(
+        r#"<nav class="segment" aria-label="Cuisine">{}{}</nav>"#,
+        link("/stocks", "Stocks"),
+        link("/recipes", "Recettes"),
     )
 }
 
@@ -1326,9 +1366,329 @@ mod tests {
         }
     }
 
+    /// The active family of the header tests below.
+    fn family(name: &str) -> GroupSummary {
+        GroupSummary {
+            group_id: Uuid::from_u128(1),
+            name: name.to_string(),
+            role: "owner".to_string(),
+            ownership_notice: None,
+        }
+    }
+
+    /// The two dispositions of the one navigation markup (#523).
+    #[derive(Clone, Copy, PartialEq)]
+    enum Layout {
+        Phone,
+        Pc,
+    }
+
+    /// `html` without the spans opened by `open`, and their content: the
+    /// ones the layout under test does not draw, spans nested in them
+    /// included.
+    fn without_spans(html: &str, open: &str) -> String {
+        let mut out = html.to_string();
+        while let Some(at) = out.find(open) {
+            out.replace_range(at..span_end(&out, at), "");
+        }
+        out
+    }
+
+    /// The offset just past the `</span>` that closes the span opened at
+    /// `at`.
+    fn span_end(html: &str, at: usize) -> usize {
+        let mut depth = 0;
+        let mut i = at;
+        loop {
+            let next_open = html[i + 1..].find("<span").map(|o| i + 1 + o);
+            let next_close = i + 1 + html[i + 1..].find("</span>").expect("a closed span");
+            match next_open {
+                Some(o) if o < next_close => {
+                    depth += 1;
+                    i = o;
+                }
+                _ if depth == 0 => return next_close + "</span>".len(),
+                _ => {
+                    depth -= 1;
+                    i = next_close;
+                }
+            }
+        }
+    }
+
+    /// `html` without its `aria-hidden` spans — the pastille, the avatar's
+    /// initial — which hold text only. An icon keeps its place: it holds
+    /// no text.
+    fn without_hidden_spans(html: &str) -> String {
+        let hidden = r#"aria-hidden="true">"#;
+        let mut out = html.to_string();
+        let mut from = 0;
+        while let Some(found) = out[from..].find(hidden) {
+            let attr = from + found;
+            let at = out[..attr].rfind('<').expect("an opening tag");
+            if !out[at..].starts_with("<span") {
+                from = attr + hidden.len();
+                continue;
+            }
+            let end = span_end(&out, at);
+            out.replace_range(at..end, "");
+            from = at;
+        }
+        out
+    }
+
+    /// The text of `html`, tags dropped and whitespace collapsed.
+    fn text_of(html: &str) -> String {
+        let mut text = String::new();
+        let mut in_tag = false;
+        for c in html.chars() {
+            match c {
+                '<' => in_tag = true,
+                '>' => in_tag = false,
+                c if !in_tag => text.push(c),
+                _ => {}
+            }
+        }
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// What one layout of `header` shows in its navigation: each link's
+    /// `href` and the name it is read by. A link classed `pc` is not drawn
+    /// on a phone, nor a `phone` one on a PC; the same goes for the spans
+    /// inside a link, which is how one link carries two labels. The
+    /// `aria-hidden` pastille is left out, its words are not.
+    fn destinations(header: &str, layout: Layout) -> Vec<(String, String)> {
+        drawn_links(header, layout)
+            .into_iter()
+            .map(|(href, name, _)| (href, name))
+            .collect()
+    }
+
+    /// The links one layout of `header` draws and marks `aria-current`:
+    /// what an assistive technology announces as the current page there.
+    fn current_links(header: &str, layout: Layout) -> Vec<(String, String)> {
+        drawn_links(header, layout)
+            .into_iter()
+            .filter(|(_, _, current)| *current)
+            .map(|(href, name, _)| (href, name))
+            .collect()
+    }
+
+    /// `destinations`, each link with whether it carries `aria-current`.
+    fn drawn_links(header: &str, layout: Layout) -> Vec<(String, String, bool)> {
+        let hidden = match layout {
+            Layout::Phone => "pc",
+            Layout::Pc => "phone",
+        };
+        let nav = &header[header.find("<nav").expect("a nav")..];
+        let nav = &nav[..nav.find("</nav>").expect("the nav's end")];
+        nav.split("<a ")
+            .skip(1)
+            .filter_map(|link| {
+                let tag = &link[..link.find('>').expect("an opening tag")];
+                let class = tag
+                    .split(r#"class=""#)
+                    .nth(1)
+                    .and_then(|c| c.split('"').next())
+                    .unwrap_or("");
+                if class.split(' ').any(|c| c == hidden) {
+                    return None;
+                }
+                let href = tag
+                    .split(r#"href=""#)
+                    .nth(1)?
+                    .split('"')
+                    .next()?
+                    .to_string();
+                let inner = &link[link.find('>').expect("an opening tag") + 1..];
+                let inner = &inner[..inner.find("</a>").expect("a closed link")];
+                let shown = without_spans(inner, &format!(r#"<span class="{hidden}">"#));
+                let shown = without_hidden_spans(&shown);
+                let current = tag.contains(r#"aria-current="page""#);
+                Some((href, text_of(&shown), current))
+            })
+            .collect()
+    }
+
+    fn hrefs_and_names(list: &[(&str, &str)]) -> Vec<(String, String)> {
+        list.iter()
+            .map(|(h, n)| (h.to_string(), n.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_phone_gets_six_tabs() {
+        // #523: Accueil, Agenda, Courses, Cuisine (which opens the stocks),
+        // Messages and Profil. Budget is reached from its card on the home
+        // page; the families and the account are under Profil.
+        let header = app_header(&me(false), Some(&family("Famille Martin")), "/", 0);
+        assert_eq!(
+            destinations(&header, Layout::Phone),
+            hrefs_and_names(&[
+                ("/", "Accueil"),
+                ("/agenda", "Agenda"),
+                ("/grocery-list", "Courses"),
+                ("/stocks", "Cuisine"),
+                ("/messagerie", "Messages"),
+                ("/account", "Profil"),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_pc_gets_the_whole_list_and_the_profile_block_last() {
+        // Budget is shown to every member until #531 adds its role
+        // condition (arbitrage of 2026-10-28); Notifications waits for #535.
+        let header = app_header(&me(false), Some(&family("Famille Martin")), "/", 0);
+        assert_eq!(
+            destinations(&header, Layout::Pc),
+            hrefs_and_names(&[
+                ("/", "Accueil"),
+                ("/agenda", "Agenda"),
+                ("/grocery-list", "Courses"),
+                ("/stocks", "Stocks"),
+                ("/recipes", "Recettes"),
+                ("/budget", "Budget"),
+                ("/messagerie", "Messagerie"),
+                ("/account", "Profil : Alice Famille Martin"),
+            ])
+        );
+    }
+
+    #[test]
+    fn the_admin_link_is_on_the_pc_list_of_the_superadmin_only() {
+        let admin = app_header(&me(true), Some(&family("F")), "/", 0);
+        let pc = destinations(&admin, Layout::Pc);
+        assert_eq!(
+            pc[pc.len() - 2],
+            ("/admin/users".to_string(), "Admin".to_string())
+        );
+        // The phone bar keeps its six tabs.
+        assert_eq!(destinations(&admin, Layout::Phone).len(), 6);
+        let member = app_header(&me(false), Some(&family("F")), "/", 0);
+        assert!(!member.contains("/admin"), "{member}");
+    }
+
+    #[test]
+    fn no_notifications_entry_until_the_feature_ships() {
+        // #535 delivers the notification centre; until then the place is
+        // kept, not the link.
+        let header = app_header(&me(false), Some(&family("F")), "/", 0);
+        assert!(!header.contains("Notifications"), "{header}");
+    }
+
+    #[test]
+    fn every_destination_but_the_profile_carries_its_icon() {
+        let header = app_header(&me(true), Some(&family("F")), "/", 0);
+        let nav = &header[header.find("<nav").unwrap()..header.find("</nav>").unwrap()];
+        for link in nav.split("<a ").skip(1) {
+            let link = &link[..link.find("</a>").unwrap()];
+            if link.contains(r#"href="/account""#) {
+                // The caller's own initial stands in for an icon.
+                assert!(link.contains(r#"class="avatar""#), "{link}");
+            } else {
+                assert!(link.contains(r#"<svg class="icon""#), "{link}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_profile_block_names_the_caller_and_the_active_family() {
+        let header = app_header(&me(false), Some(&family("Les <Martin>")), "/", 0);
+        let link = &header[header.find(r#"href="/account""#).unwrap()..];
+        let link = &link[..link.find("</a>").unwrap()];
+        // The name alone in its element: the suite finds it by its exact text.
+        assert!(link.contains("<span>Alice</span>"), "{link}");
+        assert!(link.contains("Les &lt;Martin&gt;"), "{link}");
+        assert!(!link.contains("<Martin>"), "{link}");
+        // Without a family, the block says so rather than leaving a gap.
+        let header = app_header(&me(false), None, "/", 0);
+        assert!(header.contains("Aucune famille"), "{header}");
+    }
+
+    #[test]
+    fn the_header_holds_no_form() {
+        // The family switcher and the logout button moved to the profile
+        // (#529), which posts to the same `POST /groups/switch` without JS.
+        let header = app_header(&me(false), Some(&family("F")), "/", 0);
+        assert!(!header.contains("<form"), "{header}");
+        assert!(!header.contains("<select"), "{header}");
+    }
+
+    #[test]
+    fn exactly_one_drawn_link_is_current_on_every_page_of_the_navigation() {
+        // Counted per layout: a link one layout does not draw is out of its
+        // accessibility tree too (`display: none`). `None`: the page has no
+        // entry in that layout, and nothing is lit rather than a guess.
+        for (path, phone, pc) in [
+            ("/", Some(("/", "Accueil")), Some(("/", "Accueil"))),
+            (
+                "/agenda/new",
+                Some(("/agenda", "Agenda")),
+                Some(("/agenda", "Agenda")),
+            ),
+            (
+                "/grocery-list",
+                Some(("/grocery-list", "Courses")),
+                Some(("/grocery-list", "Courses")),
+            ),
+            (
+                "/stocks/new",
+                Some(("/stocks", "Cuisine")),
+                Some(("/stocks", "Stocks")),
+            ),
+            // The recipes have no tab on a phone: Cuisine, which leads to
+            // their segment, is the current one there.
+            (
+                "/recipes",
+                Some(("/stocks", "Cuisine")),
+                Some(("/recipes", "Recettes")),
+            ),
+            ("/budget", None, Some(("/budget", "Budget"))),
+            (
+                "/messagerie",
+                Some(("/messagerie", "Messages")),
+                Some(("/messagerie", "Messagerie")),
+            ),
+            ("/admin/groups", None, Some(("/admin/users", "Admin"))),
+            (
+                "/account",
+                Some(("/account", "Profil")),
+                Some(("/account", "Profil : Alice F")),
+            ),
+            (
+                "/account/export",
+                Some(("/account", "Profil")),
+                Some(("/account", "Profil : Alice F")),
+            ),
+            // The families are under Profil, so their pages light it.
+            (
+                "/groups",
+                Some(("/account", "Profil")),
+                Some(("/account", "Profil : Alice F")),
+            ),
+            (
+                "/groups/new",
+                Some(("/account", "Profil")),
+                Some(("/account", "Profil : Alice F")),
+            ),
+        ] {
+            let header = app_header(&me(true), Some(&family("F")), path, 0);
+            for (layout, expected) in [(Layout::Phone, phone), (Layout::Pc, pc)] {
+                assert_eq!(
+                    current_links(&header, layout),
+                    hrefs_and_names(expected.as_slice()),
+                    "on {path}: {header}"
+                );
+            }
+        }
+        let header = app_header(&me(true), Some(&family("F")), "/privacy-policy", 0);
+        assert!(!header.contains("aria-current"), "{header}");
+    }
+
     #[test]
     fn the_header_marks_exactly_one_link_as_the_current_page() {
-        let header = app_header(&me(true), &[], None, "/agenda/new", 0);
+        let header = app_header(&me(true), None, "/agenda/new", 0);
         assert_eq!(
             header.matches(r#"aria-current="page""#).count(),
             1,
@@ -1336,9 +1696,10 @@ mod tests {
         );
         assert!(header.contains(r#"<a class="navlink" href="/agenda" aria-current="page">"#));
         // Every nav link wears the component class, current or not — that is
-        // what takes the navigation out of `.muted`: eight tabs, the Admin
-        // one a superadmin gets, and "Mon compte" in the account block.
-        assert_eq!(header.matches(r#"class="navlink""#).count(), 10);
+        // what takes the navigation out of `.muted`: seven destinations and
+        // the phone's Cuisine tab, the Admin one a superadmin gets, and the
+        // profile.
+        assert_eq!(header.matches(r#"class="navlink"#).count(), 10);
     }
 
     // -- unread badge on the Messagerie tab (#463) -------------------------
@@ -1383,7 +1744,7 @@ mod tests {
 
     #[test]
     fn the_header_puts_the_badge_on_the_messagerie_tab_only() {
-        let header = app_header(&me(false), &[], None, "/agenda", 3);
+        let header = app_header(&me(false), None, "/agenda", 3);
         let link = &header[header
             .find(r#"href="/messagerie""#)
             .expect("messagerie tab")..];
@@ -1391,23 +1752,31 @@ mod tests {
         assert!(link.contains(">Messagerie<"), "{link}");
         assert!(link.contains(" (3 non lus)"), "{link}");
         assert_eq!(header.matches(r#"class="badge warn""#).count(), 1);
-        // The navigation itself is unchanged: same links, one current page.
-        assert_eq!(header.matches(r#"class="navlink""#).count(), 9);
+        // Both labels of the tab carry the count in their name.
+        for (layout, name) in [
+            (Layout::Phone, "Messages (3 non lus)"),
+            (Layout::Pc, "Messagerie (3 non lus)"),
+        ] {
+            assert!(
+                destinations(&header, layout)
+                    .contains(&("/messagerie".to_string(), name.to_string())),
+                "{header}"
+            );
+        }
         assert_eq!(header.matches(r#"aria-current="page""#).count(), 1);
     }
 
     #[test]
     fn the_header_has_no_badge_without_unread_messages() {
-        let header = app_header(&me(false), &[], None, "/agenda", 0);
+        let header = app_header(&me(false), None, "/agenda", 0);
         assert!(!header.contains("badge"), "{header}");
-        assert!(header.contains(r#"<a class="navlink" href="/messagerie">Messagerie</a>"#));
     }
 
     #[test]
     fn the_account_link_is_current_on_the_account_screens() {
-        // "Mon compte" is a destination like any other; on /account/export
+        // The profile is a destination like any other; on /account/export
         // the header has to say so too.
-        let header = app_header(&me(false), &[], None, "/account/export", 0);
+        let header = app_header(&me(false), None, "/account/export", 0);
         assert!(header.contains(r#"href="/account" aria-current="page""#));
         assert_eq!(header.matches(r#"aria-current="page""#).count(), 1);
     }
@@ -1415,12 +1784,41 @@ mod tests {
     #[test]
     fn the_header_navigation_is_not_secondary_content() {
         // The nav sat in a `.muted` block: grey, 0.875rem, ranked below the
-        // content it leads to (#69).
-        let header = app_header(&me(false), &[], None, "/", 0);
-        let nav = &header[..header.find("</nav>").expect("a nav in the header")];
+        // content it leads to (#69). The family under the caller's name in
+        // the profile block is the one secondary line it holds.
+        let header = app_header(&me(false), Some(&family("F")), "/", 0);
+        let nav = &header[..header.find(r#"href="/account""#).expect("the profile link")];
         assert!(
             !nav.contains("muted"),
             "the main navigation is still styled as secondary content: {nav}"
+        );
+    }
+
+    // -- the kitchen segment (#523) ----------------------------------------
+
+    #[test]
+    fn the_kitchen_segment_lights_the_page_it_is_on() {
+        let stocks = kitchen_segment("/stocks");
+        assert!(
+            stocks.starts_with(r#"<nav class="segment" aria-label="Cuisine">"#),
+            "{stocks}"
+        );
+        assert!(
+            stocks.contains(r#"<a href="/stocks" aria-current="page">Stocks</a>"#),
+            "{stocks}"
+        );
+        assert!(
+            stocks.contains(r#"<a href="/recipes">Recettes</a>"#),
+            "{stocks}"
+        );
+        let recipes = kitchen_segment("/recipes?notice=x");
+        assert!(
+            recipes.contains(r#"<a href="/stocks">Stocks</a>"#),
+            "{recipes}"
+        );
+        assert!(
+            recipes.contains(r#"<a href="/recipes" aria-current="page">Recettes</a>"#),
+            "{recipes}"
         );
     }
 
@@ -2778,6 +3176,18 @@ mod tests {
             root.contains("--dur: 0s"),
             "reduced motion has to zero the duration token: {root}"
         );
+    }
+
+    #[test]
+    fn page_transitions_are_only_asked_for_without_a_reduced_motion_preference() {
+        // #523: a cross-document view transition between pages, never for
+        // someone who asked for less motion. It is opted into inside the
+        // `no-preference` query, so no `reduce` rule has to undo it.
+        let css = css();
+        assert_eq!(css.matches("@view-transition").count(), 1, "{css}");
+        let (block, _) = block_after(&css, "@media (prefers-reduced-motion: no-preference)", 0);
+        let (rule, _) = block_after(&block, "@view-transition", 0);
+        assert!(rule.contains("navigation: auto"), "{rule}");
     }
 
     #[test]

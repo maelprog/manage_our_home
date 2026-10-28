@@ -64,7 +64,7 @@ test.describe("User admin — access gate", () => {
 
     // No door on the home page.
     await page.goto("/");
-    await expect(page.getByRole("link", { name: "Admin" })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "Admin", exact: true })).toHaveCount(0);
 
     // Direct navigation is redirected to the home page (never revealed, not
     // even as a 403), for every /admin route.
@@ -100,9 +100,10 @@ test.describe("User admin — support look-up", () => {
     // The superadmin is a member of neither family.
     const { page } = await newSuperadmin(browser, "e2e-admin-super", "Super Admin");
 
-    // The Admin door appears now.
+    // The Admin door appears now. Exact: since #523 the profile link is
+    // named after the caller too — "Profil : Super Admin …".
     await page.goto("/");
-    await expect(page.getByRole("link", { name: "Admin" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Admin", exact: true })).toBeVisible();
 
     // Groups screen: both families are visible despite no membership.
     await page.goto("/admin/groups");
@@ -157,7 +158,7 @@ test.describe("User admin — session cap (#226)", () => {
 
     // A member page first: it must not make the session good for /admin again.
     await page.goto("/");
-    await expect(page.getByRole("link", { name: "Admin" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Admin", exact: true })).toBeVisible();
     await page.goto("/admin/groups");
     await expect(page).toHaveURL(/\/login\?reauth=admin$/);
     await expect(page.getByText("Votre session d'administration a expiré")).toBeVisible();
