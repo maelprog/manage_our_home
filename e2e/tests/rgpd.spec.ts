@@ -160,9 +160,9 @@ test.describe("RGPD — data export", () => {
     const family = `Foyer Portabilite ${Date.now()}`;
     await createGroup(page, family);
 
-    // Reached from the header's "Mon compte" link, then the hub.
+    // Reached from the navigation's profile link, then the hub.
     await page.goto("/");
-    await page.getByRole("link", { name: "Mon compte" }).click();
+    await page.getByRole("link", { name: /^Profil/ }).click();
     await expect(page).toHaveURL("/account");
     await page.getByRole("link", { name: "Exporter mes données" }).click();
     await expect(page).toHaveURL("/account/export");

@@ -14,7 +14,7 @@ use leptos::prelude::*;
 use manage_our_home_shared::dto::stocks::{StockItemList, StockItemResponse, SORT_BY_EXPIRY};
 use manage_our_home_shared::validation::stocks::is_low_stock;
 
-use crate::app::{shell_with_header, Width};
+use crate::app::{kitchen_segment, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -173,7 +173,7 @@ pub async fn get(
         Width::Full,
         "Stocks",
         &fam.header,
-        &body.to_html(),
+        &format!("{}{}", kitchen_segment("/stocks"), body.to_html()),
     ))
     .into_response()
 }

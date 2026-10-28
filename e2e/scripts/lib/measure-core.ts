@@ -15,7 +15,9 @@ export type NavParse = {
 };
 
 const NAV_TABLE_RE = /const NAV:[^=]*=\s*\[([\s\S]*?)\];/g;
-const CONDITIONAL_ENTRY_RE = /\.chain\(\s*[\w.]*\.then_some\(\("([^"]*)"/g;
+// `\s*` wherever rustfmt may break a line: it splits a tuple wider than its
+// call width over several lines, and a long `.chain(…)` before `.then_some`.
+const CONDITIONAL_ENTRY_RE = /\.chain\(\s*[\w.]*\s*\.then_some\(\(\s*"([^"]*)"/g;
 
 /**
  * Extracts the app nav out of `apps/web/src/app.rs`'s `app_header`.
@@ -49,7 +51,7 @@ export function parseNavRoutes(source: string): NavParse {
     );
   }
   return {
-    hrefs: [...tables[0][1].matchAll(/\("([^"]*)"\s*,/g)].map((m) => m[1]),
+    hrefs: [...tables[0][1].matchAll(/\(\s*"([^"]*)"\s*,/g)].map((m) => m[1]),
     conditional: [...source.matchAll(CONDITIONAL_ENTRY_RE)].map((m) => m[1]),
   };
 }

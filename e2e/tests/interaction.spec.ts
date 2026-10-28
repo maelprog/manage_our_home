@@ -121,15 +121,18 @@ async function walkWithTheKeyboard(page: Page, steps: number): Promise<number> {
   return stops;
 }
 
+// The sidebar's destinations (#523) — the default viewport is a PC's — and
+// the link each page lights. The families have no entry of their own: they
+// are under the profile, which their pages light.
 const NAV: ReadonlyArray<readonly [string, string]> = [
-  ["/", "Accueil"],
-  ["/agenda", "Agenda"],
-  ["/stocks", "Stocks"],
-  ["/recipes", "Recettes"],
-  ["/grocery-list", "Liste de courses"],
-  ["/budget", "Budget"],
-  ["/messagerie", "Messagerie"],
-  ["/groups", "Groupes"],
+  ["/", "/"],
+  ["/agenda", "/agenda"],
+  ["/stocks", "/stocks"],
+  ["/recipes", "/recipes"],
+  ["/grocery-list", "/grocery-list"],
+  ["/budget", "/budget"],
+  ["/messagerie", "/messagerie"],
+  ["/groups", "/account"],
 ];
 
 test.describe("Interaction states (#69)", () => {
@@ -139,21 +142,24 @@ test.describe("Interaction states (#69)", () => {
   });
 
   test("the navigation says which page you are on, and only one", async ({ page }) => {
-    for (const [path, label] of NAV) {
+    // Scoped to the header: the kitchen segment at the head of the stocks
+    // and the recipes (#523) is a navigation of its own, which names the
+    // same page.
+    const current = page.locator('header [aria-current="page"]');
+    for (const [path, href] of NAV) {
       await page.goto(path);
-      const current = page.locator('[aria-current="page"]');
       await expect(current, `on ${path}`).toHaveCount(1);
-      await expect(current, `on ${path}`).toHaveText(label);
+      await expect(current, `on ${path}`).toHaveAttribute("href", href);
     }
 
     // A page below a section keeps its section lit, so you never lose the
     // thread by opening a form.
     await page.goto("/agenda/new");
-    await expect(page.locator('[aria-current="page"]')).toHaveText("Agenda");
+    await expect(current).toHaveAttribute("href", "/agenda");
 
-    // "Mon compte" is a destination too.
+    // The profile is a destination too.
     await page.goto("/account");
-    await expect(page.locator('[aria-current="page"]')).toHaveText("Mon compte");
+    await expect(current).toHaveAttribute("href", "/account");
 
     // …and a page that is in no tab lights none of them rather than guessing.
     await page.goto("/privacy-policy");

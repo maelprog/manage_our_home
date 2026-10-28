@@ -67,7 +67,7 @@ pub(crate) async fn header_with_groups(
         }
         _ => 0,
     };
-    let header = app_header(me, &groups, active, redirect_to, unread);
+    let header = app_header(me, active, redirect_to, unread);
     (groups, header)
 }
 

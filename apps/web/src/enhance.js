@@ -191,11 +191,12 @@
     }
   }
 
-  // The phone tab bar (`.tabs`, below 861 px) scrolls sideways and every
-  // tab is a full page load, so the bar comes back scrolled to its start
-  // and a tab near its end — Messagerie — is off screen once followed
-  // (#456). Brings the current tab to the middle of the bar, instantly;
-  // nothing happens when the bar does not overflow (the sidebar).
+  // The phone tab bar (`.tabs`, below 861 px) scrolls sideways when its
+  // tabs do not fit — nine of them did not at 390px (#456), the six of
+  // #523 do — and every tab is a full page load,
+  // so the bar comes back scrolled to its start and a tab near its end is
+  // off screen once followed. Brings the current tab to the middle of the
+  // bar, instantly; nothing happens when the bar does not overflow.
   function revealCurrentTab() {
     var bar = document.querySelector(".tabs");
     var tab = bar && bar.querySelector('[aria-current="page"]');
