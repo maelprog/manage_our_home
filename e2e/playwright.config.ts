@@ -27,13 +27,18 @@ export default defineConfig({
     trace: "retain-on-failure",
     // The suite browses as a visitor who asked for reduced motion, which
     // turns off the page transition (#523: `@view-transition` is only asked
-    // for under `prefers-reduced-motion: no-preference`). Headless Chromium
-    // stops producing frames after a cross-document view transition: in the
-    // pinned image (Playwright 1.61.1), headless shell and new headless
-    // alike, `requestAnimationFrame` did not fire once in 8 s on the page a
-    // link led to, and every click there waited for "stable" until the test
-    // timed out. A spec that needs full motion emulates it itself. Through
-    // `contextOptions`: `reducedMotion` is no fixture option of its own.
+    // for under `prefers-reduced-motion: no-preference`). Playwright launches
+    // Chromium with `--disable-back-forward-cache` among its default
+    // arguments, and with it the page a cross-document view transition
+    // leads to gets no frame: in the pinned image (Playwright 1.61.1),
+    // `requestAnimationFrame` never fires there and every click waits for
+    // "stable" until the test times out — headless or headed under Xvfb
+    // alike. Leaving the argument out (`ignoreDefaultArgs`) clears it on the
+    // full Chromium build (`channel: "chromium"`), not on the headless shell
+    // this suite runs by default. tests/page-transition.spec.ts does that
+    // for the transition itself; a spec that only needs a full-motion style
+    // emulates it on a loaded page. Through `contextOptions`:
+    // `reducedMotion` is no fixture option of its own.
     contextOptions: { reducedMotion: "reduce" },
     ...(https && {
       ignoreHTTPSErrors: true,

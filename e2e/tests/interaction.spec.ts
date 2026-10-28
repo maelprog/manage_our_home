@@ -296,8 +296,8 @@ test.describe("Interaction states (#69)", () => {
   test("a visitor who asked for no motion gets none", async ({ page }) => {
     // The suite browses under `reducedMotion: "reduce"` (playwright.config.ts,
     // #523), so the full-motion side is emulated here, on a page already
-    // loaded — no navigation, hence no view transition to stall headless
-    // Chromium.
+    // loaded — no navigation, hence no view transition for the suite's
+    // browser to freeze on.
     await page.goto("/groups");
     const durations = () =>
       page

@@ -607,10 +607,16 @@ ni `transition`, et `aria-current` n'apparaissait nulle part.
   de mouvement (`page_transitions_are_only_asked_for_without_a_reduced_motion_preference`).
   Un navigateur qui ne connaît pas les transitions entre documents charge
   la page comme avant. La suite Playwright, elle, navigue sous
-  `reducedMotion: "reduce"` (`e2e/playwright.config.ts`) : Chromium sans
-  affichage cesse de produire des images après une transition entre
-  documents, et chaque clic qui suit attend jusqu'à l'échec du test. La
-  transition n'est donc couverte que par le test de la feuille.
+  `reducedMotion: "reduce"` (`e2e/playwright.config.ts`) : Playwright
+  lance Chromium avec `--disable-back-forward-cache`, et avec cet argument
+  la page atteinte par une transition entre documents ne reçoit plus
+  d'image — aucun `requestAnimationFrame`, chaque clic attend jusqu'à
+  l'échec du test, sans affichage comme affiché sous Xvfb.
+  `e2e/tests/page-transition.spec.ts` retire l'argument
+  (`ignoreDefaultArgs`) sur le Chromium complet (`channel: "chromium"`) et
+  suit des liens en mouvement complet : la transition a lieu et la page
+  atteinte répond. Le headless shell, navigateur par défaut de la suite,
+  reste figé même sans l'argument.
 - **Durée :** `--dur: 150ms`, courbe `--ease: cubic-bezier(0.2, 0, 0.2, 1)`.
   Les deux moitiés sont des jetons parce que la neutralisation sous
   `prefers-reduced-motion` passe par eux (voir plus bas) : une durée écrite en
