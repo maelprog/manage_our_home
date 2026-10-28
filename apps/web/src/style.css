@@ -261,7 +261,8 @@ button, .btn {
   display: inline-block;
   /* 44px both ways (#74), with the fields above: the padding gives the
      height, the floor gives the width to a button of one glyph — the
-     agenda's ◀ / ▶, ~38px wide on their padding alone. */
+     agenda's ◀ / ▶ were ~38px wide on their padding alone. Their icons
+     (#522) come to 46px with the padding: the floor still sets the width. */
   padding: var(--s3);
   min-width: var(--s12);
   border-radius: var(--r-sm);
@@ -310,6 +311,15 @@ button.sm, .btn.sm { font-size: var(--t-sm); }
    accent, the action size, and the pointer no browser gives a <summary>.
    The padding is its target: one line of --t-sm is 20px tall (#74). */
 summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); padding: var(--s3) 0; }
+/* An icon of the set (#522, apps/web/src/icons.rs): Lucide's drawings on a
+   24-unit grid, stroked in the text colour, so an icon takes the colour of
+   whatever holds it, in both themes and under forced colours. The stroke is
+   written here and not on each <svg>: the sheet is paid once per deploy, the
+   markup on every page view. 1.25em fits inside the line box of Source
+   Sans 3 at its `normal` line height, so a button that holds only an icon is
+   as tall as one that holds a word; `top` keeps the gap under an inline
+   baseline out of that box. */
+.icon { width: 1.25em; height: 1.25em; vertical-align: top; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
 /* -- Components ----------------------------------------------------------
    The patterns the routes used to retype: 173 inline `style="…"` attributes

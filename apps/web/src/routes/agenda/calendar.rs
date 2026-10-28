@@ -50,6 +50,7 @@ use manage_our_home_shared::dto::agenda::OccurrenceResponse;
 use manage_our_home_shared::validation::agenda::{month_grid, week_days};
 
 use crate::app::{html_escape, shell_with_header, Width};
+use crate::icons::{icon_link, Icon};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -264,21 +265,31 @@ fn render_nav(is_week: bool, focus: NaiveDate, title: &str) -> String {
         )
     };
     let view_q = if is_week { "week" } else { "month" };
-    // The arrows are a bare glyph: their accessible name is what they step
+    // The arrows are an icon alone: their accessible name is what they step
     // to, which is a week in the week view, not a month.
     let (prev_label, next_label) = if is_week {
         ("Semaine précédente", "Semaine suivante")
     } else {
         ("Mois précédent", "Mois suivant")
     };
+    let arrow = |date: NaiveDate, label: &str, icon: Icon| {
+        icon_link(
+            "btn secondary",
+            &format!("/agenda?view={view_q}&date={date}"),
+            label,
+            icon,
+        )
+    };
+    let prev_link = arrow(prev, prev_label, Icon::Previous);
+    let next_link = arrow(next, next_label, Icon::Next);
     let today = today_paris();
     format!(
         r#"<div class="page-header">
 <h1>{title}</h1>
 <span class="actions">
-<a class="btn secondary" href="/agenda?view={view_q}&date={prev}" aria-label="{prev_label}">◀</a>
+{prev_link}
 <a class="btn secondary" href="/agenda?view={view_q}&date={today}">Aujourd'hui</a>
-<a class="btn secondary" href="/agenda?view={view_q}&date={next}" aria-label="{next_label}">▶</a>
+{next_link}
 <a class="btn secondary" href="/agenda?view=month&date={focus}">Mois</a>
 <a class="btn secondary" href="/agenda?view=week&date={focus}">Semaine</a>
 <a class="btn secondary" href="/agenda/imports">Agendas Google</a>
@@ -287,8 +298,8 @@ fn render_nav(is_week: bool, focus: NaiveDate, title: &str) -> String {
 </div>"#,
         title = html_escape(title),
         view_q = view_q,
-        prev = prev,
-        next = next,
+        prev_link = prev_link,
+        next_link = next_link,
         today = today,
         focus = focus,
     )
@@ -673,9 +684,10 @@ mod tests {
 
     // -- render_nav ----------------------------------------------------
     //
-    // The prev/next arrows are a bare glyph. Before #320 the template wrote
+    // The prev/next arrows are an icon alone. Before #320 the template wrote
     // them inside a raw string as `"◀"`, so the quotes reached the page, and
-    // nothing gave the links a name a screen reader could announce.
+    // nothing gave the links a name a screen reader could announce. Since
+    // #522 the glyphs are the icon set's chevrons; the names are unchanged.
 
     /// The `<a …>…</a>` whose `href` targets `date`, as rendered.
     fn nav_link(html: &str, view: &str, date: &str) -> String {
@@ -688,14 +700,20 @@ mod tests {
     }
 
     #[test]
-    fn the_month_arrows_are_a_bare_glyph_named_for_the_month_they_reach() {
+    fn the_month_arrows_are_an_icon_named_for_the_month_they_reach() {
         let html = render_nav(false, day(15), "juillet 2026");
         let prev = nav_link(&html, "month", "2026-06-01");
         let next = nav_link(&html, "month", "2026-08-01");
         assert!(prev.contains(r#"aria-label="Mois précédent""#), "{prev}");
         assert!(next.contains(r#"aria-label="Mois suivant""#), "{next}");
-        assert!(prev.ends_with(">◀</a>"), "{prev}");
-        assert!(next.ends_with(">▶</a>"), "{next}");
+        assert!(prev.ends_with(&arrow(Icon::Previous)), "{prev}");
+        assert!(next.ends_with(&arrow(Icon::Next)), "{next}");
+    }
+
+    /// The end of an arrow link: its icon and nothing else, no glyph left
+    /// beside it.
+    fn arrow(icon: Icon) -> String {
+        format!(">{}</a>", crate::icons::icon(icon))
     }
 
     #[test]
@@ -710,8 +728,8 @@ mod tests {
             "{prev}"
         );
         assert!(next.contains(r#"aria-label="Semaine suivante""#), "{next}");
-        assert!(prev.ends_with(">◀</a>"), "{prev}");
-        assert!(next.ends_with(">▶</a>"), "{next}");
+        assert!(prev.ends_with(&arrow(Icon::Previous)), "{prev}");
+        assert!(next.ends_with(&arrow(Icon::Next)), "{next}");
     }
 
     #[test]
