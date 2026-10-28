@@ -115,7 +115,10 @@ Les deux dernières valeurs sont celles d'un écran large : sous 861 px,
 `--t-sm` monte à 0.9375rem et `--t-xs` à 0.875rem
 (voir [Layout](#layout) → plancher typographique).
 
-Interlignage : 1.5 pour le corps, 1.25 pour les titres.
+Interlignage : le corps n'en déclare aucun — `body` ne porte pas de
+`line-height` — et garde donc `normal`, celui que fixent les métriques de
+Source Sans 3 ; 1.25 pour les titres (`h1, h2, h3`) ; 1.55 pour `.prose`,
+le texte des documents légaux.
 
 Graisses : 600 pour les titres et, depuis #521, pour les boutons et les
 badges ; 600 aussi pour les en-têtes de tableau, le jour d'une case de
