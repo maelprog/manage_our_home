@@ -1769,6 +1769,23 @@ mod pure_logic_tests {
         assert!(!html.contains("<li"), "{html}");
     }
 
+    /// The agenda's horizon reaches past the week: an occurrence ten days
+    /// out belongs to "Aujourd'hui", not to any of the seven columns.
+    #[test]
+    fn an_occurrence_past_the_seventh_day_leaves_the_week_empty() {
+        let later = timed_at(
+            Utc.with_ymd_and_hms(2026, 9, 13, 10, 0, 0).unwrap(),
+            "Plus tard",
+        );
+        let html = week_block(Some(&[later]), fixture_day());
+        assert!(
+            html.contains("Rien de prévu ces sept prochains jours."),
+            "{html}"
+        );
+        assert!(!html.contains("Plus tard"), "{html}");
+        assert!(!html.contains("<li"), "{html}");
+    }
+
     /// The agenda card already says the read failed; the week says nothing.
     #[test]
     fn an_unreadable_agenda_draws_no_week() {
