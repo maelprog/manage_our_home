@@ -1,6 +1,8 @@
-# Design System — Manage our home
+# Design System — MHome
 
 Source de vérité pour toute décision visuelle dans `apps/web`.
+L'application s'appelle **MHome** (#521) : chaque page s'intitule
+`{titre} — MHome` (`apps/web/src/app.rs`, `document`).
 L'état des lieux qui a motivé ce système est dans
 [`docs/design-audit.md`](docs/design-audit.md).
 
@@ -53,21 +55,33 @@ L'état des lieux qui a motivé ce système est dans
 
 ## Direction esthétique
 
-- **Direction :** utilitaire chaleureux.
-- **Niveau de décoration :** minimal — la typographie et l'espacement font tout
-  le travail. Aucune texture, aucun dégradé, aucune ombre décorative.
-- **Ambiance :** du papier posé sur un plan de travail. Neutres chauds plutôt
-  que blanc clinique ou gris-bleu SaaS. Une seule couleur saturée dans toute
-  l'interface, donc tout ce qui est teinté porte du sens.
+- **Direction (#521) :** chaleureux, aéré, tactile. Elle succède à
+  « utilitaire chaleureux » — voir le journal, entrée du 2026-10-28.
+  *Chaleureux* : les neutres chauds restent, et les titres en Fraunces.
+  *Aéré* : le contenu se range dans des cartes blanches qui se détachent du
+  fond par une ombre douce, avec des rayons francs (12 / 16 / 20 px).
+  *Tactile* : toute cible fait au moins 44 px, et ce qui se touche se lit
+  comme un objet — un bouton est un bloc, pas un mot souligné.
+- **Niveau de décoration :** retenu. La typographie et l'espacement font
+  l'essentiel ; la seule ombre est celle des cartes (`--shadow`). Aucune
+  texture, aucun dégradé.
+- **Ambiance :** des fiches posées sur un plan de travail. Neutres chauds
+  plutôt que blanc clinique ou gris-bleu SaaS. Une seule couleur saturée dans
+  toute l'interface, donc tout ce qui est teinté porte du sens.
 - **Ce qu'on refuse :** les primaires saturées et le codage couleur bariolé de
   la catégorie (Cozi, FamilyWall), les sans géométriques arrondis qui font
-  « application pour enfants », les ombres portées et les cartes flottantes.
+  « application pour enfants », les ombres dures ou empilées et toute autre
+  élévation que celle des cartes.
+- **Maquettes :** le canevas de la demande du 2026-10-21, thème clair et
+  thème sombre (rangée ajoutée le 2026-10-22). Les écrans y sont repris un
+  par un (#524 à #530, #533, #539) ; ce document porte les jetons qu'ils
+  partagent.
 
 ---
 
 ## Typographie
 
-- **Titres (`h1`, `h2`, `h3`) :** **Fraunces** (variable, OFL) —
+- **Titres (`h1`, `h2`, `h3`) :** **Fraunces** (variable, OFL), graisse 600 —
   un serif chaud et légèrement excentrique. C'est le choix qui empêche
   l'application de ressembler à un back-office : toute la catégorie utilise des
   sans arrondis. Réservé aux titres, jamais au corps.
@@ -117,15 +131,24 @@ complet, plus une rampe catégorielle réservée à l'identification des membres
 | Jeton | Clair | Sombre | Usage |
 |---|---|---|---|
 | `--bg` | `#FBFAF7` | `#1A1917` | fond de page |
-| `--surface` | `#FFFFFF` | `#242320` | cartes, sidebar, champs — **une seule élévation** |
+| `--surface` | `#FFFFFF` | `#242320` | cartes, sidebar, champs, bouton secondaire — jamais `#FFFFFF` écrit en dur |
 | `--fg` | `#1C1A17` | `#EDEAE4` | texte principal |
 | `--muted` | `#6B655C` | `#A19A8F` | texte secondaire — contraste AA vérifié sur `--bg` **et** `--surface` |
-| `--border` | `#E3DFD7` | `#38352F` | bordures, séparateurs |
+| `--border` | `#E3DFD7` | `#38352F` | bordure d'un contrôle, filet qui doit se voir |
+| `--line` | `#EFEBE4` | `#322F2A` | ligne fine : séparateur entre deux lignes de liste, piste d'une jauge (#521) |
 | `--hover` | `#F2EFE9` | `#2E2C28` | fond au survol |
 | `--accent` | `#14706E` | `#4FB3AF` | actions primaires, liens, état actif |
 | `--accent-fg` | `#FFFFFF` | `#10201F` | texte sur `--accent` |
 | `--accent-soft` | `#E1F0EF` | `#1C3635` | fonds teintés (jour courant, nav active) |
 | `--accent-hover` | `#105855` | `#6EC7C3` | aplat plein survolé (#69) |
+
+`--shadow`, l'ombre des cartes (#521), est un jeton de couleur à deux valeurs
+comme les autres : en clair, deux couches douces,
+`0 1px 2px rgba(28,26,23,.06), 0 8px 24px rgba(28,26,23,.06)` ; en sombre,
+où une ombre ne se voit pas, un liseré `--hover` puis l'ombre portée,
+`0 0 0 1px var(--hover), 0 8px 24px rgba(0,0,0,.28)`. Le garde-fou qui exige
+qu'un jeton de couleur soit redéclaré en sombre le voit : il lit la couleur
+n'importe où dans la valeur, pas seulement en tête.
 
 Le pétrole remplace le `#2952cc` actuel : il évite le bleu SaaS générique et,
 surtout, il ne rentre pas en collision avec le rouge d'erreur ni avec le vert
@@ -164,6 +187,26 @@ n'a pas de champ couleur et n'en a pas besoin.
 
 **La couleur n'est jamais le seul porteur d'information** (WCAG 1.4.1) :
 elle accompagne toujours une initiale ou un nom.
+
+### Ce que les écrans repris peindront en sombre
+
+Les maquettes ajoutent trois motifs qu'aucun composant de la feuille ne porte
+encore. Leurs valeurs sombres sont fixées ici, pour que chaque écran repris
+(#524 et suivantes) les prenne telles quelles et ajoute alors ses paires au
+garde-fou de contraste :
+
+- **Avatar plein** (initiale sur la teinte du membre) : en clair, initiale
+  `--accent-fg` blanche sur `--m1`…`--m8` (4,77:1 au pire, `--m2`) ; en
+  sombre, initiale `#10201F` — la valeur sombre de `--accent-fg` — sur la
+  rampe éclaircie (5,75:1 au pire, `--m1`). Du blanc sur la rampe sombre
+  tomberait entre 2,35 et 2,92:1.
+- **Fond d'événement par membre** :
+  `color-mix(in srgb, var(--surface), var(--mN) 16%)`, texte `--fg` —
+  9,70:1 au pire en sombre (`--m3`), 14,03:1 en clair.
+- **Voile d'une fenêtre** : `rgba(28,26,23,.32)` en clair,
+  `rgba(0,0,0,.6)` en sombre.
+
+Ratios WCAG 2.x calculés sur les valeurs de la feuille au 2026-10-28.
 
 ### Règles
 
@@ -227,11 +270,16 @@ elle accompagne toujours une initiale ou un nom.
 | `--w-read` | 65rem | détail d'événement, recettes, compte, politique de confidentialité |
 | *(pleine)* | 100% | agenda, tables d'admin, messagerie, listes |
 
-- **Rayons :** `--r-sm: 4px` (badges, pastilles) · `--r-md: 8px` (boutons,
-  champs) · `--r-lg: 12px` (cartes). Pas de rayon uniforme partout, pas de
-  `border-radius: 9999px` décoratif.
-- **Élévation :** une seule surface (`--surface`) délimitée par `--border`.
-  **Aucune `box-shadow` décorative** — l'ombre est réservée à l'anneau de focus.
+- **Rayons (#521) :** `--r-sm: 12px` (boutons, champs, badges, pastilles,
+  avatars, liens de navigation) · `--r-md: 16px` (notices) · `--r-lg: 20px`
+  (cartes). Pas de rayon uniforme partout, pas de `border-radius: 9999px` :
+  à 12 px, un badge ou une pastille s'arrondit en gélule et un avatar de
+  24 px en cercle sans autre règle.
+- **Élévation (#521) :** une seule, celle de la carte — `--surface` posé sur
+  `--bg` et soulevé par `--shadow`. Sa bordure reste, transparente :
+  `.card.danger` la colore, et le mode contrastes forcés, qui retire toute
+  ombre, la repeint, si bien que la carte garde un bord. Aucune autre
+  `box-shadow` que celle-ci et l'anneau de focus des champs.
 
 Livré par #70, et voici ce que la mise en œuvre a fixé que ce tableau ne
 disait pas.
@@ -1394,3 +1442,4 @@ quatre tours de vérification à #72.
 | 2026-10-10 | Les documents légaux passent dans un pied de page commun, et la connexion est recadrée (#419) | Demande du 2026-10-09. Les trois liens légaux étaient des lignes de la colonne `.links` des formulaires de connexion et d'inscription ; aucune page n'avait de `<footer>`, et une page connectée ne les montrait que dans « Mon compte ». `shell()` et `shell_with_header()` rendent désormais le même `<footer>` après `<main>` (repère `contentinfo`), avec session ou sans. Il n'est pas une navigation : la règle « une page sans session ne rend aucune navigation » de [Layout](#layout) tient. Il ne coûte aucune règle propre : c'est `.links.centered`, la ligne centrée que prennent aussi « Créer un compte » et « Mot de passe oublié ? » sous le formulaire de connexion. Sur une page connectée il suit la grille au lieu d'y entrer : dedans, au-dessus de 861 px, il tombait dans la colonne latérale, et le placer sous le contenu demandait deux déclarations de plus (`grid-column` pour lui, `grid-row` pour la colonne latérale) que le budget des déclarations n'avait plus. Il s'étend donc sous les deux colonnes, centré sur la page et non sur le contenu. « Continuer avec Google » prend la largeur du bouton du formulaire par `.actions.stacked`, ajouté au sélecteur de `.list-row.stacked`, et reste en variante `secondary`. Les liens de compte de l'inscription et des autres formulaires restent alignés à gauche : la demande ne visait que la connexion |
 | 2026-10-20 | Plafond de feuille : **13 KiB → 42 KiB** (43 008 o), la borne passe d'un aller-retour à deux | Arbitrage utilisateur du 2026-10-20. La question change, pas la méthode. Manquer l'aller-retour unique coûte **un RTT, à cache froid seulement** — une fois par visiteur et par déploiement, la feuille étant `immutable` sous une URL à empreinte. Les utilisateurs sont un foyer qui revient chaque jour, sur des téléphones de dix ans au plus, pour qui analyser 40 Kio de CSS coûte quelques millisecondes : le budget achetait un RTT au premier affichage après déploiement, au prix d'un plafond qui ne laissait que 1 349 o (flate2 niveau 6). Dérivation, celle de #72 prolongée d'une fenêtre : le slow start double la `cwnd` après le premier vol — 14 254 o au premier vol (IW10 moins 280 o d'en-têtes et 66 o de cadrage TLS), 20 × 1 460 = 29 200 o au second moins 44 o de cadrage pour ses deux enregistrements TLS, soit **43 410 o** en deux allers-retours. 42 KiB est le plus grand palier de KiB qui tienne, 402 o dessous — prix de l'arrondi, pas réserve. La borne reste conservatrice : la feuille part sur la connexion qui vient de porter le document, `cwnd` déjà crue. **Ce que ça abandonne** : le garde-fou de feuille ne sonne plus au fil du travail ordinaire ; il devient une alarme contre les accidents (framework recopié, police en base64), et la pression vers la sobriété passe aux tests de redondance de l'entrée suivante. **Ce que ça garde** : le remède au-delà (découper la feuille) et la règle de demander avant de bouger la valeur. Test renommé `the_compressed_stylesheet_arrives_within_two_round_trips` |
 | 2026-10-20 | `DECLARATIONS_CEILING` supprimé, la redondance est tenue par trois tests | Arbitrage utilisateur du 2026-10-20, après le relèvement de `SHEET_CEILING` le même jour. Le plafond ne laissait plus que 2 o (3 134 sur 3 136, flate2 niveau 6), et une passe de chasse aux doublons faite à la main n'a rendu que 7 o — un `font-weight: 400` resté de l'extraction des styles inline (#68), retiré. La feuille était propre et le garde-fou bloquait quand même : il comptait des **octets**, pas des **répétitions**, et ne parlait qu'une fois le total débordé. Remplacé par ce qu'il prétendait tenir, chaque test nommant la ligne fautive : un même sélecteur ouvert deux fois dans le même contexte (`@media` compris), une même propriété posée deux fois dans un bloc, une classe stylée que plus aucune source n'émet — le sens inverse de `every_class_a_source_references_exists_in_the_stylesheet`, qui manquait. Les trois ont été vérifiés rouges sur une classe morte et deux doublons injectés. **Ce que ça abandonne** : toute borne sur le volume des déclarations, et la contrainte d'ordre des deux garde-fous, qui était la borne basse de `SHEET_CEILING`. **Pas couvert, dit plutôt que laissé à trouver** : une valeur en dur là où un token existe (les `rem` de `.prose`) — c'est une décision de design, pas un doublon, à traiter à part. Rapport `budget_report` allégé de la section d'ordre |
+| 2026-10-28 | Direction « chaleureux, aéré, tactile », et l'application s'appelle MHome (#521) | Demande du 2026-10-21, « rendre l'application plus esthétique, agréable à utiliser, interactive et moderne », avec ses maquettes ; rangée sombre ajoutée le 2026-10-22. Elle renverse un point de la direction « utilitaire chaleureux » posée avec le système initial : les ombres portées et les cartes flottantes, que la section Direction esthétique refusait, deviennent l'unique élévation. Une seule ombre, celle de `.card`, portée par un jeton à deux valeurs, `--shadow` — deux couches douces en clair, un liseré `--hover` plus une ombre portée en sombre, où une ombre seule ne se voit pas. Le garde-fou de redéclaration sombre ne lisait une couleur qu'en tête de valeur et aurait laissé passer une ombre déclarée en clair seulement : il la lit désormais n'importe où dans la valeur. Rayons 12 / 16 / 20 px au lieu de 4 / 8 / 12, mêmes trois jetons ; boutons et champs passent sur `--r-sm`, comme dans les maquettes. Nouveau jeton `--line` pour les lignes fines (séparateurs de liste, piste de la jauge de mot de passe), `--border` restant le bord d'un contrôle. Titres en Fraunces 600, champs et bouton secondaire sur `--surface`. Les neutres de la demande (`#FBFAF7`, `#1C1A17`, `#6B655C`, `#E3DFD7`) étaient déjà ceux de la feuille et ne bougent pas, ni aucun jeton sombre existant. Le markup des routes ne change pas : les écrans sont repris un par un ensuite. Le nom **MHome** entre dans le titre de chaque page ; les courriels, les documents légaux et le README gardent « Manage Our Home » dans ce lot |
