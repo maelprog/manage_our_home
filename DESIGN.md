@@ -116,6 +116,11 @@ Les deux dernières valeurs sont celles d'un écran large : sous 861 px,
 (voir [Layout](#layout) → plancher typographique).
 
 Interlignage : 1.5 pour le corps, 1.25 pour les titres.
+
+Graisses : 600 pour les titres et, depuis #521, pour les boutons et les
+badges ; 600 aussi pour les en-têtes de tableau, le jour d'une case de
+l'agenda, l'initiale d'un avatar et le lien de navigation de la page
+courante. Le reste du texte garde la graisse par défaut.
 `letter-spacing: -0.01em` sur les titres, `0.04em` sur les micro-libellés
 capitalisés.
 
