@@ -530,7 +530,7 @@ hgroup > h1 { margin: 0; }
    grid's gap is their spacing. */
 .dash { display: grid; grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); align-items: start; gap: var(--s4); margin-top: var(--s6); }
 .dash > .card { margin: 0; }
-/* A card's way out, in its head: an accent link, 44px tall (--s12). */
+/* A card's way out, in its head: an accent link, 48px (--s12), over the 44px. */
 .more { display: inline-flex; align-items: center; min-height: var(--s12); color: var(--accent); font-weight: 600; }
 /* A tile is a card that is itself the link: an icon, a count, what it
    counts. Its colour is the text's, not the link's; the pointer colours
