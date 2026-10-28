@@ -178,17 +178,20 @@ test.describe("Accueil — le tableau de bord d'une famille peuplée", () => {
     await addBudgetEntry(page, "Courses de la semaine", "42.50");
 
     await page.goto("/");
-    await expect(page.getByRole("heading", { name: "Accueil" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Bonjour", level: 1 })).toBeVisible();
 
     // Agenda: the event, with the creator's name as its (default) assignee.
-    const agenda = card(page, "Prochains événements");
+    // Tomorrow is not today: the card lists it under "Ensuite" (#524).
+    const agenda = card(page, "Aujourd'hui");
     await expect(agenda.getByText("Rendez-vous pédiatre")).toBeVisible();
     await expect(agenda.getByText("Dash Owner")).toBeVisible();
 
     // Stock, grocery, budget: each card's own real number, not a placeholder.
     await expect(card(page, "Stock bas").getByText("Farine")).toBeVisible();
-    await expect(card(page, "Liste de courses").getByText("1 article à acheter.")).toBeVisible();
-    await expect(card(page, "Budget").getByText("42,50 €")).toBeVisible();
+    const grocery = page.locator('a.tile[href="/grocery-list"]');
+    await expect(grocery.locator("strong")).toHaveText("1");
+    await expect(grocery).toContainText("article à acheter");
+    await expect(card(page, "Budget d").getByText("42,50 €")).toBeVisible();
 
     // Nothing anyone else wrote: the unread card is empty, and says so with
     // "tout est lu" rather than "aucun message".
@@ -221,7 +224,7 @@ test.describe("Accueil — le tableau de bord d'une famille peuplée", () => {
     // of the day — the blocker was a filter on that instant, which made
     // birthdays, holidays and school breaks invisible outright.
     await page.goto("/");
-    const agenda = card(page, "Prochains événements");
+    const agenda = card(page, "Aujourd'hui");
     await expect(agenda.getByText("Anniversaire de Léa")).toBeVisible();
     // The all-day row says "journée" instead of a clock time; that branch
     // was unreachable for the current day.
@@ -264,7 +267,7 @@ test.describe("Accueil — le tableau de bord d'une famille peuplée", () => {
     });
 
     await page.goto("/");
-    const agenda = card(page, "Prochains événements");
+    const agenda = card(page, "Aujourd'hui");
     await expect(agenda.getByText("Contrôle technique")).toBeVisible();
     await expect(agenda.getByText(/Rien de prévu/)).toHaveCount(0);
   });
@@ -283,7 +286,7 @@ test.describe("Accueil — le tableau de bord d'une famille peuplée", () => {
 
     await page.goto("/");
     await expect(
-      card(page, "Prochains événements").getByText("Séjour à la montagne"),
+      card(page, "Aujourd'hui").getByText("Séjour à la montagne"),
     ).toBeVisible();
   });
 });
@@ -410,7 +413,7 @@ test.describe("Accueil — l'assignation d'un événement", () => {
 
     // The dashboard names both.
     await page.goto("/");
-    const agenda = card(page, "Prochains événements");
+    const agenda = card(page, "Aujourd'hui");
     await expect(agenda.getByText("Sortie scolaire")).toBeVisible();
     await expect(agenda.getByText(/Assign Owner/)).toBeVisible();
     await expect(agenda.getByText(/Assign Member/)).toBeVisible();
@@ -426,5 +429,106 @@ test.describe("Accueil — l'assignation d'un événement", () => {
     await expect(assignees).toContainText("Assign Member");
 
     await member.context().close();
+  });
+});
+
+// Issue #524: the home of the mock-ups, "Mobile — Accueil" and
+// "PC — Accueil". One markup for both: the week card and the two actions
+// beside the greeting are the PC's (`.pc`), the floating "+" the phone's.
+async function seedTheTiles(page: Page): Promise<void> {
+  await addGroceryItem(page, "Lait");
+  await addGroceryItem(page, "Œufs");
+  await page.locator("li", { hasText: "Lait" }).getByRole("button", { name: "Cocher" }).click();
+  await expect(page).toHaveURL(/\/grocery-list\?notice=item_checked$/);
+
+  await page.goto("/stocks/new");
+  await page.getByLabel("Nom").fill("Crème fraîche");
+  await page.getByLabel("Quantité").fill("1");
+  await page.getByLabel("Unité").fill("pot");
+  await page.getByLabel("Date de péremption").fill(isoDay(2));
+  await page.getByRole("button", { name: "Ajouter l'article" }).click();
+  await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
+}
+
+test.describe("Accueil — la maquette sur téléphone", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("la date, les tuiles et le bouton flottant", async ({ page }) => {
+    await registerAndLogin(page, "e2e-homephone", "Phone Owner");
+    await createGroup(page, FAMILY);
+    await seedTheTiles(page);
+
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Bonjour", level: 1 })).toBeVisible();
+    await expect(page.locator("hgroup .eyebrow")).toHaveText(/^\p{L}+ \d{1,2}(er)? \p{L}+$/u);
+
+    // One article left of two, the other ticked.
+    const grocery = page.locator('a.tile[href="/grocery-list"]');
+    await expect(grocery.locator("strong")).toHaveText("1");
+    await expect(grocery).toContainText("1 sur 2 cochés");
+
+    // The cream expires in two days: this week.
+    const expiry = page.locator('a.tile[href="/stocks?sort=expires_on"]');
+    await expect(expiry.locator("strong")).toHaveText("1");
+    await expect(expiry).toContainText("produit périme cette semaine");
+
+    // The two tiles share a row.
+    const g = await grocery.boundingBox();
+    const e = await expiry.boundingBox();
+    expect(g && e && Math.abs(g.y - e.y) < 1).toBe(true);
+
+    // Nothing planned at all: the card says so.
+    await expect(card(page, "Aujourd'hui").getByText(/Rien de prévu/)).toBeVisible();
+
+    // The PC's week and actions are not drawn; the floating "+" is, above
+    // the tab bar, and leads to the event form.
+    await expect(page.getByRole("heading", { name: "Les sept prochains jours" })).toBeHidden();
+    await expect(page.getByRole("link", { name: "Nouvel événement" })).toBeHidden();
+    const add = page.getByRole("link", { name: "Ajouter un événement" });
+    await expect(add).toBeInViewport({ ratio: 1 });
+    const bar = await page.getByRole("navigation", { name: "Navigation principale" }).boundingBox();
+    const fab = await add.boundingBox();
+    expect(bar && fab && fab.y + fab.height <= bar.y).toBe(true);
+    await add.click();
+    await expect(page).toHaveURL("/agenda/new");
+  });
+});
+
+test.describe("Accueil — la maquette sur PC", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("la semaine, les actions de l'en-tête, pas de bouton flottant", async ({ page }) => {
+    await registerAndLogin(page, "e2e-homepc", "Pc Owner");
+    await createGroup(page, FAMILY);
+    await seedTheTiles(page);
+    const inThreeDays = isoDay(3);
+    await createEvent(page, {
+      title: "Marché",
+      start: `${inThreeDays}T10:00`,
+      end: `${inThreeDays}T11:00`,
+    });
+
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Bonjour", level: 1 })).toBeVisible();
+
+    // The week: seven days from today, the event on its own day — the
+    // fourth column.
+    const week = card(page, "Les sept prochains jours");
+    await expect(week).toBeVisible();
+    const days = week.locator("ol.days > li");
+    await expect(days).toHaveCount(7);
+    await expect(days.first()).toContainText("aujourd'hui");
+    await expect(days.nth(3).getByRole("link", { name: /Marché/ })).toBeVisible();
+
+    // The tiles and the cards are there too.
+    await expect(page.locator('a.tile[href="/grocery-list"]')).toContainText("1 sur 2 cochés");
+    await expect(page.locator('a.tile[href="/stocks?sort=expires_on"] strong')).toHaveText("1");
+    await expect(card(page, "Aujourd'hui").getByText("Marché")).toBeVisible();
+
+    // The two actions beside the greeting; no floating button.
+    await expect(page.getByRole("link", { name: "Ajouter un événement" })).toBeHidden();
+    await expect(page.getByRole("link", { name: "Ajouter aux courses" })).toBeVisible();
+    await page.getByRole("link", { name: "Nouvel événement" }).click();
+    await expect(page).toHaveURL("/agenda/new");
   });
 });

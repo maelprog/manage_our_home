@@ -73,7 +73,7 @@ const FR_MONTHS: [&str; 12] = [
     "novembre",
     "décembre",
 ];
-const FR_WEEKDAYS: [&str; 7] = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"];
+pub(crate) const FR_WEEKDAYS: [&str; 7] = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"];
 
 /// The most occurrences a month-grid cell lists before it stops listing and
 /// starts counting. A cell is 6.5rem tall (104px) and that is what three
@@ -85,7 +85,7 @@ const FR_WEEKDAYS: [&str; 7] = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
 /// so a cell that grows past 6.5rem pushes nothing out of view. It is also
 /// where the month grid's "+N autres" sends the reader, so capping there
 /// would be a dead end.
-const MONTH_CHIP_CAP: usize = 3;
+pub(crate) const MONTH_CHIP_CAP: usize = 3;
 
 #[derive(serde::Deserialize)]
 pub struct CalendarQuery {
@@ -397,7 +397,11 @@ fn overflow_label(hidden: usize) -> String {
 
 /// One day-cell's occurrence chips. Tasks get a ☑/☐ marker and a
 /// strike-through when that occurrence is completed.
-fn render_chips(occs: &[&OccurrenceResponse], cap: Option<usize>, day: NaiveDate) -> String {
+pub(crate) fn render_chips(
+    occs: &[&OccurrenceResponse],
+    cap: Option<usize>,
+    day: NaiveDate,
+) -> String {
     let (shown, hidden) = day_split(occs.len(), cap);
     let mut out: String = occs[..shown]
         .iter()

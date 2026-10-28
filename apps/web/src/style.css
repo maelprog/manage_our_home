@@ -242,8 +242,8 @@ h3 { font-size: var(--t-lg); margin: var(--s4) 0 var(--s1); }
   /* The PC side of the one markup (`app::app_header`): what only a phone
      shows, and the kitchen segment the sidebar makes redundant. The Cuisine
      tab is a `.navlink`, declared further down: `.navlink.phone` outranks
-     it. */
-  .phone, .navlink.phone, .segment { display: none; }
+     it, as `.btn.phone` outranks `.btn` for the home's floating "+" (#524). */
+  .phone, .navlink.phone, .btn.phone, .segment { display: none; }
   .cal tbody tr { height: 6.5rem; }
   /* The messagerie's send box, kept in reach at the foot of a long thread
      instead of sitting past the end of it (audit §5). `.content >` is the
@@ -517,6 +517,47 @@ a.list-row .icon { flex: none; }
   font-size: var(--t-xs);
   text-decoration: none;
 }
+/* -- The home page (#524) ------------------------------------------------
+   The mock-up's "Accueil": the date over "Bonjour", then the cards. A
+   capitalised micro-label first — the date, a day of the week card. */
+.eyebrow { margin: 0; color: var(--muted); font-size: var(--t-sm); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+hgroup > h1 { margin: 0; }
+/* The cards share a grid: as many 16rem columns as fit on a PC; on a phone
+   two, where the two tiles sit side by side and every card takes the whole
+   row (the narrow block at the end of the sheet, which has to come after
+   this rule to win). On a PC a card keeps its own height: a tile beside a
+   long "Aujourd'hui" would otherwise stretch into an empty block. The
+   grid's gap is their spacing. */
+.dash { display: grid; grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); align-items: start; gap: var(--s4); margin-top: var(--s6); }
+.dash > .card { margin: 0; }
+/* A card's way out, in its head: an accent link, 44px tall (--s12). */
+.more { display: inline-flex; align-items: center; min-height: var(--s12); color: var(--accent); font-weight: 600; }
+/* A tile is a card that is itself the link: an icon, a count, what it
+   counts. Its colour is the text's, not the link's; the pointer colours
+   its edge, the transparent border every card keeps. */
+.tile { display: flex; flex-direction: column; gap: var(--s2x); color: var(--fg); text-decoration: none; }
+.tile:hover { border-color: var(--border); }
+.tile > strong { font-size: var(--t-2xl); line-height: 1; }
+.tile .icon { align-self: flex-start; width: var(--s12); height: var(--s12); padding: var(--s3); border-radius: var(--r-sm); background: var(--accent-soft); color: var(--accent); }
+/* What expires this week, in the warning tint, flat on the page. */
+.tile.warn { background: var(--warning-soft); color: var(--warning); box-shadow: none; }
+.tile.warn .icon { background: var(--surface); color: var(--warning); }
+/* The grocery tile's gauge, the password gauge's shape: the track in
+   --line, the fill in currentColor. `appearance: none` hands its two parts
+   to the sheet; each engine names them its own way, and a selector list
+   holding a pseudo-element an engine does not know is dropped whole —
+   hence three rules for two colours. */
+progress { width: 100%; height: var(--s2x); border: 0; border-radius: var(--r-sm); background: var(--line); color: var(--accent); overflow: hidden; appearance: none; }
+progress::-webkit-progress-bar { background: var(--line); }
+progress::-webkit-progress-value { background: currentColor; }
+progress::-moz-progress-bar { background: currentColor; }
+/* An agenda row of the home page: the time in a pill, the title over who
+   it is for, the avatar at the end. */
+.when { flex: none; min-width: var(--s16); padding: var(--s1) var(--s2x); border-radius: var(--r-sm); background: var(--accent-soft); color: var(--accent); font-weight: 600; text-align: center; font-variant-numeric: tabular-nums; }
+.what { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+/* The PC's seven days, one column each; today's wears `.current`. */
+.days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: var(--s2x); margin: 0; padding: 0; list-style: none; }
+.days > li { padding: var(--s1); border-radius: var(--r-sm); }
 /* Something already dealt with: a completed task, a ticked grocery item. */
 .done { text-decoration: line-through; color: var(--muted); }
 /* The agenda (#71). Month and week are one table of whole weeks — six rows
@@ -711,6 +752,16 @@ caption, .skip-link:not(:focus) { clip-path: inset(50%); }
   /* The phone side of the one markup (`app::app_header`, #523): what only
      a PC shows. Here, after `.navlink`, which it has to override. */
   .pc { display: none; }
+  /* The home's cards on a phone (#524): two columns, the two tiles side by
+     side, every card the whole row. */
+  .dash { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; gap: var(--s3); }
+  .dash > section { grid-column: 1 / -1; }
+  /* The home's floating "+" (#524), over the content and clear of the tab
+     bar under it. No shadow: the card's is the only elevation (DESIGN.md →
+     Layout). The page grows by its height, so that at the foot of the
+     page it covers nothing. */
+  .fab { position: fixed; right: var(--s4); bottom: calc(var(--s16) + var(--s4)); z-index: 1; }
+  body:has(.fab) { padding-bottom: calc(var(--s16) * 2); }
 }
 /* Page transitions without JavaScript (#523): a cross-fade from one page to
    the next, for whoever has not asked for less motion. Asked for in the

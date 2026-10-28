@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -19,10 +21,12 @@ use crate::app::{
     member_photo_url, shell, shell_with_header, Width,
 };
 use crate::family::{active_group_id_from_headers, resolve_active_group};
+use crate::icons::{icon, icon_link, Icon};
 use crate::layout::CurrentUser;
 use crate::routes::account::terms::update_notice;
+use crate::routes::agenda::calendar::{render_chips, FR_WEEKDAYS, MONTH_CHIP_CAP};
 use crate::routes::agenda::{
-    fmt_paris, occurrences_from_response, paris_local_to_utc, read_or_log, today_paris,
+    fmt_paris, occurrences_from_response, paris_local_to_utc, read_or_log, today_paris, DISPLAY_TZ,
 };
 use crate::routes::groups::ownership::ownership_notices;
 use crate::routes::groups::{cookie_of, header_with_groups};
@@ -49,6 +53,9 @@ const DASHBOARD_AGENDA_CAP: usize = 5;
 /// Same trade for stock: a taste of what's low, `/stocks?low_stock=1` for
 /// the rest.
 const DASHBOARD_STOCK_CAP: usize = 5;
+/// The expiry tile counts what expires from today to this many days out:
+/// seven days in all, the "cette semaine" of the mock-up (#524).
+const DASHBOARD_EXPIRY_DAYS: i64 = 6;
 /// Requested straight from the API (`?limit=&unread=true`), newest-unread
 /// first — no client-side capping needed for messages the way the other
 /// blocks need it.
@@ -230,15 +237,59 @@ fn row_assignee_ids<'a>(assignee_ids: &'a [Uuid], created_by: &'a Uuid) -> &'a [
     }
 }
 
-/// One upcoming-event row: the assigned member(s)' coloured initial (their
-/// own colour for one assignee, the running average for several — see
-/// `combined_member_colour`, and `row_assignee_ids` for who counts as
-/// assigned on an event carrying no assignee at all), the time, and the
-/// title. The ring's letter is the first assignee's initial; with several
-/// assignees the names beside it (not just the ring) are what actually says
-/// who, matching WCAG 1.4.1 (colour is never the only carrier — see
-/// `agenda/calendar.rs`'s doc comment on the same constraint).
-fn agenda_row(occ: &OccurrenceResponse, members: &[GroupMember]) -> String {
+/// The Paris civil day an occurrence starts on.
+fn paris_start_day(occ: &OccurrenceResponse) -> NaiveDate {
+    occ.occurrence_starts_at
+        .with_timezone(&DISPLAY_TZ)
+        .date_naive()
+}
+
+/// The pill at the head of an agenda row (#524): what the eye looks for
+/// first. Today's time, or "Journée"; for a later day its date — a weekday
+/// name would need chrono's `%a`, which has no locale and would print
+/// `Wed` in a French page; and "En cours" for an event begun on an earlier
+/// day and not over, whose start time would say something false about
+/// today.
+fn when_label(occ: &OccurrenceResponse, today: NaiveDate) -> String {
+    let day = paris_start_day(occ);
+    if day > today {
+        fmt_paris(occ.occurrence_starts_at, "%d/%m")
+    } else if occ.event.all_day {
+        "Journée".to_string()
+    } else if day < today {
+        "En cours".to_string()
+    } else {
+        fmt_paris(occ.occurrence_starts_at, "%H:%M")
+    }
+}
+
+/// Splits the card's occurrences, already in start order, between today —
+/// anything that started today or before and is not over, which is all
+/// `soonest_occurrences` keeps — and the days after.
+fn split_today(
+    picked: Vec<&OccurrenceResponse>,
+    today: NaiveDate,
+) -> (Vec<&OccurrenceResponse>, Vec<&OccurrenceResponse>) {
+    picked
+        .into_iter()
+        .partition(|o| paris_start_day(o) <= today)
+}
+
+/// One row of the "Aujourd'hui" card: the time in a pill, the title, who it
+/// is for, and that member's avatar (their own colour for one assignee, the
+/// running average for several — see `combined_member_colour`, and
+/// `row_assignee_ids` for who counts as assigned on an event carrying no
+/// assignee at all). The ring's letter is the first assignee's initial;
+/// with several assignees the names under the title (not just the ring) are
+/// what actually says who, matching WCAG 1.4.1 (colour is never the only
+/// carrier — see `agenda/calendar.rs`'s doc comment on the same
+/// constraint). A later day's pill holds its date, so its time moves to the
+/// names' line.
+///
+/// The avatar is a flex item of the row, centred on it: the baseline gap
+/// that lifted a photo 6–7 px above an initial in the inline avatar this
+/// row used to carry (#468) has no line to sit on here.
+fn agenda_row(occ: &OccurrenceResponse, today: NaiveDate, members: &[GroupMember]) -> String {
     let e = &occ.event;
     let shown = row_assignee_ids(&e.assignee_ids, &e.created_by);
     let assignee_names: Vec<&str> = shown.iter().map(|id| author_name(members, *id)).collect();
@@ -256,30 +307,52 @@ fn agenda_row(occ: &OccurrenceResponse, members: &[GroupMember]) -> String {
         }
         _ => html_escape(&initial),
     };
-    let time = if e.all_day {
-        "journée".to_string()
+    let detail = if paris_start_day(occ) > today {
+        let time = if e.all_day {
+            "Journée".to_string()
+        } else {
+            fmt_paris(occ.occurrence_starts_at, "%H:%M")
+        };
+        format!("{time} · {assignees}")
     } else {
-        // No weekday name here: chrono's `%a` has no locale support and
-        // would render the English abbreviation (`Wed`) in an
-        // otherwise all-French page — see `agenda/detail.rs`'s
-        // pre-existing use of the same specifier, not this issue's to fix.
-        fmt_paris(occ.occurrence_starts_at, "%d/%m %H:%M")
+        assignees
     };
     format!(
-        r#"<li class="list-row"><span><span class="avatar" style="color:{colour}" aria-hidden="true">{icon}</span> <strong>{time}</strong> {title} <span class="muted">— {assignees}</span></span></li>"#,
-        colour = colour,
-        time = html_escape(&time),
+        r#"<li class="list-row"><span class="when">{when}</span><span class="what"><strong>{title}</strong><span class="muted">{detail}</span></span><span class="avatar" style="color:{colour}" aria-hidden="true">{icon}</span></li>"#,
+        when = html_escape(&when_label(occ, today)),
         title = html_escape(&e.title),
-        assignees = html_escape(&assignees),
+        detail = html_escape(&detail),
     )
 }
 
+/// A card's head: its title, and the link that leads to the whole of it —
+/// `.more`, 44 px tall like any target (DESIGN.md → Espacement).
+fn card_head(title: &str, href: &str, label: &str) -> String {
+    format!(
+        r#"<div class="split"><h2>{title}</h2><a class="more" href="{href}">{label}</a></div>"#,
+        title = html_escape(title),
+        label = html_escape(label),
+    )
+}
+
+fn agenda_list(rows: &[&OccurrenceResponse], today: NaiveDate, members: &[GroupMember]) -> String {
+    let rows: String = rows.iter().map(|o| agenda_row(o, today, members)).collect();
+    format!(r#"<ul class="list">{rows}</ul>"#)
+}
+
+/// The "Aujourd'hui" card of the mock-up (#524). It still reads the next
+/// `DASHBOARD_AGENDA_CAP` occurrences of the horizon, as the card it
+/// replaces did, and lists those of the days after under "Ensuite": a phone
+/// has no week view, and a card that only knew today would say nothing of
+/// an appointment on Tuesday — the gap #455 closed.
+///
 /// `occurrences` is `None` when the API's answer could not be read: that
 /// renders as an error, never as the "nothing planned" an empty list means
 /// (#455).
 fn agenda_block(
     occurrences: Option<&[OccurrenceResponse]>,
     now: DateTime<Utc>,
+    today: NaiveDate,
     members: &[GroupMember],
 ) -> String {
     let body = match occurrences {
@@ -294,21 +367,189 @@ fn agenda_block(
                     r#"<p class="muted">Rien de prévu dans les {DASHBOARD_AGENDA_HORIZON_DAYS} prochains jours.</p>"#
                 )
             } else {
-                let rows: String = picked.iter().map(|o| agenda_row(o, members)).collect();
-                format!(r#"<ul class="list">{rows}</ul>"#)
+                let (now_rows, later) = split_today(picked, today);
+                let now_html = if now_rows.is_empty() {
+                    r#"<p class="muted">Rien aujourd'hui.</p>"#.to_string()
+                } else {
+                    agenda_list(&now_rows, today, members)
+                };
+                let later_html = if later.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "\n<h3>Ensuite</h3>\n{}",
+                        agenda_list(&later, today, members)
+                    )
+                };
+                format!("{now_html}{later_html}")
             }
         }
     };
     format!(
-        r#"<section class="card">
-<h2>Prochains événements</h2>
-{body}
-<a class="btn secondary" href="/agenda">Voir l'agenda</a>
-</section>"#
+        "<section class=\"card\">\n{head}\n{body}\n</section>",
+        head = card_head("Aujourd'hui", "/agenda", "Agenda"),
     )
 }
 
-fn stocks_block(items: &[StockItemResponse]) -> String {
+/// The seven days the PC's week card shows (#524): today and the six after
+/// it. Not Monday to Sunday as the mock-up draws them: the card reads the
+/// same horizon as "Aujourd'hui", which starts at today's midnight, and
+/// days already gone would show what that read never asked for.
+fn week_days(today: NaiveDate) -> Vec<NaiveDate> {
+    (0..7).map(|d| today + Duration::days(d)).collect()
+}
+
+/// The week card, drawn on a PC only (`.pc`): one column a day, each
+/// occurrence a chip of the agenda (`agenda::calendar::render_chips`,
+/// capped at the month grid's three rows, the last one counting the rest
+/// and leading to the week view). Today's column wears `.current` and says
+/// "aujourd'hui" in words — the tint is never the only carrier.
+///
+/// `None` — the agenda could not be read — draws nothing: the
+/// "Aujourd'hui" card already says so.
+fn week_block(occurrences: Option<&[OccurrenceResponse]>, today: NaiveDate) -> String {
+    let Some(occurrences) = occurrences else {
+        return String::new();
+    };
+    let days = week_days(today);
+    let mut by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
+    for occ in occurrences {
+        let day = paris_start_day(occ);
+        if days.contains(&day) {
+            by_day.entry(day).or_default().push(occ);
+        }
+    }
+    let body = if by_day.is_empty() {
+        r#"<p class="muted">Rien de prévu ces sept prochains jours.</p>"#.to_string()
+    } else {
+        let columns: String = days
+            .iter()
+            .map(|day| {
+                let mut occs = by_day.remove(day).unwrap_or_default();
+                occs.sort_by_key(|o| o.occurrence_starts_at);
+                let weekday = FR_WEEKDAYS[day.weekday().num_days_from_monday() as usize];
+                let (class, note) = if *day == today {
+                    (r#" class="current""#, " · aujourd'hui")
+                } else {
+                    ("", "")
+                };
+                format!(
+                    r#"<li{class}><p class="eyebrow">{weekday} {num}{note}</p>{chips}</li>"#,
+                    num = day.day(),
+                    chips = render_chips(&occs, Some(MONTH_CHIP_CAP), *day),
+                )
+            })
+            .collect();
+        format!(r#"<ol class="days">{columns}</ol>"#)
+    };
+    format!(
+        "<section class=\"card pc\">\n{head}\n{body}\n</section>",
+        head = card_head(
+            "Les sept prochains jours",
+            "/agenda?view=week",
+            "Ouvrir l'agenda"
+        ),
+    )
+}
+
+/// The date over the greeting, lower case as French writes it — the sheet
+/// sets it in capitals (`.eyebrow`): "mercredi 28 octobre", "dimanche 1er
+/// novembre".
+fn long_date_fr(day: NaiveDate) -> String {
+    const WEEKDAYS: [&str; 7] = [
+        "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche",
+    ];
+    let weekday = WEEKDAYS[day.weekday().num_days_from_monday() as usize];
+    let num = match day.day() {
+        1 => "1er".to_string(),
+        n => n.to_string(),
+    };
+    format!("{weekday} {num} {}", month_name_fr(day.month()))
+}
+
+/// The head of the page: the date and "Bonjour", and on a PC the two
+/// actions the mock-up puts beside them. A phone has the floating button
+/// instead (`add_event_button`), and its grocery tile leads to the list.
+fn greeting(today: NaiveDate) -> String {
+    format!(
+        r#"<div class="page-header"><hgroup><p class="eyebrow">{date}</p><h1>Bonjour</h1></hgroup><div class="actions pc"><a class="btn secondary" href="/grocery-list">Ajouter aux courses</a><a class="btn" href="/agenda/new">{plus} Nouvel événement</a></div></div>"#,
+        date = html_escape(&long_date_fr(today)),
+        plus = icon(Icon::Plus),
+    )
+}
+
+/// The phone's floating "+" (#524), above the tab bar: an icon alone, so
+/// the link is named by its label (`icon_link`). `.phone`: a PC has
+/// "Nouvel événement" in the page's head.
+fn add_event_button() -> String {
+    icon_link(
+        "btn fab phone",
+        "/agenda/new",
+        "Ajouter un événement",
+        Icon::Plus,
+    )
+}
+
+/// The grocery tile: what is left to buy, and a gauge of what is already
+/// ticked off out of the whole list. The gauge is `aria-hidden` — a
+/// `<progress>` inside a link would be read as a second control — and the
+/// line under it says the same in words. An empty list has neither.
+fn grocery_tile(unchecked: usize, total: usize) -> String {
+    let label = if unchecked > 1 {
+        "articles à acheter"
+    } else {
+        "article à acheter"
+    };
+    let gauge = if total == 0 {
+        String::new()
+    } else {
+        let ticked = total.saturating_sub(unchecked);
+        format!(
+            r#"<progress max="{total}" value="{ticked}" aria-hidden="true"></progress><span class="muted">{ticked} sur {total} cochés</span>"#
+        )
+    };
+    format!(
+        r#"<a class="card tile" href="/grocery-list">{cart}<strong>{unchecked}</strong><span class="muted">{label}</span>{gauge}</a>"#,
+        cart = icon(Icon::Groceries),
+    )
+}
+
+/// What the stock holds that expires this week: today to six days out,
+/// soonest first. Already past is not "this week" — the stock page shows
+/// it as expired — and an article with no date is not counted.
+fn expiring_this_week(items: &[StockItemResponse], today: NaiveDate) -> Vec<&StockItemResponse> {
+    let last = today + Duration::days(DASHBOARD_EXPIRY_DAYS);
+    let mut out: Vec<&StockItemResponse> = items
+        .iter()
+        .filter(|i| i.expires_on.is_some_and(|d| today <= d && d <= last))
+        .collect();
+    out.sort_by_key(|i| i.expires_on);
+    out
+}
+
+/// The expiry tile, in the warning tint: how many articles expire this
+/// week, leading to the stock sorted by date ("à consommer en premier").
+fn expiry_tile(expiring: &[&StockItemResponse]) -> String {
+    let label = match expiring.len() {
+        0 => "rien ne périme cette semaine",
+        1 => "produit périme cette semaine",
+        _ => "produits périment cette semaine",
+    };
+    format!(
+        r#"<a class="card tile warn" href="/stocks?sort=expires_on">{clock}<strong>{count}</strong><span>{label}</span></a>"#,
+        clock = icon(Icon::Clock),
+        count = expiring.len(),
+    )
+}
+
+/// The articles at or under their threshold, in the order the API lists
+/// the stock (by name). One read of the stock feeds both this card and the
+/// expiry tile.
+fn low_stock_items(items: &[StockItemResponse]) -> Vec<&StockItemResponse> {
+    items.iter().filter(|i| i.low_stock).collect()
+}
+
+fn stocks_block(items: &[&StockItemResponse]) -> String {
     let shown = &items[..items.len().min(DASHBOARD_STOCK_CAP)];
     let hidden = items.len().saturating_sub(shown.len());
     let body = if items.is_empty() {
@@ -331,45 +572,35 @@ fn stocks_block(items: &[StockItemResponse]) -> String {
         format!(r#"<ul class="list">{rows}</ul>{more}"#)
     };
     format!(
-        r#"<section class="card">
-<h2>Stock bas</h2>
-{body}
-<a class="btn secondary" href="/stocks?low_stock=1">Voir le stock</a>
-</section>"#
+        "<section class=\"card\">\n{head}\n{body}\n</section>",
+        head = card_head("Stock bas", "/stocks?low_stock=1", "Voir le stock"),
     )
 }
 
-fn grocery_block(unchecked: usize) -> String {
-    let text = match unchecked {
-        0 => "Aucun article à acheter pour le moment.".to_string(),
-        1 => "1 article à acheter.".to_string(),
-        n => format!("{n} articles à acheter."),
-    };
-    format!(
-        r#"<section class="card">
-<h2>Liste de courses</h2>
-<p>{text}</p>
-<a class="btn secondary" href="/grocery-list">Voir la liste</a>
-</section>"#,
-        text = html_escape(&text),
-    )
+/// "Budget d'octobre", "Budget de mars": French elides `de` before a vowel,
+/// and three months start with one.
+fn budget_title(month: u32) -> String {
+    let name = month_name_fr(month);
+    if name.starts_with(['a', 'o']) {
+        format!("Budget d'{name}")
+    } else {
+        format!("Budget de {name}")
+    }
 }
 
+/// This month's spend. Shown to every member until #531 reserves the
+/// budget to owners and admins.
 fn budget_block(total: Option<f64>, today: NaiveDate) -> String {
-    let month = html_escape(month_name_fr(today.month()));
     let body = match total {
         Some(total) => format!(
-            r#"<p><strong>{amount}</strong> dépensés en {month}.</p>"#,
+            r#"<p><strong>{amount}</strong> dépensés.</p>"#,
             amount = html_escape(&format_euros(total)),
         ),
-        None => format!(r#"<p class="muted">Aucune dépense enregistrée en {month}.</p>"#),
+        None => r#"<p class="muted">Aucune dépense enregistrée ce mois-ci.</p>"#.to_string(),
     };
     format!(
-        r#"<section class="card">
-<h2>Budget</h2>
-{body}
-<a class="btn secondary" href="/budget">Voir le budget</a>
-</section>"#
+        "<section class=\"card\">\n{head}\n{body}\n</section>",
+        head = card_head(&budget_title(today.month()), "/budget", "Voir le budget"),
     )
 }
 
@@ -401,7 +632,7 @@ fn hidden_unread(shown: usize, unread_total: Option<i64>) -> usize {
 
 /// `messages` is already the unread page (see `message_row`'s doc comment):
 /// an empty list here means "nothing unread", not "no messages ever" — same
-/// distinction `grocery_block` draws between zero-unchecked and an empty
+/// distinction `grocery_tile` draws between zero-unchecked and an empty
 /// list, and the same reason the empty copy says "tout est lu" rather than
 /// "aucun message".
 ///
@@ -427,11 +658,8 @@ fn messages_block(
         format!(r#"<ul class="list">{rows}</ul>{more}"#)
     };
     format!(
-        r#"<section class="card">
-<h2>Messages non lus</h2>
-{body}
-<a class="btn secondary" href="/messagerie">Voir la messagerie</a>
-</section>"#
+        "<section class=\"card\">\n{head}\n{body}\n</section>",
+        head = card_head("Messages non lus", "/messagerie", "Voir la messagerie"),
     )
 }
 
@@ -444,12 +672,18 @@ fn messages_block(
 /// fields). With no family yet, the pre-#73 empty-state hint
 /// (`/groups/new`, `/groups`) is unchanged.
 ///
-/// Each card is one more API call to apps/api at render time — this app is
+/// Since #524 it is laid out as the mock-ups draw it: the date and
+/// "Bonjour", the PC's week, then the cards — "Aujourd'hui", the grocery
+/// and expiry tiles, the budget, the low stock and the unread chat. The
+/// week and "Aujourd'hui" are two readings of the one agenda call, and the
+/// low-stock card and the expiry tile two readings of the one stock call.
+///
+/// Each domain is one more API call to apps/api at render time — this app is
 /// SSR-only, with no client-side hydration to defer work to (see
 /// `Cargo.toml`'s doc comment and the issue's own "Attention" note). Five
 /// domain calls plus one shared members lookup (for the agenda/messages
-/// author names) is the accepted cost of five cards; if that ever needs
-/// trimming, the fix is fewer cards, not async loading.
+/// author names) is the accepted cost; if that ever needs trimming, the fix
+/// is fewer cards, not async loading.
 pub async fn get(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
@@ -539,10 +773,13 @@ async fn dashboard(me: MeResponse, state: AppState, headers: HeaderMap) -> Respo
         Err(_) => return service_unavailable_page().into_response(),
     };
 
-    let low_stock: Vec<StockItemResponse> = match api_request_auth(
+    // The whole stock, once: the low-stock card and the expiry tile are two
+    // readings of it (#524), where the card alone used to ask the API for
+    // `?low_stock=true`.
+    let stock: Vec<StockItemResponse> = match api_request_auth(
         &state,
         reqwest::Method::GET,
-        &format!("/groups/{}/stock-items?low_stock=true", fam.gid),
+        &format!("/groups/{}/stock-items", fam.gid),
         cookie.as_deref(),
         None,
     )
@@ -622,23 +859,32 @@ async fn dashboard(me: MeResponse, state: AppState, headers: HeaderMap) -> Respo
     let members = fetch_members(&state, fam.gid, cookie.as_deref()).await;
 
     let body = format!(
-        r#"<h1>Accueil</h1>
-{terms}{ownership}{agenda}
-{stocks}
+        r#"{greeting}
+{terms}{ownership}{week}
+<div class="dash">
+{agenda}
 {grocery}
+{expiry}
 {budget}
-{messages}"#,
+{stocks}
+{messages}
+</div>
+{add}"#,
+        greeting = greeting(today),
         // #319: a member who accepted an earlier version of the CGU is told
         // here, first thing after logging in, until they acknowledge it.
         terms = update_notice(&me),
         // #323: a group that came to the member without their asking, until
         // they acknowledge it — from the same `GET /groups` the header uses.
         ownership = ownership_notices(&groups),
-        agenda = agenda_block(occurrences.as_deref(), chrono::Utc::now(), &members),
-        stocks = stocks_block(&low_stock),
-        grocery = grocery_block(count_unchecked(&grocery_items)),
+        week = week_block(occurrences.as_deref(), today),
+        agenda = agenda_block(occurrences.as_deref(), chrono::Utc::now(), today, &members),
+        grocery = grocery_tile(count_unchecked(&grocery_items), grocery_items.len()),
+        expiry = expiry_tile(&expiring_this_week(&stock, today)),
         budget = budget_block(current_month_total(&budget_summary.periods, today), today),
+        stocks = stocks_block(&low_stock_items(&stock)),
         messages = messages_block(&messages.messages, messages.unread_total, &members),
+        add = add_event_button(),
     );
 
     Html(shell_with_header(
@@ -897,7 +1143,7 @@ mod pure_logic_tests {
     /// An API failure is not "nothing planned".
     #[test]
     fn an_unreadable_agenda_is_an_error_not_an_empty_card() {
-        let html = agenda_block(None, late_afternoon(), &[]);
+        let html = agenda_block(None, late_afternoon(), fixture_day(), &[]);
         assert!(!html.contains("Rien de prévu"), "{html}");
         assert!(html.contains(r#"class="notice error""#), "{html}");
         assert!(html.contains("Impossible de charger"), "{html}");
@@ -906,7 +1152,7 @@ mod pure_logic_tests {
     /// The empty copy names the horizon it actually searched.
     #[test]
     fn an_empty_horizon_says_how_far_it_looked() {
-        let html = agenda_block(Some(&[]), late_afternoon(), &[]);
+        let html = agenda_block(Some(&[]), late_afternoon(), fixture_day(), &[]);
         assert!(
             html.contains(&format!(
                 "Rien de prévu dans les {DASHBOARD_AGENDA_HORIZON_DAYS} prochains jours."
@@ -920,7 +1166,7 @@ mod pure_logic_tests {
     #[test]
     fn a_horizon_holding_only_finished_events_is_empty_not_an_error() {
         let occs = vec![occurrence_span(8, 9, "Ce matin")];
-        let html = agenda_block(Some(&occs), late_afternoon(), &[]);
+        let html = agenda_block(Some(&occs), late_afternoon(), fixture_day(), &[]);
         assert!(html.contains("Rien de prévu"), "{html}");
         assert!(!html.contains("notice error"), "{html}");
     }
@@ -1192,7 +1438,11 @@ mod pure_logic_tests {
     fn a_legacy_row_names_its_creator_instead_of_a_question_mark() {
         let creator = Uuid::from_u128(7);
         let members = vec![member(creator, "Camille")];
-        let html = agenda_row(&occurrence_assigned_to(creator, &[]), &members);
+        let html = agenda_row(
+            &occurrence_assigned_to(creator, &[]),
+            fixture_day(),
+            &members,
+        );
         assert!(html.contains("Camille"), "{html}");
         assert!(html.contains(">C</span>"), "{html}");
         assert!(!html.contains('?'), "{html}");
@@ -1206,8 +1456,16 @@ mod pure_logic_tests {
     fn a_legacy_row_wears_its_creator_s_own_colour() {
         let creator = Uuid::from_u128(7);
         let members = vec![member(creator, "Camille")];
-        let legacy = agenda_row(&occurrence_assigned_to(creator, &[]), &members);
-        let explicit = agenda_row(&occurrence_assigned_to(creator, &[creator]), &members);
+        let legacy = agenda_row(
+            &occurrence_assigned_to(creator, &[]),
+            fixture_day(),
+            &members,
+        );
+        let explicit = agenda_row(
+            &occurrence_assigned_to(creator, &[creator]),
+            fixture_day(),
+            &members,
+        );
         assert_eq!(legacy, explicit);
     }
 
@@ -1218,7 +1476,11 @@ mod pure_logic_tests {
         let creator = Uuid::from_u128(7);
         let other = Uuid::from_u128(8);
         let members = vec![member(creator, "Camille"), member(other, "Robin")];
-        let html = agenda_row(&occurrence_assigned_to(creator, &[other]), &members);
+        let html = agenda_row(
+            &occurrence_assigned_to(creator, &[other]),
+            fixture_day(),
+            &members,
+        );
         assert!(html.contains("Robin"), "{html}");
         assert!(!html.contains("Camille"), "{html}");
     }
@@ -1231,7 +1493,7 @@ mod pure_logic_tests {
         let mut with_photo = member(robin, "Robin");
         with_photo.has_avatar = true;
         let occ = occurrence_assigned_to(robin, &[robin]);
-        let html = agenda_row(&occ, &[with_photo]);
+        let html = agenda_row(&occ, fixture_day(), &[with_photo]);
         let photo = crate::app::member_photo_url(occ.event.group_id, robin);
         assert!(html.contains(&crate::app::avatar_photo(&photo)), "{html}");
         assert!(!html.contains(">R</span>"), "{html}");
@@ -1251,9 +1513,431 @@ mod pure_logic_tests {
         let members = vec![member(camille, "Camille"), with_photo];
         let html = agenda_row(
             &occurrence_assigned_to(camille, &[robin, camille]),
+            fixture_day(),
             &members,
         );
         assert!(!html.contains("<img"), "{html}");
         assert!(html.contains(">R</span>"), "{html}");
+    }
+
+    // -- the mock-up's home (#524) -----------------------------------------
+
+    /// 2026-09-03, the day the fixtures above live on (UTC+2 in Paris).
+    fn fixture_day() -> NaiveDate {
+        ymd(2026, 9, 3)
+    }
+
+    #[test]
+    fn the_date_line_names_the_weekday_and_the_month_in_french() {
+        assert_eq!(long_date_fr(ymd(2026, 10, 28)), "mercredi 28 octobre");
+        assert_eq!(long_date_fr(ymd(2026, 10, 26)), "lundi 26 octobre");
+        assert_eq!(long_date_fr(ymd(2026, 11, 8)), "dimanche 8 novembre");
+    }
+
+    /// French writes the first of the month as an ordinal.
+    #[test]
+    fn the_first_of_the_month_is_written_1er() {
+        assert_eq!(long_date_fr(ymd(2026, 11, 1)), "dimanche 1er novembre");
+    }
+
+    #[test]
+    fn the_greeting_carries_the_date_the_heading_and_the_pc_actions() {
+        let html = greeting(ymd(2026, 10, 28));
+        assert!(
+            html.contains(r#"<p class="eyebrow">mercredi 28 octobre</p>"#),
+            "{html}"
+        );
+        assert!(html.contains("<h1>Bonjour</h1>"), "{html}");
+        // The PC draws two buttons beside the greeting; the phone has the
+        // floating one instead.
+        assert!(html.contains(r#"class="actions pc""#), "{html}");
+        assert!(html.contains(r#"href="/agenda/new""#), "{html}");
+        assert!(html.contains("Nouvel événement"), "{html}");
+        assert!(html.contains(r#"href="/grocery-list""#), "{html}");
+    }
+
+    #[test]
+    fn the_phone_gets_a_floating_button_that_adds_an_event() {
+        let html = add_event_button();
+        assert!(html.contains(r#"class="btn fab phone""#), "{html}");
+        assert!(html.contains(r#"href="/agenda/new""#), "{html}");
+        assert!(
+            html.contains(r#"aria-label="Ajouter un événement""#),
+            "{html}"
+        );
+    }
+
+    // -- the "Aujourd'hui" card ------------------------------------------
+
+    /// An occurrence of `title` starting at `starts`, one hour long.
+    fn timed_at(starts: DateTime<Utc>, title: &str) -> OccurrenceResponse {
+        occurrence_between(starts, starts + Duration::hours(1), false, title)
+    }
+
+    #[test]
+    fn a_timed_event_today_shows_its_paris_time() {
+        // 08:15 UTC is 10:15 in Paris in September.
+        let occ = timed_at(Utc.with_ymd_and_hms(2026, 9, 3, 8, 15, 0).unwrap(), "École");
+        assert_eq!(when_label(&occ, fixture_day()), "10:15");
+    }
+
+    #[test]
+    fn an_all_day_event_today_says_journee() {
+        assert_eq!(
+            when_label(&all_day_occurrence("Anniversaire"), fixture_day()),
+            "Journée"
+        );
+    }
+
+    #[test]
+    fn a_later_event_shows_its_paris_date() {
+        let occ = timed_at(Utc.with_ymd_and_hms(2026, 9, 8, 16, 0, 0).unwrap(), "Judo");
+        assert_eq!(when_label(&occ, fixture_day()), "08/09");
+    }
+
+    /// Started on an earlier day and not over: it belongs to today, but its
+    /// start time would say something false about today.
+    #[test]
+    fn an_event_begun_on_an_earlier_day_is_en_cours() {
+        let occ = occurrence_between(
+            Utc.with_ymd_and_hms(2026, 9, 1, 8, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 9, 4, 8, 0, 0).unwrap(),
+            false,
+            "Séjour",
+        );
+        assert_eq!(when_label(&occ, fixture_day()), "En cours");
+    }
+
+    #[test]
+    fn today_takes_what_starts_today_or_before_and_later_the_rest() {
+        let early = timed_at(
+            Utc.with_ymd_and_hms(2026, 9, 3, 8, 0, 0).unwrap(),
+            "Ce matin",
+        );
+        // 22:30 UTC on the 3rd is 00:30 on the 4th in Paris: tomorrow.
+        let tomorrow = timed_at(
+            Utc.with_ymd_and_hms(2026, 9, 3, 22, 30, 0).unwrap(),
+            "Demain",
+        );
+        let birthday = all_day_occurrence("Anniversaire");
+        let picked = vec![&birthday, &early, &tomorrow];
+        let (today, later) = split_today(picked, fixture_day());
+        let titles = |v: &[&OccurrenceResponse]| -> Vec<String> {
+            v.iter().map(|o| o.event.title.clone()).collect()
+        };
+        assert_eq!(titles(&today), ["Anniversaire", "Ce matin"]);
+        assert_eq!(titles(&later), ["Demain"]);
+    }
+
+    #[test]
+    fn the_agenda_card_is_titled_today() {
+        let html = agenda_block(Some(&[]), late_afternoon(), fixture_day(), &[]);
+        assert!(html.contains("<h2>Aujourd'hui</h2>"), "{html}");
+        assert!(html.contains(r#"href="/agenda""#), "{html}");
+    }
+
+    #[test]
+    fn a_row_puts_its_time_in_a_pill_and_names_who_it_is_for() {
+        let camille = Uuid::from_u128(7);
+        let mut occ = occurrence_assigned_to(camille, &[camille]);
+        occ.event.title = "Piscine".to_string();
+        let html = agenda_row(&occ, fixture_day(), &[member(camille, "Camille")]);
+        assert!(
+            html.contains(r#"<span class="when">20:00</span>"#),
+            "{html}"
+        );
+        assert!(html.contains("<strong>Piscine</strong>"), "{html}");
+        assert!(
+            html.contains(r#"<span class="muted">Camille</span>"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"class="avatar""#), "{html}");
+    }
+
+    /// A later row's pill holds its date, so its time moves to the line
+    /// under the title, beside who it is for.
+    #[test]
+    fn a_later_row_says_its_time_under_the_title() {
+        let camille = Uuid::from_u128(7);
+        let mut occ = occurrence_assigned_to(camille, &[camille]);
+        let starts = Utc.with_ymd_and_hms(2026, 9, 8, 16, 0, 0).unwrap();
+        occ.occurrence_starts_at = starts;
+        occ.occurrence_ends_at = starts + Duration::hours(1);
+        let html = agenda_row(&occ, fixture_day(), &[member(camille, "Camille")]);
+        assert!(
+            html.contains(r#"<span class="when">08/09</span>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<span class="muted">18:00 · Camille</span>"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn events_after_today_are_listed_under_ensuite() {
+        let now = late_afternoon();
+        let tonight = timed_at(Utc.with_ymd_and_hms(2026, 9, 3, 18, 0, 0).unwrap(), "Dîner");
+        let later = timed_at(now + Duration::days(5), "Contrôle technique");
+        let html = agenda_block(Some(&[later, tonight]), now, fixture_day(), &[]);
+        let (head, tail) = html.split_once("<h3>Ensuite</h3>").expect(&html);
+        assert!(head.contains("Dîner"), "{html}");
+        assert!(tail.contains("Contrôle technique"), "{html}");
+        assert!(!html.contains("Rien"), "{html}");
+    }
+
+    /// Nothing left today, something on Tuesday: the card says so, and
+    /// still shows Tuesday — the concern of #455.
+    #[test]
+    fn an_empty_today_says_so_and_still_shows_what_comes_next() {
+        let now = late_afternoon();
+        let later = timed_at(now + Duration::days(5), "Contrôle technique");
+        let html = agenda_block(Some(&[later]), now, fixture_day(), &[]);
+        assert!(
+            html.contains(r#"<p class="muted">Rien aujourd'hui.</p>"#),
+            "{html}"
+        );
+        assert!(html.contains("<h3>Ensuite</h3>"), "{html}");
+        assert!(html.contains("Contrôle technique"), "{html}");
+        assert!(!html.contains("Rien de prévu"), "{html}");
+    }
+
+    #[test]
+    fn a_today_with_nothing_after_it_has_no_ensuite_heading() {
+        let tonight = timed_at(Utc.with_ymd_and_hms(2026, 9, 3, 18, 0, 0).unwrap(), "Dîner");
+        let html = agenda_block(Some(&[tonight]), late_afternoon(), fixture_day(), &[]);
+        assert!(!html.contains("Ensuite"), "{html}");
+        assert!(!html.contains("Rien"), "{html}");
+    }
+
+    // -- the week (PC) -----------------------------------------------------
+
+    #[test]
+    fn the_week_is_today_and_the_six_days_after_it() {
+        let days = week_days(ymd(2026, 10, 28));
+        assert_eq!(days.len(), 7);
+        assert_eq!(days[0], ymd(2026, 10, 28));
+        assert_eq!(days[6], ymd(2026, 11, 3));
+    }
+
+    #[test]
+    fn the_week_is_drawn_on_a_pc_only_with_today_marked_in_words() {
+        let tonight = timed_at(Utc.with_ymd_and_hms(2026, 9, 3, 18, 0, 0).unwrap(), "Dîner");
+        let html = week_block(Some(&[tonight]), fixture_day());
+        assert!(html.contains(r#"<section class="card pc">"#), "{html}");
+        assert_eq!(html.matches("<li").count(), 7, "{html}");
+        assert!(
+            html.contains(r#"<li class="current"><p class="eyebrow">Jeu 3 · aujourd'hui</p>"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"<p class="eyebrow">Mer 9</p>"#), "{html}");
+        assert!(html.contains(r#"class="chip""#), "{html}");
+        assert!(html.contains("Dîner"), "{html}");
+    }
+
+    /// Each occurrence lands on its own Paris day: 22:30 UTC on the 3rd is
+    /// the 4th in Paris.
+    #[test]
+    fn an_occurrence_lands_on_its_paris_day() {
+        let late = timed_at(
+            Utc.with_ymd_and_hms(2026, 9, 3, 22, 30, 0).unwrap(),
+            "Minuit et demi",
+        );
+        let html = week_block(Some(&[late]), fixture_day());
+        let (_, friday) = html.split_once("Ven 4").expect(&html);
+        let friday = friday.split("</li>").next().unwrap();
+        assert!(friday.contains("Minuit et demi"), "{html}");
+    }
+
+    /// A day holds three rows, the third counting the rest, as the agenda's
+    /// month grid does.
+    #[test]
+    fn a_crowded_day_counts_what_it_does_not_list() {
+        let occs: Vec<OccurrenceResponse> = (10..15).map(|h| occurrence(h, "Réunion")).collect();
+        let html = week_block(Some(&occs), fixture_day());
+        assert_eq!(html.matches("Réunion").count(), 2, "{html}");
+        assert!(html.contains("+3 autres"), "{html}");
+    }
+
+    #[test]
+    fn an_empty_week_says_so_instead_of_seven_empty_columns() {
+        let html = week_block(Some(&[]), fixture_day());
+        assert!(
+            html.contains("Rien de prévu ces sept prochains jours."),
+            "{html}"
+        );
+        assert!(!html.contains("<li"), "{html}");
+    }
+
+    /// The agenda card already says the read failed; the week says nothing.
+    #[test]
+    fn an_unreadable_agenda_draws_no_week() {
+        assert_eq!(week_block(None, fixture_day()), "");
+    }
+
+    // -- the tiles ---------------------------------------------------------
+
+    #[test]
+    fn the_grocery_tile_counts_what_is_left_and_gauges_what_is_ticked() {
+        let html = grocery_tile(3, 5);
+        assert!(
+            html.contains(r#"<a class="card tile" href="/grocery-list">"#),
+            "{html}"
+        );
+        assert!(html.contains("<strong>3</strong>"), "{html}");
+        assert!(html.contains("articles à acheter"), "{html}");
+        assert!(
+            html.contains(r#"<progress max="5" value="2" aria-hidden="true"></progress>"#),
+            "{html}"
+        );
+        // The gauge is drawn for the eye; the words say it for everyone.
+        assert!(html.contains("2 sur 5 cochés"), "{html}");
+    }
+
+    #[test]
+    fn one_article_left_is_singular() {
+        let html = grocery_tile(1, 1);
+        assert!(html.contains("article à acheter"), "{html}");
+        assert!(!html.contains("articles"), "{html}");
+    }
+
+    #[test]
+    fn an_empty_list_has_no_gauge() {
+        let html = grocery_tile(0, 0);
+        assert!(html.contains("<strong>0</strong>"), "{html}");
+        assert!(html.contains("article à acheter"), "{html}");
+        assert!(!html.contains("<progress"), "{html}");
+        assert!(!html.contains("sur 0"), "{html}");
+    }
+
+    fn stock(name: &str, low: bool, expires_on: Option<NaiveDate>) -> StockItemResponse {
+        StockItemResponse {
+            id: Uuid::nil(),
+            group_id: Uuid::nil(),
+            created_by: Uuid::nil(),
+            name: name.to_string(),
+            category: None,
+            quantity: 1.0,
+            unit: "u".to_string(),
+            reorder_threshold: None,
+            low_stock: low,
+            expires_on,
+            expiry_status: manage_our_home_shared::validation::stocks::ExpiryStatus::Unknown,
+            barcode: None,
+        }
+    }
+
+    #[test]
+    fn what_expires_this_week_is_today_to_six_days_out_soonest_first() {
+        let today = fixture_day();
+        let items = vec![
+            stock("J+6", false, Some(today + Duration::days(6))),
+            stock("Périmé", false, Some(today - Duration::days(1))),
+            stock("Aujourd'hui", false, Some(today)),
+            stock("J+7", false, Some(today + Duration::days(7))),
+            stock("Sans date", false, None),
+        ];
+        let names: Vec<&str> = expiring_this_week(&items, today)
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect();
+        assert_eq!(names, ["Aujourd'hui", "J+6"]);
+    }
+
+    #[test]
+    fn the_expiry_tile_counts_and_leads_to_the_stock_by_date() {
+        let today = fixture_day();
+        let items = vec![
+            stock("Crème", false, Some(today)),
+            stock("Jambon", false, Some(today)),
+        ];
+        let html = expiry_tile(&expiring_this_week(&items, today));
+        assert!(
+            html.contains(r#"<a class="card tile warn" href="/stocks?sort=expires_on">"#),
+            "{html}"
+        );
+        assert!(html.contains("<strong>2</strong>"), "{html}");
+        assert!(html.contains("produits périment cette semaine"), "{html}");
+    }
+
+    #[test]
+    fn one_product_expiring_is_singular() {
+        let today = fixture_day();
+        let items = vec![stock("Crème", false, Some(today))];
+        let html = expiry_tile(&expiring_this_week(&items, today));
+        assert!(html.contains("produit périme cette semaine"), "{html}");
+    }
+
+    #[test]
+    fn nothing_expiring_says_so() {
+        let html = expiry_tile(&[]);
+        assert!(html.contains("<strong>0</strong>"), "{html}");
+        assert!(html.contains("rien ne périme cette semaine"), "{html}");
+    }
+
+    // -- the other cards ---------------------------------------------------
+
+    #[test]
+    fn only_low_items_reach_the_low_stock_card_in_their_order() {
+        let items = vec![
+            stock("Farine", true, None),
+            stock("Lait", false, None),
+            stock("Sucre", true, None),
+        ];
+        let names: Vec<&str> = low_stock_items(&items)
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect();
+        assert_eq!(names, ["Farine", "Sucre"]);
+    }
+
+    #[test]
+    fn an_empty_low_stock_card_says_so() {
+        let html = stocks_block(&[]);
+        assert!(html.contains("<h2>Stock bas</h2>"), "{html}");
+        assert!(html.contains("Aucun article en stock bas."), "{html}");
+        assert!(html.contains(r#"href="/stocks?low_stock=1""#), "{html}");
+    }
+
+    #[test]
+    fn the_budget_card_is_titled_by_its_month_with_the_elision() {
+        assert_eq!(budget_title(10), "Budget d'octobre");
+        assert_eq!(budget_title(4), "Budget d'avril");
+        assert_eq!(budget_title(8), "Budget d'août");
+        assert_eq!(budget_title(3), "Budget de mars");
+    }
+
+    #[test]
+    fn the_budget_card_shows_the_month_s_spend() {
+        let html = budget_block(Some(42.5), ymd(2026, 10, 28));
+        assert!(html.contains("<h2>Budget d'octobre</h2>"), "{html}");
+        assert!(html.contains("42,50"), "{html}");
+        assert!(html.contains(r#"href="/budget""#), "{html}");
+    }
+
+    #[test]
+    fn an_empty_budget_card_says_nothing_was_spent() {
+        let html = budget_block(None, ymd(2026, 10, 28));
+        assert!(
+            html.contains("Aucune dépense enregistrée ce mois-ci."),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn an_empty_messages_card_says_everything_is_read() {
+        let html = messages_block(&[], None, &[]);
+        assert!(html.contains("<h2>Messages non lus</h2>"), "{html}");
+        assert!(html.contains("Tout est lu."), "{html}");
+        assert!(html.contains(r#"href="/messagerie""#), "{html}");
+    }
+
+    /// Each card's way out is a link in its head, 44 px tall (`.more`).
+    #[test]
+    fn a_card_head_holds_its_title_and_its_link() {
+        assert_eq!(
+            card_head("Stock bas", "/stocks?low_stock=1", "Voir le stock"),
+            r#"<div class="split"><h2>Stock bas</h2><a class="more" href="/stocks?low_stock=1">Voir le stock</a></div>"#
+        );
     }
 }
