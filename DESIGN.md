@@ -559,9 +559,11 @@ Livré par #522 : un jeu d'icônes en SVG inline, `apps/web/src/icons.rs`.
   balisage à chaque page vue. Le `<svg>` ne porte que sa classe, son
   `viewBox` et `aria-hidden="true"` ; jamais d'attribut `style`.
 - **Taille : `1.25em`,** ce que tient la ligne de Source Sans 3 à son
-  interlignage `normal` : un bouton qui ne tient qu'une icône a la hauteur
-  d'un bouton qui tient un mot (48 px l'un et l'autre dans Chromium, mesuré
-  le 2026-10-28).
+  interlignage `normal` : un lien `.btn` qui ne tient qu'une icône a la
+  hauteur d'un lien `.btn` qui tient un mot (48 px l'un et l'autre dans
+  Chromium, mesuré par #522 le 2026-10-28 sur les flèches de l'agenda et
+  « Aujourd'hui »). Un `<button>` qui ne tiendrait qu'une icône n'a pas été
+  mesuré : il n'en existe aucun.
 - **Une icône n'est jamais le nom accessible de ce qui la porte.** À côté
   d'un libellé visible, elle le répéterait ; seule dans une commande, le nom
   va sur la commande. `icon_link(class, href, label, icon)` est la façon
