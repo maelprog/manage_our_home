@@ -326,7 +326,7 @@ fn agenda_row(occ: &OccurrenceResponse, today: NaiveDate, members: &[GroupMember
 }
 
 /// A card's head: its title, and the link that leads to the whole of it —
-/// `.more`, 44 px tall like any target (DESIGN.md → Espacement).
+/// `.more`, 48px (--s12), over the 44px of any target (DESIGN.md → Espacement).
 fn card_head(title: &str, href: &str, label: &str) -> String {
     format!(
         r#"<div class="split"><h2>{title}</h2><a class="more" href="{href}">{label}</a></div>"#,
