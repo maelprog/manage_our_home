@@ -357,6 +357,13 @@ summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); padding
    put `--muted` at 4.38:1 in dark when this was written; #74 has since
    darkened it for today's cell, which shows the same pair. */
 .list-row.mine { background: var(--surface); border-left: var(--s1) solid var(--accent); padding-left: var(--s2x); }
+/* A row that is itself the control (#529): a link the width of its card
+   (a setting of the profile), or the label of a radio (a family to make
+   active). The whole row is the target, --s12 tall; it reads as a line of
+   the list, in the body's colour and size, not as a link or a field label.
+   The radio takes the accent, as the rest of the app's controls do. */
+a.list-row, .family { min-height: var(--s12); padding-inline: var(--s2x); color: inherit; text-decoration: none; font-size: var(--t-base); }
+.family { flex-direction: row; justify-content: flex-start; cursor: pointer; accent-color: var(--accent); }
 /* A group of controls: buttons side by side, a filter form, a table's
    actions cell. */
 .actions {
@@ -449,6 +456,13 @@ summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); padding
   background: var(--surface);
   overflow: clip;
 }
+/* The profile's head (#529): the caller's icon, name and e-mail. The icon
+   is the `.avatar` above drawn at --s16; a photo fills it as it fills the
+   small one, the sheet's size overriding the `<img>`'s own. */
+.profile-head { display: flex; align-items: center; gap: var(--s4); margin-bottom: var(--s4); }
+.profile-head h1, .profile-head p { margin: 0; }
+.profile-head .avatar { flex: none; width: var(--s16); height: var(--s16); border-radius: var(--r-lg); font-size: var(--t-2xl); }
+.profile-head img { width: 100%; height: 100%; }
 /* A member's name, with or without their avatar, as a link to their
    profile (#466). --s12 both ways: the 44px DESIGN.md → Espacement asks of
    a target, which a name in a row or an author line is. The colour is the
