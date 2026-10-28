@@ -232,30 +232,34 @@ pub(crate) fn unread_badge(unread: u64) -> String {
 /// The main navigation, in order (#523): `href`, the label on a PC, the
 /// label on a phone, the icon.
 ///
-/// A phone label of `None` keeps the destination off the phone's bottom bar:
+/// A label of `None` keeps the destination off that layout. On a phone,
 /// Recettes is reached through Cuisine's segment (`kitchen_segment`), Budget
-/// through its card on the home page. Budget is shown to every member on a
-/// PC until #531 adds its role condition (arbitrage of 2026-10-28); the
+/// through its card on the home page. Cuisine is a link of its own rather
+/// than a second label of Stocks: it stands for the stocks and the recipes
+/// both, so it is the current tab on either (`app_header`), where the PC
+/// lights Stocks or Recettes. Budget is shown to every member on a PC until
+/// #531 adds its role condition (arbitrage of 2026-10-28); the
 /// Notifications entry waits for #535.
 ///
 /// `/admin/users` is appended for the single technical superadmin only,
 /// on a PC — everyone else never sees the door. The profile closes the list,
 /// outside the table: its content is the caller's, not a literal.
-const NAV: [(&str, &str, Option<&str>, Glyph); 7] = [
-    ("/", "Accueil", Some("Accueil"), Glyph::Home),
-    ("/agenda", "Agenda", Some("Agenda"), Glyph::Calendar),
+const NAV: [(&str, Option<&str>, Option<&str>, Glyph); 8] = [
+    ("/", Some("Accueil"), Some("Accueil"), Glyph::Home),
+    ("/agenda", Some("Agenda"), Some("Agenda"), Glyph::Calendar),
     (
         "/grocery-list",
-        "Courses",
+        Some("Courses"),
         Some("Courses"),
         Glyph::Groceries,
     ),
-    ("/stocks", "Stocks", Some("Cuisine"), Glyph::Stocks),
-    ("/recipes", "Recettes", None, Glyph::Recipes),
-    ("/budget", "Budget", None, Glyph::Budget),
+    ("/stocks", None, Some("Cuisine"), Glyph::Stocks),
+    ("/stocks", Some("Stocks"), None, Glyph::Stocks),
+    ("/recipes", Some("Recettes"), None, Glyph::Recipes),
+    ("/budget", Some("Budget"), None, Glyph::Budget),
     (
         "/messagerie",
-        "Messagerie",
+        Some("Messagerie"),
         Some("Messages"),
         Glyph::Messages,
     ),
@@ -264,13 +268,16 @@ const NAV: [(&str, &str, Option<&str>, Glyph); 7] = [
 /// The application's navigation, rendered once and laid out twice (#70,
 /// #523): a persistent sidebar from 861 px up, a bottom tab bar of six
 /// below. One markup for both, so `aria-current="page"` lands on exactly
-/// one element whatever the viewport — two navs would light two tabs.
+/// one drawn element whatever the viewport — two navs would light two tabs.
 ///
 /// What differs between the two is said by two classes the stylesheet
-/// hides on the other layout: `pc` (the brand, Recettes, Budget, Admin, the
-/// caller's name and family) and `phone` (a tab's short label). A link that
-/// keeps the same label on both carries neither. A hidden span leaves the
-/// accessible name too, so a link is read by the label it shows.
+/// hides on the other layout: `pc` (the brand, Stocks, Recettes, Budget,
+/// Admin, the caller's name and family) and `phone` (the Cuisine tab, a
+/// tab's short label). A link that keeps the same label on both carries
+/// neither. What is hidden leaves the accessibility tree too, so a link is
+/// read by the label it shows, and on the stocks and the recipes each
+/// layout has its own current link: Cuisine on a phone, Stocks or Recettes
+/// on a PC.
 ///
 /// The last link is the profile (`/account`, #529): the caller's initial
 /// and "Profil" on a phone; the initial, the name and the active family on
@@ -298,23 +305,29 @@ pub fn app_header(
         .copied()
         .chain(
             me.is_superadmin
-                .then_some(("/admin/users", "Admin", None, Glyph::Settings)),
+                .then_some(("/admin/users", Some("Admin"), None, Glyph::Settings)),
         )
-        .map(|(href, label, short, glyph)| {
-            let (class, label) = match short {
-                None => ("pc", label.to_string()),
-                Some(short) if short == label => ("", label.to_string()),
-                Some(short) => (
+        .map(|(href, pc, phone, glyph)| {
+            let (class, label) = match (pc, phone) {
+                (Some(pc), None) => ("pc", pc.to_string()),
+                (None, Some(phone)) => ("phone", phone.to_string()),
+                (Some(pc), Some(phone)) if pc == phone => ("", pc.to_string()),
+                (Some(pc), Some(phone)) => (
                     "",
-                    format!(r#"<span class="pc">{label}</span><span class="phone">{short}</span>"#),
+                    format!(r#"<span class="pc">{pc}</span><span class="phone">{phone}</span>"#),
                 ),
+                (None, None) => unreachable!("a navigation entry drawn on no layout"),
             };
             let badge = if href == "/messagerie" {
                 unread_badge(unread_messages)
             } else {
                 String::new()
             };
-            let current = nav_link_is_current(href, redirect_to);
+            // The phone's Cuisine tab stands for the recipes as well.
+            let current = nav_link_is_current(href, redirect_to)
+                || (pc.is_none()
+                    && href == "/stocks"
+                    && nav_link_is_current("/recipes", redirect_to));
             navlink(
                 href,
                 class,
@@ -1445,6 +1458,24 @@ mod tests {
     /// inside a link, which is how one link carries two labels. The
     /// `aria-hidden` pastille is left out, its words are not.
     fn destinations(header: &str, layout: Layout) -> Vec<(String, String)> {
+        drawn_links(header, layout)
+            .into_iter()
+            .map(|(href, name, _)| (href, name))
+            .collect()
+    }
+
+    /// The links one layout of `header` draws and marks `aria-current`:
+    /// what an assistive technology announces as the current page there.
+    fn current_links(header: &str, layout: Layout) -> Vec<(String, String)> {
+        drawn_links(header, layout)
+            .into_iter()
+            .filter(|(_, _, current)| *current)
+            .map(|(href, name, _)| (href, name))
+            .collect()
+    }
+
+    /// `destinations`, each link with whether it carries `aria-current`.
+    fn drawn_links(header: &str, layout: Layout) -> Vec<(String, String, bool)> {
         let hidden = match layout {
             Layout::Phone => "pc",
             Layout::Pc => "phone",
@@ -1473,7 +1504,8 @@ mod tests {
                 let inner = &inner[..inner.find("</a>").expect("a closed link")];
                 let shown = without_spans(inner, &format!(r#"<span class="{hidden}">"#));
                 let shown = without_hidden_spans(&shown);
-                Some((href, text_of(&shown)))
+                let current = tag.contains(r#"aria-current="page""#);
+                Some((href, text_of(&shown), current))
             })
             .collect()
     }
@@ -1584,32 +1616,71 @@ mod tests {
     }
 
     #[test]
-    fn exactly_one_link_is_current_on_every_page_of_the_navigation() {
-        for (path, href) in [
-            ("/", "/"),
-            ("/agenda/new", "/agenda"),
-            ("/grocery-list", "/grocery-list"),
-            ("/stocks/new", "/stocks"),
-            ("/recipes", "/recipes"),
-            ("/budget", "/budget"),
-            ("/messagerie", "/messagerie"),
-            ("/admin/groups", "/admin/users"),
-            ("/account", "/account"),
-            ("/account/export", "/account"),
+    fn exactly_one_drawn_link_is_current_on_every_page_of_the_navigation() {
+        // Counted per layout: a link one layout does not draw is out of its
+        // accessibility tree too (`display: none`). `None`: the page has no
+        // entry in that layout, and nothing is lit rather than a guess.
+        for (path, phone, pc) in [
+            ("/", Some(("/", "Accueil")), Some(("/", "Accueil"))),
+            (
+                "/agenda/new",
+                Some(("/agenda", "Agenda")),
+                Some(("/agenda", "Agenda")),
+            ),
+            (
+                "/grocery-list",
+                Some(("/grocery-list", "Courses")),
+                Some(("/grocery-list", "Courses")),
+            ),
+            (
+                "/stocks/new",
+                Some(("/stocks", "Cuisine")),
+                Some(("/stocks", "Stocks")),
+            ),
+            // The recipes have no tab on a phone: Cuisine, which leads to
+            // their segment, is the current one there.
+            (
+                "/recipes",
+                Some(("/stocks", "Cuisine")),
+                Some(("/recipes", "Recettes")),
+            ),
+            ("/budget", None, Some(("/budget", "Budget"))),
+            (
+                "/messagerie",
+                Some(("/messagerie", "Messages")),
+                Some(("/messagerie", "Messagerie")),
+            ),
+            ("/admin/groups", None, Some(("/admin/users", "Admin"))),
+            (
+                "/account",
+                Some(("/account", "Profil")),
+                Some(("/account", "Profil : Alice F")),
+            ),
+            (
+                "/account/export",
+                Some(("/account", "Profil")),
+                Some(("/account", "Profil : Alice F")),
+            ),
             // The families are under Profil, so their pages light it.
-            ("/groups", "/account"),
-            ("/groups/new", "/account"),
+            (
+                "/groups",
+                Some(("/account", "Profil")),
+                Some(("/account", "Profil : Alice F")),
+            ),
+            (
+                "/groups/new",
+                Some(("/account", "Profil")),
+                Some(("/account", "Profil : Alice F")),
+            ),
         ] {
             let header = app_header(&me(true), Some(&family("F")), path, 0);
-            assert_eq!(
-                header.matches(r#"aria-current="page""#).count(),
-                1,
-                "on {path}: {header}"
-            );
-            assert!(
-                header.contains(&format!(r#"href="{href}" aria-current="page""#)),
-                "on {path}, {href} is not the current link: {header}"
-            );
+            for (layout, expected) in [(Layout::Phone, phone), (Layout::Pc, pc)] {
+                assert_eq!(
+                    current_links(&header, layout),
+                    hrefs_and_names(expected.as_slice()),
+                    "on {path}: {header}"
+                );
+            }
         }
         let header = app_header(&me(true), Some(&family("F")), "/privacy-policy", 0);
         assert!(!header.contains("aria-current"), "{header}");
@@ -1625,9 +1696,10 @@ mod tests {
         );
         assert!(header.contains(r#"<a class="navlink" href="/agenda" aria-current="page">"#));
         // Every nav link wears the component class, current or not — that is
-        // what takes the navigation out of `.muted`: seven destinations, the
-        // Admin one a superadmin gets, and the profile.
-        assert_eq!(header.matches(r#"class="navlink"#).count(), 9);
+        // what takes the navigation out of `.muted`: seven destinations and
+        // the phone's Cuisine tab, the Admin one a superadmin gets, and the
+        // profile.
+        assert_eq!(header.matches(r#"class="navlink"#).count(), 10);
     }
 
     // -- unread badge on the Messagerie tab (#463) -------------------------

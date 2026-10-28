@@ -86,7 +86,10 @@ for (const [layout, viewport, destinations] of [
         const link = nav(page).getByRole("link", { name, exact: true });
         await link.click();
         await expect(page, `${name}`).toHaveURL(href);
-        const current = page.locator('header [aria-current="page"]');
+        // Counted among the drawn links: on the stocks and the recipes, the
+        // phone's Cuisine tab and the PC's Stocks or Recettes link are both
+        // current, and each layout hides the other's.
+        const current = page.locator('header [aria-current="page"]').filter({ visible: true });
         await expect(current, `${name}`).toHaveCount(1);
         await expect(current, `${name}`).toHaveAttribute("href", href);
       }
@@ -128,9 +131,11 @@ test.describe("navigation — phone only", () => {
       "aria-current",
       "page",
     );
-    // Recettes has no tab of its own here: the Cuisine tab wears the
-    // current tab's ground and weight on the recipes too.
+    // Recettes has no tab of its own here: the Cuisine tab is the current
+    // one on the recipes too, and wears the current tab's ground and weight.
     const cuisine = nav(page).getByRole("link", { name: "Cuisine" });
+    await expect(cuisine).toHaveAttribute("aria-current", "page");
+    await expect(page.locator('header [aria-current="page"]').filter({ visible: true })).toHaveCount(1);
     const lit = await cuisine.evaluate((node) => {
       const style = getComputedStyle(node);
       return { weight: style.fontWeight, background: style.backgroundColor };

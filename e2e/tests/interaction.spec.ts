@@ -144,8 +144,9 @@ test.describe("Interaction states (#69)", () => {
   test("the navigation says which page you are on, and only one", async ({ page }) => {
     // Scoped to the header: the kitchen segment at the head of the stocks
     // and the recipes (#523) is a navigation of its own, which names the
-    // same page.
-    const current = page.locator('header [aria-current="page"]');
+    // same page. Drawn links only: on those two pages the phone's Cuisine
+    // tab, which a PC does not draw, is current too.
+    const current = page.locator('header [aria-current="page"]').filter({ visible: true });
     for (const [path, href] of NAV) {
       await page.goto(path);
       await expect(current, `on ${path}`).toHaveCount(1);
@@ -169,7 +170,7 @@ test.describe("Interaction states (#69)", () => {
   test("the current tab is told apart by its ground and its weight", async ({ page }) => {
     await page.goto("/agenda");
     const current = page.locator('.navlink[aria-current="page"]');
-    const other = page.locator('.navlink[href="/stocks"]');
+    const other = page.locator('.navlink[href="/grocery-list"]');
     const read = (locator: typeof current) =>
       locator.evaluate((node) => {
         const style = getComputedStyle(node);
@@ -278,7 +279,7 @@ test.describe("Interaction states (#69)", () => {
     const background = (selector: string) =>
       page.locator(selector).first().evaluate((node) => getComputedStyle(node).backgroundColor);
 
-    for (const selector of ['.navlink[href="/stocks"]', ".list-row", "form .btn, form button"]) {
+    for (const selector of ['.navlink[href="/grocery-list"]', ".list-row", "form .btn, form button"]) {
       const before = await background(selector);
       await page.locator(selector).first().hover();
       await expect

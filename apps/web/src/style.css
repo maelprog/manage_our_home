@@ -240,8 +240,10 @@ h3 { font-size: var(--t-lg); margin: var(--s4) 0 var(--s1); }
   .profile { margin-top: auto; }
   .profile .pc { display: grid; }
   /* The PC side of the one markup (`app::app_header`): what only a phone
-     shows, and the kitchen segment the sidebar makes redundant. */
-  .phone, .segment { display: none; }
+     shows, and the kitchen segment the sidebar makes redundant. The Cuisine
+     tab is a `.navlink`, declared further down: `.navlink.phone` outranks
+     it. */
+  .phone, .navlink.phone, .segment { display: none; }
   .cal tbody tr { height: 6.5rem; }
   /* The messagerie's send box, kept in reach at the foot of a long thread
      instead of sitting past the end of it (audit §5). `.content >` is the
@@ -709,9 +711,6 @@ caption, .skip-link:not(:focus) { clip-path: inset(50%); }
   /* The phone side of the one markup (`app::app_header`, #523): what only
      a PC shows. Here, after `.navlink`, which it has to override. */
   .pc { display: none; }
-  /* Recettes has no tab on a phone: Cuisine stays lit on the recipes,
-     which `aria-current` puts on the hidden Recettes link. */
-  .tabs:has([href="/recipes"][aria-current]) [href="/stocks"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 }
 /* Page transitions without JavaScript (#523): a cross-fade from one page to
    the next, for whoever has not asked for less motion. Asked for in the

@@ -199,7 +199,9 @@
   // bar, instantly; nothing happens when the bar does not overflow.
   function revealCurrentTab() {
     var bar = document.querySelector(".tabs");
-    var tab = bar && bar.querySelector('[aria-current="page"]');
+    // `:not(.pc)`: on the stocks and the recipes, a PC link is current too,
+    // and the phone does not draw it (#523).
+    var tab = bar && bar.querySelector('[aria-current="page"]:not(.pc)');
     if (!tab || bar.scrollWidth <= bar.clientWidth) return;
     var barBox = bar.getBoundingClientRect();
     var tabBox = tab.getBoundingClientRect();
