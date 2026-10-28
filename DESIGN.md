@@ -123,7 +123,13 @@ le texte des documents légaux.
 Graisses : 600 pour les titres et, depuis #521, pour les boutons et les
 badges ; 600 aussi pour les en-têtes de tableau, le jour d'une case de
 l'agenda, l'initiale d'un avatar, le lien de navigation de la page
-courante et, depuis #523, celui du segment de la cuisine. Le reste du texte garde la graisse par défaut.
+courante et, depuis #523, celui du segment de la cuisine. Le reste du
+texte garde la graisse par défaut, 400, à une exception que la feuille ne
+pose pas : `<strong>` et `<b>`, qu'aucune règle ne restyle, sont rendus
+par le navigateur en `bolder`, soit 700 sur un corps à 400 (Chromium,
+mesuré le 2026-10-28). Les sources Rust d'`apps/web/src` en écrivent 61
+et 24, tests compris (comptés le même jour). `<dt>` n'en est pas : 400
+dans Chromium, et la feuille le met en `--muted` et `--t-xs`.
 `letter-spacing: -0.01em` sur les titres, `0.04em` sur les micro-libellés
 capitalisés.
 
