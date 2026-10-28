@@ -144,7 +144,7 @@ fn document(title: &str, body: &str) -> String {
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>{title} — Manage our home</title>
+<title>{title} — MHome</title>
 <link rel="stylesheet" href="{css}"/>
 {enhance}
 </head>
@@ -1464,10 +1464,12 @@ mod tests {
             .collect()
     }
 
-    /// The tokens a block declares to a *literal* colour — `#hex`, `rgb(…)`,
-    /// `hsl(…)`. Those are the ones each theme has to restate. A token
-    /// holding a length, a font size, or a reference to another token
-    /// resolves the same way whatever the theme, so it needs no dark entry.
+    /// The tokens a block declares with a *literal* colour — `#hex`,
+    /// `rgb(…)`, `hsl(…)` — anywhere in the value, not only at its start: a
+    /// shadow (`--shadow`, #521) holds its colour after the offsets. Those
+    /// are the ones each theme has to restate. A token holding a length, a
+    /// font size, or a reference to another token resolves the same way
+    /// whatever the theme, so it needs no dark entry.
     fn literal_colour_tokens(block: &str) -> BTreeSet<String> {
         block
             .split(';')
@@ -1475,9 +1477,7 @@ mod tests {
             .map(|(name, value)| (name.trim(), value.trim()))
             .filter(|(name, value)| {
                 name.starts_with("--")
-                    && (value.starts_with('#')
-                        || value.starts_with("rgb")
-                        || value.starts_with("hsl"))
+                    && (value.contains('#') || value.contains("rgb") || value.contains("hsl"))
             })
             .map(|(name, _)| name.to_string())
             .collect()
@@ -1654,6 +1654,40 @@ mod tests {
             "colour tokens never restated under `prefers-color-scheme: dark`, \
              so they keep their light value in the dark theme: {missing:?}"
         );
+    }
+
+    #[test]
+    fn a_token_that_holds_a_colour_anywhere_in_its_value_is_a_colour_token() {
+        // A shadow is a colour too (#521): `--shadow` holds `rgba(…)` after
+        // its offsets, and a light-only shadow is the #65 fault again — the
+        // light value carried into the dark theme, where it does not show.
+        let block = "--shadow: 0 1px 2px rgba(28, 26, 23, 0.06); --ring: 0 0 0 1px #2e2c28; \
+                     --s1: 4px; --fg: #1c1a17; --dur: 150ms; --alias: var(--fg)";
+        let found = literal_colour_tokens(block);
+        for token in ["--shadow", "--ring", "--fg"] {
+            assert!(found.contains(token), "{token} holds a colour: {found:?}");
+        }
+        for token in ["--s1", "--dur", "--alias"] {
+            assert!(!found.contains(token), "{token} holds no colour: {found:?}");
+        }
+    }
+
+    #[test]
+    fn a_card_lifts_on_the_two_theme_shadow_token_over_the_surface() {
+        // DESIGN.md → Layout → Élévation (#521): the card is the one lifted
+        // surface. Its ground is `--surface`, never a literal white that
+        // survives the theme switch, and its shadow is `--shadow`, which the
+        // dark theme restates as a rim — a dark shadow does not show.
+        let (card, _) = block_after(&css(), "\n.card {", 0);
+        for decl in [
+            format!("background: {}", var_of("--surface")),
+            format!("box-shadow: {}", var_of("--shadow")),
+        ] {
+            assert!(
+                card.contains(&decl),
+                "`.card` should declare `{decl}`: {card}"
+            );
+        }
     }
 
     #[test]
@@ -2614,7 +2648,7 @@ mod tests {
         // the browser's defaults — a white box with black text sitting next
         // to dark `input`s in the same form.
         let (fields, _) = block_after(&css(), "input, select, textarea", 0);
-        assert!(fields.contains("background: var(--bg)"));
+        assert!(fields.contains("background: var(--surface)"));
         assert!(fields.contains("color: var(--fg)"));
         // Browsers do not inherit the page font into a `textarea`.
         assert!(fields.contains("font-family: inherit"));
@@ -2880,6 +2914,22 @@ mod tests {
         let html = shell_with_header(Width::Full, "Titre", "<header>nav</header>", "<h1>x</h1>");
         let app_end = html.find("</div>\n<footer").expect("the .app grid closes");
         assert!(app_end > html.find("</main>").unwrap(), "{html}");
+    }
+
+    #[test]
+    fn every_page_title_names_the_app_mhome() {
+        // The app is called MHome (#521): the tab, the history and the
+        // bookmarks read `{title} — MHome`, on both shells.
+        let pages = [
+            shell_with_header(Width::Full, "Agenda", "<header>nav</header>", "<h1>x</h1>"),
+            shell(Width::Form, "Connexion", "<h1>x</h1>"),
+        ];
+        for (html, title) in pages.iter().zip(["Agenda", "Connexion"]) {
+            assert!(
+                html.contains(&format!("<title>{title} — MHome</title>")),
+                "the page title should end with « — MHome »: {html}"
+            );
+        }
     }
 
     #[test]

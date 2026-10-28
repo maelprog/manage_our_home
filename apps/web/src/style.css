@@ -19,7 +19,13 @@
   --fg: #1c1a17;
   --muted: #6b655c;
   --border: #e3dfd7;
+  /* The finer line (#521): a separator between rows, a progress track.
+     --border stays the edge of a control, which has to be seen. */
+  --line: #efebe4;
   --hover: #f2efe9;
+  /* The one lift in the system, a card's (#521) - two soft layers, the
+     close one for the edge and the wide one for the air under it. */
+  --shadow: 0 1px 2px rgba(28, 26, 23, 0.06), 0 8px 24px rgba(28, 26, 23, 0.06);
   --accent: #14706e;
   --accent-fg: #ffffff;
   --accent-soft: #e1f0ef;
@@ -58,8 +64,9 @@
      raises the floor on a screen held at arm's length. */
   --t-xs: 0.875rem; --t-sm: 0.9375rem; --t-base: 1rem;
   --t-lg: 1.125rem; --t-xl: 1.375rem; --t-2xl: 1.75rem;
-  /* Radii: badges, then controls, then cards. Not one radius everywhere. */
-  --r-sm: 4px; --r-md: 8px; --r-lg: 12px;
+  /* Radii (#521): controls and small pieces, then notices, then cards. At
+     12px a badge, a chip or a 24px avatar rounds into a pill or a circle. */
+  --r-sm: 12px; --r-md: 16px; --r-lg: 20px;
   /* Content widths, picked per page instead of imposing one narrow column on
      the agenda and the admin tables. */
   --w-form: 28rem; --w-read: 65rem; --w-sidebar: 15rem;
@@ -82,7 +89,11 @@
     --fg: #edeae4;
     --muted: #a19a8f;
     --border: #38352f;
+    --line: #322f2a;
     --hover: #2e2c28;
+    /* A shadow does not show on a dark ground, so the card is drawn by a
+       --hover rim first, then the drop under it. */
+    --shadow: 0 0 0 1px var(--hover), 0 8px 24px rgba(0, 0, 0, 0.28);
     /* Lightened until it works as text, which is the constraining use:
        7.03:1 on --bg, 6.29:1 on --surface, 5.16:1 on --accent-soft. Solid
        accent surfaces flip their text with --accent-fg — white on this teal
@@ -145,7 +156,7 @@ body {
   padding-bottom: var(--s16);
 }
 /* Titles only, per DESIGN.md — Fraunces never carries body text. */
-h1, h2, h3 { font-family: "Fraunces", Georgia, serif; line-height: 1.25; }
+h1, h2, h3 { font-family: "Fraunces", Georgia, serif; font-weight: 600; line-height: 1.25; }
 /* One size per level, taken from the scale. Fourteen section subtitles used
    to carry an inline font-size — in two different values for the same level
    (1.05rem in the account sections, 1.1rem in the agenda's) — plus an inline
@@ -235,8 +246,9 @@ input, select, textarea {
      (#74): the line box plus 8px each side came to 40px. */
   padding: var(--s3);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--bg);
+  border-radius: var(--r-sm);
+  /* White in light, as a card is (#521): a field reads as a place to type. */
+  background: var(--surface);
   color: var(--fg);
 }
 button, .btn {
@@ -252,7 +264,8 @@ button, .btn {
      agenda's ◀ / ▶, ~38px wide on their padding alone. */
   padding: var(--s3);
   min-width: var(--s12);
-  border-radius: var(--r-md);
+  border-radius: var(--r-sm);
+  font-weight: 600;
   /* The border is the accent the button sits on, not the neutral --border it
      used to carry (audit §4.4): a teal button ringed in warm grey read as an
      outline that meant nothing, and `.danger` recoloured its own while the
@@ -270,7 +283,7 @@ button, .btn {
   text-decoration: none;
 }
 button.secondary, .btn.secondary {
-  background: transparent;
+  background: var(--surface);
   border-color: var(--border);
   color: var(--fg);
 }
@@ -282,7 +295,7 @@ button.danger, .btn.danger {
 /* A destructive action that is not the page's primary one — the "Supprimer"
    of a detail page, which seven routes wrote as an inline `color`. */
 button.secondary.danger, .btn.secondary.danger {
-  background: transparent;
+  background: var(--surface);
   border-color: var(--border);
   color: var(--error);
 }
@@ -318,7 +331,7 @@ summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); padding
   gap: var(--s3);
 }
 .page-header { margin-bottom: var(--s4); }
-.list-row { padding: var(--s2x) 0; border-bottom: 1px solid var(--border); }
+.list-row { padding: var(--s2x) 0; border-bottom: 1px solid var(--line); }
 /* A row whose content stacks instead of sitting side by side: a message,
    a recipe with its summary under the name. `.actions.stacked` is the same
    column for a group of controls (#419): the "Continuer avec Google" under
@@ -327,7 +340,7 @@ summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); padding
 .list-row.stacked, .actions.stacked { flex-direction: column; align-items: stretch; }
 /* A message you wrote yourself — the most useful thing on a shared family
    thread, and the messagerie said nothing at all (audit §5). The ground is
-   `--surface`, the one elevation the system has; the rule is the 4px member
+   `--surface`, a card's own ground; the rule is the 4px member
    bar DESIGN.md → Layout already describes, in `--accent` because it says
    *you*. *Who* is the coloured initial beside the name, so the hue is never
    the only carrier (WCAG 1.4.1). `--accent-soft` would have read louder but
@@ -359,15 +372,19 @@ summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); padding
 /* A list of `.list-row`s: the separators come from the rows, so the bullets
    and the browser's indent have to go. */
 .list { list-style: none; padding: 0; margin: var(--s4) 0; }
-/* A bordered block of related content — one surface, one radius, no shadow
-   (DESIGN.md → Layout → Élévation). `.inline` is the same box laid out as a
-   single row of fields, which is how the "add an item" forms use it. */
+/* A block of related content, lifted off the page by --shadow — the one
+   elevation of DESIGN.md → Layout → Élévation (#521). The border stays,
+   transparent: `.card.danger` colours it, and forced-colors mode, which
+   drops every shadow, repaints it so the card keeps an edge. `.inline` is
+   the same box laid out as a single row of fields, which is how the
+   "add an item" forms use it. */
 .card {
   margin-top: var(--s6);
   padding: var(--s4);
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--r-lg);
   background: var(--surface);
+  box-shadow: var(--shadow);
 }
 .card.inline { display: flex; flex-direction: row; flex-wrap: wrap; align-items: flex-end; gap: var(--s2x); }
 .card.danger { border-color: var(--error); }
@@ -380,8 +397,9 @@ summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); padding
 .badge {
   display: inline-block;
   font-size: var(--t-xs);
-  padding: var(--s2) var(--s1);
+  padding: var(--s2) var(--s2x);
   border-radius: var(--r-sm);
+  font-weight: 600;
   background: var(--border);
   color: var(--fg);
 }
@@ -489,7 +507,7 @@ dd { margin: var(--s2) 0 0 0; }
    in the semantic colour of the level, which the words wear too. No level
    while the field is empty: neither colour nor fill. */
 .pw-meter { display: flex; align-items: center; gap: var(--s2x); font-size: var(--t-sm); }
-.pw-bar { flex: 1; height: var(--s1); border-radius: var(--r-sm); background: var(--border); overflow: hidden; }
+.pw-bar { flex: 1; height: var(--s1); border-radius: var(--r-sm); background: var(--line); overflow: hidden; }
 .pw-bar > span { display: block; height: 100%; background: currentColor; }
 .pw-meter[data-level="0"] { color: var(--error); }
 .pw-meter[data-level="1"] { color: var(--warning); }
