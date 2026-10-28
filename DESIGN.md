@@ -116,6 +116,11 @@ Les deux dernières valeurs sont celles d'un écran large : sous 861 px,
 (voir [Layout](#layout) → plancher typographique).
 
 Interlignage : 1.5 pour le corps, 1.25 pour les titres.
+
+Graisses : 600 pour les titres et, depuis #521, pour les boutons et les
+badges ; 600 aussi pour les en-têtes de tableau, le jour d'une case de
+l'agenda, l'initiale d'un avatar et le lien de navigation de la page
+courante. Le reste du texte garde la graisse par défaut.
 `letter-spacing: -0.01em` sur les titres, `0.04em` sur les micro-libellés
 capitalisés.
 
@@ -206,7 +211,10 @@ garde-fou de contraste :
 - **Voile d'une fenêtre** : `rgba(28,26,23,.32)` en clair,
   `rgba(0,0,0,.6)` en sombre.
 
-Ratios WCAG 2.x calculés sur les valeurs de la feuille au 2026-10-28.
+Ratios WCAG 2.x calculés sur les valeurs de la feuille au 2026-10-28. Ceux
+du fond d'événement le sont sur le mélange arrondi à 8 bits par canal, la
+couleur qu'un écran affiche ; sur le mélange exact, ils valent 14,01:1 en
+clair et 9,74:1 en sombre.
 
 ### Règles
 
@@ -271,7 +279,7 @@ Ratios WCAG 2.x calculés sur les valeurs de la feuille au 2026-10-28.
 | *(pleine)* | 100% | agenda, tables d'admin, messagerie, listes |
 
 - **Rayons (#521) :** `--r-sm: 12px` (boutons, champs, badges, pastilles,
-  avatars, liens de navigation) · `--r-md: 16px` (notices) · `--r-lg: 20px`
+  avatars, liens de navigation, barre de la jauge de mot de passe) · `--r-md: 16px` (notices) · `--r-lg: 20px`
   (cartes). Pas de rayon uniforme partout, pas de `border-radius: 9999px` :
   à 12 px, un badge ou une pastille s'arrondit en gélule et un avatar de
   24 px en cercle sans autre règle.
@@ -462,6 +470,7 @@ aucune n'introduit de valeur hors des échelles :
 | `.actions.stacked` | un groupe de contrôles empilés, chacun étiré sur toute la largeur (#419) : « Continuer avec Google » sous les formulaires de connexion et d'inscription, à la largeur du bouton du formulaire et non à celle de son libellé. Même sélecteur que `.list-row.stacked` |
 | `.sr-only` | un texte dit aux technologies d'assistance et dessiné pour personne (#463) : le « (3 non lus) » qui suit la pastille `.badge.warn` de l'onglet Messagerie, elle-même `aria-hidden`. Hors du flux, une boîte de 1 px rognée : le motif habituel de texte masqué visuellement |
 | `.pw-meter`, `.pw-bar` | la jauge de robustesse sous un mot de passe qu'on choisit (#461), construite par `enhance.js` sur `data-pw-meter` : sans JavaScript elle n'existe pas. Le libellé (« trop court », « faible », « correct », « solide ») porte le niveau dans une région `aria-live="polite"` ; la barre, en `currentColor`, le répète dans le jeton sémantique du niveau (`--error`, `--warning`, `--success`), que le libellé porte aussi — trois paires sur `--bg` que mesure le garde-fou de contraste |
+| `.icon` | une icône du jeu (#522), voir [Icônes](#icônes) : la taille, et le trait que le balisage ne porte pas |
 | `caption` | le nom d'un tableau pour les technologies d'assistance (#145) — élément, pas classe : aujourd'hui le mois de la grille de l'agenda, que le `<h1>` voisin montre déjà. Partage les deux règles de `.skip-link` : hors du flux et rogné, jamais `display: none` |
 
 Le résiduel de `style="…"` assumé après #68 : une couleur de membre calculée
@@ -491,6 +500,41 @@ le balisage, la boîte de `--s6` moins sa bordure, pour que la ligne ne bouge
 pas à son arrivée. La boîte la rogne à son arrondi (`overflow: clip`). Elle est servie par `apps/web` lui-même, comme tout ce que
 charge une page. Une ligne de l'accueil assignée à plusieurs membres garde
 l'initiale et la teinte mélangée : une photo n'en nommerait qu'un.
+
+### Icônes
+
+Livré par #522 : un jeu d'icônes en SVG inline, `apps/web/src/icons.rs`.
+
+- **Les tracés sont ceux de [Lucide](https://lucide.dev)** (ISC, et MIT
+  pour ceux qu'il tient de Feather), recopiés dans le code : aucun fichier
+  ni aucune requête de plus, rien qui sorte du site. Les licences sont dans
+  [`docs/credits.md`](docs/credits.md).
+- **Le jeu couvre les maquettes** : une variante de l'énumération `Icon` par
+  rôle (accueil, agenda, courses, stocks, recettes, budget, messages,
+  cloche, recherche, scan, précédent, suivant, plus, moins, envoyer,
+  horloge, membres, lien, palette, coche, trombone, réglages, étincelles,
+  fermer, appareil photo, corbeille). Un nom de rôle et non de dessin :
+  `Budget` reste `Budget` si son dessin change.
+- **Le trait est celui du texte** (`currentColor`), dans les deux thèmes et
+  en contrastes forcés. Il est écrit une fois, dans la règle `.icon`, et non
+  sur chaque `<svg>` : la feuille se paie une fois par déploiement, le
+  balisage à chaque page vue. Le `<svg>` ne porte que sa classe, son
+  `viewBox` et `aria-hidden="true"` ; jamais d'attribut `style`.
+- **Taille : `1.25em`,** ce que tient la ligne de Source Sans 3 à son
+  interlignage `normal` : un bouton qui ne tient qu'une icône a la hauteur
+  d'un bouton qui tient un mot (48 px l'un et l'autre dans Chromium, mesuré
+  le 2026-10-28).
+- **Une icône n'est jamais le nom accessible de ce qui la porte.** À côté
+  d'un libellé visible, elle le répéterait ; seule dans une commande, le nom
+  va sur la commande. `icon_link(class, href, label, icon)` est la façon
+  prévue d'écrire un lien qui ne tient qu'une icône, et le libellé y est un
+  paramètre. C'est une convention, tenue en revue : rien n'empêche
+  d'entourer `icon()` d'un `<a>` à la main, et un libellé vide est accepté
+  (le lien n'a alors pas de nom). Les flèches de l'agenda sont les
+  premières à l'employer ; leurs `aria-label` n'ont pas changé.
+- **#522 ne pose d'icône nulle part ailleurs.** Les onglets n'en portent
+  toujours pas (journal, 2026-07-31, #70) ; les écrans repris (#524 et
+  suivantes) posent chacun les leurs.
 
 ---
 
@@ -1443,3 +1487,4 @@ quatre tours de vérification à #72.
 | 2026-10-20 | Plafond de feuille : **13 KiB → 42 KiB** (43 008 o), la borne passe d'un aller-retour à deux | Arbitrage utilisateur du 2026-10-20. La question change, pas la méthode. Manquer l'aller-retour unique coûte **un RTT, à cache froid seulement** — une fois par visiteur et par déploiement, la feuille étant `immutable` sous une URL à empreinte. Les utilisateurs sont un foyer qui revient chaque jour, sur des téléphones de dix ans au plus, pour qui analyser 40 Kio de CSS coûte quelques millisecondes : le budget achetait un RTT au premier affichage après déploiement, au prix d'un plafond qui ne laissait que 1 349 o (flate2 niveau 6). Dérivation, celle de #72 prolongée d'une fenêtre : le slow start double la `cwnd` après le premier vol — 14 254 o au premier vol (IW10 moins 280 o d'en-têtes et 66 o de cadrage TLS), 20 × 1 460 = 29 200 o au second moins 44 o de cadrage pour ses deux enregistrements TLS, soit **43 410 o** en deux allers-retours. 42 KiB est le plus grand palier de KiB qui tienne, 402 o dessous — prix de l'arrondi, pas réserve. La borne reste conservatrice : la feuille part sur la connexion qui vient de porter le document, `cwnd` déjà crue. **Ce que ça abandonne** : le garde-fou de feuille ne sonne plus au fil du travail ordinaire ; il devient une alarme contre les accidents (framework recopié, police en base64), et la pression vers la sobriété passe aux tests de redondance de l'entrée suivante. **Ce que ça garde** : le remède au-delà (découper la feuille) et la règle de demander avant de bouger la valeur. Test renommé `the_compressed_stylesheet_arrives_within_two_round_trips` |
 | 2026-10-20 | `DECLARATIONS_CEILING` supprimé, la redondance est tenue par trois tests | Arbitrage utilisateur du 2026-10-20, après le relèvement de `SHEET_CEILING` le même jour. Le plafond ne laissait plus que 2 o (3 134 sur 3 136, flate2 niveau 6), et une passe de chasse aux doublons faite à la main n'a rendu que 7 o — un `font-weight: 400` resté de l'extraction des styles inline (#68), retiré. La feuille était propre et le garde-fou bloquait quand même : il comptait des **octets**, pas des **répétitions**, et ne parlait qu'une fois le total débordé. Remplacé par ce qu'il prétendait tenir, chaque test nommant la ligne fautive : un même sélecteur ouvert deux fois dans le même contexte (`@media` compris), une même propriété posée deux fois dans un bloc, une classe stylée que plus aucune source n'émet — le sens inverse de `every_class_a_source_references_exists_in_the_stylesheet`, qui manquait. Les trois ont été vérifiés rouges sur une classe morte et deux doublons injectés. **Ce que ça abandonne** : toute borne sur le volume des déclarations, et la contrainte d'ordre des deux garde-fous, qui était la borne basse de `SHEET_CEILING`. **Pas couvert, dit plutôt que laissé à trouver** : une valeur en dur là où un token existe (les `rem` de `.prose`) — c'est une décision de design, pas un doublon, à traiter à part. Rapport `budget_report` allégé de la section d'ordre |
 | 2026-10-28 | Direction « chaleureux, aéré, tactile », et l'application s'appelle MHome (#521) | Demande du 2026-10-21, « rendre l'application plus esthétique, agréable à utiliser, interactive et moderne », avec ses maquettes ; rangée sombre ajoutée le 2026-10-22. Elle renverse un point de la direction « utilitaire chaleureux » posée avec le système initial : les ombres portées et les cartes flottantes, que la section Direction esthétique refusait, deviennent l'unique élévation. Une seule ombre, celle de `.card`, portée par un jeton à deux valeurs, `--shadow` — deux couches douces en clair, un liseré `--hover` plus une ombre portée en sombre, où une ombre seule ne se voit pas. Le garde-fou de redéclaration sombre ne lisait une couleur qu'en tête de valeur et aurait laissé passer une ombre déclarée en clair seulement : il la lit désormais n'importe où dans la valeur. Rayons 12 / 16 / 20 px au lieu de 4 / 8 / 12, mêmes trois jetons ; boutons et champs passent sur `--r-sm`, comme dans les maquettes. Nouveau jeton `--line` pour les lignes fines (séparateurs de liste, piste de la jauge de mot de passe), `--border` restant le bord d'un contrôle. Titres en Fraunces 600, champs et bouton secondaire sur `--surface`. Les neutres de la demande (`#FBFAF7`, `#1C1A17`, `#6B655C`, `#E3DFD7`) étaient déjà ceux de la feuille et ne bougent pas, ni aucun jeton sombre existant. Le markup des routes ne change pas : les écrans sont repris un par un ensuite. Le nom **MHome** entre dans le titre de chaque page ; les courriels, les documents légaux et le README gardent « Manage Our Home » dans ce lot |
+| 2026-10-28 | Un jeu d'icônes en SVG inline, tracés Lucide, trait porté par la feuille (#522) | Demande du 2026-10-21 (maquettes). Inline plutôt qu'un sprite ou une `<img>` : rien de plus à charger, rien qui sorte du site, et le trait suit `currentColor`, donc le thème et les contrastes forcés. Le trait (`currentColor`, épaisseur 2, extrémités et jointures arrondies) et l'absence de remplissage sont une règle `.icon` de la feuille plutôt que des attributs de chaque `<svg>` : ces attributs pèseraient 98 o bruts par icône dans le document, à chaque page vue, quand la règle se paie une fois par déploiement. Taille `1.25em`, que tient la ligne de Source Sans 3 : une flèche de l'agenda et le bouton « Aujourd'hui » mesurent 48 px de haut l'un et l'autre dans Chromium. L'icône est toujours `aria-hidden` ; seule dans un lien, elle passe par `icon_link`, dont le libellé est un paramètre. Les premières posées sont les flèches de l'agenda, à la place de ◀ et ▶ : 171 o bruts de plus par page de l'agenda, deux `<svg>` de 89 et 88 o à la place de deux glyphes de 3 o. Les onglets restent sans icône (entrée du 2026-07-31) |
