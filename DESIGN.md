@@ -321,10 +321,11 @@ disait pas.
   `<main>`, où il n'avait jamais eu sa place.
 - **Six onglets sur téléphone (#523)**, chacun son icône au-dessus de son
   libellé court : Accueil, Agenda, Courses, Cuisine, Messages, Profil. Ils
-  se partagent la barre et tiennent sur 390 px ; les neuf onglets d'avant
-  n'y tenaient pas (670 px de contenu à 390 px, relevé lors de #463 :
-  Messagerie et sa pastille étaient hors de la vue au chargement). L'icône est `aria-hidden` : l'onglet se lit toujours par son
-  libellé. Recettes passe par le segment Stocks | Recettes en tête des deux
+  se partagent la barre et tiennent sur 390 px ; les huit onglets d'avant
+  (neuf pour le superadmin) n'y tenaient pas — 670 px de contenu à 390 px,
+  relevé lors de #463 : Messagerie, septième, et sa pastille étaient hors
+  de la vue au chargement. L'icône est `aria-hidden` : l'onglet se lit
+  toujours par son libellé. Recettes passe par le segment Stocks | Recettes en tête des deux
   pages (`.segment`, téléphone seulement), Budget par sa carte de
   l'accueil, les familles et le compte par Profil. L'onglet Cuisine reste
   allumé sur les recettes (`:has()`), où `aria-current` est sur le lien
@@ -601,7 +602,11 @@ ni `transition`, et `aria-current` n'apparaissait nulle part.
   annulée dans `reduce` : une seule règle, et rien pour qui a demandé moins
   de mouvement (`page_transitions_are_only_asked_for_without_a_reduced_motion_preference`).
   Un navigateur qui ne connaît pas les transitions entre documents charge
-  la page comme avant.
+  la page comme avant. La suite Playwright, elle, navigue sous
+  `reducedMotion: "reduce"` (`e2e/playwright.config.ts`) : Chromium sans
+  affichage cesse de produire des images après une transition entre
+  documents, et chaque clic qui suit attend jusqu'à l'échec du test. La
+  transition n'est donc couverte que par le test de la feuille.
 - **Durée :** `--dur: 150ms`, courbe `--ease: cubic-bezier(0.2, 0, 0.2, 1)`.
   Les deux moitiés sont des jetons parce que la neutralisation sous
   `prefers-reduced-motion` passe par eux (voir plus bas) : une durée écrite en

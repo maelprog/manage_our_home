@@ -328,7 +328,7 @@ pub fn app_header(
         "profile",
         nav_link_is_current("/account", redirect_to) || nav_link_is_current("/groups", redirect_to),
         &format!(
-            r#"{avatar}<span class="phone">Profil</span><span class="pc"><span class="sr-only">Profil : </span>{name} <span class="muted">{family}</span></span>"#,
+            r#"{avatar}<span class="phone">Profil</span><span class="pc"><span class="sr-only">Profil : </span><span>{name}</span> <span class="muted">{family}</span></span>"#,
             avatar = member_avatar(me.user_id, &me.display_name, None),
             name = html_escape(&me.display_name),
             family = html_escape(active.map_or("Aucune famille", |g| g.name.as_str())),
@@ -1565,7 +1565,8 @@ mod tests {
         let header = app_header(&me(false), Some(&family("Les <Martin>")), "/", 0);
         let link = &header[header.find(r#"href="/account""#).unwrap()..];
         let link = &link[..link.find("</a>").unwrap()];
-        assert!(link.contains("Alice"), "{link}");
+        // The name alone in its element: the suite finds it by its exact text.
+        assert!(link.contains("<span>Alice</span>"), "{link}");
         assert!(link.contains("Les &lt;Martin&gt;"), "{link}");
         assert!(!link.contains("<Martin>"), "{link}");
         // Without a family, the block says so rather than leaving a gap.

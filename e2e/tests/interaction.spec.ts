@@ -198,6 +198,12 @@ test.describe("Interaction states (#69)", () => {
     // timeout said nothing about focus rings. The ceiling is raised against
     // that contention: a real slowdown would show in an isolated run first.
     test.setTimeout(60_000);
+    // Full motion, as before #523 set the suite to reduced motion: this
+    // walk reaches the date field of /stocks/new since the header lost its
+    // form, and under reduced motion that field showed no ring in Chromium
+    // (on `main` as well). Only `goto` and Tab here: no navigation a view
+    // transition would follow.
+    await page.emulateMedia({ reducedMotion: "no-preference" });
     for (const colorScheme of ["light", "dark"] as const) {
       await page.emulateMedia({ colorScheme });
       for (const path of ["/", "/agenda", "/stocks/new", "/groups"]) {
@@ -287,13 +293,19 @@ test.describe("Interaction states (#69)", () => {
   });
 
   test("a visitor who asked for no motion gets none", async ({ page }) => {
-    await page.emulateMedia({ reducedMotion: "reduce" });
+    // The suite browses under `reducedMotion: "reduce"` (playwright.config.ts,
+    // #523), so the full-motion side is emulated here, on a page already
+    // loaded — no navigation, hence no view transition to stall headless
+    // Chromium.
     await page.goto("/groups");
-    const durations = await page
-      .locator("button")
-      .first()
-      .evaluate((node) => getComputedStyle(node).transitionDuration);
-    expect(durations.split(",").map((d) => d.trim())).toEqual(["0s", "0s", "0s"]);
+    const durations = () =>
+      page
+        .locator("button")
+        .first()
+        .evaluate((node) => getComputedStyle(node).transitionDuration.split(",").map((d) => d.trim()));
     await page.emulateMedia({ reducedMotion: "no-preference" });
+    expect(await durations()).toEqual(["0.15s", "0.15s", "0.15s"]);
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    expect(await durations()).toEqual(["0s", "0s", "0s"]);
   });
 });
