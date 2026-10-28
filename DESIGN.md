@@ -276,7 +276,7 @@ Ratios WCAG 2.x calculés sur les valeurs de la feuille au 2026-10-28.
 | *(pleine)* | 100% | agenda, tables d'admin, messagerie, listes |
 
 - **Rayons (#521) :** `--r-sm: 12px` (boutons, champs, badges, pastilles,
-  avatars, liens de navigation) · `--r-md: 16px` (notices) · `--r-lg: 20px`
+  avatars, liens de navigation, barre de la jauge de mot de passe) · `--r-md: 16px` (notices) · `--r-lg: 20px`
   (cartes). Pas de rayon uniforme partout, pas de `border-radius: 9999px` :
   à 12 px, un badge ou une pastille s'arrondit en gélule et un avatar de
   24 px en cercle sans autre règle.
