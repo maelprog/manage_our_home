@@ -526,9 +526,11 @@ Livré par #522 : un jeu d'icônes en SVG inline, `apps/web/src/icons.rs`.
   le 2026-10-28).
 - **Une icône n'est jamais le nom accessible de ce qui la porte.** À côté
   d'un libellé visible, elle le répéterait ; seule dans une commande, le nom
-  va sur la commande. `icon_link(class, href, label, icon)` est la seule
-  façon d'écrire un lien qui ne tient qu'une icône, et le libellé y est un
-  paramètre : l'oublier ne compile pas. Les flèches de l'agenda sont les
+  va sur la commande. `icon_link(class, href, label, icon)` est la façon
+  prévue d'écrire un lien qui ne tient qu'une icône, et le libellé y est un
+  paramètre. C'est une convention, tenue en revue : rien n'empêche
+  d'entourer `icon()` d'un `<a>` à la main, et un libellé vide est accepté
+  (le lien n'a alors pas de nom). Les flèches de l'agenda sont les
   premières à l'employer ; leurs `aria-label` n'ont pas changé.
 - **#522 ne pose d'icône nulle part ailleurs.** Les onglets n'en portent
   toujours pas (journal, 2026-07-31, #70) ; les écrans repris (#524 et

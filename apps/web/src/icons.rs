@@ -17,8 +17,9 @@
 //!
 //! **Always `aria-hidden`.** An icon is never the accessible name of what
 //! carries it. Next to a visible label it would repeat it; alone in a control
-//! the name belongs on the control, which is what [`icon_link`] makes the
-//! only way to write one.
+//! the name belongs on the control. [`icon_link`] is the intended way to
+//! write such a link, a convention held in review: nothing stops a caller
+//! from wrapping [`icon`] in an `<a>` by hand.
 //!
 //! **Drawings: Lucide** (<https://lucide.dev>, lucide-static 1.63.0, ISC
 //! licence; the icons Lucide inherits from Feather also under MIT). The
@@ -196,9 +197,10 @@ pub fn icon(icon: Icon) -> &'static str {
 
 /// A link whose only content is an icon, named by `label`.
 ///
-/// The label is a parameter rather than something to remember: an icon alone
-/// gives a control no accessible name, and a screen reader would announce
-/// the bare `href`. `label` is escaped here; `class` and `href` are written
+/// The label is a parameter, so a call site has to say something: an icon
+/// alone gives a control no accessible name, and a screen reader would
+/// announce the bare `href`. An empty `label` is not refused and gives the
+/// link an empty name. `label` is escaped here; `class` and `href` are written
 /// as given, and must already be safe in a double-quoted attribute.
 pub fn icon_link(class: &str, href: &str, label: &str, icon: Icon) -> String {
     format!(
