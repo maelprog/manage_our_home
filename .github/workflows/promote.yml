@@ -148,7 +148,9 @@ jobs:
 
       # `deploy` receives the overlays and their scripts with `k3s`, once
       # (#431): until then there is nothing to move. A file missing from
-      # deploy's tip but found in its history was removed: red.
+      # deploy's tip but found in its history was removed: red. With
+      # --full-history: a merge that takes the tree of a branch cut before
+      # the overlays would otherwise hide the commits that had them.
       - name: Overlays on deploy
         id: tree
         if: steps.app.outputs.ready == 'true'
@@ -156,7 +158,7 @@ jobs:
           never=() gone=()
           for f in "$STAGING_OVERLAY" ci/set-images.sh ci/install-tools.sh; do
             [ -f "deploy/$f" ] && continue
-            if [ -n "$(git -C deploy log -n 1 --format=%h -- "$f")" ]; then gone+=("$f"); else never+=("$f"); fi
+            if [ -n "$(git -C deploy log --full-history -n 1 --format=%h -- "$f")" ]; then gone+=("$f"); else never+=("$f"); fi
           done
           if [ "${#gone[@]}" -gt 0 ]; then
             echo "::error::deploy had ${gone[*]} and no longer has: no staging PR for ${EVENT_SHA}"
@@ -415,7 +417,7 @@ jobs:
           never=() gone=()
           for f in "$STAGING_OVERLAY" "$PROD_OVERLAY" ci/set-images.sh ci/install-tools.sh; do
             [ -f "deploy/$f" ] && continue
-            if [ -n "$(git -C deploy log -n 1 --format=%h -- "$f")" ]; then gone+=("$f"); else never+=("$f"); fi
+            if [ -n "$(git -C deploy log --full-history -n 1 --format=%h -- "$f")" ]; then gone+=("$f"); else never+=("$f"); fi
           done
           if [ "${#gone[@]}" -gt 0 ]; then
             echo "::error::deploy had ${gone[*]} and no longer has: no prod PR for ${TAG}"
