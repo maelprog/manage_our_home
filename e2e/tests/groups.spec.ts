@@ -56,12 +56,12 @@ async function createInviteLink(page: Page, groupName: string): Promise<string> 
   return href;
 }
 
-/** A second, independently authenticated user in its own browser context. */
 /** The active family, as the sidebar's profile block names it (#523). */
 function activeFamily(page: Page) {
   return page.locator('header a[href="/account"] .muted');
 }
 
+/** A second, independently authenticated user in its own browser context. */
 async function secondUser(
   browser: Browser,
   prefix: string,
