@@ -29,10 +29,22 @@
 # App can merge its own PR into `deploy`, or into `main`. That this bot
 # never merges is a property of the steps below, which never call it, and
 # of whoever can edit them. Its client ID is the repository variable
-# PROMOTE_APP_CLIENT_ID, its private key the secret PROMOTE_APP_PRIVATE_KEY;
-# until both exist, each run ends with a warning and opens nothing. A PR
-# opened by GITHUB_TOKEN would not start deploy.yml, and its checks are
-# required by the ruleset: hence the App.
+# PROMOTE_APP_CLIENT_ID, its private key the secret PROMOTE_APP_PRIVATE_KEY.
+# A PR opened by GITHUB_TOKEN would not start deploy.yml, and its checks
+# are required by the ruleset: hence the App.
+#
+# Green or red (arbitrage of 2026-10-16, #503): a run that cannot promote
+# ends green with a warning only while the setup has not started, and red
+# once a part of it is there and broken; otherwise a promotion that stops
+# would go unnoticed.
+# - Neither the variable nor the secret: warning, nothing opened. One of
+#   them without the other: red.
+# - Both: the token is asked first thing, whether or not there is anything
+#   to move, so that an expired, deleted or mistyped key is red on the
+#   next run and not on the next promotion.
+# - `deploy` without the overlays or their scripts: warning while none of
+#   the missing files was ever in its history (`k3s` not merged into it
+#   yet), red if one of them was there and is gone.
 #
 # No loop: the PRs go into `deploy`, whose tree holds neither images.yml
 # nor this file, so neither starts there; this workflow starts on a
@@ -102,31 +114,59 @@ jobs:
         run: |
           if [ -n "$CLIENT_ID" ] && [ "$HAS_KEY" = true ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::the promotion App is not configured (variable PROMOTE_APP_CLIENT_ID, secret PROMOTE_APP_PRIVATE_KEY): no staging PR for ${EVENT_SHA}"
+          elif [ -z "$CLIENT_ID" ] && [ "$HAS_KEY" != true ]; then
+            echo "::warning::the promotion App is not set up yet (neither the variable PROMOTE_APP_CLIENT_ID nor the secret PROMOTE_APP_PRIVATE_KEY): no staging PR for ${EVENT_SHA}"
             echo "ready=false" >> "$GITHUB_OUTPUT"
+          elif [ -n "$CLIENT_ID" ]; then
+            echo "::error::the promotion App is half set up: the variable PROMOTE_APP_CLIENT_ID is there, the secret PROMOTE_APP_PRIVATE_KEY is missing or empty"
+            exit 1
+          else
+            echo "::error::the promotion App is half set up: the secret PROMOTE_APP_PRIVATE_KEY is there, the variable PROMOTE_APP_CLIENT_ID is missing or empty"
+            exit 1
           fi
+
+      # Asked even when nothing will be moved: a key that no longer works
+      # is red now (header, « Green or red »).
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: token
+        if: steps.app.outputs.ready == 'true'
+        with:
+          client-id: ${{ vars.PROMOTE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PROMOTE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.app.outputs.ready == 'true'
         with:
           ref: deploy
           path: deploy
+          # The history, for « Overlays on deploy »; trees only.
+          fetch-depth: 0
+          filter: blob:none
           persist-credentials: false
 
       # `deploy` receives the overlays and their scripts with `k3s`, once
-      # (#431): until then there is nothing to move.
+      # (#431): until then there is nothing to move. A file missing from
+      # deploy's tip but found in its history was removed: red.
       - name: Overlays on deploy
         id: tree
         if: steps.app.outputs.ready == 'true'
         run: |
+          never=() gone=()
           for f in "$STAGING_OVERLAY" ci/set-images.sh ci/install-tools.sh; do
-            if [ ! -f "deploy/$f" ]; then
-              echo "::warning::deploy has no $f yet: no staging PR for ${EVENT_SHA}"
-              echo "ready=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
+            [ -f "deploy/$f" ] && continue
+            if [ -n "$(git -C deploy log -n 1 --format=%h -- "$f")" ]; then gone+=("$f"); else never+=("$f"); fi
           done
+          if [ "${#gone[@]}" -gt 0 ]; then
+            echo "::error::deploy had ${gone[*]} and no longer has: no staging PR for ${EVENT_SHA}"
+            exit 1
+          fi
+          if [ "${#never[@]}" -gt 0 ]; then
+            echo "::warning::deploy has no ${never[*]} yet: no staging PR for ${EVENT_SHA}"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
       - name: Tools
@@ -283,15 +323,6 @@ jobs:
             echo "Opened by \`promote.yml\` of \`main\`. To be merged by hand; the \`promotion\` job checks the signatures."
           } > "$RUNNER_TEMP/body.md"
 
-      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        id: token
-        if: steps.edit.outputs.changed == 'true'
-        with:
-          client-id: ${{ vars.PROMOTE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.PROMOTE_APP_PRIVATE_KEY }}
-          permission-contents: write
-          permission-pull-requests: write
-
       # The branch is rebuilt from deploy and pushed over the previous one:
       # an open PR then shows one commit, the last pair.
       - name: Push and open (or update) the PR
@@ -345,29 +376,56 @@ jobs:
           fi
           if [ -n "$CLIENT_ID" ] && [ "$HAS_KEY" = true ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::the promotion App is not configured (variable PROMOTE_APP_CLIENT_ID, secret PROMOTE_APP_PRIVATE_KEY): no prod PR for ${TAG}"
+          elif [ -z "$CLIENT_ID" ] && [ "$HAS_KEY" != true ]; then
+            echo "::warning::the promotion App is not set up yet (neither the variable PROMOTE_APP_CLIENT_ID nor the secret PROMOTE_APP_PRIVATE_KEY): no prod PR for ${TAG}"
             echo "ready=false" >> "$GITHUB_OUTPUT"
+          elif [ -n "$CLIENT_ID" ]; then
+            echo "::error::the promotion App is half set up: the variable PROMOTE_APP_CLIENT_ID is there, the secret PROMOTE_APP_PRIVATE_KEY is missing or empty"
+            exit 1
+          else
+            echo "::error::the promotion App is half set up: the secret PROMOTE_APP_PRIVATE_KEY is there, the variable PROMOTE_APP_CLIENT_ID is missing or empty"
+            exit 1
           fi
+
+      # Asked even when nothing will be moved: a key that no longer works
+      # is red now (header, « Green or red »).
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: token
+        if: steps.app.outputs.ready == 'true'
+        with:
+          client-id: ${{ vars.PROMOTE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PROMOTE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.app.outputs.ready == 'true'
         with:
           ref: deploy
           path: deploy
+          # The history, for « Overlays on deploy »; trees only.
+          fetch-depth: 0
+          filter: blob:none
           persist-credentials: false
 
       - name: Overlays on deploy
         id: tree
         if: steps.app.outputs.ready == 'true'
         run: |
+          never=() gone=()
           for f in "$STAGING_OVERLAY" "$PROD_OVERLAY" ci/set-images.sh ci/install-tools.sh; do
-            if [ ! -f "deploy/$f" ]; then
-              echo "::warning::deploy has no $f yet: no prod PR for ${TAG}"
-              echo "ready=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
+            [ -f "deploy/$f" ] && continue
+            if [ -n "$(git -C deploy log -n 1 --format=%h -- "$f")" ]; then gone+=("$f"); else never+=("$f"); fi
           done
+          if [ "${#gone[@]}" -gt 0 ]; then
+            echo "::error::deploy had ${gone[*]} and no longer has: no prod PR for ${TAG}"
+            exit 1
+          fi
+          if [ "${#never[@]}" -gt 0 ]; then
+            echo "::warning::deploy has no ${never[*]} yet: no prod PR for ${TAG}"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
       - name: Tools
@@ -478,15 +536,6 @@ jobs:
             echo
             echo "Opened by \`promote.yml\` of \`main\`. To be merged by hand; the \`promotion\` job is red if this pair is not the one staging runs. Argo CD then waits for « Sync » on prod."
           } > "$RUNNER_TEMP/body.md"
-
-      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        id: token
-        if: steps.edit.outputs.changed == 'true'
-        with:
-          client-id: ${{ vars.PROMOTE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.PROMOTE_APP_PRIVATE_KEY }}
-          permission-contents: write
-          permission-pull-requests: write
 
       - name: Push and open (or update) the PR
         if: steps.edit.outputs.changed == 'true'
