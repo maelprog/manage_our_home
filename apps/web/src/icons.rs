@@ -28,42 +28,64 @@
 
 use crate::app::html_escape;
 
-/// One icon of the set: what the mock-ups of the 2026-10-21 request draw.
-///
-/// Named for the role it plays in the application, not for its drawing:
-/// `Budget` stays `Budget` if its picture changes.
-// The set ships ahead of the screens that use it (#524 to #539 take the
-// mock-ups over one by one): until they land, most variants are only
-// constructed by the tests.
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Icon {
-    Home,
-    Calendar,
-    Groceries,
-    Stocks,
-    Recipes,
-    Budget,
-    Messages,
-    Bell,
-    Search,
-    Scan,
-    Previous,
-    Next,
-    Plus,
-    Minus,
-    Send,
-    Clock,
-    Members,
-    Link,
-    Palette,
-    Check,
-    Paperclip,
-    Settings,
-    Sparkles,
-    Close,
-    Camera,
-    Trash,
+/// Declares [`Icon`] and, for the tests, `Icon::ALL` from one list of
+/// variant names: a variant cannot be added to the enum without being added
+/// to `ALL`, so every test that walks `ALL` covers every icon.
+macro_rules! icon_set {
+    (
+        $(#[$meta:meta])*
+        pub enum Icon { $($variant:ident),* $(,)? }
+    ) => {
+        $(#[$meta])*
+        pub enum Icon { $($variant),* }
+
+        #[cfg(test)]
+        impl Icon {
+            /// Every variant, in declaration order, written by `icon_set!`
+            /// from the list that declares the enum.
+            pub(crate) const ALL: &'static [Icon] = &[$(Icon::$variant),*];
+        }
+    };
+}
+
+icon_set! {
+    /// One icon of the set: what the mock-ups of the 2026-10-21 request draw.
+    ///
+    /// Named for the role it plays in the application, not for its drawing:
+    /// `Budget` stays `Budget` if its picture changes.
+    // The set ships ahead of the screens that use it (#524 to #539 take the
+    // mock-ups over one by one): until they land, most variants are only
+    // constructed by the tests.
+    #[allow(dead_code)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Icon {
+        Home,
+        Calendar,
+        Groceries,
+        Stocks,
+        Recipes,
+        Budget,
+        Messages,
+        Bell,
+        Search,
+        Scan,
+        Previous,
+        Next,
+        Plus,
+        Minus,
+        Send,
+        Clock,
+        Members,
+        Link,
+        Palette,
+        Check,
+        Paperclip,
+        Settings,
+        Sparkles,
+        Close,
+        Camera,
+        Trash,
+    }
 }
 
 /// An icon's `<svg>` element around its shapes, assembled at compile time:
@@ -190,83 +212,10 @@ pub fn icon_link(class: &str, href: &str, label: &str, icon: Icon) -> String {
 mod tests {
     use super::*;
 
-    /// Every variant, by hand: the tests below read this list, so a variant
-    /// left out of it is a variant left untested — `every_icon_is_listed`
-    /// counts it against the enum.
-    const ALL: [Icon; 26] = [
-        Icon::Home,
-        Icon::Calendar,
-        Icon::Groceries,
-        Icon::Stocks,
-        Icon::Recipes,
-        Icon::Budget,
-        Icon::Messages,
-        Icon::Bell,
-        Icon::Search,
-        Icon::Scan,
-        Icon::Previous,
-        Icon::Next,
-        Icon::Plus,
-        Icon::Minus,
-        Icon::Send,
-        Icon::Clock,
-        Icon::Members,
-        Icon::Link,
-        Icon::Palette,
-        Icon::Check,
-        Icon::Paperclip,
-        Icon::Settings,
-        Icon::Sparkles,
-        Icon::Close,
-        Icon::Camera,
-        Icon::Trash,
-    ];
-
-    /// The position of `icon` in the enum. Exhaustive on purpose: a new
-    /// variant does not compile until it is given one, and
-    /// `every_icon_is_listed` then finds it missing from `ALL`.
-    fn ordinal(icon: Icon) -> usize {
-        match icon {
-            Icon::Home => 0,
-            Icon::Calendar => 1,
-            Icon::Groceries => 2,
-            Icon::Stocks => 3,
-            Icon::Recipes => 4,
-            Icon::Budget => 5,
-            Icon::Messages => 6,
-            Icon::Bell => 7,
-            Icon::Search => 8,
-            Icon::Scan => 9,
-            Icon::Previous => 10,
-            Icon::Next => 11,
-            Icon::Plus => 12,
-            Icon::Minus => 13,
-            Icon::Send => 14,
-            Icon::Clock => 15,
-            Icon::Members => 16,
-            Icon::Link => 17,
-            Icon::Palette => 18,
-            Icon::Check => 19,
-            Icon::Paperclip => 20,
-            Icon::Settings => 21,
-            Icon::Sparkles => 22,
-            Icon::Close => 23,
-            Icon::Camera => 24,
-            Icon::Trash => 25,
-        }
-    }
-
-    #[test]
-    fn every_icon_is_listed() {
-        for (i, icon) in ALL.iter().enumerate() {
-            assert_eq!(ordinal(*icon), i, "{icon:?} out of place in ALL");
-        }
-    }
-
     #[test]
     fn every_icon_is_one_hidden_svg_element() {
         let open = r#"<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">"#;
-        for i in ALL {
+        for &i in Icon::ALL {
             let svg = icon(i);
             let shapes = svg
                 .strip_prefix(open)
@@ -282,7 +231,7 @@ mod tests {
         // Neither a `style` attribute nor a `<style>` element: the stroke is
         // the sheet's `.icon` rule, and the CSP's `style-src 'self'` refuses
         // the element outright.
-        for i in ALL {
+        for &i in Icon::ALL {
             assert!(!icon(i).contains("style"), "{i:?}: {}", icon(i));
         }
     }
@@ -291,7 +240,7 @@ mod tests {
     fn no_icon_paints_its_own_colour() {
         // Every colour is the text's. A fill or stroke written as a hex value
         // would stay black on the dark theme.
-        for i in ALL {
+        for &i in Icon::ALL {
             let svg = icon(i);
             for attr in ["fill=\"", "stroke=\""] {
                 for value in svg.split(attr).skip(1) {
@@ -303,8 +252,8 @@ mod tests {
 
     #[test]
     fn no_two_icons_draw_the_same_thing() {
-        for (n, a) in ALL.iter().enumerate() {
-            for b in &ALL[n + 1..] {
+        for (n, a) in Icon::ALL.iter().enumerate() {
+            for b in &Icon::ALL[n + 1..] {
                 assert_ne!(icon(*a), icon(*b), "{a:?} and {b:?}");
             }
         }
