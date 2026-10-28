@@ -211,7 +211,10 @@ garde-fou de contraste :
 - **Voile d'une fenêtre** : `rgba(28,26,23,.32)` en clair,
   `rgba(0,0,0,.6)` en sombre.
 
-Ratios WCAG 2.x calculés sur les valeurs de la feuille au 2026-10-28.
+Ratios WCAG 2.x calculés sur les valeurs de la feuille au 2026-10-28. Ceux
+du fond d'événement le sont sur le mélange arrondi à 8 bits par canal, la
+couleur qu'un écran affiche ; sur le mélange exact, ils valent 14,01:1 en
+clair et 9,74:1 en sombre.
 
 ### Règles
 
