@@ -86,7 +86,7 @@ pub async fn get(
         <div class="actions">
             <a class="btn" href="/groups/new">"Créer un groupe"</a>
         </div>
-        <h2>"Rejoindre via une invitation"</h2>
+        <h2 id="join">"Rejoindre via une invitation"</h2>
         <form method="post" action="/groups/join">
             <label>
                 "Lien ou code d'invitation"

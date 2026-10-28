@@ -410,4 +410,47 @@ test.describe("Groups — active-family switcher", () => {
       "Famille Une",
     );
   });
+
+  // #529: the profile lists the families as radio buttons, posting to the
+  // same `POST /groups/switch` as the header's switcher.
+  test("the profile picks the active family, which the header then shows", async ({ page }) => {
+    await registerAndLogin(page, "e2e-profile-switch", "Profil User");
+    await createGroup(page, "Famille Une");
+    await createGroup(page, "Famille Deux");
+
+    await page.goto("/account");
+    await expect(page.getByRole("heading", { name: "Profil User", level: 1 })).toBeVisible();
+    const families = page.getByRole("radiogroup", { name: "Mes familles" });
+    const one = families.getByRole("radio", { name: /Famille Une/ });
+    const two = families.getByRole("radio", { name: /Famille Deux/ });
+    await expect(two).toBeChecked();
+    await expect(one).not.toBeChecked();
+    await expect(families.getByText("1 membre · Propriétaire")).toHaveCount(2);
+
+    await one.check();
+    await page.getByRole("button", { name: "Utiliser cette famille" }).click();
+    await expect(page).toHaveURL("/account");
+    await expect(page.locator("select[name=group_id] option[selected]")).toHaveText(
+      "Famille Une",
+    );
+    await expect(one).toBeChecked();
+
+    // The header keeps it on the next page.
+    await page.goto("/");
+    await expect(page.locator("select[name=group_id] option[selected]")).toHaveText(
+      "Famille Une",
+    );
+
+    // The RGPD rights stay two clicks away from any page: "Mon compte",
+    // then the row.
+    await page.getByRole("link", { name: "Mon compte", exact: true }).click();
+    await expect(page).toHaveURL("/account");
+    await page.getByRole("link", { name: "Supprimer mon compte" }).click();
+    await expect(page).toHaveURL("/account/delete");
+    await page.getByRole("link", { name: "Mon compte", exact: true }).click();
+    await expect(page.getByRole("link", { name: "Exporter mes données" })).toHaveAttribute(
+      "href",
+      "/account/export",
+    );
+  });
 });

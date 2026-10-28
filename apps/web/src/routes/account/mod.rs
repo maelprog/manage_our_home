@@ -29,6 +29,7 @@ pub mod deactivated;
 pub mod delete;
 pub mod export;
 pub mod notifications;
+pub mod profile;
 pub mod sessions;
 pub mod terms;
 
@@ -38,7 +39,9 @@ use axum::response::{Html, IntoResponse, Response};
 use manage_our_home_shared::dto::auth::MeResponse;
 
 use crate::app::{html_escape, shell, shell_with_header, Width};
+use crate::family::{active_group_id_from_headers, resolve_active_group};
 use crate::layout::CurrentUser;
+use crate::routes::groups::members::fetch_group_detail;
 use crate::routes::groups::{cookie_of, header_with_groups};
 use crate::state::AppState;
 
@@ -127,63 +130,52 @@ fn error_html(error: Option<&str>) -> String {
     format!(r#"<p class="notice error">{}</p>"#, html_escape(text))
 }
 
-/// `GET /account` — the RGPD hub: who you are, the export entry point, the
-/// deletion entry point (replaced by the pending panel once a request is in
-/// flight). The three public legal documents are no longer listed here: every
-/// page links them from the shell's footer since #419.
+/// `GET /account` — the profile (#529): who you are, your families and the
+/// active one, the profile photo, then the account's settings — the RGPD
+/// export and deletion among them, so both rights stay two clicks from any
+/// page ("Mon compte", then the row). A pending deletion shows its panel at
+/// the top instead of the deletion row. The three public legal documents are
+/// not listed here: every page links them from the shell's footer since #419.
 pub async fn get(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<HubQuery>,
 ) -> Response {
-    let header = account_header(&state, &headers, &me, "/account").await;
-    let has_photo = avatar::has_own_photo(&state, account_cookie(&headers).as_deref()).await;
-
-    let deletion_section = if can_request_deletion(me.deletion_requested_at) {
-        r#"<section class="card">
-<h2>Supprimer mon compte</h2>
-<p class="muted">Droit à l'effacement (Art. 17). La suppression est précédée d'un délai de grâce annulable ; elle n'est pas possible tant que vous êtes propriétaire d'une famille.</p>
-<a class="btn danger" href="/account/delete">Supprimer mon compte</a>
-</section>"#
-            .to_string()
-    } else {
-        pending_deletion_panel(&me)
-    };
+    let cookie = account_cookie(&headers);
+    let (groups, header) = header_with_groups(&state, &headers, &me, "/account").await;
+    let has_photo = avatar::has_own_photo(&state, cookie.as_deref()).await;
+    let active =
+        resolve_active_group(&groups, active_group_id_from_headers(&headers)).map(|g| g.group_id);
+    // One `GET /groups/:id` per family for its member count: a person
+    // belongs to a handful at most, and a failed read shows the role alone.
+    let mut families = Vec::with_capacity(groups.len());
+    for g in groups {
+        let members = fetch_group_detail(&state, cookie.as_deref(), g.group_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|detail| detail.members.len());
+        families.push((g, members));
+    }
 
     let body = format!(
-        r#"<h1>Mon compte</h1>
-<dl>
-<dt>Nom affiché</dt><dd>{name}</dd>
-<dt>Email</dt><dd>{email}</dd>
-</dl>
-{notice}{error}{terms}
+        r#"{head}
+{notice}{error}{terms}{pending}
+{families}
 {photo}
-<section class="card">
-<h2>Notifications de rappel</h2>
-<p class="muted">Recevoir les rappels de vos événements par notification, par email, ou les deux.</p>
-<a class="btn secondary" href="/account/notifications">Gérer mes notifications</a>
-</section>
-<section class="card">
-<h2>Sessions actives</h2>
-<p class="muted">Voir vos sessions ouvertes, et en fermer une ou toutes.</p>
-<a class="btn secondary" href="/account/sessions">Gérer mes sessions</a>
-</section>
-<section class="card">
-<h2>Exporter mes données</h2>
-<p class="muted">Droit d'accès et de portabilité (Art. 15/20) : téléchargez au format JSON tout ce que le service conserve qui vous concerne.</p>
-<a class="btn secondary" href="/account/export">Exporter mes données</a>
-</section>
-{deletion_section}"#,
-        name = html_escape(&me.display_name),
-        email = html_escape(&me.email),
+{settings}"#,
+        head = profile::profile_head(&me, has_photo),
         notice = notice_html(query.notice.as_deref()),
         error = error_html(query.error.as_deref()),
         // #319: a new version of the CGU is announced here as on the home
         // page, until acknowledged.
         terms = terms::update_notice(&me),
-        // #468: the profile photo, first of the account's settings.
+        pending = pending_deletion_panel(&me),
+        families = profile::families_section(&families, active),
+        // #468: the profile photo.
         photo = avatar::section(&me, has_photo),
+        settings = profile::settings_section(&me),
     );
     Html(shell_with_header(Width::Read, "Mon compte", &header, &body)).into_response()
 }
