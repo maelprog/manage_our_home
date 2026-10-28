@@ -120,12 +120,18 @@ fn collect_recipes<'a>(value: &'a Value, out: &mut Vec<&'a Value>) {
 /// `Recipe`, `schema:Recipe`, `http://schema.org/Recipe`, alone or in an
 /// array of types.
 fn is_recipe_type(t: &Value) -> bool {
-    let named = |s: &str| s == "Recipe" || s.ends_with("/Recipe") || s.ends_with(":Recipe");
     match t {
-        Value::String(s) => named(s),
-        Value::Array(types) => types.iter().filter_map(Value::as_str).any(named),
+        Value::String(s) => names_recipe(s),
+        Value::Array(types) => types.iter().filter_map(Value::as_str).any(names_recipe),
         _ => false,
     }
+}
+
+/// Whether a type names schema.org's `Recipe`: `Recipe`, `schema:Recipe`,
+/// `http://schema.org/Recipe`. Also what a microdata `itemtype` is checked
+/// on (`microdata`).
+pub(crate) fn names_recipe(t: &str) -> bool {
+    t == "Recipe" || t.ends_with("/Recipe") || t.ends_with(":Recipe")
 }
 
 fn read_recipe(node: &Value) -> Option<ExtractedRecipe> {

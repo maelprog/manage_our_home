@@ -1,9 +1,12 @@
 pub mod crud;
+pub mod html;
 pub mod import;
 pub mod ingredient_line;
 pub mod jsonld;
 pub mod meal_history;
+pub mod microdata;
 pub mod outcome;
+pub mod prose;
 pub mod selections;
 pub mod suggestions;
 pub mod taxonomy;

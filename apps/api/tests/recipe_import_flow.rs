@@ -26,6 +26,7 @@ use sqlx::PgPool;
 
 const MARMITON: &str = include_str!("fixtures/recipe_pages/marmiton_graph.html");
 const NO_RECIPE: &str = include_str!("fixtures/recipe_pages/no_recipe.html");
+const PROSE: &str = include_str!("fixtures/recipe_pages/woochiens_prose.html");
 
 /// The name the test client pins to the local server.
 const SITE: &str = "recettes.test";
@@ -54,6 +55,7 @@ async fn site() -> (SocketAddr, Arc<AtomicUsize>) {
             match uri.path() {
                 "/marmiton" => html(MARMITON.into()),
                 "/no-recipe" => html(NO_RECIPE.into()),
+                "/prose" => html(PROSE.into()),
                 "/json" => axum::Json(serde_json::json!({"@type": "Recipe"})).into_response(),
                 "/no-type" => Response::new(Body::from(MARMITON)),
                 "/broken" => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -219,6 +221,37 @@ async fn a_recipe_page_gives_a_draft_and_creates_nothing(db: PgPool) {
         draft["steps"][2],
         "Laisser reposer 1 heure, votre pâte est prête."
     );
+    assert_eq!(recipe_count(&db).await, 0, "the import saves nothing");
+}
+
+/// A page with neither JSON-LD nor microdata (#475): its prose gives the
+/// draft, whose `source_url` loses its tracking parameters only.
+#[sqlx::test]
+async fn a_prose_page_gives_a_draft_without_tracking_parameters(db: PgPool) {
+    let s = setup(db.clone(), true).await;
+    let page = format!("http://{SITE}:{}/prose", s.port);
+    let res = import(
+        &s,
+        &format!("{page}?id=7&utm_source=Pinterest&utm_medium=organic"),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let draft = json_body(res).await;
+    assert_eq!(
+        draft["name"],
+        "Tajine de poulet aux épices : des saveurs orientales"
+    );
+    assert_eq!(draft["source_url"], format!("{page}?id=7"));
+    assert_eq!(draft["ingredients"].as_array().unwrap().len(), 18);
+    assert_eq!(
+        draft["ingredients"][0],
+        serde_json::json!({"quantity": 1.2, "unit": "kg", "name": "Poulet entier ou morceaux"})
+    );
+    assert_eq!(
+        draft["ingredients"][12],
+        serde_json::json!({"quantity": 250.0, "unit": "ml", "name": "Bouillon de volaille"})
+    );
+    assert!(!draft["steps"].as_array().unwrap().is_empty());
     assert_eq!(recipe_count(&db).await, 0, "the import saves nothing");
 }
 

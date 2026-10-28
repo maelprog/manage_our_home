@@ -1,5 +1,9 @@
 //! `POST /groups/:id/recipes/import` (#405): the recipe a web page
-//! publishes as schema.org JSON-LD, as a draft for the member to review.
+//! publishes, as a draft for the member to review. Read from the page's
+//! schema.org JSON-LD (`jsonld`), else its schema.org microdata
+//! (`microdata`), else its prose (`prose`, #475): an « Ingrédients »
+//! heading over a list. The draft's `source_url` is the address without
+//! its tracking parameters (`without_tracking`).
 //! It creates nothing — the reviewed recipe goes through
 //! `POST /groups/:id/recipes`, with the page as `source_url`. Open to any
 //! member, like creating a recipe.
@@ -32,7 +36,7 @@ use crate::error::{AppError, AppResult};
 use crate::groups::require_role;
 use crate::public_destination::{check_url, refusal_in, Refused};
 use crate::rate_limit::{SlidingLimiter, SlidingWindow};
-use crate::recipes::{ingredient_line, jsonld};
+use crate::recipes::{ingredient_line, jsonld, microdata, prose};
 use crate::AppState;
 
 /// The heaviest page read, in bytes. A recipe page with its JSON-LD weighs
@@ -63,7 +67,8 @@ pub enum ImportFailure {
     NotHtml,
     /// More than `MAX_PAGE_BYTES`.
     TooLarge,
-    /// No `Recipe` node in the page's JSON-LD.
+    /// No recipe in the page: no `Recipe` in its JSON-LD or microdata, no
+    /// ingredient under an « Ingrédients » heading.
     NoRecipe,
 }
 
@@ -106,16 +111,20 @@ pub async fn import_recipe(
     let page = fetch_page(&state.recipe_import_client, url.clone()).await?;
     // Reading up to `MAX_PAGE_BYTES` is CPU work, linear but not free: off
     // the async workers, so one import does not stall other requests.
-    let source_url = url.to_string();
+    let source_url = without_tracking(&url).to_string();
     let draft = tokio::task::spawn_blocking(move || draft_of(&page, source_url))
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("recipe extraction panicked: {e}")))?;
     Ok(Json(draft.ok_or(ImportFailure::NoRecipe)?))
 }
 
-/// The draft a page gives, or `None` when it publishes no recipe.
+/// The draft a page gives, or `None` when it publishes no recipe: its
+/// JSON-LD recipe, else its microdata recipe, else the recipe its prose
+/// gives.
 fn draft_of(page: &str, source_url: String) -> Option<RecipeDraft> {
-    let recipe = jsonld::extract_recipe(page)?;
+    let recipe = jsonld::extract_recipe(page)
+        .or_else(|| microdata::extract_recipe(page))
+        .or_else(|| prose::extract_recipe(page))?;
     Some(RecipeDraft {
         name: recipe.name,
         ingredients: recipe
@@ -171,7 +180,8 @@ fn is_html(content_type: &str) -> bool {
 }
 
 /// The page at `url`, as text, read up to `MAX_PAGE_BYTES`. Bytes that are
-/// not UTF-8 are replaced: JSON-LD is UTF-8 by definition.
+/// not UTF-8 are replaced: JSON-LD is UTF-8 by definition, and so are
+/// nearly all recipe pages.
 async fn fetch_page(client: &reqwest::Client, url: Url) -> Result<String, ImportFailure> {
     let mut response = client
         .get(url)
@@ -234,6 +244,27 @@ impl ImportThrottle {
     pub async fn admit(&self, user: Uuid) -> Result<bool, sqlx::Error> {
         self.0.admit(user.as_bytes()).await
     }
+}
+
+/// `url` without its tracking parameters: `utm_*`, `fbclid`, `gclid`
+/// (names in any case). The other parameters stay as written, in their
+/// order; a query left empty is dropped with its `?`.
+fn without_tracking(url: &Url) -> Url {
+    let Some(query) = url.query().filter(|q| !q.is_empty()) else {
+        return url.clone();
+    };
+    let tracking = |pair: &&str| {
+        let name = pair
+            .split('=')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        name.starts_with("utm_") || name == "fbclid" || name == "gclid"
+    };
+    let kept: Vec<&str> = query.split('&').filter(|p| !tracking(p)).collect();
+    let mut cleaned = url.clone();
+    cleaned.set_query((!kept.is_empty()).then(|| kept.join("&")).as_deref());
+    cleaned
 }
 
 /// `source_url` as a recipe stores it: trimmed, `http` or `https`, at most
@@ -360,6 +391,91 @@ mod tests {
         assert_eq!(throttle.tracked(), 2);
         throttle.admit(Uuid::new_v4(), now + RATE_WINDOW);
         assert_eq!(throttle.tracked(), 1);
+    }
+
+    fn cleaned(url: &str) -> String {
+        without_tracking(&Url::parse(url).unwrap()).to_string()
+    }
+
+    #[test]
+    fn tracking_parameters_are_dropped_from_the_source_url() {
+        assert_eq!(
+            cleaned("https://recipescomfortfood.woochiens.com/tajine/?utm_source=Pinterest&utm_medium=organic"),
+            "https://recipescomfortfood.woochiens.com/tajine/"
+        );
+        assert_eq!(
+            cleaned(
+                "https://e.fr/r?id=3&utm_campaign=x&page=2&fbclid=Ab1&gclid=Z9&UTM_TERM=y#etape-2"
+            ),
+            "https://e.fr/r?id=3&page=2#etape-2"
+        );
+        // Other parameters stay as written, in their order and encoding.
+        for kept in [
+            "https://e.fr/r?q=cr%C3%AApe+sucr%C3%A9e&tri=note",
+            "https://e.fr/r?utm=1&utmsource=2&xfbclid=3",
+            "https://e.fr/r?a=1&&b",
+            "https://e.fr/r?",
+            "https://e.fr/r",
+        ] {
+            assert_eq!(cleaned(kept), kept);
+        }
+    }
+
+    const WOOCHIENS: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/recipe_pages/woochiens_prose.html"
+    ));
+
+    fn draft(page: &str) -> Option<RecipeDraft> {
+        draft_of(page, "https://e.fr/r".into())
+    }
+
+    /// The page of #475: neither JSON-LD nor microdata, a recipe in prose.
+    #[test]
+    fn the_woochiens_prose_page_gives_a_draft() {
+        let draft = draft(WOOCHIENS).unwrap();
+        assert!(draft.name.starts_with("Tajine de poulet"), "{}", draft.name);
+        assert!(draft.ingredients.len() >= 15, "{}", draft.ingredients.len());
+        let named = |name: &str| {
+            draft
+                .ingredients
+                .iter()
+                .find(|i| i.name == name)
+                .unwrap_or_else(|| panic!("no {name}: {:#?}", draft.ingredients))
+                .clone()
+        };
+        let poulet = named("Poulet entier ou morceaux");
+        assert_eq!(
+            (poulet.quantity, poulet.unit.as_deref()),
+            (Some(1.2), Some("kg"))
+        );
+        let bouillon = named("Bouillon de volaille");
+        assert_eq!(
+            (bouillon.quantity, bouillon.unit.as_deref()),
+            (Some(250.0), Some("ml"))
+        );
+        assert!(!draft.steps.is_empty());
+    }
+
+    /// JSON-LD first, then microdata, then prose: a page carrying the three
+    /// gives its JSON-LD recipe, one without JSON-LD its microdata recipe.
+    #[test]
+    fn extractors_are_tried_in_order() {
+        let jsonld =
+            r#"<script type="application/ld+json">{"@type": "Recipe", "name": "JSON-LD"}</script>"#;
+        let microdata = r#"<div itemscope itemtype="https://schema.org/Recipe"><h2 itemprop="name">Microdata</h2></div>"#;
+        let prose = "<h1>Prose</h1><h2>Ingrédients</h2><ul><li>1 poireau</li></ul>";
+        let name = |page: &str| draft(page).map(|d| d.name);
+        assert_eq!(
+            name(&format!("{jsonld}{microdata}{prose}")).as_deref(),
+            Some("JSON-LD")
+        );
+        assert_eq!(
+            name(&format!("{prose}{microdata}")).as_deref(),
+            Some("Microdata")
+        );
+        assert_eq!(name(prose).as_deref(), Some("Prose"));
+        assert_eq!(name("<h1>Rien</h1><p>Pas de recette.</p>"), None);
     }
 
     #[test]
