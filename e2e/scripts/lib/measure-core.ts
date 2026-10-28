@@ -18,6 +18,9 @@ const NAV_TABLE_RE = /const NAV:[^=]*=\s*\[([\s\S]*?)\];/g;
 // `\s*` wherever rustfmt may break a line: it splits a tuple wider than its
 // call width over several lines, and a long `.chain(…)` before `.then_some`.
 const CONDITIONAL_ENTRY_RE = /\.chain\(\s*[\w.]*\s*\.then_some\(\(\s*"([^"]*)"/g;
+// A link written outside the table through the same helper: the profile,
+// which closes the navigation since #523.
+const NAVLINK_CALL_RE = /\bnavlink\(\s*"([^"]*)"/g;
 
 /**
  * Extracts the app nav out of `apps/web/src/app.rs`'s `app_header`.
@@ -50,8 +53,14 @@ export function parseNavRoutes(source: string): NavParse {
         "parseNavRoutes() en attend exactement une (celle d'app_header)",
     );
   }
+  // A page once: since #523 the phone's Cuisine tab and the PC's Stocks
+  // link are two entries for `/stocks`.
+  const hrefs = new Set([
+    ...[...tables[0][1].matchAll(/\(\s*"([^"]*)"\s*,/g)].map((m) => m[1]),
+    ...[...source.matchAll(NAVLINK_CALL_RE)].map((m) => m[1]),
+  ]);
   return {
-    hrefs: [...tables[0][1].matchAll(/\(\s*"([^"]*)"\s*,/g)].map((m) => m[1]),
+    hrefs: [...hrefs],
     conditional: [...source.matchAll(CONDITIONAL_ENTRY_RE)].map((m) => m[1]),
   };
 }

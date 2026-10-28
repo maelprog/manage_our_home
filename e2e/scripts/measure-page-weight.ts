@@ -317,9 +317,19 @@ const ROUTES: RouteSpec[] = [
       pageSize: 50,
     },
   },
-  // `/groups` n'est plus une entrée de la nav depuis #523 : les familles
-  // passent sous le profil (`/account`), lien qui n'est pas dans la table
-  // `NAV`. Le garde-fou 1 refuserait de le mesurer ici.
+  // Le profil (onglet Profil, bloc du pied de la colonne) depuis #523 : les
+  // familles y sont passées, `/groups` n'est plus une entrée de la nav. Une
+  // ligne par famille, comme `/groups` les comptait.
+  {
+    path: "/account",
+    floor: 500,
+    items: {
+      label: "familles",
+      minStoredKey: "groups",
+      pattern: new RegExp(`name="group_id" value="${UUID}"`),
+      count: () => ({ path: "/groups", key: "" }),
+    },
+  },
 ];
 
 /**

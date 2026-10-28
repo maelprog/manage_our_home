@@ -113,6 +113,36 @@ test("parseNavRoutes reads entries rustfmt wrapped over several lines", () => {
   assert.deepEqual(parsed.conditional, ["/admin/users"]);
 });
 
+// The profile closes the navigation outside the table (#523), through the
+// same `navlink` call; and the phone's Cuisine tab and the PC's Stocks link
+// are two entries for one page.
+const APP_RS_NAV_PROFILE = `
+const NAV: [(&str, Option<&str>, Option<&str>, Glyph); 3] = [
+    ("/", Some("Accueil"), Some("Accueil"), Glyph::Home),
+    ("/stocks", None, Some("Cuisine"), Glyph::Stocks),
+    ("/stocks", Some("Stocks"), None, Glyph::Stocks),
+];
+
+fn navlink(href: &str, class: &str, current: bool, inner: &str) -> String {
+    format!(r#"<a class="{class}" href="{href}">{inner}</a>"#)
+}
+
+pub fn app_header(me: &MeResponse) -> String {
+    let links: String = NAV.iter().map(|(href, ..)| navlink(href, "", false, "")).collect();
+    let profile = navlink(
+        "/account",
+        "profile",
+        false,
+        "",
+    );
+}
+`;
+
+test("parseNavRoutes reads the profile link and counts a page once", () => {
+  const parsed = parseNavRoutes(APP_RS_NAV_PROFILE);
+  assert.deepEqual(parsed.hrefs, ["/", "/stocks", "/account"]);
+});
+
 test("parseNavRoutes reads the real nav of apps/web/src/app.rs", () => {
   const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
   const parsed = parseNavRoutes(readFileSync(join(repo, "apps/web/src/app.rs"), "utf8"));
@@ -124,6 +154,7 @@ test("parseNavRoutes reads the real nav of apps/web/src/app.rs", () => {
     "/recipes",
     "/budget",
     "/messagerie",
+    "/account",
   ]);
   assert.deepEqual(parsed.conditional, ["/admin/users"]);
 });
