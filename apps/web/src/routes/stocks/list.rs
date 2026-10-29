@@ -87,7 +87,8 @@ pub(crate) fn list_href(state: &ListState) -> String {
 }
 
 /// Every place the list holds, once each — compared without case or
-/// surrounding spaces, written as first met — in alphabetical order.
+/// surrounding spaces, written as first met — in alphabetical order,
+/// accents aside.
 pub(crate) fn places(items: &[StockItemResponse]) -> Vec<String> {
     let mut found: Vec<(String, String)> = Vec::new();
     for place in items
@@ -101,8 +102,32 @@ pub(crate) fn places(items: &[StockItemResponse]) -> Vec<String> {
             found.push((key, place.to_string()));
         }
     }
-    found.sort();
+    // Accents aside first, so « Étagère » sits among the E; the key then
+    // breaks a tie (« Entree » before « Entrée »).
+    found.sort_by_cached_key(|(key, _)| (without_accents(key), key.clone()));
     found.into_iter().map(|(_, place)| place).collect()
+}
+
+/// `key` (already lowercased) with the accents of French letters taken
+/// off — « é » reads « e », « œ » reads « oe » — for an alphabetical order.
+fn without_accents(key: &str) -> String {
+    let mut out = String::with_capacity(key.len());
+    for c in key.chars() {
+        match c {
+            'à' | 'â' | 'ä' | 'á' | 'ã' | 'å' => out.push('a'),
+            'é' | 'è' | 'ê' | 'ë' => out.push('e'),
+            'î' | 'ï' | 'í' | 'ì' => out.push('i'),
+            'ô' | 'ö' | 'ó' | 'ò' | 'õ' => out.push('o'),
+            'ù' | 'û' | 'ü' | 'ú' => out.push('u'),
+            'ÿ' | 'ý' => out.push('y'),
+            'ç' => out.push('c'),
+            'ñ' => out.push('n'),
+            'œ' => out.push_str("oe"),
+            'æ' => out.push_str("ae"),
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// Whether `item` is kept in `place` (same key) and its name contains
@@ -452,6 +477,21 @@ mod tests {
             item("Riz", Some("  "), 1.0, "kg"),
         ];
         assert_eq!(places(&items), ["Frigo", "Placard"]);
+    }
+
+    #[test]
+    fn places_are_sorted_as_a_dictionary_reads_them_accents_aside() {
+        let items = [
+            item("Lait", Some("Placard"), 1.0, "L"),
+            item("Pain", Some("Étagère"), 1.0, "unité"),
+            item("Glace", Some("Congélateur"), 1.0, "pot"),
+            item("Sucre", Some("cellier"), 1.0, "kg"),
+            item("Eau", Some("Entrée"), 1.0, "L"),
+        ];
+        assert_eq!(
+            places(&items),
+            ["cellier", "Congélateur", "Entrée", "Étagère", "Placard"]
+        );
     }
 
     #[test]
