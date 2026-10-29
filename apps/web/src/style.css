@@ -682,7 +682,7 @@ progress::-moz-progress-bar { background: currentColor; }
 .scan { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s4); border: 2px dashed var(--accent); border-radius: var(--r-lg); }
 .scan > * { margin: 0; }
 .scan .icon { color: var(--accent); }
-.or { display: flex; align-items: center; gap: var(--s3); margin: 0; color: var(--muted); font-size: var(--t-sm); }
+.or { display: flex; align-items: center; gap: var(--s3); margin: var(--s4) 0; color: var(--muted); font-size: var(--t-sm); }
 .or::before, .or::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
 /* Support/admin screens (front epic F9) show multi-column tables that are
    wider than the narrow form column; the wrapper lets them scroll instead of

@@ -594,8 +594,9 @@ Livré par #522 : un jeu d'icônes en SVG inline, `apps/web/src/icons.rs`.
   interlignage `normal` : un lien `.btn` qui ne tient qu'une icône a la
   hauteur d'un lien `.btn` qui tient un mot (48 px l'un et l'autre dans
   Chromium, mesuré par #522 le 2026-10-28 sur les flèches de l'agenda et
-  « Aujourd'hui »). Un `<button>` qui ne tiendrait qu'une icône n'a pas été
-  mesuré : il n'en existe aucun.
+  « Aujourd'hui »). Un `<button>` qui ne tient qu'une icône, les « − » et
+  « + » du `.stepper` des stocks (#527), mesure aussi 48 × 48 px dans
+  Chromium, sur téléphone comme sur PC (mesuré le 2026-10-29).
 - **Une icône n'est jamais le nom accessible de ce qui la porte.** À côté
   d'un libellé visible, elle le répéterait ; seule dans une commande, le nom
   va sur la commande. `icon_link(class, href, label, icon)` est la façon

@@ -505,9 +505,9 @@ test.describe("Grocery list — reception (#472)", () => {
     // Five days out: the list names its weekday (#527), and a quantity in
     // the default unit reads as the bare number.
     await page.goto("/stocks");
-    const lait = page.locator("li", { hasText: "Lait" });
-    await expect(lait.locator(".stepper > span")).toHaveText("2 L");
-    await expect(lait).toContainText(`périme ${frWeekday(date)}`);
+    const laitRow = page.locator("li", { hasText: "Lait" });
+    await expect(laitRow.locator(".stepper > span")).toHaveText("2 L");
+    await expect(laitRow).toContainText(`périme ${frWeekday(date)}`);
     await expect(page.locator("li", { hasText: "Pain" }).locator(".stepper > span")).toHaveText("1");
   });
 
