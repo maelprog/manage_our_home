@@ -25,7 +25,7 @@ use manage_our_home_shared::dto::grocery_list::{
 };
 use manage_our_home_shared::dto::recipes::RecipeSelectionResponse;
 use manage_our_home_shared::dto::stocks::{StockItemList, StockItemResponse};
-use manage_our_home_shared::validation::budget::validate_entry_form;
+use manage_our_home_shared::validation::budget::{can_access_budget, validate_entry_form};
 use manage_our_home_shared::validation::grocery_list::{
     can_modify, quantity_label, source_label, validate_item_form,
 };
@@ -151,9 +151,11 @@ fn error_html(error: Option<&str>) -> String {
 ///
 /// Once an item is checked (bought), the row also shows the Budget
 /// price-on-checkout form (F7): an inline amount field posting to
-/// `POST /grocery-list/:id/price`. Any member may set a price, and the backend
-/// upserts on the item, so a re-tap re-tarifies rather than double-counting.
-fn item_row(item: &GroceryItemResponse, can_edit: bool) -> String {
+/// `POST /grocery-list/:id/price`. The backend upserts on the item, so a
+/// re-tap re-tarifies rather than double-counting. `can_price` is
+/// `can_access_budget` of the caller's role (#531): a standard member gets no
+/// price field, an owner or an admin adds the spend later.
+fn item_row(item: &GroceryItemResponse, can_edit: bool, can_price: bool) -> String {
     let next = !item.checked;
     let (toggle_label, tick_class, tick_icon, name_class) = if item.checked {
         ("Décocher", "tick", icon(Icon::Check), r#" class="done""#)
@@ -180,8 +182,9 @@ fn item_row(item: &GroceryItemResponse, can_edit: bool) -> String {
         String::new()
     };
 
-    // Price-on-checkout (F7): only on a checked item, and open to any member.
-    let price_form = if item.checked {
+    // Price-on-checkout (F7): only on a checked item, and only for whom
+    // reaches the budget.
+    let price_form = if item.checked && can_price {
         format!(
             r#"<form method="post" action="/grocery-list/{id}/price" class="actions">
 <input type="number" name="amount" step="0.01" min="0" required placeholder="Prix (€)" aria-label="Prix pour {name_attr}" style="width:7rem;"/>
@@ -233,9 +236,10 @@ fn progress_html(checked: usize, total: usize) -> String {
 /// The list in its two sections (#526), « À acheter » then « Dans le
 /// panier », read off the checked state alone — the order inside each is
 /// the backend's. A section with nothing in it is left out. Under the
-/// basket, the way to the reception (#472).
+/// basket, the way to the reception (#472). `can_price`: see `item_row`.
 fn sections_html(
     items: &[GroceryItemResponse],
+    can_price: bool,
     can_edit: impl Fn(&GroceryItemResponse) -> bool,
 ) -> String {
     if items.is_empty() {
@@ -245,7 +249,7 @@ fn sections_html(
         let rows: String = items
             .iter()
             .filter(|item| item.checked == checked)
-            .map(|item| item_row(item, can_edit(item)))
+            .map(|item| item_row(item, can_edit(item), can_price))
             .collect();
         if rows.is_empty() {
             String::new()
@@ -430,7 +434,7 @@ pub async fn get(
         generate = generate_html(planned_count(planned.as_deref())),
         progress = progress_html(checked, items.len()),
         plus = icon(Icon::Plus),
-        list = sections_html(&items, |item| can_modify(
+        list = sections_html(&items, can_access_budget(&fam.role), |item| can_modify(
             &fam.role,
             item.created_by == me.user_id
         )),
@@ -621,9 +625,11 @@ pub struct PriceForm {
     amount: String,
 }
 
-/// Sets a price on a checked grocery item (Budget price-on-checkout, F7). Any
-/// member may set a price; the backend upserts on the item, so a re-tap
-/// re-tarifies the same budget entry rather than double-counting. Relays to
+/// Sets a price on a checked grocery item (Budget price-on-checkout, F7). An
+/// owner or an admin may set a price (#531: a standard member's is the
+/// backend's 404, the item-not-found page); the backend upserts on the item,
+/// so a re-tap re-tarifies the same budget entry rather than double-counting.
+/// Relays to
 /// `POST /groups/:id/grocery-items/:item_id/price`.
 pub async fn price(
     CurrentUser(me): CurrentUser,
@@ -948,7 +954,7 @@ mod tests {
     #[test]
     fn the_sections_split_on_the_checked_state_in_the_list_order() {
         let items = [item("Pain", false), item("Sel", false), item("Lait", true)];
-        let html = sections_html(&items, |_| false);
+        let html = sections_html(&items, true, |_| false);
         let buy = html
             .find(r#"<h3 class="eyebrow">À acheter</h3>"#)
             .expect("À acheter");
@@ -968,12 +974,12 @@ mod tests {
 
     #[test]
     fn a_section_with_nothing_in_it_is_left_out() {
-        let html = sections_html(&[item("Pain", false)], |_| false);
+        let html = sections_html(&[item("Pain", false)], true, |_| false);
         assert!(html.contains("À acheter"), "{html}");
         assert!(!html.contains("Dans le panier"), "{html}");
         assert!(!html.contains("/grocery-list/reception"), "{html}");
 
-        let html = sections_html(&[item("Lait", true)], |_| false);
+        let html = sections_html(&[item("Lait", true)], true, |_| false);
         assert!(!html.contains("À acheter"), "{html}");
         assert!(html.contains("Dans le panier"), "{html}");
         // Something is checked: the way to the reception (#472).
@@ -982,7 +988,7 @@ mod tests {
 
     #[test]
     fn an_empty_list_says_so() {
-        let html = sections_html(&[], |_| true);
+        let html = sections_html(&[], true, |_| true);
         assert!(html.contains("Aucun article pour le moment."), "{html}");
         assert!(!html.contains("<h3"), "{html}");
     }
@@ -990,7 +996,7 @@ mod tests {
     #[test]
     fn the_tick_box_is_the_form_button_and_works_without_javascript() {
         let it = item("Pain", false);
-        let html = item_row(&it, false);
+        let html = item_row(&it, false, true);
         assert!(
             html.contains(&format!(
                 r#"<form method="post" action="/grocery-list/{}/check" data-keep-scroll>"#,
@@ -1016,7 +1022,7 @@ mod tests {
 
     #[test]
     fn a_checked_row_is_ticked_struck_through_and_priced() {
-        let html = item_row(&item("Lait", true), false);
+        let html = item_row(&item("Lait", true), false, true);
         assert!(
             html.contains(r#"<input type="hidden" name="checked" value="false"/>"#),
             "{html}"
@@ -1036,12 +1042,28 @@ mod tests {
     }
 
     #[test]
+    fn a_standard_member_s_checked_row_has_no_price_field() {
+        // #531: the price is a budget entry, which a standard member does not
+        // reach; an owner or an admin adds the spend later.
+        let html = item_row(&item("Lait", true), false, false);
+        assert!(
+            html.contains(r#"<strong class="done">Lait</strong>"#),
+            "{html}"
+        );
+        assert!(!html.contains("/price"), "{html}");
+        assert!(!html.contains("Prix"), "{html}");
+        let html = sections_html(&[item("Lait", true)], false, |_| false);
+        assert!(!html.contains("/price"), "{html}");
+        assert!(sections_html(&[item("Lait", true)], true, |_| false).contains("/price"));
+    }
+
+    #[test]
     fn the_row_names_the_quantity_the_provenance_and_the_edit_link() {
         let mut it = item("Farine", false);
         it.quantity = Some(300.0);
         it.unit = Some("g".into());
         it.source = "recipe".into();
-        let html = item_row(&it, true);
+        let html = item_row(&it, true, true);
         assert!(
             html.contains(r#"<span class="muted">300 g</span>"#),
             "{html}"
@@ -1051,7 +1073,7 @@ mod tests {
             "{html}"
         );
         assert!(html.contains(">Modifier</a>"), "{html}");
-        assert!(!item_row(&it, false).contains("Modifier"));
+        assert!(!item_row(&it, false, true).contains("Modifier"));
     }
 
     #[test]

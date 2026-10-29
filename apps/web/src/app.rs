@@ -10,6 +10,7 @@
 use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
 use manage_our_home_shared::validation::auth::{MAX_PASSWORD_LEN, MIN_PASSWORD_LEN};
+use manage_our_home_shared::validation::budget::can_access_budget;
 use uuid::Uuid;
 
 use crate::icons::{icon, Icon as Glyph};
@@ -237,9 +238,9 @@ pub(crate) fn unread_badge(unread: u64) -> String {
 /// through its card on the home page. Cuisine is a link of its own rather
 /// than a second label of Stocks: it stands for the stocks and the recipes
 /// both, so it is the current tab on either (`app_header`), where the PC
-/// lights Stocks or Recettes. Budget is shown to every member on a PC until
-/// #531 adds its role condition (arbitrage of 2026-10-28); the
-/// Notifications entry waits for #535.
+/// lights Stocks or Recettes. Budget is left out for a standard member of
+/// the active family (#531, `can_access_budget`); the Notifications entry
+/// waits for #535.
 ///
 /// `/admin/users` is appended for the single technical superadmin only,
 /// on a PC — everyone else never sees the door. The profile closes the list,
@@ -300,9 +301,12 @@ pub fn app_header(
     redirect_to: &str,
     unread_messages: u64,
 ) -> String {
+    // No family yet: the link stays, `/budget` sends to `/groups/new`.
+    let budget = active.is_none_or(|g| can_access_budget(&g.role));
     let links: String = NAV
         .iter()
         .copied()
+        .filter(|&(href, ..)| budget || href != "/budget")
         .chain(
             me.is_superadmin
                 .then_some(("/admin/users", Some("Admin"), None, Glyph::Settings)),
@@ -1565,9 +1569,24 @@ mod tests {
     }
 
     #[test]
+    fn a_standard_member_is_shown_no_budget_link() {
+        // #531: a child of the family is a standard member, kept out of the
+        // budget; an admin and the owner keep the link.
+        let mut standard = family("Famille Martin");
+        standard.role = "standard".to_string();
+        let header = app_header(&me(false), Some(&standard), "/", 0);
+        assert!(!header.contains("/budget"), "{header}");
+        assert_eq!(destinations(&header, Layout::Pc).len(), 7);
+        let mut admin = family("Famille Martin");
+        admin.role = "admin".to_string();
+        let header = app_header(&me(false), Some(&admin), "/", 0);
+        assert!(header.contains(r#"href="/budget""#), "{header}");
+    }
+
+    #[test]
     fn a_pc_gets_the_whole_list_and_the_profile_block_last() {
-        // Budget is shown to every member until #531 adds its role
-        // condition (arbitrage of 2026-10-28); Notifications waits for #535.
+        // The owner's list: Budget is for owners and admins (#531);
+        // Notifications waits for #535.
         let header = app_header(&me(false), Some(&family("Famille Martin")), "/", 0);
         assert_eq!(
             destinations(&header, Layout::Pc),

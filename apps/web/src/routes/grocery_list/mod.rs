@@ -13,7 +13,8 @@
 //! `list::price` renders an inline "Renseigner le prix" form on each checked
 //! item, posting to `POST /grocery-list/:id/price` (see
 //! `docs/front-epic-7-budget.md`). It is purely additive — the check-off
-//! behaviour itself is unchanged.
+//! behaviour itself is unchanged. Since #531 the form is drawn for an owner
+//! or an admin only (`can_access_budget`).
 //!
 //! Permission bar (mirrors `apps/api/src/grocery_list/mod.rs::can_modify`):
 //! any family member may add, read, or **check off** an item, so those

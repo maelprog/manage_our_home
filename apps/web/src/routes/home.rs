@@ -12,7 +12,7 @@ use manage_our_home_shared::dto::grocery_list::{GroceryItemList, GroceryItemResp
 use manage_our_home_shared::dto::groups::{GroupDetailResponse, GroupMember, GroupSummary};
 use manage_our_home_shared::dto::messagerie::{MessageList, MessageResponse};
 use manage_our_home_shared::dto::stocks::{StockItemList, StockItemResponse};
-use manage_our_home_shared::validation::budget::{format_euros, month_name_fr};
+use manage_our_home_shared::validation::budget::{can_access_budget, format_euros, month_name_fr};
 use manage_our_home_shared::validation::messagerie::author_name;
 use uuid::Uuid;
 
@@ -151,9 +151,11 @@ fn truncate_message(content: &str, max_chars: usize) -> String {
 /// authenticated header (nav + family switcher, #17). Built the same way as
 /// every other family-scoped route (`routes/agenda`, `routes/stocks`, …);
 /// `None` means the user has no group yet, handled separately by `get`
-/// before this is even called.
+/// before this is even called. `role` is the caller's in that family, which
+/// decides the budget card (#531).
 struct FamilyContext {
     gid: Uuid,
+    role: String,
     header: String,
 }
 
@@ -167,6 +169,7 @@ async fn family_context(
     let active: Option<&GroupSummary> = resolve_active_group(&groups, preferred);
     let fam = active.map(|g| FamilyContext {
         gid: g.group_id,
+        role: g.role.clone(),
         header: header.clone(),
     });
     (fam, groups)
@@ -588,8 +591,8 @@ fn budget_title(month: u32) -> String {
     }
 }
 
-/// This month's spend. Shown to every member until #531 reserves the
-/// budget to owners and admins.
+/// This month's spend, for an owner or an admin: a standard member's home
+/// page has no budget card (#531), and its summary is not even asked for.
 fn budget_block(total: Option<f64>, today: NaiveDate) -> String {
     let body = match total {
         Some(total) => format!(
@@ -812,24 +815,29 @@ async fn dashboard(me: MeResponse, state: AppState, headers: HeaderMap) -> Respo
         Err(_) => return service_unavailable_page().into_response(),
     };
 
-    let budget_summary: BudgetSummary = match api_request_auth(
-        &state,
-        reqwest::Method::GET,
-        &format!("/groups/{}/budget-entries/summary", fam.gid),
-        cookie.as_deref(),
-        None,
-    )
-    .await
-    {
-        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
-            serde_json::from_value::<BudgetSummary>(resp.body).unwrap_or(BudgetSummary {
+    let budget = if can_access_budget(&fam.role) {
+        let budget_summary: BudgetSummary = match api_request_auth(
+            &state,
+            reqwest::Method::GET,
+            &format!("/groups/{}/budget-entries/summary", fam.gid),
+            cookie.as_deref(),
+            None,
+        )
+        .await
+        {
+            Ok(resp) if resp.status == reqwest::StatusCode::OK => {
+                serde_json::from_value::<BudgetSummary>(resp.body).unwrap_or(BudgetSummary {
+                    periods: Vec::new(),
+                })
+            }
+            Ok(_) => BudgetSummary {
                 periods: Vec::new(),
-            })
-        }
-        Ok(_) => BudgetSummary {
-            periods: Vec::new(),
-        },
-        Err(_) => return service_unavailable_page().into_response(),
+            },
+            Err(_) => return service_unavailable_page().into_response(),
+        };
+        budget_block(current_month_total(&budget_summary.periods, today), today)
+    } else {
+        String::new()
     };
 
     let empty_messages = || MessageList {
@@ -881,7 +889,6 @@ async fn dashboard(me: MeResponse, state: AppState, headers: HeaderMap) -> Respo
         agenda = agenda_block(occurrences.as_deref(), chrono::Utc::now(), today, &members),
         grocery = grocery_tile(count_unchecked(&grocery_items), grocery_items.len()),
         expiry = expiry_tile(&expiring_this_week(&stock, today)),
-        budget = budget_block(current_month_total(&budget_summary.periods, today), today),
         stocks = stocks_block(&low_stock_items(&stock)),
         messages = messages_block(&messages.messages, messages.unread_total, &members),
         add = add_event_button(),

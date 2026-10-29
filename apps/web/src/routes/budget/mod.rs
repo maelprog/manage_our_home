@@ -14,9 +14,13 @@
 //! price-on-checkout action wired into `routes/grocery_list/list.rs` (the hook
 //! F6 deferred to F7).
 //!
-//! Permission bar (mirrors `apps/api/src/budget/mod.rs::can_modify`): any
-//! family member may create, read, or set a price, so those controls render for
-//! everyone; the per-row edit link and the edit screen's edit/delete controls
+//! Access (#531, `can_access_budget`): only an owner or an admin reaches these
+//! pages; a standard member gets the 404 of an unknown path
+//! (`family_context`), as the API answers them.
+//!
+//! Permission bar past it (mirrors `apps/api/src/budget/mod.rs::can_modify`):
+//! create, read and set-a-price render for whoever reaches the budget; the
+//! per-row edit link and the edit screen's edit/delete controls
 //! render only for the entry's creator or a group admin/owner. The backend
 //! stays the authority (a forged edit/delete is still 403'd, mapped
 //! defensively here).
@@ -25,7 +29,8 @@ pub mod edit;
 pub mod list;
 pub mod new;
 
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Redirect, Response};
 use leptos::prelude::*;
 use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
@@ -39,32 +44,40 @@ use crate::state::AppState;
 // The permission mirror lives in `apps/shared` (pure, TDD'd) alongside the
 // other budget logic; re-export it so the submodules import it from the local
 // module like the Grocery-list/Recipes/Stocks pages do.
+use manage_our_home_shared::validation::budget::can_access_budget;
 pub(crate) use manage_our_home_shared::validation::budget::can_modify;
 
 /// Resolved active-family context for a Budget page: the family id every
 /// `/groups/:gid/…` API call is scoped to, the caller's role in it (for the
-/// permission bar), and the shared authenticated header. `None` means the user
-/// has no group yet — callers redirect to `/groups/new`.
+/// permission bar), and the shared authenticated header.
 pub(crate) struct FamilyContext {
     pub gid: Uuid,
     pub role: String,
     pub header: String,
 }
 
+/// The active family of a Budget page, or the answer the page gives instead:
+/// a redirect to `/groups/new` when the user has no group yet, and for a
+/// standard member of the active family (#531) the very 404 an unknown path
+/// gets — no route behind `/budget` tells a child that a budget exists.
 pub(crate) async fn family_context(
     state: &AppState,
     headers: &HeaderMap,
     me: &MeResponse,
     redirect_to: &str,
-) -> Option<FamilyContext> {
+) -> Result<FamilyContext, Response> {
     let (groups, header) = header_with_groups(state, headers, me, redirect_to).await;
     let preferred = active_group_id_from_headers(headers);
     let active: Option<&GroupSummary> = resolve_active_group(&groups, preferred);
-    active.map(|g| FamilyContext {
-        gid: g.group_id,
-        role: g.role.clone(),
-        header,
-    })
+    match active {
+        None => Err(Redirect::to("/groups/new").into_response()),
+        Some(g) if !can_access_budget(&g.role) => Err(StatusCode::NOT_FOUND.into_response()),
+        Some(g) => Ok(FamilyContext {
+            gid: g.group_id,
+            role: g.role.clone(),
+            header,
+        }),
+    }
 }
 
 /// Fetches `cookie_of` for a Budget handler (re-exported so the submodules
