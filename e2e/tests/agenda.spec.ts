@@ -656,4 +656,59 @@ test.describe("Agenda — feuille de création sans JavaScript (#525)", () => {
     await page.getByRole("link", { name: "Fermer" }).click();
     await expect(page).toHaveURL("/agenda");
   });
+
+  // The sheet carries the attachment the mock-up draws: sent as multipart,
+  // the file goes to the event once it exists.
+  test("the sheet creates an event with its attachment, JavaScript off", async ({ page }) => {
+    await registerAndLogin(page, "e2e-agnewatt", "Agenda Justificatif");
+    await createGroup(page, "Famille Justificatifs");
+    await page.goto("/agenda/new");
+
+    const date = dayThisMonth(18);
+    await page.getByLabel("Titre").fill("Rendez-vous avec justificatif");
+    await page.getByLabel("Début").fill(`${date}T14:00`);
+    await page.getByLabel("Fin").fill(`${date}T15:00`);
+    await page.getByLabel("Pièce jointe").setInputFiles({
+      name: "convocation.png",
+      mimeType: "image/png",
+      buffer: PNG_1X1,
+    });
+    await page.getByRole("button", { name: "Créer l'événement" }).click();
+    await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
+    await expect(page.getByText("Événement créé.")).toBeVisible();
+
+    await openEventDetail(page, "Rendez-vous avec justificatif");
+    const link = page.getByRole("link", { name: "convocation.png" });
+    await expect(link).toBeVisible();
+    const href = await link.getAttribute("href");
+    if (!href) throw new Error("no download link");
+    const resp = await page.request.get(href, { maxRedirects: 0 });
+    expect(resp.status()).toBeGreaterThanOrEqual(300);
+    expect(resp.status()).toBeLessThan(400);
+    expect(resp.headers()["location"] ?? "").toContain("X-Amz-");
+  });
+
+  // A refused file is caught before the event is written: the form comes
+  // back under the reason, and the agenda holds nothing.
+  test("a refused file brings the sheet back and creates nothing", async ({ page }) => {
+    await registerAndLogin(page, "e2e-agnewbad", "Agenda Fichier Refusé");
+    await createGroup(page, "Famille Refus");
+    await page.goto("/agenda/new");
+
+    const date = dayThisMonth(19);
+    await page.getByLabel("Titre").fill("Événement au mauvais fichier");
+    await page.getByLabel("Début").fill(`${date}T09:00`);
+    await page.getByLabel("Fin").fill(`${date}T10:00`);
+    await page.getByLabel("Pièce jointe").setInputFiles({
+      name: "notes.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("bonjour"),
+    });
+    await page.getByRole("button", { name: "Créer l'événement" }).click();
+    await expect(page).toHaveURL("/agenda/new");
+    await expect(page.getByText("Type de fichier non autorisé (png, jpg, webp, pdf).")).toBeVisible();
+
+    await page.goto(`/agenda?view=month&date=${date}`);
+    await expect(page.getByRole("link", { name: /Événement au mauvais fichier/ })).toHaveCount(0);
+  });
 });
