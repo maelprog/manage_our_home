@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO budget_entries (group_id, created_by, grocery_item_id, name, amount_cents, spent_at)\n        VALUES ($1, $2, $3, $4, $5, $6)\n        ON CONFLICT (grocery_item_id) WHERE grocery_item_id IS NOT NULL\n        DO UPDATE SET\n            name = EXCLUDED.name,\n            amount_cents = EXCLUDED.amount_cents,\n            spent_at = EXCLUDED.spent_at,\n            updated_at = now()\n        RETURNING id, group_id, created_by, grocery_item_id, name, amount_cents, spent_at, created_at, updated_at\n        ",
+  "query": "SELECT id, group_id, name, amount_cents, spent_at, category_id, created_at\n               FROM budget_entries WHERE group_id = $1 AND created_by = $2 ORDER BY created_at",
   "describe": {
     "columns": [
       {
@@ -27,28 +27,6 @@
       },
       {
         "ordinal": 2,
-        "name": "created_by",
-        "type_info": "Uuid",
-        "origin": {
-          "Table": {
-            "table": "budget_entries",
-            "name": "created_by"
-          }
-        }
-      },
-      {
-        "ordinal": 3,
-        "name": "grocery_item_id",
-        "type_info": "Uuid",
-        "origin": {
-          "Table": {
-            "table": "budget_entries",
-            "name": "grocery_item_id"
-          }
-        }
-      },
-      {
-        "ordinal": 4,
         "name": "name",
         "type_info": "Text",
         "origin": {
@@ -59,7 +37,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 3,
         "name": "amount_cents",
         "type_info": "Int8",
         "origin": {
@@ -70,7 +48,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 4,
         "name": "spent_at",
         "type_info": "Date",
         "origin": {
@@ -81,7 +59,18 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 5,
+        "name": "category_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "budget_entries",
+            "name": "category_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -90,40 +79,23 @@
             "name": "created_at"
           }
         }
-      },
-      {
-        "ordinal": 8,
-        "name": "updated_at",
-        "type_info": "Timestamptz",
-        "origin": {
-          "Table": {
-            "table": "budget_entries",
-            "name": "updated_at"
-          }
-        }
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid",
-        "Uuid",
-        "Text",
-        "Int8",
-        "Date"
+        "Uuid"
       ]
     },
     "nullable": [
       false,
       false,
       false,
+      false,
+      false,
       true,
-      false,
-      false,
-      false,
-      false,
       false
     ]
   },
-  "hash": "b2436ba82513d132d6a3767caf14cd28dd56416a27bca5a620f03654448d0c50"
+  "hash": "12ee71905060f5eb3a05b22c6690f78b3477d95f51aa824d12c95273732f96c3"
 }

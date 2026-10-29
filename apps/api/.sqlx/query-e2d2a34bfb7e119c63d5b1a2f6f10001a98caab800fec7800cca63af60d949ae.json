@@ -1,0 +1,73 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT c.id, c.name, c.color, c.monthly_cap_cents,\n               COALESCE(SUM(e.amount_cents), 0)::bigint AS \"total_cents!\"\n        FROM budget_categories c\n        LEFT JOIN budget_entries e\n               ON e.category_id = c.id AND e.group_id = c.group_id\n              AND e.spent_at >= $2 AND e.spent_at < $3\n        WHERE c.group_id = $1\n        GROUP BY c.id\n        ORDER BY lower(c.name)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "budget_categories",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "budget_categories",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "color",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "budget_categories",
+            "name": "color"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "monthly_cap_cents",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "budget_categories",
+            "name": "monthly_cap_cents"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "total_cents!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      null
+    ]
+  },
+  "hash": "e2d2a34bfb7e119c63d5b1a2f6f10001a98caab800fec7800cca63af60d949ae"
+}

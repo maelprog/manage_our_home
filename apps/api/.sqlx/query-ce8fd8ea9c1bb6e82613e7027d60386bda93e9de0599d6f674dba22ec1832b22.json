@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO budget_entries (group_id, created_by, grocery_item_id, name, amount_cents, spent_at)\n        VALUES ($1, $2, $3, $4, $5, $6)\n        RETURNING id, group_id, created_by, grocery_item_id, name, amount_cents, spent_at, created_at, updated_at\n        ",
+  "query": "SELECT id, group_id, created_by, grocery_item_id, category_id, name, amount_cents, spent_at, created_at, updated_at\n           FROM budget_entries WHERE id = $1 AND group_id = $2",
   "describe": {
     "columns": [
       {
@@ -49,6 +49,17 @@
       },
       {
         "ordinal": 4,
+        "name": "category_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "budget_entries",
+            "name": "category_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
         "name": "name",
         "type_info": "Text",
         "origin": {
@@ -59,7 +70,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "amount_cents",
         "type_info": "Int8",
         "origin": {
@@ -70,7 +81,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "spent_at",
         "type_info": "Date",
         "origin": {
@@ -81,7 +92,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -92,7 +103,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -106,17 +117,14 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid",
-        "Uuid",
-        "Text",
-        "Int8",
-        "Date"
+        "Uuid"
       ]
     },
     "nullable": [
       false,
       false,
       false,
+      true,
       true,
       false,
       false,
@@ -125,5 +133,5 @@
       false
     ]
   },
-  "hash": "c6057ae139476899f88c4e856fd3f7e97b29176c28020130d1af741ef56e0f39"
+  "hash": "ce8fd8ea9c1bb6e82613e7027d60386bda93e9de0599d6f674dba22ec1832b22"
 }

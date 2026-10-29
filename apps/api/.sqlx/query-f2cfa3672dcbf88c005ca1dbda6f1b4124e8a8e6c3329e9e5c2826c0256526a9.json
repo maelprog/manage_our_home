@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO budget_settings (group_id) VALUES ($1) ON CONFLICT (group_id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f2cfa3672dcbf88c005ca1dbda6f1b4124e8a8e6c3329e9e5c2826c0256526a9"
+}

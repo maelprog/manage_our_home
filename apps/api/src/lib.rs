@@ -423,6 +423,21 @@ pub fn build_router(state: AppState) -> Router {
                 .delete(budget::entries::delete_budget_entry),
         )
         .route(
+            "/groups/:id/budget-categories",
+            post(budget::categories::create_budget_category)
+                .get(budget::categories::list_budget_categories),
+        )
+        .route(
+            "/groups/:id/budget-categories/:category_id",
+            axum::routing::patch(budget::categories::update_budget_category)
+                .delete(budget::categories::delete_budget_category),
+        )
+        .route(
+            "/groups/:id/budget-settings",
+            get(budget::categories::get_budget_settings)
+                .put(budget::categories::put_budget_settings),
+        )
+        .route(
             "/groups/:id/messages",
             post(messagerie::messages::create_message).get(messagerie::messages::list_messages),
         )

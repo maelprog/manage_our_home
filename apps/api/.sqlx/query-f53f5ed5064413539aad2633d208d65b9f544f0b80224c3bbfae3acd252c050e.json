@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT COALESCE(SUM(amount_cents), 0)::bigint AS \"total_cents!\"\n        FROM budget_entries\n        WHERE group_id = $1 AND category_id IS NULL AND spent_at >= $2 AND spent_at < $3\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "total_cents!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "f53f5ed5064413539aad2633d208d65b9f544f0b80224c3bbfae3acd252c050e"
+}

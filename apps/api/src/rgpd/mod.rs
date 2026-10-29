@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::audit;
 use crate::auth::session::{scoped_tx, user_scoped_tx, AuthUser};
+use crate::budget::can_access_budget;
 use crate::error::AppResult;
 use crate::AppState;
 
@@ -28,7 +29,10 @@ use crate::AppState;
 ///
 /// Every family-scoped category is fetched per group through `scoped_tx`
 /// (RLS-enforced) and filtered at the SQL layer on the column that names the
-/// caller, so this is never a "dump my whole family's data" endpoint. Secrets
+/// caller, so this is never a "dump my whole family's data" endpoint. One
+/// exception, by request (#532): the family's budget settings — its monthly
+/// cap and its categories, which name no one — go to the members who reach
+/// the budget (`can_access_budget`), under `budget_settings`. Secrets
 /// are left out: session ids (they are the session cookie), invitation and
 /// email tokens, OAuth refresh tokens, attachment and profile photo storage
 /// keys and ICS feed URLs. Attachments and the profile photo come as
@@ -417,7 +421,7 @@ pub async fn export_account(
         }));
 
         let budget_rows = sqlx::query!(
-            r#"SELECT id, group_id, name, amount_cents, spent_at, created_at
+            r#"SELECT id, group_id, name, amount_cents, spent_at, category_id, created_at
                FROM budget_entries WHERE group_id = $1 AND created_by = $2 ORDER BY created_at"#,
             group_id,
             auth.user_id
@@ -428,9 +432,44 @@ pub async fn export_account(
             json!({
                 "id": b.id, "group_id": b.group_id, "name": b.name,
                 "amount": b.amount_cents as f64 / 100.0, "spent_at": b.spent_at,
-                "created_at": b.created_at,
+                "category_id": b.category_id, "created_at": b.created_at,
             })
         }));
+
+        // The family's budget settings (#532), to a current member who
+        // reaches the budget only: a standard member — or someone who has
+        // left — is not told the family has a budget, as on the routes.
+        let reaches_budget = memberships
+            .iter()
+            .any(|m| m.id == group_id && can_access_budget(&m.role));
+        if group.is_member && reaches_budget {
+            let cap = sqlx::query_scalar!(
+                "SELECT monthly_cap_cents FROM budget_settings WHERE group_id = $1",
+                group_id
+            )
+            .fetch_optional(&mut *tx)
+            .await?
+            .flatten();
+            let categories = sqlx::query!(
+                r#"SELECT id, name, color, monthly_cap_cents, created_at, updated_at
+                   FROM budget_categories WHERE group_id = $1 ORDER BY lower(name)"#,
+                group_id
+            )
+            .fetch_all(&mut *tx)
+            .await?;
+            let categories = categories
+                .into_iter()
+                .map(|k| {
+                    json!({
+                        "id": k.id, "name": k.name, "color": k.color,
+                        "monthly_cap": k.monthly_cap_cents.map(|c| c as f64 / 100.0),
+                        "created_at": k.created_at, "updated_at": k.updated_at,
+                    })
+                })
+                .collect();
+            c.budget_settings
+                .extend(export::budget_settings_entry(group_id, cap, categories));
+        }
 
         let message_rows = sqlx::query!(
             r#"SELECT id, group_id, pgp_sym_decrypt(content, $3) as "content!", reply_to_id,

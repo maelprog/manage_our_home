@@ -1,3 +1,4 @@
+pub mod categories;
 pub mod entries;
 
 use uuid::Uuid;
