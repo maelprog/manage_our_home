@@ -83,8 +83,10 @@ pub fn normalize_unit(raw: &str) -> String {
 /// - A symbol (`g`, `kg`, `L`, `cl`…, in any case) or an abbreviation
 ///   ending in a dot never takes a plural.
 /// - A named unit takes the French plural from 2 on — 1,5 paquet, 2
-///   paquets: `s`, or `x` after `au`/`eu`, `aux` for `al`; one already
-///   ending in `s`, `x` or `z` stays as it is. Only the first word turns
+///   paquets: `s`, or `x` after `au`/`eu`, `aux` for `al`, save the
+///   few words that take an `s` all the same (« pneus », « festivals »);
+///   one already ending in `s`, `x` or `z` stays as it is. A unit in
+///   capitals takes its mark in capitals (« PAQUETS »). Only the first word turns
 ///   plural (« boîtes de conserve »). What the member typed is never
 ///   turned singular.
 pub fn format_quantity(quantity: f64, unit: &str) -> String {
@@ -107,14 +109,33 @@ pub fn format_quantity(quantity: f64, unit: &str) -> String {
         Some((first, rest)) => (first, format!(" {rest}")),
         None => (unit, String::new()),
     };
-    let plural = if first.ends_with(['s', 'x', 'z']) {
+    // Compared in lower case, the mark written in the word's own case:
+    // « PAQUET » reads « PAQUETS ».
+    let lower = first.to_lowercase();
+    let capitals = first.chars().any(char::is_alphabetic) && first == first.to_uppercase();
+    let mark = |suffix: &str| {
+        if capitals {
+            suffix.to_uppercase()
+        } else {
+            suffix.to_string()
+        }
+    };
+    // The words that take a plain `s` despite their ending.
+    const S_PLURAL: [&str; 11] = [
+        "pneu", "bleu", "émeu", "landau", "sarrau", "bal", "carnaval", "chacal", "festival",
+        "récital", "régal",
+    ];
+    let plural = if lower.ends_with(['s', 'x', 'z']) {
         first.to_string()
-    } else if first.ends_with("au") || first.ends_with("eu") {
-        format!("{first}x")
-    } else if let Some(stem) = first.strip_suffix("al") {
-        format!("{stem}aux")
+    } else if S_PLURAL.contains(&lower.as_str()) {
+        format!("{first}{}", mark("s"))
+    } else if lower.ends_with("au") || lower.ends_with("eu") {
+        format!("{first}{}", mark("x"))
+    } else if lower.ends_with("al") {
+        // `al` is two ASCII bytes whatever the case.
+        format!("{}{}", &first[..first.len() - 2], mark("aux"))
     } else {
-        format!("{first}s")
+        format!("{first}{}", mark("s"))
     };
     format!("{number} {plural}{rest}")
 }
@@ -541,6 +562,22 @@ mod tests {
         assert_eq!(format_quantity(2.0, "pois"), "2 pois");
         assert_eq!(format_quantity(2.0, "noix"), "2 noix");
         assert_eq!(format_quantity(2.0, "paquets"), "2 paquets");
+    }
+
+    #[test]
+    fn the_plural_of_the_au_eu_al_exceptions_takes_an_s() {
+        assert_eq!(format_quantity(4.0, "pneu"), "4 pneus");
+        assert_eq!(format_quantity(2.0, "landau"), "2 landaus");
+        assert_eq!(format_quantity(2.0, "festival"), "2 festivals");
+    }
+
+    #[test]
+    fn a_unit_in_capitals_takes_its_plural_in_capitals() {
+        assert_eq!(format_quantity(2.0, "PAQUET"), "2 PAQUETS");
+        assert_eq!(format_quantity(2.0, "BOCAL"), "2 BOCAUX");
+        assert_eq!(format_quantity(2.0, "PRUNEAU"), "2 PRUNEAUX");
+        assert_eq!(format_quantity(2.0, "Paquet"), "2 Paquets");
+        assert_eq!(format_quantity(2.0, "PNEU"), "2 PNEUS");
     }
 
     #[test]
