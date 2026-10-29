@@ -554,8 +554,9 @@ pub(crate) async fn reminder_push_block(state: &AppState, cookie: Option<&str>) 
 }
 
 /// The body a plain form post may have: axum's default, which this route
-/// had before it took files (#525). Only a multipart body, read under the
-/// upload gate, gets the route's 20 MiB.
+/// had before it took files (#525). Only the file of a multipart body,
+/// read under the upload gate, gets the route's 20 MiB: its text fields
+/// together stay within this (`read_multipart`).
 const FORM_BODY_LIMIT: usize = 2 * 1024 * 1024;
 
 /// A file the sheet carried, read whole: its name and its bytes.
@@ -597,7 +598,10 @@ pub async fn post(
             }
             match read_multipart(&state, &headers, request).await {
                 Ok((pairs, file)) => (axum::body::Bytes::from(form_body(&pairs)), file),
-                Err(()) => {
+                Err(MultipartError::TooLarge) => {
+                    return StatusCode::PAYLOAD_TOO_LARGE.into_response()
+                }
+                Err(MultipartError::Broken) => {
                     // The body broke off: nothing of it can be trusted, the
                     // form comes back blank under the reason.
                     let cookie = agenda_cookie(&headers);
@@ -773,39 +777,68 @@ pub async fn post(
     }
 }
 
+/// Why the sheet's multipart body could not be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MultipartError {
+    /// Its text fields, together, go past `FORM_BODY_LIMIT`.
+    TooLarge,
+    /// It broke off, was malformed, or carried a second file.
+    Broken,
+}
+
 /// The text fields of the sheet's multipart body, in order, and the file
 /// it carries when one was chosen. One file at most (#326): a second
-/// `file` field is refused at its headers, before its bytes are read.
-async fn read_multipart(
-    state: &AppState,
+/// `file` field is refused at its headers, before its bytes are read. The
+/// text fields together are held to `FORM_BODY_LIMIT`, the plain form's
+/// own bound, and refused on the chunk that goes past it.
+async fn read_multipart<S: Send + Sync>(
+    state: &S,
     headers: &HeaderMap,
     request: axum::extract::Request,
-) -> Result<(Vec<(String, String)>, Option<ChosenFile>), ()> {
+) -> Result<(Vec<(String, String)>, Option<ChosenFile>), MultipartError> {
     use axum::extract::FromRequest;
+    let broken = |_| MultipartError::Broken;
     let mut multipart = axum::extract::Multipart::from_request(request, state)
         .await
-        .map_err(|_| ())?;
+        .map_err(|_| MultipartError::Broken)?;
     let mut pairs = Vec::new();
     let mut file: Option<ChosenFile> = None;
     let mut seen_file = false;
-    while let Some(mut field) = multipart.next_field().await.map_err(|_| ())? {
+    // What the text fields, names included, may still take.
+    let mut text_left = FORM_BODY_LIMIT;
+    while let Some(mut field) = multipart.next_field().await.map_err(broken)? {
         let name = field.name().unwrap_or_default().to_string();
         if name != "file" {
-            pairs.push((name, field.text().await.map_err(|_| ())?));
+            // Read by chunks against what is left of the plain form's
+            // limit: the route takes 20 MiB for the file, and the text
+            // would otherwise be held several times over (decoded,
+            // re-encoded, parsed) under one permit of the upload gate.
+            text_left = text_left
+                .checked_sub(name.len())
+                .ok_or(MultipartError::TooLarge)?;
+            let mut value = Vec::new();
+            while let Some(chunk) = field.chunk().await.map_err(broken)? {
+                text_left = text_left
+                    .checked_sub(chunk.len())
+                    .ok_or(MultipartError::TooLarge)?;
+                value.extend_from_slice(&chunk);
+            }
+            let value = String::from_utf8(value).map_err(|_| MultipartError::Broken)?;
+            pairs.push((name, value));
             continue;
         }
         if seen_file {
-            return Err(());
+            return Err(MultipartError::Broken);
         }
         seen_file = true;
         let Some(filename) = chosen_file(field.file_name()) else {
             // Nothing chosen: the field's (empty) bytes are skipped.
-            while field.chunk().await.map_err(|_| ())?.is_some() {}
+            while field.chunk().await.map_err(broken)?.is_some() {}
             continue;
         };
         // One buffer sized before the first chunk (#246).
         let mut bytes = Vec::with_capacity(super::attachments::file_buffer_capacity(headers));
-        while let Some(chunk) = field.chunk().await.map_err(|_| ())? {
+        while let Some(chunk) = field.chunk().await.map_err(broken)? {
             bytes.extend_from_slice(&chunk);
         }
         file = Some((filename, axum::body::Bytes::from(bytes)));
@@ -1217,5 +1250,82 @@ mod tests {
             error_message("upload_failed"),
             "L'envoi de la pièce jointe a échoué, merci de réessayer."
         );
+    }
+
+    // -- the text fields of a multipart body are bounded (#525) -------------
+
+    const BOUNDARY: &str = "----agendanewboundary";
+
+    /// A multipart body of these text fields, and an empty file field.
+    fn multipart_of(fields: &[(&str, &str)]) -> axum::extract::Request {
+        let mut body = String::new();
+        for (name, value) in fields {
+            body.push_str(&format!(
+                "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+            ));
+        }
+        body.push_str(&format!(
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\"\r\n\
+             Content-Type: application/octet-stream\r\n\r\n\r\n--{BOUNDARY}--\r\n"
+        ));
+        axum::http::Request::post("/agenda/new")
+            .header(
+                CONTENT_TYPE,
+                format!("multipart/form-data; boundary={BOUNDARY}"),
+            )
+            .body(axum::body::Body::from(body))
+            .unwrap()
+    }
+
+    /// Read under the route's own limit, the 20 MiB a file may take.
+    async fn read(request: axum::extract::Request) -> Result<usize, MultipartError> {
+        use tower::ServiceExt;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+        let app = axum::Router::new().route(
+            "/agenda/new",
+            axum::routing::post(move |request: axum::extract::Request| {
+                let tx = tx.lock().unwrap().take().unwrap();
+                async move {
+                    let read = read_multipart(&(), &HeaderMap::new(), request)
+                        .await
+                        .map(|(pairs, _)| pairs.len());
+                    let _ = tx.send(read);
+                }
+            })
+            .layer(axum::extract::DefaultBodyLimit::max(
+                manage_our_home_http_guard::MAX_UPLOAD_BODY_BYTES,
+            )),
+        );
+        app.oneshot(request).await.unwrap();
+        rx.await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn text_fields_within_the_form_limit_are_read() {
+        let title = "a".repeat(1000);
+        let read = read(multipart_of(&[
+            ("title", &title),
+            ("starts_at", "2026-09-05T10:00"),
+        ]))
+        .await;
+        assert_eq!(read, Ok(2));
+    }
+
+    /// One field past the plain form's limit is refused, though the route
+    /// takes 20 MiB for a file.
+    #[tokio::test]
+    async fn one_text_field_past_the_form_limit_is_refused() {
+        let description = "a".repeat(FORM_BODY_LIMIT + 1);
+        let read = read(multipart_of(&[("description", &description)])).await;
+        assert_eq!(read, Err(MultipartError::TooLarge));
+    }
+
+    /// The bound is on all the text fields together, not on each.
+    #[tokio::test]
+    async fn text_fields_past_the_form_limit_together_are_refused() {
+        let half = "a".repeat(FORM_BODY_LIMIT / 2 + 1);
+        let read = read(multipart_of(&[("title", &half), ("description", &half)])).await;
+        assert_eq!(read, Err(MultipartError::TooLarge));
     }
 }

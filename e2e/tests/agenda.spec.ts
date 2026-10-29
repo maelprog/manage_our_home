@@ -400,6 +400,28 @@ test.describe("Agenda — type de média et corps illisible", () => {
     await expect(page.getByRole("link", { name: /Injecte/ })).toHaveCount(0);
     await expect(page.getByRole("link", { name: /Sans dates/ })).toHaveCount(0);
   });
+
+  // The sheet is multipart since it carries a file (#525): the route takes
+  // 20 MiB for the file, but its text fields together keep the plain
+  // form's 2 MiB.
+  test("des champs texte multipart au-delà de 2 Mio sont un 413", async ({ page }) => {
+    await registerAndLogin(page, "e2e-agmpbig", "Multipart User");
+    await createGroup(page, "Famille Multipart");
+
+    const date = dayThisMonth(13);
+    const fields = {
+      title: "Trop long",
+      starts_at: `${date}T10:00`,
+      ends_at: `${date}T11:00`,
+    };
+    const tooLong = await page.request.post("/agenda/new", {
+      multipart: { ...fields, description: "a".repeat(2 * 1024 * 1024 + 1) },
+    });
+    expect(tooLong.status()).toBe(413);
+
+    await page.goto("/agenda");
+    await expect(page.getByRole("link", { name: /Trop long/ })).toHaveCount(0);
+  });
 });
 
 // #117. An all-day event is stored with an exclusive end — the Paris
