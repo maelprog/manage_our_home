@@ -244,7 +244,18 @@ h3 { font-size: var(--t-lg); margin: var(--s4) 0 var(--s1); }
      tab is a `.navlink`, declared further down: `.navlink.phone` outranks
      it, as `.btn.phone` outranks `.btn` for the home's floating "+" (#524). */
   .phone, .navlink.phone, .btn.phone, .segment { display: none; }
+  .segment.views { display: flex; }
   .cal tbody tr { height: 6.5rem; }
+  /* The mock-up's grid (#525): each day a tile of its own, apart from the
+     next; a day of another month, flat on the page. */
+  .cal { border-collapse: separate; border-spacing: var(--s1); }
+  .cal-cell { border-radius: var(--r-sm); background: var(--surface); }
+  .cal-cell:has(.outside) { background: transparent; }
+  .cal-cell.current { border-color: var(--accent); }
+  /* A chip holds one line, as the mock-up draws it: table cells do not
+     wrap (`th, td`), so a long title ran out of its chip and over the next
+     day. The link keeps the whole title as its name. */
+  .chip { overflow: hidden; text-overflow: ellipsis; }
   /* The messagerie's send box, kept in reach at the foot of a long thread
      instead of sitting past the end of it (audit §5). `.content >` is the
      point of the selector: the same class dresses the edit form inside a
@@ -517,6 +528,21 @@ a.list-row .icon { flex: none; }
   font-size: var(--t-xs);
   text-decoration: none;
 }
+/* A chip in its member's tint (#525, `routes::agenda::calendar::member_tint`): 16 % of the hue
+   mixed into --surface, the text staying --fg — DESIGN.md → Couleur, the
+   event ground; app.rs measures --fg on all eight, in both themes. Declared
+   after `.chip` so the tint wins, and before `.chip:hover`, which outranks
+   it. The hue is never alone: the chip carries the member's initial. */
+.m1 { background: color-mix(in srgb, var(--surface), var(--m1) 16%); }
+.m2 { background: color-mix(in srgb, var(--surface), var(--m2) 16%); }
+.m3 { background: color-mix(in srgb, var(--surface), var(--m3) 16%); }
+.m4 { background: color-mix(in srgb, var(--surface), var(--m4) 16%); }
+.m5 { background: color-mix(in srgb, var(--surface), var(--m5) 16%); }
+.m6 { background: color-mix(in srgb, var(--surface), var(--m6) 16%); }
+.m7 { background: color-mix(in srgb, var(--surface), var(--m7) 16%); }
+.m8 { background: color-mix(in srgb, var(--surface), var(--m8) 16%); }
+/* The initials in a chip: the avatar at the height of the chip's line. */
+.chip .avatar { width: var(--s4); height: var(--s4); margin-right: var(--s1); vertical-align: top; }
 /* -- The home page (#524) ------------------------------------------------
    The mock-up's "Accueil": the date over "Bonjour", then the cards. A
    capitalised micro-label first — the date, a day of the week card. */
@@ -565,12 +591,35 @@ progress::-moz-progress-bar { background: currentColor; }
    re-reads that one. The row height is in the 861px query: on a `<tr>` it is
    a floor a crowded day grows past, on a block it would be a ceiling. */
 .cal { table-layout: fixed; }
-.cal-cell { vertical-align: top; border: 1px solid var(--border); padding: var(--s1); }
+/* --line, the fine rule (#521): the cell's edge on a PC, the separator
+   between two days of the phone's list. */
+.cal-cell { vertical-align: top; border: 1px solid var(--line); padding: var(--s1); }
 .cal-day { font-size: var(--t-sm); font-weight: 600; }
 /* A day outside the month being looked at. */
 .cal-day.outside { color: var(--muted); }
 /* Today's cell, and the occurrence an event page was opened on. */
 .current { background: var(--accent-soft); }
+/* Today's number in the accent, as the mock-up circles it (#525). */
+.cal-cell.current .cal-day { display: inline-block; min-width: var(--s6); border-radius: var(--r-sm); background: var(--accent); color: var(--accent-fg); text-align: center; }
+/* The grid and, on a PC, the panel of the day beside it (#525) — under it
+   when the column is too narrow for both. `min-width: 0` lets the table
+   give way instead of pushing the column past the viewport. */
+.agenda { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--s4); }
+.agenda > .cal { flex: 999 1 36rem; min-width: 0; }
+.agenda > .card { flex: 1 1 20rem; margin: 0; }
+/* Semaine | Mois (#525): the kitchen's segment, beside the arrows. The
+   861px query keeps it on a PC, where the kitchen's goes. */
+.views a { padding: 0 var(--s3); }
+/* The event form as the mock-up's sheet (#525). The fieldsets it holds are
+   cards of their own elsewhere (the edit page); inside the sheet they are
+   groups of fields, not a card on a card. */
+.sheet { margin-top: 0; }
+.sheet .card { margin-top: 0; padding: 0; box-shadow: none; }
+/* "Assigné à" as a row of pills (#525): the checkbox, the member's
+   initial, the name. A ticked one takes the accent's tint. */
+.picks { display: flex; flex-wrap: wrap; gap: var(--s2x); }
+.pick { padding: 0 var(--s3) 0 var(--s2x); border: 1px solid var(--border); border-radius: var(--r-sm); accent-color: var(--accent); }
+.pick:has(:checked) { border-color: var(--accent); background: var(--accent-soft); }
 /* Support/admin screens (front epic F9) show multi-column tables that are
    wider than the narrow form column; the wrapper lets them scroll instead of
    overflowing the page. */
@@ -762,6 +811,9 @@ caption, .skip-link:not(:focus) { clip-path: inset(50%); }
      page it covers nothing. */
   .fab { position: fixed; right: var(--s4); bottom: calc(var(--s16) + var(--s4)); z-index: 1; }
   body:has(.fab) { padding-bottom: calc(var(--s16) * 2); }
+  /* The event sheet (#525) reaches the screen's edges and opens upwards,
+     as a sheet does on a phone. */
+  .sheet { margin-inline: calc(var(--s4) * -1); border-radius: var(--r-lg) var(--r-lg) 0 0; }
 }
 /* Page transitions without JavaScript (#523): a cross-fade from one page to
    the next, for whoever has not asked for less motion. Asked for in the

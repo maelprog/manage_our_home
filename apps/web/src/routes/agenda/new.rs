@@ -5,6 +5,13 @@
 //! round-trip; the backend's matching 400s (`ends_at_before_starts_at`,
 //! `invalid_rrule`) are mapped defensively. 403 (non-member) → forbidden
 //! page. Success (201) → PRG `/agenda?notice=event_created`.
+//!
+//! The sheet can carry one attachment (#525), so it is sent as
+//! `multipart/form-data`; a plain form post is still read. The file is
+//! checked (`validate_attachment`) before the event is created, and relayed
+//! to apps/api (`attachments::relay`) once it exists. A file apps/api does
+//! not keep sends the browser to the event's page under the reason
+//! (`after_attachment`): the event is there, the file can be sent again.
 
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
@@ -16,15 +23,19 @@ use manage_our_home_shared::dto::agenda::{
 };
 use manage_our_home_shared::dto::groups::GroupMember;
 use manage_our_home_shared::validation::agenda::{
-    build_rrule, validate_event_form, EventFormError, Freq, Recurrence, RecurrenceEnd,
+    build_rrule, validate_attachment, validate_event_form, AttachmentError, EventFormError, Freq,
+    Recurrence, RecurrenceEnd,
 };
 use uuid::Uuid;
 
-use crate::app::{html_escape, shell_with_header, Width};
+use crate::app::{html_escape, member_avatar, shell_with_header, Width};
+use crate::icons::{icon_link, Icon};
 use crate::layout::CurrentUser;
 use crate::routes::account::notifications::{fetch_settings, push_block};
 use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
+
+use super::attachments::{relay, Relay};
 
 use super::{
     agenda_cookie, date_only, family_context, forbidden_page, form_bounds, to_datetime_local,
@@ -68,6 +79,54 @@ pub(crate) fn is_form_urlencoded(headers: &HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
+/// How a creation form's body is to be read (#525).
+///
+/// The sheet is sent as `multipart/form-data`, because it can carry a file;
+/// a plain form post is still read as it always was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CreateBody {
+    Form,
+    Multipart,
+}
+
+/// `None` for any other media type, which the page answers with a 415.
+pub(crate) fn create_body_kind(headers: &HeaderMap) -> Option<CreateBody> {
+    if is_form_urlencoded(headers) {
+        return Some(CreateBody::Form);
+    }
+    headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .filter(|media| media.trim().eq_ignore_ascii_case("multipart/form-data"))
+        .map(|_| CreateBody::Multipart)
+}
+
+/// The file name of a submitted file field, when a file was chosen: a
+/// browser sends the field anyway, with an empty name.
+pub(crate) fn chosen_file(filename: Option<&str>) -> Option<String> {
+    filename.filter(|name| !name.is_empty()).map(str::to_string)
+}
+
+/// The text fields of a multipart body, encoded back as the plain form
+/// body the rest of `post` reads: repeated keys (`assignee_ids`) included.
+pub(crate) fn form_body(pairs: &[(String, String)]) -> String {
+    serde_urlencoded::to_string(pairs).unwrap_or_default()
+}
+
+/// Where the browser goes once the event exists and its file was relayed.
+/// A file apps/api did not keep sends it to the event's page, where it can
+/// be sent again, under the reason it was refused.
+pub(crate) fn after_attachment(event_id: Uuid, relay: Relay) -> String {
+    match relay {
+        Relay::Created => "/agenda?notice=event_created".to_string(),
+        Relay::Rejected(code) => format!("/agenda/{event_id}?error={code}"),
+        Relay::NotFound | Relay::Unavailable | Relay::TimedOut | Relay::Failed => {
+            format!("/agenda/{event_id}?error=upload_failed")
+        }
+    }
+}
+
 /// Hidden field the assignee fieldset carries when it actually listed the
 /// family's members. Its absence from a submitted body means the picker was
 /// rendered blind — `fetch_group_detail` had failed and the fieldset came
@@ -97,6 +156,10 @@ pub(crate) fn assignee_ids_from_raw_form(raw: &str) -> Vec<Uuid> {
 /// checkboxes just below, one input per option rather than a dynamic
 /// multi-select widget, so it needs no JS and degrades to plain checkboxes
 /// with JS disabled like every other form on this app.
+///
+/// Since #525 each box is a pill (`.pick` in a `.picks` row) with the
+/// member's initial (`.avatar`, `aria-hidden`) before the name: the checkbox
+/// stays drawn and stays the control, the name stays its label.
 pub(crate) fn assignee_checkboxes(members: &[GroupMember], selected: &[Uuid]) -> String {
     if members.is_empty() {
         // The roster couldn't be loaded (a `fetch_group_detail` failure —
@@ -118,14 +181,15 @@ pub(crate) fn assignee_checkboxes(members: &[GroupMember], selected: &[Uuid]) ->
                 ""
             };
             format!(
-                r#"<label class="field inline"><input type="checkbox" name="assignee_ids" value="{id}"{checked}/>{name}</label>"#,
+                r#"<label class="field inline pick"><input type="checkbox" name="assignee_ids" value="{id}"{checked}/>{avatar}{name}</label>"#,
                 id = m.user_id,
+                avatar = member_avatar(m.user_id, &m.display_name, None),
                 name = html_escape(&m.display_name),
             )
         })
         .collect();
     format!(
-        r#"<fieldset class="card">
+        r#"<fieldset class="card picks">
 <legend>Assigné à</legend>
 <input type="hidden" name="{marker}" value="1"/>
 {boxes}
@@ -381,6 +445,9 @@ pub(crate) fn error_message(code: &str) -> &'static str {
         "invalid_rrule" => "La récurrence choisie est invalide.",
         "invalid_form" => "Formulaire incomplet ou illisible, merci de réessayer.",
         "unavailable" => "Service momentanément indisponible, merci de réessayer.",
+        "unsupported_file_type" => "Type de fichier non autorisé (png, jpg, webp, pdf).",
+        "file_too_large" => "Fichier trop volumineux (max 20 Mo).",
+        "upload_failed" => "L'envoi de la pièce jointe a échoué, merci de réessayer.",
         _ => "Une erreur est survenue, merci de réessayer.",
     }
 }
@@ -388,6 +455,7 @@ pub(crate) fn error_message(code: &str) -> &'static str {
 #[allow(clippy::too_many_arguments)]
 fn page(
     header: &str,
+    family: &str,
     error: Option<&str>,
     all_day: bool,
     default_start: &str,
@@ -405,24 +473,35 @@ fn page(
     let assignees = assignee_checkboxes(members, selected_assignees);
     // `header` is trusted HTML built by `app_header`; embed it directly at
     // the top, the same position the `view!`-based pages give it.
+    //
+    // The sheet of the mock-up (#525): the family over the title, the cross
+    // that closes it back to the agenda, then the fields in the order the
+    // mock-up asks them — title, when, how often, the reminder, who for.
+    // What it does not draw (a task, a place, a description) follows. It is
+    // still a page and a plain `POST`: without JavaScript nothing changes.
     let body = format!(
-        r#"<h1>Nouvel événement</h1>
+        r#"<section class="card sheet">
+<div class="page-header"><hgroup><p class="eyebrow">{family}</p><h1>Nouvel événement</h1></hgroup>{close}</div>
 {error_html}
-<form method="post" action="/agenda/new">
+<form method="post" action="/agenda/new" enctype="multipart/form-data">
 <label>Titre <input type="text" name="title" required/></label>
-<label class="field inline">
-<input type="checkbox" name="is_task"/> Il s'agit d'une tâche (à cocher une fois faite)</label>
 {schedule}
-<label>Lieu <input type="text" name="location"/></label>
-<label>Description <textarea name="description" rows="3"></textarea></label>
 {picker}
-{assignees}
-<p class="muted">Aucune sélection = assigné à vous.</p>
 <label>Rappel {reminder}</label>
 {push}
+{assignees}
+<p class="muted">Aucune sélection = assigné à vous.</p>
+<label>Pièce jointe (png, jpg, webp, pdf — max 20 Mo)
+<input type="file" name="file" accept="image/png,image/jpeg,image/webp,application/pdf"/></label>
+<label class="field inline">
+<input type="checkbox" name="is_task"/> Il s'agit d'une tâche (à cocher une fois faite)</label>
+<label>Lieu <input type="text" name="location"/></label>
+<label>Description <textarea name="description" rows="3"></textarea></label>
 <button type="submit">Créer l'événement</button>
 </form>
-<div class="links"><a href="/agenda">Retour à l'agenda</a></div>"#,
+</section>"#,
+        family = html_escape(family),
+        close = icon_link("btn secondary", "/agenda", "Fermer", Icon::Close),
     );
     shell_with_header(Width::Form, "Nouvel événement", header, &body)
 }
@@ -452,6 +531,7 @@ pub async fn get(
     let push = reminder_push_block(&state, cookie.as_deref()).await;
     Html(page(
         &fam.header,
+        &fam.name,
         None,
         false,
         &start,
@@ -473,17 +553,81 @@ pub(crate) async fn reminder_push_block(state: &AppState, cookie: Option<&str>) 
         .unwrap_or_default()
 }
 
+/// The body a plain form post may have: axum's default, which this route
+/// had before it took files (#525). Only the file of a multipart body,
+/// read under the upload gate, gets the route's 20 MiB: its text fields
+/// together stay within this (`read_multipart`).
+const FORM_BODY_LIMIT: usize = 2 * 1024 * 1024;
+
+/// A file the sheet carried, read whole: its name and its bytes.
+type ChosenFile = (String, axum::body::Bytes);
+
 pub async fn post(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
     headers: HeaderMap,
-    raw_body: axum::body::Bytes,
+    request: axum::extract::Request,
 ) -> Response {
-    if !is_form_urlencoded(&headers) {
+    let Some(kind) = create_body_kind(&headers) else {
         return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
-    }
+    };
     let Some(fam) = family_context(&state, &headers, &me, "/agenda/new").await else {
         return Redirect::to("/groups/new").into_response();
+    };
+
+    // The file is held in memory whole, through the read and the relay,
+    // like `attachments::upload`: the same gate bounds how many are held at
+    // once (#219), taken before a byte of the body.
+    let mut _upload_permit = None;
+    let (raw_body, file) = match kind {
+        CreateBody::Form => {
+            match axum::body::to_bytes(request.into_body(), FORM_BODY_LIMIT).await {
+                Ok(bytes) => (bytes, None),
+                Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+            }
+        }
+        CreateBody::Multipart => {
+            match state.upload_gate.try_acquire(me.user_id) {
+                Ok(permit) => _upload_permit = Some(permit),
+                Err(busy) => {
+                    tracing::info!(?busy, "upload turned away");
+                    return manage_our_home_http_guard::service_unavailable(
+                        super::service_unavailable_page().into_response(),
+                    );
+                }
+            }
+            match read_multipart(&state, &headers, request).await {
+                Ok((pairs, file)) => (axum::body::Bytes::from(form_body(&pairs)), file),
+                Err(MultipartError::TooLarge) => {
+                    return StatusCode::PAYLOAD_TOO_LARGE.into_response()
+                }
+                Err(MultipartError::Broken) => {
+                    // The body broke off: nothing of it can be trusted, the
+                    // form comes back blank under the reason.
+                    let cookie = agenda_cookie(&headers);
+                    let members = fetch_group_detail(&state, cookie.as_deref(), fam.gid)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|g| g.members)
+                        .unwrap_or_default();
+                    let push = reminder_push_block(&state, cookie.as_deref()).await;
+                    let now = chrono::Utc::now();
+                    return Html(page(
+                        &fam.header,
+                        &fam.name,
+                        Some(error_message("upload_failed")),
+                        false,
+                        &to_datetime_local(now),
+                        &to_datetime_local(now + chrono::Duration::hours(1)),
+                        &members,
+                        &[],
+                        &push,
+                    ))
+                    .into_response();
+                }
+            }
+        }
     };
 
     let raw = String::from_utf8_lossy(&raw_body);
@@ -507,6 +651,7 @@ pub async fn post(
             StatusCode::UNPROCESSABLE_ENTITY,
             Html(page(
                 &fam.header,
+                &fam.name,
                 Some(error_message("invalid_form")),
                 false,
                 &to_datetime_local(now),
@@ -522,6 +667,7 @@ pub async fn post(
     let render_error = |code: &str| {
         Html(page(
             &fam.header,
+            &fam.name,
             Some(error_message(code)),
             form.all_day.is_some(),
             &form.starts_at,
@@ -546,6 +692,17 @@ pub async fn post(
     let Ok(rrule) = rrule_from_form(&form) else {
         return render_error("invalid_rrule");
     };
+
+    // The file is checked before the event is created: refused here, the
+    // form comes back and nothing was written. The browser cannot be handed
+    // the file back, it has to be chosen again.
+    if let Some((filename, bytes)) = &file {
+        match validate_attachment(filename, bytes.len() as u64) {
+            Err(AttachmentError::UnsupportedType) => return render_error("unsupported_file_type"),
+            Err(AttachmentError::TooLarge) => return render_error("file_too_large"),
+            Ok(()) => {}
+        }
+    }
 
     let description =
         (!form.description.trim().is_empty()).then(|| form.description.trim().to_string());
@@ -573,8 +730,9 @@ pub async fn post(
 
     match result {
         Ok(resp) if resp.status == reqwest::StatusCode::CREATED => {
+            let event = serde_json::from_value::<EventResponse>(resp.body).ok();
             // Fire the optional reminder against the freshly created event.
-            if let Ok(event) = serde_json::from_value::<EventResponse>(resp.body) {
+            if let Some(event) = &event {
                 if let Some((_, _, minutes)) = REMINDER_OPTIONS
                     .iter()
                     .find(|(k, _, _)| *k == form.reminder)
@@ -594,6 +752,19 @@ pub async fn post(
                     .await;
                 }
             }
+            // Then its file, once the event has an id to attach it to.
+            if let (Some(event), Some((filename, bytes))) = (event, file) {
+                let relayed = relay(
+                    &state,
+                    cookie.as_deref(),
+                    fam.gid,
+                    event.id,
+                    filename,
+                    bytes,
+                )
+                .await;
+                return Redirect::to(&after_attachment(event.id, relayed)).into_response();
+            }
             Redirect::to("/agenda?notice=event_created").into_response()
         }
         Ok(resp) if resp.status == reqwest::StatusCode::BAD_REQUEST => {
@@ -604,6 +775,75 @@ pub async fn post(
         }
         Ok(_) | Err(_) => render_error("unavailable"),
     }
+}
+
+/// Why the sheet's multipart body could not be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MultipartError {
+    /// Its text fields, together, go past `FORM_BODY_LIMIT`.
+    TooLarge,
+    /// It broke off, was malformed, or carried a second file.
+    Broken,
+}
+
+/// The text fields of the sheet's multipart body, in order, and the file
+/// it carries when one was chosen. One file at most (#326): a second
+/// `file` field is refused at its headers, before its bytes are read. The
+/// text fields together are held to `FORM_BODY_LIMIT`, the plain form's
+/// own bound, and refused on the chunk that goes past it.
+async fn read_multipart<S: Send + Sync>(
+    state: &S,
+    headers: &HeaderMap,
+    request: axum::extract::Request,
+) -> Result<(Vec<(String, String)>, Option<ChosenFile>), MultipartError> {
+    use axum::extract::FromRequest;
+    let broken = |_| MultipartError::Broken;
+    let mut multipart = axum::extract::Multipart::from_request(request, state)
+        .await
+        .map_err(|_| MultipartError::Broken)?;
+    let mut pairs = Vec::new();
+    let mut file: Option<ChosenFile> = None;
+    let mut seen_file = false;
+    // What the text fields, names included, may still take.
+    let mut text_left = FORM_BODY_LIMIT;
+    while let Some(mut field) = multipart.next_field().await.map_err(broken)? {
+        let name = field.name().unwrap_or_default().to_string();
+        if name != "file" {
+            // Read by chunks against what is left of the plain form's
+            // limit: the route takes 20 MiB for the file, and the text
+            // would otherwise be held several times over (decoded,
+            // re-encoded, parsed) under one permit of the upload gate.
+            text_left = text_left
+                .checked_sub(name.len())
+                .ok_or(MultipartError::TooLarge)?;
+            let mut value = Vec::new();
+            while let Some(chunk) = field.chunk().await.map_err(broken)? {
+                text_left = text_left
+                    .checked_sub(chunk.len())
+                    .ok_or(MultipartError::TooLarge)?;
+                value.extend_from_slice(&chunk);
+            }
+            let value = String::from_utf8(value).map_err(|_| MultipartError::Broken)?;
+            pairs.push((name, value));
+            continue;
+        }
+        if seen_file {
+            return Err(MultipartError::Broken);
+        }
+        seen_file = true;
+        let Some(filename) = chosen_file(field.file_name()) else {
+            // Nothing chosen: the field's (empty) bytes are skipped.
+            while field.chunk().await.map_err(broken)?.is_some() {}
+            continue;
+        };
+        // One buffer sized before the first chunk (#246).
+        let mut bytes = Vec::with_capacity(super::attachments::file_buffer_capacity(headers));
+        while let Some(chunk) = field.chunk().await.map_err(broken)? {
+            bytes.extend_from_slice(&chunk);
+        }
+        file = Some((filename, axum::body::Bytes::from(bytes)));
+    }
+    Ok((pairs, file))
 }
 
 #[cfg(test)]
@@ -783,11 +1023,309 @@ mod tests {
         assert!(html.contains("&quot;&gt;&lt;script&gt;"), "{html}");
     }
 
+    // -- the sheet (#525) ---------------------------------------------------
+
+    fn sheet() -> String {
+        page(
+            "",
+            "Famille <Martin>",
+            None,
+            false,
+            "2026-09-05T10:00",
+            "2026-09-05T11:00",
+            &[member(1, "Alice")],
+            &[],
+            "",
+        )
+    }
+
+    #[test]
+    fn the_form_is_a_sheet_named_for_the_family_and_closed_by_a_cross() {
+        let html = sheet();
+        assert!(html.contains(r#"<section class="card sheet">"#), "{html}");
+        assert!(
+            html.contains(
+                r#"<hgroup><p class="eyebrow">Famille &lt;Martin&gt;</p><h1>Nouvel événement</h1></hgroup>"#
+            ),
+            "{html}"
+        );
+        // The cross is the way back: an icon alone, named on the link.
+        assert!(
+            html.contains(&crate::icons::icon_link(
+                "btn secondary",
+                "/agenda",
+                "Fermer",
+                crate::icons::Icon::Close
+            )),
+            "{html}"
+        );
+        assert!(!html.contains("Retour à l'agenda"), "{html}");
+    }
+
+    #[test]
+    fn the_sheet_asks_in_the_order_the_mock_up_draws() {
+        // Title, when, how often, the reminder, who for, the attachment;
+        // what the mock-up
+        // does not draw (a task, a place, a description) comes after.
+        let html = sheet();
+        let at = |needle: &str| {
+            html.find(needle)
+                .unwrap_or_else(|| panic!("`{needle}` is not in the form: {html}"))
+        };
+        let order = [
+            at(r#"name="title""#),
+            at(r#"name="all_day""#),
+            at(r#"name="starts_at""#),
+            at(r#"name="freq""#),
+            at(r#"name="reminder""#),
+            at(r#"name="assignee_ids""#),
+            at(r#"name="file""#),
+            at(r#"name="is_task""#),
+            at(r#"name="location""#),
+            at(r#"name="description""#),
+            at("Créer l'événement"),
+        ];
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "{order:?}");
+    }
+
+    #[test]
+    fn each_member_is_a_pill_with_their_initial_beside_the_name() {
+        let alice = member(1, "Alice");
+        let html = assignee_checkboxes(std::slice::from_ref(&alice), &[]);
+        assert!(html.contains(r#"<fieldset class="card picks">"#), "{html}");
+        assert!(
+            html.contains(&format!(
+                r#"<label class="field inline pick"><input type="checkbox" name="assignee_ids" value="{id}"/>{avatar}Alice</label>"#,
+                id = alice.user_id,
+                avatar = crate::app::member_avatar(alice.user_id, "Alice", None),
+            )),
+            "{html}"
+        );
+    }
+
     #[test]
     fn the_selected_members_come_back_checked() {
         let members = vec![member(1, "Alice"), member(2, "Bob")];
         let html = assignee_checkboxes(&members, &[members[1].user_id]);
         assert!(html.contains(&format!(r#"value="{}" checked"#, members[1].user_id)));
         assert!(html.contains(&format!(r#"value="{}"/>"#, members[0].user_id)));
+    }
+
+    // -- the attachment at creation (#525) ----------------------------------
+
+    #[test]
+    fn a_multipart_post_is_read_as_one() {
+        for value in [
+            "multipart/form-data; boundary=----x",
+            "Multipart/Form-Data;boundary=y",
+        ] {
+            assert_eq!(
+                create_body_kind(&headers_with(value)),
+                Some(CreateBody::Multipart),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_plain_form_post_is_still_read_as_a_form() {
+        assert_eq!(
+            create_body_kind(&headers_with(
+                "application/x-www-form-urlencoded; charset=UTF-8"
+            )),
+            Some(CreateBody::Form)
+        );
+    }
+
+    #[test]
+    fn any_other_body_is_neither() {
+        for value in [
+            "text/plain",
+            "multipart/mixed; boundary=x",
+            "application/json",
+        ] {
+            assert_eq!(create_body_kind(&headers_with(value)), None, "{value}");
+        }
+        assert_eq!(create_body_kind(&HeaderMap::new()), None);
+    }
+
+    /// A browser sends the file field even when nothing was chosen, with an
+    /// empty file name.
+    #[test]
+    fn a_file_field_without_a_name_is_no_file() {
+        assert_eq!(chosen_file(None), None);
+        assert_eq!(chosen_file(Some("")), None);
+        assert_eq!(
+            chosen_file(Some("devis.pdf")),
+            Some("devis.pdf".to_string())
+        );
+    }
+
+    #[test]
+    fn the_text_fields_of_a_multipart_body_read_back_as_the_form() {
+        let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let pairs: Vec<(String, String)> = [
+            ("title", "Café & thé = 2"),
+            ("starts_at", "2026-09-05T10:00"),
+            ("ends_at", "2026-09-05T11:00"),
+            ("assignee_ids", &a.to_string()),
+            ("assignee_ids", &b.to_string()),
+            ("reminder", "60"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let body = form_body(&pairs);
+        let form: EventForm = serde_urlencoded::from_str(&body).expect(&body);
+        assert_eq!(form.title, "Café & thé = 2");
+        assert_eq!(form.starts_at, "2026-09-05T10:00");
+        assert_eq!(form.reminder, "60");
+        assert_eq!(assignee_ids_from_raw_form(&body), vec![a, b]);
+    }
+
+    #[test]
+    fn a_stored_attachment_ends_on_the_agenda_like_any_creation() {
+        assert_eq!(
+            after_attachment(Uuid::from_u128(7), Relay::Created),
+            "/agenda?notice=event_created"
+        );
+    }
+
+    /// The event exists by then: its page is where the file can be sent
+    /// again, under the reason it was refused.
+    #[test]
+    fn a_refused_attachment_ends_on_the_event_with_its_reason() {
+        let id = Uuid::from_u128(7);
+        assert_eq!(
+            after_attachment(id, Relay::Rejected("file_too_large")),
+            format!("/agenda/{id}?error=file_too_large")
+        );
+    }
+
+    #[test]
+    fn any_other_failure_ends_on_the_event_as_a_failed_upload() {
+        let id = Uuid::from_u128(7);
+        for relay in [
+            Relay::NotFound,
+            Relay::Unavailable,
+            Relay::TimedOut,
+            Relay::Failed,
+        ] {
+            assert_eq!(
+                after_attachment(id, relay),
+                format!("/agenda/{id}?error=upload_failed"),
+                "{relay:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_sheet_is_sent_as_multipart_with_an_optional_file() {
+        let html = sheet();
+        assert!(
+            html.contains(
+                r#"<form method="post" action="/agenda/new" enctype="multipart/form-data">"#
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                r#"<input type="file" name="file" accept="image/png,image/jpeg,image/webp,application/pdf"/>"#
+            ),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_refused_file_is_explained_on_the_form() {
+        assert_eq!(
+            error_message("unsupported_file_type"),
+            "Type de fichier non autorisé (png, jpg, webp, pdf)."
+        );
+        assert_eq!(
+            error_message("file_too_large"),
+            "Fichier trop volumineux (max 20 Mo)."
+        );
+        assert_eq!(
+            error_message("upload_failed"),
+            "L'envoi de la pièce jointe a échoué, merci de réessayer."
+        );
+    }
+
+    // -- the text fields of a multipart body are bounded (#525) -------------
+
+    const BOUNDARY: &str = "----agendanewboundary";
+
+    /// A multipart body of these text fields, and an empty file field.
+    fn multipart_of(fields: &[(&str, &str)]) -> axum::extract::Request {
+        let mut body = String::new();
+        for (name, value) in fields {
+            body.push_str(&format!(
+                "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+            ));
+        }
+        body.push_str(&format!(
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\"\r\n\
+             Content-Type: application/octet-stream\r\n\r\n\r\n--{BOUNDARY}--\r\n"
+        ));
+        axum::http::Request::post("/agenda/new")
+            .header(
+                CONTENT_TYPE,
+                format!("multipart/form-data; boundary={BOUNDARY}"),
+            )
+            .body(axum::body::Body::from(body))
+            .unwrap()
+    }
+
+    /// Read under the route's own limit, the 20 MiB a file may take.
+    async fn read(request: axum::extract::Request) -> Result<usize, MultipartError> {
+        use tower::ServiceExt;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+        let app = axum::Router::new().route(
+            "/agenda/new",
+            axum::routing::post(move |request: axum::extract::Request| {
+                let tx = tx.lock().unwrap().take().unwrap();
+                async move {
+                    let read = read_multipart(&(), &HeaderMap::new(), request)
+                        .await
+                        .map(|(pairs, _)| pairs.len());
+                    let _ = tx.send(read);
+                }
+            })
+            .layer(axum::extract::DefaultBodyLimit::max(
+                manage_our_home_http_guard::MAX_UPLOAD_BODY_BYTES,
+            )),
+        );
+        app.oneshot(request).await.unwrap();
+        rx.await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn text_fields_within_the_form_limit_are_read() {
+        let title = "a".repeat(1000);
+        let read = read(multipart_of(&[
+            ("title", &title),
+            ("starts_at", "2026-09-05T10:00"),
+        ]))
+        .await;
+        assert_eq!(read, Ok(2));
+    }
+
+    /// One field past the plain form's limit is refused, though the route
+    /// takes 20 MiB for a file.
+    #[tokio::test]
+    async fn one_text_field_past_the_form_limit_is_refused() {
+        let description = "a".repeat(FORM_BODY_LIMIT + 1);
+        let read = read(multipart_of(&[("description", &description)])).await;
+        assert_eq!(read, Err(MultipartError::TooLarge));
+    }
+
+    /// The bound is on all the text fields together, not on each.
+    #[tokio::test]
+    async fn text_fields_past_the_form_limit_together_are_refused() {
+        let half = "a".repeat(FORM_BODY_LIMIT / 2 + 1);
+        let read = read(multipart_of(&[("title", &half), ("description", &half)])).await;
+        assert_eq!(read, Err(MultipartError::TooLarge));
     }
 }

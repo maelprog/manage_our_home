@@ -1,6 +1,6 @@
 import { expect, Page, test } from "@playwright/test";
 import { fetchEventBounds, fetchVerificationToken } from "../lib/db";
-import { parisDayOfMonth } from "../lib/dates";
+import { parisDay, parisDayOfMonth } from "../lib/dates";
 
 // Front epic #3 — Agenda (issue #18): every user journey the epic
 // introduces, happy paths plus the documented error states from
@@ -400,6 +400,28 @@ test.describe("Agenda — type de média et corps illisible", () => {
     await expect(page.getByRole("link", { name: /Injecte/ })).toHaveCount(0);
     await expect(page.getByRole("link", { name: /Sans dates/ })).toHaveCount(0);
   });
+
+  // The sheet is multipart since it carries a file (#525): the route takes
+  // 20 MiB for the file, but its text fields together keep the plain
+  // form's 2 MiB.
+  test("des champs texte multipart au-delà de 2 Mio sont un 413", async ({ page }) => {
+    await registerAndLogin(page, "e2e-agmpbig", "Multipart User");
+    await createGroup(page, "Famille Multipart");
+
+    const date = dayThisMonth(13);
+    const fields = {
+      title: "Trop long",
+      starts_at: `${date}T10:00`,
+      ends_at: `${date}T11:00`,
+    };
+    const tooLong = await page.request.post("/agenda/new", {
+      multipart: { ...fields, description: "a".repeat(2 * 1024 * 1024 + 1) },
+    });
+    expect(tooLong.status()).toBe(413);
+
+    await page.goto("/agenda");
+    await expect(page.getByRole("link", { name: /Trop long/ })).toHaveCount(0);
+  });
 });
 
 // #117. An all-day event is stored with an exclusive end — the Paris
@@ -524,5 +546,191 @@ test.describe("Agenda — journée entière", () => {
     expect(html).toContain("La fin doit être après le début.");
     expect(html).toContain(`type="date" name="ends_at" value="${d6}"`);
     await expect(fetchEventBounds(email, "Dates inversees")).rejects.toThrow();
+  });
+});
+
+// #525 — the head of the agenda, from the mock-ups: ‹ · « Aujourd'hui » · ›
+// stepping by the view on screen, and the Semaine / Mois toggle, on a phone
+// as on a PC. The arrows keep their accessible names.
+const AGENDA_LAYOUTS = [
+  ["téléphone", { width: 390, height: 844 }],
+  ["PC", { width: 1440, height: 900 }],
+] as const;
+
+const VIEW_ARROWS = [
+  ["month", "Mois précédent", "Mois suivant"],
+  ["week", "Semaine précédente", "Semaine suivante"],
+] as const;
+
+for (const [layout, viewport] of AGENDA_LAYOUTS) {
+  test.describe(`Agenda — en-tête, ${layout} (#525)`, () => {
+    test.use({ viewport });
+
+    test("› then ‹ come back to the same period, and « Aujourd'hui » to today's", async ({ page }) => {
+      await registerAndLogin(page, "e2e-agnav", "Agenda Nav");
+      await createGroup(page, "Famille Navigation");
+      const heading = page.getByRole("heading", { level: 1 });
+      const today = parisDay();
+
+      for (const [view, previous, next] of VIEW_ARROWS) {
+        await page.goto(`/agenda?view=${view}`);
+        const current = (await heading.innerText()).trim();
+
+        await page.getByRole("link", { name: next, exact: true }).click();
+        await expect(heading).not.toHaveText(current);
+        await page.getByRole("link", { name: previous, exact: true }).click();
+        await expect(heading).toHaveText(current);
+
+        // Two steps away, then back in one.
+        await page.getByRole("link", { name: previous, exact: true }).click();
+        await page.getByRole("link", { name: previous, exact: true }).click();
+        await expect(heading).not.toHaveText(current);
+        await page.getByRole("link", { name: "Aujourd'hui", exact: true }).click();
+        await expect(page).toHaveURL(`/agenda?view=${view}&date=${today}`);
+        await expect(heading).toHaveText(current);
+      }
+    });
+
+    test("Semaine and Mois switch the view, and say which one is on screen", async ({ page }) => {
+      await registerAndLogin(page, "e2e-agview", "Agenda Vue");
+      await createGroup(page, "Famille Affichage");
+      await page.goto("/agenda");
+      const toggle = page.getByRole("navigation", { name: "Affichage" });
+      await expect(toggle).toBeVisible();
+      const month = toggle.getByRole("link", { name: "Mois", exact: true });
+      const week = toggle.getByRole("link", { name: "Semaine", exact: true });
+      await expect(month).toHaveAttribute("aria-current", "true");
+      await expect(week).not.toHaveAttribute("aria-current");
+
+      await week.click();
+      await expect(page).toHaveURL(/\/agenda\?view=week&date=/);
+      await expect(page.getByRole("heading", { level: 1 })).toHaveText(/^Semaine du /);
+      await expect(week).toHaveAttribute("aria-current", "true");
+      await expect(page.getByRole("link", { name: "Semaine précédente", exact: true })).toBeVisible();
+
+      await month.click();
+      await expect(page).toHaveURL(/\/agenda\?view=month&date=/);
+      await expect(month).toHaveAttribute("aria-current", "true");
+    });
+  });
+}
+
+test.describe("Agenda — mise en page (#525)", () => {
+  test("a phone gets the floating + and no day panel", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await registerAndLogin(page, "e2e-agphone", "Agenda Phone");
+    await createGroup(page, "Famille Téléphone");
+    await page.goto("/agenda");
+    await expect(page.getByRole("link", { name: "Ajouter un événement" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Nouvel événement" })).toBeHidden();
+    await expect(page.getByText("Rien de prévu ce jour-là.")).toBeHidden();
+  });
+
+  test("a PC gets the day panel, named for the day in focus", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await registerAndLogin(page, "e2e-agpanel", "Agenda Panneau");
+    await createGroup(page, "Famille Panneau");
+    const date = dayThisMonth(16);
+    await createEvent(page, { title: "Cours de judo", start: `${date}T17:00`, end: `${date}T18:00` });
+
+    await page.goto(`/agenda?view=month&date=${date}`);
+    const [y, m, d] = date.split("-").map(Number);
+    const long = new Intl.DateTimeFormat("fr-FR", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      timeZone: "UTC",
+    }).format(new Date(Date.UTC(y, m - 1, d)));
+    const panel = page.locator("section.card").filter({
+      has: page.getByRole("heading", { level: 2, name: new RegExp(`^${long}$`, "i") }),
+    });
+    await expect(panel).toBeVisible();
+    await expect(panel.getByText("Cours de judo")).toBeVisible();
+    await expect(panel.getByText("17:00")).toBeVisible();
+    // The chip in the grid stays the one link to the event.
+    await expect(page.getByRole("link", { name: /Cours de judo/ })).toHaveCount(1);
+    await expect(page.getByRole("link", { name: "Ajouter un événement" })).toBeHidden();
+  });
+});
+
+test.describe("Agenda — feuille de création sans JavaScript (#525)", () => {
+  test.use({ javaScriptEnabled: false });
+
+  test("the sheet creates an event with JavaScript off, and its cross goes back", async ({ page }) => {
+    await registerAndLogin(page, "e2e-agnojs", "Agenda Sans JS");
+    await createGroup(page, "Famille Sans Script");
+    await page.goto("/agenda/new");
+    await expect(page.getByRole("heading", { level: 1, name: "Nouvel événement" })).toBeVisible();
+    await expect(page.locator(".sheet .eyebrow")).toHaveText("Famille Sans Script");
+
+    const date = dayThisMonth(17);
+    await page.getByLabel("Titre").fill("Atelier sans script");
+    await page.getByLabel("Début").fill(`${date}T09:00`);
+    await page.getByLabel("Fin").fill(`${date}T10:00`);
+    await page.getByRole("checkbox", { name: "Agenda Sans JS" }).check();
+    await page.getByRole("button", { name: "Créer l'événement" }).click();
+    await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
+    await expect(page.getByText("Événement créé.")).toBeVisible();
+    await page.goto(`/agenda?view=month&date=${date}`);
+    await expect(page.getByRole("link", { name: /Atelier sans script/ })).toBeVisible();
+
+    await page.goto("/agenda/new");
+    await page.getByRole("link", { name: "Fermer" }).click();
+    await expect(page).toHaveURL("/agenda");
+  });
+
+  // The sheet carries the attachment the mock-up draws: sent as multipart,
+  // the file goes to the event once it exists.
+  test("the sheet creates an event with its attachment, JavaScript off", async ({ page }) => {
+    await registerAndLogin(page, "e2e-agnewatt", "Agenda Justificatif");
+    await createGroup(page, "Famille Justificatifs");
+    await page.goto("/agenda/new");
+
+    const date = dayThisMonth(18);
+    await page.getByLabel("Titre").fill("Rendez-vous avec justificatif");
+    await page.getByLabel("Début").fill(`${date}T14:00`);
+    await page.getByLabel("Fin").fill(`${date}T15:00`);
+    await page.getByLabel("Pièce jointe").setInputFiles({
+      name: "convocation.png",
+      mimeType: "image/png",
+      buffer: PNG_1X1,
+    });
+    await page.getByRole("button", { name: "Créer l'événement" }).click();
+    await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
+    await expect(page.getByText("Événement créé.")).toBeVisible();
+
+    await openEventDetail(page, "Rendez-vous avec justificatif");
+    const link = page.getByRole("link", { name: "convocation.png" });
+    await expect(link).toBeVisible();
+    const href = await link.getAttribute("href");
+    if (!href) throw new Error("no download link");
+    const resp = await page.request.get(href, { maxRedirects: 0 });
+    expect(resp.status()).toBeGreaterThanOrEqual(300);
+    expect(resp.status()).toBeLessThan(400);
+    expect(resp.headers()["location"] ?? "").toContain("X-Amz-");
+  });
+
+  // A refused file is caught before the event is written: the form comes
+  // back under the reason, and the agenda holds nothing.
+  test("a refused file brings the sheet back and creates nothing", async ({ page }) => {
+    await registerAndLogin(page, "e2e-agnewbad", "Agenda Fichier Refusé");
+    await createGroup(page, "Famille Refus");
+    await page.goto("/agenda/new");
+
+    const date = dayThisMonth(19);
+    await page.getByLabel("Titre").fill("Événement au mauvais fichier");
+    await page.getByLabel("Début").fill(`${date}T09:00`);
+    await page.getByLabel("Fin").fill(`${date}T10:00`);
+    await page.getByLabel("Pièce jointe").setInputFiles({
+      name: "notes.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("bonjour"),
+    });
+    await page.getByRole("button", { name: "Créer l'événement" }).click();
+    await expect(page).toHaveURL("/agenda/new");
+    await expect(page.getByText("Type de fichier non autorisé (png, jpg, webp, pdf).")).toBeVisible();
+
+    await page.goto(`/agenda?view=month&date=${date}`);
+    await expect(page.getByRole("link", { name: /Événement au mauvais fichier/ })).toHaveCount(0);
   });
 });

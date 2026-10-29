@@ -217,7 +217,14 @@ fn build_router(state: AppState) -> Router {
         .route("/agenda", get(routes::agenda::calendar::get))
         .route(
             "/agenda/new",
-            get(routes::agenda::new::get).post(routes::agenda::new::post),
+            // The sheet can carry a file (#525): its multipart body gets the
+            // upload page's limit, a plain form post keeps axum's 2 MiB
+            // (`routes::agenda::new::post`).
+            get(routes::agenda::new::get)
+                .post(routes::agenda::new::post)
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    manage_our_home_http_guard::MAX_UPLOAD_BODY_BYTES,
+                )),
         )
         // Google Calendar import (front epic F11): registered before the
         // `/agenda/:id` family below purely for readability — the router

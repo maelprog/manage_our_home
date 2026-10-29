@@ -100,57 +100,100 @@ pub async fn upload(
         Ok(()) => {}
     }
 
-    // Forward to apps/api as a fresh multipart request (backend re-sniffs).
     let cookie = agenda_cookie(&headers);
+    match relay(
+        &state,
+        cookie.as_deref(),
+        fam.gid,
+        event_id,
+        filename,
+        bytes,
+    )
+    .await
+    {
+        Relay::Created => {
+            Redirect::to(&format!("{detail}?notice=attachment_added")).into_response()
+        }
+        Relay::NotFound => event_not_found_page().into_response(),
+        // apps/api has its own upload gate and its own body bounds (#219),
+        // and its gate is also filled by calls reaching `/api/*` directly:
+        // its 503 or 408 is passed on as such, not folded into a failed
+        // upload.
+        Relay::Unavailable => manage_our_home_http_guard::service_unavailable(
+            service_unavailable_page().into_response(),
+        ),
+        // A 408 is a body that came too slowly, not a service that is down:
+        // the same page and headers as apps/web's own 408 (#243).
+        Relay::TimedOut => {
+            manage_our_home_http_guard::request_timeout(crate::body_bounds::body_read_timeout_page())
+        }
+        Relay::Rejected(code) => Redirect::to(&format!("{detail}?error={code}")).into_response(),
+        Relay::Failed => Redirect::to(&format!("{detail}?error=upload_failed")).into_response(),
+    }
+}
+
+/// What apps/api made of a file relayed to it (`relay`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Relay {
+    /// 201: the file is attached.
+    Created,
+    /// 404: no such event in this family.
+    NotFound,
+    /// 503: apps/api's own upload gate is full.
+    Unavailable,
+    /// 408: the body reached apps/api too slowly.
+    TimedOut,
+    /// 422, with the error code to show (`rejected_code`).
+    Rejected(&'static str),
+    /// Anything else, the network included.
+    Failed,
+}
+
+/// Sends one file to apps/api as a fresh multipart request, which re-sniffs
+/// its bytes. Shared by the event page's upload form and the creation form
+/// (#525).
+pub(crate) async fn relay(
+    state: &AppState,
+    cookie: Option<&str>,
+    gid: Uuid,
+    event_id: Uuid,
+    filename: String,
+    bytes: axum::body::Bytes,
+) -> Relay {
     // The buffer itself goes out, not a copy of it (#246).
     let len = bytes.len() as u64;
     let part = reqwest::multipart::Part::stream_with_length(bytes, len).file_name(filename);
     let form = reqwest::multipart::Form::new().part("file", part);
     let mut req = state.http.post(format!(
         "{}/groups/{}/events/{}/attachments",
-        state.api_internal_base_url, fam.gid, event_id
+        state.api_internal_base_url, gid, event_id
     ));
-    if let Some(cookie) = cookie.as_deref() {
+    if let Some(cookie) = cookie {
         req = req.header("cookie", cookie);
     }
-    let resp = match req.multipart(form).send().await {
-        Ok(r) => r,
-        Err(_) => return Redirect::to(&format!("{detail}?error=upload_failed")).into_response(),
+    let Ok(resp) = req.multipart(form).send().await else {
+        return Relay::Failed;
     };
+    match resp.status() {
+        reqwest::StatusCode::CREATED => Relay::Created,
+        reqwest::StatusCode::NOT_FOUND => Relay::NotFound,
+        reqwest::StatusCode::SERVICE_UNAVAILABLE => Relay::Unavailable,
+        reqwest::StatusCode::REQUEST_TIMEOUT => Relay::TimedOut,
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY => {
+            let body = resp.json::<serde_json::Value>().await.unwrap_or_default();
+            let code = body.get("error").and_then(|v| v.as_str()).unwrap_or("");
+            Relay::Rejected(rejected_code(code))
+        }
+        _ => Relay::Failed,
+    }
+}
 
-    let status = resp.status();
-    if status == reqwest::StatusCode::CREATED {
-        return Redirect::to(&format!("{detail}?notice=attachment_added")).into_response();
+/// The page's error code for apps/api's 422: it emits two.
+fn rejected_code(api_error: &str) -> &'static str {
+    match api_error {
+        "file_too_large" => "file_too_large",
+        _ => "unsupported_file_type",
     }
-    if status == reqwest::StatusCode::NOT_FOUND {
-        return event_not_found_page().into_response();
-    }
-    // apps/api has its own upload gate and its own body bounds (#219), and
-    // its gate is also filled by calls reaching `/api/*` directly: its 503
-    // or 408 is passed on as such, not folded into a failed upload.
-    if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
-        return manage_our_home_http_guard::service_unavailable(
-            service_unavailable_page().into_response(),
-        );
-    }
-    // A 408 is a body that came too slowly, not a service that is down:
-    // the same page and headers as apps/web's own 408 (#243).
-    if status == reqwest::StatusCode::REQUEST_TIMEOUT {
-        return manage_our_home_http_guard::request_timeout(
-            crate::body_bounds::body_read_timeout_page(),
-        );
-    }
-    if status == reqwest::StatusCode::UNPROCESSABLE_ENTITY {
-        // Distinguish the two 422 codes the backend emits.
-        let body = resp.json::<serde_json::Value>().await.unwrap_or_default();
-        let code = body.get("error").and_then(|v| v.as_str()).unwrap_or("");
-        let mapped = match code {
-            "file_too_large" => "file_too_large",
-            _ => "unsupported_file_type",
-        };
-        return Redirect::to(&format!("{detail}?error={mapped}")).into_response();
-    }
-    Redirect::to(&format!("{detail}?error=upload_failed")).into_response()
 }
 
 /// How much room to make for the file before reading it (#246).
@@ -160,7 +203,7 @@ pub async fn upload(
 /// gets a buffer of the limit, not of its claim. Without a usable
 /// `Content-Length`, the limit itself — one buffer of it is what the
 /// upload gate budgets for each upload anyway.
-fn file_buffer_capacity(headers: &HeaderMap) -> usize {
+pub(crate) fn file_buffer_capacity(headers: &HeaderMap) -> usize {
     let limit = manage_our_home_http_guard::MAX_UPLOAD_BODY_BYTES;
     headers
         .get(axum::http::header::CONTENT_LENGTH)
@@ -271,6 +314,18 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(header::CONTENT_LENGTH, value.parse().unwrap());
         headers
+    }
+
+    /// apps/api answers 422 for two reasons; anything it does not name is
+    /// read as a refused type.
+    #[test]
+    fn a_refusal_keeps_its_reason() {
+        assert_eq!(super::rejected_code("file_too_large"), "file_too_large");
+        assert_eq!(
+            super::rejected_code("unsupported_file_type"),
+            "unsupported_file_type"
+        );
+        assert_eq!(super::rejected_code(""), "unsupported_file_type");
     }
 
     #[test]
