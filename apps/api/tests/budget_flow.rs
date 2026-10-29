@@ -217,10 +217,7 @@ async fn checked_grocery_item(
     )
     .await;
     assert_status(&create, StatusCode::CREATED);
-    let item_id = json_body(create).await["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let item_id = json_body(create).await["id"].as_str().unwrap().to_string();
     let check = call(
         router,
         Method::POST,
@@ -329,13 +326,8 @@ async fn an_admin_and_the_owner_reach_every_budget_route(db: PgPool) {
         "owner-password1",
     )
     .await;
-    let admin_cookie = register_verify_login(
-        &router,
-        &db,
-        "budget-admin@example.test",
-        "admin-password1",
-    )
-    .await;
+    let admin_cookie =
+        register_verify_login(&router, &db, "budget-admin@example.test", "admin-password1").await;
     let group_id = create_group(&router, &owner_cookie, "Foyer").await;
     join_as_standard(&router, &owner_cookie, &admin_cookie, &group_id).await;
     set_role(
