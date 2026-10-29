@@ -139,7 +139,7 @@ row is the exact `(status, code)` → French UI state.
 | 400 | `name_required` | inline on the form |
 | 400 | `amount_must_be_non_negative` | inline on the form |
 | 409 | `grocery_item_already_priced` | inline (unreachable — the form sends no `grocery_item_id`; mapped defensively) |
-| 403 | `forbidden` | forbidden page (unreachable — any member may create; defensive) |
+| 403 | `forbidden` | forbidden page (unreachable — only an owner or an admin reaches `/budget/new` since #531, and a standard member gets 404, not 403; defensive) |
 | 404 | `not_found` | inline (unreachable — the form sends no `grocery_item_id`; defensive) |
 | — | transport / other | inline "Service momentanément indisponible…" |
 

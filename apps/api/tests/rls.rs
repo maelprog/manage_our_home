@@ -902,6 +902,115 @@ async fn budget_entries_isolated_without_scoping(db: PgPool) {
         .unwrap();
 }
 
+/// Issue #532: `budget_categories` and `budget_settings` (migration 0035)
+/// hold even against a query that forgets `WHERE group_id = ...`, and an
+/// entry of group A cannot be filed under a category of group B: the
+/// composite key refuses it whatever the application checks.
+#[sqlx::test]
+async fn budget_categories_and_settings_isolated_without_scoping(db: PgPool) {
+    let mut ids = Vec::new();
+    for (email, group) in [("cat-a@example.test", "A"), ("cat-b@example.test", "B")] {
+        let user: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (email, password_hash, display_name, email_verified) VALUES ($1, 'x', 'U', true) RETURNING id",
+        )
+        .bind(email)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let group: Uuid = sqlx::query_scalar(
+            "INSERT INTO groups (name, created_by) VALUES ($1, $2) RETURNING id",
+        )
+        .bind(group)
+        .bind(user)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        ids.push((user, group));
+    }
+    let (owner_a, group_a) = ids[0];
+    let (_, group_b) = ids[1];
+    let category_b: Uuid = sqlx::query_scalar(
+        "INSERT INTO budget_categories (group_id, name, color, monthly_cap_cents) VALUES ($1, 'secret B', 'blue', 100) RETURNING id",
+    )
+    .bind(group_b)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO budget_settings (group_id, monthly_cap_cents) VALUES ($1, 5000)")
+        .bind(group_b)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    // The composite key, checked as the table owner: no RLS involved.
+    let cross = sqlx::query(
+        "INSERT INTO budget_entries (group_id, created_by, name, amount_cents, category_id) VALUES ($1, $2, 'x', 1, $3)",
+    )
+    .bind(group_a)
+    .bind(owner_a)
+    .bind(category_b)
+    .execute(&db)
+    .await;
+    assert!(
+        cross.is_err(),
+        "an entry of A must not name a category of B"
+    );
+
+    let role = format!("app_test_role_{}", Uuid::new_v4().simple());
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "GRANT SELECT ON budget_categories, budget_settings TO {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+
+    #[allow(clippy::disallowed_methods)]
+    let mut tx = db.begin().await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+        .bind(group_a.to_string())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let categories: Vec<Uuid> = sqlx::query_scalar("SELECT group_id FROM budget_categories")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    assert!(
+        categories.is_empty(),
+        "group A's scope must not see group B's categories"
+    );
+    let settings: Vec<Uuid> = sqlx::query_scalar("SELECT group_id FROM budget_settings")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    assert!(
+        settings.is_empty(),
+        "group A's scope must not see group B's cap"
+    );
+
+    tx.commit().await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "REVOKE ALL ON budget_categories, budget_settings FROM {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP ROLE {role}")))
+        .execute(&db)
+        .await
+        .unwrap();
+}
+
 /// Issue #73's `event_assignees` (migration 0011). The table carries no
 /// `group_id` of its own — its policy joins back to `events`, the same
 /// shape `event_reminders`/`event_attachments` use — which is precisely why

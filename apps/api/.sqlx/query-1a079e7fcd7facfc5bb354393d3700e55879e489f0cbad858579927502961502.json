@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT name, color, monthly_cap_cents FROM budget_categories\n         WHERE id = $1 AND group_id = $2 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "budget_categories",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "color",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "budget_categories",
+            "name": "color"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "monthly_cap_cents",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "budget_categories",
+            "name": "monthly_cap_cents"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "1a079e7fcd7facfc5bb354393d3700e55879e489f0cbad858579927502961502"
+}

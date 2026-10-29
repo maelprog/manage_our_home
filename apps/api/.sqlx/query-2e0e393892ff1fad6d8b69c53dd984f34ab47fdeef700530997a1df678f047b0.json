@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, group_id, name, amount_cents, spent_at, created_at\n               FROM budget_entries WHERE group_id = $1 AND created_by = $2 ORDER BY created_at",
+  "query": "INSERT INTO budget_categories (group_id, name, color, monthly_cap_cents)\n           VALUES ($1, $2, $3, $4)\n           RETURNING id, group_id, name, color, monthly_cap_cents, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -9,7 +9,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "budget_entries",
+            "table": "budget_categories",
             "name": "id"
           }
         }
@@ -20,7 +20,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "budget_entries",
+            "table": "budget_categories",
             "name": "group_id"
           }
         }
@@ -31,30 +31,30 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "budget_entries",
+            "table": "budget_categories",
             "name": "name"
           }
         }
       },
       {
         "ordinal": 3,
-        "name": "amount_cents",
-        "type_info": "Int8",
+        "name": "color",
+        "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "budget_entries",
-            "name": "amount_cents"
+            "table": "budget_categories",
+            "name": "color"
           }
         }
       },
       {
         "ordinal": 4,
-        "name": "spent_at",
-        "type_info": "Date",
+        "name": "monthly_cap_cents",
+        "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "budget_entries",
-            "name": "spent_at"
+            "table": "budget_categories",
+            "name": "monthly_cap_cents"
           }
         }
       },
@@ -64,8 +64,19 @@
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
-            "table": "budget_entries",
+            "table": "budget_categories",
             "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "budget_categories",
+            "name": "updated_at"
           }
         }
       }
@@ -73,7 +84,9 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid"
+        "Text",
+        "Text",
+        "Int8"
       ]
     },
     "nullable": [
@@ -81,9 +94,10 @@
       false,
       false,
       false,
+      true,
       false,
       false
     ]
   },
-  "hash": "73fefdbd42f47b12151a56115d55a21d5b2f7704935d3069942e086bbda8ca91"
+  "hash": "2e0e393892ff1fad6d8b69c53dd984f34ab47fdeef700530997a1df678f047b0"
 }

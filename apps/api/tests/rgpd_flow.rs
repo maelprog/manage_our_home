@@ -1070,6 +1070,8 @@ async fn export_accounts_for_every_table(db: PgPool) {
         ("recipe_selections", "recipe_selections"),
         ("grocery_items", "grocery_items"),
         ("budget_entries", "budget_entries"),
+        ("budget_categories", "budget_settings"),
+        ("budget_settings", "budget_settings"),
         ("messages", "messages"),
         ("message_read_state", "message_read_state"),
         ("calendar_imports", "calendar_imports"),

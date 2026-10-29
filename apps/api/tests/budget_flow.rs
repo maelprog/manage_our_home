@@ -1,7 +1,7 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
-use chrono::{NaiveDate, Utc};
+use chrono::{Datelike, NaiveDate, Utc};
 use common::{assert_status, call, json_body, set_cookie, test_router};
 use manage_our_home_shared::validation::auth::paris_day;
 use sqlx::PgPool;
@@ -780,4 +780,972 @@ async fn summary_cumulates_spend_per_month(db: PgPool) {
         .find(|p| p["period"] == "2026-06-01")
         .expect("june period present");
     assert_eq!(june["total"], 3.0);
+}
+
+// -- Categories and caps (#532) ----------------------------------------------
+
+/// An owner and an admin of a fresh group, logged in: (owner, admin, group).
+async fn owner_and_admin(
+    router: &axum::Router,
+    db: &PgPool,
+    prefix: &str,
+) -> (String, String, String) {
+    let owner_email = format!("{prefix}-owner@example.test");
+    let admin_email = format!("{prefix}-admin@example.test");
+    let owner = register_verify_login(router, db, &owner_email, "owner-password1").await;
+    let admin = register_verify_login(router, db, &admin_email, "admin-password1").await;
+    let group_id = create_group(router, &owner, "Foyer").await;
+    join_as_standard(router, &owner, &admin, &group_id).await;
+    set_role(router, db, &owner, &group_id, &admin_email, "admin").await;
+    (owner, admin, group_id)
+}
+
+async fn create_category(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+    body: serde_json::Value,
+) -> String {
+    let res = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/budget-categories"),
+        Some(cookie),
+        Some(body),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    json_body(res).await["id"].as_str().unwrap().to_string()
+}
+
+async fn create_entry(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+    body: serde_json::Value,
+) -> serde_json::Value {
+    let res = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/budget-entries"),
+        Some(cookie),
+        Some(body),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    json_body(res).await
+}
+
+/// AC #532: an admin creates, lists, edits and deletes the family's
+/// categories, and reads and sets its monthly cap.
+#[sqlx::test]
+async fn an_admin_runs_the_categories_and_the_family_cap(db: PgPool) {
+    let router = test_router(db.clone());
+    let (_owner, admin, group_id) = owner_and_admin(&router, &db, "cat-crud").await;
+    let categories = format!("/groups/{group_id}/budget-categories");
+    let settings = format!("/groups/{group_id}/budget-settings");
+
+    let create = call(
+        &router,
+        Method::POST,
+        &categories,
+        Some(&admin),
+        Some(serde_json::json!({"name": "  Loisirs ", "color": "ochre", "monthly_cap": 80.0})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let loisirs = json_body(create).await;
+    assert_eq!(loisirs["name"], "Loisirs", "the name is trimmed");
+    assert_eq!(loisirs["color"], "ochre");
+    assert_eq!(loisirs["monthly_cap"], 80.0);
+    assert_eq!(loisirs["group_id"], group_id.as_str());
+    let loisirs_id = loisirs["id"].as_str().unwrap().to_string();
+    create_category(
+        &router,
+        &admin,
+        &group_id,
+        serde_json::json!({"name": "alimentation", "color": "blue"}),
+    )
+    .await;
+
+    // Listed by name, whatever the case; a category without cap says null.
+    let list = json_body(call(&router, Method::GET, &categories, Some(&admin), None).await).await;
+    let list = list["categories"].as_array().unwrap();
+    let names: Vec<&str> = list.iter().map(|c| c["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["alimentation", "Loisirs"]);
+    assert!(list[0]["monthly_cap"].is_null());
+
+    // A PATCH changes what it names and keeps the rest; `null` removes the cap.
+    let category = format!("{categories}/{loisirs_id}");
+    let rename = call(
+        &router,
+        Method::PATCH,
+        &category,
+        Some(&admin),
+        Some(serde_json::json!({"name": "Sorties"})),
+    )
+    .await;
+    assert_status(&rename, StatusCode::OK);
+    let renamed = json_body(rename).await;
+    assert_eq!(renamed["name"], "Sorties");
+    assert_eq!(renamed["color"], "ochre");
+    assert_eq!(renamed["monthly_cap"], 80.0);
+    let uncap = call(
+        &router,
+        Method::PATCH,
+        &category,
+        Some(&admin),
+        Some(serde_json::json!({"monthly_cap": null, "color": "green"})),
+    )
+    .await;
+    assert_status(&uncap, StatusCode::OK);
+    let uncapped = json_body(uncap).await;
+    assert!(uncapped["monthly_cap"].is_null());
+    assert_eq!(uncapped["color"], "green");
+    assert_eq!(uncapped["name"], "Sorties");
+
+    let delete = call(&router, Method::DELETE, &category, Some(&admin), None).await;
+    assert_status(&delete, StatusCode::NO_CONTENT);
+    let again = call(&router, Method::DELETE, &category, Some(&admin), None).await;
+    assert_status(&again, StatusCode::NOT_FOUND);
+    let list = json_body(call(&router, Method::GET, &categories, Some(&admin), None).await).await;
+    assert_eq!(list["categories"].as_array().unwrap().len(), 1);
+
+    // The family cap: none at first, set, then removed.
+    let get = call(&router, Method::GET, &settings, Some(&admin), None).await;
+    assert_status(&get, StatusCode::OK);
+    assert!(json_body(get).await["monthly_cap"].is_null());
+    let put = call(
+        &router,
+        Method::PUT,
+        &settings,
+        Some(&admin),
+        Some(serde_json::json!({"monthly_cap": 1200.5})),
+    )
+    .await;
+    assert_status(&put, StatusCode::OK);
+    assert_eq!(json_body(put).await["monthly_cap"], 1200.5);
+    let get = call(&router, Method::GET, &settings, Some(&admin), None).await;
+    assert_eq!(json_body(get).await["monthly_cap"], 1200.5);
+    let clear = call(
+        &router,
+        Method::PUT,
+        &settings,
+        Some(&admin),
+        Some(serde_json::json!({"monthly_cap": null})),
+    )
+    .await;
+    assert_status(&clear, StatusCode::OK);
+    assert!(json_body(clear).await["monthly_cap"].is_null());
+}
+
+/// AC #532 and the user's decision of 2026-10-29: a standard member gets 404
+/// on every category and cap route — and on the entry and price routes —
+/// before their body is looked at: a malformed body is a 404 too, never the
+/// 400 that would tell them the route exists. Nothing they send lands.
+#[sqlx::test]
+async fn a_standard_member_gets_404_on_categories_and_caps_whatever_the_body(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner = register_verify_login(
+        &router,
+        &db,
+        "cat-std-owner@example.test",
+        "owner-password1",
+    )
+    .await;
+    let member = register_verify_login(
+        &router,
+        &db,
+        "cat-std-member@example.test",
+        "member-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner, "Foyer").await;
+    join_as_standard(&router, &owner, &member, &group_id).await;
+    let category_id = create_category(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Enfants", "color": "violet", "monthly_cap": 50.0}),
+    )
+    .await;
+    let item_id = checked_grocery_item(&router, &member, &group_id, "Pain").await;
+    let entry_id = create_entry(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Courses", "amount": 12.0}),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let categories = format!("/groups/{group_id}/budget-categories");
+    let category = format!("{categories}/{category_id}");
+    let settings = format!("/groups/{group_id}/budget-settings");
+    let entries = format!("/groups/{group_id}/budget-entries");
+    let entry = format!("{entries}/{entry_id}");
+    let price = format!("/groups/{group_id}/grocery-items/{item_id}/price");
+    // A body the extractor cannot read at all — missing fields, a wrong
+    // type, not an object — is a 404 too: the bar comes before the body.
+    let unreadable = [
+        serde_json::json!({}),
+        serde_json::json!({"name": 5, "color": [], "amount": "abc", "monthly_cap": "abc"}),
+        serde_json::json!("abc"),
+    ];
+    let body_routes = [
+        ("create category", Method::POST, categories.clone()),
+        ("update category", Method::PATCH, category.clone()),
+        ("set cap", Method::PUT, settings.clone()),
+        ("create entry", Method::POST, entries.clone()),
+        ("update entry", Method::PATCH, entry.clone()),
+        ("price", Method::POST, price.clone()),
+    ];
+    for (what, method, uri) in &body_routes {
+        for body in &unreadable {
+            let res = call(
+                &router,
+                method.clone(),
+                uri,
+                Some(&member),
+                Some(body.clone()),
+            )
+            .await;
+            assert_eq!(
+                res.status(),
+                StatusCode::NOT_FOUND,
+                "a standard member's {what} with body {body} must be a 404"
+            );
+        }
+    }
+    // Past the bar, the owner still gets the extractor's own answer.
+    let res = call(
+        &router,
+        Method::POST,
+        &categories,
+        Some(&owner),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let requests = [
+        ("list categories", Method::GET, categories.clone(), None),
+        (
+            "create category",
+            Method::POST,
+            categories.clone(),
+            Some(serde_json::json!({"name": "Bonbons", "color": "blue"})),
+        ),
+        (
+            "create category, invalid",
+            Method::POST,
+            categories.clone(),
+            Some(serde_json::json!({"name": " ", "color": "#ff0000", "monthly_cap": -1})),
+        ),
+        (
+            "update category",
+            Method::PATCH,
+            category.clone(),
+            Some(serde_json::json!({"monthly_cap": 999.0})),
+        ),
+        (
+            "update category, invalid",
+            Method::PATCH,
+            category.clone(),
+            Some(serde_json::json!({"name": ""})),
+        ),
+        ("delete category", Method::DELETE, category.clone(), None),
+        ("read cap", Method::GET, settings.clone(), None),
+        (
+            "set cap",
+            Method::PUT,
+            settings.clone(),
+            Some(serde_json::json!({"monthly_cap": 1.0})),
+        ),
+        (
+            "set cap, invalid",
+            Method::PUT,
+            settings.clone(),
+            Some(serde_json::json!({"monthly_cap": 0})),
+        ),
+        (
+            "summary, invalid month",
+            Method::GET,
+            format!("/groups/{group_id}/budget-entries/summary?month=nope"),
+            None,
+        ),
+        (
+            "create entry, invalid",
+            Method::POST,
+            format!("/groups/{group_id}/budget-entries"),
+            Some(serde_json::json!({"name": "", "amount": -1.0})),
+        ),
+        (
+            "price, invalid",
+            Method::POST,
+            format!("/groups/{group_id}/grocery-items/{item_id}/price"),
+            Some(serde_json::json!({"amount": -3.0})),
+        ),
+    ];
+    for (what, method, uri, body) in requests {
+        let res = call(&router, method, &uri, Some(&member), body).await;
+        assert_eq!(
+            res.status(),
+            StatusCode::NOT_FOUND,
+            "a standard member's {what} must be a 404"
+        );
+    }
+
+    let list = json_body(call(&router, Method::GET, &categories, Some(&owner), None).await).await;
+    let list = list["categories"].as_array().unwrap();
+    assert_eq!(list.len(), 1, "{list:?}");
+    assert_eq!(list[0]["monthly_cap"], 50.0);
+    let cap = call(&router, Method::GET, &settings, Some(&owner), None).await;
+    assert!(json_body(cap).await["monthly_cap"].is_null());
+}
+
+/// AC #532: the bounds of the user's decision of 2026-10-29 — a trimmed name
+/// of 1 to 40 characters, unique in the family whatever its case, a colour
+/// from the closed list, caps above zero, 30 categories at most.
+#[sqlx::test]
+async fn categories_and_caps_are_bounded(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner =
+        register_verify_login(&router, &db, "cat-bounds@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner, "Foyer").await;
+    let categories = format!("/groups/{group_id}/budget-categories");
+    let first = create_category(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Santé", "color": "green"}),
+    )
+    .await;
+
+    let refused = [
+        (
+            serde_json::json!({"name": "  ", "color": "blue"}),
+            StatusCode::BAD_REQUEST,
+            "name_required",
+        ),
+        (
+            serde_json::json!({"name": "é".repeat(41), "color": "blue"}),
+            StatusCode::BAD_REQUEST,
+            "name_too_long",
+        ),
+        (
+            serde_json::json!({"name": "Rouge", "color": "#a8342a"}),
+            StatusCode::BAD_REQUEST,
+            "invalid_color",
+        ),
+        (
+            serde_json::json!({"name": "Rouge", "color": "red"}),
+            StatusCode::BAD_REQUEST,
+            "invalid_color",
+        ),
+        (
+            serde_json::json!({"name": "Rouge", "color": "blue", "monthly_cap": 0}),
+            StatusCode::BAD_REQUEST,
+            "cap_must_be_positive",
+        ),
+        (
+            serde_json::json!({"name": "SANTÉ", "color": "blue"}),
+            StatusCode::CONFLICT,
+            "category_name_taken",
+        ),
+    ];
+    for (body, status, code) in refused {
+        let res = call(
+            &router,
+            Method::POST,
+            &categories,
+            Some(&owner),
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(res.status(), status, "{body}");
+        assert_eq!(json_body(res).await["error"], code, "{body}");
+    }
+    let forty = create_category(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "é".repeat(40), "color": "orange"}),
+    )
+    .await;
+
+    // A rename onto another category's name, whatever its case, is refused
+    // too; onto its own name in another case, it is not.
+    let rename = call(
+        &router,
+        Method::PATCH,
+        &format!("{categories}/{forty}"),
+        Some(&owner),
+        Some(serde_json::json!({"name": "santé"})),
+    )
+    .await;
+    assert_status(&rename, StatusCode::CONFLICT);
+    let recase = call(
+        &router,
+        Method::PATCH,
+        &format!("{categories}/{first}"),
+        Some(&owner),
+        Some(serde_json::json!({"name": "SANTÉ"})),
+    )
+    .await;
+    assert_status(&recase, StatusCode::OK);
+    for (body, code) in [
+        (
+            serde_json::json!({"monthly_cap": -5.0}),
+            "cap_must_be_positive",
+        ),
+        (serde_json::json!({"color": "Blue"}), "invalid_color"),
+        (serde_json::json!({"name": " "}), "name_required"),
+    ] {
+        let res = call(
+            &router,
+            Method::PATCH,
+            &format!("{categories}/{first}"),
+            Some(&owner),
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(json_body(res).await["error"], code, "{body}");
+    }
+    let family_cap = call(
+        &router,
+        Method::PUT,
+        &format!("/groups/{group_id}/budget-settings"),
+        Some(&owner),
+        Some(serde_json::json!({"monthly_cap": -1.0})),
+    )
+    .await;
+    assert_status(&family_cap, StatusCode::BAD_REQUEST);
+
+    // 30 categories, not 31.
+    for n in 3..=30 {
+        create_category(
+            &router,
+            &owner,
+            &group_id,
+            serde_json::json!({"name": format!("Catégorie {n}"), "color": "blue"}),
+        )
+        .await;
+    }
+    let thirty_first = call(
+        &router,
+        Method::POST,
+        &categories,
+        Some(&owner),
+        Some(serde_json::json!({"name": "Une de trop", "color": "blue"})),
+    )
+    .await;
+    assert_status(&thirty_first, StatusCode::CONFLICT);
+    assert_eq!(
+        json_body(thirty_first).await["error"],
+        "category_limit_reached"
+    );
+    let list = json_body(call(&router, Method::GET, &categories, Some(&owner), None).await).await;
+    assert_eq!(list["categories"].as_array().unwrap().len(), 30);
+}
+
+/// AC #532: the 30-category bound holds under simultaneous creations — with
+/// 25 categories on file, 15 creations at once leave exactly 30, the other
+/// 10 refused `category_limit_reached`. Without the family's lock in
+/// `create_budget_category`, several would read 25 together and pass.
+#[sqlx::test]
+async fn simultaneous_creations_stop_at_thirty_categories(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, _admin, group_id) = owner_and_admin(&router, &db, "cat-race").await;
+    let categories = format!("/groups/{group_id}/budget-categories");
+    for n in 1..=25 {
+        create_category(
+            &router,
+            &owner,
+            &group_id,
+            serde_json::json!({"name": format!("Avant {n}"), "color": "green"}),
+        )
+        .await;
+    }
+
+    let mut creations = tokio::task::JoinSet::new();
+    for n in 1..=15 {
+        let (router, owner, uri) = (router.clone(), owner.clone(), categories.clone());
+        creations.spawn(async move {
+            let body = serde_json::json!({"name": format!("Course {n}"), "color": "blue"});
+            let res = call(&router, Method::POST, &uri, Some(&owner), Some(body)).await;
+            let status = res.status();
+            (status, json_body(res).await)
+        });
+    }
+    let (mut created, mut refused) = (0, 0);
+    while let Some(outcome) = creations.join_next().await {
+        let (status, body) = outcome.unwrap();
+        match status {
+            StatusCode::CREATED => created += 1,
+            StatusCode::CONFLICT => {
+                assert_eq!(body["error"], "category_limit_reached", "{body}");
+                refused += 1;
+            }
+            other => panic!("unexpected {other}: {body}"),
+        }
+    }
+    assert_eq!((created, refused), (5, 10));
+
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM budget_categories WHERE group_id = $1::uuid")
+            .bind(&group_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(rows, 30);
+}
+
+/// AC #532: an entry takes a category at creation and on edit (`null` moves
+/// it back to « Sans catégorie »), and deleting a category leaves its
+/// entries in place with `category_id = NULL`.
+#[sqlx::test]
+async fn deleting_a_category_leaves_its_entries_uncategorized(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner =
+        register_verify_login(&router, &db, "cat-delete@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner, "Foyer").await;
+    let food = create_category(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Alimentation", "color": "blue"}),
+    )
+    .await;
+    let home = create_category(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Maison", "color": "orange"}),
+    )
+    .await;
+
+    let entry = create_entry(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Supermarché", "amount": 40.0, "category_id": food}),
+    )
+    .await;
+    assert_eq!(entry["category_id"], food.as_str());
+    let entry_uri = format!(
+        "/groups/{group_id}/budget-entries/{}",
+        entry["id"].as_str().unwrap()
+    );
+    let plain = create_entry(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Divers", "amount": 1.0}),
+    )
+    .await;
+    assert!(plain["category_id"].is_null());
+
+    // Edit: another category, then none, then back; a PATCH that does not
+    // name it keeps it.
+    for (body, expected) in [
+        (
+            serde_json::json!({"category_id": home}),
+            Some(home.as_str()),
+        ),
+        (serde_json::json!({"amount": 41.0}), Some(home.as_str())),
+        (serde_json::json!({"category_id": null}), None),
+        (
+            serde_json::json!({"category_id": food}),
+            Some(food.as_str()),
+        ),
+    ] {
+        let res = call(
+            &router,
+            Method::PATCH,
+            &entry_uri,
+            Some(&owner),
+            Some(body.clone()),
+        )
+        .await;
+        assert_status(&res, StatusCode::OK);
+        let got = json_body(res).await;
+        assert_eq!(got["category_id"].as_str(), expected, "{body}");
+    }
+    // An unknown category is the 404 of any missing referenced resource.
+    let unknown = uuid::Uuid::new_v4();
+    let res = call(
+        &router,
+        Method::PATCH,
+        &entry_uri,
+        Some(&owner),
+        Some(serde_json::json!({"category_id": unknown})),
+    )
+    .await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+
+    let delete = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}/budget-categories/{food}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_status(&delete, StatusCode::NO_CONTENT);
+    let after = json_body(call(&router, Method::GET, &entry_uri, Some(&owner), None).await).await;
+    assert!(after["category_id"].is_null(), "{after}");
+    assert_eq!(after["amount"], 41.0, "the entry itself is untouched");
+    assert_eq!(after["name"], "Supermarché");
+    let stored: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT category_id FROM budget_entries WHERE id = $1")
+            .bind(uuid::Uuid::parse_str(entry["id"].as_str().unwrap()).unwrap())
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(stored, None);
+}
+
+/// AC #532: the summary reports the asked month against the caps — the
+/// month's total and the family's cap, and per category its total, its cap,
+/// the share spent and the overrun; no cap, no percentage.
+#[sqlx::test]
+async fn the_summary_reflects_the_caps(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner =
+        register_verify_login(&router, &db, "cat-summary@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner, "Foyer").await;
+    let put = call(
+        &router,
+        Method::PUT,
+        &format!("/groups/{group_id}/budget-settings"),
+        Some(&owner),
+        Some(serde_json::json!({"monthly_cap": 100.0})),
+    )
+    .await;
+    assert_status(&put, StatusCode::OK);
+    let leisure = create_category(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Loisirs", "color": "ochre", "monthly_cap": 50.0}),
+    )
+    .await;
+    let health = create_category(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Santé", "color": "green"}),
+    )
+    .await;
+    let food = create_category(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Alimentation", "color": "blue", "monthly_cap": 200.0}),
+    )
+    .await;
+    for (name, amount, day, category) in [
+        ("Cinéma", 30.0, "2026-10-03", Some(&leisure)),
+        ("Concert", 22.0, "2026-10-31", Some(&leisure)),
+        ("Pharmacie", 10.0, "2026-10-10", Some(&health)),
+        ("Divers", 5.5, "2026-10-12", None),
+        ("Bowling", 7.0, "2026-09-30", Some(&leisure)),
+        ("Musée", 9.0, "2026-11-01", Some(&leisure)),
+    ] {
+        create_entry(
+            &router,
+            &owner,
+            &group_id,
+            serde_json::json!({"name": name, "amount": amount, "spent_at": day, "category_id": category}),
+        )
+        .await;
+    }
+
+    let summary = |month: &str| {
+        let uri = format!("/groups/{group_id}/budget-entries/summary?month={month}");
+        let router = router.clone();
+        let owner = owner.clone();
+        async move {
+            let res = call(&router, Method::GET, &uri, Some(&owner), None).await;
+            assert_status(&res, StatusCode::OK);
+            json_body(res).await
+        }
+    };
+
+    let october = summary("2026-10").await;
+    let month = &october["month"];
+    assert_eq!(month["period"], "2026-10-01");
+    assert_eq!(month["total"], 67.5);
+    assert_eq!(month["monthly_cap"], 100.0);
+    assert_eq!(month["percent"], 67);
+    assert_eq!(month["over_cap"], false);
+    assert_eq!(month["uncategorized"], 5.5);
+    let cats = month["categories"].as_array().unwrap();
+    let names: Vec<&str> = cats.iter().map(|c| c["name"].as_str().unwrap()).collect();
+    assert_eq!(
+        names,
+        ["Alimentation", "Loisirs", "Santé"],
+        "every category, by name"
+    );
+    // Nothing spent under a cap: 0 %, listed all the same.
+    assert_eq!(cats[0]["id"], food.as_str());
+    assert_eq!(cats[0]["total"], 0.0);
+    assert_eq!(cats[0]["percent"], 0);
+    assert_eq!(cats[0]["over_cap"], false);
+    // 52 € of 50 €: 104 %, over.
+    assert_eq!(cats[1]["id"], leisure.as_str());
+    assert_eq!(cats[1]["color"], "ochre");
+    assert_eq!(cats[1]["total"], 52.0);
+    assert_eq!(cats[1]["monthly_cap"], 50.0);
+    assert_eq!(cats[1]["percent"], 104);
+    assert_eq!(cats[1]["over_cap"], true);
+    // No cap: no percentage, no overrun.
+    assert_eq!(cats[2]["total"], 10.0);
+    assert!(cats[2]["monthly_cap"].is_null());
+    assert!(cats[2]["percent"].is_null());
+    assert_eq!(cats[2]["over_cap"], false);
+    // The per-month history is still there.
+    assert_eq!(october["periods"].as_array().unwrap().len(), 3);
+
+    // Another month, under the family cap's overrun this time.
+    let put = call(
+        &router,
+        Method::PUT,
+        &format!("/groups/{group_id}/budget-settings"),
+        Some(&owner),
+        Some(serde_json::json!({"monthly_cap": 6.0})),
+    )
+    .await;
+    assert_status(&put, StatusCode::OK);
+    let september = summary("2026-09").await;
+    let month = &september["month"];
+    assert_eq!(month["total"], 7.0);
+    assert_eq!(month["percent"], 116);
+    assert_eq!(month["over_cap"], true);
+    assert_eq!(month["uncategorized"], 0.0);
+
+    // Without a family cap, no percentage.
+    call(
+        &router,
+        Method::PUT,
+        &format!("/groups/{group_id}/budget-settings"),
+        Some(&owner),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    let november = summary("2026-11").await;
+    assert!(november["month"]["monthly_cap"].is_null());
+    assert!(november["month"]["percent"].is_null());
+    assert_eq!(november["month"]["over_cap"], false);
+    assert_eq!(november["month"]["total"], 9.0);
+
+    for bad in ["2026-13", "2026-10-01", "oct"] {
+        let res = call(
+            &router,
+            Method::GET,
+            &format!("/groups/{group_id}/budget-entries/summary?month={bad}"),
+            Some(&owner),
+            None,
+        )
+        .await;
+        assert_status(&res, StatusCode::BAD_REQUEST);
+    }
+
+    // Left out, the month is the current one in Paris.
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/budget-entries/summary"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    let period: NaiveDate = json_body(res).await["month"]["period"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let today = paris_day(Utc::now());
+    assert_eq!(
+        (period.year(), period.month(), period.day()),
+        (today.year(), today.month(), 1)
+    );
+}
+
+/// AC #532: another family sees nothing of these categories or this cap —
+/// not in its own lists, not by id, not by filing one of its entries under
+/// them.
+#[sqlx::test]
+async fn another_family_sees_nothing_of_the_categories(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_a =
+        register_verify_login(&router, &db, "cat-rls-a@example.test", "owner-password1").await;
+    let owner_b =
+        register_verify_login(&router, &db, "cat-rls-b@example.test", "owner-password1").await;
+    let group_a = create_group(&router, &owner_a, "A").await;
+    let group_b = create_group(&router, &owner_b, "B").await;
+    let category_a = create_category(
+        &router,
+        &owner_a,
+        &group_a,
+        serde_json::json!({"name": "Secret", "color": "violet", "monthly_cap": 10.0}),
+    )
+    .await;
+    call(
+        &router,
+        Method::PUT,
+        &format!("/groups/{group_a}/budget-settings"),
+        Some(&owner_a),
+        Some(serde_json::json!({"monthly_cap": 900.0})),
+    )
+    .await;
+
+    // B's own views are empty.
+    let list = json_body(
+        call(
+            &router,
+            Method::GET,
+            &format!("/groups/{group_b}/budget-categories"),
+            Some(&owner_b),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(list["categories"], serde_json::json!([]));
+    let cap = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_b}/budget-settings"),
+        Some(&owner_b),
+        None,
+    )
+    .await;
+    assert!(json_body(cap).await["monthly_cap"].is_null());
+    let summary = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_b}/budget-entries/summary"),
+        Some(&owner_b),
+        None,
+    )
+    .await;
+    let summary = json_body(summary).await;
+    assert_eq!(summary["month"]["categories"], serde_json::json!([]));
+    assert!(summary["month"]["monthly_cap"].is_null());
+
+    // A's category through B's group: unknown.
+    let through_b = format!("/groups/{group_b}/budget-categories/{category_a}");
+    let patch = call(
+        &router,
+        Method::PATCH,
+        &through_b,
+        Some(&owner_b),
+        Some(serde_json::json!({"name": "Pris"})),
+    )
+    .await;
+    assert_status(&patch, StatusCode::NOT_FOUND);
+    let delete = call(&router, Method::DELETE, &through_b, Some(&owner_b), None).await;
+    assert_status(&delete, StatusCode::NOT_FOUND);
+    let entry = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_b}/budget-entries"),
+        Some(&owner_b),
+        Some(serde_json::json!({"name": "Pain", "amount": 1.0, "category_id": category_a})),
+    )
+    .await;
+    assert_status(&entry, StatusCode::NOT_FOUND);
+
+    // A's group itself is closed to B, as every group route.
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_a}/budget-categories"),
+        Some(&owner_b),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+
+    // And A's category is as A left it.
+    let list = json_body(
+        call(
+            &router,
+            Method::GET,
+            &format!("/groups/{group_a}/budget-categories"),
+            Some(&owner_a),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(list["categories"][0]["name"], "Secret");
+}
+
+/// AC #532: the RGPD export hands an owner or an admin the family's budget
+/// settings — its cap and its categories — and each entry's category; a
+/// standard member of the same family gets no `budget_settings` at all.
+#[sqlx::test]
+async fn the_export_carries_the_categories_to_those_who_reach_the_budget(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, admin, group_id) = owner_and_admin(&router, &db, "cat-export").await;
+    let member = register_verify_login(
+        &router,
+        &db,
+        "cat-export-member@example.test",
+        "member-password1",
+    )
+    .await;
+    join_as_standard(&router, &owner, &member, &group_id).await;
+    let food = create_category(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Alimentation", "color": "blue", "monthly_cap": 300.0}),
+    )
+    .await;
+    call(
+        &router,
+        Method::PUT,
+        &format!("/groups/{group_id}/budget-settings"),
+        Some(&owner),
+        Some(serde_json::json!({"monthly_cap": 750.0})),
+    )
+    .await;
+    create_entry(
+        &router,
+        &admin,
+        &group_id,
+        serde_json::json!({"name": "Marché", "amount": 12.0, "category_id": food}),
+    )
+    .await;
+
+    let export = |cookie: String| {
+        let router = router.clone();
+        async move {
+            let res = call(&router, Method::GET, "/account/export", Some(&cookie), None).await;
+            assert_status(&res, StatusCode::OK);
+            json_body(res).await
+        }
+    };
+    let doc = export(admin.clone()).await;
+    let settings = doc["budget_settings"].as_array().unwrap();
+    assert_eq!(settings.len(), 1, "{settings:?}");
+    assert_eq!(settings[0]["group_id"], group_id.as_str());
+    assert_eq!(settings[0]["monthly_cap"], 750.0);
+    assert_eq!(settings[0]["categories"][0]["id"], food.as_str());
+    assert_eq!(settings[0]["categories"][0]["name"], "Alimentation");
+    assert_eq!(settings[0]["categories"][0]["color"], "blue");
+    assert_eq!(settings[0]["categories"][0]["monthly_cap"], 300.0);
+    assert_eq!(doc["budget_entries"][0]["category_id"], food.as_str());
+
+    let doc = export(owner).await;
+    assert_eq!(doc["budget_settings"].as_array().unwrap().len(), 1);
+    let doc = export(member).await;
+    assert_eq!(doc["budget_settings"], serde_json::json!([]));
 }

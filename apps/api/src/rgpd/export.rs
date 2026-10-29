@@ -31,6 +31,7 @@ pub struct ExportCategories {
     pub recipe_selections: Vec<Value>,
     pub grocery_items: Vec<Value>,
     pub budget_entries: Vec<Value>,
+    pub budget_settings: Vec<Value>,
     pub messages: Vec<Value>,
     pub message_read_state: Vec<Value>,
     pub calendar_imports: Vec<Value>,
@@ -64,6 +65,7 @@ pub fn build_export(profile: Value, categories: ExportCategories) -> Value {
         "recipe_selections": categories.recipe_selections,
         "grocery_items": categories.grocery_items,
         "budget_entries": categories.budget_entries,
+        "budget_settings": categories.budget_settings,
         "messages": categories.messages,
         "message_read_state": categories.message_read_state,
         "calendar_imports": categories.calendar_imports,
@@ -76,6 +78,28 @@ pub fn build_export(profile: Value, categories: ExportCategories) -> Value {
         "audit_log": categories.audit_log,
         "push_subscriptions": categories.push_subscriptions,
     })
+}
+
+/// A family's budget settings (#532) as the export hands them to an owner or
+/// an admin: the monthly cap for the whole family, in euros (`null`
+/// without one), and its categories as given. These rows name no one — they
+/// are the family's, not the person's — so the export only reaches them
+/// through the budget's own bar (`can_access_budget`), applied by the
+/// caller. `None` for a family that set neither, so the key does not fill
+/// with empty shells.
+pub fn budget_settings_entry(
+    group_id: Uuid,
+    monthly_cap_cents: Option<i64>,
+    categories: Vec<Value>,
+) -> Option<Value> {
+    if monthly_cap_cents.is_none() && categories.is_empty() {
+        return None;
+    }
+    Some(json!({
+        "group_id": group_id,
+        "monthly_cap": monthly_cap_cents.map(|c| c as f64 / 100.0),
+        "categories": categories,
+    }))
 }
 
 /// One group the export walks, and whether the caller is still a member.
@@ -157,6 +181,7 @@ mod tests {
                 recipe_selections: vec![json!({"id": "rs"})],
                 grocery_items: vec![json!({"id": "gi"})],
                 budget_entries: vec![json!({"id": "be"})],
+                budget_settings: vec![json!({"id": "bs"})],
                 messages: vec![json!({"id": "ms"})],
                 message_read_state: vec![json!({"id": "mr"})],
                 calendar_imports: vec![json!({"id": "ci"})],
@@ -187,6 +212,7 @@ mod tests {
             ("recipe_selections", "rs"),
             ("grocery_items", "gi"),
             ("budget_entries", "be"),
+            ("budget_settings", "bs"),
             ("messages", "ms"),
             ("message_read_state", "mr"),
             ("calendar_imports", "ci"),
@@ -201,15 +227,15 @@ mod tests {
         ] {
             assert_eq!(doc[key][0]["id"], id, "{key}");
         }
-        // The profile and the 25 categories, nothing else.
-        assert_eq!(doc.as_object().unwrap().len(), 26);
+        // The profile and the 26 categories, nothing else.
+        assert_eq!(doc.as_object().unwrap().len(), 27);
     }
 
     #[test]
     fn build_export_keeps_every_key_when_empty() {
         let doc = build_export(json!({"id": "u1"}), ExportCategories::default());
         let object = doc.as_object().unwrap();
-        assert_eq!(object.len(), 26);
+        assert_eq!(object.len(), 27);
         for (key, value) in object {
             if key != "profile" {
                 assert_eq!(value.as_array().map(Vec::len), Some(0), "{key}");
@@ -322,5 +348,41 @@ mod tests {
     #[test]
     fn export_scope_is_empty_without_any_group() {
         assert!(export_scope(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn budget_settings_entry_holds_the_cap_in_euros_and_the_categories() {
+        let entry = budget_settings_entry(
+            id(7),
+            Some(50_000),
+            vec![json!({"name": "Loisirs"}), json!({"name": "Maison"})],
+        )
+        .unwrap();
+        assert_eq!(entry["group_id"], json!(id(7)));
+        assert_eq!(entry["monthly_cap"], 500.0);
+        assert_eq!(
+            entry["categories"],
+            json!([{"name": "Loisirs"}, {"name": "Maison"}])
+        );
+    }
+
+    #[test]
+    fn budget_settings_entry_without_a_cap_keeps_its_categories() {
+        let entry = budget_settings_entry(id(7), None, vec![json!({"name": "Santé"})]).unwrap();
+        assert!(entry["monthly_cap"].is_null());
+        assert!(entry.as_object().unwrap().contains_key("monthly_cap"));
+        assert_eq!(entry["categories"][0]["name"], "Santé");
+    }
+
+    #[test]
+    fn budget_settings_entry_with_a_cap_and_no_category() {
+        let entry = budget_settings_entry(id(7), Some(1), vec![]).unwrap();
+        assert_eq!(entry["monthly_cap"], 0.01);
+        assert_eq!(entry["categories"], json!([]));
+    }
+
+    #[test]
+    fn a_family_without_cap_or_category_adds_no_budget_settings_entry() {
+        assert_eq!(budget_settings_entry(id(7), None, vec![]), None);
     }
 }

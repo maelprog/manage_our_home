@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT created_by, name, amount_cents, spent_at FROM budget_entries WHERE id = $1 AND group_id = $2 FOR UPDATE",
+  "query": "SELECT created_by, name, amount_cents, spent_at, category_id FROM budget_entries WHERE id = $1 AND group_id = $2 FOR UPDATE",
   "describe": {
     "columns": [
       {
@@ -46,6 +46,17 @@
             "name": "spent_at"
           }
         }
+      },
+      {
+        "ordinal": 4,
+        "name": "category_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "budget_entries",
+            "name": "category_id"
+          }
+        }
       }
     ],
     "parameters": {
@@ -58,8 +69,9 @@
       false,
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "c41084b823a16daffbb972c015b72f808f450f75bcc3a12dac504c6c58b4b824"
+  "hash": "ad50b07f6cd331df0579691b5a2cbe3dccd7206e7e497568926ec0878d0f790e"
 }

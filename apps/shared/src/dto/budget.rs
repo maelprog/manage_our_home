@@ -92,3 +92,107 @@ pub struct BudgetPeriodTotal {
 pub struct BudgetSummary {
     pub periods: Vec<BudgetPeriodTotal>,
 }
+
+// -- Categories and caps (#532) -----------------------------------------------
+//
+// Unlike the shapes above, these are not mirrors: `apps/api` serializes and
+// deserializes these very structs, so the backend and `apps/web` (#533)
+// cannot drift. Caps are euros on the wire, cents in the database, as
+// `amount`. A cap of `null` is « no cap ».
+
+/// Serde's blanket `Option<T>` impl reads an explicit `null` and a missing key
+/// as the same `None`; this `deserialize_with` runs only when the key is
+/// present, so `Some(None)` — « clear it » — is reachable (see the twin in
+/// `dto/grocery_list.rs`).
+fn deserialize_some<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+/// A spending category of the family. `color` is one of
+/// `validation::budget::CATEGORY_COLORS`, a named key, never a hex value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BudgetCategory {
+    pub id: Uuid,
+    pub group_id: Uuid,
+    pub name: String,
+    pub color: String,
+    pub monthly_cap: Option<f64>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// `GET /groups/:id/budget-categories` (`{ "categories": [...] }`, by name).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BudgetCategoryList {
+    pub categories: Vec<BudgetCategory>,
+}
+
+/// `POST /groups/:id/budget-categories` request body.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateBudgetCategoryRequest {
+    pub name: String,
+    pub color: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monthly_cap: Option<f64>,
+}
+
+/// `PATCH /groups/:id/budget-categories/:category_id` request body. A field
+/// left out keeps its value; `monthly_cap: null` removes the cap.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UpdateBudgetCategoryRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_some",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub monthly_cap: Option<Option<f64>>,
+}
+
+/// `GET` and `PUT /groups/:id/budget-settings`, response and request body:
+/// the monthly cap for the whole family. `PUT` replaces it, so a body
+/// without `monthly_cap` removes it, as `null` does.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BudgetSettings {
+    #[serde(default)]
+    pub monthly_cap: Option<f64>,
+}
+
+/// One category's spend over the summary's month.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BudgetCategoryUsage {
+    pub id: Uuid,
+    pub name: String,
+    pub color: String,
+    pub total: f64,
+    pub monthly_cap: Option<f64>,
+    /// `validation::budget::cap_usage`: the total as a share of the cap,
+    /// rounded down; `null` without a cap.
+    pub percent: Option<i64>,
+    /// The total is strictly above the cap.
+    pub over_cap: bool,
+}
+
+/// The `month` member of `GET /groups/:id/budget-entries/summary`: one month
+/// (`?month=YYYY-MM`, else the current one in Paris) against the caps. Every
+/// category is listed, spent in or not, by name; `uncategorized` is the
+/// spend filed under none (« Sans catégorie »). `total` is the whole month,
+/// `uncategorized` included.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BudgetMonthSummary {
+    /// First day of the month.
+    pub period: NaiveDate,
+    pub total: f64,
+    pub monthly_cap: Option<f64>,
+    pub percent: Option<i64>,
+    pub over_cap: bool,
+    pub categories: Vec<BudgetCategoryUsage>,
+    pub uncategorized: f64,
+}

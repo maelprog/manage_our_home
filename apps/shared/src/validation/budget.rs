@@ -20,6 +20,12 @@
 //!   place.
 //! - `format_period` turns a summary period (first-of-month `NaiveDate`) into
 //!   the French month-and-year label the monthly summary shows.
+//! - Categories and caps (#532): `validate_category_name`,
+//!   `is_category_color` and `cap_to_cents` are the backend's own guards for
+//!   a category and for the monthly caps (global and per category);
+//!   `cap_usage` turns a month's total and a cap into the percentage and the
+//!   overrun the summary returns; `parse_month` reads the summary's `month`
+//!   parameter.
 
 use chrono::{Datelike, NaiveDate};
 
@@ -120,9 +126,282 @@ pub fn format_period(period: NaiveDate) -> String {
     format!("{} {}", month_name_fr(period.month()), period.year())
 }
 
+/// Longest category name, in characters, after trimming (#532).
+pub const CATEGORY_NAME_MAX: usize = 40;
+
+/// Most categories a family may have (#532). The API refuses the 31st.
+pub const CATEGORIES_MAX: i64 = 30;
+
+/// The closed list of colours a category may take (#532), as named keys:
+/// the database stores the key, never a hex value, and `apps/web` maps each
+/// key onto a `DESIGN.md` token (#533). The five are the swatches of the
+/// budget mock-up, in its order — Alimentation `#2F7A9E`, Enfants `#7A5EA8`,
+/// Santé `#457F44`, Maison `#B35C2E`, Loisirs `#8E630F` (light theme) — given
+/// here only to say which key is which. The migration's `CHECK` repeats the
+/// list (`0035_budget_categories.sql`).
+pub const CATEGORY_COLORS: [&str; 5] = ["blue", "violet", "green", "orange", "ochre"];
+
+/// Why a category, or a cap, was refused (#532), in the order the backend
+/// checks a category: name, colour, cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CategoryError {
+    NameRequired,
+    NameTooLong,
+    InvalidColor,
+    CapNotPositive,
+}
+
+impl CategoryError {
+    /// The 400's error code.
+    pub fn code(&self) -> &'static str {
+        match self {
+            CategoryError::NameRequired => "name_required",
+            CategoryError::NameTooLong => "name_too_long",
+            CategoryError::InvalidColor => "invalid_color",
+            CategoryError::CapNotPositive => "cap_must_be_positive",
+        }
+    }
+}
+
+/// A category's name, trimmed: 1 to `CATEGORY_NAME_MAX` characters. Its
+/// uniqueness within the family, ignoring case, is the database's.
+pub fn validate_category_name(name: &str) -> Result<&str, CategoryError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(CategoryError::NameRequired);
+    }
+    if name.chars().count() > CATEGORY_NAME_MAX {
+        return Err(CategoryError::NameTooLong);
+    }
+    Ok(name)
+}
+
+/// Whether `color` is one of `CATEGORY_COLORS`, exactly.
+pub fn is_category_color(color: &str) -> bool {
+    CATEGORY_COLORS.contains(&color)
+}
+
+/// A monthly cap, global or per category, from the euros of the API boundary
+/// to the cents the database keeps: finite, and at least one cent once
+/// rounded — a cap of zero would make every expense an overrun. Removing a
+/// cap is sending `null`, not `0`.
+pub fn cap_to_cents(amount: f64) -> Result<i64, CategoryError> {
+    if !amount.is_finite() {
+        return Err(CategoryError::CapNotPositive);
+    }
+    let cents = (amount * 100.0).round() as i64;
+    if cents <= 0 {
+        return Err(CategoryError::CapNotPositive);
+    }
+    Ok(cents)
+}
+
+/// How much of a cap a month's spend uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CapUsage {
+    /// The total as a share of the cap, in percent, rounded down — so 100
+    /// means the cap is reached, and an overrun of less than one percent
+    /// still reads 100. `None` without a cap.
+    pub percent: Option<i64>,
+    /// The total is strictly above the cap: reaching it is not exceeding it.
+    pub over_cap: bool,
+}
+
+/// `total_cents` against `cap_cents`. No cap, or a cap of zero (which the
+/// API never stores), gives no percentage and no overrun.
+pub fn cap_usage(total_cents: i64, cap_cents: Option<i64>) -> CapUsage {
+    match cap_cents {
+        Some(cap) if cap > 0 => {
+            let percent = i128::from(total_cents) * 100 / i128::from(cap);
+            CapUsage {
+                percent: Some(i64::try_from(percent).unwrap_or(i64::MAX)),
+                over_cap: total_cents > cap,
+            }
+        }
+        _ => CapUsage {
+            percent: None,
+            over_cap: false,
+        },
+    }
+}
+
+/// The summary's `month` parameter, `YYYY-MM`, as the first day of that
+/// month. Anything else — a day, a missing zero, a month 13 — is `None`.
+pub fn parse_month(month: &str) -> Option<NaiveDate> {
+    let (year, mon) = month.split_once('-')?;
+    if year.len() != 4 || mon.len() != 2 {
+        return None;
+    }
+    if !year.bytes().chain(mon.bytes()).all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    NaiveDate::from_ymd_opt(year.parse().ok()?, mon.parse().ok()?, 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- categories and caps (#532) ------------------------------------------
+
+    #[test]
+    fn a_category_name_is_trimmed() {
+        assert_eq!(
+            validate_category_name("  Alimentation "),
+            Ok("Alimentation")
+        );
+    }
+
+    #[test]
+    fn a_blank_category_name_is_rejected() {
+        assert_eq!(
+            validate_category_name("   "),
+            Err(CategoryError::NameRequired)
+        );
+        assert_eq!(validate_category_name(""), Err(CategoryError::NameRequired));
+    }
+
+    #[test]
+    fn a_category_name_holds_forty_characters_not_forty_one() {
+        // Characters, not bytes: « é » is two bytes and one character.
+        let forty = "é".repeat(40);
+        assert_eq!(validate_category_name(&forty), Ok(forty.as_str()));
+        let forty_one = "é".repeat(41);
+        assert_eq!(
+            validate_category_name(&forty_one),
+            Err(CategoryError::NameTooLong)
+        );
+        // The bound applies after trimming.
+        let padded = format!("  {forty}  ");
+        assert!(validate_category_name(&padded).is_ok());
+    }
+
+    #[test]
+    fn the_category_colours_are_the_closed_list_of_the_mockup() {
+        for colour in ["blue", "violet", "green", "orange", "ochre"] {
+            assert!(is_category_color(colour), "{colour}");
+        }
+        assert_eq!(CATEGORY_COLORS.len(), 5);
+        // Named keys only: no hex, no other case.
+        assert!(!is_category_color("#2f7a9e"));
+        assert!(!is_category_color("Blue"));
+        assert!(!is_category_color(""));
+    }
+
+    #[test]
+    fn a_cap_is_a_positive_number_of_cents() {
+        assert_eq!(cap_to_cents(500.0), Ok(50_000));
+        assert_eq!(cap_to_cents(12.345), Ok(1_235));
+        assert_eq!(cap_to_cents(0.01), Ok(1));
+    }
+
+    #[test]
+    fn a_zero_negative_or_non_finite_cap_is_rejected() {
+        for cap in [0.0, -1.0, 0.004, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                cap_to_cents(cap),
+                Err(CategoryError::CapNotPositive),
+                "{cap}"
+            );
+        }
+    }
+
+    #[test]
+    fn category_error_codes() {
+        assert_eq!(CategoryError::NameRequired.code(), "name_required");
+        assert_eq!(CategoryError::NameTooLong.code(), "name_too_long");
+        assert_eq!(CategoryError::InvalidColor.code(), "invalid_color");
+        assert_eq!(CategoryError::CapNotPositive.code(), "cap_must_be_positive");
+    }
+
+    #[test]
+    fn the_percentage_is_the_share_of_the_cap_rounded_down() {
+        assert_eq!(
+            cap_usage(41_000, Some(50_000)),
+            CapUsage {
+                percent: Some(82),
+                over_cap: false
+            }
+        );
+        // 99.99 % has not reached the cap yet.
+        assert_eq!(cap_usage(9_999, Some(10_000)).percent, Some(99));
+        assert_eq!(cap_usage(0, Some(10_000)).percent, Some(0));
+    }
+
+    #[test]
+    fn reaching_the_cap_is_not_exceeding_it() {
+        assert_eq!(
+            cap_usage(10_000, Some(10_000)),
+            CapUsage {
+                percent: Some(100),
+                over_cap: false
+            }
+        );
+        assert_eq!(
+            cap_usage(10_001, Some(10_000)),
+            CapUsage {
+                percent: Some(100),
+                over_cap: true
+            }
+        );
+        assert_eq!(
+            cap_usage(10_400, Some(10_000)),
+            CapUsage {
+                percent: Some(104),
+                over_cap: true
+            }
+        );
+    }
+
+    #[test]
+    fn no_cap_or_a_zero_cap_gives_no_percentage_and_no_overrun() {
+        let none = CapUsage {
+            percent: None,
+            over_cap: false,
+        };
+        assert_eq!(cap_usage(12_345, None), none);
+        assert_eq!(cap_usage(12_345, Some(0)), none);
+        assert_eq!(cap_usage(0, None), none);
+    }
+
+    #[test]
+    fn the_percentage_does_not_overflow_on_huge_totals() {
+        assert_eq!(
+            cap_usage(i64::MAX, Some(1)).percent,
+            Some(i64::MAX),
+            "saturates rather than wrapping"
+        );
+        assert!(cap_usage(i64::MAX, Some(1)).over_cap);
+    }
+
+    #[test]
+    fn a_month_is_read_as_year_dash_month() {
+        assert_eq!(
+            parse_month("2026-10"),
+            Some(NaiveDate::from_ymd_opt(2026, 10, 1).unwrap())
+        );
+        assert_eq!(
+            parse_month("2025-01"),
+            Some(NaiveDate::from_ymd_opt(2025, 1, 1).unwrap())
+        );
+    }
+
+    #[test]
+    fn a_malformed_month_is_rejected() {
+        for bad in [
+            "",
+            "2026",
+            "2026-13",
+            "2026-00",
+            "2026-1",
+            "2026-10-01",
+            "26-10",
+            "abcd-ef",
+            "2026/10",
+        ] {
+            assert_eq!(parse_month(bad), None, "{bad:?}");
+        }
+    }
 
     // -- validate_entry_form -------------------------------------------------
 
