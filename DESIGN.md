@@ -420,7 +420,10 @@ redécouvre :
   que la teinte porte seule l'information, il lui faut donc le *nom* du
   membre à côté — un second appel API et un coût par pastille sur le
   document, c'est-à-dire exactement ce que l'arbitrage évite. À reprendre
-  quand le budget de réponse le permettra ;
+  quand le budget de réponse le permettra. **Repris par #525**, au prix
+  dit ici : `/agenda` lit la liste des membres à côté des événements, et
+  chaque pastille porte la teinte de son premier membre (`.m1`…`.m8`) et
+  l'initiale de chacun de ses membres (`.avatar`) ;
 - **le titre d'événement atterrit sur `--t-base` (1rem)** et non sur les
   1.0625rem ci-dessus : aucun jeton ne porte cette valeur et en ajouter un
   coûte plus qu'il ne rapporte.
@@ -522,7 +525,12 @@ aucune n'introduit de valeur hors des échelles :
 | `.more` | le lien d'une carte vers sa page, dans l'en-tête de la carte à côté du titre (#524) : `--accent`, 600, `--s12` de haut. Remplace le bouton secondaire « Voir… » qui fermait chaque carte de l'accueil |
 | `.when`, `.what` | une ligne de la carte « Aujourd'hui » (#524) : l'heure dans une pastille `--accent-soft` (« Journée », « En cours », ou la date d'un jour suivant), puis le titre sur le nom des assignés ; l'avatar au bout de la ligne, centré sur elle |
 | `.days` | la semaine de l'accueil sur PC (#524) : sept colonnes, aujourd'hui et les six jours suivants, chaque occurrence une `.chip` de l'agenda ; la colonne du jour porte `.current` et dit « aujourd'hui » en toutes lettres |
-| `.fab` | le « + » flottant de l'accueil sur téléphone (#524), un `.btn` vers `/agenda/new` nommé « Ajouter un événement » : fixé au-dessus de la barre d'onglets, sans ombre — celle des cartes reste la seule élévation. La page s'allonge de sa hauteur (`body:has(.fab)`), pour qu'en bas de page il ne couvre rien |
+| `.fab` | le « + » flottant de l'accueil sur téléphone (#524), un `.btn` vers `/agenda/new` nommé « Ajouter un événement » : fixé au-dessus de la barre d'onglets, sans ombre — celle des cartes reste la seule élévation. La page s'allonge de sa hauteur (`body:has(.fab)`), pour qu'en bas de page il ne couvre rien. L'agenda le porte aussi depuis #525 |
+| `.m1` … `.m8` | la teinte d'une pastille de l'agenda (#525) : 16 % de la couleur du membre dans `--surface`, le fond d'événement de [Couleur](#ce-que-les-écrans-repris-peindront-en-sombre), texte `--fg` — une classe et non un `style=`, choisie par `agenda::calendar::member_tint` sur le même hachage que la couleur du membre. La pastille porte aussi l'initiale de chacun de ses membres, et une pastille qui ne nomme personne reste neutre. Une tâche faite n'est pas teintée : `--muted` tombe sous AA sur les teintes sombres. Sur PC, une pastille tient une ligne, coupée par des points de suspension ; le lien garde le titre entier pour nom |
+| `.agenda` | la grille de l'agenda et, sur PC, le panneau du jour à côté d'elle (#525) — en dessous quand la colonne est trop étroite pour les deux. Le panneau est une `.card.pc` : le jour de `?date=` (aujourd'hui sans paramètre), une ligne par occurrence avec l'heure en `.when`, le titre sur les noms, les initiales au bout. Ses lignes ne sont pas des liens : la pastille de la grille en est un. Sur PC, chaque jour de la grille est une case à lui (`border-spacing`), aujourd'hui cerclé en `--accent` et son numéro en pastille pleine |
+| `.views` | Semaine \| Mois en tête de l'agenda (#525), sur téléphone comme sur PC : un `.segment` (`<nav aria-label="Affichage">`), la vue affichée en `aria-current="true"`. À côté, `‹` · « Aujourd'hui » · `›`, qui avancent d'une semaine ou d'un mois selon la vue ; « Nouvel événement » sur PC, le `.fab` de l'accueil sur téléphone |
+| `.sheet` | le formulaire d'un nouvel événement en feuille (#525) : la famille en `.eyebrow` au-dessus du titre, une croix « Fermer » vers l'agenda, puis les champs dans l'ordre de la maquette — titre, horaires, récurrence, rappel, membres —, ce qu'elle ne dessine pas ensuite. Une `.card` ; sur téléphone, bord à bord et arrondie en haut. Les fieldsets qu'elle contient y perdent leur carte |
+| `.picks`, `.pick` | « Assigné à » en pastilles (#525) : la case, l'initiale du membre, son nom ; une case cochée prend `--accent-soft` et une bordure `--accent`. La case reste dessinée et reste le contrôle, le nom reste son libellé |
 | `caption` | le nom d'un tableau pour les technologies d'assistance (#145) — élément, pas classe : aujourd'hui le mois de la grille de l'agenda, que le `<h1>` voisin montre déjà. Partage les deux règles de `.skip-link` : hors du flux et rogné, jamais `display: none` |
 
 Le résiduel de `style="…"` assumé après #68 : une couleur de membre calculée

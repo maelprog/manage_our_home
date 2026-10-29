@@ -20,7 +20,8 @@ use manage_our_home_shared::validation::agenda::{
 };
 use uuid::Uuid;
 
-use crate::app::{html_escape, shell_with_header, Width};
+use crate::app::{html_escape, member_avatar, shell_with_header, Width};
+use crate::icons::{icon_link, Icon};
 use crate::layout::CurrentUser;
 use crate::routes::account::notifications::{fetch_settings, push_block};
 use crate::routes::groups::members::fetch_group_detail;
@@ -97,6 +98,10 @@ pub(crate) fn assignee_ids_from_raw_form(raw: &str) -> Vec<Uuid> {
 /// checkboxes just below, one input per option rather than a dynamic
 /// multi-select widget, so it needs no JS and degrades to plain checkboxes
 /// with JS disabled like every other form on this app.
+///
+/// Since #525 each box is a pill (`.pick` in a `.picks` row) with the
+/// member's initial (`.avatar`, `aria-hidden`) before the name: the checkbox
+/// stays drawn and stays the control, the name stays its label.
 pub(crate) fn assignee_checkboxes(members: &[GroupMember], selected: &[Uuid]) -> String {
     if members.is_empty() {
         // The roster couldn't be loaded (a `fetch_group_detail` failure —
@@ -118,14 +123,15 @@ pub(crate) fn assignee_checkboxes(members: &[GroupMember], selected: &[Uuid]) ->
                 ""
             };
             format!(
-                r#"<label class="field inline"><input type="checkbox" name="assignee_ids" value="{id}"{checked}/>{name}</label>"#,
+                r#"<label class="field inline pick"><input type="checkbox" name="assignee_ids" value="{id}"{checked}/>{avatar}{name}</label>"#,
                 id = m.user_id,
+                avatar = member_avatar(m.user_id, &m.display_name, None),
                 name = html_escape(&m.display_name),
             )
         })
         .collect();
     format!(
-        r#"<fieldset class="card">
+        r#"<fieldset class="card picks">
 <legend>Assigné à</legend>
 <input type="hidden" name="{marker}" value="1"/>
 {boxes}
@@ -388,6 +394,7 @@ pub(crate) fn error_message(code: &str) -> &'static str {
 #[allow(clippy::too_many_arguments)]
 fn page(
     header: &str,
+    family: &str,
     error: Option<&str>,
     all_day: bool,
     default_start: &str,
@@ -405,24 +412,33 @@ fn page(
     let assignees = assignee_checkboxes(members, selected_assignees);
     // `header` is trusted HTML built by `app_header`; embed it directly at
     // the top, the same position the `view!`-based pages give it.
+    //
+    // The sheet of the mock-up (#525): the family over the title, the cross
+    // that closes it back to the agenda, then the fields in the order the
+    // mock-up asks them — title, when, how often, the reminder, who for.
+    // What it does not draw (a task, a place, a description) follows. It is
+    // still a page and a plain `POST`: without JavaScript nothing changes.
     let body = format!(
-        r#"<h1>Nouvel événement</h1>
+        r#"<section class="card sheet">
+<div class="page-header"><hgroup><p class="eyebrow">{family}</p><h1>Nouvel événement</h1></hgroup>{close}</div>
 {error_html}
 <form method="post" action="/agenda/new">
 <label>Titre <input type="text" name="title" required/></label>
-<label class="field inline">
-<input type="checkbox" name="is_task"/> Il s'agit d'une tâche (à cocher une fois faite)</label>
 {schedule}
-<label>Lieu <input type="text" name="location"/></label>
-<label>Description <textarea name="description" rows="3"></textarea></label>
 {picker}
-{assignees}
-<p class="muted">Aucune sélection = assigné à vous.</p>
 <label>Rappel {reminder}</label>
 {push}
+{assignees}
+<p class="muted">Aucune sélection = assigné à vous.</p>
+<label class="field inline">
+<input type="checkbox" name="is_task"/> Il s'agit d'une tâche (à cocher une fois faite)</label>
+<label>Lieu <input type="text" name="location"/></label>
+<label>Description <textarea name="description" rows="3"></textarea></label>
 <button type="submit">Créer l'événement</button>
 </form>
-<div class="links"><a href="/agenda">Retour à l'agenda</a></div>"#,
+</section>"#,
+        family = html_escape(family),
+        close = icon_link("btn secondary", "/agenda", "Fermer", Icon::Close),
     );
     shell_with_header(Width::Form, "Nouvel événement", header, &body)
 }
@@ -452,6 +468,7 @@ pub async fn get(
     let push = reminder_push_block(&state, cookie.as_deref()).await;
     Html(page(
         &fam.header,
+        &fam.name,
         None,
         false,
         &start,
@@ -507,6 +524,7 @@ pub async fn post(
             StatusCode::UNPROCESSABLE_ENTITY,
             Html(page(
                 &fam.header,
+                &fam.name,
                 Some(error_message("invalid_form")),
                 false,
                 &to_datetime_local(now),
@@ -522,6 +540,7 @@ pub async fn post(
     let render_error = |code: &str| {
         Html(page(
             &fam.header,
+            &fam.name,
             Some(error_message(code)),
             form.all_day.is_some(),
             &form.starts_at,
@@ -781,6 +800,84 @@ mod tests {
         let html = schedule_fields(false, r#""><script>"#, "x");
         assert!(!html.contains("<script>"), "{html}");
         assert!(html.contains("&quot;&gt;&lt;script&gt;"), "{html}");
+    }
+
+    // -- the sheet (#525) ---------------------------------------------------
+
+    fn sheet() -> String {
+        page(
+            "",
+            "Famille <Martin>",
+            None,
+            false,
+            "2026-09-05T10:00",
+            "2026-09-05T11:00",
+            &[member(1, "Alice")],
+            &[],
+            "",
+        )
+    }
+
+    #[test]
+    fn the_form_is_a_sheet_named_for_the_family_and_closed_by_a_cross() {
+        let html = sheet();
+        assert!(html.contains(r#"<section class="card sheet">"#), "{html}");
+        assert!(
+            html.contains(
+                r#"<hgroup><p class="eyebrow">Famille &lt;Martin&gt;</p><h1>Nouvel événement</h1></hgroup>"#
+            ),
+            "{html}"
+        );
+        // The cross is the way back: an icon alone, named on the link.
+        assert!(
+            html.contains(&crate::icons::icon_link(
+                "btn secondary",
+                "/agenda",
+                "Fermer",
+                crate::icons::Icon::Close
+            )),
+            "{html}"
+        );
+        assert!(!html.contains("Retour à l'agenda"), "{html}");
+    }
+
+    #[test]
+    fn the_sheet_asks_in_the_order_the_mock_up_draws() {
+        // Title, when, how often, the reminder, who for; what the mock-up
+        // does not draw (a task, a place, a description) comes after.
+        let html = sheet();
+        let at = |needle: &str| {
+            html.find(needle)
+                .unwrap_or_else(|| panic!("`{needle}` is not in the form: {html}"))
+        };
+        let order = [
+            at(r#"name="title""#),
+            at(r#"name="all_day""#),
+            at(r#"name="starts_at""#),
+            at(r#"name="freq""#),
+            at(r#"name="reminder""#),
+            at(r#"name="assignee_ids""#),
+            at(r#"name="is_task""#),
+            at(r#"name="location""#),
+            at(r#"name="description""#),
+            at("Créer l'événement"),
+        ];
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "{order:?}");
+    }
+
+    #[test]
+    fn each_member_is_a_pill_with_their_initial_beside_the_name() {
+        let alice = member(1, "Alice");
+        let html = assignee_checkboxes(std::slice::from_ref(&alice), &[]);
+        assert!(html.contains(r#"<fieldset class="card picks">"#), "{html}");
+        assert!(
+            html.contains(&format!(
+                r#"<label class="field inline pick"><input type="checkbox" name="assignee_ids" value="{id}"/>{avatar}Alice</label>"#,
+                id = alice.user_id,
+                avatar = crate::app::member_avatar(alice.user_id, "Alice", None),
+            )),
+            "{html}"
+        );
     }
 
     #[test]

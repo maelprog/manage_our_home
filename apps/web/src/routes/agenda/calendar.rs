@@ -31,13 +31,23 @@
 //! * There is no `view=day`. The "Mois" button DESIGN.md describes would
 //!   have nothing to switch back from, so it does not exist either; the
 //!   month/week toggle keeps doing that job on both viewports.
-//! * A member's colour on each occurrence is left to a later pass. WCAG
-//!   1.4.1 forbids the hue carrying the information alone, so it needs the
-//!   member's *name* next to it — a second API call and a per-chip cost on
-//!   the document, i.e. exactly what this trade exists to avoid.
+//!
+//! The third concession of #71 — no member colour on an occurrence — was
+//! taken back by #525, at the price #71 named: a second API call (the
+//! family's roster, read alongside the events) and a per-chip cost on the
+//! document. Each chip wears its member's tint as a class (`member_tint`,
+//! no inline style) *and* their initials, since WCAG 1.4.1 forbids the hue
+//! carrying the information alone.
 //!
 //! The month view caps a crowded day at `MONTH_CHIP_CAP` and counts the
 //! rest into a "+N autres" link to the week view, which caps nothing.
+//!
+//! # The mock-up's head and day panel (#525)
+//!
+//! `‹` · « Aujourd'hui » · `›` step by the view on screen, and the
+//! Semaine / Mois toggle sits beside them, on a phone as on a PC. A PC adds
+//! the panel of the day in focus (`day_panel`, `.pc`): the day `?date=`
+//! names, today when it names none.
 
 use std::collections::BTreeMap;
 
@@ -47,11 +57,13 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use chrono::{Datelike, NaiveDate};
 use leptos::prelude::*;
 use manage_our_home_shared::dto::agenda::OccurrenceResponse;
+use manage_our_home_shared::dto::groups::GroupMember;
 use manage_our_home_shared::validation::agenda::{month_grid, week_days};
 
-use crate::app::{html_escape, shell_with_header, Width};
-use crate::icons::{icon_link, Icon};
+use crate::app::{html_escape, member_avatar, member_index, shell_with_header, Width};
+use crate::icons::{icon, icon_link, Icon};
 use crate::layout::CurrentUser;
+use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
 use super::{
@@ -74,6 +86,19 @@ const FR_MONTHS: [&str; 12] = [
     "décembre",
 ];
 pub(crate) const FR_WEEKDAYS: [&str; 7] = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"];
+
+/// The classes that tint a chip in a member's hue (#525): `.m1` to `.m8`,
+/// each 16 % of its ramp token mixed into `--surface`, the event ground of
+/// DESIGN.md → Couleur. Written out, in the order of the ramp, because the
+/// stylesheet's guards look for a class in the sources by its name.
+const MEMBER_TINTS: [&str; 8] = ["m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8"];
+
+/// The tint class of a member's chips: the hue of their `app::member_colour`,
+/// as a class rather than an inline style — a chip is drawn once per
+/// occurrence, and its hue is the one thing it would otherwise need inline.
+pub(crate) fn member_tint(user_id: uuid::Uuid) -> &'static str {
+    MEMBER_TINTS[member_index(user_id)]
+}
 
 /// The most occurrences a month-grid cell lists before it stops listing and
 /// starts counting. A cell is 6.5rem tall (104px) and that is what three
@@ -164,15 +189,16 @@ pub async fn get(
     // body that is not an occurrence list) still renders the grid, so the
     // navigation stays usable, but under an error notice: an empty grid alone
     // would say "nothing planned" (#455).
-    let (occurrences, load_error): (Vec<OccurrenceResponse>, bool) = match api_request_auth(
-        &state,
-        reqwest::Method::GET,
-        &path,
-        cookie.as_deref(),
-        None,
-    )
-    .await
-    {
+    //
+    // The roster is read alongside, for the chips' tints and initials
+    // (#525). It is decoration: a roster that cannot be read leaves every
+    // chip neutral rather than taking the page down.
+    let (events, roster) = tokio::join!(
+        api_request_auth(&state, reqwest::Method::GET, &path, cookie.as_deref(), None,),
+        fetch_group_detail(&state, cookie.as_deref(), fam.gid),
+    );
+    let members: Vec<GroupMember> = roster.ok().flatten().map(|g| g.members).unwrap_or_default();
+    let (occurrences, load_error): (Vec<OccurrenceResponse>, bool) = match events {
         Ok(resp) => match read_or_log(
             occurrences_from_response(resp.status, resp.body),
             fam.gid,
@@ -211,14 +237,19 @@ pub async fn get(
     // The page's `<h1>` and the grid's `<caption>` (#145) say the same
     // thing, so they are computed once.
     let title = view_title(is_week, focus);
-    let grid_html = render_grid(&days, &by_day, focus_month, today, cap, &title);
+    let grid_html = render_grid(&days, &by_day, focus_month, today, cap, &title, &members);
+    let panel_html = day_panel(
+        focus,
+        by_day.get(&focus).map(|v| v.as_slice()).unwrap_or(&[]),
+        &members,
+    );
     let nav_html = render_nav(is_week, focus, &title);
     let notice_html = notices_html(query.notice.as_deref(), load_error);
 
     let body = view! {
         <div inner_html=nav_html></div>
         <div inner_html=notice_html></div>
-        <div inner_html=grid_html></div>
+        <div class="agenda" inner_html=grid_html + &panel_html></div>
     };
     Html(shell_with_header(
         Width::Full,
@@ -246,8 +277,14 @@ fn view_title(is_week: bool, focus: NaiveDate) -> String {
     }
 }
 
-/// Prev/next/today navigation, the month/week toggle, and the "new event"
-/// button.
+/// The head of the page (#525): the view's name, `‹` · « Aujourd'hui » ·
+/// `›` stepping by that view, the Semaine / Mois toggle — on a phone as on
+/// a PC — then the imports, and a new event: the page's button on a PC, the
+/// floating "+" of the home page on a phone (`.fab`, #524).
+///
+/// The toggle is a `<nav>` of two links, `.segment` like the kitchen's
+/// (#523); the view on screen carries `aria-current`, so its position is
+/// said in markup and not only drawn.
 fn render_nav(is_week: bool, focus: NaiveDate, title: &str) -> String {
     let (prev, next) = if is_week {
         (
@@ -289,25 +326,35 @@ fn render_nav(is_week: bool, focus: NaiveDate, title: &str) -> String {
     let prev_link = arrow(prev, prev_label, Icon::Previous);
     let next_link = arrow(next, next_label, Icon::Next);
     let today = today_paris();
+    let view_link = |view: &str, label: &str| {
+        let current = if view == view_q {
+            r#" aria-current="true""#
+        } else {
+            ""
+        };
+        format!(r#"<a href="/agenda?view={view}&date={focus}"{current}>{label}</a>"#)
+    };
     format!(
         r#"<div class="page-header">
 <h1>{title}</h1>
 <span class="actions">
-{prev_link}
-<a class="btn secondary" href="/agenda?view={view_q}&date={today}">Aujourd'hui</a>
-{next_link}
-<a class="btn secondary" href="/agenda?view=month&date={focus}">Mois</a>
-<a class="btn secondary" href="/agenda?view=week&date={focus}">Semaine</a>
+<span class="actions">{prev_link}<a class="btn secondary" href="/agenda?view={view_q}&date={today}">Aujourd'hui</a>{next_link}</span>
+<nav class="segment views" aria-label="Affichage">{week}{month}</nav>
 <a class="btn secondary" href="/agenda/imports">Agendas Google</a>
-<a class="btn" href="/agenda/new">Nouvel événement</a>
+<a class="btn pc" href="/agenda/new">{plus} Nouvel événement</a>
 </span>
-</div>"#,
+</div>
+{fab}"#,
         title = html_escape(title),
-        view_q = view_q,
-        prev_link = prev_link,
-        next_link = next_link,
-        today = today,
-        focus = focus,
+        week = view_link("week", "Semaine"),
+        month = view_link("month", "Mois"),
+        plus = icon(Icon::Plus),
+        fab = icon_link(
+            "btn fab phone",
+            "/agenda/new",
+            "Ajouter un événement",
+            Icon::Plus
+        ),
     )
 }
 
@@ -334,6 +381,7 @@ fn render_grid(
     today: NaiveDate,
     cap: Option<usize>,
     caption: &str,
+    members: &[GroupMember],
 ) -> String {
     let headers: String = FR_WEEKDAYS
         .iter()
@@ -351,6 +399,7 @@ fn render_grid(
                 by_day.get(day).map(|v| v.as_slice()).unwrap_or(&[]),
                 cap,
                 *day,
+                members,
             );
             rows.push_str(&format!(
                 r#"<td class="cal-cell{today_class}">
@@ -401,12 +450,45 @@ fn overflow_label(hidden: usize) -> String {
     }
 }
 
+/// The members an occurrence belongs to, in the order the API lists its
+/// assignees: the creator when it lists none (`EventResponse::assignee_ids`
+/// can arrive empty, see `home.rs::row_assignee_ids`). An id the roster does
+/// not know — a member who left, a roster that could not be read — names
+/// nobody and is dropped.
+fn people<'a>(occ: &OccurrenceResponse, members: &'a [GroupMember]) -> Vec<&'a GroupMember> {
+    let e = &occ.event;
+    let ids = if e.assignee_ids.is_empty() {
+        std::slice::from_ref(&e.created_by)
+    } else {
+        e.assignee_ids.as_slice()
+    };
+    ids.iter()
+        .filter_map(|id| members.iter().find(|m| m.user_id == *id))
+        .collect()
+}
+
+/// Their initials, each the member's `.avatar` (`aria-hidden`: the chip is
+/// named by its time and title, and the detail page names the people).
+fn initials(people: &[&GroupMember]) -> String {
+    people
+        .iter()
+        .map(|m| member_avatar(m.user_id, &m.display_name, None))
+        .collect()
+}
+
 /// One day-cell's occurrence chips. Tasks get a ☑/☐ marker and a
 /// strike-through when that occurrence is completed.
+///
+/// A chip wears its first member's tint (#525, `member_tint`) and the
+/// initials of every member it belongs to: the hue is never alone (WCAG
+/// 1.4.1), so a chip that names nobody stays neutral. A done task keeps its
+/// initials and loses its tint: `--muted`, the colour of what is done, falls
+/// under AA on the darker tints of the dark theme.
 pub(crate) fn render_chips(
     occs: &[&OccurrenceResponse],
     cap: Option<usize>,
     day: NaiveDate,
+    members: &[GroupMember],
 ) -> String {
     let (shown, hidden) = day_split(occs.len(), cap);
     let mut out: String = occs[..shown]
@@ -428,11 +510,17 @@ pub(crate) fn render_chips(
             } else {
                 ("", "")
             };
+            let people = people(occ, members);
+            let tint = match people.first() {
+                Some(first) if done.is_empty() => format!(" {}", member_tint(first.user_id)),
+                _ => String::new(),
+            };
             format!(
-                r#"<a href="/agenda/{id}?occ={occ}" class="chip{done}">{marker}<strong>{time}</strong> {title}</a>"#,
+                r#"<a href="/agenda/{id}?occ={occ}" class="chip{done}{tint}">{initials}{marker}<strong>{time}</strong> {title}</a>"#,
                 id = e.id,
                 occ = occ_param,
                 done = done,
+                initials = initials(&people),
                 marker = marker,
                 time = html_escape(&time),
                 title = html_escape(&e.title),
@@ -447,6 +535,57 @@ pub(crate) fn render_chips(
         ));
     }
     out
+}
+
+/// "Mardi 14 juillet": the day panel's heading.
+fn long_day(day: NaiveDate) -> String {
+    const WEEKDAYS: [&str; 7] = [
+        "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche",
+    ];
+    format!(
+        "{} {} {}",
+        WEEKDAYS[day.weekday().num_days_from_monday() as usize],
+        day.day(),
+        FR_MONTHS[(day.month() - 1) as usize],
+    )
+}
+
+/// The panel beside the grid on a PC (#525, `.pc`): the day in focus, one
+/// row per occurrence — its time in the home page's pill (`.when`), the
+/// title over the names of the people, their initials at the end.
+///
+/// The rows are not links. The chip of the same occurrence is one, right
+/// beside it in the grid: a second link would be a second tab stop and a
+/// second "Dentiste" for whoever looks the event up by name.
+fn day_panel(day: NaiveDate, occs: &[&OccurrenceResponse], members: &[GroupMember]) -> String {
+    let body = if occs.is_empty() {
+        r#"<p class="muted">Rien de prévu ce jour-là.</p>"#.to_string()
+    } else {
+        let rows: String = occs
+            .iter()
+            .map(|occ| {
+                let when = if occ.event.all_day {
+                    "Journée".to_string()
+                } else {
+                    fmt_paris(occ.occurrence_starts_at, "%H:%M")
+                };
+                let people = people(occ, members);
+                let names: Vec<&str> = people.iter().map(|m| m.display_name.as_str()).collect();
+                format!(
+                    r#"<li class="list-row"><span class="when">{when}</span><span class="what"><strong>{title}</strong><span class="muted">{names}</span></span>{initials}</li>"#,
+                    when = html_escape(&when),
+                    title = html_escape(&occ.event.title),
+                    names = html_escape(&names.join(", ")),
+                    initials = initials(&people),
+                )
+            })
+            .collect();
+        format!(r#"<ul class="list">{rows}</ul>"#)
+    };
+    format!(
+        r#"<section class="card pc"><h2>{heading}</h2>{body}</section>"#,
+        heading = html_escape(&long_day(day)),
+    )
 }
 
 #[cfg(test)]
@@ -565,7 +704,7 @@ mod tests {
             .map(|i| occurrence(8 + i, &format!("Événement {i}")))
             .collect();
         let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
-        let html = render_chips(&refs, Some(MONTH_CHIP_CAP), day(15));
+        let html = render_chips(&refs, Some(MONTH_CHIP_CAP), day(15), &[]);
         assert!(html.contains("Événement 0"), "{html}");
         assert!(html.contains("Événement 1"), "{html}");
         assert!(!html.contains("Événement 2"), "{html}");
@@ -582,7 +721,7 @@ mod tests {
     fn an_uncrowded_month_cell_carries_no_indicator() {
         let occs = [occurrence(9, "Dentiste")];
         let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
-        let html = render_chips(&refs, Some(MONTH_CHIP_CAP), day(15));
+        let html = render_chips(&refs, Some(MONTH_CHIP_CAP), day(15), &[]);
         assert!(html.contains("Dentiste"), "{html}");
         assert!(!html.contains("autre"), "{html}");
         assert!(!html.contains("view=week"), "{html}");
@@ -594,7 +733,7 @@ mod tests {
             .map(|i| occurrence(8 + i, &format!("Événement {i}")))
             .collect();
         let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
-        let html = render_chips(&refs, None, day(15));
+        let html = render_chips(&refs, None, day(15), &[]);
         for i in 0..5 {
             assert!(html.contains(&format!("Événement {i}")), "{html}");
         }
@@ -613,7 +752,15 @@ mod tests {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> =
             [(day(15), occs.iter().collect())].into_iter().collect();
         let week: Vec<NaiveDate> = (13..=19).map(day).collect();
-        let html = render_grid(&week, &by_day, None, day(1), None, "Semaine du 13 juillet");
+        let html = render_grid(
+            &week,
+            &by_day,
+            None,
+            day(1),
+            None,
+            "Semaine du 13 juillet",
+            &[],
+        );
         assert!(html.starts_with(r#"<table class="cal">"#), "{html}");
         // Seven weekday headers, and seven cells in one row: a day with
         // nothing on it still renders its cell, because that is what makes
@@ -633,7 +780,15 @@ mod tests {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         // 2026-07-27 (Monday) .. 2026-08-02: four July days, three August.
         let week: Vec<NaiveDate> = week_days(day(29));
-        let html = render_grid(&week, &by_day, None, day(29), None, "Semaine du 27 juillet");
+        let html = render_grid(
+            &week,
+            &by_day,
+            None,
+            day(29),
+            None,
+            "Semaine du 27 juillet",
+            &[],
+        );
         assert_eq!(html.matches("cal-day outside").count(), 0, "{html}");
     }
 
@@ -641,7 +796,7 @@ mod tests {
     fn the_month_grid_marks_today_and_the_days_of_the_neighbouring_months() {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         let days: Vec<NaiveDate> = month_grid(2026, 7);
-        let html = render_grid(&days, &by_day, Some(7), day(15), None, "juillet 2026");
+        let html = render_grid(&days, &by_day, Some(7), day(15), None, "juillet 2026", &[]);
         assert_eq!(html.matches("cal-cell current").count(), 1, "{html}");
         // July 2026 starts on a Wednesday: two June days lead the grid, and
         // the six weeks run into August.
@@ -657,7 +812,7 @@ mod tests {
         // weekdays and no month. The caption is the table's own name.
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         let days: Vec<NaiveDate> = month_grid(2026, 7);
-        let html = render_grid(&days, &by_day, Some(7), day(15), None, "juillet 2026");
+        let html = render_grid(&days, &by_day, Some(7), day(15), None, "juillet 2026", &[]);
         assert!(
             html.starts_with(r#"<table class="cal"><caption>juillet 2026</caption><thead>"#),
             "{html}"
@@ -668,7 +823,7 @@ mod tests {
     fn the_caption_is_escaped_like_the_heading() {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         let week: Vec<NaiveDate> = (13..=19).map(day).collect();
-        let html = render_grid(&week, &by_day, None, day(1), None, "<b>");
+        let html = render_grid(&week, &by_day, None, day(1), None, "<b>", &[]);
         assert!(html.contains("<caption>&lt;b&gt;</caption>"), "{html}");
     }
 
@@ -676,7 +831,7 @@ mod tests {
     fn every_weekday_header_heads_a_column() {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         let week: Vec<NaiveDate> = (13..=19).map(day).collect();
-        let html = render_grid(&week, &by_day, None, day(1), None, "x");
+        let html = render_grid(&week, &by_day, None, day(1), None, "x", &[]);
         // Every `<th` but the one opening `<thead>` is a weekday header.
         assert_eq!(html.matches("<th").count(), 7 + 1, "{html}");
         assert_eq!(html.matches(r#"<th scope="col">"#).count(), 7, "{html}");
@@ -761,5 +916,258 @@ mod tests {
         for text in html.split('>').filter_map(|s| s.split('<').next()) {
             assert!(!text.contains('"'), "quoted text node: {text:?}");
         }
+    }
+
+    // -- the head of the page (#525) -----------------------------------
+
+    /// The `<nav class="segment views">` of the rendered head.
+    fn views_toggle(html: &str) -> &str {
+        let start = html
+            .find(r#"<nav class="segment views" aria-label="Affichage">"#)
+            .expect("the view toggle is rendered");
+        let end = start + html[start..].find("</nav>").unwrap();
+        &html[start..end]
+    }
+
+    #[test]
+    fn the_view_toggle_marks_the_view_on_screen() {
+        // Mois and Semaine are one control with two positions, on a phone
+        // as on a PC: the one on screen says so, in markup and not only in
+        // colour.
+        let month = render_nav(false, day(15), "juillet 2026");
+        let toggle = views_toggle(&month);
+        assert!(
+            toggle.contains(
+                r#"<a href="/agenda?view=month&date=2026-07-15" aria-current="true">Mois</a>"#
+            ),
+            "{toggle}"
+        );
+        assert!(
+            toggle.contains(r#"<a href="/agenda?view=week&date=2026-07-15">Semaine</a>"#),
+            "{toggle}"
+        );
+        let week = render_nav(true, day(15), "Semaine du 13 juillet");
+        let toggle = views_toggle(&week);
+        assert!(
+            toggle.contains(
+                r#"<a href="/agenda?view=week&date=2026-07-15" aria-current="true">Semaine</a>"#
+            ),
+            "{toggle}"
+        );
+        assert_eq!(toggle.matches("aria-current").count(), 1, "{toggle}");
+    }
+
+    #[test]
+    fn today_keeps_the_view_it_was_pressed_in() {
+        let today = today_paris();
+        for (is_week, view) in [(false, "month"), (true, "week")] {
+            let html = render_nav(is_week, day(15), "x");
+            assert!(
+                html.contains(&format!(
+                    r#"href="/agenda?view={view}&date={today}">Aujourd'hui</a>"#
+                )),
+                "{html}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_event_is_a_button_on_a_pc_and_the_floating_plus_on_a_phone() {
+        // The home's floating "+" (#524), the same `.fab`: the mock-up of
+        // the phone agenda draws it where the PC has its button.
+        let html = render_nav(false, day(15), "juillet 2026");
+        assert!(
+            html.contains(r#"<a class="btn pc" href="/agenda/new">"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(&icon_link(
+                "btn fab phone",
+                "/agenda/new",
+                "Ajouter un événement",
+                Icon::Plus
+            )),
+            "{html}"
+        );
+        // The imports stay reachable on both: a phone has no other way in
+        // from the agenda.
+        assert!(
+            html.contains(r#"<a class="btn secondary" href="/agenda/imports">Agendas Google</a>"#),
+            "{html}"
+        );
+    }
+
+    // -- chips coloured by member (#525) -------------------------------
+
+    #[test]
+    fn a_member_tint_is_the_class_of_their_own_ramp_hue() {
+        // The chip's ground and the avatar's initial have to name the same
+        // member: one hash, two spellings of its result.
+        for i in 0u8..64 {
+            let id = Uuid::from_bytes([i, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 1, 2, 3, 4, 5]);
+            assert_eq!(
+                format!("--{}", member_tint(id)),
+                crate::app::member_colour(id),
+                "{id}"
+            );
+        }
+    }
+
+    fn named(n: u128, name: &str) -> GroupMember {
+        GroupMember {
+            user_id: Uuid::from_u128(n),
+            display_name: name.to_string(),
+            email: format!("{n}@example.test"),
+            has_avatar: false,
+            role: "member".to_string(),
+        }
+    }
+
+    fn assigned(hour: u32, title: &str, ids: &[u128]) -> OccurrenceResponse {
+        let mut occ = occurrence(hour, title);
+        occ.event.assignee_ids = ids.iter().map(|n| Uuid::from_u128(*n)).collect();
+        occ
+    }
+
+    #[test]
+    fn a_chip_wears_the_tint_of_its_member_and_their_initial() {
+        let members = [named(7, "Chloé"), named(8, "Alex")];
+        let occs = [assigned(9, "Piscine", &[7])];
+        let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
+        let html = render_chips(&refs, None, day(15), &members);
+        let tint = member_tint(Uuid::from_u128(7));
+        assert!(html.contains(&format!(r#"class="chip {tint}">"#)), "{html}");
+        // The hue is never alone (WCAG 1.4.1): the initial rides with it.
+        assert!(
+            html.contains(&crate::app::member_avatar(
+                Uuid::from_u128(7),
+                "Chloé",
+                None
+            )),
+            "{html}"
+        );
+        assert!(!html.contains(">A</span>"), "{html}");
+    }
+
+    #[test]
+    fn a_shared_chip_takes_its_first_member_tint_and_every_initial() {
+        let members = [named(7, "Chloé"), named(8, "Alex")];
+        let occs = [assigned(9, "Pédiatre", &[8, 7])];
+        let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
+        let html = render_chips(&refs, None, day(15), &members);
+        let tint = member_tint(Uuid::from_u128(8));
+        assert!(html.contains(&format!(r#"class="chip {tint}">"#)), "{html}");
+        let alex = html.find(">A</span>").expect("Alex's initial");
+        let chloe = html.find(">C</span>").expect("Chloé's initial");
+        assert!(alex < chloe, "initials follow the assignees' order: {html}");
+    }
+
+    #[test]
+    fn a_chip_with_no_known_member_stays_neutral() {
+        // Nobody to name, so no hue: a colour without its initial is the
+        // WCAG 1.4.1 failure the initial exists to prevent. Same when the
+        // roster could not be read at all.
+        let occs = [assigned(9, "Dentiste", &[99])];
+        let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
+        for members in [vec![named(7, "Chloé")], vec![]] {
+            let html = render_chips(&refs, None, day(15), &members);
+            assert!(html.contains(r#"class="chip">"#), "{html}");
+            assert!(!html.contains("avatar"), "{html}");
+        }
+    }
+
+    #[test]
+    fn a_chip_with_no_assignee_is_its_creators() {
+        // `assignee_ids` can arrive empty (home.rs, `row_assignee_ids`):
+        // the creator is who the event belongs to.
+        let members = [named(7, "Chloé")];
+        let mut occ = assigned(9, "Courses", &[]);
+        occ.event.created_by = Uuid::from_u128(7);
+        let occs = [occ];
+        let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
+        let html = render_chips(&refs, None, day(15), &members);
+        assert!(html.contains(">C</span>"), "{html}");
+    }
+
+    #[test]
+    fn a_done_task_keeps_its_initial_and_loses_its_tint() {
+        // --muted, the colour of what is done, measures 4.19:1 on the
+        // darkest tint in the dark theme: under AA. The neutral ground is
+        // where it holds.
+        let members = [named(7, "Chloé")];
+        let mut occ = assigned(9, "Poubelles", &[7]);
+        occ.event.is_task = true;
+        occ.event.completed_at = Some(occ.occurrence_starts_at);
+        let occs = [occ];
+        let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
+        let html = render_chips(&refs, None, day(15), &members);
+        assert!(html.contains(r#"class="chip done">"#), "{html}");
+        assert!(html.contains(">C</span>"), "{html}");
+    }
+
+    // -- the day panel of a PC (#525) ----------------------------------
+
+    #[test]
+    fn the_day_panel_is_named_by_the_day_it_shows() {
+        let html = day_panel(day(14), &[], &[]);
+        assert!(html.contains("<h2>Mardi 14 juillet</h2>"), "{html}");
+        assert!(html.starts_with(r#"<section class="card pc">"#), "{html}");
+    }
+
+    #[test]
+    fn the_day_panel_lists_each_occurrence_with_its_time_and_people() {
+        let members = [named(7, "Chloé"), named(8, "Alex")];
+        let occs = [
+            assigned(9, "Dépôt <école>", &[7]),
+            assigned(14, "Pédiatre", &[8, 7]),
+        ];
+        let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
+        let html = day_panel(day(15), &refs, &members);
+        assert_eq!(
+            html.matches(r#"<li class="list-row">"#).count(),
+            2,
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"<span class="when">{}</span>"#,
+                fmt_paris(occs[0].occurrence_starts_at, "%H:%M")
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains("<strong>Dépôt &lt;école&gt;</strong>"),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<span class="muted">Alex, Chloé</span>"#),
+            "{html}"
+        );
+        // The rows are not links: the chip beside them in the grid is, and
+        // a second link per occurrence would be a second tab stop for it.
+        assert!(!html.contains("<a "), "{html}");
+    }
+
+    #[test]
+    fn a_whole_day_event_in_the_panel_says_so() {
+        let mut occ = assigned(0, "Anniversaire", &[]);
+        occ.event.all_day = true;
+        let occs = [occ];
+        let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
+        let html = day_panel(day(15), &refs, &[]);
+        assert!(
+            html.contains(r#"<span class="when">Journée</span>"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn an_empty_day_panel_says_nothing_is_planned() {
+        let html = day_panel(day(15), &[], &[]);
+        assert!(
+            html.contains(r#"<p class="muted">Rien de prévu ce jour-là.</p>"#),
+            "{html}"
+        );
+        assert!(!html.contains("<ul"), "{html}");
     }
 }

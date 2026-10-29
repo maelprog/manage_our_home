@@ -50,6 +50,8 @@ pub(crate) struct FamilyContext {
     /// The caller's role in the active family (`owner`/`admin`/`standard`),
     /// used to gate edit/delete controls (`can_modify`).
     pub role: String,
+    /// The family's name, which the event sheet is headed with (#525).
+    pub name: String,
     pub header: String,
 }
 
@@ -65,6 +67,7 @@ pub(crate) async fn family_context(
     active.map(|g| FamilyContext {
         gid: g.group_id,
         role: g.role.clone(),
+        name: g.name.clone(),
         header,
     })
 }

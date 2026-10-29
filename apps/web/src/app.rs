@@ -510,8 +510,15 @@ const MEMBER_RAMP: [&str; 8] = [
 /// the id's bytes rather than anything from `std::hash`, whose `SipHash`
 /// keys are randomised per process.
 pub fn member_colour(user_id: Uuid) -> &'static str {
+    MEMBER_RAMP[member_index(user_id)]
+}
+
+/// Where a member falls on the ramp, `0..8`: the one hash behind both
+/// `member_colour` and the agenda's chip tints
+/// (`routes::agenda::calendar::member_tint`, #525).
+pub(crate) fn member_index(user_id: Uuid) -> usize {
     let sum: u32 = user_id.as_bytes().iter().map(|b| u32::from(*b)).sum();
-    MEMBER_RAMP[sum as usize % MEMBER_RAMP.len()]
+    sum as usize % MEMBER_RAMP.len()
 }
 
 /// The CSS colour expression for an event's assignees (issue #73): a single
@@ -935,6 +942,28 @@ mod tests {
             MEMBER_RAMP.len(),
             "hues actually used: {used:?}"
         );
+    }
+
+    // -- the chip tints (#525) --------------------------------------------
+
+    #[test]
+    fn every_tint_class_mixes_its_hue_into_the_surface() {
+        // DESIGN.md → Couleur → « Fond d'événement par membre »: 16 % of the
+        // hue into --surface, the text staying --fg. The contrast test below
+        // measures exactly that mix, so the rule has to say it.
+        let sheet = css();
+        for token in MEMBER_RAMP {
+            let class = token.trim_start_matches("--");
+            let (block, _) = block_after(&sheet, &format!("\n.{class} {{"), 0);
+            assert!(
+                block.contains(&format!(
+                    "background: color-mix(in srgb, {}, {} 16%)",
+                    var_of("--surface"),
+                    var_of(token)
+                )),
+                "`.{class}` does not tint --surface with {token} at 16%: {block}"
+            );
+        }
     }
 
     // -- combined_member_colour (#73) -----------------------------------
@@ -2349,6 +2378,25 @@ mod tests {
                             check(name, three, ground, "shared event");
                         }
                     }
+                }
+            }
+            // An occurrence chip tinted for its member (#525, `.m1`…`.m8`):
+            // --fg on 16 % of the hue mixed into --surface. Done chips are
+            // never tinted (`--muted` there falls to 4.19:1 in dark), which
+            // is the agenda's to hold, not the sheet's.
+            let surface = get("--surface");
+            for token in MEMBER_RAMP {
+                let hue = get(token);
+                let mut tint = [0.0; 3];
+                for (k, channel) in tint.iter_mut().enumerate() {
+                    *channel = surface[k] * 0.84 + hue[k] * 0.16;
+                }
+                let ratio = contrast_ratio(get("--fg"), tint);
+                if ratio < AA {
+                    failures.push(format!(
+                        "{theme}: --fg on the {token} tint = {ratio:.2} (.chip.{})",
+                        token.trim_start_matches("--")
+                    ));
                 }
             }
         }
