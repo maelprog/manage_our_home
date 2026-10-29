@@ -112,16 +112,17 @@ test.describe("Groups — invitations", () => {
     await expect(guest).toHaveURL(/\/groups\?notice=joined$/);
     await expect(guest.getByText("Vous avez rejoint le groupe.")).toBeVisible();
     const guestRow = guest.locator("li", { hasText: "Famille Invitation" });
-    await expect(guestRow.getByText("Membre", { exact: true })).toBeVisible();
+    await expect(guestRow.getByText("Standard", { exact: true })).toBeVisible();
 
-    // Owner sees the new member listed with the standard role.
+    // Owner sees the new member listed with the standard role, in its
+    // pastille (#530).
     await page.goto("/groups");
     await page
       .locator("li", { hasText: "Famille Invitation" })
       .getByRole("link", { name: "Membres" })
       .click();
     await expect(
-      page.locator("li", { hasText: "Invited Guest" }).locator("span.muted", { hasText: "Membre" }),
+      page.locator("li", { hasText: "Invited Guest" }).locator(".badge", { hasText: "Standard" }),
     ).toBeVisible();
 
     // Single-use, even for another fresh user: accepting deleted the
@@ -171,6 +172,36 @@ test.describe("Groups — invitations", () => {
     await expect(member.getByRole("button", { name: "Créer une invitation" })).toHaveCount(0);
     await expect(member.getByRole("button", { name: "Changer le rôle" })).toHaveCount(0);
     await expect(member.getByRole("button", { name: "Retirer" })).toHaveCount(0);
+
+    // #530: nor, on the family settings, « Gérer » or the invitation —
+    // while the owner has both there.
+    await member.goto("/groups");
+    await member
+      .locator("li", { hasText: "Famille Permissions" })
+      .getByRole("link", { name: "Paramètres" })
+      .click();
+    await expect(member.getByRole("heading", { level: 1, name: "Famille Permissions" })).toBeVisible();
+    await expect(member.locator("li", { hasText: "Perm Owner" }).locator(".badge")).toHaveText(
+      "Propriétaire",
+    );
+    await expect(member.getByRole("link", { name: "Gérer", exact: true })).toHaveCount(0);
+    await expect(member.getByRole("button", { name: "Inviter" })).toHaveCount(0);
+    await expect(member.getByLabel("E-mail à inviter")).toHaveCount(0);
+
+    await page.goto("/groups");
+    await page
+      .locator("li", { hasText: "Famille Permissions" })
+      .getByRole("link", { name: "Paramètres" })
+      .click();
+    await expect(page.getByLabel("E-mail à inviter")).toBeVisible();
+    const memberRow = page.locator("li", { hasText: "Perm Member" });
+    await expect(memberRow.locator(".badge")).toHaveText("Standard");
+    await memberRow.getByRole("link", { name: "Gérer", exact: true }).click();
+    await expect(page).toHaveURL(/\/groups\/[0-9a-f-]+\/members#member-[0-9a-f-]+$/);
+    await expect(page.locator("li.list-row:target")).toContainText("Perm Member");
+    await expect(
+      page.locator("li.list-row:target").getByRole("button", { name: "Changer le rôle" }),
+    ).toBeVisible();
   });
 
   // #462: an invitation opened without a session survives the login.
@@ -285,9 +316,9 @@ test.describe("Groups — member roles and removal", () => {
     await memberRow.locator("select[name=role]").selectOption("admin");
     await memberRow.getByRole("button", { name: "Changer le rôle" }).click();
     await expect(page.getByText("Rôle mis à jour.")).toBeVisible();
-    // The role label span, not the <select> option that shares the text.
+    // The role pastille (#530), not the <select> option that shares the text.
     await expect(
-      page.locator("li", { hasText: "Role Member" }).locator("span.muted", { hasText: "Admin" }),
+      page.locator("li", { hasText: "Role Member" }).locator(".badge", { hasText: "Admin" }),
     ).toBeVisible();
 
     await page.locator("li", { hasText: "Role Member" }).getByRole("button", { name: "Retirer" }).click();
@@ -307,7 +338,9 @@ test.describe("Groups — settings", () => {
     await page.getByLabel("Nom du groupe").fill("Famille Après");
     await page.getByRole("button", { name: "Renommer" }).click();
     await expect(page.getByText("Groupe renommé.")).toBeVisible();
-    await expect(page.getByText("Paramètres — Famille Après")).toBeVisible();
+    // #530: the family's name is the page's title, under « Paramètres de
+    // la famille ».
+    await expect(page.getByRole("heading", { level: 1, name: "Famille Après" })).toBeVisible();
   });
 
   test("last remaining member cannot leave (409) but can delete the group", async ({ page }) => {

@@ -392,6 +392,9 @@ summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); padding
 a.list-row, .family { flex-wrap: nowrap; min-height: var(--s12); padding-inline: var(--s2x); color: inherit; text-decoration: none; font-size: var(--t-base); }
 .family { flex-direction: row; justify-content: flex-start; cursor: pointer; accent-color: var(--accent); }
 a.list-row .icon { flex: none; }
+/* The member a « Gérer » of the family settings led to (#530), on the
+   members page: the row the fragment names, in the accent's tint. */
+.list-row:target { background: var(--accent-soft); }
 /* A group of controls: buttons side by side, a filter form, a table's
    actions cell. */
 .actions {
@@ -453,6 +456,10 @@ a.list-row .icon { flex: none; }
    took that over the --warning pair while the latter was under AA in
    light; #74 fixed the pair and left this badge as it was. */
 .badge.warn { background: var(--error); color: var(--accent-fg); }
+/* A role that manages the family, Propriétaire or Admin (#530): the
+   accent's tint, where Standard keeps the neutral badge. The word says the
+   role; the tint repeats it. */
+.badge.accent { background: var(--accent-soft); color: var(--accent); }
 /* A member's initial in their ramp colour. The hue is the only thing the
    route passes in (`app::member_colour`); it lands on `color`, not on a
    background, because DESIGN.md → Composants defines the avatar as a
@@ -611,11 +618,15 @@ progress::-moz-progress-bar { background: currentColor; }
    One card — the basket's count, the quick-add form, the two sections — and
    on a PC the suggestions and the recipes to cook beside it, under it when
    the column is too narrow for both (the agenda's pattern). The cards lose
-   their top margin: the row's gap, or the one under each card, spaces them. */
-.groceries { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--s4); }
-.groceries > * { flex: 1 1 20rem; }
-.groceries > .card { flex: 999 1 30rem; min-width: 0; }
-.groceries .card { margin: 0 0 var(--s4); }
+   their top margin: the row's gap, or the one under each card, spaces them.
+   The family settings (#530) share the layout, with a column of cards on
+   each side: the members and the name's card, then — beside them on a PC,
+   under them when the width runs out — the column « Couleur de la famille »
+   (#538) will open, today the Google calendars. */
+.groceries, .settings { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--s4); }
+.groceries > *, .settings > * { flex: 1 1 20rem; }
+.groceries > .card, .settings > :first-child { flex: 999 1 30rem; min-width: 0; }
+.groceries .card, .settings .card { margin: 0 0 var(--s4); }
 /* « À acheter », « Dans le panier »: the eyebrow's micro-label, in the body
    face rather than the headings' serif, close over its rows. */
 .groceries h3 { margin: var(--s4) 0 0; font-family: inherit; }
