@@ -87,8 +87,8 @@
   document.addEventListener("change", function (event) {
     var input = event.target;
     if (!input.hasAttribute) return;
-    // `data-submit-on-change` (the grocery list's check boxes, the stocks'
-    // barcode photo, #402). `form.submit()` fires no `submit` event, hence
+    // `data-submit-on-change` (the stocks' barcode photo, #402; the grocery
+    // list's check boxes until #526). `form.submit()` fires no `submit` event, hence
     // the explicit `keepScroll`.
     if (input.hasAttribute("data-submit-on-change")) {
       keepScroll(input.form);
@@ -161,7 +161,7 @@
 
   // `data-keep-scroll` on a form (#456): the page its redirect lands on
   // opens at the height the form was sent from, rather than at the top —
-  // the grocery list's check boxes, where the ticked row also moves down.
+  // the grocery list's tick boxes, where the ticked row also moves down.
   // Only when that page has the sender's path and shows no error: a
   // failed post comes back to the same list with its `.notice.error`
   // banner at the top (`?error=…`), which the reader must see, and a
