@@ -15,6 +15,7 @@ use crate::audit;
 use crate::auth::session::{scoped_tx, token_scoped_tx, user_scoped_tx, AuthUser};
 use crate::auth::token::{new_token, token_hash};
 use crate::error::{AppError, AppResult};
+use crate::notifications::center;
 use crate::AppState;
 
 const MAX_GROUPS_PER_USER: i64 = 10;
@@ -536,6 +537,38 @@ pub async fn create_invitation(
         )),
         None => None,
     };
+    // The invited address may already hold an account (#534): its notification
+    // centre says so too. Without the token, which travels by email only —
+    // the notification tells, the email's link accepts. Nothing is written
+    // for an address with no account, nor for an inviter inviting their own.
+    if let (Some(email), Some((group_name, inviter))) = (&body.invited_email, &notice) {
+        let invitee = sqlx::query_scalar!(
+            r#"SELECT id FROM users
+               WHERE email = $1 AND id <> $2
+                 AND deactivated_at IS NULL AND deleted_at IS NULL"#,
+            email,
+            auth.user_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(invitee) = invitee {
+            center::insert_for(
+                &mut tx,
+                &[invitee],
+                &center::NewNotification {
+                    group_id,
+                    event: center::Event::Invitation {
+                        inviter,
+                        group: group_name,
+                    },
+                    object_id: Some(invitation_id),
+                    actor_id: Some(auth.user_id),
+                    dedup_key: None,
+                },
+            )
+            .await?;
+        }
+    }
     tx.commit().await?;
 
     // Absolute, in the email as in the response (#462): the link is shared

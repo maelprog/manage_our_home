@@ -234,6 +234,22 @@ pub fn build_router(state: AppState) -> Router {
                 .put(notifications::preferences::update_settings),
         )
         .route(
+            "/notifications",
+            get(notifications::center::list_notifications),
+        )
+        .route(
+            "/notifications/unread_count",
+            get(notifications::center::unread_count),
+        )
+        .route(
+            "/notifications/read",
+            post(notifications::center::mark_all_read),
+        )
+        .route(
+            "/notifications/:id/read",
+            post(notifications::center::mark_read),
+        )
+        .route(
             "/account/push-subscriptions",
             post(notifications::preferences::subscribe)
                 .delete(notifications::preferences::unsubscribe_all),

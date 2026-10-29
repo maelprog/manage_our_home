@@ -268,6 +268,9 @@ async fn main() -> anyhow::Result<()> {
         email,
         state.push.clone(),
     ));
+    // On the admin pool: `stock_items` is under a forced RLS policy, and
+    // the pass refuses to run without BYPASSRLS (#534).
+    tokio::spawn(jobs::stock_expiry::run(state.admin_db.clone()));
 
     // Messagerie events reach this replica's sockets through Postgres
     // `LISTEN`, whichever replica wrote them (#429): listen before serving.

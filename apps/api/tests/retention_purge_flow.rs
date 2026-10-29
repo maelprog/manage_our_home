@@ -140,6 +140,27 @@ async fn each_table_loses_exactly_the_rows_past_their_retention(db: PgPool) {
     insert_invitation(&db, group, live, now - Duration::days(30) - minute).await;
     let inv_kept = insert_invitation(&db, group, live, now - Duration::days(30) + minute).await;
 
+    // #534: the notification centre keeps 30 days, read or not.
+    let mut notif_kept = Uuid::nil();
+    for (created, read) in [
+        (now - Duration::days(30) - minute, false),
+        (now - Duration::days(30) + minute, true),
+    ] {
+        notif_kept = sqlx::query_scalar(
+            "INSERT INTO notifications (user_id, group_id, kind, body, created_at, read_at)
+             VALUES ($1, $2, 'message', 'Nouveau message.', $3,
+                     CASE WHEN $4 THEN now() END)
+             RETURNING id",
+        )
+        .bind(live)
+        .bind(group)
+        .bind(created)
+        .bind(read)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    }
+
     let far = now + Duration::days(20);
     let idle_edge = now - Duration::days(7);
     // Gone: revoked, expired, idle past the timeout, deactivated account.
@@ -213,6 +234,7 @@ async fn each_table_loses_exactly_the_rows_past_their_retention(db: PgPool) {
             password_reset_tokens: 1,
             invitations: 1,
             sessions: 4,
+            notifications: 1,
             login_throttle: 1,
             rate_limit_log: 1,
             csp_report_throttle: 1,
@@ -255,6 +277,10 @@ async fn each_table_loses_exactly_the_rows_past_their_retention(db: PgPool) {
             .unwrap();
     assert_eq!(reset_left, vec![reset_kept]);
     assert_eq!(ids(&db, "SELECT id FROM invitations").await, vec![inv_kept]);
+    assert_eq!(
+        ids(&db, "SELECT id FROM notifications").await,
+        vec![notif_kept]
+    );
     let mut sessions = ids(&db, "SELECT id FROM sessions").await;
     sessions.sort();
     let mut expected = vec![s_active, s_almost_idle, s_almost_expired];

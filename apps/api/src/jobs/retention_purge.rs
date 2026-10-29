@@ -40,11 +40,15 @@ pub const PASSWORD_RESET_RETENTION_HOURS: i64 = 1;
 /// An invitation is deleted when it is accepted, so this only catches the
 /// ones nobody accepted — with the invited address they carry.
 pub const INVITATION_RETENTION_DAYS: i64 = 30;
+/// The notification centre's entries (#534), read or not: long enough to
+/// find a month's reminders and messages again, short enough that the
+/// list holds no history of its own (controller's decision of 2026-10-21).
+pub const NOTIFICATION_RETENTION_DAYS: i64 = 30;
 
 /// The instant, per table, before which a row has outlived its retention.
 ///
 /// Computed once per pass in Rust rather than as `now()` inside each
-/// statement, so one pass applies one clock to all five tables — and so
+/// statement, so one pass applies one clock to all six tables — and so
 /// the durations themselves are testable without a database.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetentionCutoffs {
@@ -56,6 +60,8 @@ pub struct RetentionCutoffs {
     pub password_reset: DateTime<Utc>,
     /// `invitations.created_at` older than this goes.
     pub invitation: DateTime<Utc>,
+    /// `notifications.created_at` older than this goes.
+    pub notification: DateTime<Utc>,
     /// A session whose `last_seen_at` is older than this has been idle
     /// past `SESSION_IDLE_TIMEOUT_DAYS` and is already refused.
     pub session_idle: DateTime<Utc>,
@@ -75,6 +81,7 @@ impl RetentionCutoffs {
             email_verification: now - Duration::hours(EMAIL_VERIFICATION_RETENTION_HOURS),
             password_reset: now - Duration::hours(PASSWORD_RESET_RETENTION_HOURS),
             invitation: now - Duration::days(INVITATION_RETENTION_DAYS),
+            notification: now - Duration::days(NOTIFICATION_RETENTION_DAYS),
             session_idle: now - Duration::days(SESSION_IDLE_TIMEOUT_DAYS),
             now,
         }
@@ -93,6 +100,8 @@ pub struct PurgeCounts {
     pub password_reset_tokens: u64,
     pub invitations: u64,
     pub sessions: u64,
+    /// The notification centre's entries (#534).
+    pub notifications: u64,
     /// Login lock counters past `auth::throttle::purge_cutoff` (#427).
     pub login_throttle: u64,
     /// Sliding-window limits past `rate_limit::LONGEST_WINDOW` (#428).
@@ -176,6 +185,14 @@ pub async fn purge(pool: &PgPool, cutoffs: RetentionCutoffs) -> anyhow::Result<P
     .await?
     .rows_affected();
 
+    let notifications = sqlx::query!(
+        "DELETE FROM notifications WHERE created_at < $1",
+        cutoffs.notification
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+
     // A session goes as soon as `AuthUser` would refuse it for good: logged
     // out or revoked, past its absolute lifetime, idle past the timeout —
     // its end dated by least(expires_at, last_seen_at + idle timeout), the
@@ -225,6 +242,7 @@ pub async fn purge(pool: &PgPool, cutoffs: RetentionCutoffs) -> anyhow::Result<P
         password_reset_tokens,
         invitations,
         sessions,
+        notifications,
         login_throttle,
         rate_limit_log,
         csp_report_throttle,
@@ -262,6 +280,15 @@ mod tests {
         assert_eq!(cutoffs.email_verification, now() - Duration::hours(48));
         assert_eq!(cutoffs.invitation, now() - Duration::days(30));
         assert_eq!(cutoffs.password_reset, now() - Duration::hours(1));
+    }
+
+    /// The duration decided on 2026-10-21 (#534), as published.
+    #[test]
+    fn notifications_keep_30_days() {
+        assert_eq!(
+            RetentionCutoffs::at(now()).notification,
+            now() - Duration::days(30)
+        );
     }
 
     /// One clock for the whole pass.

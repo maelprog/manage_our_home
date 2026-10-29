@@ -1082,6 +1082,7 @@ async fn export_accounts_for_every_table(db: PgPool) {
         ("password_reset_tokens", "password_resets"),
         ("audit_log", "audit_log"),
         ("push_subscriptions", "push_subscriptions"),
+        ("notifications", "notifications"),
     ];
     const LEFT_OUT: &[(&str, &str)] = &[
         (
@@ -1184,6 +1185,7 @@ async fn export_accounts_for_every_column_referencing_users(db: PgPool) {
         ("password_reset_tokens", "user_id"),
         ("audit_log", "actor_user_id"),
         ("push_subscriptions", "user_id"),
+        ("notifications", "user_id"),
     ];
     const LEFT_OUT: &[(&str, &str, &str)] = &[
         (
@@ -1197,6 +1199,14 @@ async fn export_accounts_for_every_column_referencing_users(db: PgPool) {
             "invitations",
             "consumed_by",
             "never written: accepting an invitation deletes the row",
+        ),
+        // #534: the account whose action caused a notification addressed to
+        // another member. The row is the recipient's, exported to them; the
+        // account purge deletes it with the actor (its text may name them).
+        (
+            "notifications",
+            "actor_id",
+            "names who caused another member's notification, exported to its recipient",
         ),
     ];
 

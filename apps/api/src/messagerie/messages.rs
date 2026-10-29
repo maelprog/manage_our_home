@@ -11,6 +11,7 @@ use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::groups::require_role;
 use crate::messagerie::{can_modify, notify, Change, Notification};
+use crate::notifications::center;
 use crate::AppState;
 
 const MAX_CONTENT_CHARS: usize = 4000;
@@ -229,6 +230,20 @@ pub async fn create_message(
             group_id,
             change: Change::Created,
             message_id: row.id,
+        },
+    )
+    .await?;
+    // The other members' notification centre (#534): who wrote, never what.
+    center::insert_for_members(
+        &mut tx,
+        &center::NewNotification {
+            group_id,
+            event: center::Event::Message {
+                author: &auth.display_name,
+            },
+            object_id: Some(row.id),
+            actor_id: Some(auth.user_id),
+            dedup_key: None,
         },
     )
     .await?;

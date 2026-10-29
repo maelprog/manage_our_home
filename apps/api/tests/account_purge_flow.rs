@@ -128,6 +128,21 @@ async fn seed_personal_rows(db: &PgPool, group: Uuid, event: Uuid, user: Uuid, t
     .execute(db)
     .await
     .unwrap();
+    // A notification received (#534), and one caused: its text names the
+    // account, so it goes too — from the centre of an account nobody purges.
+    let reader = insert_user(db, &format!("lecteur-{tag}@example.test"), None).await;
+    for (recipient, actor) in [(user, None), (reader, Some(user))] {
+        sqlx::query(
+            "INSERT INTO notifications (user_id, group_id, kind, actor_id, body)
+             VALUES ($1, $2, 'message', $3, 'Nouveau message.')",
+        )
+        .bind(recipient)
+        .bind(group)
+        .bind(actor)
+        .execute(db)
+        .await
+        .unwrap();
+    }
 }
 
 /// Rows per personal table that still point at `user`.
@@ -178,6 +193,14 @@ async fn personal_rows(db: &PgPool, user: Uuid) -> Vec<(&'static str, i64)> {
             "push_subscriptions",
             "SELECT count(*) FROM push_subscriptions WHERE user_id = $1",
         ),
+        (
+            "notifications",
+            "SELECT count(*) FROM notifications WHERE user_id = $1",
+        ),
+        (
+            "notifications caused",
+            "SELECT count(*) FROM notifications WHERE actor_id = $1",
+        ),
     ] {
         let n: i64 = sqlx::query_scalar(sql)
             .bind(user)
@@ -202,6 +225,8 @@ fn all(n: i64) -> Vec<(&'static str, i64)> {
         "invitations",
         "calendar_imports",
         "push_subscriptions",
+        "notifications",
+        "notifications caused",
     ]
     .into_iter()
     .map(|t| (t, n))

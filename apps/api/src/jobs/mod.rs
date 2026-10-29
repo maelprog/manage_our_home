@@ -3,3 +3,4 @@ pub mod attachment_reconcile;
 pub mod retention_purge;
 pub mod scheduled_notifications;
 pub mod single_runner;
+pub mod stock_expiry;
