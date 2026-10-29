@@ -49,6 +49,8 @@ pub(crate) use manage_our_home_shared::validation::messagerie::can_modify;
 /// redirect to `/groups/new`.
 pub(crate) struct FamilyContext {
     pub gid: Uuid,
+    /// The family's name, which the page is headed with (#528).
+    pub name: String,
     pub role: String,
     pub user_id: Uuid,
     pub header: String,
@@ -69,6 +71,7 @@ pub(crate) async fn family_context(
     let active: Option<&GroupSummary> = resolve_active_group(&groups, preferred);
     active.map(|g| FamilyContext {
         gid: g.group_id,
+        name: g.name.clone(),
         role: g.role.clone(),
         user_id: me.user_id,
         header,

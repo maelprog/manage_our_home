@@ -2274,18 +2274,22 @@ mod tests {
     /// list, written down rather than hidden.
     const TEXT_PAIRS: &[(&str, &str, &str)] = &[
         ("--fg", "--bg", "body"),
-        ("--fg", "--surface", ".card, header, inputs"),
+        ("--fg", "--surface", ".card, header, inputs, a .msg bubble"),
         ("--fg", "--border", ".badge, .chip:hover, .chip.done:hover"),
         ("--fg", "--hover", ".chip, a hovered row"),
         ("--fg", "--accent-soft", ".current"),
         ("--muted", "--bg", ".muted, th, dt"),
-        ("--muted", "--surface", ".muted in a card, .list-row.mine"),
+        ("--muted", "--surface", ".muted in a card"),
         ("--muted", "--hover", "a hovered .list-row"),
         ("--muted", "--accent-soft", "today off the month, .outside"),
         ("--accent", "--bg", "links, summary"),
         ("--accent", "--surface", "links in a card"),
         ("--accent", "--accent-soft", ".navlink[aria-current]"),
-        ("--accent-fg", "--accent", "button, .filters [aria-current]"),
+        (
+            "--accent-fg",
+            "--accent",
+            "button, .filters [aria-current], a .msg.mine bubble",
+        ),
         ("--accent-fg", "--accent-hover", "button:hover"),
         ("--accent-fg", "--error", "button.danger, .badge.warn"),
         ("--accent-fg", "--error-hover", "button.danger:hover"),
@@ -2886,7 +2890,10 @@ mod tests {
             // left the whole suite green while the edit textarea silently
             // collapsed back to its ~20-column default. That is the hole
             // the inline `min-width: 16rem` used to plug.
-            ".list-row.mine",
+            //
+            // The message you wrote was `.list-row.mine` until #528 made
+            // the thread a conversation of `.msg` bubbles.
+            ".msg.mine",
             "summary {",
             ".actions > details[open]",
             ".card",

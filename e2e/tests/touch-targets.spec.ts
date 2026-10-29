@@ -62,7 +62,7 @@ async function seed(page: Page): Promise<string[]> {
   await page.goto("/messagerie");
   await page.getByLabel("Votre message").fill("Bonjour");
   await page.getByRole("button", { name: "Envoyer" }).click();
-  await expect(page.locator(".list-row", { hasText: "Bonjour" })).toBeVisible();
+  await expect(page.locator("li[data-message-id]", { hasText: "Bonjour" })).toBeVisible();
 
   await page.goto("/agenda/new");
   await page.getByLabel("Titre").fill("Rendez-vous");

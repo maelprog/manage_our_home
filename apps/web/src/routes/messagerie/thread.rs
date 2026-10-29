@@ -17,13 +17,14 @@ use manage_our_home_shared::dto::messagerie::{
     CreateMessageRequest, MessageList, MessageResponse, UpdateMessageRequest,
 };
 use manage_our_home_shared::validation::messagerie::{
-    author_name, clamp_limit, format_message_time, message_ws_url, older_page_query, reply_excerpt,
-    validate_content,
+    author_name, clamp_limit, format_message_time, message_ws_url, older_page_query,
+    replies_in_window, replies_label, reply_excerpt, validate_content, Replies,
 };
 use uuid::Uuid;
 
 use crate::app::{html_escape, member_avatar, member_link, shell_with_header, Icon, Width};
 use crate::assets::Script;
+use crate::icons::{icon, Icon as Glyph};
 use crate::layout::CurrentUser;
 use crate::lenient_query::{lenient, LenientQuery};
 use crate::state::{api_request_auth, AppState};
@@ -210,13 +211,33 @@ fn composer(
             )
         })
         .unwrap_or_default();
+    // One row, the field then the send button (#528). The field starts one
+    // line high and grows with what is typed where the browser sizes a field
+    // to its content (`field-sizing`, style.css); elsewhere it scrolls.
     format!(
         r#"<form id="composer" method="post" action="/messagerie" class="composer">
-{error_html}{reply_html}<textarea name="content" required rows="3" maxlength="4000" aria-label="Votre message" placeholder="Votre message…">{content}</textarea>
-<button type="submit">Envoyer</button>
+{error_html}{reply_html}<textarea name="content" required rows="1" maxlength="4000" aria-label="Votre message" placeholder="Votre message…">{content}</textarea>
+<button type="submit">{send}Envoyer</button>
 </form>"#,
         content = html_escape(content),
+        send = icon(Glyph::Send),
     )
+}
+
+/// « n réponses » under a message answered in the window (#528), a link to
+/// the first answer's row. Empty for a message nobody answered — or whose
+/// answers all sit on another page: the count is the window's
+/// (`replies_in_window`).
+fn replies_link(replies: Option<Replies>) -> String {
+    replies
+        .map(|r| {
+            format!(
+                r##"<a class="replies" href="#message-{first}">{label}</a>"##,
+                first = r.first,
+                label = html_escape(&replies_label(r.count)),
+            )
+        })
+        .unwrap_or_default()
 }
 
 /// Renders one message row. `content` is escaped and newlines are preserved
@@ -229,13 +250,19 @@ fn composer(
 /// `mine` is authorship, and it is deliberately not `can_edit`: an owner may
 /// edit anybody's message, and a thread that marked those as theirs would be
 /// lying about who said what. The distinction is a class the sheet dresses
-/// (`.list-row.mine`), because on a shared family thread "who wrote this" is
+/// (`.msg.mine`), because on a shared family thread "who wrote this" is
 /// the most useful thing on the row and the audit found it simply absent.
+///
+/// Since #528 the row is a chat bubble (`.msg`): the bubble is the content
+/// alone — yours on the right in `--accent`, the others' on the left in
+/// `--surface` — with the identity line and the quote above it, and under it
+/// « n réponses » (`replies`) and the actions.
 fn message_row(
     msg: &MessageResponse,
     members: &[manage_our_home_shared::dto::groups::GroupMember],
     can_edit: bool,
     mine: bool,
+    replies: Option<Replies>,
 ) -> String {
     let edit_controls = if can_edit {
         format!(
@@ -258,10 +285,10 @@ fn message_row(
     };
 
     format!(
-        r#"<li id="message-{id}" data-message-id="{id}" class="list-row stacked{mine}">
+        r#"<li id="message-{id}" data-message-id="{id}" class="msg{mine}">
 {meta}
 {quote}<div class="multiline">{content}</div>
-<div class="actions">
+{replies}<div class="actions">
 {reply}{edit_controls}
 </div>
 </li>"#,
@@ -270,6 +297,7 @@ fn message_row(
         meta = message_meta(msg, members),
         quote = reply_quote(msg, members),
         content = html_escape(&msg.content),
+        replies = replies_link(replies),
         reply = reply_link(msg.id),
     )
 }
@@ -460,6 +488,16 @@ fn live_script() -> String {
     Script::MessagerieLive.tag()
 }
 
+/// The page's title, with the family whose conversation it is in the
+/// `.eyebrow` above it (#528, the PC mock-up's head). The live view and the
+/// re-render of a rejected edit share it.
+fn heading(family: &str) -> String {
+    format!(
+        r#"<hgroup><p class="eyebrow">{}</p><h1>Messagerie</h1></hgroup>"#,
+        html_escape(family)
+    )
+}
+
 /// Renders the full `/messagerie` page. `messages` arrive newest-first from the
 /// API and are reversed to render oldest→newest.
 fn page(
@@ -473,12 +511,19 @@ fn page(
 ) -> String {
     // Oldest at the top, newest at the bottom (chat convention).
     let ordered: Vec<&MessageResponse> = list.messages.iter().rev().collect();
+    let replies = replies_in_window(&list.messages);
 
     let rows = ordered
         .iter()
         .map(|m| {
             let mine = m.created_by == fam.user_id;
-            message_row(m, members, can_modify(&fam.role, mine), mine)
+            message_row(
+                m,
+                members,
+                can_modify(&fam.role, mine),
+                mine,
+                replies.get(&m.id).copied(),
+            )
         })
         .collect::<String>();
 
@@ -502,7 +547,7 @@ fn page(
         r#"<p class="muted">Aucun message pour le moment. Écrivez le premier&nbsp;!</p>"#
             .to_string()
     } else {
-        format!(r#"{older_link}<ul class="list">{rows}</ul>"#)
+        format!(r#"{older_link}<ul class="list msgs">{rows}</ul>"#)
     };
 
     // A history window (not the live view) shows a way back to the recent view
@@ -534,16 +579,16 @@ fn page(
     let script = if live { live_script() } else { String::new() };
 
     let body = format!(
-        r#"<h1>Messagerie</h1>
-<p class="muted">La conversation de la famille. Un seul fil, partagé par tous les membres.</p>
+        r#"{heading}
 {notice}
 {live_status}
 {back_link}
-<div id="thread" data-group-id="{gid}" data-live="{live}" data-ws-url="{ws_url}">
+<div id="thread" class="thread" data-group-id="{gid}" data-live="{live}" data-ws-url="{ws_url}">
 {list_html}
 </div>
 {composer}
 {script}"#,
+        heading = heading(&fam.name),
         notice = notice_html(query.notice.as_deref()),
         gid = fam.gid,
         live = live,
@@ -917,27 +962,29 @@ async fn rerender_with_edit_error(
     };
     let members = fetch_members(state, fam.gid, cookie).await;
     let ordered: Vec<&MessageResponse> = list.messages.iter().rev().collect();
+    let replies = replies_in_window(&list.messages);
     let rows = ordered
         .iter()
         .map(|m| {
             let mine = m.created_by == fam.user_id;
+            let answers = replies.get(&m.id).copied();
             if m.id == message_id {
-                edit_error_row(m, &members, submitted, error_message(code), mine)
+                edit_error_row(m, &members, submitted, error_message(code), mine, answers)
             } else {
-                message_row(m, &members, can_modify(&fam.role, mine), mine)
+                message_row(m, &members, can_modify(&fam.role, mine), mine, answers)
             }
         })
         .collect::<String>();
 
     let body = format!(
-        r#"<h1>Messagerie</h1>
-<p class="muted">La conversation de la famille. Un seul fil, partagé par tous les membres.</p>
+        r#"{heading}
 <p id="live-status" class="muted live-status" aria-live="polite"></p>
-<div id="thread" data-group-id="{gid}" data-live="true" data-ws-url="{ws_url}">
-<ul class="list">{rows}</ul>
+<div id="thread" class="thread" data-group-id="{gid}" data-live="true" data-ws-url="{ws_url}">
+<ul class="list msgs">{rows}</ul>
 </div>
 {composer}
 {script}"#,
+        heading = heading(&fam.name),
         composer = composer("", None, None, &list, &members),
         gid = fam.gid,
         ws_url = html_escape(&message_ws_url(&fam.api_public_base_url, fam.gid)),
@@ -960,12 +1007,13 @@ fn edit_error_row(
     submitted: &str,
     error: &str,
     mine: bool,
+    replies: Option<Replies>,
 ) -> String {
     format!(
-        r#"<li id="message-{id}" data-message-id="{id}" class="list-row stacked{mine}">
+        r#"<li id="message-{id}" data-message-id="{id}" class="msg{mine}">
 {meta}
 {quote}<div class="multiline">{content}</div>
-<div class="actions">
+{replies}<div class="actions">
 {reply}
 <details open>
 <summary>Modifier</summary>
@@ -982,6 +1030,7 @@ fn edit_error_row(
         meta = message_meta(msg, members),
         quote = reply_quote(msg, members),
         content = html_escape(&msg.content),
+        replies = replies_link(replies),
         reply = reply_link(msg.id),
         error = html_escape(error),
         submitted = html_escape(submitted),
@@ -1208,9 +1257,11 @@ mod tests {
     #[test]
     fn every_row_shape_carries_the_reconcile_key() {
         let msg = sample("Bonjour");
-        assert!(message_row(&msg, &[], true, true).contains("data-message-id="));
-        assert!(message_row(&msg, &[], false, false).contains("data-message-id="));
-        assert!(edit_error_row(&msg, &[], "Bonjour", "Erreur", true).contains("data-message-id="));
+        assert!(message_row(&msg, &[], true, true, None).contains("data-message-id="));
+        assert!(message_row(&msg, &[], false, false, None).contains("data-message-id="));
+        assert!(
+            edit_error_row(&msg, &[], "Bonjour", "Erreur", true, None).contains("data-message-id=")
+        );
     }
 
     // -- #72: the thread as a design-system surface ----------------------
@@ -1236,9 +1287,9 @@ mod tests {
         }];
         let msg = sample("Bonjour");
         for row in [
-            message_row(&msg, &members, true, true),
-            message_row(&msg, &members, false, false),
-            edit_error_row(&msg, &members, "Bonjour", "Erreur", true),
+            message_row(&msg, &members, true, true, None),
+            message_row(&msg, &members, false, false, None),
+            edit_error_row(&msg, &members, "Bonjour", "Erreur", true, None),
         ] {
             assert!(row.contains(r#"class="avatar""#), "no avatar in {row}");
             assert!(
@@ -1267,9 +1318,9 @@ mod tests {
         let msg = sample("Bonjour");
         let photo = crate::app::member_photo_url(msg.group_id, msg.created_by);
         for row in [
-            message_row(&msg, &members, true, true),
-            message_row(&msg, &members, false, false),
-            edit_error_row(&msg, &members, "Bonjour", "Erreur", true),
+            message_row(&msg, &members, true, true, None),
+            message_row(&msg, &members, false, false, None),
+            edit_error_row(&msg, &members, "Bonjour", "Erreur", true, None),
         ] {
             assert!(
                 row.contains(&member_avatar(msg.created_by, "Alice", Some(&photo))),
@@ -1299,9 +1350,9 @@ mod tests {
             msg.group_id, msg.created_by
         );
         for row in [
-            message_row(&msg, &members, true, true),
-            message_row(&msg, &members, false, false),
-            edit_error_row(&msg, &members, "Bonjour", "Erreur", true),
+            message_row(&msg, &members, true, true, None),
+            message_row(&msg, &members, false, false, None),
+            edit_error_row(&msg, &members, "Bonjour", "Erreur", true, None),
         ] {
             let at = row
                 .find(&href)
@@ -1342,16 +1393,102 @@ mod tests {
     #[test]
     fn your_own_messages_are_told_apart_from_everyone_elses() {
         let msg = sample("Bonjour");
-        assert!(message_row(&msg, &[], true, true).contains(r#"stacked mine""#));
+        assert!(message_row(&msg, &[], true, true, None).contains(r#"class="msg mine""#));
+        assert!(edit_error_row(&msg, &[], "Bonjour", "Erreur", true, None)
+            .contains(r#"class="msg mine""#));
         // An admin may edit someone else's message; that is a permission,
         // not authorship, and marking those as yours would misattribute them.
-        assert!(!message_row(&msg, &[], true, false).contains("mine"));
-        assert!(!edit_error_row(&msg, &[], "Bonjour", "Erreur", false).contains("mine"));
+        assert!(message_row(&msg, &[], true, false, None).contains(r#"class="msg""#));
+        assert!(!message_row(&msg, &[], true, false, None).contains("mine"));
+        assert!(!edit_error_row(&msg, &[], "Bonjour", "Erreur", false, None).contains("mine"));
         assert!(
-            crate::assets::STYLESHEET.contains(".list-row.mine"),
+            crate::assets::STYLESHEET.contains(".msg.mine"),
             "`mine` reaches the class attribute through a format! placeholder, \
              so app.rs's class guard cannot see it: check it here or nowhere"
         );
+    }
+
+    // -- #528: the thread as a conversation ------------------------------
+
+    /// Each message is a bubble (`.msg`, DESIGN.md → Classes de soutien):
+    /// the content alone, so that a bubble of your own — `--accent-fg` on
+    /// `--accent` — never holds a link or a control painted for another
+    /// ground. The identity line, the quote and the actions sit around it.
+    #[test]
+    fn the_bubble_holds_the_content_and_nothing_else() {
+        let msg = reply();
+        for row in every_row_shape(&msg) {
+            let at = row.find(r#"<div class="multiline">"#).expect("a bubble");
+            let end = at + row[at..].find("</div>").unwrap();
+            let bubble = &row[at..end];
+            assert!(!bubble.contains("<a"), "a link inside the bubble: {bubble}");
+            assert!(!bubble.contains("<button"), "{bubble}");
+            assert!(!bubble.contains("<details"), "{bubble}");
+        }
+    }
+
+    /// « n réponses » (#465's replies, counted by `replies_in_window`) under
+    /// a message answered in the window, on every row shape alike, as a
+    /// link to its first answer's row.
+    #[test]
+    fn an_answered_message_counts_its_replies_on_every_row_shape() {
+        let msg = sample("Bonjour");
+        let replies = Replies {
+            count: 2,
+            first: parent_id(),
+        };
+        let link = format!(
+            r##"<a class="replies" href="#message-{}">2 réponses</a>"##,
+            parent_id()
+        );
+        let members = alice();
+        for row in [
+            message_row(&msg, &members, true, true, Some(replies)),
+            message_row(&msg, &members, false, false, Some(replies)),
+            edit_error_row(&msg, &members, "Oui", "Erreur", true, Some(replies)),
+        ] {
+            let at = row
+                .find(&link)
+                .unwrap_or_else(|| panic!("no count in {row}"));
+            assert!(
+                at > row.find(r#"class="multiline""#).unwrap(),
+                "the count sits under the bubble: {row}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_message_nobody_answered_counts_nothing() {
+        for row in every_row_shape(&sample("Bonjour")) {
+            assert!(!row.contains("réponse"), "{row}");
+            assert!(!row.contains("replies"), "{row}");
+        }
+    }
+
+    /// The page names the family it is the conversation of, in the
+    /// `.eyebrow` over the title (#524's `hgroup`), escaped.
+    #[test]
+    fn the_heading_names_the_family() {
+        let html = heading("Famille <Martin>");
+        assert!(
+            html.contains(r#"<p class="eyebrow">Famille &lt;Martin&gt;</p>"#),
+            "{html}"
+        );
+        assert!(html.contains("<h1>Messagerie</h1>"), "{html}");
+        assert!(html.starts_with("<hgroup>"), "{html}");
+    }
+
+    /// The send button draws the paper plane and keeps its word: its
+    /// accessible name, the one the e2e suite clicks, stays « Envoyer ».
+    #[test]
+    fn the_send_button_keeps_its_label_beside_its_icon() {
+        let html = composer("", None, None, &window_with_parent(), &alice());
+        let svg = crate::icons::icon(crate::icons::Icon::Send);
+        assert!(
+            html.contains(&format!(r#"<button type="submit">{svg}Envoyer</button>"#)),
+            "{html}"
+        );
+        assert!(html.contains(r#"aria-label="Votre message""#), "{html}");
     }
 
     /// The two row shapes are near-duplicates and have drifted before — the
@@ -1363,8 +1500,8 @@ mod tests {
         msg.edited_at = Some(chrono::Utc::now());
         let meta = message_meta(&msg, &[]);
         assert!(meta.contains("(modifié)"));
-        assert!(message_row(&msg, &[], true, false).contains(&meta));
-        assert!(edit_error_row(&msg, &[], "Bonjour", "Erreur", true).contains(&meta));
+        assert!(message_row(&msg, &[], true, false, None).contains(&meta));
+        assert!(edit_error_row(&msg, &[], "Bonjour", "Erreur", true, None).contains(&meta));
     }
 
     /// The edit textarea forced `min-width:16rem` inline, which nearly filled
@@ -1373,8 +1510,8 @@ mod tests {
     fn no_row_hand_rolls_a_width_on_the_edit_field() {
         let msg = sample("Bonjour");
         for row in [
-            message_row(&msg, &[], true, true),
-            edit_error_row(&msg, &[], "Bonjour", "Erreur", true),
+            message_row(&msg, &[], true, true, None),
+            edit_error_row(&msg, &[], "Bonjour", "Erreur", true, None),
         ] {
             assert!(
                 !row.contains("min-width"),
@@ -1390,8 +1527,8 @@ mod tests {
     fn the_edit_disclosure_is_not_a_button_in_disguise() {
         let msg = sample("Bonjour");
         for row in [
-            message_row(&msg, &[], true, true),
-            edit_error_row(&msg, &[], "Bonjour", "Erreur", true),
+            message_row(&msg, &[], true, true, None),
+            edit_error_row(&msg, &[], "Bonjour", "Erreur", true, None),
         ] {
             let at = row.find("<summary").expect("the edit form is a disclosure");
             let end = row[at..].find('>').unwrap() + at;
@@ -1429,7 +1566,7 @@ mod tests {
     fn live_script_detects_the_open_inline_editor_and_replays_after_it_closes() {
         let js = LIVE_SCRIPT;
         assert!(js.contains("details[open]"));
-        assert!(message_row(&sample("Bonjour"), &[], true, true).contains("<details"));
+        assert!(message_row(&sample("Bonjour"), &[], true, true, None).contains("<details"));
         // <details>'s toggle event doesn't bubble — the listener has to capture.
         assert!(js.contains(r#"addEventListener("toggle""#));
         assert!(js.contains("li[data-message-id]"));
@@ -1484,7 +1621,7 @@ mod tests {
         // Only the disclosure is dropped: the row's rendered blocks — and the
         // delete control, which vanishes when the row stops being yours — are
         // exactly what the comparison is for.
-        let row = message_row(&sample("Bonjour"), &[], true, true);
+        let row = message_row(&sample("Bonjour"), &[], true, true, None);
         let closed = row
             .find("</details>")
             .expect("the edit form is a disclosure");
@@ -1528,9 +1665,9 @@ mod tests {
     fn every_row_shape(msg: &MessageResponse) -> [String; 3] {
         let members = alice();
         [
-            message_row(msg, &members, true, true),
-            message_row(msg, &members, false, false),
-            edit_error_row(msg, &members, "Oui", "Erreur", true),
+            message_row(msg, &members, true, true, None),
+            message_row(msg, &members, false, false, None),
+            edit_error_row(msg, &members, "Oui", "Erreur", true, None),
         ]
     }
 
@@ -1547,7 +1684,7 @@ mod tests {
         }
         // A member who may not edit still gets the actions block, with the
         // reply alone in it.
-        let other = message_row(&msg, &[], false, false);
+        let other = message_row(&msg, &[], false, false, None);
         assert!(other.contains(r#"<div class="actions">"#));
         assert!(!other.contains("/edit") && !other.contains("/delete"));
     }
