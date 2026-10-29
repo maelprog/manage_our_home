@@ -100,7 +100,7 @@ pub async fn get(
 ) -> Response {
     let fam = match family_context(&state, &headers, &me, "/budget").await {
         Ok(fam) => fam,
-        Err(answer) => return answer,
+        Err(answer) => return *answer,
     };
     let cookie = budget_cookie(&headers);
 

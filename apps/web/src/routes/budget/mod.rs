@@ -65,13 +65,15 @@ pub(crate) async fn family_context(
     headers: &HeaderMap,
     me: &MeResponse,
     redirect_to: &str,
-) -> Result<FamilyContext, Response> {
+) -> Result<FamilyContext, Box<Response>> {
     let (groups, header) = header_with_groups(state, headers, me, redirect_to).await;
     let preferred = active_group_id_from_headers(headers);
     let active: Option<&GroupSummary> = resolve_active_group(&groups, preferred);
     match active {
-        None => Err(Redirect::to("/groups/new").into_response()),
-        Some(g) if !can_access_budget(&g.role) => Err(StatusCode::NOT_FOUND.into_response()),
+        None => Err(Box::new(Redirect::to("/groups/new").into_response())),
+        Some(g) if !can_access_budget(&g.role) => {
+            Err(Box::new(StatusCode::NOT_FOUND.into_response()))
+        }
         Some(g) => Ok(FamilyContext {
             gid: g.group_id,
             role: g.role.clone(),

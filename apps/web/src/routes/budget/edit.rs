@@ -80,7 +80,7 @@ pub async fn get(
 ) -> Response {
     let fam = match family_context(&state, &headers, &me, &format!("/budget/{entry_id}")).await {
         Ok(fam) => fam,
-        Err(answer) => return answer,
+        Err(answer) => return *answer,
     };
     let cookie = budget_cookie(&headers);
     let entry = match fetch_entry(&state, fam.gid, entry_id, cookie.as_deref()).await {
@@ -109,7 +109,7 @@ pub async fn post(
 ) -> Response {
     let fam = match family_context(&state, &headers, &me, &format!("/budget/{entry_id}")).await {
         Ok(fam) => fam,
-        Err(answer) => return answer,
+        Err(answer) => return *answer,
     };
 
     let render_error = |code: &str| {
@@ -179,7 +179,7 @@ pub async fn delete(
 ) -> Response {
     let fam = match family_context(&state, &headers, &me, &format!("/budget/{entry_id}")).await {
         Ok(fam) => fam,
-        Err(answer) => return answer,
+        Err(answer) => return *answer,
     };
     let cookie = budget_cookie(&headers);
     let result = api_request_auth(

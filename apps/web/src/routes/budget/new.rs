@@ -103,7 +103,7 @@ pub async fn get(
 ) -> Response {
     let fam = match family_context(&state, &headers, &me, "/budget/new").await {
         Ok(fam) => fam,
-        Err(answer) => return answer,
+        Err(answer) => return *answer,
     };
     // Pre-fill the date with today for convenience (still optional server-side).
     let form = EntryForm {
@@ -124,7 +124,7 @@ pub async fn post(
 ) -> Response {
     let fam = match family_context(&state, &headers, &me, "/budget/new").await {
         Ok(fam) => fam,
-        Err(answer) => return answer,
+        Err(answer) => return *answer,
     };
 
     let render_error =
