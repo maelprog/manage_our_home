@@ -769,8 +769,11 @@ dd { margin: var(--s2) 0 0 0; }
 .composer { flex-flow: row wrap; align-items: flex-end; gap: var(--s2x); margin-top: var(--s4); }
 .composer > .notice { flex-basis: 100%; margin: 0; }
 .composer textarea { flex: 1 1 12rem; field-sizing: content; max-height: calc(var(--s16) * 2); }
-/* The send button's icon keeps its distance from the word. */
+/* The send button's icon keeps its distance from the word, and the reply
+   notice's « Annuler » reads as a link in the app's colour, not the
+   browser's. */
 .composer button { display: inline-flex; align-items: center; gap: var(--s1); }
+.composer > .notice a { color: var(--accent); font-weight: 600; }
 /* The live thread's send box stays in reach at the foot of the screen
    (#528), on a phone as on a PC — it stuck on a PC only until then (#72),
    when it was three lines high. `.content >` is the point of the selector:
