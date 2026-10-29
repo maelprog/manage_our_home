@@ -20,6 +20,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::Form;
 use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
+use manage_our_home_shared::validation::groups::can_manage_group;
 use uuid::Uuid;
 
 use crate::app::{app_header, nav_link_is_current};
@@ -38,8 +39,23 @@ pub(crate) fn role_label(role: &str) -> &'static str {
     match role {
         "owner" => "Propriétaire",
         "admin" => "Admin",
-        _ => "Membre",
+        _ => "Standard",
     }
+}
+
+/// A member's role as a pastille (#530): the two roles that manage the
+/// family in the accent's tint, the standard one in the neutral badge. The
+/// word says the role; the tint only repeats it.
+pub(crate) fn role_badge(role: &str) -> String {
+    let tint = if can_manage_group(role) {
+        " accent"
+    } else {
+        ""
+    };
+    format!(
+        r#"<span class="badge{tint}">{label}</span>"#,
+        label = role_label(role)
+    )
 }
 
 /// Fetches the caller's groups and renders the shared authenticated
@@ -121,4 +137,37 @@ pub async fn switch(
         response_headers.insert(axum::http::header::SET_COOKIE, v);
     }
     (response_headers, Redirect::to(&target)).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #530: the three roles of `group_members.role`, under the names the
+    /// mock-ups give them.
+    #[test]
+    fn each_role_has_its_french_name() {
+        assert_eq!(role_label("owner"), "Propriétaire");
+        assert_eq!(role_label("admin"), "Admin");
+        assert_eq!(role_label("standard"), "Standard");
+    }
+
+    /// The two roles that manage the family wear the accent's tint, the
+    /// standard one the neutral badge; the word carries the role either way
+    /// (WCAG 1.4.1).
+    #[test]
+    fn a_role_badge_is_tinted_for_the_roles_that_manage() {
+        assert_eq!(
+            role_badge("owner"),
+            r#"<span class="badge accent">Propriétaire</span>"#
+        );
+        assert_eq!(
+            role_badge("admin"),
+            r#"<span class="badge accent">Admin</span>"#
+        );
+        assert_eq!(
+            role_badge("standard"),
+            r#"<span class="badge">Standard</span>"#
+        );
+    }
 }

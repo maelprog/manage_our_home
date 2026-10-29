@@ -2284,7 +2284,11 @@ mod tests {
         ("--muted", "--accent-soft", "today off the month, .outside"),
         ("--accent", "--bg", "links, summary"),
         ("--accent", "--surface", "links in a card"),
-        ("--accent", "--accent-soft", ".navlink[aria-current]"),
+        (
+            "--accent",
+            "--accent-soft",
+            ".navlink[aria-current], .badge.accent, a link on .list-row:target",
+        ),
         (
             "--accent-fg",
             "--accent",

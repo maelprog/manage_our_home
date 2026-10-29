@@ -142,7 +142,7 @@ mod tests {
         for (role, label) in [
             ("owner", "Propriétaire"),
             ("admin", "Admin"),
-            ("standard", "Membre"),
+            ("standard", "Standard"),
         ] {
             let body = profile_body(Uuid::from_u128(1), &profile("Alice", role));
             assert!(body.contains(label), "{role}: {body}");

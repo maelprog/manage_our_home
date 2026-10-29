@@ -247,7 +247,7 @@ mod tests {
     fn an_unknown_member_count_leaves_the_role_alone() {
         let html = family_choice(&group(1, "Foyer", "member"), None, false);
         assert!(
-            html.contains(r#"<span class="muted">Membre</span>"#),
+            html.contains(r#"<span class="muted">Standard</span>"#),
             "{html}"
         );
         assert!(!html.contains("membre "), "{html}");

@@ -27,7 +27,7 @@ use crate::app::{member_link, shell, shell_with_header, Icon, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
-use super::{cookie_of, header_with_groups, role_label};
+use super::{cookie_of, header_with_groups, role_badge};
 
 pub(crate) fn group_not_found_page() -> Html<String> {
     let body = view! {
@@ -113,7 +113,7 @@ fn page(
                         <form method="post" action=role_action class="actions">
                             <select name="role">
                                 <option value="admin" selected=m.role == "admin">"Admin"</option>
-                                <option value="standard" selected=m.role == "standard">"Membre"</option>
+                                <option value="standard" selected=m.role == "standard">"Standard"</option>
                             </select>
                             <button type="submit" class="secondary">"Changer le rôle"</button>
                         </form>
@@ -125,15 +125,17 @@ fn page(
             } else {
                 None
             };
+            // The row's id is where the settings page's « Gérer » lands
+            // (#530); `:target` marks it.
             view! {
-                <li class="list-row">
+                <li class="list-row" id=format!("member-{}", m.user_id)>
                     <span>
                         // Avatar and name, as one link to the member's
                         // profile (#466).
                         <span inner_html=member_link(group.id, m.user_id, &m.display_name, Icon::avatar(m.has_avatar))></span>
-                        <span class="muted">{format!(" ({})", m.email)}</span>
-                        " — "
-                        <span class="muted">{role_label(&m.role)}</span>
+                        <span class="muted">{format!(" ({}) ", m.email)}</span>
+                        // The role in a pastille (#530).
+                        <span inner_html=role_badge(&m.role)></span>
                     </span>
                     {controls}
                 </li>
@@ -394,6 +396,38 @@ mod tests {
                 "{name} is not a profile link: {html}"
             );
         }
+    }
+
+    /// #530: each row is the target of the settings page's « Gérer », and
+    /// says the member's role in a pastille.
+    #[test]
+    fn each_row_is_anchored_and_shows_the_role_pastille() {
+        let (g, alice, bob) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let group = GroupDetailResponse {
+            id: g,
+            name: "Foyer".to_string(),
+            members: vec![
+                member(alice, "Alice", "owner"),
+                member(bob, "Bob", "standard"),
+            ],
+        };
+        let html = page("", &me(alice), &group, None, None, None);
+        for id in [alice, bob] {
+            assert!(
+                html.contains(&format!(r#"<li id="member-{id}" class="list-row">"#)),
+                "{html}"
+            );
+        }
+        assert!(html.contains(&super::super::role_badge("owner")), "{html}");
+        assert!(
+            html.contains(&super::super::role_badge("standard")),
+            "{html}"
+        );
+        // The role select names the standard role as the pastille does.
+        assert!(
+            html.contains(r#"<option value="standard" selected>Standard</option>"#),
+            "{html}"
+        );
     }
 
     /// #468: a member with a photo is shown with it, one without keeps
