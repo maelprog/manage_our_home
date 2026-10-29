@@ -29,6 +29,7 @@ use manage_our_home_shared::validation::budget::validate_entry_form;
 use manage_our_home_shared::validation::grocery_list::{
     can_modify, quantity_label, source_label, validate_item_form,
 };
+use manage_our_home_shared::validation::stocks::format_quantity;
 use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
@@ -298,7 +299,7 @@ fn suggestions_html(suggestions: Option<&[&StockItemResponse]>) -> String {
                 .iter()
                 .map(|s| {
                     let name = html_escape(&s.name);
-                    let left = quantity_label(Some(s.quantity), Some(&s.unit));
+                    let left = format_quantity(s.quantity, &s.unit);
                     format!(
                         r#"<li class="list-row"><span class="what"><strong>{name}</strong><span class="muted">Stock bas : {left}</span></span><form method="post" action="/grocery-list/add"><input type="hidden" name="name" value="{name}"/><button type="submit" class="secondary" aria-label="Mettre {name} sur la liste">{plus}</button></form></li>"#,
                         left = html_escape(&left),
@@ -1076,6 +1077,17 @@ mod tests {
             .map(|n| stock(&format!("Article {n}"), 0.0, "kg", true))
             .collect();
         assert_eq!(suggested(&stock, &[]).len(), SUGGESTION_CAP);
+    }
+
+    #[test]
+    fn a_suggestion_writes_the_stock_left_as_the_stock_list_does() {
+        let pates = stock("Pâtes", 2.0, "paquet", true);
+        let oeufs = stock("Œufs", 1.0, "unité", true);
+        let lait = stock("Lait", 0.5, "L", true);
+        let html = suggestions_html(Some(&[&pates, &oeufs, &lait]));
+        assert!(html.contains("Stock bas : 2 paquets"), "{html}");
+        assert!(html.contains("Stock bas : 1<"), "{html}");
+        assert!(html.contains("Stock bas : 0,5 L"), "{html}");
     }
 
     #[test]

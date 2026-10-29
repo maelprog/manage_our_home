@@ -28,7 +28,7 @@ use manage_our_home_shared::dto::stocks::{
     StockItemResponse,
 };
 use manage_our_home_shared::validation::stocks::{
-    merge_target, normalize_unit, ReceptionMode, StockCandidate,
+    format_quantity, merge_target, normalize_unit, ReceptionMode, StockCandidate,
 };
 use uuid::Uuid;
 
@@ -119,7 +119,7 @@ pub(crate) fn form_line(line: &ReceptionLine) -> FormLine {
 
 /// A stock line as the merge choice names it: what it holds, and its date.
 fn stock_summary(stock: &StockItemResponse) -> String {
-    let held = format!("{} {}", fmt_num(stock.quantity), stock.unit);
+    let held = format_quantity(stock.quantity, &stock.unit);
     match stock.expires_on {
         Some(d) => format!("{held}, péremption le {}", fmt_date(d)),
         None => held,
@@ -634,6 +634,19 @@ mod tests {
         let l = form_line(&proposal);
         assert_eq!(l.quantity, "0.5");
         assert_eq!(l.merge_label, "Ajouter au stock existant (1 kg)");
+    }
+
+    #[test]
+    fn a_stock_line_writes_its_quantity_as_the_stock_list_does() {
+        let mut pates = stock_item(11, "Pâtes", "paquet", None);
+        pates.quantity = 2.0;
+        assert_eq!(stock_summary(&pates), "2 paquets");
+        let mut oeufs = stock_item(12, "Œufs", "unité", None);
+        oeufs.quantity = 6.0;
+        assert_eq!(stock_summary(&oeufs), "6");
+        let mut riz = stock_item(13, "Riz", "kg", None);
+        riz.quantity = 1.5;
+        assert_eq!(stock_summary(&riz), "1,5 kg");
     }
 
     #[test]
