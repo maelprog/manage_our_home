@@ -44,7 +44,7 @@ use manage_our_home_shared::dto::stocks::{
     StockItemResponse,
 };
 use manage_our_home_shared::validation::stocks::{
-    normalize_unit, validate_item_form, ItemFormError, DEFAULT_UNIT,
+    format_quantity, normalize_unit, validate_item_form, ItemFormError, DEFAULT_UNIT,
 };
 use uuid::Uuid;
 
@@ -485,7 +485,7 @@ fn already_in_stock_page(
     let id = item.id;
     let body = format!(
         r#"<h1>Déjà en stock</h1>
-<p>Déjà en stock : <strong>{name}</strong> ({qty} {unit})</p>
+<p>Déjà en stock : <strong>{name}</strong> ({qty})</p>
 <form method="post" action="/stocks/{id}/adjust" class="actions">
 <input type="hidden" name="quantity" value="{next}"/>
 <button type="submit">+1</button>
@@ -496,8 +496,7 @@ fn already_in_stock_page(
 <a href="/stocks">Retour aux stocks</a>
 </div>"#,
         name = html_escape(&item.name),
-        qty = html_escape(&fmt_num(item.quantity)),
-        unit = html_escape(&item.unit),
+        qty = html_escape(&format_quantity(item.quantity, &item.unit)),
         next = html_escape(&fmt_num(item.quantity + 1.0)),
         other = html_escape(&format!(
             "/stocks/new?{}&other=1",
@@ -1173,6 +1172,16 @@ mod tests {
         let html = already_in_stock_page("", &item(None), "3017620422003", None, true);
         assert!(
             html.contains(r#"href="/stocks/new?scan=3017620422003&amp;other=1""#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn already_in_stock_writes_the_quantity_as_the_list_does() {
+        // Two in the default unit: the bare number, as on the list (#527).
+        let html = already_in_stock_page("", &item(None), "3017620422003", None, true);
+        assert!(
+            html.contains("Déjà en stock : <strong>Nutella</strong> (2)</p>"),
             "{html}"
         );
     }

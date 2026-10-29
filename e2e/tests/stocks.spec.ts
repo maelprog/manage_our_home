@@ -184,7 +184,7 @@ test.describe("Stocks — list & create", () => {
     await createGroup(page, "Famille Oeufs");
     await createItem(page, { name: "Oeufs", quantity: "6", unit: "" });
     await openItemDetail(page, "Oeufs");
-    await expect(page.getByText("Quantité : 6 unité")).toBeVisible();
+    await expect(page.getByText("Quantité : 6", { exact: true })).toBeVisible();
   });
 
   test("unknown item id shows the not-found page", async ({ page }) => {
@@ -342,7 +342,7 @@ test.describe("Stocks — permission bar", () => {
     await member.getByLabel("Ajuster la quantité").fill("5");
     await member.getByRole("button", { name: "Mettre à jour la quantité" }).click();
     await expect(member.getByText("Quantité mise à jour.")).toBeVisible();
-    await expect(member.getByText("5 plaquette")).toBeVisible();
+    await expect(member.getByText("5 plaquettes")).toBeVisible();
     await context.close();
   });
 });

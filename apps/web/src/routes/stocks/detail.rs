@@ -17,7 +17,7 @@ use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use manage_our_home_shared::dto::stocks::{StockItemResponse, UpdateStockItemRequest};
-use manage_our_home_shared::validation::stocks::is_low_stock;
+use manage_our_home_shared::validation::stocks::{format_quantity, is_low_stock};
 use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
@@ -121,9 +121,8 @@ fn page(
         .unwrap_or_default();
     let threshold_html = match item.reorder_threshold {
         Some(t) => format!(
-            "<p><strong>Seuil de réappro :</strong> {} {}</p>",
-            html_escape(&fmt_num(t)),
-            html_escape(&item.unit),
+            "<p><strong>Seuil de réappro :</strong> {}</p>",
+            html_escape(&format_quantity(t, &item.unit)),
         ),
         None => r#"<p class="muted">Aucun seuil de réappro défini.</p>"#.to_string(),
     };
@@ -167,7 +166,7 @@ fn page(
     let body = format!(
         r#"<h1>{name}</h1>
 {notice_html}{error_html}
-<p><strong>Quantité :</strong> {qty} {unit}</p>
+<p><strong>Quantité :</strong> {qty}</p>
 {low_html}
 {category_html}
 {threshold_html}
@@ -175,8 +174,7 @@ fn page(
 {controls_html}
 <div class="links"><a href="/stocks">Retour aux stocks</a></div>"#,
         name = html_escape(&item.name),
-        qty = html_escape(&fmt_num(item.quantity)),
-        unit = html_escape(&item.unit),
+        qty = html_escape(&format_quantity(item.quantity, &item.unit)),
     );
     shell_with_header(Width::Read, &item.name, header, &body)
 }
@@ -301,6 +299,42 @@ mod tests {
 
     fn id() -> Uuid {
         Uuid::from_u128(7)
+    }
+
+    fn item(quantity: f64, unit: &str, threshold: Option<f64>) -> StockItemResponse {
+        StockItemResponse {
+            id: id(),
+            group_id: Uuid::nil(),
+            created_by: Uuid::nil(),
+            name: "Pâtes".to_string(),
+            category: None,
+            quantity,
+            unit: unit.to_string(),
+            reorder_threshold: threshold,
+            low_stock: false,
+            expires_on: None,
+            expiry_status: manage_our_home_shared::validation::stocks::ExpiryStatus::Unknown,
+            barcode: None,
+        }
+    }
+
+    #[test]
+    fn the_quantity_and_the_threshold_read_as_the_list_writes_them() {
+        let html = page("", &item(6.0, "unité", Some(1.5)), false, None, None);
+        assert!(html.contains("<strong>Quantité :</strong> 6</p>"), "{html}");
+        assert!(
+            html.contains("<strong>Seuil de réappro :</strong> 1,5</p>"),
+            "{html}"
+        );
+        let html = page("", &item(2.0, "paquet", Some(1.0)), false, None, None);
+        assert!(
+            html.contains("<strong>Quantité :</strong> 2 paquets</p>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<strong>Seuil de réappro :</strong> 1 paquet</p>"),
+            "{html}"
+        );
     }
 
     #[test]

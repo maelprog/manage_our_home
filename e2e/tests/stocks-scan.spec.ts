@@ -135,10 +135,10 @@ test.describe("Stocks — barcode scan", () => {
     // The same code again: the article already in stock, and "+1".
     await page.goto(`/stocks/new?scan=${KNOWN}`);
     await expect(page.getByRole("heading", { name: "Déjà en stock" })).toBeVisible();
-    await expect(page.getByText("Déjà en stock : Pâte à tartiner (400 g) (1 unité)")).toBeVisible();
+    await expect(page.getByText("Déjà en stock : Pâte à tartiner (400 g) (1)")).toBeVisible();
     await page.getByRole("button", { name: "+1" }).click();
     await expect(page).toHaveURL(/\/stocks\/[0-9a-f-]+\?notice=quantity_adjusted$/);
-    await expect(page.getByText("Quantité : 2 unité")).toBeVisible();
+    await expect(page.getByText("Quantité : 2", { exact: true })).toBeVisible();
 
     // "Créer quand même un autre article": the form, without the code.
     await page.goto(`/stocks/new?scan=${KNOWN}`);
@@ -298,9 +298,9 @@ test.describe("Stocks — barcode scan without JavaScript", () => {
     await page.goto("/stocks/new");
     await page.getByLabel("Code-barres").fill(UNKNOWN);
     await page.getByRole("button", { name: "Chercher le produit" }).click();
-    await expect(page.getByText("Déjà en stock : Surligneurs (1 unité)")).toBeVisible();
+    await expect(page.getByText("Déjà en stock : Surligneurs (1)")).toBeVisible();
     await page.getByRole("button", { name: "+1" }).click();
-    await expect(page.getByText("Quantité : 2 unité")).toBeVisible();
+    await expect(page.getByText("Quantité : 2", { exact: true })).toBeVisible();
   });
 
   test("a proposed date has no shortcut, nothing is written before sending, a typed date is saved", async ({ page }) => {
