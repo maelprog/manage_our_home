@@ -62,8 +62,10 @@ GET screen: the checkout action is a one-field, high-frequency gesture, so an
 inline form (same lightweight approach as F6's inline manual-add) beats a
 full page round-trip. The field appears only once an item is checked (bought),
 matching the "prix au checkout" framing. Any member may set a price (same bar
-as the check-off itself), so it renders for everyone; the backend upsert makes
-a re-tap idempotent (re-tarifies, never double-counts — see below), so it needs
+as the check-off itself), so it renders for everyone — superseded by #531: the
+budget, the price included, is now reserved to owners and admins, and a
+standard member gets neither the field nor the `/budget` pages (404). The
+backend upsert makes a re-tap idempotent (re-tarifies, never double-counts — see below), so it needs
 no confirmation and stays visible even after a price is set. F7 also removes the
 "Budget hook out of scope" note F6 left in `routes/grocery_list/mod.rs`, since
 the hook is now wired.
@@ -226,7 +228,8 @@ mapped defensively per the tables above.
    with a banner.
 4. A standard member gets no `Modifier` link on another member's entry and the
    forbidden page if they GET its edit screen — but **can** still set a price on
-   a grocery item and add their own manual entry.
+   a grocery item and add their own manual entry. (Superseded by #531: a
+   standard member no longer reaches the budget at all.)
 5. Documented error states render their exact French copy: server-side
    empty-name rejection and negative-amount rejection on add, and unknown-entry
    404. The pure `validate_entry_form` / `can_modify` / `format_euros` /
