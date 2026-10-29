@@ -245,8 +245,8 @@ pub struct ImportRunResponse {
 
 /// Any member may trigger a manual on-demand import (it's a read of the
 /// feed + write to shared Agenda data, not a credential change) — same
-/// "any member" bar Stocks/Recipes/Grocery list/Budget use for their
-/// create/read actions. Fetches the feed fresh every call: v1 is
+/// "any member" bar Stocks/Recipes/Grocery list use for their create/read
+/// actions (Budget is owner/admin only since #531). Fetches the feed fresh every call: v1 is
 /// pull-on-demand only, no background polling (see migration comment for
 /// the OAuth-vs-ICS tradeoff).
 pub async fn trigger_calendar_import(

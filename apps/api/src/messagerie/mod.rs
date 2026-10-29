@@ -13,9 +13,9 @@ use uuid::Uuid;
 
 use crate::messagerie::messages::MessageResponse;
 
-/// Same permission bar as Budget/Stocks/Recipes/Grocery list: any member may
-/// create or read a message, but only the message's author or a group
-/// admin/owner may edit or delete it.
+/// Same permission bar as Stocks/Recipes/Grocery list (Budget is owner/admin
+/// only since #531): any member may create or read a message, but only the
+/// message's author or a group admin/owner may edit or delete it.
 pub(crate) fn can_modify(actor_role: &str, actor_is_creator: bool) -> bool {
     actor_is_creator || actor_role == "owner" || actor_role == "admin"
 }
