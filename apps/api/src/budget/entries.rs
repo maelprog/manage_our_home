@@ -1,3 +1,4 @@
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
@@ -116,12 +117,13 @@ pub async fn create_budget_entry(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(group_id): Path<Uuid>,
-    Json(body): Json<CreateBudgetEntryRequest>,
+    body: Result<Json<CreateBudgetEntryRequest>, JsonRejection>,
 ) -> AppResult<impl IntoResponse> {
     // The bar first, the body after: a standard member gets the same 404
-    // whatever they send, never a 400 telling them the route exists.
+    // whatever they send, never a 400 or 422 telling them the route exists.
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_budget_access(&mut tx, group_id, auth.user_id).await?;
+    let Json(body) = body?;
 
     let name = body.name.trim();
     if name.is_empty() {
@@ -206,11 +208,12 @@ pub async fn set_grocery_item_price(
     State(state): State<AppState>,
     auth: AuthUser,
     Path((group_id, item_id)): Path<(Uuid, Uuid)>,
-    Json(body): Json<SetGroceryItemPriceRequest>,
+    body: Result<Json<SetGroceryItemPriceRequest>, JsonRejection>,
 ) -> AppResult<impl IntoResponse> {
     // The bar first, as `create_budget_entry`.
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_budget_access(&mut tx, group_id, auth.user_id).await?;
+    let Json(body) = body?;
 
     let amount_cents = to_cents(body.amount)?;
 
@@ -308,10 +311,11 @@ pub async fn update_budget_entry(
     State(state): State<AppState>,
     auth: AuthUser,
     Path((group_id, entry_id)): Path<(Uuid, Uuid)>,
-    Json(body): Json<UpdateBudgetEntryRequest>,
+    body: Result<Json<UpdateBudgetEntryRequest>, JsonRejection>,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let actor_role = require_budget_access(&mut tx, group_id, auth.user_id).await?;
+    let Json(body) = body?;
 
     // FOR UPDATE locks the row for the rest of this transaction, mirroring
     // grocery_list/items.rs's and stocks/items.rs's concurrent-write protection.

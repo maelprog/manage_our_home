@@ -970,10 +970,66 @@ async fn a_standard_member_gets_404_on_categories_and_caps_whatever_the_body(db:
     )
     .await;
     let item_id = checked_grocery_item(&router, &member, &group_id, "Pain").await;
+    let entry_id = create_entry(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Courses", "amount": 12.0}),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let categories = format!("/groups/{group_id}/budget-categories");
     let category = format!("{categories}/{category_id}");
     let settings = format!("/groups/{group_id}/budget-settings");
+    let entries = format!("/groups/{group_id}/budget-entries");
+    let entry = format!("{entries}/{entry_id}");
+    let price = format!("/groups/{group_id}/grocery-items/{item_id}/price");
+    // A body the extractor cannot read at all — missing fields, a wrong
+    // type, not an object — is a 404 too: the bar comes before the body.
+    let unreadable = [
+        serde_json::json!({}),
+        serde_json::json!({"name": 5, "color": [], "amount": "abc", "monthly_cap": "abc"}),
+        serde_json::json!("abc"),
+    ];
+    let body_routes = [
+        ("create category", Method::POST, categories.clone()),
+        ("update category", Method::PATCH, category.clone()),
+        ("set cap", Method::PUT, settings.clone()),
+        ("create entry", Method::POST, entries.clone()),
+        ("update entry", Method::PATCH, entry.clone()),
+        ("price", Method::POST, price.clone()),
+    ];
+    for (what, method, uri) in &body_routes {
+        for body in &unreadable {
+            let res = call(
+                &router,
+                method.clone(),
+                uri,
+                Some(&member),
+                Some(body.clone()),
+            )
+            .await;
+            assert_eq!(
+                res.status(),
+                StatusCode::NOT_FOUND,
+                "a standard member's {what} with body {body} must be a 404"
+            );
+        }
+    }
+    // Past the bar, the owner still gets the extractor's own answer.
+    let res = call(
+        &router,
+        Method::POST,
+        &categories,
+        Some(&owner),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
     let requests = [
         ("list categories", Method::GET, categories.clone(), None),
         (

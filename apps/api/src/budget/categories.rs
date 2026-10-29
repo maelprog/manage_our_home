@@ -1,11 +1,13 @@
 //! Spending categories and the family's monthly cap (#532). Same bar as the
 //! entries (#531): an owner or an admin, a standard member gets 404 — and the
 //! bar comes before the body is looked at, so a standard member's malformed
-//! category is a 404 too, never a 400 that would tell them the route exists.
+//! category is a 404 too — be it refused by the validation or unreadable to the
+//! extractor —, never a 400 or 422 that would tell them the route exists.
 //!
 //! The wire shapes are `manage_our_home_shared::dto::budget`'s own structs;
 //! the guards are `validation::budget`'s.
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
@@ -110,10 +112,11 @@ pub async fn create_budget_category(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(group_id): Path<Uuid>,
-    Json(body): Json<CreateBudgetCategoryRequest>,
+    body: Result<Json<CreateBudgetCategoryRequest>, JsonRejection>,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_budget_access(&mut tx, group_id, auth.user_id).await?;
+    let Json(body) = body?;
 
     let name = validate_category_name(&body.name)?;
     let color = valid_color(&body.color)?;
@@ -165,10 +168,11 @@ pub async fn update_budget_category(
     State(state): State<AppState>,
     auth: AuthUser,
     Path((group_id, category_id)): Path<(Uuid, Uuid)>,
-    Json(body): Json<UpdateBudgetCategoryRequest>,
+    body: Result<Json<UpdateBudgetCategoryRequest>, JsonRejection>,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_budget_access(&mut tx, group_id, auth.user_id).await?;
+    let Json(body) = body?;
 
     let name = body
         .name
@@ -265,10 +269,11 @@ pub async fn put_budget_settings(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(group_id): Path<Uuid>,
-    Json(body): Json<BudgetSettings>,
+    body: Result<Json<BudgetSettings>, JsonRejection>,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_budget_access(&mut tx, group_id, auth.user_id).await?;
+    let Json(body) = body?;
 
     let cap_cents = optional_cap(body.monthly_cap)?;
     let cap = sqlx::query_scalar!(

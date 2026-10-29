@@ -1,3 +1,4 @@
+use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -47,6 +48,11 @@ pub enum AppError {
     /// 503 with `Retry-After`, at once, without reading the body.
     #[error("uploads busy")]
     UploadsBusy,
+    /// A JSON body the extractor could not read, taken as a `Result` so the
+    /// handler checks its access bar first (#532) and only then turns the
+    /// body down — answered exactly as axum's own rejection would be.
+    #[error(transparent)]
+    Body(#[from] JsonRejection),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
     #[error(transparent)]
@@ -55,6 +61,9 @@ pub enum AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        if let AppError::Body(rejection) = self {
+            return rejection.into_response();
+        }
         if let AppError::ConflictJson(body) = &self {
             return (StatusCode::CONFLICT, Json(body.clone())).into_response();
         }
@@ -66,7 +75,9 @@ impl IntoResponse for AppError {
         let (status, message) = match &self {
             AppError::NotFound => (StatusCode::NOT_FOUND, "not_found".to_string()),
             AppError::Conflict(m) => (StatusCode::CONFLICT, m.clone()),
-            AppError::ConflictJson(_) | AppError::UploadsBusy => unreachable!(),
+            AppError::ConflictJson(_) | AppError::UploadsBusy | AppError::Body(_) => {
+                unreachable!()
+            }
             AppError::Unprocessable(m) => (StatusCode::UNPROCESSABLE_ENTITY, m.clone()),
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
             AppError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".to_string()),
