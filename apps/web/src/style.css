@@ -528,7 +528,7 @@ a.list-row .icon { flex: none; }
   font-size: var(--t-xs);
   text-decoration: none;
 }
-/* A chip in its member's tint (#525, `app::member_tint`): 16 % of the hue
+/* A chip in its member's tint (#525, `routes::agenda::calendar::member_tint`): 16 % of the hue
    mixed into --surface, the text staying --fg — DESIGN.md → Couleur, the
    event ground; app.rs measures --fg on all eight, in both themes. Declared
    after `.chip` so the tint wins, and before `.chip:hover`, which outranks
