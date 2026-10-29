@@ -2285,7 +2285,7 @@ mod tests {
         ("--accent", "--bg", "links, summary"),
         ("--accent", "--surface", "links in a card"),
         ("--accent", "--accent-soft", ".navlink[aria-current]"),
-        ("--accent-fg", "--accent", "button"),
+        ("--accent-fg", "--accent", "button, .filters [aria-current]"),
         ("--accent-fg", "--accent-hover", "button:hover"),
         ("--accent-fg", "--error", "button.danger, .badge.warn"),
         ("--accent-fg", "--error-hover", "button.danger:hover"),
@@ -2297,9 +2297,17 @@ mod tests {
         ("--warning", "--bg", ".pw-meter (faible)"),
         ("--success", "--bg", ".pw-meter (correct, solide)"),
         ("--error", "--surface", ".field-error in a card"),
-        ("--error", "--error-soft", ".notice.error, .danger:hover"),
+        (
+            "--error",
+            "--error-soft",
+            ".notice.error, .danger:hover, .badge.late",
+        ),
         ("--success", "--success-soft", ".notice.success"),
-        ("--warning", "--warning-soft", ".notice.warning"),
+        (
+            "--warning",
+            "--warning-soft",
+            ".notice.warning, .badge.soon",
+        ),
     ];
 
     /// `color-mix(in srgb, …)` of equal parts, which is what

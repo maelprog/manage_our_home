@@ -93,6 +93,48 @@ async function openItemDetail(page: Page, name: string): Promise<void> {
 }
 
 test.describe("Stocks — list & create", () => {
+  // #527: the stepper of a card, the quantity with its unit, the place
+  // filters and the search, without JavaScript in the way of any of them.
+  test("add a product, one up and one down from the list, then find it with its unit", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-ststep", "Stepper User");
+    await createGroup(page, "Famille Placard");
+    await createItem(page, { name: "Pâtes complètes", quantity: "2", unit: "paquet", category: "Placard" });
+    await createItem(page, { name: "Crème", quantity: "1", unit: "pot", category: "Frigo" });
+
+    const qty = (name: string) => page.locator("li", { hasText: name }).locator(".stepper > span");
+    await page.goto("/stocks");
+    await expect(qty("Pâtes complètes")).toHaveText("2 paquets");
+    await expect(qty("Crème")).toHaveText("1 pot");
+
+    await page.getByRole("button", { name: "Ajouter 1 à Pâtes complètes" }).click();
+    await expect(page).toHaveURL(/\/stocks\?notice=quantity_adjusted$/);
+    await expect(page.getByText("Quantité mise à jour.")).toBeVisible();
+    await expect(qty("Pâtes complètes")).toHaveText("3 paquets");
+    await page.getByRole("button", { name: "Retirer 1 à Pâtes complètes" }).click();
+    await page.getByRole("button", { name: "Retirer 1 à Pâtes complètes" }).click();
+    await expect(qty("Pâtes complètes")).toHaveText("1 paquet");
+
+    // A place filter, kept by the stepper's way back.
+    const filters = page.getByRole("navigation", { name: "Filtres" });
+    await filters.getByRole("link", { name: "Frigo", exact: true }).click();
+    await expect(page).toHaveURL(/\/stocks\?lieu=Frigo$/);
+    await expect(page.locator("li", { hasText: "Pâtes complètes" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Retirer 1 à Crème" }).click();
+    await expect(page).toHaveURL(/\/stocks\?lieu=Frigo&notice=quantity_adjusted$/);
+    await expect(qty("Crème")).toHaveText("0 pot");
+    await expect(page.getByRole("button", { name: "Retirer 1 à Crème" })).toBeDisabled();
+
+    // The search, which keeps the place it was typed in.
+    await filters.getByRole("link", { name: "Tout", exact: true }).click();
+    await page.getByRole("searchbox", { name: "Chercher un produit" }).fill("pâtes");
+    await page.getByRole("searchbox", { name: "Chercher un produit" }).press("Enter");
+    await expect(page).toHaveURL(/\/stocks\?q=p%C3%A2tes$/);
+    await expect(qty("Pâtes complètes")).toHaveText("1 paquet");
+    await expect(page.locator("li", { hasText: "Crème" })).toHaveCount(0);
+  });
+
   test("create an item; low-stock badge shows when quantity is at/below threshold", async ({
     page,
   }) => {
@@ -142,7 +184,7 @@ test.describe("Stocks — list & create", () => {
     await createGroup(page, "Famille Oeufs");
     await createItem(page, { name: "Oeufs", quantity: "6", unit: "" });
     await openItemDetail(page, "Oeufs");
-    await expect(page.getByText("Quantité : 6 unité")).toBeVisible();
+    await expect(page.getByText("Quantité : 6", { exact: true })).toBeVisible();
   });
 
   test("unknown item id shows the not-found page", async ({ page }) => {
@@ -169,17 +211,17 @@ test.describe("Stocks — expiry date", () => {
     await createItem(page, { name: "Riz", quantity: "2", unit: "kg", expiresOn: inAMonth });
     await createItem(page, { name: "Sel", quantity: "1", unit: "kg" });
 
+    // The pastilles of #527: red from the day before, amber for the rest
+    // of the week (named by its weekday), a later date written out.
     await page.goto("/stocks");
     const row = (name: string) => page.locator("li", { hasText: name });
-    await expect(row("Yaourt").getByText("Périmé")).toBeVisible();
-    await expect(row("Yaourt")).toContainText(`péremption le ${frDate(yesterday)}`);
-    await expect(row("Lait").getByText("À consommer bientôt")).toBeVisible();
-    await expect(row("Lait")).toContainText(`péremption le ${frDate(inTwoDays)}`);
-    await expect(row("Riz")).toContainText(`péremption le ${frDate(inAMonth)}`);
-    await expect(row("Riz").locator(".badge")).toHaveCount(0);
-    await expect(row("Sel")).not.toContainText("péremption");
+    await expect(row("Yaourt").locator(".badge.late")).toHaveText("périmé");
+    await expect(row("Lait").locator(".badge.soon")).toContainText("périme ");
+    await expect(row("Riz").locator(".badge")).toHaveText(`jusqu'au ${frDate(inAMonth)}`);
+    await expect(row("Riz").locator(".badge.late, .badge.soon")).toHaveCount(0);
+    await expect(row("Sel").locator(".badge")).toHaveCount(0);
 
-    const names = page.locator("ul.list li strong");
+    const names = page.locator("ul.stock li strong");
     await expect(names).toHaveText(["Lait", "Riz", "Sel", "Yaourt"]);
     await page.getByRole("link", { name: "À consommer en premier" }).click();
     await expect(page).toHaveURL(/\/stocks\?sort=expires_on$/);
@@ -300,7 +342,7 @@ test.describe("Stocks — permission bar", () => {
     await member.getByLabel("Ajuster la quantité").fill("5");
     await member.getByRole("button", { name: "Mettre à jour la quantité" }).click();
     await expect(member.getByText("Quantité mise à jour.")).toBeVisible();
-    await expect(member.getByText("5 plaquette")).toBeVisible();
+    await expect(member.getByText("5 plaquettes")).toBeVisible();
     await context.close();
   });
 });

@@ -17,7 +17,7 @@ use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use manage_our_home_shared::dto::stocks::{StockItemResponse, UpdateStockItemRequest};
-use manage_our_home_shared::validation::stocks::is_low_stock;
+use manage_our_home_shared::validation::stocks::{format_quantity, is_low_stock};
 use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
@@ -121,9 +121,8 @@ fn page(
         .unwrap_or_default();
     let threshold_html = match item.reorder_threshold {
         Some(t) => format!(
-            "<p><strong>Seuil de réappro :</strong> {} {}</p>",
-            html_escape(&fmt_num(t)),
-            html_escape(&item.unit),
+            "<p><strong>Seuil de réappro :</strong> {}</p>",
+            html_escape(&format_quantity(t, &item.unit)),
         ),
         None => r#"<p class="muted">Aucun seuil de réappro défini.</p>"#.to_string(),
     };
@@ -167,7 +166,7 @@ fn page(
     let body = format!(
         r#"<h1>{name}</h1>
 {notice_html}{error_html}
-<p><strong>Quantité :</strong> {qty} {unit}</p>
+<p><strong>Quantité :</strong> {qty}</p>
 {low_html}
 {category_html}
 {threshold_html}
@@ -175,8 +174,7 @@ fn page(
 {controls_html}
 <div class="links"><a href="/stocks">Retour aux stocks</a></div>"#,
         name = html_escape(&item.name),
-        qty = html_escape(&fmt_num(item.quantity)),
-        unit = html_escape(&item.unit),
+        qty = html_escape(&format_quantity(item.quantity, &item.unit)),
     );
     shell_with_header(Width::Read, &item.name, header, &body)
 }
@@ -186,6 +184,32 @@ fn page(
 #[derive(serde::Deserialize)]
 pub struct AdjustForm {
     quantity: String,
+    /// Where the stocks list's stepper came from (#527): the list's own
+    /// address, filters included. Absent from the detail page's form.
+    #[serde(default)]
+    back: String,
+}
+
+/// Where an adjustment lands once saved: `back` with the notice, when it is
+/// the stocks list (`/stocks`, bare or with a query) — anything else is
+/// refused, so the field cannot send the member off the site — and the
+/// article's page otherwise.
+pub(crate) fn adjusted_target(back: &str, item_id: Uuid) -> String {
+    // `/stocks` then nothing, or its query: no path can follow, so no
+    // other page — let alone another site — is reachable through it. The
+    // query is the one `list::list_href` writes, percent-encoded: visible
+    // ASCII only, which also keeps the `Location` header valid.
+    match back.strip_prefix("/stocks") {
+        Some("") => "/stocks?notice=quantity_adjusted".to_string(),
+        Some(query)
+            if query.starts_with('?')
+                && !query.contains('#')
+                && query.chars().all(|c| c.is_ascii_graphic()) =>
+        {
+            format!("/stocks{query}&notice=quantity_adjusted")
+        }
+        _ => format!("/stocks/{item_id}?notice=quantity_adjusted"),
+    }
 }
 
 pub async fn adjust(
@@ -223,9 +247,7 @@ pub async fn adjust(
     .await;
 
     let target = match result {
-        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
-            format!("{detail}?notice=quantity_adjusted")
-        }
+        Ok(resp) if resp.status == reqwest::StatusCode::OK => adjusted_target(&form.back, item_id),
         Ok(resp) if resp.status == reqwest::StatusCode::FORBIDDEN => {
             format!("{detail}?error=forbidden")
         }
@@ -268,5 +290,82 @@ pub async fn delete(
             item_not_found_page().into_response()
         }
         Ok(_) | Err(_) => service_unavailable_page().into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id() -> Uuid {
+        Uuid::from_u128(7)
+    }
+
+    fn item(quantity: f64, unit: &str, threshold: Option<f64>) -> StockItemResponse {
+        StockItemResponse {
+            id: id(),
+            group_id: Uuid::nil(),
+            created_by: Uuid::nil(),
+            name: "Pâtes".to_string(),
+            category: None,
+            quantity,
+            unit: unit.to_string(),
+            reorder_threshold: threshold,
+            low_stock: false,
+            expires_on: None,
+            expiry_status: manage_our_home_shared::validation::stocks::ExpiryStatus::Unknown,
+            barcode: None,
+        }
+    }
+
+    #[test]
+    fn the_quantity_and_the_threshold_read_as_the_list_writes_them() {
+        let html = page("", &item(6.0, "unité", Some(1.5)), false, None, None);
+        assert!(html.contains("<strong>Quantité :</strong> 6</p>"), "{html}");
+        assert!(
+            html.contains("<strong>Seuil de réappro :</strong> 1,5</p>"),
+            "{html}"
+        );
+        let html = page("", &item(2.0, "paquet", Some(1.0)), false, None, None);
+        assert!(
+            html.contains("<strong>Quantité :</strong> 2 paquets</p>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<strong>Seuil de réappro :</strong> 1 paquet</p>"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn the_list_is_where_its_stepper_lands_filters_kept() {
+        assert_eq!(
+            adjusted_target("/stocks", id()),
+            "/stocks?notice=quantity_adjusted"
+        );
+        assert_eq!(
+            adjusted_target("/stocks?lieu=Frigo&q=lait", id()),
+            "/stocks?lieu=Frigo&q=lait&notice=quantity_adjusted"
+        );
+    }
+
+    #[test]
+    fn anything_but_the_list_lands_on_the_article() {
+        let detail = "/stocks/00000000-0000-0000-0000-000000000007?notice=quantity_adjusted";
+        for back in [
+            "",
+            "https://example.org/stocks",
+            "//example.org",
+            "/stocks/new",
+            "/stocksx",
+            "/stocks/../account",
+            "/stocks#x",
+            "/stocks?q=a#x",
+            "/stocks?q=a\r\nSet-Cookie: x",
+            "/stocks?lieu=Congélateur",
+            "/budget",
+        ] {
+            assert_eq!(adjusted_target(back, id()), detail, "{back}");
+        }
     }
 }

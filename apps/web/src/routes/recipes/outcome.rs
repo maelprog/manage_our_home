@@ -32,7 +32,7 @@ use manage_our_home_shared::dto::recipes::{
     DoneRequest, RemovalWarning,
 };
 use manage_our_home_shared::dto::stocks::StockItemResponse;
-use manage_our_home_shared::validation::stocks::article_key;
+use manage_our_home_shared::validation::stocks::{article_key, format_quantity};
 use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
@@ -304,7 +304,7 @@ fn amount(quantity: Option<f64>, unit: Option<&str>) -> Option<String> {
 
 /// What a stock line holds, and its date.
 fn held(stock: &StockItemResponse) -> String {
-    let held = format!("{} {}", fmt_num(stock.quantity), stock.unit);
+    let held = format_quantity(stock.quantity, &stock.unit);
     match stock.expires_on {
         Some(d) => format!("{held}, péremption le {}", fmt_date(d)),
         None => held,
@@ -1080,6 +1080,13 @@ mod tests {
             expiry_status: ExpiryStatus::Unknown,
             barcode: None,
         }
+    }
+
+    #[test]
+    fn a_stock_line_writes_its_quantity_as_the_stock_list_does() {
+        assert_eq!(held(&stock(10, "Pâtes", 2.0, "paquet")), "2 paquets");
+        assert_eq!(held(&stock(11, "Œufs", 6.0, "unité")), "6");
+        assert_eq!(held(&stock(12, "Farine", 1.5, "kg")), "1,5 kg");
     }
 
     fn ingredient(
