@@ -58,18 +58,19 @@ The list renders each item as a checkbox ("cases à cocher"), but `apps/web`
 ships no client hydration bundle, so a bare `<input type=checkbox>` cannot
 submit on its own. Each row is therefore a small `<form method=post>` to
 `POST /grocery-list/:id/check` carrying a hidden `checked` field set to the
-**target** (toggled) state, with:
+**target** (toggled) state.
 
-- a real `<input type=checkbox>` reflecting the current state that
-  auto-submits on change (`data-submit-on-change`, read by
-  `apps/web/src/enhance.js` since #325; an inline `onchange` before) — progressive
-  enhancement, same PE approach as the password-visibility toggle in
-  `app.rs`; and
-- an always-present submit button (`Cocher` / `Décocher`) that works with
-  JS disabled and is the deterministic E2E target.
+Until #526 the row held two controls: a real `<input type=checkbox>` that
+auto-submitted on change (`data-submit-on-change`, read by
+`apps/web/src/enhance.js`), and a `Cocher` / `Décocher` submit button for
+the no-JS path. Since #526 (the mock-ups' tick box) they are one: the box
+**is** the form's submit button (`.tick`), named « Cocher Pain » /
+« Décocher Pain », empty until ticked and then filled with its check. It
+works with JS disabled, and there is no second control to keep in step.
 
-The backend orders the list `checked, name`, so checked items sink to the
-bottom; the UI strikes them through. The check form carries
+The backend orders the list `checked, name`; the page splits it into two
+sections on that state alone, « À acheter » then « Dans le panier », and
+strikes the checked names through. The check form carries
 `data-keep-scroll` (#456): with JavaScript, the redirected list reopens at
 the height it was ticked from rather than at the top — unless the check
 failed, so that the error banner above the list is seen. Any member may check/uncheck any item
@@ -110,7 +111,7 @@ any barcode/scan capture (post-v1, not in the backend).
 
 | Method | Path | Handler | Purpose | API call(s) |
 |---|---|---|---|---|
-| GET | `/grocery-list` | `grocery_list::list::get` | Shared list (unchecked then checked), inline manual-add form, generate button | `GET /groups/:id/grocery-items` |
+| GET | `/grocery-list` | `grocery_list::list::get` | Shared list in two sections (« À acheter », « Dans le panier »), inline manual-add form, generate button; on a PC, low-stock suggestions and the recipes « À réaliser » (#526) | `GET /groups/:id/grocery-items`, `GET /groups/:id/recipes/selections`, `GET /groups/:id/stock-items` |
 | POST | `/grocery-list/add` | `grocery_list::list::add` | Add a manual item | `POST /groups/:id/grocery-items` |
 | POST | `/grocery-list/generate` | `grocery_list::list::generate` | Generate from recipes + stocks (idempotent) | `POST /groups/:id/grocery-items/generate` |
 | POST | `/grocery-list/:id/check` | `grocery_list::list::check` | Check/uncheck an item (any member) | `POST /groups/:id/grocery-items/:item_id/check` |
@@ -132,7 +133,7 @@ each row is the exact `(status, code)` → French UI state.
 
 | Status | UI |
 |---|---|
-| 200 | render list + inline add + generate button |
+| 200 | render list + inline add + generate button. The selections and the stock are read beside it (#526); either failing leaves the list served, its card saying it could not be read |
 | other (403 non-member — unreachable once family resolved) | render empty, no JSON leak |
 | transport error | service-unavailable page |
 

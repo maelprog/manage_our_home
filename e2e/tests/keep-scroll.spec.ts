@@ -6,7 +6,8 @@ import { fetchVerificationToken } from "../lib/db";
 //   the page now shown is brought into the bar (`enhance.js`, `.tabs`).
 //   Since #523 its six tabs fit a 390px phone, so the test below checks
 //   that no tab is left past the bar's edge in the first place.
-// - Ticking a grocery item posts its form and redirects back to the list;
+// - Ticking a grocery item posts its form and redirects back to the list
+//   (the tick box is the form's submit button since #526);
 //   `data-keep-scroll` on that form puts the page back where it was.
 
 function uniqueEmail(prefix: string): string {
@@ -83,7 +84,7 @@ test.describe("keep scroll — grocery list check-off", () => {
     }
 
     await page.goto("/grocery-list");
-    const box = page.getByRole("checkbox", { name: "Article 25", exact: true });
+    const box = page.getByRole("button", { name: "Cocher Article 25", exact: true });
     await box.scrollIntoViewIfNeeded();
     const row = page.locator("li.list-row", { has: box });
     const rowHeight = (await row.boundingBox())?.height ?? 0;
@@ -94,7 +95,7 @@ test.describe("keep scroll — grocery list check-off", () => {
 
     await box.click();
     await page.waitForURL(/\/grocery-list\?notice=item_checked$/);
-    await expect(page.getByRole("checkbox", { name: "Article 25", exact: true })).toBeChecked();
+    await expect(page.getByRole("button", { name: "Décocher Article 25", exact: true })).toBeVisible();
 
     const after = await page.evaluate(() => window.scrollY);
     expect(Math.abs(after - before)).toBeLessThanOrEqual(rowHeight);
@@ -113,7 +114,7 @@ test.describe("keep scroll — grocery list check-off", () => {
     }
 
     await page.goto("/grocery-list");
-    const box = page.getByRole("checkbox", { name: "Article 25", exact: true });
+    const box = page.getByRole("button", { name: "Cocher Article 25", exact: true });
     await box.scrollIntoViewIfNeeded();
     expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
 
@@ -129,6 +130,6 @@ test.describe("keep scroll — grocery list check-off", () => {
     // The banner sits above the list: the page must not reopen down at the
     // row, or the failure goes unseen.
     await expect(page.locator(".notice.error")).toBeInViewport();
-    await expect(page.getByRole("checkbox", { name: "Article 25", exact: true })).not.toBeChecked();
+    await expect(page.getByRole("button", { name: "Cocher Article 25", exact: true })).toBeVisible();
   });
 });

@@ -242,6 +242,105 @@ test.describe("Grocery list — check off", () => {
   });
 });
 
+// Issue #526: the page of the mock-ups « Mobile — Courses » and « PC —
+// Courses ». The tick box is the row form's submit button, so it works
+// without JavaScript; with it, the same button posts (keep-scroll.spec.ts
+// ticks it with JavaScript on).
+test.describe("Grocery list — the mock-ups' page (#526)", () => {
+  const section = (page: Page, title: string) => page.locator(`h3:text-is("${title}") + ul`);
+
+  test("checks and unchecks without JavaScript, between the two sections", async ({
+    page,
+    browser,
+  }) => {
+    await registerAndLogin(page, "e2e-glnojs", "Grocery No Script");
+    await createGroup(page, "Famille Sans Script");
+    await addItem(page, "Pain");
+    await addItem(page, "Lait", "2", "L");
+
+    const context = await browser.newContext({
+      javaScriptEnabled: false,
+      storageState: await page.context().storageState(),
+    });
+    const noJs = await context.newPage();
+    await noJs.goto("/grocery-list");
+    await expect(noJs.getByRole("heading", { name: "0 sur 2 dans le panier" })).toBeVisible();
+    await expect(noJs.getByText("2 restants")).toBeVisible();
+    await expect(section(noJs, "À acheter").locator("li")).toHaveCount(2);
+    await expect(noJs.getByRole("heading", { name: "Dans le panier", exact: true })).toHaveCount(0);
+
+    // The box itself, at least 44px each way (DESIGN.md → Espacement).
+    const tick = noJs.getByRole("button", { name: "Cocher Pain", exact: true });
+    const box = await tick.boundingBox();
+    expect(box?.width ?? 0).toBeGreaterThanOrEqual(44);
+    expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+
+    await tick.click();
+    await expect(noJs).toHaveURL(/\/grocery-list\?notice=item_checked$/);
+    await expect(noJs.getByRole("heading", { name: "1 sur 2 dans le panier" })).toBeVisible();
+    await expect(noJs.getByText("1 restant", { exact: true })).toBeVisible();
+    const basket = section(noJs, "Dans le panier");
+    await expect(basket.locator("li")).toHaveCount(1);
+    await expect(basket.locator("strong.done")).toHaveText("Pain");
+    await expect(basket.getByRole("button", { name: "Décocher Pain", exact: true })).toBeVisible();
+    await expect(section(noJs, "À acheter").locator("li")).toHaveCount(1);
+
+    await basket.getByRole("button", { name: "Décocher Pain", exact: true }).click();
+    await expect(noJs).toHaveURL(/\/grocery-list\?notice=item_unchecked$/);
+    await expect(noJs.getByRole("heading", { name: "0 sur 2 dans le panier" })).toBeVisible();
+    await expect(noJs.getByRole("heading", { name: "Dans le panier", exact: true })).toHaveCount(0);
+    await expect(section(noJs, "À acheter").locator("li")).toHaveCount(2);
+    await context.close();
+  });
+
+  test("on a PC, low-stock suggestions go on the list in one press, beside the recipes to cook", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await registerAndLogin(page, "e2e-glsuggest", "Grocery Suggester");
+    await createGroup(page, "Famille Suggestions");
+    await createStockItem(page, "Beurre", "0", "kg", "1");
+    await createStockItem(page, "Café", "1", "paquet", "2");
+    await createStockItem(page, "Riz", "5", "kg");
+    await createRecipe(page, "Soupe", "Poireau | 2 | pièce");
+    await planRecipe(page, "Soupe");
+    // Already on the list, whatever its case: not suggested.
+    await addItem(page, "café");
+
+    const suggestions = page.locator("aside section", {
+      has: page.getByRole("heading", { name: "Suggestions" }),
+    });
+    await expect(suggestions.locator("li")).toHaveCount(1);
+    await expect(suggestions.locator("li")).toContainText("Beurre");
+    await expect(suggestions.locator("li")).toContainText("Stock bas : 0 kg");
+
+    const recipes = page.locator("aside section", {
+      has: page.getByRole("heading", { name: "Recettes prévues" }),
+    });
+    await expect(recipes).toContainText("Soupe");
+    await expect(recipes.getByRole("link", { name: "Voir les recettes" })).toHaveAttribute(
+      "href",
+      "/recipes#a-realiser",
+    );
+
+    await suggestions.getByRole("button", { name: "Mettre Beurre sur la liste" }).click();
+    await expect(page).toHaveURL(/\/grocery-list\?notice=item_added$/);
+    await expect(section(page, "À acheter").locator("li", { hasText: "Beurre" })).toHaveCount(1);
+    await expect(suggestions).toContainText("Rien ne manque au stock que la liste n'ait déjà.");
+
+    // The list's card and the side cards sit side by side.
+    const list = await page.locator(".groceries > .card").boundingBox();
+    const side = await page.locator(".groceries > aside").boundingBox();
+    expect(side?.x ?? 0).toBeGreaterThan((list?.x ?? 0) + (list?.width ?? 0) - 1);
+
+    // A phone draws neither.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.getByRole("heading", { name: "Suggestions" })).toBeHidden();
+    await expect(page.getByRole("heading", { name: "Recettes prévues" })).toBeHidden();
+    await expect(page.getByRole("heading", { name: "0 sur 2 dans le panier" })).toBeVisible();
+  });
+});
+
 test.describe("Grocery list — edit & delete", () => {
   test("edit round-trips through the item form", async ({ page }) => {
     await registerAndLogin(page, "e2e-gledit", "Grocery Editor");

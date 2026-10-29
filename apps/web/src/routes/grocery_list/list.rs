@@ -1,9 +1,13 @@
-//! `/grocery-list` — the family's one shared list. Unchecked items first,
-//! then checked ones (backend order `checked, name`), each rendered as a
-//! no-JS-safe check-off form (`docs/front-epic-6-grocery-list.md`). The page
-//! carries the inline manual-add form and the idempotent generate button;
-//! per-row a "Modifier" link renders only for items the caller may modify.
-//! PRG banners after add/generate/check/update/delete.
+//! `/grocery-list` — the family's one shared list, as the mock-ups « Mobile
+//! — Courses » and « PC — Courses » draw it (#526). One card holds how many
+//! articles are in the basket, the quick-add form and the list in two
+//! sections, « À acheter » then « Dans le panier » (backend order `checked,
+//! name`), each row a no-JS-safe check-off form whose tick box is its submit
+//! button (`docs/front-epic-6-grocery-list.md`). On a PC, two cards beside
+//! it: low-stock suggestions and the recipes « À réaliser ». The page also
+//! carries the idempotent generate button; per-row a "Modifier" link renders
+//! only for items the caller may modify. PRG banners after
+//! add/generate/check/update/delete.
 //!
 //! The generation takes the recipes « À réaliser » only (#470): its button
 //! says how many, and links to the recipes when there are none.
@@ -19,6 +23,8 @@ use manage_our_home_shared::dto::budget::SetGroceryItemPriceRequest;
 use manage_our_home_shared::dto::grocery_list::{
     CheckGroceryItemRequest, CreateGroceryItemRequest, GroceryItemList, GroceryItemResponse,
 };
+use manage_our_home_shared::dto::recipes::RecipeSelectionResponse;
+use manage_our_home_shared::dto::stocks::{StockItemList, StockItemResponse};
 use manage_our_home_shared::validation::budget::validate_entry_form;
 use manage_our_home_shared::validation::grocery_list::{
     can_modify, quantity_label, source_label, validate_item_form,
@@ -26,6 +32,7 @@ use manage_our_home_shared::validation::grocery_list::{
 use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
+use crate::icons::{icon, Icon};
 use crate::layout::CurrentUser;
 use crate::lenient_query::{lenient, LenientQuery};
 use crate::routes::recipes::planned_selections;
@@ -75,14 +82,12 @@ fn notice_html(notice: Option<&str>, added: Option<usize>, received: Option<usiz
     format!(r#"<p class="notice success">{}</p>"#, html_escape(&text))
 }
 
-/// How many recipes « À réaliser » the generation would take; `None` when
-/// the count cannot be read (transport failure or any status but `200`), so
-/// the button keeps its generic label rather than claiming there are none.
-async fn planned_count(state: &AppState, gid: Uuid, cookie: Option<&str>) -> Option<usize> {
-    planned_selections(state, gid, cookie)
-        .await
-        .ok()
-        .map(|s| s.len())
+/// How many recipes « À réaliser » the generation would take, read off the
+/// selections `get` fetches for its PC card (#526); `None` when they cannot
+/// be read (transport failure or any status but `200`), so the button keeps
+/// its generic label rather than claiming there are none.
+fn planned_count(selections: Option<&[RecipeSelectionResponse]>) -> Option<usize> {
+    selections.map(<[_]>::len)
 }
 
 /// The generate button (#470), which names how many recipes « À réaliser »
@@ -135,13 +140,13 @@ fn error_html(error: Option<&str>) -> String {
 }
 
 /// Renders one item as a check-off form plus, for permitted users, an edit
-/// link. The checkbox auto-submits on change (progressive enhancement); the
-/// always-present `Cocher`/`Décocher` button is the no-JS path and the E2E
-/// target. The hidden `checked` field carries the *target* (toggled) state.
-/// The submission on change is `data-submit-on-change`, which
-/// `app::ENHANCE_SCRIPT` acts on; `data-keep-scroll` has the list reopen at
-/// the height it was ticked from (#456), since the redirect reloads it —
-/// at the top when the check failed, where its error banner is.
+/// link. The tick box of the mock-up (#526) is the form's submit button
+/// (`.tick`): it works without JavaScript, and the hidden `checked` field
+/// carries the *target* (toggled) state. Its name says what it does,
+/// « Cocher Pain » / « Décocher Pain »; the check it draws once ticked is
+/// `aria-hidden`, as every icon is. `data-keep-scroll` has the list reopen at
+/// the height it was ticked from (#456), since the redirect reloads it — at
+/// the top when the check failed, where its error banner is.
 ///
 /// Once an item is checked (bought), the row also shows the Budget
 /// price-on-checkout form (F7): an inline amount field posting to
@@ -149,18 +154,20 @@ fn error_html(error: Option<&str>) -> String {
 /// upserts on the item, so a re-tap re-tarifies rather than double-counting.
 fn item_row(item: &GroceryItemResponse, can_edit: bool) -> String {
     let next = !item.checked;
-    let toggle_label = if item.checked { "Décocher" } else { "Cocher" };
-    let checked_attr = if item.checked { " checked" } else { "" };
-    let name_class = if item.checked { " class=\"done\"" } else { "" };
+    let (toggle_label, tick_class, tick_icon, name_class) = if item.checked {
+        ("Décocher", "tick", icon(Icon::Check), r#" class="done""#)
+    } else {
+        ("Cocher", "tick secondary", "", "")
+    };
 
     let qty = quantity_label(item.quantity, item.unit.as_deref());
     let qty_html = if qty.is_empty() {
         String::new()
     } else {
-        format!(r#" <span class="muted">— {}</span>"#, html_escape(&qty))
+        format!(r#"<span class="muted">{}</span>"#, html_escape(&qty))
     };
     let badge_html = source_label(&item.source)
-        .map(|l| format!(r#" <span class="badge">{}</span>"#, html_escape(l)))
+        .map(|l| format!(r#"<span class="badge">{}</span>"#, html_escape(l)))
         .unwrap_or_default();
 
     let edit_link = if can_edit {
@@ -188,18 +195,169 @@ fn item_row(item: &GroceryItemResponse, can_edit: bool) -> String {
 
     format!(
         r#"<li class="list-row">
-<form method="post" action="/grocery-list/{id}/check" class="actions" data-keep-scroll>
+<form method="post" action="/grocery-list/{id}/check" data-keep-scroll>
 <input type="hidden" name="checked" value="{next}"/>
-<input type="checkbox"{checked_attr} data-submit-on-change aria-label="{name_attr}"/>
-<span{name_class}><strong>{name}</strong>{qty_html}{badge_html}</span>
-<button type="submit" class="secondary">{toggle_label}</button>
+<button type="submit" class="{tick_class}" aria-label="{toggle_label} {name}">{tick_icon}</button>
 </form>
+<span class="what"><strong{name_class}>{name}</strong>{qty_html}{badge_html}</span>
 <span class="actions">{price_form}{edit_link}</span>
 </li>"#,
         id = item.id,
         name = html_escape(&item.name),
-        name_attr = html_escape(&item.name),
     )
+}
+
+// -- the page of the mock-ups (#526) ----------------------------------------
+
+/// Low-stock articles suggested beside the list (#526) — at most this many,
+/// the home's stock card's cap.
+const SUGGESTION_CAP: usize = 5;
+
+/// The head of the list's card (#526): how many articles are in the basket,
+/// of how many, and how many are left — in words, which the gauge under them
+/// repeats, so the gauge is `aria-hidden` (the home's grocery tile, #524).
+/// Nothing on an empty list: « 0 sur 0 » would say nothing.
+fn progress_html(checked: usize, total: usize) -> String {
+    if total == 0 {
+        return String::new();
+    }
+    let left = total.saturating_sub(checked);
+    let left_label = if left > 1 { "restants" } else { "restant" };
+    format!(
+        r#"<div class="split"><h2>{checked} sur {total} dans le panier</h2><span class="muted">{left} {left_label}</span></div>
+<progress max="{total}" value="{checked}" aria-hidden="true"></progress>"#
+    )
+}
+
+/// The list in its two sections (#526), « À acheter » then « Dans le
+/// panier », read off the checked state alone — the order inside each is
+/// the backend's. A section with nothing in it is left out. Under the
+/// basket, the way to the reception (#472).
+fn sections_html(
+    items: &[GroceryItemResponse],
+    can_edit: impl Fn(&GroceryItemResponse) -> bool,
+) -> String {
+    if items.is_empty() {
+        return r#"<p class="muted">Aucun article pour le moment.</p>"#.to_string();
+    }
+    let section = |title: &str, checked: bool| {
+        let rows: String = items
+            .iter()
+            .filter(|item| item.checked == checked)
+            .map(|item| item_row(item, can_edit(item)))
+            .collect();
+        if rows.is_empty() {
+            String::new()
+        } else {
+            format!(
+                r#"<h3 class="eyebrow">{title}</h3>
+<ul class="list">{rows}</ul>
+"#
+            )
+        }
+    };
+    let checked = items.iter().filter(|item| item.checked).count();
+    format!(
+        "{}{}{}",
+        section("À acheter", false),
+        section("Dans le panier", true),
+        reception_html(checked)
+    )
+}
+
+/// What the stock is short of and the list does not hold yet (#526): the
+/// stock's `low_stock` articles whose name is on no line of the list,
+/// checked or not, compared trimmed and case-folded. In the stock's order,
+/// at most `SUGGESTION_CAP`.
+fn suggested<'a>(
+    stock: &'a [StockItemResponse],
+    items: &[GroceryItemResponse],
+) -> Vec<&'a StockItemResponse> {
+    let fold = |name: &str| name.trim().to_lowercase();
+    let listed: Vec<String> = items.iter().map(|item| fold(&item.name)).collect();
+    stock
+        .iter()
+        .filter(|s| s.low_stock && !listed.contains(&fold(&s.name)))
+        .take(SUGGESTION_CAP)
+        .collect()
+}
+
+/// The PC's suggestions card (#526). Each one is put on the list by a single
+/// press: a form to `/grocery-list/add` carrying the name alone. Its button
+/// is named « Mettre … sur la liste » and not « Ajouter … », which the add
+/// form's own button is called. `None` is a stock that could not be read,
+/// told apart from a stock that lacks nothing.
+fn suggestions_html(suggestions: Option<&[&StockItemResponse]>) -> String {
+    let body = match suggestions {
+        None => r#"<p class="muted">Le stock n'a pas pu être lu.</p>"#.to_string(),
+        Some([]) => {
+            r#"<p class="muted">Rien ne manque au stock que la liste n'ait déjà.</p>"#.to_string()
+        }
+        Some(suggestions) => {
+            let rows: String = suggestions
+                .iter()
+                .map(|s| {
+                    let name = html_escape(&s.name);
+                    let left = quantity_label(Some(s.quantity), Some(&s.unit));
+                    format!(
+                        r#"<li class="list-row"><span class="what"><strong>{name}</strong><span class="muted">Stock bas : {left}</span></span><form method="post" action="/grocery-list/add"><input type="hidden" name="name" value="{name}"/><button type="submit" class="secondary" aria-label="Mettre {name} sur la liste">{plus}</button></form></li>"#,
+                        left = html_escape(&left),
+                        plus = icon(Icon::Plus),
+                    )
+                })
+                .collect();
+            format!(r#"<ul class="list">{rows}</ul>"#)
+        }
+    };
+    format!(
+        r#"<section class="card"><h2>Suggestions</h2>
+{body}</section>"#
+    )
+}
+
+/// The PC's reminder of the recipes « À réaliser » (#526, the selections of
+/// #470), by name, with a way to the recipes. `None` is a selection that
+/// could not be read, told apart from none planned.
+fn planned_html(selections: Option<&[RecipeSelectionResponse]>) -> String {
+    let body = match selections {
+        None => r#"<p class="muted">Les recettes prévues n'ont pas pu être lues.</p>"#.to_string(),
+        Some([]) => r#"<p class="muted">Aucune recette prévue.</p>"#.to_string(),
+        Some(selections) => {
+            let names: Vec<String> = selections
+                .iter()
+                .map(|s| html_escape(&s.recipe_name))
+                .collect();
+            format!("<p>{}</p>", names.join(", "))
+        }
+    };
+    format!(
+        r#"<section class="card"><div class="split"><h2>Recettes prévues</h2><a class="more" href="/recipes#a-realiser">Voir les recettes</a></div>
+{body}</section>"#
+    )
+}
+
+/// The whole stock, for the suggestions; `None` when it cannot be read.
+async fn stock_items(
+    state: &AppState,
+    gid: Uuid,
+    cookie: Option<&str>,
+) -> Option<Vec<StockItemResponse>> {
+    match api_request_auth(
+        state,
+        reqwest::Method::GET,
+        &format!("/groups/{gid}/stock-items"),
+        cookie,
+        None,
+    )
+    .await
+    {
+        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
+            serde_json::from_value::<StockItemList>(resp.body)
+                .map(|l| l.items)
+                .ok()
+        }
+        Ok(_) | Err(_) => None,
+    }
 }
 
 pub async fn get(
@@ -213,15 +371,22 @@ pub async fn get(
     };
     let cookie = grocery_cookie(&headers);
 
-    let items: Vec<GroceryItemResponse> = match api_request_auth(
-        &state,
-        reqwest::Method::GET,
-        &format!("/groups/{}/grocery-items", fam.gid),
-        cookie.as_deref(),
-        None,
-    )
-    .await
-    {
+    // The list, the recipes « À réaliser » and the stock, read side by side:
+    // the last two only feed the PC's cards and the generate button's label,
+    // and either failing leaves the list served.
+    let items_path = format!("/groups/{}/grocery-items", fam.gid);
+    let (items, planned, stock) = tokio::join!(
+        api_request_auth(
+            &state,
+            reqwest::Method::GET,
+            &items_path,
+            cookie.as_deref(),
+            None,
+        ),
+        planned_selections(&state, fam.gid, cookie.as_deref()),
+        stock_items(&state, fam.gid, cookie.as_deref()),
+    );
+    let items: Vec<GroceryItemResponse> = match items {
         Ok(resp) if resp.status == reqwest::StatusCode::OK => {
             serde_json::from_value::<GroceryItemList>(resp.body)
                 .map(|l| l.items)
@@ -232,25 +397,12 @@ pub async fn get(
         Ok(_) => Vec::new(),
         Err(_) => return service_unavailable_page().into_response(),
     };
-    let planned = planned_count(&state, fam.gid, cookie.as_deref()).await;
+    let planned = planned.ok();
+    let suggestions = stock.as_deref().map(|stock| suggested(stock, &items));
 
     let notice = notice_html(query.notice.as_deref(), query.added, query.received);
     let error = error_html(query.error.as_deref());
-
-    let list_html = if items.is_empty() {
-        r#"<p class="muted">Aucun article pour le moment.</p>"#.to_string()
-    } else {
-        let rows = items
-            .iter()
-            .map(|item| item_row(item, can_modify(&fam.role, item.created_by == me.user_id)))
-            .collect::<String>();
-        let checked = items.iter().filter(|item| item.checked).count();
-        format!(
-            r#"<ul class="list">{rows}</ul>
-{reception}"#,
-            reception = reception_html(checked)
-        )
-    };
+    let checked = items.iter().filter(|item| item.checked).count();
 
     let body = format!(
         r#"<div class="page-header">
@@ -259,14 +411,30 @@ pub async fn get(
 </div>
 <p class="muted">Une seule liste partagée par famille. La génération reprend les ingrédients manquants des recettes à réaliser, pour leur nombre de personnes, et les stocks sous leur seuil. Elle est sans risque à relancer : les articles déjà présents ne sont pas dupliqués.</p>
 {notice}{error}
-<form method="post" action="/grocery-list/add" class="card inline">
+<div class="groceries">
+<section class="card">
+{progress}
+<form method="post" action="/grocery-list/add" class="quick-add">
 <label>Article <input type="text" name="name" required placeholder="ex. Lait"/></label>
 <label>Quantité <input type="number" name="quantity" step="any" min="0" placeholder="Optionnel"/></label>
 <label>Unité <input type="text" name="unit" placeholder="Optionnel (ex. L, kg)"/></label>
-<button type="submit">Ajouter</button>
+<button type="submit">{plus} Ajouter</button>
 </form>
-{list_html}"#,
-        generate = generate_html(planned),
+{list}</section>
+<aside class="pc">
+{suggestions}
+{planned}
+</aside>
+</div>"#,
+        generate = generate_html(planned_count(planned.as_deref())),
+        progress = progress_html(checked, items.len()),
+        plus = icon(Icon::Plus),
+        list = sections_html(&items, |item| can_modify(
+            &fam.role,
+            item.created_by == me.user_id
+        )),
+        suggestions = suggestions_html(suggestions.as_deref()),
+        planned = planned_html(planned.as_deref()),
     );
     Html(shell_with_header(
         Width::Full,
@@ -638,7 +806,10 @@ mod tests {
         // must not say « Générer depuis les stocks » nor link to the choice.
         for status in [403, 404, 500, 503] {
             let state = fake_selections_api(status, r#"{"error":"x"}"#).await;
-            let planned = planned_count(&state, Uuid::from_u128(1), Some("session=s")).await;
+            let selections = planned_selections(&state, Uuid::from_u128(1), Some("session=s"))
+                .await
+                .ok();
+            let planned = planned_count(selections.as_deref());
             assert_eq!(planned, None, "{status}");
             let html = generate_html(planned);
             assert!(
@@ -652,7 +823,10 @@ mod tests {
     #[tokio::test]
     async fn an_empty_selection_read_counts_no_recipe() {
         let state = fake_selections_api(200, r#"{"selections":[]}"#).await;
-        let planned = planned_count(&state, Uuid::from_u128(1), Some("session=s")).await;
+        let selections = planned_selections(&state, Uuid::from_u128(1), Some("session=s"))
+            .await
+            .ok();
+        let planned = planned_count(selections.as_deref());
         assert_eq!(planned, Some(0));
         assert!(generate_html(planned).contains(">Générer depuis les stocks</button>"));
     }
@@ -696,5 +870,272 @@ mod tests {
         let q = list_query("notice=generated&added=2&added=5&notice=item_added");
         assert_eq!(q.notice.as_deref(), Some("generated"));
         assert_eq!(q.added, Some(2));
+    }
+
+    // -- the page of the mock-ups (#526) -----------------------------------
+
+    fn item(name: &str, checked: bool) -> GroceryItemResponse {
+        GroceryItemResponse {
+            id: Uuid::from_u128(name.len() as u128 + if checked { 1000 } else { 0 }),
+            group_id: Uuid::from_u128(1),
+            created_by: Uuid::from_u128(2),
+            name: name.to_string(),
+            quantity: None,
+            unit: None,
+            checked,
+            source: "manual".to_string(),
+            source_recipe_id: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    fn stock(name: &str, quantity: f64, unit: &str, low: bool) -> StockItemResponse {
+        StockItemResponse {
+            id: Uuid::from_u128(name.len() as u128),
+            group_id: Uuid::from_u128(1),
+            created_by: Uuid::from_u128(2),
+            name: name.to_string(),
+            category: None,
+            quantity,
+            unit: unit.to_string(),
+            reorder_threshold: low.then_some(1.0),
+            low_stock: low,
+            expires_on: None,
+            expiry_status: manage_our_home_shared::validation::stocks::ExpiryStatus::Unknown,
+            barcode: None,
+        }
+    }
+
+    fn selection(name: &str) -> RecipeSelectionResponse {
+        RecipeSelectionResponse {
+            id: Uuid::from_u128(name.len() as u128),
+            recipe_id: Uuid::from_u128(name.len() as u128 + 1),
+            recipe_name: name.to_string(),
+            status: "planned".to_string(),
+            servings: None,
+            created_by: Uuid::from_u128(2),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn the_progress_says_how_many_are_in_the_basket_of_how_many() {
+        let html = progress_html(3, 7);
+        assert!(html.contains("<h2>3 sur 7 dans le panier</h2>"), "{html}");
+        assert!(html.contains(">4 restants<"), "{html}");
+        // The gauge repeats the words: hidden from assistive technology.
+        assert!(
+            html.contains(r#"<progress max="7" value="3" aria-hidden="true"></progress>"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn one_or_none_left_is_singular() {
+        assert!(progress_html(6, 7).contains(">1 restant<"));
+        assert!(progress_html(7, 7).contains(">0 restant<"));
+        assert!(progress_html(0, 1).contains("<h2>0 sur 1 dans le panier</h2>"));
+    }
+
+    #[test]
+    fn an_empty_list_has_no_progress() {
+        assert_eq!(progress_html(0, 0), "");
+    }
+
+    #[test]
+    fn the_sections_split_on_the_checked_state_in_the_list_order() {
+        let items = [item("Pain", false), item("Sel", false), item("Lait", true)];
+        let html = sections_html(&items, |_| false);
+        let buy = html
+            .find(r#"<h3 class="eyebrow">À acheter</h3>"#)
+            .expect("À acheter");
+        let basket = html
+            .find(r#"<h3 class="eyebrow">Dans le panier</h3>"#)
+            .expect("Dans le panier");
+        let (pain, sel, lait) = (
+            html.find("Cocher Pain").unwrap(),
+            html.find("Cocher Sel").unwrap(),
+            html.find("Décocher Lait").unwrap(),
+        );
+        assert!(
+            buy < pain && pain < sel && sel < basket && basket < lait,
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_section_with_nothing_in_it_is_left_out() {
+        let html = sections_html(&[item("Pain", false)], |_| false);
+        assert!(html.contains("À acheter"), "{html}");
+        assert!(!html.contains("Dans le panier"), "{html}");
+        assert!(!html.contains("/grocery-list/reception"), "{html}");
+
+        let html = sections_html(&[item("Lait", true)], |_| false);
+        assert!(!html.contains("À acheter"), "{html}");
+        assert!(html.contains("Dans le panier"), "{html}");
+        // Something is checked: the way to the reception (#472).
+        assert!(html.contains(r#"href="/grocery-list/reception""#), "{html}");
+    }
+
+    #[test]
+    fn an_empty_list_says_so() {
+        let html = sections_html(&[], |_| true);
+        assert!(html.contains("Aucun article pour le moment."), "{html}");
+        assert!(!html.contains("<h3"), "{html}");
+    }
+
+    #[test]
+    fn the_tick_box_is_the_form_button_and_works_without_javascript() {
+        let it = item("Pain", false);
+        let html = item_row(&it, false);
+        assert!(
+            html.contains(&format!(
+                r#"<form method="post" action="/grocery-list/{}/check" data-keep-scroll>"#,
+                it.id
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<input type="hidden" name="checked" value="true"/>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                r#"<button type="submit" class="tick secondary" aria-label="Cocher Pain"></button>"#
+            ),
+            "{html}"
+        );
+        // No bare checkbox any more: the box is the button.
+        assert!(!html.contains("checkbox"), "{html}");
+        assert!(!html.contains(r#"class="done""#), "{html}");
+        assert!(!html.contains("/price"), "{html}");
+    }
+
+    #[test]
+    fn a_checked_row_is_ticked_struck_through_and_priced() {
+        let html = item_row(&item("Lait", true), false);
+        assert!(
+            html.contains(r#"<input type="hidden" name="checked" value="false"/>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"<button type="submit" class="tick" aria-label="Décocher Lait">{}</button>"#,
+                icon(Icon::Check)
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<strong class="done">Lait</strong>"#),
+            "{html}"
+        );
+        assert!(html.contains("/price"), "{html}");
+    }
+
+    #[test]
+    fn the_row_names_the_quantity_the_provenance_and_the_edit_link() {
+        let mut it = item("Farine", false);
+        it.quantity = Some(300.0);
+        it.unit = Some("g".into());
+        it.source = "recipe".into();
+        let html = item_row(&it, true);
+        assert!(
+            html.contains(r#"<span class="muted">300 g</span>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<span class="badge">Recette</span>"#),
+            "{html}"
+        );
+        assert!(html.contains(">Modifier</a>"), "{html}");
+        assert!(!item_row(&it, false).contains("Modifier"));
+    }
+
+    #[test]
+    fn the_suggestions_are_the_low_stock_the_list_lacks() {
+        let stock = [
+            stock("Beurre", 0.0, "kg", true),
+            stock("Café", 1.0, "paquet", true),
+            stock("Riz", 5.0, "kg", false),
+            stock("Lait", 0.0, "L", true),
+        ];
+        // On the list already, checked or not, whatever its case.
+        let items = [item(" café ", false), item("LAIT", true)];
+        let names: Vec<&str> = suggested(&stock, &items)
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(names, ["Beurre"]);
+    }
+
+    #[test]
+    fn the_suggestions_are_capped() {
+        let stock: Vec<StockItemResponse> = (0..8)
+            .map(|n| stock(&format!("Article {n}"), 0.0, "kg", true))
+            .collect();
+        assert_eq!(suggested(&stock, &[]).len(), SUGGESTION_CAP);
+    }
+
+    #[test]
+    fn a_suggestion_puts_the_article_on_the_list_in_one_press() {
+        let beurre = stock("Beurre", 0.0, "kg", true);
+        let html = suggestions_html(Some(&[&beurre]));
+        assert!(html.contains("<h2>Suggestions</h2>"), "{html}");
+        assert!(html.contains("<strong>Beurre</strong>"), "{html}");
+        assert!(html.contains("Stock bas : 0 kg"), "{html}");
+        assert!(
+            html.contains(r#"<form method="post" action="/grocery-list/add">"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<input type="hidden" name="name" value="Beurre"/>"#),
+            "{html}"
+        );
+        // Not « Ajouter … »: the add form's own button is named « Ajouter ».
+        assert!(
+            html.contains(&format!(
+                r#"<button type="submit" class="secondary" aria-label="Mettre Beurre sur la liste">{}</button>"#,
+                icon(Icon::Plus)
+            )),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn no_suggestion_and_an_unread_stock_say_so_apart() {
+        let none = suggestions_html(Some(&[]));
+        assert!(
+            none.contains("Rien ne manque au stock que la liste n'ait déjà."),
+            "{none}"
+        );
+        let unread = suggestions_html(None);
+        assert!(unread.contains("Le stock n'a pas pu être lu."), "{unread}");
+    }
+
+    #[test]
+    fn the_planned_recipes_are_named_with_a_link_to_the_recipes() {
+        let html = planned_html(Some(&[selection("Soupe de potiron"), selection("Quiche")]));
+        assert!(html.contains("<h2>Recettes prévues</h2>"), "{html}");
+        assert!(html.contains("<p>Soupe de potiron, Quiche</p>"), "{html}");
+        assert!(
+            html.contains(r#"<a class="more" href="/recipes#a-realiser">Voir les recettes</a>"#),
+            "{html}"
+        );
+        let escaped = planned_html(Some(&[selection("Pâtes <b>")]));
+        assert!(escaped.contains("Pâtes &lt;b&gt;"), "{escaped}");
+    }
+
+    #[test]
+    fn no_planned_recipe_and_an_unread_selection_say_so_apart() {
+        let none = planned_html(Some(&[]));
+        assert!(none.contains("Aucune recette prévue."), "{none}");
+        assert!(none.contains(r#"href="/recipes#a-realiser""#), "{none}");
+        let unread = planned_html(None);
+        assert!(
+            unread.contains("Les recettes prévues n'ont pas pu être lues."),
+            "{unread}"
+        );
     }
 }

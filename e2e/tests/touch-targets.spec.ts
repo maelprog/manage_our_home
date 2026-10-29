@@ -124,8 +124,9 @@ async function undersized(page: Page): Promise<Box[]> {
       if (style.display === "none" || style.visibility === "hidden") continue;
       const isBox = node.matches('input[type="checkbox"], input[type="radio"]');
       // A bare box whose own form has a submit button doing the same thing —
-      // the grocery row's checkbox beside its "Cocher" / "Décocher": WCAG
-      // 2.5.5's equivalent-control exception. The button is measured.
+      // the grocery row's checkbox beside its "Cocher" / "Décocher" until
+      // #526 made the box the button: WCAG 2.5.5's equivalent-control
+      // exception. The button is measured.
       if (isBox && !node.closest("label")) {
         const form = (node as HTMLInputElement).form;
         if (form?.querySelector('button[type="submit"], button:not([type])')) continue;

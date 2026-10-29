@@ -620,6 +620,35 @@ progress::-moz-progress-bar { background: currentColor; }
 .picks { display: flex; flex-wrap: wrap; gap: var(--s2x); }
 .pick { padding: 0 var(--s3) 0 var(--s2x); border: 1px solid var(--border); border-radius: var(--r-sm); accent-color: var(--accent); }
 .pick:has(:checked) { border-color: var(--accent); background: var(--accent-soft); }
+/* -- The grocery list (#526) ----------------------------------------------
+   One card — the basket's count, the quick-add form, the two sections — and
+   on a PC the suggestions and the recipes to cook beside it, under it when
+   the column is too narrow for both (the agenda's pattern). The cards lose
+   their top margin: the row's gap, or the one under each card, spaces them. */
+.groceries { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--s4); }
+.groceries > * { flex: 1 1 20rem; }
+.groceries > .card { flex: 999 1 30rem; min-width: 0; }
+.groceries .card { margin: 0 0 var(--s4); }
+/* « À acheter », « Dans le panier »: the eyebrow's micro-label, in the body
+   face rather than the headings' serif, close over its rows. */
+.groceries h3 { margin: var(--s4) 0 0; font-family: inherit; }
+.groceries .list { margin: var(--s1) 0 0; }
+/* A row's name takes what the tick box leaves; a checked row's price form,
+   too wide for a phone's line beside it, goes to the next one. */
+.groceries .what { flex-basis: 8rem; }
+/* Article, quantity, unit and the button on one line where they fit. The
+   inputs take their label's width, so the labels can shrink to it. */
+.quick-add { flex-direction: row; flex-wrap: wrap; align-items: flex-end; gap: var(--s2x); margin: var(--s4) 0; }
+.quick-add > label { flex: 1 1 6rem; }
+.quick-add > :first-child { flex: 3 1 12rem; }
+.quick-add input { width: 100%; }
+/* The tick box of a row: the form's own submit button, so it works without
+   JavaScript, drawn as the mock-up's square — --s12, 48px, over the 44px it
+   asks for. Ticked, the primary button and its check; not yet, the
+   secondary one edged in --muted: --border would be 1.3:1 on --surface,
+   under the 3:1 a control's edge needs (WCAG 1.4.11). */
+.tick { display: inline-flex; flex: none; align-items: center; justify-content: center; width: var(--s12); height: var(--s12); padding: 0; border-width: 2px; }
+.tick.secondary { border-color: var(--muted); }
 /* Support/admin screens (front epic F9) show multi-column tables that are
    wider than the narrow form column; the wrapper lets them scroll instead of
    overflowing the page. */
