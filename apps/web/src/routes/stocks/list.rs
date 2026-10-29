@@ -119,7 +119,7 @@ const WEEKDAYS: [&str; 7] = [
 ];
 
 /// The expiry pastille of a card, as `(class, text)` (#527). Red (`late`)
-/// from the day before: expired, today, tomorrow; amber (`soon`) for the
+/// for a past date, today or tomorrow; amber (`soon`) for the
 /// rest of the week — two to six days out, the home tile's week — named by
 /// its weekday; a later date in the neutral badge. The words carry the
 /// state, the tint only doubles it (DESIGN.md — colour is never the sole

@@ -360,6 +360,7 @@ mod tests {
             "/stocksx",
             "/stocks/../account",
             "/stocks#x",
+            "/stocks?q=a#x",
             "/stocks?q=a\r\nSet-Cookie: x",
             "/stocks?lieu=Congélateur",
             "/budget",
