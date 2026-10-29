@@ -73,6 +73,52 @@ pub fn normalize_unit(raw: &str) -> String {
     }
 }
 
+/// A quantity and its unit as the stock list reads them (#527): « 2
+/// paquets », « 250 g », « 1,5 L », and the bare number for
+/// `DEFAULT_UNIT` (« 3 », not « 3 unités »).
+///
+/// - The number is written the French way: a comma before the decimals,
+///   at most three of them, trailing zeros dropped (`0.1 + 0.2` reads
+///   « 0,3 »).
+/// - A symbol (`g`, `kg`, `L`, `cl`…, in any case) or an abbreviation
+///   ending in a dot never takes a plural.
+/// - A named unit takes the French plural from 2 on — 1,5 paquet, 2
+///   paquets: `s`, or `x` after `au`/`eu`, `aux` for `al`; one already
+///   ending in `s`, `x` or `z` stays as it is. Only the first word turns
+///   plural (« boîtes de conserve »). What the member typed is never
+///   turned singular.
+pub fn format_quantity(quantity: f64, unit: &str) -> String {
+    // Three decimals at most, then the trailing zeros and the point go.
+    let quantity = (quantity * 1000.0).round() / 1000.0;
+    let rounded = format!("{quantity:.3}");
+    let trimmed = rounded.trim_end_matches('0').trim_end_matches('.');
+    let number = if trimmed == "-0" { "0" } else { trimmed }.replace('.', ",");
+
+    let unit = unit.trim();
+    if unit.is_empty() || article_key(unit) == DEFAULT_UNIT {
+        return number;
+    }
+    const SYMBOLS: [&str; 7] = ["g", "kg", "mg", "l", "cl", "ml", "dl"];
+    let invariant = SYMBOLS.contains(&article_key(unit).as_str()) || unit.ends_with('.');
+    if invariant || quantity < 2.0 {
+        return format!("{number} {unit}");
+    }
+    let (first, rest) = match unit.split_once(' ') {
+        Some((first, rest)) => (first, format!(" {rest}")),
+        None => (unit, String::new()),
+    };
+    let plural = if first.ends_with(['s', 'x', 'z']) {
+        first.to_string()
+    } else if first.ends_with("au") || first.ends_with("eu") {
+        format!("{first}x")
+    } else if let Some(stem) = first.strip_suffix("al") {
+        format!("{stem}aux")
+    } else {
+        format!("{first}s")
+    };
+    format!("{number} {plural}{rest}")
+}
+
 /// Mirror of the backend's derived `low_stock` flag
 /// (`reorder_threshold.map(|t| quantity <= t).unwrap_or(false)`): an item with
 /// no threshold is never low; otherwise it is low exactly when its quantity is
@@ -451,5 +497,70 @@ mod tests {
         let b = line(3, "Lait", "L", None);
         assert_eq!(merge_target("lait", "L", None, &[a, b]), Some(id(3)));
         assert_eq!(merge_target("lait", "L", None, &[b, a]), Some(id(3)));
+    }
+
+    // -- format_quantity (#527) ----------------------------------------------
+
+    #[test]
+    fn the_issue_cases_read_as_the_mock_up_writes_them() {
+        assert_eq!(format_quantity(2.0, "paquet"), "2 paquets");
+        assert_eq!(format_quantity(1.0, "paquet"), "1 paquet");
+        assert_eq!(format_quantity(250.0, "g"), "250 g");
+        assert_eq!(format_quantity(1.5, "L"), "1,5 L");
+        assert_eq!(format_quantity(3.0, "unité"), "3");
+    }
+
+    #[test]
+    fn the_default_unit_is_left_out_whatever_its_case_or_spaces() {
+        assert_eq!(format_quantity(1.0, DEFAULT_UNIT), "1");
+        assert_eq!(format_quantity(0.0, " Unité "), "0");
+        assert_eq!(format_quantity(2.5, ""), "2,5");
+    }
+
+    #[test]
+    fn a_symbol_never_takes_a_plural_in_any_case() {
+        for unit in ["g", "kg", "mg", "L", "l", "cl", "cL", "ml", "dl"] {
+            assert_eq!(format_quantity(3.0, unit), format!("3 {unit}"));
+        }
+        assert_eq!(format_quantity(4.0, "pcs."), "4 pcs.");
+    }
+
+    #[test]
+    fn a_named_unit_is_singular_under_two() {
+        assert_eq!(format_quantity(0.0, "pot"), "0 pot");
+        assert_eq!(format_quantity(1.5, "paquet"), "1,5 paquet");
+        assert_eq!(format_quantity(1.999, "boîte"), "1,999 boîte");
+    }
+
+    #[test]
+    fn a_named_unit_takes_the_french_plural() {
+        assert_eq!(format_quantity(4.0, "tranche"), "4 tranches");
+        assert_eq!(format_quantity(2.0, "bocal"), "2 bocaux");
+        assert_eq!(format_quantity(2.0, "pruneau"), "2 pruneaux");
+        assert_eq!(format_quantity(3.0, "feu"), "3 feux");
+        assert_eq!(format_quantity(2.0, "pois"), "2 pois");
+        assert_eq!(format_quantity(2.0, "noix"), "2 noix");
+        assert_eq!(format_quantity(2.0, "paquets"), "2 paquets");
+    }
+
+    #[test]
+    fn only_the_first_word_turns_plural() {
+        assert_eq!(
+            format_quantity(3.0, "boîte de conserve"),
+            "3 boîtes de conserve"
+        );
+    }
+
+    #[test]
+    fn what_was_typed_is_never_turned_singular() {
+        assert_eq!(format_quantity(1.0, "paquets"), "1 paquets");
+    }
+
+    #[test]
+    fn decimals_are_french_and_rounded_to_three() {
+        assert_eq!(format_quantity(0.1 + 0.2, "kg"), "0,3 kg");
+        assert_eq!(format_quantity(0.125, "kg"), "0,125 kg");
+        assert_eq!(format_quantity(2.0004, "kg"), "2 kg");
+        assert_eq!(format_quantity(1250.0, "g"), "1250 g");
     }
 }

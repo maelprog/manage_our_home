@@ -49,6 +49,7 @@ use manage_our_home_shared::validation::stocks::{
 use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
+use crate::icons::{icon, icon_link, Icon};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -174,6 +175,21 @@ pub(crate) fn parse_expires_on(s: &str) -> Result<Option<NaiveDate>, ()> {
     }
 }
 
+/// The units the unit field suggests (#527), the mock-up's list: the
+/// default, the symbols, then the named units.
+pub(crate) const UNITS: [&str; 10] = [
+    DEFAULT_UNIT,
+    "g",
+    "kg",
+    "cl",
+    "L",
+    "paquet",
+    "pot",
+    "boîte",
+    "sachet",
+    "tranche",
+];
+
 /// Renders the item form fields (shared markup, pre-filled). Used by create
 /// (empty defaults) and edit (existing values).
 pub(crate) fn form_fields(
@@ -201,19 +217,30 @@ pub(crate) fn form_fields(
             format!("\n<span class=\"muted\">Proposée d'après la catégorie {category} : vérifiez-la, vous pouvez la corriger.</span>")
         }
     };
+    // The mock-up's order (#527): name, quantity and unit side by side, the
+    // place, the date, the threshold. The unit and the place stay free
+    // text; the `<datalist>`s only suggest the mock-up's values.
     format!(
         r#"<label>Nom <input type="text" name="name" required value="{name}"/></label>
-<label>Catégorie <input type="text" name="category" value="{category}" placeholder="Optionnel (ex. Cellier, Frigo)"/></label>
+<div class="pair">
 <label>Quantité <input type="number" name="quantity" step="any" min="0" value="{quantity}"/></label>
-<label>Unité <input type="text" name="unit" value="{unit}" placeholder="unité si vide (ex. kg, L)"/></label>
-<label>Seuil de réappro
-<input type="number" name="reorder_threshold" step="any" min="0" value="{reorder_threshold}" placeholder="Optionnel — laisser vide pour aucun seuil"/>
-<span class="muted">En dessous ou à ce niveau, l'article est signalé « stock bas ». Partagé au niveau de la famille.</span>
-</label>
+<label>Unité <input type="text" name="unit" value="{unit}" placeholder="unité si vide (ex. kg, L)" list="units"/></label>
+</div>
+<datalist id="units">{units}</datalist>
+<label>Catégorie <input type="text" name="category" value="{category}" placeholder="Optionnel (ex. Frigo, Placard)" list="places"/></label>
+<datalist id="places"><option value="Frigo"></option><option value="Placard"></option><option value="Congélateur"></option></datalist>
 <label>Date de péremption
 <input type="date" name="expires_on" value="{expires_on}" data-expiry-shortcuts/>{origin_note}
 <span class="muted">Optionnel. Si l'article en a plusieurs, la plus proche.</span>
+</label>
+<label>Seuil de réappro
+<input type="number" name="reorder_threshold" step="any" min="0" value="{reorder_threshold}" placeholder="Optionnel — laisser vide pour aucun seuil"/>
+<span class="muted">En dessous ou à ce niveau, l'article est signalé « stock bas ». Partagé au niveau de la famille.</span>
 </label>"#,
+        units = UNITS
+            .iter()
+            .map(|u| format!(r#"<option value="{u}"></option>"#))
+            .collect::<String>(),
         name = html_escape(name),
         category = html_escape(category),
         quantity = html_escape(quantity),
@@ -291,7 +318,9 @@ pub(crate) const OFF_ATTRIBUTION: &str = r#"<p class="muted">Données produits :
 /// the "Code-barres" field, for the digits typed by hand.
 fn scan_block(scan_value: &str) -> String {
     format!(
-        r#"<form method="post" action="/stocks/new/photo" enctype="multipart/form-data" class="card inline">
+        r#"<div class="scan">
+<p><strong>{icon} Scanner le code-barres</strong><br/><span class="muted">Remplit le nom et propose une date de péremption.</span></p>
+<form method="post" action="/stocks/new/photo" enctype="multipart/form-data" class="card inline">
 <label>Photographier le code <input type="file" name="photo" accept="image/*" capture="environment" required data-submit-on-change/></label>
 <button type="submit" class="secondary">Scanner</button>
 </form>
@@ -299,7 +328,9 @@ fn scan_block(scan_value: &str) -> String {
 <label>Code-barres <input type="text" name="scan" inputmode="numeric" autocomplete="off" value="{scan}"/></label>
 <button type="submit" class="secondary">Chercher le produit</button>
 </form>
-<p class="muted">La photo est lue sur le serveur puis oubliée : elle n'est ni conservée ni transmise.</p>"#,
+<p class="muted">La photo est lue sur le serveur puis oubliée : elle n'est ni conservée ni transmise.</p>
+</div>"#,
+        icon = icon(Icon::Scan),
         scan = html_escape(scan_value),
     )
 }
@@ -320,14 +351,17 @@ pub(crate) fn photo_error_message(code: &str) -> &'static str {
 /// not instead.
 fn photo_retry_page(header: &str, code: &str) -> String {
     let body = format!(
-        r#"<h1>Scanner un article</h1>
+        r#"<section class="card sheet">
+<div class="page-header"><h1>Scanner un article</h1>{close}</div>
 <p class="notice error">{message}</p>
 <p>Reprenez la photo, ou tapez les chiffres imprimés sous les barres : le scan sera relancé.</p>
 {scan}
 <div class="links">
 <a href="/stocks/new">Saisir l'article sans code-barres</a>
 <a href="/stocks">Retour aux stocks</a>
-</div>"#,
+</div>
+</section>"#,
+        close = icon_link("btn secondary", "/stocks", "Fermer", Icon::Close),
         message = html_escape(photo_error_message(code)),
         scan = scan_block(""),
     );
@@ -343,7 +377,7 @@ struct Intro {
 }
 
 fn page(
-    header: &str,
+    fam: &FamilyContext,
     form: &ItemForm,
     error: Option<&str>,
     scan_value: &str,
@@ -379,10 +413,15 @@ fn page(
             code = html_escape(&form.barcode),
         )
     };
+    // The sheet of the mock-ups « Ajouter un produit » (#527): the family
+    // over the title, the cross back to the list, the scan first, then the
+    // form. Still a page and plain forms: nothing needs JavaScript.
     let body = format!(
-        r#"<h1>Nouvel article</h1>
+        r#"<section class="card sheet">
+<div class="page-header"><hgroup><p class="eyebrow">Dans le stock de {family}</p><h1>Ajouter un produit</h1></hgroup>{close}</div>
 {error_html}
 {scan}
+<p class="or" aria-hidden="true">ou saisir</p>
 {notice_html}
 <form method="post" action="/stocks/new">
 {fields}
@@ -390,10 +429,12 @@ fn page(
 <button type="submit">Ajouter l'article</button>
 </form>
 {attribution}
-<div class="links"><a href="/stocks">Retour aux stocks</a></div>"#,
+</section>"#,
+        family = html_escape(&fam.name),
+        close = icon_link("btn secondary", "/stocks", "Fermer", Icon::Close),
         scan = scan_block(scan_value),
     );
-    shell_with_header(Width::Form, "Nouvel article", header, &body)
+    shell_with_header(Width::Form, "Ajouter un produit", &fam.header, &body)
 }
 
 /// "Déjà en stock" (#402): the family's article carrying the scanned code,
@@ -498,7 +539,7 @@ pub async fn get(
             quantity: "0".to_string(),
             ..Default::default()
         };
-        return Html(page(&fam.header, &form, None, "", &Intro::default())).into_response();
+        return Html(page(&fam, &form, None, "", &Intro::default())).into_response();
     }
     scanned(
         &state,
@@ -538,7 +579,7 @@ async fn scanned(
             ..Default::default()
         };
         Html(page(
-            &fam.header,
+            fam,
             &form,
             Some(error_message(error)),
             raw,
@@ -608,7 +649,7 @@ async fn scanned(
         notice: Some(notice),
         attribution: scan.product.is_some(),
     };
-    Html(page(&fam.header, &form, None, code, &intro)).into_response()
+    Html(page(fam, &form, None, code, &intro)).into_response()
 }
 
 async fn fetch_item(
@@ -743,7 +784,7 @@ pub async fn post(
 
     let render_error = |code: &str| {
         Html(page(
-            &fam.header,
+            &fam,
             &form,
             Some(error_message(code)),
             "",
@@ -816,7 +857,7 @@ pub async fn post(
                 ..form
             };
             Html(page(
-                &fam.header,
+                &fam,
                 &form,
                 Some(error_message("barcode_already_in_stock")),
                 "",

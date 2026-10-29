@@ -451,10 +451,17 @@ test.describe("Grocery list — malformed URL parameters (#582)", () => {
   });
 });
 
-/** `09/10/2026` from `2026-10-09`, as the stocks list writes a date. */
+/** `09/10/2026` from `2026-10-09`, as the stocks pages write a date. */
 function frDate(iso: string): string {
   const [y, m, d] = iso.split("-");
   return `${d}/${m}/${y}`;
+}
+
+/** The weekday of `2026-10-09`, as the stocks list names a date of the
+ *  coming week (#527): « vendredi ». */
+function frWeekday(iso: string): string {
+  const days = ["dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"];
+  return days[new Date(`${iso}T12:00:00Z`).getUTCDay()];
 }
 
 async function check(page: Page, name: string): Promise<void> {
@@ -495,11 +502,13 @@ test.describe("Grocery list — reception (#472)", () => {
     // Nothing checked any more: no way to the reception.
     await expect(page.getByRole("link", { name: "Réceptionner les articles cochés" })).toHaveCount(0);
 
+    // Five days out: the list names its weekday (#527), and a quantity in
+    // the default unit reads as the bare number.
     await page.goto("/stocks");
-    await expect(page.locator("li", { hasText: "Lait" })).toContainText(
-      `2 L · péremption le ${frDate(date)}`,
-    );
-    await expect(page.locator("li", { hasText: "Pain" })).toContainText("1 unité");
+    const lait = page.locator("li", { hasText: "Lait" });
+    await expect(lait.locator(".stepper > span")).toHaveText("2 L");
+    await expect(lait).toContainText(`périme ${frWeekday(date)}`);
+    await expect(page.locator("li", { hasText: "Pain" }).locator(".stepper > span")).toHaveText("1");
   });
 
   test("a line in error is shown again with what was typed; a left-out item stays", async ({
@@ -555,8 +564,8 @@ test.describe("Grocery list — reception (#472)", () => {
     await page.goto("/stocks");
     const rows = page.locator("li", { hasText: "Lait" });
     await expect(rows).toHaveCount(2);
-    await expect(rows.filter({ hasText: `1 L · péremption le ${frDate(stockDate)}` })).toHaveCount(1);
-    await expect(rows.filter({ hasText: `3 L · péremption le ${frDate(otherDate)}` })).toHaveCount(1);
+    await expect(rows.filter({ hasText: `périme ${frWeekday(stockDate)}` }).locator(".stepper > span")).toHaveText("1 L");
+    await expect(rows.filter({ hasText: `jusqu'au ${frDate(otherDate)}` }).locator(".stepper > span")).toHaveText("3 L");
   });
 
   test("a checked item adds to the existing stock line; a left-out one with its quantity emptied does not block", async ({

@@ -186,6 +186,32 @@ fn page(
 #[derive(serde::Deserialize)]
 pub struct AdjustForm {
     quantity: String,
+    /// Where the stocks list's stepper came from (#527): the list's own
+    /// address, filters included. Absent from the detail page's form.
+    #[serde(default)]
+    back: String,
+}
+
+/// Where an adjustment lands once saved: `back` with the notice, when it is
+/// the stocks list (`/stocks`, bare or with a query) — anything else is
+/// refused, so the field cannot send the member off the site — and the
+/// article's page otherwise.
+pub(crate) fn adjusted_target(back: &str, item_id: Uuid) -> String {
+    // `/stocks` then nothing, or its query: no path can follow, so no
+    // other page — let alone another site — is reachable through it. The
+    // query is the one `list::list_href` writes, percent-encoded: visible
+    // ASCII only, which also keeps the `Location` header valid.
+    match back.strip_prefix("/stocks") {
+        Some("") => "/stocks?notice=quantity_adjusted".to_string(),
+        Some(query)
+            if query.starts_with('?')
+                && !query.contains('#')
+                && query.chars().all(|c| c.is_ascii_graphic()) =>
+        {
+            format!("/stocks{query}&notice=quantity_adjusted")
+        }
+        _ => format!("/stocks/{item_id}?notice=quantity_adjusted"),
+    }
 }
 
 pub async fn adjust(
@@ -223,9 +249,7 @@ pub async fn adjust(
     .await;
 
     let target = match result {
-        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
-            format!("{detail}?notice=quantity_adjusted")
-        }
+        Ok(resp) if resp.status == reqwest::StatusCode::OK => adjusted_target(&form.back, item_id),
         Ok(resp) if resp.status == reqwest::StatusCode::FORBIDDEN => {
             format!("{detail}?error=forbidden")
         }
@@ -268,5 +292,45 @@ pub async fn delete(
             item_not_found_page().into_response()
         }
         Ok(_) | Err(_) => service_unavailable_page().into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id() -> Uuid {
+        Uuid::from_u128(7)
+    }
+
+    #[test]
+    fn the_list_is_where_its_stepper_lands_filters_kept() {
+        assert_eq!(
+            adjusted_target("/stocks", id()),
+            "/stocks?notice=quantity_adjusted"
+        );
+        assert_eq!(
+            adjusted_target("/stocks?lieu=Frigo&q=lait", id()),
+            "/stocks?lieu=Frigo&q=lait&notice=quantity_adjusted"
+        );
+    }
+
+    #[test]
+    fn anything_but_the_list_lands_on_the_article() {
+        let detail = "/stocks/00000000-0000-0000-0000-000000000007?notice=quantity_adjusted";
+        for back in [
+            "",
+            "https://example.org/stocks",
+            "//example.org",
+            "/stocks/new",
+            "/stocksx",
+            "/stocks/../account",
+            "/stocks#x",
+            "/stocks?q=a\r\nSet-Cookie: x",
+            "/stocks?lieu=Congélateur",
+            "/budget",
+        ] {
+            assert_eq!(adjusted_target(back, id()), detail, "{back}");
+        }
     }
 }

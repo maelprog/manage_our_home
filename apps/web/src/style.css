@@ -256,6 +256,9 @@ h3 { font-size: var(--t-lg); margin: var(--s4) 0 var(--s1); }
      wrap (`th, td`), so a long title ran out of its chip and over the next
      day. The link keeps the whole title as its name. */
   .chip { overflow: hidden; text-overflow: ellipsis; }
+  /* A stock card on a PC (#527): the stepper takes its own line, the
+     buttons at its two ends. */
+  .stock .stepper { flex-basis: 100%; justify-content: space-between; }
   /* The messagerie's send box, kept in reach at the foot of a long thread
      instead of sitting past the end of it (audit §5). `.content >` is the
      point of the selector: the same class dresses the edit form inside a
@@ -649,6 +652,38 @@ progress::-moz-progress-bar { background: currentColor; }
    under the 3:1 a control's edge needs (WCAG 1.4.11). */
 .tick { display: inline-flex; flex: none; align-items: center; justify-content: center; width: var(--s12); height: var(--s12); padding: 0; border-width: 2px; }
 .tick.secondary { border-color: var(--muted); }
+/* -- The stocks (#527) ----------------------------------------------------
+   The search field draws its magnifier inside the box, so the box is the
+   label and the input inside it loses its own edge. */
+.search label { flex-direction: row; align-items: center; gap: var(--s2x); padding-left: var(--s3); border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface); color: var(--muted); }
+.search input { flex: 1; min-width: 0; border: 0; }
+/* The filters, a row of pills: every place, « Stock bas », the order. The
+   one shown takes the accent, as a current tab does. */
+.filters { display: flex; flex-wrap: wrap; gap: var(--s2x); margin: var(--s4) 0; }
+.filters a { display: inline-flex; align-items: center; min-height: var(--s12); padding: 0 var(--s4); border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface); color: var(--fg); font-size: var(--t-sm); font-weight: 600; text-decoration: none; }
+.filters [aria-current] { border-color: var(--accent); background: var(--accent); color: var(--accent-fg); }
+/* One card per article: a row on a phone — the name and its line, the
+   stepper at the end — and a grid of cards on a PC. */
+.stock { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: var(--s3); margin: 0; padding: 0; list-style: none; }
+.stock > .card { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2x) var(--s3); margin: 0; padding: var(--s3); }
+.stock .what { flex-basis: 8rem; }
+/* − quantity +: two one-button forms around the figure. */
+.stepper { display: flex; align-items: center; gap: var(--s1); }
+.stepper > span { min-width: var(--s16); text-align: center; font-weight: 600; font-variant-numeric: tabular-nums; }
+.stepper button:disabled { color: var(--muted); cursor: default; }
+/* The expiry pastille: red from the day before, amber for the rest of the
+   week. Its words say which; the tint repeats them. */
+.badge.late { background: var(--error-soft); color: var(--error); }
+.badge.soon { background: var(--warning-soft); color: var(--warning); }
+/* The add sheet: quantity and unit share a line; the scan comes first, in
+   the accent's dashed box, then « ou saisir » between two fine lines. */
+.pair { display: flex; gap: var(--s2x); }
+.pair > label { flex: 1; min-width: 0; }
+.scan { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s4); border: 2px dashed var(--accent); border-radius: var(--r-lg); }
+.scan > * { margin: 0; }
+.scan .icon { color: var(--accent); }
+.or { display: flex; align-items: center; gap: var(--s3); margin: 0; color: var(--muted); font-size: var(--t-sm); }
+.or::before, .or::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
 /* Support/admin screens (front epic F9) show multi-column tables that are
    wider than the narrow form column; the wrapper lets them scroll instead of
    overflowing the page. */
