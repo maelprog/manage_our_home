@@ -1196,6 +1196,58 @@ async fn categories_and_caps_are_bounded(db: PgPool) {
     assert_eq!(list["categories"].as_array().unwrap().len(), 30);
 }
 
+/// AC #532: the 30-category bound holds under simultaneous creations — with
+/// 25 categories on file, 15 creations at once leave exactly 30, the other
+/// 10 refused `category_limit_reached`. Without the family's lock in
+/// `create_budget_category`, several would read 25 together and pass.
+#[sqlx::test]
+async fn simultaneous_creations_stop_at_thirty_categories(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, _admin, group_id) = owner_and_admin(&router, &db, "cat-race").await;
+    let categories = format!("/groups/{group_id}/budget-categories");
+    for n in 1..=25 {
+        create_category(
+            &router,
+            &owner,
+            &group_id,
+            serde_json::json!({"name": format!("Avant {n}"), "color": "green"}),
+        )
+        .await;
+    }
+
+    let mut creations = tokio::task::JoinSet::new();
+    for n in 1..=15 {
+        let (router, owner, uri) = (router.clone(), owner.clone(), categories.clone());
+        creations.spawn(async move {
+            let body = serde_json::json!({"name": format!("Course {n}"), "color": "blue"});
+            let res = call(&router, Method::POST, &uri, Some(&owner), Some(body)).await;
+            let status = res.status();
+            (status, json_body(res).await)
+        });
+    }
+    let (mut created, mut refused) = (0, 0);
+    while let Some(outcome) = creations.join_next().await {
+        let (status, body) = outcome.unwrap();
+        match status {
+            StatusCode::CREATED => created += 1,
+            StatusCode::CONFLICT => {
+                assert_eq!(body["error"], "category_limit_reached", "{body}");
+                refused += 1;
+            }
+            other => panic!("unexpected {other}: {body}"),
+        }
+    }
+    assert_eq!((created, refused), (5, 10));
+
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM budget_categories WHERE group_id = $1::uuid")
+            .bind(&group_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(rows, 30);
+}
+
 /// AC #532: an entry takes a category at creation and on edit (`null` moves
 /// it back to « Sans catégorie »), and deleting a category leaves its
 /// entries in place with `category_id = NULL`.
