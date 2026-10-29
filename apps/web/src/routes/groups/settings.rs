@@ -691,4 +691,26 @@ mod tests {
             "{html}"
         );
     }
+
+    /// Another member's name and e-mail are theirs to choose: escaped in
+    /// their row and in the owner's successor options alike.
+    #[test]
+    fn a_members_name_and_email_are_escaped() {
+        let mut group = family();
+        group.members[1].display_name = "<i>Sam</i>".to_string();
+        group.members[1].email = "<s>sam@example.test".to_string();
+        let html = page("", &me(OWNER), &group, None, None);
+        assert!(
+            html.contains(&format!(
+                r#"<option value="{ADMIN}">&lt;i&gt;Sam&lt;/i&gt; — Admin</option>"#
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<span class="muted">&lt;s&gt;sam@example.test</span>"#),
+            "{html}"
+        );
+        assert!(!html.contains("<i>Sam</i>"), "{html}");
+        assert!(!html.contains("<s>sam@"), "{html}");
+    }
 }
