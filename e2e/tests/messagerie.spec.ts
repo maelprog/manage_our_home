@@ -81,6 +81,18 @@ test.describe("Messagerie — thread & composer", () => {
     await expect(row.getByText("Msg Sender")).toBeVisible();
     // Paris-local timestamp (dd/mm/yyyy à hh:mm).
     await expect(row.getByText(/\d{2}\/\d{2}\/\d{4} à \d{2}:\d{2}/)).toBeVisible();
+    // #528: your own message is a bubble on the right, in the accent.
+    await expect(row).toHaveClass("msg mine");
+    const bubble = row.locator(".multiline");
+    await expect(bubble).toHaveText("Bonjour la famille");
+    const rowBox = await row.boundingBox();
+    const bubbleBox = await bubble.boundingBox();
+    if (!rowBox || !bubbleBox) throw new Error("the message is not laid out");
+    expect(Math.round(bubbleBox.x + bubbleBox.width)).toBe(Math.round(rowBox.x + rowBox.width));
+    // The page names the family, and the composer stays in reach at the
+    // foot of the screen.
+    await expect(page.locator("hgroup .eyebrow")).toHaveText("Famille Discussion");
+    await expect(page.locator("#composer")).toHaveCSS("position", "sticky");
   });
 
   test("server-side empty-content rejection preserves the typed text", async ({ page }) => {
@@ -179,6 +191,12 @@ test.describe("Messagerie — live updates (WebSocket)", () => {
       member.locator("#thread").getByText("Message en direct"),
     ).toBeVisible({ timeout: 15000 });
     await expectPushedLive(member);
+    // #528: the pushed message lands as a bubble of the family's — `.msg`,
+    // not `.mine`, since the member did not write it — in the server's
+    // render, not one the script builds.
+    await expect(
+      member.locator("#thread li[data-message-id]", { hasText: "Message en direct" }),
+    ).toHaveClass("msg");
 
     await context.close();
   });
@@ -560,11 +578,20 @@ test.describe("Messagerie — replies (#465)", () => {
     await expect(quote).toHaveAttribute("href", `#message-${parentId}`);
     await expect(page.locator(`#message-${parentId}`)).toHaveCount(1);
 
-    // The other member gets it live, quote included.
+    // #528: the parent counts its answer, as a link to it.
+    const replyId = await reply.getAttribute("data-message-id");
+    const count = parentRow.locator(".replies");
+    await expect(count).toHaveText("1 réponse");
+    await expect(count).toHaveAttribute("href", `#message-${replyId}`);
+
+    // The other member gets it live, quote and count included.
     const memberReply = member.locator("#thread li[data-message-id]", { hasText: "Vers 8h" });
     await expect(memberReply.locator(".quote")).toContainText("On part à quelle heure ?", {
       timeout: 15000,
     });
+    await expect(
+      member.locator(`#thread li[data-message-id="${parentId}"] .replies`),
+    ).toHaveText("1 réponse");
     await expectPushedLive(member);
 
     // Deleting the parent keeps the reply, without its quote — live too: the

@@ -23,12 +23,17 @@
 //! - `reply_excerpt` is the one definition of a reply's quote of its parent
 //!   (#464): `apps/api` cuts `reply_to.excerpt` with it, and the composer
 //!   quotes the message being answered with it (#465).
+//! - `replies_in_window` / `replies_label` count the answers a message has
+//!   among those a page renders, for the thread's « n réponses » (#528).
+
+use std::collections::HashMap;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use chrono_tz::Europe::Paris;
 use uuid::Uuid;
 
 use crate::dto::groups::GroupMember;
+use crate::dto::messagerie::MessageResponse;
 
 /// Max message length, mirroring `apps/api/src/messagerie/messages.rs`'s
 /// `MAX_CONTENT_CHARS`. Counted in `char`s, after trimming.
@@ -159,6 +164,61 @@ pub fn reply_excerpt(content: &str) -> String {
     match content.char_indices().nth(REPLY_EXCERPT_CHARS) {
         None => content.to_string(),
         Some((cut, _)) => format!("{}…", content[..cut].trim_end()),
+    }
+}
+
+/// The answers a message has among the messages of one window (#528).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Replies {
+    /// How many messages of the window answer it.
+    pub count: usize,
+    /// The oldest of them, the one « n réponses » leads to.
+    pub first: Uuid,
+}
+
+/// For each message answered in `messages`, how many of `messages` answer it
+/// and which answer came first — by `(created_at, id)`, the order the
+/// cursor pages by, whatever order `messages` is in.
+///
+/// Only the window is counted: the API sends no reply count, so an answer
+/// on another page of the thread is not seen. A parent outside the window
+/// is keyed all the same; the thread simply has no row to show it on.
+pub fn replies_in_window(messages: &[MessageResponse]) -> HashMap<Uuid, Replies> {
+    let mut oldest: HashMap<Uuid, (usize, &MessageResponse)> = HashMap::new();
+    for msg in messages {
+        let Some(parent) = &msg.reply_to else {
+            continue;
+        };
+        oldest
+            .entry(parent.id)
+            .and_modify(|(count, first)| {
+                *count += 1;
+                if (msg.created_at, msg.id) < (first.created_at, first.id) {
+                    *first = msg;
+                }
+            })
+            .or_insert((1, msg));
+    }
+    oldest
+        .into_iter()
+        .map(|(parent, (count, first))| {
+            (
+                parent,
+                Replies {
+                    count,
+                    first: first.id,
+                },
+            )
+        })
+        .collect()
+}
+
+/// « 1 réponse », « 2 réponses ».
+pub fn replies_label(count: usize) -> String {
+    if count == 1 {
+        "1 réponse".to_string()
+    } else {
+        format!("{count} réponses")
     }
 }
 
@@ -431,5 +491,94 @@ mod tests {
             reply_excerpt(&content),
             format!("{}…", "a".repeat(REPLY_EXCERPT_CHARS - 1))
         );
+    }
+
+    // -- replies_in_window / replies_label (#528) ----------------------------
+
+    fn message(id: u128, minute: u32, reply_to: Option<u128>) -> MessageResponse {
+        let at = chrono::Utc
+            .with_ymd_and_hms(2026, 10, 29, 17, minute, 0)
+            .unwrap();
+        MessageResponse {
+            id: uuid(id),
+            group_id: uuid(100),
+            created_by: uuid(200),
+            content: "x".to_string(),
+            edited_at: None,
+            created_at: at,
+            updated_at: at,
+            reply_to: reply_to.map(|parent| crate::dto::messagerie::ReplyTo {
+                id: uuid(parent),
+                created_by: uuid(200),
+                excerpt: "x".to_string(),
+            }),
+        }
+    }
+
+    #[test]
+    fn a_window_without_replies_counts_nothing() {
+        let window = [message(2, 2, None), message(1, 1, None)];
+        assert!(replies_in_window(&window).is_empty());
+    }
+
+    #[test]
+    fn each_answered_message_counts_its_replies() {
+        // Newest first, as the API sends them.
+        let window = [
+            message(5, 5, Some(1)),
+            message(4, 4, Some(2)),
+            message(3, 3, Some(1)),
+            message(2, 2, None),
+            message(1, 1, None),
+        ];
+        let replies = replies_in_window(&window);
+        assert_eq!(replies.len(), 2);
+        assert_eq!(replies[&uuid(1)].count, 2);
+        assert_eq!(replies[&uuid(2)].count, 1);
+        assert!(!replies.contains_key(&uuid(3)));
+    }
+
+    /// « n réponses » leads to the oldest answer, wherever the window puts it.
+    #[test]
+    fn the_first_reply_is_the_oldest_whatever_the_order() {
+        let newest_first = [
+            message(5, 5, Some(1)),
+            message(3, 3, Some(1)),
+            message(1, 1, None),
+        ];
+        assert_eq!(replies_in_window(&newest_first)[&uuid(1)].first, uuid(3));
+        let shuffled = [
+            message(3, 3, Some(1)),
+            message(5, 5, Some(1)),
+            message(1, 1, None),
+        ];
+        assert_eq!(replies_in_window(&shuffled)[&uuid(1)].first, uuid(3));
+    }
+
+    /// Two answers stamped with the same instant: the id decides, as it does
+    /// for the cursor, so the link does not move from one render to the next.
+    #[test]
+    fn a_tie_on_the_instant_goes_to_the_smaller_id() {
+        let window = [
+            message(9, 3, Some(1)),
+            message(4, 3, Some(1)),
+            message(1, 1, None),
+        ];
+        assert_eq!(replies_in_window(&window)[&uuid(1)].first, uuid(4));
+    }
+
+    /// The parent may sit outside the window (an older page): its answers
+    /// are still counted, the thread just has no row to show the count on.
+    #[test]
+    fn a_parent_outside_the_window_is_counted_too() {
+        let window = [message(3, 3, Some(1))];
+        assert_eq!(replies_in_window(&window)[&uuid(1)].count, 1);
+    }
+
+    #[test]
+    fn the_label_agrees_with_its_count() {
+        assert_eq!(replies_label(1), "1 réponse");
+        assert_eq!(replies_label(2), "2 réponses");
+        assert_eq!(replies_label(12), "12 réponses");
     }
 }

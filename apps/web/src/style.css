@@ -259,13 +259,6 @@ h3 { font-size: var(--t-lg); margin: var(--s4) 0 var(--s1); }
   /* A stock card on a PC (#527): the stepper takes its own line, the
      buttons at its two ends. */
   .stock .stepper { flex-basis: 100%; justify-content: space-between; }
-  /* The messagerie's send box, kept in reach at the foot of a long thread
-     instead of sitting past the end of it (audit §5). `.content >` is the
-     point of the selector: the same class dresses the edit form inside a
-     row, which must not stick. It needs a ground — the thread scrolls
-     under it — and a floor, or the button meets the screen edge. Here and
-     not below the breakpoint: there the tab bar owns the viewport foot. */
-  .content > .composer { position: sticky; bottom: 0; background: var(--bg); padding-bottom: var(--s4); }
 }
 /* No browser gives a form a margin; the routes said `margin:0` on 20-odd of
    them anyway. Saying it once here is what makes those attributes go away. */
@@ -383,21 +376,12 @@ summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); padding
 }
 .page-header { margin-bottom: var(--s4); }
 .list-row { padding: var(--s2x) 0; border-bottom: 1px solid var(--line); }
-/* A row whose content stacks instead of sitting side by side: a message,
-   a recipe with its summary under the name. `.actions.stacked` is the same
+/* A row whose content stacks instead of sitting side by side: a recipe
+   with its summary under the name. `.actions.stacked` is the same
    column for a group of controls (#419): the "Continuer avec Google" under
    the login and register forms, stretched to the width of the form's own
    button instead of the width of its label. */
 .list-row.stacked, .actions.stacked { flex-direction: column; align-items: stretch; }
-/* A message you wrote yourself — the most useful thing on a shared family
-   thread, and the messagerie said nothing at all (audit §5). The ground is
-   `--surface`, a card's own ground; the rule is the 4px member
-   bar DESIGN.md → Layout already describes, in `--accent` because it says
-   *you*. *Who* is the coloured initial beside the name, so the hue is never
-   the only carrier (WCAG 1.4.1). `--accent-soft` would have read louder but
-   put `--muted` at 4.38:1 in dark when this was written; #74 has since
-   darkened it for today's cell, which shows the same pair. */
-.list-row.mine { background: var(--surface); border-left: var(--s1) solid var(--accent); padding-left: var(--s2x); }
 /* A row that is itself the control (#529): a link the width of its card
    (a setting of the profile), or the label of a radio (a family to make
    active). The whole row is the target, --s12 tall; it reads as a line of
@@ -758,10 +742,48 @@ dd { margin: var(--s2) 0 0 0; }
    which gives it its colour and size: its own line above the reply, ruled
    on the left as a quotation is, and a link to the quoted row. */
 .quote { display: block; border-left: var(--s2) solid var(--border); padding-left: var(--s2x); }
-/* The messagerie's composer, and its live-connection line — which reserves
-   its height so that a status appearing does not shove the thread down.
-   #72 reworks the thread; these are the values it carried inline. */
-.composer { margin-top: var(--s4); }
+/* The messagerie as a conversation (#528). A message is a column: who and
+   when, the quote it answers, the bubble, « n réponses », the actions. The
+   bubble is the content alone — never a link or a control, whose colours
+   are not made for --accent. Your own sit on the right, the bubble in
+   --accent-fg on --accent; the family's on the left, --fg on --surface
+   with a --line rim. Mine is decided by who wrote it, never by who may edit
+   it (#72). The corner nearest the sender is the one left square. */
+/* The page takes the column's whole width: a full-width `.content` is as
+   wide as what it holds on a PC, and a bubble is a share of the line. */
+.content:has(> .thread) { width: 100%; }
+.msgs { display: flex; flex-direction: column; gap: var(--s4); }
+.msg { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s1); }
+.msg.mine { align-items: flex-end; }
+.msg > .multiline { max-width: 80%; margin: 0; padding: var(--s2x) var(--s3); border: 1px solid var(--line); border-radius: var(--r-lg) var(--r-lg) var(--r-lg) var(--s1); background: var(--surface); }
+.msg.mine > .multiline { border-color: var(--accent); border-radius: var(--r-lg) var(--r-lg) var(--s1) var(--r-lg); background: var(--accent); color: var(--accent-fg); }
+/* The actions keep the row's width, so that an open edit form gets it. */
+.msg > .actions { align-self: stretch; margin: 0; }
+.msg.mine > .actions { justify-content: flex-end; }
+.replies { display: inline-flex; align-items: center; min-height: var(--s12); color: var(--accent); font-size: var(--t-sm); font-weight: 600; }
+/* The composer: the field and the send button on one row, any notice (an
+   error, the message being answered) on its own above them. The field
+   starts one line high and grows with its text up to the height of two
+   tab bars, where `field-sizing` exists; elsewhere it scrolls. The edit
+   form of a message wears the same class. */
+.composer { flex-flow: row wrap; align-items: flex-end; gap: var(--s2x); margin-top: var(--s4); }
+.composer > .notice { flex-basis: 100%; margin: 0; }
+.composer textarea { flex: 1 1 12rem; field-sizing: content; max-height: calc(var(--s16) * 2); }
+/* The send button's icon keeps its distance from the word, and the reply
+   notice's « Annuler » reads as a link in the app's colour, not the
+   browser's. */
+.composer button { display: inline-flex; align-items: center; gap: var(--s1); }
+.composer > .notice a { color: var(--accent); font-weight: 600; }
+/* The live thread's send box stays in reach at the foot of the screen
+   (#528), on a phone as on a PC — it stuck on a PC only until then (#72),
+   when it was three lines high. `.content >` is the point of the selector:
+   the edit form inside a row must not stick. It needs a ground, since the
+   thread scrolls under it, and a floor, or the button meets the screen
+   edge — on a phone, the height of the fixed tab bar that covers it (the
+   query at the end of the sheet). */
+.content > .composer { position: sticky; bottom: 0; padding: var(--s2x) 0 var(--s4); background: var(--bg); }
+/* The live-connection line reserves its height, so that a status appearing
+   does not shove the thread down. */
 .live-status { min-height: 1.2em; margin: var(--s1) 0; }
 /* Long-form document rendered from markdown (front epic F10's privacy policy,
    `validation::rgpd::render_markdown`): prose needs readable line height and
@@ -878,6 +900,8 @@ caption, .skip-link:not(:focus) { clip-path: inset(50%); }
   /* The event sheet (#525) reaches the screen's edges and opens upwards,
      as a sheet does on a phone. */
   .sheet { margin-inline: calc(var(--s4) * -1); border-radius: var(--r-lg) var(--r-lg) 0 0; }
+  /* The send box stuck above the tab bar (#528): its floor is the bar. */
+  .content > .composer { padding-bottom: var(--s16); }
 }
 /* Page transitions without JavaScript (#523): a cross-fade from one page to
    the next, for whoever has not asked for less motion. Asked for in the
