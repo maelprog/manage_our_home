@@ -1,13 +1,13 @@
 //! `/budget` — the family's grocery-derived spend: a **Résumé mensuel** section
-//! (cumulated per month, computed server-side) above the entry list. Any member
-//! reads it; per-row a `Modifier` link renders only for entries the caller may
-//! modify. Manual entry lives on `/budget/new`; the price-on-checkout path is on
+//! (cumulated per month, computed server-side) above the entry list. An owner
+//! or an admin reads it (#531); per-row a `Modifier` link renders only for
+//! entries the caller may modify. Manual entry lives on `/budget/new`; the price-on-checkout path is on
 //! the grocery list. PRG banners after create/update/delete and after a
 //! price-set on the grocery list. See `docs/front-epic-7-budget.md`.
 
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::response::{Html, IntoResponse, Response};
 use manage_our_home_shared::dto::budget::{BudgetEntryList, BudgetEntryResponse, BudgetSummary};
 use manage_our_home_shared::validation::budget::{can_modify, format_euros, format_period};
 
@@ -98,8 +98,9 @@ pub async fn get(
     headers: HeaderMap,
     Query(query): Query<ListQuery>,
 ) -> Response {
-    let Some(fam) = family_context(&state, &headers, &me, "/budget").await else {
-        return Redirect::to("/groups/new").into_response();
+    let fam = match family_context(&state, &headers, &me, "/budget").await {
+        Ok(fam) => fam,
+        Err(answer) => return *answer,
     };
     let cookie = budget_cookie(&headers);
 

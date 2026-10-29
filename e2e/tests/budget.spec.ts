@@ -5,10 +5,11 @@ import { fetchVerificationToken } from "../lib/db";
 // happy paths plus the documented error states from apps/api/src/budget/'s
 // error tables (see docs/front-epic-7-budget.md). Budget is tied to the grocery
 // list: manual price entry (/budget/new) + price-on-checkout on a checked
-// grocery item. Any member may create/read/set a price, so those controls show
-// for everyone; the per-row "Modifier" link and the edit/delete screen stay
-// behind can_modify (creator/admin/owner). Set-price upserts on the item, so a
-// re-tap re-tarifies rather than double-counting.
+// grocery item. Only an owner or an admin reaches the budget (#531): a standard
+// member sees no link to it, no price field on the grocery list, and a 404 on
+// its pages. Past that bar, the per-row "Modifier" link and the edit/delete
+// screen stay behind can_modify (creator/admin/owner). Set-price upserts on the
+// item, so a re-tap re-tarifies rather than double-counting.
 
 function uniqueEmail(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.test`;
@@ -215,8 +216,8 @@ test.describe("Budget — edit & delete", () => {
   });
 });
 
-test.describe("Budget — permission bar", () => {
-  test("a standard member can add/price but not edit/delete another member's entry", async ({
+test.describe("Budget — reserved to owners and admins (#531)", () => {
+  test("a standard member sees no way to the budget, and its pages are a 404", async ({
     page,
     browser,
   }) => {
@@ -224,8 +225,8 @@ test.describe("Budget — permission bar", () => {
     await createGroup(page, "Famille Droits Budget");
     const href = await createInvitationLink(page, "Famille Droits Budget");
 
-    // Owner adds an entry and captures its edit URL, plus a grocery item the
-    // member will price.
+    // The owner adds an entry and captures its edit URL, plus a checked
+    // grocery item — which the owner may price.
     await addEntry(page, "Dépense Owner", "20");
     await page.goto("/budget");
     const editHref = await page
@@ -236,40 +237,37 @@ test.describe("Budget — permission bar", () => {
     await addGroceryItem(page, "Lait partagé");
     await page.goto("/grocery-list");
     await page.locator("li", { hasText: "Lait partagé" }).getByRole("button", { name: "Cocher" }).click();
+    await expect(page.getByLabel("Prix pour Lait partagé")).toHaveCount(1);
+    await page.goto("/");
+    await expect(page.locator('a[href="/budget"]').first()).toBeAttached();
 
+    // A member who joins through an invitation is standard.
     const context = await browser.newContext();
     const member = await context.newPage();
     await registerAndLogin(member, "e2e-budgetmember", "Perm Member");
     await member.goto(href);
     await member.getByRole("button", { name: "Rejoindre le groupe" }).click();
 
-    // The member sees no "Modifier" link on the owner's entry...
-    await member.goto("/budget");
-    await expect(member.getByText("Dépense Owner")).toBeVisible();
-    await expect(
-      member.locator("li", { hasText: "Dépense Owner" }).getByRole("link", { name: "Modifier" }),
-    ).toHaveCount(0);
-    // ...and GETting its edit screen directly is forbidden.
-    await member.goto(editHref);
-    await expect(member.getByRole("heading", { name: "Action non autorisée" })).toBeVisible();
-
-    // ...but the member can still add their own entry...
-    await addEntry(member, "Dépense Membre", "5");
-    await expect(member.locator("li", { hasText: "Dépense Membre" })).toHaveCount(1);
-
-    // ...and set a price on a checked grocery item (any member may).
+    // No link to the budget anywhere on the home page — neither the PC
+    // sidebar's entry nor the card the phone reaches it through — and none
+    // on the grocery list either.
+    await member.goto("/");
+    await expect(member.getByRole("heading", { name: /^Budget d/ })).toHaveCount(0);
+    await expect(member.locator('a[href^="/budget"]')).toHaveCount(0);
     await member.goto("/grocery-list");
-    await member
-      .locator("li", { hasText: "Lait partagé" })
-      .getByLabel("Prix pour Lait partagé")
-      .fill("2.30");
-    await member
-      .locator("li", { hasText: "Lait partagé" })
-      .getByRole("button", { name: "Renseigner le prix" })
-      .click();
-    await expect(member.getByText("Prix enregistré.")).toBeVisible();
-    await member.goto("/budget");
-    await expect(member.locator("li", { hasText: "Lait partagé" }).getByText("2,30 €")).toBeVisible();
+    await expect(member.locator('a[href^="/budget"]')).toHaveCount(0);
+    // The checked item carries no price field.
+    await expect(member.locator("li", { hasText: "Lait partagé" })).toHaveCount(1);
+    await expect(member.getByLabel("Prix pour Lait partagé")).toHaveCount(0);
+    await expect(member.getByRole("button", { name: "Renseigner le prix" })).toHaveCount(0);
+
+    // Typed in by hand, every budget page answers as an unknown path does.
+    const unknown = await member.goto("/cette-page-n-existe-pas");
+    for (const path of ["/budget", "/budget/new", editHref]) {
+      const res = await member.goto(path);
+      expect(res?.status(), path).toBe(404);
+      expect(await res?.text(), path).toBe(await unknown?.text());
+    }
 
     await context.close();
   });

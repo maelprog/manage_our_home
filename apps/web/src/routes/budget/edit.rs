@@ -78,9 +78,9 @@ pub async fn get(
     headers: HeaderMap,
     Path(entry_id): Path<Uuid>,
 ) -> Response {
-    let Some(fam) = family_context(&state, &headers, &me, &format!("/budget/{entry_id}")).await
-    else {
-        return Redirect::to("/groups/new").into_response();
+    let fam = match family_context(&state, &headers, &me, &format!("/budget/{entry_id}")).await {
+        Ok(fam) => fam,
+        Err(answer) => return *answer,
     };
     let cookie = budget_cookie(&headers);
     let entry = match fetch_entry(&state, fam.gid, entry_id, cookie.as_deref()).await {
@@ -107,9 +107,9 @@ pub async fn post(
     Path(entry_id): Path<Uuid>,
     Form(form): Form<EntryForm>,
 ) -> Response {
-    let Some(fam) = family_context(&state, &headers, &me, &format!("/budget/{entry_id}")).await
-    else {
-        return Redirect::to("/groups/new").into_response();
+    let fam = match family_context(&state, &headers, &me, &format!("/budget/{entry_id}")).await {
+        Ok(fam) => fam,
+        Err(answer) => return *answer,
     };
 
     let render_error = |code: &str| {
@@ -177,9 +177,9 @@ pub async fn delete(
     headers: HeaderMap,
     Path(entry_id): Path<Uuid>,
 ) -> Response {
-    let Some(fam) = family_context(&state, &headers, &me, &format!("/budget/{entry_id}")).await
-    else {
-        return Redirect::to("/groups/new").into_response();
+    let fam = match family_context(&state, &headers, &me, &format!("/budget/{entry_id}")).await {
+        Ok(fam) => fam,
+        Err(answer) => return *answer,
     };
     let cookie = budget_cookie(&headers);
     let result = api_request_auth(

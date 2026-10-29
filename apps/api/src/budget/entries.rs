@@ -7,9 +7,8 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::auth::session::{scoped_tx, AuthUser};
-use crate::budget::can_modify;
+use crate::budget::{can_modify, require_budget_access};
 use crate::error::{AppError, AppResult};
-use crate::groups::require_role;
 use crate::stocks::items::day_or_today;
 use crate::AppState;
 
@@ -102,7 +101,7 @@ pub async fn create_budget_entry(
     let amount_cents = to_cents(body.amount)?;
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
-    require_role(&mut tx, group_id, auth.user_id).await?;
+    require_budget_access(&mut tx, group_id, auth.user_id).await?;
 
     if let Some(item_id) = body.grocery_item_id {
         // Same "referenced resource doesn't exist" condition as
@@ -151,8 +150,9 @@ pub async fn create_budget_entry(
 }
 
 /// Associates a price with a grocery item, e.g. once it's been checked
-/// off/bought (docs/v1-scope.md epic #6). Any member may set a price, same
-/// bar as creating a manual entry.
+/// off/bought (docs/v1-scope.md epic #6). Same bar as creating a manual
+/// entry: an owner or an admin (#531); a standard member gets 404, since a
+/// price is a budget entry.
 pub async fn set_grocery_item_price(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -162,7 +162,7 @@ pub async fn set_grocery_item_price(
     let amount_cents = to_cents(body.amount)?;
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
-    require_role(&mut tx, group_id, auth.user_id).await?;
+    require_budget_access(&mut tx, group_id, auth.user_id).await?;
 
     let item = sqlx::query!(
         "SELECT name FROM grocery_items WHERE id = $1 AND group_id = $2",
@@ -209,7 +209,7 @@ pub async fn get_budget_entry(
     Path((group_id, entry_id)): Path<(Uuid, Uuid)>,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
-    require_role(&mut tx, group_id, auth.user_id).await?;
+    require_budget_access(&mut tx, group_id, auth.user_id).await?;
 
     let entry = sqlx::query_as!(
         BudgetEntryRow,
@@ -232,7 +232,7 @@ pub async fn list_budget_entries(
     Path(group_id): Path<Uuid>,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
-    require_role(&mut tx, group_id, auth.user_id).await?;
+    require_budget_access(&mut tx, group_id, auth.user_id).await?;
 
     let rows = sqlx::query_as!(
         BudgetEntryRow,
@@ -261,7 +261,7 @@ pub async fn update_budget_entry(
     Json(body): Json<UpdateBudgetEntryRequest>,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
-    let actor_role = require_role(&mut tx, group_id, auth.user_id).await?;
+    let actor_role = require_budget_access(&mut tx, group_id, auth.user_id).await?;
 
     // FOR UPDATE locks the row for the rest of this transaction, mirroring
     // grocery_list/items.rs's and stocks/items.rs's concurrent-write protection.
@@ -319,7 +319,7 @@ pub async fn delete_budget_entry(
     Path((group_id, entry_id)): Path<(Uuid, Uuid)>,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
-    let actor_role = require_role(&mut tx, group_id, auth.user_id).await?;
+    let actor_role = require_budget_access(&mut tx, group_id, auth.user_id).await?;
 
     let existing = sqlx::query!(
         "SELECT created_by FROM budget_entries WHERE id = $1 AND group_id = $2",
@@ -362,7 +362,7 @@ pub async fn budget_summary(
     Path(group_id): Path<Uuid>,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
-    require_role(&mut tx, group_id, auth.user_id).await?;
+    require_budget_access(&mut tx, group_id, auth.user_id).await?;
 
     let rows = sqlx::query!(
         r#"

@@ -7,8 +7,9 @@ pub mod imports;
 pub mod parse;
 
 /// Permission bar for a `calendar_imports` connection, deliberately
-/// stricter than the "any member / creator-or-admin" bar every other epic
-/// uses (Stocks, Recipes, Grocery list, Budget, Messagerie): the feed URL
+/// stricter than the "any member / creator-or-admin" bar most other epics
+/// use (Stocks, Recipes, Grocery list, Messagerie; Budget is owner/admin
+/// only since #531): the feed URL
 /// is a bearer credential for a member's personal Google Calendar, not
 /// household data, so *creating* or *deleting* a connection requires an
 /// admin/owner role rather than just "any member" — a standard member

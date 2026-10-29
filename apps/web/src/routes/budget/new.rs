@@ -4,7 +4,8 @@
 //! by the price-on-checkout path on the grocery list). The empty-name /
 //! negative-amount rules are pre-validated by the shared `validate_entry_form`
 //! (inline error, no round trip); the backend's matching 400s are mapped
-//! defensively. Any member may create, so 403 isn't reachable via the UI.
+//! defensively. Whoever reaches the page may create (an owner or an admin,
+//! #531), so 403 isn't reachable via the UI.
 //! Success (201) → PRG `/budget?notice=entry_created`.
 
 use axum::extract::State;
@@ -100,8 +101,9 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Response {
-    let Some(fam) = family_context(&state, &headers, &me, "/budget/new").await else {
-        return Redirect::to("/groups/new").into_response();
+    let fam = match family_context(&state, &headers, &me, "/budget/new").await {
+        Ok(fam) => fam,
+        Err(answer) => return *answer,
     };
     // Pre-fill the date with today for convenience (still optional server-side).
     let form = EntryForm {
@@ -120,8 +122,9 @@ pub async fn post(
     headers: HeaderMap,
     Form(form): Form<EntryForm>,
 ) -> Response {
-    let Some(fam) = family_context(&state, &headers, &me, "/budget/new").await else {
-        return Redirect::to("/groups/new").into_response();
+    let fam = match family_context(&state, &headers, &me, "/budget/new").await {
+        Ok(fam) => fam,
+        Err(answer) => return *answer,
     };
 
     let render_error =

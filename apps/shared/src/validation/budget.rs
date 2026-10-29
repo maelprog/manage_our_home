@@ -8,9 +8,11 @@
 //!   (non-empty `name` after trim, a finite non-negative `amount`) in the same
 //!   order the backend checks them (name, then amount), so the first error the
 //!   form surfaces is the one a forged request would hit.
+//! - `can_access_budget` is the bar in front of the whole budget (#531): only
+//!   an owner or an admin reaches it. The backend uses this very function.
 //! - `can_modify` mirrors `apps/api/src/budget/mod.rs::can_modify`: the entry's
-//!   creator, or a group owner/admin, may edit or delete it. Any member may
-//!   create/read/set a price (that lighter bar is *not* gated here).
+//!   creator, or a group owner/admin, may edit or delete it — past
+//!   `can_access_budget`, which already keeps a standard member out.
 //! - `format_euros` / `amount_input_value` format the euro `f64` the API
 //!   returns for display (two decimals, French comma + `€`) and for
 //!   number-input pre-fill (two decimals, dot). The backend stores cents; the
@@ -60,9 +62,21 @@ pub fn validate_entry_form(name: &str, amount: f64) -> Result<(), EntryFormError
 /// Mirror of `apps/api/src/budget/mod.rs::can_modify`: the entry's creator, or
 /// a group owner/admin, may edit or delete it. Used to decide whether to render
 /// the edit/delete controls (the backend still 403s a forged request).
-/// Create/read/set-price are *not* gated by this — they're open to any member.
+/// Create/read/set-price are *not* gated by this — `can_access_budget` is.
 pub fn can_modify(role: &str, is_creator: bool) -> bool {
     is_creator || role == "owner" || role == "admin"
+}
+
+/// Whether a member of the given role reaches the family's budget at all
+/// (#531): owners and admins do, a standard member — a child of the family —
+/// does not, nor does any role this function does not name. This is the bar
+/// in front of every `/groups/:id/budget-entries*` route and the grocery
+/// item's price (`apps/api/src/budget/`), and the one `apps/web` reads to
+/// leave out the Budget tab, the home page's budget card, the price field on
+/// the grocery list and the `/budget` pages. `can_modify` only applies past
+/// it.
+pub fn can_access_budget(role: &str) -> bool {
+    role == "owner" || role == "admin"
 }
 
 /// Formats a euro amount for display: two decimals, French decimal comma, and a
@@ -185,6 +199,27 @@ mod tests {
     #[test]
     fn standard_member_cannot_modify_another_members_entry() {
         assert!(!can_modify("standard", false));
+    }
+
+    // -- can_access_budget ---------------------------------------------------
+
+    #[test]
+    fn owner_and_admin_reach_the_budget() {
+        assert!(can_access_budget("owner"));
+        assert!(can_access_budget("admin"));
+    }
+
+    #[test]
+    fn a_standard_member_does_not_reach_the_budget() {
+        assert!(!can_access_budget("standard"));
+    }
+
+    #[test]
+    fn an_unknown_role_does_not_reach_the_budget() {
+        // Closed by default: a role added later is kept out until it is
+        // named here.
+        assert!(!can_access_budget(""));
+        assert!(!can_access_budget("Owner"));
     }
 
     // -- format_euros / amount_input_value -----------------------------------

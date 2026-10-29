@@ -62,8 +62,10 @@ GET screen: the checkout action is a one-field, high-frequency gesture, so an
 inline form (same lightweight approach as F6's inline manual-add) beats a
 full page round-trip. The field appears only once an item is checked (bought),
 matching the "prix au checkout" framing. Any member may set a price (same bar
-as the check-off itself), so it renders for everyone; the backend upsert makes
-a re-tap idempotent (re-tarifies, never double-counts — see below), so it needs
+as the check-off itself), so it renders for everyone — superseded by #531: the
+budget, the price included, is now reserved to owners and admins, and a
+standard member gets neither the field nor the `/budget` pages (404). The
+backend upsert makes a re-tap idempotent (re-tarifies, never double-counts — see below), so it needs
 no confirmation and stays visible even after a price is set. F7 also removes the
 "Budget hook out of scope" note F6 left in `routes/grocery_list/mod.rs`, since
 the hook is now wired.
@@ -111,7 +113,7 @@ grocery-derived.
 | GET | `/budget/:id` | `budget::edit::get` | Entry edit screen (creator/admin/owner only) | `GET /groups/:id/budget-entries/:entry_id` |
 | POST | `/budget/:id/edit` | `budget::edit::post` | Update name/amount/date | `PATCH /groups/:id/budget-entries/:entry_id` |
 | POST | `/budget/:id/delete` | `budget::edit::delete` | Delete an entry (creator/admin/owner only) | `DELETE /groups/:id/budget-entries/:entry_id` |
-| POST | `/grocery-list/:id/price` | `grocery_list::list::price` | Set a price on a checked grocery item (any member) | `POST /groups/:id/grocery-items/:item_id/price` |
+| POST | `/grocery-list/:id/price` | `grocery_list::list::price` | Set a price on a checked grocery item (owner/admin only since #531) | `POST /groups/:id/grocery-items/:item_id/price` |
 
 No active family → every route redirects to `/groups/new` (same as
 Grocery list / Stocks / Recipes).
@@ -184,7 +186,7 @@ pre-validated by the shared `validate_entry_form`.
 | 201 | — | PRG → `/grocery-list?notice=price_set` (upsert — idempotent, a re-tap re-tarifies) |
 | 400 | `amount_must_be_non_negative` | PRG → `/grocery-list?error=amount_must_be_non_negative` |
 | 404 | `not_found` | "Article introuvable" page |
-| 403 | `forbidden` | PRG → `/grocery-list?error=forbidden` (unreachable — any member may set a price; defensive) |
+| 403 | `forbidden` | PRG → `/grocery-list?error=forbidden` (unreachable — the budget bar is owner/admin, and a standard member gets 404, not 403, since #531; defensive) |
 | — | transport / other | PRG → `/grocery-list?error=unavailable` |
 
 Amount (finite, non-negative) is pre-validated by the shared
@@ -193,6 +195,13 @@ fire here — the price form has no name field); the backend 400 is the
 defensive fallback.
 
 ## Permission bar (front mirror of `budget::can_modify`)
+
+> Superseded by #531: the budget — entries, summary, and the grocery-item
+> price — is reserved to owners and admins (`can_access_budget`). A standard
+> member gets 404 on every budget route and on the price endpoint, and the
+> front shows them neither the `/budget` link, nor the budget card, nor the
+> price form. The text below describes the original F7 bar, which now applies
+> only past that gate.
 
 Backend bar (`apps/api/src/budget/mod.rs::can_modify`): the entry's creator, or
 a group **owner/admin**, may edit (name/amount/date) or delete it; **any**
@@ -226,7 +235,8 @@ mapped defensively per the tables above.
    with a banner.
 4. A standard member gets no `Modifier` link on another member's entry and the
    forbidden page if they GET its edit screen — but **can** still set a price on
-   a grocery item and add their own manual entry.
+   a grocery item and add their own manual entry. (Superseded by #531: a
+   standard member no longer reaches the budget at all.)
 5. Documented error states render their exact French copy: server-side
    empty-name rejection and negative-amount rejection on add, and unknown-entry
    404. The pure `validate_entry_form` / `can_modify` / `format_euros` /
