@@ -231,11 +231,17 @@ pub async fn get(
 
 /// What the view is called: "juillet 2026" for a month, "Semaine du 13
 /// juillet" for a week. Unescaped — each caller escapes it where it lands.
+///
+/// A week is named by its Monday, whichever of its days is in focus: the
+/// arrows and « Aujourd'hui » keep the day they were given, and naming the
+/// week after a Wednesday said it started that day.
 fn view_title(is_week: bool, focus: NaiveDate) -> String {
-    let month = FR_MONTHS[(focus.month() - 1) as usize];
     if is_week {
-        format!("Semaine du {} {month}", focus.day())
+        let monday = week_days(focus)[0];
+        let month = FR_MONTHS[(monday.month() - 1) as usize];
+        format!("Semaine du {} {month}", monday.day())
     } else {
+        let month = FR_MONTHS[(focus.month() - 1) as usize];
         format!("{month} {}", focus.year())
     }
 }
@@ -684,6 +690,18 @@ mod tests {
     #[test]
     fn the_week_view_is_named_by_its_first_day() {
         assert_eq!(view_title(true, day(13)), "Semaine du 13 juillet");
+    }
+
+    #[test]
+    fn a_week_is_named_by_its_monday_whatever_day_it_was_opened_on() {
+        // « Aujourd'hui » and the arrows of the week view keep the day they
+        // were given, a Wednesday as often as a Monday: the title has to
+        // name the week, not that day.
+        assert_eq!(view_title(true, day(15)), "Semaine du 13 juillet");
+        assert_eq!(view_title(true, day(19)), "Semaine du 13 juillet");
+        // 2026-08-02 is a Sunday: its week starts in July.
+        let sunday = NaiveDate::from_ymd_opt(2026, 8, 2).unwrap();
+        assert_eq!(view_title(true, sunday), "Semaine du 27 juillet");
     }
 
     // -- render_nav ----------------------------------------------------
