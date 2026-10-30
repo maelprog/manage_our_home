@@ -707,6 +707,19 @@ progress.over { color: var(--error); }
    wide screen, one under the other when they do not fit. */
 .budget { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(20rem, 100%), 1fr)); align-items: start; gap: var(--s4); }
 .budget .card { margin: 0 0 var(--s4); }
+/* -- The notifications (#535) ---------------------------------------------
+   An entry is the secondary button of its own form: its icon, its text over
+   where it comes from and when, then a dot while it is unread. Unread, the
+   button's own card; read, flat on the page until the pointer is on it. */
+.notifs { display: grid; gap: var(--s2x); }
+.notif { display: flex; align-items: center; gap: var(--s3); width: 100%; font-weight: 400; text-align: left; }
+.notif:not(.unread) { border-color: transparent; background: none; }
+.notif > .icon { flex: none; width: var(--s12); height: var(--s12); padding: var(--s3); border-radius: var(--r-sm); background: var(--accent-soft); color: var(--accent); }
+.dot { flex: none; width: var(--s2x); height: var(--s2x); border-radius: var(--r-sm); color: var(--accent); background: currentColor; }
+/* The home's bell on a phone, its count on its corner as on a tab. */
+.bell { position: relative; padding: var(--s3); color: var(--fg); }
+.bell .icon { width: var(--s6); height: var(--s6); }
+.bell .badge { position: absolute; top: 0; right: 0; }
 /* Support/admin screens (front epic F9) show multi-column tables that are
    wider than the narrow form column; the wrapper lets them scroll instead of
    overflowing the page. */

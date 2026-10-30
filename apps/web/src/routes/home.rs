@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use crate::app::{
     avatar_photo, combined_member_colour, html_escape, member_colour, member_initial,
-    member_photo_url, shell, shell_with_header, Width,
+    member_photo_url, notifications_badge, shell, shell_with_header, Width,
 };
 use crate::family::{active_group_id_from_headers, resolve_active_group};
 use crate::icons::{icon, icon_link, Icon};
@@ -29,7 +29,7 @@ use crate::routes::agenda::{
     fmt_paris, occurrences_from_response, paris_local_to_utc, read_or_log, today_paris, DISPLAY_TZ,
 };
 use crate::routes::groups::ownership::ownership_notices;
-use crate::routes::groups::{cookie_of, header_with_groups};
+use crate::routes::groups::{cookie_of, header_parts};
 use crate::state::{api_request_auth, AppState};
 
 /// How far ahead the agenda card reads: today plus this many civil days
@@ -152,11 +152,13 @@ fn truncate_message(content: &str, max_chars: usize) -> String {
 /// every other family-scoped route (`routes/agenda`, `routes/stocks`, …);
 /// `None` means the user has no group yet, handled separately by `get`
 /// before this is even called. `role` is the caller's in that family, which
-/// decides the budget card (#531).
+/// decides the budget card (#531); `unread_notifications`, the bell's
+/// count (#535).
 struct FamilyContext {
     gid: Uuid,
     role: String,
     header: String,
+    unread_notifications: Option<u64>,
 }
 
 async fn family_context(
@@ -164,13 +166,14 @@ async fn family_context(
     headers: &HeaderMap,
     me: &MeResponse,
 ) -> (Option<FamilyContext>, Vec<GroupSummary>) {
-    let (groups, header) = header_with_groups(state, headers, me, "/").await;
+    let (groups, header, unread_notifications) = header_parts(state, headers, me, "/").await;
     let preferred = active_group_id_from_headers(headers);
     let active: Option<&GroupSummary> = resolve_active_group(&groups, preferred);
     let fam = active.map(|g| FamilyContext {
         gid: g.group_id,
         role: g.role.clone(),
         header: header.clone(),
+        unread_notifications,
     });
     (fam, groups)
 }
@@ -472,12 +475,35 @@ fn long_date_fr(day: NaiveDate) -> String {
 
 /// The head of the page: the date and "Bonjour", and on a PC the two
 /// actions the mock-up puts beside them. A phone has the floating button
-/// instead (`add_event_button`), and its grocery tile leads to the list.
-fn greeting(today: NaiveDate) -> String {
+/// instead (`add_event_button`), and its grocery tile leads to the list;
+/// and the bell (`bell_link`, #535), which a PC does without.
+fn greeting(today: NaiveDate, unread: Option<u64>) -> String {
     format!(
-        r#"<div class="page-header"><hgroup><p class="eyebrow">{date}</p><h1>Bonjour</h1></hgroup><div class="actions pc"><a class="btn secondary" href="/grocery-list">Ajouter aux courses</a><a class="btn" href="/agenda/new">{plus} Nouvel événement</a></div></div>"#,
+        r#"<div class="page-header"><hgroup><p class="eyebrow">{date}</p><h1>Bonjour</h1></hgroup><div class="actions pc"><a class="btn secondary" href="/grocery-list">Ajouter aux courses</a><a class="btn" href="/agenda/new">{plus} Nouvel événement</a></div>{bell}</div>"#,
         date = html_escape(&long_date_fr(today)),
         plus = icon(Icon::Plus),
+        bell = bell_link(unread),
+    )
+}
+
+/// The phone's bell (#535), at the head of the home page: the way to
+/// `/notifications` on a phone, whose tab bar has no room for it (a PC has
+/// the sidebar's entry). Its count is drawn on its corner and said in its
+/// name, "Notifications, 3 non lues"; `None` — the count could not be
+/// read — draws the bell alone.
+fn bell_link(unread: Option<u64>) -> String {
+    let unread = unread.unwrap_or(0);
+    let name = match unread {
+        0 => "Notifications".to_string(),
+        1 => "Notifications, 1 non lue".to_string(),
+        n => format!("Notifications, {n} non lues"),
+    };
+    // The badge's own words are left out of the name, which `aria-label`
+    // already says in full.
+    format!(
+        r#"<a class="bell phone" href="/notifications" aria-label="{name}">{svg}{badge}</a>"#,
+        svg = icon(Icon::Bell),
+        badge = notifications_badge(unread),
     )
 }
 
@@ -728,7 +754,9 @@ async fn dashboard(me: MeResponse, state: AppState, headers: HeaderMap) -> Respo
                 "."
             </p>
         };
-        let (_, header) = header_with_groups(&state, &headers, &me, "/").await;
+        // An invitation reaches a member without a family too (#534): the
+        // bell is here as well.
+        let (_, header, unread) = header_parts(&state, &headers, &me, "/").await;
         let body = view! {
             <p>"Vous êtes connecté."</p>
             {no_group_hint}
@@ -738,7 +766,9 @@ async fn dashboard(me: MeResponse, state: AppState, headers: HeaderMap) -> Respo
             "Accueil",
             &header,
             &format!(
-                "<h1>Bienvenue</h1>\n{terms}{body}",
+                r#"<div class="page-header"><h1>Bienvenue</h1>{bell}</div>
+{terms}{body}"#,
+                bell = bell_link(unread),
                 terms = update_notice(&me),
                 body = body.to_html(),
             ),
@@ -874,7 +904,7 @@ async fn dashboard(me: MeResponse, state: AppState, headers: HeaderMap) -> Respo
 {messages}
 </div>
 {add}"#,
-        greeting = greeting(today),
+        greeting = greeting(today, fam.unread_notifications),
         // #319: a member who accepted an earlier version of the CGU is told
         // here, first thing after logging in, until they acknowledge it.
         terms = update_notice(&me),
@@ -1545,7 +1575,7 @@ mod pure_logic_tests {
 
     #[test]
     fn the_greeting_carries_the_date_the_heading_and_the_pc_actions() {
-        let html = greeting(ymd(2026, 10, 28));
+        let html = greeting(ymd(2026, 10, 28), None);
         assert!(
             html.contains(r#"<p class="eyebrow">mercredi 28 octobre</p>"#),
             "{html}"
@@ -1557,6 +1587,46 @@ mod pure_logic_tests {
         assert!(html.contains(r#"href="/agenda/new""#), "{html}");
         assert!(html.contains("Nouvel événement"), "{html}");
         assert!(html.contains(r#"href="/grocery-list""#), "{html}");
+    }
+
+    #[test]
+    fn the_bell_leads_to_the_notifications_on_a_phone() {
+        let html = bell_link(Some(0));
+        assert_eq!(
+            html,
+            format!(
+                r#"<a class="bell phone" href="/notifications" aria-label="Notifications">{}</a>"#,
+                icon(Icon::Bell)
+            )
+        );
+        // Unread or unknown count: no pastille either way.
+        assert_eq!(bell_link(None), html);
+    }
+
+    #[test]
+    fn the_bell_wears_the_count_and_says_it_in_its_name() {
+        let html = bell_link(Some(3));
+        assert!(
+            html.contains(r#"aria-label="Notifications, 3 non lues""#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<span class="badge warn" aria-hidden="true">3</span>"#),
+            "{html}"
+        );
+        assert!(bell_link(Some(1)).contains(r#"aria-label="Notifications, 1 non lue""#));
+        let html = bell_link(Some(120));
+        assert!(html.contains(r#"aria-hidden="true">99+</span>"#), "{html}");
+        assert!(
+            html.contains(r#"aria-label="Notifications, 120 non lues""#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn the_greeting_holds_the_bell() {
+        let html = greeting(ymd(2026, 10, 28), Some(2));
+        assert!(html.contains(&bell_link(Some(2))), "{html}");
     }
 
     #[test]

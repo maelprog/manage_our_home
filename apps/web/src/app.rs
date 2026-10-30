@@ -230,6 +230,24 @@ pub(crate) fn unread_badge(unread: u64) -> String {
     )
 }
 
+/// The count the Notifications entry of the sidebar and the home's bell
+/// wear (#535), or nothing at all at zero — as `unread_badge`, but said
+/// the way the issue words it: "Notifications, 3 non lues".
+pub(crate) fn notifications_badge(unread: u64) -> String {
+    if unread == 0 {
+        return String::new();
+    }
+    let shown = if unread > 99 {
+        "99+".to_string()
+    } else {
+        unread.to_string()
+    };
+    let words = if unread == 1 { "non lue" } else { "non lues" };
+    format!(
+        r#"<span class="badge warn" aria-hidden="true">{shown}</span><span class="sr-only">, {unread} {words}</span>"#
+    )
+}
+
 /// The main navigation, in order (#523): `href`, the label on a PC, the
 /// label on a phone, the icon.
 ///
@@ -239,13 +257,13 @@ pub(crate) fn unread_badge(unread: u64) -> String {
 /// than a second label of Stocks: it stands for the stocks and the recipes
 /// both, so it is the current tab on either (`app_header`), where the PC
 /// lights Stocks or Recettes. Budget is left out for a standard member of
-/// the active family (#531, `can_access_budget`); the Notifications entry
-/// waits for #535.
+/// the active family (#531, `can_access_budget`). Notifications (#535) is
+/// on a PC only: a phone reaches the centre through the home's bell.
 ///
 /// `/admin/users` is appended for the single technical superadmin only,
 /// on a PC — everyone else never sees the door. The profile closes the list,
 /// outside the table: its content is the caller's, not a literal.
-const NAV: [(&str, Option<&str>, Option<&str>, Glyph); 8] = [
+const NAV: [(&str, Option<&str>, Option<&str>, Glyph); 9] = [
     ("/", Some("Accueil"), Some("Accueil"), Glyph::Home),
     ("/agenda", Some("Agenda"), Some("Agenda"), Glyph::Calendar),
     (
@@ -264,6 +282,7 @@ const NAV: [(&str, Option<&str>, Option<&str>, Glyph); 8] = [
         Some("Messages"),
         Glyph::Messages,
     ),
+    ("/notifications", Some("Notifications"), None, Glyph::Bell),
 ];
 
 /// The application's navigation, rendered once and laid out twice (#70,
@@ -273,7 +292,7 @@ const NAV: [(&str, Option<&str>, Option<&str>, Glyph); 8] = [
 ///
 /// What differs between the two is said by two classes the stylesheet
 /// hides on the other layout: `pc` (the brand, Stocks, Recettes, Budget,
-/// Admin, the caller's name and family) and `phone` (the Cuisine tab, a
+/// Notifications, Admin, the caller's name and family) and `phone` (the Cuisine tab, a
 /// tab's short label). A link that keeps the same label on both carries
 /// neither. What is hidden leaves the accessibility tree too, so a link is
 /// read by the label it shows, and on the stocks and the recipes each
@@ -295,11 +314,14 @@ const NAV: [(&str, Option<&str>, Option<&str>, Glyph); 8] = [
 ///
 /// `unread_messages` is the active family's unread count, which the
 /// Messagerie tab shows as a pastille (`unread_badge`, #463); 0 shows none.
+/// `unread_notifications` is the caller's, from every family, worn by the
+/// Notifications entry (`notifications_badge`, #535); 0 shows none either.
 pub fn app_header(
     me: &MeResponse,
     active: Option<&GroupSummary>,
     redirect_to: &str,
     unread_messages: u64,
+    unread_notifications: u64,
 ) -> String {
     // No family yet: the link stays, `/budget` sends to `/groups/new`.
     let budget = active.is_none_or(|g| can_access_budget(&g.role));
@@ -322,10 +344,10 @@ pub fn app_header(
                 ),
                 (None, None) => unreachable!("a navigation entry drawn on no layout"),
             };
-            let badge = if href == "/messagerie" {
-                unread_badge(unread_messages)
-            } else {
-                String::new()
+            let badge = match href {
+                "/messagerie" => unread_badge(unread_messages),
+                "/notifications" => notifications_badge(unread_notifications),
+                _ => String::new(),
             };
             // The phone's Cuisine tab stands for the recipes as well.
             let current = nav_link_is_current(href, redirect_to)
@@ -1554,7 +1576,7 @@ mod tests {
         // #523: Accueil, Agenda, Courses, Cuisine (which opens the stocks),
         // Messages and Profil. Budget is reached from its card on the home
         // page; the families and the account are under Profil.
-        let header = app_header(&me(false), Some(&family("Famille Martin")), "/", 0);
+        let header = app_header(&me(false), Some(&family("Famille Martin")), "/", 0, 0);
         assert_eq!(
             destinations(&header, Layout::Phone),
             hrefs_and_names(&[
@@ -1574,20 +1596,20 @@ mod tests {
         // budget; an admin and the owner keep the link.
         let mut standard = family("Famille Martin");
         standard.role = "standard".to_string();
-        let header = app_header(&me(false), Some(&standard), "/", 0);
+        let header = app_header(&me(false), Some(&standard), "/", 0, 0);
         assert!(!header.contains("/budget"), "{header}");
-        assert_eq!(destinations(&header, Layout::Pc).len(), 7);
+        assert_eq!(destinations(&header, Layout::Pc).len(), 8);
         let mut admin = family("Famille Martin");
         admin.role = "admin".to_string();
-        let header = app_header(&me(false), Some(&admin), "/", 0);
+        let header = app_header(&me(false), Some(&admin), "/", 0, 0);
         assert!(header.contains(r#"href="/budget""#), "{header}");
     }
 
     #[test]
     fn a_pc_gets_the_whole_list_and_the_profile_block_last() {
         // The owner's list: Budget is for owners and admins (#531);
-        // Notifications waits for #535.
-        let header = app_header(&me(false), Some(&family("Famille Martin")), "/", 0);
+        // Notifications closes it (#535).
+        let header = app_header(&me(false), Some(&family("Famille Martin")), "/", 0, 0);
         assert_eq!(
             destinations(&header, Layout::Pc),
             hrefs_and_names(&[
@@ -1598,6 +1620,7 @@ mod tests {
                 ("/recipes", "Recettes"),
                 ("/budget", "Budget"),
                 ("/messagerie", "Messagerie"),
+                ("/notifications", "Notifications"),
                 ("/account", "Profil : Alice Famille Martin"),
             ])
         );
@@ -1605,7 +1628,7 @@ mod tests {
 
     #[test]
     fn the_admin_link_is_on_the_pc_list_of_the_superadmin_only() {
-        let admin = app_header(&me(true), Some(&family("F")), "/", 0);
+        let admin = app_header(&me(true), Some(&family("F")), "/", 0, 0);
         let pc = destinations(&admin, Layout::Pc);
         assert_eq!(
             pc[pc.len() - 2],
@@ -1613,21 +1636,46 @@ mod tests {
         );
         // The phone bar keeps its six tabs.
         assert_eq!(destinations(&admin, Layout::Phone).len(), 6);
-        let member = app_header(&me(false), Some(&family("F")), "/", 0);
+        let member = app_header(&me(false), Some(&family("F")), "/", 0, 0);
         assert!(!member.contains("/admin"), "{member}");
     }
 
     #[test]
-    fn no_notifications_entry_until_the_feature_ships() {
-        // #535 delivers the notification centre; until then the place is
-        // kept, not the link.
-        let header = app_header(&me(false), Some(&family("F")), "/", 0);
-        assert!(!header.contains("Notifications"), "{header}");
+    fn the_notifications_entry_is_on_the_pc_list_only() {
+        // #535: a phone reaches the centre through the home's bell, and
+        // keeps its six tabs.
+        let header = app_header(&me(false), Some(&family("F")), "/", 0, 0);
+        assert!(!destinations(&header, Layout::Phone)
+            .iter()
+            .any(|(href, _)| href == "/notifications"));
+        assert!(destinations(&header, Layout::Pc)
+            .contains(&("/notifications".to_string(), "Notifications".to_string())));
+    }
+
+    #[test]
+    fn the_notifications_entry_wears_its_own_count() {
+        let header = app_header(&me(false), Some(&family("F")), "/agenda", 2, 3);
+        assert!(
+            destinations(&header, Layout::Pc).contains(&(
+                "/notifications".to_string(),
+                "Notifications, 3 non lues".to_string()
+            )),
+            "{header}"
+        );
+        // The messages keep theirs, apart.
+        assert!(destinations(&header, Layout::Pc).contains(&(
+            "/messagerie".to_string(),
+            "Messagerie (2 non lus)".to_string()
+        )));
+        assert_eq!(header.matches(r#"class="badge warn""#).count(), 2);
+        // None at zero.
+        let header = app_header(&me(false), Some(&family("F")), "/agenda", 0, 0);
+        assert!(!header.contains("badge"), "{header}");
     }
 
     #[test]
     fn every_destination_but_the_profile_carries_its_icon() {
-        let header = app_header(&me(true), Some(&family("F")), "/", 0);
+        let header = app_header(&me(true), Some(&family("F")), "/", 0, 0);
         let nav = &header[header.find("<nav").unwrap()..header.find("</nav>").unwrap()];
         for link in nav.split("<a ").skip(1) {
             let link = &link[..link.find("</a>").unwrap()];
@@ -1642,7 +1690,7 @@ mod tests {
 
     #[test]
     fn the_profile_block_names_the_caller_and_the_active_family() {
-        let header = app_header(&me(false), Some(&family("Les <Martin>")), "/", 0);
+        let header = app_header(&me(false), Some(&family("Les <Martin>")), "/", 0, 0);
         let link = &header[header.find(r#"href="/account""#).unwrap()..];
         let link = &link[..link.find("</a>").unwrap()];
         // The name alone in its element: the suite finds it by its exact text.
@@ -1650,7 +1698,7 @@ mod tests {
         assert!(link.contains("Les &lt;Martin&gt;"), "{link}");
         assert!(!link.contains("<Martin>"), "{link}");
         // Without a family, the block says so rather than leaving a gap.
-        let header = app_header(&me(false), None, "/", 0);
+        let header = app_header(&me(false), None, "/", 0, 0);
         assert!(header.contains("Aucune famille"), "{header}");
     }
 
@@ -1658,7 +1706,7 @@ mod tests {
     fn the_header_holds_no_form() {
         // The family switcher and the logout button moved to the profile
         // (#529), which posts to the same `POST /groups/switch` without JS.
-        let header = app_header(&me(false), Some(&family("F")), "/", 0);
+        let header = app_header(&me(false), Some(&family("F")), "/", 0, 0);
         assert!(!header.contains("<form"), "{header}");
         assert!(!header.contains("<select"), "{header}");
     }
@@ -1698,6 +1746,11 @@ mod tests {
                 Some(("/messagerie", "Messages")),
                 Some(("/messagerie", "Messagerie")),
             ),
+            (
+                "/notifications",
+                None,
+                Some(("/notifications", "Notifications")),
+            ),
             ("/admin/groups", None, Some(("/admin/users", "Admin"))),
             (
                 "/account",
@@ -1721,7 +1774,7 @@ mod tests {
                 Some(("/account", "Profil : Alice F")),
             ),
         ] {
-            let header = app_header(&me(true), Some(&family("F")), path, 0);
+            let header = app_header(&me(true), Some(&family("F")), path, 0, 0);
             for (layout, expected) in [(Layout::Phone, phone), (Layout::Pc, pc)] {
                 assert_eq!(
                     current_links(&header, layout),
@@ -1730,13 +1783,13 @@ mod tests {
                 );
             }
         }
-        let header = app_header(&me(true), Some(&family("F")), "/privacy-policy", 0);
+        let header = app_header(&me(true), Some(&family("F")), "/privacy-policy", 0, 0);
         assert!(!header.contains("aria-current"), "{header}");
     }
 
     #[test]
     fn the_header_marks_exactly_one_link_as_the_current_page() {
-        let header = app_header(&me(true), None, "/agenda/new", 0);
+        let header = app_header(&me(true), None, "/agenda/new", 0, 0);
         assert_eq!(
             header.matches(r#"aria-current="page""#).count(),
             1,
@@ -1745,9 +1798,9 @@ mod tests {
         assert!(header.contains(r#"<a class="navlink" href="/agenda" aria-current="page">"#));
         // Every nav link wears the component class, current or not — that is
         // what takes the navigation out of `.muted`: seven destinations and
-        // the phone's Cuisine tab, the Admin one a superadmin gets, and the
-        // profile.
-        assert_eq!(header.matches(r#"class="navlink"#).count(), 10);
+        // the phone's Cuisine tab, Notifications (#535), the Admin one a
+        // superadmin gets, and the profile.
+        assert_eq!(header.matches(r#"class="navlink"#).count(), 11);
     }
 
     // -- unread badge on the Messagerie tab (#463) -------------------------
@@ -1780,6 +1833,32 @@ mod tests {
     }
 
     #[test]
+    fn no_unread_notification_means_no_badge() {
+        assert_eq!(notifications_badge(0), "");
+    }
+
+    #[test]
+    fn the_notifications_badge_says_its_count_after_a_comma() {
+        // #535: "Notifications, 3 non lues", feminine as the word is.
+        assert_eq!(
+            notifications_badge(3),
+            r#"<span class="badge warn" aria-hidden="true">3</span><span class="sr-only">, 3 non lues</span>"#
+        );
+        assert!(notifications_badge(1).contains(">, 1 non lue<"));
+    }
+
+    #[test]
+    fn the_notifications_badge_stops_at_99_plus_for_the_eye_only() {
+        assert!(notifications_badge(99).contains(r#"aria-hidden="true">99</span>"#));
+        let badge = notifications_badge(100);
+        assert!(
+            badge.contains(r#"aria-hidden="true">99+</span>"#),
+            "{badge}"
+        );
+        assert!(badge.contains(", 100 non lues"), "{badge}");
+    }
+
+    #[test]
     fn the_visible_count_stops_at_99_plus_and_the_spoken_one_does_not() {
         assert!(unread_badge(99).contains(r#"aria-hidden="true">99</span>"#));
         let badge = unread_badge(250);
@@ -1792,7 +1871,7 @@ mod tests {
 
     #[test]
     fn the_header_puts_the_badge_on_the_messagerie_tab_only() {
-        let header = app_header(&me(false), None, "/agenda", 3);
+        let header = app_header(&me(false), None, "/agenda", 3, 0);
         let link = &header[header
             .find(r#"href="/messagerie""#)
             .expect("messagerie tab")..];
@@ -1816,7 +1895,7 @@ mod tests {
 
     #[test]
     fn the_header_has_no_badge_without_unread_messages() {
-        let header = app_header(&me(false), None, "/agenda", 0);
+        let header = app_header(&me(false), None, "/agenda", 0, 0);
         assert!(!header.contains("badge"), "{header}");
     }
 
@@ -1824,7 +1903,7 @@ mod tests {
     fn the_account_link_is_current_on_the_account_screens() {
         // The profile is a destination like any other; on /account/export
         // the header has to say so too.
-        let header = app_header(&me(false), None, "/account/export", 0);
+        let header = app_header(&me(false), None, "/account/export", 0, 0);
         assert!(header.contains(r#"href="/account" aria-current="page""#));
         assert_eq!(header.matches(r#"aria-current="page""#).count(), 1);
     }
@@ -1834,7 +1913,7 @@ mod tests {
         // The nav sat in a `.muted` block: grey, 0.875rem, ranked below the
         // content it leads to (#69). The family under the caller's name in
         // the profile block is the one secondary line it holds.
-        let header = app_header(&me(false), Some(&family("F")), "/", 0);
+        let header = app_header(&me(false), Some(&family("F")), "/", 0, 0);
         let nav = &header[..header.find(r#"href="/account""#).expect("the profile link")];
         assert!(
             !nav.contains("muted"),

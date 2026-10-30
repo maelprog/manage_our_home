@@ -139,7 +139,7 @@ pub(crate) fn shown(item: &StockItemResponse, place: Option<&str>, search: Optio
     in_place && named
 }
 
-const WEEKDAYS: [&str; 7] = [
+pub(crate) const WEEKDAYS: [&str; 7] = [
     "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche",
 ];
 
