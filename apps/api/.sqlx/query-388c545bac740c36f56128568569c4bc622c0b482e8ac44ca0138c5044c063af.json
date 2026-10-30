@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT created_by, name, instructions, servings FROM recipes WHERE id = $1 AND group_id = $2 FOR UPDATE",
+  "query": "SELECT created_by, name, instructions, servings, duration_minutes FROM recipes WHERE id = $1 AND group_id = $2 FOR UPDATE",
   "describe": {
     "columns": [
       {
@@ -46,6 +46,17 @@
             "name": "servings"
           }
         }
+      },
+      {
+        "ordinal": 4,
+        "name": "duration_minutes",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "duration_minutes"
+          }
+        }
       }
     ],
     "parameters": {
@@ -58,8 +69,9 @@
       false,
       false,
       true,
+      true,
       true
     ]
   },
-  "hash": "6fdcb3d4027f2ea7b797f034aef7ab3c28461fa4f64040aaec61068fd83cb7dc"
+  "hash": "388c545bac740c36f56128568569c4bc622c0b482e8ac44ca0138c5044c063af"
 }

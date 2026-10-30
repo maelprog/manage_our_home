@@ -1,6 +1,7 @@
 import { expect, Page, test } from "@playwright/test";
 import { parisDay } from "../lib/dates";
 import { fetchVerificationToken } from "../lib/db";
+import { fillIngredients } from "../lib/recipe-form";
 
 // Front epic F6 — Grocery list (issue #21): every user journey the epic
 // introduces, happy paths plus the documented error states from
@@ -83,7 +84,7 @@ async function createRecipe(
 ): Promise<void> {
   await page.goto("/recipes/new");
   await page.getByLabel("Nom").fill(name);
-  await page.getByLabel("Ingrédients").fill(ingredients);
+  await fillIngredients(page, ingredients);
   if (servings !== undefined) await page.getByLabel("Personnes").fill(servings);
   await page.getByRole("button", { name: "Créer la recette" }).click();
   await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\?notice=recipe_created$/);

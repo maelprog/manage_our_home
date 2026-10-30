@@ -43,6 +43,10 @@ pub struct CreateRecipeRequest {
     /// `validation::recipes::SERVINGS_MAX`; omitted when not said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub servings: Option<i32>,
+    /// How long it takes, in minutes (#539), 1 to
+    /// `validation::recipes::DURATION_MAX`; omitted when not said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_minutes: Option<i32>,
 }
 
 /// The longest `source_url` a recipe may carry, in characters.
@@ -88,6 +92,13 @@ pub struct UpdateRecipeRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub servings: Option<Option<i32>>,
+    /// Same three states (#539).
+    #[serde(
+        default,
+        deserialize_with = "deserialize_some",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub duration_minutes: Option<Option<i32>>,
 }
 
 /// One ingredient on a recipe response. Mirrors `IngredientResponse`.
@@ -117,6 +128,9 @@ pub struct RecipeResponse {
     /// The number of people it is written for (#470), if it says.
     #[serde(default)]
     pub servings: Option<i32>,
+    /// How long it takes, in minutes (#539), if it says.
+    #[serde(default)]
+    pub duration_minutes: Option<i32>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

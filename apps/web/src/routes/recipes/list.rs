@@ -471,6 +471,7 @@ mod tests {
             ingredients: Vec::new(),
             source_url: None,
             servings,
+            duration_minutes: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

@@ -14,6 +14,19 @@ use crate::recipes::import::valid_source_url;
 use crate::recipes::selections::validate_servings;
 use crate::AppState;
 
+/// The longest a recipe may say it takes, in minutes (#539): a day. The
+/// `CHECK` of `recipes.duration_minutes` (0041) holds the same bound.
+pub(crate) const DURATION_MAX: i32 = 1440;
+
+/// A recipe's time: from 1 minute to [`DURATION_MAX`].
+fn validate_duration(minutes: i32) -> AppResult<i32> {
+    if (1..=DURATION_MAX).contains(&minutes) {
+        Ok(minutes)
+    } else {
+        Err(AppError::BadRequest("invalid_duration".into()))
+    }
+}
+
 #[derive(Deserialize)]
 pub struct IngredientInput {
     pub name: String,
@@ -36,6 +49,9 @@ pub struct CreateRecipeRequest {
     /// The number of people the recipe is written for (#470), from 1 to
     /// `selections::SERVINGS_MAX`; absent, the recipe does not say.
     pub servings: Option<i32>,
+    /// How long it takes, in minutes (#539), from 1 to [`DURATION_MAX`];
+    /// absent, the recipe does not say.
+    pub duration_minutes: Option<i32>,
 }
 
 /// Serde's blanket `Option<T>` impl treats an explicit JSON `null` the same
@@ -60,6 +76,9 @@ pub struct UpdateRecipeRequest {
     /// untouched.
     #[serde(default, deserialize_with = "deserialize_some")]
     pub servings: Option<Option<i32>>,
+    /// Same three states as `servings` (#539).
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub duration_minutes: Option<Option<i32>>,
 }
 
 #[derive(Serialize)]
@@ -82,6 +101,7 @@ pub struct RecipeResponse {
     pub ingredients: Vec<IngredientResponse>,
     pub source_url: Option<String>,
     pub servings: Option<i32>,
+    pub duration_minutes: Option<i32>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -94,6 +114,7 @@ struct RecipeRow {
     instructions: Option<String>,
     source_url: Option<String>,
     servings: Option<i32>,
+    duration_minutes: Option<i32>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -206,6 +227,7 @@ pub async fn create_recipe(
         ),
     };
     let servings = body.servings.map(validate_servings).transpose()?;
+    let duration_minutes = body.duration_minutes.map(validate_duration).transpose()?;
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
@@ -213,9 +235,9 @@ pub async fn create_recipe(
     let recipe = sqlx::query_as!(
         RecipeRow,
         r#"
-        INSERT INTO recipes (group_id, created_by, name, instructions, source_url, servings)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING id, group_id, created_by, name, instructions, source_url, servings, created_at, updated_at
+        INSERT INTO recipes (group_id, created_by, name, instructions, source_url, servings, duration_minutes)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, created_at, updated_at
         "#,
         group_id,
         auth.user_id,
@@ -223,6 +245,7 @@ pub async fn create_recipe(
         body.instructions,
         source_url,
         servings,
+        duration_minutes,
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -242,6 +265,7 @@ pub async fn create_recipe(
             ingredients,
             source_url: recipe.source_url,
             servings: recipe.servings,
+            duration_minutes: recipe.duration_minutes,
             created_at: recipe.created_at,
             updated_at: recipe.updated_at,
         }),
@@ -258,7 +282,7 @@ pub async fn get_recipe(
 
     let recipe = sqlx::query_as!(
         RecipeRow,
-        r#"SELECT id, group_id, created_by, name, instructions, source_url, servings, created_at, updated_at
+        r#"SELECT id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, created_at, updated_at
            FROM recipes WHERE id = $1 AND group_id = $2"#,
         recipe_id,
         group_id,
@@ -279,6 +303,7 @@ pub async fn get_recipe(
         ingredients,
         source_url: recipe.source_url,
         servings: recipe.servings,
+        duration_minutes: recipe.duration_minutes,
         created_at: recipe.created_at,
         updated_at: recipe.updated_at,
     }))
@@ -295,7 +320,7 @@ pub async fn list_recipes(
     let recipe_rows = sqlx::query_as!(
         RecipeRow,
         r#"
-        SELECT id, group_id, created_by, name, instructions, source_url, servings, created_at, updated_at
+        SELECT id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, created_at, updated_at
         FROM recipes
         WHERE group_id = $1
         ORDER BY name
@@ -330,6 +355,7 @@ pub async fn list_recipes(
             ingredients: Vec::new(),
             source_url: r.source_url,
             servings: r.servings,
+            duration_minutes: r.duration_minutes,
             created_at: r.created_at,
             updated_at: r.updated_at,
         })
@@ -356,6 +382,9 @@ pub async fn update_recipe(
     if let Some(Some(servings)) = body.servings {
         validate_servings(servings)?;
     }
+    if let Some(Some(minutes)) = body.duration_minutes {
+        validate_duration(minutes)?;
+    }
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let actor_role = require_role(&mut tx, group_id, auth.user_id).await?;
@@ -363,7 +392,7 @@ pub async fn update_recipe(
     // FOR UPDATE locks the row for the rest of this transaction, mirroring
     // stocks/items.rs's concurrent-write protection.
     let existing = sqlx::query!(
-        "SELECT created_by, name, instructions, servings FROM recipes WHERE id = $1 AND group_id = $2 FOR UPDATE",
+        "SELECT created_by, name, instructions, servings, duration_minutes FROM recipes WHERE id = $1 AND group_id = $2 FOR UPDATE",
         recipe_id,
         group_id,
     )
@@ -388,6 +417,10 @@ pub async fn update_recipe(
         Some(s) => s,
         None => existing.servings,
     };
+    let duration_minutes = match body.duration_minutes {
+        Some(d) => d,
+        None => existing.duration_minutes,
+    };
 
     let recipe = sqlx::query_as!(
         RecipeRow,
@@ -396,15 +429,17 @@ pub async fn update_recipe(
             name = COALESCE($3, name),
             instructions = $4,
             servings = $5,
+            duration_minutes = $6,
             updated_at = now()
         WHERE id = $1 AND group_id = $2
-        RETURNING id, group_id, created_by, name, instructions, source_url, servings, created_at, updated_at
+        RETURNING id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, created_at, updated_at
         "#,
         recipe_id,
         group_id,
         name,
         instructions,
         servings,
+        duration_minutes,
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -431,6 +466,7 @@ pub async fn update_recipe(
         ingredients,
         source_url: recipe.source_url,
         servings: recipe.servings,
+        duration_minutes: recipe.duration_minutes,
         created_at: recipe.created_at,
         updated_at: recipe.updated_at,
     }))
@@ -467,4 +503,31 @@ pub async fn delete_recipe(
     tx.commit().await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rejected(minutes: i32) -> bool {
+        matches!(
+            validate_duration(minutes),
+            Err(AppError::BadRequest(m)) if m == "invalid_duration"
+        )
+    }
+
+    #[test]
+    fn a_duration_from_one_minute_to_a_day_is_accepted() {
+        assert_eq!(validate_duration(1).unwrap(), 1);
+        assert_eq!(validate_duration(45).unwrap(), 45);
+        assert_eq!(validate_duration(DURATION_MAX).unwrap(), 1440);
+    }
+
+    #[test]
+    fn a_duration_of_zero_negative_or_above_a_day_is_refused() {
+        assert!(rejected(0));
+        assert!(rejected(-1));
+        assert!(rejected(DURATION_MAX + 1));
+        assert!(rejected(i32::MAX));
+    }
 }

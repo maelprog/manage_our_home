@@ -55,35 +55,36 @@ Any ML/Ollama suggestion swap (v1 is rules-only, per architecture.md and
 the backend's own doc comment). Fridge-scan/OCR ingredient capture
 (post-v1). The grocery-list generate action (F6).
 
-### Ingredient entry: one-per-line textarea + pure parser
+### Ingredient entry: one line per ingredient + pure parser (#539)
 
-No-JS SSR, same as the rest of `apps/web` (no client bundle). Ingredients
-are entered as a textarea, **one ingredient per line**, pipe-delimited
-positional fields — parsed by the pure, TDD'd
-`manage_our_home_shared::validation::recipes::parse_ingredients`:
+No-JS SSR, same as the rest of `apps/web` (no client bundle). Until #539
+the ingredients were one pipe-delimited textarea; since then the form has
+**one line per ingredient**, each its own fields, read by the pure, TDD'd
+`manage_our_home_shared::validation::recipes::parse_ingredient_fields`:
 
-```
-Nom | quantité | unité | mois de saison | optionnel
-```
+- **Quantité** — optional `f64`, a decimal comma read as a point; empty →
+  none; negative → `ingredient_quantity_must_be_non_negative`; unparseable
+  → `ingredient_quantity_invalid` (front-only: cannot be sent as JSON).
+- **Unité** — optional free text.
+- **Ingrédient** — required on a line where anything is typed; a line with
+  nothing typed is skipped; otherwise empty → `ingredient_name_required`.
+- **Saison** — optional comma-separated month numbers `1..=12`; out of
+  range → `invalid_seasonal_month`.
+- **Facultatif** — a checkbox: the ingredient is left out of the
+  required-ingredient stock match.
+- **Retirer** — a checkbox: the line is dropped when the form is read.
 
-- **Nom** (field 1) — required, trimmed. Empty line → skipped; a non-empty
-  line with an empty name → `ingredient_name_required`.
-- **Quantité** (field 2) — optional `f64`; empty → none; negative →
-  `ingredient_quantity_must_be_non_negative`; unparseable →
-  `ingredient_quantity_invalid` (front-only: cannot be sent as JSON).
-- **Unité** (field 3) — optional free text.
-- **Mois de saison** (field 4) — optional comma-separated month numbers
-  `1..=12` (an optional `saison:` prefix is tolerated); out of range →
-  `invalid_seasonal_month`.
-- **Optionnel** (field 5) — `optionnel`/`facultatif`/`opt`/`o`/`oui`/`x`
-  (case-insensitive) marks the ingredient optional (excluded from the
-  required-ingredient stock match); anything else → required.
+The form is drawn with blank lines (five for a new recipe, three under
+those of an existing one); « Ajouter des lignes » sends it back with more,
+saving nothing. A line in error is named by its number. The reverse,
+`ingredient_fields` (used to pre-fill the edit form), is the round-trip
+inverse and is unit-tested as such. The parser mirrors the backend's
+`validate_ingredients` check order so the first error the form surfaces is
+the one a forged request would hit.
 
-Trailing fields may be omitted (`Farine` = name only; `Farine | 2 | kg`).
-The reverse, `format_ingredients` (used to pre-fill the edit form), is the
-round-trip inverse and is unit-tested as such. The parser mirrors the
-backend's `validate_ingredients` check order so the first error the form
-surfaces is the one a forged request would hit.
+The method is entered as **numbered steps**, stored one per line in
+`instructions` (`join_steps` / `steps_of`), and the form also takes the
+recipe's **time** in minutes (`duration_minutes`, 1 to 1440, `invalid_duration`).
 
 ## Route table (`apps/web`)
 
@@ -125,7 +126,7 @@ each row is the exact `(status, code)` → French UI state.
 | — | transport / other | inline "Service momentanément indisponible…" |
 
 Name + all ingredient rules are pre-validated by the shared
-`validate_recipe_name` / `parse_ingredients` (inline error, no round trip);
+`validate_recipe_name` / `parse_ingredient_fields` (inline error, no round trip);
 the backend 400s are the defensive fallback.
 
 ### `/recipes/import` (#405) — `import_recipe`

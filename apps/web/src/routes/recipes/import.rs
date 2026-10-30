@@ -11,6 +11,7 @@ use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use manage_our_home_shared::dto::recipes::{ImportRecipeRequest, RecipeDraft};
+use manage_our_home_shared::validation::recipes::IngredientFields;
 
 use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
@@ -49,37 +50,26 @@ pub(crate) fn error_text(code: &str) -> &'static str {
     }
 }
 
-/// The create form pre-filled from a draft: ingredients as the textarea's
-/// `intitulé | quantité | unité` lines, steps numbered one per line.
+/// The create form pre-filled from a draft: one line per ingredient
+/// (quantity, unit, name), one step per step of the page.
 pub(crate) fn draft_form(draft: &RecipeDraft) -> RecipeForm {
     let ingredients = draft
         .ingredients
         .iter()
-        .map(|i| {
-            // `|` separates the textarea's fields: one in a name would
-            // shift the quantity into the wrong column.
-            let name = i.name.replace('|', "/");
-            match (i.quantity, i.unit.as_deref()) {
-                (Some(q), Some(u)) => format!("{name} | {} | {}", fmt_num(q), u.replace('|', "/")),
-                (Some(q), None) => format!("{name} | {}", fmt_num(q)),
-                (None, _) => name,
-            }
+        .map(|i| IngredientFields {
+            quantity: i.quantity.map(fmt_num).unwrap_or_default(),
+            unit: i.unit.clone().unwrap_or_default(),
+            name: i.name.clone(),
+            months: String::new(),
+            optional: false,
         })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let instructions = draft
-        .steps
-        .iter()
-        .enumerate()
-        .map(|(n, step)| format!("{}. {step}", n + 1))
-        .collect::<Vec<_>>()
-        .join("\n");
+        .collect();
     RecipeForm {
         name: draft.name.clone(),
-        instructions,
         ingredients,
+        steps: draft.steps.clone(),
         source_url: draft.source_url.clone(),
-        servings: String::new(),
+        ..RecipeForm::default()
     }
 }
 
@@ -166,7 +156,7 @@ pub async fn post(
 mod tests {
     use super::*;
     use manage_our_home_shared::dto::recipes::DraftIngredient;
-    use manage_our_home_shared::validation::recipes::parse_ingredients;
+    use manage_our_home_shared::validation::recipes::parse_ingredient_fields;
 
     fn ingredient(quantity: Option<f64>, unit: Option<&str>, name: &str) -> DraftIngredient {
         DraftIngredient {
@@ -195,14 +185,28 @@ mod tests {
     fn a_draft_fills_the_create_form() {
         let form = draft_form(&draft());
         assert_eq!(form.name, "Pâte à crêpes");
+        let lines: Vec<_> = form
+            .ingredients
+            .iter()
+            .map(|l| (l.quantity.as_str(), l.unit.as_str(), l.name.as_str()))
+            .collect();
         assert_eq!(
-            form.ingredients,
-            "farine | 500 | g\ncitron | 0.5\nhuile | 0.333 | c. à soupe\nsel\nsel / poivre"
+            lines,
+            [
+                ("500", "g", "farine"),
+                ("0.5", "", "citron"),
+                ("0.333", "c. à soupe", "huile"),
+                ("", "", "sel"),
+                // One field per value: a `|` is just a character now.
+                ("", "", "sel | poivre"),
+            ]
         );
-        assert_eq!(
-            form.instructions,
-            "1. Mélanger.\n2. Laisser reposer 1 heure."
-        );
+        assert!(form
+            .ingredients
+            .iter()
+            .all(|l| !l.optional && l.months.is_empty()));
+        // The page's steps, numbered by the form.
+        assert_eq!(form.steps, ["Mélanger.", "Laisser reposer 1 heure."]);
         assert_eq!(
             form.source_url,
             "https://www.marmiton.org/recettes/crepes.aspx"
@@ -211,7 +215,7 @@ mod tests {
 
     #[test]
     fn the_ingredient_lines_read_back_as_the_draft_says() {
-        let parsed = parse_ingredients(&draft_form(&draft()).ingredients).unwrap();
+        let parsed = parse_ingredient_fields(&draft_form(&draft()).ingredients).unwrap();
         let read: Vec<_> = parsed
             .iter()
             .map(|i| (i.name.as_str(), i.quantity, i.unit.as_deref()))
@@ -223,7 +227,7 @@ mod tests {
                 ("citron", Some(0.5), None),
                 ("huile", Some(0.333), Some("c. à soupe")),
                 ("sel", None, None),
-                ("sel / poivre", None, None),
+                ("sel | poivre", None, None),
             ]
         );
     }

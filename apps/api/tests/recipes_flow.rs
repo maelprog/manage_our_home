@@ -1280,3 +1280,94 @@ async fn recipe_servings_are_set_changed_and_cleared(db: PgPool) {
         serde_json::Value::Null
     );
 }
+
+/// #539: how long a recipe takes, in minutes, from 1 to a day. Set on
+/// create, left alone by a PATCH that omits it, changed, then cleared by
+/// `null`; out of bounds is refused with `invalid_duration`.
+#[sqlx::test]
+async fn recipe_duration_is_set_changed_and_cleared(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "recipe-duration@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+
+    for minutes in [0, 1441] {
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/recipes"),
+            Some(&cookie),
+            Some(serde_json::json!({"name": "Crepes", "duration_minutes": minutes})),
+        )
+        .await;
+        assert_status(&res, StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(res).await["error"], "invalid_duration");
+    }
+
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes"),
+        Some(&cookie),
+        Some(serde_json::json!({"name": "Crepes", "duration_minutes": 45})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let recipe = json_body(res).await;
+    assert_eq!(recipe["duration_minutes"], 45);
+    let id = recipe["id"].as_str().unwrap().to_string();
+    let path = format!("/groups/{group_id}/recipes/{id}");
+
+    let patch = |body: serde_json::Value| {
+        let router = router.clone();
+        let cookie = cookie.clone();
+        let path = path.clone();
+        async move { call(&router, Method::PATCH, &path, Some(&cookie), Some(body)).await }
+    };
+
+    let res = patch(serde_json::json!({"duration_minutes": 1441})).await;
+    assert_status(&res, StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(res).await["error"], "invalid_duration");
+
+    let res = patch(serde_json::json!({"name": "Crêpes"})).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(
+        json_body(res).await["duration_minutes"],
+        45,
+        "absent: left alone"
+    );
+
+    let res = patch(serde_json::json!({"duration_minutes": 1440})).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(json_body(res).await["duration_minutes"], 1440);
+
+    let res = call(&router, Method::GET, &path, Some(&cookie), None).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(json_body(res).await["duration_minutes"], 1440);
+
+    let res = patch(serde_json::json!({"duration_minutes": null})).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(
+        json_body(res).await["duration_minutes"],
+        serde_json::Value::Null
+    );
+
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/recipes"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(
+        json_body(res).await["recipes"][0]["duration_minutes"],
+        serde_json::Value::Null
+    );
+}
