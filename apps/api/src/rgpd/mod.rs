@@ -678,6 +678,28 @@ pub async fn export_account(
         })
         .collect();
 
+    // The notification centre (#534): under the recipient policy of 0036,
+    // hence `app.user_id`, and filtered on the caller a second time. Every
+    // family's, and the invitations' from a family the caller is not in.
+    let mut notifications_tx = user_scoped_tx(&state.db, auth.user_id).await?;
+    let notifications = sqlx::query!(
+        r#"SELECT group_id, kind, object_id, body, read_at, created_at
+           FROM notifications WHERE user_id = $1 ORDER BY created_at, id"#,
+        auth.user_id
+    )
+    .fetch_all(&mut *notifications_tx)
+    .await?;
+    notifications_tx.commit().await?;
+    c.notifications = notifications
+        .into_iter()
+        .map(|n| {
+            json!({
+                "group_id": n.group_id, "kind": n.kind, "object_id": n.object_id,
+                "body": n.body, "read_at": n.read_at, "created_at": n.created_at,
+            })
+        })
+        .collect();
+
     let doc = export::build_export(profile_json, c);
 
     let mut audit_tx = crate::db::begin(&state.db).await?;

@@ -10,6 +10,7 @@
 //! (`apps/web`: the warning on the reminder forms and on
 //! `/account/notifications`).
 
+pub mod center;
 pub mod preferences;
 pub mod push;
 

@@ -13,6 +13,7 @@ use crate::error::{AppError, AppResult};
 use crate::grocery_list::can_modify;
 use crate::grocery_list::planned::{plan_lines, PlannedIngredient};
 use crate::groups::require_role;
+use crate::notifications::center;
 use crate::AppState;
 
 #[derive(Deserialize)]
@@ -137,6 +138,23 @@ pub async fn create_grocery_item(
         unit,
     )
     .fetch_one(&mut *tx)
+    .await?;
+    // The other members' notification centre (#534). An item typed by
+    // hand only: the lines `generate_grocery_items` writes from the
+    // planned recipes are a recomputation, not news.
+    center::insert_for_members(
+        &mut tx,
+        &center::NewNotification {
+            group_id,
+            event: center::Event::GroceryItem {
+                author: &auth.display_name,
+                item: &item.name,
+            },
+            object_id: Some(item.id),
+            actor_id: Some(auth.user_id),
+            dedup_key: None,
+        },
+    )
     .await?;
     tx.commit().await?;
 

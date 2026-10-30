@@ -180,15 +180,15 @@ reaches this pool — see the `SuperAdminUser` extractor, which requires a
 valid session *and* `users.is_superadmin = true`, else 403 — so `BYPASSRLS`
 here is a controlled, audited exception rather than a general bypass.
 
-Four other things run on this pool, and none is a request handler:
+Five other things run on this pool, and none is a request handler:
 
 - the **daily attachment reconcile** pass (#215, see the Ops section below),
   which needs the unscoped `event_attachments` read and deletes nothing in
   Postgres — only MinIO objects;
 - the **hourly retention purge** (#138, `src/jobs/retention_purge.rs`),
   which `DELETE`s rows, across every family, from `audit_log`,
-  `email_verification_tokens`, `password_reset_tokens`, `invitations` and
-  `sessions`. It, the account purge below, two superadmin handlers and the
+  `email_verification_tokens`, `password_reset_tokens`, `invitations`,
+  `sessions` and `notifications` (#534). It, the account purge below, two superadmin handlers and the
   reminder worker are the only code on this pool that deletes Postgres
   rows — not the only code that writes them:
   the seven `/admin/*` handlers each
@@ -200,15 +200,17 @@ Four other things run on this pool, and none is a request handler:
   `refuse_reactivation` deletes that row and `UPDATE`s `users`
   (#289), and `designate_owner` `UPDATE`s `group_members` (#323); the
   reminder worker below `UPDATE`s `scheduled_notifications` and `INSERT`s
-  into it (#293), and after each push `DELETE`s or `UPDATE`s the device's
-  `push_subscriptions` row (#306). Of the five purged tables only
-  `invitations` is RLS'd at all, and it is `FORCE ROW LEVEL SECURITY`:
-  with no `app.family_id` set, its `DELETE` on the runtime role matches
+  into it (#293), `INSERT`s into `notifications` (#534), and after each
+  push `DELETE`s or `UPDATE`s the device's `push_subscriptions` row
+  (#306); the expiry pass below `INSERT`s into `notifications` (#534).
+  Of the six purged tables only `invitations` and `notifications` are
+  RLS'd at all, both `FORCE ROW LEVEL SECURITY`: with no `app.family_id`
+  nor `app.user_id` set, their `DELETE` on the runtime role matches
   **no row** and the pass would
   report a clean sweep having erased none of the invited third parties'
-  addresses it exists to erase. So it calls the same `ensure_bypasses_rls`
+  addresses it exists to erase, nor any notification. So it calls the same `ensure_bypasses_rls`
   guard as the reconcile pass — `rolsuper OR rolbypassrls` on its own
-  connection — and aborts the whole pass otherwise, the four unguarded
+  connection — and aborts the whole pass otherwise, the four other
   tables included, logging `retention purge job failed` at ERROR once an
   hour and deleting nothing;
 - the **hourly account purge** (#139, `src/jobs/account_purge.rs`), which,
@@ -217,13 +219,15 @@ Four other things run on this pool, and none is a request handler:
   (#256, #289), deletes its personal rows
   (`group_members`, `message_read_state`, `event_assignees`, `sessions`,
   `account_reactivation_requests`, `push_subscriptions` (#306),
+  `notifications` — those it received and those it caused, whose text
+  may carry its display name (#534) —
   tokens, OAuth identities, its own `audit_log` entries, the `invitations`
   and `calendar_imports` it created) and anonymises its `users` row. Each
   group it owned passes to an heir when a member is eligible (`UPDATE` of
   `group_members`, #323), and a group left with no member at all is
   deleted with its content;
   each pass also emails the members named heirs and stamps their
-  `group_members` row once the email has gone. Five of
+  `group_members` row once the email has gone. Six of
   those tables are `FORCE ROW LEVEL SECURITY`; the pass calls the same
   `ensure_bypasses_rls` guard and, on a role that does not bypass RLS,
   logs `account purge job failed` at ERROR once an hour and purges no one.
@@ -236,7 +240,9 @@ Four other things run on this pool, and none is a request handler:
   per their reminder channel —
   forgetting a device its push service no longer knows, or one failing
   for too long, and recording the answer of the others in
-  `push_subscriptions` — and `UPDATE`s each row's status
+  `push_subscriptions` —, `INSERT`s the creator's entry into
+  `notifications` whatever the channel (#534, once per due row), and
+  `UPDATE`s each row's status
   (`sent`, `failed`, or its attempt count); and every hour reads the
   reminders of every recurring event from `event_reminders` and `events`
   and `INSERT`s the occurrences newly in range into
@@ -246,7 +252,15 @@ Four other things run on this pool, and none is a request handler:
   pass checks `rolsuper OR rolbypassrls` on its connection and, otherwise,
   logs `scheduled_notifications send failed` (every minute) or
   `scheduled_notifications refill failed` (every hour) at ERROR and does
-  nothing.
+  nothing;
+- the **hourly expiry pass** (#534, `src/jobs/stock_expiry.rs`), which
+  reads the `stock_items` of every family whose expiry date falls within
+  the « bientôt » window (today to 3 days ahead) and `INSERT`s a
+  `notifications` row for every active member of the item's family, once
+  per item and date. `stock_items` is `FORCE ROW LEVEL SECURITY`: the
+  pass calls the same `ensure_bypasses_rls` guard and, on a role that
+  does not bypass RLS, logs `stock expiry pass failed` at ERROR once an
+  hour and writes nothing.
 
 Every api process starts these jobs, and each pass runs in one process at a
 time (#426, `src/jobs/single_runner.rs`): before a pass, the process opens

@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::agenda::reminders::{refill_notifications, EventTimes};
 use crate::email::EmailSender;
 use crate::jobs::single_runner::{exclusively, Job};
-use crate::notifications::{push, ReminderChannel};
+use crate::notifications::{center, push, ReminderChannel};
 
 const SEND_POLL_INTERVAL_SECS: u64 = 60;
 const REFILL_POLL_INTERVAL_SECS: u64 = 3600;
@@ -220,7 +220,8 @@ where
 
     let due: Vec<DueRow> = sqlx::query!(
         r#"
-        SELECT sn.id, sn.occurrence_at, sn.attempts, e.title, e.created_by
+        SELECT sn.id, sn.occurrence_at, sn.attempts, e.title, e.created_by,
+               e.id AS event_id, e.group_id, e.all_day
         FROM scheduled_notifications sn
         JOIN events e ON e.id = sn.event_id
         WHERE sn.status = 'pending' AND sn.fire_at <= now()
@@ -235,6 +236,9 @@ where
         attempts: r.attempts,
         title: r.title,
         created_by: r.created_by,
+        event_id: r.event_id,
+        group_id: r.group_id,
+        all_day: r.all_day,
     })
     .collect();
 
@@ -334,6 +338,9 @@ struct DueRow {
     attempts: i32,
     title: String,
     created_by: Uuid,
+    event_id: Uuid,
+    group_id: Uuid,
+    all_day: bool,
 }
 
 /// A due notification whose member was found active and emailed if their
@@ -368,6 +375,27 @@ where
         retire(pool, row.id, RECIPIENT_GONE).await?;
         return Ok(None);
     };
+    // The notification centre (#534), whatever the channel and whether or
+    // not any device is subscribed. Keyed on the scheduled notification, so
+    // a pass that retries it after a failed email or push writes no second
+    // one.
+    center::insert_for(
+        &mut *pool.acquire().await?,
+        &[row.created_by],
+        &center::NewNotification {
+            group_id: row.group_id,
+            event: center::Event::AgendaReminder {
+                title: &row.title,
+                occurrence_at: row.occurrence_at,
+                all_day: row.all_day,
+            },
+            object_id: Some(row.event_id),
+            actor_id: None,
+            dedup_key: Some(format!("agenda_reminder:{}", row.id)),
+        },
+    )
+    .await?;
+
     // The column's CHECK (0020) admits nothing else.
     let channel = ReminderChannel::parse(&recipient.reminder_channel).ok_or_else(|| {
         anyhow::anyhow!("unknown reminder_channel {:?}", recipient.reminder_channel)

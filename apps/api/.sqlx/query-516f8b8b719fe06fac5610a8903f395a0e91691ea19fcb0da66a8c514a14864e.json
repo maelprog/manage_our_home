@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM notifications WHERE user_id = $1 OR actor_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "516f8b8b719fe06fac5610a8903f395a0e91691ea19fcb0da66a8c514a14864e"
+}

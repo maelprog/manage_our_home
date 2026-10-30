@@ -42,6 +42,8 @@ pub enum Job {
     ReminderSend,
     /// `jobs::scheduled_notifications`'s refill of recurring reminders.
     ReminderRefill,
+    /// `jobs::stock_expiry`'s hourly pass (#534).
+    StockExpiry,
 }
 
 /// The high bytes of every key, `mom-job` in ASCII: the advisory lock
@@ -50,12 +52,13 @@ pub enum Job {
 pub const LOCK_NAMESPACE: i64 = i64::from_be_bytes(*b"mom-job\0");
 
 impl Job {
-    pub const ALL: [Job; 5] = [
+    pub const ALL: [Job; 6] = [
         Job::AttachmentReconcile,
         Job::AccountPurge,
         Job::RetentionPurge,
         Job::ReminderSend,
         Job::ReminderRefill,
+        Job::StockExpiry,
     ];
 
     /// The advisory lock key of this job.
@@ -69,6 +72,7 @@ impl Job {
             Job::RetentionPurge => 3,
             Job::ReminderSend => 4,
             Job::ReminderRefill => 5,
+            Job::StockExpiry => 6,
         };
         LOCK_NAMESPACE | id
     }
@@ -177,6 +181,7 @@ mod tests {
                 0x6D6F_6D2D_6A6F_6203,
                 0x6D6F_6D2D_6A6F_6204,
                 0x6D6F_6D2D_6A6F_6205,
+                0x6D6F_6D2D_6A6F_6206,
             ]
         );
     }

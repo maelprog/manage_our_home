@@ -1365,3 +1365,143 @@ async fn membership_reads_grant_no_write_without_family_scope(db: PgPool) {
             .unwrap();
     assert_eq!(members_of_b, vec![owner_b]);
 }
+
+/// Issue #534: `notifications` (migration 0036) is read, marked and deleted
+/// per recipient, whatever the family scope says, even by a query that
+/// forgets `WHERE user_id = ...`; and a member's request writes only into
+/// the family it is scoped to.
+#[sqlx::test]
+async fn notifications_isolated_per_recipient(db: PgPool) {
+    let mut users = Vec::new();
+    for email in ["notif-a@example.test", "notif-b@example.test"] {
+        let user: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (email, password_hash, display_name, email_verified) VALUES ($1, 'x', 'U', true) RETURNING id",
+        )
+        .bind(email)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        users.push(user);
+    }
+    let (a, b) = (users[0], users[1]);
+    let mut groups = Vec::new();
+    for name in ["G", "H"] {
+        let group: Uuid = sqlx::query_scalar(
+            "INSERT INTO groups (name, created_by) VALUES ($1, $2) RETURNING id",
+        )
+        .bind(name)
+        .bind(a)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        groups.push(group);
+    }
+    let (g, h) = (groups[0], groups[1]);
+    for (user, group) in [(a, g), (b, g), (a, h)] {
+        sqlx::query(
+            "INSERT INTO notifications (user_id, group_id, kind, body) VALUES ($1, $2, 'message', 'x')",
+        )
+        .bind(user)
+        .bind(group)
+        .execute(&db)
+        .await
+        .unwrap();
+    }
+
+    let role = format!("app_test_role_{}", Uuid::new_v4().simple());
+    for statement in [
+        format!("CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"),
+        format!("GRANT SELECT, INSERT, UPDATE, DELETE ON notifications TO {role}"),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    let mut tx = db.begin().await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    for (setting, value) in [("app.user_id", a), ("app.family_id", g)] {
+        sqlx::query("SELECT set_config($1, $2, true)")
+            .bind(setting)
+            .bind(value.to_string())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    // A's own, from both families; none of B's, though B's is in the
+    // family the transaction is scoped to.
+    let mut seen: Vec<(Uuid, Uuid)> = sqlx::query_as("SELECT user_id, group_id FROM notifications")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    seen.sort();
+    let mut expected = vec![(a, g), (a, h)];
+    expected.sort();
+    assert_eq!(seen, expected);
+    for statement in [
+        "UPDATE notifications SET read_at = now() WHERE user_id <> current_setting('app.user_id')::uuid",
+        "DELETE FROM notifications WHERE user_id <> current_setting('app.user_id')::uuid",
+    ] {
+        let touched = sqlx::query(statement)
+            .execute(&mut *tx)
+            .await
+            .unwrap()
+            .rows_affected();
+        assert_eq!(touched, 0, "{statement}");
+    }
+    // Writing for B in the scoped family passes; in another family, not.
+    sqlx::query(
+        "INSERT INTO notifications (user_id, group_id, kind, body) VALUES ($1, $2, 'message', 'y')",
+    )
+    .bind(b)
+    .bind(g)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query("SAVEPOINT elsewhere")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let elsewhere = sqlx::query(
+        "INSERT INTO notifications (user_id, group_id, kind, body) VALUES ($1, $2, 'message', 'z')",
+    )
+    .bind(b)
+    .bind(h)
+    .execute(&mut *tx)
+    .await;
+    assert!(
+        elsewhere.is_err(),
+        "a write outside the scoped family passed"
+    );
+    sqlx::query("ROLLBACK TO SAVEPOINT elsewhere")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    for statement in [
+        format!("REVOKE ALL ON notifications FROM {role}"),
+        format!("DROP ROLE {role}"),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+    let unread_of_b: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM notifications WHERE user_id = $1 AND read_at IS NULL",
+    )
+    .bind(b)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        unread_of_b, 2,
+        "B's row untouched, and the one written for B"
+    );
+}

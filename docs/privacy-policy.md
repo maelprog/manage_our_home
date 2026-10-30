@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-10-16.
+Dernière mise à jour : 2026-10-30.
 
 ## Qui est responsable de vos données ?
 
@@ -48,6 +48,7 @@ données sont-elles conservées ? ».
 | Désactivation d'un compte | date à laquelle l'administrateur du service a désactivé le compte, date de l'email qui prévient de sa suppression ; si vous demandez la réactivation, la date de votre demande et le message facultatif que vous y joignez, et la date du premier refus | Intérêt légitime (exploitation et sécurité du service) |
 | Agenda | événements, tâches, pièces jointes, membres assignés à un événement | Exécution du contrat |
 | Rappels d'événements | délai choisi avant l'événement ; la façon dont vos rappels vous parviennent (notification, email ou les deux) ; pour chaque appareil où vous activez les notifications, l'adresse d'abonnement que le service de notification de votre navigateur lui attribue et ses dates d'abonnement, de dernier renouvellement et de dernier envoi réussi, et le nombre et la date de début de ses envois échoués d'affilée (50 appareils au plus par compte). L'email de rappel porte le titre et la date de l'événement ; la notification n'affiche que « Rappel d'un événement à venir » | Exécution du contrat |
+| Notifications dans l'application | pour chaque notification qui vous est adressée : son type (rappel d'événement, article bientôt périmé, message, invitation, ajout à la liste de courses), la famille concernée, l'élément visé, un texte court (titre de l'événement et sa date, nom de l'article, nom affiché du membre à l'origine de l'action, nom du groupe — jamais le contenu d'un message), la date de création, la date à laquelle vous l'avez lue et le membre à l'origine de l'action | Exécution du contrat |
 | Stocks / recettes / liste de courses | articles (et leur code-barres quand il a été scanné ou saisi), recettes (et l'adresse de la page d'où une recette a été importée), ingrédients ; la photo prise pour scanner un code-barres, lue puis oubliée (voir ci-dessous) | Exécution du contrat |
 | Budget | dépenses saisies manuellement et leur catégorie ; catégories de dépense de la famille (nom, couleur, plafond mensuel facultatif) et plafond mensuel de la famille | Exécution du contrat |
 | Messagerie | messages du fil familial (chiffrés au repos), date de votre dernière lecture du fil | Exécution du contrat |
@@ -330,6 +331,11 @@ de la purge dépasserait.
 - **Rappels d'événements** : jusqu'à la suppression du rappel ou de
   l'événement ; l'historique des envois (heure, statut, tentatives) part
   avec eux.
+- **Notifications dans l'application** : jusqu'au premier passage de purge
+  qui suit les 30 jours de leur création, lues ou non ; ou plus tôt, à la
+  suppression du groupe concerné, ou à la purge de votre compte — et à la
+  purge du compte du membre à l'origine de l'action, que le texte peut
+  nommer.
 - **Appareils abonnés aux notifications** : jusqu'à ce que le service de
   notification du navigateur signale l'abonnement expiré ou retiré (il est
   alors supprimé au premier rappel qui l'essaie), que chaque envoi y
@@ -381,7 +387,9 @@ de la purge dépasserait.
   votre compte est purgé au premier passage de purge qui suit.
 - **Ce que la purge supprime** : vos identifiants de connexion (mot de
   passe haché, connexion avec Google), votre photo de profil, vos sessions, vos appareils abonnés
-  aux notifications, vos jetons de
+  aux notifications, les notifications qui vous sont adressées dans
+  l'application et celles que vos actions ont fait adresser aux autres
+  membres, vos jetons de
   vérification et de réinitialisation, votre appartenance aux groupes et
   votre rôle, votre date de dernière lecture de la messagerie, vos
   assignations d'événements, les entrées des logs d'audit dont vous êtes
@@ -464,7 +472,8 @@ de la purge dépasserait.
   les événements qui vous sont assignés, y compris par un autre membre ;
   les rappels de vos événements et les envois qu'ils ont programmés, la
   façon dont ils vous parviennent et vos appareils abonnés aux
-  notifications ; vos
+  notifications ; les notifications qui vous sont adressées dans
+  l'application, tant qu'elles sont conservées ; vos
   pièces jointes ; les occurrences de tâches que vous avez cochées ; votre
   marqueur de lecture de la messagerie ; les invitations que vous avez
   émises et celles qu'un membre a adressées à votre adresse email (groupe,
