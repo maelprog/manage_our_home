@@ -55,20 +55,29 @@ pub struct SetGroceryItemPriceRequest {
 }
 
 /// `GET/POST/PATCH /groups/:id/budget-entries[/:entry_id]` response body.
-/// Mirrors `BudgetEntryResponse`. `grocery_item_id` is set only when the entry
-/// was created via the price-on-checkout path; `name` is denormalized so it
-/// survives the grocery item being deleted. `amount` is euros.
+/// Mirrors `BudgetEntryResponse`. `grocery_items` lists the grocery items the
+/// entry links to (#633) — the one priced on checkout, or those the entry was
+/// given; `name` is denormalized so it survives the grocery item being
+/// deleted. `amount` is euros.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BudgetEntryResponse {
     pub id: Uuid,
     pub group_id: Uuid,
     pub created_by: Uuid,
-    pub grocery_item_id: Option<Uuid>,
+    #[serde(default)]
+    pub grocery_items: Vec<LinkedGroceryItem>,
     pub name: String,
     pub amount: f64,
     pub spent_at: NaiveDate,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// A grocery item a budget entry links to. Mirrors `LinkedGroceryItem`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinkedGroceryItem {
+    pub id: Uuid,
+    pub name: String,
 }
 
 /// `GET /groups/:id/budget-entries` response envelope (`{ "entries": [...] }`).

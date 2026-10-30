@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO budget_entries (group_id, created_by, grocery_item_id, name, amount_cents, spent_at, category_id)\n        VALUES ($1, $2, $3, $4, $5, $6, $7)\n        RETURNING id, group_id, created_by, grocery_item_id, category_id, name, amount_cents, spent_at, created_at, updated_at\n        ",
+  "query": "\n                UPDATE budget_entries SET\n                    name = $3,\n                    amount_cents = $4,\n                    spent_at = $5,\n                    updated_at = now()\n                WHERE id = $1 AND group_id = $2\n                RETURNING id, group_id, created_by, category_id, name, amount_cents, spent_at, created_at, updated_at\n                ",
   "describe": {
     "columns": [
       {
@@ -38,17 +38,6 @@
       },
       {
         "ordinal": 3,
-        "name": "grocery_item_id",
-        "type_info": "Uuid",
-        "origin": {
-          "Table": {
-            "table": "budget_entries",
-            "name": "grocery_item_id"
-          }
-        }
-      },
-      {
-        "ordinal": 4,
         "name": "category_id",
         "type_info": "Uuid",
         "origin": {
@@ -59,7 +48,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 4,
         "name": "name",
         "type_info": "Text",
         "origin": {
@@ -70,7 +59,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 5,
         "name": "amount_cents",
         "type_info": "Int8",
         "origin": {
@@ -81,7 +70,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 6,
         "name": "spent_at",
         "type_info": "Date",
         "origin": {
@@ -92,7 +81,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -103,7 +92,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 8,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -118,18 +107,15 @@
       "Left": [
         "Uuid",
         "Uuid",
-        "Uuid",
         "Text",
         "Int8",
-        "Date",
-        "Uuid"
+        "Date"
       ]
     },
     "nullable": [
       false,
       false,
       false,
-      true,
       true,
       false,
       false,
@@ -138,5 +124,5 @@
       false
     ]
   },
-  "hash": "980c93b22a5141227c104ee4b6bb01f75a3657add3060fbdebf9521fec02ee75"
+  "hash": "abca45a0883c1eee4de9a7813457f03d91aeddda234e6ef9e7f6dda8dad01890"
 }

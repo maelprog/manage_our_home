@@ -64,11 +64,12 @@ fn summary_html(summary: &BudgetSummary) -> String {
 }
 
 /// Renders one budget entry: date, name, amount, an optional `Courses` badge
-/// (set when the entry came from the price-on-checkout path), and — for
+/// (set when the entry links to grocery items, as one priced on checkout
+/// does), and — for
 /// permitted users — an edit link.
 fn entry_row(entry: &BudgetEntryResponse, can_edit: bool) -> String {
     let date = entry.spent_at.format("%d/%m/%Y").to_string();
-    let badge_html = if entry.grocery_item_id.is_some() {
+    let badge_html = if !entry.grocery_items.is_empty() {
         r#" <span class="badge">Courses</span>"#
     } else {
         ""

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id FROM grocery_items WHERE id = $1 AND group_id = $2",
+  "query": "SELECT id FROM grocery_items WHERE group_id = $1 AND id = ANY($2) FOR KEY SHARE",
   "describe": {
     "columns": [
       {
@@ -18,12 +18,12 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid"
+        "UuidArray"
       ]
     },
     "nullable": [
       false
     ]
   },
-  "hash": "fc021d73337ffc3e084b70fbd9ca8e2c24189338174d1f32d9e7c62208456d86"
+  "hash": "83fba71098273c6224b515d0db811c557d1bf10e1be77b3a2c45d1fb4170091b"
 }

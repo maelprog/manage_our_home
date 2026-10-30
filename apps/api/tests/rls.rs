@@ -1011,6 +1011,142 @@ async fn budget_categories_and_settings_isolated_without_scoping(db: PgPool) {
         .unwrap();
 }
 
+/// Issue #633: the links of an expense to grocery items (migration 0038)
+/// hold against a query that forgets `WHERE group_id = ...`, and an expense
+/// of group A cannot link to an item of group B: the composite keys refuse
+/// it whatever the application checks.
+#[sqlx::test]
+async fn budget_entry_grocery_items_isolated_without_scoping(db: PgPool) {
+    let mut ids = Vec::new();
+    for (email, group) in [("link-a@example.test", "A"), ("link-b@example.test", "B")] {
+        let user: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (email, password_hash, display_name, email_verified) VALUES ($1, 'x', 'U', true) RETURNING id",
+        )
+        .bind(email)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let group: Uuid = sqlx::query_scalar(
+            "INSERT INTO groups (name, created_by) VALUES ($1, $2) RETURNING id",
+        )
+        .bind(group)
+        .bind(user)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let item: Uuid = sqlx::query_scalar(
+            "INSERT INTO grocery_items (group_id, created_by, name) VALUES ($1, $2, 'Pain') RETURNING id",
+        )
+        .bind(group)
+        .bind(user)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let entry: Uuid = sqlx::query_scalar(
+            "INSERT INTO budget_entries (group_id, created_by, name, amount_cents) VALUES ($1, $2, 'Pain', 100) RETURNING id",
+        )
+        .bind(group)
+        .bind(user)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        ids.push((group, item, entry));
+    }
+    let (group_a, item_a, entry_a) = ids[0];
+    let (group_b, item_b, entry_b) = ids[1];
+    sqlx::query(
+        "INSERT INTO budget_entry_grocery_items (entry_id, grocery_item_id, group_id) VALUES ($1, $2, $3)",
+    )
+    .bind(entry_b)
+    .bind(item_b)
+    .bind(group_b)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    // The composite keys, checked as the table owner: no RLS involved.
+    for (entry, item, group) in [
+        (entry_a, item_b, group_a),
+        (entry_a, item_b, group_b),
+        (entry_a, item_a, group_b),
+    ] {
+        let cross = sqlx::query(
+            "INSERT INTO budget_entry_grocery_items (entry_id, grocery_item_id, group_id) VALUES ($1, $2, $3)",
+        )
+        .bind(entry)
+        .bind(item)
+        .bind(group)
+        .execute(&db)
+        .await;
+        assert!(
+            cross.is_err(),
+            "an expense of one family must not link to an item of another"
+        );
+    }
+
+    let role = format!("app_test_role_{}", Uuid::new_v4().simple());
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "GRANT SELECT ON budget_entry_grocery_items TO {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+
+    #[allow(clippy::disallowed_methods)]
+    let mut tx = db.begin().await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+        .bind(group_a.to_string())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let links: Vec<Uuid> = sqlx::query_scalar("SELECT group_id FROM budget_entry_grocery_items")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    assert!(
+        links.is_empty(),
+        "group A's scope must not see group B's links"
+    );
+    tx.commit().await.unwrap();
+
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "REVOKE ALL ON budget_entry_grocery_items FROM {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP ROLE {role}")))
+        .execute(&db)
+        .await
+        .unwrap();
+
+    // Deleting the item takes its link and leaves the expense.
+    sqlx::query("DELETE FROM grocery_items WHERE id = $1")
+        .bind(item_b)
+        .execute(&db)
+        .await
+        .unwrap();
+    let left: (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM budget_entry_grocery_items),
+                (SELECT count(*) FROM budget_entries WHERE id = $1)",
+    )
+    .bind(entry_b)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(left, (0, 1));
+}
+
 /// Issue #73's `event_assignees` (migration 0011). The table carries no
 /// `group_id` of its own — its policy joins back to `events`, the same
 /// shape `event_reminders`/`event_attachments` use — which is precisely why
