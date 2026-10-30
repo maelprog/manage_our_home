@@ -1032,6 +1032,16 @@ async fn a_standard_member_gets_404_on_categories_and_caps_whatever_the_body(db:
     )
     .await;
     assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/budget-entries/summary?month=2026-01&month=2026-02"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(res).await["error"], "invalid_month");
 
     let requests = [
         ("list categories", Method::GET, categories.clone(), None),
@@ -1072,6 +1082,12 @@ async fn a_standard_member_gets_404_on_categories_and_caps_whatever_the_body(db:
             Method::PUT,
             settings.clone(),
             Some(serde_json::json!({"monthly_cap": 0})),
+        ),
+        (
+            "summary, unreadable query",
+            Method::GET,
+            format!("/groups/{group_id}/budget-entries/summary?month=2026-01&month=2026-02"),
+            None,
         ),
         ("read alert switches", Method::GET, switches.clone(), None),
         (

@@ -1,4 +1,4 @@
-use axum::extract::rejection::JsonRejection;
+use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
@@ -462,10 +462,14 @@ pub async fn budget_summary(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(group_id): Path<Uuid>,
-    Query(query): Query<SummaryQuery>,
+    query: Result<Query<SummaryQuery>, QueryRejection>,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_budget_access(&mut tx, group_id, auth.user_id).await?;
+    // The bar first, the query after, as the bodies of the other routes: a
+    // query the extractor cannot read (`month` given twice) is a standard
+    // member's 404 too, and past the bar the 400 of an invalid month.
+    let Query(query) = query.map_err(|_| AppError::BadRequest("invalid_month".into()))?;
 
     let month = match query.month.as_deref() {
         Some(month) => {
