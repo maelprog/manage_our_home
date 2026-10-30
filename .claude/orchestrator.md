@@ -9,9 +9,9 @@ gate) : mémoire du projet (`~/.claude/projects/<dossier du projet>/memory/`),
 `rust-tests-via-docker.md` et `e2e-full-stack-via-docker.md`. `postgres:16` migré
 (`apps/api/migrations/*.sql` dans l'ordre) ; MinIO : image et démarrage de l'étape
 « Start MinIO » de `ci.yml`, bucket `manage-our-home` ; `rust:1-slim-bookworm`.
-**Cache partagé** (recette) : volumes `mhome-cargo-registry`, `mhome-sccache`,
-`mhome-sccache-bin` communs à tous les agents, jamais supprimés ; worktree monté
-sur `/workspace`. Le reste porte ton préfixe ; `docker rm -f -v` à la fin.
+Cache : volumes `mhome-*` jamais supprimés ; `scripts/dev/ensure-docker-cache.sh`
+avant tout gate, `scripts/dev/require-sccache.sh && cargo …` en conteneur ;
+worktree sur `/workspace`. Le reste : ton préfixe, `docker rm -f -v` en fin.
 
 ## Gates
 **Locaux (A, avant push)** : `cargo fmt --all -- --check` ; `SQLX_OFFLINE=true cargo
