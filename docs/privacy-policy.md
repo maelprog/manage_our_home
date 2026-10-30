@@ -47,7 +47,7 @@ données sont-elles conservées ? ».
 | Invitations | adresse email de la personne invitée (si le membre qui invite la saisit), lien d'invitation valable 7 jours ; l'email envoyé nomme le groupe et le membre qui invite | Intérêt légitime (permettre à un membre d'inviter un proche dans son groupe) |
 | Désactivation d'un compte | date à laquelle l'administrateur du service a désactivé le compte, date de l'email qui prévient de sa suppression ; si vous demandez la réactivation, la date de votre demande et le message facultatif que vous y joignez, et la date du premier refus | Intérêt légitime (exploitation et sécurité du service) |
 | Agenda | événements, tâches, pièces jointes, membres assignés à un événement | Exécution du contrat |
-| Rappels d'événements | délai choisi avant l'événement ; la façon dont vos rappels vous parviennent (notification, email ou les deux) ; pour chaque appareil où vous activez les notifications, l'adresse d'abonnement que le service de notification de votre navigateur lui attribue et ses dates d'abonnement, de dernier renouvellement et de dernier envoi réussi, et le nombre et la date de début de ses envois échoués d'affilée (50 appareils au plus par compte). L'email de rappel porte le titre et la date de l'événement ; la notification n'affiche que « Rappel d'un événement à venir » | Exécution du contrat |
+| Rappels d'événements | délai choisi avant l'événement ; la façon dont vos rappels vous parviennent (notification, email ou les deux) ; pour chaque appareil où vous activez les notifications, l'adresse d'abonnement que le service de notification de votre navigateur lui attribue et ses dates d'abonnement, de dernier renouvellement et de dernier envoi réussi, et le nombre et la date de début de ses envois échoués d'affilée, le nombre et le type des notifications qui lui ont été envoyées et qu'il n'a pas encore affichées (50 appareils au plus par compte). L'email de rappel porte le titre et la date de l'événement ; la notification n'affiche que « Rappel d'un événement à venir », ou « Nouvelle notification » quand l'appareil ne peut pas savoir laquelle il a reçue | Exécution du contrat |
 | Notifications dans l'application | pour chaque notification qui vous est adressée : son type (rappel d'événement, article bientôt périmé, message, invitation, ajout à la liste de courses, alerte de plafond du budget pour les propriétaires et administrateurs d'une famille), la famille concernée, l'élément visé, un texte court (titre de l'événement et sa date, nom de l'article, nom affiché du membre à l'origine de l'action, nom du groupe, nom de la catégorie de dépense — jamais le contenu d'un message), la date de création, la date à laquelle vous l'avez lue et le membre à l'origine de l'action | Exécution du contrat |
 | Stocks / recettes / liste de courses | articles (et leur code-barres quand il a été scanné ou saisi), recettes (et l'adresse de la page d'où une recette a été importée), ingrédients ; la photo prise pour scanner un code-barres, lue puis oubliée (voir ci-dessous) | Exécution du contrat |
 | Budget | dépenses saisies manuellement et leur catégorie ; catégories de dépense de la famille (nom, couleur, plafond mensuel facultatif) et plafond mensuel de la famille | Exécution du contrat |
@@ -128,13 +128,18 @@ possibles sont :
   **vide** à l'adresse d'abonnement de votre appareil : ni le titre de
   l'événement, ni sa date, ni aucun identifiant de l'événement ou de votre
   compte. Ce service de notification apprend donc que ce serveur a envoyé
-  un message à cet appareil, à cette heure. Votre appareil affiche alors
-  toujours le même texte, « Rappel d'un événement à venir » — rien sur
-  l'écran verrouillé ne dit de quel événement il s'agit — et le titre ne se
-  lit qu'en ouvrant l'agenda. Une alerte de budget arrive de la même façon,
-  message vide compris, et s'affiche « Alerte de budget », sans montant ni
-  catégorie. Pour choisir ce texte, votre appareil demande au site, avec
-  votre session, le type de votre dernière notification. Pas de repli : sans appareil abonné, un
+  un message à cet appareil, à cette heure. Une alerte de budget arrive de
+  la même façon, message vide compris. Pour choisir le texte à afficher,
+  votre appareil demande au site, avec votre session et son adresse
+  d'abonnement, le type du message qu'il vient de recevoir ; le serveur
+  tient pour cela, par appareil, le compte des messages envoyés et pas
+  encore affichés, et leur type. Votre appareil affiche alors « Rappel d'un
+  événement à venir » pour un rappel — rien sur l'écran verrouillé ne dit
+  de quel événement il s'agit, le titre ne se lit qu'en ouvrant l'agenda —,
+  « Alerte de budget » pour une alerte, sans montant ni catégorie, et
+  « Nouvelle notification » quand il ne peut pas savoir lequel il a reçu :
+  un rappel et une alerte en route vers lui en même temps, pas de session
+  ou pas de réseau. Pas de repli : sans appareil abonné, un
   rappel par notification n'est pas envoyé du tout, et le site vous en
   avertit là où vous programmez vos rappels.
 - **Open Food Facts**, base publique de produits alimentaires, quand vous
