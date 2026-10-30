@@ -1,6 +1,8 @@
 //! `/budget/new` — add an expense, as the mock-up « Nouvelle dépense » draws
 //! it (#533): amount, name, a category in pills (« Sans catégorie »
-//! included), date, and the grocery items it paid for, if any (#633). The
+//! included), who paid it in pills (#638: the signed-in member ticked,
+//! « Personne » offered), date, and the grocery items it paid for, if any
+//! (#633). The
 //! empty-name / negative-amount rules are pre-validated by the shared
 //! `validate_entry_form` (inline error, no round trip); the backend's
 //! matching 400s, and the 409 of an item another expense already links, are
@@ -21,12 +23,14 @@ use manage_our_home_shared::dto::budget::{
     CreateBudgetEntryRequest, LinkedGroceryItem,
 };
 use manage_our_home_shared::dto::grocery_list::GroceryItemList;
+use manage_our_home_shared::dto::groups::GroupMember;
 use manage_our_home_shared::validation::budget::validate_entry_form;
 use uuid::Uuid;
 
-use crate::app::{html_escape, shell_with_header, Width};
+use crate::app::{html_escape, member_avatar, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::routes::agenda::new::is_form_urlencoded;
+use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
 use super::{
@@ -43,6 +47,11 @@ pub(crate) const CATEGORIES_PRESENT_FIELD: &str = "categories_present";
 /// Same for the grocery items: without it, an edit leaves the entry's links
 /// as they are instead of unlinking every item it could not list.
 pub(crate) const ITEMS_PRESENT_FIELD: &str = "grocery_items_present";
+
+/// Same for the payer (#638): without it, an edit leaves the entry's payer
+/// as it is, and a new expense goes to the signed-in member, the payer the
+/// pills would have ticked.
+pub(crate) const PAYERS_PRESENT_FIELD: &str = "payers_present";
 
 /// The shared entry form fields, used by both create and edit. `amount` and
 /// `spent_at` arrive as strings and are parsed in the handler; the grocery
@@ -61,6 +70,11 @@ pub struct EntryForm {
     pub categories_present: Option<String>,
     #[serde(default)]
     pub grocery_items_present: Option<String>,
+    /// A member's id, or empty for « Personne » (#638).
+    #[serde(default)]
+    pub paid_by: String,
+    #[serde(default)]
+    pub payers_present: Option<String>,
 }
 
 impl EntryForm {
@@ -71,13 +85,30 @@ impl EntryForm {
             .as_ref()
             .map(|_| Uuid::parse_str(self.category_id.trim()).ok())
     }
+
+    /// The payer picked (#638): `Some(None)` is « Personne »; `None`, no
+    /// opinion — the pills were not drawn.
+    pub(crate) fn paid_by(&self) -> Option<Option<Uuid>> {
+        self.payers_present
+            .as_ref()
+            .map(|_| Uuid::parse_str(self.paid_by.trim()).ok())
+    }
 }
 
-/// What the pills of the form offer: the family's categories and the grocery
-/// items the expense may link to, each `None` when it could not be loaded.
+/// The payer of a new expense: the one picked, else — the pills were not
+/// drawn — `me`, whom they would have ticked (user's decision of
+/// 2026-10-30).
+pub(crate) fn new_entry_payer(form: &EntryForm, me: Uuid) -> Option<Uuid> {
+    form.paid_by().unwrap_or(Some(me))
+}
+
+/// What the pills of the form offer: the family's categories, the grocery
+/// items the expense may link to and its members, each `None` when it could
+/// not be loaded.
 pub(crate) struct Choices {
     pub categories: Option<Vec<BudgetCategory>>,
     pub items: Option<Vec<LinkedGroceryItem>>,
+    pub members: Option<Vec<GroupMember>>,
 }
 
 /// French copy for a budget-entry form error code.
@@ -89,6 +120,9 @@ pub(crate) fn error_message(code: &str) -> &'static str {
             "Un des articles choisis est déjà compté dans une autre dépense."
         }
         "too_many_grocery_items" => "Une dépense ne peut regrouper plus de 100 articles.",
+        "paid_by_not_a_member" => {
+            "Le membre choisi comme payeur ne fait plus partie de la famille."
+        }
         "reference_not_found" => {
             "La catégorie ou un des articles choisis n'existe plus. Vérifiez le formulaire."
         }
@@ -148,7 +182,19 @@ pub(crate) async fn fetch_choices(
         (Some(items), Some(entries)) => Some(linkable_items(&items.items, &entries.entries, entry)),
         _ => None,
     };
-    Choices { categories, items }
+    // A family always has at least one member: an empty roster is one
+    // that could not be read, and draws no pills.
+    let members = fetch_group_detail(state, cookie, gid)
+        .await
+        .ok()
+        .flatten()
+        .map(|g| g.members)
+        .filter(|m| !m.is_empty());
+    Choices {
+        categories,
+        items,
+        members,
+    }
 }
 
 /// « Catégorie » in pills: « Sans catégorie », then each category with its
@@ -185,6 +231,40 @@ fn category_picks(categories: Option<&[BudgetCategory]>, selected: Option<Uuid>)
 <legend>Catégorie</legend>
 <input type="hidden" name="{CATEGORIES_PRESENT_FIELD}" value="1"/>
 {picks}{hint}
+</fieldset>"#
+    )
+}
+
+/// « Payé par » in pills (#638): « Personne », then each member with their
+/// initial, as the agenda's « Assigné à » draws them. `selected` is `None`
+/// for « Personne ».
+fn payer_picks(members: Option<&[GroupMember]>, selected: Option<Uuid>) -> String {
+    let Some(members) = members else {
+        return r#"<fieldset class="card">
+<legend>Payé par</legend>
+<p class="muted">La liste des membres n'a pas pu être chargée.</p>
+</fieldset>"#
+            .to_string();
+    };
+    let checked = |on: bool| if on { " checked" } else { "" };
+    let mut picks = format!(
+        r#"<label class="field inline pick"><input type="radio" name="paid_by" value=""{}/>Personne</label>"#,
+        checked(selected.is_none()),
+    );
+    for m in members {
+        picks.push_str(&format!(
+            r#"<label class="field inline pick"><input type="radio" name="paid_by" value="{id}"{on}/>{avatar}{name}</label>"#,
+            id = m.user_id,
+            on = checked(selected == Some(m.user_id)),
+            avatar = member_avatar(m.user_id, &m.display_name, None),
+            name = html_escape(&m.display_name),
+        ));
+    }
+    format!(
+        r#"<fieldset class="card picks">
+<legend>Payé par</legend>
+<input type="hidden" name="{PAYERS_PRESENT_FIELD}" value="1"/>
+{picks}
 </fieldset>"#
     )
 }
@@ -229,24 +309,28 @@ pub(crate) fn form_fields(
     form: &EntryForm,
     choices: &Choices,
     category: Option<Uuid>,
+    payer: Option<Uuid>,
     items: &[Uuid],
 ) -> String {
     format!(
         r#"<label>Montant (€) <input type="number" name="amount" step="0.01" min="0" required value="{amount}"/></label>
 <label>Nom <input type="text" name="name" required value="{name}" placeholder="ex. Courses Super U"/></label>
 {categories}
+{payers}
 <label>Date <input type="date" name="spent_at" value="{spent_at}"/></label>
 {items}"#,
         amount = html_escape(&form.amount),
         name = html_escape(&form.name),
         spent_at = html_escape(&form.spent_at),
         categories = category_picks(choices.categories.as_deref(), category),
+        payers = payer_picks(choices.members.as_deref(), payer),
         items = item_picks(choices.items.as_deref(), items),
     )
 }
 
 fn page(
     header: &str,
+    me: Uuid,
     form: &EntryForm,
     choices: &Choices,
     items: &[Uuid],
@@ -255,7 +339,13 @@ fn page(
     let error_html = error
         .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
         .unwrap_or_default();
-    let fields = form_fields(form, choices, form.category().flatten(), items);
+    let fields = form_fields(
+        form,
+        choices,
+        form.category().flatten(),
+        new_entry_payer(form, me),
+        items,
+    );
     let body = format!(
         r#"<h1>Nouvelle dépense</h1>
 {error_html}
@@ -287,7 +377,7 @@ pub async fn get(
             .to_string(),
         ..Default::default()
     };
-    Html(page(&fam.header, &form, &choices, &[], None)).into_response()
+    Html(page(&fam.header, me.user_id, &form, &choices, &[], None)).into_response()
 }
 
 pub async fn post(
@@ -310,6 +400,7 @@ pub async fn post(
         let choices = fetch_choices(&state, fam.gid, cookie.as_deref(), None).await;
         let html = page(
             &fam.header,
+            me.user_id,
             &EntryForm::default(),
             &choices,
             &[],
@@ -319,6 +410,7 @@ pub async fn post(
     };
 
     let gid = fam.gid;
+    let me_id = me.user_id;
     let render_error = |code: &'static str| {
         let (state, form, items, header) = (&state, &form, &items, &fam.header);
         let cookie = cookie.as_deref();
@@ -326,6 +418,7 @@ pub async fn post(
             let choices = fetch_choices(state, gid, cookie, None).await;
             Html(page(
                 header,
+                me_id,
                 form,
                 &choices,
                 items,
@@ -349,6 +442,7 @@ pub async fn post(
         grocery_item_id: None,
         grocery_item_ids: items.clone(),
         category_id: form.category().flatten(),
+        paid_by: new_entry_payer(&form, me.user_id),
     };
 
     let result = api_request_auth(
@@ -389,6 +483,7 @@ pub(crate) fn known_code(body: &serde_json::Value) -> &'static str {
         Some("name_required") => "name_required",
         Some("amount_must_be_non_negative") => "amount_must_be_non_negative",
         Some("too_many_grocery_items") => "too_many_grocery_items",
+        Some("paid_by_not_a_member") => "paid_by_not_a_member",
         _ => "unavailable",
     }
 }
@@ -419,6 +514,110 @@ mod tests {
 
     fn form(raw: &str) -> EntryForm {
         serde_urlencoded::from_str(raw).expect(raw)
+    }
+
+    fn member(n: u128, name: &str) -> GroupMember {
+        GroupMember {
+            user_id: Uuid::from_u128(n),
+            role: "admin".to_string(),
+            display_name: name.to_string(),
+            email: format!("{n}@example.test"),
+            has_avatar: false,
+        }
+    }
+
+    #[test]
+    fn the_payer_pills_start_with_nobody_and_tick_the_one_chosen() {
+        let members = [member(1, "Alice"), member(2, "Bruno")];
+        let html = payer_picks(Some(&members), Some(Uuid::from_u128(2)));
+        assert!(html.contains("<legend>Payé par</legend>"), "{html}");
+        assert!(
+            html.contains(r#"name="paid_by" value=""/>Personne"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"name="paid_by" value="{}" checked/>"#,
+                Uuid::from_u128(2)
+            )),
+            "{html}"
+        );
+        assert!(html.contains(r#"class="avatar""#), "{html}");
+        assert!(html.contains("Bruno</label>"), "{html}");
+        assert!(html.contains(r#"name="payers_present""#), "{html}");
+        assert_eq!(html.matches(" checked").count(), 1, "{html}");
+        assert_eq!(html.matches(r#"type="radio""#).count(), 3, "{html}");
+    }
+
+    #[test]
+    fn nobody_chosen_ticks_personne() {
+        let html = payer_picks(Some(&[member(1, "Alice")]), None);
+        assert!(
+            html.contains(r#"name="paid_by" value="" checked/>Personne"#),
+            "{html}"
+        );
+        assert_eq!(html.matches(" checked").count(), 1, "{html}");
+    }
+
+    #[test]
+    fn a_member_name_is_escaped_in_the_payer_pills() {
+        let html = payer_picks(Some(&[member(1, "<b>Alice</b>")]), None);
+        assert!(html.contains("&lt;b&gt;Alice&lt;/b&gt;</label>"), "{html}");
+    }
+
+    #[test]
+    fn members_that_did_not_load_carry_no_payer_marker() {
+        let html = payer_picks(None, Some(Uuid::from_u128(1)));
+        assert!(!html.contains("payers_present"), "{html}");
+        assert!(!html.contains("radio"), "{html}");
+        assert!(html.contains("Payé par"), "{html}");
+    }
+
+    #[test]
+    fn the_chosen_payer_is_read_only_when_the_pills_were_drawn() {
+        let id = Uuid::from_u128(7);
+        assert_eq!(
+            form(&format!("name=x&payers_present=1&paid_by={id}")).paid_by(),
+            Some(Some(id))
+        );
+        assert_eq!(
+            form("name=x&payers_present=1&paid_by=").paid_by(),
+            Some(None)
+        );
+        assert_eq!(
+            form("name=x&payers_present=1&paid_by=pas-un-uuid").paid_by(),
+            Some(None)
+        );
+        assert_eq!(form(&format!("name=x&paid_by={id}")).paid_by(), None);
+    }
+
+    #[test]
+    fn a_new_expense_is_paid_by_the_signed_in_member_unless_another_is_picked() {
+        let me = Uuid::from_u128(1);
+        let other = Uuid::from_u128(2);
+        // The pills not drawn: the member they would have ticked.
+        assert_eq!(new_entry_payer(&form("name=x"), me), Some(me));
+        assert_eq!(
+            new_entry_payer(
+                &form(&format!("name=x&payers_present=1&paid_by={other}")),
+                me
+            ),
+            Some(other)
+        );
+        // « Personne » stays possible.
+        assert_eq!(
+            new_entry_payer(&form("name=x&payers_present=1&paid_by="), me),
+            None
+        );
+    }
+
+    #[test]
+    fn a_payer_who_has_left_is_named_in_french() {
+        assert_eq!(
+            known_code(&serde_json::json!({ "error": "paid_by_not_a_member" })),
+            "paid_by_not_a_member"
+        );
+        assert!(error_message("paid_by_not_a_member").contains("payeur"));
     }
 
     #[test]

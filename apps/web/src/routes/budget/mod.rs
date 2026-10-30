@@ -220,6 +220,7 @@ mod tests {
                 })
                 .collect(),
             category_id: None,
+            paid_by: None,
             name: "Dépense".to_string(),
             amount: 1.0,
             spent_at: NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(),

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, group_id, created_by, category_id, name, amount_cents, spent_at, created_at, updated_at\n        FROM budget_entries\n        WHERE group_id = $1\n        ORDER BY spent_at DESC, created_at DESC\n        ",
+  "query": "\n        INSERT INTO budget_entries (group_id, created_by, name, amount_cents, spent_at, category_id, paid_by)\n        VALUES ($1, $2, $3, $4, $5, $6, $7)\n        RETURNING id, group_id, created_by, category_id, paid_by, name, amount_cents, spent_at, created_at, updated_at\n        ",
   "describe": {
     "columns": [
       {
@@ -49,6 +49,17 @@
       },
       {
         "ordinal": 4,
+        "name": "paid_by",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "budget_entries",
+            "name": "paid_by"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
         "name": "name",
         "type_info": "Text",
         "origin": {
@@ -59,7 +70,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "amount_cents",
         "type_info": "Int8",
         "origin": {
@@ -70,7 +81,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "spent_at",
         "type_info": "Date",
         "origin": {
@@ -81,7 +92,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -92,7 +103,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -105,6 +116,12 @@
     ],
     "parameters": {
       "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Int8",
+        "Date",
+        "Uuid",
         "Uuid"
       ]
     },
@@ -113,6 +130,7 @@
       false,
       false,
       true,
+      true,
       false,
       false,
       false,
@@ -120,5 +138,5 @@
       false
     ]
   },
-  "hash": "7732e23067cf60bc217ff7d80419c1670de9c0f83676198997b92835b330a566"
+  "hash": "7bc0ded665ec7ef1adaf7c5ae36853fc227c76ad4d17e4f67b5cd50503c560cc"
 }

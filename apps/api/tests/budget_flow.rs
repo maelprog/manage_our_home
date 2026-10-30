@@ -2806,3 +2806,386 @@ async fn push_alerts_follows_each_member_s_channel(db: PgPool) {
             .map(|d| (format!("https://fcm.googleapis.com/fcm/send/{d}"), day))
     );
 }
+
+// -- Who paid (#638) -----------------------------------------------------------
+
+async fn user_id(db: &PgPool, email: &str) -> String {
+    let id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind(email)
+        .fetch_one(db)
+        .await
+        .unwrap();
+    id.to_string()
+}
+
+/// `patch_entry`, answering the entry as the PATCH returned it.
+async fn patched(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+    entry_id: &str,
+    body: serde_json::Value,
+) -> serde_json::Value {
+    let res = call(
+        router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/budget-entries/{entry_id}"),
+        Some(cookie),
+        Some(body),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    json_body(res).await
+}
+
+async fn get_entry(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+    entry_id: &str,
+) -> serde_json::Value {
+    let res = call(
+        router,
+        Method::GET,
+        &format!("/groups/{group_id}/budget-entries/{entry_id}"),
+        Some(cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    json_body(res).await
+}
+
+/// AC #638: an expense names who paid it, a member of its family — a
+/// standard one included — or nobody; created, read, listed, changed and
+/// cleared through the routes.
+#[sqlx::test]
+async fn an_expense_is_paid_by_a_member_of_its_family_or_nobody(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, admin, group_id) = owner_and_admin(&router, &db, "paid-by").await;
+    let owner_id = user_id(&db, "paid-by-owner@example.test").await;
+    let admin_id = user_id(&db, "paid-by-admin@example.test").await;
+    let child_email = "paid-by-child@example.test";
+    let child = register_verify_login(&router, &db, child_email, "child-password1").await;
+    join_as_standard(&router, &owner, &child, &group_id).await;
+    let child_id = user_id(&db, child_email).await;
+
+    // Left out, nobody paid it.
+    let entry = create_entry(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Pain", "amount": 2.0}),
+    )
+    .await;
+    assert_eq!(entry["paid_by"], serde_json::Value::Null);
+
+    let entry = create_entry(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Marché", "amount": 18.0, "paid_by": owner_id}),
+    )
+    .await;
+    assert_eq!(entry["paid_by"], owner_id.as_str());
+    let entry_id = entry["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        get_entry(&router, &admin, &group_id, &entry_id).await["paid_by"],
+        owner_id.as_str()
+    );
+
+    // Another member, a standard one too: a child may have paid.
+    let patch = patched(
+        &router,
+        &admin,
+        &group_id,
+        &entry_id,
+        serde_json::json!({"paid_by": child_id}),
+    )
+    .await;
+    assert_eq!(patch["paid_by"], child_id.as_str());
+    let patch = patched(
+        &router,
+        &admin,
+        &group_id,
+        &entry_id,
+        serde_json::json!({"paid_by": admin_id}),
+    )
+    .await;
+    assert_eq!(patch["paid_by"], admin_id.as_str());
+
+    // A PATCH that leaves it out keeps the payer; `null` clears it.
+    let patch = patched(
+        &router,
+        &admin,
+        &group_id,
+        &entry_id,
+        serde_json::json!({"amount": 19.0}),
+    )
+    .await;
+    assert_eq!(patch["paid_by"], admin_id.as_str());
+    let list = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/budget-entries"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    let entries = json_body(list).await["entries"].clone();
+    let listed = entries
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == entry_id.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(listed["paid_by"], admin_id.as_str());
+    let patch = patched(
+        &router,
+        &admin,
+        &group_id,
+        &entry_id,
+        serde_json::json!({"paid_by": null}),
+    )
+    .await;
+    assert_eq!(patch["paid_by"], serde_json::Value::Null);
+}
+
+/// AC #638: whoever is not a member of the family — a member of another
+/// one, an unknown id — is refused as a payer, on creation as on a PATCH,
+/// and the expense is left as it was.
+#[sqlx::test]
+async fn a_payer_outside_the_family_is_refused(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, _admin, group_id) = owner_and_admin(&router, &db, "paid-out").await;
+    let stranger_email = "paid-out-stranger@example.test";
+    let stranger = register_verify_login(&router, &db, stranger_email, "stranger-password1").await;
+    create_group(&router, &stranger, "Autre foyer").await;
+    let stranger_id = user_id(&db, stranger_email).await;
+    let unknown = uuid::Uuid::new_v4().to_string();
+
+    for payer in [&stranger_id, &unknown] {
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/budget-entries"),
+            Some(&owner),
+            Some(serde_json::json!({"name": "Pain", "amount": 2.0, "paid_by": payer})),
+        )
+        .await;
+        assert_status(&res, StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(res).await["error"], "paid_by_not_a_member");
+    }
+    assert_eq!(entry_count(&router, &owner, &group_id).await, 0);
+
+    let owner_id = user_id(&db, "paid-out-owner@example.test").await;
+    let entry = create_entry(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Pain", "amount": 2.0, "paid_by": owner_id}),
+    )
+    .await;
+    let entry_id = entry["id"].as_str().unwrap().to_string();
+    for payer in [&stranger_id, &unknown] {
+        let res = call(
+            &router,
+            Method::PATCH,
+            &format!("/groups/{group_id}/budget-entries/{entry_id}"),
+            Some(&owner),
+            Some(serde_json::json!({"paid_by": payer, "amount": 9.0})),
+        )
+        .await;
+        assert_status(&res, StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(res).await["error"], "paid_by_not_a_member");
+    }
+    let kept = get_entry(&router, &owner, &group_id, &entry_id).await;
+    assert_eq!(kept["paid_by"], owner_id.as_str());
+    assert_eq!(kept["amount"], 2.0);
+}
+
+/// User's decision of 2026-10-30 (#638): when the payer's membership ends
+/// — they leave, or are removed — the expense stays, without a payer. The
+/// family's deletion still takes its expenses with it.
+#[sqlx::test]
+async fn a_payer_who_leaves_leaves_the_expense_without_a_payer(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, admin, group_id) = owner_and_admin(&router, &db, "paid-left").await;
+    let admin_id = user_id(&db, "paid-left-admin@example.test").await;
+    let child_email = "paid-left-child@example.test";
+    let child = register_verify_login(&router, &db, child_email, "child-password1").await;
+    join_as_standard(&router, &owner, &child, &group_id).await;
+    let child_id = user_id(&db, child_email).await;
+    let owner_id = user_id(&db, "paid-left-owner@example.test").await;
+
+    let mut ids = Vec::new();
+    for (name, amount, payer) in [
+        ("Essence", 50.0, &admin_id),
+        ("Goûter", 4.0, &child_id),
+        ("Loyer", 5.0, &owner_id),
+    ] {
+        let entry = create_entry(
+            &router,
+            &owner,
+            &group_id,
+            serde_json::json!({"name": name, "amount": amount, "paid_by": payer}),
+        )
+        .await;
+        ids.push(entry["id"].as_str().unwrap().to_string());
+    }
+    let (by_admin, by_child, by_owner) = (&ids[0], &ids[1], &ids[2]);
+
+    let leave = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/leave"),
+        Some(&admin),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_status(&leave, StatusCode::OK);
+    let remove = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}/members/{child_id}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_status(&remove, StatusCode::NO_CONTENT);
+
+    for (id, amount) in [(by_admin, 50.0), (by_child, 4.0)] {
+        let entry = get_entry(&router, &owner, &group_id, id).await;
+        assert_eq!(entry["paid_by"], serde_json::Value::Null, "{entry}");
+        assert_eq!(entry["amount"], amount);
+    }
+    assert_eq!(
+        get_entry(&router, &owner, &group_id, by_owner).await["paid_by"],
+        owner_id.as_str()
+    );
+
+    // No longer a member: no longer a payer.
+    let res = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/budget-entries/{by_owner}"),
+        Some(&owner),
+        Some(serde_json::json!({"paid_by": admin_id})),
+    )
+    .await;
+    assert_status(&res, StatusCode::BAD_REQUEST);
+
+    let delete = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_status(&delete, StatusCode::NO_CONTENT);
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM budget_entries")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+}
+
+/// User's decision of 2026-10-30 (#638): the summary's month totals the
+/// spend of each payer, the largest first, and the spend nobody paid; the
+/// other months stay out of it.
+#[sqlx::test]
+async fn the_summary_totals_the_month_per_payer(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, admin, group_id) = owner_and_admin(&router, &db, "paid-sum").await;
+    let owner_id = user_id(&db, "paid-sum-owner@example.test").await;
+    let admin_id = user_id(&db, "paid-sum-admin@example.test").await;
+    sqlx::query("UPDATE users SET display_name = 'Admin Payeuse' WHERE id = $1::uuid")
+        .bind(&admin_id)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    for (name, amount, payer, day) in [
+        ("A", 10.0, Some(&owner_id), "2026-03-02"),
+        ("B", 5.25, Some(&owner_id), "2026-03-30"),
+        ("C", 40.0, Some(&admin_id), "2026-03-15"),
+        ("D", 3.5, None, "2026-03-15"),
+        // Other months.
+        ("E", 99.0, Some(&owner_id), "2026-04-01"),
+        ("F", 1.0, None, "2026-02-28"),
+    ] {
+        create_entry(
+            &router,
+            &owner,
+            &group_id,
+            serde_json::json!({"name": name, "amount": amount, "paid_by": payer, "spent_at": day}),
+        )
+        .await;
+    }
+
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/budget-entries/summary?month=2026-03"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let month = json_body(res).await["month"].clone();
+    assert_eq!(month["total"], 58.75);
+    assert_eq!(
+        month["payers"],
+        serde_json::json!([
+            {"user_id": admin_id, "display_name": "Admin Payeuse", "total": 40.0},
+            {"user_id": owner_id, "display_name": "paid-sum-owner@example.test", "total": 15.25},
+        ])
+    );
+    assert_eq!(month["without_payer"], 3.5);
+
+    // A month nobody spent in.
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/budget-entries/summary?month=2026-05"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    let month = json_body(res).await["month"].clone();
+    assert_eq!(month["payers"], serde_json::json!([]));
+    assert_eq!(month["without_payer"], 0.0);
+}
+
+/// #638: the expenses a member paid are data about them; their export
+/// carries them, whoever wrote them down, with the payer.
+#[sqlx::test]
+async fn the_export_carries_the_expenses_a_member_paid(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, admin, group_id) = owner_and_admin(&router, &db, "paid-export").await;
+    let admin_id = user_id(&db, "paid-export-admin@example.test").await;
+    create_entry(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Cantine", "amount": 30.0, "paid_by": admin_id}),
+    )
+    .await;
+    create_entry(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Pas la sienne", "amount": 1.0}),
+    )
+    .await;
+
+    let export = call(&router, Method::GET, "/account/export", Some(&admin), None).await;
+    assert_status(&export, StatusCode::OK);
+    let doc = json_body(export).await;
+    let exported = doc["budget_entries"].as_array().unwrap();
+    assert_eq!(exported.len(), 1, "{exported:?}");
+    assert_eq!(exported[0]["name"], "Cantine");
+    assert_eq!(exported[0]["paid_by"], admin_id.as_str());
+}

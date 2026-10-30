@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, group_id, created_by, category_id, name, amount_cents, spent_at, created_at, updated_at\n           FROM budget_entries WHERE id = $1 AND group_id = $2",
+  "query": "\n        UPDATE budget_entries SET\n            name = $3,\n            amount_cents = $4,\n            spent_at = $5,\n            category_id = $6,\n            paid_by = $7,\n            updated_at = now()\n        WHERE id = $1 AND group_id = $2\n        RETURNING id, group_id, created_by, category_id, paid_by, name, amount_cents, spent_at, created_at, updated_at\n        ",
   "describe": {
     "columns": [
       {
@@ -49,6 +49,17 @@
       },
       {
         "ordinal": 4,
+        "name": "paid_by",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "budget_entries",
+            "name": "paid_by"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
         "name": "name",
         "type_info": "Text",
         "origin": {
@@ -59,7 +70,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "amount_cents",
         "type_info": "Int8",
         "origin": {
@@ -70,7 +81,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "spent_at",
         "type_info": "Date",
         "origin": {
@@ -81,7 +92,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -92,7 +103,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -106,6 +117,11 @@
     "parameters": {
       "Left": [
         "Uuid",
+        "Uuid",
+        "Text",
+        "Int8",
+        "Date",
+        "Uuid",
         "Uuid"
       ]
     },
@@ -114,6 +130,7 @@
       false,
       false,
       true,
+      true,
       false,
       false,
       false,
@@ -121,5 +138,5 @@
       false
     ]
   },
-  "hash": "65ff6b56d6833f19fbe1ffc47ff24f8224d70697789a05cec23e3166ee80b13e"
+  "hash": "0bdc5847b815268ea2fc9137c41a761325c9b0f746c721832c83f46b502cda0f"
 }

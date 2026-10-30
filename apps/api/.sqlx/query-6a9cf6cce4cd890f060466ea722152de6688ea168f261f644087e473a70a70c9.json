@@ -1,0 +1,49 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT e.paid_by AS \"user_id!\", u.display_name,\n               SUM(e.amount_cents)::bigint AS \"total_cents!\"\n        FROM budget_entries e\n        JOIN users u ON u.id = e.paid_by\n        WHERE e.group_id = $1 AND e.paid_by IS NOT NULL\n          AND e.spent_at >= $2 AND e.spent_at < $3\n        GROUP BY e.paid_by, u.display_name\n        ORDER BY 3 DESC, lower(u.display_name), e.paid_by\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "budget_entries",
+            "name": "paid_by"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "display_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "total_cents!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "6a9cf6cce4cd890f060466ea722152de6688ea168f261f644087e473a70a70c9"
+}
