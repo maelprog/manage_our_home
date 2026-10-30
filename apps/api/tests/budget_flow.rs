@@ -2,7 +2,9 @@ mod common;
 
 use axum::http::{Method, StatusCode};
 use chrono::{Datelike, NaiveDate, Utc};
-use common::{assert_status, call, json_body, set_cookie, test_router};
+use common::{
+    assert_status, call, json_body, set_cookie, test_router, test_router_sized, waiting_on_table,
+};
 use manage_our_home_shared::validation::auth::paris_day;
 use sqlx::PgPool;
 
@@ -2127,4 +2129,68 @@ async fn a_grocery_item_s_price_alerts_too(db: PgPool) {
         budget_alerts(&router, &admin).await,
         ["Les dépenses du mois dépassent le plafond de « Alimentation »."]
     );
+}
+
+/// The family's lock (`budget_settings … FOR UPDATE`): expenses written at
+/// once read the month's totals one after the other, so 70 € then six
+/// expenses of 2 € at once against a 100 € cap send the 80 % alert once —
+/// never none because each read the others' writes uncommitted, never
+/// twice. The entries table is held in SHARE mode meanwhile: the first
+/// expense waits on it to insert, every other one on the family's lock.
+#[sqlx::test]
+async fn simultaneous_expenses_alert_once(db: PgPool) {
+    let router = test_router_sized(db.clone(), 10);
+    let (owner, admin, group_id) = owner_and_admin(&router, &db, "alert-race").await;
+    let res = call(
+        &router,
+        Method::PUT,
+        &format!("/groups/{group_id}/budget-settings"),
+        Some(&owner),
+        Some(serde_json::json!({"monthly_cap": 100.0})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    create_entry(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Base", "amount": 70.0}),
+    )
+    .await;
+
+    let mut hold = db.begin().await.unwrap();
+    sqlx::query("LOCK TABLE budget_entries IN SHARE MODE")
+        .execute(&mut *hold)
+        .await
+        .unwrap();
+    let uri = format!("/groups/{group_id}/budget-entries");
+    let mut expenses = tokio::task::JoinSet::new();
+    for n in 0..6 {
+        let cookie = if n % 2 == 0 { owner.clone() } else { admin.clone() };
+        let (router, uri) = (router.clone(), uri.clone());
+        expenses.spawn(async move {
+            let body = serde_json::json!({"name": format!("Dépense {n}"), "amount": 2.0});
+            call(&router, Method::POST, &uri, Some(&cookie), Some(body))
+                .await
+                .status()
+        });
+    }
+    assert_eq!(
+        waiting_on_table(&db, 6, "budget_entries").await,
+        1,
+        "the expenses past the first wait on the family's lock"
+    );
+    hold.rollback().await.unwrap();
+    while let Some(status) = expenses.join_next().await {
+        assert_eq!(status.unwrap(), StatusCode::CREATED);
+    }
+
+    for cookie in [&owner, &admin] {
+        assert_eq!(budget_alerts(&router, cookie).await, [NEAR]);
+    }
+    let sent: i64 = sqlx::query_scalar("SELECT count(*) FROM budget_alerts")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(sent, 1);
 }
