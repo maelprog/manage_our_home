@@ -329,7 +329,9 @@ mod tests {
         assert_eq!(body.grocery_item_ids, Some(vec![Uuid::from_u128(7)]));
 
         // « Sans catégorie » and no item ticked clear both, explicitly.
-        let f = form("name=Courses&amount=12&category_id=&categories_present=1&grocery_items_present=1");
+        let f = form(
+            "name=Courses&amount=12&category_id=&categories_present=1&grocery_items_present=1",
+        );
         let json = serde_json::to_value(update_body(&f, 12.0, &[])).unwrap();
         assert_eq!(json["category_id"], serde_json::Value::Null, "{json}");
         assert_eq!(json["grocery_item_ids"], serde_json::json!([]), "{json}");
