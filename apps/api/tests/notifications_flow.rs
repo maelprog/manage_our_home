@@ -428,6 +428,81 @@ async fn an_expiring_item_notifies_every_member_once(db: PgPool) {
     assert_eq!(notify_expiring(&db, today).await.unwrap(), 2);
 }
 
+/// The window's first day is today: an item to eat today is told.
+#[sqlx::test]
+async fn an_item_expiring_today_is_notified(db: PgPool) {
+    let f = family(&db).await;
+    let today = NaiveDate::from_ymd_opt(2030, 10, 30).unwrap();
+    stock_item(&db, &f.group, "Crème", 1.0, today).await;
+
+    assert_eq!(notify_expiring(&db, today).await.unwrap(), 2);
+    assert_eq!(
+        kinds_and_bodies(&list(&f.router, &f.member, "").await),
+        [(
+            "stock_expiry".to_string(),
+            "« Crème » est à consommer jusqu'au 30/10/2030.".to_string()
+        )]
+    );
+}
+
+/// A deactivated account and a purged one are members still, and told
+/// nothing: neither can read its centre.
+#[sqlx::test]
+async fn a_deactivated_or_purged_member_is_not_notified(db: PgPool) {
+    let f = family(&db).await;
+    let third = register_verify_login(&f.router, &db, "third@example.test").await;
+    invite_and_join(&f.router, &f.group, &f.owner, &third).await;
+    let member = user_id(&db, "member@example.test").await;
+    let third = user_id(&db, "third@example.test").await;
+    sqlx::query("UPDATE users SET deactivated_at = now() WHERE id = $1")
+        .bind(member)
+        .execute(&db)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE users SET deleted_at = now() WHERE id = $1")
+        .bind(third)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let res = call(
+        &f.router,
+        Method::POST,
+        &format!("/groups/{}/grocery-items", f.group),
+        Some(&f.owner),
+        Some(json!({"name": "Lait"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+
+    let notified: Vec<Uuid> = sqlx::query_scalar("SELECT user_id FROM notifications")
+        .fetch_all(&db)
+        .await
+        .unwrap();
+    assert_eq!(notified, Vec::<Uuid>::new());
+}
+
+/// An inviter typing their own address is not told of their own
+/// invitation.
+#[sqlx::test]
+async fn inviting_ones_own_address_notifies_no_one(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner = register_verify_login(&router, &db, "self@example.test").await;
+    let group = create_group(&router, &owner, "Maison").await;
+
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group}/invitations"),
+        Some(&owner),
+        Some(json!({"invited_email": "self@example.test"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+
+    assert_eq!(list(&router, &owner, "").await["notifications"], json!([]));
+}
+
 // -- the API ------------------------------------------------------------------
 
 async fn insert(db: &PgPool, user: Uuid, group: &str, kind: &str, minutes_ago: i64) -> Uuid {
@@ -491,6 +566,20 @@ async fn one_or_all_can_be_marked_read(db: PgPool) {
     insert(&db, owner, &f.group, "grocery_item", 1).await;
     assert_eq!(unread(&f.router, &f.owner).await, 3);
 
+    let read_at_of = |id: Uuid| {
+        let db = db.clone();
+        async move {
+            sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+                "SELECT read_at FROM notifications WHERE id = $1",
+            )
+            .bind(id)
+            .fetch_one(&db)
+            .await
+            .unwrap()
+        }
+    };
+    // Marking it read again keeps the date of the first time.
+    let mut dates = Vec::new();
     for _ in 0..2 {
         let res = call(
             &f.router,
@@ -501,15 +590,12 @@ async fn one_or_all_can_be_marked_read(db: PgPool) {
         )
         .await;
         assert_status(&res, StatusCode::NO_CONTENT);
+        dates.push(read_at_of(first).await);
     }
     assert_eq!(unread(&f.router, &f.owner).await, 2);
-    let read_at: Option<DateTime<Utc>> =
-        sqlx::query_scalar("SELECT read_at FROM notifications WHERE id = $1")
-            .bind(first)
-            .fetch_one(&db)
-            .await
-            .unwrap();
+    let read_at = dates[0];
     assert!(read_at.is_some());
+    assert_eq!(dates[1], read_at);
 
     let res = call(
         &f.router,
@@ -522,13 +608,7 @@ async fn one_or_all_can_be_marked_read(db: PgPool) {
     assert_status(&res, StatusCode::NO_CONTENT);
     assert_eq!(unread(&f.router, &f.owner).await, 0);
     // Marking all read again keeps the first date of each.
-    let still: Option<DateTime<Utc>> =
-        sqlx::query_scalar("SELECT read_at FROM notifications WHERE id = $1")
-            .bind(first)
-            .fetch_one(&db)
-            .await
-            .unwrap();
-    assert_eq!(still, read_at);
+    assert_eq!(read_at_of(first).await, read_at);
 }
 
 fn ids(page: &Value) -> Vec<Uuid> {
