@@ -1112,6 +1112,12 @@ async fn export_accounts_for_every_table(db: PgPool) {
              to an account",
         ),
         (
+            "budget_alerts",
+            "the budget alerts already sent (#536): a family, a month, a category and a \
+             threshold, no account; the notifications they wrote are exported to their \
+             recipients",
+        ),
+        (
             "off_products",
             "Open Food Facts' public product records, keyed by code: no family, no account",
         ),
