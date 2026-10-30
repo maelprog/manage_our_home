@@ -588,7 +588,10 @@ async fn price_can_be_set_on_grocery_item(db: PgPool) {
     let entry = json_body(set_price).await;
     assert_eq!(entry["name"], "Farine");
     assert_eq!(entry["amount"], 2.35);
-    assert_eq!(entry["grocery_item_id"], item_id);
+    assert_eq!(
+        entry["grocery_items"],
+        serde_json::json!([{"id": item_id, "name": "Farine"}])
+    );
     assert_paris_today(&entry["spent_at"], before, after);
 
     let list = call(
@@ -716,6 +719,237 @@ async fn manual_entry_on_already_priced_item_is_rejected(db: PgPool) {
     )
     .await;
     assert_status(&duplicate, StatusCode::CONFLICT);
+}
+
+// -- Links to grocery items (#633) ---------------------------------------------
+
+/// A grocery item of the group, unchecked.
+async fn grocery_item(router: &axum::Router, cookie: &str, group_id: &str, name: &str) -> String {
+    let res = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/grocery-items"),
+        Some(cookie),
+        Some(serde_json::json!({ "name": name })),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    json_body(res).await["id"].as_str().unwrap().to_string()
+}
+
+async fn entry_count(router: &axum::Router, cookie: &str, group_id: &str) -> usize {
+    let res = call(
+        router,
+        Method::GET,
+        &format!("/groups/{group_id}/budget-entries"),
+        Some(cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    json_body(res).await["entries"].as_array().unwrap().len()
+}
+
+/// AC #633: an expense links to several grocery items of its family, named
+/// once each, and reads them back by name — on its own, in the list and in
+/// its author's export. An item of another family is refused (404), an
+/// item already linked to another expense too (409), and more than 100
+/// items (400): none of them creates anything.
+#[sqlx::test]
+async fn an_expense_links_to_grocery_items_of_its_family(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, admin, group_id) = owner_and_admin(&router, &db, "links").await;
+    let other =
+        register_verify_login(&router, &db, "links-other@example.test", "other-password1").await;
+    let other_group = create_group(&router, &other, "Ailleurs").await;
+    let foreign = grocery_item(&router, &other, &other_group, "Riz").await;
+
+    let pain = grocery_item(&router, &owner, &group_id, "Pain").await;
+    let lait = grocery_item(&router, &admin, &group_id, "Lait").await;
+
+    // Named twice (two brands, say), the bread is one link; the shorthand
+    // and the list add up.
+    let entry = create_entry(
+        &router,
+        &admin,
+        &group_id,
+        serde_json::json!({"name": "Courses du samedi", "amount": 12.4,
+                           "grocery_item_id": pain, "grocery_item_ids": [pain, lait]}),
+    )
+    .await;
+    let linked = serde_json::json!([
+        {"id": lait, "name": "Lait"},
+        {"id": pain, "name": "Pain"},
+    ]);
+    assert_eq!(entry["grocery_items"], linked);
+    let entry_id = entry["id"].as_str().unwrap();
+
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/budget-entries/{entry_id}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(json_body(res).await["grocery_items"], linked);
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/budget-entries"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(json_body(res).await["entries"][0]["grocery_items"], linked);
+
+    let res = call(&router, Method::GET, "/account/export", Some(&admin), None).await;
+    assert_status(&res, StatusCode::OK);
+    let doc = json_body(res).await;
+    let exported = doc["budget_entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == entry_id)
+        .expect("the entry is exported to its author");
+    let mut ids = vec![pain.clone(), lait.clone()];
+    ids.sort();
+    assert_eq!(exported["grocery_item_ids"], serde_json::json!(ids));
+
+    let refused = [
+        (
+            serde_json::json!({"name": "x", "amount": 1.0, "grocery_item_ids": [lait, foreign]}),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            serde_json::json!({"name": "x", "amount": 1.0, "grocery_item_ids": [pain]}),
+            StatusCode::CONFLICT,
+        ),
+        (
+            serde_json::json!({"name": "x", "amount": 1.0,
+                               "grocery_item_ids": (0..101).map(|_| uuid::Uuid::new_v4()).collect::<Vec<_>>()}),
+            StatusCode::BAD_REQUEST,
+        ),
+    ];
+    for (body, status) in refused {
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/budget-entries"),
+            Some(&owner),
+            Some(body),
+        )
+        .await;
+        assert_status(&res, status);
+    }
+    assert_eq!(entry_count(&router, &owner, &group_id).await, 1);
+    // Nor did the other family's item get linked to anything.
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/budget-entries/{entry_id}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(json_body(res).await["grocery_items"], linked);
+}
+
+/// AC #633: a PATCH that names the links replaces them all, `[]` unlinks
+/// every item, and one that leaves them out keeps them. Deleting a grocery
+/// item removes its link and keeps the expense. A price set on an item
+/// linked with others is refused rather than replacing their expense's
+/// amount with the item's.
+#[sqlx::test]
+async fn a_patch_replaces_the_links_and_a_deleted_item_loses_its_own(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, _admin, group_id) = owner_and_admin(&router, &db, "relink").await;
+    let pain = grocery_item(&router, &owner, &group_id, "Pain").await;
+    let lait = grocery_item(&router, &owner, &group_id, "Lait").await;
+    let oeufs = grocery_item(&router, &owner, &group_id, "Oeufs").await;
+    let entry = create_entry(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Marché", "amount": 9.0, "grocery_item_ids": [pain]}),
+    )
+    .await;
+    let entry_id = entry["id"].as_str().unwrap().to_string();
+    let url = format!("/groups/{group_id}/budget-entries/{entry_id}");
+    let patch = |body: serde_json::Value| {
+        let (router, owner, url) = (&router, &owner, &url);
+        async move {
+            let res = call(router, Method::PATCH, url, Some(owner), Some(body)).await;
+            assert_status(&res, StatusCode::OK);
+            json_body(res).await["grocery_items"].clone()
+        }
+    };
+
+    assert_eq!(
+        patch(serde_json::json!({"grocery_item_ids": [oeufs, lait]})).await,
+        serde_json::json!([{"id": lait, "name": "Lait"}, {"id": oeufs, "name": "Oeufs"}])
+    );
+    // The bread, unlinked, is free for another expense.
+    create_entry(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Boulangerie", "amount": 1.2, "grocery_item_id": pain}),
+    )
+    .await;
+    assert_eq!(
+        patch(serde_json::json!({"amount": 10.0})).await,
+        serde_json::json!([{"id": lait, "name": "Lait"}, {"id": oeufs, "name": "Oeufs"}])
+    );
+    let res = call(
+        &router,
+        Method::PATCH,
+        &url,
+        Some(&owner),
+        Some(serde_json::json!({"grocery_item_ids": [lait, pain]})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CONFLICT);
+
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/grocery-items/{lait}/price"),
+        Some(&owner),
+        Some(serde_json::json!({"amount": 1.0})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CONFLICT);
+    assert_eq!(
+        json_body(res).await["error"],
+        "grocery_item_priced_with_others"
+    );
+
+    let res = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}/grocery-items/{oeufs}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    let res = call(&router, Method::GET, &url, Some(&owner), None).await;
+    assert_status(&res, StatusCode::OK);
+    let kept = json_body(res).await;
+    assert_eq!(kept["name"], "Marché");
+    assert_eq!(kept["amount"], 10.0);
+    assert_eq!(
+        kept["grocery_items"],
+        serde_json::json!([{"id": lait, "name": "Lait"}])
+    );
+
+    assert_eq!(
+        patch(serde_json::json!({"grocery_item_ids": []})).await,
+        serde_json::json!([])
+    );
+    assert_eq!(entry_count(&router, &owner, &group_id).await, 2);
 }
 
 /// AC: spend is cumulated per period (month) at the family level.
@@ -2096,6 +2330,24 @@ async fn the_switches_and_the_current_month_bound_the_alerts(db: PgPool) {
     )
     .await;
     assert_eq!(budget_alerts(&router, &admin).await, [FULL, NEAR, category]);
+
+    // The categories' switch off, a category past its cap for the first
+    // time this month alerts nothing either.
+    let sorties = create_category(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Sorties", "color": "green", "monthly_cap": 10.0}),
+    )
+    .await;
+    create_entry(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Cinéma", "amount": 30.0, "category_id": sorties}),
+    )
+    .await;
+    assert_eq!(budget_alerts(&router, &admin).await, [FULL, NEAR, category]);
 }
 
 /// AC #536: a price set on a checked grocery item is an expense like any
@@ -2290,6 +2542,142 @@ async fn a_price_and_a_patch_of_one_expense_at_once_both_go_through(db: PgPool) 
 
     assert_eq!(price_again.await.unwrap(), StatusCode::CREATED);
     assert_eq!(patch.await.unwrap(), StatusCode::OK);
+}
+
+/// A request sent in the background: its status and its body.
+fn spawn_call(
+    router: &axum::Router,
+    method: Method,
+    uri: String,
+    cookie: &str,
+    body: serde_json::Value,
+) -> tokio::task::JoinHandle<(StatusCode, serde_json::Value)> {
+    let (router, cookie) = (router.clone(), cookie.to_string());
+    tokio::spawn(async move {
+        let res = call(&router, method, &uri, Some(&cookie), Some(body)).await;
+        let status = res.status();
+        (status, json_body(res).await)
+    })
+}
+
+/// #633: every write of a link to a grocery item takes the family's lock
+/// before reading the links. Two writes linking one item at once then see
+/// each other's link — the second gets its 409 — instead of both reading
+/// « not linked » and the second tripping on the item's unique key (a 500).
+/// The test holds the family's lock, parks a first write on it, then a
+/// second; once released, the first goes first.
+#[sqlx::test]
+async fn writes_linking_one_item_at_once_wait_for_each_other(db: PgPool) {
+    let router = test_router_sized(db.clone(), 10);
+    let (owner, _admin, group_id) = owner_and_admin(&router, &db, "link-race").await;
+    // `alerts::watch` takes the family's lock for an expense of the current
+    // month: the creations below are dated last month, so that they wait
+    // on it only if they take it themselves. This writes the family's
+    // `budget_settings` row, the lock the test holds.
+    let last_month = paris_day(Utc::now())
+        .with_day(1)
+        .unwrap()
+        .pred_opt()
+        .unwrap();
+    let res = call(
+        &router,
+        Method::PUT,
+        &format!("/groups/{group_id}/budget-settings"),
+        Some(&owner),
+        Some(serde_json::json!({"monthly_cap": null})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let entries = format!("/groups/{group_id}/budget-entries");
+    let price = |item: &str| format!("/groups/{group_id}/grocery-items/{item}/price");
+    let other = create_entry(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Épicerie", "amount": 4.0}),
+    )
+    .await;
+    let other = format!("{entries}/{}", other["id"].as_str().unwrap());
+
+    // (first write, second write, the second's error)
+    let pain = grocery_item(&router, &owner, &group_id, "Pain").await;
+    let lait = grocery_item(&router, &owner, &group_id, "Lait").await;
+    let beurre = grocery_item(&router, &owner, &group_id, "Beurre").await;
+    let oeufs = grocery_item(&router, &owner, &group_id, "Oeufs").await;
+    let riz = grocery_item(&router, &owner, &group_id, "Riz").await;
+    let races = [
+        (
+            (
+                Method::POST,
+                entries.clone(),
+                serde_json::json!({"name": "Marché", "amount": 6.0, "grocery_item_ids": [pain, lait]}),
+            ),
+            (
+                Method::POST,
+                price(&pain),
+                serde_json::json!({"amount": 1.0}),
+            ),
+            "grocery_item_priced_with_others",
+        ),
+        (
+            (
+                Method::POST,
+                entries.clone(),
+                serde_json::json!({"name": "Crèmerie", "amount": 2.0, "grocery_item_ids": [beurre], "spent_at": last_month}),
+            ),
+            (
+                Method::POST,
+                entries.clone(),
+                serde_json::json!({"name": "Beurre", "amount": 2.0, "grocery_item_id": beurre, "spent_at": last_month}),
+            ),
+            "grocery_item_already_priced",
+        ),
+        (
+            (
+                Method::POST,
+                price(&oeufs),
+                serde_json::json!({"amount": 3.0}),
+            ),
+            (
+                Method::PATCH,
+                other.clone(),
+                serde_json::json!({"grocery_item_ids": [oeufs]}),
+            ),
+            "grocery_item_already_priced",
+        ),
+        (
+            (
+                Method::PATCH,
+                other.clone(),
+                serde_json::json!({"grocery_item_ids": [riz]}),
+            ),
+            (
+                Method::POST,
+                entries.clone(),
+                serde_json::json!({"name": "Riz", "amount": 1.5, "grocery_item_ids": [riz], "spent_at": last_month}),
+            ),
+            "grocery_item_already_priced",
+        ),
+    ];
+    for ((m1, uri1, body1), (m2, uri2, body2), error) in races {
+        let mut hold = manage_our_home::db::begin(&db).await.unwrap();
+        sqlx::query("SELECT 1 FROM budget_settings WHERE group_id = $1::uuid FOR UPDATE")
+            .bind(&group_id)
+            .execute(&mut *hold)
+            .await
+            .unwrap();
+        let first = spawn_call(&router, m1, uri1, &owner, body1);
+        common::wait_for_lock_waiters(&db, None, 1).await;
+        let second = spawn_call(&router, m2, uri2, &owner, body2);
+        common::wait_for_lock_waiters(&db, None, 2).await;
+        hold.rollback().await.unwrap();
+
+        let (status, body) = first.await.unwrap();
+        assert!(status.is_success(), "first write: {status} {body}");
+        let (status, body) = second.await.unwrap();
+        assert_eq!(status, StatusCode::CONFLICT, "second write: {body}");
+        assert_eq!(body["error"], error);
+    }
 }
 
 /// A device of `email`'s account, under an endpoint no push service owns:

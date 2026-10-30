@@ -421,8 +421,11 @@ pub async fn export_account(
         }));
 
         let budget_rows = sqlx::query!(
-            r#"SELECT id, group_id, name, amount_cents, spent_at, category_id, created_at
-               FROM budget_entries WHERE group_id = $1 AND created_by = $2 ORDER BY created_at"#,
+            r#"SELECT id, group_id, name, amount_cents, spent_at, category_id, created_at,
+                      ARRAY(SELECT l.grocery_item_id FROM budget_entry_grocery_items l
+                            WHERE l.entry_id = b.id AND l.group_id = b.group_id
+                            ORDER BY l.grocery_item_id) AS "grocery_item_ids!"
+               FROM budget_entries b WHERE group_id = $1 AND created_by = $2 ORDER BY created_at"#,
             group_id,
             auth.user_id
         )
@@ -432,7 +435,8 @@ pub async fn export_account(
             json!({
                 "id": b.id, "group_id": b.group_id, "name": b.name,
                 "amount": b.amount_cents as f64 / 100.0, "spent_at": b.spent_at,
-                "category_id": b.category_id, "created_at": b.created_at,
+                "category_id": b.category_id, "grocery_item_ids": b.grocery_item_ids,
+                "created_at": b.created_at,
             })
         }));
 

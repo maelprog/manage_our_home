@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO budget_entries (group_id, created_by, grocery_item_id, name, amount_cents, spent_at)\n        VALUES ($1, $2, $3, $4, $5, $6)\n        ON CONFLICT (grocery_item_id) WHERE grocery_item_id IS NOT NULL\n        DO UPDATE SET\n            name = EXCLUDED.name,\n            amount_cents = EXCLUDED.amount_cents,\n            spent_at = EXCLUDED.spent_at,\n            updated_at = now()\n        RETURNING id, group_id, created_by, grocery_item_id, category_id, name, amount_cents, spent_at, created_at, updated_at\n        ",
+  "query": "\n        UPDATE budget_entries SET\n            name = $3,\n            amount_cents = $4,\n            spent_at = $5,\n            category_id = $6,\n            updated_at = now()\n        WHERE id = $1 AND group_id = $2\n        RETURNING id, group_id, created_by, category_id, name, amount_cents, spent_at, created_at, updated_at\n        ",
   "describe": {
     "columns": [
       {
@@ -38,17 +38,6 @@
       },
       {
         "ordinal": 3,
-        "name": "grocery_item_id",
-        "type_info": "Uuid",
-        "origin": {
-          "Table": {
-            "table": "budget_entries",
-            "name": "grocery_item_id"
-          }
-        }
-      },
-      {
-        "ordinal": 4,
         "name": "category_id",
         "type_info": "Uuid",
         "origin": {
@@ -59,7 +48,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 4,
         "name": "name",
         "type_info": "Text",
         "origin": {
@@ -70,7 +59,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 5,
         "name": "amount_cents",
         "type_info": "Int8",
         "origin": {
@@ -81,7 +70,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 6,
         "name": "spent_at",
         "type_info": "Date",
         "origin": {
@@ -92,7 +81,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -103,7 +92,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 8,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -118,17 +107,16 @@
       "Left": [
         "Uuid",
         "Uuid",
-        "Uuid",
         "Text",
         "Int8",
-        "Date"
+        "Date",
+        "Uuid"
       ]
     },
     "nullable": [
       false,
       false,
       false,
-      true,
       true,
       false,
       false,
@@ -137,5 +125,5 @@
       false
     ]
   },
-  "hash": "f589027d49ce1a26ff899463dcc755a071c6aee7bc35849b01389fcdc6123d0d"
+  "hash": "97e88dffef34cbc4f45ffbd5b06dec4d15f25190abbacfc14ea4f18b6041a221"
 }

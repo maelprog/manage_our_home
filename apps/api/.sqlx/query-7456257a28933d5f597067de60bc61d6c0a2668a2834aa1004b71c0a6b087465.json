@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT name FROM grocery_items WHERE id = $1 AND group_id = $2",
+  "query": "SELECT name FROM grocery_items WHERE id = $1 AND group_id = $2 FOR KEY SHARE",
   "describe": {
     "columns": [
       {
@@ -25,5 +25,5 @@
       false
     ]
   },
-  "hash": "c42c242c902d8576ca95e95fb617114d0410c671c0d5a31974d242093b144b72"
+  "hash": "7456257a28933d5f597067de60bc61d6c0a2668a2834aa1004b71c0a6b087465"
 }

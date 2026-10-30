@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO budget_entry_grocery_items (entry_id, grocery_item_id, group_id)\n         SELECT $1, item_id, $2 FROM unnest($3::uuid[]) AS item_id\n         ON CONFLICT (entry_id, grocery_item_id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1515680cbe51ae7d1fb76d3d4354192105df7af3b3b50738e8c8951d119208de"
+}

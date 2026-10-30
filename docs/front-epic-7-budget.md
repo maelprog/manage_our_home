@@ -27,8 +27,9 @@ price attached to something the family buys: either a **manual price entry**
 /groups/:id/grocery-items/:item_id/price`). There is no category, no payee, no
 recurring-expense modelling, no local price lookup (out of v1, see
 `docs/v1-scope.md`). The `/budget/new` form is deliberately minimal (name,
-amount, date) and never sends `grocery_item_id` — the only path that links an
-entry to a grocery item is the checkout action on the grocery list.
+amount, date) and sends no grocery item — in the UI, the only path that links
+an entry to a grocery item is the checkout action on the grocery list (the
+API takes a list of items since #633; the form's selection is #533's).
 
 ### Euros at the boundary, cents in the DB — formatting is pure and tested
 
@@ -70,19 +71,25 @@ no confirmation and stays visible even after a price is set. F7 also removes the
 "Budget hook out of scope" note F6 left in `routes/grocery_list/mod.rs`, since
 the hook is now wired.
 
-### Set-price is idempotent (upsert); manual create can 409
+### Set-price is idempotent; linking an item twice is a 409
 
 Two endpoints create a `BudgetEntryResponse`, with deliberately different
 conflict semantics that the UI mirrors:
 
-- `POST …/grocery-items/:item_id/price` **upserts** on the item's
-  `grocery_item_id` — a double-tap re-tarifies the same entry rather than
-  creating a second, double-counted one. So the inline price form has no
-  "already priced" error state; re-submitting just updates.
-- `POST /budget-entries` with a `grocery_item_id` already priced returns **409
-  `grocery_item_already_priced`**. The `/budget/new` form never sends a
-  `grocery_item_id`, so this is unreachable from the UI — it's mapped
-  defensively only.
+- `POST …/grocery-items/:item_id/price` creates an entry linked to the item
+  the first time, and **updates** that entry afterwards — a double-tap
+  re-tarifies the same entry rather than creating a second, double-counted
+  one. Since #633 the links live in `budget_entry_grocery_items` (an entry
+  links to up to 100 items, an item to one entry); an item linked to an
+  entry that carries other items too answers **409
+  `grocery_item_priced_with_others`** rather than replacing the whole
+  entry's amount with the item's.
+- `POST /budget-entries` (`grocery_item_id`, or the `grocery_item_ids` list)
+  or `PATCH` (`grocery_item_ids` replaces every link, `[]` removes them)
+  naming an item already linked to another entry returns **409
+  `grocery_item_already_priced`**. Every entry comes back with
+  `grocery_items: [{id, name}]`. The `/budget/new` form sends no item yet
+  (#533), so this is unreachable from the UI — it's mapped defensively only.
 
 ### Edit/delete on a per-entry screen, behind `can_modify`
 

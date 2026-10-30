@@ -7,6 +7,7 @@ use manage_our_home_shared::dto::budget::{BudgetCategoryUsage, BudgetMonthSummar
 use manage_our_home_shared::validation::budget::{cap_usage, parse_month};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::auth::session::{scoped_tx, AuthUser};
@@ -22,7 +23,14 @@ pub struct CreateBudgetEntryRequest {
     pub name: String,
     pub amount: f64,
     pub spent_at: Option<NaiveDate>,
+    /// One grocery item to link the expense to: a shorthand for
+    /// `grocery_item_ids` naming it alone (#633), kept from before the
+    /// expense could link to several. Both may be given.
     pub grocery_item_id: Option<Uuid>,
+    /// The grocery items of the family the expense links to (#633): each
+    /// once ([`grocery_item_ids`]), none already linked to another expense.
+    #[serde(default)]
+    pub grocery_item_ids: Vec<Uuid>,
     /// A category of the family (#532); none files it under « Sans
     /// catégorie ».
     pub category_id: Option<Uuid>,
@@ -37,6 +45,10 @@ pub struct UpdateBudgetEntryRequest {
     /// `None` (left out) keeps its category.
     #[serde(default, deserialize_with = "deserialize_some")]
     pub category_id: Option<Option<Uuid>>,
+    /// The grocery items the expense links to from now on, replacing those
+    /// it linked to (#633): `[]` unlinks them all; left out, or `null`,
+    /// the links stay.
+    pub grocery_item_ids: Option<Vec<Uuid>>,
 }
 
 /// Serde's blanket `Option<T>` impl treats an explicit JSON `null` the same
@@ -59,12 +71,20 @@ pub struct SetGroceryItemPriceRequest {
     pub spent_at: Option<NaiveDate>,
 }
 
+/// A grocery item an expense links to, under its current name.
+#[derive(Serialize)]
+pub struct LinkedGroceryItem {
+    pub id: Uuid,
+    pub name: String,
+}
+
 #[derive(Serialize)]
 pub struct BudgetEntryResponse {
     pub id: Uuid,
     pub group_id: Uuid,
     pub created_by: Uuid,
-    pub grocery_item_id: Option<Uuid>,
+    /// The grocery items the expense links to (#633), by name.
+    pub grocery_items: Vec<LinkedGroceryItem>,
     pub category_id: Option<Uuid>,
     pub name: String,
     pub amount: f64,
@@ -77,7 +97,6 @@ struct BudgetEntryRow {
     id: Uuid,
     group_id: Uuid,
     created_by: Uuid,
-    grocery_item_id: Option<Uuid>,
     category_id: Option<Uuid>,
     name: String,
     amount_cents: i64,
@@ -86,13 +105,13 @@ struct BudgetEntryRow {
     updated_at: DateTime<Utc>,
 }
 
-impl From<BudgetEntryRow> for BudgetEntryResponse {
-    fn from(r: BudgetEntryRow) -> Self {
+impl BudgetEntryResponse {
+    fn new(r: BudgetEntryRow, grocery_items: Vec<LinkedGroceryItem>) -> Self {
         BudgetEntryResponse {
             id: r.id,
             group_id: r.group_id,
             created_by: r.created_by,
-            grocery_item_id: r.grocery_item_id,
+            grocery_items,
             category_id: r.category_id,
             name: r.name,
             amount: r.amount_cents as f64 / 100.0,
@@ -112,6 +131,129 @@ fn to_cents(amount: f64) -> AppResult<i64> {
         return Err(AppError::BadRequest("amount_must_be_non_negative".into()));
     }
     Ok((amount * 100.0).round() as i64)
+}
+
+/// The most grocery items one expense links to (user's decision of
+/// 2026-10-30), counted once duplicates are merged.
+pub(crate) const GROCERY_ITEMS_MAX: usize = 100;
+
+/// The grocery items an expense is to be linked to, as the request names
+/// them: each once, in the order first named (the same item named twice,
+/// e.g. two brands of one article, is one link), and at most
+/// [`GROCERY_ITEMS_MAX`] of them.
+pub(crate) fn grocery_item_ids(ids: impl IntoIterator<Item = Uuid>) -> AppResult<Vec<Uuid>> {
+    let mut seen = HashSet::new();
+    let ids: Vec<Uuid> = ids.into_iter().filter(|id| seen.insert(*id)).collect();
+    if ids.len() > GROCERY_ITEMS_MAX {
+        return Err(AppError::BadRequest("too_many_grocery_items".into()));
+    }
+    Ok(ids)
+}
+
+type Tx<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
+
+/// The grocery items each of `entry_ids` links to, by name.
+async fn linked_items(
+    tx: &mut Tx<'_>,
+    group_id: Uuid,
+    entry_ids: &[Uuid],
+) -> AppResult<HashMap<Uuid, Vec<LinkedGroceryItem>>> {
+    let rows = sqlx::query!(
+        r#"SELECT l.entry_id, gi.id, gi.name
+           FROM budget_entry_grocery_items l
+           JOIN grocery_items gi ON gi.id = l.grocery_item_id AND gi.group_id = l.group_id
+           WHERE l.group_id = $1 AND l.entry_id = ANY($2)
+           ORDER BY lower(gi.name), gi.id"#,
+        group_id,
+        entry_ids,
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut items: HashMap<Uuid, Vec<LinkedGroceryItem>> = HashMap::new();
+    for r in rows {
+        items
+            .entry(r.entry_id)
+            .or_default()
+            .push(LinkedGroceryItem {
+                id: r.id,
+                name: r.name,
+            });
+    }
+    Ok(items)
+}
+
+/// One expense as the routes answer it, its links read in `tx`.
+async fn entry_response(
+    tx: &mut Tx<'_>,
+    group_id: Uuid,
+    entry: BudgetEntryRow,
+) -> AppResult<BudgetEntryResponse> {
+    let items = linked_items(tx, group_id, &[entry.id])
+        .await?
+        .remove(&entry.id)
+        .unwrap_or_default();
+    Ok(BudgetEntryResponse::new(entry, items))
+}
+
+/// Links the expense `entry_id` to exactly `item_ids` ([`grocery_item_ids`]),
+/// dropping the links it had to any other item. An item that is not one of
+/// the family's is the 404 of any other referenced resource; an item linked
+/// to another expense is a 409, as before #633: an item is paid once.
+///
+/// To call under the family's lock (`alerts::lock_family`), which every
+/// write of a link takes: two expenses linking one item at once see each
+/// other's link instead of tripping on its unique key. The items are
+/// locked against their deletion until the transaction ends.
+async fn set_links(
+    tx: &mut Tx<'_>,
+    group_id: Uuid,
+    entry_id: Uuid,
+    item_ids: &[Uuid],
+) -> AppResult<()> {
+    let found = sqlx::query_scalar!(
+        "SELECT id FROM grocery_items WHERE group_id = $1 AND id = ANY($2) FOR KEY SHARE",
+        group_id,
+        item_ids,
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    if found.len() != item_ids.len() {
+        return Err(AppError::NotFound);
+    }
+    let taken = sqlx::query_scalar!(
+        r#"SELECT EXISTS (
+               SELECT 1 FROM budget_entry_grocery_items
+               WHERE group_id = $1 AND grocery_item_id = ANY($2) AND entry_id <> $3
+           ) AS "taken!""#,
+        group_id,
+        item_ids,
+        entry_id,
+    )
+    .fetch_one(&mut **tx)
+    .await?;
+    if taken {
+        return Err(AppError::Conflict("grocery_item_already_priced".into()));
+    }
+    sqlx::query!(
+        "DELETE FROM budget_entry_grocery_items
+         WHERE group_id = $1 AND entry_id = $2 AND NOT (grocery_item_id = ANY($3))",
+        group_id,
+        entry_id,
+        item_ids,
+    )
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query!(
+        "INSERT INTO budget_entry_grocery_items (entry_id, grocery_item_id, group_id)
+         SELECT $1, item_id, $2 FROM unnest($3::uuid[]) AS item_id
+         ON CONFLICT (entry_id, grocery_item_id) DO NOTHING",
+        entry_id,
+        group_id,
+        item_ids,
+    )
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 pub async fn create_budget_entry(
@@ -135,29 +277,14 @@ pub async fn create_budget_entry(
         require_category(&mut tx, group_id, category_id).await?;
     }
 
-    if let Some(item_id) = body.grocery_item_id {
-        // Same "referenced resource doesn't exist" condition as
-        // set_grocery_item_price below — use the same NotFound status so
-        // clients don't have to branch on two different codes for it.
-        sqlx::query_scalar!(
-            "SELECT id FROM grocery_items WHERE id = $1 AND group_id = $2",
-            item_id,
-            group_id,
-        )
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or(AppError::NotFound)?;
-
-        let already_priced = sqlx::query_scalar!(
-            "SELECT id FROM budget_entries WHERE grocery_item_id = $1 AND group_id = $2",
-            item_id,
-            group_id,
-        )
-        .fetch_optional(&mut *tx)
-        .await?;
-        if already_priced.is_some() {
-            return Err(AppError::Conflict("grocery_item_already_priced".into()));
-        }
+    let item_ids = grocery_item_ids(
+        body.grocery_item_id
+            .into_iter()
+            .chain(body.grocery_item_ids),
+    )?;
+    if !item_ids.is_empty() {
+        // The family's lock before any link is read (`set_links`).
+        alerts::lock_family(&mut tx, group_id).await?;
     }
 
     let spent_at = day_or_today(body.spent_at, Utc::now());
@@ -165,13 +292,12 @@ pub async fn create_budget_entry(
     let entry = sqlx::query_as!(
         BudgetEntryRow,
         r#"
-        INSERT INTO budget_entries (group_id, created_by, grocery_item_id, name, amount_cents, spent_at, category_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        RETURNING id, group_id, created_by, grocery_item_id, category_id, name, amount_cents, spent_at, created_at, updated_at
+        INSERT INTO budget_entries (group_id, created_by, name, amount_cents, spent_at, category_id)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id, group_id, created_by, category_id, name, amount_cents, spent_at, created_at, updated_at
         "#,
         group_id,
         auth.user_id,
-        body.grocery_item_id,
         name,
         amount_cents,
         spent_at,
@@ -179,14 +305,18 @@ pub async fn create_budget_entry(
     )
     .fetch_one(&mut *tx)
     .await?;
+    if !item_ids.is_empty() {
+        set_links(&mut tx, group_id, entry.id, &item_ids).await?;
+    }
     let alerted = match watch {
         Some(watch) => watch.fire(&mut tx).await?,
         None => Vec::new(),
     };
+    let entry = entry_response(&mut tx, group_id, entry).await?;
     tx.commit().await?;
     alerts::push_in_background(&state, alerted);
 
-    Ok((StatusCode::CREATED, Json(BudgetEntryResponse::from(entry))))
+    Ok((StatusCode::CREATED, Json(entry)))
 }
 
 /// A category of this family, or the 404 any other referenced resource gets
@@ -225,8 +355,12 @@ pub async fn set_grocery_item_price(
 
     let amount_cents = to_cents(body.amount)?;
 
+    // The family's lock before anything is read: the expense the item is
+    // linked to, and its category, are then those no other write of the
+    // family can change before this one commits.
+    alerts::lock_family(&mut tx, group_id).await?;
     let item = sqlx::query!(
-        "SELECT name FROM grocery_items WHERE id = $1 AND group_id = $2",
+        "SELECT name FROM grocery_items WHERE id = $1 AND group_id = $2 FOR KEY SHARE",
         item_id,
         group_id,
     )
@@ -234,52 +368,91 @@ pub async fn set_grocery_item_price(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    // A price set again keeps its entry's category (the upsert below leaves
-    // `category_id` alone): that is the category whose cap it may cross.
-    let category_id = sqlx::query_scalar!(
-        "SELECT category_id FROM budget_entries WHERE grocery_item_id = $1 AND group_id = $2",
+    // "Set" is idempotent: a price set again on an item updates the expense
+    // it is linked to instead of creating a second, double-counted one.
+    let existing = sqlx::query!(
+        r#"SELECT e.id, e.category_id,
+                  (SELECT count(*) FROM budget_entry_grocery_items o
+                   WHERE o.entry_id = e.id AND o.group_id = e.group_id) AS "links!"
+           FROM budget_entry_grocery_items l
+           JOIN budget_entries e ON e.id = l.entry_id AND e.group_id = l.group_id
+           WHERE l.grocery_item_id = $1 AND l.group_id = $2
+           FOR UPDATE OF e"#,
         item_id,
         group_id,
     )
     .fetch_optional(&mut *tx)
-    .await?
-    .flatten();
+    .await?;
+    // An expense linked to other items too (#633) is their price as much
+    // as this one's: this item's own price would replace it.
+    if existing.as_ref().is_some_and(|e| e.links > 1) {
+        return Err(AppError::Conflict("grocery_item_priced_with_others".into()));
+    }
+    // A price set again keeps its entry's category (the update below leaves
+    // `category_id` alone): that is the category whose cap it may cross.
+    let category_id = existing.as_ref().and_then(|e| e.category_id);
     let spent_at = day_or_today(body.spent_at, Utc::now());
     let watch = alerts::watch(&mut tx, group_id, spent_at, category_id).await?;
 
-    // "Set" is idempotent: retries/double-taps upsert the price on the
-    // unique (non-null) grocery_item_id index instead of creating a second,
-    // double-counted budget entry.
-    let entry = sqlx::query_as!(
-        BudgetEntryRow,
-        r#"
-        INSERT INTO budget_entries (group_id, created_by, grocery_item_id, name, amount_cents, spent_at)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        ON CONFLICT (grocery_item_id) WHERE grocery_item_id IS NOT NULL
-        DO UPDATE SET
-            name = EXCLUDED.name,
-            amount_cents = EXCLUDED.amount_cents,
-            spent_at = EXCLUDED.spent_at,
-            updated_at = now()
-        RETURNING id, group_id, created_by, grocery_item_id, category_id, name, amount_cents, spent_at, created_at, updated_at
-        "#,
-        group_id,
-        auth.user_id,
-        item_id,
-        item.name,
-        amount_cents,
-        spent_at,
-    )
-    .fetch_one(&mut *tx)
-    .await?;
+    let entry = match existing {
+        Some(existing) => {
+            sqlx::query_as!(
+                BudgetEntryRow,
+                r#"
+                UPDATE budget_entries SET
+                    name = $3,
+                    amount_cents = $4,
+                    spent_at = $5,
+                    updated_at = now()
+                WHERE id = $1 AND group_id = $2
+                RETURNING id, group_id, created_by, category_id, name, amount_cents, spent_at, created_at, updated_at
+                "#,
+                existing.id,
+                group_id,
+                item.name,
+                amount_cents,
+                spent_at,
+            )
+            .fetch_one(&mut *tx)
+            .await?
+        }
+        None => {
+            let entry = sqlx::query_as!(
+                BudgetEntryRow,
+                r#"
+                INSERT INTO budget_entries (group_id, created_by, name, amount_cents, spent_at)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING id, group_id, created_by, category_id, name, amount_cents, spent_at, created_at, updated_at
+                "#,
+                group_id,
+                auth.user_id,
+                item.name,
+                amount_cents,
+                spent_at,
+            )
+            .fetch_one(&mut *tx)
+            .await?;
+            sqlx::query!(
+                "INSERT INTO budget_entry_grocery_items (entry_id, grocery_item_id, group_id)
+                 VALUES ($1, $2, $3)",
+                entry.id,
+                item_id,
+                group_id,
+            )
+            .execute(&mut *tx)
+            .await?;
+            entry
+        }
+    };
     let alerted = match watch {
         Some(watch) => watch.fire(&mut tx).await?,
         None => Vec::new(),
     };
+    let entry = entry_response(&mut tx, group_id, entry).await?;
     tx.commit().await?;
     alerts::push_in_background(&state, alerted);
 
-    Ok((StatusCode::CREATED, Json(BudgetEntryResponse::from(entry))))
+    Ok((StatusCode::CREATED, Json(entry)))
 }
 
 pub async fn get_budget_entry(
@@ -292,7 +465,7 @@ pub async fn get_budget_entry(
 
     let entry = sqlx::query_as!(
         BudgetEntryRow,
-        r#"SELECT id, group_id, created_by, grocery_item_id, category_id, name, amount_cents, spent_at, created_at, updated_at
+        r#"SELECT id, group_id, created_by, category_id, name, amount_cents, spent_at, created_at, updated_at
            FROM budget_entries WHERE id = $1 AND group_id = $2"#,
         entry_id,
         group_id,
@@ -300,9 +473,10 @@ pub async fn get_budget_entry(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    let entry = entry_response(&mut tx, group_id, entry).await?;
     tx.commit().await?;
 
-    Ok(Json(BudgetEntryResponse::from(entry)))
+    Ok(Json(entry))
 }
 
 pub async fn list_budget_entries(
@@ -316,7 +490,7 @@ pub async fn list_budget_entries(
     let rows = sqlx::query_as!(
         BudgetEntryRow,
         r#"
-        SELECT id, group_id, created_by, grocery_item_id, category_id, name, amount_cents, spent_at, created_at, updated_at
+        SELECT id, group_id, created_by, category_id, name, amount_cents, spent_at, created_at, updated_at
         FROM budget_entries
         WHERE group_id = $1
         ORDER BY spent_at DESC, created_at DESC
@@ -325,10 +499,17 @@ pub async fn list_budget_entries(
     )
     .fetch_all(&mut *tx)
     .await?;
+    let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
+    let mut items = linked_items(&mut tx, group_id, &ids).await?;
     tx.commit().await?;
 
-    let entries: Vec<BudgetEntryResponse> =
-        rows.into_iter().map(BudgetEntryResponse::from).collect();
+    let entries: Vec<BudgetEntryResponse> = rows
+        .into_iter()
+        .map(|r| {
+            let linked = items.remove(&r.id).unwrap_or_default();
+            BudgetEntryResponse::new(r, linked)
+        })
+        .collect();
 
     Ok(Json(json!({ "entries": entries })))
 }
@@ -379,6 +560,7 @@ pub async fn update_budget_entry(
         Some(None) => None,
         None => existing.category_id,
     };
+    let item_ids = body.grocery_item_ids.map(grocery_item_ids).transpose()?;
     let watch = alerts::watch(&mut tx, group_id, spent_at, category_id).await?;
 
     let entry = sqlx::query_as!(
@@ -391,7 +573,7 @@ pub async fn update_budget_entry(
             category_id = $6,
             updated_at = now()
         WHERE id = $1 AND group_id = $2
-        RETURNING id, group_id, created_by, grocery_item_id, category_id, name, amount_cents, spent_at, created_at, updated_at
+        RETURNING id, group_id, created_by, category_id, name, amount_cents, spent_at, created_at, updated_at
         "#,
         entry_id,
         group_id,
@@ -402,14 +584,18 @@ pub async fn update_budget_entry(
     )
     .fetch_one(&mut *tx)
     .await?;
+    if let Some(item_ids) = item_ids {
+        set_links(&mut tx, group_id, entry_id, &item_ids).await?;
+    }
     let alerted = match watch {
         Some(watch) => watch.fire(&mut tx).await?,
         None => Vec::new(),
     };
+    let entry = entry_response(&mut tx, group_id, entry).await?;
     tx.commit().await?;
     alerts::push_in_background(&state, alerted);
 
-    Ok(Json(BudgetEntryResponse::from(entry)))
+    Ok(Json(entry))
 }
 
 pub async fn delete_budget_entry(
@@ -575,4 +761,51 @@ pub async fn budget_summary(
     };
 
     Ok(Json(json!({ "periods": periods, "month": month })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(n: u128) -> Uuid {
+        Uuid::from_u128(n)
+    }
+
+    fn too_many(result: AppResult<Vec<Uuid>>) -> bool {
+        matches!(result, Err(AppError::BadRequest(code)) if code == "too_many_grocery_items")
+    }
+
+    #[test]
+    fn no_item_is_no_link() {
+        assert_eq!(grocery_item_ids([]).unwrap(), Vec::<Uuid>::new());
+    }
+
+    #[test]
+    fn items_keep_the_order_they_are_named_in() {
+        assert_eq!(
+            grocery_item_ids([id(3), id(1), id(2)]).unwrap(),
+            [id(3), id(1), id(2)]
+        );
+    }
+
+    #[test]
+    fn an_item_named_twice_is_one_link_at_its_first_place() {
+        assert_eq!(
+            grocery_item_ids([id(2), id(1), id(2), id(1), id(3)]).unwrap(),
+            [id(2), id(1), id(3)]
+        );
+    }
+
+    #[test]
+    fn a_hundred_items_pass_and_one_more_does_not() {
+        let hundred: Vec<Uuid> = (1..=100).map(id).collect();
+        assert_eq!(grocery_item_ids(hundred.clone()).unwrap(), hundred);
+        assert!(too_many(grocery_item_ids((1..=101).map(id))));
+    }
+
+    #[test]
+    fn duplicates_do_not_count_against_the_bound() {
+        let named = (1..=100).map(id).chain((1..=100).map(id));
+        assert_eq!(grocery_item_ids(named).unwrap().len(), 100);
+    }
 }
