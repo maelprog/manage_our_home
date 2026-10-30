@@ -2330,6 +2330,24 @@ async fn the_switches_and_the_current_month_bound_the_alerts(db: PgPool) {
     )
     .await;
     assert_eq!(budget_alerts(&router, &admin).await, [FULL, NEAR, category]);
+
+    // The categories' switch off, a category past its cap for the first
+    // time this month alerts nothing either.
+    let sorties = create_category(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Sorties", "color": "green", "monthly_cap": 10.0}),
+    )
+    .await;
+    create_entry(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Cinéma", "amount": 30.0, "category_id": sorties}),
+    )
+    .await;
+    assert_eq!(budget_alerts(&router, &admin).await, [FULL, NEAR, category]);
 }
 
 /// AC #536: a price set on a checked grocery item is an expense like any
