@@ -154,6 +154,7 @@ test("parseNavRoutes reads the real nav of apps/web/src/app.rs", () => {
     "/recipes",
     "/budget",
     "/messagerie",
+    "/notifications",
     "/account",
   ]);
   assert.deepEqual(parsed.conditional, ["/admin/users"]);

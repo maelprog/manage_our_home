@@ -317,6 +317,11 @@ const ROUTES: RouteSpec[] = [
       pageSize: 50,
     },
   },
+  // Le centre de notifications (#535), entrée PC de la colonne. Le seed
+  // n'écrit aucune notification pour le compte qui mesure (ses propres
+  // messages ne lui en valent pas) : rien à confronter, juste un plancher,
+  // comme l'accueil.
+  { path: "/notifications", floor: 400 },
   // Le profil (onglet Profil, bloc du pied de la colonne) depuis #523 : les
   // familles y sont passées, `/groups` n'est plus une entrée de la nav. Une
   // ligne par famille, comme `/groups` les comptait.
