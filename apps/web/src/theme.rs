@@ -412,6 +412,22 @@ body { background: var(--bg); }
         assert_eq!(sheet.matches(DEVICE_DARK_MEDIA).count(), 1);
     }
 
+    /// The fixture above proves the derivation; this reads the sheet that
+    /// ships. A `prefers-color-scheme` block written by hand in style.css —
+    /// a second source of dark values that nothing ties to the first —
+    /// fails here, whatever its spacing.
+    #[test]
+    fn the_shipped_source_has_no_device_block_and_the_served_sheet_one() {
+        let source = without_comments(include_str!("style.css"));
+        assert!(
+            !source.contains("prefers-color-scheme"),
+            "style.css must not write a `prefers-color-scheme` block: it is derived"
+        );
+        let served = without_comments(&crate::assets::STYLESHEET);
+        assert_eq!(served.matches("prefers-color-scheme").count(), 1);
+        assert_eq!(served.matches(DEVICE_DARK_MEDIA).count(), 1);
+    }
+
     /// A `}` inside a comment of the dark block is prose, not its end: the
     /// declarations after it are copied too, and the comment is not.
     #[test]
