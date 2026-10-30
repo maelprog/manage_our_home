@@ -31,6 +31,22 @@ use super::{
     service_unavailable_page, uuids_from_raw_form,
 };
 
+/// The PATCH body of a submitted edit form. The form always sends every
+/// field. `spent_at` has no "clear" state (NOT NULL in the DB): a valid date
+/// sets it, an empty/unparseable value leaves it as-is (`None` — omitted from
+/// the wire). The category and the links go only with the marker of the pills
+/// that offered them: pills left undrawn (the API did not answer) must not
+/// clear what the entry has.
+fn update_body(form: &EntryForm, amount: f64, items: &[Uuid]) -> UpdateBudgetEntryRequest {
+    UpdateBudgetEntryRequest {
+        name: Some(form.name.trim().to_string()),
+        amount: Some(amount),
+        spent_at: parse_spent_at(&form.spent_at),
+        category_id: form.category(),
+        grocery_item_ids: form.grocery_items_present.as_ref().map(|_| items.to_vec()),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn page(
     header: &str,
@@ -211,17 +227,7 @@ pub async fn post(
         return render_error(e.code()).await;
     }
 
-    // The edit form always sends every field. `spent_at` has no "clear" state
-    // (NOT NULL in the DB): a valid date sets it, an empty/unparseable value
-    // leaves it as-is (`None` — omitted from the wire). The category and the
-    // links go only with the marker of the pills that offered them.
-    let body = UpdateBudgetEntryRequest {
-        name: Some(form.name.trim().to_string()),
-        amount: Some(amount),
-        spent_at: parse_spent_at(&form.spent_at),
-        category_id: form.category(),
-        grocery_item_ids: form.grocery_items_present.as_ref().map(|_| items.clone()),
-    };
+    let body = update_body(&form, amount, &items);
 
     let result = api_request_auth(
         &state,
@@ -289,5 +295,52 @@ pub async fn delete(
             entry_not_found_page().into_response()
         }
         Ok(_) | Err(_) => service_unavailable_page().into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn form(raw: &str) -> EntryForm {
+        serde_urlencoded::from_str(raw).expect(raw)
+    }
+
+    #[test]
+    fn undrawn_pills_leave_the_category_and_the_items_alone() {
+        let f = form("name=Courses&amount=12&spent_at=2026-10-30&category_id=");
+        let body = update_body(&f, 12.0, &[Uuid::from_u128(7)]);
+        assert_eq!(body.category_id, None);
+        assert_eq!(body.grocery_item_ids, None);
+        let json = serde_json::to_value(&body).unwrap();
+        assert!(json.get("category_id").is_none(), "{json}");
+        assert!(json.get("grocery_item_ids").is_none(), "{json}");
+    }
+
+    #[test]
+    fn drawn_pills_send_the_category_and_the_items_even_empty() {
+        let cat = Uuid::from_u128(3);
+        let f = form(&format!(
+            "name=Courses&amount=12&spent_at=&category_id={cat}\
+             &categories_present=1&grocery_items_present=1"
+        ));
+        let body = update_body(&f, 12.0, &[Uuid::from_u128(7)]);
+        assert_eq!(body.category_id, Some(Some(cat)));
+        assert_eq!(body.grocery_item_ids, Some(vec![Uuid::from_u128(7)]));
+
+        // « Sans catégorie » and no item ticked clear both, explicitly.
+        let f = form("name=Courses&amount=12&category_id=&categories_present=1&grocery_items_present=1");
+        let json = serde_json::to_value(update_body(&f, 12.0, &[])).unwrap();
+        assert_eq!(json["category_id"], serde_json::Value::Null, "{json}");
+        assert_eq!(json["grocery_item_ids"], serde_json::json!([]), "{json}");
+    }
+
+    #[test]
+    fn the_name_is_trimmed_and_an_empty_date_is_left_out() {
+        let f = form("name=++Courses++&amount=12&spent_at=");
+        let body = update_body(&f, 12.0, &[]);
+        assert_eq!(body.name.as_deref(), Some("Courses"));
+        assert_eq!(body.amount, Some(12.0));
+        assert_eq!(body.spent_at, None);
     }
 }
