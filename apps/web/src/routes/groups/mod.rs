@@ -91,6 +91,8 @@ pub(crate) async fn header_parts(
         .unwrap_or_default();
     let preferred = active_group_id_from_headers(headers);
     let active = resolve_active_group(&groups, preferred);
+    // The page's colour (#538): `app::document` writes it on `<html>`.
+    crate::family::record_active_accent(active);
     let messages = async {
         match active {
             Some(g) if !nav_link_is_current("/messagerie", redirect_to) => {

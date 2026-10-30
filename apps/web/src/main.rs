@@ -469,6 +469,10 @@ fn build_router(state: AppState) -> Router {
             post(routes::groups::settings::rename),
         )
         .route(
+            "/groups/:id/settings/accent",
+            post(routes::groups::settings::accent),
+        )
+        .route(
             "/groups/:id/settings/transfer",
             post(routes::groups::settings::transfer),
         )
@@ -495,6 +499,9 @@ fn build_router(state: AppState) -> Router {
         // that every page — the guards' refusals included — is written in
         // it: `app::document` reads it back.
         .layer(axum::middleware::from_fn(theme::scope))
+        // The slot the active family's accent (#538) is recorded into by
+        // the shared header, and read back by `app::document`.
+        .layer(axum::middleware::from_fn(family::accent_scope))
         // The orchestrator's probes (#424), after every layer so that none
         // applies: they read no cookie and no body.
         .route("/healthz", get(routes::health::healthz))
@@ -731,6 +738,108 @@ mod theme_tests {
                 html_tag(cookies).await,
                 (StatusCode::OK, r#"<html lang="fr">"#.into()),
                 "{cookies:?}"
+            );
+        }
+    }
+}
+
+/// The active family's colour on the real router (#538): the shared header
+/// records it, `app::document` writes it on `<html>`.
+#[cfg(test)]
+mod accent_tests {
+    use axum::body::Body;
+    use axum::http::{header, Request, StatusCode};
+    use axum::routing::get;
+    use axum::Router;
+    use tower::ServiceExt;
+
+    use super::*;
+
+    const OCEAN: &str = "00000000-0000-0000-0000-00000000000a";
+    const SARCELLE: &str = "00000000-0000-0000-0000-00000000000b";
+
+    /// An apps/api with a session and two families, Océan then Sarcelle.
+    async fn web() -> Router {
+        let app = Router::new()
+            .route(
+                "/auth/me",
+                get(|| async {
+                    axum::Json(serde_json::json!({
+                        "user_id": "00000000-0000-0000-0000-000000000001",
+                        "email": "a@example.test",
+                        "display_name": "A",
+                        "email_verified": true,
+                        "terms_accepted_version": "2026-01-01",
+                    }))
+                }),
+            )
+            .route(
+                "/groups",
+                get(|| async {
+                    axum::Json(serde_json::json!([
+                        { "group_id": OCEAN, "name": "Bleus", "role": "admin", "accent": "ocean" },
+                        { "group_id": SARCELLE, "name": "Verts", "role": "owner", "accent": "sarcelle" },
+                    ]))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        build_router(AppState {
+            http: reqwest::Client::new(),
+            api_internal_base_url: format!("http://{addr}"),
+            api_public_base_url: "/api".into(),
+            body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
+            upload_gate: manage_our_home_http_guard::UploadGate::production(),
+            shutdown: manage_our_home_http_guard::Shutdown::new(),
+        })
+    }
+
+    async fn html_tag(path: &str, cookie: &str) -> (StatusCode, String) {
+        let request = Request::builder()
+            .uri(path)
+            .header(header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap();
+        let response = web().await.oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        let at = body.find("<html").expect("an <html> tag");
+        (
+            status,
+            body[at..at + body[at..].find('>').unwrap() + 1].to_string(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_page_wears_its_active_familys_accent() {
+        for (cookie, tag) in [
+            (
+                format!("session=x; active_group_id={OCEAN}"),
+                r#"<html lang="fr" data-accent="ocean">"#,
+            ),
+            (
+                format!("session=x; active_group_id={SARCELLE}"),
+                r#"<html lang="fr" data-accent="sarcelle">"#,
+            ),
+            // No preference: the first family.
+            (
+                "session=x".to_string(),
+                r#"<html lang="fr" data-accent="ocean">"#,
+            ),
+            // With a forced theme, both attributes.
+            (
+                format!("session=x; __Host-theme=dark; active_group_id={SARCELLE}"),
+                r#"<html lang="fr" data-theme="dark" data-accent="sarcelle">"#,
+            ),
+        ] {
+            assert_eq!(
+                html_tag("/groups", &cookie).await,
+                (StatusCode::OK, tag.to_string()),
+                "{cookie}"
             );
         }
     }

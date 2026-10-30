@@ -34,6 +34,22 @@
      these keep it at 8.2:1 (accent) and 8.5:1 (error) in light, 8.5:1 and
      7.8:1 in dark. */
   --accent-hover: #105855;
+  /* The eight colours a family may pick (#538), each the three tokens it
+     puts in place of the three above: the [data-accent] rules after the
+     dark theme make the swap. Sarcelle restates the defaults, for a
+     swatch of it on a page in another colour. Every pair they paint is
+     measured by `every_family_accent_meets_aa_in_both_themes` (app.rs);
+     --accent-fg, white here and #10201f in dark, is shared by all eight.
+     The -soft is 11 % of the hue on white, the -hover the hue with 22 %
+     of black. */
+  --sarcelle: #14706e; --sarcelle-soft: #e1f0ef; --sarcelle-hover: #105855;
+  --ocean: #1f5f99; --ocean-soft: #e6edf4; --ocean-hover: #184a77;
+  --prune: #6b4a9b; --prune-soft: #efebf4; --prune-hover: #533a79;
+  --foret: #3d6b35; --foret-soft: #eaefe9; --foret-hover: #305329;
+  --terracotta: #a64b25; --terracotta-soft: #f5ebe7; --terracotta-hover: #813a1d;
+  --framboise: #a3305a; --framboise-soft: #f5e8ed; --framboise-hover: #7f2546;
+  --ardoise: #475569; --ardoise-soft: #ebecef; --ardoise-hover: #374252;
+  --miel: #875800; --miel-soft: #f2ede3; --miel-hover: #694500;
   /* Semantics. Success and warning did not exist: .notice.success borrowed
      the accent, so a confirmation looked exactly like a neutral notice, and
      there was nothing to warn with. Each -soft value is the tinted surface
@@ -120,6 +136,17 @@
   /* The hover halves lighten here rather than darken: on a dark ground it
      is the lighter surface that reads as "under the pointer". */
   --accent-hover: #6ec7c3;
+  /* The families' colours (#538), lightened as the accent is; the -soft
+     values are the 2026-10-21 mock-up's, the -hover the hue with 20 % of
+     white. */
+  --sarcelle: #4fb3af; --sarcelle-soft: #1c3635; --sarcelle-hover: #6ec7c3;
+  --ocean: #67a6e0; --ocean-soft: #2b3135; --ocean-hover: #85b8e6;
+  --prune: #ad97cd; --prune-soft: #333033; --prune-hover: #bdacd7;
+  --foret: #6db162; --foret-soft: #2c3327; --foret-hover: #8ac181;
+  --terracotta: #de8c6a; --terracotta-soft: #382f28; --terracotta-hover: #e5a388;
+  --framboise: #dc88a7; --framboise-soft: #382e2f; --framboise-hover: #e3a0b9;
+  --ardoise: #95a3b7; --ardoise-soft: #303131; --ardoise-hover: #aab5c5;
+  --miel: #de9100; --miel-soft: #382f1c; --miel-hover: #e5a733;
   /* Same treatment for the semantics: the plain half lightens, the -soft
      half darkens, and each pair keeps 5:1 or better (5.92 / 6.42 / 5.49).
      --accent-fg is also the text on a solid --error, at 6.23:1. */
@@ -137,6 +164,21 @@
   /* Lightened as the ramp is: 6.11:1 on --surface, inside its range. */
   --orange: #dd8f5e;
 }
+/* The family's colour (#538): `<html data-accent>` names the active
+   family's, and a swatch or a preview names its own. Each rule points the
+   three accent tokens at that colour's, so the light and dark values above
+   apply through it and no rule here has a theme. `:root[data-accent]`
+   weighs what `:root[data-theme="dark"]` and the derived
+   `:root:not([data-theme="light"])` weigh, and comes after them: on <html>
+   it wins over the dark --accent. */
+:root[data-accent="sarcelle"], [data-accent="sarcelle"] { --accent: var(--sarcelle); --accent-soft: var(--sarcelle-soft); --accent-hover: var(--sarcelle-hover); }
+:root[data-accent="ocean"], [data-accent="ocean"] { --accent: var(--ocean); --accent-soft: var(--ocean-soft); --accent-hover: var(--ocean-hover); }
+:root[data-accent="prune"], [data-accent="prune"] { --accent: var(--prune); --accent-soft: var(--prune-soft); --accent-hover: var(--prune-hover); }
+:root[data-accent="foret"], [data-accent="foret"] { --accent: var(--foret); --accent-soft: var(--foret-soft); --accent-hover: var(--foret-hover); }
+:root[data-accent="terracotta"], [data-accent="terracotta"] { --accent: var(--terracotta); --accent-soft: var(--terracotta-soft); --accent-hover: var(--terracotta-hover); }
+:root[data-accent="framboise"], [data-accent="framboise"] { --accent: var(--framboise); --accent-soft: var(--framboise-soft); --accent-hover: var(--framboise-hover); }
+:root[data-accent="ardoise"], [data-accent="ardoise"] { --accent: var(--ardoise); --accent-soft: var(--ardoise-soft); --accent-hover: var(--ardoise-hover); }
+:root[data-accent="miel"], [data-accent="miel"] { --accent: var(--miel); --accent-soft: var(--miel-soft); --accent-hover: var(--miel-hover); }
 /* Self-hosted variable fonts, latin + latin-ext, served off /assets by
    src/assets.rs — never a CDN (it would hand every visitor's IP to a third
    party). Provenance, subsetting and the versioned file names: see there. */
@@ -637,7 +679,7 @@ progress::-moz-progress-bar { background: currentColor; }
    The family settings (#530) share the layout, with a column of cards on
    each side: the members and the name's card, then — beside them on a PC,
    under them when the width runs out — the column « Couleur de la famille »
-   (#538) will open, today the Google calendars. */
+   (#538) opens, then the Google calendars. */
 .groceries, .settings { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--s4); }
 .groceries > *, .settings > * { flex: 1 1 20rem; }
 .groceries > .card, .settings > :first-child { flex: 999 1 30rem; min-width: 0; }
@@ -705,6 +747,12 @@ progress::-moz-progress-bar { background: currentColor; }
 .cat-orange { color: var(--orange); }
 .cat-ochre { color: var(--warning); }
 .swatch { display: inline-block; width: var(--s3); height: var(--s3); border-radius: var(--r-sm); background: currentColor; }
+/* A family's colour (#538): the swatch of a pill or of the settings' line
+   takes the accent its [data-accent] parent points at. */
+[data-accent] > .swatch { color: var(--accent); }
+/* The settings' preview of a family's colour: a tint, a button, a link,
+   on the card's own surface. */
+.preview { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); padding: var(--s3); border: 1px solid var(--line); border-radius: var(--r-md); }
 /* The family's bar once the cap is exceeded; « Dépassé » says it too. */
 progress.over { color: var(--error); }
 /* Spent, cap, what is left: three figures side by side, wrapping on a

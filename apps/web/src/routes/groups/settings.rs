@@ -1,4 +1,5 @@
-//! `/groups/:id/settings` — rename, leave, transfer ownership, delete.
+//! `/groups/:id/settings` — rename, colour (#538), leave, transfer
+//! ownership, delete.
 //! Permission bar per `apps/api/src/groups/mod.rs`: rename is
 //! owner/admin (403 otherwise); transfer and delete are owner-only;
 //! anyone can leave, but an owner leaving must name a successor (422
@@ -18,11 +19,12 @@ use axum::Form;
 use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::{GroupDetailResponse, GroupMember, RenameGroupRequest};
 use manage_our_home_shared::validation::groups::{
-    actor_can_act_on, can_manage_group, validate_group_name,
+    actor_can_act_on, can_manage_group, validate_group_name, Accent,
 };
 use uuid::Uuid;
 
 use crate::app::{html_escape, member_link, shell_with_header, Icon, Width};
+use crate::family::{accent_label, accent_of};
 use crate::icons::{icon, Icon as Glyph};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
@@ -34,6 +36,7 @@ fn notice_text(code: &str) -> Option<&'static str> {
     match code {
         "renamed" => Some("Groupe renommé."),
         "ownership_transferred" => Some("Propriété transférée."),
+        "accent_changed" => Some("Couleur de la famille enregistrée."),
         _ => None,
     }
 }
@@ -42,6 +45,7 @@ fn error_text(code: &str) -> Option<&'static str> {
     match code {
         "forbidden" => Some("Vous n'avez pas les droits nécessaires pour cette action."),
         "name_required" => Some("Le nom du groupe ne peut pas être vide."),
+        "invalid_accent" => Some("Cette couleur n'est pas proposée."),
         "last_member" => Some(
             "Vous êtes le dernier membre : quitter n'est pas possible, supprimez le groupe à la place.",
         ),
@@ -203,15 +207,65 @@ fn name_card(group: &GroupDetailResponse, my_role: &str, others: &[&GroupMember]
     )
 }
 
+/// « Couleur de la famille » (#538): the eight accents as native radios
+/// of a form, for owners and admins — the bar of `PATCH /groups/:id`
+/// (`can_manage_group`) — or the colour and who may change it, for a
+/// standard member. Each pill carries its own `data-accent`, so its swatch,
+/// its radio and its tint when checked are in that colour; the preview
+/// shows the family's colour on what it paints: a tint, a button, a link.
+fn colour_card(group_id: Uuid, accent: Accent, my_role: &str) -> String {
+    let current = accent.as_str();
+    let preview = format!(
+        r#"<p class="muted">Aperçu</p>
+<div class="preview" data-accent="{current}" aria-hidden="true"><span class="badge accent">{label}</span><span class="btn">Ajouter</span><span class="more">Voir tout</span></div>"#,
+        label = accent_label(accent),
+    );
+    let body = if can_manage_group(my_role) {
+        let picks: String = Accent::ALL
+            .into_iter()
+            .map(|a| {
+                format!(
+                    r#"<label class="field inline pick" data-accent="{id}"><input type="radio" name="accent" value="{id}"{checked}><span class="swatch" aria-hidden="true"></span>{label}</label>"#,
+                    id = a.as_str(),
+                    checked = if a == accent { " checked" } else { "" },
+                    label = accent_label(a),
+                )
+            })
+            .collect();
+        format!(
+            r#"<form method="post" action="/groups/{group_id}/settings/accent">
+<div class="picks" role="radiogroup" aria-label="Couleur de la famille">{picks}</div>
+{preview}
+<button type="submit">Enregistrer la couleur</button>
+</form>"#
+        )
+    } else {
+        format!(
+            r#"<p class="field inline" data-accent="{current}"><span class="swatch" aria-hidden="true"></span>{label}</p>
+{preview}
+<p class="muted">Réservé aux propriétaires et admins.</p>"#,
+            label = accent_label(accent),
+        )
+    };
+    format!(
+        r#"<section class="card" id="couleur">
+<h2>Couleur de la famille</h2>
+{body}
+</section>"#
+    )
+}
+
 /// The family settings (#530, maquettes « Mobile — Famille » et « PC —
 /// Famille »): the family's name under « Paramètres de la famille » and
 /// your role, then the members and their roles with the invitation, then
 /// the name and the sensitive zone; beside them on a PC, under them on a
-/// phone, the column where « Couleur de la famille » (#538) goes first.
+/// phone, the column of « Couleur de la famille » (#538), then the Google
+/// calendars. `accent` is this family's, which may not be the active one's.
 fn page(
     header: &str,
     me: &MeResponse,
     group: &GroupDetailResponse,
+    accent: Accent,
     notice: Option<&str>,
     error: Option<&str>,
 ) -> String {
@@ -251,6 +305,7 @@ fn page(
 {name_card}
 </div>
 <div>
+{colour}
 <section class="card">
 <h2>Agendas Google</h2>
 <p class="muted">Les agendas Google connectés à cette famille se gèrent depuis l'agenda : leurs événements y sont recopiés à la demande.</p>
@@ -266,6 +321,7 @@ fn page(
         role = role_badge(&my_role),
         members = members_card(group, &my_role),
         name_card = name_card(group, &my_role, &others),
+        colour = colour_card(group.id, accent, &my_role),
         id = group.id,
     );
     shell_with_header(
@@ -296,10 +352,17 @@ pub async fn get(
         Err(_) => return service_unavailable_page().into_response(),
     };
     let redirect_to = format!("/groups/{group_id}/settings");
-    let (_groups, header) = header_with_groups(&state, &headers, &me, &redirect_to).await;
+    let (groups, header) = header_with_groups(&state, &headers, &me, &redirect_to).await;
+    // `GET /groups/:id` does not carry the accent (#537); the caller's list
+    // does, for every family they belong to.
+    let accent = groups
+        .iter()
+        .find(|g| g.group_id == group_id)
+        .map(accent_of)
+        .unwrap_or_default();
     let notice = query.notice.as_deref().and_then(notice_text);
     let error = query.error.as_deref().and_then(error_text);
-    Html(page(&header, &me, &group, notice, error)).into_response()
+    Html(page(&header, &me, &group, accent, notice, error)).into_response()
 }
 
 #[derive(serde::Deserialize)]
@@ -341,6 +404,58 @@ pub async fn rename(
         }
         Ok(resp) if resp.status == reqwest::StatusCode::UNPROCESSABLE_ENTITY => {
             format!("{settings_url}?error=name_required")
+        }
+        Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
+            return group_not_found_page().into_response()
+        }
+        Ok(_) | Err(_) => format!("{settings_url}?error=unavailable"),
+    };
+    Redirect::to(&target).into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct AccentForm {
+    #[serde(default)]
+    accent: String,
+}
+
+/// « Enregistrer la couleur » (#538): `PATCH /groups/:id` with the accent
+/// alone, the name kept. A value outside the eight is refused here, before
+/// apps/api, which would refuse it too (400 `invalid_accent`).
+pub async fn accent(
+    CurrentUser(_me): CurrentUser,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<Uuid>,
+    Form(form): Form<AccentForm>,
+) -> Response {
+    let settings_url = format!("/groups/{group_id}/settings");
+    let Some(accent) = Accent::parse(&form.accent) else {
+        return Redirect::to(&format!("{settings_url}?error=invalid_accent")).into_response();
+    };
+
+    let cookie = cookie_of(&headers);
+    let result = api_request_auth(
+        &state,
+        reqwest::Method::PATCH,
+        &format!("/groups/{group_id}"),
+        cookie.as_deref(),
+        Some(serde_json::json!(RenameGroupRequest {
+            name: None,
+            accent: Some(accent.as_str().to_string()),
+        })),
+    )
+    .await;
+
+    let target = match result {
+        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
+            format!("{settings_url}?notice=accent_changed")
+        }
+        Ok(resp) if resp.status == reqwest::StatusCode::FORBIDDEN => {
+            format!("{settings_url}?error=forbidden")
+        }
+        Ok(resp) if resp.status == reqwest::StatusCode::BAD_REQUEST => {
+            format!("{settings_url}?error=invalid_accent")
         }
         Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
             return group_not_found_page().into_response()
@@ -517,7 +632,7 @@ mod tests {
     }
 
     fn page_as(id: Uuid) -> String {
-        page("", &me(id), &family(), None, None)
+        page("", &me(id), &family(), Accent::Sarcelle, None, None)
     }
 
     fn manage_link(user: Uuid) -> String {
@@ -544,7 +659,7 @@ mod tests {
     fn the_family_name_is_escaped() {
         let mut group = family();
         group.name = "<b>F</b>".to_string();
-        let html = page("", &me(OWNER), &group, None, None);
+        let html = page("", &me(OWNER), &group, Accent::Sarcelle, None, None);
         assert!(html.contains("&lt;b&gt;F&lt;/b&gt;"), "{html}");
         assert!(!html.contains("<b>F</b>"), "{html}");
     }
@@ -673,7 +788,7 @@ mod tests {
             name: "Solo".to_string(),
             members: vec![member(OWNER, "Alex", "owner")],
         };
-        let html = page("", &me(OWNER), &group, None, None);
+        let html = page("", &me(OWNER), &group, Accent::Sarcelle, None, None);
         assert!(!html.contains("/settings/transfer"), "{html}");
         assert!(!html.contains("new_owner_id"), "{html}");
         assert!(html.contains("/settings/leave"), "{html}");
@@ -700,7 +815,7 @@ mod tests {
         let mut group = family();
         group.members[1].display_name = "<i>Sam</i>".to_string();
         group.members[1].email = "<s>sam@example.test".to_string();
-        let html = page("", &me(OWNER), &group, None, None);
+        let html = page("", &me(OWNER), &group, Accent::Sarcelle, None, None);
         assert!(
             html.contains(&format!(
                 r#"<option value="{ADMIN}">&lt;i&gt;Sam&lt;/i&gt; — Admin</option>"#
@@ -713,5 +828,96 @@ mod tests {
         );
         assert!(!html.contains("<i>Sam</i>"), "{html}");
         assert!(!html.contains("<s>sam@"), "{html}");
+    }
+
+    // -- « Couleur de la famille » (#538) ----------------------------------
+
+    fn colour_card(html: &str) -> &str {
+        let at = html
+            .find(r#"<section class="card" id="couleur">"#)
+            .expect("the colour card");
+        &html[at..at + html[at..].find("</section>").unwrap()]
+    }
+
+    /// Owners and admins pick among the eight, as native radios of a form
+    /// that posts to the page's own route; the family's colour is checked.
+    #[test]
+    fn owners_and_admins_pick_among_the_eight_accents() {
+        for who in [OWNER, ADMIN] {
+            let html = page("", &me(who), &family(), Accent::Prune, None, None);
+            let card = colour_card(&html);
+            assert!(card.contains("<h2>Couleur de la famille</h2>"), "{card}");
+            assert!(
+                card.contains(&format!(
+                    r#"<form method="post" action="/groups/{G}/settings/accent""#
+                )),
+                "{card}"
+            );
+            assert_eq!(card.matches(r#"type="radio" name="accent""#).count(), 8);
+            for accent in Accent::ALL {
+                let id = accent.as_str();
+                let checked = if accent == Accent::Prune {
+                    " checked"
+                } else {
+                    ""
+                };
+                assert!(
+                    card.contains(&format!(
+                        r#"<label class="field inline pick" data-accent="{id}"><input type="radio" name="accent" value="{id}"{checked}><span class="swatch" aria-hidden="true"></span>{}</label>"#,
+                        crate::family::accent_label(accent)
+                    )),
+                    "{id}: {card}"
+                );
+            }
+            assert_eq!(card.matches(" checked").count(), 1, "{card}");
+            assert!(
+                card.contains(r#"<button type="submit">Enregistrer la couleur</button>"#),
+                "{card}"
+            );
+            assert!(!card.contains("Réservé aux"), "{card}");
+        }
+    }
+
+    /// The preview is painted in the family's colour, whatever the active
+    /// family's: `data-accent` on it re-points the accent tokens.
+    #[test]
+    fn the_preview_wears_the_familys_colour() {
+        for who in [OWNER, STANDARD] {
+            let html = page("", &me(who), &family(), Accent::Miel, None, None);
+            let card = colour_card(&html);
+            assert!(
+                card.contains(r#"<div class="preview" data-accent="miel" aria-hidden="true">"#),
+                "{card}"
+            );
+        }
+    }
+
+    /// A standard member sees the colour and who may change it, and no
+    /// control to change it with.
+    #[test]
+    fn a_standard_member_sees_the_colour_but_cannot_change_it() {
+        let html = page("", &me(STANDARD), &family(), Accent::Ocean, None, None);
+        let card = colour_card(&html);
+        assert!(card.contains("<h2>Couleur de la famille</h2>"), "{card}");
+        assert!(card.contains("Océan"), "{card}");
+        assert!(
+            card.contains("Réservé aux propriétaires et admins."),
+            "{card}"
+        );
+        assert!(!card.contains("<form"), "{card}");
+        assert!(!card.contains(r#"name="accent""#), "{card}");
+        assert!(!html.contains("/settings/accent"), "{html}");
+    }
+
+    #[test]
+    fn the_accent_notice_and_errors_are_in_french() {
+        assert_eq!(
+            notice_text("accent_changed"),
+            Some("Couleur de la famille enregistrée.")
+        );
+        assert_eq!(
+            error_text("invalid_accent"),
+            Some("Cette couleur n'est pas proposée.")
+        );
     }
 }
