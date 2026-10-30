@@ -753,6 +753,91 @@ async fn the_possible_filter_keeps_the_recipes_the_stock_covers(db: PgPool) {
     assert_eq!(possible, ["Crêpes", "Pâte à pain"]);
 }
 
+/// #539: the possible filter drops the recipes before `limit` cuts the
+/// list. Two recipes with only an optional, always-in-season ingredient
+/// are created first and score above the possible one (no required
+/// ingredient counts as fully matched, plus the seasonal bonus), so a
+/// filter applied after the cut would return nothing.
+#[sqlx::test]
+async fn the_possible_filter_applies_before_the_limit(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "recipe-possible-limit@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/stock-items"),
+        Some(&cookie),
+        Some(serde_json::json!({"name": "Farine", "quantity": 1000.0, "unit": "g"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+
+    let all_months: Vec<i32> = (1..=12).collect();
+    for (name, ingredients) in [
+        (
+            "Salade d'herbes",
+            serde_json::json!([
+                {"name": "Ciboulette", "is_optional": true, "seasonal_months": all_months}
+            ]),
+        ),
+        (
+            "Bouquet garni",
+            serde_json::json!([
+                {"name": "Persil", "is_optional": true, "seasonal_months": all_months}
+            ]),
+        ),
+        (
+            "Pain",
+            serde_json::json!([{"name": "Farine", "quantity": 500.0, "unit": "g"}]),
+        ),
+    ] {
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/recipes"),
+            Some(&cookie),
+            Some(serde_json::json!({"name": name, "ingredients": ingredients})),
+        )
+        .await;
+        assert_status(&res, StatusCode::CREATED);
+    }
+
+    // Unfiltered, the two recipes without a required ingredient lead.
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/recipes/suggestions?limit=1"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    assert_ne!(body["suggestions"][0]["name"], "Pain");
+
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/recipes/suggestions?possible=true&limit=1"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    let suggestions = body["suggestions"].as_array().unwrap();
+    assert_eq!(suggestions.len(), 1, "{body}");
+    assert_eq!(suggestions[0]["name"], "Pain");
+}
+
 /// Owner and member of one group, joined through an invitation.
 async fn group_with_member(
     router: &axum::Router,
