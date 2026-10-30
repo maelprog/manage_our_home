@@ -254,6 +254,10 @@ pub fn build_router(state: AppState) -> Router {
             post(notifications::preferences::subscribe)
                 .delete(notifications::preferences::unsubscribe_all),
         )
+        .route(
+            "/account/push-subscriptions/received",
+            post(notifications::preferences::received),
+        )
         // With `/auth/logout`, the only routes a restricted session opens
         // (#289).
         .route("/account/deactivated", get(auth::deactivated::status))
@@ -452,6 +456,10 @@ pub fn build_router(state: AppState) -> Router {
             "/groups/:id/budget-settings",
             get(budget::categories::get_budget_settings)
                 .put(budget::categories::put_budget_settings),
+        )
+        .route(
+            "/groups/:id/budget-alert-settings",
+            get(budget::alerts::get_alert_settings).patch(budget::alerts::patch_alert_settings),
         )
         .route(
             "/groups/:id/messages",

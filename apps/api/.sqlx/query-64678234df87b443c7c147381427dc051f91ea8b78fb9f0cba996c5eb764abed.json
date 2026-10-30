@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO budget_settings (group_id, global_cap_alerts, category_cap_alerts)\n           VALUES ($1, COALESCE($2, true), COALESCE($3, true))\n           ON CONFLICT (group_id) DO UPDATE SET\n               global_cap_alerts = COALESCE($2, budget_settings.global_cap_alerts),\n               category_cap_alerts = COALESCE($3, budget_settings.category_cap_alerts),\n               updated_at = now()\n           RETURNING global_cap_alerts, category_cap_alerts",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "global_cap_alerts",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "budget_settings",
+            "name": "global_cap_alerts"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "category_cap_alerts",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "budget_settings",
+            "name": "category_cap_alerts"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "64678234df87b443c7c147381427dc051f91ea8b78fb9f0cba996c5eb764abed"
+}

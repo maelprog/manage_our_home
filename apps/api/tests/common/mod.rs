@@ -377,6 +377,48 @@ pub fn test_router(db: PgPool) -> axum::Router {
     build_router(test_state(db))
 }
 
+/// [`test_router`] whose handlers' pool holds `max_connections`
+/// ([`runtime_pool_sized`]): for a test that keeps more requests in their
+/// transactions at once than the default five.
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (see note on test_state above).
+#[allow(dead_code)]
+pub fn test_router_sized(db: PgPool, max_connections: u32) -> axum::Router {
+    let mut state = test_state(db.clone());
+    state.db = runtime_pool_sized(&db, max_connections);
+    build_router(state)
+}
+
+/// Waits until `n` backends of this test's database wait on a lock, then
+/// returns how many of them wait on `table` itself — the others wait on a
+/// row. Panics after 10 seconds.
+// TODO: remove #[allow(dead_code)] once every integration test binary uses
+// this helper (see note on test_state above).
+#[allow(dead_code)]
+pub async fn waiting_on_table(db: &PgPool, n: i64, table: &str) -> i64 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let (waiting, on_table): (i64, i64) = sqlx::query_as(
+            "SELECT count(*), count(*) FILTER (WHERE l.locktype = 'relation'
+                                                 AND l.relation = $1::regclass)
+             FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+             WHERE NOT l.granted AND a.datname = current_database()",
+        )
+        .bind(table)
+        .fetch_one(db)
+        .await
+        .unwrap();
+        if waiting >= n {
+            return on_table;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{waiting} of {n} requests waiting on a lock after 10 s"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 use axum::body::Body;
 use axum::http::{header, Method, Request, Response, StatusCode};
 use http_body_util::BodyExt;

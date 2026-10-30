@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO budget_alerts (group_id, month, category_id, threshold)\n               VALUES ($1, $2, $3, $4)\n               ON CONFLICT DO NOTHING\n               RETURNING true AS \"first!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "first!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Uuid",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "cd392ac5a82ade589d5f6a54473a9d96affb19c7626403d13813560eade9a884"
+}

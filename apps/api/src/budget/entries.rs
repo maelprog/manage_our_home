@@ -1,4 +1,4 @@
-use axum::extract::rejection::JsonRejection;
+use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
@@ -10,6 +10,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::auth::session::{scoped_tx, AuthUser};
+use crate::budget::alerts;
 use crate::budget::categories::{cents_to_euros, family_cap_cents};
 use crate::budget::{can_modify, require_budget_access};
 use crate::error::{AppError, AppResult};
@@ -159,6 +160,8 @@ pub async fn create_budget_entry(
         }
     }
 
+    let spent_at = day_or_today(body.spent_at, Utc::now());
+    let watch = alerts::watch(&mut tx, group_id, spent_at, body.category_id).await?;
     let entry = sqlx::query_as!(
         BudgetEntryRow,
         r#"
@@ -171,12 +174,17 @@ pub async fn create_budget_entry(
         body.grocery_item_id,
         name,
         amount_cents,
-        day_or_today(body.spent_at, Utc::now()),
+        spent_at,
         body.category_id,
     )
     .fetch_one(&mut *tx)
     .await?;
+    let alerted = match watch {
+        Some(watch) => watch.fire(&mut tx).await?,
+        None => Vec::new(),
+    };
     tx.commit().await?;
+    alerts::push_in_background(&state, alerted);
 
     Ok((StatusCode::CREATED, Json(BudgetEntryResponse::from(entry))))
 }
@@ -226,6 +234,19 @@ pub async fn set_grocery_item_price(
     .await?
     .ok_or(AppError::NotFound)?;
 
+    // A price set again keeps its entry's category (the upsert below leaves
+    // `category_id` alone): that is the category whose cap it may cross.
+    let category_id = sqlx::query_scalar!(
+        "SELECT category_id FROM budget_entries WHERE grocery_item_id = $1 AND group_id = $2",
+        item_id,
+        group_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .flatten();
+    let spent_at = day_or_today(body.spent_at, Utc::now());
+    let watch = alerts::watch(&mut tx, group_id, spent_at, category_id).await?;
+
     // "Set" is idempotent: retries/double-taps upsert the price on the
     // unique (non-null) grocery_item_id index instead of creating a second,
     // double-counted budget entry.
@@ -247,11 +268,16 @@ pub async fn set_grocery_item_price(
         item_id,
         item.name,
         amount_cents,
-        day_or_today(body.spent_at, Utc::now()),
+        spent_at,
     )
     .fetch_one(&mut *tx)
     .await?;
+    let alerted = match watch {
+        Some(watch) => watch.fire(&mut tx).await?,
+        None => Vec::new(),
+    };
     tx.commit().await?;
+    alerts::push_in_background(&state, alerted);
 
     Ok((StatusCode::CREATED, Json(BudgetEntryResponse::from(entry))))
 }
@@ -317,6 +343,9 @@ pub async fn update_budget_entry(
     let actor_role = require_budget_access(&mut tx, group_id, auth.user_id).await?;
     let Json(body) = body?;
 
+    // The family's lock before the row's, as every write of an expense
+    // (`alerts::lock_family`): the other order deadlocks with a price.
+    alerts::lock_family(&mut tx, group_id).await?;
     // FOR UPDATE locks the row for the rest of this transaction, mirroring
     // grocery_list/items.rs's and stocks/items.rs's concurrent-write protection.
     let existing = sqlx::query!(
@@ -350,6 +379,7 @@ pub async fn update_budget_entry(
         Some(None) => None,
         None => existing.category_id,
     };
+    let watch = alerts::watch(&mut tx, group_id, spent_at, category_id).await?;
 
     let entry = sqlx::query_as!(
         BudgetEntryRow,
@@ -372,7 +402,12 @@ pub async fn update_budget_entry(
     )
     .fetch_one(&mut *tx)
     .await?;
+    let alerted = match watch {
+        Some(watch) => watch.fire(&mut tx).await?,
+        None => Vec::new(),
+    };
     tx.commit().await?;
+    alerts::push_in_background(&state, alerted);
 
     Ok(Json(BudgetEntryResponse::from(entry)))
 }
@@ -436,10 +471,14 @@ pub async fn budget_summary(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(group_id): Path<Uuid>,
-    Query(query): Query<SummaryQuery>,
+    query: Result<Query<SummaryQuery>, QueryRejection>,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_budget_access(&mut tx, group_id, auth.user_id).await?;
+    // The bar first, the query after, as the bodies of the other routes: a
+    // query the extractor cannot read (`month` given twice) is a standard
+    // member's 404 too, and past the bar the 400 of an invalid month.
+    let Query(query) = query.map_err(|_| AppError::BadRequest("invalid_month".into()))?;
 
     let month = match query.month.as_deref() {
         Some(month) => {

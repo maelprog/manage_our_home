@@ -165,6 +165,26 @@ pub struct BudgetSettings {
     pub monthly_cap: Option<f64>,
 }
 
+/// `GET` and `PATCH /groups/:id/budget-alert-settings` response (#536): the
+/// family's two switches of the cap alerts, both on unless turned off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BudgetAlertSettings {
+    /// The alerts on the family's monthly cap: 80 % reached, cap reached.
+    pub global_cap_alerts: bool,
+    /// The alerts on a category's cap: cap exceeded.
+    pub category_cap_alerts: bool,
+}
+
+/// `PATCH /groups/:id/budget-alert-settings` request body: a switch named
+/// is set, a switch left out keeps its value.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct UpdateBudgetAlertSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_cap_alerts: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_cap_alerts: Option<bool>,
+}
+
 /// One category's spend over the summary's month.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BudgetCategoryUsage {

@@ -33,15 +33,17 @@ pub enum Kind {
     Message,
     Invitation,
     GroceryItem,
+    BudgetAlert,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 5] = [
+    pub const ALL: [Kind; 6] = [
         Kind::AgendaReminder,
         Kind::StockExpiry,
         Kind::Message,
         Kind::Invitation,
         Kind::GroceryItem,
+        Kind::BudgetAlert,
     ];
 
     pub fn parse(value: &str) -> Option<Self> {
@@ -55,6 +57,7 @@ impl Kind {
             Kind::Message => "message",
             Kind::Invitation => "invitation",
             Kind::GroceryItem => "grocery_item",
+            Kind::BudgetAlert => "budget_alert",
         }
     }
 }
@@ -81,6 +84,13 @@ pub enum Event<'a> {
     Invitation { inviter: &'a str, group: &'a str },
     /// A member added an item to the grocery list.
     GroceryItem { author: &'a str, item: &'a str },
+    /// The family's spending this month reached 80 % of its monthly cap
+    /// (#536).
+    BudgetCapNear,
+    /// The family's spending this month reached its monthly cap.
+    BudgetCapReached,
+    /// The month's spending in a category exceeded that category's cap.
+    BudgetCategoryCapExceeded { category: &'a str },
 }
 
 impl Event<'_> {
@@ -91,6 +101,9 @@ impl Event<'_> {
             Event::Message { .. } => Kind::Message,
             Event::Invitation { .. } => Kind::Invitation,
             Event::GroceryItem { .. } => Kind::GroceryItem,
+            Event::BudgetCapNear
+            | Event::BudgetCapReached
+            | Event::BudgetCategoryCapExceeded { .. } => Kind::BudgetAlert,
         }
     }
 }
@@ -137,6 +150,16 @@ pub fn body(event: &Event<'_>) -> String {
             "{} a ajouté « {} » à la liste de courses.",
             typed(author),
             typed(item)
+        ),
+        Event::BudgetCapNear => {
+            "Les dépenses du mois atteignent 80 % du budget de la famille.".into()
+        }
+        Event::BudgetCapReached => {
+            "Les dépenses du mois atteignent 100 % du budget de la famille.".into()
+        }
+        Event::BudgetCategoryCapExceeded { category } => format!(
+            "Les dépenses du mois dépassent le plafond de « {} ».",
+            typed(category)
         ),
     }
 }
@@ -381,18 +404,19 @@ mod tests {
     use chrono::TimeZone;
 
     #[test]
-    fn the_five_kinds_round_trip() {
+    fn the_six_kinds_round_trip() {
         for (text, kind) in [
             ("agenda_reminder", Kind::AgendaReminder),
             ("stock_expiry", Kind::StockExpiry),
             ("message", Kind::Message),
             ("invitation", Kind::Invitation),
             ("grocery_item", Kind::GroceryItem),
+            ("budget_alert", Kind::BudgetAlert),
         ] {
             assert_eq!(Kind::parse(text), Some(kind));
             assert_eq!(kind.as_str(), text);
         }
-        assert_eq!(Kind::ALL.len(), 5);
+        assert_eq!(Kind::ALL.len(), 6);
     }
 
     #[test]
@@ -436,6 +460,12 @@ mod tests {
                     item: "i",
                 },
                 Kind::GroceryItem,
+            ),
+            (Event::BudgetCapNear, Kind::BudgetAlert),
+            (Event::BudgetCapReached, Kind::BudgetAlert),
+            (
+                Event::BudgetCategoryCapExceeded { category: "c" },
+                Kind::BudgetAlert,
             ),
         ] {
             assert_eq!(event.kind(), kind, "{event:?}");
@@ -561,6 +591,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_budget_alerts_name_the_cap_they_report() {
+        assert_eq!(
+            body(&Event::BudgetCapNear),
+            "Les dépenses du mois atteignent 80 % du budget de la famille."
+        );
+        assert_eq!(
+            body(&Event::BudgetCapReached),
+            "Les dépenses du mois atteignent 100 % du budget de la famille."
+        );
+        assert_eq!(
+            body(&Event::BudgetCategoryCapExceeded {
+                category: "Loisirs\n"
+            }),
+            "Les dépenses du mois dépassent le plafond de « Loisirs »."
+        );
+    }
+
     /// A typed part cannot open a second line, nor hide characters.
     #[test]
     fn typed_parts_are_flattened_to_one_line() {
@@ -600,6 +648,7 @@ mod tests {
                 author: &long,
                 item: &long,
             },
+            Event::BudgetCategoryCapExceeded { category: &long },
         ] {
             let n = body(&event).chars().count();
             assert!((1..=300).contains(&n), "{n} characters for {event:?}");

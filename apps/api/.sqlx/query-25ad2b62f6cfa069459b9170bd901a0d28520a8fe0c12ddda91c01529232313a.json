@@ -1,0 +1,33 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT COALESCE(SUM(amount_cents), 0)::bigint AS \"family!\",\n                  COALESCE(SUM(amount_cents) FILTER (WHERE category_id = $4), 0)::bigint\n                      AS \"category!\"\n           FROM budget_entries\n           WHERE group_id = $1 AND spent_at >= $2 AND spent_at < $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "family!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "category!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "25ad2b62f6cfa069459b9170bd901a0d28520a8fe0c12ddda91c01529232313a"
+}

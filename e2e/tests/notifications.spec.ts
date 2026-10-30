@@ -94,7 +94,7 @@ test.describe("Reminder notifications", () => {
     await expect(page.getByText("« Rappel d'un événement à venir »")).toBeVisible();
   });
 
-  test("the service worker is served from the root and shows the neutral text only", async ({
+  test("the service worker is served from the root and shows a fixed text per kind", async ({
     request,
   }) => {
     const res = await request.get("/sw.js");
@@ -102,7 +102,25 @@ test.describe("Reminder notifications", () => {
     expect(res.headers()["content-type"]).toContain("javascript");
     expect(res.headers()["cache-control"]).toBe("no-cache");
     const body = await res.text();
-    expect(body).toContain(`showNotification("Rappel d'un événement à venir"`);
+    expect(body).toContain(`title: "Rappel d'un événement à venir"`);
+    expect(body).toContain(`title: "Alerte de budget"`);
+    expect(body).toContain(`fetch("/account/notifications/last-push"`);
     expect(body).not.toContain("event.data");
+  });
+
+  // What the worker asks on each push (#536), naming its device by its
+  // subscription's endpoint: the kind of the push that device got. None
+  // without a device named, nor for a device the account does not have.
+  test("the service worker's question answers for the member's session", async ({ page }) => {
+    await registerAndLogin(page, "notif-last-push");
+    const res = await page.request.get("/account/notifications/last-push");
+    expect(res.status()).toBe(200);
+    expect(res.headers()["cache-control"]).toBe("no-store");
+    expect(await res.json()).toEqual({ kind: null });
+    const unknown = await page.request.get("/account/notifications/last-push", {
+      headers: { "X-Push-Endpoint": "https://fcm.googleapis.com/fcm/send/not-a-device" },
+    });
+    expect(unknown.status()).toBe(200);
+    expect(await unknown.json()).toEqual({ kind: null });
   });
 });

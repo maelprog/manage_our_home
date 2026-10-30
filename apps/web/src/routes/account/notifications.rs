@@ -17,9 +17,12 @@
 //! never asked (`default`) is not a refusal: the script offers a button,
 //! and the system prompt opens on that click only.
 //!
-//! The service worker is [`SERVICE_WORKER`], served at `/sw.js`: it shows
-//! « Rappel d'un événement à venir » for every push, never the event's
-//! title, the same choice as the reminder emails' subject (#146).
+//! The service worker is [`SERVICE_WORKER`], served at `/sw.js`. A push
+//! carries nothing: the worker asks [`last_push`] which kind of push its
+//! device got and shows that kind's fixed text — « Rappel d'un événement à
+//! venir » for a reminder, never the event's title, the same choice as the
+//! reminder emails' subject (#146); « Alerte de budget » for a budget alert
+//! (#536); a neutral one when it cannot tell.
 
 use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -219,6 +222,63 @@ pub(crate) const PUSH_SCRIPT: &str = r#"
 })();
 "#;
 
+/// The kinds of notification the API pushes to the devices: an agenda
+/// reminder come due (#306) and a budget alert (#536). The service worker
+/// shows a text of its own for each (`sw.js`).
+pub(crate) const PUSHED_KINDS: [&str; 2] = ["agenda_reminder", "budget_alert"];
+
+/// Of the API's answer on a push received, the kind to show if it is one
+/// of [`PUSHED_KINDS`]; `None`, the neutral text, for anything else.
+pub(crate) fn pushed_kind(answer: &serde_json::Value) -> Option<&'static str> {
+    let kind = answer.get("kind")?.as_str()?;
+    PUSHED_KINDS.into_iter().find(|pushed| *pushed == kind)
+}
+
+/// The header the service worker names its device in: the endpoint of its
+/// push subscription, which the API knows it by.
+const PUSH_ENDPOINT_HEADER: &str = "x-push-endpoint";
+
+/// `GET /account/notifications/last-push`, `{"kind": …}`: what the service
+/// worker asks on each push, which carries no payload, to choose its text.
+/// It names its device ([`PUSH_ENDPOINT_HEADER`]); the API answers the
+/// kind of the push this device got (`POST
+/// /account/push-subscriptions/received`): `null` when pushes of two kinds
+/// are on their way to it, when none is, without a device named, or on any
+/// failure. The worker shows a neutral text then.
+pub async fn last_push(
+    CurrentUser(_me): CurrentUser,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
+    let cookie = account_cookie(&headers);
+    let endpoint = headers
+        .get(PUSH_ENDPOINT_HEADER)
+        .and_then(|value| value.to_str().ok());
+    let mut kind = None;
+    if let Some(endpoint) = endpoint {
+        let body = serde_json::to_value(PushSubscriptionRequest {
+            endpoint: endpoint.to_string(),
+        })
+        .ok();
+        kind = api_request_auth(
+            &state,
+            reqwest::Method::POST,
+            "/account/push-subscriptions/received",
+            cookie.as_deref(),
+            body,
+        )
+        .await
+        .ok()
+        .filter(|resp| resp.status == reqwest::StatusCode::OK)
+        .and_then(|resp| pushed_kind(&resp.body));
+    }
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(serde_json::json!({ "kind": kind })),
+    )
+        .into_response()
+}
+
 /// The service worker, served at `/sw.js` out of the binary.
 pub(crate) const SERVICE_WORKER: &str = include_str!("../../sw.js");
 
@@ -322,7 +382,7 @@ fn page_body(settings: &NotificationSettings, notice: &str, error: &str) -> Stri
         r#"<p><a href="/account">← Retour à mon compte</a></p>
 <h1>Notifications de rappel</h1>
 {notice}{error}
-<p>Les rappels de vos événements vous parviennent par notification sur les appareils où vous les avez activées, par email, ou les deux. Une notification n'affiche jamais le titre de l'événement, seulement « Rappel d'un événement à venir » : le titre se lit dans l'agenda.</p>
+<p>Les rappels de vos événements vous parviennent par notification sur les appareils où vous les avez activées, par email, ou les deux. Une notification n'affiche jamais le titre de l'événement, seulement « Rappel d'un événement à venir », ou « Nouvelle notification » quand l'appareil ne peut pas savoir laquelle il a reçue : le titre se lit dans l'agenda.</p>
 <p class="muted">Sans appareil abonné, un rappel par notification n'est pas envoyé du tout, et aucun email ne le remplace.</p>
 <form method="post" action="/account/notifications">
 <fieldset class="card">
@@ -692,9 +752,37 @@ mod tests {
         );
     }
 
+    /// The API's answer passes through when it is a kind pushed; anything
+    /// else — `null`, a kind never pushed, no answer at all — is the
+    /// neutral text.
     #[test]
-    fn the_service_worker_shows_the_neutral_text_only() {
-        assert!(SERVICE_WORKER.contains(r#"showNotification("Rappel d'un événement à venir""#));
+    fn only_a_kind_pushed_passes_through() {
+        for kind in PUSHED_KINDS {
+            assert_eq!(
+                pushed_kind(&serde_json::json!({ "kind": kind })),
+                Some(kind)
+            );
+        }
+        assert_eq!(pushed_kind(&serde_json::json!({ "kind": null })), None);
+        assert_eq!(pushed_kind(&serde_json::json!({ "kind": "message" })), None);
+        assert_eq!(pushed_kind(&serde_json::json!({ "kind": "mixed" })), None);
+        assert_eq!(pushed_kind(&serde_json::json!({ "kind": 1 })), None);
+        assert_eq!(pushed_kind(&serde_json::json!({})), None);
+        assert_eq!(pushed_kind(&serde_json::Value::Null), None);
+    }
+
+    /// One fixed text per kind pushed, chosen on what `last_push` says
+    /// about this very device.
+    #[test]
+    fn the_service_worker_shows_a_fixed_text_per_kind() {
+        assert!(SERVICE_WORKER.contains(r#"fetch("/account/notifications/last-push""#));
+        assert!(SERVICE_WORKER.contains("pushManager.getSubscription()"));
+        assert!(SERVICE_WORKER.contains(r#""X-Push-Endpoint": subscription.endpoint"#));
+        for kind in PUSHED_KINDS {
+            assert!(SERVICE_WORKER.contains(&format!("{kind}: {{")), "{kind}");
+        }
+        assert!(SERVICE_WORKER.contains(r#"title: "Rappel d'un événement à venir""#));
+        assert!(SERVICE_WORKER.contains(r#"title: "Alerte de budget""#));
         // It never reads the push's data: there is none, and there must not
         // be any title to show.
         assert!(!SERVICE_WORKER.contains("event.data"));

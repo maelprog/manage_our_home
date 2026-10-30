@@ -437,8 +437,15 @@ where
     let settled = async {
         let mut pushed = Vec::new();
         if reached.push {
-            pushed =
-                push_devices(pool, send_push, reached.created_by, reached.occurrence_at).await?;
+            let ttl = push::ttl_secs(Utc::now(), reached.occurrence_at);
+            pushed = push_devices(
+                pool,
+                send_push,
+                reached.created_by,
+                push::PushKind::AgendaReminder,
+                ttl,
+            )
+            .await?;
         }
         match settle(reached.email, &pushed) {
             Settlement::Sent => mark_sent(pool, id).await,
@@ -450,27 +457,30 @@ where
 }
 
 /// Pushes every device of `user`, up to [`MAX_CONCURRENT_DEVICES`] at
-/// once, and records each one's answer. Every device is pushed and
-/// recorded even when one fails to be; the first such error is returned
-/// once they all answered.
-async fn push_devices<P, PFut>(
+/// once, with a TTL of `ttl` seconds, and records each one's answer. Every
+/// device is pushed and recorded even when one fails to be; the first such
+/// error is returned once they all answered. Also the budget alerts' push
+/// (#536, `budget::alerts::push_alerts`): `kind` is what each device is
+/// told it got (`push::Pending`).
+pub(crate) async fn push_devices<P, PFut>(
     pool: &PgPool,
     send_push: &P,
     user: Uuid,
-    occurrence_at: DateTime<Utc>,
+    kind: push::PushKind,
+    ttl: i64,
 ) -> anyhow::Result<Vec<push::PushOutcome>>
 where
     P: Fn(String, i64) -> PFut,
     PFut: std::future::Future<Output = push::PushOutcome>,
 {
-    let devices = sqlx::query!(
+    let devices = sqlx::query_as!(
+        Device,
         r#"SELECT id, endpoint, consecutive_failures, failing_since FROM push_subscriptions
                    WHERE user_id = $1 ORDER BY created_at"#,
         user,
     )
     .fetch_all(pool)
     .await?;
-    let ttl = push::ttl_secs(Utc::now(), occurrence_at);
 
     let mut in_flight = FuturesOrdered::new();
     let mut answers = Vec::with_capacity(devices.len());
@@ -478,15 +488,7 @@ where
         if in_flight.len() == MAX_CONCURRENT_DEVICES {
             answers.extend(in_flight.next().await);
         }
-        in_flight.push_back(push_device(
-            pool,
-            send_push,
-            device.id,
-            device.endpoint,
-            device.consecutive_failures,
-            device.failing_since,
-            ttl,
-        ));
+        in_flight.push_back(push_device(pool, send_push, device, kind, ttl));
     }
     while let Some(answer) = in_flight.next().await {
         answers.push(answer);
@@ -494,23 +496,82 @@ where
     answers.into_iter().collect()
 }
 
-/// Pushes one device and records its answer.
-async fn push_device<P, PFut>(
-    pool: &PgPool,
-    send_push: &P,
+/// A subscribed device, as [`push_devices`] reads it.
+struct Device {
     id: Uuid,
     endpoint: String,
     consecutive_failures: i32,
     failing_since: Option<DateTime<Utc>>,
+}
+
+/// Pushes one device and records its answer. The push is counted on the
+/// device before it is sent — the device may ask what it got before the
+/// push service has answered — and taken off again if the push service
+/// refused it (`push::pending_after_push`, `push::pending_after_failure`).
+/// Left counted if it did not answer: the push may still arrive, of a kind
+/// no longer told (`push::pending_after_unanswered`).
+async fn push_device<P, PFut>(
+    pool: &PgPool,
+    send_push: &P,
+    device: Device,
+    kind: push::PushKind,
     ttl_secs: i64,
 ) -> anyhow::Result<push::PushOutcome>
 where
     P: Fn(String, i64) -> PFut,
     PFut: std::future::Future<Output = push::PushOutcome>,
 {
-    let outcome = send_push(endpoint, ttl_secs).await;
-    record_device(pool, id, &outcome, consecutive_failures, failing_since).await?;
+    note_pending(pool, device.id, |pending| {
+        push::pending_after_push(pending, kind, Utc::now(), ttl_secs)
+    })
+    .await?;
+    let outcome = send_push(device.endpoint, ttl_secs).await;
+    match outcome {
+        push::PushOutcome::Delivered => {}
+        push::PushOutcome::Unanswered(_) => {
+            note_pending(pool, device.id, push::pending_after_unanswered).await?;
+        }
+        push::PushOutcome::Gone | push::PushOutcome::Failed(_) => {
+            note_pending(pool, device.id, push::pending_after_failure).await?;
+        }
+    }
+    record_device(
+        pool,
+        device.id,
+        &outcome,
+        device.consecutive_failures,
+        device.failing_since,
+    )
+    .await?;
     Ok(outcome)
+}
+
+/// Applies `change` to the pushes pending on `device` (`push::Pending`),
+/// under its row's lock: the device asking what it got, and the other
+/// pushes to it, wait. Nothing for a device gone meanwhile.
+async fn note_pending(
+    pool: &PgPool,
+    device: Uuid,
+    change: impl FnOnce(push::Pending) -> push::Pending,
+) -> anyhow::Result<()> {
+    let mut tx = crate::db::begin(pool).await?;
+    let row = sqlx::query!(
+        r#"SELECT pending_push_kind, pending_pushes, pending_until FROM push_subscriptions
+           WHERE id = $1 FOR UPDATE"#,
+        device,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some(row) = row {
+        let pending = push::Pending::from_columns(
+            row.pending_push_kind.as_deref(),
+            row.pending_pushes,
+            row.pending_until,
+        );
+        crate::notifications::preferences::write_pending(&mut tx, device, change(pending)).await?;
+    }
+    tx.commit().await?;
+    Ok(())
 }
 
 /// Forgets a device or records its answer, per [`push::device_after`].
@@ -631,7 +692,7 @@ pub fn settle(email: Option<Result<(), String>>, push: &[push::PushOutcome]) -> 
         .and_then(Result::err)
         .into_iter()
         .chain(push.iter().filter_map(|o| match o {
-            push::PushOutcome::Failed(e) => Some(e.clone()),
+            push::PushOutcome::Failed(e) | push::PushOutcome::Unanswered(e) => Some(e.clone()),
             _ => None,
         }))
         .collect();
@@ -768,6 +829,15 @@ mod tests {
         assert_eq!(
             settle(None, &[Gone, failed()]),
             Settlement::Retry("push service answered 503".into())
+        );
+    }
+
+    #[test]
+    fn a_push_service_unanswered_is_retried_with_its_error() {
+        let timed_out = push::PushOutcome::Unanswered("push service timed out".into());
+        assert_eq!(
+            settle(None, &[timed_out]),
+            Settlement::Retry("push service timed out".into())
         );
     }
 

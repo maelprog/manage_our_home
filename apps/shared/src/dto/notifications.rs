@@ -40,11 +40,12 @@ pub struct NotificationResponse {
     /// The family the event happened in — for an invitation, the family the
     /// recipient is invited into, of which they are not a member yet.
     pub group_id: uuid::Uuid,
-    /// `agenda_reminder`, `stock_expiry`, `message`, `invitation` or
-    /// `grocery_item`.
+    /// `agenda_reminder`, `stock_expiry`, `message`, `invitation`,
+    /// `grocery_item` or `budget_alert` (#536).
     pub kind: String,
     /// The event, stock item, message, invitation or grocery item it is
-    /// about, per `kind`. It may have been deleted since.
+    /// about, per `kind`; for a budget alert, the category whose cap was
+    /// exceeded, none for the family's cap. It may have been deleted since.
     pub object_id: Option<uuid::Uuid>,
     /// The short text to show, in French, on one line.
     pub body: String,
