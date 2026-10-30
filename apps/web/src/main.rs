@@ -178,6 +178,11 @@ fn build_router(state: AppState) -> Router {
             "/account/notifications/devices/remove",
             post(routes::account::notifications::remove_devices),
         )
+        // What the service worker asks on each push (#536).
+        .route(
+            "/account/notifications/last-push",
+            get(routes::account::notifications::last_push),
+        )
         // The member's live sessions (#225).
         .route("/account/sessions", get(routes::account::sessions::get))
         .route(

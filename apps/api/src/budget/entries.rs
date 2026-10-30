@@ -179,10 +179,12 @@ pub async fn create_budget_entry(
     )
     .fetch_one(&mut *tx)
     .await?;
-    if let Some(watch) = watch {
-        watch.fire(&mut tx).await?;
-    }
+    let alerted = match watch {
+        Some(watch) => watch.fire(&mut tx).await?,
+        None => Vec::new(),
+    };
     tx.commit().await?;
+    alerts::push_in_background(&state, alerted);
 
     Ok((StatusCode::CREATED, Json(BudgetEntryResponse::from(entry))))
 }
@@ -270,10 +272,12 @@ pub async fn set_grocery_item_price(
     )
     .fetch_one(&mut *tx)
     .await?;
-    if let Some(watch) = watch {
-        watch.fire(&mut tx).await?;
-    }
+    let alerted = match watch {
+        Some(watch) => watch.fire(&mut tx).await?,
+        None => Vec::new(),
+    };
     tx.commit().await?;
+    alerts::push_in_background(&state, alerted);
 
     Ok((StatusCode::CREATED, Json(BudgetEntryResponse::from(entry))))
 }
@@ -395,10 +399,12 @@ pub async fn update_budget_entry(
     )
     .fetch_one(&mut *tx)
     .await?;
-    if let Some(watch) = watch {
-        watch.fire(&mut tx).await?;
-    }
+    let alerted = match watch {
+        Some(watch) => watch.fire(&mut tx).await?,
+        None => Vec::new(),
+    };
     tx.commit().await?;
+    alerts::push_in_background(&state, alerted);
 
     Ok(Json(BudgetEntryResponse::from(entry)))
 }

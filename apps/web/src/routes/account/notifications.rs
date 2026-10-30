@@ -17,16 +17,20 @@
 //! never asked (`default`) is not a refusal: the script offers a button,
 //! and the system prompt opens on that click only.
 //!
-//! The service worker is [`SERVICE_WORKER`], served at `/sw.js`: it shows
-//! « Rappel d'un événement à venir » for every push, never the event's
-//! title, the same choice as the reminder emails' subject (#146).
+//! The service worker is [`SERVICE_WORKER`], served at `/sw.js`. A push
+//! carries nothing: the worker asks [`last_push`] which kind of
+//! notification came last and shows its fixed text — « Rappel d'un
+//! événement à venir » for a reminder, never the event's title, the same
+//! choice as the reminder emails' subject (#146); « Alerte de budget » for
+//! a budget alert (#536); a neutral one when it cannot tell.
 
 use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::{Form, Json};
 use manage_our_home_shared::dto::notifications::{
-    NotificationSettings, PushSubscriptionRequest, UpdateNotificationSettings,
+    NotificationPage, NotificationResponse, NotificationSettings, PushSubscriptionRequest,
+    UpdateNotificationSettings,
 };
 
 use crate::app::{html_escape, shell_with_header, Width};
@@ -218,6 +222,57 @@ pub(crate) const PUSH_SCRIPT: &str = r#"
   });
 })();
 "#;
+
+/// The kinds of notification the API pushes to the devices: an agenda
+/// reminder come due (#306) and a budget alert (#536). The service worker
+/// shows a text of its own for each (`sw.js`).
+pub(crate) const PUSHED_KINDS: [&str; 2] = ["agenda_reminder", "budget_alert"];
+
+/// Of `latest` — the newest notification of each kind the member holds —
+/// the kind of the newest of those the API pushes ([`PUSHED_KINDS`]),
+/// `None` when there is none.
+pub(crate) fn last_pushed_kind(latest: &[NotificationResponse]) -> Option<&str> {
+    latest
+        .iter()
+        .filter(|n| PUSHED_KINDS.contains(&n.kind.as_str()))
+        .max_by_key(|n| n.created_at)
+        .map(|n| n.kind.as_str())
+}
+
+/// `GET /account/notifications/last-push`, `{"kind": …}`: what the service
+/// worker asks on each push, which carries no payload, to choose its text —
+/// the kind of the member's newest notification among those pushed
+/// ([`last_pushed_kind`]; the API writes it before it pushes), `null` when
+/// none or on any failure. The worker shows a neutral text then.
+pub async fn last_push(
+    CurrentUser(_me): CurrentUser,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
+    let cookie = account_cookie(&headers);
+    let mut latest = Vec::new();
+    for kind in PUSHED_KINDS {
+        let page = api_request_auth(
+            &state,
+            reqwest::Method::GET,
+            &format!("/notifications?kind={kind}&limit=1"),
+            cookie.as_deref(),
+            None,
+        )
+        .await
+        .ok()
+        .filter(|resp| resp.status == reqwest::StatusCode::OK)
+        .and_then(|resp| serde_json::from_value::<NotificationPage>(resp.body).ok());
+        if let Some(page) = page {
+            latest.extend(page.notifications);
+        }
+    }
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(serde_json::json!({ "kind": last_pushed_kind(&latest) })),
+    )
+        .into_response()
+}
 
 /// The service worker, served at `/sw.js` out of the binary.
 pub(crate) const SERVICE_WORKER: &str = include_str!("../../sw.js");
@@ -692,9 +747,61 @@ mod tests {
         );
     }
 
+    fn notification(kind: &str, minute: u32) -> NotificationResponse {
+        use chrono::TimeZone;
+        NotificationResponse {
+            id: uuid::Uuid::nil(),
+            group_id: uuid::Uuid::nil(),
+            kind: kind.into(),
+            object_id: None,
+            body: "texte".into(),
+            read_at: None,
+            created_at: chrono::Utc
+                .with_ymd_and_hms(2026, 10, 30, 12, minute, 0)
+                .unwrap(),
+        }
+    }
+
+    /// The newest of the pushed kinds wins, whatever the order given.
     #[test]
-    fn the_service_worker_shows_the_neutral_text_only() {
-        assert!(SERVICE_WORKER.contains(r#"showNotification("Rappel d'un événement à venir""#));
+    fn the_last_pushed_kind_is_the_newest() {
+        let reminder = notification("agenda_reminder", 10);
+        let alert = notification("budget_alert", 20);
+        assert_eq!(
+            last_pushed_kind(&[reminder.clone(), alert.clone()]),
+            Some("budget_alert")
+        );
+        assert_eq!(
+            last_pushed_kind(&[alert, notification("agenda_reminder", 30)]),
+            Some("agenda_reminder")
+        );
+        assert_eq!(last_pushed_kind(&[reminder]), Some("agenda_reminder"));
+    }
+
+    /// A kind that is never pushed (a message, newer than the reminder)
+    /// does not count; nothing pushed, no kind.
+    #[test]
+    fn a_kind_never_pushed_does_not_count() {
+        assert_eq!(
+            last_pushed_kind(&[
+                notification("agenda_reminder", 10),
+                notification("message", 50),
+            ]),
+            Some("agenda_reminder")
+        );
+        assert_eq!(last_pushed_kind(&[notification("message", 50)]), None);
+        assert_eq!(last_pushed_kind(&[]), None);
+    }
+
+    /// One fixed text per kind pushed, chosen on what `last_push` says.
+    #[test]
+    fn the_service_worker_shows_a_fixed_text_per_kind() {
+        assert!(SERVICE_WORKER.contains(r#"fetch("/account/notifications/last-push""#));
+        for kind in PUSHED_KINDS {
+            assert!(SERVICE_WORKER.contains(&format!("{kind}: {{")), "{kind}");
+        }
+        assert!(SERVICE_WORKER.contains(r#"title: "Rappel d'un événement à venir""#));
+        assert!(SERVICE_WORKER.contains(r#"title: "Alerte de budget""#));
         // It never reads the push's data: there is none, and there must not
         // be any title to show.
         assert!(!SERVICE_WORKER.contains("event.data"));

@@ -12,6 +12,12 @@
 //! none. Each family turns either kind of alert off (`budget_settings`,
 //! [`get_alert_settings`] and [`patch_alert_settings`]); both are on by
 //! default.
+//!
+//! Once the write committed, the members alerted whose channel includes
+//! notifications (`users.reminder_channel`, #306) get a push on each of
+//! their devices ([`push_in_background`]): no payload, as for the
+//! reminders; the service worker asks the web app which kind of
+//! notification came last and shows « Alerte de budget ».
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
@@ -23,7 +29,9 @@ use uuid::Uuid;
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::budget::{can_access_budget, require_budget_access};
 use crate::error::{AppError, AppResult};
+use crate::jobs::scheduled_notifications::push_devices;
 use crate::notifications::center::{self, Event, NewNotification};
+use crate::notifications::{push, ReminderChannel};
 use crate::stocks::items::day_or_today;
 use crate::AppState;
 
@@ -241,8 +249,11 @@ pub(crate) async fn watch(
 
 impl Watch {
     /// Reads the month's totals again, now that the expense is written,
-    /// and sends an alert for each threshold crossed.
-    pub(crate) async fn fire(self, tx: &mut Tx<'_>) -> AppResult<()> {
+    /// and sends an alert for each threshold crossed. Returns the members
+    /// alerted, each once, for [`push_in_background`] to push once the
+    /// transaction committed.
+    pub(crate) async fn fire(self, tx: &mut Tx<'_>) -> AppResult<Vec<Uuid>> {
+        let mut alerted = Vec::new();
         let after = totals(
             tx,
             self.group_id,
@@ -257,7 +268,7 @@ impl Watch {
             after.family,
             self.family_cap_cents,
         ) {
-            self.send(tx, None, threshold).await?;
+            alerted.extend(self.send(tx, None, threshold).await?);
         }
         if let Some(category) = &self.category {
             for threshold in crossed(
@@ -266,22 +277,25 @@ impl Watch {
                 after.category,
                 Some(category.cap_cents),
             ) {
-                self.send(tx, Some(category), threshold).await?;
+                alerted.extend(self.send(tx, Some(category), threshold).await?);
             }
         }
-        Ok(())
+        alerted.sort_unstable();
+        alerted.dedup();
+        Ok(alerted)
     }
 
     /// One alert, unless this family already had it this month
     /// (`budget_alerts`): a notification for each owner and admin whose
     /// account is active, the author of the expense included — the alert
-    /// is about the month's spending, not about their own action.
+    /// is about the month's spending, not about their own action. Returns
+    /// them, none when the alert went already.
     async fn send(
         &self,
         tx: &mut Tx<'_>,
         category: Option<&WatchedCategory>,
         threshold: Threshold,
-    ) -> AppResult<()> {
+    ) -> AppResult<Vec<Uuid>> {
         let first = sqlx::query_scalar!(
             r#"INSERT INTO budget_alerts (group_id, month, category_id, threshold)
                VALUES ($1, $2, $3, $4)
@@ -296,7 +310,7 @@ impl Watch {
         .await?
         .is_some();
         if !first {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let recipients: Vec<Uuid> = sqlx::query!(
             r#"SELECT gm.user_id, gm.role::text AS "role!"
@@ -329,8 +343,67 @@ impl Watch {
             },
         )
         .await?;
-        Ok(())
+        Ok(recipients)
     }
+}
+
+/// How long a push service keeps an alert for a device that is offline: a
+/// day. An alert read later is in the notification centre anyway.
+pub const ALERT_PUSH_TTL_SECS: i64 = 24 * 3600;
+
+/// Pushes the devices of the `alerted` members whose channel includes
+/// notifications (`ReminderChannel::includes_push`), and records each
+/// device's answer as the reminders do (`push_devices`). A member on email
+/// only gets nothing more than the notification centre: no alert is
+/// emailed. Called by [`push_in_background`]; `send_push` is the push
+/// itself, a parameter so that a test can stand in for the push services.
+pub async fn push_alerts<P, PFut>(
+    pool: &sqlx::PgPool,
+    send_push: &P,
+    alerted: &[Uuid],
+) -> anyhow::Result<()>
+where
+    P: Fn(String, i64) -> PFut,
+    PFut: std::future::Future<Output = push::PushOutcome>,
+{
+    let members = sqlx::query!(
+        r#"SELECT id, reminder_channel FROM users
+           WHERE id = ANY($1) AND deactivated_at IS NULL AND deleted_at IS NULL"#,
+        alerted,
+    )
+    .fetch_all(pool)
+    .await?;
+    for member in members {
+        let pushes = ReminderChannel::parse(&member.reminder_channel)
+            .is_some_and(ReminderChannel::includes_push);
+        if pushes {
+            push_devices(pool, send_push, member.id, ALERT_PUSH_TTL_SECS).await?;
+        }
+    }
+    Ok(())
+}
+
+/// [`push_alerts`] on a task of its own, once the expense's transaction
+/// committed: the request does not wait for the push services. Nothing
+/// without alerted members, nor on a server without a VAPID key.
+pub(crate) fn push_in_background(state: &AppState, alerted: Vec<Uuid>) {
+    let Some(vapid) = state.push.clone() else {
+        return;
+    };
+    if alerted.is_empty() {
+        return;
+    }
+    let pool = state.db.clone();
+    tokio::spawn(async move {
+        let client = push::client();
+        let send_push = |endpoint: String, ttl_secs: i64| {
+            let (client, vapid) = (client.clone(), vapid.clone());
+            async move { push::send(&client, &vapid, &endpoint, ttl_secs).await }
+        };
+        if let Err(e) = push_alerts(&pool, &send_push, &alerted).await {
+            tracing::error!(error = ?e, "failed to push a budget alert");
+        }
+    });
 }
 
 /// The family's switches; a family without a settings row has both on.

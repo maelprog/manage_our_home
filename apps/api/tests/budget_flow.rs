@@ -2183,7 +2183,11 @@ async fn simultaneous_expenses_alert_once(db: PgPool) {
     let uri = format!("/groups/{group_id}/budget-entries");
     let mut expenses = tokio::task::JoinSet::new();
     for n in 0..6 {
-        let cookie = if n % 2 == 0 { owner.clone() } else { admin.clone() };
+        let cookie = if n % 2 == 0 {
+            owner.clone()
+        } else {
+            admin.clone()
+        };
         let (router, uri) = (router.clone(), uri.clone());
         expenses.spawn(async move {
             let body = serde_json::json!({"name": format!("Dépense {n}"), "amount": 2.0});
@@ -2210,4 +2214,131 @@ async fn simultaneous_expenses_alert_once(db: PgPool) {
         .await
         .unwrap();
     assert_eq!(sent, 1);
+}
+
+/// A device of `email`'s account, under an endpoint no push service owns:
+/// `push::send` answers it `Gone` without any request, and the device is
+/// then forgotten — which is how a test sees that it was pushed.
+async fn unreachable_device(db: &PgPool, email: &str) -> uuid::Uuid {
+    sqlx::query_scalar(
+        "INSERT INTO push_subscriptions (user_id, endpoint)
+         SELECT id, 'https://push.invalid/' || gen_random_uuid() FROM users WHERE email = $1
+         RETURNING id",
+    )
+    .bind(email)
+    .fetch_one(db)
+    .await
+    .unwrap()
+}
+
+async fn device_kept(db: &PgPool, id: uuid::Uuid) -> bool {
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM push_subscriptions WHERE id = $1)")
+        .bind(id)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+/// AC #536, user's decision of 2026-10-30: an alert is pushed, once the
+/// expense committed, to the devices of the members alerted whose channel
+/// includes notifications — not to an admin on email only, nor to a
+/// standard member.
+#[sqlx::test]
+async fn an_alert_is_pushed_to_the_members_on_notifications(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, _admin, group_id) = owner_and_admin(&router, &db, "alert-push").await;
+    let member = register_verify_login(
+        &router,
+        &db,
+        "alert-push-member@example.test",
+        "member-password1",
+    )
+    .await;
+    join_as_standard(&router, &owner, &member, &group_id).await;
+    sqlx::query("UPDATE users SET reminder_channel = 'email' WHERE email = $1")
+        .bind("alert-push-admin@example.test")
+        .execute(&db)
+        .await
+        .unwrap();
+    let owner_device = unreachable_device(&db, "alert-push-owner@example.test").await;
+    let admin_device = unreachable_device(&db, "alert-push-admin@example.test").await;
+    let member_device = unreachable_device(&db, "alert-push-member@example.test").await;
+    let res = call(
+        &router,
+        Method::PUT,
+        &format!("/groups/{group_id}/budget-settings"),
+        Some(&owner),
+        Some(serde_json::json!({"monthly_cap": 100.0})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    create_entry(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Courses", "amount": 85.0}),
+    )
+    .await;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while device_kept(&db, owner_device).await {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the owner's device was not pushed within 10 s"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        device_kept(&db, admin_device).await,
+        "the admin is on email"
+    );
+    assert!(device_kept(&db, member_device).await, "a standard member");
+}
+
+/// `push_alerts` itself: of the members alerted, those whose channel
+/// includes notifications (`push` or `both`), every device of theirs.
+#[sqlx::test]
+async fn push_alerts_follows_each_member_s_channel(db: PgPool) {
+    let router = test_router(db.clone());
+    let mut ids = Vec::new();
+    for (name, channel) in [("push", "push"), ("both", "both"), ("email", "email")] {
+        let email = format!("alert-channel-{name}@example.test");
+        register_verify_login(&router, &db, &email, "member-password1").await;
+        let id: uuid::Uuid = sqlx::query_scalar(
+            "UPDATE users SET reminder_channel = $2 WHERE email = $1 RETURNING id",
+        )
+        .bind(&email)
+        .bind(channel)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        for device in 0..2 {
+            sqlx::query("INSERT INTO push_subscriptions (user_id, endpoint) VALUES ($1, $2)")
+                .bind(id)
+                .bind(format!(
+                    "https://fcm.googleapis.com/fcm/send/{name}-{device}"
+                ))
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+        ids.push(id);
+    }
+
+    let pushed = std::sync::Mutex::new(Vec::new());
+    let send_push = |endpoint: String, ttl: i64| {
+        pushed.lock().unwrap().push((endpoint, ttl));
+        async { manage_our_home::notifications::push::PushOutcome::Delivered }
+    };
+    manage_our_home::budget::alerts::push_alerts(&db, &send_push, &ids)
+        .await
+        .unwrap();
+    let mut pushed = pushed.into_inner().unwrap();
+    pushed.sort();
+    let day = manage_our_home::budget::alerts::ALERT_PUSH_TTL_SECS;
+    assert_eq!(
+        pushed,
+        ["both-0", "both-1", "push-0", "push-1"]
+            .map(|d| (format!("https://fcm.googleapis.com/fcm/send/{d}"), day))
+    );
 }

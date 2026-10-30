@@ -110,6 +110,11 @@ tourne sur un VPS loué à un hébergeur tiers (arbitrage du 2026-10-10,
   l'appareil, signé de la clé VAPID du serveur ; il apprend donc qu'un
   message part de ce serveur vers cet appareil, à cette heure, et rien de
   l'événement. L'appareil affiche toujours « Rappel d'un événement à venir ».
+  Les alertes de plafond du budget (#536) passent par le même chemin, vers
+  les propriétaires et admins dont le canal comprend les notifications :
+  message vide, l'appareil affiche « Alerte de budget » après avoir demandé
+  au site, avec la session du membre, le type de sa dernière notification
+  (`/account/notifications/last-push`).
 - **Open Food Facts** (#402) n'est destinataire d'aucune donnée
   personnelle, et n'appelle donc pas de ligne au tableau ci-dessous. Quand
   un membre scanne ou saisit le code-barres d'un article, c'est le serveur

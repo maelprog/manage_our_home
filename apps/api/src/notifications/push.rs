@@ -1,10 +1,11 @@
 //! Web Push (RFC 8030) with VAPID (RFC 8292), for the reminders sent as a
-//! notification (#306).
+//! notification (#306) and the budget alerts (#536).
 //!
 //! **No payload.** A push message carries no body at all: the service
-//! worker (`apps/web/src/sw.js`) shows the same neutral text for every
-//! one, « Rappel d'un événement à venir », and the event's title is read
-//! in the application, after the click. So nothing about the event — not
+//! worker (`apps/web/src/sw.js`) asks the site which kind of notification
+//! came last and shows that kind's fixed text — « Rappel d'un événement à
+//! venir », « Alerte de budget » —, and the event's title is read in the
+//! application, after the click. So nothing about the event — not
 //! its title, not an identifier — ever reaches the push service (Mozilla,
 //! Google, Apple, Microsoft), and there is no payload to encrypt
 //! (RFC 8291): the subscription's `p256dh`/`auth` keys are not even

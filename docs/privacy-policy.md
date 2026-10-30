@@ -120,7 +120,8 @@ possibles sont :
   sous-traitant email — à renseigner avant la mise en ligne].
 - **Le service de notification de votre navigateur**, uniquement si vos
   rappels vous parviennent par notification et que vous les avez activées
-  sur un appareil : celui de Google pour Chrome et la plupart des
+  sur un appareil — il porte alors aussi les alertes de plafond du budget,
+  si vous êtes propriétaire ou administrateur d'une famille : celui de Google pour Chrome et la plupart des
   navigateurs qui en dérivent, de Mozilla pour Firefox, d'Apple pour
   Safari, de Microsoft pour Edge. Ce n'est pas le service qui le choisit,
   c'est votre navigateur. À chaque rappel, le serveur lui envoie un message
@@ -130,7 +131,10 @@ possibles sont :
   un message à cet appareil, à cette heure. Votre appareil affiche alors
   toujours le même texte, « Rappel d'un événement à venir » — rien sur
   l'écran verrouillé ne dit de quel événement il s'agit — et le titre ne se
-  lit qu'en ouvrant l'agenda. Pas de repli : sans appareil abonné, un
+  lit qu'en ouvrant l'agenda. Une alerte de budget arrive de la même façon,
+  message vide compris, et s'affiche « Alerte de budget », sans montant ni
+  catégorie. Pour choisir ce texte, votre appareil demande au site, avec
+  votre session, le type de votre dernière notification. Pas de repli : sans appareil abonné, un
   rappel par notification n'est pas envoyé du tout, et le site vous en
   avertit là où vous programmez vos rappels.
 - **Open Food Facts**, base publique de produits alimentaires, quand vous

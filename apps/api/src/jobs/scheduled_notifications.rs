@@ -437,8 +437,8 @@ where
     let settled = async {
         let mut pushed = Vec::new();
         if reached.push {
-            pushed =
-                push_devices(pool, send_push, reached.created_by, reached.occurrence_at).await?;
+            let ttl = push::ttl_secs(Utc::now(), reached.occurrence_at);
+            pushed = push_devices(pool, send_push, reached.created_by, ttl).await?;
         }
         match settle(reached.email, &pushed) {
             Settlement::Sent => mark_sent(pool, id).await,
@@ -450,14 +450,15 @@ where
 }
 
 /// Pushes every device of `user`, up to [`MAX_CONCURRENT_DEVICES`] at
-/// once, and records each one's answer. Every device is pushed and
-/// recorded even when one fails to be; the first such error is returned
-/// once they all answered.
-async fn push_devices<P, PFut>(
+/// once, with a TTL of `ttl` seconds, and records each one's answer. Every
+/// device is pushed and recorded even when one fails to be; the first such
+/// error is returned once they all answered. Also the budget alerts' push
+/// (#536, `budget::alerts::push_alerts`).
+pub(crate) async fn push_devices<P, PFut>(
     pool: &PgPool,
     send_push: &P,
     user: Uuid,
-    occurrence_at: DateTime<Utc>,
+    ttl: i64,
 ) -> anyhow::Result<Vec<push::PushOutcome>>
 where
     P: Fn(String, i64) -> PFut,
@@ -470,7 +471,6 @@ where
     )
     .fetch_all(pool)
     .await?;
-    let ttl = push::ttl_secs(Utc::now(), occurrence_at);
 
     let mut in_flight = FuturesOrdered::new();
     let mut answers = Vec::with_capacity(devices.len());
