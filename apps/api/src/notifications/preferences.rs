@@ -12,7 +12,7 @@ use manage_our_home_shared::dto::notifications::{
     NotificationSettings, PushSubscriptionRequest, UpdateNotificationSettings,
 };
 
-use super::push::validate_endpoint;
+use super::push::{self, validate_endpoint};
 use super::ReminderChannel;
 use crate::auth::session::AuthUser;
 use crate::error::{AppError, AppResult};
@@ -107,7 +107,13 @@ pub async fn subscribe(
                consecutive_failures = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id
                    THEN push_subscriptions.consecutive_failures ELSE 0 END,
                failing_since = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id
-                   THEN push_subscriptions.failing_since END"#,
+                   THEN push_subscriptions.failing_since END,
+               pending_push_kind = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id
+                   THEN push_subscriptions.pending_push_kind END,
+               pending_pushes = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id
+                   THEN push_subscriptions.pending_pushes ELSE 0 END,
+               pending_until = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id
+                   THEN push_subscriptions.pending_until END"#,
         auth.user_id,
         endpoint.as_str()
     )
@@ -131,6 +137,63 @@ pub async fn subscribe(
 /// enough that a script cannot grow one account's rows — and the worker's
 /// pushes per reminder — without bound.
 pub const MAX_DEVICES_PER_ACCOUNT: i64 = 50;
+
+/// `POST /account/push-subscriptions/received`, `{"endpoint": …}` — what
+/// the service worker asks on each push, which carries nothing: 200
+/// `{"kind": …}`, the kind of notification this device got
+/// (`push::pending_on_receipt`), `null` for the neutral text — pushes of
+/// two kinds on their way, none pending, or an endpoint that is not one of
+/// the caller's devices. The receipt is taken off the device's count.
+pub async fn received(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(body): Json<PushSubscriptionRequest>,
+) -> AppResult<Json<serde_json::Value>> {
+    let mut tx = crate::db::begin(&state.db).await?;
+    let device = sqlx::query!(
+        r#"SELECT id, pending_push_kind, pending_pushes, pending_until FROM push_subscriptions
+           WHERE user_id = $1 AND endpoint = $2 FOR UPDATE"#,
+        auth.user_id,
+        body.endpoint,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    let mut shown = None;
+    if let Some(device) = device {
+        let pending = push::Pending::from_columns(
+            device.pending_push_kind.as_deref(),
+            device.pending_pushes,
+            device.pending_until,
+        );
+        let after;
+        (shown, after) = push::pending_on_receipt(pending, chrono::Utc::now());
+        write_pending(&mut tx, device.id, after).await?;
+    }
+    tx.commit().await?;
+    Ok(Json(
+        serde_json::json!({ "kind": shown.map(push::PushKind::as_str) }),
+    ))
+}
+
+/// Writes the pushes pending on `device`.
+pub(crate) async fn write_pending(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    device: uuid::Uuid,
+    pending: push::Pending,
+) -> sqlx::Result<()> {
+    sqlx::query!(
+        r#"UPDATE push_subscriptions
+           SET pending_push_kind = $2, pending_pushes = $3, pending_until = $4
+           WHERE id = $1"#,
+        device,
+        pending.kind.map(push::PendingKind::as_str),
+        pending.count,
+        pending.until,
+    )
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
 
 /// `DELETE /account/push-subscriptions` — forgets every device of the
 /// caller: 204. The browsers keep their side of the subscription until

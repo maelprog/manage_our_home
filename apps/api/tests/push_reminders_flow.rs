@@ -445,7 +445,9 @@ async fn a_device_moved_to_another_account_carries_none_of_its_history(db: PgPoo
          SET created_at = now() - interval '30 days',
              last_success_at = now() - interval '3 days',
              consecutive_failures = 2,
-             failing_since = now() - interval '2 days'",
+             failing_since = now() - interval '2 days',
+             pending_push_kind = 'budget_alert', pending_pushes = 1,
+             pending_until = now() + interval '1 day'",
     )
     .execute(&db)
     .await
@@ -462,6 +464,9 @@ async fn a_device_moved_to_another_account_carries_none_of_its_history(db: PgPoo
     assert!(devices[0]["last_success_at"].is_null(), "{devices:?}");
     assert_eq!(devices[0]["consecutive_failures"], 0, "{devices:?}");
     assert!(devices[0]["failing_since"].is_null(), "{devices:?}");
+    assert_eq!(devices[0]["pending_pushes"], 0, "{devices:?}");
+    assert!(devices[0]["pending_push_kind"].is_null(), "{devices:?}");
+    assert!(devices[0]["pending_until"].is_null(), "{devices:?}");
     let created_at: DateTime<Utc> = devices[0]["created_at"]
         .as_str()
         .and_then(|s| s.parse().ok())
@@ -1046,6 +1051,105 @@ async fn a_database_error_stops_no_other_reminder_failing_ones_written_last(db: 
     a_database_error_on_one_reminder_stops_none_of_the_others(db, false).await;
 }
 
+// -- the kind a device shows (#536) ----------------------------------------------
+
+/// What the service worker is told on a push received by `endpoint`'s
+/// device: the kind of notification to show, `null` for the neutral text.
+async fn received(router: &axum::Router, cookie: &str, endpoint: &str) -> serde_json::Value {
+    let res = call(
+        router,
+        Method::POST,
+        "/account/push-subscriptions/received",
+        Some(cookie),
+        Some(serde_json::json!({ "endpoint": endpoint })),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    json_body(res).await["kind"].clone()
+}
+
+/// One reminder pass whose pushes all get `outcome`.
+async fn pass_answering(db: &PgPool, outcome: PushOutcome) {
+    let send = |_: String, _: String, _: String| async { Ok::<(), anyhow::Error>(()) };
+    let send_push = |_: String, _: i64| {
+        let outcome = outcome.clone();
+        async move { outcome }
+    };
+    send_due_notifications(db, send, send_push).await.unwrap();
+}
+
+async fn push_an_alert(db: &PgPool, member: Uuid) {
+    let delivered = |_: String, _: i64| async { PushOutcome::Delivered };
+    manage_our_home::budget::alerts::push_alerts(db, &delivered, &[member])
+        .await
+        .unwrap();
+}
+
+/// A push carries nothing: the device asks which kind it got (user's
+/// decision of 2026-10-30). It is told the kind of that push, a retry
+/// included — never that of a notification written in between — and the
+/// neutral text when pushes of two kinds are on their way at once.
+#[sqlx::test]
+async fn a_device_shows_the_kind_of_the_push_it_got_retries_included(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "kinds@example.test").await;
+    let member: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind("kinds@example.test")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    add_device(&db, member, FCM).await;
+    assert_eq!(
+        received(&router, &cookie, FCM).await,
+        serde_json::Value::Null
+    );
+
+    // The reminder's push refused: retried. An alert pushed and shown in
+    // between; the retry then shows the reminder, not the alert written
+    // after it.
+    let first = due_reminder(&db, member).await;
+    pass_answering(&db, PushOutcome::Failed("push service answered 503".into())).await;
+    assert_eq!(notification(&db, first).await.1, 1);
+    push_an_alert(&db, member).await;
+    assert_eq!(received(&router, &cookie, FCM).await, "budget_alert");
+    pass_answering(&db, PushOutcome::Delivered).await;
+    assert_eq!(notification(&db, first).await.0, "sent");
+    assert_eq!(received(&router, &cookie, FCM).await, "agenda_reminder");
+    assert_eq!(
+        received(&router, &cookie, FCM).await,
+        serde_json::Value::Null
+    );
+
+    // An alert and a reminder's retry on their way at once: neither shows
+    // the other's text. Once both received, an alert shows its own again.
+    let second = due_reminder(&db, member).await;
+    pass_answering(&db, PushOutcome::Failed("push service answered 503".into())).await;
+    push_an_alert(&db, member).await;
+    pass_answering(&db, PushOutcome::Delivered).await;
+    assert_eq!(notification(&db, second).await.0, "sent");
+    for _ in 0..2 {
+        assert_eq!(
+            received(&router, &cookie, FCM).await,
+            serde_json::Value::Null
+        );
+    }
+    push_an_alert(&db, member).await;
+    assert_eq!(received(&router, &cookie, FCM).await, "budget_alert");
+
+    // Only the caller's own device answers.
+    push_an_alert(&db, member).await;
+    let other = register_verify_login(&router, &db, "kinds-other@example.test").await;
+    assert_eq!(
+        received(&router, &other, FCM).await,
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        received(&router, &cookie, MOZILLA).await,
+        serde_json::Value::Null
+    );
+    assert_eq!(received(&router, &cookie, FCM).await, "budget_alert");
+}
+
 // -- RGPD -----------------------------------------------------------------------
 
 /// Art. 15: the channel is in the profile, and every device is listed.
@@ -1067,4 +1171,8 @@ async fn the_export_carries_the_channel_and_the_devices(db: PgPool) {
     assert!(devices[0]["last_seen_at"].is_string());
     assert!(devices[0]["failing_since"].is_null());
     assert!(devices[0]["created_at"].is_string());
+    // The pushes on their way to the device (#536): none yet.
+    assert_eq!(devices[0]["pending_pushes"], 0);
+    assert!(devices[0]["pending_push_kind"].is_null());
+    assert!(devices[0]["pending_until"].is_null());
 }

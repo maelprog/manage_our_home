@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, pending_push_kind, pending_pushes, pending_until FROM push_subscriptions\n           WHERE user_id = $1 AND endpoint = $2 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "push_subscriptions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "pending_push_kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "push_subscriptions",
+            "name": "pending_push_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "pending_pushes",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "push_subscriptions",
+            "name": "pending_pushes"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "pending_until",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "push_subscriptions",
+            "name": "pending_until"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "e9845e87d246dbbdc4930c5284f1e173233810b0b8b59e9fc4a5fe82af7e9157"
+}

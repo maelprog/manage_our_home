@@ -16,8 +16,8 @@
 //! Once the write committed, the members alerted whose channel includes
 //! notifications (`users.reminder_channel`, #306) get a push on each of
 //! their devices ([`push_in_background`]): no payload, as for the
-//! reminders; the service worker asks the web app which kind of
-//! notification came last and shows « Alerte de budget ».
+//! reminders; the service worker asks which kind of push its device got
+//! (`notifications::push::Pending`) and shows « Alerte de budget ».
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
@@ -387,7 +387,14 @@ where
         let pushes = ReminderChannel::parse(&member.reminder_channel)
             .is_some_and(ReminderChannel::includes_push);
         if pushes {
-            push_devices(pool, send_push, member.id, ALERT_PUSH_TTL_SECS).await?;
+            push_devices(
+                pool,
+                send_push,
+                member.id,
+                push::PushKind::BudgetAlert,
+                ALERT_PUSH_TTL_SECS,
+            )
+            .await?;
         }
     }
     Ok(())

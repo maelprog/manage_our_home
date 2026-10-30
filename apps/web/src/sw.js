@@ -3,13 +3,14 @@
 // apps/web/src/routes/account/notifications.rs, out of the binary.
 //
 // A push carries no payload (apps/api/src/notifications/push.rs). The
-// worker asks the site which kind of notification came last
-// (/account/notifications/last-push, the member's session going along) and
-// shows that kind's fixed text, like the subject of the reminder emails
-// (#146): never an event's title, a category or an amount on the lock
-// screen. The member reads them in the application, once the click has
-// opened it. When the site cannot tell — no session, no network — the text
-// is a neutral one.
+// worker asks the site which kind of push this device got
+// (/account/notifications/last-push, the member's session going along, the
+// device named by its subscription's endpoint) and shows that kind's fixed
+// text, like the subject of the reminder emails (#146): never an event's
+// title, a category or an amount on the lock screen. The member reads them
+// in the application, once the click has opened it. When the site cannot
+// tell — pushes of two kinds on their way to this device at once, no
+// session, no network — the text is a neutral one.
 "use strict";
 
 var TEXTS = {
@@ -32,15 +33,24 @@ var NEUTRAL = {
 };
 
 function lastPushedKind() {
-  return fetch("/account/notifications/last-push", {
-    credentials: "same-origin",
-    headers: { Accept: "application/json" },
-  })
-    .then(function (response) {
-      return response.ok ? response.json() : null;
-    })
-    .then(function (answer) {
-      return answer && answer.kind;
+  return self.registration.pushManager.getSubscription()
+    .then(function (subscription) {
+      if (!subscription) {
+        return null;
+      }
+      return fetch("/account/notifications/last-push", {
+        credentials: "same-origin",
+        headers: {
+          Accept: "application/json",
+          "X-Push-Endpoint": subscription.endpoint,
+        },
+      })
+        .then(function (response) {
+          return response.ok ? response.json() : null;
+        })
+        .then(function (answer) {
+          return answer && answer.kind;
+        });
     })
     .catch(function () {
       return null;

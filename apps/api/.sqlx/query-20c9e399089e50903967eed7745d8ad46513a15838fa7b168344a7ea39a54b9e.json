@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE push_subscriptions\n           SET pending_push_kind = $2, pending_pushes = $3, pending_until = $4\n           WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Int4",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "20c9e399089e50903967eed7745d8ad46513a15838fa7b168344a7ea39a54b9e"
+}

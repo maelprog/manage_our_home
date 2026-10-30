@@ -438,7 +438,14 @@ where
         let mut pushed = Vec::new();
         if reached.push {
             let ttl = push::ttl_secs(Utc::now(), reached.occurrence_at);
-            pushed = push_devices(pool, send_push, reached.created_by, ttl).await?;
+            pushed = push_devices(
+                pool,
+                send_push,
+                reached.created_by,
+                push::PushKind::AgendaReminder,
+                ttl,
+            )
+            .await?;
         }
         match settle(reached.email, &pushed) {
             Settlement::Sent => mark_sent(pool, id).await,
@@ -453,18 +460,21 @@ where
 /// once, with a TTL of `ttl` seconds, and records each one's answer. Every
 /// device is pushed and recorded even when one fails to be; the first such
 /// error is returned once they all answered. Also the budget alerts' push
-/// (#536, `budget::alerts::push_alerts`).
+/// (#536, `budget::alerts::push_alerts`): `kind` is what each device is
+/// told it got (`push::Pending`).
 pub(crate) async fn push_devices<P, PFut>(
     pool: &PgPool,
     send_push: &P,
     user: Uuid,
+    kind: push::PushKind,
     ttl: i64,
 ) -> anyhow::Result<Vec<push::PushOutcome>>
 where
     P: Fn(String, i64) -> PFut,
     PFut: std::future::Future<Output = push::PushOutcome>,
 {
-    let devices = sqlx::query!(
+    let devices = sqlx::query_as!(
+        Device,
         r#"SELECT id, endpoint, consecutive_failures, failing_since FROM push_subscriptions
                    WHERE user_id = $1 ORDER BY created_at"#,
         user,
@@ -478,15 +488,7 @@ where
         if in_flight.len() == MAX_CONCURRENT_DEVICES {
             answers.extend(in_flight.next().await);
         }
-        in_flight.push_back(push_device(
-            pool,
-            send_push,
-            device.id,
-            device.endpoint,
-            device.consecutive_failures,
-            device.failing_since,
-            ttl,
-        ));
+        in_flight.push_back(push_device(pool, send_push, device, kind, ttl));
     }
     while let Some(answer) = in_flight.next().await {
         answers.push(answer);
@@ -494,23 +496,74 @@ where
     answers.into_iter().collect()
 }
 
-/// Pushes one device and records its answer.
-async fn push_device<P, PFut>(
-    pool: &PgPool,
-    send_push: &P,
+/// A subscribed device, as [`push_devices`] reads it.
+struct Device {
     id: Uuid,
     endpoint: String,
     consecutive_failures: i32,
     failing_since: Option<DateTime<Utc>>,
+}
+
+/// Pushes one device and records its answer. The push is counted on the
+/// device before it is sent — the device may ask what it got before the
+/// push service has answered — and taken off again if the push service
+/// refused it (`push::pending_after_push`, `push::pending_after_failure`).
+async fn push_device<P, PFut>(
+    pool: &PgPool,
+    send_push: &P,
+    device: Device,
+    kind: push::PushKind,
     ttl_secs: i64,
 ) -> anyhow::Result<push::PushOutcome>
 where
     P: Fn(String, i64) -> PFut,
     PFut: std::future::Future<Output = push::PushOutcome>,
 {
-    let outcome = send_push(endpoint, ttl_secs).await;
-    record_device(pool, id, &outcome, consecutive_failures, failing_since).await?;
+    note_pending(pool, device.id, |pending| {
+        push::pending_after_push(pending, kind, Utc::now(), ttl_secs)
+    })
+    .await?;
+    let outcome = send_push(device.endpoint, ttl_secs).await;
+    if outcome != push::PushOutcome::Delivered {
+        note_pending(pool, device.id, push::pending_after_failure).await?;
+    }
+    record_device(
+        pool,
+        device.id,
+        &outcome,
+        device.consecutive_failures,
+        device.failing_since,
+    )
+    .await?;
     Ok(outcome)
+}
+
+/// Applies `change` to the pushes pending on `device` (`push::Pending`),
+/// under its row's lock: the device asking what it got, and the other
+/// pushes to it, wait. Nothing for a device gone meanwhile.
+async fn note_pending(
+    pool: &PgPool,
+    device: Uuid,
+    change: impl FnOnce(push::Pending) -> push::Pending,
+) -> anyhow::Result<()> {
+    let mut tx = crate::db::begin(pool).await?;
+    let row = sqlx::query!(
+        r#"SELECT pending_push_kind, pending_pushes, pending_until FROM push_subscriptions
+           WHERE id = $1 FOR UPDATE"#,
+        device,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some(row) = row {
+        let pending = push::Pending::from_columns(
+            row.pending_push_kind.as_deref(),
+            row.pending_pushes,
+            row.pending_until,
+        );
+        crate::notifications::preferences::write_pending(&mut tx, device, change(pending)).await?;
+    }
+    tx.commit().await?;
+    Ok(())
 }
 
 /// Forgets a device or records its answer, per [`push::device_after`].

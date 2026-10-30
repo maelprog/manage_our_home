@@ -48,3 +48,17 @@ ALTER TABLE notifications DROP CONSTRAINT notifications_kind_check;
 ALTER TABLE notifications ADD CONSTRAINT notifications_kind_check
     CHECK (kind IN ('agenda_reminder', 'stock_expiry', 'message',
                     'invitation', 'grocery_item', 'budget_alert'));
+
+-- The alerts are pushed to the devices as the reminders are (0020): no
+-- payload, so the service worker asks which kind of notification it got
+-- (`notifications::push::Pending`). Each push is counted on its device
+-- before it is sent, each receipt takes one off: while the pushes pending
+-- are all of one kind (`pending_push_kind`), a receipt is one of them;
+-- 'mixed' once two kinds are pending, and the worker shows a neutral text
+-- until they are all received or past `pending_until`, when the last of
+-- them expires at the push service (its TTL). Goes with the device.
+ALTER TABLE push_subscriptions
+    ADD COLUMN pending_push_kind TEXT
+        CHECK (pending_push_kind IN ('agenda_reminder', 'budget_alert', 'mixed')),
+    ADD COLUMN pending_pushes    INTEGER NOT NULL DEFAULT 0 CHECK (pending_pushes >= 0),
+    ADD COLUMN pending_until     TIMESTAMPTZ;

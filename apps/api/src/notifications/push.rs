@@ -2,9 +2,10 @@
 //! notification (#306) and the budget alerts (#536).
 //!
 //! **No payload.** A push message carries no body at all: the service
-//! worker (`apps/web/src/sw.js`) asks the site which kind of notification
-//! came last and shows that kind's fixed text — « Rappel d'un événement à
-//! venir », « Alerte de budget » —, and the event's title is read in the
+//! worker (`apps/web/src/sw.js`) asks the site which kind of push its
+//! device got ([`Pending`]) and shows that kind's fixed text — « Rappel
+//! d'un événement à venir », « Alerte de budget », a neutral one when it
+//! cannot tell —, and the event's title is read in the
 //! application, after the click. So nothing about the event — not
 //! its title, not an identifier — ever reaches the push service (Mozilla,
 //! Google, Apple, Microsoft), and there is no payload to encrypt
@@ -200,6 +201,157 @@ pub fn ttl_secs(now: DateTime<Utc>, occurrence_at: DateTime<Utc>) -> i64 {
     (occurrence_at - now)
         .num_seconds()
         .clamp(MIN_TTL_SECS, MAX_TTL_SECS)
+}
+
+/// A kind of notification pushed to the devices, under its name in
+/// `notifications.kind`. The service worker shows a fixed text for each
+/// (`apps/web/src/sw.js`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushKind {
+    /// An agenda reminder come due (#306).
+    AgendaReminder,
+    /// A budget cap alert (#536).
+    BudgetAlert,
+}
+
+impl PushKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PushKind::AgendaReminder => "agenda_reminder",
+            PushKind::BudgetAlert => "budget_alert",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        [PushKind::AgendaReminder, PushKind::BudgetAlert]
+            .into_iter()
+            .find(|kind| kind.as_str() == raw)
+    }
+}
+
+/// The kind of the pushes a device has pending: one kind, or several.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingKind {
+    Only(PushKind),
+    Mixed,
+}
+
+impl PendingKind {
+    /// The value of `push_subscriptions.pending_push_kind`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PendingKind::Only(kind) => kind.as_str(),
+            PendingKind::Mixed => "mixed",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "mixed" => Some(PendingKind::Mixed),
+            _ => PushKind::parse(raw).map(PendingKind::Only),
+        }
+    }
+}
+
+/// The pushes sent to a device that it has not shown yet
+/// (`push_subscriptions.pending_*`, migration 0037), so that the service
+/// worker shows the text of the push it got, and not that of another.
+///
+/// A push carries nothing: the worker asks on each one which kind it is
+/// ([`pending_on_receipt`]). Each push is counted before it is sent
+/// ([`pending_after_push`]) and each receipt takes one off. While the
+/// pushes pending are all of one kind, a receipt can only be one of them;
+/// once two kinds are pending — an alert, and a reminder sent again by a
+/// retry — none can tell which it is, and the worker shows the neutral
+/// text until they are all received. Never another kind's text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Pending {
+    /// `None` with nothing pending.
+    pub kind: Option<PendingKind>,
+    pub count: i32,
+    /// When the last of them expires at the push service (its TTL): past
+    /// it, none can arrive any more.
+    pub until: Option<DateTime<Utc>>,
+}
+
+impl Pending {
+    /// From the columns of `push_subscriptions`.
+    pub fn from_columns(kind: Option<&str>, count: i32, until: Option<DateTime<Utc>>) -> Self {
+        if count <= 0 {
+            return Pending::default();
+        }
+        Pending {
+            kind: Some(
+                kind.and_then(PendingKind::parse)
+                    .unwrap_or(PendingKind::Mixed),
+            ),
+            count,
+            until,
+        }
+    }
+
+    /// Pushes may still arrive.
+    fn live(&self, now: DateTime<Utc>) -> bool {
+        self.count > 0 && self.until.is_some_and(|until| until > now)
+    }
+}
+
+/// `pending` once a push of `kind`, held `ttl_secs` by the push service,
+/// is about to be sent at `now`.
+pub fn pending_after_push(
+    pending: Pending,
+    kind: PushKind,
+    now: DateTime<Utc>,
+    ttl_secs: i64,
+) -> Pending {
+    let until = now + chrono::Duration::seconds(ttl_secs);
+    if !pending.live(now) {
+        return Pending {
+            kind: Some(PendingKind::Only(kind)),
+            count: 1,
+            until: Some(until),
+        };
+    }
+    let kind = match pending.kind {
+        Some(PendingKind::Only(pending_kind)) if pending_kind == kind => PendingKind::Only(kind),
+        _ => PendingKind::Mixed,
+    };
+    Pending {
+        kind: Some(kind),
+        count: pending.count.saturating_add(1),
+        until: pending.until.max(Some(until)),
+    }
+}
+
+/// `pending` once the push service refused a push counted: it never
+/// arrives. Its kind is not taken back: which of the others are left is
+/// not known.
+pub fn pending_after_failure(pending: Pending) -> Pending {
+    let count = pending.count.saturating_sub(1).max(0);
+    if count == 0 {
+        return Pending::default();
+    }
+    Pending { count, ..pending }
+}
+
+/// What a device shows on a push received at `now`: the kind of the pushes
+/// pending if they are all of one, `None` — the neutral text — otherwise,
+/// or with none pending. And `pending` with this one taken off.
+pub fn pending_on_receipt(pending: Pending, now: DateTime<Utc>) -> (Option<PushKind>, Pending) {
+    if !pending.live(now) {
+        return (None, Pending::default());
+    }
+    let shown = match pending.kind {
+        Some(PendingKind::Only(kind)) => Some(kind),
+        _ => None,
+    };
+    let count = pending.count - 1;
+    let after = if count == 0 {
+        Pending::default()
+    } else {
+        Pending { count, ..pending }
+    };
+    (shown, after)
 }
 
 /// How long a VAPID token is valid. RFC 8292 caps it at 24 hours.
@@ -742,6 +894,127 @@ mod tests {
             connections.load(Ordering::SeqCst),
             0,
             "the endpoint was requested"
+        );
+    }
+
+    // -- the kind a device shows ----------------------------------------------
+
+    fn t0() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 10, 30, 12, 0, 0).unwrap()
+    }
+
+    const R: PushKind = PushKind::AgendaReminder;
+    const A: PushKind = PushKind::BudgetAlert;
+
+    fn pushed(kinds: &[PushKind]) -> Pending {
+        kinds.iter().fold(Pending::default(), |p, &k| {
+            pending_after_push(p, k, t0(), 3600)
+        })
+    }
+
+    /// Each receipt at `now`, in turn: the kind each device shows.
+    fn shown(mut pending: Pending, receipts: usize, now: DateTime<Utc>) -> Vec<Option<PushKind>> {
+        (0..receipts)
+            .map(|_| {
+                let (kind, after) = pending_on_receipt(pending, now);
+                pending = after;
+                kind
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_kinds_have_the_names_of_the_notifications() {
+        assert_eq!(R.as_str(), "agenda_reminder");
+        assert_eq!(A.as_str(), "budget_alert");
+        for kind in [R, A] {
+            assert_eq!(PushKind::parse(kind.as_str()), Some(kind));
+            let only = PendingKind::Only(kind);
+            assert_eq!(PendingKind::parse(only.as_str()), Some(only));
+        }
+        assert_eq!(PendingKind::Mixed.as_str(), "mixed");
+        assert_eq!(PendingKind::parse("mixed"), Some(PendingKind::Mixed));
+        assert_eq!(PushKind::parse("mixed"), None);
+        assert_eq!(PushKind::parse("message"), None);
+        assert_eq!(PendingKind::parse("message"), None);
+    }
+
+    /// A push shows its own kind, once; nothing is left after.
+    #[test]
+    fn a_push_shows_its_kind() {
+        let (kind, after) = pending_on_receipt(pushed(&[A]), t0());
+        assert_eq!(kind, Some(A));
+        assert_eq!(after, Pending::default());
+        assert_eq!(shown(pushed(&[R, R]), 3, t0()), [Some(R), Some(R), None]);
+    }
+
+    /// A reminder pushed again (a retry) while an alert is pending: no
+    /// device can tell which one it got, each shows the neutral text —
+    /// never the other one's. Once all shown, an alert shows its own again.
+    #[test]
+    fn pushes_of_two_kinds_pending_show_neither() {
+        let mixed = pushed(&[R, A, R]);
+        assert_eq!(shown(mixed, 3, t0()), [None, None, None]);
+        let drained = (0..3).fold(mixed, |p, _| pending_on_receipt(p, t0()).1);
+        assert_eq!(drained, Pending::default());
+        let again = pending_after_push(drained, A, t0(), 3600);
+        assert_eq!(shown(again, 1, t0()), [Some(A)]);
+    }
+
+    /// Read back from its columns. A kind the code does not know (the
+    /// column's CHECK admits none) counts as mixed: the neutral text.
+    #[test]
+    fn pending_is_read_back_from_its_columns() {
+        let alert = pushed(&[A, A]);
+        let kind = alert.kind.map(PendingKind::as_str);
+        assert_eq!(Pending::from_columns(kind, alert.count, alert.until), alert);
+        let mixed = pushed(&[A, R]);
+        assert_eq!(
+            Pending::from_columns(Some("mixed"), mixed.count, mixed.until),
+            mixed
+        );
+        let unknown = Pending::from_columns(Some("message"), 1, alert.until);
+        assert_eq!(unknown.kind, Some(PendingKind::Mixed));
+        assert_eq!(shown(unknown, 1, t0()), [None]);
+        assert_eq!(Pending::from_columns(None, 0, None), Pending::default());
+    }
+
+    /// A receipt with nothing pending: the neutral text.
+    #[test]
+    fn nothing_pending_shows_nothing() {
+        assert_eq!(shown(Pending::default(), 1, t0()), [None]);
+    }
+
+    /// Past the longest TTL of the pushes pending, none of them can still
+    /// arrive: the record starts over, and a push of the other kind shows
+    /// its own.
+    #[test]
+    fn pushes_past_their_ttl_are_forgotten() {
+        let alert = pending_after_push(Pending::default(), A, t0(), 60);
+        let later = pending_after_push(alert, R, t0(), 3600);
+        assert_eq!(later.until, Some(t0() + Duration::seconds(3600)));
+        assert_eq!(later.kind, Some(PendingKind::Mixed));
+        assert_eq!(later.count, 2);
+
+        let past = t0() + Duration::seconds(61);
+        assert_eq!(shown(alert, 1, past), [None]);
+        let reminder = pending_after_push(alert, R, past, 60);
+        assert_eq!(reminder.count, 1);
+        assert_eq!(shown(reminder, 1, past), [Some(R)]);
+    }
+
+    /// A push the push service refused never arrives: it is taken off the
+    /// count. Its kind stays mixed in though: the neutral text, never a
+    /// wrong one.
+    #[test]
+    fn a_push_refused_is_not_counted() {
+        assert_eq!(pending_after_failure(pushed(&[A])), Pending::default());
+        let one_refused = pending_after_failure(pushed(&[A, R]));
+        assert_eq!(one_refused.count, 1);
+        assert_eq!(shown(one_refused, 1, t0()), [None]);
+        assert_eq!(
+            pending_after_failure(Pending::default()),
+            Pending::default()
         );
     }
 }

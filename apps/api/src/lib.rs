@@ -254,6 +254,10 @@ pub fn build_router(state: AppState) -> Router {
             post(notifications::preferences::subscribe)
                 .delete(notifications::preferences::unsubscribe_all),
         )
+        .route(
+            "/account/push-subscriptions/received",
+            post(notifications::preferences::received),
+        )
         // With `/auth/logout`, the only routes a restricted session opens
         // (#289).
         .route("/account/deactivated", get(auth::deactivated::status))
