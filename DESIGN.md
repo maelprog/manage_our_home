@@ -207,9 +207,9 @@ elle accompagne toujours une initiale ou un nom.
 ### Couleurs des catégories du budget
 
 Une catégorie de dépense (#532) prend une de cinq clés nommées, jamais une
-valeur hexadécimale ; `apps/web` pose chaque clé sur un jeton (#533). Ce
-sont les cinq teintes de la maquette « Budget », dans son ordre, telles que
-`CATEGORY_COLORS` (`apps/shared`) les recopie. Quatre sont
+valeur hexadécimale ; `apps/web` pose chaque clé sur un jeton (#533). Les
+clés, leur ordre et la teinte claire de chacune viennent de
+`CATEGORY_COLORS` (`apps/shared/src/validation/budget.rs`, #532). Quatre sont
 des jetons existants ; l'orange n'avait pas de voisin dans la rampe et
 devient `--orange`, éclairci en sombre comme la rampe l'est.
 

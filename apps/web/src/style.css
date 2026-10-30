@@ -53,7 +53,8 @@
      information (WCAG 1.4.1): it always accompanies an initial or a name. */
   --m1: #7a5ea8; --m2: #2f7a9e; --m3: #457f44; --m4: #976928;
   --m5: #a8555c; --m6: #55707e; --m7: #8a6d3b; --m8: #6a6aa8;
-  /* The budget categories' orange (#533): the mock-up's « Maison ». The
+  /* The budget categories' orange (#533): the `orange` key of
+     CATEGORY_COLORS (#532, apps/shared). The
      four other category colours are tokens already (DESIGN.md → Couleurs
      des catégories du budget); this one is not, and no ramp hue is near. */
   --orange: #b35c2e;
