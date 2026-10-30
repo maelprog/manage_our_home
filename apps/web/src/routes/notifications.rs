@@ -20,6 +20,7 @@ use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
+use manage_our_home_shared::dto::groups::GroupSummary;
 use manage_our_home_shared::dto::notifications::{NotificationPage, NotificationResponse};
 use uuid::Uuid;
 
@@ -70,6 +71,16 @@ fn kind_label(kind: &str) -> &'static str {
         "budget_alert" => "Budget",
         _ => "Notification",
     }
+}
+
+/// The family an opened entry makes active: its own, when the caller is
+/// still a member of it (re-checked, as `POST /groups/switch` does — the
+/// form's `group_id` is the caller's to forge), otherwise none.
+fn family_to_activate(groups: &[GroupSummary], group_id: Uuid) -> Option<Uuid> {
+    groups
+        .iter()
+        .any(|g| g.group_id == group_id)
+        .then_some(group_id)
 }
 
 fn kind_icon(kind: &str) -> Icon {
@@ -445,16 +456,13 @@ pub async fn open(
     let Some(to) = target(&form.kind, form.object_id) else {
         return Redirect::to("/notifications").into_response();
     };
-    // The family it happened in becomes the active one, when the caller is
-    // still a member of it (re-checked, as `POST /groups/switch` does).
-    let member = fetch_groups(&state, cookie.as_deref())
+    // The family it happened in becomes the active one.
+    let groups = fetch_groups(&state, cookie.as_deref())
         .await
-        .unwrap_or_default()
-        .iter()
-        .any(|g| g.group_id == form.group_id);
+        .unwrap_or_default();
     let mut response_headers = HeaderMap::new();
-    if member {
-        if let Ok(v) = set_active_group_cookie(form.group_id).parse() {
+    if let Some(group_id) = family_to_activate(&groups, form.group_id) {
+        if let Ok(v) = set_active_group_cookie(group_id).parse() {
             response_headers.insert(axum::http::header::SET_COOKIE, v);
         }
     }
@@ -754,5 +762,26 @@ mod tests {
         let (created, before) =
             cursor(Some("2026-10-30T17:30:00.000000Z"), Some(&id.to_string())).expect("a cursor");
         assert_eq!((created, before), (at, id));
+    }
+
+    fn summary(group_id: Uuid) -> GroupSummary {
+        GroupSummary {
+            group_id,
+            name: "Martin".to_string(),
+            role: "member".to_string(),
+            ownership_notice: None,
+        }
+    }
+
+    #[test]
+    fn opening_an_entry_switches_only_to_a_family_the_caller_still_belongs_to() {
+        let kept = Uuid::from_u128(1);
+        let left = Uuid::from_u128(2);
+        let groups = [summary(kept), summary(Uuid::from_u128(3))];
+        assert_eq!(family_to_activate(&groups, kept), Some(kept));
+        // Left since, or forged in the form: the active family stays.
+        assert_eq!(family_to_activate(&groups, left), None);
+        // The groups could not be read: nothing is switched.
+        assert_eq!(family_to_activate(&[], kept), None);
     }
 }
