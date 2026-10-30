@@ -1291,7 +1291,9 @@ async fn categories_and_caps_are_bounded(db: PgPool) {
 /// `create_budget_category`, several would read 25 together and pass.
 #[sqlx::test]
 async fn simultaneous_creations_stop_at_thirty_categories(db: PgPool) {
-    let router = test_router(db.clone());
+    // One connection per creation, so that they all are in their
+    // transactions at once.
+    let router = test_router_sized(db.clone(), 12);
     let (owner, _admin, group_id) = owner_and_admin(&router, &db, "cat-race").await;
     let categories = format!("/groups/{group_id}/budget-categories");
     for n in 1..=25 {
@@ -1304,8 +1306,17 @@ async fn simultaneous_creations_stop_at_thirty_categories(db: PgPool) {
         .await;
     }
 
+    // The categories table is held in SHARE mode: a creation can count the
+    // categories but not insert one. With the family's lock, the first
+    // creation waits on the table and every other one on the lock, before
+    // counting; without it, all of them would count 25 and wait to insert.
+    let mut hold = db.begin().await.unwrap();
+    sqlx::query("LOCK TABLE budget_categories IN SHARE MODE")
+        .execute(&mut *hold)
+        .await
+        .unwrap();
     let mut creations = tokio::task::JoinSet::new();
-    for n in 1..=15 {
+    for n in 1..=10 {
         let (router, owner, uri) = (router.clone(), owner.clone(), categories.clone());
         creations.spawn(async move {
             let body = serde_json::json!({"name": format!("Course {n}"), "color": "blue"});
@@ -1314,6 +1325,12 @@ async fn simultaneous_creations_stop_at_thirty_categories(db: PgPool) {
             (status, json_body(res).await)
         });
     }
+    assert_eq!(
+        waiting_on_table(&db, 10, "budget_categories").await,
+        1,
+        "the creations past the first wait on the family's lock"
+    );
+    hold.rollback().await.unwrap();
     let (mut created, mut refused) = (0, 0);
     while let Some(outcome) = creations.join_next().await {
         let (status, body) = outcome.unwrap();
@@ -1326,7 +1343,7 @@ async fn simultaneous_creations_stop_at_thirty_categories(db: PgPool) {
             other => panic!("unexpected {other}: {body}"),
         }
     }
-    assert_eq!((created, refused), (5, 10));
+    assert_eq!((created, refused), (5, 5));
 
     let rows: i64 =
         sqlx::query_scalar("SELECT count(*) FROM budget_categories WHERE group_id = $1::uuid")
