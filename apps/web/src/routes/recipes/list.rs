@@ -189,7 +189,9 @@ pub async fn get(
 
     // Suggestions (ranked). A non-200 (e.g. 403, unreachable once family is
     // resolved) renders an empty section rather than leaking JSON; a
-    // transport error is the only hard failure.
+    // transport error is a hard failure here, as for the recipes below. The
+    // selections are stricter: any status but 200 is a hard failure too
+    // (`planned_selections`).
     let suggestions: Vec<RecipeSuggestion> = match api_request_auth(
         &state,
         reqwest::Method::GET,
