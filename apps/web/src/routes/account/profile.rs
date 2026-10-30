@@ -122,7 +122,7 @@ pub(crate) fn settings_section(me: &MeResponse, appearance: Appearance) -> Strin
         setting_row(
             "/account/delete",
             "Supprimer mon compte",
-            "Droit à l'effacement, après un délai de grâce annulable",
+            "Droit à l'effacement, après un délai de grâce annulable ; impossible tant que vous êtes propriétaire d'une famille",
         )
     } else {
         String::new()
@@ -326,6 +326,12 @@ mod tests {
         assert!(html.contains(r#"href="/account/delete""#), "{html}");
         assert!(html.contains("Exporter mes données"), "{html}");
         assert!(html.contains("Supprimer mon compte"), "{html}");
+        // The card it replaced said it, and apps/api still refuses the
+        // request of a family's owner (409 `owner_of_groups`).
+        assert!(
+            html.contains("impossible tant que vous êtes propriétaire d'une famille"),
+            "{html}"
+        );
     }
 
     #[test]
