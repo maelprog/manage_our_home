@@ -366,10 +366,15 @@ disait pas.
   haut (`--s12`), au-dessus des 44 px que demande
   [Espacement](#espacement).
 - **La colonne latérale sur PC (#523)** : la marque « MHome », puis
-  Accueil, Agenda, Courses, Stocks, Recettes, Budget, Messagerie — Admin
-  pour le seul superadmin technique —, chacun son icône devant son
-  libellé ; Notifications y prendra place avec #535, et Budget y est
-  montré à tout membre jusqu'à #531, qui ajoutera la condition de rôle.
+  Accueil, Agenda, Courses, Stocks, Recettes, Budget, Messagerie,
+  Notifications (#535) — Admin pour le seul superadmin technique —,
+  chacun son icône devant son libellé ; Budget n'y est montré, quand
+  une famille est active, qu'à ses propriétaires et à ses admins (#531) —
+  sans famille, le lien reste et `/budget` mène à `/groups/new`.
+  Notifications porte le nombre des non lues de l'appelant, toutes
+  familles confondues, dans la même pastille `.badge.warn` que
+  Messagerie, et se nomme « Notifications (3 non lues) ». Elle n'a pas
+  d'onglet sur téléphone : la cloche de l'accueil (`.bell`) y mène.
   Au pied de la colonne, haute comme le viewport, le bloc du profil :
   l'initiale, le nom et la famille active, vers `/account`. C'est là que
   se choisit la famille active (un formulaire `POST /groups/switch` qui
@@ -574,6 +579,8 @@ aucune n'introduit de valeur hors des échelles :
 | `.swatch` | la pastille de couleur d'une catégorie (#533) : un carré de `--s3` arrondi en rond, en `currentColor`, `aria-hidden` à côté du nom — dans la barre d'une catégorie, le badge d'une dépense, les pastilles du formulaire, les réglages |
 | `progress.over` | la barre du plafond de la famille une fois dépassé (#533), en `--error` ; « Dépassé » en `.badge.late` le dit en mots, comme pour une catégorie. La barre s'arrête pleine, la légende « 112 % de 100,00 € » dit de combien |
 | `.figures` | Dépensé, Plafond, Reste (ou Dépassement) du mois sur `/budget` (#533) : un `<dl>` en grille de colonnes de 6 rem au moins, qui passe à la ligne plutôt que de serrer un montant ; la valeur en `--t-lg`, 600, chiffres tabulaires |
+| `.notifs`, `.notif`, `.dot` | la liste de `/notifications` (#535), dans la disposition de `.settings` — la liste et ses `.filters` (« Toutes » puis un par type), à côté sur PC la carte « Réglages » vers `/account/notifications` — sous des `h2.eyebrow` « Aujourd’hui », « Cette semaine » (les six jours d'avant) et « Plus tôt ». Une entrée est le bouton secondaire de son propre formulaire, donc sans JavaScript : l'icône du type sur `--accent-soft`, le texte sur « Agenda · 18:30 » en `.muted`. Non lue, la carte du bouton, le texte en gras et un `.dot` `--accent` de `--s2x`, `aria-hidden`, que « Non lue » en `.sr-only` dit à l'oreille ; lue, à plat sur la page jusqu'au survol |
+| `.bell` | la cloche de l'accueil sur téléphone (#535), en tête de page à côté de « Bonjour » : un lien vers `/notifications` nommé « Notifications (3 non lues) » par son `aria-label`, l'icône à `--s6` dans `--s12`, la pastille `.badge.warn` sur son coin comme sur un onglet. `.phone` : sur PC, l'entrée de la colonne latérale en tient lieu |
 | `.budget` | la page du budget (#533) : le mois — `.figures`, barre du plafond, « Par catégorie » — et ses dépenses, deux colonnes égales quand elles tiennent à 20 rem, l'une sous l'autre sinon. Le sélecteur de mois (‹ mois ›) est un `.split` au-dessus. Les réglages du budget prennent la disposition de `.settings` |
 | `caption` | le nom d'un tableau pour les technologies d'assistance (#145) — élément, pas classe : aujourd'hui le mois de la grille de l'agenda, que le `<h1>` voisin montre déjà. Partage les deux règles de `.skip-link` : hors du flux et rogné, jamais `display: none` |
 

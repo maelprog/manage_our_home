@@ -394,6 +394,12 @@ fn build_router(state: AppState) -> Router {
             "/messagerie/:id/delete",
             post(routes::messagerie::thread::delete),
         )
+        .route("/notifications", get(routes::notifications::get))
+        .route(
+            "/notifications/read",
+            post(routes::notifications::mark_all_read),
+        )
+        .route("/notifications/:id/open", post(routes::notifications::open))
         .route("/admin/groups", get(routes::admin::groups::get))
         .route("/admin/groups/:id", get(routes::admin::groups::detail))
         .route(

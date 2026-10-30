@@ -71,20 +71,57 @@ pub(crate) async fn header_with_groups(
     me: &MeResponse,
     redirect_to: &str,
 ) -> (Vec<GroupSummary>, String) {
+    let (groups, header, _) = header_parts(state, headers, me, redirect_to).await;
+    (groups, header)
+}
+
+/// `header_with_groups`, plus the caller's unread notifications (#535):
+/// the count the sidebar's Notifications entry wears, which the home's
+/// bell and `/notifications` show as well. `None` when it could not be
+/// read — the header then shows no count, and neither does the page.
+pub(crate) async fn header_parts(
+    state: &AppState,
+    headers: &HeaderMap,
+    me: &MeResponse,
+    redirect_to: &str,
+) -> (Vec<GroupSummary>, String, Option<u64>) {
     let cookie = cookie_of(headers);
     let groups = fetch_groups(state, cookie.as_deref())
         .await
         .unwrap_or_default();
     let preferred = active_group_id_from_headers(headers);
     let active = resolve_active_group(&groups, preferred);
-    let unread = match active {
-        Some(g) if !nav_link_is_current("/messagerie", redirect_to) => {
-            fetch_unread_count(state, cookie.as_deref(), g.group_id).await
+    let messages = async {
+        match active {
+            Some(g) if !nav_link_is_current("/messagerie", redirect_to) => {
+                fetch_unread_count(state, cookie.as_deref(), g.group_id).await
+            }
+            _ => 0,
         }
-        _ => 0,
     };
-    let header = app_header(me, active, redirect_to, unread);
-    (groups, header)
+    let (unread, notifications) = tokio::join!(
+        messages,
+        fetch_unread_notifications(state, cookie.as_deref())
+    );
+    let header = app_header(me, active, redirect_to, unread, notifications.unwrap_or(0));
+    (groups, header, notifications)
+}
+
+/// `GET /notifications/unread_count` (#534). `None` on any failure, as
+/// `fetch_unread_count` reads 0: the page renders without the count.
+async fn fetch_unread_notifications(state: &AppState, cookie: Option<&str>) -> Option<u64> {
+    match api_request_auth(
+        state,
+        reqwest::Method::GET,
+        "/notifications/unread_count",
+        cookie,
+        None,
+    )
+    .await
+    {
+        Ok(resp) if resp.status == reqwest::StatusCode::OK => resp.body["unread_count"].as_u64(),
+        _ => None,
+    }
 }
 
 /// `GET /groups/:id/messages/unread_count` (#463). Any failure — apps/api

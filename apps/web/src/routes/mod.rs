@@ -9,6 +9,7 @@ pub mod health;
 pub mod home;
 pub mod legal;
 pub mod messagerie;
+pub mod notifications;
 pub mod privacy;
 pub mod recipes;
 pub mod stocks;

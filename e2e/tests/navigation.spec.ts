@@ -62,6 +62,7 @@ const PC: Destinations = [
   ["Recettes", "/recipes"],
   ["Budget", "/budget"],
   ["Messagerie", "/messagerie"],
+  ["Notifications", "/notifications"],
   [/^Profil : Nav User Famille Navigation$/, "/account"],
 ];
 

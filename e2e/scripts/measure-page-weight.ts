@@ -172,6 +172,7 @@ type MinStoredKey =
   | "budgetEntries"
   | "recipes"
   | "messages"
+  | "notifications"
   | "groups";
 
 /**
@@ -191,13 +192,19 @@ type MinStoredKey =
  * passer inaperçu.
  */
 function resolveMinStored(): Record<MinStoredKey, number> {
+  const messages = optionalPositiveInt("SEED_MESSAGES", process.env.SEED_MESSAGES, 50);
   return {
     events: optionalPositiveInt("SEED_EVENTS", process.env.SEED_EVENTS, 40),
     stockItems: optionalPositiveInt("SEED_STOCK_ITEMS", process.env.SEED_STOCK_ITEMS, 40),
     groceryItems: optionalPositiveInt("SEED_GROCERY_ITEMS", process.env.SEED_GROCERY_ITEMS, 30),
     budgetEntries: optionalPositiveInt("SEED_BUDGET_ENTRIES", process.env.SEED_BUDGET_ENTRIES, 30),
     recipes: optionalPositiveInt("SEED_RECIPES", process.env.SEED_RECIPES, 25),
-    messages: optionalPositiveInt("SEED_MESSAGES", process.env.SEED_MESSAGES, 50),
+    messages,
+    // Le seed fait écrire les messages à tour de rôle, Jonas aux rangs
+    // impairs (`seedMessages`) ; chacun des siens vaut au compte qui mesure
+    // une notification « message » (`insert_for_members`, apps/api). Pas de
+    // variable propre : elle suit SEED_MESSAGES, comme le seed.
+    notifications: Math.floor(messages / 2),
     groups: 1,
   };
 }
@@ -312,9 +319,26 @@ const ROUTES: RouteSpec[] = [
       minStoredKey: "messages",
       pattern: new RegExp(`action="/messagerie/${UUID}/delete"`),
       count: (gid) => ({ path: `/groups/${gid}/messages?limit=100`, key: "messages" }),
-      // La seule route paginée : DEFAULT_PAGE_LIMIT côté API
+      // Paginée, comme /notifications : DEFAULT_PAGE_LIMIT côté API
       // (apps/shared/src/validation/messagerie.rs).
       pageSize: 50,
+    },
+  },
+  // Le centre de notifications (#535), entrée PC de la colonne. Le seed y
+  // pose une notification « message » par message de Jonas — 25 sur les 50
+  // par défaut —, ses propres messages ne valant rien à l'auteur. L'API les
+  // liste pour l'appelant, toutes familles confondues.
+  {
+    path: "/notifications",
+    floor: 400,
+    items: {
+      label: "notifications",
+      minStoredKey: "notifications",
+      pattern: new RegExp(`action="/notifications/${UUID}/open"`),
+      count: () => ({ path: "/notifications?limit=100", key: "notifications" }),
+      // PAGE_LIMIT de apps/web/src/routes/notifications.rs : au-delà, la
+      // page finit sur un lien vers les plus anciennes.
+      pageSize: 30,
     },
   },
   // Le profil (onglet Profil, bloc du pied de la colonne) depuis #523 : les
