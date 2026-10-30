@@ -454,6 +454,10 @@ pub fn build_router(state: AppState) -> Router {
                 .put(budget::categories::put_budget_settings),
         )
         .route(
+            "/groups/:id/budget-alert-settings",
+            get(budget::alerts::get_alert_settings).patch(budget::alerts::patch_alert_settings),
+        )
+        .route(
             "/groups/:id/messages",
             post(messagerie::messages::create_message).get(messagerie::messages::list_messages),
         )

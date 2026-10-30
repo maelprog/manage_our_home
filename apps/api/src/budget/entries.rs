@@ -10,6 +10,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::auth::session::{scoped_tx, AuthUser};
+use crate::budget::alerts;
 use crate::budget::categories::{cents_to_euros, family_cap_cents};
 use crate::budget::{can_modify, require_budget_access};
 use crate::error::{AppError, AppResult};
@@ -159,6 +160,8 @@ pub async fn create_budget_entry(
         }
     }
 
+    let spent_at = day_or_today(body.spent_at, Utc::now());
+    let watch = alerts::watch(&mut tx, group_id, spent_at, body.category_id).await?;
     let entry = sqlx::query_as!(
         BudgetEntryRow,
         r#"
@@ -171,11 +174,14 @@ pub async fn create_budget_entry(
         body.grocery_item_id,
         name,
         amount_cents,
-        day_or_today(body.spent_at, Utc::now()),
+        spent_at,
         body.category_id,
     )
     .fetch_one(&mut *tx)
     .await?;
+    if let Some(watch) = watch {
+        watch.fire(&mut tx).await?;
+    }
     tx.commit().await?;
 
     Ok((StatusCode::CREATED, Json(BudgetEntryResponse::from(entry))))
@@ -226,6 +232,19 @@ pub async fn set_grocery_item_price(
     .await?
     .ok_or(AppError::NotFound)?;
 
+    // A price set again keeps its entry's category (the upsert below leaves
+    // `category_id` alone): that is the category whose cap it may cross.
+    let category_id = sqlx::query_scalar!(
+        "SELECT category_id FROM budget_entries WHERE grocery_item_id = $1 AND group_id = $2",
+        item_id,
+        group_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .flatten();
+    let spent_at = day_or_today(body.spent_at, Utc::now());
+    let watch = alerts::watch(&mut tx, group_id, spent_at, category_id).await?;
+
     // "Set" is idempotent: retries/double-taps upsert the price on the
     // unique (non-null) grocery_item_id index instead of creating a second,
     // double-counted budget entry.
@@ -247,10 +266,13 @@ pub async fn set_grocery_item_price(
         item_id,
         item.name,
         amount_cents,
-        day_or_today(body.spent_at, Utc::now()),
+        spent_at,
     )
     .fetch_one(&mut *tx)
     .await?;
+    if let Some(watch) = watch {
+        watch.fire(&mut tx).await?;
+    }
     tx.commit().await?;
 
     Ok((StatusCode::CREATED, Json(BudgetEntryResponse::from(entry))))
@@ -350,6 +372,7 @@ pub async fn update_budget_entry(
         Some(None) => None,
         None => existing.category_id,
     };
+    let watch = alerts::watch(&mut tx, group_id, spent_at, category_id).await?;
 
     let entry = sqlx::query_as!(
         BudgetEntryRow,
@@ -372,6 +395,9 @@ pub async fn update_budget_entry(
     )
     .fetch_one(&mut *tx)
     .await?;
+    if let Some(watch) = watch {
+        watch.fire(&mut tx).await?;
+    }
     tx.commit().await?;
 
     Ok(Json(BudgetEntryResponse::from(entry)))

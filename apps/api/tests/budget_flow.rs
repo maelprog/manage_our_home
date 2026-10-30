@@ -984,6 +984,7 @@ async fn a_standard_member_gets_404_on_categories_and_caps_whatever_the_body(db:
     let categories = format!("/groups/{group_id}/budget-categories");
     let category = format!("{categories}/{category_id}");
     let settings = format!("/groups/{group_id}/budget-settings");
+    let switches = format!("/groups/{group_id}/budget-alert-settings");
     let entries = format!("/groups/{group_id}/budget-entries");
     let entry = format!("{entries}/{entry_id}");
     let price = format!("/groups/{group_id}/grocery-items/{item_id}/price");
@@ -991,13 +992,15 @@ async fn a_standard_member_gets_404_on_categories_and_caps_whatever_the_body(db:
     // type, not an object — is a 404 too: the bar comes before the body.
     let unreadable = [
         serde_json::json!({}),
-        serde_json::json!({"name": 5, "color": [], "amount": "abc", "monthly_cap": "abc"}),
+        serde_json::json!({"name": 5, "color": [], "amount": "abc", "monthly_cap": "abc",
+                           "global_cap_alerts": "abc"}),
         serde_json::json!("abc"),
     ];
     let body_routes = [
         ("create category", Method::POST, categories.clone()),
         ("update category", Method::PATCH, category.clone()),
         ("set cap", Method::PUT, settings.clone()),
+        ("set alert switches", Method::PATCH, switches.clone()),
         ("create entry", Method::POST, entries.clone()),
         ("update entry", Method::PATCH, entry.clone()),
         ("price", Method::POST, price.clone()),
@@ -1070,6 +1073,13 @@ async fn a_standard_member_gets_404_on_categories_and_caps_whatever_the_body(db:
             settings.clone(),
             Some(serde_json::json!({"monthly_cap": 0})),
         ),
+        ("read alert switches", Method::GET, switches.clone(), None),
+        (
+            "set alert switches",
+            Method::PATCH,
+            switches.clone(),
+            Some(serde_json::json!({"global_cap_alerts": false, "category_cap_alerts": false})),
+        ),
         (
             "summary, invalid month",
             Method::GET,
@@ -1104,6 +1114,11 @@ async fn a_standard_member_gets_404_on_categories_and_caps_whatever_the_body(db:
     assert_eq!(list[0]["monthly_cap"], 50.0);
     let cap = call(&router, Method::GET, &settings, Some(&owner), None).await;
     assert!(json_body(cap).await["monthly_cap"].is_null());
+    let res = call(&router, Method::GET, &switches, Some(&owner), None).await;
+    assert_eq!(
+        json_body(res).await,
+        serde_json::json!({"global_cap_alerts": true, "category_cap_alerts": true})
+    );
 }
 
 /// AC #532: the bounds of the user's decision of 2026-10-29 — a trimmed name
@@ -1748,4 +1763,330 @@ async fn the_export_carries_the_categories_to_those_who_reach_the_budget(db: PgP
     assert_eq!(doc["budget_settings"].as_array().unwrap().len(), 1);
     let doc = export(member).await;
     assert_eq!(doc["budget_settings"], serde_json::json!([]));
+}
+
+// -- Cap alerts (#536) ---------------------------------------------------------
+
+/// The bodies of the budget alerts `cookie`'s account holds, sorted: the
+/// alerts one expense sends share their `created_at` (one transaction), so
+/// the list's order between them is the ids'.
+async fn budget_alerts(router: &axum::Router, cookie: &str) -> Vec<String> {
+    let res = call(
+        router,
+        Method::GET,
+        "/notifications?kind=budget_alert",
+        Some(cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let page = json_body(res).await;
+    let mut bodies: Vec<String> = page["notifications"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["body"].as_str().unwrap().to_string())
+        .collect();
+    bodies.sort();
+    bodies
+}
+
+async fn patch_entry(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+    entry_id: &str,
+    body: serde_json::Value,
+) {
+    let res = call(
+        router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/budget-entries/{entry_id}"),
+        Some(cookie),
+        Some(body),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+}
+
+const NEAR: &str = "Les dépenses du mois atteignent 80 % du budget de la famille.";
+const OVER: &str = "Les dépenses du mois dépassent le budget de la famille.";
+
+/// AC #536: an expense that reaches 80 % of the family's cap, then one
+/// that exceeds it and its category's cap, alert the owner and the admins —
+/// the author of the expense included — once per threshold and per month:
+/// lowering an expense alerts nothing, and raising it again past the same
+/// caps alerts nothing more. A standard member never gets one.
+#[sqlx::test]
+async fn cap_alerts_go_once_per_month_to_owners_and_admins_only(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, admin, group_id) = owner_and_admin(&router, &db, "alert-once").await;
+    let member = register_verify_login(
+        &router,
+        &db,
+        "alert-once-member@example.test",
+        "member-password1",
+    )
+    .await;
+    join_as_standard(&router, &owner, &member, &group_id).await;
+    let res = call(
+        &router,
+        Method::PUT,
+        &format!("/groups/{group_id}/budget-settings"),
+        Some(&owner),
+        Some(serde_json::json!({"monthly_cap": 100.0})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let loisirs = create_category(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Loisirs", "color": "ochre", "monthly_cap": 30.0}),
+    )
+    .await;
+
+    // 79,99 € of 100 €: no alert yet.
+    let first = create_entry(
+        &router,
+        &admin,
+        &group_id,
+        serde_json::json!({"name": "Courses", "amount": 79.99}),
+    )
+    .await;
+    assert!(budget_alerts(&router, &owner).await.is_empty());
+    // One cent more: 80 % exactly.
+    let first_id = first["id"].as_str().unwrap();
+    patch_entry(
+        &router,
+        &admin,
+        &group_id,
+        first_id,
+        serde_json::json!({"amount": 80.0}),
+    )
+    .await;
+    assert_eq!(budget_alerts(&router, &owner).await, [NEAR]);
+    assert_eq!(
+        budget_alerts(&router, &admin).await,
+        [NEAR],
+        "the author of the expense gets it too"
+    );
+
+    // 31 € of Loisirs: past its 30 € cap, and the family past its 100 €.
+    let cinema = create_entry(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Cinéma", "amount": 31.0, "category_id": loisirs}),
+    )
+    .await;
+    let cinema_id = cinema["id"].as_str().unwrap();
+    let category = "Les dépenses du mois dépassent le plafond de « Loisirs ».";
+    for cookie in [&owner, &admin] {
+        assert_eq!(budget_alerts(&router, cookie).await, [NEAR, OVER, category]);
+    }
+
+    // Lowered under every threshold: nothing. Raised past them again in the
+    // same month: nothing more.
+    patch_entry(
+        &router,
+        &owner,
+        &group_id,
+        cinema_id,
+        serde_json::json!({"amount": 1.0}),
+    )
+    .await;
+    patch_entry(
+        &router,
+        &admin,
+        &group_id,
+        first_id,
+        serde_json::json!({"amount": 10.0}),
+    )
+    .await;
+    patch_entry(
+        &router,
+        &owner,
+        &group_id,
+        cinema_id,
+        serde_json::json!({"amount": 95.0}),
+    )
+    .await;
+    for cookie in [&owner, &admin] {
+        assert_eq!(budget_alerts(&router, cookie).await, [NEAR, OVER, category]);
+    }
+    assert!(budget_alerts(&router, &member).await.is_empty());
+    let sent: i64 = sqlx::query_scalar("SELECT count(*) FROM budget_alerts")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(sent, 3);
+}
+
+/// AC #536: the two switches, both on by default, read and set by an owner
+/// or an admin; a switch off silences its alerts, the other still alerts.
+/// And an expense dated in another month than the current one alerts
+/// nothing (user's decision of 2026-10-30), whatever it crosses there.
+#[sqlx::test]
+async fn the_switches_and_the_current_month_bound_the_alerts(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, admin, group_id) = owner_and_admin(&router, &db, "alert-switch").await;
+    let switches = format!("/groups/{group_id}/budget-alert-settings");
+
+    let res = call(&router, Method::GET, &switches, Some(&admin), None).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(
+        json_body(res).await,
+        serde_json::json!({"global_cap_alerts": true, "category_cap_alerts": true})
+    );
+    let res = call(
+        &router,
+        Method::PATCH,
+        &switches,
+        Some(&admin),
+        Some(serde_json::json!({"global_cap_alerts": false})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(
+        json_body(res).await,
+        serde_json::json!({"global_cap_alerts": false, "category_cap_alerts": true})
+    );
+    // An empty body keeps both.
+    let res = call(
+        &router,
+        Method::PATCH,
+        &switches,
+        Some(&owner),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(
+        json_body(res).await,
+        serde_json::json!({"global_cap_alerts": false, "category_cap_alerts": true})
+    );
+    // Setting the family's cap afterwards keeps the switches.
+    let res = call(
+        &router,
+        Method::PUT,
+        &format!("/groups/{group_id}/budget-settings"),
+        Some(&owner),
+        Some(serde_json::json!({"monthly_cap": 100.0})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let res = call(&router, Method::GET, &switches, Some(&owner), None).await;
+    assert_eq!(json_body(res).await["global_cap_alerts"], false);
+
+    let enfants = create_category(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Enfants", "color": "violet", "monthly_cap": 20.0}),
+    )
+    .await;
+    // Last month, past both caps: nothing, whatever the switches.
+    let today = paris_day(Utc::now());
+    let last_month = today.with_day(1).unwrap().pred_opt().unwrap();
+    create_entry(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Rentrée", "amount": 500.0,
+                           "category_id": enfants, "spent_at": last_month}),
+    )
+    .await;
+    assert!(budget_alerts(&router, &admin).await.is_empty());
+
+    // This month, past both caps: the category's alert only.
+    let entry = create_entry(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Cartable", "amount": 150.0, "category_id": enfants}),
+    )
+    .await;
+    let category = "Les dépenses du mois dépassent le plafond de « Enfants ».";
+    assert_eq!(budget_alerts(&router, &admin).await, [category]);
+
+    // Moved to last month and back, the switches now swapped: the family's
+    // alerts come, the category's (off) does not come again.
+    let entry_id = entry["id"].as_str().unwrap();
+    let res = call(
+        &router,
+        Method::PATCH,
+        &switches,
+        Some(&owner),
+        Some(serde_json::json!({"global_cap_alerts": true, "category_cap_alerts": false})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    patch_entry(
+        &router,
+        &owner,
+        &group_id,
+        entry_id,
+        serde_json::json!({"spent_at": last_month}),
+    )
+    .await;
+    assert_eq!(budget_alerts(&router, &admin).await, [category]);
+    patch_entry(
+        &router,
+        &owner,
+        &group_id,
+        entry_id,
+        serde_json::json!({"spent_at": today}),
+    )
+    .await;
+    assert_eq!(budget_alerts(&router, &admin).await, [NEAR, OVER, category]);
+}
+
+/// AC #536: a price set on a checked grocery item is an expense like any
+/// other — it alerts — and set again on the same item, it keeps its
+/// entry's category, whose cap it may then cross.
+#[sqlx::test]
+async fn a_grocery_item_s_price_alerts_too(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, admin, group_id) = owner_and_admin(&router, &db, "alert-price").await;
+    let food = create_category(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Alimentation", "color": "blue", "monthly_cap": 10.0}),
+    )
+    .await;
+    let item_id = checked_grocery_item(&router, &owner, &group_id, "Pain").await;
+    let price = format!("/groups/{group_id}/grocery-items/{item_id}/price");
+    let res = call(
+        &router,
+        Method::POST,
+        &price,
+        Some(&owner),
+        Some(serde_json::json!({"amount": 2.0})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let entry_id = json_body(res).await["id"].as_str().unwrap().to_string();
+    patch_entry(
+        &router,
+        &owner,
+        &group_id,
+        &entry_id,
+        serde_json::json!({"category_id": food}),
+    )
+    .await;
+    assert!(budget_alerts(&router, &admin).await.is_empty());
+    let res = call(
+        &router,
+        Method::POST,
+        &price,
+        Some(&owner),
+        Some(serde_json::json!({"amount": 12.0})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    assert_eq!(
+        budget_alerts(&router, &admin).await,
+        ["Les dépenses du mois dépassent le plafond de « Alimentation »."]
+    );
 }
