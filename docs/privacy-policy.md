@@ -56,6 +56,12 @@ données sont-elles conservées ? ».
 | Logs d'audit | actions sensibles : export, demande, annulation et exécution de la suppression d'un compte, suppression d'un groupe, transfert de propriété, changement de rôle, actions d'administration (les connexions ne sont pas journalisées) | Intérêt légitime (sécurité, traçabilité) |
 | Journaux techniques | messages de fonctionnement et d'erreur du serveur, qui peuvent contenir l'adresse IP d'une connexion, l'identifiant de votre compte ou de votre groupe, ou une valeur reprise d'une erreur | Intérêt légitime (fonctionnement et sécurité du service) |
 
+Si vous choisissez le thème clair ou sombre dans « Apparence », votre
+navigateur garde ce choix dans un cookie pendant un an ; revenir à
+« Automatique » le supprime. Ce cookie ne contient que ce choix et ne sert
+qu'à afficher les pages dans ce thème : préférence d'interface, il ne
+demande pas votre accord.
+
 ## Le service et les mineurs
 
 Le service n'est pas ouvert aux moins de 15 ans. C'est le seuil retenu par la

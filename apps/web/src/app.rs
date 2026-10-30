@@ -140,10 +140,14 @@ pub fn shell_with_header(width: Width, title: &str, header_html: &str, body_html
 /// without `defer`: a `data-confirm` form must not be submittable before
 /// its question is in place. It is one more blocking request on a cold
 /// cache, made alongside the sheet's, and none after that.
+///
+/// `<html>` carries `data-theme` when the visitor chose Clair or Sombre
+/// (#585): `crate::theme::scope` reads the cookie for every request, so no
+/// route passes the choice down. Automatique writes nothing.
 fn document(title: &str, body: &str) -> String {
     format!(
         r##"<!DOCTYPE html>
-<html lang="fr">
+<html lang="fr"{theme}>
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -156,11 +160,20 @@ fn document(title: &str, body: &str) -> String {
 {body}
 </body>
 </html>"##,
+        theme = html_theme_attribute(crate::theme::current()),
         title = html_escape(title),
         css = crate::assets::stylesheet_href(),
         enhance = crate::assets::Script::Enhance.tag(),
         body = body,
     )
+}
+
+/// ` data-theme="…"` for a forced theme, nothing for Automatique.
+fn html_theme_attribute(appearance: crate::theme::Appearance) -> String {
+    appearance
+        .data_theme()
+        .map(|theme| format!(r#" data-theme="{theme}""#))
+        .unwrap_or_default()
 }
 
 /// The first path segment of a URL path, query and fragment dropped —
@@ -733,18 +746,7 @@ pub fn member_link(group_id: Uuid, user_id: Uuid, display_name: &str, icon: Icon
 /// one place.
 #[cfg(test)]
 pub(crate) fn css_without_comments() -> String {
-    const CSS: &str = crate::assets::STYLESHEET;
-    let mut out = String::with_capacity(CSS.len());
-    let mut rest = CSS;
-    while let Some(at) = rest.find("/*") {
-        out.push_str(&rest[..at]);
-        rest = match rest[at + 2..].find("*/") {
-            Some(end) => &rest[at + 2 + end + 2..],
-            None => "",
-        };
-    }
-    out.push_str(rest);
-    out
+    crate::theme::without_comments(&crate::assets::STYLESHEET)
 }
 
 /// Every `url(…)` the stylesheet loads, unquoted.
@@ -2165,25 +2167,98 @@ mod tests {
         // first list covered only what paints behind `--fg` — so the list is
         // now derived from the stylesheet: every literal colour, whichever
         // side of the text it lands on.
-        let (root, after_root) = block_after(&css(), ":root", 0);
-        // `block_after` stops at the first `}`, which inside the media query
-        // is the end of its nested `:root` — so the media body it hands back
-        // *is* that `:root`, minus its closing brace.
-        let (media, _) = block_after(&css(), "@media (prefers-color-scheme: dark)", after_root);
-        let (dark, _) = block_after(&media, ":root", 0);
-        let dark = declared_tokens(&dark);
-
-        let light = literal_colour_tokens(&root);
+        //
+        // Since #585 the dark theme has two triggers, and each is read on
+        // its own: a token the served sheet left out of either keeps its
+        // light value under that one.
+        let sheet = css();
+        let (root, _) = block_after(&sheet, ":root", 0);
         assert!(
-            light.contains("--accent"),
+            literal_colour_tokens(&root).contains("--accent"),
             "the light theme should declare `--accent` as a literal colour"
         );
-        let missing: Vec<&String> = light.difference(&dark).collect();
-        assert!(
-            missing.is_empty(),
-            "colour tokens never restated under `prefers-color-scheme: dark`, \
-             so they keep their light value in the dark theme: {missing:?}"
+        let faults = dark_theme_faults(&sheet);
+        assert!(faults.is_empty(), "{}", faults.join("\n"));
+    }
+
+    /// What is wrong with the dark theme of `sheet`, one line per fault: a
+    /// literal colour of `:root` that one trigger does not restate, a
+    /// trigger that leaves the native controls light, and a forced Clair
+    /// that leaves them dark (it keeps `:root`'s tokens, the derived block
+    /// excluding it, but the device would still darken its controls).
+    fn dark_theme_faults(sheet: &str) -> Vec<String> {
+        let (root, _) = block_after(sheet, ":root", 0);
+        let light = literal_colour_tokens(&root);
+        let mut faults = Vec::new();
+        for (trigger, dark) in dark_blocks(sheet) {
+            if !dark.contains("color-scheme: dark") {
+                faults.push(format!("`{trigger}` leaves the native controls light"));
+            }
+            let declared = declared_tokens(&dark);
+            let missing: Vec<&String> = light.difference(&declared).collect();
+            if !missing.is_empty() {
+                faults.push(format!(
+                    "colour tokens never restated under `{trigger}`, \
+                     so they keep their light value in the dark theme: {missing:?}"
+                ));
+            }
+        }
+        let (forced_light, _) = block_after(sheet, r#":root[data-theme="light"] {"#, 0);
+        if !forced_light.contains("color-scheme: light") {
+            faults.push("a forced Clair leaves the native controls dark".to_string());
+        }
+        faults
+    }
+
+    /// The two blocks the dark tokens apply from (#585), each named by its
+    /// trigger: the visitor's choice, and the device's when there is none.
+    fn dark_blocks(sheet: &str) -> [(&'static str, String); 2] {
+        let explicit = format!("{} {{", crate::theme::DARK_SELECTOR);
+        let (chosen, _) = block_after(sheet, &explicit, 0);
+        // `block_after` stops at the first `}`, which inside the media query
+        // is the end of its nested rule — so the media body it hands back
+        // *is* that rule, minus its closing brace.
+        let (media, _) = block_after(sheet, crate::theme::DEVICE_DARK_MEDIA, 0);
+        let (device, _) = block_after(&media, crate::theme::DEVICE_DARK_SELECTOR, 0);
+        [
+            (crate::theme::DARK_SELECTOR, chosen),
+            (crate::theme::DEVICE_DARK_MEDIA, device),
+        ]
+    }
+
+    /// A token missing from one trigger is caught on that trigger alone,
+    /// whichever it is: the served sheet derives one block from the other,
+    /// so this guards the derivation as much as the source.
+    #[test]
+    fn a_token_missing_from_either_dark_trigger_fails() {
+        let sheet = |chosen: &str, device: &str| {
+            format!(
+                r#":root {{ --bg: #fff; --fg: #000; }}
+:root[data-theme="light"] {{ color-scheme: light; }}
+:root[data-theme="dark"] {{ color-scheme: dark; {chosen} }}
+@media (prefers-color-scheme: dark) {{ :root:not([data-theme="light"]) {{ color-scheme: dark; {device} }} }}"#
+            )
+        };
+        let both = "--bg: #111; --fg: #eee;";
+        assert!(dark_theme_faults(&sheet(both, both)).is_empty());
+        // The derived sheet is whole by construction.
+        let derived = crate::theme::with_device_theme(
+            r#":root { --bg: #fff; --fg: #000; }
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; --bg: #111; --fg: #eee; }"#,
         );
+        assert!(dark_theme_faults(&derived).is_empty(), "{derived}");
+        for (chosen, device, trigger) in [
+            ("--bg: #111;", both, crate::theme::DARK_SELECTOR),
+            (both, "--bg: #111;", crate::theme::DEVICE_DARK_MEDIA),
+        ] {
+            let faults = dark_theme_faults(&sheet(chosen, device));
+            assert_eq!(faults.len(), 1, "{faults:?}");
+            assert!(
+                faults[0].contains(trigger) && faults[0].contains("--fg"),
+                "{faults:?}"
+            );
+        }
     }
 
     #[test]
@@ -2345,8 +2420,8 @@ mod tests {
     }
 
     /// Every literal colour token of one theme, by name: the light `:root`,
-    /// or that `:root` overlaid with the dark block's restatements.
-    fn theme_colours(dark: bool) -> std::collections::BTreeMap<String, [f64; 3]> {
+    /// or that `:root` overlaid with a dark block's restatements.
+    fn theme_colours(dark: Option<&str>) -> std::collections::BTreeMap<String, [f64; 3]> {
         fn colours(block: &str) -> Vec<(String, [f64; 3])> {
             block
                 .split(';')
@@ -2359,12 +2434,10 @@ mod tests {
                 .collect()
         }
         let css = css();
-        let (root, after_root) = block_after(&css, ":root", 0);
+        let (root, _) = block_after(&css, ":root", 0);
         let mut out: std::collections::BTreeMap<_, _> = colours(&root).into_iter().collect();
-        if dark {
-            let (media, _) = block_after(&css, "@media (prefers-color-scheme: dark)", after_root);
-            let (block, _) = block_after(&media, ":root", 0);
-            out.extend(colours(&block));
+        if let Some(block) = dark {
+            out.extend(colours(block));
         }
         out
     }
@@ -2463,9 +2536,16 @@ mod tests {
         );
         const AA: f64 = 4.5;
         let mut failures = Vec::new();
-        for dark in [false, true] {
-            let theme = if dark { "dark" } else { "light" };
-            let colours = theme_colours(dark);
+        // Since #585 the dark tokens apply from two blocks — the visitor's
+        // choice and the device's — and each is measured on its own.
+        let [(chosen_trigger, chosen), (device_trigger, device)] = dark_blocks(&sheet);
+        let themes = [
+            ("light".to_string(), None),
+            (format!("dark ({chosen_trigger})"), Some(chosen.as_str())),
+            (format!("dark ({device_trigger})"), Some(device.as_str())),
+        ];
+        for (theme, dark) in &themes {
+            let colours = theme_colours(*dark);
             let get = |token: &str| {
                 *colours
                     .get(token)

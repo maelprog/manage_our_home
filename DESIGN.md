@@ -250,6 +250,43 @@ du fond d'événement le sont sur le mélange arrondi à 8 bits par canal, la
 couleur qu'un écran affiche ; sur le mélange exact, ils valent 14,01:1 en
 clair et 9,74:1 en sombre.
 
+### Thème choisi : Automatique, Clair ou Sombre (#585)
+
+La page « Apparence » du compte (`/account/appearance`) offre trois boutons
+radio dans un formulaire POST, sans script. **Automatique** (par défaut)
+suit l'appareil ; **Clair** et **Sombre** posent un cookie de préférence
+`__Host-theme` (`HttpOnly; Secure; SameSite=Lax; Path=/`, un an) ;
+revenir à Automatique le supprime. Le choix vaut pour un navigateur, pas
+pour le compte.
+
+- **Le balisage.** Chaque page rend `<html lang="fr" data-theme="light">`
+  ou `data-theme="dark"` quand le cookie porte l'une de ces deux valeurs ;
+  sans cookie, ou avec une autre valeur, l'attribut est absent. Le cookie
+  est lu par un middleware (`apps/web/src/theme.rs`), une fois par requête,
+  et `app::document` relit son résultat : aucune route ne le transmet.
+- **La feuille.** Les jetons sombres s'appliquent dans deux cas :
+  `:root[data-theme="dark"]`, et `prefers-color-scheme: dark` sur
+  `:root:not([data-theme="light"])`. `color-scheme` suit le choix
+  (`dark` dans les deux blocs, `light` sous `[data-theme="light"]`), pour
+  que les contrôles natifs — barres de défilement, sélecteurs de date —
+  basculent avec la page.
+- **Les valeurs sombres sont écrites une seule fois**, dans `style.css`,
+  sous `:root[data-theme="dark"]`. Le bloc `prefers-color-scheme` n'est
+  pas dans la source : la feuille servie le dérive au démarrage du
+  processus (`theme::with_device_theme`, appelé par `assets::STYLESHEET`),
+  en recopiant les déclarations du premier bloc sans ses commentaires. La
+  feuille reste immuable et nommée par son empreinte : sa source est
+  compilée dans le binaire, la dérivation ne dépend que d'elle, et rien
+  n'est produit par requête. Ne jamais écrire ce
+  second bloc à la main.
+- **Les garde-fous lisent les deux déclencheurs.** Le test des jetons
+  redéclarés et celui du contraste AA (`app.rs`) mesurent chacun des deux
+  blocs de la feuille servie : un jeton absent de l'un des deux fait
+  échouer le test sous ce déclencheur-là.
+- **`light-dark()`** aurait évité la copie, mais `--shadow` change de forme
+  et pas seulement de couleur d'un thème à l'autre, ce que cette fonction,
+  réservée aux couleurs, ne sait pas porter.
+
 ### Règles
 
 - **Aucune valeur codée en dur dans les routes.** Toute couleur passe par un
@@ -1638,3 +1675,4 @@ quatre tours de vérification à #72.
 | 2026-10-28 | Six onglets sur téléphone, une colonne latérale avec la marque et le profil sur PC, transition de page sans JavaScript (#523) | Demande du 2026-10-21 (maquettes « Mobile — Accueil », « PC — Accueil »). Elle renverse deux points posés plus haut. Les onglets portent une icône (entrée du 2026-07-31) : devant le libellé, `aria-hidden`, donc sans toucher au nom du lien, qui était l'objection. Et une transition accompagne le changement de page, là où Interaction et motion n'en voulait aucune : c'est le fondu que le navigateur fait d'un document au suivant, `@view-transition`, pas une animation rejouée au chargement, et elle n'est demandée que sous `prefers-reduced-motion: no-preference`. Un seul markup reste la règle : ce qu'une disposition ne dessine pas est `display: none` (`.pc`, `.phone`), donc absent de l'arbre d'accessibilité, et `aria-current` reste sur un seul lien dessiné de l'en-tête — l'onglet Cuisine du téléphone sur les stocks et les recettes, Stocks ou Recettes sur PC. Le sélecteur de famille et la déconnexion quittent l'en-tête pour le profil de #529, qui poste au même `POST /groups/switch`. Budget est montré à tout membre sur PC jusqu'à #531 (arbitrage utilisateur du 2026-10-28), Notifications attend #535 |
 | 2026-10-29 | La messagerie en conversation : des bulles, et la zone de saisie qui colle aussi sur téléphone (#528) | Demande du 2026-10-21 (maquettes « Mobile — Messages », « PC — Messagerie »). Le message propre n'est plus une ligne `--surface` à barre `--accent` (entrée du 2026-08-05) mais une bulle `--accent-fg` sur `--accent`, à droite ; l'objection de l'époque à `--accent-soft` — `--muted` sous AA dessus — ne se pose plus, la bulle ne portant que le contenu, en `--accent-fg`, paire déjà mesurée par `TEXT_PAIRS` (celle du bouton primaire). L'auteur, l'heure, la citation et les actions restent hors de la bulle, sur `--bg`. Elle renverse aussi l'entrée du 2026-08-05 sur la zone de saisie, qui ne collait qu'au-dessus de 861 px parce que deux éléments collés « mangeraient la moitié d'un écran de téléphone » : la zone faisait alors trois lignes ; elle en fait une, qui grandit avec le texte, et la maquette la dessine fixe au-dessus de la barre d'onglets. Son pied y vaut `--s16`, la hauteur que `body` réserve déjà à la barre. Ce que les maquettes dessinent et que le fil ne porte pas, faute de données : plusieurs fils par famille (puces sur téléphone, liste sur PC — un seul fil par famille dans le modèle), la pièce jointe (un message n'en a pas), « Chloé écrit… » et « lu » |
 | 2026-10-30 | Le budget d'un mois, la saisie d'une dépense et ses réglages (#533) | Demande du 2026-10-21 (maquettes « Budget », « Nouvelle dépense », « Réglages du budget »), sur l'API de #532, #536 et #633. `/budget` montre un mois (`?month=AAAA-MM`, ‹ › autour de son nom) : ce qu'il a dépensé, le plafond de la famille et ce qu'il en reste, sa barre, puis une barre par catégorie dans sa couleur avec « n % de [plafond] » et « Dépassé », enfin les dépenses du mois. Les barres sont des `<progress>` `aria-hidden` — la forme de la jauge de l'accueil, sans `style=` — et leur légende les dit en mots. Les couleurs de catégorie sont des clés posées sur des jetons ; quatre existaient, l'orange de « Maison » devient `--orange` ([Couleurs des catégories du budget](#couleurs-des-catégories-du-budget)). La dépense prend sa catégorie en pastilles (`.picks`, comme « Assigné à ») et les articles de courses cochés qu'elle a payés ; les réglages tiennent le plafond, les catégories (une disclosure chacune, nom, couleur en liste déroulante, plafond facultatif, suppression), les deux interrupteurs d'alerte et qui voit le budget. Tout est formulaire sans JavaScript. **Pas de « payé par »** : l'issue le demande, l'API n'a pas ce champ |
+| 2026-10-30 | Le thème se choisit : Automatique, Clair ou Sombre, et les valeurs sombres restent écrites une seule fois (#585) | Demande du 2026-10-22 (maquette « Mobile — Apparence »). Le thème sombre ne suivait que l'appareil. Une page « Apparence » du compte pose un cookie `__Host-theme` (un an, préférence d'interface exemptée de consentement), que chaque page traduit en `data-theme` sur `<html>` ; Automatique est l'absence du cookie. La feuille applique les jetons sombres sous `[data-theme="dark"]` et sous `prefers-color-scheme: dark` hors `[data-theme="light"]` ; le second bloc est dérivé du premier au démarrage plutôt que recopié à la main, parce qu'une copie tenue à la main est exactement ce qui a laissé passer #65 et #74. `light-dark()` écarté : `--shadow` change de forme d'un thème à l'autre, pas seulement de couleur. Détail sous Couleur → Thème choisi |

@@ -14,10 +14,11 @@ use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
 use uuid::Uuid;
 
-use super::{avatar, can_request_deletion};
+use super::{appearance, avatar, can_request_deletion};
 use crate::app::{html_escape, member_avatar};
 use crate::icons::{icon, Icon};
 use crate::routes::groups::role_label;
+use crate::theme::Appearance;
 
 /// The identity block: your icon (the photo, else the initial), your name
 /// as the page's title, your e-mail.
@@ -115,12 +116,13 @@ fn setting_row(href: &str, name: &str, hint: &str) -> String {
 /// are those of the cards they replace (DESIGN.md: the suite finds them by
 /// name). Deletion is offered only while no request is pending: the
 /// pending panel, at the top of the page, carries the cancel action then.
-pub(crate) fn settings_section(me: &MeResponse) -> String {
+/// The appearance row says the theme in force (#585).
+pub(crate) fn settings_section(me: &MeResponse, appearance: Appearance) -> String {
     let deletion = if can_request_deletion(me.deletion_requested_at) {
         setting_row(
             "/account/delete",
             "Supprimer mon compte",
-            "Droit à l'effacement, après un délai de grâce annulable",
+            "Droit à l'effacement, après un délai de grâce annulable ; impossible tant que vous êtes propriétaire d'une famille",
         )
     } else {
         String::new()
@@ -129,6 +131,7 @@ pub(crate) fn settings_section(me: &MeResponse) -> String {
         r#"<section class="card">
 <h2>Compte</h2>
 <ul class="list">
+{appearance}
 {notifications}
 {sessions}
 {export}
@@ -138,6 +141,7 @@ pub(crate) fn settings_section(me: &MeResponse) -> String {
 <button type="submit" class="secondary">Se déconnecter</button>
 </form>
 </section>"#,
+        appearance = setting_row(appearance::PATH, "Apparence", appearance.label()),
         notifications = setting_row(
             "/account/notifications",
             "Gérer mes notifications",
@@ -317,17 +321,24 @@ mod tests {
     fn the_rgpd_rights_are_one_click_from_the_profile() {
         // #529: export and deletion stay ≤ 2 clicks from anywhere — the
         // header's "Mon compte", then these.
-        let html = settings_section(&me(false));
+        let html = settings_section(&me(false), Appearance::Auto);
         assert!(html.contains(r#"href="/account/export""#), "{html}");
         assert!(html.contains(r#"href="/account/delete""#), "{html}");
         assert!(html.contains("Exporter mes données"), "{html}");
         assert!(html.contains("Supprimer mon compte"), "{html}");
+        // The card it replaced said it, and apps/api still refuses the
+        // request of a family's owner (409 `owner_of_groups`).
+        assert!(
+            html.contains("impossible tant que vous êtes propriétaire d'une famille"),
+            "{html}"
+        );
     }
 
     #[test]
     fn the_settings_keep_the_link_names_the_suite_finds_them_by() {
-        let html = settings_section(&me(false));
+        let html = settings_section(&me(false), Appearance::Auto);
         for (href, name) in [
+            ("/account/appearance", "Apparence"),
             ("/account/notifications", "Gérer mes notifications"),
             ("/account/sessions", "Gérer mes sessions"),
             ("/account/export", "Exporter mes données"),
@@ -341,7 +352,7 @@ mod tests {
 
     #[test]
     fn logging_out_is_on_the_profile() {
-        let html = settings_section(&me(false));
+        let html = settings_section(&me(false), Appearance::Auto);
         assert!(
             html.contains(r#"<form method="post" action="/logout">"#),
             "{html}"
@@ -351,8 +362,30 @@ mod tests {
 
     #[test]
     fn a_pending_deletion_replaces_the_deletion_link() {
-        let html = settings_section(&me(true));
+        let html = settings_section(&me(true), Appearance::Auto);
         assert!(!html.contains(r#"href="/account/delete""#), "{html}");
         assert!(html.contains(r#"href="/account/export""#), "{html}");
+    }
+
+    /// #585: the appearance row leads to the theme page and says the
+    /// choice in force, Automatique without one.
+    #[test]
+    fn the_appearance_row_says_the_theme_in_force() {
+        for appearance in Appearance::ALL {
+            let html = settings_section(&me(false), appearance);
+            let at = html
+                .find(r#"href="/account/appearance""#)
+                .expect("the appearance row");
+            let close = at + html[at..].find("</a>").expect("closed");
+            let row = &html[at..close];
+            assert!(row.contains("Apparence<br>"), "{row}");
+            assert!(
+                row.contains(&format!(
+                    r#"<span class="muted">{}</span>"#,
+                    appearance.label()
+                )),
+                "{appearance:?}: {row}"
+            );
+        }
     }
 }

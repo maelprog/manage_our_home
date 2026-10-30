@@ -24,6 +24,7 @@
 //! copy on both sides keeps them apart.
 
 pub mod age;
+pub mod appearance;
 pub mod avatar;
 pub mod deactivated;
 pub mod delete;
@@ -175,7 +176,7 @@ pub async fn get(
         families = profile::families_section(&families, active),
         // #468: the profile photo.
         photo = avatar::section(&me, has_photo),
-        settings = profile::settings_section(&me),
+        settings = profile::settings_section(&me, crate::theme::current()),
     );
     Html(shell_with_header(Width::Read, "Mon compte", &header, &body)).into_response()
 }
