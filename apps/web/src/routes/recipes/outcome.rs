@@ -558,16 +558,17 @@ fn warning_text(ingredient: &DoneIngredient, first_user: Option<&str>) -> Option
             Some("La recette ne donne pas de quantité : saisissez-la.".to_string())
         }
         RemovalWarning::Capped => Some(match first_user {
+            // As the stock list writes a quantity: « 4 », not « 4 unité ».
             Some(first) if ingredient.proposed_quantity > 0.0 => format!(
-                "Ce stock sert d'abord à {first} : il en reste {} {stock_unit} pour cet ingrédient.",
-                fmt_num(ingredient.proposed_quantity)
+                "Ce stock sert d'abord à {first} : il en reste {} pour cet ingrédient.",
+                format_quantity(ingredient.proposed_quantity, stock_unit)
             ),
             Some(first) => {
                 format!("Ce stock sert d'abord à {first} : il n'en reste rien pour cet ingrédient.")
             }
             None => format!(
-                "Le stock n'en contient que {} {stock_unit} : tout est proposé.",
-                fmt_num(ingredient.proposed_quantity)
+                "Le stock n'en contient que {} : tout est proposé.",
+                format_quantity(ingredient.proposed_quantity, stock_unit)
             ),
         }),
         RemovalWarning::Other => None,
@@ -2214,7 +2215,7 @@ mod tests {
         );
         assert!(html.contains("<legend>Sel</legend>"), "{html}");
         assert!(html.contains("La recette ne donne pas de quantité : saisissez-la."));
-        assert!(html.contains("Le stock n'en contient que 4 unité : tout est proposé."));
+        assert!(html.contains("Le stock n'en contient que 4 : tout est proposé."));
         // No line for the ingredient without stock: Lait is line 0.
         assert!(html.contains(&format!(r#"name="stock.0" value="{}""#, id(20))));
         assert!(html.contains(&format!(r#"name="stock.2" value="{}""#, id(40))));
