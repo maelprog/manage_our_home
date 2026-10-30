@@ -89,7 +89,7 @@ surfaces is the one a forged request would hit.
 
 | Method | Path | Handler | Purpose | API call(s) |
 |---|---|---|---|---|
-| GET | `/recipes` | `recipes::list::get` | Suggestions (ranked, with missing-ingredients) + full recipe list | `GET /groups/:id/recipes/suggestions`, `GET /groups/:id/recipes` |
+| GET | `/recipes` | `recipes::list::get` | Three tabs (#539, `?vue=`): « Toutes » — suggestions (ranked, with missing-ingredients) + full recipe list; « Prévues » (`prevues`) — the planned selections; « Possibles » (`possibles`) — the recipes the stock covers entirely | `GET /groups/:id/recipes/suggestions` (and `?possible=true`), `GET /groups/:id/recipes`, `GET /groups/:id/recipes/selections` |
 | GET | `/recipes/new` | `recipes::new::get` | Create form | — |
 | POST | `/recipes/new` | `recipes::new::post` | Create a recipe (with `source_url` when imported, #405) | `POST /groups/:id/recipes` |
 | GET | `/recipes/import` | `recipes::import::get` | Import form: the address of a recipe page (#405) | — |

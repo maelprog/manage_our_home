@@ -258,6 +258,67 @@ test.describe("Recipes — à réaliser (#470)", () => {
   });
 });
 
+// #539: the recipes in three tabs, each a link (`?vue=`), no JavaScript.
+test.describe("Recipes — Toutes, Prévues, Possibles (#539)", () => {
+  test("a planned recipe is in « Prévues »; once its ingredients are stocked, in « Possibles »", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-rctabs", "Tabs User");
+    await createGroup(page, "Famille Onglets");
+    await createRecipe(page, {
+      name: "Crêpes",
+      ingredients: "Farine | 250 | g\nLait | 500 | ml\nRhum |  |  |  | optionnel",
+    });
+    await createRecipe(page, { name: "Soupe", ingredients: "Poireau | 2 | pièce" });
+
+    const tabs = page.getByRole("navigation", { name: "Groupes de recettes" });
+    await page.goto("/recipes");
+    await expect(tabs.getByRole("link", { name: "Toutes" })).toHaveAttribute("aria-current", "true");
+    await expect(tabs.getByRole("link", { name: "Prévues · 0" })).toBeVisible();
+    await expect(tabs.getByRole("link", { name: "Possibles · 0" })).toBeVisible();
+
+    // Planned from its row of the full list.
+    await page
+      .locator("li", { hasText: "Crêpes" })
+      .filter({ has: page.getByRole("button", { name: "À réaliser" }) })
+      .getByRole("button", { name: "À réaliser" })
+      .click();
+    await expect(page).toHaveURL(/\/recipes\?notice=recipe_selected$/);
+
+    await tabs.getByRole("link", { name: "Prévues · 1" }).click();
+    await expect(page).toHaveURL(/\/recipes\?vue=prevues$/);
+    await expect(tabs.getByRole("link", { name: "Prévues · 1" })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    const planned = page.locator("li", { hasText: "Crêpes" });
+    await expect(planned.getByRole("link", { name: "Faite" })).toBeVisible();
+    await expect(planned.getByRole("link", { name: "Abandonner" })).toBeVisible();
+    await expect(planned.getByRole("button", { name: "Retirer" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Soupe" })).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Générer les courses de cette recette" }),
+    ).toBeVisible();
+
+    // Nothing in stock yet: nothing possible.
+    await page.getByRole("link", { name: "Possibles · 0" }).click();
+    await expect(page).toHaveURL(/\/recipes\?vue=possibles$/);
+    await expect(page.getByText("Aucune recette ne se fait avec le stock actuel.")).toBeVisible();
+
+    // Its required ingredients stocked, the rum (optional) not: possible.
+    await createStockItem(page, "Farine", "1", "kg");
+    await createStockItem(page, "Lait", "1", "L");
+    await page.goto("/recipes?vue=possibles");
+    await expect(tabs.getByRole("link", { name: "Possibles · 1" })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    const possible = page.locator("li", { hasText: "Crêpes" });
+    await expect(possible.getByText("Tous les ingrédients en stock")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Soupe" })).toHaveCount(0);
+  });
+});
+
 test.describe("Recipes — permission bar", () => {
   test("a standard member cannot edit or delete another member's recipe but can log a meal", async ({
     page,

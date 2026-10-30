@@ -10,6 +10,12 @@
 //! Since #470 the page opens on the recipes « À réaliser », the ones the
 //! grocery list is generated from, and each row of the full list carries
 //! the « À réaliser » / « Retirer » form.
+//!
+//! Since #539 that page is the « Toutes » tab of three, picked by `?vue=`
+//! (no JavaScript): « Prévues » lists the planned recipes, each with
+//! « Faite », « Abandonner » and « Retirer », and the generation of the
+//! grocery list; « Possibles » the recipes whose every required ingredient
+//! is in stock (`?possible=true` on the suggestions endpoint).
 
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
@@ -34,6 +40,8 @@ use super::{
 pub struct ListQuery {
     notice: Option<String>,
     error: Option<String>,
+    /// The tab (#539): `prevues`, `possibles`, or the full list.
+    vue: Option<String>,
 }
 
 fn notice_text(code: &str) -> Option<&'static str> {
@@ -176,75 +184,119 @@ fn recipe_row_html(r: &RecipeResponse, planned: Option<Option<i32>>) -> String {
     )
 }
 
-pub async fn get(
-    CurrentUser(me): CurrentUser,
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(query): Query<ListQuery>,
-) -> Response {
-    let Some(fam) = family_context(&state, &headers, &me, "/recipes").await else {
-        return Redirect::to("/groups/new").into_response();
-    };
-    let cookie = recipes_cookie(&headers);
+/// The three groups of recipes (#539), one tab each, picked by `?vue=`
+/// so that they work without JavaScript.
+#[derive(Clone, Copy, PartialEq)]
+enum Tab {
+    /// Every recipe, with the planned ones and the suggestions on top.
+    All,
+    /// The `planned` selections (#469).
+    Planned,
+    /// The recipes the stock covers entirely.
+    Possible,
+}
 
-    // Suggestions (ranked). A non-200 (e.g. 403, unreachable once family is
-    // resolved) renders an empty section rather than leaking JSON; a
-    // transport error is a hard failure here, as for the recipes below. The
-    // selections are stricter: any status but 200 is a hard failure too
-    // (`planned_selections`).
-    let suggestions: Vec<RecipeSuggestion> = match api_request_auth(
-        &state,
-        reqwest::Method::GET,
-        &format!("/groups/{}/recipes/suggestions", fam.gid),
-        cookie.as_deref(),
-        None,
-    )
-    .await
-    {
-        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
-            serde_json::from_value::<SuggestionList>(resp.body)
-                .map(|l| l.suggestions)
-                .unwrap_or_default()
+impl Tab {
+    /// The tab `?vue=` names; anything else is the full list.
+    fn from_query(vue: Option<&str>) -> Tab {
+        match vue {
+            Some("prevues") => Tab::Planned,
+            Some("possibles") => Tab::Possible,
+            _ => Tab::All,
         }
-        Ok(_) => Vec::new(),
-        Err(_) => return service_unavailable_page().into_response(),
-    };
+    }
+}
 
-    let recipes: Vec<RecipeResponse> = match api_request_auth(
-        &state,
-        reqwest::Method::GET,
-        &format!("/groups/{}/recipes", fam.gid),
-        cookie.as_deref(),
-        None,
+/// The row of tabs, each group's count beside its name, the current one in
+/// `aria-current` — the `.filters` of the stocks and notifications.
+fn tabs_html(current: Tab, planned: usize, possible: usize) -> String {
+    let links: String = [
+        (Tab::All, "/recipes", "Toutes".to_string()),
+        (
+            Tab::Planned,
+            "/recipes?vue=prevues",
+            format!("Prévues · {planned}"),
+        ),
+        (
+            Tab::Possible,
+            "/recipes?vue=possibles",
+            format!("Possibles · {possible}"),
+        ),
+    ]
+    .into_iter()
+    .map(|(tab, href, label)| {
+        let lit = if tab == current {
+            r#" aria-current="true""#
+        } else {
+            ""
+        };
+        format!(r#"<a href="{href}"{lit}>{label}</a>"#)
+    })
+    .collect();
+    format!(r#"<nav class="filters" aria-label="Groupes de recettes">{links}</nav>"#)
+}
+
+/// « Prévues »: one row per planned recipe, for how many people, with
+/// « Faite » and « Abandonner » (#474) and « Retirer » (#470); then the
+/// generation of the grocery list, which takes these recipes.
+fn planned_tab_html(planned: &[RecipeSelectionResponse]) -> String {
+    if planned.is_empty() {
+        return r#"<p class="muted">Aucune recette prévue. Le bouton « À réaliser » d'une recette, dans <a href="/recipes">Toutes</a>, la fait entrer dans la prochaine liste de courses.</p>"#.to_string();
+    }
+    let rows: String = planned
+        .iter()
+        .map(|s| {
+            let people = s
+                .servings
+                .map(|n| format!(r#"<span class="muted">{}</span>"#, servings_label(n)))
+                .unwrap_or_default();
+            format!(
+                r#"<li class="list-row">
+<a href="/recipes/{id}"><strong>{name}</strong></a>
+{people}
+<span class="actions">{outcome}{deselect}</span>
+</li>"#,
+                id = s.recipe_id,
+                name = html_escape(&s.recipe_name),
+                outcome = outcome_links(s.recipe_id, "list"),
+                deselect = deselect_form(s.recipe_id, "list"),
+            )
+        })
+        .collect();
+    let label = match planned.len() {
+        1 => "Générer les courses de cette recette".to_string(),
+        n => format!("Générer les courses de ces {n} recettes"),
+    };
+    format!(
+        r#"<ul class="list">{rows}</ul>
+<div class="actions">
+<form method="post" action="/grocery-list/generate">
+<button type="submit">{label}</button>
+</form>
+</div>"#
     )
-    .await
-    {
-        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
-            serde_json::from_value::<RecipeList>(resp.body)
-                .map(|l| l.recipes)
-                .unwrap_or_default()
-        }
-        Ok(_) => Vec::new(),
-        Err(_) => return service_unavailable_page().into_response(),
-    };
+}
 
-    let Ok(planned) = planned_selections(&state, fam.gid, cookie.as_deref()).await else {
-        return service_unavailable_page().into_response();
-    };
+/// « Possibles »: the recipes whose every required ingredient is in stock,
+/// in the suggestions' order.
+fn possible_tab_html(possible: &[RecipeSuggestion]) -> String {
+    if possible.is_empty() {
+        return r#"<p class="muted">Aucune recette ne se fait avec le stock actuel. Une recette apparaît ici quand tous ses ingrédients obligatoires sont en stock.</p>"#.to_string();
+    }
+    let rows = possible.iter().map(suggestion_html).collect::<String>();
+    format!(
+        r#"<ul class="list">{rows}</ul>
+{OFF_ATTRIBUTION}"#
+    )
+}
 
-    let notice = query
-        .notice
-        .as_deref()
-        .and_then(notice_text)
-        .map(|n| format!(r#"<p class="notice success">{}</p>"#, html_escape(n)))
-        .unwrap_or_default();
-    let error = query
-        .error
-        .as_deref()
-        .and_then(error_text)
-        .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
-        .unwrap_or_default();
-
+/// « Toutes »: the planned recipes in a sentence, the ranked suggestions,
+/// then every recipe with its « À réaliser » or « Retirer » form.
+fn all_tab_html(
+    recipes: &[RecipeResponse],
+    planned: &[RecipeSelectionResponse],
+    suggestions: &[RecipeSuggestion],
+) -> String {
     let suggestions_section = if suggestions.is_empty() {
         String::new()
     } else {
@@ -270,6 +322,116 @@ pub async fn get(
         format!(r#"<ul class="list">{rows}</ul>"#)
     };
 
+    format!(
+        r#"{planned_section}
+{suggestions_section}
+<h2>Toutes les recettes</h2>
+{list_section}"#,
+        planned_section = planned_section(planned),
+    )
+}
+
+/// A `GET …/recipes/suggestions` (`path` carries the query). A non-200
+/// (e.g. 403) reads as no suggestion rather than leaking JSON; `Err` on a
+/// transport failure only.
+async fn fetch_suggestions(
+    state: &AppState,
+    path: &str,
+    cookie: Option<&str>,
+) -> Result<Vec<RecipeSuggestion>, ()> {
+    match api_request_auth(state, reqwest::Method::GET, path, cookie, None).await {
+        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
+            Ok(serde_json::from_value::<SuggestionList>(resp.body)
+                .map(|l| l.suggestions)
+                .unwrap_or_default())
+        }
+        Ok(_) => Ok(Vec::new()),
+        Err(_) => Err(()),
+    }
+}
+
+pub async fn get(
+    CurrentUser(me): CurrentUser,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<ListQuery>,
+) -> Response {
+    let Some(fam) = family_context(&state, &headers, &me, "/recipes").await else {
+        return Redirect::to("/groups/new").into_response();
+    };
+    let cookie = recipes_cookie(&headers);
+
+    let tab = Tab::from_query(query.vue.as_deref());
+
+    // The full list, needed on every tab: its length bounds the possible
+    // recipes asked for below, so that their count is exact. A non-200
+    // reads as no recipe; a transport error is a hard failure.
+    let recipes: Vec<RecipeResponse> = match api_request_auth(
+        &state,
+        reqwest::Method::GET,
+        &format!("/groups/{}/recipes", fam.gid),
+        cookie.as_deref(),
+        None,
+    )
+    .await
+    {
+        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
+            serde_json::from_value::<RecipeList>(resp.body)
+                .map(|l| l.recipes)
+                .unwrap_or_default()
+        }
+        Ok(_) => Vec::new(),
+        Err(_) => return service_unavailable_page().into_response(),
+    };
+
+    // The selections are the other hard failure: any status but 200 makes
+    // them unknown, not empty (`planned_selections`).
+    let Ok(planned) = planned_selections(&state, fam.gid, cookie.as_deref()).await else {
+        return service_unavailable_page().into_response();
+    };
+
+    // The recipes the stock covers (#539), for the « Possibles » tab and
+    // its count on every tab, all of them.
+    let possible = if recipes.is_empty() {
+        Vec::new()
+    } else {
+        let path = format!(
+            "/groups/{}/recipes/suggestions?possible=true&limit={}",
+            fam.gid,
+            recipes.len()
+        );
+        match fetch_suggestions(&state, &path, cookie.as_deref()).await {
+            Ok(list) => list,
+            Err(()) => return service_unavailable_page().into_response(),
+        }
+    };
+
+    let notice = query
+        .notice
+        .as_deref()
+        .and_then(notice_text)
+        .map(|n| format!(r#"<p class="notice success">{}</p>"#, html_escape(n)))
+        .unwrap_or_default();
+    let error = query
+        .error
+        .as_deref()
+        .and_then(error_text)
+        .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
+        .unwrap_or_default();
+
+    let content = match tab {
+        Tab::Planned => planned_tab_html(&planned),
+        Tab::Possible => possible_tab_html(&possible),
+        Tab::All => {
+            // The ranked suggestions, on this tab only.
+            let path = format!("/groups/{}/recipes/suggestions", fam.gid);
+            let Ok(suggestions) = fetch_suggestions(&state, &path, cookie.as_deref()).await else {
+                return service_unavailable_page().into_response();
+            };
+            all_tab_html(&recipes, &planned, &suggestions)
+        }
+    };
+
     let body = format!(
         r#"{segment}<div class="page-header">
 <h1>Recettes</h1>
@@ -279,12 +441,10 @@ pub async fn get(
 </div>
 </div>
 {notice}{error}
-{planned_section}
-{suggestions_section}
-<h2>Toutes les recettes</h2>
-{list_section}"#,
+{tabs}
+{content}"#,
         segment = kitchen_segment("/recipes"),
-        planned_section = planned_section(&planned),
+        tabs = tabs_html(tab, planned.len(), possible.len()),
     );
     Html(shell_with_header(
         Width::Full,
@@ -384,6 +544,123 @@ mod tests {
         );
         assert!(html.contains("Soupe &lt;du jour&gt;</a>."), "{html}");
         assert!(planned_section(&[selection(1, "Crêpes", None)]).contains("1 recette prévue pour"),);
+    }
+
+    fn suggestion(id: u128, name: &str, matched: usize, total: usize) -> RecipeSuggestion {
+        RecipeSuggestion {
+            recipe_id: Uuid::from_u128(id),
+            name: name.into(),
+            score: 100.0,
+            matched_ingredients: matched,
+            total_required_ingredients: total,
+            missing_ingredients: Vec::new(),
+            recently_eaten: false,
+            last_eaten_on: None,
+        }
+    }
+
+    #[test]
+    fn the_tab_comes_from_the_url_and_defaults_to_all() {
+        assert!(Tab::from_query(None) == Tab::All);
+        assert!(Tab::from_query(Some("")) == Tab::All);
+        assert!(Tab::from_query(Some("prevues")) == Tab::Planned);
+        assert!(Tab::from_query(Some("possibles")) == Tab::Possible);
+        // Anything else is the full list, never an error page.
+        assert!(Tab::from_query(Some("PREVUES")) == Tab::All);
+        assert!(Tab::from_query(Some("autre")) == Tab::All);
+    }
+
+    #[test]
+    fn the_tabs_count_the_planned_and_possible_recipes_and_mark_the_current_one() {
+        assert_eq!(
+            tabs_html(Tab::All, 2, 0),
+            r#"<nav class="filters" aria-label="Groupes de recettes"><a href="/recipes" aria-current="true">Toutes</a><a href="/recipes?vue=prevues">Prévues · 2</a><a href="/recipes?vue=possibles">Possibles · 0</a></nav>"#
+        );
+        let html = tabs_html(Tab::Possible, 0, 3);
+        assert!(
+            html.contains(
+                r#"<a href="/recipes?vue=possibles" aria-current="true">Possibles · 3</a>"#
+            ),
+            "{html}"
+        );
+        assert_eq!(html.matches("aria-current").count(), 1, "{html}");
+        let html = tabs_html(Tab::Planned, 1, 0);
+        assert!(
+            html.contains(r#"<a href="/recipes?vue=prevues" aria-current="true">Prévues · 1</a>"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn the_planned_tab_lists_each_recipe_with_faite_abandonner_and_retirer() {
+        let html = planned_tab_html(&[
+            selection(1, "Crêpes", Some(6)),
+            selection(2, "Soupe <du jour>", None),
+        ]);
+        let id = Uuid::from_u128(1);
+        assert!(
+            html.contains(&format!(
+                r#"<a href="/recipes/{id}"><strong>Crêpes</strong></a>"#
+            )),
+            "{html}"
+        );
+        assert!(html.contains("6 personnes"), "{html}");
+        assert!(html.contains("Soupe &lt;du jour&gt;"), "{html}");
+        assert!(
+            html.contains(&format!(r#"href="/recipes/{id}/done?back=list""#)),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(r#"href="/recipes/{id}/abandon?back=list""#)),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(r#"action="/recipes/{id}/deselect""#)),
+            "{html}"
+        );
+        // The way to the grocery list, which takes these recipes (#470).
+        assert!(
+            html.contains(r#"<form method="post" action="/grocery-list/generate">"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(">Générer les courses de ces 2 recettes</button>"),
+            "{html}"
+        );
+        let one = planned_tab_html(&[selection(1, "Crêpes", None)]);
+        assert!(
+            one.contains(">Générer les courses de cette recette</button>"),
+            "{one}"
+        );
+    }
+
+    #[test]
+    fn an_empty_planned_tab_offers_no_generation() {
+        let html = planned_tab_html(&[]);
+        assert!(html.contains("Aucune recette prévue."), "{html}");
+        assert!(html.contains(r#"href="/recipes""#), "{html}");
+        assert!(!html.contains("/grocery-list/generate"), "{html}");
+    }
+
+    #[test]
+    fn the_possible_tab_lists_the_recipes_the_stock_covers() {
+        let html = possible_tab_html(&[suggestion(1, "Pain <maison>", 2, 2)]);
+        let id = Uuid::from_u128(1);
+        assert!(
+            html.contains(&format!(
+                r#"<a href="/recipes/{id}"><strong>Pain &lt;maison&gt;</strong></a>"#
+            )),
+            "{html}"
+        );
+        assert!(html.contains("Tous les ingrédients en stock"), "{html}");
+        // The matching goes through Open Food Facts' categories (#406).
+        assert!(html.contains(OFF_ATTRIBUTION), "{html}");
+        let empty = possible_tab_html(&[]);
+        assert!(
+            empty.contains("Aucune recette ne se fait avec le stock actuel."),
+            "{empty}"
+        );
+        assert!(!empty.contains(OFF_ATTRIBUTION), "{empty}");
     }
 
     #[test]

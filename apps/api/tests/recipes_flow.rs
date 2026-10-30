@@ -629,6 +629,130 @@ async fn suggestions_match_stock_through_the_category_taxonomy(db: PgPool) {
     assert_eq!(missing, ["Lait de coco"]);
 }
 
+/// #539: `?possible=true` keeps the recipes whose every required
+/// ingredient is in stock, by the same matching as the suggestions. A
+/// missing optional ingredient does not exclude a recipe; a missing
+/// required one does; a recipe without ingredients is not « possible ».
+/// The filter applies before `limit`.
+#[sqlx::test]
+async fn the_possible_filter_keeps_the_recipes_the_stock_covers(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "recipe-possible@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+
+    for item in [
+        serde_json::json!({"name": "Farine", "quantity": 1000.0, "unit": "g"}),
+        serde_json::json!({"name": "Oeufs", "quantity": 6.0}),
+    ] {
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/stock-items"),
+            Some(&cookie),
+            Some(item),
+        )
+        .await;
+        assert_status(&res, StatusCode::CREATED);
+    }
+
+    let mut ids = Vec::new();
+    for (name, ingredients) in [
+        (
+            "Pâte à pain",
+            serde_json::json!([
+                {"name": "Farine", "quantity": 500.0, "unit": "g"},
+                {"name": "œuf", "quantity": 1.0},
+                {"name": "Graines de sésame", "is_optional": true}
+            ]),
+        ),
+        (
+            "Crêpes",
+            serde_json::json!([
+                {"name": "Farine", "quantity": 250.0, "unit": "g"},
+                {"name": "Lait", "quantity": 500.0, "unit": "ml"}
+            ]),
+        ),
+        ("Recette sans ingrédient", serde_json::json!([])),
+    ] {
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/recipes"),
+            Some(&cookie),
+            Some(serde_json::json!({"name": name, "ingredients": ingredients})),
+        )
+        .await;
+        assert_status(&res, StatusCode::CREATED);
+        ids.push(json_body(res).await["id"].as_str().unwrap().to_string());
+    }
+
+    let names = |body: serde_json::Value| -> Vec<String> {
+        body["suggestions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // Unfiltered, all three are suggested.
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/recipes/suggestions"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(names(json_body(res).await).len(), 3);
+
+    for path in ["?possible=true", "?possible=true&limit=1"] {
+        let res = call(
+            &router,
+            Method::GET,
+            &format!("/groups/{group_id}/recipes/suggestions{path}"),
+            Some(&cookie),
+            None,
+        )
+        .await;
+        assert_status(&res, StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(names(body.clone()), ["Pâte à pain"], "{path}");
+        assert_eq!(body["suggestions"][0]["recipe_id"], ids[0]);
+        assert_eq!(body["suggestions"][0]["matched_ingredients"], 2);
+        assert_eq!(body["suggestions"][0]["total_required_ingredients"], 2);
+    }
+
+    // Once its milk is in stock, the crêpes are possible too.
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/stock-items"),
+        Some(&cookie),
+        Some(serde_json::json!({"name": "Lait", "quantity": 1.0, "unit": "L"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/recipes/suggestions?possible=true"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    let mut possible = names(json_body(res).await);
+    possible.sort();
+    assert_eq!(possible, ["Crêpes", "Pâte à pain"]);
+}
+
 /// Owner and member of one group, joined through an invitation.
 async fn group_with_member(
     router: &axum::Router,
