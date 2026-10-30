@@ -1310,7 +1310,7 @@ async fn simultaneous_creations_stop_at_thirty_categories(db: PgPool) {
     // categories but not insert one. With the family's lock, the first
     // creation waits on the table and every other one on the lock, before
     // counting; without it, all of them would count 25 and wait to insert.
-    let mut hold = db.begin().await.unwrap();
+    let mut hold = manage_our_home::db::begin(&db).await.unwrap();
     sqlx::query("LOCK TABLE budget_categories IN SHARE MODE")
         .execute(&mut *hold)
         .await
@@ -2175,7 +2175,7 @@ async fn simultaneous_expenses_alert_once(db: PgPool) {
     )
     .await;
 
-    let mut hold = db.begin().await.unwrap();
+    let mut hold = manage_our_home::db::begin(&db).await.unwrap();
     sqlx::query("LOCK TABLE budget_entries IN SHARE MODE")
         .execute(&mut *hold)
         .await
