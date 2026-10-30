@@ -64,7 +64,7 @@ fn kind_label(kind: &str) -> &'static str {
     match kind {
         "agenda_reminder" => "Agenda",
         "stock_expiry" => "Stocks",
-        "message" => "Messagerie",
+        "message" => "Messages",
         "invitation" => "Familles",
         "grocery_item" => "Courses",
         "budget_alert" => "Budget",
@@ -517,7 +517,7 @@ mod tests {
     fn each_kind_says_where_it_comes_from() {
         assert_eq!(kind_label("agenda_reminder"), "Agenda");
         assert_eq!(kind_label("stock_expiry"), "Stocks");
-        assert_eq!(kind_label("message"), "Messagerie");
+        assert_eq!(kind_label("message"), "Messages");
         assert_eq!(kind_label("invitation"), "Familles");
         assert_eq!(kind_label("grocery_item"), "Courses");
         assert_eq!(kind_label("budget_alert"), "Budget");
@@ -525,6 +525,10 @@ mod tests {
         assert_eq!(kind_label("something_new"), "Notification");
         assert_eq!(kind_icon("something_new"), Icon::Bell);
         assert_eq!(kind_icon("agenda_reminder"), Icon::Calendar);
+        // An entry is named as its filter is.
+        for (kind, label) in FILTERS.iter().skip(1) {
+            assert_eq!(kind_label(kind.unwrap()), *label);
+        }
     }
 
     #[test]
@@ -680,8 +684,8 @@ mod tests {
             html.find(needle)
                 .unwrap_or_else(|| panic!("{needle}: {html}"))
         };
-        assert!(at("<h2 class=\"eyebrow\">Aujourd’hui</h2>") < at("Messagerie · 09:00"));
-        assert!(at("Messagerie · 09:00") < at("Stocks · 08:00"));
+        assert!(at("<h2 class=\"eyebrow\">Aujourd’hui</h2>") < at("Messages · 09:00"));
+        assert!(at("Messages · 09:00") < at("Stocks · 08:00"));
         assert!(at("Stocks · 08:00") < at("<h2 class=\"eyebrow\">Cette semaine</h2>"));
         assert!(at("<h2 class=\"eyebrow\">Cette semaine</h2>") < at("Familles · lundi"));
         assert!(at("Familles · lundi") < at("<h2 class=\"eyebrow\">Plus tôt</h2>"));
