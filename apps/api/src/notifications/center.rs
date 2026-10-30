@@ -124,7 +124,10 @@ pub fn body(event: &Event<'_>) -> String {
             typed(item),
             expires_on.format("%d/%m/%Y")
         ),
-        Event::Message { author } => format!("Nouveau message de {}.", typed(author)),
+        Event::Message { author } => {
+            let author = typed(author);
+            format!("Nouveau message {}{author}.", de(&author))
+        }
         Event::Invitation { inviter, group } => format!(
             "{} vous invite à rejoindre « {} ».",
             typed(inviter),
@@ -135,6 +138,21 @@ pub fn body(event: &Event<'_>) -> String {
             typed(author),
             typed(item)
         ),
+    }
+}
+
+/// « de » before `name`, elided before a vowel (« d'Alice »). Not before
+/// `h` nor `y`: whether those elide depends on the name (« de Hugues »,
+/// « d'Hélène »), which no rule on its letters can tell.
+fn de(name: &str) -> &'static str {
+    let vowel = name.chars().next().is_some_and(|c| {
+        c.to_lowercase()
+            .all(|l| "aàâäeéèêëiîïoôöuùûüœæ".contains(l))
+    });
+    if vowel {
+        "d'"
+    } else {
+        "de "
     }
 }
 
@@ -482,9 +500,43 @@ mod tests {
     #[test]
     fn a_message_names_its_author_and_not_its_content() {
         assert_eq!(
-            body(&Event::Message { author: "Alice" }),
-            "Nouveau message de Alice."
+            body(&Event::Message { author: "Bob" }),
+            "Nouveau message de Bob."
         );
+    }
+
+    /// « de » elides before a vowel, accented or not, whatever its case.
+    #[test]
+    fn a_message_elides_de_before_a_vowel() {
+        for (author, text) in [
+            ("Alice", "Nouveau message d'Alice."),
+            ("Émilie", "Nouveau message d'Émilie."),
+            ("océane", "Nouveau message d'océane."),
+            ("Œdipe", "Nouveau message d'Œdipe."),
+            ("Ugo", "Nouveau message d'Ugo."),
+        ] {
+            assert_eq!(body(&Event::Message { author }), text, "{author:?}");
+        }
+    }
+
+    /// Not before a consonant, a digit, nor `h` or `y`, whose elision
+    /// depends on the name (« de Hugues », « d'Hélène ») and is left alone;
+    /// and the letter that counts is the first one left once sanitized.
+    #[test]
+    fn a_message_keeps_de_otherwise() {
+        for (author, text) in [
+            ("Hugues", "Nouveau message de Hugues."),
+            ("Yann", "Nouveau message de Yann."),
+            (
+                "member@example.test",
+                "Nouveau message de member@example.test.",
+            ),
+            ("1er", "Nouveau message de 1er."),
+            ("\u{200b}Bob", "Nouveau message de Bob."),
+            ("\u{200b}Alice", "Nouveau message d'Alice."),
+        ] {
+            assert_eq!(body(&Event::Message { author }), text, "{author:?}");
+        }
     }
 
     #[test]
