@@ -216,6 +216,103 @@ test.describe("Budget — edit & delete", () => {
   });
 });
 
+test.describe("Budget — categories, caps and alerts (#533)", () => {
+  test("a capped category's bar shows the share its expense takes", async ({ page }) => {
+    await registerAndLogin(page, "e2e-budgetcat", "Budget Plafonds");
+    await createGroup(page, "Famille Plafonds");
+
+    // The family's cap, then a category with its own cap.
+    await page.goto("/budget/settings");
+    await page.getByRole("spinbutton", { name: "Plafond de la famille (€)" }).fill("1000");
+    await page.getByRole("button", { name: "Enregistrer le plafond" }).click();
+    await expect(page).toHaveURL(/\/budget\/settings\?notice=cap_saved$/);
+
+    const add = page.locator('form[action="/budget/settings/categories"]');
+    await add.getByRole("textbox", { name: "Nom de la catégorie" }).fill("Alimentation");
+    await add.getByRole("combobox", { name: "Couleur" }).selectOption("green");
+    await add.getByRole("spinbutton", { name: "Plafond de la catégorie (€, facultatif)" }).fill("200");
+    await add.getByRole("button", { name: "Ajouter la catégorie" }).click();
+    await expect(page).toHaveURL(/\/budget\/settings\?notice=category_created$/);
+    await expect(page.getByText("Alimentation — plafond 200,00 €")).toBeVisible();
+
+    // An expense filed under it, from its pill.
+    await page.goto("/budget/new");
+    await page.getByLabel("Montant").fill("50");
+    await page.getByLabel("Nom").fill("Marché du samedi");
+    await page.getByRole("radio", { name: "Alimentation" }).check();
+    await page.getByRole("button", { name: "Ajouter la dépense" }).click();
+    await expect(page).toHaveURL(/\/budget\?notice=entry_created$/);
+
+    // 50 of 200 is 25 %, said in words and drawn on the bar.
+    const category = page.locator("li", { has: page.locator("progress") }).filter({ hasText: "Alimentation" });
+    await expect(category.getByText("25 % de 200,00 €")).toBeVisible();
+    await expect(category.locator("progress")).toHaveAttribute("value", "25");
+    await expect(category.getByText("Dépassé")).toHaveCount(0);
+    // The family's figures, and the expense under its category.
+    const summary = page.locator("#monthly-summary");
+    await expect(summary.getByText("950,00 €")).toBeVisible();
+    await expect(page.locator("li", { hasText: "Marché du samedi" }).getByText("Alimentation")).toBeVisible();
+
+    // A second expense takes the category past its cap.
+    await page.goto("/budget/new");
+    await page.getByLabel("Montant").fill("160");
+    await page.getByLabel("Nom").fill("Traiteur");
+    await page.getByRole("radio", { name: "Alimentation" }).check();
+    await page.getByRole("button", { name: "Ajouter la dépense" }).click();
+    await expect(page).toHaveURL(/\/budget\?notice=entry_created$/);
+    await expect(category.getByText("105 % de 200,00 €")).toBeVisible();
+    await expect(category.getByText("Dépassé")).toBeVisible();
+    await expect(category.locator("progress")).toHaveAttribute("value", "100");
+  });
+
+  test("an alert switch turned off stays off", async ({ page }) => {
+    await registerAndLogin(page, "e2e-budgetalert", "Budget Alertes");
+    await createGroup(page, "Famille Alertes");
+    await page.goto("/budget/settings");
+    const global = page.getByRole("checkbox", { name: "À 80 % puis à 100 % du plafond de la famille" });
+    const category = page.getByRole("checkbox", { name: "Au dépassement du plafond d'une catégorie" });
+    await expect(global).toBeChecked();
+    await expect(category).toBeChecked();
+    await category.uncheck();
+    await page.getByRole("button", { name: "Enregistrer les alertes" }).click();
+    await expect(page).toHaveURL(/\/budget\/settings\?notice=alerts_saved$/);
+    await expect(global).toBeChecked();
+    await expect(category).not.toBeChecked();
+  });
+
+  test("an expense links the checked grocery items it paid for", async ({ page }) => {
+    await registerAndLogin(page, "e2e-budgetlink", "Budget Articles");
+    await createGroup(page, "Famille Articles");
+    for (const name of ["Farine", "Sucre"]) {
+      await addGroceryItem(page, name);
+      await page.goto("/grocery-list");
+      await page.locator("li", { hasText: name }).getByRole("button", { name: "Cocher" }).click();
+      await expect(page).toHaveURL(/\/grocery-list\?notice=item_checked$/);
+    }
+
+    await page.goto("/budget/new");
+    await page.getByLabel("Montant").fill("7.40");
+    await page.getByLabel("Nom").fill("Épicerie");
+    await page.getByRole("checkbox", { name: "Farine" }).check();
+    await page.getByRole("checkbox", { name: "Sucre" }).check();
+    await page.getByRole("button", { name: "Ajouter la dépense" }).click();
+    await expect(page).toHaveURL(/\/budget\?notice=entry_created$/);
+    await expect(page.locator("li", { hasText: "Épicerie" }).getByText("Courses")).toBeVisible();
+
+    // Both items are now paid: the next expense is not offered them.
+    await page.goto("/budget/new");
+    await expect(page.getByRole("checkbox", { name: "Farine" })).toHaveCount(0);
+    await expect(page.getByText("Aucun article coché à rattacher.")).toBeVisible();
+
+    // Re-pricing one of them from the list says where to correct it.
+    await page.goto("/grocery-list");
+    await page.locator("li", { hasText: "Farine" }).getByLabel("Prix pour Farine").fill("2");
+    await page.locator("li", { hasText: "Farine" }).getByRole("button", { name: "Renseigner le prix" }).click();
+    await expect(page).toHaveURL(/\/grocery-list\?error=grocery_item_priced_with_others$/);
+    await expect(page.getByText(/regroupe plusieurs articles/)).toBeVisible();
+  });
+});
+
 test.describe("Budget — reserved to owners and admins (#531)", () => {
   test("a standard member sees no way to the budget, and its pages are a 404", async ({
     page,
@@ -263,7 +360,7 @@ test.describe("Budget — reserved to owners and admins (#531)", () => {
 
     // Typed in by hand, every budget page answers as an unknown path does.
     const unknown = await member.goto("/cette-page-n-existe-pas");
-    for (const path of ["/budget", "/budget/new", editHref]) {
+    for (const path of ["/budget", "/budget/new", "/budget/settings", editHref]) {
       const res = await member.goto(path);
       expect(res?.status(), path).toBe(404);
       expect(await res?.text(), path).toBe(await unknown?.text());

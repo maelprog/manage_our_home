@@ -1,7 +1,8 @@
 //! Budget screens (front epic F7, issue #22): the family's grocery-derived
-//! spend — a monthly summary + entry list (`/budget`), a manual price-entry
-//! form (`/budget/new`), and a per-entry edit/delete screen behind a permission
-//! bar (`/budget/:id`). Same SSR pattern as `routes/grocery_list/*` and
+//! spend — one month against its caps + its entries (`/budget`, #533), an
+//! entry form with a category and grocery items (`/budget/new`), a per-entry
+//! edit/delete screen behind a permission bar (`/budget/:id`), and the caps,
+//! categories and alert switches (`/budget/settings`, #533). Same SSR pattern as `routes/grocery_list/*` and
 //! `routes/recipes/*` — plain `<form method=post>` submissions, per-page error
 //! tables mapping `apps/api/src/budget/`'s exact status/error codes to French
 //! copy, PRG (`?notice=`/`?error=` codes) after every mutation. Full spec
@@ -28,11 +29,14 @@
 pub mod edit;
 pub mod list;
 pub mod new;
+pub mod settings;
 
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use leptos::prelude::*;
 use manage_our_home_shared::dto::auth::MeResponse;
+use manage_our_home_shared::dto::budget::{BudgetEntryResponse, LinkedGroceryItem};
+use manage_our_home_shared::dto::grocery_list::GroceryItemResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
 use uuid::Uuid;
 
@@ -115,4 +119,195 @@ pub(crate) fn forbidden_page() -> axum::response::Html<String> {
         <a class="btn secondary" href="/budget">"Retour au budget"</a>
     };
     axum::response::Html(shell(Width::Form, "Action non autorisée", &body.to_html()))
+}
+
+/// Every `<key>=<uuid>` pair of a raw `application/x-www-form-urlencoded`
+/// body, in order. `axum::Form` (`serde_urlencoded`) cannot read one key
+/// given several times, which is what a group of same-named checkboxes
+/// sends — the agenda's assignees have the same reader
+/// (`agenda::new::assignee_ids_from_raw_form`). A canonical UUID needs no
+/// percent-decoding: hex digits and hyphens are unreserved.
+pub(crate) fn uuids_from_raw_form(raw: &str, key: &str) -> Vec<Uuid> {
+    raw.split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .filter(|(k, _)| *k == key)
+        .filter_map(|(_, v)| Uuid::parse_str(v).ok())
+        .collect()
+}
+
+/// The class that paints a category in its colour (#533): `currentColor`
+/// of its bar and of its swatch. Empty for a key the API would not store.
+pub(crate) fn category_class(color: &str) -> &'static str {
+    match color {
+        "blue" => "cat-blue",
+        "violet" => "cat-violet",
+        "green" => "cat-green",
+        "orange" => "cat-orange",
+        "ochre" => "cat-ochre",
+        _ => "",
+    }
+}
+
+/// The grocery items an expense may be linked to, in the list's order: the
+/// checked ones — bought, so paid for — that no other expense links to,
+/// and every item `entry` already links to, checked or not, so that saving
+/// the form keeps them. An item is paid once (#633): one linked elsewhere
+/// is left out rather than offered for a 409.
+pub(crate) fn linkable_items(
+    items: &[GroceryItemResponse],
+    entries: &[BudgetEntryResponse],
+    entry: Option<&BudgetEntryResponse>,
+) -> Vec<LinkedGroceryItem> {
+    let own: &[LinkedGroceryItem] = entry.map_or(&[], |e| &e.grocery_items);
+    let is_own = |id: Uuid| own.iter().any(|i| i.id == id);
+    let elsewhere = |id: Uuid| {
+        entries
+            .iter()
+            .filter(|e| entry.is_none_or(|own| own.id != e.id))
+            .any(|e| e.grocery_items.iter().any(|i| i.id == id))
+    };
+    let mut offered: Vec<LinkedGroceryItem> = items
+        .iter()
+        .filter(|i| is_own(i.id) || (i.checked && !elsewhere(i.id)))
+        .map(|i| LinkedGroceryItem {
+            id: i.id,
+            name: i.name.clone(),
+        })
+        .collect();
+    for linked in own {
+        if !offered.iter().any(|i| i.id == linked.id) {
+            offered.push(linked.clone());
+        }
+    }
+    offered
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{NaiveDate, Utc};
+
+    fn id(n: u128) -> Uuid {
+        Uuid::from_u128(n)
+    }
+
+    fn item(n: u128, name: &str, checked: bool) -> GroceryItemResponse {
+        GroceryItemResponse {
+            id: id(n),
+            group_id: id(999),
+            created_by: id(998),
+            name: name.to_string(),
+            quantity: None,
+            unit: None,
+            checked,
+            source: "manual".to_string(),
+            source_recipe_id: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    fn entry(n: u128, linked: &[(u128, &str)]) -> BudgetEntryResponse {
+        BudgetEntryResponse {
+            id: id(n),
+            group_id: id(999),
+            created_by: id(998),
+            grocery_items: linked
+                .iter()
+                .map(|(i, name)| LinkedGroceryItem {
+                    id: id(*i),
+                    name: name.to_string(),
+                })
+                .collect(),
+            category_id: None,
+            name: "Dépense".to_string(),
+            amount: 1.0,
+            spent_at: NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    fn ids(items: &[LinkedGroceryItem]) -> Vec<Uuid> {
+        items.iter().map(|i| i.id).collect()
+    }
+
+    #[test]
+    fn the_raw_form_gives_every_uuid_of_its_key_in_order() {
+        let raw = format!(
+            "name=Courses&grocery_item_ids={}&amount=3&grocery_item_ids={}&category_id={}",
+            id(2),
+            id(1),
+            id(7)
+        );
+        assert_eq!(
+            uuids_from_raw_form(&raw, "grocery_item_ids"),
+            [id(2), id(1)]
+        );
+        assert_eq!(uuids_from_raw_form(&raw, "category_id"), [id(7)]);
+    }
+
+    #[test]
+    fn the_raw_form_skips_what_is_no_uuid_and_other_keys() {
+        let raw = format!(
+            "grocery_item_ids=&grocery_item_ids=abc&x_grocery_item_ids={}",
+            id(1)
+        );
+        assert!(uuids_from_raw_form(&raw, "grocery_item_ids").is_empty());
+    }
+
+    #[test]
+    fn every_category_colour_has_its_own_class() {
+        let classes: Vec<&str> = manage_our_home_shared::validation::budget::CATEGORY_COLORS
+            .iter()
+            .map(|c| category_class(c))
+            .collect();
+        assert_eq!(
+            classes,
+            [
+                "cat-blue",
+                "cat-violet",
+                "cat-green",
+                "cat-orange",
+                "cat-ochre"
+            ]
+        );
+        assert_eq!(category_class("#ff0000"), "");
+    }
+
+    #[test]
+    fn a_new_expense_is_offered_the_checked_items_no_expense_links() {
+        let items = [
+            item(1, "Pain", true),
+            item(2, "Lait", false),
+            item(3, "Beurre", true),
+            item(4, "Œufs", true),
+        ];
+        let entries = [entry(10, &[(3, "Beurre")])];
+        assert_eq!(ids(&linkable_items(&items, &entries, None)), [id(1), id(4)]);
+    }
+
+    #[test]
+    fn an_expense_keeps_its_own_items_checked_or_not() {
+        let items = [
+            item(1, "Pain", true),
+            item(2, "Lait", false),
+            item(3, "Beurre", true),
+        ];
+        let own = entry(10, &[(2, "Lait"), (3, "Beurre")]);
+        let other = entry(11, &[(1, "Pain")]);
+        let entries = [own.clone(), other];
+        assert_eq!(
+            ids(&linkable_items(&items, &entries, Some(&own))),
+            [id(2), id(3)]
+        );
+    }
+
+    #[test]
+    fn an_item_the_list_did_not_return_is_still_offered_to_its_expense() {
+        let own = entry(10, &[(5, "Café")]);
+        let offered = linkable_items(&[], std::slice::from_ref(&own), Some(&own));
+        assert_eq!(ids(&offered), [id(5)]);
+        assert_eq!(offered[0].name, "Café");
+    }
 }

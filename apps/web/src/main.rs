@@ -361,6 +361,24 @@ fn build_router(state: AppState) -> Router {
             "/budget/new",
             get(routes::budget::new::get).post(routes::budget::new::post),
         )
+        .route("/budget/settings", get(routes::budget::settings::get))
+        .route("/budget/settings/cap", post(routes::budget::settings::cap))
+        .route(
+            "/budget/settings/alerts",
+            post(routes::budget::settings::alerts),
+        )
+        .route(
+            "/budget/settings/categories",
+            post(routes::budget::settings::create_category),
+        )
+        .route(
+            "/budget/settings/categories/:id",
+            post(routes::budget::settings::update_category),
+        )
+        .route(
+            "/budget/settings/categories/:id/delete",
+            post(routes::budget::settings::delete_category),
+        )
         .route("/budget/:id", get(routes::budget::edit::get))
         .route("/budget/:id/edit", post(routes::budget::edit::post))
         .route("/budget/:id/delete", post(routes::budget::edit::delete))

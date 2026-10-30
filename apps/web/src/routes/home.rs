@@ -826,13 +826,9 @@ async fn dashboard(me: MeResponse, state: AppState, headers: HeaderMap) -> Respo
         .await
         {
             Ok(resp) if resp.status == reqwest::StatusCode::OK => {
-                serde_json::from_value::<BudgetSummary>(resp.body).unwrap_or(BudgetSummary {
-                    periods: Vec::new(),
-                })
+                serde_json::from_value::<BudgetSummary>(resp.body).unwrap_or_default()
             }
-            Ok(_) => BudgetSummary {
-                periods: Vec::new(),
-            },
+            Ok(_) => BudgetSummary::default(),
             Err(_) => return service_unavailable_page().into_response(),
         };
         budget_block(current_month_total(&budget_summary.periods, today), today)

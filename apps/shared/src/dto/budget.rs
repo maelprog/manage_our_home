@@ -16,11 +16,13 @@ use uuid::Uuid;
 
 /// `POST /groups/:id/budget-entries` request body. Mirrors
 /// `CreateBudgetEntryRequest`. `spent_at` is omitted from the wire when `None`
-/// (the backend defaults it to today, the Paris day). `grocery_item_id` links
-/// the entry to one grocery item: the API's shorthand for its
-/// `grocery_item_ids` list (#633, not mirrored here until a form sends it);
-/// an item already linked to another entry is a 409
-/// `grocery_item_already_priced`. The manual `/budget/new` form sends none.
+/// (the backend defaults it to today, the Paris day). `grocery_item_ids`
+/// links the entry to grocery items of the family (#633), as the
+/// `/budget/new` form's « Articles de courses » does (#533); an item already
+/// linked to another entry is a 409 `grocery_item_already_priced`.
+/// `grocery_item_id` is the API's older shorthand for one item, which no
+/// form sends. `category_id` files the entry under a category (#532), none
+/// under « Sans catégorie ».
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateBudgetEntryRequest {
     pub name: String,
@@ -29,6 +31,10 @@ pub struct CreateBudgetEntryRequest {
     pub spent_at: Option<NaiveDate>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grocery_item_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub grocery_item_ids: Vec<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_id: Option<Uuid>,
 }
 
 /// `PATCH /groups/:id/budget-entries/:entry_id` request body. Mirrors
@@ -36,6 +42,11 @@ pub struct CreateBudgetEntryRequest {
 /// in the DB, so a plain `Option` means "leave as-is" only — there is no
 /// "clear" state (unlike the grocery/stock quantity fields). Each field, when
 /// present, overwrites; when omitted, the backend keeps the stored value.
+///
+/// `category_id` is the one double `Option` (#532): `Some(None)` goes out
+/// as `null` and moves the entry to « Sans catégorie », `None` keeps its
+/// category. `grocery_item_ids`, when present, replaces the items the entry
+/// links to (#633) — `[]` unlinks them all —, and when left out keeps them.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdateBudgetEntryRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -44,6 +55,14 @@ pub struct UpdateBudgetEntryRequest {
     pub amount: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spent_at: Option<NaiveDate>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_some",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub category_id: Option<Option<Uuid>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grocery_item_ids: Option<Vec<Uuid>>,
 }
 
 /// `POST /groups/:id/grocery-items/:item_id/price` request body. Mirrors
@@ -71,6 +90,9 @@ pub struct BudgetEntryResponse {
     pub created_by: Uuid,
     #[serde(default)]
     pub grocery_items: Vec<LinkedGroceryItem>,
+    /// The entry's category (#532), `None` for « Sans catégorie ».
+    #[serde(default)]
+    pub category_id: Option<Uuid>,
     pub name: String,
     pub amount: f64,
     pub spent_at: NaiveDate,
@@ -101,10 +123,14 @@ pub struct BudgetPeriodTotal {
 }
 
 /// `GET /groups/:id/budget-entries/summary` response envelope
-/// (`{ "periods": [...] }`, newest month first).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// (`{ "periods": [...], "month": {...} }`, newest month first). `month` is
+/// the month asked for (`?month=YYYY-MM`, else the current one) against the
+/// caps (#532); `None` when a response lacks it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BudgetSummary {
     pub periods: Vec<BudgetPeriodTotal>,
+    #[serde(default)]
+    pub month: Option<BudgetMonthSummary>,
 }
 
 // -- Categories and caps (#532) -----------------------------------------------

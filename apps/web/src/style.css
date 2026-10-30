@@ -53,6 +53,11 @@
      information (WCAG 1.4.1): it always accompanies an initial or a name. */
   --m1: #7a5ea8; --m2: #2f7a9e; --m3: #457f44; --m4: #976928;
   --m5: #a8555c; --m6: #55707e; --m7: #8a6d3b; --m8: #6a6aa8;
+  /* The budget categories' orange (#533): the `orange` key of
+     CATEGORY_COLORS (#532, apps/shared). The
+     four other category colours are tokens already (DESIGN.md → Couleurs
+     des catégories du budget); this one is not, and no ramp hue is near. */
+  --orange: #b35c2e;
   /* Spacing, 4px base. The names are DESIGN.md's: --s2 is the 2px half-step,
      which is why the 8px step is --s2x and not --s2. */
   --s2: 2px; --s1: 4px; --s2x: 8px; --s3: 12px; --s4: 16px;
@@ -120,6 +125,8 @@
        5.37:1 at the floor (--m1 on --surface) across both grounds. */
     --m1: #a48bd0; --m2: #64a8c8; --m3: #7db77b; --m4: #d2a059;
     --m5: #d08a90; --m6: #8aa3b0; --m7: #b99b68; --m8: #9494ce;
+    /* Lightened as the ramp is: 6.11:1 on --surface, inside its range. */
+    --orange: #dd8f5e;
   }
 }
 /* Self-hosted variable fonts, latin + latin-ext, served off /assets by
@@ -679,6 +686,27 @@ progress::-moz-progress-bar { background: currentColor; }
 .scan .icon { color: var(--accent); }
 .or { display: flex; align-items: center; gap: var(--s3); margin: var(--s4) 0; color: var(--muted); font-size: var(--t-sm); }
 .or::before, .or::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+/* -- The budget (#533) -------------------------------------------------------
+   A category's colour is a named key (`validation::budget::CATEGORY_COLORS`)
+   that lands on `color`: the fill of its bar (`progress`, currentColor) and
+   of its swatch. Never the only carrier: the category's name is beside it,
+   and a bar's caption says its share in words. */
+.cat-blue { color: var(--m2); }
+.cat-violet { color: var(--m1); }
+.cat-green { color: var(--m3); }
+.cat-orange { color: var(--orange); }
+.cat-ochre { color: var(--warning); }
+.swatch { display: inline-block; width: var(--s3); height: var(--s3); border-radius: var(--r-sm); background: currentColor; }
+/* The family's bar once the cap is exceeded; « Dépassé » says it too. */
+progress.over { color: var(--error); }
+/* Spent, cap, what is left: three figures side by side, wrapping on a
+   narrow phone rather than squeezing an amount. */
+.figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(6rem, 1fr)); gap: var(--s3); margin: 0 0 var(--s3); }
+.figures dd { font-size: var(--t-lg); font-weight: 600; font-variant-numeric: tabular-nums; }
+/* The month and its categories, then its expenses: two equal columns on a
+   wide screen, one under the other when they do not fit. */
+.budget { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(20rem, 100%), 1fr)); align-items: start; gap: var(--s4); }
+.budget .card { margin: 0 0 var(--s4); }
 /* Support/admin screens (front epic F9) show multi-column tables that are
    wider than the narrow form column; the wrapper lets them scroll instead of
    overflowing the page. */
