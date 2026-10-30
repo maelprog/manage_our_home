@@ -368,8 +368,8 @@ disait pas.
 - **La colonne latérale sur PC (#523)** : la marque « MHome », puis
   Accueil, Agenda, Courses, Stocks, Recettes, Budget, Messagerie,
   Notifications (#535) — Admin pour le seul superadmin technique —,
-  chacun son icône devant son libellé ; Budget y est
-  montré à tout membre jusqu'à #531, qui ajoutera la condition de rôle.
+  chacun son icône devant son libellé ; Budget n'y est montré qu'aux
+  propriétaires et aux admins de la famille active (#531).
   Notifications porte le nombre des non lues de l'appelant, toutes
   familles confondues, dans la même pastille `.badge.warn` que
   Messagerie, et se nomme « Notifications, 3 non lues ». Elle n'a pas
