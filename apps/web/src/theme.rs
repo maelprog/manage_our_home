@@ -152,8 +152,7 @@ pub fn with_device_theme(source: &str) -> String {
         .unwrap_or_else(|| panic!("`{DARK_SELECTOR} {{` not found in the sheet"));
     let open = head + DARK_SELECTOR.len() + 1;
     let close = open
-        + source[open..]
-            .find('}')
+        + closing_brace(&source[open..])
             .unwrap_or_else(|| panic!("`{DARK_SELECTOR}` is never closed"));
     let declarations = without_comments(&source[open + 1..close]);
     let declarations: Vec<&str> = declarations
@@ -176,6 +175,21 @@ pub fn with_device_theme(source: &str) -> String {
     out.push_str("  }\n}");
     out.push_str(&source[close + 1..]);
     out
+}
+
+/// The offset of the first `}` of `css` outside a `/* … */` comment: a
+/// brace written in the prose of a comment does not end the block.
+fn closing_brace(css: &str) -> Option<usize> {
+    let mut from = 0;
+    loop {
+        let brace = from + css[from..].find('}')?;
+        match css[from..].find("/*").map(|at| from + at) {
+            Some(comment) if comment < brace => {
+                from = comment + 2 + css[comment + 2..].find("*/")? + 2;
+            }
+            _ => return Some(brace),
+        }
+    }
 }
 
 /// `css` with its `/* … */` comments taken out.
@@ -396,6 +410,34 @@ body { background: var(--bg); }
         assert_eq!(sheet.matches("--bg: #1a1917;").count(), 2, "{sheet}");
         assert_eq!(SOURCE.matches(DEVICE_DARK_MEDIA).count(), 0);
         assert_eq!(sheet.matches(DEVICE_DARK_MEDIA).count(), 1);
+    }
+
+    /// A `}` inside a comment of the dark block is prose, not its end: the
+    /// declarations after it are copied too, and the comment is not.
+    #[test]
+    fn a_brace_in_a_comment_does_not_end_the_dark_block() {
+        let source = r#":root { --bg: #fff; --fg: #000; }
+:root[data-theme="dark"] {
+  /* a closing } and an opening { in prose */
+  --bg: #111;
+  /* } */
+  --fg: #eee;
+}
+body { color: var(--fg); }
+"#;
+        let sheet = with_device_theme(source);
+        let at = sheet.find(DEVICE_DARK_MEDIA).expect("the derived block");
+        let derived = &sheet[at..sheet.find("body {").unwrap()];
+        for declaration in ["--bg: #111;", "--fg: #eee;"] {
+            assert!(derived.contains(declaration), "{declaration}: {sheet}");
+        }
+        assert!(!derived.contains("/*"), "{derived}");
+        assert!(
+            sheet.ends_with("}\nbody { color: var(--fg); }\n"),
+            "{sheet}"
+        );
+        assert_eq!(derived.matches('{').count(), 2, "{derived}");
+        assert_eq!(derived.matches('}').count(), 2, "{derived}");
     }
 
     #[test]
