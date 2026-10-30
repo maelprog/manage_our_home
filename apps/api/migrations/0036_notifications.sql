@@ -5,7 +5,7 @@
 -- One row per recipient. The events that write one (controller's decision
 -- of 2026-10-21) are the `kind` values below: an agenda reminder coming due
 -- (`jobs::scheduled_notifications`), a stock item nearing its expiry date
--- (same job, its expiry pass), a message posted, an invitation addressed to
+-- (`jobs::stock_expiry`), a message posted, an invitation addressed to
 -- an existing account, an item added to the grocery list. Budget alerts
 -- (#536) will add their own kind with a new migration.
 --

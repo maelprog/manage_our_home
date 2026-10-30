@@ -2,7 +2,7 @@
 //! whatever reached their devices or their inbox.
 //!
 //! Every event of [`Kind`] writes one row of `notifications` per recipient
-//! (migration 0036), through [`insert_for`] or [`insert_for_other_members`]
+//! (migration 0036), through [`insert_for`] or [`insert_for_members`]
 //! — the two writers every feature calls, budget alerts (#536) included.
 //! The member lists them, counts the unread ones and marks them read here;
 //! the rows go 30 days after they were written, read or not
