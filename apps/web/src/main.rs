@@ -20,6 +20,7 @@ mod lenient_query;
 mod return_to;
 mod routes;
 mod state;
+mod theme;
 
 use axum::routing::{get, post};
 use axum::Router;
@@ -150,6 +151,11 @@ fn build_router(state: AppState) -> Router {
         .route(
             "/account/avatar/delete",
             post(routes::account::avatar::delete),
+        )
+        // The theme (#585): a cookie of this browser's, no API call.
+        .route(
+            routes::account::appearance::PATH,
+            get(routes::account::appearance::get).post(routes::account::appearance::post),
         )
         .route("/account/export", get(routes::account::export::get))
         .route(
@@ -485,6 +491,10 @@ fn build_router(state: AppState) -> Router {
             origin_guard,
             manage_our_home_http_guard::guard_cross_origin,
         ))
+        // The theme the visitor chose (#585), around everything above so
+        // that every page — the guards' refusals included — is written in
+        // it: `app::document` reads it back.
+        .layer(axum::middleware::from_fn(theme::scope))
         // The orchestrator's probes (#424), after every layer so that none
         // applies: they read no cookie and no body.
         .route("/healthz", get(routes::health::healthz))
@@ -627,5 +637,101 @@ mod cross_origin_tests {
             .unwrap();
         let resp = router.oneshot(request).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+}
+
+/// The theme on the real router (#585): the middleware reads the cookie for
+/// every page, and a cookie it does not know never fails one.
+#[cfg(test)]
+mod theme_tests {
+    use axum::body::Body;
+    use axum::http::{header, Request, StatusCode};
+    use axum::routing::get;
+    use axum::Router;
+    use tower::ServiceExt;
+
+    use super::*;
+
+    /// An apps/api with no session to report: `/login` renders.
+    async fn web() -> Router {
+        let app = Router::new().route("/auth/me", get(|| async { StatusCode::UNAUTHORIZED }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        build_router(AppState {
+            http: reqwest::Client::new(),
+            api_internal_base_url: format!("http://{addr}"),
+            api_public_base_url: "/api".into(),
+            body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
+            upload_gate: manage_our_home_http_guard::UploadGate::production(),
+            shutdown: manage_our_home_http_guard::Shutdown::new(),
+        })
+    }
+
+    /// The status and the `<html>` tag of `/login` under these cookies.
+    async fn html_tag(cookies: &[&str]) -> (StatusCode, String) {
+        let mut request = Request::builder().uri("/login");
+        for cookie in cookies {
+            request = request.header(header::COOKIE, *cookie);
+        }
+        let response = web()
+            .await
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        let at = body.find("<html").expect("an <html> tag");
+        let tag = body[at..at + body[at..].find('>').unwrap() + 1].to_string();
+        (status, tag)
+    }
+
+    #[tokio::test]
+    async fn a_forced_theme_is_written_on_html() {
+        assert_eq!(
+            html_tag(&["__Host-theme=dark"]).await,
+            (
+                StatusCode::OK,
+                r#"<html lang="fr" data-theme="dark">"#.into()
+            )
+        );
+        assert_eq!(
+            html_tag(&["session=x; __Host-theme=light"]).await,
+            (
+                StatusCode::OK,
+                r#"<html lang="fr" data-theme="light">"#.into()
+            )
+        );
+    }
+
+    /// HTTP/2 may send the cookies in several headers.
+    #[tokio::test]
+    async fn the_cookie_is_found_in_any_cookie_header() {
+        assert_eq!(
+            html_tag(&["session=x", "__Host-theme=dark"]).await,
+            (
+                StatusCode::OK,
+                r#"<html lang="fr" data-theme="dark">"#.into()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_known_choice_the_page_follows_the_device() {
+        for cookies in [
+            &[][..],
+            &["__Host-theme=purple"],
+            &["theme=dark"],
+            &["__Host-theme="],
+        ] {
+            assert_eq!(
+                html_tag(cookies).await,
+                (StatusCode::OK, r#"<html lang="fr">"#.into()),
+                "{cookies:?}"
+            );
+        }
     }
 }

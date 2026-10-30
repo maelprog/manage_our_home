@@ -79,55 +79,63 @@
      sweep of `!important` (see the media query at the end of the sheet). */
   --dur: 150ms; --ease: cubic-bezier(0.2, 0, 0.2, 1);
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    /* Every literal colour above is restated here, and the app.rs test
-       derives that list from the stylesheet rather than naming the tokens.
-       Both bugs this guards came from a token that existed in one theme
-       only: #65 behind the text (--accent-bg and --chip-bg were referenced
-       and defined nowhere, so their light fallback applied in dark too and
-       put near-white behind near-white), #74 in front of it (--accent was
-       declared once, in light, and is the colour of every link — 2.71:1 in
-       dark). A hand-written list caught the first and missed the second. */
-    --bg: #1a1917;
-    --surface: #242320;
-    --fg: #edeae4;
-    --muted: #a19a8f;
-    --border: #38352f;
-    --line: #322f2a;
-    --hover: #2e2c28;
-    /* A shadow does not show on a dark ground, so the card is drawn by a
-       --hover rim first, then the drop under it. */
-    --shadow: 0 0 0 1px var(--hover), 0 8px 24px rgba(0, 0, 0, 0.28);
-    /* Lightened until it works as text, which is the constraining use:
-       7.03:1 on --bg, 6.29:1 on --surface, 5.16:1 on --accent-soft. Solid
-       accent surfaces flip their text with --accent-fg — white on this teal
-       would be 2.50:1 — hence #10201f, which reads 6.73:1 here. */
-    --accent: #4fb3af;
-    --accent-fg: #10201f;
-    /* Darkened by #74 from #1e3a39, which put --muted at 4.38:1 on today's
-       cell when today falls outside the month on screen. */
-    --accent-soft: #1c3635;
-    /* The hover halves lighten here rather than darken: on a dark ground it
-       is the lighter surface that reads as "under the pointer". */
-    --accent-hover: #6ec7c3;
-    /* Same treatment for the semantics: the plain half lightens, the -soft
-       half darkens, and each pair keeps 5:1 or better (5.92 / 6.42 / 5.49).
-       --accent-fg is also the text on a solid --error, at 6.23:1. */
-    --success: #7cb86c;
-    --success-soft: #22301e;
-    --warning: #d9a441;
-    --warning-soft: #332813;
-    --error: #e88075;
-    --error-soft: #3a211e;
-    --error-hover: #f09a90;
-    /* The member ramp lightens too: muted tints legible on a dark ground,
-       5.37:1 at the floor (--m1 on --surface) across both grounds. */
-    --m1: #a48bd0; --m2: #64a8c8; --m3: #7db77b; --m4: #d2a059;
-    --m5: #d08a90; --m6: #8aa3b0; --m7: #b99b68; --m8: #9494ce;
-    /* Lightened as the ramp is: 6.11:1 on --surface, inside its range. */
-    --orange: #dd8f5e;
-  }
+/* The theme a visitor picks (#585, src/theme.rs): Clair or Sombre write
+   `data-theme` on <html>, Automatique writes nothing and the device decides.
+   `color-scheme` follows, so the native controls (scrollbars, date pickers)
+   switch too. The dark values below are written once: the served sheet
+   carries, right after this block, a copy of its declarations under
+   `@media (prefers-color-scheme: dark)` for `:root:not([data-theme="light"])`,
+   derived once per process by `theme::with_device_theme` — never write that
+   block by hand. */
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  /* Every literal colour above is restated here, and the app.rs test
+     derives that list from the stylesheet rather than naming the tokens.
+     Both bugs this guards came from a token that existed in one theme
+     only: #65 behind the text (--accent-bg and --chip-bg were referenced
+     and defined nowhere, so their light fallback applied in dark too and
+     put near-white behind near-white), #74 in front of it (--accent was
+     declared once, in light, and is the colour of every link — 2.71:1 in
+     dark). A hand-written list caught the first and missed the second. */
+  --bg: #1a1917;
+  --surface: #242320;
+  --fg: #edeae4;
+  --muted: #a19a8f;
+  --border: #38352f;
+  --line: #322f2a;
+  --hover: #2e2c28;
+  /* A shadow does not show on a dark ground, so the card is drawn by a
+     --hover rim first, then the drop under it. */
+  --shadow: 0 0 0 1px var(--hover), 0 8px 24px rgba(0, 0, 0, 0.28);
+  /* Lightened until it works as text, which is the constraining use:
+     7.03:1 on --bg, 6.29:1 on --surface, 5.16:1 on --accent-soft. Solid
+     accent surfaces flip their text with --accent-fg — white on this teal
+     would be 2.50:1 — hence #10201f, which reads 6.73:1 here. */
+  --accent: #4fb3af;
+  --accent-fg: #10201f;
+  /* Darkened by #74 from #1e3a39, which put --muted at 4.38:1 on today's
+     cell when today falls outside the month on screen. */
+  --accent-soft: #1c3635;
+  /* The hover halves lighten here rather than darken: on a dark ground it
+     is the lighter surface that reads as "under the pointer". */
+  --accent-hover: #6ec7c3;
+  /* Same treatment for the semantics: the plain half lightens, the -soft
+     half darkens, and each pair keeps 5:1 or better (5.92 / 6.42 / 5.49).
+     --accent-fg is also the text on a solid --error, at 6.23:1. */
+  --success: #7cb86c;
+  --success-soft: #22301e;
+  --warning: #d9a441;
+  --warning-soft: #332813;
+  --error: #e88075;
+  --error-soft: #3a211e;
+  --error-hover: #f09a90;
+  /* The member ramp lightens too: muted tints legible on a dark ground,
+     5.37:1 at the floor (--m1 on --surface) across both grounds. */
+  --m1: #a48bd0; --m2: #64a8c8; --m3: #7db77b; --m4: #d2a059;
+  --m5: #d08a90; --m6: #8aa3b0; --m7: #b99b68; --m8: #9494ce;
+  /* Lightened as the ramp is: 6.11:1 on --surface, inside its range. */
+  --orange: #dd8f5e;
 }
 /* Self-hosted variable fonts, latin + latin-ext, served off /assets by
    src/assets.rs — never a CDN (it would hand every visitor's IP to a third

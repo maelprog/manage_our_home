@@ -109,7 +109,15 @@ async fn cache_what_was_served(mut response: Response) -> Response {
 /// at build time, and the two can be a deploy apart — serving the sheet
 /// from disk would have reintroduced exactly the drift this is avoiding,
 /// only with a hash on top to make it look safe.
-pub const STYLESHEET: &str = include_str!("style.css");
+///
+/// Since #585 the bytes served are `style.css` plus one block derived from
+/// it: the dark values, written once under `:root[data-theme="dark"]`,
+/// restated under `prefers-color-scheme: dark` for a page that made no
+/// choice (`theme::with_device_theme`). Derived once per process from a
+/// compiled-in constant, so the sheet is as fixed as the constant was: the
+/// digest, the `<link>` and the answer still come from these bytes alone.
+pub static STYLESHEET: LazyLock<String> =
+    LazyLock::new(|| crate::theme::with_device_theme(include_str!("style.css")));
 
 /// How many hex characters of the digest name the file.
 ///
@@ -149,7 +157,7 @@ fn fingerprinted_url(stem: &str, ext: &str, content: &str) -> String {
 /// input is a `const`. A `LazyLock` rather than a `const fn` only because
 /// SHA-256 is not one; the guarantee is the same.
 pub fn stylesheet_href() -> &'static str {
-    static HREF: LazyLock<String> = LazyLock::new(|| stylesheet_url(STYLESHEET));
+    static HREF: LazyLock<String> = LazyLock::new(|| stylesheet_url(&STYLESHEET));
     &HREF
 }
 
@@ -165,7 +173,7 @@ async fn serve_stylesheet() -> Response {
             CONTENT_TYPE,
             HeaderValue::from_static("text/css; charset=utf-8"),
         )],
-        STYLESHEET,
+        STYLESHEET.as_str(),
     )
         .into_response()
 }
@@ -366,7 +374,7 @@ mod tests {
         // A name that varied between two calls (a random suffix, a build
         // timestamp) would put a different URL in the page than the one the
         // route answers on, and no cache would ever hit.
-        assert_eq!(stylesheet_url(STYLESHEET), stylesheet_url(STYLESHEET));
+        assert_eq!(stylesheet_url(&STYLESHEET), stylesheet_url(&STYLESHEET));
     }
 
     #[test]
@@ -389,7 +397,7 @@ mod tests {
     fn the_name_is_a_fixed_run_of_lowercase_hex_under_the_assets_route() {
         // `immutable` is a promise made on a URL, so the URL has to be
         // stable in shape as well as in content — and safe in a path.
-        for css in ["", "body{}", STYLESHEET] {
+        for css in ["", "body{}", STYLESHEET.as_str()] {
             let url = stylesheet_url(css);
             let hex = url
                 .strip_prefix("/assets/style-")

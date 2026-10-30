@@ -1,5 +1,6 @@
 import { expect, Page, test } from "@playwright/test";
 import { fetchVerificationToken } from "../lib/db";
+import { chooseTheme } from "../lib/theme";
 
 // Issue #69 — interaction states. Its "Vérification" is a manual one:
 // "parcourir l'application entièrement au clavier (Tab / Entrée) : le focus
@@ -215,6 +216,40 @@ test.describe("Interaction states (#69)", () => {
       }
     }
     await page.emulateMedia({ colorScheme: "light" });
+  });
+
+  test("every keyboard stop shows a focus ring in a forced theme too (#585)", async ({ page }) => {
+    // The walk above, with the theme chosen against the device: Sombre on a
+    // light one, Clair on a dark one. The ring must follow the choice, not
+    // the device — and differ between the two, as it does between the
+    // device's own themes.
+    test.setTimeout(60_000);
+    const rings: string[] = [];
+    for (const [choice, device] of [
+      ["Sombre", "light"],
+      ["Clair", "dark"],
+    ] as const) {
+      // The choice is a form submitted, so a navigation a view transition
+      // follows: made under the suite's reduced motion, then full motion
+      // for the walk, as in the test above.
+      await page.emulateMedia({ colorScheme: device, reducedMotion: "reduce" });
+      await chooseTheme(page, choice);
+      await page.emulateMedia({ reducedMotion: "no-preference" });
+      for (const path of ["/", "/agenda", "/stocks/new", "/groups"]) {
+        await page.goto(path);
+        await page.locator("body").click({ position: { x: 1, y: 1 } });
+        const stops = await walkWithTheKeyboard(page, 25);
+        expect(stops, `no focusable element at all on ${path} (${choice})`).toBeGreaterThan(3);
+      }
+      await page.goto("/");
+      await page.locator("body").click({ position: { x: 1, y: 1 } });
+      await page.keyboard.press("Tab");
+      const indicator = await focusIndicator(page);
+      expect(indicator, `nothing focused under ${choice}`).not.toBeNull();
+      rings.push(indicator!.outlineColor);
+    }
+    expect(rings[0], "the ring follows the device, not the chosen theme").not.toBe(rings[1]);
+    await page.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" });
   });
 
   test("the first Tab offers to skip the navigation, and taking it does (#144)", async ({ page }) => {
