@@ -75,7 +75,9 @@ impl Appearance {
 
     /// The choice a request's `Cookie` header carries: Automatique without
     /// the cookie or with a value it does not know. The first cookie of the
-    /// name is the one read, as `family.rs` and `return_to.rs` do.
+    /// name is the one read, even when its value is unknown, as
+    /// `return_to.rs` (`return_cookie`) does; `family.rs` instead skips a
+    /// value it cannot parse and reads the next cookie of the name.
     pub fn from_cookie_header(cookie_header: Option<&str>) -> Appearance {
         let Some(header) = cookie_header else {
             return Appearance::Auto;
@@ -277,7 +279,8 @@ mod tests {
     }
 
     /// Two cookies of the name: the first one counts, whatever the second
-    /// holds — the rule of `family.rs` and `return_to.rs`.
+    /// holds, even when the first is unknown — the rule of `return_to.rs`
+    /// (`return_cookie`), not of `family.rs`, which skips an unparsable one.
     #[test]
     fn a_duplicated_cookie_reads_the_first() {
         assert_eq!(
