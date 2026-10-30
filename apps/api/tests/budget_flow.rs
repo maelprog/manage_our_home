@@ -1826,10 +1826,12 @@ async fn patch_entry(
 }
 
 const NEAR: &str = "Les dépenses du mois atteignent 80 % du budget de la famille.";
-const OVER: &str = "Les dépenses du mois dépassent le budget de la famille.";
+/// Sorts before `NEAR` (`1` before `8`).
+const FULL: &str = "Les dépenses du mois atteignent 100 % du budget de la famille.";
 
-/// AC #536: an expense that reaches 80 % of the family's cap, then one
-/// that exceeds it and its category's cap, alert the owner and the admins —
+/// AC #536: an expense that reaches 80 % of the family's cap, one that
+/// reaches the cap exactly, then one that exceeds its category's cap, alert
+/// the owner and the admins —
 /// the author of the expense included — once per threshold and per month:
 /// lowering an expense alerts nothing, and raising it again past the same
 /// caps alerts nothing more. A standard member never gets one.
@@ -1888,18 +1890,38 @@ async fn cap_alerts_go_once_per_month_to_owners_and_admins_only(db: PgPool) {
         "the author of the expense gets it too"
     );
 
-    // 31 € of Loisirs: past its 30 € cap, and the family past its 100 €.
+    // 20 € more: the family's 100 € exactly — reaching it alerts.
+    create_entry(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Pharmacie", "amount": 20.0}),
+    )
+    .await;
+    assert_eq!(budget_alerts(&router, &admin).await, [FULL, NEAR]);
+
+    // 30 € of Loisirs: its cap reached, not exceeded — nothing.
     let cinema = create_entry(
         &router,
         &owner,
         &group_id,
-        serde_json::json!({"name": "Cinéma", "amount": 31.0, "category_id": loisirs}),
+        serde_json::json!({"name": "Cinéma", "amount": 30.0, "category_id": loisirs}),
     )
     .await;
+    assert_eq!(budget_alerts(&router, &admin).await, [FULL, NEAR]);
+    // 31 €: past it.
     let cinema_id = cinema["id"].as_str().unwrap();
+    patch_entry(
+        &router,
+        &owner,
+        &group_id,
+        cinema_id,
+        serde_json::json!({"amount": 31.0}),
+    )
+    .await;
     let category = "Les dépenses du mois dépassent le plafond de « Loisirs ».";
     for cookie in [&owner, &admin] {
-        assert_eq!(budget_alerts(&router, cookie).await, [NEAR, OVER, category]);
+        assert_eq!(budget_alerts(&router, cookie).await, [FULL, NEAR, category]);
     }
 
     // Lowered under every threshold: nothing. Raised past them again in the
@@ -1929,7 +1951,7 @@ async fn cap_alerts_go_once_per_month_to_owners_and_admins_only(db: PgPool) {
     )
     .await;
     for cookie in [&owner, &admin] {
-        assert_eq!(budget_alerts(&router, cookie).await, [NEAR, OVER, category]);
+        assert_eq!(budget_alerts(&router, cookie).await, [FULL, NEAR, category]);
     }
     assert!(budget_alerts(&router, &member).await.is_empty());
     let sent: i64 = sqlx::query_scalar("SELECT count(*) FROM budget_alerts")
@@ -2054,7 +2076,7 @@ async fn the_switches_and_the_current_month_bound_the_alerts(db: PgPool) {
         serde_json::json!({"spent_at": today}),
     )
     .await;
-    assert_eq!(budget_alerts(&router, &admin).await, [NEAR, OVER, category]);
+    assert_eq!(budget_alerts(&router, &admin).await, [FULL, NEAR, category]);
 }
 
 /// AC #536: a price set on a checked grocery item is an expense like any

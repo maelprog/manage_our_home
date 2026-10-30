@@ -1,5 +1,5 @@
 //! The budget's cap alerts (#536): an expense that takes the month's
-//! spending of the family to 80 % of its cap, past its cap, or past the cap
+//! spending of the family to 80 % of its cap, to its cap, or past the cap
 //! of its category writes a notification to the owners and the admins of
 //! the family (`can_access_budget`), each threshold once per month and per
 //! scope (`budget_alerts`, migration 0037).
@@ -32,7 +32,10 @@ use crate::AppState;
 pub enum Threshold {
     /// 80 % of the cap reached — reaching it exactly counts.
     EightyPercent,
-    /// The cap exceeded: strictly above it, as `cap_usage`'s `over_cap`
+    /// The whole cap reached, equality included: the family's second
+    /// threshold (user's decision of 2026-10-30).
+    CapReached,
+    /// The cap exceeded, a category's only: strictly above it, as `cap_usage`'s `over_cap`
     /// that the summary shows. Reaching it is not exceeding it.
     OverCap,
 }
@@ -42,7 +45,7 @@ impl Threshold {
     pub fn percent(self) -> i16 {
         match self {
             Threshold::EightyPercent => 80,
-            Threshold::OverCap => 100,
+            Threshold::CapReached | Threshold::OverCap => 100,
         }
     }
 
@@ -52,14 +55,15 @@ impl Threshold {
         let (total, cap) = (i128::from(total_cents), i128::from(cap_cents));
         match self {
             Threshold::EightyPercent => total * 100 >= cap * 80,
+            Threshold::CapReached => total >= cap,
             Threshold::OverCap => total > cap,
         }
     }
 }
 
-/// The family's cap alerts at 80 % and past it (user's decision of
+/// The family's cap alerts at 80 % and at 100 % (user's decision of
 /// 2026-10-30).
-pub const FAMILY_THRESHOLDS: [Threshold; 2] = [Threshold::EightyPercent, Threshold::OverCap];
+pub const FAMILY_THRESHOLDS: [Threshold; 2] = [Threshold::EightyPercent, Threshold::CapReached];
 /// A category's: past its cap only.
 pub const CATEGORY_THRESHOLDS: [Threshold; 1] = [Threshold::OverCap];
 
@@ -311,7 +315,7 @@ impl Watch {
         let event = match (category, threshold) {
             (Some(c), _) => Event::BudgetCategoryCapExceeded { category: &c.name },
             (None, Threshold::EightyPercent) => Event::BudgetCapNear,
-            (None, Threshold::OverCap) => Event::BudgetCapExceeded,
+            (None, _) => Event::BudgetCapReached,
         };
         center::insert_for(
             tx,
@@ -413,10 +417,23 @@ mod tests {
         );
     }
 
-    /// Reaching a cap is not exceeding it (`cap_usage`'s `over_cap`); one
-    /// cent above is.
+    /// The family's cap alerts as soon as it is reached (user's decision of
+    /// 2026-10-30): equality counts, one cent short does not.
     #[test]
-    fn a_cap_is_exceeded_strictly_above_it() {
+    fn the_family_cap_alerts_once_reached_exactly() {
+        assert_eq!(
+            crossed(&FAMILY_THRESHOLDS, 90_000, 100_000, Some(100_000)),
+            [CapReached]
+        );
+        assert!(crossed(&FAMILY_THRESHOLDS, 90_000, 99_999, Some(100_000)).is_empty());
+        // Reached already: going above it crosses nothing more.
+        assert!(crossed(&FAMILY_THRESHOLDS, 100_000, 100_001, Some(100_000)).is_empty());
+    }
+
+    /// A category's cap is not: reaching it is not exceeding it
+    /// (`cap_usage`'s `over_cap`); one cent above is.
+    #[test]
+    fn a_category_cap_is_exceeded_strictly_above_it() {
         assert!(crossed(&CATEGORY_THRESHOLDS, 9_000, 10_000, Some(10_000)).is_empty());
         assert_eq!(
             crossed(&CATEGORY_THRESHOLDS, 9_000, 10_001, Some(10_000)),
@@ -435,7 +452,7 @@ mod tests {
     fn an_expense_can_cross_both_thresholds() {
         assert_eq!(
             crossed(&FAMILY_THRESHOLDS, 50_000, 120_000, Some(100_000)),
-            [EightyPercent, OverCap]
+            [EightyPercent, CapReached]
         );
     }
 
@@ -444,7 +461,7 @@ mod tests {
     fn a_threshold_already_reached_is_not_crossed_again() {
         assert_eq!(
             crossed(&FAMILY_THRESHOLDS, 85_000, 101_000, Some(100_000)),
-            [OverCap]
+            [CapReached]
         );
         assert!(crossed(&FAMILY_THRESHOLDS, 85_000, 95_000, Some(100_000)).is_empty());
         assert!(crossed(&FAMILY_THRESHOLDS, 110_000, 130_000, Some(100_000)).is_empty());
@@ -475,11 +492,15 @@ mod tests {
     fn huge_totals_do_not_overflow() {
         assert_eq!(
             crossed(&FAMILY_THRESHOLDS, 0, i64::MAX, Some(i64::MAX)),
-            [EightyPercent]
+            [EightyPercent, CapReached]
+        );
+        assert_eq!(
+            crossed(&CATEGORY_THRESHOLDS, 0, i64::MAX, Some(i64::MAX)),
+            []
         );
         assert_eq!(
             crossed(&FAMILY_THRESHOLDS, 0, i64::MAX, Some(i64::MAX / 2)),
-            [EightyPercent, OverCap]
+            [EightyPercent, CapReached]
         );
     }
 

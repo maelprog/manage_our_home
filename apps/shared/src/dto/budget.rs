@@ -169,7 +169,7 @@ pub struct BudgetSettings {
 /// family's two switches of the cap alerts, both on unless turned off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BudgetAlertSettings {
-    /// The alerts on the family's monthly cap: 80 % reached, cap exceeded.
+    /// The alerts on the family's monthly cap: 80 % reached, cap reached.
     pub global_cap_alerts: bool,
     /// The alerts on a category's cap: cap exceeded.
     pub category_cap_alerts: bool,

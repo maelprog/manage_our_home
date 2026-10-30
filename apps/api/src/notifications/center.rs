@@ -87,8 +87,8 @@ pub enum Event<'a> {
     /// The family's spending this month reached 80 % of its monthly cap
     /// (#536).
     BudgetCapNear,
-    /// The family's spending this month exceeded its monthly cap.
-    BudgetCapExceeded,
+    /// The family's spending this month reached its monthly cap.
+    BudgetCapReached,
     /// The month's spending in a category exceeded that category's cap.
     BudgetCategoryCapExceeded { category: &'a str },
 }
@@ -102,7 +102,7 @@ impl Event<'_> {
             Event::Invitation { .. } => Kind::Invitation,
             Event::GroceryItem { .. } => Kind::GroceryItem,
             Event::BudgetCapNear
-            | Event::BudgetCapExceeded
+            | Event::BudgetCapReached
             | Event::BudgetCategoryCapExceeded { .. } => Kind::BudgetAlert,
         }
     }
@@ -154,8 +154,8 @@ pub fn body(event: &Event<'_>) -> String {
         Event::BudgetCapNear => {
             "Les dépenses du mois atteignent 80 % du budget de la famille.".into()
         }
-        Event::BudgetCapExceeded => {
-            "Les dépenses du mois dépassent le budget de la famille.".into()
+        Event::BudgetCapReached => {
+            "Les dépenses du mois atteignent 100 % du budget de la famille.".into()
         }
         Event::BudgetCategoryCapExceeded { category } => format!(
             "Les dépenses du mois dépassent le plafond de « {} ».",
@@ -462,7 +462,7 @@ mod tests {
                 Kind::GroceryItem,
             ),
             (Event::BudgetCapNear, Kind::BudgetAlert),
-            (Event::BudgetCapExceeded, Kind::BudgetAlert),
+            (Event::BudgetCapReached, Kind::BudgetAlert),
             (
                 Event::BudgetCategoryCapExceeded { category: "c" },
                 Kind::BudgetAlert,
@@ -598,8 +598,8 @@ mod tests {
             "Les dépenses du mois atteignent 80 % du budget de la famille."
         );
         assert_eq!(
-            body(&Event::BudgetCapExceeded),
-            "Les dépenses du mois dépassent le budget de la famille."
+            body(&Event::BudgetCapReached),
+            "Les dépenses du mois atteignent 100 % du budget de la famille."
         );
         assert_eq!(
             body(&Event::BudgetCategoryCapExceeded {

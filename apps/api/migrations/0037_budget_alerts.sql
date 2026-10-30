@@ -1,5 +1,5 @@
 -- #536: the budget's cap alerts. An expense that takes the month's spending
--- of the family to 80 % of its cap, past its cap, or past the cap of its
+-- of the family to 80 % of its cap, to its cap, or past the cap of its
 -- category writes a notification (`notifications`, 0036) to the owners and
 -- the admins of the family, the members who reach the budget (#531).
 --
@@ -24,8 +24,8 @@ CREATE TABLE budget_alerts (
     group_id    UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
     month       DATE NOT NULL CHECK (extract(day FROM month) = 1),
     category_id UUID,
-    -- 80: 80 % of the family's cap reached; 100: a cap exceeded. A
-    -- category has the second only.
+    -- 80: 80 % of the family's cap reached; 100: the family's cap reached,
+    -- or a category's exceeded. A category has the second only.
     threshold   SMALLINT NOT NULL CHECK (threshold IN (80, 100)),
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     CHECK (category_id IS NULL OR threshold = 100),
