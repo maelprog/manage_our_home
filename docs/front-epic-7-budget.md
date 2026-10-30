@@ -194,6 +194,7 @@ pre-validated by the shared `validate_entry_form`.
 | 400 | `amount_must_be_non_negative` | PRG → `/grocery-list?error=amount_must_be_non_negative` |
 | 404 | `not_found` | "Article introuvable" page |
 | 403 | `forbidden` | PRG → `/grocery-list?error=forbidden` (unreachable — the budget bar is owner/admin, and a standard member gets 404, not 403, since #531; defensive) |
+| 409 | `grocery_item_priced_with_others` | PRG → `/grocery-list?error=grocery_item_priced_with_others` — the item's expense links other items too (#633); the banner says to correct its amount from the budget (#533) |
 | — | transport / other | PRG → `/grocery-list?error=unavailable` |
 
 Amount (finite, non-negative) is pre-validated by the shared

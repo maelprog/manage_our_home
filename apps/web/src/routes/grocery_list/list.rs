@@ -134,6 +134,9 @@ fn error_html(error: Option<&str>) -> String {
         Some("quantity_must_be_non_negative") => "La quantité ne peut pas être négative.",
         Some("amount_must_be_non_negative") => "Le montant ne peut pas être négatif.",
         Some("forbidden") => "Vous n'avez pas les droits nécessaires pour cette action.",
+        Some("grocery_item_priced_with_others") => {
+            "Cet article fait partie d'une dépense qui regroupe plusieurs articles : corrigez son montant depuis le budget."
+        }
         Some("unavailable") => "Service momentanément indisponible, merci de réessayer.",
         _ => return String::new(),
     };
@@ -151,8 +154,9 @@ fn error_html(error: Option<&str>) -> String {
 ///
 /// Once an item is checked (bought), the row also shows the Budget
 /// price-on-checkout form (F7): an inline amount field posting to
-/// `POST /grocery-list/:id/price`. The backend upserts on the item, so a
-/// re-tap re-tarifies rather than double-counting. `can_price` is
+/// `POST /grocery-list/:id/price`. A re-tap updates the expense the item is
+/// linked to rather than double-counting — unless that expense carries
+/// other items too (#633), which only the budget page corrects. `can_price` is
 /// `can_access_budget` of the caller's role (#531): a standard member gets no
 /// price field, an owner or an admin adds the spend later.
 fn item_row(item: &GroceryItemResponse, can_edit: bool, can_price: bool) -> String {
@@ -617,6 +621,22 @@ pub async fn check(
     }
 }
 
+/// The `?error=` code a refused price is relayed with: a 400's own code
+/// (an amount the pre-validation let through), the 409 of an item whose
+/// expense carries other items too (#633) — which only the budget can
+/// correct —, `forbidden` on a 403, and `unavailable` for the rest.
+fn price_error_code(status: reqwest::StatusCode, body: &serde_json::Value) -> String {
+    let code = body.get("error").and_then(|e| e.as_str());
+    match status {
+        reqwest::StatusCode::BAD_REQUEST => code.unwrap_or("unavailable").to_string(),
+        reqwest::StatusCode::CONFLICT if code == Some("grocery_item_priced_with_others") => {
+            "grocery_item_priced_with_others".to_string()
+        }
+        reqwest::StatusCode::FORBIDDEN => "forbidden".to_string(),
+        _ => "unavailable".to_string(),
+    }
+}
+
 /// The inline price-on-checkout form (F7). `amount` arrives as a euro string
 /// and is parsed in the handler.
 #[derive(serde::Deserialize)]
@@ -627,9 +647,11 @@ pub struct PriceForm {
 
 /// Sets a price on a checked grocery item (Budget price-on-checkout, F7). An
 /// owner or an admin may set a price (#531: a standard member's is the
-/// backend's 404, the item-not-found page); the backend upserts on the item,
-/// so a re-tap re-tarifies the same budget entry rather than double-counting.
-/// Relays to
+/// backend's 404, the item-not-found page). A re-tap re-tarifies the expense
+/// the item is linked to rather than double-counting; when that expense
+/// links other items too (#633), the API refuses with a 409
+/// `grocery_item_priced_with_others` and the list says to correct it from
+/// the budget (`price_error_code`). Relays to
 /// `POST /groups/:id/grocery-items/:item_id/price`.
 pub async fn price(
     CurrentUser(me): CurrentUser,
@@ -674,19 +696,11 @@ pub async fn price(
         Ok(resp) if resp.status == reqwest::StatusCode::CREATED => {
             Redirect::to("/grocery-list?notice=price_set").into_response()
         }
-        Ok(resp) if resp.status == reqwest::StatusCode::BAD_REQUEST => {
-            let code = resp
-                .body
-                .get("error")
-                .and_then(|e| e.as_str())
-                .unwrap_or("unavailable");
-            redirect(code)
-        }
         Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
             item_not_found_page().into_response()
         }
-        Ok(resp) if resp.status == reqwest::StatusCode::FORBIDDEN => redirect("forbidden"),
-        Ok(_) | Err(_) => redirect("unavailable"),
+        Ok(resp) => redirect(&price_error_code(resp.status, &resp.body)),
+        Err(_) => redirect("unavailable"),
     }
 }
 
@@ -697,6 +711,45 @@ mod tests {
     fn list_query(raw: &str) -> ListQuery {
         crate::lenient_query::from_query_str(raw)
             .expect("a malformed parameter must not reject the page")
+    }
+
+    // -- the price relay's refusals (#633's leftover, closed by #533) --------
+
+    #[test]
+    fn an_item_priced_with_others_is_its_own_error_not_an_outage() {
+        let code = price_error_code(
+            reqwest::StatusCode::CONFLICT,
+            &serde_json::json!({ "error": "grocery_item_priced_with_others" }),
+        );
+        assert_eq!(code, "grocery_item_priced_with_others");
+        let banner = error_html(Some(&code));
+        assert!(banner.contains("plusieurs articles"), "{banner}");
+        assert!(banner.contains("budget"), "{banner}");
+    }
+
+    #[test]
+    fn a_rejected_amount_keeps_the_api_code() {
+        let code = price_error_code(
+            reqwest::StatusCode::BAD_REQUEST,
+            &serde_json::json!({ "error": "amount_must_be_non_negative" }),
+        );
+        assert_eq!(code, "amount_must_be_non_negative");
+    }
+
+    #[test]
+    fn any_other_refusal_of_the_price_is_named_as_such() {
+        let forbidden = price_error_code(reqwest::StatusCode::FORBIDDEN, &serde_json::json!({}));
+        assert_eq!(forbidden, "forbidden");
+        for status in [
+            reqwest::StatusCode::CONFLICT,
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        ] {
+            assert_eq!(
+                price_error_code(status, &serde_json::json!({ "error": "other" })),
+                "unavailable",
+                "{status}"
+            );
+        }
     }
 
     #[test]
