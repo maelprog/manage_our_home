@@ -123,8 +123,7 @@ pub async fn post(
     if intent == Intent::MoreLines {
         return Html(page(&fam.header, recipe_id, &form.name, &form, None)).into_response();
     }
-    let checked = check(&form);
-    form.drop_blanks();
+    let checked = check(&mut form);
     let render_error = |message: &str| {
         Html(page(
             &fam.header,

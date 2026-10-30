@@ -175,11 +175,9 @@ pub(crate) fn name_error_code(err: RecipeFormError) -> &'static str {
     }
 }
 
-/// The form's fields (shared markup, pre-filled), with `blank_lines` empty
-/// ingredient lines and `blank_steps` empty steps after those of `form`.
-/// The blank lines and steps under those of `form`: a form with none
-/// gets [`NEW_LINES`] / [`NEW_STEPS`], one that has some [`MORE_LINES`] /
-/// [`MORE_STEPS`] more.
+/// The form's fields (shared markup, pre-filled), with blank lines and
+/// steps under those of `form`: a form with none gets [`NEW_LINES`] /
+/// [`NEW_STEPS`], one that has some [`MORE_LINES`] / [`MORE_STEPS`] more.
 pub(crate) fn form_fields(form: &RecipeForm) -> String {
     let lines = if form.ingredients.is_empty() {
         NEW_LINES
@@ -276,8 +274,7 @@ pub(crate) fn form_buttons(save: &str) -> String {
     )
 }
 
-/// The checks the form makes before calling the API, in the backend's
-/// order; `Err` is the message to show.
+/// What the checks turn the form into: the request's fields.
 pub(crate) struct Checked {
     pub ingredients: Vec<manage_our_home_shared::dto::recipes::IngredientInput>,
     pub instructions: Option<String>,
@@ -285,7 +282,12 @@ pub(crate) struct Checked {
     pub duration_minutes: Option<i32>,
 }
 
-pub(crate) fn check(form: &RecipeForm) -> Result<Checked, String> {
+/// The checks the form makes before calling the API, in the backend's
+/// order; `Err` is the message to show. The blank lines and steps go
+/// first: sent back, the form is drawn without them, so the line an error
+/// names is numbered as it is shown.
+pub(crate) fn check(form: &mut RecipeForm) -> Result<Checked, String> {
+    form.drop_blanks();
     if let Err(e) = validate_recipe_name(&form.name) {
         return Err(error_message(name_error_code(e)).to_string());
     }
@@ -372,10 +374,9 @@ pub async fn post(
     if intent == Intent::MoreLines {
         return Html(page(&fam.header, &form, None)).into_response();
     }
-    let checked = check(&form);
-    // Sent back, the form keeps what was typed: its blank lines go, and
-    // fresh ones come under the others.
-    form.drop_blanks();
+    // Sent back, the form keeps what was typed: its blank lines go (in
+    // `check`), and fresh ones come under the others.
+    let checked = check(&mut form);
     let render_error =
         |message: &str| Html(page(&fam.header, &form, Some(message))).into_response();
     let checked = match checked {
@@ -667,6 +668,26 @@ mod tests {
     }
 
     #[test]
+    fn an_error_names_the_line_as_the_form_sent_back_numbers_it() {
+        let (mut form, _) = read_form(&pairs(&[
+            ("name", "Crêpes"),
+            ("qty.1", ""),
+            ("unit.1", ""),
+            ("ing.1", ""),
+            ("qty.2", "2"),
+            ("unit.2", ""),
+            ("ing.2", ""),
+        ]));
+        let message = check(&mut form).err().unwrap();
+        assert_eq!(
+            message,
+            "Ingrédient 1 : chaque ingrédient doit avoir un nom."
+        );
+        let html = page("", &form, Some(&message));
+        assert!(html.contains(r#"name="qty.1" value="2""#), "{html}");
+    }
+
+    #[test]
     fn an_ingredient_in_error_names_its_line() {
         assert_eq!(
             ingredient_error(IngredientParseError::NameRequired { line: 2 }),
@@ -680,7 +701,7 @@ mod tests {
 
     #[test]
     fn the_checks_turn_the_form_into_the_request() {
-        let form = RecipeForm {
+        let mut form = RecipeForm {
             name: "Crêpes".into(),
             servings: "4".into(),
             duration: "90".into(),
@@ -691,23 +712,23 @@ mod tests {
             steps: vec!["Mélanger.".into(), "".into(), "Cuire.".into()],
             ..RecipeForm::default()
         };
-        let checked = check(&form).unwrap();
+        let checked = check(&mut form).unwrap();
         assert_eq!(checked.ingredients.len(), 1);
         assert_eq!(checked.ingredients[0].quantity, Some(0.5));
         assert_eq!(checked.instructions.as_deref(), Some("Mélanger.\nCuire."));
         assert_eq!(checked.servings, Some(4));
         assert_eq!(checked.duration_minutes, Some(90));
-        let late = RecipeForm {
+        let mut late = RecipeForm {
             name: "Crêpes".into(),
             duration: "1441".into(),
             ..RecipeForm::default()
         };
         assert_eq!(
-            check(&late).err().as_deref(),
+            check(&mut late).err().as_deref(),
             Some(error_message("invalid_duration"))
         );
         assert_eq!(
-            check(&RecipeForm::default()).err().as_deref(),
+            check(&mut RecipeForm::default()).err().as_deref(),
             Some("Le nom est obligatoire.")
         );
     }
