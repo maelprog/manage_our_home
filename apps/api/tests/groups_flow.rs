@@ -373,6 +373,123 @@ async fn rename_group_permissions_and_validation(db: PgPool) {
     assert_eq!(json_body(renamed).await["name"], "New Name");
 }
 
+/// #537: a family starts with the `sarcelle` accent; PATCH /groups/:id
+/// changes it for the owner and an admin (200), not for a standard member
+/// (403), refuses an identifier outside the closed list (400) and keeps the
+/// setting it is not sent. `GET /groups` carries it to every member.
+#[sqlx::test]
+async fn group_accent_is_set_by_owner_and_admins_only(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner = register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let member =
+        register_verify_login(&router, &db, "member@example.test", "member-password1").await;
+
+    let create = call(
+        &router,
+        Method::POST,
+        "/groups",
+        Some(&owner),
+        Some(serde_json::json!({"name": "Foyer"})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let created = json_body(create).await;
+    assert_eq!(created["accent"], "sarcelle");
+    let group_id = created["id"].as_str().unwrap().to_string();
+
+    let invite = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/invitations"),
+        Some(&owner),
+        Some(serde_json::json!({"invited_email": "member@example.test"})),
+    )
+    .await;
+    let token = json_body(invite).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let accept = call(
+        &router,
+        Method::POST,
+        &format!("/groups/invitations/{token}/accept"),
+        Some(&member),
+        None,
+    )
+    .await;
+    assert_status(&accept, StatusCode::OK);
+
+    let accent_of = |cookie: String| {
+        let router = router.clone();
+        async move {
+            let list = call(&router, Method::GET, "/groups", Some(&cookie), None).await;
+            assert_status(&list, StatusCode::OK);
+            let list = json_body(list).await;
+            list[0]["accent"].as_str().unwrap().to_string()
+        }
+    };
+    assert_eq!(accent_of(member.clone()).await, "sarcelle");
+
+    let patch = |cookie: String, body: serde_json::Value| {
+        let router = router.clone();
+        let uri = format!("/groups/{group_id}");
+        async move { call(&router, Method::PATCH, &uri, Some(&cookie), Some(body)).await }
+    };
+
+    // A standard member is refused, whatever the value.
+    let forbidden = patch(member.clone(), serde_json::json!({"accent": "prune"})).await;
+    assert_status(&forbidden, StatusCode::FORBIDDEN);
+
+    // Outside the closed list: no free colour, no variant spelling.
+    for value in ["bleu", "#0f766e", "Ocean", "océan", ""] {
+        let bad = patch(owner.clone(), serde_json::json!({"accent": value})).await;
+        assert_status(&bad, StatusCode::BAD_REQUEST);
+    }
+    // A body with neither setting is refused as an empty name was.
+    let empty = patch(owner.clone(), serde_json::json!({})).await;
+    assert_status(&empty, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(accent_of(owner.clone()).await, "sarcelle");
+
+    // The owner changes the accent alone: the name is kept.
+    let by_owner = patch(owner.clone(), serde_json::json!({"accent": "ocean"})).await;
+    assert_status(&by_owner, StatusCode::OK);
+    let body = json_body(by_owner).await;
+    assert_eq!(body["accent"], "ocean");
+    assert_eq!(body["name"], "Foyer");
+
+    // Renaming alone keeps the accent.
+    let renamed = patch(owner.clone(), serde_json::json!({"name": "Maison"})).await;
+    assert_status(&renamed, StatusCode::OK);
+    assert_eq!(json_body(renamed).await["accent"], "ocean");
+
+    // Promoted to admin, the member may change it.
+    let member_id: Uuid =
+        sqlx::query_scalar!("SELECT id FROM users WHERE email = 'member@example.test'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let promote = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/members/{member_id}/role"),
+        Some(&owner),
+        Some(serde_json::json!({"role": "admin"})),
+    )
+    .await;
+    assert_status(&promote, StatusCode::OK);
+    let by_admin = patch(member.clone(), serde_json::json!({"accent": "miel"})).await;
+    assert_status(&by_admin, StatusCode::OK);
+    assert_eq!(accent_of(owner.clone()).await, "miel");
+    assert_eq!(accent_of(member.clone()).await, "miel");
+
+    // The column's CHECK holds the same list, whoever writes.
+    let raw = sqlx::query("UPDATE groups SET accent = 'bleu' WHERE id = $1::uuid")
+        .bind(&group_id)
+        .execute(&db)
+        .await;
+    assert!(raw.is_err(), "the CHECK must refuse an unknown accent");
+}
+
 /// POST /groups/:id/transfer-ownership swaps roles atomically with one audit
 /// row; rejects non-owner (403), self target (422), and non-member (404).
 #[sqlx::test]

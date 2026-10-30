@@ -87,6 +87,7 @@ mod tests {
             group_id: Uuid::from_u128(id),
             name: name.to_string(),
             role: "owner".to_string(),
+            accent: "sarcelle".to_string(),
             ownership_notice: reason.map(|r| OwnershipNotice {
                 reason: r.to_string(),
                 inherited_at: Utc.with_ymd_and_hms(2026, 10, 4, 12, 0, 0).unwrap(),

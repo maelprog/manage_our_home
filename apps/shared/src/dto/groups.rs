@@ -10,6 +10,14 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::validation::groups::Accent;
+
+/// The accent of a family when an older API omits it: the default one, the
+/// accent the theme had before families could choose (#537).
+fn default_accent() -> String {
+    Accent::default().as_str().to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateGroupRequest {
     pub name: String,
@@ -20,6 +28,9 @@ pub struct CreateGroupRequest {
 pub struct GroupResponse {
     pub id: Uuid,
     pub name: String,
+    /// The family's accent (#537), an `Accent` identifier.
+    #[serde(default = "default_accent")]
+    pub accent: String,
 }
 
 /// One element of the `GET /groups` array: a group the caller belongs to,
@@ -29,6 +40,10 @@ pub struct GroupSummary {
     pub group_id: Uuid,
     pub name: String,
     pub role: String,
+    /// The family's accent (#537), an `Accent` identifier, chosen by its
+    /// owner or admins.
+    #[serde(default = "default_accent")]
+    pub accent: String,
     /// The caller became this group's owner without asking for it and has
     /// not acknowledged it yet (#323); `None` otherwise.
     #[serde(default)]
@@ -80,9 +95,15 @@ pub struct GroupMemberProfile {
     pub has_avatar: bool,
 }
 
+/// `PATCH /groups/:id`: the settings to change, each optional — the name,
+/// the accent (#537), or both. Owner or admin only.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenameGroupRequest {
-    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// An `Accent` identifier; anything else is refused with 400.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

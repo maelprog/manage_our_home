@@ -769,6 +769,7 @@ mod tests {
             group_id,
             name: "Martin".to_string(),
             role: "member".to_string(),
+            accent: "sarcelle".to_string(),
             ownership_notice: None,
         }
     }

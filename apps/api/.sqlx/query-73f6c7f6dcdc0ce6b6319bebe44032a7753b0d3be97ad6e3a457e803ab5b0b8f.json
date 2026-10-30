@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE groups SET name = $1 WHERE id = $2 RETURNING id, name",
+  "query": "UPDATE groups SET name = COALESCE($1, name), accent = COALESCE($2, accent)\n           WHERE id = $3 RETURNING id, name, accent",
   "describe": {
     "columns": [
       {
@@ -24,18 +24,31 @@
             "name": "name"
           }
         }
+      },
+      {
+        "ordinal": 2,
+        "name": "accent",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "groups",
+            "name": "accent"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
+        "Text",
         "Text",
         "Uuid"
       ]
     },
     "nullable": [
       false,
+      false,
       false
     ]
   },
-  "hash": "d0b05a29256d5d6fddb44317023b477d024746f8ee7c07d83d87458eefde82ae"
+  "hash": "73f6c7f6dcdc0ce6b6319bebe44032a7753b0d3be97ad6e3a457e803ab5b0b8f"
 }

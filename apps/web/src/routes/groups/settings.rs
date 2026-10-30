@@ -326,7 +326,8 @@ pub async fn rename(
         &format!("/groups/{group_id}"),
         cookie.as_deref(),
         Some(serde_json::json!(RenameGroupRequest {
-            name: form.name.trim().to_string(),
+            name: Some(form.name.trim().to_string()),
+            accent: None,
         })),
     )
     .await;

@@ -165,6 +165,7 @@ mod tests {
             group_id: Uuid::from_u128(n),
             name: name.to_string(),
             role: role.to_string(),
+            accent: "sarcelle".to_string(),
             ownership_notice: None,
         }
     }
