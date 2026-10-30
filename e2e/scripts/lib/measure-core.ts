@@ -234,8 +234,9 @@ export type CollectionFailure = CollectionCheck & {
  * Combien de lignes une route doit rendre pour que sa mesure compte.
  *
  * `pageSize` est la tolérance, **déclarée route par route** et non globale :
- * seule `/messagerie` pagine (50 par page côté API), partout ailleurs un rendu
- * partiel est une mesure creuse, pas une pagination.
+ * seules `/messagerie` (50 par page côté API) et `/notifications` (30 par
+ * page côté web) paginent, partout ailleurs un rendu partiel est une mesure
+ * creuse, pas une pagination.
  */
 export function expectedRendered(stored: number, pageSize: number | undefined): number {
   return pageSize === undefined ? stored : Math.min(stored, pageSize);
