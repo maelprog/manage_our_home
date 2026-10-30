@@ -2216,6 +2216,82 @@ async fn simultaneous_expenses_alert_once(db: PgPool) {
     assert_eq!(sent, 1);
 }
 
+/// One order of locks for every write of an expense: the family's lock
+/// (`budget_settings … FOR UPDATE`) first, the expense's row after. A
+/// PATCH that locked its row first and then waited on the family's lock,
+/// while a price set again on the same grocery item held the family's
+/// lock and waited on that row, was a deadlock: Postgres aborted one of
+/// them, a 500. The test holds the family's lock, parks the price on it,
+/// then the PATCH; once released, the price goes first.
+#[sqlx::test]
+async fn a_price_and_a_patch_of_one_expense_at_once_both_go_through(db: PgPool) {
+    let router = test_router_sized(db.clone(), 10);
+    let (owner, _admin, group_id) = owner_and_admin(&router, &db, "alert-deadlock").await;
+    let res = call(
+        &router,
+        Method::PUT,
+        &format!("/groups/{group_id}/budget-settings"),
+        Some(&owner),
+        Some(serde_json::json!({"monthly_cap": 100.0})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let item_id = checked_grocery_item(&router, &owner, &group_id, "Pain").await;
+    let price = format!("/groups/{group_id}/grocery-items/{item_id}/price");
+    let res = call(
+        &router,
+        Method::POST,
+        &price,
+        Some(&owner),
+        Some(serde_json::json!({"amount": 2.0})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let entry_id = json_body(res).await["id"].as_str().unwrap().to_string();
+
+    let mut hold = manage_our_home::db::begin(&db).await.unwrap();
+    sqlx::query("SELECT 1 FROM budget_settings WHERE group_id = $1::uuid FOR UPDATE")
+        .bind(&group_id)
+        .execute(&mut *hold)
+        .await
+        .unwrap();
+    let price_again = {
+        let (router, owner) = (router.clone(), owner.clone());
+        tokio::spawn(async move {
+            call(
+                &router,
+                Method::POST,
+                &price,
+                Some(&owner),
+                Some(serde_json::json!({"amount": 3.0})),
+            )
+            .await
+            .status()
+        })
+    };
+    common::wait_for_lock_waiters(&db, None, 1).await;
+    let patch = {
+        let (router, owner) = (router.clone(), owner.clone());
+        let uri = format!("/groups/{group_id}/budget-entries/{entry_id}");
+        tokio::spawn(async move {
+            call(
+                &router,
+                Method::PATCH,
+                &uri,
+                Some(&owner),
+                Some(serde_json::json!({"name": "Pain complet"})),
+            )
+            .await
+            .status()
+        })
+    };
+    common::wait_for_lock_waiters(&db, None, 2).await;
+    hold.rollback().await.unwrap();
+
+    assert_eq!(price_again.await.unwrap(), StatusCode::CREATED);
+    assert_eq!(patch.await.unwrap(), StatusCode::OK);
+}
+
 /// A device of `email`'s account, under an endpoint no push service owns:
 /// `push::send` answers it `Gone` without any request, and the device is
 /// then forgotten — which is how a test sees that it was pushed.

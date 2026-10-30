@@ -131,6 +131,16 @@ async fn lock_settings(tx: &mut Tx<'_>, group_id: Uuid) -> AppResult<LockedSetti
     .await?)
 }
 
+/// The family's lock alone ([`lock_settings`]), for a write that must take
+/// it before locking an expense's row. Every write of an expense takes the
+/// family's lock first and the row after: a PATCH locking its row first,
+/// then the family's lock in [`watch`], deadlocked with a price set again
+/// on the same grocery item, which holds the family's lock when it writes
+/// the row.
+pub(crate) async fn lock_family(tx: &mut Tx<'_>, group_id: Uuid) -> AppResult<()> {
+    lock_settings(tx, group_id).await.map(|_| ())
+}
+
 /// The category whose cap an expense may cross.
 struct WatchedCategory {
     id: Uuid,

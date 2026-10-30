@@ -343,6 +343,9 @@ pub async fn update_budget_entry(
     let actor_role = require_budget_access(&mut tx, group_id, auth.user_id).await?;
     let Json(body) = body?;
 
+    // The family's lock before the row's, as every write of an expense
+    // (`alerts::lock_family`): the other order deadlocks with a price.
+    alerts::lock_family(&mut tx, group_id).await?;
     // FOR UPDATE locks the row for the rest of this transaction, mirroring
     // grocery_list/items.rs's and stocks/items.rs's concurrent-write protection.
     let existing = sqlx::query!(
