@@ -309,7 +309,8 @@ pub struct RenameGroupRequest {
 /// invitation creation). The name must be non-empty after trimming, same
 /// rule as create — enforced here via the trimmed value being persisted —
 /// and a body with neither setting is refused the same way (422
-/// `name_required`), as it was when the name was the only one. The accent
+/// `name_required`). Before #537 such a body was also a 422, but axum's
+/// deserialization rejection (`missing field name`, plain text). The accent
 /// must be one of `Accent`'s identifiers (400 `invalid_accent`); the
 /// migration's `CHECK` holds the same list.
 pub async fn rename_group(
