@@ -617,7 +617,9 @@ fn ingredient_labels(ingredients: &[DoneIngredient]) -> Vec<String> {
 }
 
 /// The `done` page: the preview as a form, with what was typed (`typed`)
-/// and the fields in error (`invalid`) when the form comes back.
+/// and the fields in error (`invalid`) when the form comes back, and the
+/// « Autre chose utilisé ? » section (`others`).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn done_body(
     recipe_id: Uuid,
     preview: &DonePreview,
