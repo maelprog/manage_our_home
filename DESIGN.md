@@ -137,7 +137,7 @@ capitalisés.
 
 ## Couleur
 
-**Approche : restreinte.** Un accent, des neutres chauds, un jeu sémantique
+**Approche : restreinte.** Un accent — celui que la famille choisit parmi huit depuis #538 —, des neutres chauds, un jeu sémantique
 complet, plus une rampe catégorielle réservée à l'identification des membres
 — dont trois teintes peignent aussi des catégories du budget, toujours à côté
 de leur nom (#533).
@@ -286,6 +286,59 @@ pour le compte.
 - **`light-dark()`** aurait évité la copie, mais `--shadow` change de forme
   et pas seulement de couleur d'un thème à l'autre, ce que cette fonction,
   réservée aux couleurs, ne sait pas porter.
+
+### Couleur de la famille (#538)
+
+Une famille choisit sa couleur parmi huit (#537, liste fermée,
+`validation::groups::Accent`), et c'est elle que prend l'accent de chaque
+page de cette famille. Les propriétaires et les admins la choisissent dans
+« Paramètres de la famille », carte « Couleur de la famille » : huit
+pastilles (`.picks`, radios natifs d'un formulaire POST, sans script), un
+aperçu (une teinte, un bouton, un lien) et « Enregistrer la couleur ». Un
+membre standard y voit la couleur et « Réservé aux propriétaires et
+admins. », sans contrôle.
+
+| Teinte | `data-accent` | Clair : accent / soft / hover | Sombre : accent / soft / hover |
+|---|---|---|---|
+| Sarcelle (défaut) | `sarcelle` | `#14706E` / `#E1F0EF` / `#105855` | `#4FB3AF` / `#1C3635` / `#6EC7C3` |
+| Océan | `ocean` | `#1F5F99` / `#E6EDF4` / `#184A77` | `#67A6E0` / `#2B3135` / `#85B8E6` |
+| Prune | `prune` | `#6B4A9B` / `#EFEBF4` / `#533A79` | `#AD97CD` / `#333033` / `#BDACD7` |
+| Forêt | `foret` | `#3D6B35` / `#EAEFE9` / `#305329` | `#6DB162` / `#2C3327` / `#8AC181` |
+| Terracotta | `terracotta` | `#A64B25` / `#F5EBE7` / `#813A1D` | `#DE8C6A` / `#382F28` / `#E5A388` |
+| Framboise | `framboise` | `#A3305A` / `#F5E8ED` / `#7F2546` | `#DC88A7` / `#382E2F` / `#E3A0B9` |
+| Ardoise | `ardoise` | `#475569` / `#EBECEF` / `#374252` | `#95A3B7` / `#303131` / `#AAB5C5` |
+| Miel | `miel` | `#875800` / `#F2EDE3` / `#694500` | `#DE9100` / `#382F1C` / `#E5A733` |
+
+Les accents clairs et les accents et teintes sombres sont ceux de la
+demande du 2026-10-21 et de ses maquettes. Sarcelle reprend les valeurs de
+`--accent`. Pour les sept autres : le soft clair est 11 % de la teinte sur
+blanc, le hover clair la teinte mêlée de 22 % de noir, le hover sombre la
+teinte mêlée de 20 % de blanc. `--accent-fg` ne change pas d'une teinte à
+l'autre : blanc en clair, `#10201F` en sombre.
+
+- **Le balisage.** Chaque page qui a une famille active rend
+  `<html data-accent="ocean">` (sarcelle comprise) ; une page sans famille
+  — connexion, documents publics — n'a pas l'attribut. L'en-tête commun
+  (`routes::groups::header_parts`), seul endroit où chaque page résout sa
+  famille active, l'inscrit dans un emplacement propre à la requête, que
+  `app::document` relit (`family::record_active_accent`, middleware
+  `family::accent_scope`) : aucune route ne le transmet.
+- **La feuille reste immuable.** Chaque teinte est trois jetons littéraux,
+  `--<teinte>`, `--<teinte>-soft`, `--<teinte>-hover`, déclarés dans
+  `:root` et redéclarés sous `:root[data-theme="dark"]`, donc aussi dans le
+  bloc `prefers-color-scheme` qui en est dérivé. Une règle par teinte,
+  `:root[data-accent="ocean"], [data-accent="ocean"]`, pointe `--accent`,
+  `--accent-soft` et `--accent-hover` sur ces jetons. Elle n'a pas de thème :
+  le jeton qu'elle nomme a déjà la valeur du thème en vigueur.
+  `:root[data-accent]` pèse autant que les deux sélecteurs sombres et vient
+  après eux, donc il l'emporte sur `<html>`. Le sélecteur nu sert aux
+  pastilles et à l'aperçu, qui portent leur propre `data-accent`.
+- **Mesuré par un test.** `every_family_accent_meets_aa_in_both_themes`
+  (`app.rs`) remesure chaque paire de `TEXT_PAIRS` qui nomme un jeton
+  d'accent, avec les jetons de chaque teinte à la place de ceux par défaut,
+  en clair et sous les deux déclencheurs du sombre : 4,5:1 partout. Au
+  2026-10-30, le plus bas en clair est `--muted` sur le soft de Framboise
+  (4,85:1), et en sombre `--muted` sur `--accent-soft` de Sarcelle (4,63:1).
 
 ### Règles
 
@@ -1676,3 +1729,4 @@ quatre tours de vérification à #72.
 | 2026-10-29 | La messagerie en conversation : des bulles, et la zone de saisie qui colle aussi sur téléphone (#528) | Demande du 2026-10-21 (maquettes « Mobile — Messages », « PC — Messagerie »). Le message propre n'est plus une ligne `--surface` à barre `--accent` (entrée du 2026-08-05) mais une bulle `--accent-fg` sur `--accent`, à droite ; l'objection de l'époque à `--accent-soft` — `--muted` sous AA dessus — ne se pose plus, la bulle ne portant que le contenu, en `--accent-fg`, paire déjà mesurée par `TEXT_PAIRS` (celle du bouton primaire). L'auteur, l'heure, la citation et les actions restent hors de la bulle, sur `--bg`. Elle renverse aussi l'entrée du 2026-08-05 sur la zone de saisie, qui ne collait qu'au-dessus de 861 px parce que deux éléments collés « mangeraient la moitié d'un écran de téléphone » : la zone faisait alors trois lignes ; elle en fait une, qui grandit avec le texte, et la maquette la dessine fixe au-dessus de la barre d'onglets. Son pied y vaut `--s16`, la hauteur que `body` réserve déjà à la barre. Ce que les maquettes dessinent et que le fil ne porte pas, faute de données : plusieurs fils par famille (puces sur téléphone, liste sur PC — un seul fil par famille dans le modèle), la pièce jointe (un message n'en a pas), « Chloé écrit… » et « lu » |
 | 2026-10-30 | Le budget d'un mois, la saisie d'une dépense et ses réglages (#533) | Demande du 2026-10-21 (maquettes « Budget », « Nouvelle dépense », « Réglages du budget »), sur l'API de #532, #536 et #633. `/budget` montre un mois (`?month=AAAA-MM`, ‹ › autour de son nom) : ce qu'il a dépensé, le plafond de la famille et ce qu'il en reste, sa barre, puis une barre par catégorie dans sa couleur avec « n % de [plafond] » et « Dépassé », enfin les dépenses du mois. Les barres sont des `<progress>` `aria-hidden` — la forme de la jauge de l'accueil, sans `style=` — et leur légende les dit en mots. Les couleurs de catégorie sont des clés posées sur des jetons ; quatre existaient, l'orange de « Maison » devient `--orange` ([Couleurs des catégories du budget](#couleurs-des-catégories-du-budget)). La dépense prend sa catégorie en pastilles (`.picks`, comme « Assigné à ») et les articles de courses cochés qu'elle a payés ; les réglages tiennent le plafond, les catégories (une disclosure chacune, nom, couleur en liste déroulante, plafond facultatif, suppression), les deux interrupteurs d'alerte et qui voit le budget. Tout est formulaire sans JavaScript. **Pas de « payé par »** : l'issue le demande, l'API n'a pas ce champ |
 | 2026-10-30 | Le thème se choisit : Automatique, Clair ou Sombre, et les valeurs sombres restent écrites une seule fois (#585) | Demande du 2026-10-22 (maquette « Mobile — Apparence »). Le thème sombre ne suivait que l'appareil. Une page « Apparence » du compte pose un cookie `__Host-theme` (un an, préférence d'interface exemptée de consentement), que chaque page traduit en `data-theme` sur `<html>` ; Automatique est l'absence du cookie. La feuille applique les jetons sombres sous `[data-theme="dark"]` et sous `prefers-color-scheme: dark` hors `[data-theme="light"]` ; le second bloc est dérivé du premier au démarrage plutôt que recopié à la main, parce qu'une copie tenue à la main est exactement ce qui a laissé passer #65 et #74. `light-dark()` écarté : `--shadow` change de forme d'un thème à l'autre, pas seulement de couleur. Détail sous Couleur → Thème choisi |
+| 2026-10-30 | La couleur de la famille : huit teintes, que `<html data-accent>` applique à chaque page de la famille active (#538) | Demande du 2026-10-21 (maquettes « Mobile — Famille et couleur », clair et sombre), sur l'API de #537. Une famille n'avait que l'accent du thème. La feuille déclare trois jetons par teinte et par thème, et une règle par teinte repointe `--accent`, `--accent-soft` et `--accent-hover`. Les valeurs sombres restent écrites une seule fois, sous `[data-theme="dark"]` (entrée de #585). Le CSS n'est pas généré par requête, il n'y a pas de `<style>` dynamique (CSP `style-src 'self'`) et `style=` n'est pas utilisé. La teinte est posée par l'en-tête commun, qui connaît déjà la famille active, plutôt que passée par chacune des routes. Détail sous Couleur → Couleur de la famille |

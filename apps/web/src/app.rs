@@ -11,6 +11,7 @@ use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
 use manage_our_home_shared::validation::auth::{MAX_PASSWORD_LEN, MIN_PASSWORD_LEN};
 use manage_our_home_shared::validation::budget::can_access_budget;
+use manage_our_home_shared::validation::groups::Accent;
 use uuid::Uuid;
 
 use crate::icons::{icon, Icon as Glyph};
@@ -144,10 +145,14 @@ pub fn shell_with_header(width: Width, title: &str, header_html: &str, body_html
 /// `<html>` carries `data-theme` when the visitor chose Clair or Sombre
 /// (#585): `crate::theme::scope` reads the cookie for every request, so no
 /// route passes the choice down. Automatique writes nothing.
+///
+/// It carries `data-accent` too, the active family's colour (#538), which
+/// the shared header records (`crate::family::record_active_accent`) — so
+/// the header is built before the shell, as every route already does.
 fn document(title: &str, body: &str) -> String {
     format!(
         r##"<!DOCTYPE html>
-<html lang="fr"{theme}>
+<html lang="fr"{theme}{accent}>
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -161,6 +166,7 @@ fn document(title: &str, body: &str) -> String {
 </body>
 </html>"##,
         theme = html_theme_attribute(crate::theme::current()),
+        accent = html_accent_attribute(crate::family::active_accent()),
         title = html_escape(title),
         css = crate::assets::stylesheet_href(),
         enhance = crate::assets::Script::Enhance.tag(),
@@ -173,6 +179,14 @@ fn html_theme_attribute(appearance: crate::theme::Appearance) -> String {
     appearance
         .data_theme()
         .map(|theme| format!(r#" data-theme="{theme}""#))
+        .unwrap_or_default()
+}
+
+/// ` data-accent="…"` for the active family's accent (#538), nothing on a
+/// page without one: the sheet's own accent, sarcelle, then applies.
+fn html_accent_attribute(accent: Option<Accent>) -> String {
+    accent
+        .map(|accent| format!(r#" data-accent="{}""#, accent.as_str()))
         .unwrap_or_default()
 }
 
@@ -2604,6 +2618,154 @@ mod tests {
             "text under the 4.5:1 DESIGN.md asks for:\n{}",
             failures.join("\n")
         );
+    }
+
+    // -- the family's accent (#538) -----------------------------------
+    //
+    // Each of the eight accents a family may pick is three literal tokens
+    // per theme — `--<id>`, `--<id>-soft`, `--<id>-hover` — and a rule
+    // `[data-accent="<id>"]` that points `--accent`, `--accent-soft` and
+    // `--accent-hover` at them. `--accent-fg` is shared: white in light,
+    // `#10201f` in dark, on every hue.
+
+    /// The three tokens of an accent, in the order of the three it stands
+    /// in for: `--accent`, `--accent-soft`, `--accent-hover`.
+    fn accent_tokens(accent: Accent) -> [String; 3] {
+        let id = accent.as_str();
+        [
+            format!("--{id}"),
+            format!("--{id}-soft"),
+            format!("--{id}-hover"),
+        ]
+    }
+
+    const ACCENT_ROLES: [&str; 3] = ["--accent", "--accent-soft", "--accent-hover"];
+
+    /// The acceptance criterion of #538: every pair the sheet paints with
+    /// the accent — its text on `--bg`, `--surface` and its own tint,
+    /// `--fg` and `--muted` on that tint, `--accent-fg` on the solid accent
+    /// and on its hover — holds 4.5:1 for each of the eight, in light and
+    /// under both dark triggers. Every `TEXT_PAIRS` line is measured with
+    /// the family's three tokens in place of the default ones.
+    #[test]
+    fn every_family_accent_meets_aa_in_both_themes() {
+        const AA: f64 = 4.5;
+        let sheet = css();
+        let [(chosen_trigger, chosen), (device_trigger, device)] = dark_blocks(&sheet);
+        let themes = [
+            ("light".to_string(), None),
+            (format!("dark ({chosen_trigger})"), Some(chosen.as_str())),
+            (format!("dark ({device_trigger})"), Some(device.as_str())),
+        ];
+        let mut failures = Vec::new();
+        let mut measured = 0;
+        for (theme, dark) in &themes {
+            for accent in Accent::ALL {
+                let mut colours = theme_colours(*dark);
+                for (role, token) in ACCENT_ROLES.iter().zip(accent_tokens(accent)) {
+                    let rgb = *colours
+                        .get(&token)
+                        .unwrap_or_else(|| panic!("`{token}` is not a #rrggbb token in {theme}"));
+                    colours.insert(role.to_string(), rgb);
+                }
+                for (text, ground, rule) in TEXT_PAIRS {
+                    if !(text.starts_with("--accent") || ground.starts_with("--accent")) {
+                        continue;
+                    }
+                    let ratio = contrast_ratio(colours[*text], colours[*ground]);
+                    measured += 1;
+                    if ratio < AA {
+                        failures.push(format!(
+                            "{theme}, {}: {text} on {ground} = {ratio:.2} ({rule})",
+                            accent.as_str()
+                        ));
+                    }
+                }
+            }
+        }
+        // 9 pairs of TEXT_PAIRS name an accent token (`--accent-fg` on
+        // `--error` among them, unchanged by the hue), 8 accents, 3 themes:
+        // a pair dropped from the list, or an accent from the loop, shows.
+        assert_eq!(measured, 9 * 8 * 3);
+        assert!(
+            failures.is_empty(),
+            "a family accent under the 4.5:1 DESIGN.md asks for:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    /// Each accent is applied by its own rule, which beats the dark blocks
+    /// on `<html>`: `:root[data-accent]` weighs what `:root[data-theme]`
+    /// and `:root:not([data-theme])` weigh, and comes after them. The bare
+    /// `[data-accent]` paints a swatch or a preview inside the page.
+    #[test]
+    fn every_family_accent_is_applied_by_its_own_rule() {
+        let sheet = css();
+        let dark_at = sheet
+            .find(crate::theme::DEVICE_DARK_MEDIA)
+            .expect("the derived dark block");
+        for accent in Accent::ALL {
+            let id = accent.as_str();
+            let selector = format!(r#":root[data-accent="{id}"], [data-accent="{id}"] {{"#);
+            let at = sheet
+                .find(&selector)
+                .unwrap_or_else(|| panic!("no `{selector}` rule in style.css"));
+            assert!(at > dark_at, "`{selector}` must follow the dark blocks");
+            let (rule, _) = block_after(&sheet, &selector, 0);
+            for (role, token) in ACCENT_ROLES.iter().zip(accent_tokens(accent)) {
+                let declaration = format!("{role}: {};", var_of(&token));
+                assert!(rule.contains(&declaration), "{declaration}: {rule}");
+            }
+            assert_eq!(declared_tokens(&rule).len(), 3, "{rule}");
+        }
+    }
+
+    /// Sarcelle is the accent a page without `data-accent` wears: its three
+    /// tokens are the default ones, in each theme, so a swatch of it shows
+    /// what the theme would.
+    #[test]
+    fn sarcelle_is_the_default_accent_in_every_theme() {
+        let sheet = css();
+        let [(_, chosen), (_, device)] = dark_blocks(&sheet);
+        for dark in [None, Some(chosen.as_str()), Some(device.as_str())] {
+            let colours = theme_colours(dark);
+            for (role, token) in ACCENT_ROLES.iter().zip(accent_tokens(Accent::Sarcelle)) {
+                assert_eq!(colours.get(*role), colours.get(&token), "{token} {dark:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_active_familys_accent_is_written_on_html() {
+        assert_eq!(html_accent_attribute(None), "");
+        assert_eq!(
+            html_accent_attribute(Some(Accent::Ocean)),
+            r#" data-accent="ocean""#
+        );
+        assert_eq!(
+            html_accent_attribute(Some(Accent::Sarcelle)),
+            r#" data-accent="sarcelle""#
+        );
+    }
+
+    #[tokio::test]
+    async fn a_page_wears_the_accent_its_header_recorded() {
+        let ocean = GroupSummary {
+            accent: "ocean".to_string(),
+            ..family("F")
+        };
+        let page = crate::family::scope_accent(async {
+            crate::family::record_active_accent(Some(&ocean));
+            shell(Width::Form, "T", "")
+        })
+        .await;
+        assert!(
+            page.contains(r#"<html lang="fr" data-accent="ocean">"#),
+            "{page}"
+        );
+        // No header, no family: no attribute.
+        let bare = crate::family::scope_accent(async { shell(Width::Form, "T", "") }).await;
+        assert!(bare.contains(r#"<html lang="fr">"#), "{bare}");
     }
 
     // -- component classes (#68) ---------------------------------------
