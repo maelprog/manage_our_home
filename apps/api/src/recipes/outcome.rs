@@ -107,7 +107,8 @@ pub enum RemovalWarning {
     UnitMismatch,
     /// The recipe gives no quantity, so 0.
     NoQuantity,
-    /// The line holds less than the recipe calls for: all of it.
+    /// The lots of its name and unit hold less, together, than the recipe
+    /// calls for: all they hold is proposed.
     Capped,
 }
 
