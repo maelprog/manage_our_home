@@ -1150,6 +1150,45 @@ async fn a_device_shows_the_kind_of_the_push_it_got_retries_included(db: PgPool)
     assert_eq!(received(&router, &cookie, FCM).await, "budget_alert");
 }
 
+/// A push the push service did not answer (a timeout, a connection lost)
+/// may have been stored and arrive all the same: it stays counted, and the
+/// device can no longer tell which kind it got. Each push received shows
+/// the neutral text, never the alert's for the reminder, until the pushes
+/// pending are all received.
+#[sqlx::test]
+async fn a_push_unanswered_shows_the_neutral_text_never_another_kind(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "unanswered@example.test").await;
+    let member: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind("unanswered@example.test")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    add_device(&db, member, FCM).await;
+
+    // The reminder's push timed out, stored by the push service all the
+    // same; an alert is pushed after it. The device gets both.
+    let reminder = due_reminder(&db, member).await;
+    pass_answering(
+        &db,
+        PushOutcome::Unanswered("push service timed out".into()),
+    )
+    .await;
+    assert_eq!(notification(&db, reminder).await.1, 1);
+    push_an_alert(&db, member).await;
+    for _ in 0..2 {
+        assert_eq!(
+            received(&router, &cookie, FCM).await,
+            serde_json::Value::Null
+        );
+    }
+
+    // Both received: the reminder's retry shows its own text again.
+    pass_answering(&db, PushOutcome::Delivered).await;
+    assert_eq!(notification(&db, reminder).await.0, "sent");
+    assert_eq!(received(&router, &cookie, FCM).await, "agenda_reminder");
+}
+
 // -- RGPD -----------------------------------------------------------------------
 
 /// Art. 15: the channel is in the profile, and every device is listed.

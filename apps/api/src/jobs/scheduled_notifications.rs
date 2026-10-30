@@ -508,6 +508,8 @@ struct Device {
 /// device before it is sent — the device may ask what it got before the
 /// push service has answered — and taken off again if the push service
 /// refused it (`push::pending_after_push`, `push::pending_after_failure`).
+/// Left counted if it did not answer: the push may still arrive, of a kind
+/// no longer told (`push::pending_after_unanswered`).
 async fn push_device<P, PFut>(
     pool: &PgPool,
     send_push: &P,
@@ -524,8 +526,14 @@ where
     })
     .await?;
     let outcome = send_push(device.endpoint, ttl_secs).await;
-    if outcome != push::PushOutcome::Delivered {
-        note_pending(pool, device.id, push::pending_after_failure).await?;
+    match outcome {
+        push::PushOutcome::Delivered => {}
+        push::PushOutcome::Unanswered(_) => {
+            note_pending(pool, device.id, push::pending_after_unanswered).await?;
+        }
+        push::PushOutcome::Gone | push::PushOutcome::Failed(_) => {
+            note_pending(pool, device.id, push::pending_after_failure).await?;
+        }
     }
     record_device(
         pool,
@@ -684,7 +692,7 @@ pub fn settle(email: Option<Result<(), String>>, push: &[push::PushOutcome]) -> 
         .and_then(Result::err)
         .into_iter()
         .chain(push.iter().filter_map(|o| match o {
-            push::PushOutcome::Failed(e) => Some(e.clone()),
+            push::PushOutcome::Failed(e) | push::PushOutcome::Unanswered(e) => Some(e.clone()),
             _ => None,
         }))
         .collect();
@@ -821,6 +829,15 @@ mod tests {
         assert_eq!(
             settle(None, &[Gone, failed()]),
             Settlement::Retry("push service answered 503".into())
+        );
+    }
+
+    #[test]
+    fn a_push_service_unanswered_is_retried_with_its_error() {
+        let timed_out = push::PushOutcome::Unanswered("push service timed out".into());
+        assert_eq!(
+            settle(None, &[timed_out]),
+            Settlement::Retry("push service timed out".into())
         );
     }
 

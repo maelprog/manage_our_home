@@ -111,8 +111,15 @@ pub enum PushOutcome {
     /// 404 or 410: the subscription expired or was withdrawn by the
     /// browser. It is deleted, never retried.
     Gone,
-    /// Anything else, a transport error included: worth another attempt.
+    /// Refused by the push service (any other status), or never sent:
+    /// worth another attempt. The device never gets this push.
     Failed(String),
+    /// No answer from the push service: a timeout, a connection that
+    /// failed or broke off. Worth another attempt, like [`Failed`]
+    /// (`PushOutcome::Failed`) — but the push service may have stored the
+    /// message before the connection was lost, so the device may still
+    /// get it ([`pending_after_unanswered`]).
+    Unanswered(String),
 }
 
 /// Classifies a push service's HTTP status.
@@ -171,7 +178,7 @@ pub fn device_after(
             failing_since: None,
         },
         PushOutcome::Gone => DeviceAfter::Forget,
-        PushOutcome::Failed(_) => {
+        PushOutcome::Failed(_) | PushOutcome::Unanswered(_) => {
             let failures = consecutive_failures.saturating_add(1);
             let since = failing_since.unwrap_or(now);
             if failures >= MAX_CONSECUTIVE_FAILURES
@@ -323,15 +330,34 @@ pub fn pending_after_push(
     }
 }
 
-/// `pending` once the push service refused a push counted: it never
-/// arrives. Its kind is not taken back: which of the others are left is
-/// not known.
+/// `pending` once a push counted was refused by the push service, with an
+/// HTTP answer ([`PushOutcome::Failed`], [`PushOutcome::Gone`]), or never
+/// sent: it never arrives. Its kind is not taken back: which of the others
+/// are left is not known. Not for a push that got no answer — a timeout,
+/// a connection lost —: that one may have been stored and arrive
+/// ([`pending_after_unanswered`]).
 pub fn pending_after_failure(pending: Pending) -> Pending {
     let count = pending.count.saturating_sub(1).max(0);
     if count == 0 {
         return Pending::default();
     }
     Pending { count, ..pending }
+}
+
+/// `pending` once a push counted got no answer from the push service
+/// ([`PushOutcome::Unanswered`]): it may have been stored and arrive, or
+/// not. It stays counted, and the kind becomes mixed: whether a receipt is
+/// this one or another is no longer known, so every push received shows
+/// the neutral text until those pending are all received, or past their
+/// TTL.
+pub fn pending_after_unanswered(pending: Pending) -> Pending {
+    if pending.count <= 0 {
+        return Pending::default();
+    }
+    Pending {
+        kind: Some(PendingKind::Mixed),
+        ..pending
+    }
 }
 
 /// What a device shows on a push received at `now`: the kind of the pushes
@@ -494,8 +520,8 @@ pub async fn send(
     match response {
         Ok(response) => classify(response.status().as_u16()),
         // The error's text can carry the endpoint; keep the kind only.
-        Err(e) if e.is_timeout() => PushOutcome::Failed("push service timed out".into()),
-        Err(_) => PushOutcome::Failed("push service unreachable".into()),
+        Err(e) if e.is_timeout() => PushOutcome::Unanswered("push service timed out".into()),
+        Err(_) => PushOutcome::Unanswered("push service unreachable".into()),
     }
 }
 
@@ -666,6 +692,18 @@ mod tests {
             device_after(&failed(), 0, None, now()),
             keep(1, Some(now()))
         );
+    }
+
+    /// No answer from the push service is a failure as well (#536).
+    #[test]
+    fn a_push_unanswered_counts_as_a_failure() {
+        let since = Some(now() - Duration::hours(3));
+        let timed_out = PushOutcome::Unanswered("push service timed out".into());
+        assert_eq!(
+            device_after(&timed_out, 0, None, now()),
+            keep(1, Some(now()))
+        );
+        assert_eq!(device_after(&timed_out, 7, since, now()), keep(8, since));
     }
 
     #[test]
@@ -1014,6 +1052,30 @@ mod tests {
         assert_eq!(shown(one_refused, 1, t0()), [None]);
         assert_eq!(
             pending_after_failure(Pending::default()),
+            Pending::default()
+        );
+    }
+
+    /// A push the push service did not answer may still arrive: it stays
+    /// counted, but which kind arrives is no longer known — the neutral
+    /// text until the pushes pending are all received, or past their TTL.
+    #[test]
+    fn a_push_unanswered_may_still_arrive_and_shows_neither_kind() {
+        let unanswered = pending_after_unanswered(pushed(&[R]));
+        assert_eq!(unanswered.count, 1);
+        assert_eq!(unanswered.kind, Some(PendingKind::Mixed));
+        assert_eq!(unanswered.until, pushed(&[R]).until);
+
+        let then_an_alert = pending_after_push(unanswered, A, t0(), 3600);
+        assert_eq!(shown(then_an_alert, 3, t0()), [None, None, None]);
+        let drained = (0..2).fold(then_an_alert, |p, _| pending_on_receipt(p, t0()).1);
+        assert_eq!(drained, Pending::default());
+        let past = t0() + Duration::seconds(3601);
+        let reminder = pending_after_push(unanswered, R, past, 60);
+        assert_eq!(shown(reminder, 1, past), [Some(R)]);
+
+        assert_eq!(
+            pending_after_unanswered(Pending::default()),
             Pending::default()
         );
     }
