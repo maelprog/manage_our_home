@@ -304,6 +304,9 @@ pub struct DoneIngredient {
 pub struct DonePreview {
     pub selection: RecipeSelectionResponse,
     pub ingredients: Vec<DoneIngredient>,
+    /// Whether the caller may change the recipe, so `add_to_recipe` (#540).
+    #[serde(default)]
+    pub can_edit_recipe: bool,
 }
 
 /// One line of a `done` request: the quantity to take from a stock line,
@@ -315,12 +318,26 @@ pub struct DoneRemoval {
     pub exclude: bool,
 }
 
-/// `POST …/selection/done` request body. Mirrors `DoneRequest`.
+/// A product used that the recipe does not call for (#540): the quantity
+/// to take from a stock line, in its unit. Mirrors `OtherRemoval`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DoneOther {
+    pub stock_item_id: Uuid,
+    pub quantity: f64,
+}
+
+/// `POST …/selection/done` request body. Mirrors `DoneRequest`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct DoneRequest {
     pub removals: Vec<DoneRemoval>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub eaten_on: Option<NaiveDate>,
+    /// The other products used (#540).
+    #[serde(default)]
+    pub others: Vec<DoneOther>,
+    /// Adds the other products to the recipe (#540).
+    #[serde(default)]
+    pub add_to_recipe: bool,
 }
 
 /// One grocery item of an `abandoned` preview. Mirrors
