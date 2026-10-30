@@ -1,8 +1,9 @@
 //! `/budget` — one month of the family's spend, as the mock-up « Budget »
 //! draws it (#533): a month selector (`?month=YYYY-MM`, the current month
 //! without it), what the month spent against the family's cap and what is
-//! left, a bar per category with « n % de [plafond] » and « Dépassé », then
-//! the month's expenses. An owner or an admin reads it (#531); per-row a
+//! left, a bar per category with « n % de [plafond] » and « Dépassé », what
+//! each member paid over the month (#638), then the month's expenses, each
+//! with its payer. An owner or an admin reads it (#531); per-row a
 //! `Modifier` link renders only for entries the caller may modify. Manual
 //! entry lives on `/budget/new`, the caps and categories on
 //! `/budget/settings`; the price-on-checkout path is on the grocery list.
@@ -13,14 +14,15 @@ use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Response};
 use chrono::{Datelike, NaiveDate};
 use manage_our_home_shared::dto::budget::{
-    BudgetCategoryUsage, BudgetEntryList, BudgetEntryResponse, BudgetMonthSummary, BudgetSummary,
+    BudgetCategoryUsage, BudgetEntryList, BudgetEntryResponse, BudgetMonthSummary,
+    BudgetPayerTotal, BudgetSummary,
 };
 use manage_our_home_shared::validation::budget::{
     can_modify, cap_share_label, format_euros, format_period, in_month, month_param, next_month,
     parse_month, previous_month, remaining,
 };
 
-use crate::app::{html_escape, shell_with_header, Width};
+use crate::app::{html_escape, member_avatar, shell_with_header, Width};
 use crate::icons::{icon, icon_link, Icon};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
@@ -201,15 +203,53 @@ fn categories_card(m: &BudgetMonthSummary) -> String {
     )
 }
 
+/// « Par payeur » (#638): what each member paid over the month, the
+/// largest first, as the API orders them, then « Sans payeur » when some
+/// spend names nobody.
+fn payers_card(m: &BudgetMonthSummary) -> String {
+    let mut rows: String = m.payers.iter().map(payer_row).collect();
+    if m.without_payer > 0.0 {
+        rows.push_str(&format!(
+            r#"<li class="list-row"><span>Sans payeur</span><span>{}</span></li>"#,
+            html_escape(&format_euros(m.without_payer)),
+        ));
+    }
+    let body = if rows.is_empty() {
+        r#"<p class="muted">Aucune dépense ce mois-ci.</p>"#.to_string()
+    } else {
+        format!(r#"<ul class="list">{rows}</ul>"#)
+    };
+    format!(
+        r#"<section class="card">
+<h2>Par payeur</h2>
+{body}
+</section>"#
+    )
+}
+
+/// One payer's line: their initial and name, then what they paid.
+fn payer_row(p: &BudgetPayerTotal) -> String {
+    format!(
+        r#"<li class="list-row"><span>{avatar}{name}</span><span>{total}</span></li>"#,
+        avatar = member_avatar(p.user_id, &p.display_name, None),
+        name = html_escape(&p.display_name),
+        total = html_escape(&format_euros(p.total)),
+    )
+}
+
 /// Renders one budget entry: date, name, an optional `Courses` badge (set
 /// when the entry links to grocery items, as one priced on checkout does),
-/// its category in a badge with its swatch, the amount, and — for permitted
-/// users — an edit link.
+/// its category in a badge with its swatch, the amount, who paid it (#638)
+/// and — for permitted users — an edit link.
 fn entry_row(
     entry: &BudgetEntryResponse,
     category: Option<(&str, &str)>,
+    payer: Option<&str>,
     can_edit: bool,
 ) -> String {
+    let payer_html = payer
+        .map(|name| format!(" · payé par {}", html_escape(name)))
+        .unwrap_or_default();
     let date = entry.spent_at.format("%d/%m/%Y").to_string();
     let badge_html = if !entry.grocery_items.is_empty() {
         r#" <span class="badge">Courses</span>"#
@@ -235,7 +275,7 @@ fn entry_row(
     };
     format!(
         r#"<li class="list-row">
-<span><span class="muted">{date}</span> <strong>{name}</strong>{badge_html}{category_html} <span class="muted">— {amount}</span></span>
+<span><span class="muted">{date}</span> <strong>{name}</strong>{badge_html}{category_html} <span class="muted">— {amount}{payer_html}</span></span>
 {edit_link}
 </li>"#,
         date = html_escape(&date),
@@ -317,11 +357,12 @@ pub async fn get(
 
     let notice = notice_html(query.notice.as_deref());
     let error = error_html(query.error.as_deref());
-    let (summary_section, categories_section) = match &summary.month {
-        Some(m) => (summary_card(m), categories_card(m)),
+    let (summary_section, categories_section, payers_section) = match &summary.month {
+        Some(m) => (summary_card(m), categories_card(m), payers_card(m)),
         None => (
             r#"<section class="card" id="monthly-summary"><p class="muted">Le résumé du mois n'a pas pu être chargé.</p></section>"#
                 .to_string(),
+            String::new(),
             String::new(),
         ),
     };
@@ -336,6 +377,18 @@ pub async fn get(
             .find(|c| c.id == id)?;
         Some((c.name.as_str(), c.color.as_str()))
     };
+    // The month's payers carry their names: every entry listed is of that
+    // month, so its payer is among them.
+    let payer_of = |entry: &BudgetEntryResponse| {
+        let id = entry.paid_by?;
+        let p = summary
+            .month
+            .as_ref()?
+            .payers
+            .iter()
+            .find(|p| p.user_id == id)?;
+        Some(p.display_name.as_str())
+    };
     let rows: String = entries
         .iter()
         .filter(|e| in_month(e.spent_at, month))
@@ -343,6 +396,7 @@ pub async fn get(
             entry_row(
                 e,
                 category_of(e),
+                payer_of(e),
                 can_modify(&fam.role, e.created_by == me.user_id),
             )
         })
@@ -370,6 +424,7 @@ pub async fn get(
 <div>
 {summary_section}
 {categories_section}
+{payers_section}
 </div>
 <section class="card">
 <h2>Dépenses</h2>
@@ -396,7 +451,88 @@ mod tests {
             over_cap: over,
             categories: Vec::new(),
             uncategorized: 0.0,
+            payers: Vec::new(),
+            without_payer: 0.0,
         }
+    }
+
+    fn payer(n: u128, name: &str, total: f64) -> BudgetPayerTotal {
+        BudgetPayerTotal {
+            user_id: Uuid::from_u128(n),
+            display_name: name.to_string(),
+            total,
+        }
+    }
+
+    fn entry(paid_by: Option<Uuid>) -> BudgetEntryResponse {
+        BudgetEntryResponse {
+            id: Uuid::from_u128(10),
+            group_id: Uuid::from_u128(999),
+            created_by: Uuid::from_u128(1),
+            grocery_items: Vec::new(),
+            category_id: None,
+            paid_by,
+            name: "Courses".to_string(),
+            amount: 12.5,
+            spent_at: NaiveDate::from_ymd_opt(2026, 10, 3).unwrap(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn each_payer_has_a_line_with_what_they_paid_in_the_api_order() {
+        let mut m = month(None, 70.0, None, false);
+        m.payers = vec![payer(2, "Bruno", 50.0), payer(1, "Alice", 20.0)];
+        let html = payers_card(&m);
+        assert!(html.contains("<h2>Par payeur</h2>"), "{html}");
+        assert!(html.contains(r#"class="avatar""#), "{html}");
+        let bruno = html.find("Bruno").expect(&html);
+        let alice = html.find("Alice").expect(&html);
+        assert!(bruno < alice, "{html}");
+        assert!(html.contains("50,00 €"), "{html}");
+        assert!(html.contains("20,00 €"), "{html}");
+        assert!(!html.contains("Sans payeur"), "{html}");
+    }
+
+    #[test]
+    fn spend_without_a_payer_has_its_own_line_only_when_there_is_some() {
+        let mut m = month(None, 15.0, None, false);
+        m.payers = vec![payer(1, "Alice", 10.0)];
+        m.without_payer = 5.0;
+        let html = payers_card(&m);
+        assert!(html.contains("Sans payeur"), "{html}");
+        assert!(html.contains("5,00 €"), "{html}");
+    }
+
+    #[test]
+    fn a_month_without_spend_says_so_under_par_payeur() {
+        let html = payers_card(&month(None, 0.0, None, false));
+        assert!(html.contains("<h2>Par payeur</h2>"), "{html}");
+        assert!(html.contains("Aucune dépense ce mois-ci."), "{html}");
+    }
+
+    #[test]
+    fn a_payer_name_is_escaped() {
+        let mut m = month(None, 1.0, None, false);
+        m.payers = vec![payer(1, "<i>Alice</i>", 1.0)];
+        let html = payers_card(&m);
+        assert!(html.contains("&lt;i&gt;Alice&lt;/i&gt;"), "{html}");
+        let row = entry_row(
+            &entry(Some(Uuid::from_u128(1))),
+            None,
+            Some("<i>Alice</i>"),
+            false,
+        );
+        assert!(row.contains("payé par &lt;i&gt;Alice&lt;/i&gt;"), "{row}");
+    }
+
+    #[test]
+    fn an_entry_row_names_its_payer_and_none_without_one() {
+        let row = entry_row(&entry(Some(Uuid::from_u128(1))), None, Some("Alice"), false);
+        assert!(row.contains("12,50 € · payé par Alice"), "{row}");
+        let row = entry_row(&entry(None), None, None, false);
+        assert!(!row.contains("payé par"), "{row}");
     }
 
     fn usage(

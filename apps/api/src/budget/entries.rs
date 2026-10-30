@@ -3,7 +3,9 @@ use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
 use chrono::{DateTime, Datelike, Months, NaiveDate, Utc};
-use manage_our_home_shared::dto::budget::{BudgetCategoryUsage, BudgetMonthSummary};
+use manage_our_home_shared::dto::budget::{
+    BudgetCategoryUsage, BudgetMonthSummary, BudgetPayerTotal,
+};
 use manage_our_home_shared::validation::budget::{cap_usage, parse_month};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -34,6 +36,8 @@ pub struct CreateBudgetEntryRequest {
     /// A category of the family (#532); none files it under « Sans
     /// catégorie ».
     pub category_id: Option<Uuid>,
+    /// The member of the family who paid (#638); none, nobody.
+    pub paid_by: Option<Uuid>,
 }
 
 #[derive(Deserialize)]
@@ -49,6 +53,10 @@ pub struct UpdateBudgetEntryRequest {
     /// it linked to (#633): `[]` unlinks them all; left out, or `null`,
     /// the links stay.
     pub grocery_item_ids: Option<Vec<Uuid>>,
+    /// `Some(None)` (`null`) leaves the entry without a payer (#638);
+    /// `None` (left out) keeps its payer.
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub paid_by: Option<Option<Uuid>>,
 }
 
 /// Serde's blanket `Option<T>` impl treats an explicit JSON `null` the same
@@ -86,6 +94,9 @@ pub struct BudgetEntryResponse {
     /// The grocery items the expense links to (#633), by name.
     pub grocery_items: Vec<LinkedGroceryItem>,
     pub category_id: Option<Uuid>,
+    /// The member who paid (#638): `null` for nobody, and once the payer's
+    /// membership ends (`budget_entries_paid_by_fkey`, 0039).
+    pub paid_by: Option<Uuid>,
     pub name: String,
     pub amount: f64,
     pub spent_at: NaiveDate,
@@ -98,6 +109,7 @@ struct BudgetEntryRow {
     group_id: Uuid,
     created_by: Uuid,
     category_id: Option<Uuid>,
+    paid_by: Option<Uuid>,
     name: String,
     amount_cents: i64,
     spent_at: NaiveDate,
@@ -113,6 +125,7 @@ impl BudgetEntryResponse {
             created_by: r.created_by,
             grocery_items,
             category_id: r.category_id,
+            paid_by: r.paid_by,
             name: r.name,
             amount: r.amount_cents as f64 / 100.0,
             spent_at: r.spent_at,
@@ -276,6 +289,9 @@ pub async fn create_budget_entry(
     if let Some(category_id) = body.category_id {
         require_category(&mut tx, group_id, category_id).await?;
     }
+    if let Some(payer) = body.paid_by {
+        require_payer(&mut tx, group_id, payer).await?;
+    }
 
     let item_ids = grocery_item_ids(
         body.grocery_item_id
@@ -292,9 +308,9 @@ pub async fn create_budget_entry(
     let entry = sqlx::query_as!(
         BudgetEntryRow,
         r#"
-        INSERT INTO budget_entries (group_id, created_by, name, amount_cents, spent_at, category_id)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING id, group_id, created_by, category_id, name, amount_cents, spent_at, created_at, updated_at
+        INSERT INTO budget_entries (group_id, created_by, name, amount_cents, spent_at, category_id, paid_by)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING id, group_id, created_by, category_id, paid_by, name, amount_cents, spent_at, created_at, updated_at
         "#,
         group_id,
         auth.user_id,
@@ -302,6 +318,7 @@ pub async fn create_budget_entry(
         amount_cents,
         spent_at,
         body.category_id,
+        body.paid_by,
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -335,6 +352,28 @@ async fn require_category(
     .fetch_optional(&mut **tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    Ok(())
+}
+
+/// A member of this family, as the payer of an expense must be (#638), or
+/// the 400 `paid_by_not_a_member` — a member of another family and an
+/// unknown id alike. The membership is locked against its deletion until
+/// the transaction ends, so the payer cannot leave between this check and
+/// the write that names them (the composite key of `budget_entries` would
+/// refuse it then, as a 500).
+async fn require_payer(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    group_id: Uuid,
+    user_id: Uuid,
+) -> AppResult<()> {
+    sqlx::query_scalar!(
+        "SELECT user_id FROM group_members WHERE group_id = $1 AND user_id = $2 FOR KEY SHARE",
+        group_id,
+        user_id,
+    )
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| AppError::BadRequest("paid_by_not_a_member".into()))?;
     Ok(())
 }
 
@@ -405,7 +444,7 @@ pub async fn set_grocery_item_price(
                     spent_at = $5,
                     updated_at = now()
                 WHERE id = $1 AND group_id = $2
-                RETURNING id, group_id, created_by, category_id, name, amount_cents, spent_at, created_at, updated_at
+                RETURNING id, group_id, created_by, category_id, paid_by, name, amount_cents, spent_at, created_at, updated_at
                 "#,
                 existing.id,
                 group_id,
@@ -422,7 +461,7 @@ pub async fn set_grocery_item_price(
                 r#"
                 INSERT INTO budget_entries (group_id, created_by, name, amount_cents, spent_at)
                 VALUES ($1, $2, $3, $4, $5)
-                RETURNING id, group_id, created_by, category_id, name, amount_cents, spent_at, created_at, updated_at
+                RETURNING id, group_id, created_by, category_id, paid_by, name, amount_cents, spent_at, created_at, updated_at
                 "#,
                 group_id,
                 auth.user_id,
@@ -465,7 +504,7 @@ pub async fn get_budget_entry(
 
     let entry = sqlx::query_as!(
         BudgetEntryRow,
-        r#"SELECT id, group_id, created_by, category_id, name, amount_cents, spent_at, created_at, updated_at
+        r#"SELECT id, group_id, created_by, category_id, paid_by, name, amount_cents, spent_at, created_at, updated_at
            FROM budget_entries WHERE id = $1 AND group_id = $2"#,
         entry_id,
         group_id,
@@ -490,7 +529,7 @@ pub async fn list_budget_entries(
     let rows = sqlx::query_as!(
         BudgetEntryRow,
         r#"
-        SELECT id, group_id, created_by, category_id, name, amount_cents, spent_at, created_at, updated_at
+        SELECT id, group_id, created_by, category_id, paid_by, name, amount_cents, spent_at, created_at, updated_at
         FROM budget_entries
         WHERE group_id = $1
         ORDER BY spent_at DESC, created_at DESC
@@ -530,7 +569,7 @@ pub async fn update_budget_entry(
     // FOR UPDATE locks the row for the rest of this transaction, mirroring
     // grocery_list/items.rs's and stocks/items.rs's concurrent-write protection.
     let existing = sqlx::query!(
-        "SELECT created_by, name, amount_cents, spent_at, category_id FROM budget_entries WHERE id = $1 AND group_id = $2 FOR UPDATE",
+        "SELECT created_by, name, amount_cents, spent_at, category_id, paid_by FROM budget_entries WHERE id = $1 AND group_id = $2 FOR UPDATE",
         entry_id,
         group_id,
     )
@@ -560,6 +599,14 @@ pub async fn update_budget_entry(
         Some(None) => None,
         None => existing.category_id,
     };
+    let paid_by = match body.paid_by {
+        Some(Some(payer)) => {
+            require_payer(&mut tx, group_id, payer).await?;
+            Some(payer)
+        }
+        Some(None) => None,
+        None => existing.paid_by,
+    };
     let item_ids = body.grocery_item_ids.map(grocery_item_ids).transpose()?;
     let watch = alerts::watch(&mut tx, group_id, spent_at, category_id).await?;
 
@@ -571,9 +618,10 @@ pub async fn update_budget_entry(
             amount_cents = $4,
             spent_at = $5,
             category_id = $6,
+            paid_by = $7,
             updated_at = now()
         WHERE id = $1 AND group_id = $2
-        RETURNING id, group_id, created_by, category_id, name, amount_cents, spent_at, created_at, updated_at
+        RETURNING id, group_id, created_by, category_id, paid_by, name, amount_cents, spent_at, created_at, updated_at
         "#,
         entry_id,
         group_id,
@@ -581,6 +629,7 @@ pub async fn update_budget_entry(
         amount_cents,
         spent_at,
         category_id,
+        paid_by,
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -652,7 +701,8 @@ pub struct SummaryQuery {
 /// Since #532 it also reports one month against the caps, under `month`
 /// (`BudgetMonthSummary`): the month's total and the family's cap, and per
 /// category its total, its cap and the share of it spent
-/// (`validation::budget::cap_usage`).
+/// (`validation::budget::cap_usage`). Since #638, per member who paid some
+/// of it, their total, and what nobody is named as having paid.
 pub async fn budget_summary(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -722,6 +772,25 @@ pub async fn budget_summary(
     )
     .fetch_one(&mut *tx)
     .await?;
+    // A payer is a current member (0039): the name they go by now. The
+    // largest total first, then by name, then by id for a stable order.
+    let payers = sqlx::query!(
+        r#"
+        SELECT e.paid_by AS "user_id!", u.display_name,
+               SUM(e.amount_cents)::bigint AS "total_cents!"
+        FROM budget_entries e
+        JOIN users u ON u.id = e.paid_by
+        WHERE e.group_id = $1 AND e.paid_by IS NOT NULL
+          AND e.spent_at >= $2 AND e.spent_at < $3
+        GROUP BY e.paid_by, u.display_name
+        ORDER BY 3 DESC, lower(u.display_name), e.paid_by
+        "#,
+        group_id,
+        month,
+        next_month,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
     tx.commit().await?;
 
     let periods: Vec<BudgetPeriodTotal> = rows
@@ -735,6 +804,9 @@ pub async fn budget_summary(
     let total_cents = categories.iter().fold(uncategorized_cents, |sum, c| {
         sum.saturating_add(c.total_cents)
     });
+    let paid_cents = payers
+        .iter()
+        .fold(0i64, |sum, p| sum.saturating_add(p.total_cents));
     let usage = cap_usage(total_cents, family_cap);
     let month = BudgetMonthSummary {
         period: month,
@@ -758,6 +830,15 @@ pub async fn budget_summary(
             })
             .collect(),
         uncategorized: cents_to_euros(uncategorized_cents),
+        payers: payers
+            .into_iter()
+            .map(|p| BudgetPayerTotal {
+                user_id: p.user_id,
+                display_name: p.display_name,
+                total: cents_to_euros(p.total_cents),
+            })
+            .collect(),
+        without_payer: cents_to_euros(total_cents.saturating_sub(paid_cents)),
     };
 
     Ok(Json(json!({ "periods": periods, "month": month })))

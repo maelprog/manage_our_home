@@ -1,13 +1,15 @@
 //! `/budget/:id` — a budget entry's edit screen with a delete action: the
-//! form of `/budget/new` (#533), pre-filled — amount, name, category, date,
-//! and the grocery items it links to, which stay offered checked or not.
+//! form of `/budget/new` (#533), pre-filled — amount, name, category, payer
+//! (#638), date, and the grocery items it links to, which stay offered
+//! checked or not.
 //! Same permission bar as delete (`can_modify`): a non-permitted user never
 //! sees the form (GET → forbidden page), and the backend 403 is mapped to
 //! `?error=forbidden` on the entry screen defensively. `spent_at` is
 //! `NOT NULL`, so the form always sends it and a round trip preserves the
-//! date. The category and the grocery items are sent only when their pills
-//! were drawn (`CATEGORIES_PRESENT_FIELD`, `ITEMS_PRESENT_FIELD`): a picker
-//! that could not load leaves the entry's category and links as they are.
+//! date. The category, the payer and the grocery items are sent only when
+//! their pills were drawn (`CATEGORIES_PRESENT_FIELD`, `PAYERS_PRESENT_FIELD`,
+//! `ITEMS_PRESENT_FIELD`): a picker that could not load leaves the entry's
+//! category, payer and links as they are.
 //! Success (200) → PRG `/budget?notice=entry_updated`.
 
 use axum::extract::{Path, State};
@@ -34,9 +36,9 @@ use super::{
 /// The PATCH body of a submitted edit form. The form always sends every
 /// field. `spent_at` has no "clear" state (NOT NULL in the DB): a valid date
 /// sets it, an empty/unparseable value leaves it as-is (`None` — omitted from
-/// the wire). The category and the links go only with the marker of the pills
-/// that offered them: pills left undrawn (the API did not answer) must not
-/// clear what the entry has.
+/// the wire). The category, the payer and the links go only with the marker
+/// of the pills that offered them: pills left undrawn (the API did not
+/// answer) must not clear what the entry has.
 fn update_body(form: &EntryForm, amount: f64, items: &[Uuid]) -> UpdateBudgetEntryRequest {
     UpdateBudgetEntryRequest {
         name: Some(form.name.trim().to_string()),
@@ -44,6 +46,7 @@ fn update_body(form: &EntryForm, amount: f64, items: &[Uuid]) -> UpdateBudgetEnt
         spent_at: parse_spent_at(&form.spent_at),
         category_id: form.category(),
         grocery_item_ids: form.grocery_items_present.as_ref().map(|_| items.to_vec()),
+        paid_by: form.paid_by(),
     }
 }
 
@@ -55,13 +58,14 @@ fn page(
     form: &EntryForm,
     choices: &Choices,
     category: Option<Uuid>,
+    payer: Option<Uuid>,
     items: &[Uuid],
     error: Option<&str>,
 ) -> String {
     let error_html = error
         .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
         .unwrap_or_default();
-    let fields = form_fields(form, choices, category, items);
+    let fields = form_fields(form, choices, category, payer, items);
     let body = format!(
         r#"<h1>Modifier — {name_esc}</h1>
 {error_html}
@@ -150,6 +154,7 @@ fn entry_page(
         &form,
         choices,
         entry.category_id,
+        entry.paid_by,
         &items,
         error,
     )
@@ -202,6 +207,9 @@ pub async fn post(
             let category = form
                 .category()
                 .unwrap_or_else(|| entry.as_ref().and_then(|e| e.category_id));
+            let payer = form
+                .paid_by()
+                .unwrap_or_else(|| entry.as_ref().and_then(|e| e.paid_by));
             let items: Vec<Uuid> = match (&form.grocery_items_present, &entry) {
                 (None, Some(entry)) => entry.grocery_items.iter().map(|i| i.id).collect(),
                 _ => items.clone(),
@@ -213,6 +221,7 @@ pub async fn post(
                 form,
                 &choices,
                 category,
+                payer,
                 &items,
                 Some(error_message(code)),
             ))
@@ -312,9 +321,11 @@ mod tests {
         let body = update_body(&f, 12.0, &[Uuid::from_u128(7)]);
         assert_eq!(body.category_id, None);
         assert_eq!(body.grocery_item_ids, None);
+        assert_eq!(body.paid_by, None);
         let json = serde_json::to_value(&body).unwrap();
         assert!(json.get("category_id").is_none(), "{json}");
         assert!(json.get("grocery_item_ids").is_none(), "{json}");
+        assert!(json.get("paid_by").is_none(), "{json}");
     }
 
     #[test]
@@ -335,6 +346,20 @@ mod tests {
         let json = serde_json::to_value(update_body(&f, 12.0, &[])).unwrap();
         assert_eq!(json["category_id"], serde_json::Value::Null, "{json}");
         assert_eq!(json["grocery_item_ids"], serde_json::json!([]), "{json}");
+    }
+
+    #[test]
+    fn drawn_payer_pills_send_the_payer_or_nobody() {
+        let payer = Uuid::from_u128(5);
+        let f = form(&format!(
+            "name=Courses&amount=12&paid_by={payer}&payers_present=1"
+        ));
+        assert_eq!(update_body(&f, 12.0, &[]).paid_by, Some(Some(payer)));
+
+        // « Personne » clears the payer, explicitly.
+        let f = form("name=Courses&amount=12&paid_by=&payers_present=1");
+        let json = serde_json::to_value(update_body(&f, 12.0, &[])).unwrap();
+        assert_eq!(json["paid_by"], serde_json::Value::Null, "{json}");
     }
 
     #[test]

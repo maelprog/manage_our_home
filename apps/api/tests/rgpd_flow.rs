@@ -1215,14 +1215,29 @@ async fn export_accounts_for_every_column_referencing_users(db: PgPool) {
             "actor_id",
             "names who caused another member's notification, exported to its recipient",
         ),
+        // #638: who paid an expense. Its key is onto the membership, not
+        // onto `users`, and drops to NULL when the membership ends (0039):
+        // the family is already among the person's through
+        // `group_members.user_id`. The export reads it with the entries.
+        (
+            "budget_entries",
+            "paid_by",
+            "names a current member only, whose family group_members already lists",
+        ),
     ];
 
+    // A key onto `group_members` names a person too, through its
+    // `user_id` (#638): its column on that side counts as one onto `users`.
     let mut columns: Vec<String> = sqlx::query_scalar(
         "SELECT c.conrelid::regclass::text || '.' || a.attname::text
          FROM pg_constraint c
-         CROSS JOIN LATERAL unnest(c.conkey) AS k(attnum)
+         CROSS JOIN LATERAL unnest(c.conkey, c.confkey) AS k(attnum, fattnum)
          JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
-         WHERE c.contype = 'f' AND c.confrelid = 'public.users'::regclass",
+         JOIN pg_attribute f ON f.attrelid = c.confrelid AND f.attnum = k.fattnum
+         WHERE c.contype = 'f'
+           AND (c.confrelid = 'public.users'::regclass
+                OR (c.confrelid = 'public.group_members'::regclass
+                    AND f.attname = 'user_id'))",
     )
     .fetch_all(&db)
     .await

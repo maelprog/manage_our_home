@@ -313,6 +313,50 @@ test.describe("Budget — categories, caps and alerts (#533)", () => {
   });
 });
 
+test.describe("Budget — who paid (#638)", () => {
+  test("an expense paid by a member names them in the list and the month's totals", async ({
+    page,
+    browser,
+  }) => {
+    await registerAndLogin(page, "e2e-budgetpayer", "Owner Payeuse");
+    await createGroup(page, "Famille Payeurs");
+    const href = await createInvitationLink(page, "Famille Payeurs");
+    const context = await browser.newContext();
+    const member = await context.newPage();
+    await registerAndLogin(member, "e2e-budgetpaid", "Paul Payeur");
+    await member.goto(href);
+    await member.getByRole("button", { name: "Rejoindre le groupe" }).click();
+    await context.close();
+
+    // The signed-in member is ticked, nobody stays possible; another
+    // member is picked.
+    await page.goto("/budget/new");
+    await expect(page.getByRole("radio", { name: "Owner Payeuse", exact: true })).toBeChecked();
+    await expect(page.getByRole("radio", { name: "Personne", exact: true })).not.toBeChecked();
+    await page.getByLabel("Montant").fill("23.40");
+    await page.getByLabel("Nom").fill("Pharmacie");
+    await page.getByRole("radio", { name: "Paul Payeur", exact: true }).check();
+    await page.getByRole("button", { name: "Ajouter la dépense" }).click();
+    await expect(page).toHaveURL(/\/budget\?notice=entry_created$/);
+    await addEntry(page, "Boulangerie", "4");
+
+    await expect(page.locator("li", { hasText: "Pharmacie" }).getByText("payé par Paul Payeur")).toBeVisible();
+    await expect(page.locator("li", { hasText: "Boulangerie" }).getByText("payé par Owner Payeuse")).toBeVisible();
+    const payers = page.locator("section", { has: page.getByRole("heading", { name: "Par payeur" }) });
+    await expect(payers.locator("li", { hasText: "Paul Payeur" }).getByText("23,40 €")).toBeVisible();
+    await expect(payers.locator("li", { hasText: "Owner Payeuse" }).getByText("4,00 €")).toBeVisible();
+
+    // The edit form keeps the payer; « Personne » leaves the expense without one.
+    await page.locator("li", { hasText: "Pharmacie" }).getByRole("link", { name: "Modifier" }).click();
+    await expect(page.getByRole("radio", { name: "Paul Payeur", exact: true })).toBeChecked();
+    await page.getByRole("radio", { name: "Personne", exact: true }).check();
+    await page.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(page).toHaveURL(/\/budget\?notice=entry_updated$/);
+    await expect(page.locator("li", { hasText: "Pharmacie" }).getByText("payé par")).toHaveCount(0);
+    await expect(payers.locator("li", { hasText: "Sans payeur" }).getByText("23,40 €")).toBeVisible();
+  });
+});
+
 test.describe("Budget — reserved to owners and admins (#531)", () => {
   test("a standard member sees no way to the budget, and its pages are a 404", async ({
     page,

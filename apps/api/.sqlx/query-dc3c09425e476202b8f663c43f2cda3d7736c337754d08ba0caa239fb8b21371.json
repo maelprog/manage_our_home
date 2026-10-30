@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, group_id, name, amount_cents, spent_at, category_id, created_at,\n                      ARRAY(SELECT l.grocery_item_id FROM budget_entry_grocery_items l\n                            WHERE l.entry_id = b.id AND l.group_id = b.group_id\n                            ORDER BY l.grocery_item_id) AS \"grocery_item_ids!\"\n               FROM budget_entries b WHERE group_id = $1 AND created_by = $2 ORDER BY created_at",
+  "query": "\n                UPDATE budget_entries SET\n                    name = $3,\n                    amount_cents = $4,\n                    spent_at = $5,\n                    updated_at = now()\n                WHERE id = $1 AND group_id = $2\n                RETURNING id, group_id, created_by, category_id, paid_by, name, amount_cents, spent_at, created_at, updated_at\n                ",
   "describe": {
     "columns": [
       {
@@ -27,39 +27,17 @@
       },
       {
         "ordinal": 2,
-        "name": "name",
-        "type_info": "Text",
+        "name": "created_by",
+        "type_info": "Uuid",
         "origin": {
           "Table": {
             "table": "budget_entries",
-            "name": "name"
+            "name": "created_by"
           }
         }
       },
       {
         "ordinal": 3,
-        "name": "amount_cents",
-        "type_info": "Int8",
-        "origin": {
-          "Table": {
-            "table": "budget_entries",
-            "name": "amount_cents"
-          }
-        }
-      },
-      {
-        "ordinal": 4,
-        "name": "spent_at",
-        "type_info": "Date",
-        "origin": {
-          "Table": {
-            "table": "budget_entries",
-            "name": "spent_at"
-          }
-        }
-      },
-      {
-        "ordinal": 5,
         "name": "category_id",
         "type_info": "Uuid",
         "origin": {
@@ -70,7 +48,51 @@
         }
       },
       {
+        "ordinal": 4,
+        "name": "paid_by",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "budget_entries",
+            "name": "paid_by"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "budget_entries",
+            "name": "name"
+          }
+        }
+      },
+      {
         "ordinal": 6,
+        "name": "amount_cents",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "budget_entries",
+            "name": "amount_cents"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "spent_at",
+        "type_info": "Date",
+        "origin": {
+          "Table": {
+            "table": "budget_entries",
+            "name": "spent_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -81,28 +103,38 @@
         }
       },
       {
-        "ordinal": 7,
-        "name": "grocery_item_ids!",
-        "type_info": "UuidArray",
-        "origin": "Expression"
+        "ordinal": 9,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "budget_entries",
+            "name": "updated_at"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid"
+        "Uuid",
+        "Text",
+        "Int8",
+        "Date"
       ]
     },
     "nullable": [
       false,
       false,
       false,
-      false,
-      false,
+      true,
       true,
       false,
-      null
+      false,
+      false,
+      false,
+      false
     ]
   },
-  "hash": "33fd832c98ea52341ee4c4200c39b5a36bc9b2bc30ebc5118039a7e0ac92ca6b"
+  "hash": "dc3c09425e476202b8f663c43f2cda3d7736c337754d08ba0caa239fb8b21371"
 }

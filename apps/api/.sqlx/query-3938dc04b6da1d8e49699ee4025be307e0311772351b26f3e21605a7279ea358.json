@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                UPDATE budget_entries SET\n                    name = $3,\n                    amount_cents = $4,\n                    spent_at = $5,\n                    updated_at = now()\n                WHERE id = $1 AND group_id = $2\n                RETURNING id, group_id, created_by, category_id, name, amount_cents, spent_at, created_at, updated_at\n                ",
+  "query": "\n                INSERT INTO budget_entries (group_id, created_by, name, amount_cents, spent_at)\n                VALUES ($1, $2, $3, $4, $5)\n                RETURNING id, group_id, created_by, category_id, paid_by, name, amount_cents, spent_at, created_at, updated_at\n                ",
   "describe": {
     "columns": [
       {
@@ -49,6 +49,17 @@
       },
       {
         "ordinal": 4,
+        "name": "paid_by",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "budget_entries",
+            "name": "paid_by"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
         "name": "name",
         "type_info": "Text",
         "origin": {
@@ -59,7 +70,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "amount_cents",
         "type_info": "Int8",
         "origin": {
@@ -70,7 +81,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "spent_at",
         "type_info": "Date",
         "origin": {
@@ -81,7 +92,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -92,7 +103,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -117,6 +128,7 @@
       false,
       false,
       true,
+      true,
       false,
       false,
       false,
@@ -124,5 +136,5 @@
       false
     ]
   },
-  "hash": "abca45a0883c1eee4de9a7813457f03d91aeddda234e6ef9e7f6dda8dad01890"
+  "hash": "3938dc04b6da1d8e49699ee4025be307e0311772351b26f3e21605a7279ea358"
 }

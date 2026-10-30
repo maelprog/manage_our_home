@@ -22,7 +22,9 @@ use uuid::Uuid;
 /// linked to another entry is a 409 `grocery_item_already_priced`.
 /// `grocery_item_id` is the API's older shorthand for one item, which no
 /// form sends. `category_id` files the entry under a category (#532), none
-/// under « Sans catégorie ».
+/// under « Sans catégorie ». `paid_by` names the member of the family who
+/// paid (#638), none « Personne »; a non-member is a 400
+/// `paid_by_not_a_member`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateBudgetEntryRequest {
     pub name: String,
@@ -35,6 +37,8 @@ pub struct CreateBudgetEntryRequest {
     pub grocery_item_ids: Vec<Uuid>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paid_by: Option<Uuid>,
 }
 
 /// `PATCH /groups/:id/budget-entries/:entry_id` request body. Mirrors
@@ -47,6 +51,8 @@ pub struct CreateBudgetEntryRequest {
 /// as `null` and moves the entry to « Sans catégorie », `None` keeps its
 /// category. `grocery_item_ids`, when present, replaces the items the entry
 /// links to (#633) — `[]` unlinks them all —, and when left out keeps them.
+/// `paid_by` is a double `Option` as `category_id` (#638): `Some(None)`
+/// leaves the entry without a payer, `None` keeps its payer.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdateBudgetEntryRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -63,6 +69,12 @@ pub struct UpdateBudgetEntryRequest {
     pub category_id: Option<Option<Uuid>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grocery_item_ids: Option<Vec<Uuid>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_some",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub paid_by: Option<Option<Uuid>>,
 }
 
 /// `POST /groups/:id/grocery-items/:item_id/price` request body. Mirrors
@@ -93,6 +105,10 @@ pub struct BudgetEntryResponse {
     /// The entry's category (#532), `None` for « Sans catégorie ».
     #[serde(default)]
     pub category_id: Option<Uuid>,
+    /// The member who paid (#638), `None` for nobody — or for a member who
+    /// has since left the family.
+    #[serde(default)]
+    pub paid_by: Option<Uuid>,
     pub name: String,
     pub amount: f64,
     pub spent_at: NaiveDate,
@@ -245,6 +261,10 @@ pub struct BudgetCategoryUsage {
 /// category is listed, spent in or not, by name; `uncategorized` is the
 /// spend filed under none (« Sans catégorie »). `total` is the whole month,
 /// `uncategorized` included.
+///
+/// `payers` (#638) is the month's spend per member who paid some of it, the
+/// largest first, and `without_payer` the spend nobody is named as having
+/// paid: together, `total` again.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BudgetMonthSummary {
     /// First day of the month.
@@ -255,4 +275,17 @@ pub struct BudgetMonthSummary {
     pub over_cap: bool,
     pub categories: Vec<BudgetCategoryUsage>,
     pub uncategorized: f64,
+    #[serde(default)]
+    pub payers: Vec<BudgetPayerTotal>,
+    #[serde(default)]
+    pub without_payer: f64,
+}
+
+/// One member's spend over the summary's month (#638), under the name they
+/// go by now.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BudgetPayerTotal {
+    pub user_id: Uuid,
+    pub display_name: String,
+    pub total: f64,
 }
