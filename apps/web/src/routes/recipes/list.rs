@@ -258,8 +258,8 @@ fn planned_tab_html(planned: &[RecipeSelectionResponse]) -> String {
 </li>"#,
                 id = s.recipe_id,
                 name = html_escape(&s.recipe_name),
-                outcome = outcome_links(s.recipe_id, "list"),
-                deselect = deselect_form(s.recipe_id, "list"),
+                outcome = outcome_links(s.recipe_id, "planned"),
+                deselect = deselect_form(s.recipe_id, "planned"),
             )
         })
         .collect();
@@ -606,18 +606,20 @@ mod tests {
         );
         assert!(html.contains("6 personnes"), "{html}");
         assert!(html.contains("Soupe &lt;du jour&gt;"), "{html}");
+        // Each comes back to this tab.
         assert!(
-            html.contains(&format!(r#"href="/recipes/{id}/done?back=list""#)),
+            html.contains(&format!(r#"href="/recipes/{id}/done?back=planned""#)),
             "{html}"
         );
         assert!(
-            html.contains(&format!(r#"href="/recipes/{id}/abandon?back=list""#)),
+            html.contains(&format!(r#"href="/recipes/{id}/abandon?back=planned""#)),
             "{html}"
         );
         assert!(
             html.contains(&format!(r#"action="/recipes/{id}/deselect""#)),
             "{html}"
         );
+        assert!(html.contains(r#"name="back" value="planned""#), "{html}");
         // The way to the grocery list, which takes these recipes (#470).
         assert!(
             html.contains(r#"<form method="post" action="/grocery-list/generate">"#),

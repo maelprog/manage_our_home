@@ -112,13 +112,22 @@ pub(crate) async fn planned_selections(
 }
 
 /// Where the « À réaliser » and « Retirer » forms send the member back:
-/// the list when they came from it, the recipe otherwise.
+/// the list when they came from it, its « Prévues » tab (`planned`, #539),
+/// the recipe otherwise.
 pub(crate) fn back_path(back: &str, recipe_id: Uuid) -> String {
-    if back == "list" {
-        "/recipes".to_string()
-    } else {
-        format!("/recipes/{recipe_id}")
+    match back {
+        "list" => "/recipes".to_string(),
+        "planned" => "/recipes?vue=prevues".to_string(),
+        _ => format!("/recipes/{recipe_id}"),
     }
+}
+
+/// [`back_path`] with a `notice=` or `error=` parameter added, after the
+/// tab's own when it has one.
+pub(crate) fn back_with(back: &str, recipe_id: Uuid, param: &str) -> String {
+    let path = back_path(back, recipe_id);
+    let sep = if path.contains('?') { '&' } else { '?' };
+    format!("{path}{sep}{param}")
 }
 
 /// The « À réaliser » form (#470): plans the recipe for the next shopping,
@@ -152,7 +161,10 @@ pub(crate) fn deselect_form(recipe_id: Uuid, back: &str) -> String {
 /// The « Faite » and « Abandonner » links of a planned recipe (#474): each
 /// opens its confirmation page (`outcome.rs`), which comes back to `back`.
 pub(crate) fn outcome_links(recipe_id: Uuid, back: &str) -> String {
-    let back = if back == "list" { "list" } else { "detail" };
+    let back = match back {
+        "list" | "planned" => back,
+        _ => "detail",
+    };
     format!(
         r#"<a class="btn secondary" href="/recipes/{recipe_id}/done?back={back}">Faite</a>
 <a class="btn secondary" href="/recipes/{recipe_id}/abandon?back={back}">Abandonner</a>"#
@@ -186,13 +198,16 @@ pub async fn select(
     Path(recipe_id): Path<Uuid>,
     Form(form): Form<SelectForm>,
 ) -> Response {
-    let back = back_path(&form.back, recipe_id);
-    let Some(fam) = family_context(&state, &headers, &me, &back).await else {
+    let back = form.back.as_str();
+    let Some(fam) = family_context(&state, &headers, &me, &back_path(back, recipe_id)).await else {
         return Redirect::to("/groups/new").into_response();
     };
     let servings = match parse_servings(&form.servings) {
         Ok(s) => s,
-        Err(code) => return Redirect::to(&format!("{back}?error={code}")).into_response(),
+        Err(code) => {
+            return Redirect::to(&back_with(back, recipe_id, &format!("error={code}")))
+                .into_response()
+        }
     };
     let cookie = recipes_cookie(&headers);
     let result = api_request_auth(
@@ -208,18 +223,18 @@ pub async fn select(
             if resp.status == reqwest::StatusCode::CREATED
                 || resp.status == reqwest::StatusCode::OK =>
         {
-            format!("{back}?notice=recipe_selected")
+            back_with(back, recipe_id, "notice=recipe_selected")
         }
         Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
             return recipe_not_found_page().into_response()
         }
         Ok(resp) if resp.status == reqwest::StatusCode::BAD_REQUEST => {
-            format!("{back}?error=invalid_servings")
+            back_with(back, recipe_id, "error=invalid_servings")
         }
         Ok(resp) if resp.status == reqwest::StatusCode::FORBIDDEN => {
-            format!("{back}?error=forbidden")
+            back_with(back, recipe_id, "error=forbidden")
         }
-        Ok(_) | Err(_) => format!("{back}?error=unavailable"),
+        Ok(_) | Err(_) => back_with(back, recipe_id, "error=unavailable"),
     };
     Redirect::to(&target).into_response()
 }
@@ -240,8 +255,8 @@ pub async fn deselect(
     Path(recipe_id): Path<Uuid>,
     Form(form): Form<DeselectForm>,
 ) -> Response {
-    let back = back_path(&form.back, recipe_id);
-    let Some(fam) = family_context(&state, &headers, &me, &back).await else {
+    let back = form.back.as_str();
+    let Some(fam) = family_context(&state, &headers, &me, &back_path(back, recipe_id)).await else {
         return Redirect::to("/groups/new").into_response();
     };
     let cookie = recipes_cookie(&headers);
@@ -258,12 +273,12 @@ pub async fn deselect(
             if resp.status == reqwest::StatusCode::NO_CONTENT
                 || resp.status == reqwest::StatusCode::NOT_FOUND =>
         {
-            format!("{back}?notice=recipe_deselected")
+            back_with(back, recipe_id, "notice=recipe_deselected")
         }
         Ok(resp) if resp.status == reqwest::StatusCode::FORBIDDEN => {
-            format!("{back}?error=forbidden")
+            back_with(back, recipe_id, "error=forbidden")
         }
-        Ok(_) | Err(_) => format!("{back}?error=unavailable"),
+        Ok(_) | Err(_) => back_with(back, recipe_id, "error=unavailable"),
     };
     Redirect::to(&target).into_response()
 }
@@ -328,6 +343,29 @@ mod tests {
     }
 
     #[test]
+    fn the_planned_tab_is_a_way_back_too() {
+        let id = Uuid::from_u128(7);
+        assert_eq!(back_path("planned", id), "/recipes?vue=prevues");
+    }
+
+    #[test]
+    fn a_notice_is_added_to_the_way_back_whatever_its_query() {
+        let id = Uuid::from_u128(7);
+        assert_eq!(
+            back_with("list", id, "notice=recipe_done"),
+            "/recipes?notice=recipe_done"
+        );
+        assert_eq!(
+            back_with("planned", id, "notice=recipe_done"),
+            "/recipes?vue=prevues&notice=recipe_done"
+        );
+        assert_eq!(
+            back_with("detail", id, "error=forbidden"),
+            format!("/recipes/{id}?error=forbidden")
+        );
+    }
+
+    #[test]
     fn the_select_form_proposes_the_recipe_base() {
         let id = Uuid::from_u128(7);
         let html = select_form(id, Some(4), "list", "actions");
@@ -367,6 +405,9 @@ mod tests {
         );
         // Anything but `list` is the recipe.
         assert!(outcome_links(id, "https://evil.test").contains("?back=detail\""));
+        // From the « Prévues » tab, back to it.
+        assert!(outcome_links(id, "planned")
+            .contains(&format!(r#"href="/recipes/{id}/done?back=planned""#)));
     }
 
     #[test]
