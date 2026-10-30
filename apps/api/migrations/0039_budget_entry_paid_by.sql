@@ -5,11 +5,12 @@
 -- The key is composite, onto the membership rather than onto `users`: an
 -- expense can only name a member of its own family, whatever the API
 -- checks, and when that membership ends — the member leaves or is removed,
--- the account is purged (it deletes its memberships), the account is
--- deleted (`group_members` cascades from `users`) — only `paid_by` is
--- cleared (PostgreSQL 15+ column list, as `category_id` in 0035): the
--- expense stays, without a payer (user's decision of 2026-10-30). Entries
--- written before this migration have none.
+-- or the account is purged (`jobs::account_purge` deletes its memberships;
+-- the `users` row is anonymised, never deleted, so during the 30-day grace
+-- period after `POST /account/delete` the payer stays named) — only
+-- `paid_by` is cleared (PostgreSQL 15+ column list, as `category_id` in
+-- 0035): the expense stays, without a payer (user's decision of
+-- 2026-10-30). Entries written before this migration have none.
 --
 -- A current member only, then: the export reads the expenses a member paid
 -- (`rgpd`), and the family is already among theirs through `group_members`,
@@ -22,7 +23,6 @@ ALTER TABLE budget_entries
     FOREIGN KEY (group_id, paid_by)
     REFERENCES group_members (group_id, user_id)
     ON DELETE SET NULL (paid_by);
--- Serves the membership's delete (the key's SET NULL) and the summary's
--- total per payer.
+-- Serves the membership's delete (the key's SET NULL).
 CREATE INDEX budget_entries_paid_by_idx ON budget_entries (paid_by)
     WHERE paid_by IS NOT NULL;
