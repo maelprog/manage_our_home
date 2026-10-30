@@ -26,8 +26,13 @@
 //!   `cap_usage` turns a month's total and a cap into the percentage and the
 //!   overrun the summary returns; `parse_month` reads the summary's `month`
 //!   parameter.
+//! - The budget pages (#533): `month_param`, `previous_month`, `next_month`
+//!   and `in_month` drive the month selector; `remaining` and
+//!   `cap_share_label` write what a cap leaves and how much of it is used;
+//!   `parse_cap_input` reads a cap field; `category_color_name` names a
+//!   colour key in French.
 
-use chrono::{Datelike, NaiveDate};
+use chrono::{Datelike, Months, NaiveDate};
 
 /// Why a budget-entry add/edit form was rejected. Ordered to match the
 /// backend's check order (`create_budget_entry` / `update_budget_entry`): name
@@ -236,6 +241,75 @@ pub fn parse_month(month: &str) -> Option<NaiveDate> {
         return None;
     }
     NaiveDate::from_ymd_opt(year.parse().ok()?, mon.parse().ok()?, 1)
+}
+
+// -- the budget pages (#533) --------------------------------------------------
+
+/// `month` as the summary's `?month=` reads it (`parse_month`): `YYYY-MM`.
+pub fn month_param(month: NaiveDate) -> String {
+    format!("{:04}-{:02}", month.year(), month.month())
+}
+
+/// The first day of the month before `month`'s, whatever day `month` is.
+pub fn previous_month(month: NaiveDate) -> Option<NaiveDate> {
+    month.with_day(1)?.checked_sub_months(Months::new(1))
+}
+
+/// The first day of the month after `month`'s, whatever day `month` is.
+pub fn next_month(month: NaiveDate) -> Option<NaiveDate> {
+    month.with_day(1)?.checked_add_months(Months::new(1))
+}
+
+/// Whether `day` falls in the month `month` is a day of: the expenses the
+/// page lists under the month the summary is about.
+pub fn in_month(day: NaiveDate, month: NaiveDate) -> bool {
+    day.year() == month.year() && day.month() == month.month()
+}
+
+/// What is left of `cap` once `total` is spent, in euros; negative once
+/// the cap is exceeded. Both are rounded to the cent and subtracted as
+/// cents, as the backend sums them, so the remainder never shows a binary
+/// floating-point residue.
+pub fn remaining(total: f64, cap: f64) -> f64 {
+    let cents = |euros: f64| (euros * 100.0).round() as i64;
+    (cents(cap) - cents(total)) as f64 / 100.0
+}
+
+/// The share of a cap a month's spend uses, as a bar's caption:
+/// « 25 % de 200,00 € ». `percent` is the summary's, rounded down.
+pub fn cap_share_label(percent: i64, cap: f64) -> String {
+    format!("{percent} % de {}", format_euros(cap))
+}
+
+/// A cap field of the settings page, global or per category: empty is no
+/// cap; anything else is euros, with a dot or a French comma, and must pass
+/// `cap_to_cents` — the very check the API makes — or it is
+/// `CapNotPositive`, unparseable included.
+pub fn parse_cap_input(input: &str) -> Result<Option<f64>, CategoryError> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Ok(None);
+    }
+    let amount: f64 = input
+        .replace(',', ".")
+        .parse()
+        .map_err(|_| CategoryError::CapNotPositive)?;
+    cap_to_cents(amount)?;
+    Ok(Some(amount))
+}
+
+/// The French name of a category colour key, as the pages label it: a
+/// colour is never told by its swatch alone. Empty for a key that is not
+/// one of `CATEGORY_COLORS`.
+pub fn category_color_name(color: &str) -> &'static str {
+    match color {
+        "blue" => "Bleu",
+        "violet" => "Violet",
+        "green" => "Vert",
+        "orange" => "Orange",
+        "ochre" => "Ocre",
+        _ => "",
+    }
 }
 
 #[cfg(test)]
@@ -539,6 +613,112 @@ mod tests {
             format_period(NaiveDate::from_ymd_opt(2025, 12, 1).unwrap()),
             "décembre 2025"
         );
+    }
+
+    // -- the budget pages (#533) ----------------------------------------------
+
+    fn first(y: i32, m: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, 1).unwrap()
+    }
+
+    #[test]
+    fn a_month_is_named_in_the_parameter_the_summary_reads() {
+        assert_eq!(month_param(first(2026, 3)), "2026-03");
+        assert_eq!(month_param(first(2026, 12)), "2026-12");
+        // What it writes, `parse_month` reads back.
+        assert_eq!(
+            parse_month(&month_param(first(2026, 3))),
+            Some(first(2026, 3))
+        );
+    }
+
+    #[test]
+    fn the_months_either_side_cross_the_year() {
+        assert_eq!(previous_month(first(2026, 1)), Some(first(2025, 12)));
+        assert_eq!(next_month(first(2025, 12)), Some(first(2026, 1)));
+        assert_eq!(previous_month(first(2026, 3)), Some(first(2026, 2)));
+        assert_eq!(next_month(first(2026, 3)), Some(first(2026, 4)));
+    }
+
+    #[test]
+    fn a_day_mid_month_still_steps_to_the_first_of_the_next() {
+        let mid = NaiveDate::from_ymd_opt(2026, 1, 31).unwrap();
+        assert_eq!(next_month(mid), Some(first(2026, 2)));
+        assert_eq!(previous_month(mid), Some(first(2025, 12)));
+    }
+
+    #[test]
+    fn a_day_belongs_to_its_own_month_only() {
+        let march = first(2026, 3);
+        assert!(in_month(
+            NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+            march
+        ));
+        assert!(in_month(
+            NaiveDate::from_ymd_opt(2026, 3, 31).unwrap(),
+            march
+        ));
+        assert!(!in_month(
+            NaiveDate::from_ymd_opt(2026, 4, 1).unwrap(),
+            march
+        ));
+        assert!(!in_month(
+            NaiveDate::from_ymd_opt(2025, 3, 15).unwrap(),
+            march
+        ));
+    }
+
+    #[test]
+    fn what_is_left_is_counted_in_cents() {
+        // 0.1 + 0.2 is not 0.3 in binary: in cents it is.
+        assert_eq!(remaining(0.1 + 0.2, 1.0), 0.7);
+        assert_eq!(remaining(250.0, 1000.0), 750.0);
+        assert_eq!(remaining(1000.0, 1000.0), 0.0);
+    }
+
+    #[test]
+    fn an_overrun_leaves_a_negative_remainder() {
+        assert_eq!(remaining(1012.5, 1000.0), -12.5);
+    }
+
+    #[test]
+    fn the_share_of_a_cap_reads_percent_then_cap() {
+        assert_eq!(cap_share_label(25, 200.0), "25 % de 200,00 €");
+        assert_eq!(cap_share_label(104, 50.0), "104 % de 50,00 €");
+    }
+
+    #[test]
+    fn an_empty_cap_field_is_no_cap() {
+        assert_eq!(parse_cap_input(""), Ok(None));
+        assert_eq!(parse_cap_input("   "), Ok(None));
+    }
+
+    #[test]
+    fn a_cap_field_is_euros_with_a_dot_or_a_comma() {
+        assert_eq!(parse_cap_input("300"), Ok(Some(300.0)));
+        assert_eq!(parse_cap_input(" 12.5 "), Ok(Some(12.5)));
+        assert_eq!(parse_cap_input("12,5"), Ok(Some(12.5)));
+    }
+
+    #[test]
+    fn a_cap_field_that_is_no_positive_amount_is_refused() {
+        for bad in ["0", "-3", "abc", "0.004", "NaN", "inf"] {
+            assert_eq!(
+                parse_cap_input(bad),
+                Err(CategoryError::CapNotPositive),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_category_colour_has_a_french_name() {
+        let names: Vec<&str> = CATEGORY_COLORS
+            .iter()
+            .map(|c| category_color_name(c))
+            .collect();
+        assert_eq!(names, ["Bleu", "Violet", "Vert", "Orange", "Ocre"]);
+        assert_eq!(category_color_name("teal"), "");
     }
 
     #[test]

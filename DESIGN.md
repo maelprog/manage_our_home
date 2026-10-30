@@ -138,7 +138,9 @@ capitalisés.
 ## Couleur
 
 **Approche : restreinte.** Un accent, des neutres chauds, un jeu sémantique
-complet, plus une rampe catégorielle réservée à l'identification des membres.
+complet, plus une rampe catégorielle réservée à l'identification des membres
+— dont trois teintes peignent aussi des catégories du budget, toujours à côté
+de leur nom (#533).
 
 ### Neutres et accent
 
@@ -201,6 +203,29 @@ n'a pas de champ couleur et n'en a pas besoin.
 
 **La couleur n'est jamais le seul porteur d'information** (WCAG 1.4.1) :
 elle accompagne toujours une initiale ou un nom.
+
+### Couleurs des catégories du budget
+
+Une catégorie de dépense (#532) prend une de cinq clés nommées, jamais une
+valeur hexadécimale ; `apps/web` pose chaque clé sur un jeton (#533). Ce
+sont les cinq teintes de la maquette « Budget », dans son ordre, telles que
+`CATEGORY_COLORS` (`apps/shared`) les recopie. Quatre sont
+des jetons existants ; l'orange n'avait pas de voisin dans la rampe et
+devient `--orange`, éclairci en sombre comme la rampe l'est.
+
+| Clé | Classe | Jeton | Clair | Sombre |
+|---|---|---|---|---|
+| `blue` | `.cat-blue` | `--m2` | `#2F7A9E` | `#64A8C8` |
+| `violet` | `.cat-violet` | `--m1` | `#7A5EA8` | `#A48BD0` |
+| `green` | `.cat-green` | `--m3` | `#457F44` | `#7DB77B` |
+| `orange` | `.cat-orange` | `--orange` | `#B35C2E` | `#DD8F5E` |
+| `ochre` | `.cat-ochre` | `--warning` | `#8E630F` | `#D9A441` |
+
+Elles ne peignent que des surfaces — le remplissage d'une barre, une
+pastille `.swatch` —, jamais un texte : le nom de la catégorie est toujours
+à côté, et la légende d'une barre dit sa part en mots. `--orange` sur
+`--surface` : 4,68:1 en clair, 6,11:1 en sombre (WCAG 2.x, calculé sur ces
+valeurs le 2026-10-30), au-dessus des 3:1 d'un élément graphique.
 
 ### Ce que les écrans repris peindront en sombre
 
@@ -545,6 +570,11 @@ aucune n'introduit de valeur hors des échelles :
 | `.settings` | les paramètres de la famille (#530) : la disposition de `.groceries`, une colonne de cartes de chaque côté — « Membres » (chacun avec son rôle en pastille, « Gérer » sur ceux que l'appelant peut modifier, puis l'invitation par e-mail pour les propriétaires et les admins) et « Nom et zone sensible » ; à côté sur PC, dessous quand la largeur manque, la colonne où viendra « Couleur de la famille » (#538), aujourd'hui les agendas Google |
 | `.list-row:target` | la ligne d'un membre sur la page des membres quand un « Gérer » des paramètres y mène (#530) : `--accent-soft`, la ligne que nomme le fragment `#member-…` |
 | `.scan`, `.or` | la tête de la feuille « Ajouter un produit » (#527) : le scan, dans une boîte au tiret `--accent` — la photo du code et le champ « Code-barres », deux formulaires sans JavaScript — puis « ou saisir » entre deux filets `--line`, `aria-hidden` |
+| `.cat-blue` … `.cat-ochre` | la couleur d'une catégorie du budget (#533), posée sur `color` : le remplissage de sa barre `<progress>` et de sa `.swatch`. Une classe par clé, choisie par `budget::category_class` ; voir [Couleurs des catégories du budget](#couleurs-des-catégories-du-budget) |
+| `.swatch` | la pastille de couleur d'une catégorie (#533) : un carré de `--s3` arrondi en rond, en `currentColor`, `aria-hidden` à côté du nom — dans la barre d'une catégorie, le badge d'une dépense, les pastilles du formulaire, les réglages |
+| `progress.over` | la barre du plafond de la famille une fois dépassé (#533), en `--error` ; « Dépassé » en `.badge.late` le dit en mots, comme pour une catégorie. La barre s'arrête pleine, la légende « 112 % de 100,00 € » dit de combien |
+| `.figures` | Dépensé, Plafond, Reste (ou Dépassement) du mois sur `/budget` (#533) : un `<dl>` en grille de colonnes de 6 rem au moins, qui passe à la ligne plutôt que de serrer un montant ; la valeur en `--t-lg`, 600, chiffres tabulaires |
+| `.budget` | la page du budget (#533) : le mois — `.figures`, barre du plafond, « Par catégorie » — et ses dépenses, deux colonnes égales quand elles tiennent à 20 rem, l'une sous l'autre sinon. Le sélecteur de mois (‹ mois ›) est un `.split` au-dessus. Les réglages du budget prennent la disposition de `.settings` |
 | `caption` | le nom d'un tableau pour les technologies d'assistance (#145) — élément, pas classe : aujourd'hui le mois de la grille de l'agenda, que le `<h1>` voisin montre déjà. Partage les deux règles de `.skip-link` : hors du flux et rogné, jamais `display: none` |
 
 Le résiduel de `style="…"` assumé après #68 : une couleur de membre calculée
@@ -1600,3 +1630,4 @@ quatre tours de vérification à #72.
 | 2026-10-28 | Un jeu d'icônes en SVG inline, tracés Lucide, trait porté par la feuille (#522) | Demande du 2026-10-21 (maquettes). Inline plutôt qu'un sprite ou une `<img>` : rien de plus à charger, rien qui sorte du site, et le trait suit `currentColor`, donc le thème et les contrastes forcés. Le trait (`currentColor`, épaisseur 2, extrémités et jointures arrondies) et l'absence de remplissage sont une règle `.icon` de la feuille plutôt que des attributs de chaque `<svg>` : ces attributs pèseraient 98 o bruts par icône dans le document, à chaque page vue, quand la règle se paie une fois par déploiement. Taille `1.25em`, que tient la ligne de Source Sans 3 : une flèche de l'agenda et le bouton « Aujourd'hui » mesurent 48 px de haut l'un et l'autre dans Chromium. L'icône est toujours `aria-hidden` ; seule dans un lien, elle passe par `icon_link`, dont le libellé est un paramètre. Les premières posées sont les flèches de l'agenda, à la place de ◀ et ▶ : 171 o bruts de plus par page de l'agenda, deux `<svg>` de 89 et 88 o à la place de deux glyphes de 3 o. Les onglets restent sans icône (entrée du 2026-07-31) |
 | 2026-10-28 | Six onglets sur téléphone, une colonne latérale avec la marque et le profil sur PC, transition de page sans JavaScript (#523) | Demande du 2026-10-21 (maquettes « Mobile — Accueil », « PC — Accueil »). Elle renverse deux points posés plus haut. Les onglets portent une icône (entrée du 2026-07-31) : devant le libellé, `aria-hidden`, donc sans toucher au nom du lien, qui était l'objection. Et une transition accompagne le changement de page, là où Interaction et motion n'en voulait aucune : c'est le fondu que le navigateur fait d'un document au suivant, `@view-transition`, pas une animation rejouée au chargement, et elle n'est demandée que sous `prefers-reduced-motion: no-preference`. Un seul markup reste la règle : ce qu'une disposition ne dessine pas est `display: none` (`.pc`, `.phone`), donc absent de l'arbre d'accessibilité, et `aria-current` reste sur un seul lien dessiné de l'en-tête — l'onglet Cuisine du téléphone sur les stocks et les recettes, Stocks ou Recettes sur PC. Le sélecteur de famille et la déconnexion quittent l'en-tête pour le profil de #529, qui poste au même `POST /groups/switch`. Budget est montré à tout membre sur PC jusqu'à #531 (arbitrage utilisateur du 2026-10-28), Notifications attend #535 |
 | 2026-10-29 | La messagerie en conversation : des bulles, et la zone de saisie qui colle aussi sur téléphone (#528) | Demande du 2026-10-21 (maquettes « Mobile — Messages », « PC — Messagerie »). Le message propre n'est plus une ligne `--surface` à barre `--accent` (entrée du 2026-08-05) mais une bulle `--accent-fg` sur `--accent`, à droite ; l'objection de l'époque à `--accent-soft` — `--muted` sous AA dessus — ne se pose plus, la bulle ne portant que le contenu, en `--accent-fg`, paire déjà mesurée par `TEXT_PAIRS` (celle du bouton primaire). L'auteur, l'heure, la citation et les actions restent hors de la bulle, sur `--bg`. Elle renverse aussi l'entrée du 2026-08-05 sur la zone de saisie, qui ne collait qu'au-dessus de 861 px parce que deux éléments collés « mangeraient la moitié d'un écran de téléphone » : la zone faisait alors trois lignes ; elle en fait une, qui grandit avec le texte, et la maquette la dessine fixe au-dessus de la barre d'onglets. Son pied y vaut `--s16`, la hauteur que `body` réserve déjà à la barre. Ce que les maquettes dessinent et que le fil ne porte pas, faute de données : plusieurs fils par famille (puces sur téléphone, liste sur PC — un seul fil par famille dans le modèle), la pièce jointe (un message n'en a pas), « Chloé écrit… » et « lu » |
+| 2026-10-30 | Le budget d'un mois, la saisie d'une dépense et ses réglages (#533) | Demande du 2026-10-21 (maquettes « Budget », « Nouvelle dépense », « Réglages du budget »), sur l'API de #532, #536 et #633. `/budget` montre un mois (`?month=AAAA-MM`, ‹ › autour de son nom) : ce qu'il a dépensé, le plafond de la famille et ce qu'il en reste, sa barre, puis une barre par catégorie dans sa couleur avec « n % de [plafond] » et « Dépassé », enfin les dépenses du mois. Les barres sont des `<progress>` `aria-hidden` — la forme de la jauge de l'accueil, sans `style=` — et leur légende les dit en mots. Les couleurs de catégorie sont des clés posées sur des jetons ; quatre existaient, l'orange de « Maison » devient `--orange` ([Couleurs des catégories du budget](#couleurs-des-catégories-du-budget)). La dépense prend sa catégorie en pastilles (`.picks`, comme « Assigné à ») et les articles de courses cochés qu'elle a payés ; les réglages tiennent le plafond, les catégories (une disclosure chacune, nom, couleur en liste déroulante, plafond facultatif, suppression), les deux interrupteurs d'alerte et qui voit le budget. Tout est formulaire sans JavaScript. **Pas de « payé par »** : l'issue le demande, l'API n'a pas ce champ |

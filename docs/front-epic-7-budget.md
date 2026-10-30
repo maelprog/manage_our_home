@@ -110,15 +110,25 @@ payee/account modelling, charts, and local price lookup (all post-v1 or
 explicitly out of v1 per `docs/v1-scope.md`). Budget stays strictly
 grocery-derived.
 
+*Since #532/#533/#536:* categories, monthly caps (family and per category)
+and their alerts did land, with their pages (route table below). Payee
+modelling and recurring expenses are still out.
+
 ## Route table (`apps/web`)
 
 | Method | Path | Handler | Purpose | API call(s) |
 |---|---|---|---|---|
-| GET | `/budget` | `budget::list::get` | Monthly summary + entry list; per-row `Modifier` for `can_modify` | `GET /groups/:id/budget-entries/summary`, `GET /groups/:id/budget-entries` |
-| GET | `/budget/new` | `budget::new::get` | Manual price-entry form | — |
-| POST | `/budget/new` | `budget::new::post` | Create a manual entry | `POST /groups/:id/budget-entries` |
-| GET | `/budget/:id` | `budget::edit::get` | Entry edit screen (creator/admin/owner only) | `GET /groups/:id/budget-entries/:entry_id` |
-| POST | `/budget/:id/edit` | `budget::edit::post` | Update name/amount/date | `PATCH /groups/:id/budget-entries/:entry_id` |
+| GET | `/budget` | `budget::list::get` | One month (`?month=YYYY-MM`, #533): spent / cap / left, a bar per category, the month's entries; per-row `Modifier` for `can_modify` | `GET /groups/:id/budget-entries/summary[?month=]`, `GET /groups/:id/budget-entries` |
+| GET | `/budget/new` | `budget::new::get` | Entry form: amount, name, category pills, date, grocery items (#533) | `GET /groups/:id/budget-categories`, `GET /groups/:id/grocery-items`, `GET /groups/:id/budget-entries` |
+| POST | `/budget/new` | `budget::new::post` | Create an entry (raw body: `grocery_item_ids` repeats) | `POST /groups/:id/budget-entries` |
+| GET | `/budget/:id` | `budget::edit::get` | Entry edit screen (creator/admin/owner only) | `GET /groups/:id/budget-entries/:entry_id`, plus the form's three reads |
+| POST | `/budget/:id/edit` | `budget::edit::post` | Update the entry; category and links only when their pills were drawn | `PATCH /groups/:id/budget-entries/:entry_id` |
+| GET | `/budget/settings` | `budget::settings::get` | Family cap, categories, alert switches, who sees the budget (#533) | `GET /groups/:id/budget-settings`, `GET /groups/:id/budget-alert-settings`, `GET /groups/:id/budget-categories` |
+| POST | `/budget/settings/cap` | `budget::settings::cap` | Set or remove the family cap | `PUT /groups/:id/budget-settings` |
+| POST | `/budget/settings/alerts` | `budget::settings::alerts` | Set both alert switches | `PATCH /groups/:id/budget-alert-settings` |
+| POST | `/budget/settings/categories` | `budget::settings::create_category` | Add a category | `POST /groups/:id/budget-categories` |
+| POST | `/budget/settings/categories/:id` | `budget::settings::update_category` | Rename, recolour, set or remove its cap | `PATCH /groups/:id/budget-categories/:category_id` |
+| POST | `/budget/settings/categories/:id/delete` | `budget::settings::delete_category` | Delete a category (its entries go to « Sans catégorie ») | `DELETE /groups/:id/budget-categories/:category_id` |
 | POST | `/budget/:id/delete` | `budget::edit::delete` | Delete an entry (creator/admin/owner only) | `DELETE /groups/:id/budget-entries/:entry_id` |
 | POST | `/grocery-list/:id/price` | `grocery_list::list::price` | Set a price on a checked grocery item (owner/admin only since #531) | `POST /groups/:id/grocery-items/:item_id/price` |
 
