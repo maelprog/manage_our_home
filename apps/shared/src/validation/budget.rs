@@ -672,6 +672,10 @@ mod tests {
     fn what_is_left_is_counted_in_cents() {
         // 0.1 + 0.2 is not 0.3 in binary: in cents it is.
         assert_eq!(remaining(0.1 + 0.2, 1.0), 0.7);
+        // Subtracted in floats, this is 5.55e-17, not zero.
+        assert_eq!(remaining(0.1 + 0.2, 0.3), 0.0);
+        // 0.29 * 100 is 28.999999999999996: truncated, 72 cents are left.
+        assert_eq!(remaining(0.29, 1.0), 0.71);
         assert_eq!(remaining(250.0, 1000.0), 750.0);
         assert_eq!(remaining(1000.0, 1000.0), 0.0);
     }
