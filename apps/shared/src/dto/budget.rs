@@ -16,8 +16,11 @@ use uuid::Uuid;
 
 /// `POST /groups/:id/budget-entries` request body. Mirrors
 /// `CreateBudgetEntryRequest`. `spent_at` is omitted from the wire when `None`
-/// (the backend defaults it to today, the Paris day); `grocery_item_id` is only ever
-/// set by the price-on-checkout path, never by the manual `/budget/new` form.
+/// (the backend defaults it to today, the Paris day). `grocery_item_id` links
+/// the entry to one grocery item: the API's shorthand for its
+/// `grocery_item_ids` list (#633, not mirrored here until a form sends it);
+/// an item already linked to another entry is a 409
+/// `grocery_item_already_priced`. The manual `/budget/new` form sends none.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateBudgetEntryRequest {
     pub name: String,
@@ -45,8 +48,10 @@ pub struct UpdateBudgetEntryRequest {
 
 /// `POST /groups/:id/grocery-items/:item_id/price` request body. Mirrors
 /// `SetGroceryItemPriceRequest`. Associates a price with a grocery item once
-/// it's checked/bought; the backend upserts on the item so a re-tap is
-/// idempotent (re-tarifies rather than double-counting).
+/// it's checked/bought; set again, it updates the entry the item is linked to
+/// (`budget_entry_grocery_items`, #633), so a re-tap re-tarifies rather than
+/// double-counting. An item linked to an entry that carries other items too
+/// is a 409 `grocery_item_priced_with_others`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetGroceryItemPriceRequest {
     pub amount: f64,
