@@ -42,7 +42,7 @@ use crate::routes::stocks::{fmt_date, fmt_num};
 use crate::state::{api_request_auth, AppState};
 
 use super::{
-    back_path, family_context, forbidden_page, recipe_not_found_page, recipes_cookie,
+    back_path, back_with, family_context, forbidden_page, recipe_not_found_page, recipes_cookie,
     service_unavailable_page,
 };
 
@@ -283,12 +283,13 @@ pub(crate) fn parse_abandon_form(pairs: &[(String, String)]) -> Option<(Vec<Uuid
 
 // -- Rendering ----------------------------------------------------------------
 
-/// `back` as the forms carry it: `list`, or the recipe.
+/// `back` as the forms carry it: `list`, `planned` (the « Prévues » tab,
+/// #539), or the recipe.
 fn back_value(back: &str) -> &'static str {
-    if back == "list" {
-        "list"
-    } else {
-        "detail"
+    match back {
+        "list" => "list",
+        "planned" => "planned",
+        _ => "detail",
     }
 }
 
@@ -689,11 +690,7 @@ async fn gone(
     if matches!(&recipe, Ok(r) if r.status == reqwest::StatusCode::NOT_FOUND) {
         return (StatusCode::NOT_FOUND, recipe_not_found_page()).into_response();
     }
-    Redirect::to(&format!(
-        "{}?error=selection_gone",
-        back_path(back, recipe_id)
-    ))
-    .into_response()
+    Redirect::to(&back_with(back, recipe_id, "error=selection_gone")).into_response()
 }
 
 fn render(header: &str, title: &str, body: &str) -> Html<String> {
@@ -830,11 +827,9 @@ pub async fn done_post(
     )
     .await;
     match result {
-        Ok(resp) if resp.status == reqwest::StatusCode::OK => Redirect::to(&format!(
-            "{}?notice=recipe_done",
-            back_path(back, recipe_id)
-        ))
-        .into_response(),
+        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
+            Redirect::to(&back_with(back, recipe_id, "notice=recipe_done")).into_response()
+        }
         Ok(resp) if resp.status == reqwest::StatusCode::UNAUTHORIZED => {
             Redirect::to("/login").into_response()
         }
@@ -978,11 +973,8 @@ pub async fn abandon_post(
     .await;
     let (status, code) = match result {
         Ok(resp) if resp.status == reqwest::StatusCode::OK => {
-            return Redirect::to(&format!(
-                "{}?notice=recipe_abandoned",
-                back_path(back, recipe_id)
-            ))
-            .into_response()
+            return Redirect::to(&back_with(back, recipe_id, "notice=recipe_abandoned"))
+                .into_response()
         }
         Ok(resp) if resp.status == reqwest::StatusCode::UNAUTHORIZED => {
             return Redirect::to("/login").into_response()
@@ -1665,6 +1657,11 @@ mod tests {
             resp.headers()[axum::http::header::LOCATION],
             "/recipes?error=selection_gone"
         );
+        let resp = gone(&state, id(1), id(901), None, "planned").await;
+        assert_eq!(
+            resp.headers()[axum::http::header::LOCATION],
+            "/recipes?vue=prevues&error=selection_gone"
+        );
     }
 
     // -- parse_abandon_form --------------------------------------------------
@@ -1688,6 +1685,35 @@ mod tests {
     }
 
     // -- rendering -----------------------------------------------------------
+
+    #[test]
+    fn from_the_planned_tab_the_pages_go_back_to_it() {
+        let html = done_body(
+            id(901),
+            &preview(),
+            None,
+            &Invalid::default(),
+            "",
+            "planned",
+            today(),
+        );
+        assert!(html.contains(r#"name="back" value="planned""#), "{html}");
+        assert!(
+            html.contains(r#"<a class="btn secondary" href="/recipes?vue=prevues">Annuler</a>"#),
+            "{html}"
+        );
+        // Anything else is still the recipe.
+        let html = done_body(
+            id(901),
+            &preview(),
+            None,
+            &Invalid::default(),
+            "",
+            "/elsewhere",
+            today(),
+        );
+        assert!(html.contains(r#"name="back" value="detail""#), "{html}");
+    }
 
     #[test]
     fn the_done_page_proposes_every_lot_checked_for_removal() {

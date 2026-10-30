@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, group_id, created_by, name, instructions, source_url, servings, created_at, updated_at\n        FROM recipes\n        WHERE group_id = $1\n        ORDER BY name\n        ",
+  "query": "SELECT id, group_id, name, instructions, source_url, servings, duration_minutes, created_at\n               FROM recipes WHERE group_id = $1 AND created_by = $2 ORDER BY created_at",
   "describe": {
     "columns": [
       {
@@ -27,17 +27,6 @@
       },
       {
         "ordinal": 2,
-        "name": "created_by",
-        "type_info": "Uuid",
-        "origin": {
-          "Table": {
-            "table": "recipes",
-            "name": "created_by"
-          }
-        }
-      },
-      {
-        "ordinal": 3,
         "name": "name",
         "type_info": "Text",
         "origin": {
@@ -48,7 +37,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 3,
         "name": "instructions",
         "type_info": "Text",
         "origin": {
@@ -59,7 +48,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 4,
         "name": "source_url",
         "type_info": "Text",
         "origin": {
@@ -70,13 +59,24 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 5,
         "name": "servings",
         "type_info": "Int4",
         "origin": {
           "Table": {
             "table": "recipes",
             "name": "servings"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "duration_minutes",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "duration_minutes"
           }
         }
       },
@@ -90,21 +90,11 @@
             "name": "created_at"
           }
         }
-      },
-      {
-        "ordinal": 8,
-        "name": "updated_at",
-        "type_info": "Timestamptz",
-        "origin": {
-          "Table": {
-            "table": "recipes",
-            "name": "updated_at"
-          }
-        }
       }
     ],
     "parameters": {
       "Left": [
+        "Uuid",
         "Uuid"
       ]
     },
@@ -112,13 +102,12 @@
       false,
       false,
       false,
-      false,
       true,
       true,
       true,
-      false,
+      true,
       false
     ]
   },
-  "hash": "286a51e7338737320d417ced8459574ae194876080df22a26cc6399036601c50"
+  "hash": "91c6bd0154aece58bf4f3d2ee659561c8b618a1c54bb5283a42fb5d153ae3a6e"
 }

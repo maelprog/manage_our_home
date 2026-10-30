@@ -629,6 +629,215 @@ async fn suggestions_match_stock_through_the_category_taxonomy(db: PgPool) {
     assert_eq!(missing, ["Lait de coco"]);
 }
 
+/// #539: `?possible=true` keeps the recipes whose every required
+/// ingredient is in stock, by the same matching as the suggestions. A
+/// missing optional ingredient does not exclude a recipe; a missing
+/// required one does; a recipe without ingredients is not « possible ».
+/// The filter applies before `limit`.
+#[sqlx::test]
+async fn the_possible_filter_keeps_the_recipes_the_stock_covers(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "recipe-possible@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+
+    for item in [
+        serde_json::json!({"name": "Farine", "quantity": 1000.0, "unit": "g"}),
+        serde_json::json!({"name": "Oeufs", "quantity": 6.0}),
+    ] {
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/stock-items"),
+            Some(&cookie),
+            Some(item),
+        )
+        .await;
+        assert_status(&res, StatusCode::CREATED);
+    }
+
+    let mut ids = Vec::new();
+    for (name, ingredients) in [
+        (
+            "Pâte à pain",
+            serde_json::json!([
+                {"name": "Farine", "quantity": 500.0, "unit": "g"},
+                {"name": "œuf", "quantity": 1.0},
+                {"name": "Graines de sésame", "is_optional": true}
+            ]),
+        ),
+        (
+            "Crêpes",
+            serde_json::json!([
+                {"name": "Farine", "quantity": 250.0, "unit": "g"},
+                {"name": "Lait", "quantity": 500.0, "unit": "ml"}
+            ]),
+        ),
+        ("Recette sans ingrédient", serde_json::json!([])),
+    ] {
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/recipes"),
+            Some(&cookie),
+            Some(serde_json::json!({"name": name, "ingredients": ingredients})),
+        )
+        .await;
+        assert_status(&res, StatusCode::CREATED);
+        ids.push(json_body(res).await["id"].as_str().unwrap().to_string());
+    }
+
+    let names = |body: serde_json::Value| -> Vec<String> {
+        body["suggestions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // Unfiltered, all three are suggested.
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/recipes/suggestions"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(names(json_body(res).await).len(), 3);
+
+    for path in ["?possible=true", "?possible=true&limit=1"] {
+        let res = call(
+            &router,
+            Method::GET,
+            &format!("/groups/{group_id}/recipes/suggestions{path}"),
+            Some(&cookie),
+            None,
+        )
+        .await;
+        assert_status(&res, StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(names(body.clone()), ["Pâte à pain"], "{path}");
+        assert_eq!(body["suggestions"][0]["recipe_id"], ids[0]);
+        assert_eq!(body["suggestions"][0]["matched_ingredients"], 2);
+        assert_eq!(body["suggestions"][0]["total_required_ingredients"], 2);
+    }
+
+    // Once its milk is in stock, the crêpes are possible too.
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/stock-items"),
+        Some(&cookie),
+        Some(serde_json::json!({"name": "Lait", "quantity": 1.0, "unit": "L"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/recipes/suggestions?possible=true"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    let mut possible = names(json_body(res).await);
+    possible.sort();
+    assert_eq!(possible, ["Crêpes", "Pâte à pain"]);
+}
+
+/// #539: the possible filter drops the recipes before `limit` cuts the
+/// list. Two recipes with only an optional, always-in-season ingredient
+/// are created first and score above the possible one (no required
+/// ingredient counts as fully matched, plus the seasonal bonus), so a
+/// filter applied after the cut would return nothing.
+#[sqlx::test]
+async fn the_possible_filter_applies_before_the_limit(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "recipe-possible-limit@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/stock-items"),
+        Some(&cookie),
+        Some(serde_json::json!({"name": "Farine", "quantity": 1000.0, "unit": "g"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+
+    let all_months: Vec<i32> = (1..=12).collect();
+    for (name, ingredients) in [
+        (
+            "Salade d'herbes",
+            serde_json::json!([
+                {"name": "Ciboulette", "is_optional": true, "seasonal_months": all_months}
+            ]),
+        ),
+        (
+            "Bouquet garni",
+            serde_json::json!([
+                {"name": "Persil", "is_optional": true, "seasonal_months": all_months}
+            ]),
+        ),
+        (
+            "Pain",
+            serde_json::json!([{"name": "Farine", "quantity": 500.0, "unit": "g"}]),
+        ),
+    ] {
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/recipes"),
+            Some(&cookie),
+            Some(serde_json::json!({"name": name, "ingredients": ingredients})),
+        )
+        .await;
+        assert_status(&res, StatusCode::CREATED);
+    }
+
+    // Unfiltered, the two recipes without a required ingredient lead.
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/recipes/suggestions?limit=1"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    assert_ne!(body["suggestions"][0]["name"], "Pain");
+
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/recipes/suggestions?possible=true&limit=1"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    let suggestions = body["suggestions"].as_array().unwrap();
+    assert_eq!(suggestions.len(), 1, "{body}");
+    assert_eq!(suggestions[0]["name"], "Pain");
+}
+
 /// Owner and member of one group, joined through an invitation.
 async fn group_with_member(
     router: &axum::Router,
@@ -1153,6 +1362,97 @@ async fn recipe_servings_are_set_changed_and_cleared(db: PgPool) {
     assert_status(&res, StatusCode::OK);
     assert_eq!(
         json_body(res).await["recipes"][0]["servings"],
+        serde_json::Value::Null
+    );
+}
+
+/// #539: how long a recipe takes, in minutes, from 1 to a day. Set on
+/// create, left alone by a PATCH that omits it, changed, then cleared by
+/// `null`; out of bounds is refused with `invalid_duration`.
+#[sqlx::test]
+async fn recipe_duration_is_set_changed_and_cleared(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "recipe-duration@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+
+    for minutes in [0, 1441] {
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/recipes"),
+            Some(&cookie),
+            Some(serde_json::json!({"name": "Crepes", "duration_minutes": minutes})),
+        )
+        .await;
+        assert_status(&res, StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(res).await["error"], "invalid_duration");
+    }
+
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes"),
+        Some(&cookie),
+        Some(serde_json::json!({"name": "Crepes", "duration_minutes": 45})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let recipe = json_body(res).await;
+    assert_eq!(recipe["duration_minutes"], 45);
+    let id = recipe["id"].as_str().unwrap().to_string();
+    let path = format!("/groups/{group_id}/recipes/{id}");
+
+    let patch = |body: serde_json::Value| {
+        let router = router.clone();
+        let cookie = cookie.clone();
+        let path = path.clone();
+        async move { call(&router, Method::PATCH, &path, Some(&cookie), Some(body)).await }
+    };
+
+    let res = patch(serde_json::json!({"duration_minutes": 1441})).await;
+    assert_status(&res, StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(res).await["error"], "invalid_duration");
+
+    let res = patch(serde_json::json!({"name": "Crêpes"})).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(
+        json_body(res).await["duration_minutes"],
+        45,
+        "absent: left alone"
+    );
+
+    let res = patch(serde_json::json!({"duration_minutes": 1440})).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(json_body(res).await["duration_minutes"], 1440);
+
+    let res = call(&router, Method::GET, &path, Some(&cookie), None).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(json_body(res).await["duration_minutes"], 1440);
+
+    let res = patch(serde_json::json!({"duration_minutes": null})).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(
+        json_body(res).await["duration_minutes"],
+        serde_json::Value::Null
+    );
+
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/recipes"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(
+        json_body(res).await["recipes"][0]["duration_minutes"],
         serde_json::Value::Null
     );
 }

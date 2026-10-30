@@ -75,6 +75,10 @@ pub struct RecipeSuggestion {
 #[derive(Deserialize)]
 pub struct SuggestionsQuery {
     pub limit: Option<i64>,
+    /// `true` keeps only the recipes the stock covers entirely
+    /// ([`is_possible`], #539), before `limit` applies.
+    #[serde(default)]
+    pub possible: bool,
 }
 
 pub async fn suggest_recipes(
@@ -218,6 +222,9 @@ pub async fn suggest_recipes(
         })
         .collect();
 
+    if query.possible {
+        suggestions.retain(|s| is_possible(s.matched_ingredients, s.total_required_ingredients));
+    }
     suggestions.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
 
     let limit = query.limit.unwrap_or(20).max(0) as usize;
@@ -262,6 +269,14 @@ fn in_stock(ingredient_name: &str, ingredient_tag: Option<TagId>, stock: &[Stock
     stock
         .iter()
         .any(|item| item.name == name || ingredient_tag.is_some_and(|tag| item.tags.contains(&tag)))
+}
+
+/// Whether a recipe can be cooked from the stock (#539): it names at least
+/// one required ingredient, and the stock covers every one of them.
+/// Optional ingredients never count. A recipe with no required ingredient
+/// says nothing of what it takes from the stock, so it is not « possible ».
+fn is_possible(matched: usize, total_required: usize) -> bool {
+    total_required > 0 && matched == total_required
 }
 
 #[cfg(test)]
@@ -338,6 +353,25 @@ mod tests {
         assert!(!covered("lait entier bio de la ferme", &stock));
         let stock = [entry("lait entier bio de la ferme", &[])];
         assert!(covered("Lait entier bio de la ferme", &stock));
+    }
+
+    #[test]
+    fn possible_when_every_required_ingredient_is_in_stock() {
+        assert!(is_possible(2, 2));
+        assert!(is_possible(1, 1));
+    }
+
+    #[test]
+    fn not_possible_when_a_required_ingredient_is_missing() {
+        assert!(!is_possible(1, 2));
+        assert!(!is_possible(0, 3));
+    }
+
+    #[test]
+    fn not_possible_without_a_required_ingredient() {
+        // Nothing to take from the stock: the recipe says nothing about
+        // what it needs, so it is not offered as cookable from it.
+        assert!(!is_possible(0, 0));
     }
 
     #[test]

@@ -1,5 +1,5 @@
 //! `/recipes/:id` — recipe detail: ingredients (with optional/seasonal
-//! markers), instructions, the last-cooked state, plus the log-a-meal action
+//! markers), its time and numbered steps (#539), the last-cooked state, plus the log-a-meal action
 //! and the delete action; full edit lives in `edit.rs`. The « À réaliser » /
 //! « Retirer » forms (#470) plan the recipe for the next grocery list, open
 //! to any member like the selection API.
@@ -30,7 +30,7 @@ use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
-use manage_our_home_shared::validation::recipes::servings_label;
+use manage_our_home_shared::validation::recipes::{duration_label, servings_label, steps_of};
 
 use super::{
     can_modify, deselect_form, family_context, forbidden_page, outcome_links, planned_badge,
@@ -268,13 +268,7 @@ fn page(
         format!("<ul>{items}</ul>")
     };
 
-    let instructions_html = match recipe.instructions.as_deref().map(str::trim) {
-        Some(i) if !i.is_empty() => format!(
-            "<h2>Instructions</h2><p class=\"multiline\">{}</p>",
-            html_escape(i)
-        ),
-        _ => String::new(),
-    };
+    let instructions_html = steps_html(recipe.instructions.as_deref());
 
     let last_eaten_html = match last_eaten {
         Some(d) => format!(
@@ -318,9 +312,11 @@ fn page(
         .map(|s| format!(r#"<p class="muted">Pour {}.</p>"#, servings_label(s)))
         .unwrap_or_default();
     let selection_html = selection_html(id, recipe.servings, planned);
+    let time_html = time_html(recipe.duration_minutes);
     let body = format!(
         r#"<h1>{name}</h1>
 {source_html}
+{time_html}
 {notice_html}{error_html}
 {selection_html}
 <h2>Ingrédients</h2>
@@ -421,6 +417,26 @@ pub async fn delete(
     }
 }
 
+/// The method as the form wrote it (#539): one numbered step per line.
+fn steps_html(instructions: Option<&str>) -> String {
+    let steps = steps_of(instructions.unwrap_or_default());
+    if steps.is_empty() {
+        return String::new();
+    }
+    let items: String = steps
+        .iter()
+        .map(|s| format!("<li>{}</li>", html_escape(s)))
+        .collect();
+    format!("<h2>Étapes</h2><ol>{items}</ol>")
+}
+
+/// How long the recipe takes (#539), when it says.
+fn time_html(minutes: Option<i32>) -> String {
+    minutes
+        .map(|m| format!(r#"<p class="muted">Temps : {}.</p>"#, duration_label(m)))
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,5 +515,29 @@ mod tests {
             html.contains(r#"<span class="badge">À réaliser</span>"#),
             "{html}"
         );
+    }
+
+    #[test]
+    fn the_steps_are_numbered_one_per_line() {
+        assert_eq!(
+            steps_html(Some("Mélanger <bien>.\n\nCuire.")),
+            "<h2>Étapes</h2><ol><li>Mélanger &lt;bien&gt;.</li><li>Cuire.</li></ol>"
+        );
+        // A recipe imported before #539 stored its steps numbered.
+        assert_eq!(
+            steps_html(Some("1. Mélanger.\n2. Cuire.")),
+            "<h2>Étapes</h2><ol><li>Mélanger.</li><li>Cuire.</li></ol>"
+        );
+        assert_eq!(steps_html(Some("  \n ")), "");
+        assert_eq!(steps_html(None), "");
+    }
+
+    #[test]
+    fn the_time_is_said_when_the_recipe_says_it() {
+        assert_eq!(
+            time_html(Some(90)),
+            r#"<p class="muted">Temps : 1 h 30.</p>"#
+        );
+        assert_eq!(time_html(None), "");
     }
 }

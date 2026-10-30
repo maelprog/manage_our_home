@@ -1,5 +1,6 @@
 import { expect, Page, test } from "@playwright/test";
 import { fetchVerificationToken } from "../lib/db";
+import { fillIngredients, fillSteps, lineField } from "../lib/recipe-form";
 
 // Front epic F5 — Recipes (issue #20): every user journey the epic
 // introduces, happy paths plus the documented error states from
@@ -75,8 +76,8 @@ interface RecipeOpts {
 async function createRecipe(page: Page, opts: RecipeOpts): Promise<void> {
   await page.goto("/recipes/new");
   await page.getByLabel("Nom").fill(opts.name);
-  if (opts.instructions) await page.getByLabel("Instructions").fill(opts.instructions);
-  if (opts.ingredients) await page.getByLabel("Ingrédients").fill(opts.ingredients);
+  if (opts.instructions) await fillSteps(page, opts.instructions);
+  if (opts.ingredients) await fillIngredients(page, opts.ingredients);
   await page.getByRole("button", { name: "Créer la recette" }).click();
   await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\?notice=recipe_created$/);
   await expect(page.getByText("Recette créée.")).toBeVisible();
@@ -123,9 +124,12 @@ test.describe("Recipes — create & detail", () => {
     // Bypass the browser's `required` so the shared server-side validation is
     // what rejects it.
     await page.getByLabel("Nom").evaluate((el) => el.removeAttribute("required"));
-    await page.getByLabel("Ingrédients").fill("Farine | 1 | kg");
+    await fillIngredients(page, "Farine | 1 | kg");
     await page.getByRole("button", { name: "Créer la recette" }).click();
     await expect(page.getByText("Le nom est obligatoire.")).toBeVisible();
+    // What was typed comes back.
+    await expect(lineField(page, "Ingrédient", 1)).toHaveValue("Farine");
+    await expect(lineField(page, "Quantité", 1)).toHaveValue("1");
   });
 
   test("unknown recipe id shows the not-found page", async ({ page }) => {
@@ -181,18 +185,20 @@ test.describe("Recipes — log a meal", () => {
 });
 
 test.describe("Recipes — edit & delete", () => {
-  test("full edit round-trips through the ingredient textarea", async ({ page }) => {
+  test("full edit round-trips through the ingredient lines", async ({ page }) => {
     await registerAndLogin(page, "e2e-rcedit", "Edit User");
     await createGroup(page, "Famille Édition Recette");
     await createRecipe(page, { name: "Soupe", ingredients: "Carotte | 3 | pièce" });
 
     await openRecipeDetail(page, "Soupe");
     await page.getByRole("link", { name: "Modifier la recette" }).click();
-    // The textarea is pre-filled from the stored ingredients (round-trip).
-    await expect(page.getByLabel("Ingrédients")).toHaveValue("Carotte | 3 | pièce");
+    // The lines are pre-filled from the stored ingredients (round-trip).
+    await expect(lineField(page, "Ingrédient", 1)).toHaveValue("Carotte");
+    await expect(lineField(page, "Quantité", 1)).toHaveValue("3");
+    await expect(lineField(page, "Unité", 1)).toHaveValue("pièce");
 
     await page.getByLabel("Nom").fill("Soupe de légumes");
-    await page.getByLabel("Ingrédients").fill("Carotte | 3 | pièce\nPoireau | 2 | pièce");
+    await fillIngredients(page, "Carotte | 3 | pièce\nPoireau | 2 | pièce");
     await page.getByRole("button", { name: "Enregistrer" }).click();
     await expect(page.getByText("Recette mise à jour.")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Soupe de légumes", level: 1 })).toBeVisible();
@@ -222,7 +228,7 @@ test.describe("Recipes — à réaliser (#470)", () => {
 
     await page.goto("/recipes/new");
     await page.getByLabel("Nom").fill("Ratatouille");
-    await page.getByLabel("Ingrédients").fill("Courgette | 2 | pièce");
+    await fillIngredients(page, "Courgette | 2 | pièce");
     await page.getByLabel("Personnes").fill("4");
     await page.getByRole("button", { name: "Créer la recette" }).click();
     await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\?notice=recipe_created$/);
@@ -255,6 +261,133 @@ test.describe("Recipes — à réaliser (#470)", () => {
     await expect(
       page.getByText("Le nombre de personnes doit être un nombre entier de 1 à 50."),
     ).toBeVisible();
+  });
+});
+
+// #539: the recipes in three tabs, each a link (`?vue=`), no JavaScript.
+test.describe("Recipes — Toutes, Prévues, Possibles (#539)", () => {
+  test("a planned recipe is in « Prévues »; once its ingredients are stocked, in « Possibles »", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-rctabs", "Tabs User");
+    await createGroup(page, "Famille Onglets");
+    await createRecipe(page, {
+      name: "Crêpes",
+      ingredients: "Farine | 250 | g\nLait | 500 | ml\nRhum |  |  |  | optionnel",
+    });
+    await createRecipe(page, { name: "Soupe", ingredients: "Poireau | 2 | pièce" });
+
+    const tabs = page.getByRole("navigation", { name: "Groupes de recettes" });
+    await page.goto("/recipes");
+    await expect(tabs.getByRole("link", { name: "Toutes" })).toHaveAttribute("aria-current", "true");
+    await expect(tabs.getByRole("link", { name: "Prévues · 0" })).toBeVisible();
+    await expect(tabs.getByRole("link", { name: "Possibles · 0" })).toBeVisible();
+
+    // Planned from its row of the full list.
+    await page
+      .locator("li", { hasText: "Crêpes" })
+      .filter({ has: page.getByRole("button", { name: "À réaliser" }) })
+      .getByRole("button", { name: "À réaliser" })
+      .click();
+    await expect(page).toHaveURL(/\/recipes\?notice=recipe_selected$/);
+
+    await tabs.getByRole("link", { name: "Prévues · 1" }).click();
+    await expect(page).toHaveURL(/\/recipes\?vue=prevues$/);
+    await expect(tabs.getByRole("link", { name: "Prévues · 1" })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    const planned = page.locator("li", { hasText: "Crêpes" });
+    await expect(planned.getByRole("link", { name: "Faite" })).toBeVisible();
+    await expect(planned.getByRole("link", { name: "Abandonner" })).toBeVisible();
+    await expect(planned.getByRole("button", { name: "Retirer" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Soupe" })).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Générer les courses de cette recette" }),
+    ).toBeVisible();
+
+    // Nothing in stock yet: nothing possible.
+    await page.getByRole("link", { name: "Possibles · 0" }).click();
+    await expect(page).toHaveURL(/\/recipes\?vue=possibles$/);
+    await expect(page.getByText("Aucune recette ne se fait avec le stock actuel.")).toBeVisible();
+
+    // Its required ingredients stocked, the rum (optional) not: possible.
+    await createStockItem(page, "Farine", "1", "kg");
+    await createStockItem(page, "Lait", "1", "L");
+    await page.goto("/recipes?vue=possibles");
+    await expect(tabs.getByRole("link", { name: "Possibles · 1" })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    const possible = page.locator("li", { hasText: "Crêpes" });
+    await expect(possible.getByText("Tous les ingrédients en stock")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Soupe" })).toHaveCount(0);
+  });
+
+  test("« Retirer » from « Prévues » comes back to « Prévues »", async ({ page }) => {
+    await registerAndLogin(page, "e2e-rcback", "Back User");
+    await createGroup(page, "Famille Retour");
+    await createRecipe(page, { name: "Gratin", ingredients: "Pomme de terre | 1 | kg" });
+    await page.goto("/recipes");
+    await page
+      .locator("li", { hasText: "Gratin" })
+      .getByRole("button", { name: "À réaliser" })
+      .click();
+
+    await page.goto("/recipes?vue=prevues");
+    await page
+      .locator("li", { hasText: "Gratin" })
+      .getByRole("button", { name: "Retirer" })
+      .click();
+    await expect(page).toHaveURL(/\/recipes\?vue=prevues&notice=recipe_deselected$/);
+    await expect(page.getByText("Recette retirée des recettes à réaliser.")).toBeVisible();
+    const tabs = page.getByRole("navigation", { name: "Groupes de recettes" });
+    await expect(tabs.getByRole("link", { name: "Prévues · 0" })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    await expect(page.getByText("Aucune recette prévue.")).toBeVisible();
+  });
+
+  test("the form takes a time, lines to remove, more lines and numbered steps", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-rcform", "Form User");
+    await createGroup(page, "Famille Formulaire");
+
+    await page.goto("/recipes/new");
+    await page.getByLabel("Nom").fill("Crêpes");
+    await page.getByLabel("Temps (minutes)").fill("45");
+    await fillIngredients(page, "Farine | 250 | g | 1,2\nSel | 1 | pincée");
+    await fillSteps(page, "Mélanger.\nCuire.");
+    // Sel taken out, then more lines: nothing is saved yet.
+    await page.getByRole("checkbox", { name: "Retirer (ligne 2)", exact: true }).check();
+    await page.getByRole("button", { name: "Ajouter des lignes" }).click();
+    await expect(page).toHaveURL(/\/recipes\/new$/);
+    await expect(lineField(page, "Ingrédient", 1)).toHaveValue("Farine");
+    await expect(lineField(page, "Saison", 1)).toHaveValue("1,2");
+    await expect(lineField(page, "Ingrédient", 2)).toHaveValue("");
+    await expect(page.getByLabel("Temps (minutes)")).toHaveValue("45");
+    await lineField(page, "Ingrédient", 7).fill("Lait");
+    await lineField(page, "Quantité", 7).fill("0,5");
+    await lineField(page, "Unité", 7).fill("L");
+    await page.getByRole("button", { name: "Créer la recette" }).click();
+    await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\?notice=recipe_created$/);
+
+    await expect(page.getByText("Temps : 45 min.")).toBeVisible();
+    await expect(page.getByText("saison : 1, 2")).toBeVisible();
+    const ingredients = page.locator("h2:text-is('Ingrédients') ~ ul").first().locator("li strong");
+    await expect(ingredients).toHaveText(["Farine", "Lait"]);
+    await expect(page.locator("h2:text-is('Étapes') + ol li")).toHaveText(["Mélanger.", "Cuire."]);
+
+    // The edit form brings it all back, seasonal months included.
+    await page.getByRole("link", { name: "Modifier la recette" }).click();
+    await expect(page.getByLabel("Temps (minutes)")).toHaveValue("45");
+    await expect(lineField(page, "Ingrédient", 1)).toHaveValue("Farine");
+    await expect(lineField(page, "Saison", 1)).toHaveValue("1,2");
+    await expect(lineField(page, "Ingrédient", 2)).toHaveValue("Lait");
+    await expect(lineField(page, "Quantité", 2)).toHaveValue("0.5");
+    await expect(page.getByRole("textbox", { name: /^Étape 2/ })).toHaveValue("Cuire.");
   });
 });
 
@@ -324,13 +457,15 @@ test.describe("Recipes — import from a URL", () => {
     await registerAndLogin(page, "e2e-rcsource", "Source User");
     await createGroup(page, "Famille Origine");
 
+    // The import by link opens the page (#539), its own form.
+    await page.goto("/recipes/new");
+    await expect(
+      page.locator('form[action="/recipes/import"]').getByRole("textbox", {
+        name: "Importer depuis un lien",
+      }),
+    ).toBeVisible();
     // The create form as the import leaves it: the page's address in a
     // hidden `source_url` field, next to the fields the member reviews.
-    await page.goto("/recipes/new");
-    await expect(page.getByRole("link", { name: "Importer depuis une URL" })).toHaveAttribute(
-      "href",
-      "/recipes/import",
-    );
     const source = "https://www.marmiton.org/recettes/recette_crepes-faciles_27121.aspx";
     await page.locator('form[action="/recipes/new"]').evaluate((form, url) => {
       const field = document.createElement("input");

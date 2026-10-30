@@ -1,8 +1,8 @@
-//! `/recipes/:id/edit` — full edit of a recipe (name/instructions/
-//! ingredients). Same permission bar as delete (`can_modify`): a
+//! `/recipes/:id/edit` — full edit of a recipe, in the form of
+//! `new.rs` (#539): its lines and steps pre-filled, blank ones under them. Same permission bar as delete (`can_modify`): a
 //! non-permitted user never sees the form (GET → forbidden page), and the
 //! backend 403 is mapped to `?error=forbidden` on the detail page
-//! defensively. A blank instructions field *clears* it (sent as `Some(None)`
+//! defensively. No step at all *clears* the instructions (sent as `Some(None)`
 //! per the backend's double-`Option` PATCH contract); the edit form always
 //! sends the full ingredient list, replacing the recipe's ingredients.
 //! Success (200) → PRG `/recipes/:id?notice=recipe_updated`.
@@ -12,16 +12,14 @@ use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use manage_our_home_shared::dto::recipes::{RecipeResponse, UpdateRecipeRequest};
-use manage_our_home_shared::validation::recipes::{
-    format_ingredients, parse_ingredients, parse_servings, validate_recipe_name,
-};
+use manage_our_home_shared::validation::recipes::{ingredient_fields, steps_of};
 use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
-use super::new::{error_message, form_fields, name_error_code, RecipeForm};
+use super::new::{check, error_message, form_buttons, form_fields, read_form, Intent, RecipeForm};
 use super::{
     can_modify, family_context, forbidden_page, recipe_not_found_page, recipes_cookie,
     service_unavailable_page,
@@ -31,18 +29,14 @@ fn page(header: &str, id: Uuid, name: &str, form: &RecipeForm, error: Option<&st
     let error_html = error
         .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
         .unwrap_or_default();
-    let fields = form_fields(
-        &form.name,
-        &form.instructions,
-        &form.ingredients,
-        &form.servings,
-    );
+    let fields = form_fields(form);
+    let buttons = form_buttons("Enregistrer");
     let body = format!(
         r#"<h1>Modifier — {name_esc}</h1>
 {error_html}
 <form method="post" action="/recipes/{id}/edit">
 {fields}
-<button type="submit">Enregistrer</button>
+{buttons}
 </form>
 <div class="links"><a href="/recipes/{id}">Retour au détail</a></div>"#,
         name_esc = html_escape(name),
@@ -100,10 +94,14 @@ pub async fn get(
 
     let form = RecipeForm {
         name: recipe.name.clone(),
-        instructions: recipe.instructions.clone().unwrap_or_default(),
-        ingredients: format_ingredients(&recipe.ingredients),
-        source_url: String::new(),
         servings: recipe.servings.map(|s| s.to_string()).unwrap_or_default(),
+        duration: recipe
+            .duration_minutes
+            .map(|d| d.to_string())
+            .unwrap_or_default(),
+        source_url: String::new(),
+        ingredients: ingredient_fields(&recipe.ingredients),
+        steps: steps_of(recipe.instructions.as_deref().unwrap_or_default()),
     };
     Html(page(&fam.header, recipe_id, &recipe.name, &form, None)).into_response()
 }
@@ -113,7 +111,7 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(recipe_id): Path<Uuid>,
-    Form(form): Form<RecipeForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
     let Some(fam) =
         family_context(&state, &headers, &me, &format!("/recipes/{recipe_id}/edit")).await
@@ -121,41 +119,34 @@ pub async fn post(
         return Redirect::to("/groups/new").into_response();
     };
 
-    let render_error = |code: &str| {
+    let (mut form, intent) = read_form(&pairs);
+    if intent == Intent::MoreLines {
+        return Html(page(&fam.header, recipe_id, &form.name, &form, None)).into_response();
+    }
+    let checked = check(&mut form);
+    let render_error = |message: &str| {
         Html(page(
             &fam.header,
             recipe_id,
             &form.name,
             &form,
-            Some(error_message(code)),
+            Some(message),
         ))
         .into_response()
     };
-
-    if let Err(e) = validate_recipe_name(&form.name) {
-        return render_error(name_error_code(e));
-    }
-    let ingredients = match parse_ingredients(&form.ingredients) {
-        Ok(list) => list,
-        Err(e) => return render_error(e.code()),
-    };
-    // A blank number of people clears it, like the instructions below.
-    let servings = match parse_servings(&form.servings) {
-        Ok(s) => s,
-        Err(code) => return render_error(code),
+    let checked = match checked {
+        Ok(c) => c,
+        Err(message) => return render_error(&message),
     };
 
-    // A blank instructions field clears it (`Some(None)`); the edit form
-    // always sends every field, so each is `Some(...)`.
-    let instructions = {
-        let i = form.instructions.trim();
-        Some((!i.is_empty()).then(|| i.to_string()))
-    };
+    // The edit form always sends every field, so each is `Some(...)`: a
+    // blank number of people, time, or no step at all clears it.
     let body = UpdateRecipeRequest {
         name: Some(form.name.trim().to_string()),
-        instructions,
-        ingredients: Some(ingredients),
-        servings: Some(servings),
+        instructions: Some(checked.instructions),
+        ingredients: Some(checked.ingredients),
+        servings: Some(checked.servings),
+        duration_minutes: Some(checked.duration_minutes),
     };
 
     let cookie = recipes_cookie(&headers);
@@ -184,8 +175,8 @@ pub async fn post(
                 .get("error")
                 .and_then(|e| e.as_str())
                 .unwrap_or("unavailable");
-            render_error(code)
+            render_error(error_message(code))
         }
-        Ok(_) | Err(_) => render_error("unavailable"),
+        Ok(_) | Err(_) => render_error(error_message("unavailable")),
     }
 }
