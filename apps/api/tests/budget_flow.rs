@@ -2544,6 +2544,142 @@ async fn a_price_and_a_patch_of_one_expense_at_once_both_go_through(db: PgPool) 
     assert_eq!(patch.await.unwrap(), StatusCode::OK);
 }
 
+/// A request sent in the background: its status and its body.
+fn spawn_call(
+    router: &axum::Router,
+    method: Method,
+    uri: String,
+    cookie: &str,
+    body: serde_json::Value,
+) -> tokio::task::JoinHandle<(StatusCode, serde_json::Value)> {
+    let (router, cookie) = (router.clone(), cookie.to_string());
+    tokio::spawn(async move {
+        let res = call(&router, method, &uri, Some(&cookie), Some(body)).await;
+        let status = res.status();
+        (status, json_body(res).await)
+    })
+}
+
+/// #633: every write of a link to a grocery item takes the family's lock
+/// before reading the links. Two writes linking one item at once then see
+/// each other's link — the second gets its 409 — instead of both reading
+/// « not linked » and the second tripping on the item's unique key (a 500).
+/// The test holds the family's lock, parks a first write on it, then a
+/// second; once released, the first goes first.
+#[sqlx::test]
+async fn writes_linking_one_item_at_once_wait_for_each_other(db: PgPool) {
+    let router = test_router_sized(db.clone(), 10);
+    let (owner, _admin, group_id) = owner_and_admin(&router, &db, "link-race").await;
+    // `alerts::watch` takes the family's lock for an expense of the current
+    // month: the creations below are dated last month, so that they wait
+    // on it only if they take it themselves. This writes the family's
+    // `budget_settings` row, the lock the test holds.
+    let last_month = paris_day(Utc::now())
+        .with_day(1)
+        .unwrap()
+        .pred_opt()
+        .unwrap();
+    let res = call(
+        &router,
+        Method::PUT,
+        &format!("/groups/{group_id}/budget-settings"),
+        Some(&owner),
+        Some(serde_json::json!({"monthly_cap": null})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let entries = format!("/groups/{group_id}/budget-entries");
+    let price = |item: &str| format!("/groups/{group_id}/grocery-items/{item}/price");
+    let other = create_entry(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Épicerie", "amount": 4.0}),
+    )
+    .await;
+    let other = format!("{entries}/{}", other["id"].as_str().unwrap());
+
+    // (first write, second write, the second's error)
+    let pain = grocery_item(&router, &owner, &group_id, "Pain").await;
+    let lait = grocery_item(&router, &owner, &group_id, "Lait").await;
+    let beurre = grocery_item(&router, &owner, &group_id, "Beurre").await;
+    let oeufs = grocery_item(&router, &owner, &group_id, "Oeufs").await;
+    let riz = grocery_item(&router, &owner, &group_id, "Riz").await;
+    let races = [
+        (
+            (
+                Method::POST,
+                entries.clone(),
+                serde_json::json!({"name": "Marché", "amount": 6.0, "grocery_item_ids": [pain, lait]}),
+            ),
+            (
+                Method::POST,
+                price(&pain),
+                serde_json::json!({"amount": 1.0}),
+            ),
+            "grocery_item_priced_with_others",
+        ),
+        (
+            (
+                Method::POST,
+                entries.clone(),
+                serde_json::json!({"name": "Crèmerie", "amount": 2.0, "grocery_item_ids": [beurre], "spent_at": last_month}),
+            ),
+            (
+                Method::POST,
+                entries.clone(),
+                serde_json::json!({"name": "Beurre", "amount": 2.0, "grocery_item_id": beurre, "spent_at": last_month}),
+            ),
+            "grocery_item_already_priced",
+        ),
+        (
+            (
+                Method::POST,
+                price(&oeufs),
+                serde_json::json!({"amount": 3.0}),
+            ),
+            (
+                Method::PATCH,
+                other.clone(),
+                serde_json::json!({"grocery_item_ids": [oeufs]}),
+            ),
+            "grocery_item_already_priced",
+        ),
+        (
+            (
+                Method::PATCH,
+                other.clone(),
+                serde_json::json!({"grocery_item_ids": [riz]}),
+            ),
+            (
+                Method::POST,
+                entries.clone(),
+                serde_json::json!({"name": "Riz", "amount": 1.5, "grocery_item_ids": [riz], "spent_at": last_month}),
+            ),
+            "grocery_item_already_priced",
+        ),
+    ];
+    for ((m1, uri1, body1), (m2, uri2, body2), error) in races {
+        let mut hold = manage_our_home::db::begin(&db).await.unwrap();
+        sqlx::query("SELECT 1 FROM budget_settings WHERE group_id = $1::uuid FOR UPDATE")
+            .bind(&group_id)
+            .execute(&mut *hold)
+            .await
+            .unwrap();
+        let first = spawn_call(&router, m1, uri1, &owner, body1);
+        common::wait_for_lock_waiters(&db, None, 1).await;
+        let second = spawn_call(&router, m2, uri2, &owner, body2);
+        common::wait_for_lock_waiters(&db, None, 2).await;
+        hold.rollback().await.unwrap();
+
+        let (status, body) = first.await.unwrap();
+        assert!(status.is_success(), "first write: {status} {body}");
+        let (status, body) = second.await.unwrap();
+        assert_eq!(status, StatusCode::CONFLICT, "second write: {body}");
+        assert_eq!(body["error"], error);
+    }
+}
+
 /// A device of `email`'s account, under an endpoint no push service owns:
 /// `push::send` answers it `Gone` without any request, and the device is
 /// then forgotten — which is how a test sees that it was pushed.
