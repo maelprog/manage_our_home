@@ -384,8 +384,10 @@ pub async fn get(
         Err(_) => return service_unavailable_page().into_response(),
     };
 
-    // The selections are the other hard failure: any status but 200 makes
-    // them unknown, not empty (`planned_selections`).
+    // The selections fail hard on any status but 200, which makes them
+    // unknown, not empty (`planned_selections`). The possible recipes and
+    // the suggestions below fail hard on a transport error only, like the
+    // list; a non-200 reads as none (`fetch_suggestions`).
     let Ok(planned) = planned_selections(&state, fam.gid, cookie.as_deref()).await else {
         return service_unavailable_page().into_response();
     };
