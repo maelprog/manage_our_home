@@ -523,6 +523,11 @@ mod tests {
             steps_html(Some("Mélanger <bien>.\n\nCuire.")),
             "<h2>Étapes</h2><ol><li>Mélanger &lt;bien&gt;.</li><li>Cuire.</li></ol>"
         );
+        // A recipe imported before #539 stored its steps numbered.
+        assert_eq!(
+            steps_html(Some("1. Mélanger.\n2. Cuire.")),
+            "<h2>Étapes</h2><ol><li>Mélanger.</li><li>Cuire.</li></ol>"
+        );
         assert_eq!(steps_html(Some("  \n ")), "");
         assert_eq!(steps_html(None), "");
     }

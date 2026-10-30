@@ -179,14 +179,32 @@ pub fn ingredient_fields(ingredients: &[IngredientResponse]) -> Vec<IngredientFi
 }
 
 /// The numbered steps of a recipe: the lines of its instructions, trimmed,
-/// blank ones left out.
+/// blank ones left out. A line's own number (« 1. », « 2) ») goes, the
+/// steps being numbered where they are shown: a recipe imported before
+/// #539 was stored that way.
 pub fn steps_of(instructions: &str) -> Vec<String> {
     instructions
         .lines()
-        .map(str::trim)
+        .map(|l| without_step_number(l.trim()))
         .filter(|l| !l.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+/// `line` without a leading « N. » or « N) » followed by a space (or
+/// nothing else): « 12.5 g » and « 2 œufs » keep their number.
+fn without_step_number(line: &str) -> &str {
+    let digits = line.len() - line.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    if digits == 0 {
+        return line;
+    }
+    let rest = &line[digits..];
+    match rest.strip_prefix(['.', ')']) {
+        Some(after) if after.is_empty() || after.starts_with(char::is_whitespace) => {
+            after.trim_start()
+        }
+        _ => line,
+    }
 }
 
 /// The form's steps → the instructions stored, one step per line. A line
@@ -501,6 +519,21 @@ mod tests {
         );
         assert!(steps_of("").is_empty());
         assert!(steps_of(" \n ").is_empty());
+    }
+
+    #[test]
+    fn a_step_numbered_by_hand_or_by_an_old_import_loses_its_number() {
+        // Before #539 an imported recipe was stored as « 1. Mélanger. »:
+        // the list numbers its steps itself.
+        assert_eq!(
+            steps_of("1. Mélanger.\n2) Cuire 10 min.\n10.  Servir.\n3."),
+            ["Mélanger.", "Cuire 10 min.", "Servir."]
+        );
+        // A number that is not a step's is kept.
+        assert_eq!(
+            steps_of("12.5 g de sucre.\n2 œufs.\n1.Mélanger."),
+            ["12.5 g de sucre.", "2 œufs.", "1.Mélanger."]
+        );
     }
 
     #[test]
