@@ -130,6 +130,7 @@ mod tests {
             group_id: uuid::Uuid::from_u128(1),
             name: "Foyer".to_string(),
             role: "owner".to_string(),
+            accent: "sarcelle".to_string(),
             ownership_notice: None,
         };
         let html = group_row(&g).to_html();

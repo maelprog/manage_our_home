@@ -6,6 +6,7 @@ use axum::{http::StatusCode, Json};
 use chrono::{Duration, Utc};
 use manage_our_home_shared::dto::groups::GroupMemberProfile;
 use manage_our_home_shared::validation::auth::normalize_email;
+use manage_our_home_shared::validation::groups::Accent;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -30,6 +31,7 @@ pub struct CreateGroupRequest {
 pub struct GroupResponse {
     pub id: Uuid,
     pub name: String,
+    pub accent: String,
 }
 
 /// AC #9: the creator becomes owner+admin immediately; blocked at 10
@@ -63,7 +65,7 @@ pub async fn create_group(
         r#"
         INSERT INTO groups (id, name, created_by)
         VALUES ($1, $2, $3)
-        RETURNING id, name
+        RETURNING id, name, accent
         "#,
         group_id,
         body.name,
@@ -90,6 +92,7 @@ pub async fn create_group(
         Json(GroupResponse {
             id: group.id,
             name: group.name,
+            accent: group.accent,
         }),
     ))
 }
@@ -113,7 +116,7 @@ pub async fn list_groups(
     let mut tx = user_scoped_tx(&state.db, auth.user_id).await?;
     let groups = sqlx::query!(
         r#"
-        SELECT g.id, g.name, g.created_at, gm.role as "role: String",
+        SELECT g.id, g.name, g.accent, g.created_at, gm.role as "role: String",
                gm.ownership_inherited_at, gm.ownership_inherited_reason,
                (gm.role = 'owner' AND gm.ownership_inherited_at IS NOT NULL
                 AND gm.ownership_notice_seen_at IS NULL) AS "ownership_notice_pending!"
@@ -135,6 +138,7 @@ pub async fn list_groups(
                 "group_id": group.id,
                 "name": group.name,
                 "role": group.role,
+                "accent": group.accent,
                 "created_at": group.created_at,
                 // #323: the caller became this group's owner without asking
                 // for it and has not acknowledged it yet.
@@ -294,22 +298,39 @@ pub async fn acknowledge_ownership_notice(
 
 #[derive(Deserialize)]
 pub struct RenameGroupRequest {
-    pub name: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub accent: Option<String>,
 }
 
-/// Renames a group. Admin/owner only (mirrors invitation creation). The name
-/// must be non-empty after trimming, same rule as create — enforced here via
-/// the trimmed value being persisted.
+/// `PATCH /groups/:id`: changes the group's settings, its name, its accent
+/// (#537) or both; a setting left out is kept. Admin/owner only (mirrors
+/// invitation creation). The name must be non-empty after trimming, same
+/// rule as create — enforced here via the trimmed value being persisted —
+/// and a body with neither setting is refused the same way (422
+/// `name_required`). Before #537 such a body was also a 422, but axum's
+/// deserialization rejection (`missing field name`, plain text). The accent
+/// must be one of `Accent`'s identifiers (400 `invalid_accent`); the
+/// migration's `CHECK` holds the same list.
 pub async fn rename_group(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(group_id): Path<Uuid>,
     Json(body): Json<RenameGroupRequest>,
 ) -> AppResult<impl IntoResponse> {
-    let name = body.name.trim();
-    if name.is_empty() {
+    let name = body.name.as_deref().map(str::trim);
+    if name.is_some_and(str::is_empty) || (name.is_none() && body.accent.is_none()) {
         return Err(AppError::Unprocessable("name_required".into()));
     }
+    let accent = match body.accent.as_deref() {
+        Some(value) => Some(
+            Accent::parse(value)
+                .ok_or_else(|| AppError::BadRequest("invalid_accent".into()))?
+                .as_str(),
+        ),
+        None => None,
+    };
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let role = require_role(&mut tx, group_id, auth.user_id).await?;
@@ -318,8 +339,10 @@ pub async fn rename_group(
     }
 
     let group = sqlx::query!(
-        "UPDATE groups SET name = $1 WHERE id = $2 RETURNING id, name",
+        r#"UPDATE groups SET name = COALESCE($1, name), accent = COALESCE($2, accent)
+           WHERE id = $3 RETURNING id, name, accent"#,
         name,
+        accent,
         group_id
     )
     .fetch_one(&mut *tx)
@@ -329,6 +352,7 @@ pub async fn rename_group(
     Ok(Json(GroupResponse {
         id: group.id,
         name: group.name,
+        accent: group.accent,
     }))
 }
 

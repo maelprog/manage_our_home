@@ -99,9 +99,108 @@ impl OwnershipReason {
     }
 }
 
+/// A family's accent colour (#537), the value of `groups.accent`
+/// (migration 0040), chosen by its owner or admins. The list is closed —
+/// the `CHECK` of the migration spells the same eight identifiers — because
+/// a free colour would no longer guarantee the contrast of the theme;
+/// `apps/web` maps each identifier to its palette (#538).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Accent {
+    #[default]
+    Sarcelle,
+    Ocean,
+    Prune,
+    Foret,
+    Terracotta,
+    Framboise,
+    Ardoise,
+    Miel,
+}
+
+impl Accent {
+    /// Every accent, in the order the settings offer them.
+    pub const ALL: [Accent; 8] = [
+        Accent::Sarcelle,
+        Accent::Ocean,
+        Accent::Prune,
+        Accent::Foret,
+        Accent::Terracotta,
+        Accent::Framboise,
+        Accent::Ardoise,
+        Accent::Miel,
+    ];
+
+    /// The column's value, spelled exactly as the migration's `CHECK`.
+    pub fn parse(value: &str) -> Option<Self> {
+        Accent::ALL.into_iter().find(|a| a.as_str() == value)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Accent::Sarcelle => "sarcelle",
+            Accent::Ocean => "ocean",
+            Accent::Prune => "prune",
+            Accent::Foret => "foret",
+            Accent::Terracotta => "terracotta",
+            Accent::Framboise => "framboise",
+            Accent::Ardoise => "ardoise",
+            Accent::Miel => "miel",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- Accent (#537) --------------------------------------------------------
+
+    #[test]
+    fn the_eight_accents_round_trip_in_order() {
+        let names: Vec<&str> = Accent::ALL.iter().map(|a| a.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "sarcelle",
+                "ocean",
+                "prune",
+                "foret",
+                "terracotta",
+                "framboise",
+                "ardoise",
+                "miel"
+            ]
+        );
+        for accent in Accent::ALL {
+            assert_eq!(Accent::parse(accent.as_str()), Some(accent));
+        }
+    }
+
+    #[test]
+    fn the_default_accent_is_sarcelle() {
+        assert_eq!(Accent::default(), Accent::Sarcelle);
+        assert_eq!(Accent::default().as_str(), "sarcelle");
+    }
+
+    /// The list is closed and spelled exactly: no free hexadecimal colour
+    /// (contrast would no longer be guaranteed), no accents, no case or
+    /// whitespace variants.
+    #[test]
+    fn anything_else_is_not_an_accent() {
+        for text in [
+            "",
+            "Sarcelle",
+            " sarcelle",
+            "sarcelle ",
+            "océan",
+            "forêt",
+            "#0f766e",
+            "teal",
+            "rouge",
+        ] {
+            assert_eq!(Accent::parse(text), None, "{text:?}");
+        }
+    }
 
     // -- validate_group_name ---------------------------------------------
 

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT g.id, g.name, g.created_at, gm.role as \"role: String\",\n               gm.ownership_inherited_at, gm.ownership_inherited_reason,\n               (gm.role = 'owner' AND gm.ownership_inherited_at IS NOT NULL\n                AND gm.ownership_notice_seen_at IS NULL) AS \"ownership_notice_pending!\"\n        FROM group_members gm\n        JOIN groups g ON g.id = gm.group_id\n        WHERE gm.user_id = $1\n        ORDER BY g.created_at\n        ",
+  "query": "\n        SELECT g.id, g.name, g.accent, g.created_at, gm.role as \"role: String\",\n               gm.ownership_inherited_at, gm.ownership_inherited_reason,\n               (gm.role = 'owner' AND gm.ownership_inherited_at IS NOT NULL\n                AND gm.ownership_notice_seen_at IS NULL) AS \"ownership_notice_pending!\"\n        FROM group_members gm\n        JOIN groups g ON g.id = gm.group_id\n        WHERE gm.user_id = $1\n        ORDER BY g.created_at\n        ",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,17 @@
       },
       {
         "ordinal": 2,
+        "name": "accent",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "groups",
+            "name": "accent"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -37,7 +48,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "role: String",
         "type_info": {
           "Custom": {
@@ -59,7 +70,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "ownership_inherited_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -70,7 +81,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "ownership_inherited_reason",
         "type_info": "Text",
         "origin": {
@@ -81,7 +92,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "ownership_notice_pending!",
         "type_info": "Bool",
         "origin": "Expression"
@@ -97,10 +108,11 @@
       false,
       false,
       false,
+      false,
       true,
       true,
       null
     ]
   },
-  "hash": "c34518fca1784b2b478bf6095c0225e4c215122eb1811a7e18ce765d69af0df9"
+  "hash": "ce7d97eef29ef15bb31c6bb6955aa489363125d783115794497393434321c67d"
 }

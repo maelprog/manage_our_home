@@ -1430,6 +1430,7 @@ mod tests {
             group_id: Uuid::from_u128(1),
             name: name.to_string(),
             role: "owner".to_string(),
+            accent: "sarcelle".to_string(),
             ownership_notice: None,
         }
     }
