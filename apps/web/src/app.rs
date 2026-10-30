@@ -231,8 +231,11 @@ pub(crate) fn unread_badge(unread: u64) -> String {
 }
 
 /// The count the Notifications entry of the sidebar and the home's bell
-/// wear (#535), or nothing at all at zero — as `unread_badge`, but said
-/// the way the issue words it: "Notifications, 3 non lues".
+/// wear (#535), or nothing at all at zero — as `unread_badge`, in the
+/// feminine of the word: "Notifications (3 non lues)". The parentheses are
+/// the Messagerie tab's, and not the issue's comma: a browser reads the
+/// visually hidden words as a block of their own, and puts a space before
+/// them — "Notifications , 3 non lues".
 pub(crate) fn notifications_badge(unread: u64) -> String {
     if unread == 0 {
         return String::new();
@@ -244,7 +247,7 @@ pub(crate) fn notifications_badge(unread: u64) -> String {
     };
     let words = if unread == 1 { "non lue" } else { "non lues" };
     format!(
-        r#"<span class="badge warn" aria-hidden="true">{shown}</span><span class="sr-only">, {unread} {words}</span>"#
+        r#"<span class="badge warn" aria-hidden="true">{shown}</span><span class="sr-only"> ({unread} {words})</span>"#
     )
 }
 
@@ -1658,7 +1661,7 @@ mod tests {
         assert!(
             destinations(&header, Layout::Pc).contains(&(
                 "/notifications".to_string(),
-                "Notifications, 3 non lues".to_string()
+                "Notifications (3 non lues)".to_string()
             )),
             "{header}"
         );
@@ -1838,13 +1841,14 @@ mod tests {
     }
 
     #[test]
-    fn the_notifications_badge_says_its_count_after_a_comma() {
-        // #535: "Notifications, 3 non lues", feminine as the word is.
+    fn the_notifications_badge_says_its_count_in_the_feminine() {
+        // #535: "Notifications (3 non lues)" — the form of the Messagerie
+        // tab's name, the gender of the word.
         assert_eq!(
             notifications_badge(3),
-            r#"<span class="badge warn" aria-hidden="true">3</span><span class="sr-only">, 3 non lues</span>"#
+            r#"<span class="badge warn" aria-hidden="true">3</span><span class="sr-only"> (3 non lues)</span>"#
         );
-        assert!(notifications_badge(1).contains(">, 1 non lue<"));
+        assert!(notifications_badge(1).contains("> (1 non lue)<"));
     }
 
     #[test]
@@ -1855,7 +1859,7 @@ mod tests {
             badge.contains(r#"aria-hidden="true">99+</span>"#),
             "{badge}"
         );
-        assert!(badge.contains(", 100 non lues"), "{badge}");
+        assert!(badge.contains(" (100 non lues)"), "{badge}");
     }
 
     #[test]

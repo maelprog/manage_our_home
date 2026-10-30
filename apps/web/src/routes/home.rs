@@ -489,14 +489,14 @@ fn greeting(today: NaiveDate, unread: Option<u64>) -> String {
 /// The phone's bell (#535), at the head of the home page: the way to
 /// `/notifications` on a phone, whose tab bar has no room for it (a PC has
 /// the sidebar's entry). Its count is drawn on its corner and said in its
-/// name, "Notifications, 3 non lues"; `None` — the count could not be
+/// name, "Notifications (3 non lues)" as the sidebar's entry; `None` — the count could not be
 /// read — draws the bell alone.
 fn bell_link(unread: Option<u64>) -> String {
     let unread = unread.unwrap_or(0);
     let name = match unread {
         0 => "Notifications".to_string(),
-        1 => "Notifications, 1 non lue".to_string(),
-        n => format!("Notifications, {n} non lues"),
+        1 => "Notifications (1 non lue)".to_string(),
+        n => format!("Notifications ({n} non lues)"),
     };
     // The badge's own words are left out of the name, which `aria-label`
     // already says in full.
@@ -1607,18 +1607,18 @@ mod pure_logic_tests {
     fn the_bell_wears_the_count_and_says_it_in_its_name() {
         let html = bell_link(Some(3));
         assert!(
-            html.contains(r#"aria-label="Notifications, 3 non lues""#),
+            html.contains(r#"aria-label="Notifications (3 non lues)""#),
             "{html}"
         );
         assert!(
             html.contains(r#"<span class="badge warn" aria-hidden="true">3</span>"#),
             "{html}"
         );
-        assert!(bell_link(Some(1)).contains(r#"aria-label="Notifications, 1 non lue""#));
+        assert!(bell_link(Some(1)).contains(r#"aria-label="Notifications (1 non lue)""#));
         let html = bell_link(Some(120));
         assert!(html.contains(r#"aria-hidden="true">99+</span>"#), "{html}");
         assert!(
-            html.contains(r#"aria-label="Notifications, 120 non lues""#),
+            html.contains(r#"aria-label="Notifications (120 non lues)""#),
             "{html}"
         );
     }

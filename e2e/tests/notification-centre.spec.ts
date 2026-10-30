@@ -100,7 +100,7 @@ test.describe("Notification centre", () => {
     await expect(async () => {
       await page.goto("/notifications");
       await expect(
-        sidebar(page).getByRole("link", { name: "Notifications, 2 non lues", exact: true }),
+        sidebar(page).getByRole("link", { name: "Notifications (2 non lues)", exact: true }),
       ).toBeVisible({ timeout: 1_000 });
     }).toPass({ timeout: 150_000, intervals: [5_000] });
 
@@ -113,7 +113,7 @@ test.describe("Notification centre", () => {
     // The bell of the home page, on a phone, says the same count.
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/");
-    const bell = page.getByRole("link", { name: "Notifications, 2 non lues", exact: true });
+    const bell = page.getByRole("link", { name: "Notifications (2 non lues)", exact: true });
     await expect(bell).toBeVisible();
     await expect(bell).toHaveAttribute("href", "/notifications");
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -135,7 +135,7 @@ test.describe("Notification centre", () => {
     await expect(page).toHaveURL(/\/agenda\/[0-9a-f-]{36}$/);
     await expect(page.getByRole("heading", { name: "Piscine du soir" })).toBeVisible();
     await expect(
-      sidebar(page).getByRole("link", { name: "Notifications, 1 non lue", exact: true }),
+      sidebar(page).getByRole("link", { name: "Notifications (1 non lue)", exact: true }),
     ).toBeVisible();
 
     await page.goto("/notifications");
