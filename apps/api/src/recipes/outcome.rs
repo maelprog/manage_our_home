@@ -24,6 +24,20 @@
 //! `stock_item_gone`. The stock is decremented, a `meal_history` entry is
 //! inserted as « log a meal » does, and the selection becomes `done`.
 //!
+//! **Other products (#540).** The application also takes `others`, products
+//! used that the recipe does not call for: `{stock_item_id, quantity}`, the
+//! quantity above 0, in the line's unit, refused above what the line holds
+//! as above. A line of `removals` need not name an ingredient either. A
+//! line of `others` the group's stock does not hold (another group's, or
+//! none) is 404. With `add_to_recipe`, each product becomes an ingredient
+//! of the recipe (`ingredients_to_add`): its line's name and unit, the
+//! quantity used brought back to the recipe's number of people, unless the
+//! recipe already has an ingredient of that name (`article_key`), so that
+//! replaying adds it once. Changing the recipe stays for its creator, an
+//! admin or the owner (`can_modify`, as for `PATCH`): anyone else gets 403
+//! for `add_to_recipe`, and the preview says whether the caller may
+//! (`can_edit_recipe`).
+//!
 //! **Abandoned.** The preview lists the unchecked grocery items whose
 //! `source_recipe_id` names the recipe. The application takes the ids to
 //! remove (the others are kept); an id that is no longer such an item
@@ -55,6 +69,7 @@ use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::grocery_list::planned::{scale_quantity, without_binary_noise};
 use crate::groups::require_role;
+use crate::recipes::can_modify;
 use crate::recipes::meal_history::MealHistoryEntryResponse;
 use crate::recipes::selections::SelectionResponse;
 use crate::stocks::items::{day_or_today, today, StockItemResponse, StockItemRow};
@@ -285,11 +300,96 @@ pub(crate) fn check_grocery_ids(ids: &[Uuid]) -> AppResult<()> {
     }
 }
 
-/// Whether a stock line's name is one of the recipe's ingredients: a `done`
-/// request removes only from those.
-pub(crate) fn names_an_ingredient(name: &str, ingredients: &[Ingredient<'_>]) -> bool {
-    let key = article_key(name);
-    ingredients.iter().any(|i| article_key(i.name) == key)
+/// A product used that the recipe does not call for (#540): the quantity
+/// to take from a stock line, in its unit.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OtherRemoval {
+    pub stock_item_id: Uuid,
+    pub quantity: f64,
+}
+
+/// The `(stock line, quantity)` pairs of a `done` request's other products.
+/// Each quantity above 0, and each line once across `removals` and
+/// `others`, or 400.
+pub(crate) fn check_others(
+    removals: &[Removal],
+    others: &[OtherRemoval],
+) -> AppResult<Vec<(Uuid, f64)>> {
+    let mut seen: HashSet<Uuid> = removals.iter().map(|r| r.stock_item_id).collect();
+    for o in others {
+        if !seen.insert(o.stock_item_id) {
+            return Err(AppError::BadRequest("duplicate_stock_item".into()));
+        }
+        if !o.quantity.is_finite() || o.quantity <= 0.0 {
+            return Err(AppError::BadRequest("invalid_quantity".into()));
+        }
+    }
+    Ok(others
+        .iter()
+        .map(|o| (o.stock_item_id, o.quantity))
+        .collect())
+}
+
+/// An other product as taken from the stock: its line's name and unit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Used<'a> {
+    pub name: &'a str,
+    pub unit: &'a str,
+    pub quantity: f64,
+}
+
+/// An ingredient to add to the recipe.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct NewIngredient {
+    pub name: String,
+    pub quantity: f64,
+    pub unit: String,
+}
+
+/// The ingredients `add_to_recipe` adds: one per product name
+/// (`article_key`) the recipe does not have yet (`existing`), in the order
+/// the products were given, named and counted in the unit of its first
+/// line. Several lines of that name and unit add up; a line in another unit
+/// cannot be added to them (no conversion) and is left out. The quantity
+/// used, for the selection's number of people (`cooked_for`), is brought
+/// back to the recipe's (`written_for`), as the preview scales the other
+/// way (`scale_quantity`); as used when either is missing.
+pub(crate) fn ingredients_to_add(
+    used: &[Used<'_>],
+    existing: &[&str],
+    cooked_for: Option<i32>,
+    written_for: Option<i32>,
+) -> Vec<NewIngredient> {
+    let existing: HashSet<String> = existing.iter().map(|n| article_key(n)).collect();
+    let mut added: Vec<(String, NewIngredient)> = Vec::new();
+    for u in used {
+        let key = article_key(u.name);
+        if existing.contains(&key) {
+            continue;
+        }
+        match added.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, ing)) if article_key(&ing.unit) == article_key(u.unit) => {
+                ing.quantity = without_binary_noise(ing.quantity + u.quantity);
+            }
+            Some(_) => {}
+            None => added.push((
+                key,
+                NewIngredient {
+                    name: u.name.trim().to_string(),
+                    quantity: u.quantity,
+                    unit: u.unit.trim().to_string(),
+                },
+            )),
+        }
+    }
+    added
+        .into_iter()
+        .map(|(_, ing)| NewIngredient {
+            quantity: scale_quantity(Some(ing.quantity), cooked_for, written_for)
+                .unwrap_or(ing.quantity),
+            ..ing
+        })
+        .collect()
 }
 
 // -- Handlers -----------------------------------------------------------------
@@ -305,6 +405,7 @@ struct PlannedRow {
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     recipe_servings: Option<i32>,
+    recipe_created_by: Uuid,
 }
 
 impl PlannedRow {
@@ -335,7 +436,8 @@ async fn planned_selection(
             PlannedRow,
             r#"
             SELECT s.id, s.recipe_id, r.name AS recipe_name, s.status, s.servings,
-                   s.created_by, s.created_at, s.updated_at, r.servings AS recipe_servings
+                   s.created_by, s.created_at, s.updated_at, r.servings AS recipe_servings,
+                   r.created_by AS recipe_created_by
             FROM recipe_selections s
             JOIN recipes r ON r.id = s.recipe_id
             WHERE s.recipe_id = $1 AND s.group_id = $2 AND s.status = 'planned'
@@ -351,7 +453,8 @@ async fn planned_selection(
             PlannedRow,
             r#"
             SELECT s.id, s.recipe_id, r.name AS recipe_name, s.status, s.servings,
-                   s.created_by, s.created_at, s.updated_at, r.servings AS recipe_servings
+                   s.created_by, s.created_at, s.updated_at, r.servings AS recipe_servings,
+                   r.created_by AS recipe_created_by
             FROM recipe_selections s
             JOIN recipes r ON r.id = s.recipe_id
             WHERE s.recipe_id = $1 AND s.group_id = $2 AND s.status = 'planned'
@@ -443,8 +546,9 @@ pub async fn preview_done(
     Path((group_id, recipe_id)): Path<(Uuid, Uuid)>,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
-    require_role(&mut tx, group_id, auth.user_id).await?;
+    let role = require_role(&mut tx, group_id, auth.user_id).await?;
     let selection = planned_selection(&mut tx, group_id, recipe_id, false).await?;
+    let can_edit_recipe = can_modify(&role, selection.recipe_created_by == auth.user_id);
     let rows = ingredients(&mut tx, group_id, recipe_id).await?;
     let stock = sqlx::query_as!(
         StockItemRow,
@@ -513,6 +617,7 @@ pub async fn preview_done(
     Ok(Json(json!({
         "selection": selection.response(),
         "ingredients": ingredients,
+        "can_edit_recipe": can_edit_recipe,
     })))
 }
 
@@ -524,6 +629,22 @@ pub struct DoneRequest {
     pub removals: Vec<Removal>,
     /// The `meal_history` date; today when omitted.
     pub eaten_on: Option<NaiveDate>,
+    /// Products used that the recipe does not call for (#540).
+    #[serde(default)]
+    pub others: Vec<OtherRemoval>,
+    /// Adds `others` to the recipe, for the recipe's creator, an admin or
+    /// the owner (`can_modify`).
+    #[serde(default)]
+    pub add_to_recipe: bool,
+}
+
+/// An ingredient added by `add_to_recipe`.
+#[derive(Serialize)]
+pub struct AddedIngredientResponse {
+    pub id: Uuid,
+    pub name: String,
+    pub quantity: Option<f64>,
+    pub unit: Option<String>,
 }
 
 /// `POST …/selection/done`: takes the corrected quantities from the stock,
@@ -534,24 +655,21 @@ pub async fn apply_done(
     Path((group_id, recipe_id)): Path<(Uuid, Uuid)>,
     Json(body): Json<DoneRequest>,
 ) -> AppResult<impl IntoResponse> {
-    let to_apply = removals_to_apply(&body.removals)?;
+    let mut to_apply = removals_to_apply(&body.removals)?;
+    let others = check_others(&body.removals, &body.others)?;
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
-    require_role(&mut tx, group_id, auth.user_id).await?;
+    let role = require_role(&mut tx, group_id, auth.user_id).await?;
     let selection = planned_selection(&mut tx, group_id, recipe_id, true).await?;
     let rows = ingredients(&mut tx, group_id, recipe_id).await?;
-    let recipe: Vec<Ingredient<'_>> = rows
-        .iter()
-        .map(|r| Ingredient {
-            name: &r.name,
-            quantity: r.quantity,
-            unit: r.unit.as_deref(),
-        })
-        .collect();
+    let add_to_recipe = body.add_to_recipe && !others.is_empty();
+    if add_to_recipe && !can_modify(&role, selection.recipe_created_by == auth.user_id) {
+        return Err(AppError::Forbidden);
+    }
 
     // Locked in id order, so two applications taking from the same lines
     // cannot deadlock.
-    let ids: Vec<Uuid> = to_apply.iter().map(|(id, _)| *id).collect();
+    let ids: Vec<Uuid> = to_apply.iter().chain(&others).map(|(id, _)| *id).collect();
     let locked = sqlx::query_as!(
         StockItemRow,
         r#"SELECT id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on, barcode
@@ -561,6 +679,26 @@ pub async fn apply_done(
     )
     .fetch_all(&mut *tx)
     .await?;
+    // An other product the group's stock does not hold: another group's,
+    // or none. Nothing has been written yet.
+    if others
+        .iter()
+        .any(|(id, _)| !locked.iter().any(|s| s.id == *id))
+    {
+        return Err(AppError::NotFound);
+    }
+    let used: Vec<Used<'_>> = others
+        .iter()
+        .filter_map(|(id, quantity)| {
+            let line = locked.iter().find(|s| s.id == *id)?;
+            Some(Used {
+                name: &line.name,
+                unit: &line.unit,
+                quantity: *quantity,
+            })
+        })
+        .collect();
+    to_apply.extend(others.iter().copied());
     let mut remaining = Vec::with_capacity(to_apply.len());
     for (id, quantity) in &to_apply {
         let Some(line) = locked.iter().find(|s| s.id == *id) else {
@@ -568,9 +706,6 @@ pub async fn apply_done(
                 json!({ "error": "stock_item_gone", "stock_item_id": id }),
             ));
         };
-        if !names_an_ingredient(&line.name, &recipe) {
-            return Err(AppError::BadRequest("stock_item_not_in_recipe".into()));
-        }
         let Some(left) = remaining_after(line.quantity, *quantity) else {
             return Err(AppError::ConflictJson(json!({
                 "error": "insufficient_stock",
@@ -617,6 +752,39 @@ pub async fn apply_done(
     )
     .fetch_one(&mut *tx)
     .await?;
+
+    let mut added = Vec::new();
+    if add_to_recipe {
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        for ing in ingredients_to_add(&used, &names, selection.servings, selection.recipe_servings)
+        {
+            let row = sqlx::query_as!(
+                AddedIngredientResponse,
+                r#"
+                INSERT INTO recipe_ingredients (recipe_id, group_id, name, quantity, unit)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING id, name, quantity, unit
+                "#,
+                recipe_id,
+                group_id,
+                ing.name,
+                ing.quantity,
+                ing.unit,
+            )
+            .fetch_one(&mut *tx)
+            .await?;
+            added.push(row);
+        }
+        if !added.is_empty() {
+            sqlx::query!(
+                "UPDATE recipes SET updated_at = now() WHERE id = $1 AND group_id = $2",
+                recipe_id,
+                group_id,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
     let selection = close_selection(&mut tx, &selection, "done").await?;
     tx.commit().await?;
 
@@ -629,6 +797,7 @@ pub async fn apply_done(
         "selection": selection,
         "meal": meal,
         "stock_items": stock_items,
+        "added_ingredients": added,
     })))
 }
 
@@ -1217,16 +1386,113 @@ mod tests {
         assert!(check_grocery_ids(&[id(1), id(2)]).is_ok());
     }
 
-    // -- names_an_ingredient -------------------------------------------------
+    // -- check_others ---------------------------------------------------------
+
+    fn other(n: u128, quantity: f64) -> OtherRemoval {
+        OtherRemoval {
+            stock_item_id: id(n),
+            quantity,
+        }
+    }
 
     #[test]
-    fn a_stock_line_must_name_an_ingredient() {
-        let ingredients = [
-            ing("Farine", Some(200.0), Some("g")),
-            ing("Lait", None, None),
-        ];
-        assert!(names_an_ingredient(" lait ", &ingredients));
-        assert!(!names_an_ingredient("Lait de coco", &ingredients));
-        assert!(!names_an_ingredient("Lait", &[]));
+    fn other_products_are_taken_as_given() {
+        let got = check_others(&[removal(1, 2.0, false)], &[other(2, 1.5), other(3, 0.25)]);
+        assert_eq!(got.unwrap(), vec![(id(2), 1.5), (id(3), 0.25)]);
+        assert_eq!(check_others(&[], &[]).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn another_product_needs_a_quantity_above_zero() {
+        for q in [0.0, -1.0, f64::INFINITY, f64::NAN] {
+            assert_eq!(
+                bad_request(check_others(&[], &[other(2, q)])),
+                "invalid_quantity",
+                "{q}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_line_named_twice_across_both_lists_is_refused() {
+        assert_eq!(
+            bad_request(check_others(&[], &[other(2, 1.0), other(2, 2.0)])),
+            "duplicate_stock_item"
+        );
+        // Even when the recipe's line is excluded: one line, one quantity.
+        assert_eq!(
+            bad_request(check_others(&[removal(2, 0.0, true)], &[other(2, 1.0)])),
+            "duplicate_stock_item"
+        );
+    }
+
+    // -- ingredients_to_add ---------------------------------------------------
+
+    fn used<'a>(name: &'a str, unit: &'a str, quantity: f64) -> Used<'a> {
+        Used {
+            name,
+            unit,
+            quantity,
+        }
+    }
+
+    fn new_ing(name: &str, quantity: f64, unit: &str) -> NewIngredient {
+        NewIngredient {
+            name: name.into(),
+            quantity,
+            unit: unit.into(),
+        }
+    }
+
+    #[test]
+    fn each_other_product_becomes_an_ingredient_with_its_stock_unit() {
+        let got = ingredients_to_add(
+            &[used(" Crème ", "cL", 20.0), used("Sel", "pincée", 1.0)],
+            &["Farine"],
+            None,
+            None,
+        );
+        assert_eq!(
+            got,
+            vec![new_ing("Crème", 20.0, "cL"), new_ing("Sel", 1.0, "pincée")]
+        );
+    }
+
+    #[test]
+    fn a_product_the_recipe_already_names_is_not_added_again() {
+        let got = ingredients_to_add(
+            &[used("crème", "cL", 20.0), used("Sel", "pincée", 1.0)],
+            &["Farine", " Crème"],
+            None,
+            None,
+        );
+        assert_eq!(got, vec![new_ing("Sel", 1.0, "pincée")]);
+    }
+
+    #[test]
+    fn two_lots_of_one_product_are_one_ingredient() {
+        // Same unit: the quantities add up. Another unit cannot be added to
+        // them (no conversion): the first line's unit is kept.
+        let got = ingredients_to_add(
+            &[
+                used("Lait", "L", 0.1),
+                used("lait", "l", 0.2),
+                used("Lait", "cL", 50.0),
+            ],
+            &[],
+            None,
+            None,
+        );
+        assert_eq!(got, vec![new_ing("Lait", 0.3, "L")]);
+    }
+
+    #[test]
+    fn the_quantity_is_brought_back_to_the_recipes_number_of_people() {
+        // Cooked for 4, the recipe written for 2: half of what was used.
+        let got = ingredients_to_add(&[used("Crème", "cL", 30.0)], &[], Some(4), Some(2));
+        assert_eq!(got, vec![new_ing("Crème", 15.0, "cL")]);
+        // Either number missing: the quantity used.
+        let got = ingredients_to_add(&[used("Crème", "cL", 30.0)], &[], None, Some(2));
+        assert_eq!(got, vec![new_ing("Crème", 30.0, "cL")]);
     }
 }
