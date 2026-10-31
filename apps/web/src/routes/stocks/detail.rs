@@ -215,6 +215,19 @@ pub(crate) fn adjusted_target(back: &str, item_id: Uuid) -> String {
     }
 }
 
+/// The quantity the adjust form posts, or the `?error=` code it lands on.
+/// The API's guards (#649): a stepper at the bound, or a forged value above
+/// it or not finite, reads `quantity_too_large`; a negative or unreadable
+/// value, which the stepper never posts, stays `unavailable`.
+fn adjust_guard(typed: &str) -> Result<f64, &'static str> {
+    let quantity = parse_quantity(typed).ok_or("unavailable")?;
+    match check_quantities(quantity, None) {
+        Ok(()) => Ok(quantity),
+        Err(ItemFormError::QuantityTooLarge) => Err("quantity_too_large"),
+        Err(_) => Err("unavailable"),
+    }
+}
+
 pub async fn adjust(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
@@ -228,18 +241,10 @@ pub async fn adjust(
     };
     let detail = format!("/stocks/{item_id}");
 
-    let Some(quantity) = parse_quantity(&form.quantity) else {
-        return Redirect::to(&format!("{detail}?error=unavailable")).into_response();
+    let quantity = match adjust_guard(&form.quantity) {
+        Ok(quantity) => quantity,
+        Err(code) => return Redirect::to(&format!("{detail}?error={code}")).into_response(),
     };
-    // The API's guards (#649): a stepper at the bound, or a forged value,
-    // reads its own message rather than « indisponible ».
-    match check_quantities(quantity, None) {
-        Ok(()) => {}
-        Err(ItemFormError::QuantityTooLarge) => {
-            return Redirect::to(&format!("{detail}?error=quantity_too_large")).into_response()
-        }
-        Err(_) => return Redirect::to(&format!("{detail}?error=unavailable")).into_response(),
-    }
 
     let body = UpdateStockItemRequest {
         quantity: Some(quantity),
@@ -308,6 +313,37 @@ mod tests {
 
     fn id() -> Uuid {
         Uuid::from_u128(7)
+    }
+
+    // -- adjust_guard (#649) -------------------------------------------------
+
+    #[test]
+    fn a_quantity_within_the_bound_is_sent() {
+        for typed in ["0", "3", "1.5", "1000000000", ""] {
+            assert_eq!(adjust_guard(typed), Ok(parse_quantity(typed).unwrap()), "{typed}");
+        }
+    }
+
+    #[test]
+    fn a_quantity_above_the_bound_or_not_finite_reads_its_own_error() {
+        for typed in ["1000000001", "1e300", "nan", "inf"] {
+            assert_eq!(adjust_guard(typed), Err("quantity_too_large"), "{typed}");
+        }
+    }
+
+    #[test]
+    fn a_negative_or_unreadable_quantity_stays_unavailable() {
+        for typed in ["-1", "-inf", "abc"] {
+            assert_eq!(adjust_guard(typed), Err("unavailable"), "{typed}");
+        }
+    }
+
+    #[test]
+    fn every_adjust_error_has_a_message() {
+        for code in ["forbidden", "unavailable", "quantity_too_large"] {
+            assert!(error_text(code).is_some(), "{code}");
+        }
+        assert_eq!(error_text("anything-else"), None);
     }
 
     fn item(quantity: f64, unit: &str, threshold: Option<f64>) -> StockItemResponse {
