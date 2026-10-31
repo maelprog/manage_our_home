@@ -2,6 +2,7 @@ pub mod account_exists_notice;
 pub mod age_declaration;
 pub mod deactivated;
 pub mod oauth_google;
+pub mod response_floor;
 pub mod session;
 pub mod terms_acceptance;
 pub mod throttle;
@@ -134,10 +135,15 @@ fn register_action(existing: Option<ExistingAccount>) -> RegisterAction {
 /// #319: and unless it accepts the CGU (422 `terms_acceptance_required`),
 /// checked after the declaration; the version in force that day (#367) is
 /// recorded with the account, and when.
+///
+/// #571: once the fields are valid, the answer is held until the response
+/// floor (`response_floor`) has passed, whichever branch was taken: a 422
+/// says nothing about any account and leaves at once.
 pub async fn register(
     State(state): State<AppState>,
     Json(mut body): Json<RegisterRequest>,
 ) -> AppResult<impl IntoResponse> {
+    let started = Instant::now();
     body.email = normalize_email(&body.email);
     validate_email(&body.email).map_err(unprocessable)?;
     validate_password(&body.password).map_err(unprocessable)?;
@@ -145,6 +151,15 @@ pub async fn register(
     validate_age_declaration(body.declares_minimum_age).map_err(unprocessable)?;
     validate_terms_acceptance(body.accepts_terms).map_err(unprocessable)?;
 
+    let result = register_valid(&state, &body).await;
+    state.auth_response_floor.hold(started).await;
+    result?;
+    Ok(StatusCode::CREATED)
+}
+
+/// `register` once the request is valid: what it does depends on the
+/// account holding the address, its answer does not.
+async fn register_valid(state: &AppState, body: &RegisterRequest) -> AppResult<()> {
     let password_hash = hash_password(&body.password).map_err(AppError::Internal)?;
 
     let existing = sqlx::query!(
@@ -164,44 +179,78 @@ pub async fn register(
 
     match (action, existing) {
         (RegisterAction::Create, _) => {
-            create_account(&state, &body, &password_hash).await?;
+            create_account(state, body, &password_hash).await?;
         }
         (RegisterAction::ResendVerification, Some(user)) => {
-            issue_verification(&state, user.id, &body.email).await?;
+            issue_verification(state, user.id, &body.email).await?;
         }
         (RegisterAction::NotifyExisting, Some(user)) => {
-            notify_existing(&state, &body.email, &user.display_name).await;
+            notify_existing(state, &body.email, &user.display_name).await;
         }
         _ => {}
     }
-
-    Ok(StatusCode::CREATED)
+    Ok(())
 }
 
 /// `register`'s "account exists" notice to a verified address, within the
 /// cap of `account_exists_notice::RATE` per address (#570). Past the cap,
 /// or when the cap cannot be counted, nothing is sent; best-effort like the
 /// verification email. Whatever happens here, `register` answers the same.
+///
+/// #571: the cap decides on a small pool of its own, so a burst of
+/// registrations of one address delays the notices of the others. An
+/// admission not decided within `response_floor::NOTICE_ADMISSION_TIMEOUT`
+/// sends nothing, so that the queue cannot push this branch past the
+/// response floor.
 async fn notify_existing(state: &AppState, email: &str, display_name: &str) {
-    match state.account_exists_throttle.admit(email).await {
-        Ok(true) => {}
-        Ok(false) => return,
-        Err(e) => {
+    match tokio::time::timeout(
+        state.auth_response_floor.notice_admission_timeout,
+        state.account_exists_throttle.admit(email),
+    )
+    .await
+    {
+        Ok(Ok(true)) => {}
+        Ok(Ok(false)) => return,
+        Ok(Err(e)) => {
             tracing::error!(error = ?e, "account-exists notice cap unavailable, notice not sent");
+            return;
+        }
+        Err(_) => {
+            tracing::warn!("account-exists notice cap did not answer in time, notice not sent");
             return;
         }
     }
     let link = format!("{}/forgot-password", state.frontend_base_url);
-    if let Err(e) = state
-        .email
-        .send(
-            email,
-            "Vous avez déjà un compte",
-            crate::email::EmailSender::account_exists_body(display_name, &link),
-        )
-        .await
+    send_within_deadline(
+        state,
+        email,
+        "Vous avez déjà un compte",
+        crate::email::EmailSender::account_exists_body(display_name, &link),
+        "account-exists",
+    )
+    .await;
+}
+
+/// Sends one email of the routes under the response floor (#571), within
+/// `response_floor::SMTP_TIMEOUT` in all. Best-effort: a refused email, or
+/// one given up at the deadline, is logged under `what`, and the request
+/// answers as if it had left.
+async fn send_within_deadline(
+    state: &AppState,
+    to: &str,
+    subject: &str,
+    body: String,
+    what: &'static str,
+) {
+    match tokio::time::timeout(
+        state.auth_response_floor.smtp_timeout,
+        state.email.send(to, subject, body),
+    )
+    .await
     {
-        tracing::error!(error = ?e, "failed to send account-exists email");
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::error!(error = ?e, email = what, "failed to send email"),
+        Err(_) => tracing::error!(email = what, "email not sent within the SMTP deadline"),
     }
 }
 
@@ -262,17 +311,14 @@ async fn send_verification_email(state: &AppState, email: &str, token: &str) {
     // that one answers an empty 200 or a bare 410, nothing a person can
     // read (#420).
     let link = format!("{}/verify-email?token={token}", state.frontend_base_url);
-    if let Err(e) = state
-        .email
-        .send(
-            email,
-            "Vérifiez votre email",
-            crate::email::EmailSender::verification_email_body(&link),
-        )
-        .await
-    {
-        tracing::error!(error = ?e, "failed to send verification email");
-    }
+    send_within_deadline(
+        state,
+        email,
+        "Vérifiez votre email",
+        crate::email::EmailSender::verification_email_body(&link),
+        "verification",
+    )
+    .await;
 }
 
 #[derive(Deserialize)]
@@ -566,15 +612,26 @@ fn password_reset_link(frontend_base_url: &str, token: &str) -> String {
 }
 
 /// AC #4: identical response whether or not the account exists, to avoid
-/// leaking which emails are registered (anti-enumeration).
+/// leaking which emails are registered (anti-enumeration) — and, since
+/// #571, no sooner than the response floor either way.
 pub async fn forgot_password(
     State(state): State<AppState>,
     Json(mut body): Json<ForgotPasswordRequest>,
 ) -> AppResult<impl IntoResponse> {
+    let started = Instant::now();
     body.email = normalize_email(&body.email);
+    let result = mail_password_reset(&state, &body.email).await;
+    state.auth_response_floor.hold(started).await;
+    result?;
+    Ok(StatusCode::OK)
+}
+
+/// `forgot_password`'s work: a reset link to a live account holding
+/// `email`, nothing otherwise.
+async fn mail_password_reset(state: &AppState, email: &str) -> AppResult<()> {
     if let Some(user) = sqlx::query!(
         "SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL AND deactivated_at IS NULL",
-        body.email
+        email
     )
     .fetch_optional(&state.db)
     .await?
@@ -597,20 +654,16 @@ pub async fn forgot_password(
         // password to this API's /auth/password/reset), not on the API
         // endpoint itself (POST-only — a GET there would 405).
         let link = password_reset_link(&state.frontend_base_url, token.value());
-        if let Err(e) = state
-            .email
-            .send(
-                &body.email,
-                "Réinitialisation de mot de passe",
-                crate::email::EmailSender::password_reset_body(&link),
-            )
-            .await
-        {
-            tracing::error!(error = ?e, "failed to send password reset email");
-        }
+        send_within_deadline(
+            state,
+            email,
+            "Réinitialisation de mot de passe",
+            crate::email::EmailSender::password_reset_body(&link),
+            "password reset",
+        )
+        .await;
     }
-
-    Ok(StatusCode::OK)
+    Ok(())
 }
 
 /// Anti-enumeration: always returns 200 with an empty body, whether the
@@ -621,25 +674,35 @@ pub async fn forgot_password(
 /// entirely in SQL: if a token was issued for this user within the last
 /// `VERIFICATION_RESEND_COOLDOWN_SECS` (shared with apps/web, whose resend
 /// button counts it down, #420), the whole operation is a silent no-op (no
-/// new token, no email).
+/// new token, no email). #571: whichever it is, the answer is held until
+/// the response floor has passed.
 pub async fn resend_verification(
     State(state): State<AppState>,
     Json(mut body): Json<ResendVerificationRequest>,
 ) -> AppResult<impl IntoResponse> {
+    let started = Instant::now();
     body.email = normalize_email(&body.email);
+    let result = resend_verification_to(&state, &body.email).await;
+    state.auth_response_floor.hold(started).await;
+    result?;
+    Ok(StatusCode::OK)
+}
+
+/// `resend_verification`'s work: a fresh link to an unverified live
+/// account holding `email`, nothing otherwise.
+async fn resend_verification_to(state: &AppState, email: &str) -> AppResult<()> {
     let Some(user) = sqlx::query!(
         "SELECT id FROM users WHERE email = $1 AND email_verified = false AND deleted_at IS NULL
            AND deactivated_at IS NULL",
-        body.email
+        email
     )
     .fetch_optional(&state.db)
     .await?
     else {
-        return Ok(StatusCode::OK);
+        return Ok(());
     };
 
-    issue_verification(&state, user.id, &body.email).await?;
-    Ok(StatusCode::OK)
+    issue_verification(state, user.id, email).await
 }
 
 /// Issues a fresh verification token to an unverified account and mails it,
