@@ -17,7 +17,8 @@ JS pour lire le lien reçu, et ne s'ouvre pas sans lui).
 est un compte à privilèges globaux — dès que l'app est exposée sur Internet,
 un mot de passe seul est sa seule barrière.
 
-**Context (état constaté le 2026-09-16, à revérifier) :** réutilisable en l'état
+**Context (relevé du 2026-09-16, références mises à jour le 2026-10-31, à
+revérifier) :** réutilisable en l'état
 — sessions serveur en base (`sessions`, extracteur `AuthUser`,
 `apps/api/src/auth/session.rs`), donc l'état « à demi authentifié » se pose sur
 une ligne ; chiffrement au repos déjà outillé pour le secret TOTP
@@ -40,7 +41,7 @@ devenir un bypass), comptes Google-only, `delete_account`. Le secret TOTP et les
 codes de secours sont une nouvelle donnée à déclarer dans
 `registre-traitements.md` et `privacy-policy.md`.
 
-Ordre de grandeur estimé à cette date : ~10 j pour la version complète, ~4 j pour
+Ordre de grandeur estimé le 2026-09-16 : ~10 j pour la version complète, ~4 j pour
 la variante superadmin-seul sans codes de secours (déverrouillage par script
 ops). **Ce chiffrage vaut pour l'état du projet au 2026-09-16 et n'est pas à
 reprendre tel quel : refaire le relevé de l'auth avant de planifier.**
