@@ -320,7 +320,11 @@ mod tests {
     #[test]
     fn a_quantity_within_the_bound_is_sent() {
         for typed in ["0", "3", "1.5", "1000000000", ""] {
-            assert_eq!(adjust_guard(typed), Ok(parse_quantity(typed).unwrap()), "{typed}");
+            assert_eq!(
+                adjust_guard(typed),
+                Ok(parse_quantity(typed).unwrap()),
+                "{typed}"
+            );
         }
     }
 
