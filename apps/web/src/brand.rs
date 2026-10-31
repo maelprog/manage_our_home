@@ -7,8 +7,7 @@
 //! Track A5 of the issue, chosen on 2026-10-26: a double gable drawn as one
 //! stroke, which reads as an M, a lit window under the left gable and an
 //! arched door under the right one, white on a tile of the accent. The
-//! reference SVG is the issue's; `brand/favicon.svg` is it, byte for byte
-//! but for the trailing newline.
+//! reference SVG is the issue's; `brand/favicon.svg` is it, byte for byte.
 //!
 //! Every other file in `brand/` comes from that drawing through the scripts
 //! of `brand/tools/` (the recipe is at the head of `draw.py`): the PNGs are
