@@ -140,9 +140,36 @@ pub(crate) fn fmt_num(n: f64) -> String {
     }
 }
 
+/// The message for `quantity_too_large` on the stock forms and the adjust
+/// action (#649). The bound is written out in French; a test ties it to
+/// `MAX_QUANTITY`.
+pub(crate) const QUANTITY_TOO_LARGE_MESSAGE: &str =
+    "La quantité doit être un nombre d'au plus 1 000 000 000.";
+
+/// The message for `reorder_threshold_too_large` (#649).
+pub(crate) const THRESHOLD_TOO_LARGE_MESSAGE: &str =
+    "Le seuil de réappro doit être un nombre d'au plus 1 000 000 000.";
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_too_large_messages_write_the_shared_bound() {
+        use manage_our_home_shared::validation::stocks::MAX_QUANTITY;
+        // 1000000000 → « 1 000 000 000 ».
+        let digits = (MAX_QUANTITY as u64).to_string();
+        let mut grouped = String::new();
+        for (i, c) in digits.chars().enumerate() {
+            if i > 0 && (digits.len() - i) % 3 == 0 {
+                grouped.push(' ');
+            }
+            grouped.push(c);
+        }
+        let bound = format!("au plus {grouped}.");
+        assert!(QUANTITY_TOO_LARGE_MESSAGE.ends_with(&bound), "{bound}");
+        assert!(THRESHOLD_TOO_LARGE_MESSAGE.ends_with(&bound), "{bound}");
+    }
 
     #[test]
     fn an_expired_or_close_date_is_worded_not_only_coloured() {

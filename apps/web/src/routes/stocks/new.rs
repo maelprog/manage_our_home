@@ -122,10 +122,8 @@ pub(crate) fn error_message(code: &str) -> &'static str {
         "name_required" => "Le nom est obligatoire.",
         "quantity_must_be_non_negative" => "La quantité ne peut pas être négative.",
         "reorder_threshold_must_be_non_negative" => "Le seuil de réappro ne peut pas être négatif.",
-        "quantity_too_large" => "La quantité doit être un nombre d'au plus 1 000 000 000.",
-        "reorder_threshold_too_large" => {
-            "Le seuil de réappro doit être un nombre d'au plus 1 000 000 000."
-        }
+        "quantity_too_large" => super::QUANTITY_TOO_LARGE_MESSAGE,
+        "reorder_threshold_too_large" => super::THRESHOLD_TOO_LARGE_MESSAGE,
         "invalid_expires_on" => "La date de péremption n'est pas une date valide.",
         "unavailable" => "Service momentanément indisponible, merci de réessayer.",
         _ => "Une erreur est survenue, merci de réessayer.",

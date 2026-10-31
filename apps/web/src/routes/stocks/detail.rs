@@ -50,7 +50,7 @@ fn error_text(code: &str) -> Option<&'static str> {
     match code {
         "forbidden" => Some("Vous n'avez pas les droits nécessaires pour cette action."),
         "unavailable" => Some("Service momentanément indisponible, merci de réessayer."),
-        "quantity_too_large" => Some("La quantité doit être un nombre d'au plus 1 000 000 000."),
+        "quantity_too_large" => Some(super::QUANTITY_TOO_LARGE_MESSAGE),
         _ => None,
     }
 }
