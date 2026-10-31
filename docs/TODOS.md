@@ -7,9 +7,11 @@ codes de secours, opt-in pour les membres et obligatoire pour le superadmin —
 éventuellement en commençant par le superadmin seul. Écarté à ce stade : l'OTP
 par e-mail (la boîte mail est déjà le facteur de reset du mot de passe, donc pas
 un second facteur), l'OTP par SMS (nouveau sous-traitant + numéro de téléphone à
-déclarer au registre) et WebAuthn/passkeys (`navigator.credentials` impose du JS
-client au cœur de la connexion, alors que le front SSR ne charge de script qu'en
-complément du markup — `apps/web/src/assets.rs`, `Script`).
+déclarer au registre) et WebAuthn/passkeys (`navigator.credentials` imposerait
+du JS client à la connexion, qui marche aujourd'hui sans script : `<form
+method=post>` de `apps/web/src/routes/auth/login.rs`. Précédent du coût : la page
+de reset du mot de passe, `apps/web/src/routes/auth/reset_password.rs`, exige déjà
+JS pour lire le lien reçu, et ne s'ouvre pas sans lui).
 
 **Why:** pas un blocant v1 (déploiement familial restreint), mais le superadmin
 est un compte à privilèges globaux — dès que l'app est exposée sur Internet,
