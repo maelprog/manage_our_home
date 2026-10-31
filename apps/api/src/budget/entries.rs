@@ -6,7 +6,7 @@ use chrono::{DateTime, Datelike, Months, NaiveDate, Utc};
 use manage_our_home_shared::dto::budget::{
     BudgetCategoryUsage, BudgetMonthSummary, BudgetPayerTotal,
 };
-use manage_our_home_shared::validation::budget::{cap_usage, parse_month};
+use manage_our_home_shared::validation::budget::{amount_to_cents, cap_usage, parse_month};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
@@ -138,12 +138,11 @@ impl BudgetEntryResponse {
 /// Converts a euro amount from the API boundary into an integer cent count
 /// for storage — `budget_entries.amount_cents` is BIGINT rather than
 /// DOUBLE PRECISION specifically so summing amounts (`budget_summary`)
-/// doesn't accumulate binary floating-point rounding error.
+/// doesn't accumulate binary floating-point rounding error. The check is
+/// the shared `amount_to_cents`: `amount_must_be_non_negative`, or
+/// `amount_too_large` above `AMOUNT_MAX_EUROS` (#648).
 fn to_cents(amount: f64) -> AppResult<i64> {
-    if !amount.is_finite() || amount < 0.0 {
-        return Err(AppError::BadRequest("amount_must_be_non_negative".into()));
-    }
-    Ok((amount * 100.0).round() as i64)
+    amount_to_cents(amount).map_err(|e| AppError::BadRequest(e.code().into()))
 }
 
 /// The most grocery items one expense links to (user's decision of

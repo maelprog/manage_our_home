@@ -116,6 +116,7 @@ pub(crate) fn error_message(code: &str) -> &'static str {
     match code {
         "name_required" => "Le nom est obligatoire.",
         "amount_must_be_non_negative" => "Le montant ne peut pas être négatif.",
+        "amount_too_large" => "Le montant ne peut pas dépasser 10 milliards d'euros.",
         "grocery_item_already_priced" => {
             "Un des articles choisis est déjà compté dans une autre dépense."
         }
@@ -135,8 +136,8 @@ pub(crate) fn error_message(code: &str) -> &'static str {
 /// Parses a required euro amount string to an `f64`. An empty or unparseable
 /// value maps to `Err(())`, which the handler surfaces as
 /// `amount_must_be_non_negative` (the same code the backend's `to_cents`
-/// rejects a bad amount with). The `>= 0`/finite check lives in the shared
-/// `validate_entry_form`.
+/// rejects a bad amount with). The `>= 0`/finite check and the upper bound
+/// (`amount_too_large`) live in the shared `validate_entry_form`.
 pub(crate) fn parse_amount(s: &str) -> Result<f64, ()> {
     s.trim().parse::<f64>().map_err(|_| ())
 }
@@ -482,6 +483,7 @@ pub(crate) fn known_code(body: &serde_json::Value) -> &'static str {
     match body.get("error").and_then(|e| e.as_str()) {
         Some("name_required") => "name_required",
         Some("amount_must_be_non_negative") => "amount_must_be_non_negative",
+        Some("amount_too_large") => "amount_too_large",
         Some("too_many_grocery_items") => "too_many_grocery_items",
         Some("paid_by_not_a_member") => "paid_by_not_a_member",
         _ => "unavailable",
@@ -708,5 +710,14 @@ mod tests {
             "unavailable"
         );
         assert!(error_message("grocery_item_already_priced").contains("autre dépense"));
+    }
+
+    #[test]
+    fn an_amount_above_the_bound_is_worded_from_the_api_and_the_form() {
+        assert_eq!(
+            known_code(&serde_json::json!({ "error": "amount_too_large" })),
+            "amount_too_large"
+        );
+        assert!(error_message("amount_too_large").contains("10 milliards"));
     }
 }

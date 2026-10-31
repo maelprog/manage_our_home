@@ -3189,3 +3189,132 @@ async fn the_export_carries_the_expenses_a_member_paid(db: PgPool) {
     assert_eq!(exported[0]["name"], "Cantine");
     assert_eq!(exported[0]["paid_by"], admin_id.as_str());
 }
+
+/// AC #648: the budget's amounts stop at `AMOUNT_MAX_EUROS` (1e10 €, user's
+/// decision of 2026-10-31). The bound itself is taken; one cent above it,
+/// or 1e300, is a 400 `amount_too_large` — for an expense created or
+/// edited, a grocery item's price, a category's cap and the family's cap —
+/// and nothing is written, where it used to saturate at `i64::MAX` cents.
+#[sqlx::test]
+async fn an_amount_above_the_bound_is_refused_and_nothing_is_written(db: PgPool) {
+    use manage_our_home_shared::validation::budget::AMOUNT_MAX_EUROS;
+
+    let router = test_router(db.clone());
+    let owner =
+        register_verify_login(&router, &db, "budget-bound@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner, "Foyer").await;
+    let entries = format!("/groups/{group_id}/budget-entries");
+    let categories = format!("/groups/{group_id}/budget-categories");
+    let settings = format!("/groups/{group_id}/budget-settings");
+    let above = [AMOUNT_MAX_EUROS + 0.01, 1e300];
+
+    let refused = |res: axum::response::Response, what: String| async move {
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{what}");
+        assert_eq!(json_body(res).await["error"], "amount_too_large", "{what}");
+    };
+
+    // The bound itself is an amount like any other.
+    let at_bound = call(
+        &router,
+        Method::POST,
+        &entries,
+        Some(&owner),
+        Some(serde_json::json!({"name": "Maison", "amount": AMOUNT_MAX_EUROS})),
+    )
+    .await;
+    assert_status(&at_bound, StatusCode::CREATED);
+    let entry = json_body(at_bound).await;
+    assert_eq!(entry["amount"], AMOUNT_MAX_EUROS);
+    let entry_id = entry["id"].as_str().unwrap().to_string();
+    let category = create_category(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Maison", "color": "blue", "monthly_cap": AMOUNT_MAX_EUROS}),
+    )
+    .await;
+    let cap = call(
+        &router,
+        Method::PUT,
+        &settings,
+        Some(&owner),
+        Some(serde_json::json!({"monthly_cap": AMOUNT_MAX_EUROS})),
+    )
+    .await;
+    assert_status(&cap, StatusCode::OK);
+    assert_eq!(json_body(cap).await["monthly_cap"], AMOUNT_MAX_EUROS);
+
+    let item_id = checked_grocery_item(&router, &owner, &group_id, "Farine").await;
+    for amount in above {
+        let res = call(
+            &router,
+            Method::POST,
+            &entries,
+            Some(&owner),
+            Some(serde_json::json!({"name": "Trop", "amount": amount})),
+        )
+        .await;
+        refused(res, format!("new expense of {amount}")).await;
+        let res = call(
+            &router,
+            Method::PATCH,
+            &format!("{entries}/{entry_id}"),
+            Some(&owner),
+            Some(serde_json::json!({"amount": amount})),
+        )
+        .await;
+        refused(res, format!("expense edited to {amount}")).await;
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/grocery-items/{item_id}/price"),
+            Some(&owner),
+            Some(serde_json::json!({"amount": amount})),
+        )
+        .await;
+        refused(res, format!("price of {amount}")).await;
+        let res = call(
+            &router,
+            Method::POST,
+            &categories,
+            Some(&owner),
+            Some(serde_json::json!({"name": "Trop", "color": "green", "monthly_cap": amount})),
+        )
+        .await;
+        refused(res, format!("new category capped at {amount}")).await;
+        let res = call(
+            &router,
+            Method::PATCH,
+            &format!("{categories}/{category}"),
+            Some(&owner),
+            Some(serde_json::json!({"monthly_cap": amount})),
+        )
+        .await;
+        refused(res, format!("category cap edited to {amount}")).await;
+        let res = call(
+            &router,
+            Method::PUT,
+            &settings,
+            Some(&owner),
+            Some(serde_json::json!({"monthly_cap": amount})),
+        )
+        .await;
+        refused(res, format!("family cap of {amount}")).await;
+    }
+
+    // Nothing was written: one expense, still at the bound; one category,
+    // still capped at the bound; the family's cap unchanged.
+    let list = call(&router, Method::GET, &entries, Some(&owner), None).await;
+    assert_status(&list, StatusCode::OK);
+    let list = json_body(list).await;
+    let list = list["entries"].as_array().unwrap();
+    assert_eq!(list.len(), 1, "{list:?}");
+    assert_eq!(list[0]["amount"], AMOUNT_MAX_EUROS);
+    let cats = call(&router, Method::GET, &categories, Some(&owner), None).await;
+    let cats = json_body(cats).await;
+    let cats = cats["categories"].as_array().unwrap();
+    assert_eq!(cats.len(), 1, "{cats:?}");
+    assert_eq!(cats[0]["monthly_cap"], AMOUNT_MAX_EUROS);
+    let cap = call(&router, Method::GET, &settings, Some(&owner), None).await;
+    assert_eq!(json_body(cap).await["monthly_cap"], AMOUNT_MAX_EUROS);
+}
