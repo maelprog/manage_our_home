@@ -335,6 +335,52 @@ async fn quantities_above_the_bound_are_rejected_everywhere(db: PgPool) {
     }
 }
 
+/// #649: a reorder threshold written above the bound before it existed does
+/// not block a quantity-only adjustment, which checks the quantity alone.
+#[sqlx::test]
+async fn a_legacy_threshold_above_the_bound_does_not_block_a_quantity_adjustment(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "stock-legacy@example.test",
+        "test-password-1234",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/stock-items"),
+        Some(&cookie),
+        Some(serde_json::json!({"name": "Sel", "quantity": 1.0, "reorder_threshold": 1.0})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let item_id = json_body(create).await["id"].as_str().unwrap().to_string();
+    sqlx::query("UPDATE stock_items SET reorder_threshold = 1e12 WHERE id = $1::uuid")
+        .bind(&item_id)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let res = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/stock-items/{item_id}"),
+        Some(&cookie),
+        Some(serde_json::json!({"quantity": 2.0})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    assert_eq!(body["quantity"], 2.0);
+    assert_eq!(
+        body["reorder_threshold"], 1e12,
+        "the threshold is left as is"
+    );
+}
+
 /// AC: `name` is trimmed on write, `category` can be explicitly cleared via
 /// `{"category": null}` (distinct from omitting the field), and a blank
 /// `unit` becomes "unité" instead of an error (#458).

@@ -338,7 +338,8 @@ pub async fn update_stock_item(
 
     // A quantity-only adjustment is allowed to any member (shared inventory);
     // touching any full-record field requires the creator/admin/owner bar.
-    if body.touches_full_record() && !can_modify(&actor_role, existing.created_by == auth.user_id) {
+    let full_edit = body.touches_full_record();
+    if full_edit && !can_modify(&actor_role, existing.created_by == auth.user_id) {
         return Err(AppError::Forbidden);
     }
 
@@ -363,7 +364,13 @@ pub async fn update_stock_item(
         Some(d) => d,
         None => existing.expires_on,
     };
-    validate_request(quantity, reorder_threshold)?;
+    if full_edit {
+        validate_request(quantity, reorder_threshold)?;
+    } else {
+        // A quantity-only adjustment checks the quantity alone: a threshold
+        // stored before the bound (#649) must not block it.
+        validate_request(quantity, None)?;
+    }
 
     let item = sqlx::query_as!(
         StockItemRow,
