@@ -260,6 +260,41 @@ async fn a_relay_that_never_answers_does_not_push_the_answer_past_the_floor(db: 
     relay.abort();
 }
 
+/// The same for `register`, on both of its branches that mail: the
+/// verification link of a new address and the "account exists" notice of
+/// a verified one. Each answers within the margin of the floor, and as a
+/// deactivated account, which is mailed nothing, is answered.
+#[sqlx::test]
+async fn a_relay_that_never_answers_does_not_push_a_registration_past_the_floor(db: PgPool) {
+    let (port, relay) = silent_relay().await;
+    let router = router_with_relay(db.clone(), port);
+    insert_user(&db, "verified@example.test", true, false).await;
+    insert_user(&db, "deactivated@example.test", true, true).await;
+
+    let (nothing, nothing_body, nothing_elapsed) = timed(
+        &router,
+        "/auth/register",
+        registration("deactivated@example.test"),
+    )
+    .await;
+    assert_status(&nothing, StatusCode::CREATED);
+    assert_within_margin("a registration that mails nothing", nothing_elapsed);
+
+    for email in ["new@example.test", "verified@example.test"] {
+        let (sent, sent_body, sent_elapsed) =
+            timed(&router, "/auth/register", registration(email)).await;
+        assert_status(&sent, StatusCode::CREATED);
+        assert_eq!(sent_body, nothing_body, "{email}");
+        assert_eq!(
+            format!("{:?}", sent.headers()),
+            format!("{:?}", nothing.headers()),
+            "{email}"
+        );
+        assert_within_margin(&format!("{email} with a silent relay"), sent_elapsed);
+    }
+    relay.abort();
+}
+
 /// The "account exists" notice cap decides one address after the other on
 /// a pool of one connection (#570): a burst on one address queues the
 /// notices of the others. A notice that cannot be admitted within its
