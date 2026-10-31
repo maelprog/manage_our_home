@@ -89,6 +89,13 @@ async fn main() -> anyhow::Result<()> {
         ))?);
 
     let smtp_host = env::var("SMTP_HOST")?;
+    // Both transports get an explicit timeout instead of lettre's 60 s
+    // default (#571): the response floor of `register`, `forgot_password`
+    // and `resend_verification` only holds if their email cannot take
+    // longer than its share of it. lettre applies this timeout to the
+    // connection only; the handlers bound the whole send with the same
+    // `SMTP_TIMEOUT` (`auth::response_floor`). The background jobs' emails
+    // share the transport, so their connection is bounded alike.
     let smtp_transport = match manage_our_home::email::smtp_mode(
         env::var("SMTP_ALLOW_INSECURE").ok().as_deref(),
         env::var("SMTP_PORT").ok().as_deref(),
@@ -99,6 +106,7 @@ async fn main() -> anyhow::Result<()> {
                     env::var("SMTP_USERNAME")?,
                     env::var("SMTP_PASSWORD")?,
                 ))
+                .timeout(Some(manage_our_home::auth::response_floor::SMTP_TIMEOUT))
                 .build()
         }
         manage_our_home::email::SmtpMode::Insecure { port } => {
@@ -107,6 +115,7 @@ async fn main() -> anyhow::Result<()> {
             );
             AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&smtp_host)
                 .port(port)
+                .timeout(Some(manage_our_home::auth::response_floor::SMTP_TIMEOUT))
                 .build()
         }
     };
@@ -217,6 +226,18 @@ async fn main() -> anyhow::Result<()> {
             pseudonyms,
         ),
     );
+    // The least time `register`, `forgot_password` and
+    // `resend_verification` take to answer (#571). A malformed value, or one
+    // below what their slowest branch may take, refuses to start rather
+    // than fall back to the default.
+    let auth_response_floor = manage_our_home::auth::response_floor::ResponseFloor::new(
+        manage_our_home::auth::response_floor::floor_from_env(
+            env::var(manage_our_home::auth::response_floor::FLOOR_VAR)
+                .ok()
+                .as_deref(),
+        )
+        .map_err(anyhow::Error::msg)?,
+    );
     let state = AppState {
         db,
         google_oauth,
@@ -251,6 +272,7 @@ async fn main() -> anyhow::Result<()> {
         recipe_import_client: manage_our_home::outbound_http::recipe_import_client().clone(),
         recipe_import_throttle,
         account_exists_throttle,
+        auth_response_floor,
         shutdown: manage_our_home_http_guard::Shutdown::new(),
     };
 
