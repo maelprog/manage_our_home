@@ -663,7 +663,7 @@ async fn get_group_members_include_identity(db: PgPool) {
 /// group. The check belongs in the handler, not in RLS alone: without
 /// `FLOW_TEST_RUNTIME_ROLE` this suite's handlers connect as a Postgres
 /// superuser, which bypasses every policy of 0014, and under the role `apps/api/README.md` prescribes `scoped_tx` sets
-/// `app.family_id` to the very group being read, so the policy lets the row
+/// `app.group_id` to the very group being read, so the policy lets the row
 /// through there too. A foreign group and an unknown id must answer alike, so
 /// the response never tells the caller whether the group exists.
 #[sqlx::test]
@@ -740,7 +740,7 @@ async fn get_group_is_refused_to_a_non_member(db: PgPool) {
 /// Issue #208: under the NOBYPASSRLS role `apps/api/README.md` prescribes,
 /// creating an invitation with an e-mail answered 500 although the row was
 /// already committed: the group name for the e-mail was read on the bare
-/// pool after the commit, outside any `app.family_id` scope, so the `groups`
+/// pool after the commit, outside any `app.group_id` scope, so the `groups`
 /// policy hid the row. The caller must get the 201 and the token of the one
 /// invitation stored.
 #[sqlx::test]
@@ -867,7 +867,7 @@ const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR";
 
 /// `event_attachments` is RLS-scoped through its event's group, and the
 /// policy applies to the pool's own role (FORCE ROW LEVEL SECURITY), so
-/// test-side reads and writes have to set `app.family_id` the way
+/// test-side reads and writes have to set `app.group_id` the way
 /// `scoped_tx` does. Runtime `sqlx::query` on purpose: test-only SQL that
 /// would otherwise need a `.sqlx` offline cache entry.
 async fn with_family_scope<'a>(
@@ -876,7 +876,7 @@ async fn with_family_scope<'a>(
 ) -> sqlx::Transaction<'a, sqlx::Postgres> {
     #[allow(clippy::disallowed_methods)]
     let mut tx = db.begin().await.unwrap();
-    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
         .bind(group_id)
         .execute(&mut *tx)
         .await
@@ -1446,7 +1446,7 @@ async fn a_member_profile_is_shown_only_inside_a_shared_group(db: PgPool) {
     assert_eq!(json_body(shared).await["role"], "owner");
 
     // Same answers under the NOBYPASSRLS role apps/api/README.md prescribes,
-    // where `scoped_tx` puts the requested group in `app.family_id`.
+    // where `scoped_tx` puts the requested group in `app.group_id`.
     let (role, app_db) = prescribed_role_pool(&db).await;
     let scoped_router = test_router(app_db.clone());
     let ok = call(

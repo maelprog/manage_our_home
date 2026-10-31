@@ -96,7 +96,7 @@ async fn group_members_isolated_without_scoping(db: PgPool) {
 
     let (role, mut tx) = restricted_role_tx(&db).await;
 
-    // No SET LOCAL app.family_id at all: the policy's current_setting(...,
+    // No SET LOCAL app.group_id at all: the policy's current_setting(...,
     // true) is NULL, so `group_id::text = NULL` is never true for anyone —
     // zero rows visible, group A and B both included.
     let visible_with_no_scope: Vec<Uuid> = sqlx::query_scalar("SELECT group_id FROM group_members")
@@ -105,12 +105,12 @@ async fn group_members_isolated_without_scoping(db: PgPool) {
         .unwrap();
     assert!(
         visible_with_no_scope.is_empty(),
-        "rows leaked with no app.family_id set"
+        "rows leaked with no app.group_id set"
     );
 
     // Scoped to group A: group B's rows must not appear even though the
     // query itself has no WHERE clause (simulated missing app-code scoping).
-    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
         .bind(group_a.to_string())
         .execute(&mut *tx)
         .await
@@ -181,7 +181,7 @@ async fn invitations_isolated_without_scoping(db: PgPool) {
 
     let (role, mut tx) = restricted_role_tx(&db).await;
 
-    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
         .bind(group_a.to_string())
         .execute(&mut *tx)
         .await
@@ -195,8 +195,8 @@ async fn invitations_isolated_without_scoping(db: PgPool) {
         "group A's scope must not see group B's invitations"
     );
 
-    // An incorrect app.family_id (neither A nor B) must also see nothing.
-    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+    // An incorrect app.group_id (neither A nor B) must also see nothing.
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
         .bind(Uuid::new_v4().to_string())
         .execute(&mut *tx)
         .await
@@ -336,7 +336,7 @@ async fn events_isolated_without_scoping(db: PgPool) {
         .await
         .unwrap();
 
-    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
         .bind(group_a.to_string())
         .execute(&mut *tx)
         .await
@@ -424,7 +424,7 @@ async fn stock_items_isolated_without_scoping(db: PgPool) {
         .await
         .unwrap();
 
-    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
         .bind(group_a.to_string())
         .execute(&mut *tx)
         .await
@@ -512,7 +512,7 @@ async fn recipes_isolated_without_scoping(db: PgPool) {
         .await
         .unwrap();
 
-    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
         .bind(group_a.to_string())
         .execute(&mut *tx)
         .await
@@ -594,7 +594,7 @@ async fn recipe_selections_isolated_without_scoping(db: PgPool) {
         .execute(&mut *tx)
         .await
         .unwrap();
-    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
         .bind(group_a.to_string())
         .execute(&mut *tx)
         .await
@@ -698,7 +698,7 @@ async fn grocery_items_isolated_without_scoping(db: PgPool) {
         .await
         .unwrap();
 
-    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
         .bind(group_a.to_string())
         .execute(&mut *tx)
         .await
@@ -787,7 +787,7 @@ async fn messages_isolated_without_scoping(db: PgPool) {
         .await
         .unwrap();
 
-    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
         .bind(group_a.to_string())
         .execute(&mut *tx)
         .await
@@ -875,7 +875,7 @@ async fn budget_entries_isolated_without_scoping(db: PgPool) {
         .await
         .unwrap();
 
-    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
         .bind(group_a.to_string())
         .execute(&mut *tx)
         .await
@@ -976,7 +976,7 @@ async fn budget_categories_and_settings_isolated_without_scoping(db: PgPool) {
         .execute(&mut *tx)
         .await
         .unwrap();
-    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
         .bind(group_a.to_string())
         .execute(&mut *tx)
         .await
@@ -1104,7 +1104,7 @@ async fn budget_entry_grocery_items_isolated_without_scoping(db: PgPool) {
         .execute(&mut *tx)
         .await
         .unwrap();
-    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
         .bind(group_a.to_string())
         .execute(&mut *tx)
         .await
@@ -1223,7 +1223,7 @@ async fn event_assignees_isolated_without_scoping(db: PgPool) {
         .await
         .unwrap();
 
-    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
         .bind(group_a.to_string())
         .execute(&mut *tx)
         .await
@@ -1313,7 +1313,7 @@ async fn message_read_state_isolated_without_scoping(db: PgPool) {
         .await
         .unwrap();
 
-    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
         .bind(group_a.to_string())
         .execute(&mut *tx)
         .await
@@ -1385,7 +1385,7 @@ async fn set_user_id(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, user_id: Uu
 /// Issue #113: "my groups" is read with only `app.user_id` set
 /// (`user_scoped_tx`), and the `groups` policy's membership branch looks
 /// the caller up in `group_members`. That lookup is itself subject to
-/// `group_members`' policy, which only ever matched `app.family_id` — so
+/// `group_members`' policy, which only ever matched `app.group_id` — so
 /// under a role that does not bypass RLS the branch never matched and a
 /// member saw none of their own groups.
 #[sqlx::test]
@@ -1412,14 +1412,14 @@ async fn groups_visible_to_their_members_with_only_user_id(db: PgPool) {
     assert_eq!(
         memberships,
         vec![(group_a, owner_a)],
-        "only the caller's own membership rows are readable without app.family_id"
+        "only the caller's own membership rows are readable without app.group_id"
     );
     tx.commit().await.unwrap();
     drop_restricted_role(&db, &role).await;
 }
 
 /// The other half of the #113 change: seeing one's own membership and
-/// groups is not a licence to write them. Without `app.family_id` nothing
+/// groups is not a licence to write them. Without `app.group_id` nothing
 /// can be updated, deleted or inserted in `group_members` — not even a row
 /// that names the caller, which would let a user join any family by id —
 /// and the groups the caller belongs to can be neither renamed nor deleted.
@@ -1437,7 +1437,7 @@ async fn membership_reads_grant_no_write_without_family_scope(db: PgPool) {
     assert_eq!(
         renamed.rows_affected(),
         0,
-        "own group renamed without app.family_id"
+        "own group renamed without app.group_id"
     );
     let removed = sqlx::query("DELETE FROM groups WHERE id = $1")
         .bind(group_a)
@@ -1447,7 +1447,7 @@ async fn membership_reads_grant_no_write_without_family_scope(db: PgPool) {
     assert_eq!(
         removed.rows_affected(),
         0,
-        "own group deleted without app.family_id"
+        "own group deleted without app.group_id"
     );
     tx.commit().await.unwrap();
     drop_restricted_role(&db, &role).await;
@@ -1462,7 +1462,7 @@ async fn membership_reads_grant_no_write_without_family_scope(db: PgPool) {
     assert_eq!(
         updated.rows_affected(),
         0,
-        "own membership updated without app.family_id"
+        "own membership updated without app.group_id"
     );
     let deleted = sqlx::query("DELETE FROM group_members WHERE user_id = $1")
         .bind(owner_a)
@@ -1472,7 +1472,7 @@ async fn membership_reads_grant_no_write_without_family_scope(db: PgPool) {
     assert_eq!(
         deleted.rows_affected(),
         0,
-        "own membership deleted without app.family_id"
+        "own membership deleted without app.group_id"
     );
     tx.commit().await.unwrap();
     drop_restricted_role(&db, &role).await;
@@ -1488,7 +1488,7 @@ async fn membership_reads_grant_no_write_without_family_scope(db: PgPool) {
     .await;
     assert!(
         self_join.is_err(),
-        "a user joined another family by naming themselves, without app.family_id"
+        "a user joined another family by naming themselves, without app.group_id"
     );
     tx.rollback().await.unwrap();
     drop_restricted_role(&db, &role).await;
@@ -1561,7 +1561,7 @@ async fn notifications_isolated_per_recipient(db: PgPool) {
         .execute(&mut *tx)
         .await
         .unwrap();
-    for (setting, value) in [("app.user_id", a), ("app.family_id", g)] {
+    for (setting, value) in [("app.user_id", a), ("app.group_id", g)] {
         sqlx::query("SELECT set_config($1, $2, true)")
             .bind(setting)
             .bind(value.to_string())
@@ -1639,5 +1639,62 @@ async fn notifications_isolated_per_recipient(db: PgPool) {
     assert_eq!(
         unread_of_b, 2,
         "B's row untouched, and the one written for B"
+    );
+}
+
+/// Issue #421: the session variable the policies read is `app.group_id`,
+/// the name of what it holds, and no longer the one named after the
+/// family. Read from `pg_policies` rather than from the migration files,
+/// which still spell the old name in the policies they created before
+/// 0042 rewrote them: a new policy written against the old variable would
+/// read a setting nobody sets, and deny every row without a word. The
+/// match is on `family` alone, which covers the old variable and leaves
+/// no policy expression a reason to say the word.
+#[sqlx::test]
+async fn policies_read_app_group_id_and_never_name_the_family(db: PgPool) {
+    let reading_family: Vec<String> = sqlx::query_scalar(
+        "SELECT tablename || '.' || policyname FROM pg_policies \
+         WHERE qual LIKE '%family%' OR with_check LIKE '%family%' \
+         ORDER BY 1",
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        reading_family,
+        Vec::<String>::new(),
+        "policies still reading the family-named variable"
+    );
+
+    let named_family: Vec<String> = sqlx::query_scalar(
+        "SELECT tablename || '.' || policyname FROM pg_policies \
+         WHERE policyname LIKE '%family%' ORDER BY 1",
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        named_family,
+        Vec::<String>::new(),
+        "policies still named after the family"
+    );
+
+    // And the policies 0042 renamed did not vanish along the way: they
+    // are there, reading the new variable.
+    let renamed: Vec<String> = sqlx::query_scalar(
+        "SELECT tablename || '.' || policyname FROM pg_policies \
+         WHERE policyname IN ('groups_group_isolation', 'notifications_group_insert') \
+           AND coalesce(qual, '') || coalesce(with_check, '') LIKE '%app.group_id%' \
+         ORDER BY 1",
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        renamed,
+        vec![
+            "groups.groups_group_isolation".to_string(),
+            "notifications.notifications_group_insert".to_string(),
+        ]
     );
 }

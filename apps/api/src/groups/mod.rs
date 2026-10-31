@@ -44,7 +44,7 @@ pub async fn create_group(
     // The id is chosen here rather than by the column default so the
     // transaction can be scoped to the family it creates: under a role that
     // does not bypass RLS, `groups` and `group_members` only accept a new
-    // row for the family in `app.family_id` (issue #113). The same scope
+    // row for the family in `app.group_id` (issue #113). The same scope
     // lets the cap below count the caller's memberships in every family
     // (`group_members_self_read`, 0014) instead of reading back 0.
     let group_id = Uuid::new_v4();
@@ -164,7 +164,7 @@ pub async fn list_groups(
 /// bypasses RLS — the superuser the `e2e` job and infra/docker-compose.yml
 /// connected as before #311 — every group is visible, and under the role
 /// apps/api/README.md prescribes the policies of 0014 still let the row
-/// through, because `scoped_tx` puts the requested group in `app.family_id`.
+/// through, because `scoped_tx` puts the requested group in `app.group_id`.
 /// A non-member got 200 with the group name and every member's e-mail.
 ///
 /// The refusal is `NotFound`, the same answer as an id that does not exist,
@@ -232,7 +232,7 @@ pub async fn get_group(
 /// target's (`gm`), in the same `:id`. Sharing another group with the target
 /// is not enough. As in `get_group`, both checks are written in the query.
 /// The caller's is the one that holds: `scoped_tx` puts `:id` in
-/// `app.family_id`, so the policies of 0014 make the whole group readable to
+/// `app.group_id`, so the policies of 0014 make the whole group readable to
 /// a caller outside it. The target's is defence in depth: under the role
 /// apps/api/README.md prescribes, RLS already hides a membership row of
 /// another group, but a connection that bypassed RLS would not. Every refusal
@@ -544,7 +544,7 @@ pub async fn create_invitation(
     .fetch_one(&mut *tx)
     .await?;
     // Read inside the scoped transaction: once it commits, the bare pool
-    // carries no `app.family_id`, and under a NOBYPASSRLS role the `groups`
+    // carries no `app.group_id`, and under a NOBYPASSRLS role the `groups`
     // policy would hide the row after the invitation is already stored.
     // The inviter's display name goes out with the group's: art. 14 RGPD
     // makes the source of the address part of the notice, and the source is

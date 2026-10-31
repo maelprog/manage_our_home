@@ -40,11 +40,11 @@ questionnaire.
 6. **Budget: local price research.** Added as an explicit capability, scoped
    as v2 (needs a data source decision — see Open Questions).
 7. **RLS enabled from v1, not deferred.** Given the enterprise-deployable
-   bar, app-code-only isolation (a missed `WHERE family_id = ...` away from
+   bar, app-code-only isolation (a missed `WHERE group_id = ...` away from
    a cross-tenant data leak) is not an acceptable long-term posture — it's
    the kind of finding that fails a client security review. Postgres
    Row-Level Security is turned on from the start as defense in depth
-   alongside app-code scoping: every connection sets `app.family_id` via
+   alongside app-code scoping: every connection sets `app.group_id` via
    `SET LOCAL` at the start of a request/transaction, and RLS policies on
    every tenant-scoped table enforce that boundary at the DB layer even if
    application code has a bug. The extra migration/debugging overhead is
@@ -85,7 +85,7 @@ questionnaire.
 | API | **Rust + Axum** | Tokio-based, actively maintained by the Tokio team, first-class typed extractors, native WebSocket support (covers messagerie) — avoids adding a second framework for real-time. |
 | DB access | **SQLx** | Compile-time query checking against a real schema catches drift before runtime; no ORM behavior magic to audit for security. Widely used in production Rust services. |
 | DB | **PostgreSQL 16** | Mature, `pgcrypto` for column-level encryption of PII, `LISTEN/NOTIFY` for lightweight pub/sub if we scale past one API instance, JSONB for flexible fields (event notes, recipe metadata). |
-| Tenant isolation (v1) | **Postgres Row-Level Security policies on every tenant-scoped table** (via `SET LOCAL app.family_id` per request), backed by app-code scoping + integration tests as a second layer | Defense in depth from day one — a bug in application code can no longer leak data across families, which is required to pass a client security review at enterprise deployment scale. |
+| Tenant isolation (v1) | **Postgres Row-Level Security policies on every tenant-scoped table** (via `SET LOCAL app.group_id` per request), backed by app-code scoping + integration tests as a second layer | Defense in depth from day one — a bug in application code can no longer leak data across families, which is required to pass a client security review at enterprise deployment scale. |
 | Auth | **argon2 (password hashing) + custom email/password + Google OAuth2 via the `oauth2` crate** | `argon2` is the current OWASP-recommended password hash; `oauth2` crate is the de facto standard Rust OAuth2 client, actively maintained. |
 | Real-time messaging | **Axum WebSockets** | Native to the framework already in use; no extra dependency for the messagerie feature. |
 | Object storage | **MinIO (self-hosted, S3 API)** | Needed for event file attachments and (later) fridge-scan photos; S3 API means any Rust S3 client (`aws-sdk-s3`) works, and it's swappable for real S3 later without an app rewrite. |
@@ -123,7 +123,7 @@ Resolved ambiguities between overlapping/undefined epics from `idea.md`:
 
 - **Groups**: a user can belong to multiple groups/families — not previously
   stated; must be reflected in the Auth+Groups data model (no single
-  `family_id` on the user row).
+  `group_id` on the user row).
 - **Tasks with reminder**: a task is an agenda event type, not a separate
   entity — same reminder/recurrence/assignment mechanics as regular events.
 - **Stocks**: manual entry in v1 (fridge scan automates/enriches entry later,
@@ -158,8 +158,8 @@ remplacement) de l'isolation applicative ci-dessous.
 
 **Isolation multi-tenant (RLS + app-code, v1)**
 - Policies RLS sur chaque table scoped par famille, activées via
-  `SET LOCAL app.family_id` au début de chaque requête/transaction.
-- En complément, un helper de requête centralisé qui injecte `family_id` sur
+  `SET LOCAL app.group_id` au début de chaque requête/transaction.
+- En complément, un helper de requête centralisé qui injecte `group_id` sur
   toute requête scoped — jamais de SQL avec scoping manuel dispersé dans les
   handlers.
 - Tests d'intégration qui prouvent qu'un user de la famille A ne peut ni lire

@@ -109,7 +109,7 @@ no-op. That is the route `infra/postgres/init/01-roles.sh` takes, because a
 superuser is running there anyway at first boot.
 
 Why it exists: every family-scoped table is `FORCE ROW LEVEL SECURITY` with
-a policy keyed on `current_setting('app.family_id', true)`, which is `NULL`
+a policy keyed on `current_setting('app.group_id', true)`, which is `NULL`
 outside an HTTP request. DDL is not subject to RLS — which is why
 `0001..0012`, all pure DDL, never noticed — but the moment a migration does
 DML, `app_role` reads its source tables back **empty**. The statement
@@ -150,7 +150,7 @@ once `migrate` has exited 0.
 `GET /account/export` must reach what the caller wrote in a group they have
 left (leaving deletes the membership, not the content), and the invitations
 other members addressed to their email. `app_role` can see neither: every
-family-scoped policy needs `app.family_id` first. `0019_account_export_groups.sql`
+family-scoped policy needs `app.group_id` first. `0019_account_export_groups.sql`
 answers these two questions with `SECURITY DEFINER` functions owned by
 `migration_role`, whose `BYPASSRLS` is what lets them look, both with a
 pinned `search_path` and both answering for the user of `app.user_id` only:
@@ -204,7 +204,7 @@ Five other things run on this pool, and none is a request handler:
   push `DELETE`s or `UPDATE`s the device's `push_subscriptions` row
   (#306); the expiry pass below `INSERT`s into `notifications` (#534).
   Of the six purged tables only `invitations` and `notifications` are
-  RLS'd at all, both `FORCE ROW LEVEL SECURITY`: with no `app.family_id`
+  RLS'd at all, both `FORCE ROW LEVEL SECURITY`: with no `app.group_id`
   nor `app.user_id` set, their `DELETE` on the runtime role matches
   **no row** and the pass would
   report a clean sweep having erased none of the invited third parties'
@@ -247,7 +247,7 @@ Five other things run on this pool, and none is a request handler:
   reminders of every recurring event from `event_reminders` and `events`
   and `INSERT`s the occurrences newly in range into
   `scheduled_notifications`. Both `scheduled_notifications` and `events`
-  are `FORCE ROW LEVEL SECURITY` and the worker sets no `app.family_id`:
+  are `FORCE ROW LEVEL SECURITY` and the worker sets no `app.group_id`:
   on the runtime role it would find no reminder due and send none. Each
   pass checks `rolsuper OR rolbypassrls` on its connection and, otherwise,
   logs `scheduled_notifications send failed` (every minute) or

@@ -1939,7 +1939,7 @@ const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR";
 
 /// `event_attachments` is RLS-scoped through its event's group, and the
 /// policy applies to the pool's own role (FORCE ROW LEVEL SECURITY), so
-/// test-side reads and writes have to set `app.family_id` the way
+/// test-side reads and writes have to set `app.group_id` the way
 /// `scoped_tx` does. Runtime `sqlx::query` on purpose: test-only SQL that
 /// would otherwise need a `.sqlx` offline cache entry.
 async fn with_family_scope<'a>(
@@ -1948,7 +1948,7 @@ async fn with_family_scope<'a>(
 ) -> sqlx::Transaction<'a, sqlx::Postgres> {
     #[allow(clippy::disallowed_methods)]
     let mut tx = db.begin().await.unwrap();
-    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
         .bind(group_id)
         .execute(&mut *tx)
         .await

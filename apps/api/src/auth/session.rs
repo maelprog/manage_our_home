@@ -696,18 +696,18 @@ pub async fn revoke_all_sessions(
     Ok(())
 }
 
-/// Opens a transaction with `app.family_id` / `app.user_id` set via
+/// Opens a transaction with `app.group_id` / `app.user_id` set via
 /// `SET LOCAL`, so RLS policies on `group_members`/`invitations`/`groups`
 /// enforce tenant isolation at the DB layer for every query run on it
 /// (architecture.md's RLS-from-v1 requirement, AC #15).
 pub async fn scoped_tx<'a>(
     pool: &'a PgPool,
-    family_id: Uuid,
+    group_id: Uuid,
     user_id: Uuid,
 ) -> Result<Transaction<'a, Postgres>, sqlx::Error> {
     let mut tx = crate::db::begin(pool).await?;
-    sqlx::query("SELECT set_config('app.family_id', $1, true)")
-        .bind(family_id.to_string())
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
+        .bind(group_id.to_string())
         .execute(&mut *tx)
         .await?;
     sqlx::query("SELECT set_config('app.user_id', $1, true)")
@@ -717,7 +717,7 @@ pub async fn scoped_tx<'a>(
     Ok(tx)
 }
 
-/// Same as `scoped_tx` but without a known `family_id` yet (e.g. listing
+/// Same as `scoped_tx` but without a known `group_id` yet (e.g. listing
 /// "my groups"). Only `app.user_id` is set; the `groups` RLS policy falls
 /// back to membership-based visibility in this case.
 pub async fn user_scoped_tx<'a>(
@@ -733,7 +733,7 @@ pub async fn user_scoped_tx<'a>(
 }
 
 /// Resolves an invitation's `group_id` from its token alone (before
-/// `family_id` is known), relying on the `invitations` RLS policy's
+/// `group_id` is known), relying on the `invitations` RLS policy's
 /// token-based branch rather than bypassing RLS. The setting carries the
 /// token's hash in hex (#335), the spelling the policy compares
 /// `invitations.token_hash` in — never the token itself.

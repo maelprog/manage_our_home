@@ -134,7 +134,7 @@ async fn seed_event_without_assignee(db: &PgPool) -> Uuid {
 
 /// The failure #105 reports, reproduced: a role owning the tables but
 /// carrying neither `SUPERUSER` nor `BYPASSRLS` sees zero rows in
-/// `events` (no `app.family_id` is set outside an HTTP request), so the
+/// `events` (no `app.group_id` is set outside an HTTP request), so the
 /// backfill's source is empty, nothing is inserted, and nothing says so.
 /// The guard is what turns that silence into a refusal.
 #[sqlx::test]

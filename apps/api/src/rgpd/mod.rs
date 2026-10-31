@@ -103,7 +103,7 @@ pub async fn export_account(
     // naming them come from `account_export_group_ids()` (0019, #140): the
     // runtime role cannot see across families, and that function answers
     // with group ids only, for the user of `app.user_id` only. The content
-    // tables still require `app.family_id`, hence one `scoped_tx` per group
+    // tables still require `app.group_id`, hence one `scoped_tx` per group
     // below.
     let mut group_tx = user_scoped_tx(&state.db, auth.user_id).await?;
     let memberships = sqlx::query!(

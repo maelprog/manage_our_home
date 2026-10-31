@@ -49,7 +49,7 @@ Three things the diagram is meant to make obvious:
   transactions through the scoped-transaction helpers in
   [`apps/api/src/auth/session.rs`](apps/api/src/auth/session.rs), *and*
   Postgres enforces RLS policies on all 19 group-scoped tables via
-  `SET LOCAL app.family_id` — a mis-written handler still cannot read another
+  `SET LOCAL app.group_id` — a mis-written handler still cannot read another
   household's rows. One pool deliberately bypasses RLS: the super-admin routes
   behind the `SuperAdminUser` extractor (`apps/api/src/user_admin/`).
 - **`apps/shared` holds the DTOs and validation once**, and is compiled into
