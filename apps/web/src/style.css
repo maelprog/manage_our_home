@@ -613,6 +613,9 @@ hgroup > h1 { margin: 0; }
 .dash > .card { margin: 0; }
 /* A card's way out, in its head: an accent link, 48px (--s12), over the 44px. */
 .more { display: inline-flex; align-items: center; min-height: var(--s12); color: var(--accent); font-weight: 600; }
+/* A card's title leads where its `.more` does (#584). It keeps the heading's
+   colour, not the browser's blue: the underline says it is a link. */
+h2 > a { color: inherit; }
 /* A tile is a card that is itself the link: an icon, a count, what it
    counts. Its colour is the text's, not the link's; the pointer colours
    its edge, the transparent border every card keeps. */
