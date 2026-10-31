@@ -33,8 +33,13 @@ pub const RATE: SlidingWindow = SlidingWindow {
 /// `POST /csp-report`, its admissions wait on their subject's lock in a
 /// pool of their own, apart from the handlers' and from the one the recipe
 /// import and Open Food Facts share (#483). A burst of registrations of
-/// one address queues there and delays nothing else. Notices to one
-/// address are decided one after the other whatever the size.
+/// one address queues there, not in the other pools; with one connection
+/// it delays the notices of every other verified address too, and so the
+/// work of their registrations. Each admission waits at most
+/// `response_floor::NOTICE_ADMISSION_TIMEOUT`, after which no notice is
+/// sent, so the queue stays under the response floor of `register` and its
+/// answer says nothing (#571). Notices to one address are decided one after
+/// the other whatever the size.
 pub const POOL_SIZE: u32 = 1;
 
 /// Environment variable sizing that pool, per replica: every replica opens

@@ -607,6 +607,9 @@ from 1 refuses to start):
   notice cap of `POST /auth/register` alone (#570). The route answers
   anyone without a session: a burst of registrations queues there, not in
   the handlers' pool nor in the one the import and Open Food Facts share.
+  With one connection, a burst on one address delays the notices of the
+  other verified addresses too: an admission waits 250 ms at most, then
+  sends nothing, so the queue stays under the response floor (#571).
 **Connection budget, per replica.** Count, against Postgres's
 `max_connections`: the handlers' 20, the admin pool's 5, the login lock's
 `LOGIN_THROTTLE_POOL_SIZE` (4), `CSP_REPORT_POOL_SIZE` (2),
