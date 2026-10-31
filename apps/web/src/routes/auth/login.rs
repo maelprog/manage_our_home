@@ -1,6 +1,7 @@
 use axum::extract::{ConnectInfo, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::Extension;
 use axum::Form;
 use leptos::prelude::*;
 use manage_our_home_shared::dto::auth::LoginRequest;
@@ -100,7 +101,7 @@ pub async fn get(
 pub async fn post(
     _redirect: RedirectIfAuthenticated,
     State(state): State<AppState>,
-    peer: Option<ConnectInfo<SocketAddr>>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     request_headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
@@ -109,8 +110,9 @@ pub async fn post(
     // the Docker network (#178). `Option` because a server started without
     // `into_make_service_with_connect_info` has no peer to report — then
     // nothing is forwarded, which apps/api reads as "unknown client"
-    // rather than as someone else's address.
-    let forwarded = peer.map(|ConnectInfo(peer)| {
+    // rather than as someone else's address. Read as an `Extension`: axum
+    // 0.8 has no optional form of the `ConnectInfo` extractor (#625).
+    let forwarded = peer.map(|Extension(ConnectInfo(peer))| {
         crate::client_ip::forwarded_for(
             request_headers
                 .get(crate::client_ip::FORWARDED_FOR)

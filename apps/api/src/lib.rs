@@ -207,7 +207,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/google/callback", get(auth::oauth_google::callback))
         .route("/auth/logout", post(auth::logout))
         .route("/auth/sessions", get(auth::list_sessions))
-        .route("/auth/sessions/:id/revoke", post(auth::revoke_one_session))
+        .route("/auth/sessions/{id}/revoke", post(auth::revoke_one_session))
         .route(
             "/auth/sessions/revoke-all",
             post(auth::revoke_every_session),
@@ -246,7 +246,7 @@ pub fn build_router(state: AppState) -> Router {
             post(notifications::center::mark_all_read),
         )
         .route(
-            "/notifications/:id/read",
+            "/notifications/{id}/read",
             post(notifications::center::mark_read),
         )
         .route(
@@ -277,57 +277,57 @@ pub fn build_router(state: AppState) -> Router {
             post(groups::create_group).get(groups::list_groups),
         )
         .route(
-            "/groups/:id",
+            "/groups/{id}",
             get(groups::get_group)
                 .patch(groups::rename_group)
                 .delete(groups::delete_group),
         )
         .route(
-            "/groups/:id/transfer-ownership",
+            "/groups/{id}/transfer-ownership",
             post(groups::transfer_ownership),
         )
-        .route("/groups/:id/invitations", post(groups::create_invitation))
+        .route("/groups/{id}/invitations", post(groups::create_invitation))
         .route(
-            "/groups/invitations/:token/accept",
+            "/groups/invitations/{token}/accept",
             post(groups::accept_invitation),
         )
         .route(
-            "/groups/:id/members/:user_id/role",
+            "/groups/{id}/members/{user_id}/role",
             post(groups::change_role),
         )
         .route(
-            "/groups/:id/members/:user_id",
+            "/groups/{id}/members/{user_id}",
             get(groups::get_member).delete(groups::remove_member),
         )
         .route(
-            "/groups/:id/members/:user_id/avatar",
+            "/groups/{id}/members/{user_id}/avatar",
             get(avatar::get_member_avatar),
         )
-        .route("/groups/:id/leave", post(groups::leave_group))
+        .route("/groups/{id}/leave", post(groups::leave_group))
         .route(
-            "/groups/:id/ownership-notice/seen",
+            "/groups/{id}/ownership-notice/seen",
             post(groups::acknowledge_ownership_notice),
         )
         .route(
-            "/groups/:id/events",
+            "/groups/{id}/events",
             post(agenda::events::create_event).get(agenda::events::list_events),
         )
         .route(
-            "/groups/:id/events/:event_id",
+            "/groups/{id}/events/{event_id}",
             get(agenda::events::get_event)
                 .patch(agenda::events::update_event)
                 .delete(agenda::events::delete_event),
         )
         .route(
-            "/groups/:id/events/:event_id/reminders",
+            "/groups/{id}/events/{event_id}/reminders",
             post(agenda::reminders::create_reminder),
         )
         .route(
-            "/groups/:id/events/:event_id/reminders/:reminder_id",
+            "/groups/{id}/events/{event_id}/reminders/{reminder_id}",
             delete(agenda::reminders::delete_reminder),
         )
         .route(
-            "/groups/:id/events/:event_id/attachments",
+            "/groups/{id}/events/{event_id}/attachments",
             // The body limit is raised on the upload method only, and
             // `MethodRouter::layer` applies to the methods registered before
             // it — hence `.get(...)` after, which needs no body at all.
@@ -336,182 +336,182 @@ pub fn build_router(state: AppState) -> Router {
                 .get(agenda::attachments::list_attachments),
         )
         .route(
-            "/groups/:id/events/:event_id/attachments/:attachment_id/download",
+            "/groups/{id}/events/{event_id}/attachments/{attachment_id}/download",
             get(agenda::attachments::download_attachment),
         )
         .route(
-            "/groups/:id/events/:event_id/attachments/:attachment_id",
+            "/groups/{id}/events/{event_id}/attachments/{attachment_id}",
             delete(agenda::attachments::delete_attachment),
         )
         .route(
-            "/groups/:id/stock-items",
+            "/groups/{id}/stock-items",
             post(stocks::items::create_stock_item).get(stocks::items::list_stock_items),
         )
         .route(
-            "/groups/:id/stock-items/scan",
+            "/groups/{id}/stock-items/scan",
             post(stocks::scan::scan_stock_item),
         )
         .route(
-            "/groups/:id/stock-items/reception",
+            "/groups/{id}/stock-items/reception",
             get(stocks::reception::get_reception).post(stocks::reception::receive),
         )
         .route(
-            "/groups/:id/stock-items/:item_id",
+            "/groups/{id}/stock-items/{item_id}",
             get(stocks::items::get_stock_item)
                 .patch(stocks::items::update_stock_item)
                 .delete(stocks::items::delete_stock_item),
         )
         .route(
-            "/groups/:id/recipes",
+            "/groups/{id}/recipes",
             post(recipes::crud::create_recipe).get(recipes::crud::list_recipes),
         )
         .route(
-            "/groups/:id/recipes/import",
+            "/groups/{id}/recipes/import",
             post(recipes::import::import_recipe),
         )
         .route(
-            "/groups/:id/recipes/suggestions",
+            "/groups/{id}/recipes/suggestions",
             get(recipes::suggestions::suggest_recipes),
         )
         .route(
-            "/groups/:id/recipes/meal-history",
+            "/groups/{id}/recipes/meal-history",
             get(recipes::meal_history::list_meal_history),
         )
         .route(
-            "/groups/:id/recipes/selections",
+            "/groups/{id}/recipes/selections",
             get(recipes::selections::list_selections),
         )
         .route(
-            "/groups/:id/recipes/:recipe_id",
+            "/groups/{id}/recipes/{recipe_id}",
             get(recipes::crud::get_recipe)
                 .patch(recipes::crud::update_recipe)
                 .delete(recipes::crud::delete_recipe),
         )
         .route(
-            "/groups/:id/recipes/:recipe_id/meal-history",
+            "/groups/{id}/recipes/{recipe_id}/meal-history",
             post(recipes::meal_history::log_meal),
         )
         .route(
-            "/groups/:id/recipes/:recipe_id/selection",
+            "/groups/{id}/recipes/{recipe_id}/selection",
             post(recipes::selections::select_recipe)
                 .patch(recipes::selections::update_selection)
                 .delete(recipes::selections::deselect_recipe),
         )
         .route(
-            "/groups/:id/recipes/:recipe_id/selection/done",
+            "/groups/{id}/recipes/{recipe_id}/selection/done",
             get(recipes::outcome::preview_done).post(recipes::outcome::apply_done),
         )
         .route(
-            "/groups/:id/recipes/:recipe_id/selection/abandoned",
+            "/groups/{id}/recipes/{recipe_id}/selection/abandoned",
             get(recipes::outcome::preview_abandoned).post(recipes::outcome::apply_abandoned),
         )
         .route(
-            "/groups/:id/grocery-items",
+            "/groups/{id}/grocery-items",
             post(grocery_list::items::create_grocery_item)
                 .get(grocery_list::items::list_grocery_items),
         )
         .route(
-            "/groups/:id/grocery-items/generate",
+            "/groups/{id}/grocery-items/generate",
             post(grocery_list::items::generate_grocery_items),
         )
         .route(
-            "/groups/:id/grocery-items/:item_id",
+            "/groups/{id}/grocery-items/{item_id}",
             get(grocery_list::items::get_grocery_item)
                 .patch(grocery_list::items::update_grocery_item)
                 .delete(grocery_list::items::delete_grocery_item),
         )
         .route(
-            "/groups/:id/grocery-items/:item_id/check",
+            "/groups/{id}/grocery-items/{item_id}/check",
             post(grocery_list::items::check_grocery_item),
         )
         .route(
-            "/groups/:id/grocery-items/:item_id/price",
+            "/groups/{id}/grocery-items/{item_id}/price",
             post(budget::entries::set_grocery_item_price),
         )
         .route(
-            "/groups/:id/budget-entries",
+            "/groups/{id}/budget-entries",
             post(budget::entries::create_budget_entry).get(budget::entries::list_budget_entries),
         )
         .route(
-            "/groups/:id/budget-entries/summary",
+            "/groups/{id}/budget-entries/summary",
             get(budget::entries::budget_summary),
         )
         .route(
-            "/groups/:id/budget-entries/:entry_id",
+            "/groups/{id}/budget-entries/{entry_id}",
             get(budget::entries::get_budget_entry)
                 .patch(budget::entries::update_budget_entry)
                 .delete(budget::entries::delete_budget_entry),
         )
         .route(
-            "/groups/:id/budget-categories",
+            "/groups/{id}/budget-categories",
             post(budget::categories::create_budget_category)
                 .get(budget::categories::list_budget_categories),
         )
         .route(
-            "/groups/:id/budget-categories/:category_id",
+            "/groups/{id}/budget-categories/{category_id}",
             axum::routing::patch(budget::categories::update_budget_category)
                 .delete(budget::categories::delete_budget_category),
         )
         .route(
-            "/groups/:id/budget-settings",
+            "/groups/{id}/budget-settings",
             get(budget::categories::get_budget_settings)
                 .put(budget::categories::put_budget_settings),
         )
         .route(
-            "/groups/:id/budget-alert-settings",
+            "/groups/{id}/budget-alert-settings",
             get(budget::alerts::get_alert_settings).patch(budget::alerts::patch_alert_settings),
         )
         .route(
-            "/groups/:id/messages",
+            "/groups/{id}/messages",
             post(messagerie::messages::create_message).get(messagerie::messages::list_messages),
         )
-        .route("/groups/:id/messages/ws", get(messagerie::ws::message_ws))
+        .route("/groups/{id}/messages/ws", get(messagerie::ws::message_ws))
         .route(
-            "/groups/:id/messages/read",
+            "/groups/{id}/messages/read",
             post(messagerie::messages::mark_messages_read),
         )
         .route(
-            "/groups/:id/messages/unread_count",
+            "/groups/{id}/messages/unread_count",
             get(messagerie::messages::unread_count),
         )
         .route(
-            "/groups/:id/messages/:message_id",
+            "/groups/{id}/messages/{message_id}",
             axum::routing::patch(messagerie::messages::update_message)
                 .delete(messagerie::messages::delete_message),
         )
         .route(
-            "/groups/:id/calendar-imports",
+            "/groups/{id}/calendar-imports",
             post(google_calendar::imports::create_calendar_import)
                 .get(google_calendar::imports::list_calendar_imports),
         )
         .route(
-            "/groups/:id/calendar-imports/:import_id",
+            "/groups/{id}/calendar-imports/{import_id}",
             delete(google_calendar::imports::delete_calendar_import),
         )
         .route(
-            "/groups/:id/calendar-imports/:import_id/import",
+            "/groups/{id}/calendar-imports/{import_id}/import",
             post(google_calendar::imports::trigger_calendar_import),
         )
         .route("/admin/groups", get(user_admin::admin::list_groups))
         .route(
-            "/admin/groups/:id/members",
+            "/admin/groups/{id}/members",
             get(user_admin::admin::ownerless_group_members),
         )
         .route(
-            "/admin/groups/:id/owner",
+            "/admin/groups/{id}/owner",
             post(user_admin::admin::designate_owner),
         )
         .route("/admin/users", get(user_admin::admin::list_users))
         .route(
-            "/admin/users/:id/deactivate",
+            "/admin/users/{id}/deactivate",
             post(user_admin::admin::deactivate_user),
         )
         .route(
-            "/admin/users/:id/reactivate",
+            "/admin/users/{id}/reactivate",
             post(user_admin::admin::reactivate_user),
         )
         .route(
-            "/admin/users/:id/reactivation-request/refuse",
+            "/admin/users/{id}/reactivation-request/refuse",
             post(user_admin::admin::refuse_reactivation),
         )
         .layer(CookieManagerLayer::new())

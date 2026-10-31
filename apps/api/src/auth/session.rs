@@ -1,4 +1,3 @@
-use axum::async_trait;
 use axum::extract::{FromRef, FromRequestParts};
 use axum::http::request::Parts;
 use chrono::{DateTime, Duration, Utc};
@@ -432,7 +431,6 @@ pub async fn is_full_session(pool: &PgPool, session_id: Uuid) -> bool {
 /// declaration page; one of an account without acceptance of the CGU
 /// (#319), with 403 `terms_not_accepted`, on which it sends them to the
 /// acceptance page. Every other refusal is the bare 401.
-#[async_trait]
 impl<S> FromRequestParts<S> for AuthUser
 where
     AppState: FromRef<S>,
@@ -475,7 +473,6 @@ pub struct AnySession {
     pub session_id: Uuid,
 }
 
-#[async_trait]
 impl<S> FromRequestParts<S> for AnySession
 where
     AppState: FromRef<S>,
@@ -502,7 +499,6 @@ pub struct DeactivatedSession {
     pub session_id: Uuid,
 }
 
-#[async_trait]
 impl<S> FromRequestParts<S> for DeactivatedSession
 where
     AppState: FromRef<S>,
@@ -530,7 +526,6 @@ pub struct AgeUndeclaredSession {
     pub user_id: Uuid,
 }
 
-#[async_trait]
 impl<S> FromRequestParts<S> for AgeUndeclaredSession
 where
     AppState: FromRef<S>,
@@ -559,7 +554,6 @@ pub struct TermsSession {
     pub user_id: Uuid,
 }
 
-#[async_trait]
 impl<S> FromRequestParts<S> for TermsSession
 where
     AppState: FromRef<S>,

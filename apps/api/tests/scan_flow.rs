@@ -31,7 +31,7 @@ async fn off_stub() -> (String, Arc<AtomicUsize>) {
     let hits = Arc::new(AtomicUsize::new(0));
     let counter = hits.clone();
     let app = axum::Router::new().route(
-        "/api/v2/product/:code",
+        "/api/v2/product/{code}",
         axum::routing::get(move |Path(code): Path<String>| {
             let counter = counter.clone();
             async move {

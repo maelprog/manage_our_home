@@ -410,7 +410,7 @@ mod tests {
                 }),
             )
             .route(
-                "/groups/:gid/events/:eid/attachments",
+                "/groups/{gid}/events/{eid}/attachments",
                 post(move |body: Bytes| async move {
                     received.store(body.len(), Ordering::SeqCst);
                     let status =
@@ -748,7 +748,7 @@ mod tests {
                 }),
             )
             .route(
-                "/groups/:gid/events/:eid/attachments",
+                "/groups/{gid}/events/{eid}/attachments",
                 post(move |body: Body| async move {
                     barrier.wait().await;
                     // Read and drop, chunk by chunk: what this side keeps
