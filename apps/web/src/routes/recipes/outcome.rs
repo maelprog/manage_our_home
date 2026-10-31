@@ -575,7 +575,8 @@ fn warning_text(ingredient: &DoneIngredient, first_user: Option<&str>) -> Option
     }
 }
 
-/// The message of a line in error, in the unit of its stock line.
+/// The message of a line in error, in the unit of its stock line, written
+/// as the stock list writes a quantity: « 4 », not « 4 unité ».
 /// `sharing` are the labels of the ingredients taking from that line, when
 /// there are several: what it holds is for them together.
 fn line_error_text(error: LineError, unit: &str, sharing: &[&str]) -> String {
@@ -586,13 +587,16 @@ fn line_error_text(error: LineError, unit: &str, sharing: &[&str]) -> String {
         LineError::TooMuch { available } if sharing.len() > 1 => {
             let (last, others) = sharing.split_last().expect("several labels");
             format!(
-                "Le stock n'en contient que {} {unit} pour {} et {last} ensemble.",
-                fmt_num(available),
+                "Le stock n'en contient que {} pour {} et {last} ensemble.",
+                format_quantity(available, unit),
                 others.join(", ")
             )
         }
         LineError::TooMuch { available } => {
-            format!("Le stock n'en contient que {} {unit}.", fmt_num(available))
+            format!(
+                "Le stock n'en contient que {}.",
+                format_quantity(available, unit)
+            )
         }
     }
 }
@@ -2367,6 +2371,27 @@ mod tests {
                 "Le stock n'en contient que 250 g pour Farine (n° 1) et farine (n° 2) ensemble."
             ),
             "{html}"
+        );
+    }
+
+    #[test]
+    fn too_much_writes_what_the_stock_holds_as_the_stock_list_does() {
+        let too_much = |available| LineError::TooMuch { available };
+        assert_eq!(
+            line_error_text(too_much(4.0), "unité", &[]),
+            "Le stock n'en contient que 4."
+        );
+        assert_eq!(
+            line_error_text(too_much(1.5), "L", &[]),
+            "Le stock n'en contient que 1,5 L."
+        );
+        assert_eq!(
+            line_error_text(too_much(3.0), "paquet", &["Riz", "riz"]),
+            "Le stock n'en contient que 3 paquets pour Riz et riz ensemble."
+        );
+        assert_eq!(
+            line_error_text(too_much(2.0), "unité", &["Œuf", "œuf"]),
+            "Le stock n'en contient que 2 pour Œuf et œuf ensemble."
         );
     }
 
