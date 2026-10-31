@@ -289,9 +289,10 @@ async fn each_table_loses_exactly_the_rows_past_their_retention(db: PgPool) {
 }
 
 /// #570: each sliding-window limit is purged on its own window. A recipe
-/// import row goes once its newest admission is ten minutes old; an
-/// "account exists" notice row, counted over a day, stays until its newest
-/// notice is a day old.
+/// import row goes once its newest admission is ten minutes old, an Open
+/// Food Facts row once its newest read is a minute old; an "account exists"
+/// notice row, counted over a day, stays until its newest notice is a day
+/// old.
 #[sqlx::test]
 async fn each_sliding_limit_is_purged_on_its_own_window(db: PgPool) {
     let now = Utc::now();
@@ -310,6 +311,8 @@ async fn each_sliding_limit_is_purged_on_its_own_window(db: PgPool) {
             now - Duration::days(1) + minute,
         ),
         ("account_exists_notice", "ee", now - Duration::minutes(11)),
+        ("openfoodfacts", "ff", now - Duration::seconds(61)),
+        ("openfoodfacts", "ab", now - Duration::seconds(30)),
     ] {
         sqlx::query(
             "INSERT INTO rate_limit_log (kind, bucket, admitted)
@@ -325,7 +328,7 @@ async fn each_sliding_limit_is_purged_on_its_own_window(db: PgPool) {
 
     let counts = purge(&db, RetentionCutoffs::at(now)).await.unwrap();
 
-    assert_eq!(counts.rate_limit_log, 2);
+    assert_eq!(counts.rate_limit_log, 3);
     let mut left: Vec<String> = sqlx::query_scalar(
         "SELECT kind || ':' || encode(substr(bucket, 1, 1), 'hex') FROM rate_limit_log",
     )
@@ -338,6 +341,7 @@ async fn each_sliding_limit_is_purged_on_its_own_window(db: PgPool) {
         [
             "account_exists_notice:dd",
             "account_exists_notice:ee",
+            "openfoodfacts:ab",
             "recipe_import:bb"
         ]
     );
