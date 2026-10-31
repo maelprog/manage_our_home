@@ -133,6 +133,7 @@ fn error_html(error: Option<&str>) -> String {
         Some("name_required") => "Le nom est obligatoire.",
         Some("quantity_must_be_non_negative") => "La quantité ne peut pas être négative.",
         Some("amount_must_be_non_negative") => "Le montant ne peut pas être négatif.",
+        Some("amount_too_large") => "Le montant ne peut pas dépasser 10 milliards d'euros.",
         Some("forbidden") => "Vous n'avez pas les droits nécessaires pour cette action.",
         Some("grocery_item_priced_with_others") => {
             "Cet article fait partie d'une dépense qui regroupe plusieurs articles : corrigez son montant depuis le budget."
@@ -667,7 +668,8 @@ pub async fn price(
     let redirect =
         |code: &str| Redirect::to(&format!("/grocery-list?error={code}")).into_response();
 
-    // Parse + pre-validate the amount (finite, non-negative). The price form
+    // Parse + pre-validate the amount (finite, non-negative, at most
+    // `AMOUNT_MAX_EUROS`). The price form
     // has no name field, so only the amount arm of `validate_entry_form` can
     // fire — a placeholder name keeps the name arm satisfied.
     let Ok(amount) = form.amount.trim().parse::<f64>() else {
@@ -725,6 +727,16 @@ mod tests {
         let banner = error_html(Some(&code));
         assert!(banner.contains("plusieurs articles"), "{banner}");
         assert!(banner.contains("budget"), "{banner}");
+    }
+
+    #[test]
+    fn a_price_above_the_bound_is_worded() {
+        let code = price_error_code(
+            reqwest::StatusCode::BAD_REQUEST,
+            &serde_json::json!({ "error": "amount_too_large" }),
+        );
+        assert_eq!(code, "amount_too_large");
+        assert!(error_html(Some(&code)).contains("10 milliards"));
     }
 
     #[test]

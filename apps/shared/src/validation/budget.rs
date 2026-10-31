@@ -5,7 +5,8 @@
 //! never drift:
 //!
 //! - `validate_entry_form` mirrors the backend's create/update guards
-//!   (non-empty `name` after trim, a finite non-negative `amount`) in the same
+//!   (non-empty `name` after trim, a finite non-negative `amount` of at most
+//!   `AMOUNT_MAX_EUROS`, through `amount_to_cents`) in the same
 //!   order the backend checks them (name, then amount), so the first error the
 //!   form surfaces is the one a forged request would hit.
 //! - `can_access_budget` is the bar in front of the whole budget (#531): only
@@ -41,6 +42,7 @@ use chrono::{Datelike, Months, NaiveDate};
 pub enum EntryFormError {
     NameRequired,
     AmountNegative,
+    AmountTooLarge,
 }
 
 impl EntryFormError {
@@ -50,23 +52,57 @@ impl EntryFormError {
         match self {
             EntryFormError::NameRequired => "name_required",
             EntryFormError::AmountNegative => "amount_must_be_non_negative",
+            EntryFormError::AmountTooLarge => AMOUNT_TOO_LARGE,
         }
     }
 }
 
+/// The largest amount the budget takes, in euros (user's decision of
+/// 2026-10-31, #648): an expense, a grocery item's price, a monthly cap.
+/// The amount itself is accepted; one cent more is not. Without it, a huge
+/// `f64` saturated at `i64::MAX` cents on its way to the database and threw
+/// every sum and cap percentage off.
+pub const AMOUNT_MAX_EUROS: f64 = 1e10;
+
+/// The 400's error code for an amount above [`AMOUNT_MAX_EUROS`], the same
+/// for an expense, a price and a cap.
+pub const AMOUNT_TOO_LARGE: &str = "amount_too_large";
+
+/// An expense's amount, or a grocery item's price, from the euros of the API
+/// boundary to the cents the database keeps (`budget_entries.amount_cents`
+/// is BIGINT so that sums carry no floating-point error): finite and
+/// `>= 0`, else `AmountNegative`; at most [`AMOUNT_MAX_EUROS`] once rounded
+/// to the cent, else `AmountTooLarge`.
+pub fn amount_to_cents(amount: f64) -> Result<i64, EntryFormError> {
+    if !amount.is_finite() || amount < 0.0 {
+        return Err(EntryFormError::AmountNegative);
+    }
+    bounded_cents(amount).ok_or(EntryFormError::AmountTooLarge)
+}
+
+/// A finite euro amount rounded to the cent, or `None` above
+/// [`AMOUNT_MAX_EUROS`]. The bound is checked on the `f64` before the cast,
+/// which would otherwise saturate in silence.
+fn bounded_cents(amount: f64) -> Option<i64> {
+    let cents = (amount * 100.0).round();
+    if cents > AMOUNT_MAX_EUROS * 100.0 {
+        return None;
+    }
+    Some(cents as i64)
+}
+
 /// Mirrors `apps/api/src/budget/entries.rs`: `name` must be non-empty after
-/// trimming, and `amount` must be a finite value `>= 0` (the backend's
-/// `to_cents` rejects non-finite or negative amounts as
-/// `amount_must_be_non_negative`). Kept in the same order the backend
+/// trimming, and `amount` must pass `amount_to_cents` — the very check the
+/// backend's `to_cents` makes: finite and `>= 0`
+/// (`amount_must_be_non_negative`), at most `AMOUNT_MAX_EUROS`
+/// (`amount_too_large`). Kept in the same order the backend
 /// validates (name, then amount) so the first error surfaced matches what a
 /// forged request would hit.
 pub fn validate_entry_form(name: &str, amount: f64) -> Result<(), EntryFormError> {
     if name.trim().is_empty() {
         return Err(EntryFormError::NameRequired);
     }
-    if !amount.is_finite() || amount < 0.0 {
-        return Err(EntryFormError::AmountNegative);
-    }
+    amount_to_cents(amount)?;
     Ok(())
 }
 
@@ -154,6 +190,7 @@ pub enum CategoryError {
     NameTooLong,
     InvalidColor,
     CapNotPositive,
+    AmountTooLarge,
 }
 
 impl CategoryError {
@@ -164,6 +201,7 @@ impl CategoryError {
             CategoryError::NameTooLong => "name_too_long",
             CategoryError::InvalidColor => "invalid_color",
             CategoryError::CapNotPositive => "cap_must_be_positive",
+            CategoryError::AmountTooLarge => AMOUNT_TOO_LARGE,
         }
     }
 }
@@ -188,13 +226,14 @@ pub fn is_category_color(color: &str) -> bool {
 
 /// A monthly cap, global or per category, from the euros of the API boundary
 /// to the cents the database keeps: finite, and at least one cent once
-/// rounded — a cap of zero would make every expense an overrun. Removing a
-/// cap is sending `null`, not `0`.
+/// rounded — a cap of zero would make every expense an overrun — and at
+/// most [`AMOUNT_MAX_EUROS`] (`AmountTooLarge`). Removing a cap is sending
+/// `null`, not `0`.
 pub fn cap_to_cents(amount: f64) -> Result<i64, CategoryError> {
     if !amount.is_finite() {
         return Err(CategoryError::CapNotPositive);
     }
-    let cents = (amount * 100.0).round() as i64;
+    let cents = bounded_cents(amount).ok_or(CategoryError::AmountTooLarge)?;
     if cents <= 0 {
         return Err(CategoryError::CapNotPositive);
     }
@@ -283,8 +322,9 @@ pub fn cap_share_label(percent: i64, cap: f64) -> String {
 
 /// A cap field of the settings page, global or per category: empty is no
 /// cap; anything else is euros, with a dot or a French comma, and must pass
-/// `cap_to_cents` — the very check the API makes — or it is
-/// `CapNotPositive`, unparseable included.
+/// `cap_to_cents` — the very check the API makes, `AmountTooLarge` above
+/// `AMOUNT_MAX_EUROS` included — or it is `CapNotPositive`, unparseable
+/// included.
 pub fn parse_cap_input(input: &str) -> Result<Option<f64>, CategoryError> {
     let input = input.trim();
     if input.is_empty() {
@@ -386,6 +426,94 @@ mod tests {
         assert_eq!(CategoryError::NameTooLong.code(), "name_too_long");
         assert_eq!(CategoryError::InvalidColor.code(), "invalid_color");
         assert_eq!(CategoryError::CapNotPositive.code(), "cap_must_be_positive");
+        assert_eq!(CategoryError::AmountTooLarge.code(), "amount_too_large");
+    }
+
+    // -- the upper bound (#648) ----------------------------------------------
+
+    /// One cent above the bound, as the API would receive it.
+    const JUST_ABOVE: f64 = AMOUNT_MAX_EUROS + 0.01;
+
+    #[test]
+    fn a_cap_of_exactly_the_bound_is_accepted() {
+        assert_eq!(cap_to_cents(AMOUNT_MAX_EUROS), Ok(1_000_000_000_000));
+        assert_eq!(cap_to_cents(1e10), Ok(1_000_000_000_000));
+    }
+
+    #[test]
+    fn a_cap_above_the_bound_is_too_large_not_saturated() {
+        for cap in [JUST_ABOVE, 1e11, 1e300, f64::MAX] {
+            assert_eq!(
+                cap_to_cents(cap),
+                Err(CategoryError::AmountTooLarge),
+                "{cap}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_finite_cap_is_still_not_positive() {
+        for cap in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                cap_to_cents(cap),
+                Err(CategoryError::CapNotPositive),
+                "{cap}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cap_field_above_the_bound_is_too_large() {
+        assert_eq!(
+            parse_cap_input("10000000000,01"),
+            Err(CategoryError::AmountTooLarge)
+        );
+        assert_eq!(parse_cap_input("1e300"), Err(CategoryError::AmountTooLarge));
+        assert_eq!(parse_cap_input("10000000000"), Ok(Some(1e10)));
+    }
+
+    #[test]
+    fn an_amount_is_its_cents() {
+        assert_eq!(amount_to_cents(0.0), Ok(0));
+        assert_eq!(amount_to_cents(12.5), Ok(1_250));
+        assert_eq!(amount_to_cents(12.345), Ok(1_235));
+        assert_eq!(amount_to_cents(AMOUNT_MAX_EUROS), Ok(1_000_000_000_000));
+    }
+
+    #[test]
+    fn an_amount_above_the_bound_is_too_large_not_saturated() {
+        for amount in [JUST_ABOVE, 1e11, 1e300, f64::MAX] {
+            assert_eq!(
+                amount_to_cents(amount),
+                Err(EntryFormError::AmountTooLarge),
+                "{amount}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_negative_or_non_finite_amount_is_still_not_non_negative() {
+        for amount in [-0.01, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                amount_to_cents(amount),
+                Err(EntryFormError::AmountNegative),
+                "{amount}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_entry_form_refuses_an_amount_above_the_bound() {
+        assert!(validate_entry_form("Courses", AMOUNT_MAX_EUROS).is_ok());
+        assert_eq!(
+            validate_entry_form("Courses", JUST_ABOVE),
+            Err(EntryFormError::AmountTooLarge)
+        );
+        // The name still comes first.
+        assert_eq!(
+            validate_entry_form(" ", 1e300),
+            Err(EntryFormError::NameRequired)
+        );
     }
 
     #[test]
@@ -534,6 +662,7 @@ mod tests {
             EntryFormError::AmountNegative.code(),
             "amount_must_be_non_negative"
         );
+        assert_eq!(EntryFormError::AmountTooLarge.code(), "amount_too_large");
     }
 
     // -- can_modify ----------------------------------------------------------
