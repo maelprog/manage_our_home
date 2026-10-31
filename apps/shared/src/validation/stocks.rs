@@ -4,8 +4,8 @@
 //! the fixed backend (`apps/api/src/stocks/`) can never drift:
 //!
 //! `validate_item_form` mirrors `apps/api/src/stocks/items.rs`'s create/update
-//! guards (non-empty `name`, non-negative `quantity`/`reorder_threshold`)
-//! so the form rejects before a round trip. A blank `unit` is not an error:
+//! guards (non-empty `name`, `quantity`/`reorder_threshold` non-negative,
+//! finite and at most `MAX_QUANTITY`) so the form rejects before a round trip. A blank `unit` is not an error:
 //! `normalize_unit` turns it into `DEFAULT_UNIT` (#458).
 //!
 //! `is_low_stock` mirrors the backend's derived `low_stock` flag
@@ -30,13 +30,63 @@ use uuid::Uuid;
 pub enum ItemFormError {
     NameRequired,
     QuantityNegative,
+    QuantityTooLarge,
     ThresholdNegative,
+    ThresholdTooLarge,
+}
+
+/// The largest quantity, or reorder threshold, a stock line may carry (#649):
+/// far above any household stock, far below where `float8` overflows (a sum
+/// of two huge quantities used to end in a 500). The one bound of the stocks,
+/// read by `apps/api` for a creation, a full edit, a quantity-only adjustment
+/// and a reception, and by the web forms. The bound itself is accepted.
+pub const MAX_QUANTITY: f64 = 1_000_000_000.0;
+
+impl ItemFormError {
+    /// The error code `apps/api` answers for this error, and the web forms
+    /// read their message from.
+    pub fn code(self) -> &'static str {
+        match self {
+            ItemFormError::NameRequired => "name_required",
+            ItemFormError::QuantityNegative => "quantity_must_be_non_negative",
+            // The reception's code: a value that is not a number at all
+            // (`NaN`, infinity) is refused under it too.
+            ItemFormError::QuantityTooLarge => "quantity_too_large",
+            ItemFormError::ThresholdNegative => "reorder_threshold_must_be_non_negative",
+            ItemFormError::ThresholdTooLarge => "reorder_threshold_too_large",
+        }
+    }
+}
+
+/// The quantity and the reorder threshold of a stock line: each `>= 0`,
+/// finite and at most `MAX_QUANTITY`. The quantity is checked first; a
+/// negative infinity is negative before it is infinite. `NaN` fails both
+/// comparisons, so it is caught by the finiteness test, not by `< 0.0`.
+pub fn check_quantities(
+    quantity: f64,
+    reorder_threshold: Option<f64>,
+) -> Result<(), ItemFormError> {
+    if quantity < 0.0 {
+        return Err(ItemFormError::QuantityNegative);
+    }
+    if !quantity.is_finite() || quantity > MAX_QUANTITY {
+        return Err(ItemFormError::QuantityTooLarge);
+    }
+    if let Some(t) = reorder_threshold {
+        if t < 0.0 {
+            return Err(ItemFormError::ThresholdNegative);
+        }
+        if !t.is_finite() || t > MAX_QUANTITY {
+            return Err(ItemFormError::ThresholdTooLarge);
+        }
+    }
+    Ok(())
 }
 
 /// Mirrors `apps/api/src/stocks/items.rs`: `name` must be non-empty after
-/// trimming, `quantity` must be `>= 0`, and a present `reorder_threshold`
-/// must be `>= 0`. Kept in the same order the backend validates so the first
-/// error surfaced matches what a forged request would hit.
+/// trimming, then `check_quantities`. Kept in the same order the backend
+/// validates so the first error surfaced matches what a forged request would
+/// hit.
 pub fn validate_item_form(
     name: &str,
     quantity: f64,
@@ -45,15 +95,7 @@ pub fn validate_item_form(
     if name.trim().is_empty() {
         return Err(ItemFormError::NameRequired);
     }
-    if quantity < 0.0 {
-        return Err(ItemFormError::QuantityNegative);
-    }
-    if let Some(t) = reorder_threshold {
-        if t < 0.0 {
-            return Err(ItemFormError::ThresholdNegative);
-        }
-    }
-    Ok(())
+    check_quantities(quantity, reorder_threshold)
 }
 
 /// The unit an article gets when none is typed (#458). The SQL column
@@ -279,6 +321,103 @@ mod tests {
     #[test]
     fn valid_form_without_threshold_is_accepted() {
         assert!(validate_item_form("Lait", 2.0, None).is_ok());
+    }
+
+    // -- quantity upper bound (#649) -----------------------------------------
+
+    #[test]
+    fn the_bound_is_the_receptions_one_billion() {
+        assert_eq!(MAX_QUANTITY, 1_000_000_000.0);
+    }
+
+    #[test]
+    fn a_quantity_and_a_threshold_at_the_bound_are_accepted() {
+        assert!(validate_item_form("Farine", MAX_QUANTITY, Some(MAX_QUANTITY)).is_ok());
+        assert!(check_quantities(MAX_QUANTITY, Some(MAX_QUANTITY)).is_ok());
+    }
+
+    #[test]
+    fn a_quantity_above_the_bound_is_rejected() {
+        for q in [MAX_QUANTITY + 1.0, 1e300, f64::MAX] {
+            assert_eq!(
+                validate_item_form("Farine", q, None),
+                Err(ItemFormError::QuantityTooLarge),
+                "{q}"
+            );
+            assert_eq!(
+                check_quantities(q, None),
+                Err(ItemFormError::QuantityTooLarge),
+                "{q}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_quantity_that_is_not_finite_is_rejected() {
+        for q in [f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                validate_item_form("Farine", q, None),
+                Err(ItemFormError::QuantityTooLarge),
+                "{q}"
+            );
+        }
+        // Negative infinity is first of all negative.
+        assert_eq!(
+            check_quantities(f64::NEG_INFINITY, None),
+            Err(ItemFormError::QuantityNegative)
+        );
+    }
+
+    #[test]
+    fn a_threshold_above_the_bound_is_rejected() {
+        for t in [MAX_QUANTITY + 1.0, 1e300] {
+            assert_eq!(
+                validate_item_form("Farine", 1.0, Some(t)),
+                Err(ItemFormError::ThresholdTooLarge),
+                "{t}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_threshold_that_is_not_finite_is_rejected() {
+        for t in [f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                check_quantities(1.0, Some(t)),
+                Err(ItemFormError::ThresholdTooLarge),
+                "{t}"
+            );
+        }
+        assert_eq!(
+            check_quantities(1.0, Some(f64::NEG_INFINITY)),
+            Err(ItemFormError::ThresholdNegative)
+        );
+    }
+
+    #[test]
+    fn the_quantity_is_checked_before_the_threshold() {
+        assert_eq!(
+            check_quantities(f64::NAN, Some(f64::NAN)),
+            Err(ItemFormError::QuantityTooLarge)
+        );
+    }
+
+    #[test]
+    fn each_error_carries_the_code_the_api_answers() {
+        assert_eq!(ItemFormError::NameRequired.code(), "name_required");
+        assert_eq!(
+            ItemFormError::QuantityNegative.code(),
+            "quantity_must_be_non_negative"
+        );
+        assert_eq!(ItemFormError::QuantityTooLarge.code(), "quantity_too_large");
+        assert_eq!(
+            ItemFormError::ThresholdNegative.code(),
+            "reorder_threshold_must_be_non_negative"
+        );
+        assert_eq!(
+            ItemFormError::ThresholdTooLarge.code(),
+            "reorder_threshold_too_large"
+        );
     }
 
     // -- normalize_unit ------------------------------------------------------

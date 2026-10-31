@@ -17,7 +17,9 @@ use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use manage_our_home_shared::dto::stocks::{StockItemResponse, UpdateStockItemRequest};
-use manage_our_home_shared::validation::stocks::{format_quantity, is_low_stock};
+use manage_our_home_shared::validation::stocks::{
+    check_quantities, format_quantity, is_low_stock, ItemFormError,
+};
 use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
@@ -48,6 +50,7 @@ fn error_text(code: &str) -> Option<&'static str> {
     match code {
         "forbidden" => Some("Vous n'avez pas les droits nécessaires pour cette action."),
         "unavailable" => Some("Service momentanément indisponible, merci de réessayer."),
+        "quantity_too_large" => Some("La quantité doit être un nombre d'au plus 1 000 000 000."),
         _ => None,
     }
 }
@@ -228,8 +231,14 @@ pub async fn adjust(
     let Some(quantity) = parse_quantity(&form.quantity) else {
         return Redirect::to(&format!("{detail}?error=unavailable")).into_response();
     };
-    if quantity < 0.0 {
-        return Redirect::to(&format!("{detail}?error=unavailable")).into_response();
+    // The API's guards (#649): a stepper at the bound, or a forged value,
+    // reads its own message rather than « indisponible ».
+    match check_quantities(quantity, None) {
+        Ok(()) => {}
+        Err(ItemFormError::QuantityTooLarge) => {
+            return Redirect::to(&format!("{detail}?error=quantity_too_large")).into_response()
+        }
+        Err(_) => return Redirect::to(&format!("{detail}?error=unavailable")).into_response(),
     }
 
     let body = UpdateStockItemRequest {

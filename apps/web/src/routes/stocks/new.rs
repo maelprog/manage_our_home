@@ -122,6 +122,10 @@ pub(crate) fn error_message(code: &str) -> &'static str {
         "name_required" => "Le nom est obligatoire.",
         "quantity_must_be_non_negative" => "La quantité ne peut pas être négative.",
         "reorder_threshold_must_be_non_negative" => "Le seuil de réappro ne peut pas être négatif.",
+        "quantity_too_large" => "La quantité doit être un nombre d'au plus 1 000 000 000.",
+        "reorder_threshold_too_large" => {
+            "Le seuil de réappro doit être un nombre d'au plus 1 000 000 000."
+        }
         "invalid_expires_on" => "La date de péremption n'est pas une date valide.",
         "unavailable" => "Service momentanément indisponible, merci de réessayer.",
         _ => "Une erreur est survenue, merci de réessayer.",
@@ -131,11 +135,7 @@ pub(crate) fn error_message(code: &str) -> &'static str {
 /// Maps a shared `ItemFormError` to the backend's matching error code, so the
 /// inline message and a defensively-mapped 400 read identically.
 pub(crate) fn form_error_code(err: ItemFormError) -> &'static str {
-    match err {
-        ItemFormError::NameRequired => "name_required",
-        ItemFormError::QuantityNegative => "quantity_must_be_non_negative",
-        ItemFormError::ThresholdNegative => "reorder_threshold_must_be_non_negative",
-    }
+    err.code()
 }
 
 /// Parses a form quantity string to a non-negative `f64`, defaulting an empty
@@ -1282,6 +1282,34 @@ mod tests {
             "busy",
         ] {
             assert_ne!(photo_error_message(code), generic, "{code}");
+        }
+    }
+
+    #[test]
+    fn every_form_error_has_its_own_message() {
+        let generic = error_message("anything-else");
+        for err in [
+            ItemFormError::NameRequired,
+            ItemFormError::QuantityNegative,
+            ItemFormError::QuantityTooLarge,
+            ItemFormError::ThresholdNegative,
+            ItemFormError::ThresholdTooLarge,
+        ] {
+            assert_ne!(error_message(form_error_code(err)), generic, "{err:?}");
+        }
+    }
+
+    #[test]
+    fn a_typed_nan_or_infinity_is_refused_before_the_api() {
+        // `str::parse::<f64>` reads « nan » and « inf »: the shared guard
+        // refuses them like a quantity above the bound (#649).
+        for typed in ["nan", "inf", "1e10"] {
+            let q = parse_quantity(typed).unwrap();
+            assert_eq!(
+                validate_item_form("Lait", q, None),
+                Err(ItemFormError::QuantityTooLarge),
+                "{typed}"
+            );
         }
     }
 

@@ -615,13 +615,20 @@ async fn a_quantity_out_of_bounds_is_refused(db: PgPool) {
     let cookie =
         register_verify_login(&router, &db, "rcv-bound@example.test", "owner-password1").await;
     let group_id = create_group(&router, &cookie, "Foyer").await;
-    stock(
+    let salt_line = stock(
         &router,
         &cookie,
         &group_id,
-        json!({"name": "Sel", "quantity": 1e308, "unit": "kg"}),
+        json!({"name": "Sel", "quantity": 1.0, "unit": "kg"}),
     )
     .await;
+    // A line above the bound can no longer be created (#649); one written
+    // before the bound still exists, so the merge guard is kept against it.
+    sqlx::query("UPDATE stock_items SET quantity = 1e308 WHERE id = $1::uuid")
+        .bind(&salt_line)
+        .execute(&db)
+        .await
+        .unwrap();
     stock(
         &router,
         &cookie,

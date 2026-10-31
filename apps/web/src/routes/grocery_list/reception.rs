@@ -28,7 +28,7 @@ use manage_our_home_shared::dto::stocks::{
     StockItemResponse,
 };
 use manage_our_home_shared::validation::stocks::{
-    format_quantity, merge_target, normalize_unit, ReceptionMode, StockCandidate,
+    format_quantity, merge_target, normalize_unit, ReceptionMode, StockCandidate, MAX_QUANTITY,
 };
 use uuid::Uuid;
 
@@ -39,10 +39,6 @@ use crate::routes::stocks::{fmt_date, fmt_num};
 use crate::state::{api_request_auth, AppState};
 
 use super::{family_context, grocery_cookie, service_unavailable_page};
-
-/// The largest quantity a received article may carry: apps/api's
-/// `stocks::reception::MAX_QUANTITY`, which refuses the lot above it.
-const MAX_QUANTITY: f64 = 1_000_000_000.0;
 
 /// One line of the form, as shown and as submitted: every field is the
 /// text of its input, parsed only by `validate_lines`.

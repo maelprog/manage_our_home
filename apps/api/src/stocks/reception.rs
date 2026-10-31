@@ -22,7 +22,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use chrono::NaiveDate;
 use manage_our_home_shared::validation::stocks::{
-    merge_target, normalize_unit, ReceptionMode, StockCandidate,
+    merge_target, normalize_unit, ReceptionMode, StockCandidate, MAX_QUANTITY,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -85,11 +85,6 @@ struct Line {
     unit: String,
     expires_on: Option<NaiveDate>,
 }
-
-/// The largest quantity a received article may carry, and a merged line
-/// reach: far above any household stock, far below where `float8` overflows
-/// (a sum of two huge quantities used to end in a 500).
-const MAX_QUANTITY: f64 = 1_000_000_000.0;
 
 /// The lot must name at least one item, and each item once.
 fn check_lot(ids: &[Uuid]) -> AppResult<()> {
