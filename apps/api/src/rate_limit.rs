@@ -1,6 +1,7 @@
 //! Sliding-window rate limits shared by every replica (#428): the recipe
 //! import per member (`recipes::import`) and the reads sent to Open Food
-//! Facts (`stocks::openfoodfacts`).
+//! Facts (`stocks::openfoodfacts`); since #570, the "account exists" notice
+//! per address (`auth::account_exists_notice`). [`LIMITS`] lists them.
 //!
 //! Until #428 each was a `Mutex` in the process's memory: with N replicas
 //! behind the ingress, a member had N times their imports and Open Food
@@ -26,10 +27,12 @@
 //! ([`purge_expired`]) when none comes.
 //!
 //! The cost the in-memory version was spared: a database round trip and a
-//! pool connection per admission. Both limits guard a request that costs
-//! far more — an outbound HTTP fetch. That connection is held while the
-//! admission waits on its subject's lock, so it comes from a pool the
-//! limits share, apart from the handlers' ([`POOL_SIZE`], #483).
+//! pool connection per admission. Each limit guards a request that costs
+//! far more — an outbound HTTP fetch, or an email sent. That connection is
+//! held while the admission waits on its subject's lock, so it comes from a
+//! pool apart from the handlers': the one the recipe import and Open Food
+//! Facts share ([`POOL_SIZE`], #483), and one of its own for the notice,
+//! whose route answers anyone (`auth::account_exists_notice::POOL_SIZE`).
 
 use std::time::{Duration, SystemTime};
 
@@ -77,14 +80,25 @@ impl SlidingWindow {
 /// other. The login lock's classes are `mlgs` and `mlgt`.
 pub const LOG_LOCK: i32 = i32::from_be_bytes(*b"mrll");
 
-/// The longest window of the limits kept in `rate_limit_log`: the hourly
-/// purge deletes a row once its newest admission is that old.
-pub const LONGEST_WINDOW: Duration = Duration::from_secs(10 * 60);
+/// Every limit kept in `rate_limit_log`: its `kind` and its rule. The
+/// table's CHECK accepts these kinds and no other; the hourly purge
+/// ([`purge_expired`]) deletes a row once its newest admission is its own
+/// kind's window old (#570: the windows run from a minute to a day, and a
+/// ten-minute counter is not kept a day because another limit counts over
+/// one).
+pub const LIMITS: [(&str, SlidingWindow); 3] = [
+    ("recipe_import", crate::recipes::import::RATE),
+    ("openfoodfacts", crate::stocks::openfoodfacts::RATE),
+    (
+        crate::auth::account_exists_notice::KIND,
+        crate::auth::account_exists_notice::RATE,
+    ),
+];
 
-/// Connections of the pool the limits of this module share, per replica,
-/// when [`POOL_SIZE_VAR`] is unset (#483). `main.rs` opens it beside the
-/// handlers' pool (`db::pool_beside`) and gives it to every
-/// [`SlidingLimiter`]: an admission holds its connection while it waits on
+/// Connections of the pool the recipe import and Open Food Facts share,
+/// per replica, when [`POOL_SIZE_VAR`] is unset (#483). `main.rs` opens it
+/// beside the handlers' pool (`db::pool_beside`) and gives it to their
+/// [`SlidingLimiter`]s (the notice of #570 has a pool of its own): an admission holds its connection while it waits on
 /// its subject's lock, and must not hold one of the handlers'.
 pub const POOL_SIZE: u32 = 2;
 
@@ -106,15 +120,15 @@ pub struct SlidingLimiter {
 }
 
 impl SlidingLimiter {
-    /// `kind` is one the table's CHECK accepts. `db` is the limits' own
-    /// pool ([`POOL_SIZE`]), not the handlers'.
+    /// `kind` and `rule` are one of [`LIMITS`]. `db` is a pool of the
+    /// limits' own ([`POOL_SIZE`], or the notice's), not the handlers'.
     pub fn new(
         db: PgPool,
         pseudonyms: Pseudonyms,
         kind: &'static str,
         rule: SlidingWindow,
     ) -> Self {
-        debug_assert!(rule.window <= LONGEST_WINDOW);
+        debug_assert!(LIMITS.contains(&(kind, rule)), "{kind} is not in LIMITS");
         Self {
             db,
             pseudonyms,
@@ -200,18 +214,25 @@ impl SlidingLimiter {
     }
 }
 
-/// Deletes every row whose newest admission is [`LONGEST_WINDOW`] old at
-/// `now`, and says how many. Run by the hourly retention purge
+/// Deletes every row whose newest admission is its kind's window old at
+/// `now` ([`LIMITS`]), and says how many. Run by the hourly retention purge
 /// (`jobs::retention_purge`), so a subject that never comes back is not
 /// kept past the hour that follows its last window.
 pub async fn purge_expired(
     conn: &mut sqlx::PgConnection,
     now: SystemTime,
 ) -> Result<u64, sqlx::Error> {
+    let (kinds, horizons): (Vec<String>, Vec<DateTime<Utc>>) = LIMITS
+        .iter()
+        .map(|(kind, rule)| (kind.to_string(), DateTime::from(now - rule.window)))
+        .unzip();
     Ok(sqlx::query!(
-        "DELETE FROM rate_limit_log
-          WHERE (SELECT max(a) FROM unnest(admitted) AS a) <= $1",
-        DateTime::<Utc>::from(now - LONGEST_WINDOW)
+        "DELETE FROM rate_limit_log l
+          USING unnest($1::text[], $2::timestamptz[]) AS w(kind, horizon)
+          WHERE l.kind = w.kind
+            AND (SELECT max(a) FROM unnest(l.admitted) AS a) <= w.horizon",
+        &kinds,
+        &horizons
     )
     .execute(conn)
     .await?
@@ -269,6 +290,22 @@ mod tests {
         let mut log = vec![at(t0, 50), at(t0, 0), at(t0, 40)];
         assert!(RULE.admit(&mut log, at(t0, 70)));
         assert_eq!(log, vec![at(t0, 50), at(t0, 40), at(t0, 70)]);
+    }
+
+    /// #570: the purge reads each kind's window from [`LIMITS`]; a kind
+    /// listed twice would be purged on whichever window comes first.
+    #[test]
+    fn every_limit_is_listed_once() {
+        for (i, (kind, _)) in LIMITS.iter().enumerate() {
+            assert!(
+                LIMITS[i + 1..].iter().all(|(other, _)| other != kind),
+                "{kind}"
+            );
+        }
+        assert!(LIMITS.contains(&(
+            crate::auth::account_exists_notice::KIND,
+            crate::auth::account_exists_notice::RATE
+        )));
     }
 
     #[test]

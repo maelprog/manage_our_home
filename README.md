@@ -221,7 +221,7 @@ What it cannot invent, you have to fill in yourself:
 | `OAUTH_ENCRYPTION_KEY` | yes | `openssl rand -base64 32` |
 | `MESSAGE_ENCRYPTION_KEY` | yes | `openssl rand -base64 32` |
 | `CALENDAR_FEED_ENCRYPTION_KEY` | yes | `openssl rand -base64 32` |
-| `LOGIN_THROTTLE_KEY` | yes | `openssl rand -base64 32`. Keys the login lock's pseudonyms (#427), and those of the recipe import, Open Food Facts and CSP report limits (#428); the same on every replica, 16 bytes at least. |
+| `LOGIN_THROTTLE_KEY` | yes | `openssl rand -base64 32`. Keys the login lock's pseudonyms (#427), and those of the recipe import, Open Food Facts and CSP report limits (#428) and of the "account exists" notice cap (#570); the same on every replica, 16 bytes at least. |
 | `LOGIN_THROTTLE_POOL_SIZE` | no — defaults to `4` | Connections of the login lock's own pool, per API replica (#482), on top of its other pools (see `apps/api/README.md`). A whole number, at least 1; anything else refuses to start. |
 | `CSP_REPORT_POOL_SIZE` | no — defaults to `2` | Connections of the CSP report limit's own pool, per API replica (#483), on top of its other pools (see `apps/api/README.md`). A whole number, at least 1; anything else refuses to start. |
 | `RATE_LIMIT_POOL_SIZE` | no — defaults to `2` | Connections of the pool the recipe import and Open Food Facts limits share, per API replica (#483), on top of its other pools (see `apps/api/README.md`). A whole number, at least 1; anything else refuses to start. |

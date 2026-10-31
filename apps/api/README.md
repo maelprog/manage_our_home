@@ -539,17 +539,21 @@ only lets distinct addresses proceed together.
 **The other rate limits count the same way (#428).** The recipe import
 (`recipes::import::RATE_LIMIT` per member per 10 minutes), the reads sent
 to Open Food Facts (`stocks::openfoodfacts::RATE_LIMIT` a minute, for the
-whole server) and `POST /csp-report` (`csp_report_throttle::MAX_REPORTS`
+whole server), the "account exists" notice `POST /auth/register` mails to
+a verified address (`auth::account_exists_notice::RATE`, 3 per address per
+24 hours, #570) and `POST /csp-report` (`csp_report_throttle::MAX_REPORTS`
 per client address per 15 minutes) are counted in the `UNLOGGED` tables
-`rate_limit_log` and `csp_report_throttle` (migration `0029`), under an
-advisory lock per counted subject and on the database's clock, so N
-replicas allow what one does. Their rows hold HMAC pseudonyms keyed from
+`rate_limit_log` and `csp_report_throttle` (migrations `0029` and `0043`),
+under an advisory lock per counted subject and on the database's clock, so
+N replicas allow what one does. Their rows hold HMAC pseudonyms keyed from
 the same `LOGIN_THROTTLE_KEY`, each limit under a label of its own. The
 hourly retention purge deletes a `rate_limit_log` row on its first pass
-once the row's newest admission is 10 minutes old, and a
-`csp_report_throttle` row on its first pass once its window is over. A database
-error refuses the request: a 500 for the import and the CSP report, a scan
-without a product for Open Food Facts.
+once the row's newest admission is its own limit's window old
+(`rate_limit::LIMITS`), and a `csp_report_throttle` row on its first pass
+once its window is over. A database error refuses the request: a 500 for
+the import and the CSP report, a scan without a product for Open Food
+Facts, and no notice — with the registration's usual answer — for the
+account-exists email.
 
 Their admissions hold a connection while they wait on their subject's
 lock too, so they have pools of their own as well (#483), on
@@ -565,12 +569,18 @@ from 1 refuses to start):
   (`rate_limit::POOL_SIZE`), shared by the recipe import and Open Food
   Facts, both behind a session. Open Food Facts counts one subject, the
   whole server, so its admissions are decided one after the other anyway.
+- **`ACCOUNT_EXISTS_NOTICE_POOL_SIZE`** connections, 1 when unset
+  (`auth::account_exists_notice::POOL_SIZE`), for the "account exists"
+  notice cap of `POST /auth/register` alone (#570). The route answers
+  anyone without a session: a burst of registrations queues there, not in
+  the handlers' pool nor in the one the import and Open Food Facts share.
 
 **Connection budget, per replica.** Count, against Postgres's
 `max_connections`: the handlers' 20, the admin pool's 5, the login lock's
 `LOGIN_THROTTLE_POOL_SIZE` (4), `CSP_REPORT_POOL_SIZE` (2),
-`RATE_LIMIT_POOL_SIZE` (2) and one per background job pass running
-(#426) — 33 plus the job passes with the defaults, once per replica.
+`RATE_LIMIT_POOL_SIZE` (2), `ACCOUNT_EXISTS_NOTICE_POOL_SIZE` (1) and one
+per background job pass running (#426) — 34 plus the job passes with the
+defaults, once per replica.
 
 **What counts as one address (#198).** An IPv4 address stands for itself. An
 IPv6 one is reduced to its **/64** before it is used as a key: a residential

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM rate_limit_log l\n          USING unnest($1::text[], $2::timestamptz[]) AS w(kind, horizon)\n          WHERE l.kind = w.kind\n            AND (SELECT max(a) FROM unnest(l.admitted) AS a) <= w.horizon",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TimestamptzArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "646e36715833b2a5e90792ca3b2312c32ed37b8d7fa1714be35c1b129338e07a"
+}

@@ -4006,3 +4006,149 @@ async fn concurrent_registrations_of_one_address_create_one_account(db: PgPool) 
     assert_eq!(outbox.emails().len(), 1);
     assert_eq!(verification_tokens(&db, "race@example.test").await, (1, 1));
 }
+
+/// How many "account exists" notices went to `email`.
+fn account_exists_notices(outbox: &manage_our_home::email::Outbox, email: &str) -> usize {
+    outbox
+        .emails()
+        .iter()
+        .filter(|e| e.to == email && e.subject == "Vous avez déjà un compte")
+        .count()
+}
+
+/// #570, arbitrated 2026-10-22 ("cap how often you can generate this email
+/// at 3 per day"): a fourth registration of a verified address within the
+/// day mails nothing, and answers exactly like the three before it — the
+/// cap tells nobody the address has an account. The numbers are written
+/// out rather than read from `auth::account_exists_notice::RATE`, so that
+/// changing the constant fails here.
+#[sqlx::test]
+async fn the_account_exists_notice_is_mailed_three_times_a_day_at_most(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let email = "capped@example.test";
+    register_verify_login(&router, &db, email, "capped-password1").await;
+
+    let mut bodies = Vec::new();
+    for _ in 0..4 {
+        let res = register_with(&router, email, "other-password1", "Other").await;
+        assert_status(&res, StatusCode::CREATED);
+        bodies.push(body_bytes(res).await);
+    }
+    assert!(bodies.iter().all(|b| b.is_empty()), "{bodies:?}");
+    assert_eq!(account_exists_notices(&outbox, email), 3);
+
+    // The count is kept under a pseudonym, never the address.
+    let stored: Vec<(Vec<u8>, i32)> = sqlx::query_as(
+        "SELECT bucket, cardinality(admitted) FROM rate_limit_log
+          WHERE kind = 'account_exists_notice'",
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(stored.len(), 1, "{stored:?}");
+    assert_eq!(stored[0].1, 3);
+    assert!(
+        !stored[0]
+            .0
+            .windows(email.len())
+            .any(|w| w == email.as_bytes()),
+        "{stored:?}"
+    );
+
+    // Just inside the day the cap still holds; once the oldest notice is a
+    // day old, one more goes out.
+    for (age, sent) in [("23 hours 59 minutes", 3), ("24 hours", 4)] {
+        sqlx::query(
+            "UPDATE rate_limit_log
+                SET admitted = array[clock_timestamp() - $1::text::interval] || admitted[2:]
+              WHERE kind = 'account_exists_notice'",
+        )
+        .bind(age)
+        .execute(&db)
+        .await
+        .unwrap();
+        let res = register_with(&router, email, "other-password1", "Other").await;
+        assert_status(&res, StatusCode::CREATED);
+        assert_eq!(account_exists_notices(&outbox, email), sent, "{age}");
+    }
+}
+
+/// #570: each address has a cap of its own.
+#[sqlx::test]
+async fn one_addresss_notice_cap_leaves_anothers_whole(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let (first, second) = ("first-cap@example.test", "second-cap@example.test");
+    for email in [first, second] {
+        register_verify_login(&router, &db, email, "cap-password1").await;
+    }
+
+    for _ in 0..4 {
+        register_with(&router, first, "other-password1", "Other").await;
+    }
+    for _ in 0..3 {
+        register_with(&router, second, "other-password1", "Other").await;
+    }
+    assert_eq!(account_exists_notices(&outbox, first), 3);
+    assert_eq!(account_exists_notices(&outbox, second), 3);
+}
+
+/// #570: the cap is on the notice only. An unverified account's address
+/// keeps getting its verification link on the resend cooldown alone, and
+/// none of it counts against the notice it gets once verified.
+#[sqlx::test]
+async fn the_verification_link_is_not_counted_against_the_notice_cap(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let email = "unhurried@example.test";
+    register_with(&router, email, "first-password1", "Unhurried").await;
+    for _ in 0..4 {
+        age_verification_tokens(&db, email, 600).await;
+        let res = register_with(&router, email, "other-password1", "Other").await;
+        assert_status(&res, StatusCode::CREATED);
+    }
+    let links = outbox
+        .emails()
+        .iter()
+        .filter(|e| e.to == email && e.subject == "Vérifiez votre email")
+        .count();
+    assert_eq!(links, 5, "the registration, then one link per registration");
+    let counted: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM rate_limit_log WHERE kind = 'account_exists_notice'",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(counted, 0);
+
+    let token = common::mailed_token(&outbox, email, "http://localhost:5173/verify-email?token=");
+    let verify = call(
+        &router,
+        Method::GET,
+        &format!("/auth/verify-email?token={token}"),
+        None,
+        None,
+    )
+    .await;
+    assert_status(&verify, StatusCode::OK);
+    for _ in 0..3 {
+        register_with(&router, email, "other-password1", "Other").await;
+    }
+    assert_eq!(account_exists_notices(&outbox, email), 3);
+}
+
+/// #570: a cap that cannot be counted does not let the notice through, and
+/// the registration still answers as any other.
+#[sqlx::test]
+async fn a_notice_the_cap_cannot_count_is_not_mailed(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let email = "uncounted@example.test";
+    register_verify_login(&router, &db, email, "uncounted-password1").await;
+    sqlx::query("ALTER TABLE rate_limit_log RENAME TO rate_limit_log_gone")
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let res = register_with(&router, email, "other-password1", "Other").await;
+    assert_status(&res, StatusCode::CREATED);
+    assert!(body_bytes(res).await.is_empty());
+    assert_eq!(account_exists_notices(&outbox, email), 0);
+}
