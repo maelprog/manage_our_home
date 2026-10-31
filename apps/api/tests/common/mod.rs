@@ -117,6 +117,12 @@ pub fn test_state(db: PgPool) -> AppState {
         recipe_import_client: manage_our_home::outbound_http::recipe_import_client().clone(),
         recipe_import_throttle,
         account_exists_throttle,
+        // No floor, so that the hundreds of registrations the suite makes
+        // do not each wait for it; the production deadlines. The floor's
+        // own tests (`auth_response_floor_flow`, #571) set theirs.
+        auth_response_floor: manage_our_home::auth::response_floor::ResponseFloor::new(
+            std::time::Duration::ZERO,
+        ),
         shutdown: manage_our_home_http_guard::Shutdown::new(),
     }
 }

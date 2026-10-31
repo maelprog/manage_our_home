@@ -145,6 +145,11 @@ pub struct AppState {
     /// The per-address cap on the "account exists" notice `register` mails
     /// (#570), counted in Postgres (`rate_limit_log`), on a pool of its own.
     pub account_exists_throttle: std::sync::Arc<auth::account_exists_notice::NoticeThrottle>,
+    /// The least time `register` (once its fields are valid),
+    /// `forgot_password` and `resend_verification` take to answer, and the
+    /// deadlines that keep their slowest branch under it (#571):
+    /// `AUTH_RESPONSE_FLOOR_MS` in `main.rs`.
+    pub auth_response_floor: auth::response_floor::ResponseFloor,
     /// Whether the process is stopping (#424): `/readyz` answers 503 from
     /// then on, and every Messagerie WebSocket closes with a Close frame.
     /// `main.rs` triggers it on SIGTERM; tests trigger it themselves.

@@ -460,6 +460,39 @@ total. That is not anonymity: if all 20 took the same branch the difference
 says so for each, and someone who reads the journal *and* sends 19 of the
 refusals with emails they know to be unknown can isolate the 20th.
 
+## Registration, forgotten password, verification resend: the response floor (#571)
+
+`POST /auth/register`, `POST /auth/password/forgot` and
+`POST /auth/verify-email/resend` give the same answer whatever account
+holds the address, but one branch mails from within the request and
+another mails nothing: without a floor, the stopwatch told the two apart.
+Each now holds its answer until **`AUTH_RESPONSE_FLOOR_MS`** milliseconds
+have passed since it started, whatever it did (`auth::response_floor`):
+
+- **2000 when unset**, the smallest accepted too; blank means the default,
+  anything else but a whole number from 2000 refuses to start. Per replica.
+- `register`'s 422s (fields the form can point at) depend on no account and
+  are not held back; neither are the 400/415/422 axum's extractor answers
+  before a handler runs.
+- The floor only holds if the slowest branch fits under it, so what that
+  branch waits on is bounded: the email gets **1.5 s in all**
+  (`SMTP_TIMEOUT` — lettre's own timeout, set to the same value in
+  `main.rs`, bounds the connection only), the "account exists" notice cap
+  **250 ms** to admit a notice (`NOTICE_ADMISSION_TIMEOUT`, see below), and
+  the argon2id hash and the statements are allowed 250 ms
+  (`WORK_ALLOWANCE`). Their sum is the 2000 ms minimum. An email given up
+  at its deadline is logged and the answer is the usual one; a notice not
+  admitted in time is not sent.
+- The arbitration (2026-10-22) set the floor at twice the longest expected
+  branch at least: `register` on a new address, measured with its
+  figures in the body of the PR that added the floor.
+
+What it does not cover: a branch slower than the floor for another reason
+— the handlers' own pool exhausted, Postgres stalled — answers late, and
+by then every branch of the route is late with it. The background jobs'
+emails share the transport and its 1.5 s connection timeout, not the
+deadline on the whole send.
+
 ## Login lock and client addresses (#178)
 
 `POST /auth/login` admits at most 10 attempts per **(client address, email)**
@@ -574,7 +607,9 @@ from 1 refuses to start):
   notice cap of `POST /auth/register` alone (#570). The route answers
   anyone without a session: a burst of registrations queues there, not in
   the handlers' pool nor in the one the import and Open Food Facts share.
-
+  With one connection, a burst on one address delays the notices of the
+  other verified addresses too: an admission waits 250 ms at most, then
+  sends nothing, so the queue stays under the response floor (#571).
 **Connection budget, per replica.** Count, against Postgres's
 `max_connections`: the handlers' 20, the admin pool's 5, the login lock's
 `LOGIN_THROTTLE_POOL_SIZE` (4), `CSP_REPORT_POOL_SIZE` (2),
