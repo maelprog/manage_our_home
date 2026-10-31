@@ -28,12 +28,28 @@ pub const RATE: SlidingWindow = SlidingWindow {
     window: Duration::from_secs(24 * 60 * 60),
 };
 
+/// Connections of the cap's own pool, per replica, when [`POOL_SIZE_VAR`]
+/// is unset. `POST /auth/register` answers anyone without a session: like
+/// `POST /csp-report`, its admissions wait on their subject's lock in a
+/// pool of their own, apart from the handlers' and from the one the recipe
+/// import and Open Food Facts share (#483). A burst of registrations of
+/// one address queues there and delays nothing else. Notices to one
+/// address are decided one after the other whatever the size.
+pub const POOL_SIZE: u32 = 1;
+
+/// Environment variable sizing that pool, per replica: every replica opens
+/// that many connections on top of its others, so the size is set with the
+/// deployment, against Postgres's `max_connections`.
+pub const POOL_SIZE_VAR: &str = "ACCOUNT_EXISTS_NOTICE_POOL_SIZE";
+
 /// [`RATE`], counted per address in `rate_limit_log`.
 #[derive(Debug, Clone)]
 pub struct NoticeThrottle(SlidingLimiter);
 
 impl NoticeThrottle {
-    /// `db` is the limits' own pool (`rate_limit::POOL_SIZE`).
+    /// `db` is the cap's own pool ([`POOL_SIZE`] connections unless
+    /// [`POOL_SIZE_VAR`] says otherwise), not the handlers' nor the other
+    /// limits'.
     pub fn new(db: PgPool, pseudonyms: Pseudonyms) -> Self {
         Self(SlidingLimiter::new(db, pseudonyms, KIND, RATE))
     }

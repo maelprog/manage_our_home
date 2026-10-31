@@ -569,12 +569,18 @@ from 1 refuses to start):
   (`rate_limit::POOL_SIZE`), shared by the recipe import and Open Food
   Facts, both behind a session. Open Food Facts counts one subject, the
   whole server, so its admissions are decided one after the other anyway.
+- **`ACCOUNT_EXISTS_NOTICE_POOL_SIZE`** connections, 1 when unset
+  (`auth::account_exists_notice::POOL_SIZE`), for the "account exists"
+  notice cap of `POST /auth/register` alone (#570). The route answers
+  anyone without a session: a burst of registrations queues there, not in
+  the handlers' pool nor in the one the import and Open Food Facts share.
 
 **Connection budget, per replica.** Count, against Postgres's
 `max_connections`: the handlers' 20, the admin pool's 5, the login lock's
 `LOGIN_THROTTLE_POOL_SIZE` (4), `CSP_REPORT_POOL_SIZE` (2),
-`RATE_LIMIT_POOL_SIZE` (2) and one per background job pass running
-(#426) — 33 plus the job passes with the defaults, once per replica.
+`RATE_LIMIT_POOL_SIZE` (2), `ACCOUNT_EXISTS_NOTICE_POOL_SIZE` (1) and one
+per background job pass running (#426) — 34 plus the job passes with the
+defaults, once per replica.
 
 **What counts as one address (#198).** An IPv4 address stands for itself. An
 IPv6 one is reduced to its **/64** before it is used as a key: a residential

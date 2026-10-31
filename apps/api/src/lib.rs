@@ -143,7 +143,7 @@ pub struct AppState {
     /// Postgres (`rate_limit_log`, #428).
     pub recipe_import_throttle: std::sync::Arc<recipes::import::ImportThrottle>,
     /// The per-address cap on the "account exists" notice `register` mails
-    /// (#570), counted in Postgres (`rate_limit_log`).
+    /// (#570), counted in Postgres (`rate_limit_log`), on a pool of its own.
     pub account_exists_throttle: std::sync::Arc<auth::account_exists_notice::NoticeThrottle>,
     /// Whether the process is stopping (#424): `/readyz` answers 503 from
     /// then on, and every Messagerie WebSocket closes with a Close frame.

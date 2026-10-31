@@ -28,9 +28,11 @@
 //!
 //! The cost the in-memory version was spared: a database round trip and a
 //! pool connection per admission. Each limit guards a request that costs
-//! far more — an outbound HTTP fetch, or an email sent. That connection is held while the
-//! admission waits on its subject's lock, so it comes from a pool the
-//! limits share, apart from the handlers' ([`POOL_SIZE`], #483).
+//! far more — an outbound HTTP fetch, or an email sent. That connection is
+//! held while the admission waits on its subject's lock, so it comes from a
+//! pool apart from the handlers': the one the recipe import and Open Food
+//! Facts share ([`POOL_SIZE`], #483), and one of its own for the notice,
+//! whose route answers anyone (`auth::account_exists_notice::POOL_SIZE`).
 
 use std::time::{Duration, SystemTime};
 
@@ -93,10 +95,10 @@ pub const LIMITS: [(&str, SlidingWindow); 3] = [
     ),
 ];
 
-/// Connections of the pool the limits of this module share, per replica,
-/// when [`POOL_SIZE_VAR`] is unset (#483). `main.rs` opens it beside the
-/// handlers' pool (`db::pool_beside`) and gives it to every
-/// [`SlidingLimiter`]: an admission holds its connection while it waits on
+/// Connections of the pool the recipe import and Open Food Facts share,
+/// per replica, when [`POOL_SIZE_VAR`] is unset (#483). `main.rs` opens it
+/// beside the handlers' pool (`db::pool_beside`) and gives it to their
+/// [`SlidingLimiter`]s (the notice of #570 has a pool of its own): an admission holds its connection while it waits on
 /// its subject's lock, and must not hold one of the handlers'.
 pub const POOL_SIZE: u32 = 2;
 
@@ -118,8 +120,8 @@ pub struct SlidingLimiter {
 }
 
 impl SlidingLimiter {
-    /// `kind` and `rule` are one of [`LIMITS`]. `db` is the limits' own
-    /// pool ([`POOL_SIZE`]), not the handlers'.
+    /// `kind` and `rule` are one of [`LIMITS`]. `db` is a pool of the
+    /// limits' own ([`POOL_SIZE`], or the notice's), not the handlers'.
     pub fn new(
         db: PgPool,
         pseudonyms: Pseudonyms,

@@ -43,8 +43,8 @@ pub fn test_state(db: PgPool) -> AppState {
         pseudonyms.clone(),
         manage_our_home::csp_report_throttle::POOL_SIZE,
     );
-    // The recipe import, Open Food Facts and the "account exists" notice
-    // share a pool of their own, as in `main.rs` (#483).
+    // The recipe import and Open Food Facts share a pool of their own, and
+    // the "account exists" notice has one to itself, as in `main.rs` (#483).
     let rate_limit_db = manage_our_home::db::pool_beside(
         runtime_pool_options(),
         &runtime_db,
@@ -54,14 +54,16 @@ pub fn test_state(db: PgPool) -> AppState {
         rate_limit_db.clone(),
         pseudonyms.clone(),
     ));
-    let recipe_import_throttle =
-        std::sync::Arc::new(manage_our_home::recipes::import::ImportThrottle::new(
-            rate_limit_db.clone(),
-            pseudonyms.clone(),
-        ));
+    let recipe_import_throttle = std::sync::Arc::new(
+        manage_our_home::recipes::import::ImportThrottle::new(rate_limit_db, pseudonyms.clone()),
+    );
     let account_exists_throttle = std::sync::Arc::new(
         manage_our_home::auth::account_exists_notice::NoticeThrottle::new(
-            rate_limit_db,
+            manage_our_home::db::pool_beside(
+                runtime_pool_options(),
+                &runtime_db,
+                manage_our_home::auth::account_exists_notice::POOL_SIZE,
+            ),
             pseudonyms,
         ),
     );
