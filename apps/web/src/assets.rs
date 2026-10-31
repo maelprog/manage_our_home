@@ -134,14 +134,15 @@ const FINGERPRINT_LEN: usize = 16;
 /// be tested on inputs of its own — the one interesting property being
 /// that two different sheets never get the same name.
 fn stylesheet_url(css: &str) -> String {
-    fingerprinted_url("style", "css", css)
+    fingerprinted_url("style", "css", css.as_bytes())
 }
 
 /// `/assets/<stem>-<digest>.<ext>`, the digest taken over `content` — the
 /// naming rule of every file served out of the binary, the stylesheet's
-/// and, since #325, the scripts'.
-fn fingerprinted_url(stem: &str, ext: &str, content: &str) -> String {
-    let digest = Sha256::digest(content.as_bytes());
+/// and, since #325, the scripts', and since #542 the icons'
+/// (`crate::brand`), which are bytes rather than text.
+pub(crate) fn fingerprinted_url(stem: &str, ext: &str, content: &[u8]) -> String {
+    let digest = Sha256::digest(content);
     let mut hex = String::with_capacity(FINGERPRINT_LEN);
     for byte in digest.iter().take(FINGERPRINT_LEN.div_ceil(2)) {
         use std::fmt::Write;
@@ -233,7 +234,7 @@ impl Script {
         static HREFS: LazyLock<Vec<String>> = LazyLock::new(|| {
             Script::ALL
                 .iter()
-                .map(|s| fingerprinted_url(s.stem(), "js", s.source()))
+                .map(|s| fingerprinted_url(s.stem(), "js", s.source().as_bytes()))
                 .collect()
         });
         let at = Script::ALL
@@ -271,8 +272,10 @@ pub fn resolve_assets_dir(configured: Option<String>) -> PathBuf {
     }
 }
 
-/// `GET /assets/*` — the stylesheet out of the binary, the fonts off
-/// `dir`, every served response carrying the immutable cache header.
+/// `GET /assets/*` — the stylesheet, the scripts and the icons (#542) out
+/// of the binary, the fonts off `dir`, every served response carrying the
+/// immutable cache header. Plus, outside `/assets` and without that header,
+/// `/manifest.webmanifest` and `/favicon.ico` (`crate::brand`).
 /// Generic over the state so it merges into the application router before
 /// `with_state`; it needs no state of its own.
 ///
@@ -288,9 +291,22 @@ where
     for script in Script::ALL {
         router = router.route(script.href(), get(move || serve_script(script)));
     }
+    for icon in crate::brand::Icon::ALL {
+        router = router.route(icon.href(), get(move || crate::brand::serve_icon(icon)));
+    }
     router
         .nest_service("/assets", ServeDir::new(dir))
         .layer(axum::middleware::map_response(cache_what_was_served))
+        // Added after the layer, so out of its reach: these two addresses
+        // carry no digest and set their own, shorter, cache header (#542).
+        .route(
+            crate::brand::MANIFEST_PATH,
+            get(crate::brand::serve_manifest),
+        )
+        .route(
+            crate::brand::FAVICON_ROOT_PATH,
+            get(crate::brand::serve_root_favicon),
+        )
 }
 
 /// The route as `main` mounts it, reading `WEB_ASSETS_DIR` from the
@@ -537,7 +553,7 @@ mod tests {
         for script in Script::ALL {
             assert_eq!(
                 script.href(),
-                fingerprinted_url(script.stem(), "js", script.source()),
+                fingerprinted_url(script.stem(), "js", script.source().as_bytes()),
                 "{script:?}"
             );
             assert!(script.href().starts_with("/assets/"), "{script:?}");
@@ -598,7 +614,7 @@ mod tests {
         for path in [
             "/assets/enhance.js".to_string(),
             "/assets/enhance-0000000000000000.js".to_string(),
-            fingerprinted_url("enhance", "js", "alert(1)"),
+            fingerprinted_url("enhance", "js", b"alert(1)"),
         ] {
             assert_eq!(get(&path).await.status(), StatusCode::NOT_FOUND, "{path}");
         }

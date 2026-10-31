@@ -1128,6 +1128,29 @@ fn the_caddyfile_leaves_connections_to_default_src() {
     assert_eq!(directive(&policy, "default-src"), Some(vec!["'self'"]));
 }
 
+/// The favicons, the home-screen icon and the manifest (#542) are loaded
+/// from the site itself (`crate::brand`), through `img-src` and
+/// `manifest-src`. Neither is written: both fall back on `default-src
+/// 'self'`, which allows them. One written without `'self'` would block
+/// them, and the only symptom would be a missing tab icon.
+#[test]
+fn the_caddyfile_lets_pages_load_their_icons_and_manifest() {
+    let policy = caddy_csp(CADDYFILE).expect("infra/Caddyfile sets a Content-Security-Policy");
+    assert_eq!(directive(&policy, "default-src"), Some(vec!["'self'"]));
+    for name in ["img-src", "manifest-src"] {
+        assert!(
+            directive(&policy, name).is_none_or(|sources| sources.contains(&"'self'")),
+            "{name} would block the icons or the manifest"
+        );
+    }
+    // …and the pages really do point at the site's own paths.
+    for href in crate::brand::Icon::ALL.map(|i| i.href()) {
+        assert!(href.starts_with("/assets/"), "{href}");
+    }
+    let manifest = crate::brand::MANIFEST_PATH;
+    assert!(manifest.starts_with('/') && !manifest.starts_with("//"));
+}
+
 /// Violations are reported to apps/api (`csp_report.rs`), on the site's own
 /// origin: `report-to` for the browsers that implement the Reporting API,
 /// `report-uri` for the others, both to the same path.
