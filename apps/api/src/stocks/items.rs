@@ -4,7 +4,9 @@ use axum::{http::StatusCode, Json};
 use chrono::{DateTime, NaiveDate, Utc};
 use manage_our_home_shared::dto::stocks::SORT_BY_EXPIRY;
 use manage_our_home_shared::validation::auth::paris_day;
-use manage_our_home_shared::validation::stocks::{expiry_status, normalize_unit, ExpiryStatus};
+use manage_our_home_shared::validation::stocks::{
+    check_quantities, expiry_status, normalize_unit, ExpiryStatus,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -170,18 +172,10 @@ impl StockItemResponse {
     }
 }
 
+/// The shared quantity guards (#649): non-negative, finite, at most
+/// `MAX_QUANTITY`, for the quantity and the threshold alike.
 fn validate_request(quantity: f64, reorder_threshold: Option<f64>) -> AppResult<()> {
-    if quantity < 0.0 {
-        return Err(AppError::BadRequest("quantity_must_be_non_negative".into()));
-    }
-    if let Some(t) = reorder_threshold {
-        if t < 0.0 {
-            return Err(AppError::BadRequest(
-                "reorder_threshold_must_be_non_negative".into(),
-            ));
-        }
-    }
-    Ok(())
+    check_quantities(quantity, reorder_threshold).map_err(|e| AppError::BadRequest(e.code().into()))
 }
 
 pub async fn create_stock_item(
@@ -344,7 +338,8 @@ pub async fn update_stock_item(
 
     // A quantity-only adjustment is allowed to any member (shared inventory);
     // touching any full-record field requires the creator/admin/owner bar.
-    if body.touches_full_record() && !can_modify(&actor_role, existing.created_by == auth.user_id) {
+    let full_edit = body.touches_full_record();
+    if full_edit && !can_modify(&actor_role, existing.created_by == auth.user_id) {
         return Err(AppError::Forbidden);
     }
 
@@ -369,7 +364,13 @@ pub async fn update_stock_item(
         Some(d) => d,
         None => existing.expires_on,
     };
-    validate_request(quantity, reorder_threshold)?;
+    if full_edit {
+        validate_request(quantity, reorder_threshold)?;
+    } else {
+        // A quantity-only adjustment checks the quantity alone: a threshold
+        // stored before the bound (#649) must not block it.
+        validate_request(quantity, None)?;
+    }
 
     let item = sqlx::query_as!(
         StockItemRow,

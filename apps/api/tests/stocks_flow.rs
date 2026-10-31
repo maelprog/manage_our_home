@@ -216,6 +216,171 @@ async fn negative_quantity_is_rejected(db: PgPool) {
     assert_status(&create, StatusCode::BAD_REQUEST);
 }
 
+/// #649: the reception's bound (1e9) holds for a creation, a full edit and a
+/// quantity-only PATCH, for the quantity and the reorder threshold alike —
+/// the bound itself is accepted, above it is a 400 and nothing is written.
+#[sqlx::test]
+async fn quantities_above_the_bound_are_rejected_everywhere(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie =
+        register_verify_login(&router, &db, "stock-max@example.test", "test-password-1234").await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let items = format!("/groups/{group_id}/stock-items");
+
+    async fn error_code(res: axum::http::Response<axum::body::Body>) -> String {
+        json_body(res).await["error"].as_str().unwrap().to_string()
+    }
+
+    let too_large = [
+        (
+            serde_json::json!({"name": "Lait", "quantity": 1_000_000_001.0}),
+            "quantity_too_large",
+        ),
+        (
+            serde_json::json!({"name": "Lait", "quantity": 1e300}),
+            "quantity_too_large",
+        ),
+        (
+            serde_json::json!({"name": "Lait", "quantity": 1.0, "reorder_threshold": 1_000_000_001.0}),
+            "reorder_threshold_too_large",
+        ),
+    ];
+    for (body, code) in &too_large {
+        let res = call(
+            &router,
+            Method::POST,
+            &items,
+            Some(&cookie),
+            Some(body.clone()),
+        )
+        .await;
+        assert_status(&res, StatusCode::BAD_REQUEST);
+        assert_eq!(error_code(res).await, *code, "{body}");
+    }
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM stock_items")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "a refused creation writes nothing");
+
+    // The bound itself is accepted.
+    let at_bound = call(
+        &router,
+        Method::POST,
+        &items,
+        Some(&cookie),
+        Some(serde_json::json!({
+            "name": "Lait", "quantity": 1_000_000_000.0, "reorder_threshold": 1_000_000_000.0
+        })),
+    )
+    .await;
+    assert_status(&at_bound, StatusCode::CREATED);
+    let item_id = json_body(at_bound).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let item = format!("{items}/{item_id}");
+
+    let patches = [
+        // Quantity-only adjustment (open to any member, #39).
+        (
+            serde_json::json!({"quantity": 1_000_000_001.0}),
+            "quantity_too_large",
+        ),
+        // Full edits.
+        (
+            serde_json::json!({"name": "Lait", "quantity": 1e300}),
+            "quantity_too_large",
+        ),
+        (
+            serde_json::json!({"reorder_threshold": 1_000_000_001.0}),
+            "reorder_threshold_too_large",
+        ),
+    ];
+    for (body, code) in &patches {
+        let res = call(
+            &router,
+            Method::PATCH,
+            &item,
+            Some(&cookie),
+            Some(body.clone()),
+        )
+        .await;
+        assert_status(&res, StatusCode::BAD_REQUEST);
+        assert_eq!(error_code(res).await, *code, "{body}");
+    }
+    let (quantity, threshold): (f64, Option<f64>) =
+        sqlx::query_as("SELECT quantity, reorder_threshold FROM stock_items")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        (quantity, threshold),
+        (1_000_000_000.0, Some(1_000_000_000.0)),
+        "a refused PATCH writes nothing"
+    );
+
+    // Down from the bound, then back up to it by a quantity-only PATCH.
+    for q in [3.0, 1_000_000_000.0] {
+        let res = call(
+            &router,
+            Method::PATCH,
+            &item,
+            Some(&cookie),
+            Some(serde_json::json!({ "quantity": q })),
+        )
+        .await;
+        assert_status(&res, StatusCode::OK);
+        assert_eq!(json_body(res).await["quantity"], q);
+    }
+}
+
+/// #649: a reorder threshold written above the bound before it existed does
+/// not block a quantity-only adjustment, which checks the quantity alone.
+#[sqlx::test]
+async fn a_legacy_threshold_above_the_bound_does_not_block_a_quantity_adjustment(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "stock-legacy@example.test",
+        "test-password-1234",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/stock-items"),
+        Some(&cookie),
+        Some(serde_json::json!({"name": "Sel", "quantity": 1.0, "reorder_threshold": 1.0})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let item_id = json_body(create).await["id"].as_str().unwrap().to_string();
+    sqlx::query("UPDATE stock_items SET reorder_threshold = 1e12 WHERE id = $1::uuid")
+        .bind(&item_id)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let res = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/stock-items/{item_id}"),
+        Some(&cookie),
+        Some(serde_json::json!({"quantity": 2.0})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    assert_eq!(body["quantity"], 2.0);
+    assert_eq!(
+        body["reorder_threshold"], 1e12,
+        "the threshold is left as is"
+    );
+}
+
 /// AC: `name` is trimmed on write, `category` can be explicitly cleared via
 /// `{"category": null}` (distinct from omitting the field), and a blank
 /// `unit` becomes "unité" instead of an error (#458).
