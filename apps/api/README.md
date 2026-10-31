@@ -484,8 +484,9 @@ have passed since it started, whatever it did (`auth::response_floor`):
   at its deadline is logged and the answer is the usual one; a notice not
   admitted in time is not sent.
 - The arbitration (2026-10-22) set the floor at twice the longest expected
-  branch at least: `register` on a new address, measured with its
-  figures in the body of the PR that added the floor.
+  branch at least: `register` on a new address, measured without a relay,
+  its full send estimated; the figures are in the body of the PR that
+  added the floor.
 
 What it does not cover: a branch slower than the floor for another reason
 — the handlers' own pool exhausted, Postgres stalled — answers late, and
@@ -610,6 +611,7 @@ from 1 refuses to start):
   With one connection, a burst on one address delays the notices of the
   other verified addresses too: an admission waits 250 ms at most, then
   sends nothing, so the queue stays under the response floor (#571).
+
 **Connection budget, per replica.** Count, against Postgres's
 `max_connections`: the handlers' 20, the admin pool's 5, the login lock's
 `LOGIN_THROTTLE_POOL_SIZE` (4), `CSP_REPORT_POOL_SIZE` (2),
