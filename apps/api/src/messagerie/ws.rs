@@ -118,7 +118,7 @@ async fn handle_socket(
                     Err(broadcast::error::RecvError::Closed) => break,
                 };
                 let Ok(payload) = serde_json::to_string(&event) else { continue };
-                if socket.send(Message::Text(payload)).await.is_err() {
+                if socket.send(Message::Text(payload.into())).await.is_err() {
                     break;
                 }
             }

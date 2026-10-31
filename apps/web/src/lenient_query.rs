@@ -57,7 +57,6 @@ pub fn from_query_str<T: DeserializeOwned>(raw: &str) -> Result<T, serde_urlenco
 /// answers the plain-text 400 `Query` did.
 pub struct LenientQuery<T>(pub T);
 
-#[axum::async_trait]
 impl<T, S> FromRequestParts<S> for LenientQuery<T>
 where
     T: DeserializeOwned,

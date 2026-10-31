@@ -1998,7 +1998,7 @@ mod tests {
     async fn fake_recipe_api(status: u16) -> AppState {
         use axum::routing::get;
         let app = axum::Router::new().route(
-            "/groups/:gid/recipes/:id",
+            "/groups/{gid}/recipes/{id}",
             get(move || async move {
                 (
                     axum::http::StatusCode::from_u16(status).unwrap(),

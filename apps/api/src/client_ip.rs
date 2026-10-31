@@ -173,7 +173,6 @@ fn parse_entry(token: &str) -> Option<IpAddr> {
 /// answer, not a rejection, and [`resolve`] always has one.
 pub struct ClientIp(pub IpAddr);
 
-#[axum::async_trait]
 impl FromRequestParts<AppState> for ClientIp {
     type Rejection = std::convert::Infallible;
 

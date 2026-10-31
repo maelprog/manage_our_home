@@ -45,7 +45,6 @@ fn cookie_header(parts: &Parts) -> Option<String> {
 /// awaiting its acceptance of the CGU (#319) to [`TERMS_ACCEPTANCE_PAGE`].
 pub struct CurrentUser(pub MeResponse);
 
-#[axum::async_trait]
 impl<S> FromRequestParts<S> for CurrentUser
 where
     AppState: FromRef<S>,
@@ -90,7 +89,6 @@ fn to_login(path: &str) -> Response {
 /// auth state without hard-requiring a session.
 pub struct CurrentUserOpt(pub Option<MeResponse>);
 
-#[axum::async_trait]
 impl<S> FromRequestParts<S> for CurrentUserOpt
 where
     AppState: FromRef<S>,
@@ -116,7 +114,6 @@ where
 /// `/admin/*` API calls these pages make).
 pub struct CurrentSuperAdmin(pub MeResponse);
 
-#[axum::async_trait]
 impl<S> FromRequestParts<S> for CurrentSuperAdmin
 where
     AppState: FromRef<S>,
@@ -146,7 +143,6 @@ where
 /// (#319), to [`TERMS_ACCEPTANCE_PAGE`] — otherwise lets the handler render the form as normal.
 pub struct RedirectIfAuthenticated;
 
-#[axum::async_trait]
 impl<S> FromRequestParts<S> for RedirectIfAuthenticated
 where
     AppState: FromRef<S>,

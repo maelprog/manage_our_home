@@ -192,7 +192,7 @@ fn build_router(state: AppState) -> Router {
         // The member's live sessions (#225).
         .route("/account/sessions", get(routes::account::sessions::get))
         .route(
-            "/account/sessions/:id/revoke",
+            "/account/sessions/{id}/revoke",
             post(routes::account::sessions::revoke),
         )
         .route(
@@ -238,8 +238,8 @@ fn build_router(state: AppState) -> Router {
                 )),
         )
         // Google Calendar import (front epic F11): registered before the
-        // `/agenda/:id` family below purely for readability — the router
-        // matches the static `imports` segment ahead of the `:id` param
+        // `/agenda/{id}` family below purely for readability — the router
+        // matches the static `imports` segment ahead of the `{id}` param
         // regardless of declaration order.
         .route(
             "/agenda/imports",
@@ -247,33 +247,33 @@ fn build_router(state: AppState) -> Router {
         )
         .route("/agenda/imports/new", get(routes::agenda::imports::new_get))
         .route(
-            "/agenda/imports/:id/import",
+            "/agenda/imports/{id}/import",
             post(routes::agenda::imports::run),
         )
         .route(
-            "/agenda/imports/:id/delete",
+            "/agenda/imports/{id}/delete",
             get(routes::agenda::imports::delete_get).post(routes::agenda::imports::delete_post),
         )
-        .route("/agenda/:id", get(routes::agenda::detail::get))
+        .route("/agenda/{id}", get(routes::agenda::detail::get))
         .route(
-            "/agenda/:id/edit",
+            "/agenda/{id}/edit",
             get(routes::agenda::edit::get).post(routes::agenda::edit::post),
         )
-        .route("/agenda/:id/delete", post(routes::agenda::detail::delete))
+        .route("/agenda/{id}/delete", post(routes::agenda::detail::delete))
         .route(
-            "/agenda/:id/complete",
+            "/agenda/{id}/complete",
             post(routes::agenda::detail::complete),
         )
         .route(
-            "/agenda/:id/reminders",
+            "/agenda/{id}/reminders",
             post(routes::agenda::reminders::add),
         )
         .route(
-            "/agenda/:id/reminders/:rid/delete",
+            "/agenda/{id}/reminders/{rid}/delete",
             post(routes::agenda::reminders::delete),
         )
         .route(
-            "/agenda/:id/attachments",
+            "/agenda/{id}/attachments",
             // The page reads the whole file before relaying it: without a
             // limit of its own it had axum's 2 MiB default, where apps/api
             // and Caddy take 20 MiB plus framing (#243).
@@ -282,11 +282,11 @@ fn build_router(state: AppState) -> Router {
             )),
         )
         .route(
-            "/agenda/:id/attachments/:aid/download",
+            "/agenda/{id}/attachments/{aid}/download",
             get(routes::agenda::attachments::download),
         )
         .route(
-            "/agenda/:id/attachments/:aid/delete",
+            "/agenda/{id}/attachments/{aid}/delete",
             post(routes::agenda::attachments::delete),
         )
         .route("/stocks", get(routes::stocks::list::get))
@@ -302,13 +302,13 @@ fn build_router(state: AppState) -> Router {
                 routes::stocks::photo::MAX_PHOTO_BODY_BYTES,
             )),
         )
-        .route("/stocks/:id", get(routes::stocks::detail::get))
+        .route("/stocks/{id}", get(routes::stocks::detail::get))
         .route(
-            "/stocks/:id/edit",
+            "/stocks/{id}/edit",
             get(routes::stocks::edit::get).post(routes::stocks::edit::post),
         )
-        .route("/stocks/:id/adjust", post(routes::stocks::detail::adjust))
-        .route("/stocks/:id/delete", post(routes::stocks::detail::delete))
+        .route("/stocks/{id}/adjust", post(routes::stocks::detail::adjust))
+        .route("/stocks/{id}/delete", post(routes::stocks::detail::delete))
         .route("/recipes", get(routes::recipes::list::get))
         .route(
             "/recipes/new",
@@ -318,23 +318,26 @@ fn build_router(state: AppState) -> Router {
             "/recipes/import",
             get(routes::recipes::import::get).post(routes::recipes::import::post),
         )
-        .route("/recipes/:id", get(routes::recipes::detail::get))
+        .route("/recipes/{id}", get(routes::recipes::detail::get))
         .route(
-            "/recipes/:id/edit",
+            "/recipes/{id}/edit",
             get(routes::recipes::edit::get).post(routes::recipes::edit::post),
         )
-        .route("/recipes/:id/log", post(routes::recipes::detail::log))
-        .route("/recipes/:id/select", post(routes::recipes::select))
-        .route("/recipes/:id/deselect", post(routes::recipes::deselect))
+        .route("/recipes/{id}/log", post(routes::recipes::detail::log))
+        .route("/recipes/{id}/select", post(routes::recipes::select))
+        .route("/recipes/{id}/deselect", post(routes::recipes::deselect))
         .route(
-            "/recipes/:id/done",
+            "/recipes/{id}/done",
             get(routes::recipes::outcome::done_get).post(routes::recipes::outcome::done_post),
         )
         .route(
-            "/recipes/:id/abandon",
+            "/recipes/{id}/abandon",
             get(routes::recipes::outcome::abandon_get).post(routes::recipes::outcome::abandon_post),
         )
-        .route("/recipes/:id/delete", post(routes::recipes::detail::delete))
+        .route(
+            "/recipes/{id}/delete",
+            post(routes::recipes::detail::delete),
+        )
         .route("/grocery-list", get(routes::grocery_list::list::get))
         .route("/grocery-list/add", post(routes::grocery_list::list::add))
         .route(
@@ -345,21 +348,21 @@ fn build_router(state: AppState) -> Router {
             "/grocery-list/reception",
             get(routes::grocery_list::reception::get).post(routes::grocery_list::reception::post),
         )
-        .route("/grocery-list/:id", get(routes::grocery_list::edit::get))
+        .route("/grocery-list/{id}", get(routes::grocery_list::edit::get))
         .route(
-            "/grocery-list/:id/check",
+            "/grocery-list/{id}/check",
             post(routes::grocery_list::list::check),
         )
         .route(
-            "/grocery-list/:id/edit",
+            "/grocery-list/{id}/edit",
             post(routes::grocery_list::edit::post),
         )
         .route(
-            "/grocery-list/:id/delete",
+            "/grocery-list/{id}/delete",
             post(routes::grocery_list::edit::delete),
         )
         .route(
-            "/grocery-list/:id/price",
+            "/grocery-list/{id}/price",
             post(routes::grocery_list::list::price),
         )
         .route("/budget", get(routes::budget::list::get))
@@ -378,26 +381,26 @@ fn build_router(state: AppState) -> Router {
             post(routes::budget::settings::create_category),
         )
         .route(
-            "/budget/settings/categories/:id",
+            "/budget/settings/categories/{id}",
             post(routes::budget::settings::update_category),
         )
         .route(
-            "/budget/settings/categories/:id/delete",
+            "/budget/settings/categories/{id}/delete",
             post(routes::budget::settings::delete_category),
         )
-        .route("/budget/:id", get(routes::budget::edit::get))
-        .route("/budget/:id/edit", post(routes::budget::edit::post))
-        .route("/budget/:id/delete", post(routes::budget::edit::delete))
+        .route("/budget/{id}", get(routes::budget::edit::get))
+        .route("/budget/{id}/edit", post(routes::budget::edit::post))
+        .route("/budget/{id}/delete", post(routes::budget::edit::delete))
         .route(
             "/messagerie",
             get(routes::messagerie::thread::get).post(routes::messagerie::thread::post),
         )
         .route(
-            "/messagerie/:id/edit",
+            "/messagerie/{id}/edit",
             post(routes::messagerie::thread::edit),
         )
         .route(
-            "/messagerie/:id/delete",
+            "/messagerie/{id}/delete",
             post(routes::messagerie::thread::delete),
         )
         .route("/notifications", get(routes::notifications::get))
@@ -405,32 +408,35 @@ fn build_router(state: AppState) -> Router {
             "/notifications/read",
             post(routes::notifications::mark_all_read),
         )
-        .route("/notifications/:id/open", post(routes::notifications::open))
-        .route("/admin/groups", get(routes::admin::groups::get))
-        .route("/admin/groups/:id", get(routes::admin::groups::detail))
         .route(
-            "/admin/groups/:id/owner",
+            "/notifications/{id}/open",
+            post(routes::notifications::open),
+        )
+        .route("/admin/groups", get(routes::admin::groups::get))
+        .route("/admin/groups/{id}", get(routes::admin::groups::detail))
+        .route(
+            "/admin/groups/{id}/owner",
             post(routes::admin::groups::designate_owner),
         )
         .route("/admin/users", get(routes::admin::users::get))
-        .route("/admin/users/:id", get(routes::admin::users::detail))
+        .route("/admin/users/{id}", get(routes::admin::users::detail))
         .route(
-            "/admin/users/:id/deactivate",
+            "/admin/users/{id}/deactivate",
             post(routes::admin::users::deactivate),
         )
         .route(
-            "/admin/users/:id/reactivate",
+            "/admin/users/{id}/reactivate",
             post(routes::admin::users::reactivate),
         )
         .route(
-            "/admin/users/:id/reactivation-request/refuse",
+            "/admin/users/{id}/reactivation-request/refuse",
             post(routes::admin::users::refuse_reactivation),
         )
         .route("/groups", get(routes::groups::list::get))
         .route("/groups/join", post(routes::groups::list::join))
         .route("/groups/switch", post(routes::groups::switch))
         .route(
-            "/groups/:id/ownership-notice",
+            "/groups/{id}/ownership-notice",
             post(routes::groups::ownership::acknowledge),
         )
         .route(
@@ -438,50 +444,50 @@ fn build_router(state: AppState) -> Router {
             get(routes::groups::new::get).post(routes::groups::new::post),
         )
         .route(
-            "/groups/invitations/:token/accept",
+            "/groups/invitations/{token}/accept",
             get(routes::groups::invitations::get).post(routes::groups::invitations::post),
         )
-        .route("/groups/:id/members", get(routes::groups::members::get))
+        .route("/groups/{id}/members", get(routes::groups::members::get))
         .route(
-            "/groups/:id/members/invite",
+            "/groups/{id}/members/invite",
             post(routes::groups::members::invite),
         )
         .route(
-            "/groups/:id/members/:user_id",
+            "/groups/{id}/members/{user_id}",
             get(routes::groups::profile::get),
         )
         // A member's photo (#468), under the rule of their profile.
         .route(
-            "/groups/:id/members/:user_id/avatar",
+            "/groups/{id}/members/{user_id}/avatar",
             get(routes::groups::avatar::get),
         )
         .route(
-            "/groups/:id/members/:user_id/role",
+            "/groups/{id}/members/{user_id}/role",
             post(routes::groups::members::change_role),
         )
         .route(
-            "/groups/:id/members/:user_id/remove",
+            "/groups/{id}/members/{user_id}/remove",
             post(routes::groups::members::remove),
         )
-        .route("/groups/:id/settings", get(routes::groups::settings::get))
+        .route("/groups/{id}/settings", get(routes::groups::settings::get))
         .route(
-            "/groups/:id/settings/rename",
+            "/groups/{id}/settings/rename",
             post(routes::groups::settings::rename),
         )
         .route(
-            "/groups/:id/settings/accent",
+            "/groups/{id}/settings/accent",
             post(routes::groups::settings::accent),
         )
         .route(
-            "/groups/:id/settings/transfer",
+            "/groups/{id}/settings/transfer",
             post(routes::groups::settings::transfer),
         )
         .route(
-            "/groups/:id/settings/leave",
+            "/groups/{id}/settings/leave",
             post(routes::groups::settings::leave),
         )
         .route(
-            "/groups/:id/settings/delete",
+            "/groups/{id}/settings/delete",
             post(routes::groups::settings::delete),
         )
         // Every route (#219): a form can be dripped as slowly as an upload.
@@ -842,5 +848,108 @@ mod accent_tests {
                 "{cookie}"
             );
         }
+    }
+}
+
+/// `POST /login` hands apps/api the client address it saw (#178), read from
+/// the connection's `ConnectInfo` — an `Extension` since axum 0.8, which has
+/// no optional form of that extractor (#625). Served the way
+/// `shutdown::serve` serves it, the peer closes the forwarded chain; served
+/// without connect info, nothing is forwarded at all.
+#[cfg(test)]
+mod login_peer_tests {
+    use std::net::SocketAddr;
+    use std::sync::{Arc, Mutex};
+
+    use axum::http::{HeaderMap, StatusCode};
+    use axum::routing::{get, post};
+    use axum::Router;
+
+    use super::*;
+
+    /// An apps/api that accepts every login and records the forwarded
+    /// chain each one carried.
+    async fn fake_api(seen: Arc<Mutex<Vec<Option<String>>>>) -> String {
+        let app = Router::new()
+            .route("/auth/me", get(|| async { StatusCode::UNAUTHORIZED }))
+            .route(
+                "/auth/login",
+                post(move |headers: HeaderMap| async move {
+                    seen.lock().unwrap().push(
+                        headers
+                            .get(client_ip::FORWARDED_FOR)
+                            .map(|v| v.to_str().unwrap().to_string()),
+                    );
+                    axum::Json(serde_json::json!({}))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    fn state(api: String) -> AppState {
+        AppState {
+            http: reqwest::Client::new(),
+            api_internal_base_url: api,
+            api_public_base_url: "/api".into(),
+            body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
+            upload_gate: manage_our_home_http_guard::UploadGate::production(),
+            shutdown: manage_our_home_http_guard::Shutdown::new(),
+        }
+    }
+
+    async fn login(web: &str, forwarded: Option<&str>) {
+        let mut request = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap()
+            .post(format!("{web}/login"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("email=a%40b.test&password=pw");
+        if let Some(chain) = forwarded {
+            request = request.header(client_ip::FORWARDED_FOR, chain);
+        }
+        assert_eq!(
+            request.send().await.unwrap().status(),
+            StatusCode::SEE_OTHER
+        );
+    }
+
+    #[tokio::test]
+    async fn the_peer_closes_the_forwarded_chain() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let app = build_router(state(fake_api(seen.clone()).await));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let web = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap()
+        });
+        login(&web, None).await;
+        login(&web, Some("203.0.113.9")).await;
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                Some("127.0.0.1".to_string()),
+                Some("203.0.113.9, 127.0.0.1".to_string()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn nothing_is_forwarded_without_connect_info() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let app = build_router(state(fake_api(seen.clone()).await));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let web = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        login(&web, Some("203.0.113.9")).await;
+        assert_eq!(*seen.lock().unwrap(), [None]);
     }
 }

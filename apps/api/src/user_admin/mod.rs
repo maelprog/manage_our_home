@@ -1,6 +1,5 @@
 pub mod admin;
 
-use axum::async_trait;
 use axum::extract::{FromRef, FromRequestParts};
 use axum::http::request::Parts;
 use chrono::{DateTime, Duration, Utc};
@@ -128,7 +127,6 @@ pub struct SuperAdminUser {
     pub user_id: Uuid,
 }
 
-#[async_trait]
 impl<S> FromRequestParts<S> for SuperAdminUser
 where
     AppState: FromRef<S>,

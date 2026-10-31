@@ -850,7 +850,7 @@ mod tests {
     async fn fake_selections_api(status: u16, body: &'static str) -> AppState {
         use axum::routing::get;
         let app = axum::Router::new().route(
-            "/groups/:gid/recipes/selections",
+            "/groups/{gid}/recipes/selections",
             get(move || async move {
                 (
                     axum::http::StatusCode::from_u16(status).unwrap(),
