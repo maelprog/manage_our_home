@@ -333,9 +333,12 @@ fn agenda_row(occ: &OccurrenceResponse, today: NaiveDate, members: &[GroupMember
 
 /// A card's head: its title, and the link that leads to the whole of it —
 /// `.more`, 48px (--s12), over the 44px of any target (DESIGN.md → Espacement).
+/// The title leads to the same page (#584): a link inside the `<h2>`, so the
+/// heading the page is navigated by stays a heading, whatever the card's
+/// body says — an empty card, or an agenda that could not be read.
 fn card_head(title: &str, href: &str, label: &str) -> String {
     format!(
-        r#"<div class="split"><h2>{title}</h2><a class="more" href="{href}">{label}</a></div>"#,
+        r#"<div class="split"><h2><a href="{href}">{title}</a></h2><a class="more" href="{href}">{label}</a></div>"#,
         title = html_escape(title),
         label = html_escape(label),
     )
@@ -1705,8 +1708,10 @@ mod pure_logic_tests {
     #[test]
     fn the_agenda_card_is_titled_today() {
         let html = agenda_block(Some(&[]), late_afternoon(), fixture_day(), &[]);
-        assert!(html.contains("<h2>Aujourd'hui</h2>"), "{html}");
-        assert!(html.contains(r#"href="/agenda""#), "{html}");
+        assert!(
+            html.contains(r#"<h2><a href="/agenda">Aujourd'hui</a></h2>"#),
+            "{html}"
+        );
     }
 
     #[test]
@@ -1984,7 +1989,10 @@ mod pure_logic_tests {
     #[test]
     fn an_empty_low_stock_card_says_so() {
         let html = stocks_block(&[]);
-        assert!(html.contains("<h2>Stock bas</h2>"), "{html}");
+        assert!(
+            html.contains(r#"<h2><a href="/stocks?low_stock=1">Stock bas</a></h2>"#),
+            "{html}"
+        );
         assert!(html.contains("Aucun article en stock bas."), "{html}");
         assert!(html.contains(r#"href="/stocks?low_stock=1""#), "{html}");
     }
@@ -2000,7 +2008,10 @@ mod pure_logic_tests {
     #[test]
     fn the_budget_card_shows_the_month_s_spend() {
         let html = budget_block(Some(42.5), ymd(2026, 10, 28));
-        assert!(html.contains("<h2>Budget d'octobre</h2>"), "{html}");
+        assert!(
+            html.contains(r#"<h2><a href="/budget">Budget d'octobre</a></h2>"#),
+            "{html}"
+        );
         assert!(html.contains("42,50"), "{html}");
         assert!(html.contains(r#"href="/budget""#), "{html}");
     }
@@ -2017,17 +2028,83 @@ mod pure_logic_tests {
     #[test]
     fn an_empty_messages_card_says_everything_is_read() {
         let html = messages_block(&[], None, &[]);
-        assert!(html.contains("<h2>Messages non lus</h2>"), "{html}");
+        assert!(
+            html.contains(r#"<h2><a href="/messagerie">Messages non lus</a></h2>"#),
+            "{html}"
+        );
         assert!(html.contains("Tout est lu."), "{html}");
         assert!(html.contains(r#"href="/messagerie""#), "{html}");
     }
 
-    /// Each card's way out is a link in its head, 44 px tall (`.more`).
+    /// Each card's way out is a link in its head, 44 px tall (`.more`), and
+    /// its title leads to the same page (#584).
     #[test]
     fn a_card_head_holds_its_title_and_its_link() {
         assert_eq!(
             card_head("Stock bas", "/stocks?low_stock=1", "Voir le stock"),
-            r#"<div class="split"><h2>Stock bas</h2><a class="more" href="/stocks?low_stock=1">Voir le stock</a></div>"#
+            r#"<div class="split"><h2><a href="/stocks?low_stock=1">Stock bas</a></h2><a class="more" href="/stocks?low_stock=1">Voir le stock</a></div>"#
         );
+    }
+
+    // -- the titles lead where the head's link leads (#584) ----------------
+
+    /// The `href` of the link the card's `<h2>` holds, and that of its
+    /// `.more`, in that order. `None` for a title that is not a link.
+    fn head_hrefs(html: &str) -> (Option<&str>, Option<&str>) {
+        let href_after = |marker: &str| {
+            html.split_once(marker)
+                .and_then(|(_, rest)| rest.split_once('"'))
+                .map(|(href, _)| href)
+        };
+        (
+            href_after(r#"<h2><a href=""#),
+            href_after(r#"<a class="more" href=""#),
+        )
+    }
+
+    fn assert_title_leads_to(html: &str, dest: &str) {
+        assert_eq!(head_hrefs(html), (Some(dest), Some(dest)), "{html}");
+    }
+
+    #[test]
+    fn the_agenda_title_leads_to_the_agenda() {
+        let html = agenda_block(Some(&[]), late_afternoon(), fixture_day(), &[]);
+        assert_title_leads_to(&html, "/agenda");
+    }
+
+    #[test]
+    fn the_agenda_title_stays_a_link_when_the_agenda_is_unreadable() {
+        let html = agenda_block(None, late_afternoon(), fixture_day(), &[]);
+        assert!(html.contains(r#"class="notice error""#), "{html}");
+        assert_title_leads_to(&html, "/agenda");
+    }
+
+    #[test]
+    fn the_week_title_leads_to_the_agenda_s_week() {
+        let html = week_block(Some(&[]), fixture_day());
+        assert_title_leads_to(&html, "/agenda?view=week");
+    }
+
+    #[test]
+    fn the_low_stock_title_leads_to_the_low_stock() {
+        assert_title_leads_to(&stocks_block(&[]), "/stocks?low_stock=1");
+        let flour = stock("Farine", true, None);
+        assert_title_leads_to(&stocks_block(&[&flour]), "/stocks?low_stock=1");
+    }
+
+    #[test]
+    fn the_budget_title_leads_to_the_budget() {
+        assert_title_leads_to(&budget_block(None, ymd(2026, 10, 28)), "/budget");
+        assert_title_leads_to(&budget_block(Some(42.5), ymd(2026, 10, 28)), "/budget");
+    }
+
+    #[test]
+    fn the_messages_title_leads_to_the_messagerie() {
+        assert_title_leads_to(&messages_block(&[], None, &[]), "/messagerie");
+    }
+
+    #[test]
+    fn a_title_s_text_is_escaped_inside_its_link() {
+        assert!(card_head("A & B", "/x", "Voir").contains(r#"<h2><a href="/x">A &amp; B</a></h2>"#));
     }
 }

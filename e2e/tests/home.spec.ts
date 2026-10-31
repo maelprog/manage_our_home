@@ -532,3 +532,38 @@ test.describe("Accueil — la maquette sur PC", () => {
     await expect(page).toHaveURL("/agenda/new");
   });
 });
+
+// Issue #584 — a card's title leads where the link in its head does. The
+// title is still the `<h2>` (the cards above are found by it); the link is
+// inside it. On a PC, so that the week card is drawn too. The grocery card
+// has been a tile since #524: the whole card is the link, so it is clicked
+// as such.
+test.describe("Accueil — le titre de chaque carte mène à sa page", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("cliquer un titre de carte ouvre la page de la carte", async ({ page }) => {
+    await registerAndLogin(page, "e2e-hometitles", "Titles Owner");
+    await createGroup(page, FAMILY);
+
+    const titles: [string | RegExp, string][] = [
+      ["Aujourd'hui", "/agenda"],
+      ["Les sept prochains jours", "/agenda?view=week"],
+      ["Stock bas", "/stocks?low_stock=1"],
+      [/^Budget d/, "/budget"],
+      ["Messages non lus", "/messagerie"],
+    ];
+    for (const [name, href] of titles) {
+      await page.goto("/");
+      const head = page.locator("section.card").filter({ has: page.locator("h2", { hasText: name }) });
+      await expect(head).toHaveCount(1);
+      // The same destination as the card's own `.more`.
+      await expect(head.locator("a.more")).toHaveAttribute("href", href);
+      await head.locator("h2").getByRole("link").click();
+      await expect(page).toHaveURL(href);
+    }
+
+    await page.goto("/");
+    await page.locator('a.tile[href="/grocery-list"]').click();
+    await expect(page).toHaveURL("/grocery-list");
+  });
+});
