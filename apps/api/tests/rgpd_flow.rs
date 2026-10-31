@@ -1107,9 +1107,10 @@ async fn export_accounts_for_every_table(db: PgPool) {
         ),
         (
             "rate_limit_log",
-            "the recipe import's per-member counter and the Open Food Facts one (#428): \
-             HMAC pseudonyms and admission times, never exported while they lived in memory, \
-             and purged within the hour after the last admission leaves its window",
+            "the recipe import's per-member counter and the Open Food Facts one (#428), and \
+             the per-address counter of the account-exists notice (#570): HMAC pseudonyms \
+             and admission times, not tied to an account, never exported while they lived \
+             in memory, and purged within the hour after the last admission leaves its window",
         ),
         (
             "csp_report_throttle",

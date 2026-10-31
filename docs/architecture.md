@@ -368,7 +368,8 @@ justification concrète comme ci-dessus.
 Pour la règle « stateless par requête », les limites de débit comptent
 dans Postgres, partagées par tous les réplicas : le frein du login dans
 `login_throttle` (#427), l'import de recettes, les appels à Open Food Facts
-et les rapports CSP dans `rate_limit_log` et `csp_report_throttle` (#428).
+et les rapports CSP dans `rate_limit_log` et `csp_report_throttle` (#428),
+l'avis « vous avez déjà un compte » dans `rate_limit_log` (#570).
 Les tâches de fond, elles, ne tournent plus que dans un process à la fois, sous un verrou consultatif
 Postgres par tâche (#426), et le hub WebSocket de la messagerie reçoit les
 événements de tous les réplicas par `LISTEN/NOTIFY` (#429).

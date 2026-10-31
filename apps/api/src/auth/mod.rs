@@ -1,3 +1,4 @@
+pub mod account_exists_notice;
 pub mod age_declaration;
 pub mod deactivated;
 pub mod oauth_google;
@@ -119,7 +120,8 @@ fn register_action(existing: Option<ExistingAccount>) -> RegisterAction {
 /// unverified account gets a fresh verification link under the cooldown of
 /// `resend_verification` — its password and name are left as they were —,
 /// a verified one an email saying it already has an account (one awaiting
-/// its deletion too), and a deactivated one nothing. A purged account no
+/// its deletion too; at most `account_exists_notice::RATE` per address,
+/// #570), and a deactivated one nothing. A purged account no
 /// longer holds its address, so registering it creates a new account. The
 /// password is hashed in every case before the lookup, so the argon2id a
 /// new account costs is paid by the others too (in the spirit of #178).
@@ -168,23 +170,39 @@ pub async fn register(
             issue_verification(&state, user.id, &body.email).await?;
         }
         (RegisterAction::NotifyExisting, Some(user)) => {
-            let link = format!("{}/forgot-password", state.frontend_base_url);
-            if let Err(e) = state
-                .email
-                .send(
-                    &body.email,
-                    "Vous avez déjà un compte",
-                    crate::email::EmailSender::account_exists_body(&user.display_name, &link),
-                )
-                .await
-            {
-                tracing::error!(error = ?e, "failed to send account-exists email");
-            }
+            notify_existing(&state, &body.email, &user.display_name).await;
         }
         _ => {}
     }
 
     Ok(StatusCode::CREATED)
+}
+
+/// `register`'s "account exists" notice to a verified address, within the
+/// cap of `account_exists_notice::RATE` per address (#570). Past the cap,
+/// or when the cap cannot be counted, nothing is sent; best-effort like the
+/// verification email. Whatever happens here, `register` answers the same.
+async fn notify_existing(state: &AppState, email: &str, display_name: &str) {
+    match state.account_exists_throttle.admit(email).await {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(e) => {
+            tracing::error!(error = ?e, "account-exists notice cap unavailable, notice not sent");
+            return;
+        }
+    }
+    let link = format!("{}/forgot-password", state.frontend_base_url);
+    if let Err(e) = state
+        .email
+        .send(
+            email,
+            "Vous avez déjà un compte",
+            crate::email::EmailSender::account_exists_body(display_name, &link),
+        )
+        .await
+    {
+        tracing::error!(error = ?e, "failed to send account-exists email");
+    }
 }
 
 /// `register`'s new account, and its verification email. A registration of

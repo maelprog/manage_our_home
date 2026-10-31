@@ -104,7 +104,7 @@ pub struct PurgeCounts {
     pub notifications: u64,
     /// Login lock counters past `auth::throttle::purge_cutoff` (#427).
     pub login_throttle: u64,
-    /// Sliding-window limits past `rate_limit::LONGEST_WINDOW` (#428).
+    /// Sliding-window limits past their window (`rate_limit::LIMITS`, #428).
     pub rate_limit_log: u64,
     /// CSP report counters whose window is over (#428).
     pub csp_report_throttle: u64,

@@ -195,8 +195,16 @@ async fn main() -> anyhow::Result<()> {
         rate_limit_db.clone(),
         pseudonyms.clone(),
     ));
-    let recipe_import_throttle = std::sync::Arc::new(
-        manage_our_home::recipes::import::ImportThrottle::new(rate_limit_db, pseudonyms),
+    let recipe_import_throttle =
+        std::sync::Arc::new(manage_our_home::recipes::import::ImportThrottle::new(
+            rate_limit_db.clone(),
+            pseudonyms.clone(),
+        ));
+    let account_exists_throttle = std::sync::Arc::new(
+        manage_our_home::auth::account_exists_notice::NoticeThrottle::new(
+            rate_limit_db,
+            pseudonyms,
+        ),
     );
     let state = AppState {
         db,
@@ -231,6 +239,7 @@ async fn main() -> anyhow::Result<()> {
         off_throttle,
         recipe_import_client: manage_our_home::outbound_http::recipe_import_client().clone(),
         recipe_import_throttle,
+        account_exists_throttle,
         shutdown: manage_our_home_http_guard::Shutdown::new(),
     };
 
