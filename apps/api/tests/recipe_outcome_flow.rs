@@ -698,7 +698,7 @@ async fn an_item_checked_since_the_preview_refuses_the_abandon(db: PgPool) {
 
 /// AC: a selection of another group is a 404 through one's own group, and an
 /// outsider using the other group's path is refused (403). A stock line of
-/// another group cannot be decremented, nor one that names no ingredient.
+/// another group cannot be decremented.
 #[sqlx::test]
 async fn outcomes_are_isolated_between_groups(db: PgPool) {
     let router = test_router(db.clone());
@@ -767,25 +767,346 @@ async fn outcomes_are_isolated_between_groups(db: PgPool) {
         500.0
     );
 
-    // A line of his group that the recipe does not call for.
+    assert_eq!(planned_count(&router, &alice, &group_a).await, 1);
+    assert_eq!(planned_count(&router, &bob, &group_b).await, 1);
+}
+
+// -- other products (#540) ----------------------------------------------------
+
+/// The recipe's ingredients, as `(name, quantity, unit)`, by name.
+async fn recipe_ingredients(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+    recipe_id: &str,
+) -> Vec<(String, Option<f64>, Option<String>)> {
+    let res = get(
+        router,
+        cookie,
+        &format!("/groups/{group_id}/recipes/{recipe_id}"),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let mut got: Vec<_> = json_body(res).await["ingredients"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["name"].as_str().unwrap().to_string(),
+                i["quantity"].as_f64(),
+                i["unit"].as_str().map(str::to_string),
+            )
+        })
+        .collect();
+    got.sort_by(|a, b| a.0.cmp(&b.0));
+    got
+}
+
+/// Plans `recipe` again, for 4 people.
+async fn plan_again(router: &axum::Router, cookie: &str, group_id: &str, recipe: &str) {
+    let res = post(
+        router,
+        cookie,
+        &format!("/groups/{group_id}/recipes/{recipe}/selection"),
+        json!({"servings": 4}),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+}
+
+/// AC: done with a product the recipe does not call for and `add_to_recipe`
+/// → the stock is decremented and the product added to the recipe once,
+/// even when replayed. The recipe is for 2 cooked for 4: the 20 cL used are
+/// 10 cL for the recipe.
+#[sqlx::test]
+async fn another_product_is_taken_and_added_to_the_recipe_once(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "other-add@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+    let (recipe, farine, _, _) = crepes(&router, &cookie, &group_id).await;
+    let creme = stock(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Crème", "quantity": 50.0, "unit": "cL"}),
+    )
+    .await;
+
+    let res = post(
+        &router,
+        &cookie,
+        &done_path(&group_id, &recipe),
+        json!({
+            "removals": [{"stock_item_id": farine, "quantity": 400.0}],
+            "others": [{"stock_item_id": creme, "quantity": 20.0}],
+            "add_to_recipe": true
+        }),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    assert_eq!(body["selection"]["status"], "done");
+    assert_eq!(body["added_ingredients"].as_array().unwrap().len(), 1);
+    assert_eq!(body["added_ingredients"][0]["name"], "Crème");
+    assert_eq!(
+        stock_quantity(&router, &cookie, &group_id, &creme).await,
+        30.0
+    );
+    assert_eq!(
+        stock_quantity(&router, &cookie, &group_id, &farine).await,
+        100.0
+    );
+    let ingredients = recipe_ingredients(&router, &cookie, &group_id, &recipe).await;
+    assert_eq!(ingredients.len(), 5, "{ingredients:?}");
+    assert!(
+        ingredients.contains(&("Crème".into(), Some(10.0), Some("cL".into()))),
+        "{ingredients:?}"
+    );
+
+    // Replayed: the recipe now names it, so it is proposed from the stock
+    // and nothing is added again, even sent as another product.
+    plan_again(&router, &cookie, &group_id, &recipe).await;
+    let lines = done_preview(&router, &cookie, &group_id, &recipe).await;
+    assert_eq!(by_name(&lines, "Crème")["proposed_quantity"], 20.0);
+    let res = post(
+        &router,
+        &cookie,
+        &done_path(&group_id, &recipe),
+        json!({
+            "others": [{"stock_item_id": creme, "quantity": 5.0}],
+            "add_to_recipe": true
+        }),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(
+        json_body(res).await["added_ingredients"],
+        json!([]),
+        "added once"
+    );
+    assert_eq!(
+        stock_quantity(&router, &cookie, &group_id, &creme).await,
+        25.0
+    );
+    let again = recipe_ingredients(&router, &cookie, &group_id, &recipe).await;
+    assert_eq!(again, ingredients);
+    assert_eq!(meals(&router, &cookie, &group_id).await, 2);
+}
+
+/// AC: done with a product the recipe does not call for, without
+/// `add_to_recipe` → the stock is decremented, the recipe unchanged. A line
+/// of `removals` need not name an ingredient any more either.
+#[sqlx::test]
+async fn another_product_without_add_to_recipe_leaves_the_recipe_as_it_is(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "other-keep@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+    let (recipe, _, _, _) = crepes(&router, &cookie, &group_id).await;
+    let before = recipe_ingredients(&router, &cookie, &group_id, &recipe).await;
+    let creme = stock(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Crème", "quantity": 50.0, "unit": "cL"}),
+    )
+    .await;
     let jam = stock(
         &router,
-        &bob,
-        &group_b,
+        &cookie,
+        &group_id,
         json!({"name": "Confiture", "quantity": 1.0}),
     )
     .await;
+
     let res = post(
         &router,
-        &bob,
-        &done_path(&group_b, &recipe_b),
-        json!({"removals": [{"stock_item_id": jam, "quantity": 1.0}]}),
+        &cookie,
+        &done_path(&group_id, &recipe),
+        json!({
+            "removals": [{"stock_item_id": jam, "quantity": 1.0}],
+            "others": [{"stock_item_id": creme, "quantity": 20.0}],
+            "add_to_recipe": false
+        }),
     )
     .await;
-    assert_status(&res, StatusCode::BAD_REQUEST);
-    assert_eq!(json_body(res).await["error"], "stock_item_not_in_recipe");
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(json_body(res).await["added_ingredients"], json!([]));
+    assert_eq!(
+        stock_quantity(&router, &cookie, &group_id, &creme).await,
+        30.0
+    );
+    assert_eq!(stock_quantity(&router, &cookie, &group_id, &jam).await, 0.0);
+    assert_eq!(
+        recipe_ingredients(&router, &cookie, &group_id, &recipe).await,
+        before
+    );
+    assert_eq!(planned_count(&router, &cookie, &group_id).await, 0);
+}
+
+/// AC: a product of another group → 404, and nothing is applied: neither
+/// the recipe's lines nor the other products, the meal, the selection or
+/// the recipe. More than a line holds is refused as for the recipe's lines.
+#[sqlx::test]
+async fn another_groups_product_is_a_404_and_nothing_is_applied(db: PgPool) {
+    let router = test_router(db.clone());
+    let alice = register_verify_login(&router, &db, "other-iso-a@example.test").await;
+    let bob = register_verify_login(&router, &db, "other-iso-b@example.test").await;
+    let group_a = create_group(&router, &alice).await;
+    let group_b = create_group(&router, &bob).await;
+    let (recipe, farine, _, _) = crepes(&router, &alice, &group_a).await;
+    let before = recipe_ingredients(&router, &alice, &group_a, &recipe).await;
+    let creme = stock(
+        &router,
+        &alice,
+        &group_a,
+        json!({"name": "Crème", "quantity": 50.0, "unit": "cL"}),
+    )
+    .await;
+    let bobs = stock(
+        &router,
+        &bob,
+        &group_b,
+        json!({"name": "Chocolat", "quantity": 200.0, "unit": "g"}),
+    )
+    .await;
+
+    let res = post(
+        &router,
+        &alice,
+        &done_path(&group_a, &recipe),
+        json!({
+            "removals": [{"stock_item_id": farine, "quantity": 400.0}],
+            "others": [
+                {"stock_item_id": creme, "quantity": 20.0},
+                {"stock_item_id": bobs, "quantity": 50.0}
+            ],
+            "add_to_recipe": true
+        }),
+    )
+    .await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+
+    let res = post(
+        &router,
+        &alice,
+        &done_path(&group_a, &recipe),
+        json!({"others": [{"stock_item_id": creme, "quantity": 51.0}]}),
+    )
+    .await;
+    assert_status(&res, StatusCode::CONFLICT);
+    let body = json_body(res).await;
+    assert_eq!(body["error"], "insufficient_stock");
+    assert_eq!(body["available"], 50.0);
+
+    assert_eq!(
+        stock_quantity(&router, &alice, &group_a, &farine).await,
+        500.0
+    );
+    assert_eq!(
+        stock_quantity(&router, &alice, &group_a, &creme).await,
+        50.0
+    );
+    assert_eq!(stock_quantity(&router, &bob, &group_b, &bobs).await, 200.0);
+    assert_eq!(
+        recipe_ingredients(&router, &alice, &group_a, &recipe).await,
+        before
+    );
+    assert_eq!(meals(&router, &alice, &group_a).await, 0);
     assert_eq!(planned_count(&router, &alice, &group_a).await, 1);
-    assert_eq!(planned_count(&router, &bob, &group_b).await, 1);
+}
+
+/// Adding to the recipe stays for its creator, an admin or the owner, as
+/// changing it does: a standard member gets 403 and nothing is applied,
+/// and may still mark it done with other products without adding them. The
+/// preview says who may.
+#[sqlx::test]
+async fn only_who_may_change_the_recipe_adds_to_it(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner = register_verify_login(&router, &db, "other-perm-o@example.test").await;
+    let member = register_verify_login(&router, &db, "other-perm-m@example.test").await;
+    let group_id = create_group(&router, &owner).await;
+    join(&router, &owner, &member, &group_id).await;
+    let (recipe, _, _, _) = crepes(&router, &owner, &group_id).await;
+    let before = recipe_ingredients(&router, &owner, &group_id, &recipe).await;
+    let creme = stock(
+        &router,
+        &owner,
+        &group_id,
+        json!({"name": "Crème", "quantity": 50.0, "unit": "cL"}),
+    )
+    .await;
+
+    for (cookie, may) in [(&owner, true), (&member, false)] {
+        let res = get(&router, cookie, &done_path(&group_id, &recipe)).await;
+        assert_status(&res, StatusCode::OK);
+        assert_eq!(json_body(res).await["can_edit_recipe"], may);
+    }
+
+    let body = json!({
+        "others": [{"stock_item_id": creme, "quantity": 20.0}],
+        "add_to_recipe": true
+    });
+    let res = post(&router, &member, &done_path(&group_id, &recipe), body).await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+    assert_eq!(
+        stock_quantity(&router, &owner, &group_id, &creme).await,
+        50.0
+    );
+    assert_eq!(planned_count(&router, &owner, &group_id).await, 1);
+
+    let res = post(
+        &router,
+        &member,
+        &done_path(&group_id, &recipe),
+        json!({"others": [{"stock_item_id": creme, "quantity": 20.0}]}),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(
+        stock_quantity(&router, &owner, &group_id, &creme).await,
+        30.0
+    );
+    assert_eq!(
+        recipe_ingredients(&router, &owner, &group_id, &recipe).await,
+        before
+    );
+}
+
+/// Malformed other products are refused before anything is read.
+#[sqlx::test]
+async fn malformed_other_products_are_refused(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "other-bad@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+    let (recipe, farine, _, _) = crepes(&router, &cookie, &group_id).await;
+
+    for (body, code) in [
+        (
+            json!({"others": [{"stock_item_id": farine, "quantity": 0.0}]}),
+            "invalid_quantity",
+        ),
+        (
+            json!({"others": [{"stock_item_id": farine, "quantity": -1.0}]}),
+            "invalid_quantity",
+        ),
+        (
+            json!({
+                "removals": [{"stock_item_id": farine, "quantity": 0.0, "exclude": true}],
+                "others": [{"stock_item_id": farine, "quantity": 1.0}]
+            }),
+            "duplicate_stock_item",
+        ),
+    ] {
+        let res = post(&router, &cookie, &done_path(&group_id, &recipe), body).await;
+        assert_status(&res, StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(res).await["error"], code);
+    }
+    assert_eq!(
+        stock_quantity(&router, &cookie, &group_id, &farine).await,
+        500.0
+    );
+    assert_eq!(planned_count(&router, &cookie, &group_id).await, 1);
 }
 
 /// Malformed corrections are refused before anything is read.

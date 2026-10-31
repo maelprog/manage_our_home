@@ -11,7 +11,13 @@
 //!   quantity editable and a « Retirer du stock » box checked: every
 //!   ingredient is proposed for removal, the member unchecks those not
 //!   used (user precision of 2026-10-21). 0 removes nothing either. The
-//!   meal date defaults to today in Paris.
+//!   meal date defaults to today in Paris. « Autre chose utilisé ? » (#540)
+//!   searches the group's stock for products the recipe does not call for
+//!   — « Chercher » shows the form again with what it finds, unchecked —
+//!   and takes those checked, with their quantity. Once one the recipe
+//!   lacks is chosen, a member who may change the recipe is asked « Ajouter
+//!   X, Y à la recette pour la prochaine fois ? », Oui or Non, before the
+//!   form is sent.
 //! - **Abandonner**: the unchecked grocery items generated for the recipe,
 //!   each with a « Retirer » box checked by default.
 //!
@@ -28,10 +34,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use chrono::NaiveDate;
 use manage_our_home_shared::dto::recipes::{
-    AbandonItem, AbandonPreview, AbandonRequest, DoneIngredient, DonePreview, DoneRemoval,
-    DoneRequest, RemovalWarning,
+    AbandonItem, AbandonPreview, AbandonRequest, DoneIngredient, DoneOther, DonePreview,
+    DoneRemoval, DoneRequest, RemovalWarning,
 };
-use manage_our_home_shared::dto::stocks::StockItemResponse;
+use manage_our_home_shared::dto::stocks::{StockItemList, StockItemResponse};
 use manage_our_home_shared::validation::stocks::{article_key, format_quantity};
 use uuid::Uuid;
 
@@ -66,10 +72,28 @@ pub(crate) struct DoneLine {
     pub remove: bool,
 }
 
+/// A product of the « Autre chose utilisé ? » section (#540), as submitted.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct OtherLine {
+    pub stock_item_id: Uuid,
+    pub quantity: String,
+    pub used: bool,
+}
+
 /// The `done` form as submitted.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct DoneForm {
     pub lines: Vec<DoneLine>,
+    /// The other products listed, chosen (`used`) or not.
+    pub others: Vec<OtherLine>,
+    /// The text of the stock search, as typed.
+    pub search: String,
+    /// The search button was pressed: show the form again with what it
+    /// finds, without sending anything.
+    pub searching: bool,
+    /// « Ajouter … à la recette ? »: `Some(true)` for Oui, `None` when not
+    /// answered.
+    pub add_to_recipe: Option<bool>,
     pub eaten_on: String,
     pub back: String,
 }
@@ -88,8 +112,12 @@ pub(crate) enum LineError {
 pub(crate) struct Invalid {
     /// One entry per line, `Some` on the lines in error; empty when none.
     pub lines: Vec<Option<LineError>>,
+    /// The same for the form's other products; empty when none.
+    pub others: Vec<Option<LineError>>,
     /// The meal date does not read.
     pub date: bool,
+    /// « Ajouter … à la recette ? » is asked and not answered.
+    pub add_to_recipe: bool,
 }
 
 /// Why a `done` form is not sent.
@@ -103,43 +131,79 @@ pub(crate) enum DoneError {
 }
 
 /// Reads the `done` form back: lines numbered `stock.i`, `quantity.i`,
-/// `remove.i`, in their numeric order. A line without a valid stock id is
-/// dropped; a repeated field keeps its first occurrence.
+/// `remove.i`, and other products numbered `other.i`, `other_quantity.i`,
+/// `other_used.i`, each in their numeric order. A line without a valid
+/// stock id is dropped; a repeated field keeps its first occurrence. `q` is
+/// the search, `intent=search` its button, `add_to_recipe` `yes` or `no`.
 pub(crate) fn parse_done_form(pairs: &[(String, String)]) -> DoneForm {
     use std::collections::btree_map::{BTreeMap, Entry};
-    let (mut eaten_on, mut back) = (None, None);
-    // line index → field name → value.
+    let (mut eaten_on, mut back, mut search, mut intent, mut add) = (None, None, None, None, None);
+    // line index → field name → value, for the recipe's lines and for the
+    // other products.
     let mut fields: BTreeMap<usize, BTreeMap<&str, &str>> = BTreeMap::new();
+    let mut other_fields: BTreeMap<usize, BTreeMap<&str, &str>> = BTreeMap::new();
     for (key, value) in pairs {
+        let value = value.as_str();
         match key.split_once('.') {
-            None if key == "eaten_on" => {
-                eaten_on.get_or_insert(value.as_str());
+            None => {
+                let slot = match key.as_str() {
+                    "eaten_on" => &mut eaten_on,
+                    "back" => &mut back,
+                    "q" => &mut search,
+                    "intent" => &mut intent,
+                    "add_to_recipe" => &mut add,
+                    _ => continue,
+                };
+                slot.get_or_insert(value);
             }
-            None if key == "back" => {
-                back.get_or_insert(value.as_str());
-            }
-            None => {}
             Some((field, index)) => {
                 let Ok(index) = index.parse::<usize>() else {
                     continue;
                 };
-                if let Entry::Vacant(slot) = fields.entry(index).or_default().entry(field) {
+                let map = if field.starts_with("other") {
+                    &mut other_fields
+                } else {
+                    &mut fields
+                };
+                if let Entry::Vacant(slot) = map.entry(index).or_default().entry(field) {
                     slot.insert(value);
                 }
             }
         }
     }
+    let id = |v: Option<&&str>| v?.trim().parse::<Uuid>().ok();
     DoneForm {
         lines: fields
             .into_values()
             .filter_map(|f| {
                 Some(DoneLine {
-                    stock_item_id: f.get("stock")?.trim().parse::<Uuid>().ok()?,
+                    stock_item_id: id(f.get("stock"))?,
                     quantity: f.get("quantity").copied().unwrap_or_default().to_string(),
                     remove: f.contains_key("remove"),
                 })
             })
             .collect(),
+        others: other_fields
+            .into_values()
+            .filter_map(|f| {
+                Some(OtherLine {
+                    stock_item_id: id(f.get("other"))?,
+                    quantity: f
+                        .get("other_quantity")
+                        .copied()
+                        .unwrap_or_default()
+                        .to_string(),
+                    used: f.contains_key("other_used"),
+                })
+            })
+            .collect(),
+        search: search.unwrap_or_default().to_string(),
+        searching: intent == Some("search"),
+        add_to_recipe: match add {
+            Some("yes") => Some(true),
+            Some("no") => Some(false),
+            _ => None,
+        },
         eaten_on: eaten_on.unwrap_or_default().to_string(),
         back: back.unwrap_or_default().to_string(),
     }
@@ -166,10 +230,15 @@ fn parse_quantity(text: &str) -> Option<f64> {
 /// lines must be the preview's lots, in order; each line kept for removal
 /// needs a quantity of 0 or more, at most what its stock line holds. Two
 /// ingredients of the same name take from the same line: their lines are
-/// sent as one, the sum of what is kept for removal.
+/// sent as one, the sum of what is kept for removal. Each other product
+/// chosen must still be in the group's `stock`, with a quantity above 0
+/// and at most what its line holds. « Ajouter … à la recette ? » must be
+/// answered when it is asked (`offered_names`, to who may change the
+/// recipe); `add_to_recipe` is sent only then, for Oui.
 pub(crate) fn validate_done(
     form: &DoneForm,
     preview: &DonePreview,
+    stock: &[StockItemResponse],
 ) -> Result<DoneRequest, DoneError> {
     let lots: Vec<_> = preview.ingredients.iter().flat_map(|i| &i.lots).collect();
     if form.lines.len() != lots.len()
@@ -207,22 +276,59 @@ pub(crate) fn validate_done(
         let available = without_noise(lot.stock_item.quantity);
         errors.push((entry.1 > available).then_some(LineError::TooMuch { available }));
     }
+    // The other products chosen: each in the group's stock, else the page
+    // is stale; above 0, at most what its line holds.
+    let mut others = Vec::new();
+    let mut used = Vec::new();
+    let mut other_errors = Vec::with_capacity(form.others.len());
+    for other in &form.others {
+        if !other.used {
+            other_errors.push(None);
+            continue;
+        }
+        let Some(line) = stock.iter().find(|s| s.id == other.stock_item_id) else {
+            return Err(DoneError::Stale);
+        };
+        let Some(quantity) = parse_quantity(&other.quantity).filter(|q| *q > 0.0) else {
+            other_errors.push(Some(LineError::InvalidQuantity));
+            continue;
+        };
+        let available = without_noise(line.quantity);
+        if quantity > available {
+            other_errors.push(Some(LineError::TooMuch { available }));
+            continue;
+        }
+        other_errors.push(None);
+        used.push(line);
+        others.push(DoneOther {
+            stock_item_id: line.id,
+            quantity,
+        });
+    }
+    // Asked only of who may change the recipe, about products it lacks.
+    let asked = preview.can_edit_recipe && !offered_names(preview, &used).is_empty();
+    let unanswered = asked && form.add_to_recipe.is_none();
     let eaten_on = match form.eaten_on.trim() {
         "" => Ok(None),
         d => d.parse::<NaiveDate>().map(Some),
     };
     // Every field in error at once, the date with the lines.
     let lines_ok = errors.iter().all(Option::is_none);
+    let others_ok = other_errors.iter().all(Option::is_none);
     let eaten_on = match eaten_on {
-        Ok(d) if lines_ok => d,
+        Ok(d) if lines_ok && others_ok && !unanswered => d,
         date => {
             return Err(DoneError::Invalid(Invalid {
                 lines: if lines_ok { vec![] } else { errors },
+                others: if others_ok { vec![] } else { other_errors },
                 date: date.is_err(),
+                add_to_recipe: unanswered,
             }))
         }
     };
     Ok(DoneRequest {
+        others,
+        add_to_recipe: asked && form.add_to_recipe == Some(true),
         removals: taken
             .into_iter()
             .map(|(stock_item_id, quantity, kept)| DoneRemoval {
@@ -233,6 +339,121 @@ pub(crate) fn validate_done(
             .collect(),
         eaten_on,
     })
+}
+
+/// The most stock lines a search lists.
+pub(crate) const SEARCH_MAX: usize = 10;
+
+/// The stock lines whose name contains `search` (`article_key`: trimmed,
+/// whatever the case), but those of `exclude`, by name, at most
+/// `SEARCH_MAX`. Nothing for a blank search.
+pub(crate) fn search_stock<'a>(
+    stock: &'a [StockItemResponse],
+    search: &str,
+    exclude: &[Uuid],
+) -> Vec<&'a StockItemResponse> {
+    let search = article_key(search);
+    if search.is_empty() {
+        return vec![];
+    }
+    let mut found: Vec<_> = stock
+        .iter()
+        .filter(|s| !exclude.contains(&s.id) && article_key(&s.name).contains(&search))
+        .collect();
+    found.sort_by_cached_key(|s| (article_key(&s.name), s.id));
+    found.truncate(SEARCH_MAX);
+    found
+}
+
+/// A product of the « Autre chose utilisé ? » section, as shown.
+#[derive(Debug, Clone)]
+pub(crate) struct OtherShown {
+    pub stock: StockItemResponse,
+    pub quantity: String,
+    pub used: bool,
+    pub error: Option<LineError>,
+}
+
+/// The « Autre chose utilisé ? » section as shown.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Others {
+    pub lines: Vec<OtherShown>,
+    /// The search field's text.
+    pub search: String,
+    /// The lines include what `search` found, which may be nothing.
+    pub searched: bool,
+}
+
+/// The section of a form shown again: its other products found in `stock`,
+/// as typed, with `errors` (one per product of the form, or empty). After
+/// a search (`search`), only the products chosen are kept, followed by the
+/// lines the search finds, unchecked and empty, but the recipe's lots and
+/// the products already listed.
+pub(crate) fn others_section(
+    form: &DoneForm,
+    preview: &DonePreview,
+    stock: &[StockItemResponse],
+    errors: &[Option<LineError>],
+    search: bool,
+) -> Others {
+    let mut lines: Vec<OtherShown> = form
+        .others
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| !search || o.used)
+        .filter_map(|(n, o)| {
+            Some(OtherShown {
+                stock: stock.iter().find(|s| s.id == o.stock_item_id)?.clone(),
+                quantity: o.quantity.clone(),
+                used: o.used,
+                error: errors.get(n).copied().flatten(),
+            })
+        })
+        .collect();
+    let searched = search && !article_key(&form.search).is_empty();
+    if searched {
+        let exclude: Vec<Uuid> = preview
+            .ingredients
+            .iter()
+            .flat_map(|i| i.lots.iter().map(|l| l.stock_item.id))
+            .chain(lines.iter().map(|l| l.stock.id))
+            .collect();
+        lines.extend(
+            search_stock(stock, &form.search, &exclude)
+                .into_iter()
+                .map(|s| OtherShown {
+                    stock: s.clone(),
+                    quantity: String::new(),
+                    used: false,
+                    error: None,
+                }),
+        );
+    }
+    Others {
+        lines,
+        search: form.search.clone(),
+        searched,
+    }
+}
+
+/// The names « Ajouter … à la recette ? » asks about: those of the
+/// products `used` the recipe has no ingredient of (`article_key`), once
+/// each, in order.
+pub(crate) fn offered_names(preview: &DonePreview, used: &[&StockItemResponse]) -> Vec<String> {
+    let mut keys: Vec<String> = preview
+        .ingredients
+        .iter()
+        .map(|i| article_key(&i.name))
+        .collect();
+    let mut names = Vec::new();
+    for s in used {
+        let key = article_key(&s.name);
+        if !keys.contains(&key) {
+            keys.push(key);
+            names.push(s.name.trim().to_string());
+        }
+    }
+    names
 }
 
 /// What a 400 or 409 of apps/api to a sent form means for the page.
@@ -246,13 +467,12 @@ pub(crate) enum Refusal {
     Rejected,
 }
 
-/// The refusal of a `done`: a 409 (a stock line lowered or gone), or the
-/// 400 `stock_item_not_in_recipe` (an ingredient renamed or removed since
-/// the fresh preview), is a change; any other 400 is a rejected request.
-pub(crate) fn done_refusal(status: reqwest::StatusCode, body: &serde_json::Value) -> Refusal {
-    let changed = status == reqwest::StatusCode::CONFLICT
-        || body.get("error").and_then(|e| e.as_str()) == Some("stock_item_not_in_recipe");
-    if changed {
+/// The refusal of a `done`: a 409 (a stock line lowered or gone) or a 404
+/// (an other product gone from the stock, or the selection closed: the
+/// preview read again tells them apart) is a change; a 400 is a rejected
+/// request.
+pub(crate) fn done_refusal(status: reqwest::StatusCode) -> Refusal {
+    if status == reqwest::StatusCode::CONFLICT || status == reqwest::StatusCode::NOT_FOUND {
         Refusal::Changed
     } else {
         Refusal::Rejected
@@ -338,23 +558,25 @@ fn warning_text(ingredient: &DoneIngredient, first_user: Option<&str>) -> Option
             Some("La recette ne donne pas de quantité : saisissez-la.".to_string())
         }
         RemovalWarning::Capped => Some(match first_user {
+            // As the stock list writes a quantity: « 4 », not « 4 unité ».
             Some(first) if ingredient.proposed_quantity > 0.0 => format!(
-                "Ce stock sert d'abord à {first} : il en reste {} {stock_unit} pour cet ingrédient.",
-                fmt_num(ingredient.proposed_quantity)
+                "Ce stock sert d'abord à {first} : il en reste {} pour cet ingrédient.",
+                format_quantity(ingredient.proposed_quantity, stock_unit)
             ),
             Some(first) => {
                 format!("Ce stock sert d'abord à {first} : il n'en reste rien pour cet ingrédient.")
             }
             None => format!(
-                "Le stock n'en contient que {} {stock_unit} : tout est proposé.",
-                fmt_num(ingredient.proposed_quantity)
+                "Le stock n'en contient que {} : tout est proposé.",
+                format_quantity(ingredient.proposed_quantity, stock_unit)
             ),
         }),
         RemovalWarning::Other => None,
     }
 }
 
-/// The message of a line in error, in the unit of its stock line.
+/// The message of a line in error, in the unit of its stock line, written
+/// as the stock list writes a quantity: « 4 », not « 4 unité ».
 /// `sharing` are the labels of the ingredients taking from that line, when
 /// there are several: what it holds is for them together.
 fn line_error_text(error: LineError, unit: &str, sharing: &[&str]) -> String {
@@ -365,13 +587,16 @@ fn line_error_text(error: LineError, unit: &str, sharing: &[&str]) -> String {
         LineError::TooMuch { available } if sharing.len() > 1 => {
             let (last, others) = sharing.split_last().expect("several labels");
             format!(
-                "Le stock n'en contient que {} {unit} pour {} et {last} ensemble.",
-                fmt_num(available),
+                "Le stock n'en contient que {} pour {} et {last} ensemble.",
+                format_quantity(available, unit),
                 others.join(", ")
             )
         }
         LineError::TooMuch { available } => {
-            format!("Le stock n'en contient que {} {unit}.", fmt_num(available))
+            format!(
+                "Le stock n'en contient que {}.",
+                format_quantity(available, unit)
+            )
         }
     }
 }
@@ -396,7 +621,9 @@ fn ingredient_labels(ingredients: &[DoneIngredient]) -> Vec<String> {
 }
 
 /// The `done` page: the preview as a form, with what was typed (`typed`)
-/// and the fields in error (`invalid`) when the form comes back.
+/// and the fields in error (`invalid`) when the form comes back, and the
+/// « Autre chose utilisé ? » section (`others`).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn done_body(
     recipe_id: Uuid,
     preview: &DonePreview,
@@ -405,6 +632,7 @@ pub(crate) fn done_body(
     banner: &str,
     back: &str,
     today: NaiveDate,
+    others: &Others,
 ) -> String {
     let back = back_value(back);
     let cancel = back_path(back, recipe_id);
@@ -498,6 +726,23 @@ pub(crate) fn done_body(
             .date
             .then(|| "La date du repas n'est pas une date valide.".to_string()),
     );
+    let others_html = others_fieldset(others);
+    let used: Vec<&StockItemResponse> = others
+        .lines
+        .iter()
+        .filter(|l| l.used)
+        .map(|l| &l.stock)
+        .collect();
+    let offered = offered_names(preview, &used);
+    let question = if preview.can_edit_recipe && !offered.is_empty() {
+        add_to_recipe_fieldset(
+            &offered,
+            typed.and_then(|t| t.add_to_recipe),
+            invalid.add_to_recipe,
+        )
+    } else {
+        String::new()
+    };
     format!(
         r#"<h1>Recette faite : {name}</h1>
 {banner}<p class="muted">À la validation, les quantités cochées sont retirées du stock et le repas est enregistré. Décochez un ingrédient que vous n'avez pas utilisé ; une quantité à 0 ne retire rien non plus.</p>
@@ -505,13 +750,99 @@ pub(crate) fn done_body(
 <input type="hidden" name="back" value="{back}"/>
 {date_error}<label>Date du repas
 <input type="date" name="eaten_on" value="{eaten_on}"{date_aria}/></label>
-{fieldsets}<div class="actions">
+{fieldsets}{others_html}{question}<div class="actions">
 <button type="submit">Marquer comme faite</button>
 <a class="btn secondary" href="{cancel}">Annuler</a>
 </div>
 </form>"#,
         name = html_escape(&preview.selection.recipe_name),
         eaten_on = html_escape(&eaten_on),
+    )
+}
+
+/// « Autre chose utilisé ? » (#540): the other products listed, each with
+/// its quantity and a « Retirer … du stock » box, then the stock search.
+/// Without JavaScript, « Chercher » sends the form back to be shown again
+/// with what it finds; the search comes before « Marquer comme faite », so
+/// Enter in a field searches rather than marks the recipe done.
+fn others_fieldset(others: &Others) -> String {
+    let mut lines = String::new();
+    for (j, line) in others.lines.iter().enumerate() {
+        let stock = &line.stock;
+        let name = html_escape(stock.name.trim());
+        let (error, aria) = field_error(
+            &format!("other_quantity.{j}"),
+            line.error.map(|e| match e {
+                LineError::InvalidQuantity => format!(
+                    "Saisissez une quantité supérieure à 0, ou décochez « Retirer {} du stock ».",
+                    stock.name.trim()
+                ),
+                e => line_error_text(e, &stock.unit, &[]),
+            }),
+        );
+        lines.push_str(&format!(
+            r#"<input type="hidden" name="other.{j}" value="{id}"/>
+{error}<label>Quantité de {name} à retirer, en {unit} (stock : {held})
+<input type="number" name="other_quantity.{j}" step="any" min="0" value="{quantity}"{aria}/></label>
+<label class="field inline"><input type="checkbox" name="other_used.{j}"{checked}/> Retirer {name} du stock</label>
+"#,
+            id = stock.id,
+            unit = html_escape(&stock.unit),
+            held = html_escape(&held(stock)),
+            quantity = html_escape(&line.quantity),
+            checked = if line.used { " checked" } else { "" },
+        ));
+    }
+    // After a search only the products chosen are kept: an unchecked line
+    // is one it found.
+    let none_found = if others.searched && others.lines.iter().all(|l| l.used) {
+        format!(
+            "<p class=\"muted\">Aucun autre produit du stock ne correspond à « {} ».</p>\n",
+            html_escape(others.search.trim())
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        r#"<fieldset class="card">
+<legend>Autre chose utilisé ?</legend>
+<p class="muted">Cherchez dans le stock un produit que la recette ne prévoit pas, puis cochez-le avec la quantité utilisée.</p>
+{lines}{none_found}<label>Chercher dans le stock
+<input type="search" name="q" value="{search}"/></label>
+<div class="actions"><button type="submit" name="intent" value="search" class="secondary" formnovalidate>Chercher</button></div>
+</fieldset>
+"#,
+        search = html_escape(&others.search),
+    )
+}
+
+/// « Ajouter X, Y à la recette pour la prochaine fois ? », Oui or Non,
+/// with the answer given (`answer`), and its error when left unanswered.
+fn add_to_recipe_fieldset(names: &[String], answer: Option<bool>, unanswered: bool) -> String {
+    let (error, _) = field_error(
+        "add_to_recipe",
+        unanswered.then(|| {
+            "Répondez à la question : ajouter ces produits à la recette ou non.".to_string()
+        }),
+    );
+    // The group names the error; `aria-invalid` is for its fields.
+    let aria = if unanswered {
+        r#" aria-describedby="add_to_recipe-error""#
+    } else {
+        ""
+    };
+    let radio = |value: &str, label: &str, checked: bool| {
+        format!(
+            r#"<label class="field inline"><input type="radio" name="add_to_recipe" value="{value}"{checked}/> {label}</label>
+"#,
+            checked = if checked { " checked" } else { "" },
+        )
+    };
+    format!(
+        "<fieldset class=\"card\"{aria}>\n<legend>Ajouter {names} à la recette pour la prochaine fois ?</legend>\n{error}{yes}{no}</fieldset>\n",
+        names = html_escape(&names.join(", ")),
+        yes = radio("yes", "Oui", answer == Some(true)),
+        no = radio("no", "Non", answer == Some(false)),
     )
 }
 
@@ -738,6 +1069,7 @@ pub async fn done_get(
                 "",
                 &query.back,
                 today(),
+                &Others::default(),
             ),
         )
         .into_response(),
@@ -779,13 +1111,19 @@ pub async fn done_post(
                 p: &DonePreview,
                 typed: Option<&DoneForm>,
                 invalid: &Invalid,
-                code: &str| {
+                code: &str,
+                others: &Others| {
+        let banner = if code.is_empty() {
+            String::new()
+        } else {
+            banner(code)
+        };
         (
             status,
             render(
                 &fam.header,
                 "Recette faite",
-                &done_body(recipe_id, p, typed, invalid, &banner(code), back, today()),
+                &done_body(recipe_id, p, typed, invalid, &banner, back, today(), others),
             ),
         )
             .into_response()
@@ -797,7 +1135,38 @@ pub async fn done_post(
                 return not_shown(other, &state, fam.gid, cookie.as_deref(), back, recipe_id).await
             }
         };
-    let request = match validate_done(&form, &current) {
+    // The group's stock, for the other products and the search only.
+    let stock = if form.searching || !form.others.is_empty() {
+        match group_stock(&state, fam.gid, cookie.as_deref()).await {
+            Some(s) => s,
+            None => {
+                return show(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    &current,
+                    Some(&form),
+                    &Invalid::default(),
+                    "unavailable",
+                    &Others::default(),
+                )
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    // « Chercher »: the same form, with what the search finds.
+    if form.searching {
+        return show(
+            StatusCode::OK,
+            &current,
+            Some(&form),
+            &Invalid::default(),
+            "",
+            &others_section(&form, &current, &stock, &[], true),
+        );
+    }
+    let as_typed =
+        |errors: &[Option<LineError>]| others_section(&form, &current, &stock, errors, false);
+    let request = match validate_done(&form, &current, &stock) {
         Ok(r) => r,
         Err(DoneError::Stale) => {
             return show(
@@ -806,6 +1175,7 @@ pub async fn done_post(
                 None,
                 &Invalid::default(),
                 "stock_changed",
+                &Others::default(),
             )
         }
         Err(DoneError::Invalid(invalid)) => {
@@ -815,6 +1185,7 @@ pub async fn done_post(
                 Some(&form),
                 &invalid,
                 "invalid",
+                &as_typed(&invalid.others),
             )
         }
     };
@@ -836,25 +1207,16 @@ pub async fn done_post(
         Ok(resp) if resp.status == reqwest::StatusCode::FORBIDDEN => {
             forbidden_page().into_response()
         }
-        Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
-            not_shown(
-                Preview::<()>::Gone,
-                &state,
-                fam.gid,
-                cookie.as_deref(),
-                back,
-                recipe_id,
-            )
-            .await
-        }
         Ok(resp)
             if resp.status == reqwest::StatusCode::CONFLICT
+                || resp.status == reqwest::StatusCode::NOT_FOUND
                 || resp.status == reqwest::StatusCode::BAD_REQUEST =>
         {
-            match done_refusal(resp.status, &resp.body) {
-                // A stock line lowered or gone since the fresh preview, or
-                // the recipe's ingredients changed: the updated preview,
-                // not the typed corrections of another one.
+            match done_refusal(resp.status) {
+                // A stock line lowered or gone since the fresh preview: the
+                // updated preview, not the typed corrections of another
+                // one. A 404 is that, or the selection closed since, which
+                // the preview then answers.
                 Refusal::Changed => match preview::<DonePreview>(
                     &state,
                     fam.gid,
@@ -870,6 +1232,7 @@ pub async fn done_post(
                         None,
                         &Invalid::default(),
                         "stock_changed",
+                        &Others::default(),
                     ),
                     other => {
                         not_shown(other, &state, fam.gid, cookie.as_deref(), back, recipe_id).await
@@ -883,6 +1246,7 @@ pub async fn done_post(
                         Some(&form),
                         &Invalid::default(),
                         "rejected",
+                        &as_typed(&[]),
                     )
                 }
             }
@@ -893,7 +1257,32 @@ pub async fn done_post(
             Some(&form),
             &Invalid::default(),
             "unavailable",
+            &as_typed(&[]),
         ),
+    }
+}
+
+/// The group's stock lines, or `None` when apps/api does not give them.
+async fn group_stock(
+    state: &AppState,
+    gid: Uuid,
+    cookie: Option<&str>,
+) -> Option<Vec<StockItemResponse>> {
+    match api_request_auth(
+        state,
+        reqwest::Method::GET,
+        &format!("/groups/{gid}/stock-items"),
+        cookie,
+        None,
+    )
+    .await
+    {
+        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
+            serde_json::from_value::<StockItemList>(resp.body)
+                .ok()
+                .map(|l| l.items)
+        }
+        _ => None,
     }
 }
 
@@ -1111,6 +1500,7 @@ mod tests {
     /// Farine 400 g over two lots (100 g + 500 g), Lait 1 L of 2 L.
     fn preview() -> DonePreview {
         DonePreview {
+            can_edit_recipe: false,
             selection: selection("Crêpes"),
             ingredients: vec![
                 ingredient(
@@ -1147,8 +1537,8 @@ mod tests {
     fn form(lines: Vec<DoneLine>) -> DoneForm {
         DoneForm {
             lines,
-            eaten_on: String::new(),
             back: "detail".into(),
+            ..DoneForm::default()
         }
     }
 
@@ -1165,7 +1555,10 @@ mod tests {
     }
 
     fn invalid_lines(lines: Vec<Option<LineError>>) -> DoneError {
-        DoneError::Invalid(Invalid { lines, date: false })
+        DoneError::Invalid(Invalid {
+            lines,
+            ..Invalid::default()
+        })
     }
 
     // -- parse_done_form -----------------------------------------------------
@@ -1212,6 +1605,7 @@ mod tests {
                 line(20, "1", true),
             ]),
             &preview(),
+            &[],
         );
         assert_eq!(
             got,
@@ -1222,6 +1616,7 @@ mod tests {
                     removal(20, 1.0, false),
                 ],
                 eaten_on: None,
+                ..DoneRequest::default()
             })
         );
     }
@@ -1235,6 +1630,7 @@ mod tests {
                 line(20, "", false),
             ]),
             &preview(),
+            &[],
         )
         .unwrap();
         assert_eq!(
@@ -1256,6 +1652,7 @@ mod tests {
                 line(20, "0.5", true),
             ]),
             &preview(),
+            &[],
         )
         .unwrap();
         assert_eq!(
@@ -1278,6 +1675,7 @@ mod tests {
                     line(20, "1", true),
                 ]),
                 &preview(),
+                &[],
             );
             assert_eq!(
                 got,
@@ -1301,6 +1699,7 @@ mod tests {
                 line(20, "2", true)
             ]),
             &preview(),
+            &[],
         )
         .is_ok());
         let got = validate_done(
@@ -1310,6 +1709,7 @@ mod tests {
                 line(20, "3", true),
             ]),
             &preview(),
+            &[],
         );
         assert_eq!(
             got,
@@ -1345,7 +1745,7 @@ mod tests {
         ];
         for lines in cases {
             assert_eq!(
-                validate_done(&form(lines.clone()), &preview()),
+                validate_done(&form(lines.clone()), &preview(), &[]),
                 Err(DoneError::Stale),
                 "{lines:?}"
             );
@@ -1361,15 +1761,16 @@ mod tests {
         ]);
         f.eaten_on = "2026-10-24".into();
         assert_eq!(
-            validate_done(&f, &preview()).unwrap().eaten_on,
+            validate_done(&f, &preview(), &[]).unwrap().eaten_on,
             Some("2026-10-24".parse().unwrap())
         );
         f.eaten_on = "24/10/2026".into();
         assert_eq!(
-            validate_done(&f, &preview()),
+            validate_done(&f, &preview(), &[]),
             Err(DoneError::Invalid(Invalid {
                 lines: vec![],
-                date: true
+                date: true,
+                ..Invalid::default()
             }))
         );
     }
@@ -1383,10 +1784,11 @@ mod tests {
         ]);
         f.eaten_on = "24/10/2026".into();
         assert_eq!(
-            validate_done(&f, &preview()),
+            validate_done(&f, &preview(), &[]),
             Err(DoneError::Invalid(Invalid {
                 lines: vec![Some(LineError::InvalidQuantity), None, None],
                 date: true,
+                ..Invalid::default()
             }))
         );
     }
@@ -1400,10 +1802,12 @@ mod tests {
             &Invalid {
                 lines: vec![],
                 date: true,
+                ..Invalid::default()
             },
             "",
             "list",
             today(),
+            &Others::default(),
         );
         assert!(
             html.contains("La date du repas n'est pas une date valide."),
@@ -1425,10 +1829,12 @@ mod tests {
             &Invalid {
                 lines: vec![Some(LineError::InvalidQuantity), None, None],
                 date: true,
+                ..Invalid::default()
             },
             "",
             "list",
             today(),
+            &Others::default(),
         );
         assert!(
             html.contains(r#"<p class="field-error" id="quantity.0-error">"#),
@@ -1458,6 +1864,7 @@ mod tests {
     fn two_ingredients_on_one_stock_line_are_sent_as_one_line() {
         // « Sel » twice in the recipe, both proposed from the same line.
         let p = DonePreview {
+            can_edit_recipe: false,
             selection: selection("Soupe"),
             ingredients: vec![
                 ingredient(
@@ -1482,24 +1889,28 @@ mod tests {
         let got = validate_done(
             &form(vec![line(10, "0.1", true), line(10, "0.2", true)]),
             &p,
+            &[],
         );
         assert_eq!(got.unwrap().removals, vec![removal(10, 0.3, false)]);
         // One of the two unchecked: only the other is taken.
         let got = validate_done(
             &form(vec![line(10, "0.1", false), line(10, "0.2", true)]),
             &p,
+            &[],
         );
         assert_eq!(got.unwrap().removals, vec![removal(10, 0.2, false)]);
         // Both unchecked: excluded.
         let got = validate_done(
             &form(vec![line(10, "0.1", false), line(10, "0.2", false)]),
             &p,
+            &[],
         );
         assert_eq!(got.unwrap().removals, vec![removal(10, 0.0, true)]);
         // Together above the line: the line that goes over is in error.
         let got = validate_done(
             &form(vec![line(10, "0.2", true), line(10, "0.2", true)]),
             &p,
+            &[],
         );
         assert_eq!(
             got,
@@ -1516,6 +1927,7 @@ mod tests {
         // (more than it holds), even though both read 0.123456789 at the
         // billionth.
         let p = DonePreview {
+            can_edit_recipe: false,
             selection: selection("Sauce"),
             ingredients: vec![ingredient(
                 1,
@@ -1527,14 +1939,14 @@ mod tests {
             )],
         };
         assert_eq!(
-            validate_done(&form(vec![line(10, "0.1234567891234", true)]), &p),
+            validate_done(&form(vec![line(10, "0.1234567891234", true)]), &p, &[]),
             Err(invalid_lines(vec![Some(LineError::TooMuch {
                 available: 0.1234567891
             })]))
         );
         // Exactly what it holds is accepted, and sent as typed.
         assert_eq!(
-            validate_done(&form(vec![line(10, "0.1234567891", true)]), &p)
+            validate_done(&form(vec![line(10, "0.1234567891", true)]), &p, &[])
                 .unwrap()
                 .removals,
             vec![removal(10, 0.1234567891, false)]
@@ -1559,6 +1971,7 @@ mod tests {
                 line(20, "1", true),
             ]),
             &p,
+            &[],
         );
         assert_eq!(got.unwrap().removals.len(), 3);
     }
@@ -1568,33 +1981,15 @@ mod tests {
     #[test]
     fn a_refusal_for_a_change_made_since_is_told_from_a_rejected_form() {
         use reqwest::StatusCode as S;
-        let body = |code: &str| serde_json::json!({ "error": code });
-        // A stock line lowered or gone, or an ingredient renamed or removed
-        // since the fresh preview.
-        for (status, code) in [
-            (S::CONFLICT, "insufficient_stock"),
-            (S::CONFLICT, "stock_item_gone"),
-            (S::BAD_REQUEST, "stock_item_not_in_recipe"),
-        ] {
-            assert_eq!(
-                done_refusal(status, &body(code)),
-                Refusal::Changed,
-                "{code}"
-            );
+        // A stock line lowered or gone (409), an other product gone or the
+        // selection closed (404, told apart by the preview read again).
+        for status in [S::CONFLICT, S::NOT_FOUND] {
+            assert_eq!(done_refusal(status), Refusal::Changed, "{status}");
         }
         // A request the page should never have built: not a change, which
-        // another try would not fix.
-        for code in ["duplicate_stock_item", "invalid_quantity", "anything"] {
-            assert_eq!(
-                done_refusal(S::BAD_REQUEST, &body(code)),
-                Refusal::Rejected,
-                "{code}"
-            );
-        }
-        assert_eq!(
-            done_refusal(S::BAD_REQUEST, &serde_json::Value::Null),
-            Refusal::Rejected
-        );
+        // another try would not fix. A line naming no ingredient is no
+        // longer refused (#540).
+        assert_eq!(done_refusal(S::BAD_REQUEST), Refusal::Rejected);
     }
 
     // -- gone ----------------------------------------------------------------
@@ -1696,6 +2091,7 @@ mod tests {
             "",
             "planned",
             today(),
+            &Others::default(),
         );
         assert!(html.contains(r#"name="back" value="planned""#), "{html}");
         assert!(
@@ -1711,6 +2107,7 @@ mod tests {
             "",
             "/elsewhere",
             today(),
+            &Others::default(),
         );
         assert!(html.contains(r#"name="back" value="detail""#), "{html}");
     }
@@ -1725,6 +2122,7 @@ mod tests {
             "",
             "list",
             today(),
+            &Others::default(),
         );
         assert!(html.contains("<h1>Recette faite : Crêpes</h1>"), "{html}");
         assert!(
@@ -1769,6 +2167,7 @@ mod tests {
     #[test]
     fn the_done_page_says_why_a_line_is_proposed_at_zero_or_capped() {
         let p = DonePreview {
+            can_edit_recipe: false,
             selection: selection("Gâteau"),
             ingredients: vec![
                 ingredient(
@@ -1813,6 +2212,7 @@ mod tests {
             "",
             "detail",
             today(),
+            &Others::default(),
         );
         assert!(html.contains("<legend>Sucre · 50 g pour la recette</legend>"));
         assert!(html.contains("Aucun article de ce nom en stock : rien à retirer."));
@@ -1821,7 +2221,7 @@ mod tests {
         );
         assert!(html.contains("<legend>Sel</legend>"), "{html}");
         assert!(html.contains("La recette ne donne pas de quantité : saisissez-la."));
-        assert!(html.contains("Le stock n'en contient que 4 unité : tout est proposé."));
+        assert!(html.contains("Le stock n'en contient que 4 : tout est proposé."));
         // No line for the ingredient without stock: Lait is line 0.
         assert!(html.contains(&format!(r#"name="stock.0" value="{}""#, id(20))));
         assert!(html.contains(&format!(r#"name="stock.2" value="{}""#, id(40))));
@@ -1835,6 +2235,7 @@ mod tests {
         let first = held.min(400.0);
         let second = (held - first).min(200.0);
         DonePreview {
+            can_edit_recipe: false,
             selection: selection("Tarte"),
             ingredients: vec![
                 ingredient(
@@ -1867,6 +2268,7 @@ mod tests {
             "",
             "list",
             today(),
+            &Others::default(),
         );
         for n in [1, 2] {
             let name = if n == 1 { "Farine" } else { "farine" };
@@ -1898,6 +2300,7 @@ mod tests {
             "",
             "list",
             today(),
+            &Others::default(),
         );
         assert!(!html.contains("n° "), "{html}");
     }
@@ -1913,6 +2316,7 @@ mod tests {
             "",
             "list",
             today(),
+            &Others::default(),
         );
         assert!(
             html.contains("Le stock n'en contient que 250 g : tout est proposé."),
@@ -1934,6 +2338,7 @@ mod tests {
             "",
             "list",
             today(),
+            &Others::default(),
         );
         assert!(
             html.contains(
@@ -1954,10 +2359,12 @@ mod tests {
             &Invalid {
                 lines: errors.to_vec(),
                 date: false,
+                ..Invalid::default()
             },
             "",
             "list",
             today(),
+            &Others::default(),
         );
         assert!(
             html.contains(
@@ -1968,10 +2375,40 @@ mod tests {
     }
 
     #[test]
+    fn too_much_writes_what_the_stock_holds_as_the_stock_list_does() {
+        let too_much = |available| LineError::TooMuch { available };
+        assert_eq!(
+            line_error_text(too_much(4.0), "unité", &[]),
+            "Le stock n'en contient que 4."
+        );
+        assert_eq!(
+            line_error_text(too_much(1.5), "L", &[]),
+            "Le stock n'en contient que 1,5 L."
+        );
+        assert_eq!(
+            line_error_text(too_much(3.0), "paquet", &["Riz", "riz"]),
+            "Le stock n'en contient que 3 paquets pour Riz et riz ensemble."
+        );
+        assert_eq!(
+            line_error_text(too_much(2.0), "unité", &["Œuf", "œuf"]),
+            "Le stock n'en contient que 2 pour Œuf et œuf ensemble."
+        );
+    }
+
+    #[test]
     fn the_done_page_marks_an_optional_ingredient() {
         let mut p = preview();
         p.ingredients[1].is_optional = true;
-        let html = done_body(id(901), &p, None, &Invalid::default(), "", "list", today());
+        let html = done_body(
+            id(901),
+            &p,
+            None,
+            &Invalid::default(),
+            "",
+            "list",
+            today(),
+            &Others::default(),
+        );
         assert!(
             html.contains("<legend>Lait · 1 L pour la recette · optionnel</legend>"),
             "{html}"
@@ -1998,10 +2435,12 @@ mod tests {
             &Invalid {
                 lines: errors.to_vec(),
                 date: false,
+                ..Invalid::default()
             },
             "<p class=\"notice error\">x</p>",
             "list",
             today(),
+            &Others::default(),
         );
         assert!(
             html.contains(r#"name="eaten_on" value="2026-10-20""#),
@@ -2022,7 +2461,16 @@ mod tests {
         let mut p = preview();
         p.selection.recipe_name = "<b>Crêpes</b>".into();
         p.ingredients[0].name = "Farine & <i>".into();
-        let html = done_body(id(901), &p, None, &Invalid::default(), "", "list", today());
+        let html = done_body(
+            id(901),
+            &p,
+            None,
+            &Invalid::default(),
+            "",
+            "list",
+            today(),
+            &Others::default(),
+        );
         assert!(!html.contains("<b>") && !html.contains("<i>"), "{html}");
         assert!(html.contains("&lt;b&gt;Crêpes&lt;/b&gt;"));
     }
@@ -2099,5 +2547,418 @@ mod tests {
             .contains("Aucun article de la liste de courses n'a été généré pour cette recette."));
         assert!(!html.contains(r#"name="remove""#));
         assert!(html.contains(r#"<button type="submit">Abandonner la recette</button>"#));
+    }
+
+    // -- other products (#540) -------------------------------------------------
+
+    /// The group's stock beside `preview()`: its three lots, and Crème,
+    /// Crème fraîche and Sel that the recipe does not call for.
+    fn group_stock() -> Vec<StockItemResponse> {
+        vec![
+            stock(10, "Farine", 100.0, "g"),
+            stock(11, "Farine", 500.0, "g"),
+            stock(20, "Lait", 2.0, "L"),
+            stock(30, "Crème", 50.0, "cL"),
+            stock(31, "Crème fraîche", 20.0, "cL"),
+            stock(40, "Sel", 1.0, "unité"),
+        ]
+    }
+
+    fn recipe_lines() -> Vec<DoneLine> {
+        vec![
+            line(10, "100", true),
+            line(11, "300", true),
+            line(20, "1", true),
+        ]
+    }
+
+    fn other_line(n: u128, quantity: &str, used: bool) -> OtherLine {
+        OtherLine {
+            stock_item_id: id(n),
+            quantity: quantity.into(),
+            used,
+        }
+    }
+
+    fn editable() -> DonePreview {
+        DonePreview {
+            can_edit_recipe: true,
+            ..preview()
+        }
+    }
+
+    #[test]
+    fn the_done_form_reads_the_other_products_the_search_and_the_answer() {
+        let got = parse_done_form(&pairs(&[
+            ("stock.0", &id(10).to_string()),
+            ("quantity.0", "100"),
+            ("other.1", &id(40).to_string()),
+            ("other_quantity.1", "1"),
+            ("other.0", &id(30).to_string()),
+            ("other_quantity.0", "20"),
+            ("other_used.0", "on"),
+            ("q", " crè "),
+            ("intent", "search"),
+            ("add_to_recipe", "yes"),
+        ]));
+        // The other products do not mix with the recipe's lines of the
+        // same number.
+        assert_eq!(got.lines, vec![line(10, "100", false)]);
+        assert_eq!(
+            got.others,
+            vec![other_line(30, "20", true), other_line(40, "1", false)]
+        );
+        assert_eq!(got.search, " crè ");
+        assert!(got.searching);
+        assert_eq!(got.add_to_recipe, Some(true));
+        let got = parse_done_form(&pairs(&[("add_to_recipe", "no")]));
+        assert_eq!(got.add_to_recipe, Some(false));
+        assert!(!got.searching);
+        assert_eq!(parse_done_form(&[]).add_to_recipe, None);
+    }
+
+    fn stock_line(n: u128, name: &str) -> StockItemResponse {
+        stock(n, name, 1.0, "unité")
+    }
+
+    #[test]
+    fn the_search_finds_the_stock_lines_not_already_on_the_page() {
+        let stock = group_stock();
+        let ids =
+            |found: Vec<&StockItemResponse>| -> Vec<Uuid> { found.iter().map(|s| s.id).collect() };
+        // Words inside the name, whatever the case.
+        assert_eq!(ids(search_stock(&stock, " CRÈ", &[])), vec![id(30), id(31)]);
+        // A line already on the page is not offered twice.
+        assert_eq!(ids(search_stock(&stock, "crème", &[id(30)])), vec![id(31)]);
+        assert!(search_stock(&stock, "  ", &[]).is_empty());
+        assert!(search_stock(&stock, "chocolat", &[]).is_empty());
+        // At most SEARCH_MAX lines.
+        let many: Vec<StockItemResponse> = (0..30)
+            .map(|n| stock_line(100 + n, &format!("Épice {n}")))
+            .collect();
+        assert_eq!(search_stock(&many, "épice", &[]).len(), SEARCH_MAX);
+    }
+
+    #[test]
+    fn a_search_keeps_the_products_chosen_and_offers_the_others_unchecked() {
+        let mut f = form(recipe_lines());
+        f.others = vec![other_line(30, "20", true), other_line(40, "", false)];
+        f.search = "crème".into();
+        f.searching = true;
+        let got = others_section(&f, &preview(), &group_stock(), &[], true);
+        // Crème kept as typed; Sel, left unchecked, dropped; Crème fraîche
+        // offered. Crème is not offered twice.
+        let shown: Vec<(Uuid, &str, bool)> = got
+            .lines
+            .iter()
+            .map(|l| (l.stock.id, l.quantity.as_str(), l.used))
+            .collect();
+        assert_eq!(shown, vec![(id(30), "20", true), (id(31), "", false)]);
+        assert_eq!(got.search, "crème");
+        assert!(got.searched);
+        // The recipe's own lots are never offered.
+        f.search = "farine".into();
+        let got = others_section(&f, &preview(), &group_stock(), &[], true);
+        assert_eq!(got.lines.len(), 1);
+    }
+
+    #[test]
+    fn a_form_shown_again_keeps_every_other_product_as_typed() {
+        let mut f = form(recipe_lines());
+        f.others = vec![other_line(30, "abc", true), other_line(40, "", false)];
+        let errors = [Some(LineError::InvalidQuantity), None];
+        let got = others_section(&f, &preview(), &group_stock(), &errors, false);
+        let shown: Vec<(Uuid, &str, bool, Option<LineError>)> = got
+            .lines
+            .iter()
+            .map(|l| (l.stock.id, l.quantity.as_str(), l.used, l.error))
+            .collect();
+        assert_eq!(
+            shown,
+            vec![
+                (id(30), "abc", true, Some(LineError::InvalidQuantity)),
+                (id(40), "", false, None)
+            ]
+        );
+        assert!(!got.searched);
+    }
+
+    #[test]
+    fn the_products_chosen_are_sent_with_the_recipes_lines() {
+        let mut f = form(recipe_lines());
+        f.others = vec![
+            other_line(30, "20", true),
+            other_line(31, "5", false),
+            other_line(40, "1", true),
+        ];
+        f.add_to_recipe = Some(false);
+        let got = validate_done(&f, &editable(), &group_stock()).unwrap();
+        assert_eq!(got.removals.len(), 3);
+        assert_eq!(
+            got.others,
+            vec![
+                DoneOther {
+                    stock_item_id: id(30),
+                    quantity: 20.0
+                },
+                DoneOther {
+                    stock_item_id: id(40),
+                    quantity: 1.0
+                },
+            ]
+        );
+        assert!(!got.add_to_recipe);
+        f.add_to_recipe = Some(true);
+        assert!(
+            validate_done(&f, &editable(), &group_stock())
+                .unwrap()
+                .add_to_recipe
+        );
+    }
+
+    #[test]
+    fn a_product_chosen_needs_a_quantity_above_zero_within_its_stock() {
+        let mut f = form(recipe_lines());
+        f.add_to_recipe = Some(false);
+        for (typed, error) in [
+            ("0", LineError::InvalidQuantity),
+            ("", LineError::InvalidQuantity),
+            ("abc", LineError::InvalidQuantity),
+            ("51", LineError::TooMuch { available: 50.0 }),
+        ] {
+            f.others = vec![other_line(30, typed, true), other_line(40, "x", false)];
+            assert_eq!(
+                validate_done(&f, &editable(), &group_stock()),
+                Err(DoneError::Invalid(Invalid {
+                    others: vec![Some(error), None],
+                    ..Invalid::default()
+                })),
+                "{typed:?}"
+            );
+        }
+        f.others = vec![other_line(30, "50", true)];
+        assert!(validate_done(&f, &editable(), &group_stock()).is_ok());
+    }
+
+    #[test]
+    fn a_product_chosen_that_left_the_stock_is_stale() {
+        let mut f = form(recipe_lines());
+        f.others = vec![other_line(99, "1", true)];
+        f.add_to_recipe = Some(false);
+        assert_eq!(
+            validate_done(&f, &editable(), &group_stock()),
+            Err(DoneError::Stale)
+        );
+        // Unchecked, it is not sent: no matter.
+        f.others = vec![other_line(99, "1", false)];
+        assert!(validate_done(&f, &editable(), &group_stock()).is_ok());
+    }
+
+    #[test]
+    fn the_question_names_the_products_the_recipe_does_not_have_yet() {
+        let stock = group_stock();
+        // Farine is already an ingredient.
+        let used = [&stock[3], &stock[5], &stock[0]];
+        assert_eq!(offered_names(&preview(), &used), vec!["Crème", "Sel"]);
+        let twice = [&stock[3], &stock[3]];
+        assert_eq!(offered_names(&preview(), &twice), vec!["Crème"]);
+        assert!(offered_names(&preview(), &[]).is_empty());
+    }
+
+    #[test]
+    fn the_question_must_be_answered_before_sending() {
+        let mut f = form(recipe_lines());
+        f.others = vec![other_line(30, "20", true)];
+        assert_eq!(
+            validate_done(&f, &editable(), &group_stock()),
+            Err(DoneError::Invalid(Invalid {
+                add_to_recipe: true,
+                ..Invalid::default()
+            }))
+        );
+        // Not asked of a member who may not change the recipe: nothing is
+        // added.
+        let got = validate_done(&f, &preview(), &group_stock()).unwrap();
+        assert!(!got.add_to_recipe);
+        // Nor when every product chosen is already an ingredient.
+        let mut p = editable();
+        p.ingredients[1].name = "crème".into();
+        assert!(!validate_done(&f, &p, &group_stock()).unwrap().add_to_recipe);
+    }
+
+    #[test]
+    fn a_yes_without_a_product_chosen_adds_nothing() {
+        let mut f = form(recipe_lines());
+        f.add_to_recipe = Some(true);
+        let got = validate_done(&f, &editable(), &group_stock()).unwrap();
+        assert!(got.others.is_empty());
+        assert!(!got.add_to_recipe);
+    }
+
+    fn section(lines: Vec<(StockItemResponse, &str, bool)>) -> Others {
+        Others {
+            lines: lines
+                .into_iter()
+                .map(|(stock, quantity, used)| OtherShown {
+                    stock,
+                    quantity: quantity.into(),
+                    used,
+                    error: None,
+                })
+                .collect(),
+            search: String::new(),
+            searched: false,
+        }
+    }
+
+    #[test]
+    fn the_done_page_offers_to_search_the_stock_for_other_products() {
+        let html = done_body(
+            id(901),
+            &editable(),
+            None,
+            &Invalid::default(),
+            "",
+            "list",
+            today(),
+            &Others::default(),
+        );
+        assert!(
+            html.contains("<legend>Autre chose utilisé ?</legend>"),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<input type="search" name="q" value=""/>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<button type="submit" name="intent" value="search" class="secondary" formnovalidate>Chercher</button>"#),
+            "{html}"
+        );
+        // Nothing chosen: no question yet.
+        assert!(!html.contains("pour la prochaine fois"), "{html}");
+    }
+
+    #[test]
+    fn the_done_page_lists_the_products_found_and_asks_about_those_chosen() {
+        let mut others = section(vec![
+            (stock(30, "Crème", 50.0, "cL"), "20", true),
+            (stock(40, "Sel", 1.0, "unité"), "", false),
+            (stock(41, "Poivre", 1.0, "unité"), "1", true),
+        ]);
+        others.search = "<s>".into();
+        others.searched = true;
+        let html = done_body(
+            id(901),
+            &editable(),
+            None,
+            &Invalid::default(),
+            "",
+            "list",
+            today(),
+            &others,
+        );
+        assert!(
+            html.contains(&format!(r#"name="other.0" value="{}""#, id(30))),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"name="other_quantity.0" step="any" min="0" value="20""#),
+            "{html}"
+        );
+        assert!(html.contains(r#"name="other_used.0" checked"#), "{html}");
+        assert!(html.contains(r#"name="other_used.1"/>"#), "{html}");
+        assert!(
+            html.contains("Quantité de Crème à retirer, en cL (stock : 50 cL)"),
+            "{html}"
+        );
+        assert!(html.contains("Retirer Sel du stock"), "{html}");
+        assert!(html.contains(r#"value="&lt;s&gt;""#), "{html}");
+        assert!(
+            html.contains(
+                "<legend>Ajouter Crème, Poivre à la recette pour la prochaine fois ?</legend>"
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<input type="radio" name="add_to_recipe" value="yes"/> Oui"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<input type="radio" name="add_to_recipe" value="no"/> Non"#),
+            "{html}"
+        );
+        // A member who may not change the recipe is not asked.
+        let html = done_body(
+            id(901),
+            &preview(),
+            None,
+            &Invalid::default(),
+            "",
+            "list",
+            today(),
+            &others,
+        );
+        assert!(!html.contains("pour la prochaine fois"), "{html}");
+    }
+
+    #[test]
+    fn a_search_without_result_says_so() {
+        let others = Others {
+            search: "chocolat".into(),
+            searched: true,
+            ..Others::default()
+        };
+        let html = done_body(
+            id(901),
+            &preview(),
+            None,
+            &Invalid::default(),
+            "",
+            "list",
+            today(),
+            &others,
+        );
+        assert!(
+            html.contains("Aucun autre produit du stock ne correspond à « chocolat »."),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn the_unanswered_question_and_an_other_product_in_error_are_marked() {
+        let mut others = section(vec![(stock(30, "Crème", 50.0, "cL"), "60", true)]);
+        others.lines[0].error = Some(LineError::TooMuch { available: 50.0 });
+        let typed = DoneForm {
+            add_to_recipe: Some(true),
+            ..form(recipe_lines())
+        };
+        let html = done_body(
+            id(901),
+            &editable(),
+            Some(&typed),
+            &Invalid {
+                add_to_recipe: true,
+                ..Invalid::default()
+            },
+            "",
+            "list",
+            today(),
+            &others,
+        );
+        assert!(html.contains("Le stock n'en contient que 50 cL."), "{html}");
+        assert!(
+            html.contains(r#"name="other_quantity.0" step="any" min="0" value="60" aria-invalid="true" aria-describedby="other_quantity.0-error"/>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains("Répondez à la question : ajouter ces produits à la recette ou non."),
+            "{html}"
+        );
+        // The answer typed comes back checked.
+        assert!(
+            html.contains(r#"name="add_to_recipe" value="yes" checked/>"#),
+            "{html}"
+        );
     }
 }

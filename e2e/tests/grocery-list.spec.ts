@@ -696,4 +696,59 @@ test.describe("Recipes to cook — done or abandoned (#474)", () => {
     await page.goto("/stocks");
     await expect(page.locator("li", { hasText: "Lait" })).toContainText("2 L");
   });
+
+  test("another product found in the stock is taken and added to the recipe (#540)", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-gldoneother", "Grocery Improviser");
+    await createGroup(page, "Famille Impro");
+    await createStockItem(page, "Farine", "1000", "g");
+    await createStockItem(page, "Crème", "50", "cL");
+    await createRecipe(page, "Tarte", "Farine | 400 | g");
+    await planRecipe(page, "Tarte");
+
+    await page.goto("/recipes");
+    await page
+      .locator("li", { hasText: "Tarte" })
+      .filter({ has: page.getByRole("link", { name: "Faite" }) })
+      .getByRole("link", { name: "Faite" })
+      .click();
+    await expect(page.getByRole("heading", { name: "Recette faite : Tarte" })).toBeVisible();
+    // Nothing chosen yet: no question.
+    await expect(page.getByText("pour la prochaine fois")).toHaveCount(0);
+
+    // The search lists Crème, unchecked; the recipe's line is kept as typed.
+    await page.getByLabel("Quantité de Farine à retirer").fill("350");
+    await page.getByLabel("Chercher dans le stock").fill("crè");
+    await page.getByRole("button", { name: "Chercher", exact: true }).click();
+    const creme = page.getByRole("checkbox", { name: "Retirer Crème du stock" });
+    await expect(creme).not.toBeChecked();
+    await expect(page.getByLabel("Quantité de Farine à retirer")).toHaveValue("350");
+    await creme.check();
+    await page.getByLabel("Quantité de Crème à retirer").fill("20");
+
+    // Chosen, the product brings the question, to answer before sending.
+    await page.getByRole("button", { name: "Marquer comme faite" }).click();
+    const question = page.getByRole("group", {
+      name: "Ajouter Crème à la recette pour la prochaine fois ?",
+    });
+    await expect(question).toBeVisible();
+    await expect(
+      page.getByText("Répondez à la question : ajouter ces produits à la recette ou non."),
+    ).toBeVisible();
+    await expect(page.getByLabel("Quantité de Crème à retirer")).toHaveValue("20");
+    await question.getByRole("radio", { name: "Oui" }).check();
+    await page.getByRole("button", { name: "Marquer comme faite" }).click();
+    await expect(page).toHaveURL(/\/recipes\?notice=recipe_done$/);
+
+    await page.goto("/stocks");
+    await expect(page.locator("li", { hasText: "Crème" })).toContainText("30 cL");
+    await expect(page.locator("li", { hasText: "Farine" })).toContainText("650 g");
+
+    // The recipe now has Crème, for next time.
+    await page.goto("/recipes");
+    await page.getByRole("link", { name: "Tarte", exact: true }).first().click();
+    await expect(page.getByRole("heading", { name: "Tarte", level: 1 })).toBeVisible();
+    await expect(page.locator("li", { hasText: "Crème" })).toContainText("20 cL");
+  });
 });

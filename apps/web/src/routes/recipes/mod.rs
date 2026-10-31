@@ -403,7 +403,7 @@ mod tests {
 <a class="btn secondary" href="/recipes/{id}/abandon?back=list">Abandonner</a>"#
             )
         );
-        // Anything but `list` is the recipe.
+        // Anything but `list` or `planned` is the recipe.
         assert!(outcome_links(id, "https://evil.test").contains("?back=detail\""));
         // From the « Prévues » tab, back to it.
         assert!(outcome_links(id, "planned")
