@@ -628,7 +628,8 @@ aucune n'introduit de valeur hors des échelles :
 | `.actions > details[open]` | une disclosure ouverte prend la largeur de sa ligne (#72), ce que le `min-width: 16rem` inline du champ d'édition demandait à sa place |
 | `.app`, `.content`, `.w-form`, `.w-read`, `.tabs` | la coque responsive de #70 : la grille sidebar + contenu, la colonne de contenu et ses deux largeurs bornées, la barre d'onglets qui devient la sidebar |
 | `.pc`, `.phone` | ce qu'une seule des deux dispositions de la navigation dessine (#523) : `.pc` disparaît sous 861 px, `.phone` au-dessus. `display: none`, donc hors de l'arbre d'accessibilité aussi — c'est ce qui donne à un même lien deux libellés et un seul nom à la fois |
-| `.brand` | la marque « MHome » en tête de la colonne latérale (#523) : l'icône de l'accueil en `--accent`, le mot dans la police et la graisse des titres. Un paragraphe, pas un lien : Accueil est juste en dessous |
+| `.brand` | la marque « MHome » en tête de la colonne latérale (#523) : le symbole du logo (`.logo`, #542 ; l'icône de l'accueil avant lui), le mot dans la police et la graisse des titres. Un paragraphe, pas un lien : Accueil est juste en dessous |
+| `.logo` | le symbole du logo, inline (#542, voir [Logo](#logo)) : la tuile en `--accent`, le dessin en `--accent-fg`, `1.5em` de côté. Le balisage ne porte que la géométrie ; les couleurs viennent de la feuille, donc du thème et de la couleur de la famille |
 | `.profile` | le dernier lien de la navigation (#523), vers `/account` : l'initiale et « Profil » sur téléphone ; sur PC, au pied de la colonne, l'initiale, le nom et la famille active en `.muted` |
 | `.segment` | Stocks \| Recettes en tête de ces deux pages, sur téléphone seulement (#523) : deux liens qui se partagent la ligne, celui de la page courante sur `--surface` et en 600, le tout sur `--border`. Une `<nav aria-label="Cuisine">` |
 | `.skip-link` | le lien d'évitement (#144, WCAG 2.4.1) : premier élément de `<body>` sur les deux coques, vers `<main id="main">`. Rogné par `clip-path` tant qu'il n'a pas le focus — ni `display: none` ni `visibility`, qui le sortiraient de l'ordre de tabulation — puis posé au-dessus de la sidebar collante avec l'anneau de focus des liens |
@@ -703,6 +704,68 @@ pas à son arrivée. La boîte la rogne à son arrondi (`overflow: clip`). Elle 
 charge une page. Une ligne de l'accueil assignée à plusieurs membres garde
 l'initiale et la teinte mélangée : une photo n'en nommerait qu'un.
 
+### Logo
+
+Livré par #542 : `apps/web/src/brand.rs` et le dossier `apps/web/src/brand/`.
+
+- **Le dessin est la piste A5**, arbitrée le 2026-10-26 : un double pignon
+  d'un seul trait, qui se lit comme un M, une fenêtre allumée sous le pignon
+  de gauche, une porte en arche sous celui de droite. Blanc sur une tuile de
+  l'accent, sur une grille de 32 : tuile arrondie à 7,5, trait de 3 (de 2,2
+  pour la porte). `brand/favicon.svg` est le SVG de référence de l'issue.
+- **Deux versions.** En couleur, la tuile `#14706E` (l'accent clair, celui
+  de la feuille sans famille) et le dessin blanc. En monochrome, le dessin
+  seul, sans tuile, en `currentColor` (`brand/logo-mono.svg`) : pour un
+  fond qu'on ne choisit pas.
+- **Le logotype** « MHome » est en Fraunces 600, la police des titres, à
+  `opsz` 24. Dans un fichier (`brand/logo.svg`, `logo-mono.svg`) il est
+  vectorisé, jamais en `<text>` : un SVG affiché comme image ne charge pas
+  de police web. Sa hauteur de capitale vaut 14/32 de la tuile, centrée
+  sur elle. Ces deux fichiers ne sont pas servis : ils sont le logo pour
+  qui en a besoin hors de l'application.
+- **Dans l'application**, la tête de la colonne latérale (`.brand`) porte
+  le symbole inline (`.logo`), dont la feuille donne les couleurs : la
+  tuile en `--accent`, le dessin en `--accent-fg`, donc le thème et la
+  couleur de la famille (#538). Le mot qui suit reste du texte, dans la
+  Fraunces que la page a chargée de toute façon : le logotype vectorisé
+  pèse 5,6 ko, que chaque page paierait.
+- **Zone de protection : un quart du côté de la tuile**, libre de tout
+  autre élément, tout autour du symbole. C'est l'écart que le logotype
+  laisse entre la tuile et le mot (8 sur 32). Dans la colonne latérale,
+  `--s2x` (8 px) pour une tuile de 33 px.
+- **Tailles minimales.** Le symbole tient à 16 px (le favicon, vu à cette
+  taille avant l'arbitrage) ; en dessous, rien. Le logotype complet pas
+  sous 32 px de haut, où la capitale fait 14 px.
+- **On ne fait pas** : recolorer la tuile hors de `--accent`, poser le
+  dessin sur un autre fond que sa tuile ou que `currentColor`, contourer,
+  ombrer, déformer, écrire « MHome » dans une autre police.
+
+Ce qu'un navigateur ou un téléphone en prend, servi depuis le binaire comme
+la feuille et les scripts (`include_bytes!`, `/assets/<nom>-<empreinte>.<ext>`,
+`immutable` un an) — jamais depuis `apps/web/assets/`, dont les noms ne
+portent pas d'empreinte :
+
+| Fichier | Taille | Ce que c'est |
+|---|---|---|
+| `favicon.svg` | vectoriel | le favicon des navigateurs qui le prennent : la tuile arrondie |
+| `favicon.ico` | 16 et 32 px | le favicon des autres ; aussi servi à `/favicon.ico`, que des clients demandent sans lire la page |
+| `apple-touch-icon.png` | 180 px | l'écran d'accueil d'iOS : tuile à bords francs et opaque, iOS arrondit lui-même et peint la transparence en noir |
+| `icon-192.png`, `icon-512.png` | 192, 512 px | les icônes du manifeste, la tuile arrondie |
+| `icon-maskable-512.png` | 512 px | l'icône `maskable` du manifeste : la tuile jusqu'au bord, le symbole réduit à 80 % pour tenir dans le cercle de sécurité (40 % du côté de rayon) |
+
+Le manifeste est servi à `/manifest.webmanifest`
+(`application/manifest+json`) : `name` et `short_name` « MHome »,
+`start_url` et `id` `/`, `display: standalone`, `theme_color` l'accent
+clair, `background_color` le `--bg` clair. Une seule valeur par site : ni
+le thème ni la couleur de la famille n'y entrent, et un test les tient
+égaux aux jetons de `:root`. Lui et `/favicon.ico` n'ont pas d'empreinte
+dans leur nom : ils sont servis en `no-cache`, pas `immutable`. La CSP n'a
+pas bougé : `default-src 'self'` couvre `img-src` et `manifest-src`.
+
+Les PNG et l'`.ico` sont produits par `brand/tools/` (Chromium sans tête
+pour le rendu, la recette en tête de `draw.py`) ; les régénérer après toute
+retouche du dessin.
+
 ### Icônes
 
 Livré par #522 : un jeu d'icônes en SVG inline, `apps/web/src/icons.rs`.
@@ -744,8 +807,8 @@ Livré par #522 : un jeu d'icônes en SVG inline, `apps/web/src/icons.rs`.
   son libellé et `aria-hidden` comme toutes : l'objection du 2026-07-31
   portait sur une icône *à la place* du libellé, qui aurait changé le nom
   du lien. Le profil porte l'initiale du compte (`.avatar`), la marque
-  « MHome » l'icône de l'accueil. Dans la barre basse, l'icône passe à
-  `--s6`.
+  « MHome » le symbole du logo depuis #542 (l'icône de l'accueil avant).
+  Dans la barre basse, l'icône passe à `--s6`.
 
 ---
 
@@ -1732,3 +1795,4 @@ quatre tours de vérification à #72.
 | 2026-10-30 | Le thème se choisit : Automatique, Clair ou Sombre, et les valeurs sombres restent écrites une seule fois (#585) | Demande du 2026-10-22 (maquette « Mobile — Apparence »). Le thème sombre ne suivait que l'appareil. Une page « Apparence » du compte pose un cookie `__Host-theme` (un an, préférence d'interface exemptée de consentement), que chaque page traduit en `data-theme` sur `<html>` ; Automatique est l'absence du cookie. La feuille applique les jetons sombres sous `[data-theme="dark"]` et sous `prefers-color-scheme: dark` hors `[data-theme="light"]` ; le second bloc est dérivé du premier au démarrage plutôt que recopié à la main, parce qu'une copie tenue à la main est exactement ce qui a laissé passer #65 et #74. `light-dark()` écarté : `--shadow` change de forme d'un thème à l'autre, pas seulement de couleur. Détail sous Couleur → Thème choisi |
 | 2026-10-30 | La couleur de la famille : huit teintes, que `<html data-accent>` applique à chaque page de la famille active (#538) | Demande du 2026-10-21 (maquettes « Mobile — Famille et couleur », clair et sombre), sur l'API de #537. Une famille n'avait que l'accent du thème. La feuille déclare trois jetons par teinte et par thème, et une règle par teinte repointe `--accent`, `--accent-soft` et `--accent-hover`. Les valeurs sombres restent écrites une seule fois, sous `[data-theme="dark"]` (entrée de #585). Le CSS n'est pas généré par requête, il n'y a pas de `<style>` dynamique (CSP `style-src 'self'`) et `style=` n'est pas utilisé. La teinte est posée par l'en-tête commun, qui connaît déjà la famille active, plutôt que passée par chacune des routes. Détail sous Couleur → Couleur de la famille |
 | 2026-10-30 | Le formulaire de recette en lignes et en étapes, sans JavaScript (#539) | Demande du 2026-10-21 (maquette « Nouvelle recette », illisible pour ce lot : le formulaire suit les composants existants). Le champ texte « Ingrédients » à barres verticales devient une ligne par ingrédient — quantité, unité, ingrédient, saison, « Facultatif », « Retirer » — et les instructions, des étapes numérotées. Sans JavaScript, le formulaire est dessiné avec des lignes vides (cinq lignes et trois étapes pour une recette neuve, trois lignes et deux étapes de plus sous celles d'une recette existante) ; une ligne vide est ignorée, une ligne cochée « Retirer » est écartée à la lecture, et « Ajouter des lignes », second bouton du formulaire, le renvoie avec des lignes de plus sans rien enregistrer. Il vient **après** « Créer la recette » : la touche Entrée presse le premier bouton d'envoi d'un formulaire. Les mois de saison, que la liste de l'issue ne nommait pas, gardent leur champ : arbitrage du 2026-10-30, ils ne doivent pas être perdus. L'import par lien passe en tête de la page, un formulaire à part en `.card.inline`. Les étapes sont rangées une par ligne dans `instructions` ; le détail les montre en `<ol>`. Coût : deux classes, `.lines` et `.line`, six règles ; la feuille passe de 63 930 à 64 635 o bruts et de 20 775 à 20 988 o compressés (flate2 niveau 6, `budget_report`, mesuré sur `origin/main` 162a89e et sur cette branche) |
+| 2026-10-31 | Le logo MHome : favicon, icônes d'écran d'accueil, manifeste, et le symbole en tête de la colonne latérale (#542) | Demande du 2026-10-21. Trois pistes, puis leurs variantes, proposées en commentaire de l'issue ; retenue le 2026-10-26 : **A5**, le double pignon en M, fenêtre à gauche, porte à droite. Il n'y avait ni favicon, ni icône d'écran d'accueil, ni manifeste. Les fichiers sont servis depuis le binaire sous une empreinte, comme la feuille ; le manifeste et `/favicon.ico`, qui n'en portent pas, en `no-cache`. La tête de la colonne latérale perd l'icône de l'accueil, qui doublait le premier lien juste en dessous, pour le symbole, dont la feuille donne les couleurs. Le logotype vectorisé reste hors des pages (5,6 ko chacune) : le mot y reste du texte dans la même police. Usage, zone de protection et tailles minimales : [Logo](#logo) |

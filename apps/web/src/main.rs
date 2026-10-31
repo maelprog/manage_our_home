@@ -1,6 +1,7 @@
 mod app;
 mod assets;
 mod body_bounds;
+mod brand;
 mod client_ip;
 // The CSP guard (#141, #325). Test-only: it embeds infra/Caddyfile, which
 // sets the policy, and holds the markup emitted here to it — no inline script.

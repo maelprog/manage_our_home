@@ -142,6 +142,9 @@ pub fn shell_with_header(width: Width, title: &str, header_html: &str, body_html
 /// its question is in place. It is one more blocking request on a cold
 /// cache, made alongside the sheet's, and none after that.
 ///
+/// Between the two, the favicons, the home-screen icon and the manifest
+/// (#542, `crate::brand::head_links`). None of them blocks the rendering.
+///
 /// `<html>` carries `data-theme` when the visitor chose Clair or Sombre
 /// (#585): `crate::theme::scope` reads the cookie for every request, so no
 /// route passes the choice down. Automatique writes nothing.
@@ -158,6 +161,7 @@ fn document(title: &str, body: &str) -> String {
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>{title} — MHome</title>
 <link rel="stylesheet" href="{css}"/>
+{brand}
 {enhance}
 </head>
 <body>
@@ -169,6 +173,7 @@ fn document(title: &str, body: &str) -> String {
         accent = html_accent_attribute(crate::family::active_accent()),
         title = html_escape(title),
         css = crate::assets::stylesheet_href(),
+        brand = crate::brand::head_links(),
         enhance = crate::assets::Script::Enhance.tag(),
         body = body,
     )
@@ -408,7 +413,7 @@ pub fn app_header(
 <p class="brand pc">{brand}MHome</p>
 <nav class="tabs" aria-label="Navigation principale">{links}{profile}</nav>
 </header>"#,
-        brand = icon(Glyph::Home),
+        brand = crate::brand::SIDEBAR_MARK,
     )
 }
 
@@ -3752,6 +3757,49 @@ mod tests {
                 "the page title should end with « — MHome »: {html}"
             );
         }
+    }
+
+    #[test]
+    fn every_page_head_links_the_favicons_the_touch_icon_and_the_manifest() {
+        // #542, on both shells: the links are in the `<head>`, where a
+        // browser looks for them, and point at the files `brand` serves.
+        let pages = [
+            shell_with_header(Width::Full, "Agenda", "<header>nav</header>", "<h1>x</h1>"),
+            shell(Width::Form, "Connexion", "<h1>x</h1>"),
+        ];
+        for html in pages {
+            let head = &html[..html.find("</head>").expect("a head")];
+            for expected in [
+                format!(
+                    r#"<link rel="icon" href="{}" sizes="32x32"/>"#,
+                    crate::brand::Icon::FaviconIco.href()
+                ),
+                format!(
+                    r#"<link rel="icon" href="{}" type="image/svg+xml"/>"#,
+                    crate::brand::Icon::FaviconSvg.href()
+                ),
+                format!(
+                    r#"<link rel="apple-touch-icon" href="{}"/>"#,
+                    crate::brand::Icon::AppleTouch.href()
+                ),
+                r#"<link rel="manifest" href="/manifest.webmanifest"/>"#.to_string(),
+            ] {
+                assert!(head.contains(&expected), "{expected} missing: {head}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_sidebar_brand_is_the_logo_then_the_name() {
+        // #542: the A5 symbol replaces the home icon in front of « MHome ».
+        let header = app_header(&me(false), Some(&family("F")), "/", 0, 0);
+        assert!(
+            header.contains(&format!(
+                r#"<p class="brand pc">{}MHome</p>"#,
+                crate::brand::SIDEBAR_MARK
+            )),
+            "{header}"
+        );
     }
 
     #[test]

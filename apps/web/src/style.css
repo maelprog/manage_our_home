@@ -260,7 +260,11 @@ h3 { font-size: var(--t-lg); margin: var(--s4) 0 var(--s1); }
 .segment [aria-current] { background: var(--surface); font-weight: 600; }
 /* The brand at the head of the sidebar (#521's name). */
 .brand { display: flex; align-items: center; gap: var(--s2x); margin: 0 0 var(--s4); font-size: var(--t-xl); }
-.brand .icon { color: var(--accent); }
+/* The logo's symbol (#542, `brand::SIDEBAR_MARK`): the tile in the family's
+   accent, the drawing in the text that goes on it. */
+.logo { flex: none; width: 1.5em; height: 1.5em; fill: var(--accent-fg); stroke: var(--accent-fg); stroke-linecap: round; stroke-linejoin: round; }
+.logo rect { stroke: none; }
+.logo :first-child { fill: var(--accent); }
 /* The sidebar is the override and not the other way round: a `min-width` /
    `max-width` pair leaves a hole between 860 and 861 CSS pixels, which a
    zoomed viewport lands in. */
