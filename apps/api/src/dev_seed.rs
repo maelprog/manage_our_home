@@ -58,11 +58,11 @@ pub async fn seed_dev_users(db: &PgPool) -> Result<()> {
     }
 
     // `groups`/`group_members` are under FORCE RLS; their policies check
-    // `app.family_id`/`app.user_id` (see migration 0001 and
+    // `app.group_id`/`app.user_id` (see migration 0001 and
     // auth/session.rs). Generating the group id client-side lets us satisfy
     // the WITH CHECK on the very INSERT that creates the group.
     let group_id = Uuid::new_v4();
-    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
         .bind(group_id.to_string())
         .execute(&mut *tx)
         .await?;

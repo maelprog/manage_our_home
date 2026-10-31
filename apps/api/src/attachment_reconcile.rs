@@ -227,7 +227,7 @@ pub fn parse_args(args: &[String]) -> anyhow::Result<Invocation> {
 /// Aborts unless the connection genuinely bypasses RLS.
 ///
 /// `event_attachments` is `FORCE ROW LEVEL SECURITY` and its policy keys
-/// on `current_setting('app.family_id', true)` (`0002_agenda.sql`), so an
+/// on `current_setting('app.group_id', true)` (`0002_agenda.sql`), so an
 /// unscoped `SELECT storage_key` on a normal application connection
 /// returns **zero rows, not all rows**. A pass that trusted that would
 /// conclude the entire bucket is orphaned and delete all of it. Failing

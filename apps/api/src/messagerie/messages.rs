@@ -561,7 +561,7 @@ pub(crate) async fn load_message(
     message_id: Uuid,
 ) -> Result<Option<MessageResponse>, sqlx::Error> {
     let mut tx = crate::db::begin(db).await?;
-    sqlx::query("SELECT set_config('app.family_id', $1, true)")
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
         .bind(group_id.to_string())
         .execute(&mut *tx)
         .await?;

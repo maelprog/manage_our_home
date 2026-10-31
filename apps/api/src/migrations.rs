@@ -8,7 +8,7 @@
 //! `apps/api/README.md`'s "Deployment note on Row-Level Security"
 //! prescribes `NOSUPERUSER NOBYPASSRLS` for the runtime connection, and
 //! every family-scoped table is `FORCE ROW LEVEL SECURITY` with a policy
-//! keyed on `current_setting('app.family_id', true)`. That setting is
+//! keyed on `current_setting('app.group_id', true)`. That setting is
 //! `NULL` outside an HTTP request, so during a migration such a role sees
 //! **zero rows** in those tables. DDL is unaffected — which is why
 //! `0001..0012` never noticed — but the moment a migration does DML, its
@@ -91,7 +91,7 @@ pub async fn ensure_migration_role(conn: &mut sqlx::PgConnection) -> anyhow::Res
         anyhow::bail!(
             "refusing to migrate: the connection {MIGRATION_URL_VAR} names is neither \
              SUPERUSER nor BYPASSRLS, so FORCE ROW LEVEL SECURITY applies to it and \
-             `app.family_id` is unset outside a request. Every family-scoped table would \
+             `app.group_id` is unset outside a request. Every family-scoped table would \
              read back empty, a migration's DML would apply to zero rows without saying \
              so, and sqlx would record it as applied anyway. Point {MIGRATION_URL_VAR} at \
              the NOSUPERUSER BYPASSRLS migration role (see apps/api/README.md)."
@@ -893,7 +893,7 @@ mod tests {
     }
 
     /// The #105 role: owns the tables, but `FORCE ROW LEVEL SECURITY`
-    /// still applies to it and `app.family_id` is unset during a
+    /// still applies to it and `app.group_id` is unset during a
     /// migration.
     #[test]
     fn a_plain_role_may_not_apply_migrations() {
