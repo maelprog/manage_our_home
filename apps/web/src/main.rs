@@ -850,3 +850,106 @@ mod accent_tests {
         }
     }
 }
+
+/// `POST /login` hands apps/api the client address it saw (#178), read from
+/// the connection's `ConnectInfo` — an `Extension` since axum 0.8, which has
+/// no optional form of that extractor (#625). Served the way
+/// `shutdown::serve` serves it, the peer closes the forwarded chain; served
+/// without connect info, nothing is forwarded at all.
+#[cfg(test)]
+mod login_peer_tests {
+    use std::net::SocketAddr;
+    use std::sync::{Arc, Mutex};
+
+    use axum::http::{HeaderMap, StatusCode};
+    use axum::routing::{get, post};
+    use axum::Router;
+
+    use super::*;
+
+    /// An apps/api that accepts every login and records the forwarded
+    /// chain each one carried.
+    async fn fake_api(seen: Arc<Mutex<Vec<Option<String>>>>) -> String {
+        let app = Router::new()
+            .route("/auth/me", get(|| async { StatusCode::UNAUTHORIZED }))
+            .route(
+                "/auth/login",
+                post(move |headers: HeaderMap| async move {
+                    seen.lock().unwrap().push(
+                        headers
+                            .get(client_ip::FORWARDED_FOR)
+                            .map(|v| v.to_str().unwrap().to_string()),
+                    );
+                    axum::Json(serde_json::json!({}))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    fn state(api: String) -> AppState {
+        AppState {
+            http: reqwest::Client::new(),
+            api_internal_base_url: api,
+            api_public_base_url: "/api".into(),
+            body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
+            upload_gate: manage_our_home_http_guard::UploadGate::production(),
+            shutdown: manage_our_home_http_guard::Shutdown::new(),
+        }
+    }
+
+    async fn login(web: &str, forwarded: Option<&str>) {
+        let mut request = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap()
+            .post(format!("{web}/login"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("email=a%40b.test&password=pw");
+        if let Some(chain) = forwarded {
+            request = request.header(client_ip::FORWARDED_FOR, chain);
+        }
+        assert_eq!(
+            request.send().await.unwrap().status(),
+            StatusCode::SEE_OTHER
+        );
+    }
+
+    #[tokio::test]
+    async fn the_peer_closes_the_forwarded_chain() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let app = build_router(state(fake_api(seen.clone()).await));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let web = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap()
+        });
+        login(&web, None).await;
+        login(&web, Some("203.0.113.9")).await;
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                Some("127.0.0.1".to_string()),
+                Some("203.0.113.9, 127.0.0.1".to_string()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn nothing_is_forwarded_without_connect_info() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let app = build_router(state(fake_api(seen.clone()).await));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let web = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        login(&web, Some("203.0.113.9")).await;
+        assert_eq!(*seen.lock().unwrap(), [None]);
+    }
+}
