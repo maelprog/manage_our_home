@@ -50,4 +50,5 @@ reprendre tel quel : refaire le relevé de l'auth avant de planifier.**
 code à 6 chiffres sans plafond, ce sont 10⁶ tentatives. `/login` en a un depuis
 #178 (verrou par couple adresse/e-mail, `apps/api/src/auth/throttle.rs`), qui ne
 couvrira pas la route de challenge d'office ; le rate-limiting de
-`v2-deployment.md` (item 14, `/login` et `/register`) reste le cadre où le poser.
+`v2-deployment.md` (item 14, `/login` et `/register`) reste le cadre où le poser. Il
+vaut le coup indépendamment de la MFA.
