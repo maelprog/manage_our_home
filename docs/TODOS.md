@@ -26,9 +26,14 @@ une ligne ; chiffrement au repos déjà outillé pour le secret TOTP
 `apps/api/src/auth/oauth_google.rs`) ; `audit_log` (migration 0001) pour
 tracer activation/désactivation ; front SSR en `<form method=post>`, donc un
 écran de challenge est une route de plus, pas du JS. Les deux pièces qui portent
-le coût : `login_inner` (`apps/api/src/auth/mod.rs`) crée directement une session
-pleine et `AuthUser` fait confiance à toute ligne non révoquée — l'état
-`pending_mfa` touche l'extracteur utilisé par toutes les routes ; et la
+le coût : l'ouverture de session et son extracteur — `login_inner`
+(`apps/api/src/auth/mod.rs`) ouvre une session pleine, ou restreinte pour un
+compte désactivé (#289), et `session_state` (`apps/api/src/auth/session.rs`)
+écarte les sessions révoquées, expirées ou inactives puis classe les autres en
+`SessionAccess` (`Full`, `Deactivated`, `AgeUndeclared`, `TermsNotAccepted`),
+chaque état restreint ayant son extracteur (`DeactivatedSession`, …) ; un état
+`pending_mfa` serait une variante de plus sur ce modèle, mais touche le verdict
+qu'appliquent toutes les routes ; et la
 récupération en cas de perte du téléphone, qui est le coût récurrent réel sur une
 app sans support. À re-spécifier au passage : `reset_password` (ne doit pas
 devenir un bypass), comptes Google-only, `delete_account`. Le secret TOTP et les
