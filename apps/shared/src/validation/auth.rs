@@ -83,8 +83,9 @@ pub fn validate_email(email: &str) -> Result<(), &'static str> {
 /// grammar of that field admits ASCII only in the local part.
 ///
 /// Keeping addresses ASCII is what makes [`normalize_email`] agree with the
-/// `lower(email)` unique index of migration 0030: outside ASCII, Rust's
-/// lowercasing and Postgres's (which follows the database's `LC_CTYPE`)
+/// `lower(email)` unique index of migration 0030: its output is then
+/// lowercase ASCII, which `lower()` leaves unchanged, whereas outside ASCII
+/// Rust's lowercasing and Postgres's (which follows the database's locale)
 /// differ. Not a shape check: [`validate_email`] adds that.
 pub fn validate_email_ascii(email: &str) -> Result<(), &'static str> {
     if !email.is_ascii() {
@@ -105,9 +106,12 @@ pub fn validate_email_ascii(email: &str) -> Result<(), &'static str> {
 ///
 /// Only case and surrounding whitespace are folded: dots and `+` tags are
 /// provider-specific and stay as typed. Only ASCII case, too (#572): an
-/// address is refused outside ASCII ([`validate_email_ascii`]), and folding
-/// nothing else keeps this function and Postgres's `lower()` equal by
-/// construction, whatever the database's locale.
+/// address is refused outside ASCII ([`validate_email_ascii`]), so what this
+/// function stores is lowercase ASCII — a fixed point of Postgres's
+/// `lower()`, which leaves it unchanged, and the `lower(email)` index of
+/// migration 0030 sees the stored address itself. That holds whatever the
+/// locale; the two foldings are not equal on uppercase input (an ICU `tr-TR`
+/// base lowers `I` to `ı`), but only Rust's ever folds an address here.
 pub fn normalize_email(email: &str) -> String {
     email.trim().to_ascii_lowercase()
 }
@@ -494,8 +498,8 @@ mod tests {
     #[test]
     fn normalize_email_folds_ascii_letters_only() {
         // #572: Rust's Unicode lowercasing and Postgres's `lower()` disagree
-        // outside ASCII; folding only ASCII keeps the two equal by
-        // construction. Such an address is refused by `validate_email`
+        // outside ASCII; folding only ASCII stores lowercase ASCII, which
+        // `lower()` leaves as is. Such an address is refused by `validate_email`
         // anyway — what matters is that nothing outside ASCII is rewritten.
         assert_eq!(normalize_email("ÀB@X.FR"), "Àb@x.fr");
         assert_eq!(normalize_email("İ@X.FR"), "İ@x.fr");
