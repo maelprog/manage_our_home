@@ -955,3 +955,93 @@ async fn only_creator_or_admin_can_delete_stock_item(db: PgPool) {
     .await;
     assert_status(&owner_delete, StatusCode::NO_CONTENT);
 }
+
+/// `GET …/stocks/expiring_count`, returning `expiring_count`.
+async fn expiring_count(router: &axum::Router, group_id: &str, cookie: &str) -> i64 {
+    let res = call(
+        router,
+        Method::GET,
+        &format!("/groups/{group_id}/stocks/expiring_count"),
+        Some(cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    json_body(res).await["expiring_count"].as_i64().unwrap()
+}
+
+/// AC (#564): the Stocks tab's pastille counts the lines still in stock
+/// dated up to J+`EXPIRY_SOON_DAYS` in Europe/Paris, past dates included —
+/// not J+4, not an empty line, not an undated one, not another family's.
+#[sqlx::test]
+async fn the_expiring_count_is_what_the_list_flags_still_in_stock(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "stock-expiring-count@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let other_group = create_group(&router, &cookie, "Autre foyer").await;
+    let today = paris_day(Utc::now());
+    let day = |offset: i64| Some((today + Duration::days(offset)).to_string());
+
+    assert_eq!(expiring_count(&router, &group_id, &cookie).await, 0);
+
+    for (group, name, quantity, expires_on) in [
+        (&group_id, "Crème", 1.0, day(3)),
+        (&group_id, "Yaourt", 2.0, day(-5)),
+        (&group_id, "Lait", 1.0, day(0)),
+        (&group_id, "Beurre", 1.0, day(4)),
+        (&group_id, "Fromage", 0.0, day(1)),
+        (&group_id, "Sel", 1.0, None),
+        (&other_group, "Jambon", 1.0, day(1)),
+    ] {
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group}/stock-items"),
+            Some(&cookie),
+            Some(serde_json::json!({"name": name, "quantity": quantity, "expires_on": expires_on})),
+        )
+        .await;
+        assert_status(&res, StatusCode::CREATED);
+    }
+
+    // Crème (J+3), Yaourt (past) and Lait (today).
+    assert_eq!(expiring_count(&router, &group_id, &cookie).await, 3);
+    assert_eq!(expiring_count(&router, &other_group, &cookie).await, 1);
+}
+
+/// AC (#564): a non-member is refused the count, as the rest of the stocks.
+#[sqlx::test]
+async fn non_member_cannot_read_the_expiring_count(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner = register_verify_login(
+        &router,
+        &db,
+        "stock-expiring-owner@example.test",
+        "owner-password1",
+    )
+    .await;
+    let outsider = register_verify_login(
+        &router,
+        &db,
+        "stock-expiring-outsider@example.test",
+        "outsider-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner, "Foyer").await;
+
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/stocks/expiring_count"),
+        Some(&outsider),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+}

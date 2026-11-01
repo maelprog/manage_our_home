@@ -227,6 +227,15 @@ pub fn expiry_status(expires_on: Option<NaiveDate>, today: NaiveDate) -> ExpiryS
     }
 }
 
+/// The last expiry date the Stocks tab's pastille counts on `today` (#564):
+/// an article dated up to it, past dates included, is one `expiry_status`
+/// calls `Expired` or `Soon` — the ones the list flags. `apps/api` counts
+/// `expires_on <= expiring_until(today)` in SQL rather than classifying
+/// every line.
+pub fn expiring_until(today: NaiveDate) -> NaiveDate {
+    today + chrono::Duration::days(EXPIRY_SOON_DAYS)
+}
+
 /// How a received grocery item enters the stock (#471): added to an existing
 /// line (`merge`) or as a line of its own (`new`). On the wire: `"merge"`,
 /// `"new"`.
@@ -524,6 +533,29 @@ mod tests {
             expiry_status(Some(d(2026, 11, 3)), d(2026, 10, 30)),
             ExpiryStatus::Ok
         );
+    }
+
+    // -- expiring_until (#564) -----------------------------------------------
+
+    #[test]
+    fn the_last_counted_day_is_the_last_soon_day() {
+        assert_eq!(expiring_until(d(2026, 10, 7)), d(2026, 10, 10));
+        assert_eq!(expiring_until(d(2026, 10, 30)), d(2026, 11, 2));
+    }
+
+    #[test]
+    fn a_date_up_to_the_last_counted_day_is_exactly_an_expired_or_soon_one() {
+        // The pastille's `count(*)` (`expires_on <= expiring_until(today)`)
+        // and the list's verdict must name the same articles.
+        let today = d(2026, 10, 7);
+        for offset in -10..=10 {
+            let date = today + chrono::Duration::days(offset);
+            let flagged = matches!(
+                expiry_status(Some(date), today),
+                ExpiryStatus::Expired | ExpiryStatus::Soon
+            );
+            assert_eq!(date <= expiring_until(today), flagged, "J{offset:+}");
+        }
     }
 
     // -- merge_target (#471) -------------------------------------------------

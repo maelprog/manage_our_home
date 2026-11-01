@@ -2,10 +2,10 @@ use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
 use chrono::{DateTime, NaiveDate, Utc};
-use manage_our_home_shared::dto::stocks::SORT_BY_EXPIRY;
+use manage_our_home_shared::dto::stocks::{ExpiringStockCount, SORT_BY_EXPIRY};
 use manage_our_home_shared::validation::auth::paris_day;
 use manage_our_home_shared::validation::stocks::{
-    check_quantities, expiry_status, normalize_unit, ExpiryStatus,
+    check_quantities, expiring_until, expiry_status, normalize_unit, ExpiryStatus,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -312,6 +312,33 @@ pub async fn list_stock_items(
         .collect();
 
     Ok(Json(json!({ "items": items })))
+}
+
+/// `GET /groups/:id/stocks/expiring_count` — the number on the Stocks tab's
+/// pastille (#564), fetched by apps/web for every authenticated page.
+///
+/// One `count(*)`: the lines still in stock (quantity above 0) whose date
+/// is at most `expiring_until(today)`, today being the Paris day — the
+/// articles the list flags « périmé » or « périme … », past dates
+/// included. An undated line is never counted (`NULL <= date` is not true).
+pub async fn expiring_count(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(group_id): Path<Uuid>,
+) -> AppResult<Json<ExpiringStockCount>> {
+    let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
+    require_role(&mut tx, group_id, auth.user_id).await?;
+
+    let expiring_count = sqlx::query_scalar!(
+        r#"SELECT count(*) AS "count!" FROM stock_items
+           WHERE group_id = $1 AND quantity > 0 AND expires_on <= $2"#,
+        group_id,
+        expiring_until(today()),
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Json(ExpiringStockCount { expiring_count }))
 }
 
 pub async fn update_stock_item(

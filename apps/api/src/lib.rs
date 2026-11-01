@@ -364,6 +364,10 @@ pub fn build_router(state: AppState) -> Router {
             get(stocks::reception::get_reception).post(stocks::reception::receive),
         )
         .route(
+            "/groups/{id}/stocks/expiring_count",
+            get(stocks::items::expiring_count),
+        )
+        .route(
             "/groups/{id}/stock-items/{item_id}",
             get(stocks::items::get_stock_item)
                 .patch(stocks::items::update_stock_item)

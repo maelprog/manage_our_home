@@ -62,8 +62,9 @@ pub(crate) fn role_badge(role: &str) -> String {
 /// header (nav + family switcher) for a Groups page.
 ///
 /// Every authenticated page goes through here, so this is also where the
-/// Messagerie tab's unread count is fetched (#463) — except on the
-/// messagerie itself, which advances the read marker *after* its header is
+/// Messagerie tab's unread count is fetched (#463), with the Stocks tab's
+/// count of articles past or close to their date (#564) — the former
+/// except on the messagerie itself, which advances the read marker *after* its header is
 /// built: the count would be the one the page is clearing.
 pub(crate) async fn header_with_groups(
     state: &AppState,
@@ -101,11 +102,27 @@ pub(crate) async fn header_parts(
             _ => 0,
         }
     };
-    let (unread, notifications) = tokio::join!(
+    let expiring = async {
+        match active {
+            Some(g) => fetch_expiring_count(state, cookie.as_deref(), g.group_id).await,
+            None => 0,
+        }
+    };
+    // The three counts in parallel (#564): each is a round trip to apps/api
+    // that every authenticated page waits for.
+    let (unread, notifications, expiring) = tokio::join!(
         messages,
-        fetch_unread_notifications(state, cookie.as_deref())
+        fetch_unread_notifications(state, cookie.as_deref()),
+        expiring
     );
-    let header = app_header(me, active, redirect_to, unread, notifications.unwrap_or(0));
+    let header = app_header(
+        me,
+        active,
+        redirect_to,
+        unread,
+        notifications.unwrap_or(0),
+        expiring,
+    );
     (groups, header, notifications)
 }
 
@@ -134,6 +151,18 @@ async fn fetch_unread_count(state: &AppState, cookie: Option<&str>, group_id: Uu
     match api_request_auth(state, reqwest::Method::GET, &path, cookie, None).await {
         Ok(resp) if resp.status == reqwest::StatusCode::OK => {
             resp.body["unread_count"].as_u64().unwrap_or(0)
+        }
+        _ => 0,
+    }
+}
+
+/// `GET /groups/:id/stocks/expiring_count` (#564), the Stocks tab's
+/// pastille. Any failure counts as 0, as `fetch_unread_count`.
+async fn fetch_expiring_count(state: &AppState, cookie: Option<&str>, group_id: Uuid) -> u64 {
+    let path = format!("/groups/{group_id}/stocks/expiring_count");
+    match api_request_auth(state, reqwest::Method::GET, &path, cookie, None).await {
+        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
+            resp.body["expiring_count"].as_u64().unwrap_or(0)
         }
         _ => 0,
     }
