@@ -974,7 +974,7 @@ async fn expiring_count(router: &axum::Router, group_id: &str, cookie: &str) -> 
 /// dated up to J+`EXPIRY_SOON_DAYS` in Europe/Paris, past dates included —
 /// not J+4, not an empty line, not an undated one, not another family's.
 #[sqlx::test]
-async fn the_expiring_count_is_what_the_list_flags_still_in_stock(db: PgPool) {
+async fn the_expiring_count_is_expired_or_soon_lines_still_in_stock(db: PgPool) {
     let router = test_router(db.clone());
     let cookie = register_verify_login(
         &router,

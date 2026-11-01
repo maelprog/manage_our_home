@@ -229,7 +229,8 @@ pub fn expiry_status(expires_on: Option<NaiveDate>, today: NaiveDate) -> ExpiryS
 
 /// The last expiry date the Stocks tab's pastille counts on `today` (#564):
 /// an article dated up to it, past dates included, is one `expiry_status`
-/// calls `Expired` or `Soon` — the ones the list flags. `apps/api` counts
+/// calls `Expired` or `Soon` — the API's `expiry_status` field and the
+/// detail page's badge. `apps/api` counts
 /// `expires_on <= expiring_until(today)` in SQL rather than classifying
 /// every line.
 pub fn expiring_until(today: NaiveDate) -> NaiveDate {
@@ -546,7 +547,7 @@ mod tests {
     #[test]
     fn a_date_up_to_the_last_counted_day_is_exactly_an_expired_or_soon_one() {
         // The pastille's `count(*)` (`expires_on <= expiring_until(today)`)
-        // and the list's verdict must name the same articles.
+        // and `expiry_status`'s Expired/Soon must name the same dates.
         let today = d(2026, 10, 7);
         for offset in -10..=10 {
             let date = today + chrono::Duration::days(offset);

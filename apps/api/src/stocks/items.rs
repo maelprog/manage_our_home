@@ -319,8 +319,8 @@ pub async fn list_stock_items(
 ///
 /// One `count(*)`: the lines still in stock (quantity above 0) whose date
 /// is at most `expiring_until(today)`, today being the Paris day — the
-/// articles the list flags « périmé » or « périme … », past dates
-/// included. An undated line is never counted (`NULL <= date` is not true).
+/// lines `expiry_status` classes `Expired` or `Soon` (the API field and the
+/// detail page's badge). An undated line is never counted (`NULL <= date` is not true).
 pub async fn expiring_count(
     State(state): State<AppState>,
     auth: AuthUser,
