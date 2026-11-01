@@ -17,6 +17,10 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 overlays=apps/manage-our-home/overlays
 API=ghcr.io/maelprog/manage-our-home-api
 WEB=ghcr.io/maelprog/manage-our-home-web
+# MinIO and its client, at the tag of the base: another digest of the same
+# repository and tag is what a patch of one overlay would move them to.
+MINIO=docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5
+MC=docker.io/bitnamilegacy/minio-client:2025.7.21-debian-12-r3
 
 failures=0
 checks=0
@@ -47,6 +51,13 @@ set_pair() { # dir overlay pair-name
 }
 image_digest() { # dir overlay image
   N="$3" yq '.images[] | select(.name == env(N)) | .digest' "$1/$overlays/$2/kustomization.yaml"
+}
+# The first container of <kind>/<name> to <image>, by a patch of one
+# kustomization.
+patch_image() { # kustomization kind name image
+  K="$2" W="$3" P="- op: replace
+  path: /spec/template/spec/containers/0/image
+  value: $4" yq -i '.patches += [{"target": {"kind": strenv(K), "name": strenv(W)}, "patch": strenv(P)}]' "$1"
 }
 
 # --- ci/set-images.sh ----------------------------------------------------
@@ -119,7 +130,9 @@ fi
 # promoted; one commit moving both to P5; staging to P6. At its tip,
 # staging runs P6 and prod P5; prod has run P0 (the pair of this branch,
 # as committed), P1, P4 and P5 — P4 at a commit that touched prod alone,
-# and no commit touching staging saw it in prod.
+# and no commit touching staging saw it in prod. Then MinIO, by a patch
+# of each overlay: staging to M1, promoted; staging to M2. At the tip,
+# staging's MinIO is M2 and prod's M1; prod's ran M0 (the base's) first.
 ctx=promotion-check
 base="$work/base"
 fixture "$base"
@@ -131,6 +144,12 @@ set_pair "$base" prod P4 > /dev/null && commit "$base" "prod P4"
 set_pair "$base" staging P5 > /dev/null && set_pair "$base" prod P5 > /dev/null \
   && commit "$base" "staging and prod P5"
 set_pair "$base" staging P6 > /dev/null && commit "$base" "staging P6"
+patch_image "$base/$overlays/staging/kustomization.yaml" StatefulSet minio "$MINIO@$(digest M1)" \
+  && commit "$base" "staging MinIO M1"
+patch_image "$base/$overlays/prod/kustomization.yaml" StatefulSet minio "$MINIO@$(digest M1)" \
+  && commit "$base" "prod MinIO M1"
+patch_image "$base/$overlays/staging/kustomization.yaml" StatefulSet minio "$MINIO@$(digest M2)" \
+  && commit "$base" "staging MinIO M2"
 
 # expect <pass|fail> <description> <command on the head copy $h>...
 expect() {
@@ -181,11 +200,7 @@ image_patch() { # the api container to an image of elsewhere, by a patch
   path: /spec/template/spec/containers/0/image
   value: ghcr.io/evil/manage-our-home-api@$(digest P3-api)" yq -i '.patches += [{"target": {"kind": "Deployment", "name": "api"}, "patch": strenv(P)}]' "$(prod_file)"
 }
-image_patch_of() { # <kind> <name> <image>: its first container to <image>, by a patch
-  K="$1" W="$2" P="- op: replace
-  path: /spec/template/spec/containers/0/image
-  value: $3" yq -i '.patches += [{"target": {"kind": strenv(K), "name": strenv(W)}, "patch": strenv(P)}]' "$(prod_file)"
-}
+image_patch_of() { patch_image "$(prod_file)" "$@"; } # <kind> <name> <image>
 api_image_patch() { image_patch_of Deployment api "$1"; }
 bare_pod() { # a Pod of its own in the prod overlay, on an image of elsewhere
   cat > "$h/$overlays/prod/pod.yaml" << EOF
@@ -230,7 +245,60 @@ expect fail "a bare Pod added to prod, on an image of elsewhere" bare_pod
 said "Pod/extra/thing" "bare Pod"
 expect pass "prod moved to the pair staging runs, web listed first" reordered
 
-# A base with no overlay yet — `deploy` before `k3s` is merged into it.
+# Every image the render holds, a container's or a volume's, and
+# ephemeralContainers as much as the others.
+api_pod_patch() { # a JSON patch of the api Deployment
+  P="$1" yq -i '.patches += [{"target": {"kind": "Deployment", "name": "api"}, "patch": strenv(P)}]' "$(prod_file)"
+}
+ephemeral_unknown() {
+  api_pod_patch '[{"op": "add", "path": "/spec/template/spec/ephemeralContainers", "value": [{"name": "debug", "image": "ghcr.io/evil/thing@'"$(digest evil)"'"}]}]'
+}
+ephemeral_web() { # an ephemeral container named as the api's, on the web image
+  api_pod_patch '[{"op": "add", "path": "/spec/template/spec/ephemeralContainers", "value": [{"name": "api", "image": "'"$WEB@$(image_digest "$h" prod "$WEB")"'"}]}]'
+}
+volume_unknown() {
+  api_pod_patch '[{"op": "add", "path": "/spec/template/spec/volumes", "value": [{"name": "tools", "image": {"reference": "ghcr.io/evil/thing@'"$(digest evil)"'"}}]}]'
+}
+expect fail "an ephemeral container on an image of elsewhere" ephemeral_unknown
+said "image this check does not know: Deployment/api/debug" "ephemeral unknown"
+expect fail "an ephemeral container on the image of another application" ephemeral_web
+said "prod renders Deployment/api/api with '$WEB@" "ephemeral web"
+expect fail "a volume on an image of elsewhere" volume_unknown
+said "image this check does not know: Deployment/api/volume:tools" "volume unknown"
+
+# MinIO and its client: prod runs the image staging runs, container by
+# container, tag and digest, as for the application's pair.
+prod_minio() { patch_image "$(prod_file)" StatefulSet minio "$MINIO@$(digest "$1")"; }
+staging_minio() { patch_image "$h/$overlays/staging/kustomization.yaml" StatefulSet minio "$MINIO@$(digest "$1")"; }
+both_minio() { staging_minio "$1" && prod_minio "$1"; }
+prod_bucket() { patch_image "$(prod_file)" Job minio-bucket "$MC@$(digest "$1")"; }
+prod_minio_first() { yq -i 'del(.patches)' "$(prod_file)"; } # the revert of M1's promotion
+mc_base=$(yq '.spec.template.spec.containers[0].image' "$root/apps/manage-our-home/base/minio/bucket-job.yaml")
+expect pass "prod's MinIO unchanged (M1), staging's ahead (M2)" noop
+! grep -q "StatefulSet/minio/minio" "$work/out" \
+  || fail "prod's MinIO unchanged, yet taken for a move: $(cat "$work/out")"
+expect pass "prod's MinIO moved to the one staging runs" prod_minio M2
+expect pass "prod's MinIO back to the one it ran first (M0)" prod_minio_first
+expect fail "prod's MinIO moved alone to another digest of its repository" prod_minio M3
+said "StatefulSet/minio/minio" "MinIO elsewhere"
+said "$MINIO@$(digest M3)" "MinIO elsewhere, proposed"
+said "$MINIO@$(digest M2)" "MinIO elsewhere, staging's"
+expect fail "prod's MinIO client moved alone to another digest of its repository" prod_bucket M3
+said "Job/minio-bucket/bucket" "client elsewhere"
+said "$MC@$(digest M3)" "client elsewhere, proposed"
+said "$mc_base" "client elsewhere, staging's"
+expect fail "staging's and prod's MinIO moved together to a new digest" both_minio M3
+said "StatefulSet/minio/minio" "MinIO moved together"
+# Two containers of one name, MinIO's moved, an initContainer beside it
+# on the image prod runs: each is checked, neither hides the other.
+minio_twice() {
+  prod_minio M3 && P='[{"op": "add", "path": "/spec/template/spec/initContainers", "value": [{"name": "minio", "image": "'"$MINIO@$(digest M1)"'"}]}]' \
+    yq -i '.patches += [{"target": {"kind": "StatefulSet", "name": "minio"}, "patch": strenv(P)}]' "$(prod_file)"
+}
+expect fail "prod's MinIO moved, an initContainer of the same name on the image prod runs" minio_twice
+said "prod renders StatefulSet/minio/minio more than once" "MinIO twice"
+
+# A base with no overlay yet — `deploy` as it was before #508.
 check
 empty="$work/empty"
 mkdir -p "$empty"

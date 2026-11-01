@@ -8,8 +8,7 @@
 #   ci/platform-test.sh
 #
 # EXPECT_STAGING_REVISION, when set, is the branch every Application of
-# staging must read: the CI sets it to the branch a PR goes into, so the
-# promotion PR to `deploy` fails while staging still follows `k3s`.
+# staging must read: the CI sets it to the branch a PR goes into (`deploy`).
 #
 # Exits non-zero if any check fails, after running all of them.
 
@@ -296,7 +295,7 @@ for env in staging prod; do
     for d in $(r 'select(.kind == "Deployment" or .kind == "StatefulSet") | .kind + "/" + .metadata.name + "=" + ((.spec.replicas // 1) | tostring)'); do
       check
       case "${d%=*}" in
-        Deployment/argocd-applicationset-controller) want=0 ;;
+        Deployment/argocd-applicationset-controller | Deployment/argocd-server) want=0 ;;
         *) want=1 ;;
       esac
       [ "${d#*=}" = "$want" ] || fail "${d%=*}: ${d#*=} replica(s), expected $want"

@@ -4,19 +4,15 @@ Cette branche décrit **ce qui tourne** sur les clusters k3s ; le code de
 l'application est sur `main`. Elle ne partage aucun historique avec `main`
 (branche orpheline, #431).
 
-**Branche d'intégration `k3s`** (arbitrage du 2026-10-13) : les PR de
-l'epic k3s (#431 à #437) visent `k3s`, pas `deploy`. Rien n'arrive sur
-`deploy` avant que toute l'architecture tourne sur le serveur de test ;
-alors une seule PR `k3s` → `deploy`, mergée à la main par l'utilisateur,
-fait la promotion. La CI de cette branche (`deploy.yml`) tourne pareil sur
-les deux.
+L'epic k3s (#431 à #437) a été intégrée sur une branche `k3s` (arbitrage
+du 2026-10-13), promue dans `deploy` par #508 puis rattrapée par #672 ;
+`k3s` est supprimée. Tout changement de cette branche passe par une PR vers
+`deploy`, mergée à la main par l'utilisateur.
 
 ## Le modèle
 
 - **GitOps** : un Argo CD par cluster lit cette branche et applique son
-  overlay (#432) ; pendant l'intégration, celui du serveur de test lit
-  `k3s`, `deploy` restant vide jusqu'à la promotion
-  (`platform/README.md`). Personne ne fait de `kubectl apply` à la main,
+  overlay (#432). Personne ne fait de `kubectl apply` à la main,
   hors l'amorçage d'un cluster (`platform/bootstrap.sh`), les briques
   posées hors d'Argo CD (kube-vip, MetalLB, kured,
   system-upgrade-controller) et les gestes d'exploitation que prescrit
@@ -565,7 +561,20 @@ Le job `promotion` de `deploy.yml`, sur chaque PR :
   en staging. Une paire que staging a fait tourner autrefois mais plus
   maintenant est rouge. Avant tout cela, la paire du fichier doit être ce
   que prod rend : ni `newName`, ni `newTag`, ni patch qui déplace une
-  image de l'appli derrière elle.
+  image de l'appli derrière elle. Toute image du rendu de l'overlay de
+  prod est contrôlée, celle d'un conteneur (`containers`,
+  `initContainers`, `ephemeralContainers`) comme celle d'un volume
+  (`image.reference`) : une image ni de l'appli ni de MinIO ou de son
+  client est rouge. L'image de Postgres n'est pas lue : l'`imageName` du
+  `Cluster` CNPG est rendu par `overlays/prod/postgres`, une
+  kustomization à part. Les
+  images de MinIO et de son client (tag et empreinte) suivent la même
+  règle que la paire, conteneur par conteneur : inchangées, ou celle que
+  staging rend au bout de la branche visée, ou une image que prod a
+  rendue à un commit antérieur. Un patch du seul overlay de prod qui
+  passe MinIO à une autre empreinte de son dépôt est rouge, et une même
+  PR qui change MinIO en staging et en prod l'est aussi : staging le fait
+  tourner d'abord.
 
 Limite : le contrôle juge la branche visée telle qu'elle était quand le
 job a tourné. Le ruleset n'exige pas que la PR soit à jour de sa base
@@ -582,8 +591,7 @@ double.
 
 `.github/rulesets/deploy.json` : PR obligatoire, liste de contournement
 vide, ni suppression ni force-push, et les jobs de `deploy.yml` (`render`,
-`promotion`, `k3d`, `observability`) exigés au vert. Il ne vise que `deploy` : `k3s` reste
-mergée par la vérification des PR de l'epic (arbitrage du 2026-10-13).
+`promotion`, `k3d`, `observability`) exigés au vert.
 L'utilisateur, administrateur du dépôt, l'applique une fois :
 
 ```
@@ -607,7 +615,6 @@ promotion mergée par squash (ou rebase) est un commit ordinaire :
 `git revert <commit>`. Mergée par un commit de fusion, il faut dire quel
 parent garder : `git revert -m 1 <commit de fusion>` (le parent 1 est
 `deploy` avant la fusion).
-
 
 ```
 git fetch origin
@@ -645,8 +652,8 @@ qu'il manque, Alertmanager n'envoie rien.
 
 ## CI de cette branche
 
-`.github/workflows/deploy.yml`, sur chaque PR vers `deploy` ou `k3s` et
-chaque push sur l'une d'elles :
+`.github/workflows/deploy.yml`, sur chaque PR vers `deploy` et
+chaque push sur `deploy` :
 
 1. `ci/validate.sh` : `kustomize build` de chaque overlay, de son
    Postgres et de la plateforme de chaque cluster, `kubeconform -strict`
