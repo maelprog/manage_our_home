@@ -82,9 +82,14 @@ fn error_text(code: &str) -> Option<&'static str> {
         "forbidden" => Some("Vous n'avez pas les droits nécessaires pour cette action."),
         "invalid_role" => Some("Rôle invalide."),
         "unavailable" => Some("Service momentanément indisponible, merci de réessayer."),
+        INVALID_EMAIL => Some(crate::routes::auth::register::NON_ASCII_EMAIL),
         _ => None,
     }
 }
+
+/// `?error=` once apps/api has refused the invited address (422
+/// `invalid_email`): today only for being outside ASCII (#572).
+const INVALID_EMAIL: &str = "invalid_email";
 
 fn page(
     header: &str,
@@ -272,6 +277,9 @@ pub async fn invite(
         Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
             group_not_found_page().into_response()
         }
+        Ok(resp) if resp.status == reqwest::StatusCode::UNPROCESSABLE_ENTITY => {
+            Redirect::to(&format!("{members_url}?error={INVALID_EMAIL}")).into_response()
+        }
         Ok(_) | Err(_) => Redirect::to(&format!("{members_url}?error=unavailable")).into_response(),
     }
 }
@@ -353,6 +361,16 @@ pub async fn remove(
 mod tests {
     use super::*;
     use manage_our_home_shared::dto::groups::GroupMember;
+
+    /// #572: an invited address apps/api refuses comes back with the
+    /// registration form's message, not as an unavailable service.
+    #[test]
+    fn a_refused_invited_address_says_why() {
+        assert_eq!(
+            error_text(INVALID_EMAIL),
+            Some(crate::routes::auth::register::NON_ASCII_EMAIL)
+        );
+    }
 
     fn me(id: Uuid) -> MeResponse {
         MeResponse {

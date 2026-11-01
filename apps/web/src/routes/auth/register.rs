@@ -5,7 +5,7 @@ use leptos::prelude::*;
 use manage_our_home_shared::dto::auth::RegisterRequest;
 use manage_our_home_shared::validation::auth::{
     normalize_email, validate_age_declaration, validate_display_name, validate_email,
-    validate_password, validate_terms_acceptance, MINIMUM_AGE_YEARS,
+    validate_email_ascii, validate_password, validate_terms_acceptance, MINIMUM_AGE_YEARS,
 };
 
 use crate::app::{
@@ -32,6 +32,25 @@ pub struct RegisterForm {
     minimum_age: Option<String>,
     /// The acceptance of the CGU (#319), same shape: present when ticked.
     accepts_terms: Option<String>,
+}
+
+/// What the form says of an address apps/api refuses with `invalid_email`
+/// because it is not ASCII (#572). Also the invitation form's
+/// (`routes::groups::members`).
+pub(crate) const NON_ASCII_EMAIL: &str =
+    "Adresse email invalide : seuls les caractères ASCII sont acceptés, sans accent ni lettre \
+     hors de l'alphabet latin de base.";
+
+/// The message on the email field, if the address is refused: checked as
+/// apps/api checks it, once normalised (#459).
+fn email_error(email: &str) -> Option<&'static str> {
+    let email = normalize_email(email);
+    if validate_email_ascii(&email).is_err() {
+        return Some(NON_ASCII_EMAIL);
+    }
+    validate_email(&email)
+        .err()
+        .map(|_| "Adresse email invalide.")
 }
 
 /// The boxes of the form, as the visitor left them: a form that comes back
@@ -161,12 +180,12 @@ pub async fn post(
         declares_minimum_age,
         accepts_terms,
     };
-    if validate_email(&normalize_email(&form.email)).is_err() {
+    if let Some(message) = email_error(&form.email) {
         return Html(page(
             &form.email,
             &form.display_name,
             boxes,
-            Some("Adresse email invalide."),
+            Some(message),
             None,
             None,
             &state.api_public_base_url,
@@ -321,6 +340,29 @@ mod tests {
             .expect("attribute outside an input");
         let close = at + html[at..].find('>').expect("unterminated input");
         &html[open..=close]
+    }
+
+    /// #572: an address outside ASCII is refused, and the form says why —
+    /// a general "invalid" would leave the visitor looking for a typo.
+    #[test]
+    fn an_address_outside_ascii_is_refused_with_its_own_message() {
+        for email in ["é@x.fr", "a@exämple.fr", " İ@X.FR "] {
+            assert_eq!(email_error(email), Some(NON_ASCII_EMAIL), "{email:?}");
+        }
+        assert!(NON_ASCII_EMAIL.contains("ASCII"), "{NON_ASCII_EMAIL}");
+        assert!(NON_ASCII_EMAIL.contains("accent"), "{NON_ASCII_EMAIL}");
+    }
+
+    #[test]
+    fn a_malformed_ascii_address_keeps_the_general_message() {
+        assert_eq!(email_error("plainaddress"), Some("Adresse email invalide."));
+    }
+
+    #[test]
+    fn a_valid_address_has_no_message() {
+        for email in [" Alice@Example.com ", "a@xn--exmple-cua.fr"] {
+            assert_eq!(email_error(email), None, "{email:?}");
+        }
     }
 
     /// #419: the legal documents are the shell's footer, no longer a line of

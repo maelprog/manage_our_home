@@ -23,11 +23,13 @@ pub struct LoginForm {
 /// (#462), kept only when it is a `return_to::safe_return_path` — anything
 /// else is ignored: nothing is stored, and the login ends on `/` — or, when
 /// an invitation was already remembered in this browser, on that invitation,
-/// a path checked when stored and again when read (#576).
+/// a path checked when stored and again when read (#576); `?google=` a
+/// Google sign-in apps/api refused (#572).
 #[derive(serde::Deserialize)]
 pub struct LoginQuery {
     reauth: Option<String>,
     next: Option<String>,
+    google: Option<String>,
 }
 
 /// The notice `?reauth=` puts above the form. Only the one value the
@@ -36,6 +38,20 @@ fn reauth_notice(reason: Option<&str>) -> Option<&'static str> {
     match reason {
         Some("admin") => Some(
             "Votre session d'administration a expiré : reconnectez-vous pour accéder à l'administration.",
+        ),
+        _ => None,
+    }
+}
+
+/// The error `?google=` puts above the form: apps/api's Google callback
+/// sends a refused sign-in back here (#572). Only the one value it sends has
+/// copy; anything else a URL carries shows nothing.
+fn google_refusal(reason: Option<&str>) -> Option<&'static str> {
+    match reason {
+        Some("email_not_ascii") => Some(
+            "Connexion Google refusée : l'adresse de ce compte Google contient des caractères \
+             non ASCII (accents, lettres hors de l'alphabet latin de base), que le service \
+             n'accepte pas. Aucun compte n'a été créé.",
         ),
         _ => None,
     }
@@ -84,7 +100,7 @@ pub async fn get(
 ) -> Response {
     let html = Html(page(
         "",
-        None,
+        google_refusal(query.google.as_deref()),
         reauth_notice(query.reauth.as_deref()),
         &state.api_public_base_url,
     ));
@@ -186,6 +202,23 @@ pub async fn post(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #572: apps/api sends a Google sign-in whose address is not ASCII
+    /// back here with `?google=email_not_ascii`; the page says why.
+    #[test]
+    fn a_google_address_outside_ascii_is_explained() {
+        let error = google_refusal(Some("email_not_ascii")).expect("a message");
+        assert!(error.contains("Google"), "{error}");
+        assert!(error.contains("ASCII"), "{error}");
+        assert!(error.contains("Aucun compte"), "{error}");
+    }
+
+    #[test]
+    fn no_other_google_reason_has_a_message() {
+        for reason in [None, Some(""), Some("other"), Some("<b>")] {
+            assert_eq!(google_refusal(reason), None, "{reason:?}");
+        }
+    }
 
     #[test]
     fn the_admin_reauth_reason_has_its_notice() {
