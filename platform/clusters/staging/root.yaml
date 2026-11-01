@@ -11,8 +11,8 @@ spec:
   project: default
   source:
     repoURL: https://github.com/maelprog/manage_our_home.git
-    # Same as manage-our-home.yaml: `k3s` during the integration of the
-    # epic, `deploy` from the promotion on.
+    # Same as manage-our-home.yaml. Changing it reaches the cluster only by
+    # applying this file again by hand (platform/README.md).
     targetRevision: deploy
     path: platform/clusters/staging
   destination:

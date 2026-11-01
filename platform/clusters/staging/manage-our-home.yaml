@@ -13,9 +13,8 @@ spec:
   project: default
   source:
     repoURL: https://github.com/maelprog/manage_our_home.git
-    # `k3s` while the k3s epic is integrated there (arbitrage of
-    # 2026-10-13); the promotion PR to `deploy` changes it, which
-    # ci/platform-test.sh requires of a PR to `deploy`.
+    # The branch every cluster reads; ci/platform-test.sh requires it of a
+    # PR to `deploy`.
     targetRevision: deploy
     path: apps/manage-our-home/overlays/staging
   destination:

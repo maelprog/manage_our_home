@@ -298,7 +298,7 @@ minio_twice() {
 expect fail "prod's MinIO moved, an initContainer of the same name on the image prod runs" minio_twice
 said "prod renders StatefulSet/minio/minio more than once" "MinIO twice"
 
-# A base with no overlay yet — `deploy` before `k3s` is merged into it.
+# A base with no overlay yet — `deploy` as it was before #508.
 check
 empty="$work/empty"
 mkdir -p "$empty"
