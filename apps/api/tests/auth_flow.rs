@@ -4300,3 +4300,29 @@ async fn a_google_profile_outside_ascii_is_refused_with_a_reason(db: PgPool) {
         .unwrap();
     assert_eq!(identities, 0);
 }
+
+/// #572: the refusal comes before the lookup by Google identity, so an
+/// identity already bound to an account does not open it once its profile
+/// carries an address outside ASCII.
+#[sqlx::test]
+async fn a_bound_google_identity_whose_address_turns_non_ascii_is_refused(db: PgPool) {
+    let ascii = router_with_google_stub(db.clone(), "google-sub-572b", "zoe@example.test").await;
+    let res = google_callback(&ascii).await;
+    assert!(opens_a_session(&res), "{}", res.status());
+    let user_id = user_id_by_email(&db, "zoe@example.test").await;
+    assert_eq!(google_identity_rows(&db, user_id).await, 1);
+    let sessions = session_rows(&db, user_id).await;
+
+    let non_ascii =
+        router_with_google_stub(db.clone(), "google-sub-572b", "zoë@example.test").await;
+    let res = google_callback(&non_ascii).await;
+    assert_eq!(
+        res.headers()
+            .get(axum::http::header::LOCATION)
+            .and_then(|v| v.to_str().ok()),
+        Some("http://localhost:5173/login?google=email_not_ascii")
+    );
+    assert!(!opens_a_session(&res));
+    assert_eq!(session_rows(&db, user_id).await, sessions);
+    assert_eq!(stored_emails(&db).await, ["zoe@example.test"]);
+}
