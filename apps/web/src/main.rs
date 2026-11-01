@@ -328,6 +328,10 @@ fn build_router(state: AppState) -> Router {
         .route("/recipes/{id}/select", post(routes::recipes::select))
         .route("/recipes/{id}/deselect", post(routes::recipes::deselect))
         .route(
+            "/recipes/{id}/missing",
+            get(routes::recipes::missing::get).post(routes::recipes::missing::post),
+        )
+        .route(
             "/recipes/{id}/done",
             get(routes::recipes::outcome::done_get).post(routes::recipes::outcome::done_post),
         )

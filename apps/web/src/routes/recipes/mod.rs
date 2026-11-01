@@ -18,6 +18,7 @@ pub mod detail;
 pub mod edit;
 pub mod import;
 pub mod list;
+pub mod missing;
 pub mod new;
 pub mod outcome;
 
@@ -29,7 +30,7 @@ use leptos::prelude::*;
 use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
 use manage_our_home_shared::dto::recipes::{
-    RecipeSelectionList, RecipeSelectionResponse, SelectRecipeRequest,
+    PlannedSelection, PlannedSelectionList, RecipeSelectionResponse, SelectRecipeRequest,
 };
 use manage_our_home_shared::validation::recipes::{parse_servings, servings_label, SERVINGS_MAX};
 use uuid::Uuid;
@@ -91,6 +92,19 @@ pub(crate) async fn planned_selections(
     gid: Uuid,
     cookie: Option<&str>,
 ) -> Result<Vec<RecipeSelectionResponse>, ()> {
+    planned_with_stock(state, gid, cookie)
+        .await
+        .map(|list| list.into_iter().map(|s| s.selection).collect())
+}
+
+/// [`planned_selections`] with what the stock holds of each (#559): the
+/// elements missing, and the date by which to cook it, the dated ones
+/// first (#560).
+pub(crate) async fn planned_with_stock(
+    state: &AppState,
+    gid: Uuid,
+    cookie: Option<&str>,
+) -> Result<Vec<PlannedSelection>, ()> {
     match api_request_auth(
         state,
         reqwest::Method::GET,
@@ -101,7 +115,7 @@ pub(crate) async fn planned_selections(
     .await
     {
         Ok(resp) if resp.status == reqwest::StatusCode::OK => {
-            Ok(serde_json::from_value::<RecipeSelectionList>(resp.body)
+            Ok(serde_json::from_value::<PlannedSelectionList>(resp.body)
                 .map(|l| l.selections)
                 .unwrap_or_default())
         }
