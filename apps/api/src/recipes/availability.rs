@@ -623,6 +623,18 @@ mod tests {
     }
 
     #[test]
+    fn the_nearest_expiring_line_of_one_need_dates_it() {
+        let stock = [
+            line(1, "Safran", 0.5, "g", Some(in_days(2))),
+            line(2, "Safran", 0.2, "g", Some(in_days(1))),
+        ];
+        assert_eq!(
+            use_by(&[need("Safran", Some(1.0), Some("g"))], &stock, today()),
+            Some(in_days(1))
+        );
+    }
+
+    #[test]
     fn no_need_no_date() {
         let stock = [line(1, "Lait", 1.0, "L", Some(in_days(1)))];
         assert_eq!(use_by(&[], &stock, today()), None);
