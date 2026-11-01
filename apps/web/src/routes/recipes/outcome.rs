@@ -2358,7 +2358,11 @@ mod tests {
             (S::NOT_FOUND, "not_found"),
             (S::BAD_REQUEST, "stock_item_not_in_recipe"),
         ] {
-            assert_eq!(done_refusal(status, &body(code)), Refusal::Changed, "{code}");
+            assert_eq!(
+                done_refusal(status, &body(code)),
+                Refusal::Changed,
+                "{code}"
+            );
         }
         // A request the page should never have built: not a change, which
         // another try would not fix.
