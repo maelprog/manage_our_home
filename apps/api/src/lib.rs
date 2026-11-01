@@ -414,6 +414,10 @@ pub fn build_router(state: AppState) -> Router {
             get(recipes::outcome::preview_abandoned).post(recipes::outcome::apply_abandoned),
         )
         .route(
+            "/groups/{id}/recipes/{recipe_id}/selection/missing",
+            post(grocery_list::items::add_missing_grocery_items),
+        )
+        .route(
             "/groups/{id}/grocery-items",
             post(grocery_list::items::create_grocery_item)
                 .get(grocery_list::items::list_grocery_items),

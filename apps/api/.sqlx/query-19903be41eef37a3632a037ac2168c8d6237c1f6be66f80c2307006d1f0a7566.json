@@ -1,0 +1,113 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT s.id AS selection_id, s.recipe_id, ri.name, ri.quantity, ri.unit, ri.is_optional,\n               r.servings AS recipe_servings, s.servings AS selection_servings\n        FROM recipe_selections s\n        JOIN recipes r ON r.id = s.recipe_id\n        JOIN recipe_ingredients ri ON ri.recipe_id = s.recipe_id\n        WHERE s.group_id = $1 AND s.status = 'planned'\n          AND ($2::uuid IS NULL OR s.recipe_id = $2)\n        ORDER BY s.created_at, s.id, ri.name, ri.id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "selection_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "recipe_selections",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "recipe_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "recipe_selections",
+            "name": "recipe_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "recipe_ingredients",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "quantity",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "recipe_ingredients",
+            "name": "quantity"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "unit",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "recipe_ingredients",
+            "name": "unit"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "is_optional",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "recipe_ingredients",
+            "name": "is_optional"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "recipe_servings",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "servings"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "selection_servings",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "recipe_selections",
+            "name": "servings"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "19903be41eef37a3632a037ac2168c8d6237c1f6be66f80c2307006d1f0a7566"
+}

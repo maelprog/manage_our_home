@@ -1,3 +1,4 @@
+pub mod availability;
 pub mod crud;
 pub mod html;
 pub mod import;

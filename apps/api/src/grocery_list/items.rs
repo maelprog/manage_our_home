@@ -14,6 +14,8 @@ use crate::grocery_list::can_modify;
 use crate::grocery_list::planned::{plan_lines, PlannedIngredient};
 use crate::groups::require_role;
 use crate::notifications::center;
+use crate::recipes::availability::planned_availability;
+use crate::stocks::items::today;
 use crate::AppState;
 
 #[derive(Deserialize)]
@@ -465,6 +467,74 @@ pub async fn generate_grocery_items(
         created.push(GroceryItemResponse::from(item));
     }
 
+    tx.commit().await?;
+
+    Ok((StatusCode::CREATED, Json(json!({ "items": created }))))
+}
+
+/// `POST /groups/:id/recipes/:recipe_id/selection/missing` (#559): adds to
+/// the grocery list what the stock lacks of the recipe's `planned`
+/// selection (`recipes::availability::missing`), one item per element,
+/// with the quantity lacking and the recipe in `source_recipe_id`. A name
+/// already on the list unchecked is not added again, as for
+/// `generate_grocery_items`, so replaying adds nothing. 404 without a
+/// `planned` selection of that recipe in the group. Any member may, as for
+/// the generation. 201 with the items created.
+pub async fn add_missing_grocery_items(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((group_id, recipe_id)): Path<(Uuid, Uuid)>,
+) -> AppResult<impl IntoResponse> {
+    let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
+    require_role(&mut tx, group_id, auth.user_id).await?;
+
+    sqlx::query_scalar!(
+        "SELECT id FROM recipe_selections WHERE recipe_id = $1 AND group_id = $2 AND status = 'planned'",
+        recipe_id,
+        group_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    let missing: Vec<_> = planned_availability(&mut tx, group_id, Some(recipe_id), today())
+        .await?
+        .into_iter()
+        .flat_map(|a| a.missing)
+        .collect();
+
+    let mut seen: HashSet<String> = sqlx::query_scalar!(
+        "SELECT name FROM grocery_items WHERE group_id = $1 AND checked = false",
+        group_id,
+    )
+    .fetch_all(&mut *tx)
+    .await?
+    .into_iter()
+    .map(|n| n.trim().to_lowercase())
+    .collect();
+
+    let mut created: Vec<GroceryItemResponse> = Vec::new();
+    for line in missing {
+        if !seen.insert(line.name.trim().to_lowercase()) {
+            continue;
+        }
+        let item = sqlx::query_as!(
+            GroceryItemRow,
+            r#"
+            INSERT INTO grocery_items (group_id, created_by, name, quantity, unit, source, source_recipe_id)
+            VALUES ($1, $2, $3, $4, $5, 'recipe', $6)
+            RETURNING id, group_id, created_by, name, quantity, unit, checked, source, source_recipe_id, created_at, updated_at
+            "#,
+            group_id,
+            auth.user_id,
+            line.name,
+            line.quantity,
+            line.unit,
+            line.recipe_id,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        created.push(GroceryItemResponse::from(item));
+    }
     tx.commit().await?;
 
     Ok((StatusCode::CREATED, Json(json!({ "items": created }))))
