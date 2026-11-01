@@ -687,14 +687,10 @@ fn back_value(back: &str) -> &'static str {
     }
 }
 
-/// A quantity and its unit, as the page shows them: `400 g`, `2`, or
-/// nothing.
+/// A quantity and its unit, as the stock list writes them
+/// (`format_quantity`): `400 g`, `1,5 L`, `3 gousses`, `2`, or nothing.
 fn amount(quantity: Option<f64>, unit: Option<&str>) -> Option<String> {
-    match (quantity, unit.map(str::trim).filter(|u| !u.is_empty())) {
-        (Some(q), Some(u)) => Some(format!("{} {u}", fmt_num(q))),
-        (Some(q), None) => Some(fmt_num(q)),
-        (None, _) => None,
-    }
+    quantity.map(|q| format_quantity(q, unit.unwrap_or("")))
 }
 
 /// What a stock line holds, and its date.
@@ -1804,6 +1800,19 @@ mod tests {
             expiry_status: ExpiryStatus::Unknown,
             barcode: None,
         }
+    }
+
+    #[test]
+    fn a_recipe_quantity_is_written_as_the_stock_list_writes_one() {
+        assert_eq!(amount(Some(1.5), Some("L")).as_deref(), Some("1,5 L"));
+        assert_eq!(
+            amount(Some(3.0), Some(" gousse ")).as_deref(),
+            Some("3 gousses")
+        );
+        assert_eq!(amount(Some(2.0), Some("unité")).as_deref(), Some("2"));
+        assert_eq!(amount(Some(2.0), Some("  ")).as_deref(), Some("2"));
+        assert_eq!(amount(Some(2.0), None).as_deref(), Some("2"));
+        assert_eq!(amount(None, Some("g")), None);
     }
 
     #[test]
