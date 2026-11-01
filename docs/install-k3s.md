@@ -24,7 +24,7 @@ Arbitrage (b) du 2026-10-10 :
 | Machines | serveur maison, un ou plusieurs nœuds | VPS loué à un hébergeur tiers, un nœud |
 | Usage | familial, essais | public |
 | Argo CD | synchro automatique | « Sync » manuel, rien ne part sans clic |
-| Branche suivie | `k3s` pendant l'intégration, `deploy` ensuite | `deploy` |
+| Branche suivie | `deploy` | `deploy` |
 | Observabilité (#437) | non | oui |
 | Entrée HTTP | ServiceLB (un nœud) ou MetalLB (plusieurs) | ServiceLB |
 | Adresse, certificat | `staging.home.arpa`, réseau maison seulement, autorité maison | nom public, Let's Encrypt |
@@ -457,8 +457,6 @@ poste$ cd manage_our_home-deploy
 poste$ ci/install-tools.sh ~/.local/bin kubectl helm yq kubeseal
 ```
 
-(pendant l'intégration de l'epic, `--branch k3s`).
-
 ### L'entrée HTTP : ServiceLB ou MetalLB
 
 Traefik, l'ingress que k3s installe, a un Service `LoadBalancer` en
@@ -665,9 +663,10 @@ poste$ platform/bootstrap.sh <staging|prod>
 poste$ kubectl -n argocd get applications
 ```
 
-La racine suit la branche de `clusters/<env>/root.yaml` : `deploy` pour la
-prod ; `k3s` pour le staging pendant l'intégration, `deploy` après la
-PR de promotion `k3s` → `deploy` (`platform/README.md`, « Environnements »).
+La racine suit la branche de `clusters/<env>/root.yaml` (`deploy`). Elle
+n'est pas dans son propre rendu : si ce fichier change, le réappliquer à la
+main après le merge (`kubectl apply -f platform/clusters/<env>/root.yaml`,
+`platform/README.md`, « Environnements »).
 
 **Les secrets**, une fois le contrôleur Sealed Secrets en marche : un
 `SealedSecret` par Secret de `README.md`, « Secrets », scellé par
