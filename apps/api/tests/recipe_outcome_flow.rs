@@ -1073,6 +1073,71 @@ async fn only_who_may_change_the_recipe_adds_to_it(db: PgPool) {
     );
 }
 
+/// `add_to_recipe` from a member who may not change the recipe is 403 only
+/// when it would add something: other products the recipe already names
+/// add nothing, so the request goes through, the recipe unchanged.
+#[sqlx::test]
+async fn adding_nothing_to_the_recipe_is_not_refused_to_a_member(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner = register_verify_login(&router, &db, "other-noop-o@example.test").await;
+    let member = register_verify_login(&router, &db, "other-noop-m@example.test").await;
+    let group_id = create_group(&router, &owner).await;
+    join(&router, &owner, &member, &group_id).await;
+    let (recipe, _, beurre, _) = crepes(&router, &owner, &group_id).await;
+    let before = recipe_ingredients(&router, &owner, &group_id, &recipe).await;
+    let creme = stock(
+        &router,
+        &owner,
+        &group_id,
+        json!({"name": "Crème", "quantity": 50.0, "unit": "cL"}),
+    )
+    .await;
+
+    // Beurre is in the recipe already, Crème is not: 403, nothing applied.
+    let res = post(
+        &router,
+        &member,
+        &done_path(&group_id, &recipe),
+        json!({
+            "others": [
+                {"stock_item_id": beurre, "quantity": 20.0},
+                {"stock_item_id": creme, "quantity": 20.0}
+            ],
+            "add_to_recipe": true
+        }),
+    )
+    .await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+    assert_eq!(
+        stock_quantity(&router, &owner, &group_id, &beurre).await,
+        250.0
+    );
+    assert_eq!(planned_count(&router, &owner, &group_id).await, 1);
+
+    // Beurre alone: nothing to add, so nothing to refuse.
+    let res = post(
+        &router,
+        &member,
+        &done_path(&group_id, &recipe),
+        json!({
+            "others": [{"stock_item_id": beurre, "quantity": 20.0}],
+            "add_to_recipe": true
+        }),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(json_body(res).await["added_ingredients"], json!([]));
+    assert_eq!(
+        stock_quantity(&router, &owner, &group_id, &beurre).await,
+        230.0
+    );
+    assert_eq!(
+        recipe_ingredients(&router, &owner, &group_id, &recipe).await,
+        before
+    );
+    assert_eq!(planned_count(&router, &owner, &group_id).await, 0);
+}
+
 /// Malformed other products are refused before anything is read.
 #[sqlx::test]
 async fn malformed_other_products_are_refused(db: PgPool) {

@@ -35,7 +35,8 @@
 //! recipe already has an ingredient of that name (`article_key`), so that
 //! replaying adds it once. Changing the recipe stays for its creator, an
 //! admin or the owner (`can_modify`, as for `PATCH`): anyone else gets 403
-//! for `add_to_recipe`, and the preview says whether the caller may
+//! for an `add_to_recipe` that adds something (products the recipe already
+//! names add nothing), and the preview says whether the caller may
 //! (`can_edit_recipe`).
 //!
 //! **Updating the recipe (#558).** The application also takes
@@ -724,12 +725,14 @@ pub async fn apply_done(
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let role = require_role(&mut tx, group_id, auth.user_id).await?;
     let selection = planned_selection(&mut tx, group_id, recipe_id, true).await?;
-    let add_to_recipe = body.add_to_recipe && !others.is_empty();
-    let changes_recipe = add_to_recipe || !body.recipe_updates.is_empty();
-    if changes_recipe && !can_modify(&role, selection.recipe_created_by == auth.user_id) {
+    let may_change = can_modify(&role, selection.recipe_created_by == auth.user_id);
+    if !body.recipe_updates.is_empty() && !may_change {
         return Err(AppError::Forbidden);
     }
-    if changes_recipe {
+    let add_to_recipe = body.add_to_recipe && !others.is_empty();
+    // Who may not change the recipe gets 403 for `add_to_recipe` only once
+    // it is known to add something (below); it writes nothing to it.
+    if (add_to_recipe && may_change) || !body.recipe_updates.is_empty() {
         // Locked as `PATCH` locks it, before its ingredients are read: a
         // `PATCH` replacing them meanwhile would otherwise leave an
         // ingredient added twice, or a change to one it deleted.
@@ -783,6 +786,15 @@ pub async fn apply_done(
             })
         })
         .collect();
+    let to_add = if add_to_recipe {
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        ingredients_to_add(&used, &names, selection.servings, selection.recipe_servings)
+    } else {
+        vec![]
+    };
+    if !to_add.is_empty() && !may_change {
+        return Err(AppError::Forbidden);
+    }
     to_apply.extend(others.iter().copied());
     let mut remaining = Vec::with_capacity(to_apply.len());
     for (id, quantity) in &to_apply {
@@ -839,27 +851,23 @@ pub async fn apply_done(
     .await?;
 
     let mut added = Vec::new();
-    if add_to_recipe {
-        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
-        for ing in ingredients_to_add(&used, &names, selection.servings, selection.recipe_servings)
-        {
-            let row = sqlx::query_as!(
-                AddedIngredientResponse,
-                r#"
-                INSERT INTO recipe_ingredients (recipe_id, group_id, name, quantity, unit)
-                VALUES ($1, $2, $3, $4, $5)
-                RETURNING id, name, quantity, unit
-                "#,
-                recipe_id,
-                group_id,
-                ing.name,
-                ing.quantity,
-                ing.unit,
-            )
-            .fetch_one(&mut *tx)
-            .await?;
-            added.push(row);
-        }
+    for ing in to_add {
+        let row = sqlx::query_as!(
+            AddedIngredientResponse,
+            r#"
+            INSERT INTO recipe_ingredients (recipe_id, group_id, name, quantity, unit)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id, name, quantity, unit
+            "#,
+            recipe_id,
+            group_id,
+            ing.name,
+            ing.quantity,
+            ing.unit,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        added.push(row);
     }
     for u in &body.recipe_updates {
         match u.change {
