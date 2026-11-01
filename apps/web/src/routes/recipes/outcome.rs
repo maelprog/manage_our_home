@@ -647,12 +647,16 @@ pub(crate) enum Refusal {
     Rejected,
 }
 
-/// The refusal of a `done`: a 409 (a stock line lowered or gone) or a 404
+/// The refusal of a `done`: a 409 (a stock line lowered or gone), a 404
 /// (an other product gone from the stock, or the selection closed: the
-/// preview read again tells them apart) is a change; a 400 is a rejected
-/// request.
-pub(crate) fn done_refusal(status: reqwest::StatusCode) -> Refusal {
-    if status == reqwest::StatusCode::CONFLICT || status == reqwest::StatusCode::NOT_FOUND {
+/// preview read again tells them apart) or the 400
+/// `stock_item_not_in_recipe` (an ingredient renamed or removed since the
+/// fresh preview) is a change; any other 400 is a rejected request.
+pub(crate) fn done_refusal(status: reqwest::StatusCode, body: &serde_json::Value) -> Refusal {
+    let changed = status == reqwest::StatusCode::CONFLICT
+        || status == reqwest::StatusCode::NOT_FOUND
+        || body.get("error").and_then(|e| e.as_str()) == Some("stock_item_not_in_recipe");
+    if changed {
         Refusal::Changed
     } else {
         Refusal::Rejected
@@ -1559,7 +1563,7 @@ pub async fn done_post(
                 || resp.status == reqwest::StatusCode::NOT_FOUND
                 || resp.status == reqwest::StatusCode::BAD_REQUEST =>
         {
-            match done_refusal(resp.status) {
+            match done_refusal(resp.status, &resp.body) {
                 // A stock line lowered or gone since the fresh preview: the
                 // updated preview, not the typed corrections of another
                 // one. A 404 is that, or the selection closed since, which
@@ -2345,15 +2349,23 @@ mod tests {
     #[test]
     fn a_refusal_for_a_change_made_since_is_told_from_a_rejected_form() {
         use reqwest::StatusCode as S;
+        let body = |code: &str| serde_json::json!({ "error": code });
         // A stock line lowered or gone (409), an other product gone or the
-        // selection closed (404, told apart by the preview read again).
-        for status in [S::CONFLICT, S::NOT_FOUND] {
-            assert_eq!(done_refusal(status), Refusal::Changed, "{status}");
+        // selection closed (404, told apart by the preview read again), or
+        // an ingredient renamed or removed since the fresh preview (400).
+        for (status, code) in [
+            (S::CONFLICT, "insufficient_stock"),
+            (S::NOT_FOUND, "not_found"),
+            (S::BAD_REQUEST, "stock_item_not_in_recipe"),
+        ] {
+            assert_eq!(done_refusal(status, &body(code)), Refusal::Changed, "{code}");
         }
         // A request the page should never have built: not a change, which
-        // another try would not fix. A line naming no ingredient is no
-        // longer refused (#540).
-        assert_eq!(done_refusal(S::BAD_REQUEST), Refusal::Rejected);
+        // another try would not fix.
+        assert_eq!(
+            done_refusal(S::BAD_REQUEST, &body("invalid_quantity")),
+            Refusal::Rejected
+        );
     }
 
     // -- gone ----------------------------------------------------------------

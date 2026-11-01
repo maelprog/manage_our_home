@@ -27,17 +27,18 @@
 //! **Other products (#540).** The application also takes `others`, products
 //! used that the recipe does not call for: `{stock_item_id, quantity}`, the
 //! quantity above 0, in the line's unit, refused above what the line holds
-//! as above. A line of `removals` need not name an ingredient either. A
-//! line of `others` the group's stock does not hold (another group's, or
-//! none) is 404. With `add_to_recipe`, each product becomes an ingredient
-//! of the recipe (`ingredients_to_add`): its line's name and unit, the
-//! quantity used brought back to the recipe's number of people, unless the
-//! recipe already has an ingredient of that name (`article_key`), so that
-//! replaying adds it once. Changing the recipe stays for its creator, an
-//! admin or the owner (`can_modify`, as for `PATCH`): anyone else gets 403
-//! for an `add_to_recipe` that adds something (products the recipe already
-//! names add nothing), and the preview says whether the caller may
-//! (`can_edit_recipe`).
+//! as above. A line of `removals`, on the other hand, must name one of the
+//! recipe's ingredients (`article_key`), or 400 `stock_item_not_in_recipe`,
+//! as before #540. A line of `others` the group's stock does not hold
+//! (another group's, or none) is 404. With `add_to_recipe`, each product
+//! becomes an ingredient of the recipe (`ingredients_to_add`): its line's
+//! name and unit, the quantity used brought back to the recipe's number of
+//! people, unless the recipe already has an ingredient of that name
+//! (`article_key`), so that replaying adds it once. Changing the recipe
+//! stays for its creator, an admin or the owner (`can_modify`, as for
+//! `PATCH`): anyone else gets 403 for an `add_to_recipe` that adds
+//! something (products the recipe already names add nothing), and the
+//! preview says whether the caller may (`can_edit_recipe`).
 //!
 //! **Updating the recipe (#558).** The application also takes
 //! `recipe_updates`, `{ingredient_id, action}` where `action` is
@@ -320,6 +321,13 @@ pub(crate) fn check_grocery_ids(ids: &[Uuid]) -> AppResult<()> {
 pub struct OtherRemoval {
     pub stock_item_id: Uuid,
     pub quantity: f64,
+}
+
+/// Whether a stock line's name is one of the recipe's ingredients
+/// (`article_key`): a line of `removals` takes only from those.
+pub(crate) fn names_an_ingredient(name: &str, ingredients: &[&str]) -> bool {
+    let key = article_key(name);
+    ingredients.iter().any(|i| article_key(i) == key)
 }
 
 /// The `(stock line, quantity)` pairs of a `done` request's other products.
@@ -786,8 +794,18 @@ pub async fn apply_done(
             })
         })
         .collect();
+    let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+    // A line of `removals` the recipe does not call for: an ingredient
+    // renamed or removed since the preview, or a product for `others`.
+    if to_apply.iter().any(|(id, _)| {
+        locked
+            .iter()
+            .find(|s| s.id == *id)
+            .is_some_and(|line| !names_an_ingredient(&line.name, &names))
+    }) {
+        return Err(AppError::BadRequest("stock_item_not_in_recipe".into()));
+    }
     let to_add = if add_to_recipe {
-        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
         ingredients_to_add(&used, &names, selection.servings, selection.recipe_servings)
     } else {
         vec![]
@@ -1509,6 +1527,16 @@ mod tests {
     fn distinct_or_no_grocery_ids_are_accepted() {
         assert!(check_grocery_ids(&[]).is_ok());
         assert!(check_grocery_ids(&[id(1), id(2)]).is_ok());
+    }
+
+    // -- names_an_ingredient -------------------------------------------------
+
+    #[test]
+    fn a_stock_line_must_name_an_ingredient() {
+        let ingredients = ["Farine", "Lait"];
+        assert!(names_an_ingredient(" lait ", &ingredients));
+        assert!(!names_an_ingredient("Lait de coco", &ingredients));
+        assert!(!names_an_ingredient("Lait", &[]));
     }
 
     // -- check_others ---------------------------------------------------------

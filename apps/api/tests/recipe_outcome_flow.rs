@@ -895,8 +895,7 @@ async fn another_product_is_taken_and_added_to_the_recipe_once(db: PgPool) {
 }
 
 /// AC: done with a product the recipe does not call for, without
-/// `add_to_recipe` → the stock is decremented, the recipe unchanged. A line
-/// of `removals` need not name an ingredient any more either.
+/// `add_to_recipe` → the stock is decremented, the recipe unchanged.
 #[sqlx::test]
 async fn another_product_without_add_to_recipe_leaves_the_recipe_as_it_is(db: PgPool) {
     let router = test_router(db.clone());
@@ -911,20 +910,12 @@ async fn another_product_without_add_to_recipe_leaves_the_recipe_as_it_is(db: Pg
         json!({"name": "Crème", "quantity": 50.0, "unit": "cL"}),
     )
     .await;
-    let jam = stock(
-        &router,
-        &cookie,
-        &group_id,
-        json!({"name": "Confiture", "quantity": 1.0}),
-    )
-    .await;
 
     let res = post(
         &router,
         &cookie,
         &done_path(&group_id, &recipe),
         json!({
-            "removals": [{"stock_item_id": jam, "quantity": 1.0}],
             "others": [{"stock_item_id": creme, "quantity": 20.0}],
             "add_to_recipe": false
         }),
@@ -936,7 +927,6 @@ async fn another_product_without_add_to_recipe_leaves_the_recipe_as_it_is(db: Pg
         stock_quantity(&router, &cookie, &group_id, &creme).await,
         30.0
     );
-    assert_eq!(stock_quantity(&router, &cookie, &group_id, &jam).await, 0.0);
     assert_eq!(
         recipe_ingredients(&router, &cookie, &group_id, &recipe).await,
         before
@@ -1071,6 +1061,57 @@ async fn only_who_may_change_the_recipe_adds_to_it(db: PgPool) {
         recipe_ingredients(&router, &owner, &group_id, &recipe).await,
         before
     );
+}
+
+/// A line of `removals` takes from the recipe's ingredients only: a stock
+/// line the recipe does not call for is 400 `stock_item_not_in_recipe`, as
+/// before #540, and nothing is applied. Such a product goes in `others`.
+#[sqlx::test]
+async fn a_removal_the_recipe_does_not_call_for_is_refused(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "removal-not-in@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+    let (recipe, farine, _, _) = crepes(&router, &cookie, &group_id).await;
+    let jam = stock(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Confiture", "quantity": 1.0}),
+    )
+    .await;
+
+    let res = post(
+        &router,
+        &cookie,
+        &done_path(&group_id, &recipe),
+        json!({"removals": [
+            {"stock_item_id": farine, "quantity": 400.0},
+            {"stock_item_id": jam, "quantity": 1.0}
+        ]}),
+    )
+    .await;
+    assert_status(&res, StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(res).await["error"], "stock_item_not_in_recipe");
+    assert_eq!(
+        stock_quantity(&router, &cookie, &group_id, &farine).await,
+        500.0
+    );
+    assert_eq!(stock_quantity(&router, &cookie, &group_id, &jam).await, 1.0);
+    assert_eq!(meals(&router, &cookie, &group_id).await, 0);
+    assert_eq!(planned_count(&router, &cookie, &group_id).await, 1);
+
+    let res = post(
+        &router,
+        &cookie,
+        &done_path(&group_id, &recipe),
+        json!({
+            "removals": [{"stock_item_id": farine, "quantity": 400.0}],
+            "others": [{"stock_item_id": jam, "quantity": 1.0}]
+        }),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(stock_quantity(&router, &cookie, &group_id, &jam).await, 0.0);
 }
 
 /// `add_to_recipe` from a member who may not change the recipe is 403 only
