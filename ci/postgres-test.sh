@@ -11,7 +11,7 @@
 #      initialised (ci/postgres.yaml).
 #   2. RLS: app_role neither bypasses RLS nor owns a table, and the
 #      policies apply to it: a group's membership is invisible to it
-#      without that group's `app.family_id`, visible with it.
+#      without that group's `app.group_id`, visible with it.
 #   3. Restore (README.md, "Restaurer"): a row written before an instant T
 #      and one written after; Argo CD paused and the api stopped, the
 #      Cluster is deleted, volume included, and recreated from the object
@@ -131,10 +131,10 @@ check_rls() { # label
   echo "app_role: no BYPASSRLS, owns no table; $v tables under forced RLS"
   gid=$(add_group "rls-$1")
   v=$(cnpg -c "SET ROLE app_role; SELECT count(*) FROM group_members WHERE group_id = '$gid'" | tail -n 1)
-  [ "$v" = 0 ] || { echo "::error::app_role sees $v membership(s) of group $gid without its app.family_id"; exit 1; }
-  v=$(cnpg -c "SET ROLE app_role; SELECT set_config('app.family_id', '$gid', false); SELECT count(*) FROM group_members WHERE group_id = '$gid'" | tail -n 1)
-  [ "$v" = 1 ] || { echo "::error::app_role sees $v membership(s) of group $gid with its app.family_id, expected 1"; exit 1; }
-  echo "app_role: a group's membership hidden without its app.family_id, visible with it"
+  [ "$v" = 0 ] || { echo "::error::app_role sees $v membership(s) of group $gid without its app.group_id"; exit 1; }
+  v=$(cnpg -c "SET ROLE app_role; SELECT set_config('app.group_id', '$gid', false); SELECT count(*) FROM group_members WHERE group_id = '$gid'" | tail -n 1)
+  [ "$v" = 1 ] || { echo "::error::app_role sees $v membership(s) of group $gid with its app.group_id, expected 1"; exit 1; }
+  echo "app_role: a group's membership hidden without its app.group_id, visible with it"
 }
 
 wait_archiving() {
