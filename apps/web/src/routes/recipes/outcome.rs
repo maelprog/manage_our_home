@@ -20,8 +20,9 @@
 //!   form is sent. When the quantities used are not the recipe's (#558),
 //!   that member then gets a page in between, « Mettre à jour la recette
 //!   pour la prochaine fois ? » (`update_proposals`, `update_body`): each
-//!   change checked, an ingredient not used to be removed or made optional
-//!   as chosen; it sends the form again with the answers.
+//!   change checked but those capped by the stock, an ingredient not used
+//!   to be removed or made optional as chosen; it sends the form again
+//!   with the answers.
 //! - **Abandonner**: the unchecked grocery items generated for the recipe,
 //!   each with a « Retirer » box checked by default.
 //!
@@ -519,6 +520,10 @@ pub(crate) struct UpdateProposal {
     /// What was used, for the recipe's number of people; `None` when
     /// nothing was.
     pub new_quantity: Option<f64>,
+    /// The stock held less than the recipe asked for (`Capped`): what was
+    /// used says what was left, not what the recipe needs, so the change
+    /// is proposed unchecked.
+    pub capped: bool,
 }
 
 /// The ingredients whose quantity used differs from the recipe's (#558),
@@ -586,6 +591,7 @@ pub(crate) fn update_proposals(preview: &DonePreview, form: &DoneForm) -> Vec<Up
             recipe_quantity: written,
             unit: unit.trim().to_string(),
             new_quantity,
+            capped: ingredient.warning == Some(RemovalWarning::Capped),
         });
     }
     proposals
@@ -932,7 +938,8 @@ pub(crate) fn done_body(
 
 /// « Mettre à jour la recette pour la prochaine fois ? » (#558): the step
 /// between the `done` form and its sending, when the quantities used differ
-/// from the recipe's. Each proposal is checked; an ingredient not used
+/// from the recipe's. Each proposal is checked, except one capped by the
+/// stock (`UpdateProposal::capped`), at 0 included; an ingredient not used
 /// offers « Retirer de la recette » or « Passer facultatif », neither
 /// chosen. The form sent is carried in hidden fields, so that this page
 /// sends it again with the answers (`step=update`). `missing` are the
@@ -950,7 +957,8 @@ pub(crate) fn update_body(
             .updates
             .as_ref()
             .and_then(|c| c.iter().find(|c| c.ingredient_id == p.ingredient_id));
-        let apply = choice.is_none_or(|c| c.apply);
+        // Unanswered: checked, unless capped by the stock.
+        let apply = choice.map_or(!p.capped, |c| c.apply);
         let was = format_quantity(p.recipe_quantity, &p.unit);
         let what = match p.new_quantity {
             Some(q) => format!("{} : {was} → {}", p.label, format_quantity(q, &p.unit)),
@@ -3352,7 +3360,12 @@ mod tests {
             recipe_quantity: recipe,
             unit: unit.into(),
             new_quantity: new,
+            capped: false,
         }
+    }
+
+    fn capped(p: UpdateProposal) -> UpdateProposal {
+        UpdateProposal { capped: true, ..p }
     }
 
     fn choice(n: u128, apply: bool, unused: Option<Unused>) -> UpdateChoice {
@@ -3541,6 +3554,43 @@ mod tests {
         assert_eq!(
             got,
             vec![proposal(2, "farine (n° 2)", 200.0, "g", Some(100.0))]
+        );
+    }
+
+    #[test]
+    fn an_ingredient_capped_by_the_stock_is_proposed_as_capped() {
+        // Farine 200 g for 2, cooked for 4 (400 g), only 100 g in stock:
+        // the 100 g used are 50 g for 2, proposed as capped.
+        let mut p = for_two();
+        let farine = |held: f64| {
+            let mut i = ingredient(
+                1,
+                "Farine",
+                Some(400.0),
+                Some("g"),
+                vec![(stock(10, "Farine", held, "g"), held)],
+                Some(RemovalWarning::Capped),
+            );
+            i.recipe_quantity = Some(200.0);
+            i
+        };
+        p.ingredients[0] = farine(100.0);
+        let lines = |flour: &str| {
+            form(vec![
+                line(10, flour, true),
+                line(20, "1", true),
+                line(30, "2", true),
+            ])
+        };
+        assert_eq!(
+            update_proposals(&p, &lines("100")),
+            vec![capped(proposal(1, "Farine", 200.0, "g", Some(50.0)))]
+        );
+        // Nothing left in stock: not used, capped too.
+        p.ingredients[0] = farine(0.0);
+        assert_eq!(
+            update_proposals(&p, &lines("0")),
+            vec![capped(proposal(1, "Farine", 200.0, "g", None))]
         );
     }
 
@@ -3747,6 +3797,43 @@ mod tests {
             "{html}"
         );
         assert!(!html.contains("update_unused.2-error"), "{html}");
+    }
+
+    #[test]
+    fn a_change_capped_by_the_stock_is_proposed_unchecked() {
+        let mut f = form(vec![line(10, "100", true)]);
+        let proposals = [
+            capped(proposal(1, "Farine", 200.0, "g", Some(50.0))),
+            capped(proposal(2, "Lait", 0.5, "L", None)),
+            proposal(3, "Sel", 1.0, "pincée", Some(2.0)),
+        ];
+        let html = update_body(id(901), &for_two(), &f, &proposals, &[]);
+        assert!(
+            html.contains(r#"name="update_apply.0"/> Farine : 200 g → 50 g"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                r#"name="update_apply.1"/> Lait : 0,5 L dans la recette, rien d'utilisé"#
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"name="update_apply.2" checked/> Sel"#),
+            "{html}"
+        );
+        // Checked by the member, shown again: checked.
+        f.updates = Some(vec![
+            choice(1, true, None),
+            choice(2, false, None),
+            choice(3, true, None),
+        ]);
+        let html = update_body(id(901), &for_two(), &f, &proposals, &[]);
+        assert!(
+            html.contains(r#"name="update_apply.0" checked/> Farine"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"name="update_apply.1"/> Lait"#), "{html}");
     }
 
     #[test]
