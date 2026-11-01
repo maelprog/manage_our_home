@@ -1477,3 +1477,44 @@ async fn a_member_profile_is_shown_only_inside_a_shared_group(db: PgPool) {
     drop(scoped_router);
     drop_prescribed_role(&db, app_db, &role).await;
 }
+
+/// #572: no account can hold an address outside ASCII, so no invitation
+/// names one: 422 `invalid_email`, and nothing is stored.
+#[sqlx::test]
+async fn an_invitation_to_an_address_outside_ascii_is_refused(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let create = call(
+        &router,
+        Method::POST,
+        "/groups",
+        Some(&owner_cookie),
+        Some(serde_json::json!({"name": "Foyer"})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let group_id = json_body(create).await["id"].as_str().unwrap().to_string();
+
+    for email in ["zoë@example.test", "a@exämple.test"] {
+        let invite = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/invitations"),
+            Some(&owner_cookie),
+            Some(serde_json::json!({"invited_email": email})),
+        )
+        .await;
+        assert_status(&invite, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            json_body(invite).await["error"],
+            "invalid_email",
+            "{email:?}"
+        );
+    }
+    let stored: i64 = sqlx::query_scalar("SELECT count(*) FROM invitations")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(stored, 0);
+}

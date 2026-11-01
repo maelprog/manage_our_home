@@ -82,9 +82,14 @@ fn error_text(code: &str) -> Option<&'static str> {
         "forbidden" => Some("Vous n'avez pas les droits nécessaires pour cette action."),
         "invalid_role" => Some("Rôle invalide."),
         "unavailable" => Some("Service momentanément indisponible, merci de réessayer."),
+        INVALID_EMAIL => Some(crate::routes::auth::register::NON_ASCII_EMAIL),
         _ => None,
     }
 }
+
+/// `?error=` once apps/api has refused the invited address (422
+/// `invalid_email`): today only for being outside ASCII (#572).
+const INVALID_EMAIL: &str = "invalid_email";
 
 fn page(
     header: &str,
@@ -272,6 +277,9 @@ pub async fn invite(
         Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
             group_not_found_page().into_response()
         }
+        Ok(resp) if resp.status == reqwest::StatusCode::UNPROCESSABLE_ENTITY => {
+            Redirect::to(&format!("{members_url}?error={INVALID_EMAIL}")).into_response()
+        }
         Ok(_) | Err(_) => Redirect::to(&format!("{members_url}?error=unavailable")).into_response(),
     }
 }
@@ -353,6 +361,16 @@ pub async fn remove(
 mod tests {
     use super::*;
     use manage_our_home_shared::dto::groups::GroupMember;
+
+    /// #572: an invited address apps/api refuses comes back with the
+    /// registration form's message, not as an unavailable service.
+    #[test]
+    fn a_refused_invited_address_says_why() {
+        assert_eq!(
+            error_text(INVALID_EMAIL),
+            Some(crate::routes::auth::register::NON_ASCII_EMAIL)
+        );
+    }
 
     fn me(id: Uuid) -> MeResponse {
         MeResponse {
@@ -450,6 +468,90 @@ mod tests {
         assert!(
             html.contains(&crate::app::member_link(g, alice, "Alice", Icon::Initial)),
             "{html}"
+        );
+    }
+}
+
+/// The invitation form on the real router, against a stand-in apps/api.
+#[cfg(test)]
+mod route_tests {
+    use axum::body::Body;
+    use axum::http::{header, Method, Request, StatusCode};
+    use axum::routing::{get, post};
+    use axum::{Json, Router};
+    use tower::ServiceExt;
+
+    use crate::state::AppState;
+
+    const GROUP: &str = "00000000-0000-0000-0000-00000000000a";
+
+    /// An apps/api with a session, whose invitation route answers `status`
+    /// with `{"error": error}`.
+    async fn send_invite(status: StatusCode, error: &'static str) -> axum::response::Response {
+        let app = Router::new()
+            .route(
+                "/auth/me",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "user_id": "00000000-0000-0000-0000-000000000001",
+                        "email": "a@example.test",
+                        "display_name": "A",
+                        "email_verified": true,
+                        "terms_accepted_version": "2026-01-01",
+                    }))
+                }),
+            )
+            .route(
+                &format!("/groups/{GROUP}/invitations"),
+                post(move || async move { (status, Json(serde_json::json!({ "error": error }))) }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let router = crate::build_router(AppState {
+            http: reqwest::Client::new(),
+            api_internal_base_url: format!("http://{addr}"),
+            api_public_base_url: "/api".into(),
+            body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
+            upload_gate: manage_our_home_http_guard::UploadGate::production(),
+            shutdown: manage_our_home_http_guard::Shutdown::new(),
+        });
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/groups/{GROUP}/members/invite"))
+            .header(header::COOKIE, "session_id=s")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from("invited_email=zo%C3%AB%40example.test"))
+            .unwrap();
+        router.oneshot(request).await.unwrap()
+    }
+
+    fn location(response: &axum::response::Response) -> Option<&str> {
+        response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+    }
+
+    /// #572: an address apps/api refuses (422 `invalid_email`) comes back
+    /// on the members page with its own message, not as an unavailable
+    /// service.
+    #[tokio::test]
+    async fn a_refused_invited_address_lands_on_its_message() {
+        let response = send_invite(StatusCode::UNPROCESSABLE_ENTITY, "invalid_email").await;
+        assert!(response.status().is_redirection(), "{}", response.status());
+        assert_eq!(
+            location(&response),
+            Some(format!("/groups/{GROUP}/members?error=invalid_email").as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn any_other_failure_is_still_unavailable() {
+        let response = send_invite(StatusCode::INTERNAL_SERVER_ERROR, "internal").await;
+        assert_eq!(
+            location(&response),
+            Some(format!("/groups/{GROUP}/members?error=unavailable").as_str())
         );
     }
 }

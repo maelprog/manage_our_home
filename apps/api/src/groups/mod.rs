@@ -5,7 +5,7 @@ use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
 use chrono::{Duration, Utc};
 use manage_our_home_shared::dto::groups::GroupMemberProfile;
-use manage_our_home_shared::validation::auth::normalize_email;
+use manage_our_home_shared::validation::auth::{normalize_email, validate_email_ascii};
 use manage_our_home_shared::validation::groups::Accent;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -519,6 +519,11 @@ pub async fn create_invitation(
     // Stored as accounts are (#459), so the invitation is found by the
     // export of the account it names whatever capitals either was typed in.
     body.invited_email = body.invited_email.as_deref().map(normalize_email);
+    // #572: no account can hold an address outside ASCII, so no invitation
+    // names one: 422 `invalid_email`, as at registration.
+    if let Some(email) = body.invited_email.as_deref() {
+        validate_email_ascii(email).map_err(|code| AppError::Unprocessable(code.into()))?;
+    }
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let role = require_role(&mut tx, group_id, auth.user_id).await?;
     if role != "owner" && role != "admin" {

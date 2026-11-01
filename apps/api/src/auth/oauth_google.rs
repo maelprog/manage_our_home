@@ -1,6 +1,6 @@
 use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Redirect};
-use manage_our_home_shared::validation::auth::normalize_email;
+use manage_our_home_shared::validation::auth::{normalize_email, validate_email_ascii};
 use oauth2::url::Url;
 use oauth2::{
     AuthorizationCode, CsrfToken, PkceCodeChallenge, PkceCodeVerifier, Scope, TokenResponse,
@@ -203,6 +203,16 @@ pub async fn callback(
     // Stored and matched in the same form as a password account's (#459),
     // so a Google profile finds the account its holder registered by hand.
     let email = normalize_email(&userinfo.email);
+    // #572: addresses are ASCII only. A Google profile whose address is not
+    // signs in to nothing and creates nothing — not even an account already
+    // bound to it, which a password login would refuse too — and the
+    // browser lands on the login page, which says why.
+    if validate_email_ascii(&email).is_err() {
+        return Ok(Redirect::to(&format!(
+            "{}/login?google=email_not_ascii",
+            state.frontend_base_url
+        )));
+    }
 
     let refresh_token_plain = token.refresh_token().map(|t| t.secret().clone());
 

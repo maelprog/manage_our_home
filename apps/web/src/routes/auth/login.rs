@@ -23,11 +23,13 @@ pub struct LoginForm {
 /// (#462), kept only when it is a `return_to::safe_return_path` — anything
 /// else is ignored: nothing is stored, and the login ends on `/` — or, when
 /// an invitation was already remembered in this browser, on that invitation,
-/// a path checked when stored and again when read (#576).
+/// a path checked when stored and again when read (#576); `?google=` a
+/// Google sign-in apps/api refused (#572).
 #[derive(serde::Deserialize)]
 pub struct LoginQuery {
     reauth: Option<String>,
     next: Option<String>,
+    google: Option<String>,
 }
 
 /// The notice `?reauth=` puts above the form. Only the one value the
@@ -36,6 +38,20 @@ fn reauth_notice(reason: Option<&str>) -> Option<&'static str> {
     match reason {
         Some("admin") => Some(
             "Votre session d'administration a expiré : reconnectez-vous pour accéder à l'administration.",
+        ),
+        _ => None,
+    }
+}
+
+/// The error `?google=` puts above the form: apps/api's Google callback
+/// sends a refused sign-in back here (#572). Only the one value it sends has
+/// copy; anything else a URL carries shows nothing.
+fn google_refusal(reason: Option<&str>) -> Option<&'static str> {
+    match reason {
+        Some("email_not_ascii") => Some(
+            "Connexion Google refusée : l'adresse de ce compte Google contient des caractères \
+             non ASCII (accents, lettres hors de l'alphabet latin de base), que le service \
+             n'accepte pas. Aucun compte n'a été créé.",
         ),
         _ => None,
     }
@@ -84,7 +100,7 @@ pub async fn get(
 ) -> Response {
     let html = Html(page(
         "",
-        None,
+        google_refusal(query.google.as_deref()),
         reauth_notice(query.reauth.as_deref()),
         &state.api_public_base_url,
     ));
@@ -187,6 +203,23 @@ pub async fn post(
 mod tests {
     use super::*;
 
+    /// #572: apps/api sends a Google sign-in whose address is not ASCII
+    /// back here with `?google=email_not_ascii`; the page says why.
+    #[test]
+    fn a_google_address_outside_ascii_is_explained() {
+        let error = google_refusal(Some("email_not_ascii")).expect("a message");
+        assert!(error.contains("Google"), "{error}");
+        assert!(error.contains("ASCII"), "{error}");
+        assert!(error.contains("Aucun compte"), "{error}");
+    }
+
+    #[test]
+    fn no_other_google_reason_has_a_message() {
+        for reason in [None, Some(""), Some("other"), Some("<b>")] {
+            assert_eq!(google_refusal(reason), None, "{reason:?}");
+        }
+    }
+
     #[test]
     fn the_admin_reauth_reason_has_its_notice() {
         let notice = reauth_notice(Some("admin")).expect("a notice for the admin reason");
@@ -256,5 +289,53 @@ mod tests {
         );
         let without = page("", None, None, "http://api");
         assert!(!without.contains(r#"class="notice""#), "{without}");
+    }
+}
+
+/// The route on the real router, against a stand-in apps/api.
+#[cfg(test)]
+mod route_tests {
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use axum::Router;
+    use tower::ServiceExt;
+
+    use crate::state::AppState;
+
+    /// `GET {uri}` from a visitor with no session.
+    async fn get_page(uri: &str) -> (StatusCode, String) {
+        let app = Router::new().route("/auth/me", get(|| async { StatusCode::UNAUTHORIZED }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let router = crate::build_router(AppState {
+            http: reqwest::Client::new(),
+            api_internal_base_url: format!("http://{addr}"),
+            api_public_base_url: "/api".into(),
+            body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
+            upload_gate: manage_our_home_http_guard::UploadGate::production(),
+            shutdown: manage_our_home_http_guard::Shutdown::new(),
+        });
+        let request = Request::builder().uri(uri).body(Body::empty()).unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    /// #572: the URL apps/api's Google callback sends a refused sign-in to
+    /// shows why, as an error above the form.
+    #[tokio::test]
+    async fn a_google_refusal_in_the_query_is_shown_as_an_error() {
+        let (status, body) = get_page("/login?google=email_not_ascii").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            body.contains(r#"<p class="notice error">Connexion Google refusée"#),
+            "{body}"
+        );
+
+        let (_, plain) = get_page("/login").await;
+        assert!(!plain.contains("notice error"), "{plain}");
     }
 }
