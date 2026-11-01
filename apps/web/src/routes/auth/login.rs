@@ -291,3 +291,51 @@ mod tests {
         assert!(!without.contains(r#"class="notice""#), "{without}");
     }
 }
+
+/// The route on the real router, against a stand-in apps/api.
+#[cfg(test)]
+mod route_tests {
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use axum::Router;
+    use tower::ServiceExt;
+
+    use crate::state::AppState;
+
+    /// `GET {uri}` from a visitor with no session.
+    async fn get_page(uri: &str) -> (StatusCode, String) {
+        let app = Router::new().route("/auth/me", get(|| async { StatusCode::UNAUTHORIZED }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let router = crate::build_router(AppState {
+            http: reqwest::Client::new(),
+            api_internal_base_url: format!("http://{addr}"),
+            api_public_base_url: "/api".into(),
+            body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
+            upload_gate: manage_our_home_http_guard::UploadGate::production(),
+            shutdown: manage_our_home_http_guard::Shutdown::new(),
+        });
+        let request = Request::builder().uri(uri).body(Body::empty()).unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    /// #572: the URL apps/api's Google callback sends a refused sign-in to
+    /// shows why, as an error above the form.
+    #[tokio::test]
+    async fn a_google_refusal_in_the_query_is_shown_as_an_error() {
+        let (status, body) = get_page("/login?google=email_not_ascii").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            body.contains(r#"<p class="notice error">Connexion Google refusée"#),
+            "{body}"
+        );
+
+        let (_, plain) = get_page("/login").await;
+        assert!(!plain.contains("notice error"), "{plain}");
+    }
+}
