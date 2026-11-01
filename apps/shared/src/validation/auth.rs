@@ -54,8 +54,10 @@ pub fn validate_password(password: &str) -> Result<(), &'static str> {
 /// local part, a single `@`, and a domain containing a dot with non-empty
 /// labels on both sides of it. No surrounding whitespace allowed: callers
 /// pass the address through [`normalize_email`] first. This is a shape
-/// check, not RFC 5322 compliance.
+/// check, not RFC 5322 compliance — except that the address must be ASCII
+/// ([`validate_email_ascii`], #572).
 pub fn validate_email(email: &str) -> Result<(), &'static str> {
+    validate_email_ascii(email)?;
     if email != email.trim() {
         return Err("invalid_email");
     }
@@ -75,8 +77,24 @@ pub fn validate_email(email: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// `invalid_email` when the address holds a character outside ASCII (#572).
+/// An internationalised domain is accepted in its ASCII form (`xn--…`),
+/// which is what a browser sends from an `<input type="email">`; the WHATWG
+/// grammar of that field admits ASCII only in the local part.
+///
+/// Keeping addresses ASCII is what makes [`normalize_email`] agree with the
+/// `lower(email)` unique index of migration 0030: outside ASCII, Rust's
+/// lowercasing and Postgres's (which follows the database's `LC_CTYPE`)
+/// differ. Not a shape check: [`validate_email`] adds that.
+pub fn validate_email_ascii(email: &str) -> Result<(), &'static str> {
+    if !email.is_ascii() {
+        return Err("invalid_email");
+    }
+    Ok(())
+}
+
 /// The form under which an address is stored and looked up (#459):
-/// surrounding whitespace trimmed, every letter lowercased. Every address
+/// surrounding whitespace trimmed, ASCII letters lowercased (#572). Every address
 /// the API receives — registration, login, forgotten password, resend,
 /// Google sign-in, invitation — goes through it before being validated,
 /// stored or compared, so `Alice@Example.com` and `alice@example.com` are
@@ -86,9 +104,12 @@ pub fn validate_email(email: &str) -> Result<(), &'static str> {
 /// addresses that differ only by case.
 ///
 /// Only case and surrounding whitespace are folded: dots and `+` tags are
-/// provider-specific and stay as typed.
+/// provider-specific and stay as typed. Only ASCII case, too (#572): an
+/// address is refused outside ASCII ([`validate_email_ascii`]), and folding
+/// nothing else keeps this function and Postgres's `lower()` equal by
+/// construction, whatever the database's locale.
 pub fn normalize_email(email: &str) -> String {
-    email.trim().to_lowercase()
+    email.trim().to_ascii_lowercase()
 }
 
 /// `display_name_required` when the name is empty after trimming surrounding
@@ -411,6 +432,33 @@ mod tests {
         assert_eq!(validate_email("a@b.co "), Err("invalid_email"));
     }
 
+    // -- ASCII only (#572) ---------------------------------------------
+
+    #[test]
+    fn an_address_with_a_non_ascii_local_part_is_rejected() {
+        assert_eq!(validate_email("é@x.fr"), Err("invalid_email"));
+        assert_eq!(validate_email("İ@x.fr"), Err("invalid_email"));
+    }
+
+    #[test]
+    fn an_address_with_a_unicode_domain_is_rejected() {
+        assert_eq!(validate_email("a@exämple.fr"), Err("invalid_email"));
+    }
+
+    #[test]
+    fn an_internationalised_domain_in_its_ascii_form_is_accepted() {
+        assert_eq!(validate_email("a@xn--exmple-cua.fr"), Ok(()));
+    }
+
+    #[test]
+    fn the_ascii_check_alone_refuses_only_non_ascii_characters() {
+        assert_eq!(validate_email_ascii("é@x.fr"), Err("invalid_email"));
+        assert_eq!(validate_email_ascii("a@exämple.fr"), Err("invalid_email"));
+        assert_eq!(validate_email_ascii("a@xn--exmple-cua.fr"), Ok(()));
+        // Not a shape check: invitations have never had one.
+        assert_eq!(validate_email_ascii("plainaddress"), Ok(()));
+    }
+
     // -- normalize_email ----------------------------------------------
 
     #[test]
@@ -438,9 +486,20 @@ mod tests {
 
     #[test]
     fn normalize_email_is_idempotent() {
-        let once = normalize_email(" Éloïse@Exemple.FR ");
-        assert_eq!(once, "éloïse@exemple.fr");
+        let once = normalize_email(" Eloise@Exemple.FR ");
+        assert_eq!(once, "eloise@exemple.fr");
         assert_eq!(normalize_email(&once), once);
+    }
+
+    #[test]
+    fn normalize_email_folds_ascii_letters_only() {
+        // #572: Rust's Unicode lowercasing and Postgres's `lower()` disagree
+        // outside ASCII; folding only ASCII keeps the two equal by
+        // construction. Such an address is refused by `validate_email`
+        // anyway — what matters is that nothing outside ASCII is rewritten.
+        assert_eq!(normalize_email("ÀB@X.FR"), "Àb@x.fr");
+        assert_eq!(normalize_email("İ@X.FR"), "İ@x.fr");
+        assert_eq!(normalize_email("ΣΑΣ@x.gr"), "ΣΑΣ@x.gr");
     }
 
     #[test]
