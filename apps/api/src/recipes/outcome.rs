@@ -38,6 +38,18 @@
 //! for `add_to_recipe`, and the preview says whether the caller may
 //! (`can_edit_recipe`).
 //!
+//! **Updating the recipe (#558).** The application also takes
+//! `recipe_updates`, `{ingredient_id, action}` where `action` is
+//! `set_quantity` (with `quantity`, above 0, for the recipe's number of
+//! people), `remove` or `make_optional`: what the cook learned for next
+//! time. They are applied in the same transaction as the removals, for the
+//! same people as `add_to_recipe` (403 otherwise, and nothing applied); an
+//! ingredient the recipe does not have, of another recipe or group, is 404
+//! and nothing is applied. The preview gives what the page needs to propose
+//! them: each ingredient's quantity as written (`recipe_quantity`) and the
+//! recipe's number of people (`recipe_servings`). Any change to the recipe
+//! first locks its row, as `PATCH` does.
+//!
 //! **Abandoned.** The preview lists the unchecked grocery items whose
 //! `source_recipe_id` names the recipe. The application takes the ids to
 //! remove (the others are kept); an id that is no longer such an item
@@ -393,6 +405,47 @@ pub(crate) fn ingredients_to_add(
         .collect()
 }
 
+/// What a `done` request changes in one of the recipe's ingredients
+/// (#558). On the wire, beside `ingredient_id`: `"action": "set_quantity"`
+/// with `"quantity"`, `"action": "remove"` or `"action": "make_optional"`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum RecipeChange {
+    /// The ingredient's new quantity, for the recipe's number of people,
+    /// in its unit.
+    SetQuantity { quantity: f64 },
+    /// The ingredient leaves the recipe.
+    Remove,
+    /// The ingredient becomes optional; its quantity is kept.
+    MakeOptional,
+}
+
+/// One change to the recipe a `done` request carries (#558).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct RecipeUpdate {
+    pub ingredient_id: Uuid,
+    #[serde(flatten)]
+    pub change: RecipeChange,
+}
+
+/// The changes to the recipe a `done` request carries: each ingredient
+/// once, and a new quantity finite and above 0 (an ingredient no longer
+/// used is removed or made optional, not set to 0), or 400.
+pub(crate) fn check_recipe_updates(updates: &[RecipeUpdate]) -> AppResult<()> {
+    let mut seen = HashSet::with_capacity(updates.len());
+    for u in updates {
+        if !seen.insert(u.ingredient_id) {
+            return Err(AppError::BadRequest("duplicate_ingredient".into()));
+        }
+        if let RecipeChange::SetQuantity { quantity } = u.change {
+            if !quantity.is_finite() || quantity <= 0.0 {
+                return Err(AppError::BadRequest("invalid_quantity".into()));
+            }
+        }
+    }
+    Ok(())
+}
+
 // -- Handlers -----------------------------------------------------------------
 
 /// The recipe's `planned` selection, with the recipe's own number of people.
@@ -521,6 +574,8 @@ pub struct DoneLineResponse {
     pub name: String,
     /// The recipe's quantity, scaled to the selection's number of people.
     pub quantity: Option<f64>,
+    /// The recipe's quantity as written, not scaled (#558).
+    pub recipe_quantity: Option<f64>,
     pub unit: Option<String>,
     pub is_optional: bool,
     /// The stock lines proposed, in the order they are taken from; empty
@@ -595,6 +650,7 @@ pub async fn preview_done(
             ingredient_id: r.id,
             name: r.name.clone(),
             quantity,
+            recipe_quantity: r.quantity,
             unit: r.unit.clone(),
             is_optional: r.is_optional,
             lots: p
@@ -619,6 +675,7 @@ pub async fn preview_done(
         "selection": selection.response(),
         "ingredients": ingredients,
         "can_edit_recipe": can_edit_recipe,
+        "recipe_servings": selection.recipe_servings,
     })))
 }
 
@@ -637,6 +694,10 @@ pub struct DoneRequest {
     /// the owner (`can_modify`).
     #[serde(default)]
     pub add_to_recipe: bool,
+    /// Changes to the recipe's ingredients (#558), for the same people as
+    /// `add_to_recipe`.
+    #[serde(default)]
+    pub recipe_updates: Vec<RecipeUpdate>,
 }
 
 /// An ingredient added by `add_to_recipe`.
@@ -658,14 +719,37 @@ pub async fn apply_done(
 ) -> AppResult<impl IntoResponse> {
     let mut to_apply = removals_to_apply(&body.removals)?;
     let others = check_others(&body.removals, &body.others)?;
+    check_recipe_updates(&body.recipe_updates)?;
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let role = require_role(&mut tx, group_id, auth.user_id).await?;
     let selection = planned_selection(&mut tx, group_id, recipe_id, true).await?;
-    let rows = ingredients(&mut tx, group_id, recipe_id).await?;
     let add_to_recipe = body.add_to_recipe && !others.is_empty();
-    if add_to_recipe && !can_modify(&role, selection.recipe_created_by == auth.user_id) {
+    let changes_recipe = add_to_recipe || !body.recipe_updates.is_empty();
+    if changes_recipe && !can_modify(&role, selection.recipe_created_by == auth.user_id) {
         return Err(AppError::Forbidden);
+    }
+    if changes_recipe {
+        // Locked as `PATCH` locks it, before its ingredients are read: a
+        // `PATCH` replacing them meanwhile would otherwise leave an
+        // ingredient added twice, or a change to one it deleted.
+        sqlx::query_scalar!(
+            "SELECT id FROM recipes WHERE id = $1 AND group_id = $2 FOR UPDATE",
+            recipe_id,
+            group_id,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+    }
+    let rows = ingredients(&mut tx, group_id, recipe_id).await?;
+    // An ingredient the recipe does not have: another recipe's, another
+    // group's, or none. Nothing has been written yet.
+    if body
+        .recipe_updates
+        .iter()
+        .any(|u| !rows.iter().any(|r| r.id == u.ingredient_id))
+    {
+        return Err(AppError::NotFound);
     }
 
     // Locked in id order, so two applications taking from the same lines
@@ -776,15 +860,47 @@ pub async fn apply_done(
             .await?;
             added.push(row);
         }
-        if !added.is_empty() {
-            sqlx::query!(
-                "UPDATE recipes SET updated_at = now() WHERE id = $1 AND group_id = $2",
-                recipe_id,
+    }
+    for u in &body.recipe_updates {
+        match u.change {
+            RecipeChange::SetQuantity { quantity } => {
+                sqlx::query!(
+                    "UPDATE recipe_ingredients SET quantity = $3 WHERE id = $1 AND group_id = $2",
+                    u.ingredient_id,
+                    group_id,
+                    quantity,
+                )
+                .execute(&mut *tx)
+                .await?
+            }
+            RecipeChange::Remove => {
+                sqlx::query!(
+                    "DELETE FROM recipe_ingredients WHERE id = $1 AND group_id = $2",
+                    u.ingredient_id,
+                    group_id,
+                )
+                .execute(&mut *tx)
+                .await?
+            }
+            RecipeChange::MakeOptional => {
+                sqlx::query!(
+                "UPDATE recipe_ingredients SET is_optional = true WHERE id = $1 AND group_id = $2",
+                u.ingredient_id,
                 group_id,
             )
-            .execute(&mut *tx)
-            .await?;
-        }
+                .execute(&mut *tx)
+                .await?
+            }
+        };
+    }
+    if !added.is_empty() || !body.recipe_updates.is_empty() {
+        sqlx::query!(
+            "UPDATE recipes SET updated_at = now() WHERE id = $1 AND group_id = $2",
+            recipe_id,
+            group_id,
+        )
+        .execute(&mut *tx)
+        .await?;
     }
     let selection = close_selection(&mut tx, &selection, "done").await?;
     tx.commit().await?;
@@ -1495,5 +1611,82 @@ mod tests {
         // Either number missing: the quantity used.
         let got = ingredients_to_add(&[used("Crème", "cL", 30.0)], &[], None, Some(2));
         assert_eq!(got, vec![new_ing("Crème", 30.0, "cL")]);
+    }
+
+    // -- recipe updates (#558) -------------------------------------------------
+
+    fn update(n: u128, change: RecipeChange) -> RecipeUpdate {
+        RecipeUpdate {
+            ingredient_id: id(n),
+            change,
+        }
+    }
+
+    #[test]
+    fn a_recipe_update_reads_its_action_beside_the_ingredient() {
+        let got: Vec<RecipeUpdate> = serde_json::from_value(json!([
+            {"ingredient_id": id(1), "action": "set_quantity", "quantity": 250.0},
+            {"ingredient_id": id(2), "action": "remove"},
+            {"ingredient_id": id(3), "action": "make_optional"}
+        ]))
+        .unwrap();
+        assert_eq!(
+            got,
+            vec![
+                update(1, RecipeChange::SetQuantity { quantity: 250.0 }),
+                update(2, RecipeChange::Remove),
+                update(3, RecipeChange::MakeOptional),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_recipe_update_without_a_known_action_does_not_read() {
+        for bad in [
+            json!({"ingredient_id": id(1)}),
+            json!({"ingredient_id": id(1), "action": "rename"}),
+            json!({"ingredient_id": id(1), "action": "set_quantity"}),
+        ] {
+            assert!(
+                serde_json::from_value::<RecipeUpdate>(bad.clone()).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn distinct_recipe_updates_are_accepted() {
+        assert!(check_recipe_updates(&[]).is_ok());
+        assert!(check_recipe_updates(&[
+            update(1, RecipeChange::SetQuantity { quantity: 0.5 }),
+            update(2, RecipeChange::Remove),
+            update(3, RecipeChange::MakeOptional),
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn an_ingredient_updated_twice_is_refused() {
+        assert_eq!(
+            bad_request(check_recipe_updates(&[
+                update(1, RecipeChange::Remove),
+                update(1, RecipeChange::MakeOptional),
+            ])),
+            "duplicate_ingredient"
+        );
+    }
+
+    #[test]
+    fn a_new_quantity_must_be_finite_and_above_zero() {
+        for q in [0.0, -1.0, f64::INFINITY, f64::NAN] {
+            assert_eq!(
+                bad_request(check_recipe_updates(&[update(
+                    1,
+                    RecipeChange::SetQuantity { quantity: q }
+                )])),
+                "invalid_quantity",
+                "{q}"
+            );
+        }
     }
 }

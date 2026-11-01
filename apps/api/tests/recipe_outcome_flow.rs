@@ -1413,3 +1413,313 @@ async fn an_abandon_without_remove_is_refused(db: PgPool) {
     assert_status(&res, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(planned_count(&router, &cookie, &group_id).await, 1);
 }
+
+// -- Updating the recipe (#558) -------------------------------------------------
+
+/// The recipe's ingredients by name: `(quantity, is_optional)`.
+async fn recipe_lines(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+    recipe_id: &str,
+) -> Vec<(String, Option<f64>, bool)> {
+    let res = get(
+        router,
+        cookie,
+        &format!("/groups/{group_id}/recipes/{recipe_id}"),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let mut got: Vec<_> = json_body(res).await["ingredients"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["name"].as_str().unwrap().to_string(),
+                i["quantity"].as_f64(),
+                i["is_optional"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    got.sort_by(|a, b| a.0.cmp(&b.0));
+    got
+}
+
+/// The id of the ingredient `name` of the recipe, from the preview.
+fn ingredient_id(lines: &[Value], name: &str) -> String {
+    by_name(lines, name)["ingredient_id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// AC: done with a corrected quantity and `set_quantity` → the stock is
+/// decremented and the ingredient's quantity is the new one; with an
+/// ingredient at 0 and `remove` → it is deleted. The preview gives the
+/// quantities as written and the recipe's number of people.
+#[sqlx::test]
+async fn done_with_recipe_updates_sets_a_quantity_and_removes_an_ingredient(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "update-set@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+    let (recipe, farine, beurre, _) = crepes(&router, &cookie, &group_id).await;
+
+    let res = get(&router, &cookie, &done_path(&group_id, &recipe)).await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    assert_eq!(body["recipe_servings"], 2);
+    let lines = body["ingredients"].as_array().unwrap().clone();
+    let f = by_name(&lines, "Farine");
+    assert_eq!(f["quantity"], 400.0, "scaled to the 4 people cooked for");
+    assert_eq!(f["recipe_quantity"], 200.0, "as written, for 2");
+
+    let res = post(
+        &router,
+        &cookie,
+        &done_path(&group_id, &recipe),
+        json!({
+            "removals": [
+                {"stock_item_id": farine, "quantity": 500.0},
+                {"stock_item_id": beurre, "quantity": 0.0, "exclude": true}
+            ],
+            "recipe_updates": [
+                {"ingredient_id": ingredient_id(&lines, "Farine"), "action": "set_quantity", "quantity": 250.0},
+                {"ingredient_id": ingredient_id(&lines, "Beurre"), "action": "remove"}
+            ]
+        }),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(json_body(res).await["selection"]["status"], "done");
+    assert_eq!(
+        stock_quantity(&router, &cookie, &group_id, &farine).await,
+        0.0
+    );
+    assert_eq!(
+        stock_quantity(&router, &cookie, &group_id, &beurre).await,
+        250.0
+    );
+    assert_eq!(
+        recipe_lines(&router, &cookie, &group_id, &recipe).await,
+        vec![
+            ("Farine".into(), Some(250.0), false),
+            ("Sel".into(), Some(1.0), false),
+            ("Sucre".into(), Some(30.0), false),
+        ]
+    );
+}
+
+/// AC: an ingredient at 0 and `make_optional` → `is_optional`, its quantity
+/// unchanged; done without a list of updates → the recipe is unchanged.
+#[sqlx::test]
+async fn done_with_make_optional_keeps_the_quantity_and_without_updates_changes_nothing(
+    db: PgPool,
+) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "update-opt@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+    let (recipe, farine, _, _) = crepes(&router, &cookie, &group_id).await;
+    let before = recipe_lines(&router, &cookie, &group_id, &recipe).await;
+
+    // Without updates, whatever was used: the recipe as it was.
+    let res = post(
+        &router,
+        &cookie,
+        &done_path(&group_id, &recipe),
+        json!({"removals": [{"stock_item_id": farine, "quantity": 100.0}]}),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(
+        recipe_lines(&router, &cookie, &group_id, &recipe).await,
+        before
+    );
+
+    plan_again(&router, &cookie, &group_id, &recipe).await;
+    let lines = done_preview(&router, &cookie, &group_id, &recipe).await;
+    let res = post(
+        &router,
+        &cookie,
+        &done_path(&group_id, &recipe),
+        json!({
+            "removals": [{"stock_item_id": farine, "quantity": 400.0}],
+            "recipe_updates": [
+                {"ingredient_id": ingredient_id(&lines, "Beurre"), "action": "make_optional"}
+            ]
+        }),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let after = recipe_lines(&router, &cookie, &group_id, &recipe).await;
+    assert!(
+        after.contains(&("Beurre".into(), Some(50.0), true)),
+        "{after:?}"
+    );
+    assert_eq!(after.len(), before.len());
+    assert_eq!(
+        stock_quantity(&router, &cookie, &group_id, &farine).await,
+        0.0
+    );
+}
+
+/// AC: a standard member who did not create the recipe and asks for an
+/// update → 403, and nothing is applied: neither the stock nor the recipe.
+/// The same request without the update goes through.
+#[sqlx::test]
+async fn a_member_who_may_not_change_the_recipe_cannot_update_it(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner = register_verify_login(&router, &db, "update-perm-o@example.test").await;
+    let member = register_verify_login(&router, &db, "update-perm-m@example.test").await;
+    let group_id = create_group(&router, &owner).await;
+    join(&router, &owner, &member, &group_id).await;
+    let (recipe, farine, _, _) = crepes(&router, &owner, &group_id).await;
+    let before = recipe_lines(&router, &owner, &group_id, &recipe).await;
+    let lines = done_preview(&router, &member, &group_id, &recipe).await;
+
+    let res = post(
+        &router,
+        &member,
+        &done_path(&group_id, &recipe),
+        json!({
+            "removals": [{"stock_item_id": farine, "quantity": 300.0}],
+            "recipe_updates": [
+                {"ingredient_id": ingredient_id(&lines, "Farine"), "action": "set_quantity", "quantity": 150.0}
+            ]
+        }),
+    )
+    .await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+    assert_eq!(
+        stock_quantity(&router, &owner, &group_id, &farine).await,
+        500.0
+    );
+    assert_eq!(
+        recipe_lines(&router, &owner, &group_id, &recipe).await,
+        before
+    );
+    assert_eq!(meals(&router, &owner, &group_id).await, 0);
+    assert_eq!(planned_count(&router, &owner, &group_id).await, 1);
+
+    let res = post(
+        &router,
+        &member,
+        &done_path(&group_id, &recipe),
+        json!({"removals": [{"stock_item_id": farine, "quantity": 300.0}]}),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(
+        stock_quantity(&router, &owner, &group_id, &farine).await,
+        200.0
+    );
+}
+
+/// AC: an `ingredient_id` of another recipe, or of another group → 404,
+/// and nothing is applied, the valid updates beside it neither.
+#[sqlx::test]
+async fn an_ingredient_of_another_recipe_or_group_is_a_404_and_nothing_is_applied(db: PgPool) {
+    let router = test_router(db.clone());
+    let alice = register_verify_login(&router, &db, "update-iso-a@example.test").await;
+    let bob = register_verify_login(&router, &db, "update-iso-b@example.test").await;
+    let group_a = create_group(&router, &alice).await;
+    let group_b = create_group(&router, &bob).await;
+    let (recipe, farine, _, _) = crepes(&router, &alice, &group_a).await;
+    let lines = done_preview(&router, &alice, &group_a, &recipe).await;
+    let before = recipe_lines(&router, &alice, &group_a, &recipe).await;
+    // Another recipe of the same group, and a recipe of another group.
+    let tarte = planned_recipe(
+        &router,
+        &alice,
+        &group_a,
+        json!({"name": "Tarte", "ingredients": [{"name": "Pommes", "quantity": 4.0}]}),
+        json!({}),
+    )
+    .await;
+    let tarte_lines = done_preview(&router, &alice, &group_a, &tarte).await;
+    let (bobs_recipe, _, _, _) = crepes(&router, &bob, &group_b).await;
+    let bobs_lines = done_preview(&router, &bob, &group_b, &bobs_recipe).await;
+
+    for foreign in [
+        ingredient_id(&tarte_lines, "Pommes"),
+        ingredient_id(&bobs_lines, "Farine"),
+    ] {
+        let res = post(
+            &router,
+            &alice,
+            &done_path(&group_a, &recipe),
+            json!({
+                "removals": [{"stock_item_id": farine, "quantity": 400.0}],
+                "recipe_updates": [
+                    {"ingredient_id": ingredient_id(&lines, "Farine"), "action": "set_quantity", "quantity": 100.0},
+                    {"ingredient_id": foreign, "action": "remove"}
+                ]
+            }),
+        )
+        .await;
+        assert_status(&res, StatusCode::NOT_FOUND);
+    }
+    assert_eq!(
+        stock_quantity(&router, &alice, &group_a, &farine).await,
+        500.0
+    );
+    assert_eq!(
+        recipe_lines(&router, &alice, &group_a, &recipe).await,
+        before
+    );
+    assert_eq!(
+        recipe_lines(&router, &alice, &group_a, &tarte).await,
+        vec![("Pommes".into(), Some(4.0), false)]
+    );
+    assert_eq!(
+        recipe_lines(&router, &bob, &group_b, &bobs_recipe)
+            .await
+            .len(),
+        4
+    );
+    assert_eq!(meals(&router, &alice, &group_a).await, 0);
+    assert_eq!(planned_count(&router, &alice, &group_a).await, 2);
+}
+
+/// Malformed updates are refused before anything is read.
+#[sqlx::test]
+async fn malformed_recipe_updates_are_refused(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "update-bad@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+    let (recipe, farine, _, _) = crepes(&router, &cookie, &group_id).await;
+    let lines = done_preview(&router, &cookie, &group_id, &recipe).await;
+    let flour = ingredient_id(&lines, "Farine");
+
+    for (updates, code) in [
+        (
+            json!([{"ingredient_id": flour, "action": "set_quantity", "quantity": 0.0}]),
+            "invalid_quantity",
+        ),
+        (
+            json!([
+                {"ingredient_id": flour, "action": "remove"},
+                {"ingredient_id": flour, "action": "make_optional"}
+            ]),
+            "duplicate_ingredient",
+        ),
+    ] {
+        let res = post(
+            &router,
+            &cookie,
+            &done_path(&group_id, &recipe),
+            json!({
+                "removals": [{"stock_item_id": farine, "quantity": 400.0}],
+                "recipe_updates": updates
+            }),
+        )
+        .await;
+        assert_status(&res, StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(res).await["error"], code);
+    }
+    assert_eq!(
+        stock_quantity(&router, &cookie, &group_id, &farine).await,
+        500.0
+    );
+    assert_eq!(planned_count(&router, &cookie, &group_id).await, 1);
+}

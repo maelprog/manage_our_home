@@ -17,7 +17,11 @@
 //!   and takes those checked, with their quantity. Once one the recipe
 //!   lacks is chosen, a member who may change the recipe is asked « Ajouter
 //!   X, Y à la recette pour la prochaine fois ? », Oui or Non, before the
-//!   form is sent.
+//!   form is sent. When the quantities used are not the recipe's (#558),
+//!   that member then gets a page in between, « Mettre à jour la recette
+//!   pour la prochaine fois ? » (`update_proposals`, `update_body`): each
+//!   change checked, an ingredient not used to be removed or made optional
+//!   as chosen; it sends the form again with the answers.
 //! - **Abandonner**: the unchecked grocery items generated for the recipe,
 //!   each with a « Retirer » box checked by default.
 //!
@@ -35,10 +39,10 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use chrono::NaiveDate;
 use manage_our_home_shared::dto::recipes::{
     AbandonItem, AbandonPreview, AbandonRequest, DoneIngredient, DoneOther, DonePreview,
-    DoneRemoval, DoneRequest, RemovalWarning,
+    DoneRemoval, DoneRequest, RecipeChange, RecipeUpdate, RemovalWarning,
 };
 use manage_our_home_shared::dto::stocks::{StockItemList, StockItemResponse};
-use manage_our_home_shared::validation::stocks::{article_key, format_quantity};
+use manage_our_home_shared::validation::stocks::{article_key, format_quantity, normalize_unit};
 use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
@@ -94,6 +98,9 @@ pub(crate) struct DoneForm {
     /// « Ajouter … à la recette ? »: `Some(true)` for Oui, `None` when not
     /// answered.
     pub add_to_recipe: Option<bool>,
+    /// The answers of « Mettre à jour la recette ? » (#558), `None` until
+    /// that step is shown.
+    pub updates: Option<Vec<UpdateChoice>>,
     pub eaten_on: String,
     pub back: String,
 }
@@ -135,13 +142,18 @@ pub(crate) enum DoneError {
 /// `other_used.i`, each in their numeric order. A line without a valid
 /// stock id is dropped; a repeated field keeps its first occurrence. `q` is
 /// the search, `intent=search` its button, `add_to_recipe` `yes` or `no`.
+/// `step=update` marks the answers of « Mettre à jour la recette ? »
+/// (#558), numbered `update.i` (the ingredient), `update_apply.i` (its
+/// box), `update_unused.i` (`remove` or `optional`).
 pub(crate) fn parse_done_form(pairs: &[(String, String)]) -> DoneForm {
     use std::collections::btree_map::{BTreeMap, Entry};
     let (mut eaten_on, mut back, mut search, mut intent, mut add) = (None, None, None, None, None);
+    let mut step = None;
     // line index → field name → value, for the recipe's lines and for the
     // other products.
     let mut fields: BTreeMap<usize, BTreeMap<&str, &str>> = BTreeMap::new();
     let mut other_fields: BTreeMap<usize, BTreeMap<&str, &str>> = BTreeMap::new();
+    let mut update_fields: BTreeMap<usize, BTreeMap<&str, &str>> = BTreeMap::new();
     for (key, value) in pairs {
         let value = value.as_str();
         match key.split_once('.') {
@@ -152,6 +164,7 @@ pub(crate) fn parse_done_form(pairs: &[(String, String)]) -> DoneForm {
                     "q" => &mut search,
                     "intent" => &mut intent,
                     "add_to_recipe" => &mut add,
+                    "step" => &mut step,
                     _ => continue,
                 };
                 slot.get_or_insert(value);
@@ -162,6 +175,8 @@ pub(crate) fn parse_done_form(pairs: &[(String, String)]) -> DoneForm {
                 };
                 let map = if field.starts_with("other") {
                     &mut other_fields
+                } else if field.starts_with("update") {
+                    &mut update_fields
                 } else {
                     &mut fields
                 };
@@ -204,6 +219,22 @@ pub(crate) fn parse_done_form(pairs: &[(String, String)]) -> DoneForm {
             Some("no") => Some(false),
             _ => None,
         },
+        updates: (step == Some("update")).then(|| {
+            update_fields
+                .into_values()
+                .filter_map(|f| {
+                    Some(UpdateChoice {
+                        ingredient_id: id(f.get("update"))?,
+                        apply: f.contains_key("update_apply"),
+                        unused: match f.get("update_unused").copied() {
+                            Some("remove") => Some(Unused::Remove),
+                            Some("optional") => Some(Unused::MakeOptional),
+                            _ => None,
+                        },
+                    })
+                })
+                .collect()
+        }),
         eaten_on: eaten_on.unwrap_or_default().to_string(),
         back: back.unwrap_or_default().to_string(),
     }
@@ -338,6 +369,7 @@ pub(crate) fn validate_done(
             })
             .collect(),
         eaten_on,
+        recipe_updates: Vec::new(),
     })
 }
 
@@ -454,6 +486,148 @@ pub(crate) fn offered_names(preview: &DonePreview, used: &[&StockItemResponse]) 
         }
     }
     names
+}
+
+/// What to do with an ingredient not used at all (#558), chosen by the
+/// member: there is no default.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Unused {
+    Remove,
+    MakeOptional,
+}
+
+/// One answer of « Mettre à jour la recette ? » (#558), as submitted.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct UpdateChoice {
+    pub ingredient_id: Uuid,
+    /// Its box is checked: change it.
+    pub apply: bool,
+    /// For an ingredient not used: remove it or make it optional.
+    pub unused: Option<Unused>,
+}
+
+/// An ingredient « Mettre à jour la recette ? » proposes to change (#558).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct UpdateProposal {
+    pub ingredient_id: Uuid,
+    /// As the page names it (`ingredient_labels`).
+    pub label: String,
+    /// The recipe's quantity, as written.
+    pub recipe_quantity: f64,
+    /// The recipe's unit, as written.
+    pub unit: String,
+    /// What was used, for the recipe's number of people; `None` when
+    /// nothing was.
+    pub new_quantity: Option<f64>,
+}
+
+/// The ingredients whose quantity used differs from the recipe's (#558),
+/// in the recipe's order, for a member who may change the recipe. What an
+/// ingredient used is the sum of its lines kept for removal (`form`, its
+/// lines already checked by `validate_done`); it is compared with the
+/// recipe's quantity scaled to the selection, without binary noise, and
+/// brought back to the recipe's number of people. Left out: an ingredient
+/// without quantity in the recipe, without a stock line, or whose stock
+/// line is in another unit (no conversion), and an optional ingredient not
+/// used, which the recipe already allows.
+pub(crate) fn update_proposals(preview: &DonePreview, form: &DoneForm) -> Vec<UpdateProposal> {
+    let lot_count: usize = preview.ingredients.iter().map(|i| i.lots.len()).sum();
+    if !preview.can_edit_recipe || form.lines.len() != lot_count {
+        return vec![];
+    }
+    let labels = ingredient_labels(&preview.ingredients);
+    let mut lines = form.lines.iter();
+    let mut proposals = Vec::new();
+    for (ingredient, label) in preview.ingredients.iter().zip(labels) {
+        // This ingredient's lines, in the order of its lots.
+        let own: Vec<&DoneLine> = lines.by_ref().take(ingredient.lots.len()).collect();
+        let (Some(scaled), Some(written)) = (ingredient.quantity, ingredient.recipe_quantity)
+        else {
+            continue;
+        };
+        let unit = ingredient.unit.as_deref().unwrap_or("");
+        let same_unit =
+            |stock_unit: &str| article_key(stock_unit) == article_key(&normalize_unit(unit));
+        if ingredient.lots.is_empty()
+            || !ingredient
+                .lots
+                .iter()
+                .all(|l| same_unit(&l.stock_item.unit))
+        {
+            continue;
+        }
+        let used = own
+            .iter()
+            .filter(|l| l.remove)
+            .filter_map(|l| parse_quantity(&l.quantity))
+            .fold(0.0, |sum, q| without_noise(sum + q));
+        let new_quantity = if used == 0.0 {
+            if ingredient.is_optional {
+                continue;
+            }
+            None
+        } else if used == without_noise(scaled) {
+            continue;
+        } else {
+            // Back to the recipe's number of people, as apps/api scales
+            // the other way.
+            Some(
+                match (preview.selection.servings, preview.recipe_servings) {
+                    (Some(cooked), Some(written)) if cooked > 0 => {
+                        without_noise(used * f64::from(written) / f64::from(cooked))
+                    }
+                    _ => used,
+                },
+            )
+        };
+        proposals.push(UpdateProposal {
+            ingredient_id: ingredient.ingredient_id,
+            label,
+            recipe_quantity: written,
+            unit: unit.trim().to_string(),
+            new_quantity,
+        });
+    }
+    proposals
+}
+
+/// The changes the answers ask for (#558): the proposals whose box is
+/// checked, a new quantity as proposed, an ingredient not used removed or
+/// made optional as chosen. An answer about an ingredient no longer
+/// proposed is ignored. `Err` names the ingredients not used whose box is
+/// checked without a choice.
+pub(crate) fn recipe_updates(
+    proposals: &[UpdateProposal],
+    choices: &[UpdateChoice],
+) -> Result<Vec<RecipeUpdate>, Vec<Uuid>> {
+    let mut updates = Vec::new();
+    let mut missing = Vec::new();
+    for p in proposals {
+        let Some(choice) = choices.iter().find(|c| c.ingredient_id == p.ingredient_id) else {
+            continue;
+        };
+        if !choice.apply {
+            continue;
+        }
+        let change = match (p.new_quantity, choice.unused) {
+            (Some(quantity), _) => RecipeChange::SetQuantity { quantity },
+            (None, Some(Unused::Remove)) => RecipeChange::Remove,
+            (None, Some(Unused::MakeOptional)) => RecipeChange::MakeOptional,
+            (None, None) => {
+                missing.push(p.ingredient_id);
+                continue;
+            }
+        };
+        updates.push(RecipeUpdate {
+            ingredient_id: p.ingredient_id,
+            change,
+        });
+    }
+    if missing.is_empty() {
+        Ok(updates)
+    } else {
+        Err(missing)
+    }
 }
 
 /// What a 400 or 409 of apps/api to a sent form means for the page.
@@ -758,6 +932,152 @@ pub(crate) fn done_body(
         name = html_escape(&preview.selection.recipe_name),
         eaten_on = html_escape(&eaten_on),
     )
+}
+
+/// « Mettre à jour la recette pour la prochaine fois ? » (#558): the step
+/// between the `done` form and its sending, when the quantities used differ
+/// from the recipe's. Each proposal is checked; an ingredient not used
+/// offers « Retirer de la recette » or « Passer facultatif », neither
+/// chosen. The form sent is carried in hidden fields, so that this page
+/// sends it again with the answers (`step=update`). `missing` are the
+/// ingredients not used checked without a choice.
+pub(crate) fn update_body(
+    recipe_id: Uuid,
+    preview: &DonePreview,
+    form: &DoneForm,
+    proposals: &[UpdateProposal],
+    missing: &[Uuid],
+) -> String {
+    let mut rows = String::new();
+    for (k, p) in proposals.iter().enumerate() {
+        let choice = form
+            .updates
+            .as_ref()
+            .and_then(|c| c.iter().find(|c| c.ingredient_id == p.ingredient_id));
+        let apply = choice.is_none_or(|c| c.apply);
+        let was = format_quantity(p.recipe_quantity, &p.unit);
+        let what = match p.new_quantity {
+            Some(q) => format!("{} : {was} → {}", p.label, format_quantity(q, &p.unit)),
+            None => format!("{} : {was} dans la recette, rien d'utilisé", p.label),
+        };
+        rows.push_str(&format!(
+            r#"<input type="hidden" name="update.{k}" value="{id}"/>
+<label class="field inline"><input type="checkbox" name="update_apply.{k}"{checked}/> {what}</label>
+"#,
+            id = p.ingredient_id,
+            checked = if apply { " checked" } else { "" },
+            what = html_escape(&what),
+        ));
+        if p.new_quantity.is_some() {
+            continue;
+        }
+        let name = format!("update_unused.{k}");
+        let (error, _) = field_error(
+            &name,
+            missing.contains(&p.ingredient_id).then(|| {
+                format!(
+                    "Choisissez de retirer {} de la recette ou de le passer facultatif, ou décochez-le.",
+                    p.label
+                )
+            }),
+        );
+        // The group names the error, as for « Ajouter … à la recette ? ».
+        let aria = if error.is_empty() {
+            String::new()
+        } else {
+            format!(r#" aria-describedby="{name}-error""#)
+        };
+        let unused = choice.and_then(|c| c.unused);
+        let radio = |value: &str, label: &str, checked: bool| {
+            format!(
+                r#"<label class="field inline"><input type="radio" name="{name}" value="{value}"{checked}/> {label}</label>
+"#,
+                checked = if checked { " checked" } else { "" },
+            )
+        };
+        rows.push_str(&format!(
+            "{error}<div role=\"radiogroup\" aria-label=\"{label} : que faire ?\"{aria}>\n{remove}{optional}</div>\n",
+            label = html_escape(&p.label),
+            remove = radio(
+                "remove",
+                "Le retirer de la recette",
+                unused == Some(Unused::Remove)
+            ),
+            optional = radio(
+                "optional",
+                "Le passer facultatif",
+                unused == Some(Unused::MakeOptional)
+            ),
+        ));
+    }
+    let back = back_value(&form.back);
+    let cancel = back_path(back, recipe_id);
+    let banner = if missing.is_empty() {
+        String::new()
+    } else {
+        banner("invalid")
+    };
+    // The quantities are the recipe's, not those cooked.
+    let servings = match (preview.recipe_servings, preview.selection.servings) {
+        (Some(written), Some(cooked)) if written != cooked => {
+            format!(", pour {written} personnes comme elle")
+        }
+        _ => String::new(),
+    };
+    format!(
+        r#"<h1>Recette faite : {name}</h1>
+{banner}<form method="post" action="/recipes/{recipe_id}/done">
+{hidden}<fieldset class="card">
+<legend>Mettre à jour la recette pour la prochaine fois ?</legend>
+<p class="muted">Les quantités utilisées ne sont pas celles de la recette. Les changements cochés y sont enregistrés{servings} ; décochez ceux à ne pas garder.</p>
+{rows}</fieldset>
+<div class="actions">
+<button type="submit">Marquer comme faite</button>
+<a class="btn secondary" href="{cancel}">Annuler</a>
+</div>
+</form>"#,
+        name = html_escape(&preview.selection.recipe_name),
+        hidden = sent_form_fields(form, back),
+    )
+}
+
+/// The `done` form as sent, in hidden fields, so that the update step
+/// sends it again (`step=update`): the lines, the products chosen, the
+/// answer to « Ajouter … à la recette ? », the date and `back`.
+fn sent_form_fields(form: &DoneForm, back: &str) -> String {
+    let hidden = |name: &str, value: &str| {
+        format!(
+            "<input type=\"hidden\" name=\"{name}\" value=\"{}\"/>\n",
+            html_escape(value)
+        )
+    };
+    let mut out = hidden("step", "update");
+    out.push_str(&hidden("back", back));
+    out.push_str(&hidden("eaten_on", &form.eaten_on));
+    for (i, line) in form.lines.iter().enumerate() {
+        out.push_str(&hidden(
+            &format!("stock.{i}"),
+            &line.stock_item_id.to_string(),
+        ));
+        out.push_str(&hidden(&format!("quantity.{i}"), &line.quantity));
+        if line.remove {
+            out.push_str(&hidden(&format!("remove.{i}"), "on"));
+        }
+    }
+    for (j, other) in form.others.iter().filter(|o| o.used).enumerate() {
+        out.push_str(&hidden(
+            &format!("other.{j}"),
+            &other.stock_item_id.to_string(),
+        ));
+        out.push_str(&hidden(&format!("other_quantity.{j}"), &other.quantity));
+        out.push_str(&hidden(&format!("other_used.{j}"), "on"));
+    }
+    match form.add_to_recipe {
+        Some(true) => out.push_str(&hidden("add_to_recipe", "yes")),
+        Some(false) => out.push_str(&hidden("add_to_recipe", "no")),
+        None => {}
+    }
+    out
 }
 
 /// « Autre chose utilisé ? » (#540): the other products listed, each with
@@ -1166,7 +1486,7 @@ pub async fn done_post(
     }
     let as_typed =
         |errors: &[Option<LineError>]| others_section(&form, &current, &stock, errors, false);
-    let request = match validate_done(&form, &current, &stock) {
+    let mut request = match validate_done(&form, &current, &stock) {
         Ok(r) => r,
         Err(DoneError::Stale) => {
             return show(
@@ -1189,6 +1509,29 @@ pub async fn done_post(
             )
         }
     };
+    // « Mettre à jour la recette ? » (#558): once the form is valid, before
+    // it is sent, when the quantities used are not the recipe's.
+    let proposals = update_proposals(&current, &form);
+    if !proposals.is_empty() {
+        let step = |status: StatusCode, missing: &[Uuid]| {
+            (
+                status,
+                render(
+                    &fam.header,
+                    "Recette faite",
+                    &update_body(recipe_id, &current, &form, &proposals, missing),
+                ),
+            )
+                .into_response()
+        };
+        match &form.updates {
+            None => return step(StatusCode::OK, &[]),
+            Some(choices) => match recipe_updates(&proposals, choices) {
+                Ok(updates) => request.recipe_updates = updates,
+                Err(missing) => return step(StatusCode::UNPROCESSABLE_ENTITY, &missing),
+            },
+        }
+    }
     let result = api_request_auth(
         &state,
         reqwest::Method::POST,
@@ -1483,6 +1826,7 @@ mod tests {
             ingredient_id: id(n),
             name: name.into(),
             quantity,
+            recipe_quantity: quantity,
             unit: unit.map(str::to_string),
             is_optional: false,
             lots: lots
@@ -1500,6 +1844,7 @@ mod tests {
     /// Farine 400 g over two lots (100 g + 500 g), Lait 1 L of 2 L.
     fn preview() -> DonePreview {
         DonePreview {
+            recipe_servings: None,
             can_edit_recipe: false,
             selection: selection("Crêpes"),
             ingredients: vec![
@@ -1864,6 +2209,7 @@ mod tests {
     fn two_ingredients_on_one_stock_line_are_sent_as_one_line() {
         // « Sel » twice in the recipe, both proposed from the same line.
         let p = DonePreview {
+            recipe_servings: None,
             can_edit_recipe: false,
             selection: selection("Soupe"),
             ingredients: vec![
@@ -1927,6 +2273,7 @@ mod tests {
         // (more than it holds), even though both read 0.123456789 at the
         // billionth.
         let p = DonePreview {
+            recipe_servings: None,
             can_edit_recipe: false,
             selection: selection("Sauce"),
             ingredients: vec![ingredient(
@@ -2167,6 +2514,7 @@ mod tests {
     #[test]
     fn the_done_page_says_why_a_line_is_proposed_at_zero_or_capped() {
         let p = DonePreview {
+            recipe_servings: None,
             can_edit_recipe: false,
             selection: selection("Gâteau"),
             ingredients: vec![
@@ -2235,6 +2583,7 @@ mod tests {
         let first = held.min(400.0);
         let second = (held - first).min(200.0);
         DonePreview {
+            recipe_servings: None,
             can_edit_recipe: false,
             selection: selection("Tarte"),
             ingredients: vec![
@@ -2582,6 +2931,7 @@ mod tests {
 
     fn editable() -> DonePreview {
         DonePreview {
+            recipe_servings: None,
             can_edit_recipe: true,
             ..preview()
         }
@@ -2958,6 +3308,445 @@ mod tests {
         // The answer typed comes back checked.
         assert!(
             html.contains(r#"name="add_to_recipe" value="yes" checked/>"#),
+            "{html}"
+        );
+    }
+
+    // -- « Mettre à jour la recette ? » (#558) ---------------------------------
+
+    /// The recipe for 2, cooked for 4: Farine 200 g (400 g scaled) over two
+    /// lots, Lait 0,5 L (1 L scaled), Sel optional 1 pincée (2 scaled), all
+    /// in stock in the recipe's units. The caller may change it.
+    fn for_two() -> DonePreview {
+        let mut p = editable();
+        p.recipe_servings = Some(2);
+        p.ingredients[0].recipe_quantity = Some(200.0);
+        p.ingredients[1].recipe_quantity = Some(0.5);
+        let mut sel = ingredient(
+            3,
+            "Sel",
+            Some(2.0),
+            Some("pincée"),
+            vec![(stock(30, "Sel", 10.0, "pincée"), 2.0)],
+            None,
+        );
+        sel.recipe_quantity = Some(1.0);
+        sel.is_optional = true;
+        p.ingredients.push(sel);
+        p
+    }
+
+    fn proposal(n: u128, label: &str, recipe: f64, unit: &str, new: Option<f64>) -> UpdateProposal {
+        UpdateProposal {
+            ingredient_id: id(n),
+            label: label.into(),
+            recipe_quantity: recipe,
+            unit: unit.into(),
+            new_quantity: new,
+        }
+    }
+
+    fn choice(n: u128, apply: bool, unused: Option<Unused>) -> UpdateChoice {
+        UpdateChoice {
+            ingredient_id: id(n),
+            apply,
+            unused,
+        }
+    }
+
+    #[test]
+    fn the_done_form_reads_the_answers_of_the_update_step() {
+        let got = parse_done_form(&pairs(&[
+            ("stock.0", &id(10).to_string()),
+            ("quantity.0", "100"),
+            ("step", "update"),
+            ("update.1", &id(2).to_string()),
+            ("update_unused.1", "optional"),
+            ("update.0", &id(1).to_string()),
+            ("update_apply.0", "on"),
+            ("update.2", &id(3).to_string()),
+            ("update_apply.2", "on"),
+            ("update_unused.2", "remove"),
+            ("update.3", "not-a-uuid"),
+            ("update_apply.3", "on"),
+        ]));
+        assert_eq!(got.lines, vec![line(10, "100", false)]);
+        assert_eq!(
+            got.updates,
+            Some(vec![
+                choice(1, true, None),
+                choice(2, false, Some(Unused::MakeOptional)),
+                choice(3, true, Some(Unused::Remove)),
+            ])
+        );
+        // Before the step, no answer at all; at the step, maybe none checked.
+        assert_eq!(
+            parse_done_form(&pairs(&[("update.0", &id(1).to_string())])).updates,
+            None
+        );
+        assert_eq!(
+            parse_done_form(&pairs(&[("step", "update")])).updates,
+            Some(vec![])
+        );
+    }
+
+    #[test]
+    fn a_quantity_used_other_than_the_recipes_is_proposed_for_its_number_of_people() {
+        // 500 g of flour cooked for 4 is 250 g for the recipe's 2; the milk
+        // and the salt are used as the recipe says.
+        let got = update_proposals(
+            &for_two(),
+            &form(vec![
+                line(10, "100", true),
+                line(11, "400", true),
+                line(20, "1", true),
+                line(30, "2", true),
+            ]),
+        );
+        assert_eq!(got, vec![proposal(1, "Farine", 200.0, "g", Some(250.0))]);
+    }
+
+    #[test]
+    fn nothing_is_proposed_to_who_may_not_change_the_recipe() {
+        let mut p = for_two();
+        p.can_edit_recipe = false;
+        let f = form(vec![
+            line(10, "100", true),
+            line(11, "400", true),
+            line(20, "0", true),
+            line(30, "2", true),
+        ]);
+        assert_eq!(update_proposals(&p, &f), vec![]);
+    }
+
+    #[test]
+    fn an_ingredient_not_used_is_proposed_without_a_quantity_unless_optional() {
+        // The milk unchecked, the salt (optional) at 0: only the milk.
+        let got = update_proposals(
+            &for_two(),
+            &form(vec![
+                line(10, "100", true),
+                line(11, "300", true),
+                line(20, "1", false),
+                line(30, "0", true),
+            ]),
+        );
+        assert_eq!(got, vec![proposal(2, "Lait", 0.5, "L", None)]);
+        // An optional ingredient used otherwise than written is proposed.
+        let got = update_proposals(
+            &for_two(),
+            &form(vec![
+                line(10, "100", true),
+                line(11, "300", true),
+                line(20, "1", true),
+                line(30, "4", true),
+            ]),
+        );
+        assert_eq!(got, vec![proposal(3, "Sel", 1.0, "pincée", Some(2.0))]);
+    }
+
+    #[test]
+    fn no_proposal_without_a_quantity_a_stock_line_or_the_same_unit() {
+        let mut p = for_two();
+        p.ingredients = vec![
+            // Another unit: no conversion.
+            ingredient(
+                4,
+                "Sucre",
+                Some(60.0),
+                Some("g"),
+                vec![(stock(40, "Sucre", 1.0, "kg"), 0.0)],
+                Some(RemovalWarning::UnitMismatch),
+            ),
+            // No quantity in the recipe.
+            ingredient(
+                5,
+                "Poivre",
+                None,
+                None,
+                vec![(stock(50, "Poivre", 1.0, "unité"), 0.0)],
+                Some(RemovalWarning::NoQuantity),
+            ),
+            // No stock line.
+            ingredient(
+                6,
+                "Rhum",
+                Some(2.0),
+                Some("cL"),
+                vec![],
+                Some(RemovalWarning::NoStock),
+            ),
+        ];
+        let f = form(vec![line(40, "0.2", true), line(50, "1", true)]);
+        assert_eq!(update_proposals(&p, &f), vec![]);
+        // Nor when they are not used at all.
+        let f = form(vec![line(40, "0", false), line(50, "0", false)]);
+        assert_eq!(update_proposals(&p, &f), vec![]);
+    }
+
+    #[test]
+    fn an_ingredient_without_unit_compares_with_a_stock_counted_in_units() {
+        let mut p = for_two();
+        p.recipe_servings = None;
+        p.ingredients = vec![ingredient(
+            7,
+            "Oeufs",
+            Some(3.0),
+            None,
+            vec![(stock(70, "Oeufs", 6.0, "unité"), 3.0)],
+            None,
+        )];
+        let got = update_proposals(&p, &form(vec![line(70, "4", true)]));
+        // Without the recipe's number of people: as used.
+        assert_eq!(got, vec![proposal(7, "Oeufs", 3.0, "", Some(4.0))]);
+    }
+
+    #[test]
+    fn the_quantity_used_is_compared_without_binary_noise() {
+        // 0.1 + 0.2 typed over two lots is the 0.3 of the recipe.
+        let mut p = for_two();
+        p.recipe_servings = None;
+        p.ingredients = vec![ingredient(
+            8,
+            "Lait",
+            Some(0.3),
+            Some("L"),
+            vec![
+                (stock(80, "Lait", 0.1, "L"), 0.1),
+                (stock(81, "Lait", 0.2, "L"), 0.2),
+            ],
+            None,
+        )];
+        let f = form(vec![line(80, "0,1", true), line(81, "0.2", true)]);
+        assert_eq!(update_proposals(&p, &f), vec![]);
+    }
+
+    #[test]
+    fn two_ingredients_of_one_name_are_proposed_apart() {
+        let mut p = shared_preview(600.0);
+        p.can_edit_recipe = true;
+        let got = update_proposals(
+            &p,
+            &form(vec![line(10, "400", true), line(10, "100", true)]),
+        );
+        assert_eq!(
+            got,
+            vec![proposal(2, "farine (n° 2)", 200.0, "g", Some(100.0))]
+        );
+    }
+
+    #[test]
+    fn the_answers_make_the_changes_sent() {
+        let proposals = [
+            proposal(1, "Farine", 200.0, "g", Some(250.0)),
+            proposal(2, "Lait", 0.5, "L", None),
+            proposal(3, "Sel", 1.0, "pincée", None),
+            proposal(4, "Beurre", 50.0, "g", Some(40.0)),
+            proposal(5, "Sucre", 30.0, "g", Some(20.0)),
+        ];
+        let got = recipe_updates(
+            &proposals,
+            &[
+                choice(1, true, None),
+                choice(2, true, Some(Unused::Remove)),
+                choice(3, true, Some(Unused::MakeOptional)),
+                // Unchecked: kept as it is, whatever was chosen.
+                choice(4, false, Some(Unused::Remove)),
+                // No longer proposed: ignored.
+                choice(9, true, Some(Unused::Remove)),
+            ],
+        );
+        assert_eq!(
+            got,
+            Ok(vec![
+                RecipeUpdate {
+                    ingredient_id: id(1),
+                    change: RecipeChange::SetQuantity { quantity: 250.0 },
+                },
+                RecipeUpdate {
+                    ingredient_id: id(2),
+                    change: RecipeChange::Remove,
+                },
+                RecipeUpdate {
+                    ingredient_id: id(3),
+                    change: RecipeChange::MakeOptional,
+                },
+            ])
+        );
+        assert_eq!(recipe_updates(&proposals, &[]), Ok(vec![]));
+    }
+
+    #[test]
+    fn an_ingredient_not_used_and_checked_needs_a_choice() {
+        let proposals = [
+            proposal(1, "Farine", 200.0, "g", Some(250.0)),
+            proposal(2, "Lait", 0.5, "L", None),
+            proposal(3, "Sel", 1.0, "pincée", None),
+        ];
+        let got = recipe_updates(
+            &proposals,
+            &[
+                choice(1, true, None),
+                choice(2, true, None),
+                choice(3, false, None),
+            ],
+        );
+        assert_eq!(got, Err(vec![id(2)]));
+    }
+
+    /// The `name`/`value` pairs of the hidden inputs of a page.
+    fn hidden_pairs(html: &str) -> Vec<(String, String)> {
+        html.split(r#"<input type="hidden" name=""#)
+            .skip(1)
+            .map(|rest| {
+                let (name, rest) = rest.split_once('"').unwrap();
+                let value = rest
+                    .split_once(r#"value=""#)
+                    .unwrap()
+                    .1
+                    .split_once('"')
+                    .unwrap()
+                    .0;
+                (name.to_string(), value.to_string())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_update_step_lists_each_change_checked_and_carries_the_form() {
+        let mut f = form(vec![
+            line(10, "100", true),
+            line(11, "400", true),
+            line(20, "1", false),
+            line(30, "2", true),
+        ]);
+        f.eaten_on = "2026-10-25".into();
+        f.back = "planned".into();
+        f.others = vec![other_line(40, "20", true), other_line(41, "", false)];
+        f.add_to_recipe = Some(false);
+        let proposals = [
+            proposal(1, "Farine", 200.0, "g", Some(250.0)),
+            proposal(2, "Lait", 0.5, "L", None),
+        ];
+        let html = update_body(id(901), &for_two(), &f, &proposals, &[]);
+        assert!(
+            html.contains("Mettre à jour la recette pour la prochaine fois ?"),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"action="/recipes/00000000-0000-0000-0000-000000000385/done""#),
+            "{html}"
+        );
+        // Each change, checked by default.
+        assert!(
+            html.contains(&format!(
+                r#"<input type="hidden" name="update.0" value="{}"/>"#,
+                id(1)
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                r#"<input type="checkbox" name="update_apply.0" checked/> Farine : 200 g → 250 g"#
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                r#"<input type="checkbox" name="update_apply.1" checked/> Lait : 0,5 L dans la recette, rien d'utilisé"#
+            ),
+            "{html}"
+        );
+        // An ingredient not used: two choices, neither made.
+        assert!(
+            html.contains(
+                r#"<input type="radio" name="update_unused.1" value="remove"/> Le retirer de la recette"#
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                r#"<input type="radio" name="update_unused.1" value="optional"/> Le passer facultatif"#
+            ),
+            "{html}"
+        );
+        assert!(!html.contains("update_unused.0"), "{html}");
+        // The form as sent, to send it again.
+        for field in [
+            r#"name="step" value="update""#.to_string(),
+            r#"name="back" value="planned""#.to_string(),
+            r#"name="eaten_on" value="2026-10-25""#.to_string(),
+            format!(r#"name="stock.0" value="{}""#, id(10)),
+            r#"name="quantity.1" value="400""#.to_string(),
+            r#"name="remove.1" value="on""#.to_string(),
+            format!(r#"name="stock.2" value="{}""#, id(20)),
+            format!(r#"name="other.0" value="{}""#, id(40)),
+            r#"name="other_quantity.0" value="20""#.to_string(),
+            r#"name="other_used.0" value="on""#.to_string(),
+            r#"name="add_to_recipe" value="no""#.to_string(),
+        ] {
+            assert!(html.contains(&field), "{field} in {html}");
+        }
+        assert!(!html.contains(r#"name="remove.2""#), "{html}");
+        // Only the products chosen.
+        assert!(!html.contains(&id(41).to_string()), "{html}");
+        // Read back, it is the same form.
+        let back = parse_done_form(&hidden_pairs(&html));
+        assert_eq!(back.lines, f.lines);
+        assert_eq!(back.others, vec![other_line(40, "20", true)]);
+        assert_eq!(
+            (back.eaten_on.as_str(), back.back.as_str()),
+            ("2026-10-25", "planned")
+        );
+        assert_eq!(back.add_to_recipe, Some(false));
+        // Only the ingredients are hidden: the boxes are the member's.
+        assert_eq!(
+            back.updates,
+            Some(vec![choice(1, false, None), choice(2, false, None)])
+        );
+    }
+
+    #[test]
+    fn the_update_step_shown_again_keeps_the_answers_and_marks_a_missing_choice() {
+        let mut f = form(vec![line(10, "100", true)]);
+        f.updates = Some(vec![
+            choice(1, false, None),
+            choice(2, true, None),
+            choice(3, true, Some(Unused::MakeOptional)),
+        ]);
+        let proposals = [
+            proposal(1, "Farine", 200.0, "g", Some(250.0)),
+            proposal(2, "Lait", 0.5, "L", None),
+            proposal(3, "Sel", 1.0, "pincée", None),
+        ];
+        let html = update_body(id(901), &for_two(), &f, &proposals, &[id(2)]);
+        assert!(html.contains(r#"name="update_apply.0"/> Farine"#), "{html}");
+        assert!(
+            html.contains(r#"name="update_apply.1" checked/>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"value="optional" checked/> Le passer facultatif"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<p class="field-error" id="update_unused.1-error">"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"aria-describedby="update_unused.1-error""#),
+            "{html}"
+        );
+        assert!(!html.contains("update_unused.2-error"), "{html}");
+    }
+
+    #[test]
+    fn the_update_step_escapes_what_members_typed() {
+        let f = form(vec![]);
+        let proposals = [proposal(1, "<b>Farine</b>", 200.0, "g", Some(250.0))];
+        let html = update_body(id(901), &for_two(), &f, &proposals, &[]);
+        assert!(
+            html.contains("&lt;b&gt;Farine&lt;/b&gt; : 200 g → 250 g"),
             "{html}"
         );
     }
