@@ -741,3 +741,205 @@ async fn generate_scales_and_sums_the_planned_quantities(db: PgPool) {
     names.sort();
     assert_eq!(names, ["Farine", "Lait"], "{items:?}");
 }
+
+/// Issue #559: adding a planned recipe's missing ingredients to the list
+/// creates one item per element of `missing`, with the quantity lacking and
+/// the recipe in `source_recipe_id`; replaying adds nothing while the items
+/// stay unchecked.
+#[sqlx::test]
+async fn adding_the_missing_ingredients_is_idempotent(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie = register_verify_login(
+        &router,
+        &db,
+        "grocery-missing@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/stock-items"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"name": "Oeufs", "quantity": 1.0})),
+    )
+    .await;
+    call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/stock-items"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"name": "Farine", "quantity": 500.0, "unit": "g"})),
+    )
+    .await;
+    let recipe_id = create_recipe(
+        &router,
+        &owner_cookie,
+        &group_id,
+        serde_json::json!({
+            "name": "Crêpes",
+            "servings": 2,
+            "ingredients": [
+                {"name": "Oeufs", "quantity": 3.0, "is_optional": false},
+                {"name": "Farine", "quantity": 200.0, "unit": "g", "is_optional": false},
+                {"name": "Lait", "quantity": 0.5, "unit": "L", "is_optional": false},
+                {"name": "Rhum", "quantity": 1.0, "unit": "cl", "is_optional": true}
+            ]
+        }),
+    )
+    .await;
+    // Cooked for 4: 6 eggs, 400 g of flour, 1 L of milk.
+    select(&router, &owner_cookie, &group_id, &recipe_id, Some(4)).await;
+
+    let path = format!("/groups/{group_id}/recipes/{recipe_id}/selection/missing");
+    let res = call(&router, Method::POST, &path, Some(&owner_cookie), None).await;
+    assert_status(&res, StatusCode::CREATED);
+    let created = json_body(res).await["items"].as_array().unwrap().clone();
+    let summary: Vec<_> = created
+        .iter()
+        .map(|i| {
+            (
+                i["name"].as_str().unwrap().to_string(),
+                i["quantity"].as_f64().unwrap(),
+                i["unit"].as_str().unwrap().to_string(),
+                i["source"].as_str().unwrap().to_string(),
+                i["source_recipe_id"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        vec![
+            (
+                "Lait".into(),
+                1.0,
+                "L".into(),
+                "recipe".into(),
+                recipe_id.clone()
+            ),
+            (
+                "Oeufs".into(),
+                5.0,
+                "unité".into(),
+                "recipe".into(),
+                recipe_id.clone()
+            ),
+        ]
+    );
+
+    // Replayed: one item per unchecked name.
+    let res = call(&router, Method::POST, &path, Some(&owner_cookie), None).await;
+    assert_status(&res, StatusCode::CREATED);
+    assert!(json_body(res).await["items"].as_array().unwrap().is_empty());
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM grocery_items")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(rows, 2);
+
+    // Once an item is checked, its name can be added again.
+    let milk = created[0]["id"].as_str().unwrap();
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/grocery-items/{milk}/check"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"checked": true})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let res = call(&router, Method::POST, &path, Some(&owner_cookie), None).await;
+    assert_status(&res, StatusCode::CREATED);
+    let again = json_body(res).await["items"].as_array().unwrap().clone();
+    assert_eq!(again.len(), 1);
+    assert_eq!(again[0]["name"], "Lait");
+}
+
+/// Issue #559: adding the missing ingredients needs a `planned` selection of
+/// the recipe in the group named by the path: another group's selection, a
+/// recipe not planned, or a selection already done is 404, and nothing is
+/// written; a non-member is refused.
+#[sqlx::test]
+async fn adding_the_missing_ingredients_of_another_group_is_404(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie = register_verify_login(
+        &router,
+        &db,
+        "grocery-missing-a@example.test",
+        "owner-password1",
+    )
+    .await;
+    let outsider_cookie = register_verify_login(
+        &router,
+        &db,
+        "grocery-missing-b@example.test",
+        "outsider-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let outsider_group = create_group(&router, &outsider_cookie, "Autre foyer").await;
+    let recipe_id = create_recipe(
+        &router,
+        &owner_cookie,
+        &group_id,
+        serde_json::json!({
+            "name": "Omelette",
+            "ingredients": [{"name": "Oeufs", "quantity": 3.0, "is_optional": false}]
+        }),
+    )
+    .await;
+    let not_planned = create_recipe(
+        &router,
+        &owner_cookie,
+        &group_id,
+        serde_json::json!({
+            "name": "Quiche",
+            "ingredients": [{"name": "Oeufs", "quantity": 3.0, "is_optional": false}]
+        }),
+    )
+    .await;
+    select(&router, &owner_cookie, &group_id, &recipe_id, None).await;
+
+    let smuggled = format!("/groups/{outsider_group}/recipes/{recipe_id}/selection/missing");
+    let res = call(
+        &router,
+        Method::POST,
+        &smuggled,
+        Some(&outsider_cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    let foreign = format!("/groups/{group_id}/recipes/{recipe_id}/selection/missing");
+    let res = call(
+        &router,
+        Method::POST,
+        &foreign,
+        Some(&outsider_cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes/{not_planned}/selection/missing"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    sqlx::query("UPDATE recipe_selections SET status = 'done'")
+        .execute(&db)
+        .await
+        .unwrap();
+    let res = call(&router, Method::POST, &foreign, Some(&owner_cookie), None).await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM grocery_items")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+}

@@ -8,7 +8,9 @@
 //! already planned is idempotent: 200 with the existing selection, its
 //! `servings` updated when the request carries one. Moving a selection to
 //! `done` or `abandoned` is `recipes::outcome` (#473); generating the
-//! grocery list from the selections is #470.
+//! grocery list from the selections is #470. The list tells, for each
+//! selection, what the stock lacks and by when it should be cooked
+//! (`recipes::availability`, #559).
 
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
@@ -21,6 +23,8 @@ use uuid::Uuid;
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::groups::require_role;
+use crate::recipes::availability::{by_priority, planned_availability, MissingResponse};
+use crate::stocks::items::today;
 use crate::AppState;
 
 /// Upper bound on the number of people a selection is cooked for. The
@@ -206,8 +210,24 @@ pub async fn deselect_recipe(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// One `planned` selection of the list (#559): the selection, what the
+/// stock lacks of its recipe's required ingredients (`missing`, empty when
+/// the stock covers them), and the date by which it should be cooked to
+/// use up what expires (`use_by`), with the days left until then in
+/// Europe/Paris (`days_left`, negative once past). A non-empty `missing`
+/// is a warning: the recipe can still be cooked.
+#[derive(Serialize)]
+pub struct PlannedSelectionResponse {
+    #[serde(flatten)]
+    pub selection: SelectionResponse,
+    pub missing: Vec<MissingResponse>,
+    pub use_by: Option<chrono::NaiveDate>,
+    pub days_left: Option<i64>,
+}
+
 /// `GET /groups/:id/recipes/selections`: the group's `planned` selections,
-/// oldest first.
+/// those with a `use_by` first, the nearest first, then the others oldest
+/// first.
 pub async fn list_selections(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -230,7 +250,34 @@ pub async fn list_selections(
     )
     .fetch_all(&mut *tx)
     .await?;
+    let today = today();
+    let mut availability = planned_availability(&mut tx, group_id, None, today).await?;
     tx.commit().await?;
+
+    let planned: Vec<_> = selections
+        .into_iter()
+        .map(|selection| {
+            let (missing, use_by) = match availability
+                .iter()
+                .position(|a| a.selection_id == selection.id)
+            {
+                Some(i) => {
+                    let a = availability.swap_remove(i);
+                    (a.missing, a.use_by)
+                }
+                None => (vec![], None),
+            };
+            let response = PlannedSelectionResponse {
+                selection,
+                missing: missing.into_iter().map(MissingResponse::from).collect(),
+                use_by,
+                days_left: use_by.map(|d| (d - today).num_days()),
+            };
+            (response, use_by)
+        })
+        .collect();
+    let selections: Vec<PlannedSelectionResponse> =
+        by_priority(planned).into_iter().map(|(s, _)| s).collect();
 
     Ok(Json(json!({ "selections": selections })))
 }

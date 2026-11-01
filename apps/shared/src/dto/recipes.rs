@@ -261,6 +261,32 @@ pub struct RecipeSelectionList {
     pub selections: Vec<RecipeSelectionResponse>,
 }
 
+/// One `planned` selection of `GET /groups/:id/recipes/selections` with
+/// what the stock holds of its recipe (#559). Mirrors
+/// `apps/api/src/recipes/selections.rs::PlannedSelectionResponse`.
+/// `missing` lists what the stock lacks of the required ingredients, in
+/// their unit (a warning: the recipe can still be cooked); `use_by` is the
+/// date by which to cook it to use up what expires, `days_left` the days
+/// until then in Europe/Paris, negative once past.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlannedSelection {
+    #[serde(flatten)]
+    pub selection: RecipeSelectionResponse,
+    #[serde(default)]
+    pub missing: Vec<MissingIngredient>,
+    #[serde(default)]
+    pub use_by: Option<NaiveDate>,
+    #[serde(default)]
+    pub days_left: Option<i64>,
+}
+
+/// The same response as [`RecipeSelectionList`], read with what the stock
+/// holds of each recipe (#559): the dated ones first, the nearest first.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlannedSelectionList {
+    pub selections: Vec<PlannedSelection>,
+}
+
 // -- done / abandoned (#473) -------------------------------------------------
 
 /// Why a `done` preview proposes 0, or less than the recipe. Mirrors

@@ -1456,3 +1456,234 @@ async fn recipe_duration_is_set_changed_and_cleared(db: PgPool) {
         serde_json::Value::Null
     );
 }
+
+// -- What the stock holds of the planned recipes (#559) ----------------------
+
+/// Creates a stock line and returns its id.
+async fn stock_line(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+    body: serde_json::Value,
+) -> String {
+    let res = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/stock-items"),
+        Some(cookie),
+        Some(body),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    json_body(res).await["id"].as_str().unwrap().to_string()
+}
+
+/// A recipe with these ingredients, planned for the next shopping.
+async fn planned_recipe(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+    name: &str,
+    ingredients: serde_json::Value,
+) -> String {
+    let res = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes"),
+        Some(cookie),
+        Some(serde_json::json!({"name": name, "ingredients": ingredients})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let recipe_id = json_body(res).await["id"].as_str().unwrap().to_string();
+    let select = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes/{recipe_id}/selection"),
+        Some(cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_status(&select, StatusCode::CREATED);
+    recipe_id
+}
+
+/// Issue #559: each planned selection lists what the stock lacks of its
+/// required ingredients — 3 eggs against 1 lack 2, against 5 nothing —
+/// and a stock decremented by another action shows on the next read.
+#[sqlx::test]
+async fn planned_selections_list_what_the_stock_lacks(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner_cookie, member_cookie, group_id) =
+        group_with_member(&router, &db, "sel-missing").await;
+    let eggs = stock_line(
+        &router,
+        &owner_cookie,
+        &group_id,
+        serde_json::json!({"name": "Oeufs", "quantity": 1.0}),
+    )
+    .await;
+    stock_line(
+        &router,
+        &owner_cookie,
+        &group_id,
+        serde_json::json!({"name": "Farine", "quantity": 1.0, "unit": "kg"}),
+    )
+    .await;
+    planned_recipe(
+        &router,
+        &owner_cookie,
+        &group_id,
+        "Crêpes",
+        serde_json::json!([
+            {"name": "Oeufs", "quantity": 3.0, "is_optional": false},
+            // Another unit than the stock's: no conversion, lacks entirely.
+            {"name": "Farine", "quantity": 250.0, "unit": "g", "is_optional": false},
+            {"name": "Sel", "is_optional": false},
+            {"name": "Rhum", "quantity": 1.0, "unit": "cl", "is_optional": true}
+        ]),
+    )
+    .await;
+
+    let listed = planned_selections(&router, &member_cookie, &group_id).await;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["recipe_name"], "Crêpes");
+    assert_eq!(
+        listed[0]["missing"],
+        serde_json::json!([
+            {"name": "Farine", "quantity": 250.0, "unit": "g"},
+            {"name": "Oeufs", "quantity": 2.0, "unit": "unité"},
+            {"name": "Sel", "quantity": null, "unit": null}
+        ])
+    );
+    assert_eq!(listed[0]["use_by"], serde_json::Value::Null);
+    assert_eq!(listed[0]["days_left"], serde_json::Value::Null);
+
+    // 5 eggs: they no longer lack.
+    let res = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/stock-items/{eggs}"),
+        Some(&member_cookie),
+        Some(serde_json::json!({"quantity": 5.0})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let listed = planned_selections(&router, &member_cookie, &group_id).await;
+    let names: Vec<_> = listed[0]["missing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(names, vec!["Farine", "Sel"]);
+
+    // Decremented by another action: they lack again on the next read.
+    let res = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/stock-items/{eggs}"),
+        Some(&member_cookie),
+        Some(serde_json::json!({"quantity": 2.0})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let listed = planned_selections(&router, &member_cookie, &group_id).await;
+    assert_eq!(
+        listed[0]["missing"][1],
+        serde_json::json!({"name": "Oeufs", "quantity": 1.0, "unit": "unité"})
+    );
+}
+
+/// Issue #559: a line past its date still counts, but dates the recipe
+/// (`use_by`, negative `days_left`); a line due in 2 days dates it only
+/// when the line due in 30 days does not suffice alone; the dated recipes
+/// come first, the nearest first, then the others oldest first.
+#[sqlx::test]
+async fn planned_selections_are_dated_and_ordered_by_what_expires(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner_cookie, _member_cookie, group_id) =
+        group_with_member(&router, &db, "sel-use-by").await;
+    let today = paris_day(Utc::now());
+    let later = |n: u64| today.checked_add_days(Days::new(n)).unwrap();
+    let past = today.checked_sub_days(Days::new(2)).unwrap();
+    stock_line(
+        &router,
+        &owner_cookie,
+        &group_id,
+        serde_json::json!({"name": "Crème", "quantity": 2.0, "unit": "pot", "expires_on": past}),
+    )
+    .await;
+    stock_line(
+        &router,
+        &owner_cookie,
+        &group_id,
+        serde_json::json!({"name": "Lait", "quantity": 1.0, "unit": "L", "expires_on": later(2)}),
+    )
+    .await;
+    let late_milk = stock_line(
+        &router,
+        &owner_cookie,
+        &group_id,
+        serde_json::json!({"name": "Lait", "quantity": 2.0, "unit": "L", "expires_on": later(30)}),
+    )
+    .await;
+
+    // Planned in this order: nothing dated, then the milk, then the cream.
+    planned_recipe(
+        &router,
+        &owner_cookie,
+        &group_id,
+        "Pâtes",
+        serde_json::json!([{"name": "Pâtes", "quantity": 500.0, "unit": "g", "is_optional": false}]),
+    )
+    .await;
+    planned_recipe(
+        &router,
+        &owner_cookie,
+        &group_id,
+        "Flan",
+        serde_json::json!([{"name": "Lait", "quantity": 2.0, "unit": "L", "is_optional": false}]),
+    )
+    .await;
+    planned_recipe(
+        &router,
+        &owner_cookie,
+        &group_id,
+        "Gratin",
+        serde_json::json!([{"name": "Crème", "quantity": 1.0, "unit": "pot", "is_optional": false}]),
+    )
+    .await;
+
+    let names = |listed: &[serde_json::Value]| -> Vec<String> {
+        listed
+            .iter()
+            .map(|s| s["recipe_name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let listed = planned_selections(&router, &owner_cookie, &group_id).await;
+    // The 2 L due in 30 days suffice alone: the milk does not date « Flan ».
+    assert_eq!(names(&listed), vec!["Gratin", "Pâtes", "Flan"]);
+    // The expired cream still counts: nothing lacks.
+    assert_eq!(listed[0]["missing"], serde_json::json!([]));
+    assert_eq!(listed[0]["use_by"], past.to_string());
+    assert_eq!(listed[0]["days_left"], -2);
+    assert_eq!(listed[2]["use_by"], serde_json::Value::Null);
+
+    // 1 L due in 30 days no longer suffices: « Flan » is dated by the
+    // line due in 2 days, and comes before the recipe dated by nothing.
+    let res = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/stock-items/{late_milk}"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"quantity": 1.0})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let listed = planned_selections(&router, &owner_cookie, &group_id).await;
+    assert_eq!(names(&listed), vec!["Gratin", "Flan", "Pâtes"]);
+    assert_eq!(listed[1]["use_by"], later(2).to_string());
+    assert_eq!(listed[1]["days_left"], 2);
+    assert_eq!(listed[1]["missing"], serde_json::json!([]));
+}
