@@ -4152,3 +4152,149 @@ async fn a_notice_the_cap_cannot_count_is_not_mailed(db: PgPool) {
     assert!(body_bytes(res).await.is_empty());
     assert_eq!(account_exists_notices(&outbox, email), 0);
 }
+
+// -- ASCII-only addresses (#572) ------------------------------------------
+
+/// #572: an address outside ASCII is refused at registration, local part
+/// or domain alike; the same domain in its ASCII form (`xn--…`, what a
+/// browser sends) is accepted.
+#[sqlx::test]
+async fn a_registration_outside_ascii_is_refused(db: PgPool) {
+    let router = test_router(db.clone());
+    for email in ["é@example.test", "a@exämple.test", "İ@example.test"] {
+        let res = register_as(&router, email).await;
+        assert_status(&res, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(json_body(res).await["error"], "invalid_email", "{email:?}");
+    }
+    assert!(stored_emails(&db).await.is_empty());
+
+    assert_status(
+        &register_as(&router, "a@xn--exmple-cua.test").await,
+        StatusCode::CREATED,
+    );
+    assert_eq!(stored_emails(&db).await, ["a@xn--exmple-cua.test"]);
+}
+
+/// The status and body of a login attempt.
+async fn login_answer(router: &axum::Router, email: &str, password: &str) -> (StatusCode, Vec<u8>) {
+    let res = call(
+        router,
+        Method::POST,
+        "/auth/login",
+        None,
+        Some(serde_json::json!({"email": email, "password": password})),
+    )
+    .await;
+    (res.status(), body_bytes(res).await)
+}
+
+/// #572: a login with an address outside ASCII gets what an unknown
+/// address gets — even when a row older than the rule holds it and the
+/// password is right: such a row names no account any more.
+#[sqlx::test]
+async fn a_login_outside_ascii_answers_like_an_unknown_address(db: PgPool) {
+    let router = test_router(db.clone());
+    register_verify_login(&router, &db, "eloise@example.test", "eloise-password-1").await;
+    sqlx::query("UPDATE users SET email = 'éloïse@example.test' WHERE email = 'eloise@example.test'")
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let unknown = login_answer(&router, "nobody@example.test", "eloise-password-1").await;
+    assert_eq!(unknown.0, StatusCode::UNAUTHORIZED);
+    for typed in ["éloïse@example.test", "ÉLOÏSE@example.test"] {
+        assert_eq!(
+            login_answer(&router, typed, "eloise-password-1").await,
+            unknown,
+            "{typed:?}"
+        );
+    }
+}
+
+/// #572: the forgotten-password and resend requests answer an address
+/// outside ASCII as they answer an unknown one, and send nothing — even to
+/// a row older than the rule holding it.
+#[sqlx::test]
+async fn forgotten_password_and_resend_outside_ascii_do_nothing(db: PgPool) {
+    let router = test_router(db.clone());
+    assert_status(
+        &register_as(&router, "zoe@example.test").await,
+        StatusCode::CREATED,
+    );
+    let user_id = user_id_by_email(&db, "zoe@example.test").await;
+    sqlx::query("UPDATE users SET email = 'zoë@example.test' WHERE id = $1")
+        .bind(user_id)
+        .execute(&db)
+        .await
+        .unwrap();
+    // Past the resend cooldown the registration's own token started.
+    sqlx::query(
+        "UPDATE email_verification_tokens SET created_at = now() - interval '1 day'
+         WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    for route in ["/auth/password/forgot", "/auth/verify-email/resend"] {
+        let unknown = call(
+            &router,
+            Method::POST,
+            route,
+            None,
+            Some(serde_json::json!({"email": "nobody@example.test"})),
+        )
+        .await;
+        let res = call(
+            &router,
+            Method::POST,
+            route,
+            None,
+            Some(serde_json::json!({"email": "zoë@example.test"})),
+        )
+        .await;
+        assert_eq!(res.status(), unknown.status(), "{route}");
+        assert_eq!(body_bytes(res).await, body_bytes(unknown).await, "{route}");
+    }
+
+    let resets: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM password_reset_tokens WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(resets, 0, "no reset token");
+    let fresh: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM email_verification_tokens
+         WHERE user_id = $1 AND created_at > now() - interval '1 hour'",
+    )
+    .bind(user_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(fresh, 0, "no fresh verification token");
+}
+
+/// #572: a Google profile whose address is not ASCII signs in to nothing
+/// and creates nothing; the browser is sent to the login page, which says
+/// why.
+#[sqlx::test]
+async fn a_google_profile_outside_ascii_is_refused_with_a_reason(db: PgPool) {
+    let router = router_with_google_stub(db.clone(), "google-sub-572", "Zoë@Example.test").await;
+    let res = google_callback(&router).await;
+    assert!(res.status().is_redirection(), "{}", res.status());
+    assert_eq!(
+        res.headers()
+            .get(axum::http::header::LOCATION)
+            .and_then(|v| v.to_str().ok()),
+        Some("http://localhost:5173/login?google=email_not_ascii")
+    );
+    assert!(!opens_a_session(&res));
+    assert!(stored_emails(&db).await.is_empty());
+    let identities: i64 = sqlx::query_scalar("SELECT count(*) FROM oauth_identities")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(identities, 0);
+}

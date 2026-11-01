@@ -462,13 +462,20 @@ async fn login_inner(
     let at = Instant::now();
     // A deactivated account (#256) goes through the same checks as any
     // other, so a wrong password on it gets the same refusal (#289).
-    let user = sqlx::query!(
-        r#"SELECT id, password_hash, email_verified, deactivated_at IS NOT NULL AS "deactivated!"
+    // #572: an address outside ASCII names no account, whatever a row
+    // older than the rule holds: it goes on as an unknown email, decoy
+    // hash and all, so the answer is the one any unknown address gets.
+    let user = if body.email.is_ascii() {
+        sqlx::query!(
+            r#"SELECT id, password_hash, email_verified, deactivated_at IS NOT NULL AS "deactivated!"
            FROM users WHERE email = $1 AND deleted_at IS NULL"#,
-        body.email
-    )
-    .fetch_optional(&state.db)
-    .await;
+            body.email
+        )
+        .fetch_optional(&state.db)
+        .await
+    } else {
+        Ok(None)
+    };
     timing.lookup = at.elapsed();
     let user = match user {
         Ok(user) => user,
@@ -629,6 +636,11 @@ pub async fn forgot_password(
 /// `forgot_password`'s work: a reset link to a live account holding
 /// `email`, nothing otherwise.
 async fn mail_password_reset(state: &AppState, email: &str) -> AppResult<()> {
+    // #572: an address outside ASCII names no account; it gets what an
+    // unknown one gets, and the response floor hides the skipped query.
+    if !email.is_ascii() {
+        return Ok(());
+    }
     if let Some(user) = sqlx::query!(
         "SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL AND deactivated_at IS NULL",
         email
@@ -691,6 +703,10 @@ pub async fn resend_verification(
 /// `resend_verification`'s work: a fresh link to an unverified live
 /// account holding `email`, nothing otherwise.
 async fn resend_verification_to(state: &AppState, email: &str) -> AppResult<()> {
+    // #572: as in `mail_password_reset`.
+    if !email.is_ascii() {
+        return Ok(());
+    }
     let Some(user) = sqlx::query!(
         "SELECT id FROM users WHERE email = $1 AND email_verified = false AND deleted_at IS NULL
            AND deactivated_at IS NULL",
