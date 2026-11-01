@@ -873,10 +873,10 @@ pub async fn apply_done(
         let row = sqlx::query_as!(
             AddedIngredientResponse,
             r#"
-            INSERT INTO recipe_ingredients (recipe_id, group_id, name, quantity, unit)
-            VALUES ($1, $2, $3, $4, $5)
-            RETURNING id, name, quantity, unit
-            "#,
+                INSERT INTO recipe_ingredients (recipe_id, group_id, name, quantity, unit)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING id, name, quantity, unit
+                "#,
             recipe_id,
             group_id,
             ing.name,
