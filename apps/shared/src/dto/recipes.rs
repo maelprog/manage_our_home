@@ -292,6 +292,9 @@ pub struct DoneIngredient {
     pub ingredient_id: Uuid,
     pub name: String,
     pub quantity: Option<f64>,
+    /// The recipe's quantity as written, not scaled (#558).
+    #[serde(default)]
+    pub recipe_quantity: Option<f64>,
     pub unit: Option<String>,
     pub is_optional: bool,
     pub lots: Vec<DoneLot>,
@@ -307,6 +310,10 @@ pub struct DonePreview {
     /// Whether the caller may change the recipe, so `add_to_recipe` (#540).
     #[serde(default)]
     pub can_edit_recipe: bool,
+    /// The recipe's own number of people, which `quantity` is scaled from
+    /// to the selection's (#558).
+    #[serde(default)]
+    pub recipe_servings: Option<i32>,
 }
 
 /// One line of a `done` request: the quantity to take from a stock line,
@@ -338,6 +345,33 @@ pub struct DoneRequest {
     /// Adds the other products to the recipe (#540).
     #[serde(default)]
     pub add_to_recipe: bool,
+    /// Changes to the recipe's ingredients (#558).
+    #[serde(default)]
+    pub recipe_updates: Vec<RecipeUpdate>,
+}
+
+/// What a `done` request changes in one of the recipe's ingredients
+/// (#558). Mirrors `RecipeChange`: on the wire, beside `ingredient_id`,
+/// `"action": "set_quantity"` with `"quantity"`, `"remove"` or
+/// `"make_optional"`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum RecipeChange {
+    /// The new quantity, for the recipe's number of people, in its unit.
+    SetQuantity {
+        quantity: f64,
+    },
+    Remove,
+    MakeOptional,
+}
+
+/// One change to the recipe of a `done` request (#558). Mirrors
+/// `RecipeUpdate`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecipeUpdate {
+    pub ingredient_id: Uuid,
+    #[serde(flatten)]
+    pub change: RecipeChange,
 }
 
 /// One grocery item of an `abandoned` preview. Mirrors

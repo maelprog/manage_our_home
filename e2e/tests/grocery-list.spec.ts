@@ -663,6 +663,13 @@ test.describe("Recipes to cook — done or abandoned (#474)", () => {
     await expect(page.getByRole("checkbox", { name: "Retirer Lait du stock" })).toBeChecked();
     await lait.fill("0");
     await page.getByRole("button", { name: "Marquer comme faite" }).click();
+    // Its creator is asked whether the recipe changes (#558): not this time.
+    const unused = page.getByRole("checkbox", {
+      name: "Lait : 1 L dans la recette, rien d'utilisé",
+    });
+    await expect(unused).toBeChecked();
+    await unused.uncheck();
+    await page.getByRole("button", { name: "Marquer comme faite" }).click();
     await expect(page).toHaveURL(/\/recipes\?notice=recipe_done$/);
     await expect(
       page.getByText("Recette faite : le stock est mis à jour et le repas enregistré."),
@@ -739,6 +746,9 @@ test.describe("Recipes to cook — done or abandoned (#474)", () => {
     await expect(page.getByLabel("Quantité de Crème à retirer")).toHaveValue("20");
     await question.getByRole("radio", { name: "Oui" }).check();
     await page.getByRole("button", { name: "Marquer comme faite" }).click();
+    // 350 g of the recipe's 400 g: kept as written this time (#558).
+    await page.getByRole("checkbox", { name: "Farine : 400 g → 350 g" }).uncheck();
+    await page.getByRole("button", { name: "Marquer comme faite" }).click();
     await expect(page).toHaveURL(/\/recipes\?notice=recipe_done$/);
 
     await page.goto("/stocks");
@@ -750,5 +760,62 @@ test.describe("Recipes to cook — done or abandoned (#474)", () => {
     await page.getByRole("link", { name: "Tarte", exact: true }).first().click();
     await expect(page.getByRole("heading", { name: "Tarte", level: 1 })).toBeVisible();
     await expect(page.locator("li", { hasText: "Crème" })).toContainText("20 cL");
+    await expect(page.locator("li", { hasText: "Farine" })).toContainText("400 g");
+  });
+
+  test("the quantities used are carried over to the recipe for next time (#558)", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-gldoneupdate", "Grocery Learner");
+    await createGroup(page, "Famille Ajustée");
+    await createStockItem(page, "Farine", "1000", "g");
+    await createStockItem(page, "Lait", "2", "L");
+    // Written for 2, cooked for 4: the page scales, the recipe keeps its 2.
+    await createRecipe(page, "Quiche", "Farine | 200 | g\nLait | 1 | L", "2");
+    await planRecipe(page, "Quiche", "4");
+
+    await page.goto("/recipes");
+    await page
+      .locator("li", { hasText: "Quiche" })
+      .filter({ has: page.getByRole("link", { name: "Faite" }) })
+      .getByRole("link", { name: "Faite" })
+      .click();
+    await expect(page.getByLabel("Quantité de Farine à retirer")).toHaveValue("400");
+    await page.getByLabel("Quantité de Farine à retirer").fill("500");
+    await page.getByRole("checkbox", { name: "Retirer Lait du stock" }).uncheck();
+    await page.getByRole("button", { name: "Marquer comme faite" }).click();
+
+    // Each change is proposed, checked; the milk not used asks what to do.
+    await expect(
+      page.getByRole("group", { name: "Mettre à jour la recette pour la prochaine fois ?" }),
+    ).toBeVisible();
+    await expect(page.getByRole("checkbox", { name: "Farine : 200 g → 250 g" })).toBeChecked();
+    await expect(
+      page.getByRole("checkbox", { name: "Lait : 1 L dans la recette, rien d'utilisé" }),
+    ).toBeChecked();
+    const lait = page.getByRole("radiogroup", { name: "Lait : que faire ?" });
+    await expect(lait.getByRole("radio", { name: "Le retirer de la recette" })).not.toBeChecked();
+    await expect(lait.getByRole("radio", { name: "Le passer facultatif" })).not.toBeChecked();
+    // Checked without a choice: asked again.
+    await page.getByRole("button", { name: "Marquer comme faite" }).click();
+    await expect(
+      page.getByText(
+        "Choisissez de retirer Lait de la recette ou de le passer facultatif, ou décochez-le.",
+      ),
+    ).toBeVisible();
+    await lait.getByRole("radio", { name: "Le passer facultatif" }).check();
+    await page.getByRole("button", { name: "Marquer comme faite" }).click();
+    await expect(page).toHaveURL(/\/recipes\?notice=recipe_done$/);
+
+    await page.goto("/stocks");
+    await expect(page.locator("li", { hasText: "Farine" })).toContainText("500 g");
+    await expect(page.locator("li", { hasText: "Lait" })).toContainText("2 L");
+
+    await page.goto("/recipes");
+    await page.getByRole("link", { name: "Quiche", exact: true }).first().click();
+    await expect(page.getByRole("heading", { name: "Quiche", level: 1 })).toBeVisible();
+    await expect(page.locator("li", { hasText: "Farine" })).toContainText("250 g");
+    await expect(page.locator("li", { hasText: "Lait" })).toContainText("1 L");
+    await expect(page.locator("li", { hasText: "Lait" })).toContainText("optionnel");
   });
 });
