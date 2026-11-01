@@ -4195,10 +4195,12 @@ async fn login_answer(router: &axum::Router, email: &str, password: &str) -> (St
 async fn a_login_outside_ascii_answers_like_an_unknown_address(db: PgPool) {
     let router = test_router(db.clone());
     register_verify_login(&router, &db, "eloise@example.test", "eloise-password-1").await;
-    sqlx::query("UPDATE users SET email = 'éloïse@example.test' WHERE email = 'eloise@example.test'")
-        .execute(&db)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE users SET email = 'éloïse@example.test' WHERE email = 'eloise@example.test'",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
 
     let unknown = login_answer(&router, "nobody@example.test", "eloise-password-1").await;
     assert_eq!(unknown.0, StatusCode::UNAUTHORIZED);

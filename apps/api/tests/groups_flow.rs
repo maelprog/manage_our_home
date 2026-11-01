@@ -1506,7 +1506,11 @@ async fn an_invitation_to_an_address_outside_ascii_is_refused(db: PgPool) {
         )
         .await;
         assert_status(&invite, StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(json_body(invite).await["error"], "invalid_email", "{email:?}");
+        assert_eq!(
+            json_body(invite).await["error"],
+            "invalid_email",
+            "{email:?}"
+        );
     }
     let stored: i64 = sqlx::query_scalar("SELECT count(*) FROM invitations")
         .fetch_one(&db)
