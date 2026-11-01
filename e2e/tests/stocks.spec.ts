@@ -253,6 +253,30 @@ test.describe("Stocks — expiry date", () => {
     await expect(page.getByText("Article mis à jour.")).toBeVisible();
     await expect(page.getByText("Aucune date de péremption.")).toBeVisible();
   });
+
+  // #564: the Stocks entry counts what is past or close to its date, on
+  // the PC's sidebar and on the phone's Cuisine tab — the same link.
+  test("an article due tomorrow puts « 1 » on the Stocks tab", async ({ page }) => {
+    await registerAndLogin(page, "e2e-stbadge", "Badge Stocks");
+    await createGroup(page, "Famille Pastille Stocks");
+    const tab = page.locator('.tabs a[href="/stocks"].pc');
+
+    await page.goto("/agenda");
+    await expect(tab).toHaveAccessibleName("Stocks");
+    await expect(page.locator(".tabs .badge")).toHaveCount(0);
+
+    await createItem(page, { name: "Crème", quantity: "1", unit: "pot", expiresOn: parisDay(1) });
+    await createItem(page, { name: "Riz", quantity: "1", unit: "kg", expiresOn: parisDay(30) });
+    await page.goto("/agenda");
+    await expect(tab.locator(".badge")).toHaveText("1");
+    await expect(tab).toHaveAccessibleName("Stocks (1 bientôt périmé)");
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const cuisine = page.locator('.tabs a[href="/stocks"].phone');
+    await expect(cuisine.locator(".badge")).toHaveText("1");
+    await expect(cuisine).toHaveAccessibleName("Cuisine (1 bientôt périmé)");
+    await expect(cuisine.locator(".badge")).toBeInViewport({ ratio: 1 });
+  });
 });
 
 test.describe("Stocks — edit, adjust & delete", () => {

@@ -283,6 +283,32 @@ pub(crate) fn notifications_badge(unread: u64) -> String {
     )
 }
 
+/// The count the Stocks entry of the sidebar and the phone's Cuisine tab
+/// wear (#564): the active family's articles in stock whose date is past or
+/// within `EXPIRY_SOON_DAYS` — or nothing at all at zero. Drawn and said
+/// as `unread_badge`: "Stocks (2 bientôt périmés)" on a PC, "Cuisine (2
+/// bientôt périmés)" on a phone, the articles already past included. The
+/// link stays `/stocks`: an `<a>` cannot hold a second one for the count,
+/// and the list's own « À consommer en premier » sort is one tap away.
+pub(crate) fn expiring_badge(expiring: u64) -> String {
+    if expiring == 0 {
+        return String::new();
+    }
+    let shown = if expiring > 99 {
+        "99+".to_string()
+    } else {
+        expiring.to_string()
+    };
+    let words = if expiring == 1 {
+        "bientôt périmé"
+    } else {
+        "bientôt périmés"
+    };
+    format!(
+        r#"<span class="badge warn" aria-hidden="true">{shown}</span><span class="sr-only"> ({expiring} {words})</span>"#
+    )
+}
+
 /// The main navigation, in order (#523): `href`, the label on a PC, the
 /// label on a phone, the icon.
 ///
@@ -351,12 +377,16 @@ const NAV: [(&str, Option<&str>, Option<&str>, Glyph); 9] = [
 /// Messagerie tab shows as a pastille (`unread_badge`, #463); 0 shows none.
 /// `unread_notifications` is the caller's, from every family, worn by the
 /// Notifications entry (`notifications_badge`, #535); 0 shows none either.
+/// `expiring_stocks` is the active family's articles past or close to
+/// their date, worn by Stocks on a PC and Cuisine on a phone
+/// (`expiring_badge`, #564); 0 shows none.
 pub fn app_header(
     me: &MeResponse,
     active: Option<&GroupSummary>,
     redirect_to: &str,
     unread_messages: u64,
     unread_notifications: u64,
+    expiring_stocks: u64,
 ) -> String {
     // No family yet: the link stays, `/budget` sends to `/groups/new`.
     let budget = active.is_none_or(|g| can_access_budget(&g.role));
@@ -382,6 +412,7 @@ pub fn app_header(
             let badge = match href {
                 "/messagerie" => unread_badge(unread_messages),
                 "/notifications" => notifications_badge(unread_notifications),
+                "/stocks" => expiring_badge(expiring_stocks),
                 _ => String::new(),
             };
             // The phone's Cuisine tab stands for the recipes as well.
@@ -1601,7 +1632,7 @@ mod tests {
         // #523: Accueil, Agenda, Courses, Cuisine (which opens the stocks),
         // Messages and Profil. Budget is reached from its card on the home
         // page; the families and the account are under Profil.
-        let header = app_header(&me(false), Some(&family("Famille Martin")), "/", 0, 0);
+        let header = app_header(&me(false), Some(&family("Famille Martin")), "/", 0, 0, 0);
         assert_eq!(
             destinations(&header, Layout::Phone),
             hrefs_and_names(&[
@@ -1621,12 +1652,12 @@ mod tests {
         // budget; an admin and the owner keep the link.
         let mut standard = family("Famille Martin");
         standard.role = "standard".to_string();
-        let header = app_header(&me(false), Some(&standard), "/", 0, 0);
+        let header = app_header(&me(false), Some(&standard), "/", 0, 0, 0);
         assert!(!header.contains("/budget"), "{header}");
         assert_eq!(destinations(&header, Layout::Pc).len(), 8);
         let mut admin = family("Famille Martin");
         admin.role = "admin".to_string();
-        let header = app_header(&me(false), Some(&admin), "/", 0, 0);
+        let header = app_header(&me(false), Some(&admin), "/", 0, 0, 0);
         assert!(header.contains(r#"href="/budget""#), "{header}");
     }
 
@@ -1634,7 +1665,7 @@ mod tests {
     fn a_pc_gets_the_whole_list_and_the_profile_block_last() {
         // The owner's list: Budget is for owners and admins (#531);
         // Notifications closes it (#535).
-        let header = app_header(&me(false), Some(&family("Famille Martin")), "/", 0, 0);
+        let header = app_header(&me(false), Some(&family("Famille Martin")), "/", 0, 0, 0);
         assert_eq!(
             destinations(&header, Layout::Pc),
             hrefs_and_names(&[
@@ -1653,7 +1684,7 @@ mod tests {
 
     #[test]
     fn the_admin_link_is_on_the_pc_list_of_the_superadmin_only() {
-        let admin = app_header(&me(true), Some(&family("F")), "/", 0, 0);
+        let admin = app_header(&me(true), Some(&family("F")), "/", 0, 0, 0);
         let pc = destinations(&admin, Layout::Pc);
         assert_eq!(
             pc[pc.len() - 2],
@@ -1661,7 +1692,7 @@ mod tests {
         );
         // The phone bar keeps its six tabs.
         assert_eq!(destinations(&admin, Layout::Phone).len(), 6);
-        let member = app_header(&me(false), Some(&family("F")), "/", 0, 0);
+        let member = app_header(&me(false), Some(&family("F")), "/", 0, 0, 0);
         assert!(!member.contains("/admin"), "{member}");
     }
 
@@ -1669,7 +1700,7 @@ mod tests {
     fn the_notifications_entry_is_on_the_pc_list_only() {
         // #535: a phone reaches the centre through the home's bell, and
         // keeps its six tabs.
-        let header = app_header(&me(false), Some(&family("F")), "/", 0, 0);
+        let header = app_header(&me(false), Some(&family("F")), "/", 0, 0, 0);
         assert!(!destinations(&header, Layout::Phone)
             .iter()
             .any(|(href, _)| href == "/notifications"));
@@ -1679,7 +1710,7 @@ mod tests {
 
     #[test]
     fn the_notifications_entry_wears_its_own_count() {
-        let header = app_header(&me(false), Some(&family("F")), "/agenda", 2, 3);
+        let header = app_header(&me(false), Some(&family("F")), "/agenda", 2, 3, 0);
         assert!(
             destinations(&header, Layout::Pc).contains(&(
                 "/notifications".to_string(),
@@ -1694,13 +1725,13 @@ mod tests {
         )));
         assert_eq!(header.matches(r#"class="badge warn""#).count(), 2);
         // None at zero.
-        let header = app_header(&me(false), Some(&family("F")), "/agenda", 0, 0);
+        let header = app_header(&me(false), Some(&family("F")), "/agenda", 0, 0, 0);
         assert!(!header.contains("badge"), "{header}");
     }
 
     #[test]
     fn every_destination_but_the_profile_carries_its_icon() {
-        let header = app_header(&me(true), Some(&family("F")), "/", 0, 0);
+        let header = app_header(&me(true), Some(&family("F")), "/", 0, 0, 0);
         let nav = &header[header.find("<nav").unwrap()..header.find("</nav>").unwrap()];
         for link in nav.split("<a ").skip(1) {
             let link = &link[..link.find("</a>").unwrap()];
@@ -1715,7 +1746,7 @@ mod tests {
 
     #[test]
     fn the_profile_block_names_the_caller_and_the_active_family() {
-        let header = app_header(&me(false), Some(&family("Les <Martin>")), "/", 0, 0);
+        let header = app_header(&me(false), Some(&family("Les <Martin>")), "/", 0, 0, 0);
         let link = &header[header.find(r#"href="/account""#).unwrap()..];
         let link = &link[..link.find("</a>").unwrap()];
         // The name alone in its element: the suite finds it by its exact text.
@@ -1723,7 +1754,7 @@ mod tests {
         assert!(link.contains("Les &lt;Martin&gt;"), "{link}");
         assert!(!link.contains("<Martin>"), "{link}");
         // Without a family, the block says so rather than leaving a gap.
-        let header = app_header(&me(false), None, "/", 0, 0);
+        let header = app_header(&me(false), None, "/", 0, 0, 0);
         assert!(header.contains("Aucune famille"), "{header}");
     }
 
@@ -1731,7 +1762,7 @@ mod tests {
     fn the_header_holds_no_form() {
         // The family switcher and the logout button moved to the profile
         // (#529), which posts to the same `POST /groups/switch` without JS.
-        let header = app_header(&me(false), Some(&family("F")), "/", 0, 0);
+        let header = app_header(&me(false), Some(&family("F")), "/", 0, 0, 0);
         assert!(!header.contains("<form"), "{header}");
         assert!(!header.contains("<select"), "{header}");
     }
@@ -1799,7 +1830,7 @@ mod tests {
                 Some(("/account", "Profil : Alice F")),
             ),
         ] {
-            let header = app_header(&me(true), Some(&family("F")), path, 0, 0);
+            let header = app_header(&me(true), Some(&family("F")), path, 0, 0, 0);
             for (layout, expected) in [(Layout::Phone, phone), (Layout::Pc, pc)] {
                 assert_eq!(
                     current_links(&header, layout),
@@ -1808,13 +1839,13 @@ mod tests {
                 );
             }
         }
-        let header = app_header(&me(true), Some(&family("F")), "/privacy-policy", 0, 0);
+        let header = app_header(&me(true), Some(&family("F")), "/privacy-policy", 0, 0, 0);
         assert!(!header.contains("aria-current"), "{header}");
     }
 
     #[test]
     fn the_header_marks_exactly_one_link_as_the_current_page() {
-        let header = app_header(&me(true), None, "/agenda/new", 0, 0);
+        let header = app_header(&me(true), None, "/agenda/new", 0, 0, 0);
         assert_eq!(
             header.matches(r#"aria-current="page""#).count(),
             1,
@@ -1895,9 +1926,58 @@ mod tests {
         assert!(badge.contains(" (250 non lus)"), "{badge}");
     }
 
+    // -- expiring badge on the Stocks tab (#564) ---------------------------
+
+    #[test]
+    fn no_expiring_article_means_no_badge() {
+        assert_eq!(expiring_badge(0), "");
+    }
+
+    #[test]
+    fn the_expiring_badge_says_its_count_in_words() {
+        assert_eq!(
+            expiring_badge(3),
+            r#"<span class="badge warn" aria-hidden="true">3</span><span class="sr-only"> (3 bientôt périmés)</span>"#
+        );
+        assert!(
+            expiring_badge(1).contains("> (1 bientôt périmé)<"),
+            "{}",
+            expiring_badge(1)
+        );
+    }
+
+    #[test]
+    fn the_expiring_badge_stops_at_99_plus_for_the_eye_only() {
+        assert!(expiring_badge(99).contains(r#"aria-hidden="true">99</span>"#));
+        let badge = expiring_badge(100);
+        assert!(
+            badge.contains(r#"aria-hidden="true">99+</span>"#),
+            "{badge}"
+        );
+        assert!(badge.contains(" (100 bientôt périmés)"), "{badge}");
+    }
+
+    #[test]
+    fn the_stocks_tab_wears_the_expiring_count_on_both_layouts() {
+        let header = app_header(&me(false), Some(&family("F")), "/agenda", 0, 0, 2);
+        for (layout, name) in [
+            (Layout::Phone, "Cuisine (2 bientôt périmés)"),
+            (Layout::Pc, "Stocks (2 bientôt périmés)"),
+        ] {
+            assert!(
+                destinations(&header, layout).contains(&("/stocks".to_string(), name.to_string())),
+                "{header}"
+            );
+        }
+        // The phone's Cuisine tab and the PC's Stocks entry, nothing else.
+        assert_eq!(header.matches(r#"class="badge warn""#).count(), 2);
+        let header = app_header(&me(false), Some(&family("F")), "/agenda", 0, 0, 0);
+        assert!(!header.contains("badge"), "{header}");
+    }
+
     #[test]
     fn the_header_puts_the_badge_on_the_messagerie_tab_only() {
-        let header = app_header(&me(false), None, "/agenda", 3, 0);
+        let header = app_header(&me(false), None, "/agenda", 3, 0, 0);
         let link = &header[header
             .find(r#"href="/messagerie""#)
             .expect("messagerie tab")..];
@@ -1921,7 +2001,7 @@ mod tests {
 
     #[test]
     fn the_header_has_no_badge_without_unread_messages() {
-        let header = app_header(&me(false), None, "/agenda", 0, 0);
+        let header = app_header(&me(false), None, "/agenda", 0, 0, 0);
         assert!(!header.contains("badge"), "{header}");
     }
 
@@ -1929,7 +2009,7 @@ mod tests {
     fn the_account_link_is_current_on_the_account_screens() {
         // The profile is a destination like any other; on /account/export
         // the header has to say so too.
-        let header = app_header(&me(false), None, "/account/export", 0, 0);
+        let header = app_header(&me(false), None, "/account/export", 0, 0, 0);
         assert!(header.contains(r#"href="/account" aria-current="page""#));
         assert_eq!(header.matches(r#"aria-current="page""#).count(), 1);
     }
@@ -1939,7 +2019,7 @@ mod tests {
         // The nav sat in a `.muted` block: grey, 0.875rem, ranked below the
         // content it leads to (#69). The family under the caller's name in
         // the profile block is the one secondary line it holds.
-        let header = app_header(&me(false), Some(&family("F")), "/", 0, 0);
+        let header = app_header(&me(false), Some(&family("F")), "/", 0, 0, 0);
         let nav = &header[..header.find(r#"href="/account""#).expect("the profile link")];
         assert!(
             !nav.contains("muted"),
@@ -3792,7 +3872,7 @@ mod tests {
     #[test]
     fn the_sidebar_brand_is_the_logo_then_the_name() {
         // #542: the A5 symbol replaces the home icon in front of « MHome ».
-        let header = app_header(&me(false), Some(&family("F")), "/", 0, 0);
+        let header = app_header(&me(false), Some(&family("F")), "/", 0, 0, 0);
         assert!(
             header.contains(&format!(
                 r#"<p class="brand pc">{}MHome</p>"#,

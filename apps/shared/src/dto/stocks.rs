@@ -234,3 +234,11 @@ pub struct ReceptionLine {
 pub struct ReceptionList {
     pub items: Vec<ReceptionLine>,
 }
+
+/// `GET /groups/:id/stocks/expiring_count` (#564): the active family's
+/// articles in stock (quantity above 0) whose date is past or within
+/// `EXPIRY_SOON_DAYS` — the number on the Stocks tab's pastille.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExpiringStockCount {
+    pub expiring_count: i64,
+}
