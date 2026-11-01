@@ -188,12 +188,12 @@ expect() { # name expected-rc stderr-grep (empty: none)
 run key
 expect "key" 0 ""
 checks=$((checks + 1))
-[ "$out" = "key=argocd-images-$REDIS" ] || fail "key: got [$out]"
+[ "$out" = "key=argocd-images-linux/amd64-$REDIS" ] || fail "key: got [$out]"
 
 STUB_RENDER=$stubs/render-two.yaml run key
 expect "key, two images" 0 ""
 checks=$((checks + 1))
-[ "$out" = "key=argocd-images-$OTHER $REDIS" ] || fail "key, two images: got [$out]"
+[ "$out" = "key=argocd-images-linux/amd64-$OTHER $REDIS" ] || fail "key, two images: got [$out]"
 
 STUB_RENDER=$stubs/render-none.yaml run key
 expect "key, nothing to preload" 1 "renders no image outside quay.io and ghcr.io"
@@ -271,7 +271,8 @@ expect_pull() { # name pull-error 0|1 stderr-grep pulls
 
 expect_pull "pulled and saved" "" 0 "" 1
 checks=$((checks + 1))
-grep -qxF "save --output $stubs/out.tar $REDIS" "$stubs/log" || fail "pulled and saved: no docker save of $REDIS"
+grep -qxF "save --output $stubs/out.tar --platform linux/amd64 $REDIS" "$stubs/log" || fail "pulled and saved: no single-platform docker save of $REDIS"
+grep -qxF "pull --quiet --platform linux/amd64 $REDIS" "$stubs/log" || fail "pulled and saved: no single-platform docker pull of $REDIS"
 expect_pull "refused with 429, said so" \
   "Error response from daemon: toomanyrequests: Rate exceeded" 1 \
   "::error::cache miss, and the pull of $REDIS from ecr-public.aws.com was refused: 429 Too Many Requests, 3 times" 3

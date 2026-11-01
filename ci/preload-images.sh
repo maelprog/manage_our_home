@@ -7,7 +7,7 @@
 # keep the images in the Actions cache: ECR is only asked on a miss.
 #
 #   ci/preload-images.sh key                  cache key, as key=<...> for $GITHUB_OUTPUT
-#   ci/preload-images.sh pull <tar>           docker pull, then docker save into <tar>
+#   ci/preload-images.sh pull <tar>           docker pull, then docker save into <tar> (linux/amd64)
 #   ci/preload-images.sh import <tar> <cluster>  into the node, then checked there
 #   ci/preload-images.sh check                after the bootstrap: the kubelet found
 #                                             them on the node, never pulled them
@@ -26,6 +26,13 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 argocd="$root/platform/components/argocd/application.yaml"
+# The node's platform, the only one pulled and saved. Without it, on a
+# Docker that keeps images in containerd (ubuntu-26.04 runners), `docker
+# save` of a multi-platform image writes the whole index but only this
+# platform's layers, and the node's `ctr import` stops on the first layer
+# missing ("content digest ... not found"). In the cache key, so that an
+# archive saved before this cannot be restored.
+platform=linux/amd64
 
 usage() { sed -n '9,16p' "$0" >&2; exit 2; }
 
@@ -74,7 +81,7 @@ pull() { # tar
   for img in "${imgs[@]}"; do
     for n in $(seq 1 "$tries"); do
       echo "== pull $img (attempt $n of $tries)"
-      if err=$(docker pull --quiet "$img" 2>&1); then
+      if err=$(docker pull --quiet --platform "$platform" "$img" 2>&1); then
         echo "$err"
         break
       fi
@@ -90,7 +97,7 @@ pull() { # tar
       sleep $((n * ${PRELOAD_RETRY_DELAY:-20}))
     done
   done
-  docker save --output "$1" "${imgs[@]}"
+  docker save --output "$1" --platform "$platform" "${imgs[@]}"
   echo "== saved ${imgs[*]} into $1 ($(du -h "$1" | cut -f1))"
 }
 
@@ -153,7 +160,7 @@ case "$cmd" in
     list=$(images)
     echo "== images to preload:" >&2
     echo "$list" >&2
-    echo "key=argocd-images-$(tr '\n' ' ' <<< "$list" | sed 's/ $//')"
+    echo "key=argocd-images-$platform-$(tr '\n' ' ' <<< "$list" | sed 's/ $//')"
     ;;
   pull) [ $# -eq 1 ] || usage; pull "$1" ;;
   import) [ $# -eq 2 ] || usage; import "$1" "$2" ;;
