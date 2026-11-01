@@ -497,9 +497,16 @@ a.list-row .icon { flex: none; }
 }
 .card.inline { display: flex; flex-direction: row; flex-wrap: wrap; align-items: flex-end; gap: var(--s2x); }
 .card.danger { border-color: var(--error); }
-/* A card or notice opens with its heading, whose own top margin would push
-   it off the padding. */
-.card > :first-child, .notice > :first-child { margin-top: 0; }
+/* A modal (#560: what a planned recipe lacks), opened by enhance.js: the
+   card's box on the tokens rather than the browser's Canvas colours, never
+   wider than the form column. The browser centres a modal with `margin:
+   auto`, which `.list-row > *` above strips from a dialog kept in its row,
+   so `:modal` says it again — and outweighs that rule. */
+dialog { padding: var(--s4); border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); color: var(--fg); max-width: min(var(--w-form), 100% - 2 * var(--s4)); }
+dialog:modal { margin: auto; }
+/* A card, notice or dialog opens with its heading, whose own top margin
+   would push it off the padding. */
+.card > :first-child, .notice > :first-child, dialog > :first-child { margin-top: 0; }
 /* A pastille on a line of data: a category, "Courses", "Déjà cuisiné". The
    text colour is stated rather than inherited: inside a struck-through
    `.done` row, --muted on this tint measures 4.31:1, just under AA. */

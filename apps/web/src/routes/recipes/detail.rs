@@ -32,9 +32,10 @@ use crate::state::{api_request_auth, AppState};
 
 use manage_our_home_shared::validation::recipes::{duration_label, servings_label, steps_of};
 
+use super::missing::{after_stock_change, incomplete_banner, incomplete_count};
 use super::{
     can_modify, deselect_form, family_context, forbidden_page, outcome_links, planned_badge,
-    planned_selections, recipe_not_found_page, recipes_cookie, select_form,
+    planned_with_stock, recipe_not_found_page, recipes_cookie, select_form,
     service_unavailable_page,
 };
 
@@ -199,23 +200,40 @@ pub async fn get(
     };
 
     let last = last_eaten(&state, fam.gid, recipe_id, cookie.as_deref()).await;
-    let planned = planned_selections(&state, fam.gid, cookie.as_deref())
+    let all_planned = planned_with_stock(&state, fam.gid, cookie.as_deref())
         .await
-        .unwrap_or_default()
-        .into_iter()
-        .find(|s| s.recipe_id == recipe_id)
-        .map(|s| s.servings);
+        .unwrap_or_default();
+    let planned = all_planned
+        .iter()
+        .find(|p| p.selection.recipe_id == recipe_id)
+        .map(|p| p.selection.servings);
+    // Marked done, the recipe took from the stock (#560): the planned ones
+    // it left incomplete are told, with the way to « Prévues ».
+    let incomplete = if after_stock_change(query.notice.as_deref()) {
+        incomplete_banner(incomplete_count(&all_planned))
+    } else {
+        String::new()
+    };
     let can_edit = can_modify(&fam.role, recipe.created_by == me.user_id);
-    let notice = query.notice.as_deref().and_then(notice_text);
-    let error = query.error.as_deref().and_then(error_text);
+    let notice_html = query
+        .notice
+        .as_deref()
+        .and_then(notice_text)
+        .map(|n| format!(r#"<p class="notice success">{}</p>"#, html_escape(n)))
+        .unwrap_or_default();
+    let error_html = query
+        .error
+        .as_deref()
+        .and_then(error_text)
+        .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
+        .unwrap_or_default();
     Html(page(
         &fam.header,
         &recipe,
         last,
         planned,
         can_edit,
-        notice,
-        error,
+        &format!("{notice_html}{incomplete}{error_html}"),
     ))
     .into_response()
 }
@@ -240,22 +258,17 @@ fn selection_html(id: Uuid, base: Option<i32>, planned: Option<Option<i32>>) -> 
     }
 }
 
+/// The recipe's page. `banners` are the ones of the URL's `?notice=` and
+/// `?error=`, and the planned recipes left incomplete in between (#560).
 fn page(
     header: &str,
     recipe: &RecipeResponse,
     last_eaten: Option<NaiveDate>,
     planned: Option<Option<i32>>,
     can_edit: bool,
-    notice: Option<&str>,
-    error: Option<&str>,
+    banners: &str,
 ) -> String {
     let id = recipe.id;
-    let notice_html = notice
-        .map(|n| format!(r#"<p class="notice success">{}</p>"#, html_escape(n)))
-        .unwrap_or_default();
-    let error_html = error
-        .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
-        .unwrap_or_default();
 
     let ingredients_html = if recipe.ingredients.is_empty() {
         r#"<p class="muted">Aucun ingrédient renseigné.</p>"#.to_string()
@@ -317,7 +330,7 @@ fn page(
         r#"<h1>{name}</h1>
 {source_html}
 {time_html}
-{notice_html}{error_html}
+{banners}
 {selection_html}
 <h2>Ingrédients</h2>
 {servings_html}

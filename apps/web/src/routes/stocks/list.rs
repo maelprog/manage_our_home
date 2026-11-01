@@ -31,6 +31,7 @@ use crate::app::{html_escape, kitchen_segment, shell_with_header, Width};
 use crate::icons::{icon, Icon};
 use crate::layout::CurrentUser;
 use crate::routes::agenda::today_paris;
+use crate::routes::recipes::missing::{after_stock_change, incomplete_banner_for};
 use crate::state::{api_request_auth, AppState};
 
 use super::{family_context, fmt_date, fmt_num, service_unavailable_page, stocks_cookie};
@@ -284,6 +285,13 @@ pub async fn get(
     };
 
     let notice = query.notice.as_deref().and_then(notice_text);
+    // A stepper or a deletion changed the stock (#560): the planned recipes
+    // it left incomplete are told, with the way to « Prévues ».
+    let incomplete = if after_stock_change(query.notice.as_deref()) {
+        incomplete_banner_for(&state, fam.gid, cookie.as_deref()).await
+    } else {
+        String::new()
+    };
     Html(shell_with_header(
         Width::Full,
         "Stocks",
@@ -291,18 +299,20 @@ pub async fn get(
         &format!(
             "{}{}",
             kitchen_segment("/stocks"),
-            body(&view, &items, today_paris(), notice)
+            body(&view, &items, today_paris(), notice, &incomplete)
         ),
     ))
     .into_response()
 }
 
-/// The page under the header, from what apps/api returned.
+/// The page under the header, from what apps/api returned. `incomplete`
+/// is the banner of the planned recipes left incomplete, after the notice.
 fn body(
     view: &ListState,
     items: &[StockItemResponse],
     today: NaiveDate,
     notice: Option<&str>,
+    incomplete: &str,
 ) -> String {
     let here = list_href(view);
     let link = |label: &str, state: ListState, current: bool| {
@@ -391,7 +401,7 @@ fn body(
 
     format!(
         r#"<div class="page-header"><h1>Stocks</h1><span class="actions"><a class="btn secondary pc" href="/stocks/new">{scan}Scanner un code-barres</a><a class="btn" href="/stocks/new">{plus}Ajouter un produit</a></span></div>
-{notice}<form method="get" action="/stocks" role="search" class="search"><label><span class="sr-only">Chercher un produit</span>{search_icon}<input type="search" name="q" value="{q}" placeholder="Chercher un produit…"/></label>{kept}</form>
+{notice}{incomplete}<form method="get" action="/stocks" role="search" class="search"><label><span class="sr-only">Chercher un produit</span>{search_icon}<input type="search" name="q" value="{q}" placeholder="Chercher un produit…"/></label>{kept}</form>
 <nav class="filters" aria-label="Filtres">{filters}</nav>
 {empty}<ul class="stock">{cards}</ul>"#,
         scan = icon(Icon::Scan),
@@ -603,7 +613,7 @@ mod tests {
             place: Some("frigo".to_string()),
             ..Default::default()
         };
-        let html = body(&view, &items, d(2026, 10, 29), None);
+        let html = body(&view, &items, d(2026, 10, 29), None, "");
         assert!(html.contains(r#"<a href="/stocks">Tout</a>"#), "{html}");
         assert!(
             html.contains(r#"<a href="/stocks?lieu=Frigo" aria-current="true">Frigo</a>"#),
@@ -629,10 +639,28 @@ mod tests {
             search: Some("riz".to_string()),
             ..Default::default()
         };
-        let html = body(&view, &items, d(2026, 10, 29), None);
+        let html = body(&view, &items, d(2026, 10, 29), None, "");
         assert!(html.contains("Aucun article ne correspond."), "{html}");
-        let html = body(&ListState::default(), &[], d(2026, 10, 29), None);
+        let html = body(&ListState::default(), &[], d(2026, 10, 29), None, "");
         assert!(html.contains("Aucun article pour le moment."), "{html}");
+    }
+
+    #[test]
+    fn the_incomplete_recipes_banner_follows_the_notice() {
+        let banner = r#"<p class="notice warning">1 recette prévue incomplète.</p>"#;
+        let html = body(
+            &ListState::default(),
+            &[],
+            d(2026, 10, 29),
+            Some("Quantité mise à jour."),
+            banner,
+        );
+        assert!(
+            html.contains(&format!(
+                r#"<p class="notice success">Quantité mise à jour.</p>{banner}<form method="get""#
+            )),
+            "{html}"
+        );
     }
 
     #[test]

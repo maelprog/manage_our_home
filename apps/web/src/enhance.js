@@ -75,6 +75,28 @@
     });
   }
 
+  // `data-dialog="<id>"` on a link (`recipes::missing::missing_badge`,
+  // #560): opens the `<dialog>` of that id as a modal instead of following
+  // the link. The browser moves the focus into the dialog, keeps it there
+  // and closes it on Escape; once closed, the focus goes back to the link.
+  // Without JavaScript, or without `showModal`, the link leads to a page
+  // with the same content.
+  document.addEventListener("click", function (event) {
+    var link = closest(event.target, "[data-dialog]");
+    if (!link) return;
+    var dialog = document.getElementById(link.getAttribute("data-dialog"));
+    if (!dialog || typeof dialog.showModal !== "function") return;
+    event.preventDefault();
+    dialog.addEventListener(
+      "close",
+      function () {
+        link.focus();
+      },
+      { once: true }
+    );
+    dialog.showModal();
+  });
+
   // `data-confirm="…"` on a form: asks before it is submitted, and stops
   // the submission on a refusal.
   document.addEventListener("submit", function (event) {

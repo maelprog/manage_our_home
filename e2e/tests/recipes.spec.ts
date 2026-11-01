@@ -1,4 +1,5 @@
 import { expect, Page, test } from "@playwright/test";
+import { parisDay } from "../lib/dates";
 import { fetchVerificationToken } from "../lib/db";
 import { fillIngredients, fillSteps, lineField } from "../lib/recipe-form";
 
@@ -388,6 +389,110 @@ test.describe("Recipes — Toutes, Prévues, Possibles (#539)", () => {
     await expect(lineField(page, "Ingrédient", 2)).toHaveValue("Lait");
     await expect(lineField(page, "Quantité", 2)).toHaveValue("0.5");
     await expect(page.getByRole("textbox", { name: /^Étape 2/ })).toHaveValue("Cuire.");
+  });
+});
+
+/** Plans `name` from its row of the full list, for its own base. */
+async function planFromList(page: Page, name: string): Promise<void> {
+  await page.goto("/recipes");
+  await page
+    .locator("li", { hasText: name })
+    .filter({ has: page.getByRole("button", { name: "À réaliser" }) })
+    .getByRole("button", { name: "À réaliser" })
+    .click();
+  await expect(page).toHaveURL(/\/recipes\?notice=recipe_selected$/);
+}
+
+// #560: what the stock lacks of a planned recipe, and by when to cook it.
+test.describe("Recipes — Prévues : manquants et priorité (#560)", () => {
+  test("a stock lowered under the recipe's need: badge, dialog, then onto the grocery list", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-rcmiss", "Missing User");
+    await createGroup(page, "Famille Manquants");
+    await createRecipe(page, { name: "Crêpes", ingredients: "Lait | 500 | ml" });
+    await createStockItem(page, "Lait", "500", "ml");
+    await planFromList(page, "Crêpes");
+
+    // Everything in stock: no warning.
+    await page.goto("/recipes?vue=prevues");
+    const row = page.locator("li", { hasText: "Crêpes" });
+    await expect(row.getByRole("link", { name: "Faite" })).toBeVisible();
+    await expect(page.getByText(/Il manque/)).toHaveCount(0);
+
+    // One ml less: the stocks say a planned recipe is now incomplete.
+    await page.goto("/stocks");
+    await page.getByRole("button", { name: "Retirer 1 à Lait" }).click();
+    await expect(page).toHaveURL(/\/stocks\?notice=quantity_adjusted$/);
+    await expect(page.getByText("1 recette prévue incomplète.")).toBeVisible();
+    await page.getByRole("link", { name: "Voir les recettes prévues" }).click();
+    await expect(page).toHaveURL(/\/recipes\?vue=prevues$/);
+
+    // The badge opens the list, focus inside; Escape gives it back.
+    const badge = row.getByRole("link", { name: "Il manque 1 élément" });
+    await badge.click();
+    const dialog = page.getByRole("dialog", { name: "Il manque à « Crêpes »" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("listitem")).toHaveText(["Lait — 1 ml"]);
+    await expect(dialog.getByRole("button", { name: "Ajouter à la liste de courses" })).toBeFocused();
+    // Centred in the viewport, on a desktop and on a phone: the row it sits
+    // in strips its children's margins, the browser's `margin: auto` with them.
+    const initialViewport = page.viewportSize();
+    for (const size of [
+      { width: 1280, height: 800 },
+      { width: 390, height: 844 },
+    ]) {
+      await page.setViewportSize(size);
+      const box = await dialog.boundingBox();
+      expect(box).not.toBeNull();
+      const left = box!.x;
+      const right = size.width - box!.x - box!.width;
+      const top = box!.y;
+      const bottom = size.height - box!.y - box!.height;
+      expect(left).toBeGreaterThan(0);
+      expect(top).toBeGreaterThan(0);
+      expect(Math.abs(left - right)).toBeLessThanOrEqual(1);
+      expect(Math.abs(top - bottom)).toBeLessThanOrEqual(1);
+    }
+    if (initialViewport) await page.setViewportSize(initialViewport);
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+    await expect(badge).toBeFocused();
+    // Still a recipe one can mark done.
+    await expect(row.getByRole("link", { name: "Faite" })).toBeVisible();
+
+    await badge.click();
+    await dialog.getByRole("button", { name: "Ajouter à la liste de courses" }).click();
+    await expect(page).toHaveURL(/\/recipes\?vue=prevues&notice=missing_added$/);
+    await expect(page.getByText("Éléments manquants ajoutés à la liste de courses.")).toBeVisible();
+
+    await page.goto("/grocery-list");
+    await expect(page.getByText("Lait", { exact: true })).toBeVisible();
+  });
+
+  test("a stock needed by tomorrow puts its recipe first, with the date", async ({ page }) => {
+    await registerAndLogin(page, "e2e-rcprio", "Priority User");
+    await createGroup(page, "Famille Urgence");
+    await createRecipe(page, { name: "Soupe", ingredients: "Poireau | 2 | pièce" });
+    await createRecipe(page, { name: "Gratin", ingredients: "Crème | 1 | pot" });
+    await page.goto("/stocks/new");
+    await page.getByLabel("Nom").fill("Crème");
+    await page.getByLabel("Quantité").fill("1");
+    await page.getByLabel("Unité").fill("pot");
+    const tomorrow = parisDay(1);
+    await page.getByLabel("Date de péremption").fill(tomorrow);
+    await page.getByRole("button", { name: "Ajouter l'article" }).click();
+    await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
+    // The undated one planned first.
+    await planFromList(page, "Soupe");
+    await planFromList(page, "Gratin");
+
+    await page.goto("/recipes?vue=prevues");
+    const [, m, d] = tomorrow.split("-");
+    const rows = page.locator("ul.list > li");
+    await expect(rows.first()).toContainText("Gratin");
+    await expect(rows.first().getByText(`À faire avant le ${d}/${m} (sous 1 jour)`)).toBeVisible();
+    await expect(rows.nth(1)).toContainText("Soupe");
   });
 });
 

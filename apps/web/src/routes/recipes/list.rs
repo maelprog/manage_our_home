@@ -21,8 +21,8 @@ use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use manage_our_home_shared::dto::recipes::{
-    MissingIngredient, RecipeList, RecipeResponse, RecipeSelectionResponse, RecipeSuggestion,
-    SuggestionList,
+    MissingIngredient, PlannedSelection, RecipeList, RecipeResponse, RecipeSelectionResponse,
+    RecipeSuggestion, SuggestionList,
 };
 use manage_our_home_shared::validation::recipes::{servings_label, stock_summary};
 
@@ -31,8 +31,11 @@ use crate::layout::CurrentUser;
 use crate::routes::stocks::new::OFF_ATTRIBUTION;
 use crate::state::{api_request_auth, AppState};
 
+use super::missing::{
+    incomplete_banner, incomplete_count, missing_badge, missing_dialog, use_by_badge,
+};
 use super::{
-    deselect_form, family_context, outcome_links, planned_badge, planned_selections,
+    deselect_form, family_context, outcome_links, planned_badge, planned_with_stock,
     recipes_cookie, select_form, service_unavailable_page,
 };
 
@@ -52,6 +55,10 @@ fn notice_text(code: &str) -> Option<&'static str> {
         "recipe_deselected" => Some("Recette retirée des recettes à réaliser."),
         "recipe_done" => Some(super::outcome::DONE_NOTICE),
         "recipe_abandoned" => Some(super::outcome::ABANDONED_NOTICE),
+        "missing_added" => Some("Éléments manquants ajoutés à la liste de courses."),
+        "missing_none" => Some(
+            "Aucun article ajouté : les éléments manquants sont déjà sur la liste de courses, ou plus rien ne manque.",
+        ),
         _ => None,
     }
 }
@@ -238,26 +245,36 @@ fn tabs_html(current: Tab, planned: usize, possible: usize) -> String {
 
 /// « Prévues »: one row per planned recipe, for how many people, with
 /// « Faite » and « Abandonner » (#474) and « Retirer » (#470); then the
-/// generation of the grocery list, which takes these recipes.
-fn planned_tab_html(planned: &[RecipeSelectionResponse]) -> String {
+/// generation of the grocery list, which takes these recipes. Since #560
+/// a row says by when to cook it and what the stock lacks of it, in the
+/// API's order — the dated ones first.
+fn planned_tab_html(planned: &[PlannedSelection]) -> String {
     if planned.is_empty() {
         return r#"<p class="muted">Aucune recette prévue. Le bouton « À réaliser » d'une recette, dans <a href="/recipes">Toutes</a>, la fait entrer dans la prochaine liste de courses.</p>"#.to_string();
     }
     let rows: String = planned
         .iter()
-        .map(|s| {
+        .map(|p| {
+            let s = &p.selection;
             let people = s
                 .servings
                 .map(|n| format!(r#"<span class="muted">{}</span>"#, servings_label(n)))
                 .unwrap_or_default();
             format!(
                 r#"<li class="list-row">
-<a href="/recipes/{id}"><strong>{name}</strong></a>
+<span><a href="/recipes/{id}"><strong>{name}</strong></a>{use_by}{missing}</span>
 {people}
-<span class="actions">{outcome}{deselect}</span>
+<span class="actions">{outcome}{deselect}</span>{dialog}
 </li>"#,
                 id = s.recipe_id,
                 name = html_escape(&s.recipe_name),
+                use_by = p
+                    .use_by
+                    .zip(p.days_left)
+                    .map(|(date, days)| use_by_badge(date, days))
+                    .unwrap_or_default(),
+                missing = missing_badge(s.recipe_id, p.missing.len()),
+                dialog = missing_dialog(p),
                 outcome = outcome_links(s.recipe_id, "planned"),
                 deselect = deselect_form(s.recipe_id, "planned"),
             )
@@ -388,9 +405,11 @@ pub async fn get(
     // unknown, not empty (`planned_selections`). The possible recipes and
     // the suggestions below fail hard on a transport error only, like the
     // list; a non-200 reads as none (`fetch_suggestions`).
-    let Ok(planned) = planned_selections(&state, fam.gid, cookie.as_deref()).await else {
+    let Ok(with_stock) = planned_with_stock(&state, fam.gid, cookie.as_deref()).await else {
         return service_unavailable_page().into_response();
     };
+    let planned: Vec<RecipeSelectionResponse> =
+        with_stock.iter().map(|p| p.selection.clone()).collect();
 
     // The recipes the stock covers (#539), for the « Possibles » tab and
     // its count on every tab, all of them.
@@ -420,9 +439,17 @@ pub async fn get(
         .and_then(error_text)
         .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
         .unwrap_or_default();
+    // A recipe marked done took from the stock (#560): the planned ones it
+    // left incomplete are told, with the way to « Prévues » — except on
+    // « Prévues », whose rows say it themselves.
+    let incomplete = if query.notice.as_deref() == Some("recipe_done") && tab != Tab::Planned {
+        incomplete_banner(incomplete_count(&with_stock))
+    } else {
+        String::new()
+    };
 
     let content = match tab {
-        Tab::Planned => planned_tab_html(&planned),
+        Tab::Planned => planned_tab_html(&with_stock),
         Tab::Possible => possible_tab_html(&possible),
         Tab::All => {
             // The ranked suggestions, on this tab only.
@@ -442,7 +469,7 @@ pub async fn get(
 <a class="btn" href="/recipes/new">Nouvelle recette</a>
 </div>
 </div>
-{notice}{error}
+{notice}{error}{incomplete}
 {tabs}
 {content}"#,
         segment = kitchen_segment("/recipes"),
@@ -476,6 +503,15 @@ mod tests {
             duration_minutes: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+        }
+    }
+
+    fn with_stock(s: RecipeSelectionResponse) -> PlannedSelection {
+        PlannedSelection {
+            selection: s,
+            missing: Vec::new(),
+            use_by: None,
+            days_left: None,
         }
     }
 
@@ -597,8 +633,8 @@ mod tests {
     #[test]
     fn the_planned_tab_lists_each_recipe_with_faite_abandonner_and_retirer() {
         let html = planned_tab_html(&[
-            selection(1, "Crêpes", Some(6)),
-            selection(2, "Soupe <du jour>", None),
+            with_stock(selection(1, "Crêpes", Some(6))),
+            with_stock(selection(2, "Soupe <du jour>", None)),
         ]);
         let id = Uuid::from_u128(1);
         assert!(
@@ -632,10 +668,75 @@ mod tests {
             html.contains(">Générer les courses de ces 2 recettes</button>"),
             "{html}"
         );
-        let one = planned_tab_html(&[selection(1, "Crêpes", None)]);
+        let one = planned_tab_html(&[with_stock(selection(1, "Crêpes", None))]);
         assert!(
             one.contains(">Générer les courses de cette recette</button>"),
             "{one}"
+        );
+    }
+
+    #[test]
+    fn a_complete_undated_planned_recipe_carries_no_badge_and_no_dialog() {
+        let html = planned_tab_html(&[with_stock(selection(1, "Crêpes", Some(6)))]);
+        assert!(!html.contains("badge"), "{html}");
+        assert!(!html.contains("<dialog"), "{html}");
+        assert!(!html.contains("Il manque"), "{html}");
+    }
+
+    #[test]
+    fn a_planned_recipe_lacking_something_opens_its_list_and_stays_faite_able() {
+        let mut p = with_stock(selection(1, "Crêpes", Some(6)));
+        p.missing = vec![
+            MissingIngredient {
+                name: "Lait".into(),
+                quantity: Some(300.0),
+                unit: Some("ml".into()),
+            },
+            MissingIngredient {
+                name: "Sel".into(),
+                quantity: None,
+                unit: None,
+            },
+        ];
+        let id = Uuid::from_u128(1);
+        let html = planned_tab_html(&[p]);
+        assert!(html.contains(&missing_badge(id, 2)), "{html}");
+        assert!(html.contains(">Il manque 2 éléments</a>"), "{html}");
+        assert!(
+            html.contains(&format!(r#"<dialog id="missing-{id}""#)),
+            "{html}"
+        );
+        assert!(html.contains("<li>Lait — 300 ml</li>"), "{html}");
+        // A warning: « Faite » is still there.
+        assert!(
+            html.contains(&format!(r#"href="/recipes/{id}/done?back=planned""#)),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn the_dated_planned_recipes_say_by_when_in_the_order_received() {
+        let date = |d| chrono::NaiveDate::from_ymd_opt(2026, 11, d).unwrap();
+        let mut soon = with_stock(selection(1, "Gratin", None));
+        soon.use_by = Some(date(2));
+        soon.days_left = Some(1);
+        let mut past = with_stock(selection(2, "Soupe", None));
+        past.use_by = Some(date(1));
+        past.days_left = Some(-1);
+        let plain = with_stock(selection(3, "Crêpes", None));
+        let html = planned_tab_html(&[soon, past, plain]);
+        assert!(
+            html.contains("À faire avant le 02/11 (sous 1 jour)</span>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("Produit périmé depuis le 01/11</span>"),
+            "{html}"
+        );
+        let at = |name: &str| html.find(name).unwrap();
+        assert!(
+            at("Gratin") < at("Soupe") && at("Soupe") < at("Crêpes"),
+            "{html}"
         );
     }
 
