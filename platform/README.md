@@ -45,18 +45,19 @@ limite à `kubectl top` et aux journaux des pods. `ci/platform-test.sh`
 | `manage-our-home-<env>` | synchro automatique | **manuelle**, sans `syncPolicy.automated` |
 | `postgres-<env>` | synchro automatique | **manuelle**, sans `syncPolicy.automated` |
 | Briques (Argo CD, Kyverno…) | synchro automatique | automatique, mais leur version et leurs valeurs ne changent qu'à la synchro manuelle de la racine |
-| Branche lue | `k3s` pendant l'intégration, `deploy` ensuite | `deploy` |
+| Branche lue | `deploy` | `deploy` |
 
 En prod, un merge sur `deploy` laisse `platform` ou `manage-our-home-prod`
 `OutOfSync` ; rien n'est déployé avant que l'utilisateur clique « Sync »
 dans Argo CD (arbitrage du 2026-10-10). Aucun jeton Argo CD n'est donné à
 la CI ni aux agents.
 
-**Promotion `k3s` → `deploy`** : la PR doit passer `targetRevision: k3s` à
-`deploy` dans `clusters/staging/root.yaml` et
-`clusters/staging/manage-our-home.yaml` et `clusters/staging/postgres.yaml` ;
-`ci/platform-test.sh` échoue sur
-une PR vers `deploy` tant que staging suit `k3s`.
+**La racine n'est pas dans son propre rendu** : un changement de
+`clusters/<env>/root.yaml` (sa branche, son chemin) n'atteint le cluster
+qu'en le réappliquant à la main (`kubectl apply -f`) après le merge. Oubli
+de ce geste après #508 : le staging a lu l'ancienne branche `k3s` jusqu'à
+#672, et les promotions d'images mergées dans `deploy` entre-temps ne l'ont
+pas atteint. `ci/platform-test.sh` exige `targetRevision: deploy` partout.
 
 ## Ordre de la première synchro
 

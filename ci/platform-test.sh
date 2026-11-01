@@ -8,8 +8,7 @@
 #   ci/platform-test.sh
 #
 # EXPECT_STAGING_REVISION, when set, is the branch every Application of
-# staging must read: the CI sets it to the branch a PR goes into, so the
-# promotion PR to `deploy` fails while staging still follows `k3s`.
+# staging must read: the CI sets it to the branch a PR goes into (`deploy`).
 #
 # Exits non-zero if any check fails, after running all of them.
 

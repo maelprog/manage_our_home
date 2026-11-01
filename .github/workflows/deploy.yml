@@ -30,9 +30,9 @@ name: Deploy manifests
 
 on:
   pull_request:
-    branches: [deploy, k3s]
+    branches: [deploy]
   push:
-    branches: [deploy, k3s]
+    branches: [deploy]
   workflow_dispatch:
 
 permissions: {}
