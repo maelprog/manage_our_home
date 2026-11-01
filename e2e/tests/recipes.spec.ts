@@ -435,6 +435,26 @@ test.describe("Recipes — Prévues : manquants et priorité (#560)", () => {
     await expect(dialog).toBeVisible();
     await expect(dialog.getByRole("listitem")).toHaveText(["Lait — 1 ml"]);
     await expect(dialog.getByRole("button", { name: "Ajouter à la liste de courses" })).toBeFocused();
+    // Centred in the viewport, on a desktop and on a phone: the row it sits
+    // in strips its children's margins, the browser's `margin: auto` with them.
+    const initialViewport = page.viewportSize();
+    for (const size of [
+      { width: 1280, height: 800 },
+      { width: 390, height: 844 },
+    ]) {
+      await page.setViewportSize(size);
+      const box = await dialog.boundingBox();
+      expect(box).not.toBeNull();
+      const left = box!.x;
+      const right = size.width - box!.x - box!.width;
+      const top = box!.y;
+      const bottom = size.height - box!.y - box!.height;
+      expect(left).toBeGreaterThan(0);
+      expect(top).toBeGreaterThan(0);
+      expect(Math.abs(left - right)).toBeLessThanOrEqual(1);
+      expect(Math.abs(top - bottom)).toBeLessThanOrEqual(1);
+    }
+    if (initialViewport) await page.setViewportSize(initialViewport);
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();
     await expect(badge).toBeFocused();
