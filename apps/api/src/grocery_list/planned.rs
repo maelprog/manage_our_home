@@ -40,9 +40,10 @@ pub(crate) struct PlannedLine {
 /// Drops the binary noise of a computed quantity, without rounding it
 /// (decision of 2026-10-25): `0.1 + 0.2` reads `0.3`, not
 /// `0.30000000000000004`, while `0.125 + 0.0625` keeps its `0.1875` and
-/// `200 × 5 / 3` reads `333.333333333`. It keeps twelve significant digits,
-/// more than any quantity typed here carries, so a non-zero quantity never
-/// becomes 0.
+/// `200 × 5 / 3` reads `333.333333333`. It keeps twelve significant digits:
+/// nothing bounds the digits of a quantity (`DOUBLE PRECISION`), so one
+/// typed with more loses its last ones (`1.23456789012345` reads
+/// `1.23456789012`), but a non-zero quantity never becomes 0.
 pub(crate) fn without_binary_noise(q: f64) -> f64 {
     format!("{q:.11e}").parse().unwrap_or(q)
 }
