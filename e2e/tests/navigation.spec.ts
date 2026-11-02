@@ -167,3 +167,102 @@ test.describe("navigation — PC only", () => {
     expect(box.y + box.height).toBeGreaterThan(900 - 80);
   });
 });
+
+// Issue #673: above 861px `.content` is a grid item beside the sidebar, and
+// its `margin: 0 auto` turned the grid's stretch off — the column shrank to
+// its content, so the home's `.dash` held one card per row. It now fills its
+// track, bounded only by `--w-form` or `--w-read`, and stays centred.
+test.describe("navigation — the content column", () => {
+  const width = async (page: Page, selector: string): Promise<number> => {
+    const box = await page.locator(selector).boundingBox();
+    if (!box) throw new Error(`${selector} not rendered`);
+    return box.width;
+  };
+
+  test.describe("on a PC", () => {
+    test.use({ viewport: { width: 1280, height: 800 } });
+
+    test("fills the column beside the sidebar, or its bounded width", async ({ page }) => {
+      await registerAndLogin(page, "e2e-nav-column", "Column User");
+      await createGroup(page, "Famille Colonne");
+      await page.goto("/grocery-list");
+      await page.getByLabel("Article").fill("Pain");
+      await page.getByRole("button", { name: "Ajouter" }).click();
+      await expect(page).toHaveURL(/\/grocery-list\?notice=item_added$/);
+
+      // `/`: the whole column, so the dashboard lays its cards side by side.
+      await page.goto("/");
+      const column = 1280 - (await width(page, ".app > header"));
+      expect(Math.abs((await width(page, "main.content")) - column)).toBeLessThanOrEqual(1);
+      const tracks = await page
+        .locator(".dash")
+        .evaluate((node) => getComputedStyle(node).gridTemplateColumns.split(" ").length);
+      expect(tracks).toBeGreaterThanOrEqual(2);
+
+      // `/agenda`, month view, a guard rather than a proof of #673 — its wide
+      // grid already filled the column: the grid and the day's panel beside
+      // it (`.agenda`, #525) still span the column's content box, and the
+      // table takes all of it but the panel and the gap between them.
+      await page.goto("/agenda");
+      const inner = await page.locator("main.content").evaluate((node) => {
+        const style = getComputedStyle(node);
+        return node.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      });
+      expect(Math.abs((await width(page, ".agenda")) - inner)).toBeLessThanOrEqual(1);
+      const gap = await page
+        .locator(".agenda")
+        .evaluate((node) => parseFloat(getComputedStyle(node).columnGap));
+      const beside = (await width(page, ".agenda > .card")) + gap;
+      expect(Math.abs((await width(page, "table.cal")) - (inner - beside))).toBeLessThanOrEqual(1);
+
+      // A `w-form` route measures `--w-form` (28rem), whatever it holds.
+      const rem = await page.evaluate(() =>
+        parseFloat(getComputedStyle(document.documentElement).fontSize),
+      );
+      await page.goto("/groups/new");
+      await expect(page.locator("main.content.w-form")).toHaveCount(1);
+      expect(Math.abs((await width(page, "main.content")) - 28 * rem)).toBeLessThanOrEqual(1);
+
+      // A `w-read` route: `--w-read` (65rem), capped by the column.
+      await page.goto("/account/appearance");
+      await expect(page.locator("main.content.w-read")).toHaveCount(1);
+      const read = Math.min(65 * rem, column);
+      expect(Math.abs((await width(page, "main.content")) - read)).toBeLessThanOrEqual(1);
+
+      // The messagerie keeps its full width without a rule of its own.
+      await page.goto("/messagerie");
+      expect(Math.abs((await width(page, "main.content")) - column)).toBeLessThanOrEqual(1);
+
+      // At 1280px `--w-read` equals the column: only a wider window shows
+      // the bound at work. At 1600px the `w-read` route keeps 65rem, centred
+      // in a wider column.
+      await page.setViewportSize({ width: 1600, height: 900 });
+      await page.goto("/account/appearance");
+      const sidebar = await width(page, ".app > header");
+      const box = await page.locator("main.content").boundingBox();
+      if (!box) throw new Error("main.content not rendered");
+      expect(65 * rem).toBeLessThan(1600 - sidebar);
+      expect(Math.abs(box.width - 65 * rem)).toBeLessThanOrEqual(1);
+      const left = box.x - sidebar;
+      const right = 1600 - (box.x + box.width);
+      expect(Math.abs(left - right)).toBeLessThanOrEqual(1);
+    });
+  });
+
+  test.describe("on a phone", () => {
+    test.use({ viewport: { width: 390, height: 844 } });
+
+    test("is the page's width, with nothing past its edge", async ({ page }) => {
+      await registerAndLogin(page, "e2e-nav-column-phone", "Column Phone");
+      await createGroup(page, "Famille Colonne");
+      for (const path of ["/", "/agenda", "/groups/new", "/messagerie"]) {
+        await page.goto(path);
+        expect(Math.abs((await width(page, "main.content")) - 390), path).toBeLessThanOrEqual(1);
+        const overflow = await page.evaluate(
+          () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        );
+        expect(overflow, path).toBeLessThanOrEqual(0);
+      }
+    });
+  });
+});
