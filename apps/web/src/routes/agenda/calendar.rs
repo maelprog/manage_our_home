@@ -14,9 +14,10 @@
 //! those same cells as a list of the days that carry something.
 //!
 //! That is a deliberate trade, decided before the work started, and it is
-//! worth stating what each side costs. The stylesheet is inlined into every
-//! response and is bounded by two ceilings (`app.rs`, DESIGN.md → Livraison
-//! du CSS); a reflow spends a handful of declarations there, **once**.
+//! worth stating what each side costs. The stylesheet is served from
+//! `/assets` under its fingerprint since #89 and is bounded by
+//! `SHEET_CEILING` (`app.rs`, DESIGN.md → Livraison du CSS); a reflow spends
+//! a handful of declarations there, paid once per deployment.
 //! Rendering both a grid and a list and hiding one with CSS would instead
 //! spend *document* bytes — paid on every page view, growing with how much
 //! the family has stored, on `/agenda`, which is already the heaviest route
