@@ -2553,7 +2553,7 @@ mod tests {
         ("--fg", "--border", ".badge, .chip:hover, .chip.done:hover"),
         ("--fg", "--hover", ".chip, a hovered row"),
         ("--fg", "--accent-soft", ".current"),
-        ("--muted", "--bg", ".muted, th, dt"),
+        ("--muted", "--bg", ".muted, th, dt, .mini .outside"),
         ("--muted", "--surface", ".muted in a card"),
         ("--muted", "--hover", "a hovered .list-row"),
         ("--muted", "--accent-soft", "today off the month, .outside"),
@@ -2567,7 +2567,7 @@ mod tests {
         (
             "--accent-fg",
             "--accent",
-            "button, .filters [aria-current], a .msg.mine bubble",
+            "button, .filters [aria-current], a .msg.mine bubble, .mini .current",
         ),
         ("--accent-fg", "--accent-hover", "button:hover"),
         ("--accent-fg", "--error", "button.danger, .badge.warn"),
@@ -4258,7 +4258,8 @@ mod tests {
                 ("shared/src/validation/rgpd.rs", 1),
                 ("web/src/routes/admin/groups.rs", 10),
                 ("web/src/routes/admin/users.rs", 5),
-                ("web/src/routes/agenda/calendar.rs", 1),
+                // The grid's weekdays and the mini grid's initials (#675).
+                ("web/src/routes/agenda/calendar.rs", 2),
                 ("web/src/routes/agenda/imports.rs", 4),
             ],
         );

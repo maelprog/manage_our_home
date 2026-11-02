@@ -653,6 +653,77 @@ test.describe("Agenda — mise en page (#525)", () => {
   });
 });
 
+// #675 — a phone's list shows only the days that carry something, so an
+// empty month showed no date at all. A mini grid of the period now heads it.
+test.describe("Agenda — mini-grille sur téléphone (#675)", () => {
+  test("an empty month shows its days, today marked, and says nothing is planned", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await registerAndLogin(page, "e2e-agmini", "Agenda Mini");
+    await createGroup(page, "Famille Grille");
+    await page.goto("/agenda");
+
+    const mini = page.locator("table.mini");
+    await expect(mini).toBeVisible();
+    const cells = mini.locator("td");
+    const count = await cells.count();
+    expect(count).toBeGreaterThanOrEqual(28);
+    expect(count).toBeLessThanOrEqual(42);
+    for (const text of await cells.allInnerTexts()) expect(text.trim()).toMatch(/^\d{1,2}$/);
+    await expect(page.getByText("Rien de prévu ce mois-ci.")).toBeVisible();
+
+    const today = mini.locator('td[aria-current="date"]');
+    await expect(today).toHaveCount(1);
+    await expect(today).toHaveClass(/\bcurrent\b/);
+    await expect(today).toHaveText(String(Number(parisDay().slice(8))));
+
+    await page.goto("/agenda?view=week");
+    await expect(mini.locator("td")).toHaveCount(7);
+    await expect(page.getByText("Rien de prévu cette semaine.")).toBeVisible();
+  });
+
+  test("a day with an event links to its entry in the list, and says so", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await registerAndLogin(page, "e2e-agminilink", "Agenda Lien");
+    await createGroup(page, "Famille Ancre");
+    const date = dayThisMonth(15);
+    await createEvent(page, { title: "Réunion parents", start: `${date}T10:00`, end: `${date}T11:00` });
+
+    await page.goto(`/agenda?view=month&date=${date}`);
+    const link = page.locator("table.mini").getByRole("link", { name: /^15 \S+, 1 événement$/ });
+    await expect(link).toHaveAttribute("href", `#j${date}`);
+    await expect(page.getByText("Rien de prévu ce mois-ci.")).toBeHidden();
+    await link.click();
+    await expect(page).toHaveURL(new RegExp(`#j${date}$`));
+    const entry = page.locator(`#j${date}`);
+    await expect(entry).toBeVisible();
+    await expect(entry.getByRole("link", { name: /Réunion parents/ })).toBeVisible();
+  });
+
+  test("no horizontal scroll at 360px", async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 780 });
+    await registerAndLogin(page, "e2e-agmini360", "Agenda Étroit");
+    await createGroup(page, "Famille Étroite");
+    for (const path of ["/agenda", "/agenda?view=week"]) {
+      await page.goto(path);
+      await expect(page.locator("table.mini")).toBeVisible();
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      );
+      expect(overflow, path).toBeLessThanOrEqual(0);
+    }
+  });
+
+  test("a PC keeps its grid and gets neither the mini grid nor the empty state", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await registerAndLogin(page, "e2e-agminipc", "Agenda Bureau");
+    await createGroup(page, "Famille Bureau");
+    await page.goto("/agenda");
+    await expect(page.locator("table.cal")).toBeVisible();
+    await expect(page.locator("table.mini")).toBeHidden();
+    await expect(page.getByText("Rien de prévu ce mois-ci.")).toBeHidden();
+  });
+});
+
 test.describe("Agenda — feuille de création sans JavaScript (#525)", () => {
   test.use({ javaScriptEnabled: false });
 
