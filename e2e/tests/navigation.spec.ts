@@ -232,6 +232,20 @@ test.describe("navigation — the content column", () => {
       // The messagerie keeps its full width without a rule of its own.
       await page.goto("/messagerie");
       expect(Math.abs((await width(page, "main.content")) - column)).toBeLessThanOrEqual(1);
+
+      // At 1280px `--w-read` equals the column: only a wider window shows
+      // the bound at work. At 1600px the `w-read` route keeps 65rem, centred
+      // in a wider column.
+      await page.setViewportSize({ width: 1600, height: 900 });
+      await page.goto("/account/appearance");
+      const sidebar = await width(page, ".app > header");
+      const box = await page.locator("main.content").boundingBox();
+      if (!box) throw new Error("main.content not rendered");
+      expect(65 * rem).toBeLessThan(1600 - sidebar);
+      expect(Math.abs(box.width - 65 * rem)).toBeLessThanOrEqual(1);
+      const left = box.x - sidebar;
+      const right = 1600 - (box.x + box.width);
+      expect(Math.abs(left - right)).toBeLessThanOrEqual(1);
     });
   });
 
