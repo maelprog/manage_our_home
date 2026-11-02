@@ -447,13 +447,15 @@ summary { cursor: pointer; color: var(--accent); font-size: var(--t-sm); padding
 .list-row.stacked, .actions.stacked { flex-direction: column; align-items: stretch; }
 /* A row that is itself the control (#529): a link the width of its card
    (a setting of the profile), or the label of a radio (a family to make
-   active). The whole row is the target, --s12 tall; it reads as a line of
-   the list, in the body's colour and size, not as a link or a field label.
-   It does not wrap: on a phone the text does, and the chevron or the radio
-   stays on its line. The radio takes the accent, as the rest of the app's
-   controls do. */
-a.list-row, .family { flex-wrap: nowrap; min-height: var(--s12); padding-inline: var(--s2x); color: inherit; text-decoration: none; font-size: var(--t-base); }
-.family { flex-direction: row; justify-content: flex-start; cursor: pointer; accent-color: var(--accent); }
+   active, a theme to pick). The whole row is the target, --s12 tall; it
+   reads as a line of the list, in the body's colour and size, not as a link
+   or a field label. It does not wrap: on a phone the text does, and the
+   chevron or the radio stays on its line. The radio takes the accent, as
+   the rest of the app's controls do. Keyed on the element rather than a
+   class since #674: the theme's choices lacked the family's class and
+   inherited `label`'s column, their radios stacked over their names. */
+a.list-row, label.list-row { flex-wrap: nowrap; min-height: var(--s12); padding-inline: var(--s2x); color: inherit; text-decoration: none; font-size: var(--t-base); }
+label.list-row { flex-direction: row; justify-content: flex-start; cursor: pointer; accent-color: var(--accent); }
 a.list-row .icon { flex: none; }
 /* The member a « Gérer » of the family settings led to (#530), on the
    members page: the row the fragment names, in the accent's tint. */
@@ -953,6 +955,17 @@ button.secondary:hover, .btn.secondary:hover { background: var(--hover); }
 button.danger:hover, .btn.danger:hover { background: var(--error-hover); border-color: var(--error-hover); }
 button.secondary.danger:hover, .btn.secondary.danger:hover { background: var(--error-soft); }
 .list-row:hover, .navlink:hover { background: var(--hover); }
+/* No native tap flash (#674): Chrome Android and Safari iOS painted their
+   blue highlight over whatever was touched. The answer to a touch is the
+   system's own — hover, focus ring, `aria-current`. Inherited, so once. */
+html { -webkit-tap-highlight-color: transparent; }
+/* The filter or view shown (`aria-current="true"`) and the kitchen
+   segment's current half link to the page already open: a click only
+   reloaded it (#674). They keep their look and their place in the
+   accessibility tree; the pointer goes through them. A lit `.toggle`
+   (« Stock bas ») turns itself off, and a nav tab (`aria-current="page"`)
+   leads back from a sub-page: both stay live. */
+[aria-current="true"]:not(.toggle), .segment [aria-current] { pointer-events: none; }
 /* `color` too: a done occurrence (`.chip.done`) is --muted, which measures
    4.34:1 (light) and 4.38:1 (dark) on --border. Hovered, it reads --fg. */
 .chip:hover { background: var(--border); color: var(--fg); }
