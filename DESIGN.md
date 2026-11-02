@@ -907,8 +907,10 @@ ni `transition`, et `aria-current` n'apparaissait nulle part.
   segment de la cuisine mènent à la page déjà ouverte : `pointer-events:
   none`, ils gardent leur aspect et leur place dans l'arbre d'accessibilité.
   Restent actifs : un filtre bascule allumé (`.toggle`, « Stock bas »), qui
-  s'éteint au clic et mène donc ailleurs, et les liens de navigation
-  (`aria-current="page"`), qui ramènent à la liste depuis une sous-page.
+  s'éteint au clic et mène donc ailleurs, et les onglets de la navigation
+  (`.navlink` en `aria-current="page"`), qui ramènent à la liste depuis une
+  sous-page. Le segment de la cuisine porte lui aussi `aria-current="page"`
+  et reste inerte : c'est la classe qui décide, pas la valeur de l'attribut.
   L'activation au clavier (Entrée) n'est pas concernée.
 - **Pas de surbrillance native au toucher** (#674) :
   `html { -webkit-tap-highlight-color: transparent }`. La réponse à un
