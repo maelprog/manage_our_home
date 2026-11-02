@@ -3621,12 +3621,25 @@ mod tests {
             inert.contains("pointer-events: none"),
             "the current filter is still clickable: {inert:?}"
         );
+        // A nav tab is reached by its class or by its `aria-current="page"`:
+        // `[aria-current]:not(.toggle)` names no `.navlink` and still takes
+        // every tab. An inert selector may name `aria-current` only with
+        // the filter's value, or under the kitchen segment.
         for rule in css_rules(&css()) {
-            if rule.body.contains("pointer-events: none") {
+            if !rule.body.contains("pointer-events: none") {
+                continue;
+            }
+            for part in rule.selector.split(", ") {
                 assert!(
-                    !rule.selector.contains(".navlink"),
-                    "a nav link is made inert: {}",
-                    rule.selector
+                    !part.contains(".navlink"),
+                    "a nav link is made inert: {part}"
+                );
+                let filter_only = part
+                    .match_indices("[aria-current")
+                    .all(|(i, _)| part[i..].starts_with(r#"[aria-current="true"]"#));
+                assert!(
+                    filter_only || part.starts_with(".segment "),
+                    "a nav link's `aria-current` is made inert: {part}"
                 );
             }
         }
