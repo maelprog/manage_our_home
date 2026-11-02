@@ -315,9 +315,13 @@ fn body(
     incomplete: &str,
 ) -> String {
     let here = list_href(view);
-    let link = |label: &str, state: ListState, current: bool| {
+    // A `toggle` turns its own filter off when lit, so it leads elsewhere
+    // and the sheet keeps it live; any other current filter leads to the
+    // page already open and is inert to the pointer (#674).
+    let link = |label: &str, state: ListState, current: bool, toggle: bool| {
         format!(
-            r#"<a href="{href}"{current}>{label}</a>"#,
+            r#"<a {class}href="{href}"{current}>{label}</a>"#,
+            class = if toggle { r#"class="toggle" "# } else { "" },
             href = html_escape(&list_href(&state)),
             current = if current {
                 r#" aria-current="true""#
@@ -334,6 +338,7 @@ fn body(
             ..view.clone()
         },
         view.place.is_none(),
+        false,
     )];
     let current_place = view.place.as_deref().map(article_key);
     for place in places(items) {
@@ -345,6 +350,7 @@ fn body(
                 ..view.clone()
             },
             current,
+            false,
         ));
     }
     filters.push(link(
@@ -354,6 +360,7 @@ fn body(
             ..view.clone()
         },
         view.only_low,
+        true,
     ));
     filters.push(link(
         if view.by_expiry {
@@ -365,6 +372,7 @@ fn body(
             by_expiry: !view.by_expiry,
             ..view.clone()
         },
+        false,
         false,
     ));
 
@@ -628,6 +636,33 @@ mod tests {
         assert!(!html.contains("<strong>Lait</strong>"), "{html}");
         assert!(
             html.contains(r#"<input type="hidden" name="lieu" value="frigo"/>"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn stock_bas_is_a_toggle_that_stays_live_while_shown() {
+        // #674: the current filter is inert to the pointer, as it leads to
+        // the page already open. « Stock bas » lit leads elsewhere — it
+        // turns the filter off — so it says it is a toggle, which the
+        // sheet spares.
+        let on = ListState {
+            only_low: true,
+            ..Default::default()
+        };
+        let html = body(&on, &[], d(2026, 10, 29), None, "");
+        assert!(
+            html.contains(r#"<a class="toggle" href="/stocks" aria-current="true">Stock bas</a>"#),
+            "{html}"
+        );
+        let html = body(&ListState::default(), &[], d(2026, 10, 29), None, "");
+        assert!(
+            html.contains(r#"<a class="toggle" href="/stocks?low_stock=1">Stock bas</a>"#),
+            "{html}"
+        );
+        // A place filter is not one: shown, it leads to itself.
+        assert!(
+            html.contains(r#"<a href="/stocks" aria-current="true">Tout</a>"#),
             "{html}"
         );
     }

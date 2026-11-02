@@ -96,3 +96,44 @@ test.describe("Choosing the theme (#585)", () => {
     expect(await resolvedTheme(page)).toEqual({ dataTheme: null, bg: DARK_BG, colorScheme: "dark" });
   });
 });
+
+// Issue #674 — the label rule stacks a field's content, and it put each
+// theme's radio above its name. Every radio row sits on one line, the radio
+// centred on its text, the whole row a ≥ 44 px target; on a phone and a PC.
+for (const viewport of [
+  { width: 390, height: 844 },
+  { width: 1280, height: 800 },
+]) {
+  test.describe(`The theme's choices at ${viewport.width}px (#674)`, () => {
+    test.use({ viewport });
+
+    test("each radio sits beside its text, centred on it, in a row of 44px or more", async ({
+      page,
+    }) => {
+      await registerWithAFamily(page);
+      await page.goto("/account/appearance");
+      const rows = page.locator('[role="radiogroup"] label');
+      await expect(rows).toHaveCount(3);
+      for (let i = 0; i < 3; i++) {
+        const row = rows.nth(i);
+        const radio = row.locator('input[type="radio"]');
+        const text = row.locator(":scope > span");
+        const r = await radio.boundingBox();
+        const t = await text.boundingBox();
+        const l = await row.boundingBox();
+        if (!r || !t || !l) throw new Error(`row ${i} is not laid out`);
+        const centre = r.y + r.height / 2;
+        expect(centre, `radio ${i} is within its text`).toBeGreaterThanOrEqual(t.y);
+        expect(centre, `radio ${i} is within its text`).toBeLessThanOrEqual(t.y + t.height);
+        expect(Math.abs(centre - (t.y + t.height / 2)), `radio ${i} off its text's centre`).toBeLessThanOrEqual(2);
+        expect(r.x + r.width, `radio ${i} is left of its text`).toBeLessThanOrEqual(t.x);
+        expect(l.height, `row ${i} is a 44px target`).toBeGreaterThanOrEqual(44);
+        // The radio takes the accent, as the rest of the controls do.
+        expect(await radio.evaluate((el) => getComputedStyle(el).accentColor)).not.toBe("auto");
+      }
+      // The whole row is the target: a click on the text picks the radio.
+      await rows.nth(2).locator("strong").click();
+      await expect(page.getByRole("radio", { name: "Sombre" })).toBeChecked();
+    });
+  });
+}

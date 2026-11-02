@@ -3584,6 +3584,66 @@ mod tests {
         out
     }
 
+    /// The body of the top-level rule whose selector list is exactly
+    /// `selector`, if the sheet has one.
+    fn top_level_rule(selector: &str) -> Option<String> {
+        css_rules(&css())
+            .into_iter()
+            .find(|rule| rule.context.is_empty() && rule.selector == selector)
+            .map(|rule| rule.body)
+    }
+
+    #[test]
+    fn the_root_turns_the_native_tap_highlight_off() {
+        // #674: Chrome Android and Safari iOS paint their own blue flash on
+        // every link or button touched, over the system's hover and focus.
+        // The property inherits, so declaring it once on the root covers
+        // every element.
+        let root = top_level_rule("html").unwrap_or_default();
+        assert!(
+            root.contains("-webkit-tap-highlight-color: transparent"),
+            "no `html {{ -webkit-tap-highlight-color: transparent }}` rule: {root:?}"
+        );
+    }
+
+    #[test]
+    fn the_current_filter_ignores_the_pointer_and_the_current_page_does_not() {
+        // #674: the filter shown (`aria-current="true"`) and the kitchen
+        // segment's current half link to the URL already displayed, so a
+        // click only reloaded the page. A lit toggle (« Stock bas ») leads
+        // elsewhere — it turns itself off — and a nav tab
+        // (`aria-current="page"`) leads back to the list from a sub-page:
+        // both stay clickable.
+        let inert =
+            top_level_rule(r#"[aria-current="true"]:not(.toggle), .segment [aria-current]"#)
+                .unwrap_or_default();
+        assert!(
+            inert.contains("pointer-events: none"),
+            "the current filter is still clickable: {inert:?}"
+        );
+        for rule in css_rules(&css()) {
+            if rule.body.contains("pointer-events: none") {
+                assert!(
+                    !rule.selector.contains(".navlink"),
+                    "a nav link is made inert: {}",
+                    rule.selector
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_radio_row_puts_its_radio_beside_its_text() {
+        // #674: `label` stacks its content for a field, which put the theme's
+        // radios above their names. Every radio row, not just a family's,
+        // sits on one line.
+        let row = top_level_rule("label.list-row").unwrap_or_default();
+        assert!(
+            row.contains("flex-direction: row"),
+            "`label.list-row` does not set its radio beside its text: {row:?}"
+        );
+    }
+
     #[test]
     fn every_interactive_surface_answers_the_pointer() {
         // Audit §3.3: not one `:hover` in the sheet, so on a PC nothing said

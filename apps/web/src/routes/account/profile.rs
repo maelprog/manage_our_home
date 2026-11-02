@@ -60,7 +60,7 @@ pub(crate) fn family_choice(g: &GroupSummary, members: Option<usize>, active: bo
         None => role.to_string(),
     };
     format!(
-        r#"<label class="list-row family"><input type="radio" name="group_id" value="{id}"{checked}><span><strong>{name}</strong>{badge}<br><span class="muted">{meta}</span></span></label>"#,
+        r#"<label class="list-row"><input type="radio" name="group_id" value="{id}"{checked}><span><strong>{name}</strong>{badge}<br><span class="muted">{meta}</span></span></label>"#,
         id = g.group_id,
         name = html_escape(&g.name),
     )
@@ -220,10 +220,7 @@ mod tests {
             )),
             "{html}"
         );
-        assert!(
-            html.starts_with(r#"<label class="list-row family">"#),
-            "{html}"
-        );
+        assert!(html.starts_with(r#"<label class="list-row">"#), "{html}");
     }
 
     #[test]
