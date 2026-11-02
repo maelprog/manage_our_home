@@ -679,6 +679,18 @@ progress::-moz-progress-bar { background: currentColor; }
 /* Semaine | Mois (#525): the kitchen's segment, beside the arrows. The
    861px query keeps it on a PC, where the kitchen's goes. */
 .views a { padding: 0 var(--s3); }
+/* A phone's period at a glance (#675, `calendar::render_mini`), above the
+   list of the days that carry something: seven columns of day numbers,
+   `.phone`. A day that carries something is a 48px link to its entry in the
+   list, a dot under its number — and words in its name, WCAG 1.4.1. Today
+   in the accent, `.current` after `.outside` so that its text wins. */
+.mini { table-layout: fixed; border-collapse: separate; border-spacing: 0; margin-bottom: var(--s4); font-variant-numeric: tabular-nums; }
+.mini th, .mini td { padding: 0; border: 0; text-align: center; }
+.mini td { height: var(--s12); }
+.mini .outside { color: var(--muted); }
+.mini .current { border-radius: var(--r-sm); background: var(--accent); color: var(--accent-fg); }
+.mini a { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s2); height: var(--s12); color: inherit; font-weight: 600; text-decoration: none; }
+.mini a::after { content: ""; width: var(--s1); height: var(--s1); border-radius: 50%; background: currentColor; }
 /* The event form as the mock-up's sheet (#525). The fieldsets it holds are
    cards of their own elsewhere (the edit page); inside the sheet they are
    groups of fields, not a card on a card. */

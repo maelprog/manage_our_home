@@ -2553,7 +2553,7 @@ mod tests {
         ("--fg", "--border", ".badge, .chip:hover, .chip.done:hover"),
         ("--fg", "--hover", ".chip, a hovered row"),
         ("--fg", "--accent-soft", ".current"),
-        ("--muted", "--bg", ".muted, th, dt"),
+        ("--muted", "--bg", ".muted, th, dt, .mini .outside"),
         ("--muted", "--surface", ".muted in a card"),
         ("--muted", "--hover", "a hovered .list-row"),
         ("--muted", "--accent-soft", "today off the month, .outside"),
@@ -2567,7 +2567,7 @@ mod tests {
         (
             "--accent-fg",
             "--accent",
-            "button, .filters [aria-current], a .msg.mine bubble",
+            "button, .filters [aria-current], a .msg.mine bubble, .mini .current",
         ),
         ("--accent-fg", "--accent-hover", "button:hover"),
         ("--accent-fg", "--error", "button.danger, .badge.warn"),
@@ -3621,12 +3621,25 @@ mod tests {
             inert.contains("pointer-events: none"),
             "the current filter is still clickable: {inert:?}"
         );
+        // A nav tab is reached by its class or by its `aria-current="page"`:
+        // `[aria-current]:not(.toggle)` names no `.navlink` and still takes
+        // every tab. An inert selector may name `aria-current` only with
+        // the filter's value, or under the kitchen segment.
         for rule in css_rules(&css()) {
-            if rule.body.contains("pointer-events: none") {
+            if !rule.body.contains("pointer-events: none") {
+                continue;
+            }
+            for part in rule.selector.split(", ") {
                 assert!(
-                    !rule.selector.contains(".navlink"),
-                    "a nav link is made inert: {}",
-                    rule.selector
+                    !part.contains(".navlink"),
+                    "a nav link is made inert: {part}"
+                );
+                let filter_only = part
+                    .match_indices("[aria-current")
+                    .all(|(i, _)| part[i..].starts_with(r#"[aria-current="true"]"#));
+                assert!(
+                    filter_only || part.starts_with(".segment "),
+                    "a nav link's `aria-current` is made inert: {part}"
                 );
             }
         }
@@ -4258,7 +4271,8 @@ mod tests {
                 ("shared/src/validation/rgpd.rs", 1),
                 ("web/src/routes/admin/groups.rs", 10),
                 ("web/src/routes/admin/users.rs", 5),
-                ("web/src/routes/agenda/calendar.rs", 1),
+                // The grid's weekdays and the mini grid's initials (#675).
+                ("web/src/routes/agenda/calendar.rs", 2),
                 ("web/src/routes/agenda/imports.rs", 4),
             ],
         );

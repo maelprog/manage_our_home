@@ -98,7 +98,9 @@ interface Box {
  * and button-styled links, fields, nav links, the password toggle, the
  * agenda's arrows and chips, a disclosure's summary, a `.links` column, a
  * member's name as a link to their profile (`.member`, #466 — the seeded
- * message's author on /messagerie, the member list, the event's assignee).
+ * message's author on /messagerie, the member list, the event's assignee),
+ * a day of the phone's mini grid that links to its entry in the list (#675 —
+ * the seeded event's day, today).
  *
  * Left out, each for a stated reason:
  * - a bare text link (`<a>` with no class): inside a sentence it is WCAG
@@ -114,7 +116,7 @@ async function undersized(page: Page): Promise<Box[]> {
   return page.evaluate((min) => {
     const out: { what: string; width: number; height: number }[] = [];
     const nodes = document.querySelectorAll<HTMLElement>(
-      'button, .btn, input:not([type="hidden"]), select, textarea, summary, .navlink, .chip, .links a, .member',
+      'button, .btn, input:not([type="hidden"]), select, textarea, summary, .navlink, .chip, .links a, .member, .mini a',
     );
     const wide = window.matchMedia("(min-width: 861px)").matches;
     for (const node of nodes) {

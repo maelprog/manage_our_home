@@ -14,9 +14,10 @@
 //! those same cells as a list of the days that carry something.
 //!
 //! That is a deliberate trade, decided before the work started, and it is
-//! worth stating what each side costs. The stylesheet is inlined into every
-//! response and is bounded by two ceilings (`app.rs`, DESIGN.md → Livraison
-//! du CSS); a reflow spends a handful of declarations there, **once**.
+//! worth stating what each side costs. The stylesheet is served from
+//! `/assets` under its fingerprint since #89 and is bounded by
+//! `SHEET_CEILING` (`app.rs`, DESIGN.md → Livraison du CSS); a reflow spends
+//! a handful of declarations there, paid once per deployment.
 //! Rendering both a grid and a list and hiding one with CSS would instead
 //! spend *document* bytes — paid on every page view, growing with how much
 //! the family has stored, on `/agenda`, which is already the heaviest route
@@ -48,6 +49,18 @@
 //! Semaine / Mois toggle sits beside them, on a phone as on a PC. A PC adds
 //! the panel of the day in focus (`day_panel`, `.pc`): the day `?date=`
 //! names, today when it names none.
+//!
+//! # A phone's period at a glance (#675)
+//!
+//! The list of #71 shows only the days that carry something, so a month
+//! with nothing in it showed no date at all. A phone now gets, above the
+//! list, a mini grid of the same days (`render_mini`, `.phone`): their
+//! numbers under the weekdays' initials, a day that carries something as a
+//! link to its entry in the list, and an empty state when that list is
+//! empty (`empty_state`). It is a second markup, the trade #71 refused, and
+//! it does not undo that refusal: what #71 would not pay was a list growing
+//! with what the family has stored. The mini grid holds 42 days at most and
+//! counts occurrences without listing them.
 
 use std::collections::BTreeMap;
 
@@ -86,6 +99,9 @@ const FR_MONTHS: [&str; 12] = [
     "décembre",
 ];
 pub(crate) const FR_WEEKDAYS: [&str; 7] = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"];
+const FR_LONG_WEEKDAYS: [&str; 7] = [
+    "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche",
+];
 
 /// The classes that tint a chip in a member's hue (#525): `.m1` to `.m8`,
 /// each 16 % of its ramp token mixed into `--surface`, the event ground of
@@ -245,10 +261,14 @@ pub async fn get(
     );
     let nav_html = render_nav(is_week, focus, &title);
     let notice_html = notices_html(query.notice.as_deref(), load_error);
+    // The head of a phone's list (#675): the period at a glance, then what
+    // the list says when it is empty.
+    let mini_html = render_mini(&days, &by_day, focus_month, today, &title)
+        + &empty_state(&days, &by_day, is_week, load_error);
 
     let body = view! {
         <div inner_html=nav_html></div>
-        <div inner_html=notice_html></div>
+        <div inner_html=notice_html + &mini_html></div>
         <div class="agenda" inner_html=grid_html + &panel_html></div>
     };
     Html(shell_with_header(
@@ -395,14 +415,17 @@ fn render_grid(
             let in_focus = focus_month.is_none_or(|m| day.month() == m);
             let today_class = if *day == today { " current" } else { "" };
             let outside_class = if in_focus { "" } else { " outside" };
-            let chips = render_chips(
-                by_day.get(day).map(|v| v.as_slice()).unwrap_or(&[]),
-                cap,
-                *day,
-                members,
-            );
+            let occs = by_day.get(day).map(|v| v.as_slice()).unwrap_or(&[]);
+            // The mini grid's target on a phone (#675): only a day the
+            // list shows is one.
+            let id = if occs.is_empty() {
+                String::new()
+            } else {
+                format!(r#" id="{}""#, day_anchor(*day))
+            };
+            let chips = render_chips(occs, cap, *day, members);
             rows.push_str(&format!(
-                r#"<td class="cal-cell{today_class}">
+                r#"<td class="cal-cell{today_class}"{id}>
 <div class="cal-day{outside_class}">{num}</div>{chips}</td>"#,
                 today_class = today_class,
                 outside_class = outside_class,
@@ -419,6 +442,100 @@ fn render_grid(
         r#"<table class="cal"><caption>{caption}</caption><thead><tr>{headers}</tr></thead><tbody>{rows}</tbody></table>"#,
         caption = html_escape(caption),
     )
+}
+
+/// "1 événement", "2 événements": what a day of the mini grid carries.
+fn events_label(n: usize) -> String {
+    if n == 1 {
+        "1 événement".to_string()
+    } else {
+        format!("{n} événements")
+    }
+}
+
+/// The id of a day's entry in the phone's list, the mini grid's target.
+/// The whole date and not the day number: a month grid shows the 1st to
+/// the 9th of two months.
+fn day_anchor(day: NaiveDate) -> String {
+    format!("j{day}")
+}
+
+/// The phone's period at a glance (#675), above the list of days: the same
+/// days as the grid, seven columns of their numbers under the initials of
+/// the weekdays. The list shows only the days that carry something, so a
+/// month with nothing in it showed no date at all.
+///
+/// `.phone`: a PC has the grid itself, and `display: none` takes this out
+/// of its accessibility tree too. A day that carries something is a link
+/// to its entry in the list (`day_anchor`) — no `view=day`, no script — and
+/// its name says so, the dot the sheet draws under it being only the
+/// visible half (WCAG 1.4.1). Its titles stay in the list: here, a count.
+///
+/// These are document bytes, paid on every page view, on a PC too: the
+/// trade #71 refused. They do not grow with what the family has stored —
+/// 42 days at most, a few more bytes per day that carries something — which
+/// is what the refusal was about (DESIGN.md → L'agenda sur téléphone).
+fn render_mini(
+    days: &[NaiveDate],
+    by_day: &BTreeMap<NaiveDate, Vec<&OccurrenceResponse>>,
+    focus_month: Option<u32>,
+    today: NaiveDate,
+    title: &str,
+) -> String {
+    let headers: String = FR_LONG_WEEKDAYS
+        .iter()
+        .map(|d| format!(r#"<th scope="col" aria-label="{d}">{}</th>"#, &d[..1]))
+        .collect();
+    let mut rows = String::new();
+    for week in days.chunks(7) {
+        rows.push_str("<tr>");
+        for day in week {
+            let outside = !focus_month.is_none_or(|m| day.month() == m);
+            let attrs = match (outside, *day == today) {
+                (false, false) => "",
+                (true, false) => r#" class="outside""#,
+                (false, true) => r#" class="current" aria-current="date""#,
+                (true, true) => r#" class="outside current" aria-current="date""#,
+            };
+            let n = day.day();
+            let inner = match by_day.get(day).map(Vec::len) {
+                Some(count) if count > 0 => format!(
+                    r##"<a href="#{anchor}">{n}<span class="sr-only"> {month}, {label}</span></a>"##,
+                    anchor = day_anchor(*day),
+                    month = FR_MONTHS[(day.month() - 1) as usize],
+                    label = events_label(count),
+                ),
+                _ => n.to_string(),
+            };
+            rows.push_str(&format!("<td{attrs}>{inner}</td>"));
+        }
+        rows.push_str("</tr>");
+    }
+    format!(
+        r#"<table class="mini phone" aria-label="Aperçu : {title}"><thead><tr>{headers}</tr></thead><tbody>{rows}</tbody></table>"#,
+        title = html_escape(title),
+    )
+}
+
+/// What the phone's list says when it has no day to show (#675): nothing
+/// this month, or this week. A PC shows the empty grid, which says it
+/// already. Nothing when the events could not be read: the error notice
+/// above (#455) is the truth, and "Rien de prévu" under it would not be.
+fn empty_state(
+    days: &[NaiveDate],
+    by_day: &BTreeMap<NaiveDate, Vec<&OccurrenceResponse>>,
+    is_week: bool,
+    load_error: bool,
+) -> String {
+    if load_error || days.iter().any(|d| by_day.contains_key(d)) {
+        return String::new();
+    }
+    let period = if is_week {
+        "cette semaine"
+    } else {
+        "ce mois-ci"
+    };
+    format!(r#"<p class="muted phone">Rien de prévu {period}.</p>"#)
 }
 
 /// How a day's occurrences split between `(listed, counted)`: the chips the
@@ -539,12 +656,9 @@ pub(crate) fn render_chips(
 
 /// "Mardi 14 juillet": the day panel's heading.
 fn long_day(day: NaiveDate) -> String {
-    const WEEKDAYS: [&str; 7] = [
-        "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche",
-    ];
     format!(
         "{} {} {}",
-        WEEKDAYS[day.weekday().num_days_from_monday() as usize],
+        FR_LONG_WEEKDAYS[day.weekday().num_days_from_monday() as usize],
         day.day(),
         FR_MONTHS[(day.month() - 1) as usize],
     )
@@ -801,6 +915,173 @@ mod tests {
         // July 2026 starts on a Wednesday: two June days lead the grid, and
         // the six weeks run into August.
         assert!(html.matches("cal-day outside").count() >= 2, "{html}");
+    }
+
+    // -- the phone's period at a glance (#675) ---------------------------
+
+    #[test]
+    fn the_count_of_a_day_agrees_in_number() {
+        assert_eq!(events_label(1), "1 événement");
+        assert_eq!(events_label(2), "2 événements");
+        assert_eq!(events_label(12), "12 événements");
+    }
+
+    #[test]
+    fn a_day_is_anchored_by_its_full_date() {
+        // A month grid shows the 1st to the 9th twice (July's and August's):
+        // the day number alone would give two cells the same id.
+        assert_eq!(day_anchor(day(15)), "j2026-07-15");
+    }
+
+    #[test]
+    fn a_day_of_the_list_carries_the_anchor_the_mini_grid_points_at() {
+        let occs = [occurrence(9, "Dentiste")];
+        let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> =
+            [(day(15), occs.iter().collect())].into_iter().collect();
+        let days: Vec<NaiveDate> = month_grid(2026, 7);
+        let html = render_grid(&days, &by_day, Some(7), day(1), None, "juillet 2026", &[]);
+        assert!(
+            html.contains(r#"<td class="cal-cell" id="j2026-07-15">"#),
+            "{html}"
+        );
+        // Only a day the list shows needs one: the others are not targets.
+        assert_eq!(html.matches(" id=").count(), 1, "{html}");
+    }
+
+    /// The `<td>…</td>` of the mini grid that holds day `n` of July 2026.
+    fn mini_cell(html: &str, n: u32) -> String {
+        let anchor = format!("j2026-07-{n:02}");
+        let cells: Vec<&str> = html.split("<td").skip(1).collect();
+        let found = cells
+            .iter()
+            .find(|c| c.contains(&format!(">{n}</td>")) || c.contains(&anchor))
+            .expect("the day is rendered");
+        format!("<td{}", &found[..found.find("</td>").unwrap() + 5])
+    }
+
+    #[test]
+    fn the_mini_grid_shows_every_day_of_the_month_with_its_number() {
+        let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
+        let days: Vec<NaiveDate> = month_grid(2026, 7);
+        let html = render_mini(&days, &by_day, Some(7), day(1), "juillet 2026");
+        // A phone-only table: out of sight, and of the accessibility tree,
+        // on a PC.
+        assert!(
+            html.starts_with(r#"<table class="mini phone" aria-label="Aperçu : juillet 2026">"#),
+            "{html}"
+        );
+        assert_eq!(html.matches("<td").count(), 42, "{html}");
+        assert_eq!(html.matches("<tr>").count(), 1 + 6, "{html}");
+        for n in 1..=31 {
+            assert!(html.contains(&format!(">{n}</td>")), "day {n}: {html}");
+        }
+        // July 2026 runs Wednesday to Friday: Monday 29 June leads the grid,
+        // Sunday 9 August ends it — 2 + 9 days of other months, muted.
+        assert_eq!(
+            html.matches(r#"<td class="outside">"#).count(),
+            11,
+            "{html}"
+        );
+        // No day carries anything, so nothing is a link.
+        assert!(!html.contains("<a "), "{html}");
+    }
+
+    #[test]
+    fn the_mini_grid_heads_its_columns_with_the_initials_of_the_days() {
+        let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
+        let html = render_mini(&week_days(day(15)), &by_day, None, day(1), "x");
+        // The letter is what fits a seventh of a phone; the name is what
+        // tells Mardi from Mercredi.
+        assert!(
+            html.contains(r#"<th scope="col" aria-label="Lundi">L</th><th scope="col" aria-label="Mardi">M</th><th scope="col" aria-label="Mercredi">M</th>"#),
+            "{html}"
+        );
+        assert_eq!(html.matches(r#"<th scope="col""#).count(), 7, "{html}");
+    }
+
+    #[test]
+    fn the_mini_grid_of_a_week_is_one_row_and_mutes_nothing() {
+        let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
+        // 2026-07-27 .. 2026-08-02: four July days, three August.
+        let html = render_mini(&week_days(day(29)), &by_day, None, day(1), "x");
+        assert_eq!(html.matches("<td").count(), 7, "{html}");
+        assert!(!html.contains("outside"), "{html}");
+    }
+
+    #[test]
+    fn today_is_marked_in_the_mini_grid_by_class_and_by_aria_current() {
+        let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
+        let days: Vec<NaiveDate> = month_grid(2026, 7);
+        let html = render_mini(&days, &by_day, Some(7), day(15), "juillet 2026");
+        assert_eq!(
+            mini_cell(&html, 15),
+            r#"<td class="current" aria-current="date">15</td>"#
+        );
+        assert_eq!(html.matches("aria-current").count(), 1, "{html}");
+    }
+
+    #[test]
+    fn a_day_that_carries_something_links_to_its_entry_in_the_list() {
+        let occs = [occurrence(9, "Dentiste"), occurrence(14, "Piscine")];
+        let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> =
+            [(day(15), occs.iter().collect())].into_iter().collect();
+        let days: Vec<NaiveDate> = month_grid(2026, 7);
+        let html = render_mini(&days, &by_day, Some(7), day(1), "juillet 2026");
+        // An anchor, no `view=day`, no script. Its name says the day and
+        // that it carries something — not the hue of a dot alone (WCAG
+        // 1.4.1): "15 juillet, 2 événements".
+        assert_eq!(
+            mini_cell(&html, 15),
+            r##"<td><a href="#j2026-07-15">15<span class="sr-only"> juillet, 2 événements</span></a></td>"##
+        );
+        assert_eq!(html.matches("<a ").count(), 1, "{html}");
+        // The titles stay in the list: the grid only counts.
+        assert!(!html.contains("Dentiste"), "{html}");
+    }
+
+    #[test]
+    fn a_day_of_another_month_names_its_own_month() {
+        let occs = [occurrence(9, "Dentiste")];
+        let june_30 = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
+        let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> =
+            [(june_30, occs.iter().collect())].into_iter().collect();
+        let days: Vec<NaiveDate> = month_grid(2026, 7);
+        let html = render_mini(&days, &by_day, Some(7), day(1), "juillet 2026");
+        assert!(
+            html.contains(r##"<td class="outside"><a href="#j2026-06-30">30<span class="sr-only"> juin, 1 événement</span></a></td>"##),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn an_empty_period_says_nothing_is_planned_on_a_phone() {
+        let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
+        let month = month_grid(2026, 7);
+        assert_eq!(
+            empty_state(&month, &by_day, false, false),
+            r#"<p class="muted phone">Rien de prévu ce mois-ci.</p>"#
+        );
+        let week = week_days(day(15));
+        assert_eq!(
+            empty_state(&week, &by_day, true, false),
+            r#"<p class="muted phone">Rien de prévu cette semaine.</p>"#
+        );
+    }
+
+    #[test]
+    fn a_period_with_something_planned_has_no_empty_state() {
+        let occs = [occurrence(9, "Dentiste")];
+        let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> =
+            [(day(15), occs.iter().collect())].into_iter().collect();
+        assert_eq!(empty_state(&month_grid(2026, 7), &by_day, false, false), "");
+    }
+
+    #[test]
+    fn events_that_could_not_be_read_are_not_nothing_planned() {
+        // The error notice (#455) already says so; "Rien de prévu" under it
+        // would say something false.
+        let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
+        assert_eq!(empty_state(&month_grid(2026, 7), &by_day, false, true), "");
     }
 
     // -- what the grid is called (#145) ----------------------------------
