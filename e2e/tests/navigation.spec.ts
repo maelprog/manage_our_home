@@ -170,9 +170,8 @@ test.describe("navigation — PC only", () => {
 
 // Issue #673: above 861px `.content` is a grid item beside the sidebar, and
 // its `margin: 0 auto` turned the grid's stretch off — the column shrank to
-// its content, so the home's `.dash` held one card per row and the month's
-// table was squeezed. It now fills its track, bounded only by `--w-form` or
-// `--w-read`, and stays centred.
+// its content, so the home's `.dash` held one card per row. It now fills its
+// track, bounded only by `--w-form` or `--w-read`, and stays centred.
 test.describe("navigation — the content column", () => {
   const width = async (page: Page, selector: string): Promise<number> => {
     const box = await page.locator(selector).boundingBox();
@@ -200,9 +199,10 @@ test.describe("navigation — the content column", () => {
         .evaluate((node) => getComputedStyle(node).gridTemplateColumns.split(" ").length);
       expect(tracks).toBeGreaterThanOrEqual(2);
 
-      // `/agenda`, month view: the grid and the day's panel beside it
-      // (`.agenda`, #525) span the column's content box, and the table takes
-      // all of it but the panel and the gap between them.
+      // `/agenda`, month view, a guard rather than a proof of #673 — its wide
+      // grid already filled the column: the grid and the day's panel beside
+      // it (`.agenda`, #525) still span the column's content box, and the
+      // table takes all of it but the panel and the gap between them.
       await page.goto("/agenda");
       const inner = await page.locator("main.content").evaluate((node) => {
         const style = getComputedStyle(node);
