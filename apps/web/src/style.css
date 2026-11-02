@@ -229,8 +229,10 @@ h3 { font-size: var(--t-lg); margin: var(--s4) 0 var(--s1); }
    `aria-current="page"` elements, which is worse than none. */
 /* The content column, as wide as the page asked for (`app::Width`): bounded
    by one of the two classes below, or the whole column when it names
-   neither. `margin: 0 auto` centres it either way. */
-.content { margin: 0 auto; padding: var(--s6) var(--s4); }
+   neither. `margin: 0 auto` centres it either way. `width: 100%` because
+   above 861px it is a grid item, and an `auto` margin there turns the
+   grid's stretch off: without it the column shrank to its content (#673). */
+.content { width: 100%; margin: 0 auto; padding: var(--s6) var(--s4); }
 .w-form { max-width: var(--w-form); }
 .w-read { max-width: var(--w-read); }
 /* Six tabs on a phone (#523), each its icon over its short label. They
@@ -881,9 +883,6 @@ dd { margin: var(--s2) 0 0 0; }
    --accent-fg on --accent; the family's on the left, --fg on --surface
    with a --line rim. Mine is decided by who wrote it, never by who may edit
    it (#72). The corner nearest the sender is the one left square. */
-/* The page takes the column's whole width: a full-width `.content` is as
-   wide as what it holds on a PC, and a bubble is a share of the line. */
-.content:has(> .thread) { width: 100%; }
 .msgs { display: flex; flex-direction: column; gap: var(--s4); }
 .msg { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s1); }
 .msg.mine { align-items: flex-end; }

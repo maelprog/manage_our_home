@@ -583,7 +583,7 @@ fn page(
 {notice}
 {live_status}
 {back_link}
-<div id="thread" class="thread" data-group-id="{gid}" data-live="{live}" data-ws-url="{ws_url}">
+<div id="thread" data-group-id="{gid}" data-live="{live}" data-ws-url="{ws_url}">
 {list_html}
 </div>
 {composer}
@@ -979,7 +979,7 @@ async fn rerender_with_edit_error(
     let body = format!(
         r#"{heading}
 <p id="live-status" class="muted live-status" aria-live="polite"></p>
-<div id="thread" class="thread" data-group-id="{gid}" data-live="true" data-ws-url="{ws_url}">
+<div id="thread" data-group-id="{gid}" data-live="true" data-ws-url="{ws_url}">
 <ul class="list msgs">{rows}</ul>
 </div>
 {composer}
