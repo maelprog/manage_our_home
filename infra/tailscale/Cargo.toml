@@ -1,0 +1,17 @@
+[package]
+name = "manage_our_home_tailnet_policy"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# The tailnet's access policy (`policy.json`, #684) and the test, run by
+# the workspace test job on every pull request, that pins it: the file must
+# equal, key for key, the policy written out in src/lib.rs. Nothing in
+# apps/ depends on this crate.
+[lib]
+name = "manage_our_home_tailnet_policy"
+path = "src/lib.rs"
+
+[dependencies]
+# Already in Cargo.lock through the apps: the workspace graph does not grow.
+serde_json = "1"

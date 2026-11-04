@@ -1,0 +1,46 @@
+{
+  "groups": {
+    "group:famille": [],
+    "group:admin": []
+  },
+  "tagOwners": {
+    "tag:serveur": ["autogroup:admin"]
+  },
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["group:famille"],
+      "dst": ["tag:serveur:443"]
+    },
+    {
+      "action": "accept",
+      "src": ["group:admin"],
+      "dst": ["tag:serveur:22,443,6443"]
+    }
+  ],
+  "tests": [
+    {
+      "src": "group:famille",
+      "accept": ["tag:serveur:443"],
+      "deny": [
+        "tag:serveur:22",
+        "tag:serveur:80",
+        "tag:serveur:6443",
+        "tag:serveur:10250",
+        "192.168.1.254:80",
+        "192.168.1.254:443"
+      ]
+    },
+    {
+      "src": "group:admin",
+      "accept": ["tag:serveur:22", "tag:serveur:443", "tag:serveur:6443"],
+      "deny": [
+        "tag:serveur:80",
+        "tag:serveur:2379",
+        "tag:serveur:10250",
+        "192.168.1.254:80",
+        "192.168.1.254:443"
+      ]
+    }
+  ]
+}
