@@ -1,9 +1,9 @@
 name: Tailscale policy
 
 # The staging tailnet's access policy (#684, docs/staging-tailscale.md).
-# The offline check — the file's own `tests` block, and what keeps it
-# publishable — is a unit test of the `manage_our_home_tailnet_policy`
-# crate, run by the `test` job of ci.yml on every pull request. This
+# The offline check — policy.json equals, key for key, the policy pinned in
+# the test of the `manage_our_home_tailnet_policy` crate, and names no
+# login — runs in the `test` job of ci.yml on every pull request. This
 # workflow adds what needs the coordinator, and so a credential:
 #   - `validate` asks Tailscale to validate the policy of main, its tests
 #     included, after each change merged into it;

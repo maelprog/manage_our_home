@@ -52,17 +52,20 @@ La politique d'accès du tailnet est versionnée dans
   `{"group:famille": ["…"], "group:admin": ["…"]}`, exactement ces deux
   clés.
 - Le bloc `tests` du fichier décrit ce tableau. Le coordinateur refuse une
-  politique dont un test échoue ; la crate `infra/tailscale` (test de la CI,
-  job `test`) rejoue ces tests sans lui, pour le sous-ensemble du langage
-  de politique que le fichier emploie. Elle refuse ce qui en sort au lieu
-  de l'ignorer : une clé autre que `groups`, `tagOwners`, `acls` et
-  `tests` ; une règle dont la source est `*` ou n'est ni un groupe ni un
-  tag déclarés ni un identifiant ; une règle dont la destination n'est
-  pas un tag déclaré (une adresse, un sous-réseau, `autogroup:…`, un
-  groupe, `*`) ; une liste de ports mal formée ou une plage inversée ;
-  tout identifiant écrit dans le fichier. Elle vérifie enfin le tableau
-  ci-dessus indépendamment des tests du fichier, port par port de 1 à
-  65535, pour les deux groupes et pour le serveur lui-même.
+  politique dont un test échoue ; il les exécute quand le workflow valide
+  la politique de `main` (voir « Qui applique la politique »).
+- **La politique est épinglée.** La crate `infra/tailscale` (test de la
+  CI, job `test`, sur chaque pull request) n'interprète pas le langage de
+  politique : elle compare `policy.json`, clé par clé, à la politique
+  écrite en entier dans son test (`PINNED`, `infra/tailscale/src/lib.rs`),
+  et échoue sur toute clé ajoutée (`ssh`, `grants`, `nodeAttrs`,
+  `autoApprovers`, ou n'importe quelle autre), retirée ou modifiée,
+  `tagOwners` et `tests` compris. L'ordre des clés et la mise en page ne
+  comptent pas. Elle vérifie aussi qu'aucun `@` n'est écrit dans le
+  fichier. **Modifier l'accès, c'est donc modifier aussi `PINNED`** dans
+  la même pull request, et c'est cette modification-là qui se relit à la
+  main : rien ne vérifie qu'un nouvel épinglage correspond au tableau
+  ci-dessus.
 
 **Rôle dans le tailnet et groupe sont indépendants.** Le rôle (*Owner*,
 *Admin*, *Member*) dit qui administre le tailnet ; le groupe dit ce qu'un
@@ -81,7 +84,7 @@ Le workflow `.github/workflows/tailscale-policy.yml` :
   *Run workflow* sans cocher `apply`). Aucune pull request ne lance ce
   workflow : son job exécuterait le `policy.sh` de la branche, qui
   pourrait envoyer l'identifiant n'importe où. Une pull request n'a que la
-  vérification hors ligne du job `test` de la CI. Sans les secrets, le job
+  vérification hors ligne (l'épinglage) du job `test` de la CI. Sans les secrets, le job
   passe avec un avertissement ;
 - **applique** la politique de `main` au tailnet à la main seulement :
   onglet Actions → *Tailscale policy* → *Run workflow*, case `apply` cochée.
