@@ -1408,3 +1408,96 @@ async fn a_temp_object_of_the_caller_cannot_shadow_the_export_functions_tables(d
     drop(conn);
     drop_prescribed_role(&db, app_db, &role).await;
 }
+
+/// Issue #620: an event's privacy is part of what the export says about it,
+/// in both categories that carry events — the ones the caller created and
+/// the ones they are assigned to. Read through the prescribed role, under
+/// which a private event is visible to its participants alone: the caller
+/// is one of each, and finds both.
+#[sqlx::test]
+async fn export_states_whether_each_event_is_private(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "p620-owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer Prive").await;
+    let member_cookie =
+        register_verify_login(&router, &db, "p620-member@example.test", "member-password1").await;
+    join_group(&router, &owner_cookie, &member_cookie, &group_id).await;
+    let member_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM users WHERE email = 'p620-member@example.test'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+
+    for (cookie, title, is_private, assignee) in [
+        (&member_cookie, "Mien partage", false, None),
+        (&member_cookie, "Mien prive", true, None),
+        (&owner_cookie, "Confie prive", true, Some(member_id)),
+    ] {
+        let mut body = serde_json::json!({
+            "title": title,
+            "starts_at": "2026-10-01T10:00:00Z",
+            "ends_at": "2026-10-01T11:00:00Z",
+            "is_task": true,
+            "is_private": is_private,
+        });
+        if let Some(a) = assignee {
+            body["assignee_ids"] = serde_json::json!([a]);
+        }
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/events"),
+            Some(cookie),
+            Some(body),
+        )
+        .await;
+        assert_status(&res, StatusCode::CREATED);
+    }
+
+    let (role, app_db) = prescribed_role_pool(&db).await;
+    let scoped_router = test_router(app_db.clone());
+    let export = call(
+        &scoped_router,
+        Method::GET,
+        "/account/export",
+        Some(&member_cookie),
+        None,
+    )
+    .await;
+    assert_status(&export, StatusCode::OK);
+    let doc = json_body(export).await;
+    let privacy = |key: &str| -> Vec<(String, bool)> {
+        let mut rows: Vec<(String, bool)> = doc[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e["title"].as_str().unwrap().to_string(),
+                    e["is_private"].as_bool().expect("is_private is a boolean"),
+                )
+            })
+            .collect();
+        rows.sort();
+        rows
+    };
+    assert_eq!(
+        privacy("agenda_events"),
+        [
+            ("Mien partage".to_string(), false),
+            ("Mien prive".to_string(), true)
+        ]
+    );
+    assert_eq!(
+        privacy("event_assignments"),
+        [
+            ("Confie prive".to_string(), true),
+            ("Mien partage".to_string(), false),
+            ("Mien prive".to_string(), true),
+        ]
+    );
+
+    drop(scoped_router);
+    drop_prescribed_role(&db, app_db, &role).await;
+}

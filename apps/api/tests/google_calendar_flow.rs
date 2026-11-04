@@ -3,8 +3,8 @@ mod common;
 use axum::http::{Method, StatusCode};
 use chrono::{DateTime, Utc};
 use common::{
-    assert_status, call, call_upload, json_body, real_minio_from_env, set_cookie, test_router,
-    test_router_with_storage,
+    assert_status, call, call_upload, drop_prescribed_role, json_body, prescribed_role_pool,
+    real_minio_from_env, set_cookie, test_router, test_router_with_storage,
 };
 use sqlx::PgPool;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1724,4 +1724,117 @@ async fn a_failed_object_delete_aborts_the_whole_connection_delete(db: PgPool) {
         1,
         "…and the connection too, or the retry has nothing to retry through"
     );
+}
+
+/// #620: a sync run by an admin who does not see an imported event — made
+/// private by one of its participants — leaves it alone. The event is
+/// hidden from them, its UID→event mapping is not: imported again, it would
+/// collide with that mapping and fail the whole sync.
+///
+/// Driven through a role that does not bypass RLS: under the harness role
+/// the admin would see the event and the hidden path would never run.
+#[sqlx::test]
+async fn a_sync_leaves_alone_an_imported_event_hidden_from_its_runner(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "cal-priv1@example.test", "owner-password1").await;
+    let admin_cookie =
+        register_verify_login(&router, &db, "cal-priv2@example.test", "admin-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+
+    let invite = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/invitations"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    let token = json_body(invite).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let accept = call(
+        &router,
+        Method::POST,
+        &format!("/groups/invitations/{token}/accept"),
+        Some(&admin_cookie),
+        None,
+    )
+    .await;
+    assert_status(&accept, StatusCode::OK);
+    let admin_id = user_id_of(&db, "cal-priv2@example.test").await;
+    let promote = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/members/{admin_id}/role"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"role": "admin"})),
+    )
+    .await;
+    assert_status(&promote, StatusCode::OK);
+
+    let feed_url = spawn_ics_server(ICS_BODY, 2).await;
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/calendar-imports"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"label": "Foyer calendar", "feed_url": feed_url})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let import_id = json_body(create).await["id"].as_str().unwrap().to_string();
+    let import_uri = format!("/groups/{group_id}/calendar-imports/{import_id}/import");
+    let first = call(
+        &router,
+        Method::POST,
+        &import_uri,
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&first, StatusCode::OK);
+
+    let (role, app_db) = prescribed_role_pool(&db).await;
+    let scoped = test_router(app_db.clone());
+
+    // The owner ran the import: the event is theirs, and they hide it.
+    let event_id: Uuid = sqlx::query_scalar("SELECT id FROM events")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    let hide = call(
+        &scoped,
+        Method::PATCH,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"is_private": true})),
+    )
+    .await;
+    assert_status(&hide, StatusCode::OK);
+    assert_eq!(event_count(&scoped, &admin_cookie, &group_id).await, 0);
+
+    let second = call(
+        &scoped,
+        Method::POST,
+        &import_uri,
+        Some(&admin_cookie),
+        None,
+    )
+    .await;
+    assert_status(&second, StatusCode::OK);
+    assert_eq!(
+        json_body(second).await,
+        serde_json::json!({"imported": 0, "updated": 0, "skipped": 1}),
+    );
+    let events: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(events, 1, "the sync wrote no second copy of the event");
+    assert_eq!(event_count(&scoped, &owner_cookie, &group_id).await, 1);
+
+    drop(scoped);
+    drop_prescribed_role(&db, app_db, &role).await;
 }

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM event_assignees WHERE event_id = $1 AND NOT (user_id = ANY($2))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d4b475bed110a3ab4553c2425cd5db23df174a8a3e726da6d47a42e6d7853345"
+}
