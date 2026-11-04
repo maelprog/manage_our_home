@@ -2843,3 +2843,431 @@ async fn a_patch_does_not_wait_for_a_transaction_referencing_the_event(db: PgPoo
     assert_status(&patch, StatusCode::OK);
     upload.commit().await.unwrap();
 }
+
+// -- #620: private events -----------------------------------------------
+
+/// A member of `group_id`, logged in, with `role` — added directly, as
+/// `event_assignment_to_several_members` does, since the invitation flow is
+/// not what these tests are about.
+async fn private_event_member(
+    router: &axum::Router,
+    db: &PgPool,
+    group_id: &str,
+    email: &str,
+    role: &str,
+) -> (String, Uuid) {
+    let cookie = register_verify_login(router, db, email, "member-password1").await;
+    let id: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind(email)
+        .fetch_one(db)
+        .await
+        .unwrap();
+    let mut tx = with_family_scope(db, group_id).await;
+    sqlx::query(
+        "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, $3::group_role)",
+    )
+    .bind(Uuid::parse_str(group_id).unwrap())
+    .bind(id)
+    .bind(role)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    (cookie, id)
+}
+
+async fn create_event_with(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+    body: serde_json::Value,
+) -> serde_json::Value {
+    let res = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(cookie),
+        Some(body),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    json_body(res).await
+}
+
+/// The ids of the events listed to `cookie` over `[from, to]`, one per
+/// occurrence.
+async fn listed_event_ids(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Vec<String> {
+    let res = call(
+        router,
+        Method::GET,
+        &format!(
+            "/groups/{group_id}/events?from={}&to={}",
+            urlenc(&from.to_rfc3339()),
+            urlenc(&to.to_rfc3339())
+        ),
+        Some(cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    json_body(res).await["occurrences"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// AC (#620): a private event is invisible to a member who is not one of
+/// its participants — absent from the list, 404 on GET, PATCH and DELETE —
+/// whatever their role: the owner and an admin are refused like anyone.
+/// An assignee who did not create it sees it and may change and delete it.
+///
+/// Driven through a role that does not bypass RLS: the harness role would
+/// show every row and prove nothing.
+#[sqlx::test]
+async fn a_private_event_is_visible_to_its_participants_alone(db: PgPool) {
+    let (role, pool) = prescribed_role_pool(&db).await;
+    let router = test_router(pool.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "priv-owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let (creator_cookie, _) = private_event_member(
+        &router,
+        &db,
+        &group_id,
+        "priv-creator@example.test",
+        "standard",
+    )
+    .await;
+    let (assignee_cookie, assignee_id) = private_event_member(
+        &router,
+        &db,
+        &group_id,
+        "priv-assignee@example.test",
+        "standard",
+    )
+    .await;
+    let (outsider_cookie, _) = private_event_member(
+        &router,
+        &db,
+        &group_id,
+        "priv-outsider@example.test",
+        "standard",
+    )
+    .await;
+    let (admin_cookie, _) =
+        private_event_member(&router, &db, &group_id, "priv-admin@example.test", "admin").await;
+
+    let starts_at = Utc::now() + Duration::days(1);
+    let shared = create_event_with(
+        &router,
+        &creator_cookie,
+        &group_id,
+        serde_json::json!({
+            "title": "Dîner",
+            "starts_at": starts_at,
+            "ends_at": starts_at + Duration::hours(1),
+        }),
+    )
+    .await;
+    assert_eq!(shared["is_private"], false);
+    let shared_id = shared["id"].as_str().unwrap().to_string();
+    // The creator is not among the assignees: still a participant.
+    let private = create_event_with(
+        &router,
+        &creator_cookie,
+        &group_id,
+        serde_json::json!({
+            "title": "Surprise",
+            "starts_at": starts_at,
+            "ends_at": starts_at + Duration::hours(1),
+            "assignee_ids": [assignee_id],
+            "is_private": true,
+        }),
+    )
+    .await;
+    assert_eq!(private["is_private"], true);
+    let private_id = private["id"].as_str().unwrap().to_string();
+    let event_uri = format!("/groups/{group_id}/events/{private_id}");
+    let (from, to) = (
+        starts_at - Duration::hours(1),
+        starts_at + Duration::hours(2),
+    );
+
+    for (who, cookie) in [
+        ("outsider", &outsider_cookie),
+        ("admin", &admin_cookie),
+        ("owner", &owner_cookie),
+    ] {
+        assert_eq!(
+            listed_event_ids(&router, cookie, &group_id, from, to).await,
+            vec![shared_id.clone()],
+            "{who}"
+        );
+        for (method, body) in [
+            (Method::GET, None),
+            (Method::PATCH, Some(serde_json::json!({"title": "Vu"}))),
+            (Method::DELETE, None),
+        ] {
+            let res = call(&router, method.clone(), &event_uri, Some(cookie), body).await;
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "{who} {method}");
+        }
+    }
+
+    for cookie in [&creator_cookie, &assignee_cookie] {
+        let mut listed = listed_event_ids(&router, cookie, &group_id, from, to).await;
+        listed.sort();
+        let mut expected = vec![shared_id.clone(), private_id.clone()];
+        expected.sort();
+        assert_eq!(listed, expected);
+    }
+    let get = call(
+        &router,
+        Method::GET,
+        &event_uri,
+        Some(&assignee_cookie),
+        None,
+    )
+    .await;
+    assert_status(&get, StatusCode::OK);
+    assert_eq!(json_body(get).await["is_private"], true);
+
+    let patch = call(
+        &router,
+        Method::PATCH,
+        &event_uri,
+        Some(&assignee_cookie),
+        Some(serde_json::json!({"title": "Surprise avancée"})),
+    )
+    .await;
+    assert_status(&patch, StatusCode::OK);
+    let patched = json_body(patch).await;
+    assert_eq!(patched["title"], "Surprise avancée");
+    assert_eq!(patched["is_private"], true);
+
+    let delete = call(
+        &router,
+        Method::DELETE,
+        &event_uri,
+        Some(&assignee_cookie),
+        None,
+    )
+    .await;
+    assert_status(&delete, StatusCode::NO_CONTENT);
+
+    drop_prescribed_role(&db, pool, &role).await;
+}
+
+/// AC (#620): a private series has no occurrence at all for a member who
+/// is not one of its participants, while its creator gets every one.
+#[sqlx::test]
+async fn a_private_recurring_event_has_no_occurrence_for_a_non_participant(db: PgPool) {
+    let (role, pool) = prescribed_role_pool(&db).await;
+    let router = test_router(pool.clone());
+    let creator_cookie = register_verify_login(
+        &router,
+        &db,
+        "priv-series-creator@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &creator_cookie, "Foyer").await;
+    let (outsider_cookie, _) = private_event_member(
+        &router,
+        &db,
+        &group_id,
+        "priv-series-outsider@example.test",
+        "admin",
+    )
+    .await;
+
+    let starts_at = Utc.with_ymd_and_hms(2026, 3, 2, 9, 0, 0).unwrap();
+    let series = create_event_with(
+        &router,
+        &creator_cookie,
+        &group_id,
+        serde_json::json!({
+            "title": "Kiné",
+            "starts_at": starts_at,
+            "ends_at": starts_at + Duration::hours(1),
+            "rrule": "FREQ=WEEKLY;COUNT=4",
+            "is_private": true,
+        }),
+    )
+    .await;
+    let series_id = series["id"].as_str().unwrap().to_string();
+    let (from, to) = (
+        starts_at - Duration::days(1),
+        starts_at + Duration::days(30),
+    );
+
+    assert_eq!(
+        listed_event_ids(&router, &creator_cookie, &group_id, from, to).await,
+        vec![series_id; 4]
+    );
+    assert_eq!(
+        listed_event_ids(&router, &outsider_cookie, &group_id, from, to).await,
+        Vec::<String>::new()
+    );
+
+    drop_prescribed_role(&db, pool, &role).await;
+}
+
+/// AC (#620): an assignee who takes themselves off a private event they did
+/// not create loses it — 404 from then on — and the creator keeps it. The
+/// write that does it is answered, with the assignees it left.
+#[sqlx::test]
+async fn an_assignee_who_leaves_a_private_event_loses_it(db: PgPool) {
+    let (role, pool) = prescribed_role_pool(&db).await;
+    let router = test_router(pool.clone());
+    let creator_cookie = register_verify_login(
+        &router,
+        &db,
+        "priv-leave-creator@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &creator_cookie, "Foyer").await;
+    let creator_id: Uuid =
+        sqlx::query_scalar("SELECT id FROM users WHERE email = 'priv-leave-creator@example.test'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let (assignee_cookie, assignee_id) = private_event_member(
+        &router,
+        &db,
+        &group_id,
+        "priv-leave-assignee@example.test",
+        "standard",
+    )
+    .await;
+
+    let starts_at = Utc::now() + Duration::days(1);
+    let event = create_event_with(
+        &router,
+        &creator_cookie,
+        &group_id,
+        serde_json::json!({
+            "title": "Cadeau",
+            "starts_at": starts_at,
+            "ends_at": starts_at + Duration::hours(1),
+            "assignee_ids": [creator_id, assignee_id],
+            "is_private": true,
+        }),
+    )
+    .await;
+    let event_uri = format!(
+        "/groups/{group_id}/events/{}",
+        event["id"].as_str().unwrap()
+    );
+
+    let leave = call(
+        &router,
+        Method::PATCH,
+        &event_uri,
+        Some(&assignee_cookie),
+        Some(serde_json::json!({"assignee_ids": [creator_id]})),
+    )
+    .await;
+    assert_status(&leave, StatusCode::OK);
+    assert_eq!(
+        json_body(leave).await["assignee_ids"],
+        serde_json::json!([creator_id])
+    );
+
+    let gone = call(
+        &router,
+        Method::GET,
+        &event_uri,
+        Some(&assignee_cookie),
+        None,
+    )
+    .await;
+    assert_status(&gone, StatusCode::NOT_FOUND);
+    let kept = call(
+        &router,
+        Method::GET,
+        &event_uri,
+        Some(&creator_cookie),
+        None,
+    )
+    .await;
+    assert_status(&kept, StatusCode::OK);
+    assert_eq!(
+        json_body(kept).await["assignee_ids"],
+        serde_json::json!([creator_id])
+    );
+
+    drop_prescribed_role(&db, pool, &role).await;
+}
+
+/// #620: an event is made private only by someone who will be one of its
+/// participants. An admin who may edit a member's shared event but is not
+/// on it is refused — the write would hide the event from its own author —
+/// and allowed once they put themselves on it in the same request. Either
+/// way the creator keeps it.
+#[sqlx::test]
+async fn making_an_event_private_needs_its_author_among_its_participants(db: PgPool) {
+    let (role, pool) = prescribed_role_pool(&db).await;
+    let router = test_router(pool.clone());
+    let admin_cookie = register_verify_login(
+        &router,
+        &db,
+        "priv-make-admin@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &admin_cookie, "Foyer").await;
+    let admin_id: Uuid =
+        sqlx::query_scalar("SELECT id FROM users WHERE email = 'priv-make-admin@example.test'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let (creator_cookie, _) = private_event_member(
+        &router,
+        &db,
+        &group_id,
+        "priv-make-creator@example.test",
+        "standard",
+    )
+    .await;
+    let event_id = create_event(&router, &creator_cookie, &group_id).await;
+    let event_uri = format!("/groups/{group_id}/events/{event_id}");
+
+    let refused = call(
+        &router,
+        Method::PATCH,
+        &event_uri,
+        Some(&admin_cookie),
+        Some(serde_json::json!({"is_private": true})),
+    )
+    .await;
+    assert_status(&refused, StatusCode::FORBIDDEN);
+    let still_shared = call(&router, Method::GET, &event_uri, Some(&admin_cookie), None).await;
+    assert_status(&still_shared, StatusCode::OK);
+    assert_eq!(json_body(still_shared).await["is_private"], false);
+
+    let allowed = call(
+        &router,
+        Method::PATCH,
+        &event_uri,
+        Some(&admin_cookie),
+        Some(serde_json::json!({"is_private": true, "assignee_ids": [admin_id]})),
+    )
+    .await;
+    assert_status(&allowed, StatusCode::OK);
+    assert_eq!(json_body(allowed).await["is_private"], true);
+    for cookie in [&admin_cookie, &creator_cookie] {
+        let get = call(&router, Method::GET, &event_uri, Some(cookie), None).await;
+        assert_status(&get, StatusCode::OK);
+    }
+
+    drop_prescribed_role(&db, pool, &role).await;
+}

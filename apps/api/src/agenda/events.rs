@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::agenda::{attachments, can_modify, recurrence};
+use crate::agenda::{attachments, can_modify, is_participant, may_set_privacy, recurrence};
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::groups::require_role;
@@ -32,6 +32,11 @@ pub struct CreateEventRequest {
     /// to the creator by default" rather than an event with nobody on it.
     #[serde(default)]
     pub assignee_ids: Option<Vec<Uuid>>,
+    /// Visible to its participants alone — its creator and its assignees
+    /// (#620, `events_isolation` in migration 0044). Missing means shared,
+    /// the behaviour every event had before.
+    #[serde(default)]
+    pub is_private: bool,
 }
 
 #[derive(Deserialize)]
@@ -53,6 +58,10 @@ pub struct UpdateEventRequest {
     /// `[creator]` if that leaves nothing (e.g. every box unchecked).
     #[serde(default)]
     pub assignee_ids: Option<Vec<Uuid>>,
+    /// `None` leaves the event's privacy as it is. Only someone who sees
+    /// the event can send it, so only a participant can change it on a
+    /// private one (#620).
+    pub is_private: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -70,6 +79,7 @@ pub struct EventResponse {
     pub completed_at: Option<DateTime<Utc>>,
     pub rrule: Option<String>,
     pub assignee_ids: Vec<Uuid>,
+    pub is_private: bool,
 }
 
 /// `title` is `None` when the request does not carry one at all — a PATCH
@@ -161,9 +171,9 @@ pub async fn create_event(
     let event = sqlx::query_as!(
         EventRow,
         r#"
-        INSERT INTO events (group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, rrule)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        RETURNING id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule
+        INSERT INTO events (group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, rrule, is_private)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        RETURNING id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private
         "#,
         group_id,
         auth.user_id,
@@ -175,6 +185,7 @@ pub async fn create_event(
         body.all_day,
         body.is_task,
         body.rrule,
+        body.is_private,
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -231,21 +242,62 @@ fn resolve_assignees(requested: &[Uuid], valid_members: &[Uuid], creator: Uuid) 
     }
 }
 
-/// Replaces `event_id`'s assignees wholesale — simpler than diffing, and
-/// the table is small (at most a family's member count).
+/// Replaces `event_id`'s assignees with `assignee_ids`: the two halves
+/// below, back to back. The update path runs them apart, around its write
+/// to `events` (see `update_event`).
 async fn replace_assignees(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     event_id: Uuid,
     assignee_ids: &[Uuid],
 ) -> AppResult<()> {
-    sqlx::query!("DELETE FROM event_assignees WHERE event_id = $1", event_id,)
-        .execute(&mut **tx)
-        .await?;
+    upsert_assignees(tx, event_id, assignee_ids).await?;
+    drop_other_assignees(tx, event_id, assignee_ids).await
+}
+
+/// First half of a replacement: writes every row of the new set, the ones
+/// already there included.
+///
+/// The set used to be replaced by deleting every row, then inserting the
+/// new ones. On a private event (#620) that order locks out a participant
+/// who is only an assignee: once their own row is deleted, the policy of
+/// `events` no longer shows them the event, and the policy of
+/// `event_assignees` refuses the insert that follows. Writing the new set
+/// first, and deleting what falls out of it last, keeps them a participant
+/// for as long as the replacement needs them to be.
+///
+/// The rows kept are rewritten, not skipped: `created_at` takes the
+/// transaction's `now()` on every row of the set, as the wholesale insert
+/// gave it, so `assignees_for_events` still orders them by `user_id` alone.
+async fn upsert_assignees(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    event_id: Uuid,
+    assignee_ids: &[Uuid],
+) -> AppResult<()> {
     sqlx::query!(
         r#"
         INSERT INTO event_assignees (event_id, user_id)
         SELECT $1, u FROM UNNEST($2::uuid[]) AS u
+        ON CONFLICT (event_id, user_id) DO UPDATE SET created_at = EXCLUDED.created_at
         "#,
+        event_id,
+        assignee_ids,
+    )
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Second half of a replacement: deletes the rows outside the new set. One
+/// statement, so every row it deletes is matched against the policy as it
+/// stood before it ran — a participant taking themselves off the event
+/// still sees the rows they are deleting.
+async fn drop_other_assignees(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    event_id: Uuid,
+    assignee_ids: &[Uuid],
+) -> AppResult<()> {
+    sqlx::query!(
+        "DELETE FROM event_assignees WHERE event_id = $1 AND NOT (user_id = ANY($2))",
         event_id,
         assignee_ids,
     )
@@ -303,6 +355,7 @@ struct EventRow {
     is_task: bool,
     completed_at: Option<DateTime<Utc>>,
     rrule: Option<String>,
+    is_private: bool,
 }
 
 /// `EventRow` doesn't carry `assignee_ids` (it comes from a separate
@@ -324,6 +377,7 @@ fn event_response(r: EventRow, assignee_ids: Vec<Uuid>) -> EventResponse {
         completed_at: r.completed_at,
         rrule: r.rrule,
         assignee_ids,
+        is_private: r.is_private,
     }
 }
 
@@ -337,7 +391,7 @@ pub async fn get_event(
 
     let event = sqlx::query_as!(
         EventRow,
-        r#"SELECT id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule
+        r#"SELECT id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private
            FROM events WHERE id = $1 AND group_id = $2"#,
         event_id,
         group_id,
@@ -429,7 +483,7 @@ pub async fn list_events(
     let rows = sqlx::query_as!(
         EventRow,
         r#"
-        SELECT id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule
+        SELECT id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private
         FROM events
         WHERE group_id = $1
           AND starts_at <= $3
@@ -527,6 +581,7 @@ pub async fn list_events(
                     completed_at,
                     rrule: base.rrule.clone(),
                     assignee_ids: base.assignee_ids.clone(),
+                    is_private: base.is_private,
                 },
                 occurrence_starts_at,
                 occurrence_ends_at,
@@ -563,7 +618,7 @@ pub async fn update_event(
     // for nothing. `FOR NO KEY UPDATE` still conflicts with the sync's
     // `FOR UPDATE OF e` and with any other write to the row.
     let existing = sqlx::query!(
-        "SELECT created_by, starts_at, ends_at, all_day, rrule, is_task, completed_at FROM events WHERE id = $1 AND group_id = $2 FOR NO KEY UPDATE",
+        "SELECT created_by, starts_at, ends_at, all_day, rrule, is_task, completed_at, is_private FROM events WHERE id = $1 AND group_id = $2 FOR NO KEY UPDATE",
         event_id,
         group_id,
     )
@@ -571,7 +626,44 @@ pub async fn update_event(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    if !can_modify(&actor_role, existing.created_by == auth.user_id) {
+    let current_assignees = assignees_for_events(&mut tx, &[event_id])
+        .await?
+        .remove(&event_id)
+        .unwrap_or_default();
+    let actor_is_participant =
+        is_participant(auth.user_id, existing.created_by, &current_assignees);
+    if !can_modify(
+        &actor_role,
+        existing.created_by == auth.user_id,
+        existing.is_private && actor_is_participant,
+    ) {
+        return Err(AppError::Forbidden);
+    }
+
+    // `Some(_)` replaces the assignee set (falling back to the creator if
+    // that empties it out, `resolve_assignees`); `None` leaves it as-is.
+    let new_assignees = match &body.assignee_ids {
+        Some(requested) => {
+            let valid_members = valid_member_ids(&mut tx, group_id).await?;
+            Some(resolve_assignees(
+                requested,
+                &valid_members,
+                existing.created_by,
+            ))
+        }
+        None => None,
+    };
+    let will_be_private = body.is_private.unwrap_or(existing.is_private);
+    let actor_participant_after = is_participant(
+        auth.user_id,
+        existing.created_by,
+        new_assignees.as_deref().unwrap_or(&current_assignees),
+    );
+    if !may_set_privacy(
+        existing.is_private,
+        will_be_private,
+        actor_participant_after,
+    ) {
         return Err(AppError::Forbidden);
     }
 
@@ -646,6 +738,16 @@ pub async fn update_event(
         }
     };
 
+    // The new assignees are written before the row and the old ones
+    // deleted after it (#620): the policy checks the row this `UPDATE`
+    // writes, and on a private event it passes only for a participant. Made
+    // private by someone who adds themselves to it, the event needs their
+    // row already there; left by an assignee who takes themselves off it,
+    // it needs theirs still there.
+    if let Some(new_assignees) = &new_assignees {
+        upsert_assignees(&mut tx, event_id, new_assignees).await?;
+    }
+
     let event = sqlx::query_as!(
         EventRow,
         r#"
@@ -658,9 +760,10 @@ pub async fn update_event(
             all_day = COALESCE($8, all_day),
             rrule = $9,
             completed_at = $10,
+            is_private = $11,
             updated_at = now()
         WHERE id = $1 AND group_id = $2
-        RETURNING id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule
+        RETURNING id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private
         "#,
         event_id,
         group_id,
@@ -672,21 +775,23 @@ pub async fn update_event(
         body.all_day,
         rrule,
         completed_at,
+        will_be_private,
     )
     .fetch_one(&mut *tx)
     .await?;
 
-    // `Some(_)` replaces the assignee set (falling back to the creator if
-    // that empties it out, `resolve_assignees`); `None` leaves it as-is.
-    if let Some(requested) = &body.assignee_ids {
-        let valid_members = valid_member_ids(&mut tx, group_id).await?;
-        let assignee_ids = resolve_assignees(requested, &valid_members, existing.created_by);
-        replace_assignees(&mut tx, event_id, &assignee_ids).await?;
-    }
-    let assignee_ids = assignees_for_events(&mut tx, &[event_id])
-        .await?
-        .remove(&event_id)
-        .unwrap_or_default();
+    let assignee_ids = match new_assignees {
+        Some(mut new_assignees) => {
+            drop_other_assignees(&mut tx, event_id, &new_assignees).await?;
+            // Not read back: an assignee who just left a private event no
+            // longer sees its assignees. Every row of the set carries the
+            // same `created_at` (`upsert_assignees`), so this is the order
+            // `assignees_for_events` reads them in.
+            new_assignees.sort();
+            new_assignees
+        }
+        None => current_assignees,
+    };
     tx.commit().await?;
 
     Ok(Json(event_response(event, assignee_ids)))
@@ -708,7 +813,7 @@ pub async fn delete_event(
     // conflicts with `FOR KEY SHARE`: this read waits for the upload and
     // collects its key, or an upload arriving after it waits and answers 404.
     let existing = sqlx::query!(
-        "SELECT created_by FROM events WHERE id = $1 AND group_id = $2 FOR UPDATE",
+        "SELECT created_by, is_private FROM events WHERE id = $1 AND group_id = $2 FOR UPDATE",
         event_id,
         group_id,
     )
@@ -716,7 +821,19 @@ pub async fn delete_event(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    if !can_modify(&actor_role, existing.created_by == auth.user_id) {
+    // A private event is visible to its participants alone (#620): the
+    // policy already answered 404 to anyone else. Checked here all the same,
+    // on the same rule as `update_event`, rather than inferred from the row
+    // having been found.
+    let assignees = assignees_for_events(&mut tx, &[event_id])
+        .await?
+        .remove(&event_id)
+        .unwrap_or_default();
+    if !can_modify(
+        &actor_role,
+        existing.created_by == auth.user_id,
+        existing.is_private && is_participant(auth.user_id, existing.created_by, &assignees),
+    ) {
         return Err(AppError::Forbidden);
     }
 

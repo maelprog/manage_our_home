@@ -806,6 +806,7 @@ mod tests {
                 completed_at: None,
                 rrule: None,
                 assignee_ids: vec![Uuid::nil()],
+                is_private: false,
             },
             occurrence_starts_at: starts,
             occurrence_ends_at: starts,

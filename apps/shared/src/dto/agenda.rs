@@ -29,6 +29,10 @@ pub struct CreateEventRequest {
     /// default").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee_ids: Option<Vec<Uuid>>,
+    /// Visible to its participants alone — its creator and `assignee_ids`
+    /// (#620). `false` is a shared event, as every event was before.
+    #[serde(default)]
+    pub is_private: bool,
 }
 
 /// `PATCH /groups/:id/events/:event_id` request body. Every field is
@@ -61,6 +65,9 @@ pub struct UpdateEventRequest {
     /// leave none (see the backend's `resolve_assignees`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee_ids: Option<Vec<Uuid>>,
+    /// `None` leaves the event's privacy unchanged (#620).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_private: Option<bool>,
 }
 
 /// `GET/POST/PATCH /groups/:id/events[/:event_id]` response body. For a
@@ -129,6 +136,9 @@ pub struct EventResponse {
     /// back to the creator, `web/routes/agenda/detail.rs::assignees_html`
     /// drops its line.
     pub assignee_ids: Vec<Uuid>,
+    /// Visible to its participants alone (#620): whoever reads it is one.
+    #[serde(default)]
+    pub is_private: bool,
 }
 
 /// One expanded occurrence in a `GET /groups/:id/events?from&to` window.

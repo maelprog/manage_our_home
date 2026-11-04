@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, group_id, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, created_at\n               FROM events WHERE group_id = $1 AND created_by = $2 ORDER BY created_at",
+  "query": "SELECT id, group_id, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private, created_at\n               FROM events WHERE group_id = $1 AND created_by = $2 ORDER BY created_at",
   "describe": {
     "columns": [
       {
@@ -126,6 +126,17 @@
       },
       {
         "ordinal": 11,
+        "name": "is_private",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "is_private"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -154,8 +165,9 @@
       false,
       true,
       true,
+      false,
       false
     ]
   },
-  "hash": "8bfbe60d15b30dc2a7116535427cce06f285c882e9085d4517c27835b4193981"
+  "hash": "f78de36ba8e5bb81688b37d1087c1c135d5b28a284028862aea6f5f155472195"
 }

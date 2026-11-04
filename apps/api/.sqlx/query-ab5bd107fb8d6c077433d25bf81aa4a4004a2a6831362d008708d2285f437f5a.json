@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT created_by FROM events WHERE id = $1 AND group_id = $2 FOR UPDATE",
+  "query": "SELECT created_by, is_private FROM events WHERE id = $1 AND group_id = $2 FOR UPDATE",
   "describe": {
     "columns": [
       {
@@ -13,6 +13,17 @@
             "name": "created_by"
           }
         }
+      },
+      {
+        "ordinal": 1,
+        "name": "is_private",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "is_private"
+          }
+        }
       }
     ],
     "parameters": {
@@ -22,8 +33,9 @@
       ]
     },
     "nullable": [
+      false,
       false
     ]
   },
-  "hash": "19d8905bde49929a8d83911d29b4d7d345418737d7ff152296c3ed3cbab987fb"
+  "hash": "ab5bd107fb8d6c077433d25bf81aa4a4004a2a6831362d008708d2285f437f5a"
 }

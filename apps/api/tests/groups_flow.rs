@@ -1061,6 +1061,122 @@ async fn deleting_a_group_removes_the_objects_of_all_of_its_events(db: PgPool) {
     }
 }
 
+/// #620: the owner deleting the group does not see the private events of
+/// its members, and the cascade deletes them all the same — their objects
+/// must go with them, not stay in the bucket with nothing pointing at them.
+/// Driven through a role that does not bypass RLS, under which the owner
+/// does not see the private event.
+///
+/// Needs a real MinIO; skipped otherwise (see `real_minio_from_env`).
+#[sqlx::test]
+async fn deleting_a_group_removes_the_objects_of_private_events_too(db: PgPool) {
+    let Some((s3, bucket)) = real_minio_from_env() else {
+        eprintln!(
+            "skipping deleting_a_group_removes_the_objects_of_private_events_too: \
+             no MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY/BUCKET in the environment"
+        );
+        return;
+    };
+    let storage = manage_our_home::storage::Storage::new(s3.clone(), bucket.clone());
+    let router = test_router_with_storage(db.clone(), storage.clone());
+    let owner_cookie = register_verify_login(
+        &router,
+        &db,
+        "group-private1@example.test",
+        "owner-password1",
+    )
+    .await;
+    let member_cookie = register_verify_login(
+        &router,
+        &db,
+        "group-private2@example.test",
+        "member-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let invite = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/invitations"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_status(&invite, StatusCode::CREATED);
+    let token = json_body(invite).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let accept = call(
+        &router,
+        Method::POST,
+        &format!("/groups/invitations/{token}/accept"),
+        Some(&member_cookie),
+        None,
+    )
+    .await;
+    assert_status(&accept, StatusCode::OK);
+
+    let (role, app_db) = prescribed_role_pool(&db).await;
+    let scoped = test_router_with_storage(app_db.clone(), storage);
+    let starts_at = Utc::now() + Duration::days(1);
+    let event = call(
+        &scoped,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(&member_cookie),
+        Some(serde_json::json!({
+            "title": "Rendez-vous",
+            "starts_at": starts_at,
+            "ends_at": starts_at + Duration::hours(1),
+            "is_private": true,
+        })),
+    )
+    .await;
+    assert_status(&event, StatusCode::CREATED);
+    let event_id = json_body(event).await["id"].as_str().unwrap().to_string();
+    let upload = call_upload(
+        &scoped,
+        &format!("/groups/{group_id}/events/{event_id}/attachments"),
+        &member_cookie,
+        "ordonnance.png",
+        PNG_BYTES,
+    )
+    .await;
+    assert_status(&upload, StatusCode::CREATED);
+    let hidden = call(
+        &scoped,
+        Method::GET,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&hidden, StatusCode::NOT_FOUND);
+
+    // Read as the harness role, which sees every row.
+    let keys = group_storage_keys(&db, &group_id).await;
+    assert_eq!(keys.len(), 1);
+    assert!(object_exists(&s3, &bucket, &keys[0]).await);
+
+    let delete = call(
+        &scoped,
+        Method::DELETE,
+        &format!("/groups/{group_id}"),
+        Some(&owner_cookie),
+        None,
+    )
+    .await;
+    assert_status(&delete, StatusCode::NO_CONTENT);
+    assert!(
+        !object_exists(&s3, &bucket, &keys[0]).await,
+        "the object of a private event the owner does not see must go with the group"
+    );
+
+    drop(scoped);
+    drop_prescribed_role(&db, app_db, &role).await;
+}
+
 /// AC (#57): pins the ordering choice, as `event_delete_aborts_...` does
 /// for the per-event path. Objects go first, the group row after, so a
 /// storage failure aborts the whole delete: the caller sees an error and

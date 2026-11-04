@@ -717,6 +717,8 @@ pub async fn post(
         is_task: form.is_task.is_some(),
         rrule,
         assignee_ids: (!assignee_ids.is_empty()).then(|| assignee_ids.clone()),
+        // The form has no privacy field yet (#621): a shared event, as before.
+        is_private: false,
     };
 
     let result = api_request_auth(
