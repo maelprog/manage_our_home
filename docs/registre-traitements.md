@@ -1,6 +1,8 @@
 # Registre des traitements — Manage Our Home
 
 Registre tenu au titre de l'article 30 du RGPD. Dernière mise à jour :
+2026-11-04 (accès au serveur de test par le VPN Tailscale, coordinateur
+hors UE accepté pour le staging, #684) ;
 2026-11-04 (nom de domaine chez Scaleway, bureau d'enregistrement et zone
 DNS, anonymisation WHOIS ; certificat Let's Encrypt et journaux de
 transparence, #681) ;
@@ -191,6 +193,40 @@ tourne sur un VPS loué à un hébergeur tiers (arbitrage du 2026-10-10,
   certificat vient d'une autorité locale (`home-ca`), pour un nom en
   `.home.arpa`. Mentionné pour que la liste des flux sortants soit
   complète.
+- **Tailscale** (Tailscale Inc., hors UE), coordinateur du VPN par lequel
+  la famille et l'administration joignent le **serveur de test** (#684,
+  `docs/staging-tailscale.md`) : sous-traitant (art. 28) au titre de ce
+  réseau. Il ne concerne que les personnes dont un appareil est inscrit au
+  tailnet, pas les utilisateurs du service public. Retenu pour le staging
+  seul, transfert hors UE compris, par arbitrage du 2026-11-04 ; Headscale,
+  coordinateur auto-hébergé sur le VPS de production (#443), le
+  remplacera, et cette entrée avec lui. Tailscale reçoit, pour chaque
+  personne, l'adresse et le nom du compte Google avec lequel elle se
+  connecte au tailnet (fournisseur d'identité arbitré le 2026-11-04) ; pour
+  chaque appareil, son nom, son système, la version du client, son adresse
+  IP publique, sa clé publique, son adresse dans le tailnet et les dates et
+  heures de ses connexions (politique de confidentialité de Tailscale, en
+  vigueur le 2026-08-25, consultée le 2026-11-04, « Tailscale Solution
+  Information »). Il ne voit pas le contenu du trafic, chiffré de bout en
+  bout, y compris quand ses relais le transportent. Conservation : le
+  journal d'audit de la configuration (appareils ajoutés, approuvés,
+  retirés, changements de politique) est gardé 90 jours, durée que le
+  client ne peut ni régler ni désactiver ; les journaux de flux réseau
+  (*network flow logs*) sont désactivés par défaut, réservés aux offres
+  payantes, et ne sont pas activés ; la fiche d'un appareil vit tant que
+  l'appareil est inscrit, et Tailscale ne donne pas de durée après son
+  retrait (« no longer than necessary »). La clé d'un appareil de la
+  famille expire 90 jours après sa dernière authentification (arbitrage du
+  2026-11-04) : c'est la durée maximale pendant laquelle un appareil perdu
+  et non signalé garde l'accès. Les groupes de la politique d'accès
+  nomment les adresses Google des personnes ; ils ne sont pas écrits dans
+  le dépôt, qui est public, mais dans un secret du dépôt
+  (`infra/tailscale/policy.json`, `TS_ACL_GROUPS`). Google, en
+  authentifiant la personne, apprend qu'elle se connecte à Tailscale : il
+  le fait pour le compte de la personne, titulaire de son compte Google,
+  pas pour celui du responsable de traitement. L'accord de traitement des
+  données (DPA) de Tailscale, auquel sa politique renvoie, n'a pas été
+  relu, et son acceptation pour ce tailnet n'est pas établie.
 
 **Sauvegardes de la base** (#433 ; manifests de la branche de déploiement,
 `apps/manage-our-home/base/postgres/`). La base est sauvegardée en continu
@@ -253,7 +289,10 @@ transfert (art. 44-49) se juge destinataire par destinataire. Le relais email
 n'en demande aucun : Scaleway déclare ne transférer aucune donnée du service
 hors de l'UE. Pour les autres destinataires tiers, **aucun mécanisme n'est
 arrêté à ce jour** : le service n'est pas ouvert, et la dernière colonne porte
-donc un placeholder plutôt qu'une affirmation. Ce qui est vérifié est écrit tel
+donc un placeholder plutôt qu'une affirmation. Une exception, hors du service
+public : le coordinateur Tailscale du serveur de test, dont le transfert est
+accepté pour le staging (arbitrage du 2026-11-04) sur la base que sa
+politique de confidentialité déclare. Ce qui est vérifié est écrit tel
 quel, avec sa source et sa date ; le reste attend la mise en ligne
 (`docs/v2-deployment.md` #18).
 
@@ -268,6 +307,7 @@ quel, avec sa source et sa date ; le reste attend la mise en ligne
 | Scaleway (stockage objet des sauvegardes, Scaleway Object Storage) | les sauvegardes de la base (copies complètes et WAL) | Région `fr-par` (Paris) fixée dans les manifests (#433). La liste des sous-traitants ultérieurs de Scaleway n'a pas été relue pour ce service | À établir au pas 2 de `docs/v2-deployment.md` #18, comme pour le relais email |
 | Scaleway (bureau d'enregistrement et zone DNS, Scaleway Domains and DNS) | aucune donnée d'utilisateur ; l'identité du titulaire du domaine, pour le compte propre de Scaleway | Scaleway SAS, établie à Paris ; aucun transfert hors UE n'est connu pour ce service (#681). La liste des sous-traitants ultérieurs de Scaleway n'a pas été relue pour ce service : la page ne répondait pas le 2026-11-04 | Sans objet tant qu'aucun sous-traitant hors UE n'apparaît ; relecture au pas 2 de `docs/v2-deployment.md` #18 |
 | Let's Encrypt (émetteur du certificat TLS) | rien de personnel : les noms à certifier ; publiés ensuite par les journaux de transparence des certificats | Le compte ACME de production n'a pas d'adresse de contact (`cluster-issuers.yaml`, branche de déploiement) | Sans objet : aucune donnée personnelle ne sort |
+| Tailscale (coordinateur du VPN du serveur de test, #684) | pour les seuls appareils inscrits au tailnet : compte Google de la personne, nom, système, adresse IP publique et clé publique de l'appareil, heures de connexion ; jamais le contenu du trafic | Tailscale Inc. ; données hébergées « in Canada, Germany, the United States and the United Kingdom », et possiblement dans d'autres pays, selon sa politique de confidentialité (en vigueur le 2026-08-25, consultée le 2026-11-04), qui ne cite pas le cadre de protection des données UE–États-Unis. Son DPA n'a pas été relu | Clauses contractuelles types (art. 46(2)(c)) pour les transferts vers les États-Unis : « for transfers from the EU/EEA, UK and Switzerland to the US, we rely on standard contractual clauses » (même politique) ; décisions d'adéquation (art. 45) pour le Canada et le Royaume-Uni. Transfert accepté pour le staging par le responsable de traitement le 2026-11-04, jusqu'à Headscale (#443) |
 
 **Ce que cette section ne garantit pas.** La localisation du relais est une
 garantie d'exploitation, pas une propriété du code : l'hôte vient de la
@@ -298,6 +338,7 @@ ligne.
 | 8 | User admin (superadmin) | liste des groupes/utilisateurs à l'échelle globale, avec pour chaque groupe s'il a un propriétaire ; pour un groupe resté sans propriétaire seulement, la liste de ses membres (nom affiché, email, rôle, date d'arrivée, compte désactivé ou en suppression demandée) et la désignation de l'un des membres actifs comme propriétaire (#323) ; désactivation et réactivation d'un compte, date de désactivation (`users.deactivated_at`) et date de l'email d'avertissement (`users.deactivation_notice_sent_at`) ; demande de réactivation du titulaire, sa date et son message facultatif de 1000 caractères au plus (`account_reactivation_requests`, #289), date du premier refus depuis la désactivation (`users.reactivation_refused_at`) | Support technique/maintenance de la plateforme | Intérêt légitime (exploitation du service) | La désactivation n'efface rien et dure jusqu'à la réactivation, qui efface les deux dates. La demande de réactivation — une en attente à la fois — est supprimée par la décision du superadmin (réactivation ou refus) ou par la purge du compte ; tant qu'elle est en attente, la purge à 2 ans et son email d'avertissement sont suspendus, si c'est la première depuis la désactivation — pas la purge d'un compte dont la suppression a été demandée (ci-dessous). Le premier refus depuis la désactivation date `reactivation_refused_at` : une nouvelle demande reste possible mais ne suspend plus rien (arbitrage du responsable de traitement du 2026-09-29) ; il efface aussi la date de l'email, si bien que, si l'avertissement était déjà parti, un nouveau part une fois l'échéance à 30 jours ou moins, et la purge a lieu 30 jours après lui au plus tôt ; elle n'a de toute façon jamais lieu moins de 30 jours après le refus, que ce nouvel email parte ou non (#296). Ce report de 30 jours n'a lieu qu'une fois : un refus suivant supprime la demande sans rien changer d'autre, ni la date du premier refus ni celle de l'email, et ne repousse donc plus la purge (arbitrage du responsable de traitement du 2026-10-02, #313). `reactivation_refused_at` est effacé par la réactivation, une nouvelle désactivation et la purge. Sans réactivation, le compte est purgé (voir « Droit à l'effacement » ci-dessous) après 2 ans de désactivation — durée recommandée par la CNIL pour un compte inactif, arbitrage du responsable de traitement du 2026-09-28 (#256) ; son titulaire est averti par email 30 jours avant (de nouveau après le premier refus, s'il suit un avertissement, dans le cas ci-dessus), et la purge n'a jamais lieu moins de 30 jours après cet email ; s'il n'a pas pu partir, elle a lieu au plus tôt 2 ans et 30 jours après la désactivation. Exception : un compte dont la suppression a été demandée est purgé au terme de ses 30 jours de grâce, désactivé ou non, demande de réactivation en attente ou non, refus ou non (ligne 1, #139) | Scaleway (l'email d'avertissement : adresse du compte, dates de désactivation et de purge, identité et contact du responsable) |
 | 9 | Import calendrier Google | URL de flux iCal privée (chiffrée), libellé, date du dernier import, événements importés et leur identifiant externe | Miroir en lecture seule d'un agenda Google externe | Consentement explicite (l'utilisateur fournit volontairement l'URL) | Jusqu'à la suppression de l'import par un administrateur ou le propriétaire du groupe, ou du groupe ; les événements importés restent après la suppression de l'import sauf si leur suppression est demandée avec lui ; la purge du compte du membre qui a configuré l'import supprime l'import, URL de flux comprise, et laisse ses événements dans le groupe (#139) | Hébergeur du flux (Google en pratique ; le code accepte toute URL `http`/`https`), interrogé par le serveur à chaque import lancé par un membre — aucune synchronisation en arrière-plan |
 | — | Logs d'audit (transverse) | horodatage, acteur, action, cible, métadonnées (identifiants et compteurs) ; actions journalisées : export, demande et annulation de suppression de compte, demande de réactivation d'un compte désactivé, purge, suppression de groupe (y compris par la purge, faute de membre), transfert de propriété (y compris par la purge, par la réactivation d'un membre d'un groupe sans propriétaire et par la désignation du superadmin, avec le motif), changement de rôle, consultation des listes et des membres d'un groupe sans propriétaire, désactivation et réactivation d'un compte et refus d'une demande de réactivation par le superadmin — les connexions ne le sont pas | Traçabilité de sécurité, obligations RGPD (preuve des actions d'export/suppression) | Intérêt légitime | 6 mois glissants (recommandation de la CNIL pour les journaux, délibération n° 2021-122), appliqués par la purge de conservation horaire (#138) ; la purge d'un compte supprime aussitôt les entrées dont il est l'acteur ; restent, pour la même durée, celles qui le concernent sans être de son fait (voir « Droit à l'effacement » ci-dessous) (#139). Le minimum d'un an du décret n° 2021-1362 a été écarté : il vise les hébergeurs et les services de communication au public, pas une application familiale portée par une personne physique — arbitrage du responsable de traitement du 2026-09-19, à revoir si le service change de nature | Aucun tiers |
+| — | Accès au serveur de test (VPN Tailscale, #684) | pour chaque personne dont un appareil est inscrit au tailnet du staging (famille, administration) : adresse et nom de son compte Google, groupe d'accès (`famille` ou `admin`) ; pour chaque appareil : nom, système, version du client, adresse IP publique, clé publique, adresse dans le tailnet, dates et heures de connexion | Restreindre l'accès au serveur de test aux appareils inscrits, sans port ouvert sur la box | Intérêt légitime (sécurité du serveur de test) | Appareil : tant qu'il est inscrit ; il perd l'accès 90 jours après sa dernière authentification, ou aussitôt retiré de la console. Journal d'audit de la configuration : 90 jours chez Tailscale, non réglable. Après le retrait d'un appareil, Tailscale ne donne pas de durée (voir « Sous-traitants (destinataires) ») | Tailscale (coordinateur, hors UE : voir « Transferts hors de l'Union européenne ») ; Google (authentification de la personne, pour son propre compte) |
 | — | Journaux techniques (transverse) | ce que les conteneurs du cluster de production écrivent sur leur sortie — api, web, Postgres, MinIO, Traefik et les composants de la plateforme : messages de fonctionnement et d'erreur, horodatés, rattachés à leur namespace, leur pod et leur conteneur (#437). Les applications n'y écrivent pas l'adresse IP des clients, mais un message peut citer l'identifiant d'un compte ou d'un groupe, ou une valeur reprise d'une erreur (celle du relais email ou de Postgres, par exemple) ; ceux de Traefik et de Postgres peuvent contenir une adresse IP | Diagnostiquer une panne, détecter et comprendre un incident de sécurité | Intérêt légitime (fonctionnement et sécurité du service) | 14 jours dans Loki (`retention_period: 336h`, `platform/components/observability/loki.yaml` de la branche de déploiement), après quoi son compacteur les supprime à son passage suivant, dans les heures qui suivent ; le nœud garde aussi les derniers journaux de chaque conteneur jusqu'à leur rotation par kubelet. La purge d'un compte ne les touche pas : ils s'effacent à ce terme | Aucun tiers : Loki tourne dans le cluster, sur le VPS (voir « Hébergeur du VPS ») |
 | 12 | RGPD (export/suppression) | export à la demande (Art. 20), demande/annulation de suppression (Art. 17) | Exercice des droits RGPD | Obligation légale | L'export n'est pas persisté côté serveur (généré à la demande, retourné directement) | Aucun tiers |
 

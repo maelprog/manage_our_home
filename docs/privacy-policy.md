@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-10-30.
+Dernière mise à jour : 2026-11-04.
 
 ## Qui est responsable de vos données ?
 
@@ -177,6 +177,21 @@ possibles sont :
   est chiffré dans la base (messages, jetons OAuth, adresses de flux
   calendrier) le reste dans la copie. Elle est conservée 30 jours (voir
   « Combien de temps vos données sont-elles conservées ? »).
+- **Tailscale** (Tailscale Inc.), uniquement si l'administrateur vous a
+  ouvert l'accès au **serveur de test** du service, et pas pour le service
+  public : ce serveur ne se joint que par un réseau privé virtuel (VPN)
+  Tailscale. Pour chaque appareil que vous y inscrivez, Tailscale reçoit le
+  compte Google avec lequel vous vous y connectez, le nom et le système de
+  l'appareil, son adresse IP et les heures de ses connexions ; il ne voit
+  pas le contenu de ce que vous échangez avec le serveur, chiffré de bout
+  en bout. Il garde 90 jours le journal des changements du réseau
+  (appareils ajoutés, approuvés, retirés), et la fiche d'un appareil tant
+  que celui-ci est inscrit ; il ne publie pas de durée au-delà. Un
+  appareil perd l'accès 90 jours après votre dernière connexion à
+  Tailscale depuis cet appareil, ou dès que l'administrateur le retire.
+  Tailscale est un sous-traitant du responsable de traitement, inscrit à
+  son registre des traitements. Un réseau privé hébergé par le service
+  lui-même le remplacera.
 
 Aucune autre donnée ne quitte le serveur applicatif. Les suggestions de
 recettes sont calculées sur le serveur par des règles fixes (ingrédients en
@@ -186,7 +201,7 @@ n'est appelé, ni sur le serveur ni chez un tiers.
 ## Vos données quittent-elles l'Union européenne ?
 
 Ce service n'est pas encore ouvert au public, et cette page n'affirmera pas
-plus que ce qui est établi. Voici où en est chacun des quatre cas.
+plus que ce qui est établi. Voici où en est chacun des cinq cas.
 
 - **Le relais des emails reste dans l'Union européenne.** Les emails
   partent par Scaleway, qui déclare héberger et traiter l'ensemble des
@@ -217,6 +232,16 @@ plus que ce qui est établi. Voici où en est chacun des quatre cas.
   sera indiqué ici avant l'ouverture du service : [transferts hors UE des
   services de notification — à renseigner avant la mise en ligne]. Si vos
   rappels vous parviennent par email seulement, rien ne part vers eux.
+- **Tailscale**, pour les seuls appareils inscrits au serveur de test :
+  Tailscale déclare héberger ses données au Canada, en Allemagne, aux
+  États-Unis et au Royaume-Uni, et encadrer les transferts de l'Union
+  européenne vers les États-Unis par les clauses contractuelles types de
+  la Commission européenne (sa politique de confidentialité, consultée le
+  4 novembre 2026) ; le Canada et le Royaume-Uni font l'objet d'une
+  décision d'adéquation de la Commission. Ce transfert est accepté pour le
+  serveur de test seulement, jusqu'à son remplacement par un réseau privé
+  hébergé par le service lui-même. Si aucun de vos appareils n'est inscrit
+  au serveur de test, rien ne part vers Tailscale.
 - **Le reste ne quitte pas le serveur du service** : vos messages, votre
   agenda, vos listes, votre budget et vos pièces jointes n'y sont partagés
   avec aucun tiers, sinon par la sauvegarde de la base, conservée chez
