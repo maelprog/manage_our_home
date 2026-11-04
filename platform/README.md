@@ -248,14 +248,15 @@ pas exactement `SCW_ACCESS_KEY` et `SCW_SECRET_KEY`.
 ### La clé : une application IAM dédiée
 
 Jamais la clé du bucket de sauvegarde : une **application IAM** à elle,
-dont la politique ne donne que le DNS. Dans la console Scaleway
+dont la politique ne donne que Domains and DNS. Dans la console Scaleway
 (Organisation → IAM), ou avec la CLI `scw` :
 
 1. **Le projet.** La politique se limite à un projet : celui qui porte la
    zone `watallo.fr` (console : Domains and DNS → la zone → son projet).
-   Si la zone a un projet à elle, la clé n'atteint rien d'autre ; si elle
-   partage le projet du bucket, la clé reste bornée au DNS par
-   l'ensemble de permissions, mais atteint toutes les zones du projet.
+   Si la zone a un projet à elle, la clé n'atteint aucune autre ressource
+   Scaleway ; si elle partage le projet du bucket, l'ensemble de
+   permissions la tient à l'écart du bucket, mais elle atteint tous les
+   domaines et toutes les zones du projet.
 2. **L'application** :
    `scw iam application create name=cert-manager-dns01-staging description="DNS-01 du staging (#682)"`.
 3. **La politique**, un seul ensemble de permissions, sur ce seul projet :
@@ -267,11 +268,16 @@ dont la politique ne donne que le DNS. Dans la console Scaleway
      rules.0.permission-set-names.0=DomainsDNSFullAccess
    ```
 
-   `DomainsDNSFullAccess` (les enregistrements des zones du projet) et
-   rien d'autre : ni le bureau d'enregistrement (transfert,
-   renouvellement du domaine), ni droit d'organisation, ni Object
-   Storage. Le webhook n'a besoin que d'écrire et de supprimer un TXT ;
-   Scaleway n'a pas de droit plus fin que la zone.
+   La documentation de Scaleway décrit `DomainsDNSFullAccess` comme un
+   accès complet à Domains and DNS, sans ensemble à part pour le bureau
+   d'enregistrement : la clé atteint donc **probablement aussi la gestion
+   du domaine lui-même** (renouvellement, transfert, contacts), pas
+   seulement les enregistrements de ses zones. Le webhook n'a besoin que
+   d'écrire et de supprimer un TXT, mais Scaleway n'offre pas d'ensemble
+   plus étroit. Ce que la politique exclut : Object Storage (le bucket de
+   sauvegarde), les autres produits et l'organisation. Une fuite de la clé
+   est donc à traiter comme une fuite sur le domaine : rotation immédiate
+   (« Rotation de la clé »).
 4. **La clé d'API** de l'application :
    `scw iam api-key create application-id=<id de l'application> description="cert-manager staging"`.
    Elle affiche une seule fois l'*access key* (`SCW…`) et la *secret
