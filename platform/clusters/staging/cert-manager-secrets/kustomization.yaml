@@ -25,4 +25,5 @@ commonAnnotations:
   argocd.argoproj.io/sync-wave: "-3"
   # The SealedSecret CRD comes with the controller's Application.
   argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
-resources: []
+resources:
+  - scaleway-dns01.yaml
