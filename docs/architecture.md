@@ -166,6 +166,15 @@ remplacement) de l'isolation applicative ci-dessous.
   ni écrire les données de la famille B, sur chaque endpoint sensible, y
   compris en simulant un bug applicatif (scoping manquant) pour vérifier que
   RLS bloque quand même l'accès.
+- Un événement de l'agenda peut être privé (#620, migration 0044) : la
+  policy de `events` lit aussi `app.user_id` et ne montre un événement privé
+  qu'à ses participants — son créateur et les membres de « pour qui »
+  (`event_assignees`) —, rôle de propriétaire ou d'admin compris. Les tables
+  filles (rappels, pièces jointes, complétions, « pour qui ») suivent, leurs
+  policies passant par `events`. La lecture de `event_assignees` depuis la
+  policy de `events` passe par une fonction `SECURITY DEFINER` étroite
+  (`event_is_assigned_to_current_user`), seule sortie de la récursion entre
+  les deux policies.
 
 **Auth**
 - argon2id, paramètres mémoire/temps calibrés sur le matériel cible (~250ms
