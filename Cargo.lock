@@ -2504,7 +2504,6 @@ dependencies = [
 name = "manage_our_home_tailnet_policy"
 version = "0.1.0"
 dependencies = [
- "serde",
  "serde_json",
 ]
 
