@@ -53,9 +53,16 @@ La politique d'accès du tailnet est versionnée dans
   clés.
 - Le bloc `tests` du fichier décrit ce tableau. Le coordinateur refuse une
   politique dont un test échoue ; la crate `infra/tailscale` (test de la CI,
-  job `test`) rejoue ces tests sans lui, refuse toute clé hors de ce
-  sous-ensemble et tout identifiant écrit dans le fichier, et vérifie le
-  tableau ci-dessus indépendamment des tests du fichier.
+  job `test`) rejoue ces tests sans lui, pour le sous-ensemble du langage
+  de politique que le fichier emploie. Elle refuse ce qui en sort au lieu
+  de l'ignorer : une clé autre que `groups`, `tagOwners`, `acls` et
+  `tests` ; une règle dont la source est `*` ou n'est ni un groupe ni un
+  tag déclarés ni un identifiant ; une règle dont la destination n'est
+  pas un tag déclaré (une adresse, un sous-réseau, `autogroup:…`, un
+  groupe, `*`) ; une liste de ports mal formée ou une plage inversée ;
+  tout identifiant écrit dans le fichier. Elle vérifie enfin le tableau
+  ci-dessus indépendamment des tests du fichier, port par port de 1 à
+  65535, pour les deux groupes et pour le serveur lui-même.
 
 **Rôle dans le tailnet et groupe sont indépendants.** Le rôle (*Owner*,
 *Admin*, *Member*) dit qui administre le tailnet ; le groupe dit ce qu'un
@@ -69,10 +76,13 @@ administrateur le peut, ou un identifiant d'API créé par lui.
 
 Le workflow `.github/workflows/tailscale-policy.yml` :
 
-- **valide** la politique auprès du coordinateur, tests compris, à chaque
-  modification de `infra/tailscale/` (pull request et `main`). Sans les
-  secrets, le job passe avec un avertissement : la vérification hors ligne
-  du job `test` de la CI a tourné quand même ;
+- **valide** la politique de `main` auprès du coordinateur, tests compris,
+  après chaque modification de `infra/tailscale/` fusionnée (ou à la main,
+  *Run workflow* sans cocher `apply`). Aucune pull request ne lance ce
+  workflow : son job exécuterait le `policy.sh` de la branche, qui
+  pourrait envoyer l'identifiant n'importe où. Une pull request n'a que la
+  vérification hors ligne du job `test` de la CI. Sans les secrets, le job
+  passe avec un avertissement ;
 - **applique** la politique de `main` au tailnet à la main seulement :
   onglet Actions → *Tailscale policy* → *Run workflow*, case `apply` cochée.
   Comme un changement de la branche `deploy`, toucher à l'infrastructure
@@ -91,8 +101,21 @@ poste$ infra/tailscale/policy.sh apply
 poste$ unset TS_API_KEY TS_ACL_GROUPS
 ```
 
-**L'identifiant.** Deux possibilités, rangées dans les secrets GitHub du
-dépôt, jamais dans un fichier ni une issue :
+**Où ranger les secrets : l'environnement `tailscale`, pas le dépôt.**
+Settings → *Environments* → *New environment* `tailscale` →
+*Deployment branches and tags* : *Selected branches and tags*, la seule
+branche `main`. Puis, dans cet environnement, les secrets
+`TS_ACL_GROUPS` et l'identifiant ci-dessous. C'est cette règle qui fait
+la frontière : un job lancé depuis une autre référence (une branche, une
+pull request), même par un workflow modifié pour réclamer
+l'environnement, n'en reçoit aucun secret. Un secret rangé au niveau du
+dépôt, lui, serait lisible par tout workflow d'une branche du dépôt :
+n'en ranger aucun là. GitHub crée l'environnement sans règle si le
+workflow tourne avant ce réglage ; il ne contient alors aucun secret, et
+le job passe avec un avertissement.
+
+**L'identifiant.** Deux possibilités, rangées dans l'environnement
+`tailscale`, jamais dans un fichier ni une issue :
 
 - **Client OAuth (recommandé)** : `TS_OAUTH_CLIENT_ID` et
   `TS_OAUTH_CLIENT_SECRET`. Console → *Settings* → *Trust credentials* →
