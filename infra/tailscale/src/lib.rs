@@ -5,9 +5,12 @@
 //! sends to Tailscale. The coordinator runs its `tests` block when it
 //! validates or applies it, but only with an API key; this crate runs the
 //! same block in the workspace test job, for the subset of the policy
-//! language the file uses. A key the subset does not know (`ssh`, `grants`,
-//! `autoApprovers`, `nodeAttrs`…) is refused rather than ignored: each of
-//! them can open something the tests here would not see.
+//! language the file uses. What the subset does not know is refused rather
+//! than ignored, since each can open something the tests here would not
+//! see: a key such as `ssh`, `grants`, `autoApprovers` or `nodeAttrs`; a
+//! rule source `*`; a rule destination whose host is anything but a
+//! declared tag (an address, a subnet, `autogroup:…`, a group, a login,
+//! `*`); a malformed or inverted port range.
 
 use std::collections::BTreeMap;
 
@@ -50,10 +53,11 @@ pub fn parse(json: &str) -> Result<Policy, String> {
 /// Whether the policy lets `src` (a group, a tag or a login) open `dst`
 /// (`host:port`, one port).
 ///
-/// Every rule is checked before any is matched, so a rule naming an
-/// undeclared group or tag, or a malformed port, is an error even when
-/// the question asked does not touch it: the coordinator would refuse the
-/// whole file.
+/// Every rule is checked before any is matched, so a rule outside the
+/// subset (an undeclared group or tag, a source `*`, a destination host
+/// that is not a tag, a malformed port) is an error even when the question
+/// asked does not touch it. A question may still name any host: since
+/// rules only reach tags, an address is never reached.
 pub fn allows(policy: &Policy, src: &str, dst: &str) -> Result<bool, String> {
     check_rules(policy)?;
     let principals = principals(policy, src)?;
@@ -62,16 +66,12 @@ pub fn allows(policy: &Policy, src: &str, dst: &str) -> Result<bool, String> {
         .parse()
         .map_err(|_| format!("{dst}: a test names one port"))?;
     for acl in policy.acls.iter().filter(|acl| acl.action == "accept") {
-        if !acl
-            .src
-            .iter()
-            .any(|s| s == "*" || principals.iter().any(|p| p == s))
-        {
+        if !acl.src.iter().any(|s| principals.iter().any(|p| p == s)) {
             continue;
         }
         for d in &acl.dst {
             let (rule_host, ports) = split_host_port(d)?;
-            if (rule_host == "*" || rule_host == host) && ports_match(ports, port)? {
+            if rule_host == host && ports_match(ports, port)? {
                 return Ok(true);
             }
         }
@@ -167,14 +167,17 @@ fn declared(policy: &Policy, name: &str) -> Result<(), String> {
 
 fn check_rules(policy: &Policy) -> Result<(), String> {
     for acl in &policy.acls {
-        for src in acl.src.iter().filter(|s| *s != "*") {
+        for src in &acl.src {
             declared(policy, src)?;
         }
         for dst in &acl.dst {
             let (host, ports) = split_host_port(dst)?;
-            if host.starts_with("tag:") {
-                declared(policy, host)?;
+            if !host.starts_with("tag:") {
+                return Err(format!(
+                    "{dst}: a rule destination is a declared tag, nothing else"
+                ));
             }
+            declared(policy, host)?;
             ports_match(ports, 0)?;
         }
     }
@@ -189,7 +192,8 @@ fn split_host_port(dst: &str) -> Result<(&str, &str), String> {
 }
 
 /// `*`, or a comma-separated list of ports and `low-high` ranges. Every
-/// part is parsed, matched or not, so a typo is an error.
+/// part is parsed, matched or not, so a typo or an inverted range is an
+/// error.
 fn ports_match(spec: &str, port: u16) -> Result<bool, String> {
     if spec == "*" {
         return Ok(true);
@@ -204,6 +208,9 @@ fn ports_match(spec: &str, port: u16) -> Result<bool, String> {
             Some((low, high)) => (parse(low)?, parse(high)?),
             None => (parse(part)?, parse(part)?),
         };
+        if low > high {
+            return Err(format!("{spec}: {part} is an inverted range"));
+        }
         hit |= (low..=high).contains(&port);
     }
     Ok(hit)
