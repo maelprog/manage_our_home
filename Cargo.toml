@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["apps/api", "apps/web", "apps/shared", "apps/http_guard"]
+members = ["apps/api", "apps/web", "apps/shared", "apps/http_guard", "infra/tailscale"]
 
 # The picture codecs, optimised in the dev profile that `cargo test` and
 # `cargo nextest` build with (the test profile inherits it), and in that

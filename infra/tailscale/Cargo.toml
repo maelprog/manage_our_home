@@ -1,0 +1,19 @@
+[package]
+name = "manage_our_home_tailnet_policy"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# The tailnet's access policy (`policy.json`, #684) and the offline check
+# that runs its own `tests` block in the workspace test job: the
+# coordinator's validation endpoint needs an API key, which a pull request
+# from a fork, or a repository without the secret, does not have. Nothing
+# in apps/ depends on this crate.
+[lib]
+name = "manage_our_home_tailnet_policy"
+path = "src/lib.rs"
+
+[dependencies]
+# Already in Cargo.lock through the apps: the workspace graph does not grow.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
