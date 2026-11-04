@@ -181,14 +181,20 @@ possibles sont :
   ouvert l'accès au **serveur de test** du service, et pas pour le service
   public : ce serveur ne se joint que par un réseau privé virtuel (VPN)
   Tailscale. Pour chaque appareil que vous y inscrivez, Tailscale reçoit le
-  compte Google avec lequel vous vous y connectez, le nom et le système de
-  l'appareil, son adresse IP et les heures de ses connexions ; il ne voit
-  pas le contenu de ce que vous échangez avec le serveur, chiffré de bout
-  en bout. Il garde 90 jours le journal des changements du réseau
-  (appareils ajoutés, approuvés, retirés), et la fiche d'un appareil tant
-  que celui-ci est inscrit ; il ne publie pas de durée au-delà. Un
-  appareil perd l'accès 90 jours après votre dernière connexion à
-  Tailscale depuis cet appareil, ou dès que l'administrateur le retire.
+  compte Google avec lequel vous vous y connectez, le nom, le nom d'hôte
+  et le système de l'appareil, son « user agent » (l'identification de son logiciel), ses réglages de langue,
+  son adresse IP et les heures de ses connexions, ainsi que des journaux
+  de ses connexions avec les autres appareils du réseau (ouverture et
+  fermeture de chacune, volumes échangés), que l'application Tailscale
+  lui envoie par défaut ; sur iOS et Android, Tailscale ne documente
+  aucun moyen de désactiver cet envoi. Il ne voit pas le contenu de ce
+  que vous échangez avec le serveur, chiffré de bout en bout. Il garde
+  90 jours le journal des changements du réseau (appareils ajoutés,
+  approuvés, retirés), et la fiche d'un appareil tant que celui-ci est
+  inscrit ; il ne publie pas de durée au-delà, et aucune pour les
+  journaux de connexions : leur durée de conservation est inconnue. Un
+  appareil perd l'accès 90 jours après votre dernière authentification à
+  Tailscale sur cet appareil, ou dès que l'administrateur le retire.
   Tailscale est un sous-traitant du responsable de traitement, inscrit à
   son registre des traitements. Un réseau privé hébergé par le service
   lui-même le remplacera.
