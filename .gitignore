@@ -9,3 +9,6 @@ target/
 .claude/arbitrages.md
 .claude/orchestrator-history.md
 .playwright-mcp/
+
+# Guides locaux (propres à la machine)
+docs/guides/
