@@ -199,7 +199,7 @@ pub async fn export_account(
         }
 
         let events = sqlx::query!(
-            r#"SELECT id, group_id, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, created_at
+            r#"SELECT id, group_id, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private, created_at
                FROM events WHERE group_id = $1 AND created_by = $2 ORDER BY created_at"#,
             group_id,
             auth.user_id
@@ -211,7 +211,7 @@ pub async fn export_account(
                 "id": e.id, "group_id": e.group_id, "title": e.title, "description": e.description,
                 "location": e.location, "starts_at": e.starts_at, "ends_at": e.ends_at,
                 "all_day": e.all_day, "is_task": e.is_task, "completed_at": e.completed_at,
-                "rrule": e.rrule, "created_at": e.created_at,
+                "rrule": e.rrule, "is_private": e.is_private, "created_at": e.created_at,
             })
         }));
 
@@ -219,7 +219,7 @@ pub async fn export_account(
         // whoever created the event and whoever made the assignment.
         let assignments = sqlx::query!(
             r#"SELECT e.id, e.group_id, e.title, e.description, e.location, e.starts_at, e.ends_at,
-                      e.all_day, e.is_task, e.completed_at, e.rrule, ea.created_at AS assigned_at
+                      e.all_day, e.is_task, e.completed_at, e.rrule, e.is_private, ea.created_at AS assigned_at
                FROM event_assignees ea JOIN events e ON e.id = ea.event_id
                WHERE e.group_id = $1 AND ea.user_id = $2 ORDER BY ea.created_at"#,
             group_id,
@@ -233,7 +233,7 @@ pub async fn export_account(
                 "description": e.description, "location": e.location,
                 "starts_at": e.starts_at, "ends_at": e.ends_at, "all_day": e.all_day,
                 "is_task": e.is_task, "completed_at": e.completed_at, "rrule": e.rrule,
-                "assigned_at": e.assigned_at,
+                "is_private": e.is_private, "assigned_at": e.assigned_at,
             })
         }));
 
@@ -277,11 +277,13 @@ pub async fn export_account(
             }));
 
         let attachment_rows = sqlx::query!(
-            r#"SELECT a.id, a.event_id, a.storage_key, a.filename, a.mime_type, a.size_bytes, a.created_at
-               FROM event_attachments a JOIN events e ON e.id = a.event_id
-               WHERE e.group_id = $1 AND a.uploaded_by = $2 ORDER BY a.created_at"#,
-            group_id,
-            auth.user_id
+            // Through the function, not the table: a private event the caller
+            // was taken off is hidden by RLS, and their attachment with it (#620).
+            r#"SELECT id AS "id!", event_id AS "event_id!", storage_key AS "storage_key!",
+                      filename AS "filename!", mime_type AS "mime_type!",
+                      size_bytes AS "size_bytes!", created_at AS "created_at!"
+               FROM account_export_event_attachments($1)"#,
+            group_id
         )
         .fetch_all(&mut *tx)
         .await?;
@@ -297,11 +299,11 @@ pub async fn export_account(
         }));
 
         let completions = sqlx::query!(
-            r#"SELECT c.event_id, c.occurrence_at, c.completed_at
-               FROM event_occurrence_completions c JOIN events e ON e.id = c.event_id
-               WHERE e.group_id = $1 AND c.completed_by = $2 ORDER BY c.completed_at"#,
-            group_id,
-            auth.user_id
+            // Same reason as the attachments above (#620).
+            r#"SELECT event_id AS "event_id!", occurrence_at AS "occurrence_at!",
+                      completed_at AS "completed_at!"
+               FROM account_export_event_completions($1)"#,
+            group_id
         )
         .fetch_all(&mut *tx)
         .await?;

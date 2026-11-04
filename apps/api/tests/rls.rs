@@ -1698,3 +1698,204 @@ async fn policies_read_app_group_id_and_never_name_the_family(db: PgPool) {
         ]
     );
 }
+
+/// Issue #620: a private event, and everything hanging off it, is visible to
+/// its participants alone — its creator and its assignees — even to a query
+/// with no `WHERE` at all, and whatever the reader's role in the group.
+///
+/// Seeded as the harness role, which bypasses RLS: one group owned by
+/// `owner`, a private event created by `creator` for `assignee`, and
+/// `outsider`, a member who is neither. `owner` is not a participant either:
+/// owning the group grants nothing here.
+#[sqlx::test]
+async fn a_private_event_and_its_rows_are_visible_to_its_participants_alone(db: PgPool) {
+    let mut users = Vec::new();
+    for tag in ["owner", "creator", "assignee", "outsider"] {
+        let id: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (email, password_hash, display_name, email_verified) \
+             VALUES ($1, 'x', $2, true) RETURNING id",
+        )
+        .bind(format!("private-{tag}@example.test"))
+        .bind(tag)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        users.push(id);
+    }
+    let [owner, creator, assignee, outsider] = users[..] else {
+        unreachable!()
+    };
+    let group: Uuid =
+        sqlx::query_scalar("INSERT INTO groups (name, created_by) VALUES ('P', $1) RETURNING id")
+            .bind(owner)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    for (user, role) in [
+        (owner, "owner"),
+        (creator, "standard"),
+        (assignee, "standard"),
+        (outsider, "standard"),
+    ] {
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, $3::group_role)",
+        )
+        .bind(group)
+        .bind(user)
+        .bind(role)
+        .execute(&db)
+        .await
+        .unwrap();
+    }
+
+    let starts_at = chrono::Utc::now();
+    let mut events = Vec::new();
+    for (title, is_private) in [("shared", false), ("private", true)] {
+        let id: Uuid = sqlx::query_scalar(
+            "INSERT INTO events (group_id, created_by, title, starts_at, ends_at, is_task, is_private) \
+             VALUES ($1, $2, $3, $4, $4 + interval '1 hour', true, $5) RETURNING id",
+        )
+        .bind(group)
+        .bind(creator)
+        .bind(title)
+        .bind(starts_at)
+        .bind(is_private)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let reminder: Uuid = sqlx::query_scalar(
+            "INSERT INTO event_reminders (event_id, offset_minutes) VALUES ($1, 10) RETURNING id",
+        )
+        .bind(id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        for statement in [
+            "INSERT INTO event_assignees (event_id, user_id) VALUES ($1, $2)",
+            "INSERT INTO event_occurrence_completions (event_id, occurrence_at, completed_by) \
+             VALUES ($1, now(), $2)",
+            "INSERT INTO event_attachments (event_id, uploaded_by, storage_key, filename, mime_type, size_bytes) \
+             VALUES ($1, $2, gen_random_uuid()::text, 'f.png', 'image/png', 1)",
+        ] {
+            sqlx::query(statement)
+                .bind(id)
+                .bind(assignee)
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO scheduled_notifications (event_reminder_id, event_id, occurrence_at, fire_at) \
+             VALUES ($1, $2, now(), now())",
+        )
+        .bind(reminder)
+        .bind(id)
+        .execute(&db)
+        .await
+        .unwrap();
+        events.push(id);
+    }
+    let [shared, private] = events[..] else {
+        unreachable!()
+    };
+
+    const TABLES: [&str; 6] = [
+        "events",
+        "event_reminders",
+        "scheduled_notifications",
+        "event_attachments",
+        "event_occurrence_completions",
+        "event_assignees",
+    ];
+    let role = format!("app_test_role_{}", Uuid::new_v4().simple());
+    for statement in [
+        format!("CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"),
+        format!(
+            "GRANT SELECT ON {}, group_members TO {role}",
+            TABLES.join(", ")
+        ),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+
+    for (reader, sees_private) in [
+        (creator, true),
+        (assignee, true),
+        (outsider, false),
+        (owner, false),
+    ] {
+        #[allow(clippy::disallowed_methods)]
+        let mut tx = db.begin().await.unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        sqlx::query("SELECT set_config('app.group_id', $1, true)")
+            .bind(group.to_string())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        set_user_id(&mut tx, reader).await;
+
+        let expected = if sees_private {
+            let mut both = vec![shared, private];
+            both.sort();
+            both
+        } else {
+            vec![shared]
+        };
+        for table in TABLES {
+            let column = if table == "events" { "id" } else { "event_id" };
+            let visible: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT {column} FROM {table} ORDER BY 1"
+            )))
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+            assert_eq!(
+                visible, expected,
+                "{table} as {reader} (private visible: {sees_private})"
+            );
+        }
+
+        // The keys a group deletion collects cover the private event too,
+        // for the owner alone (`group_attachment_storage_keys`, 0044).
+        let keys: Vec<String> =
+            sqlx::query_scalar("SELECT * FROM group_attachment_storage_keys($1)")
+                .bind(group)
+                .fetch_all(&mut *tx)
+                .await
+                .unwrap();
+        assert_eq!(keys.len(), if reader == owner { 2 } else { 0 }, "{reader}");
+        tx.rollback().await.unwrap();
+    }
+
+    // Without `app.user_id` the private event is nobody's.
+    #[allow(clippy::disallowed_methods)]
+    let mut tx = db.begin().await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
+        .bind(group.to_string())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let visible: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM events")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(visible, vec![shared]);
+    tx.rollback().await.unwrap();
+
+    for statement in [format!("DROP OWNED BY {role}"), format!("DROP ROLE {role}")] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+}

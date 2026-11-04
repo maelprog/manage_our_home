@@ -297,13 +297,18 @@ pub(crate) async fn storage_keys_for_events(
 /// from `groups` just as `event_attachments` cascades from `events` — so
 /// this reads through both in one round trip rather than listing the
 /// events first only to throw the ids away.
+///
+/// Read through `group_attachment_storage_keys()` (migration 0044), not
+/// from the tables: under their policies, the owner deleting the group does
+/// not see the private events they take no part in (#620), whose rows the
+/// cascade deletes all the same. The function answers only for the group
+/// `scoped_tx` was opened on, and only to its owner.
 pub(crate) async fn storage_keys_for_group(
     tx: &mut sqlx::PgConnection,
     group_id: Uuid,
 ) -> AppResult<Vec<String>> {
     Ok(sqlx::query_scalar!(
-        "SELECT storage_key FROM event_attachments
-         WHERE event_id IN (SELECT id FROM events WHERE group_id = $1)",
+        r#"SELECT storage_key AS "storage_key!" FROM group_attachment_storage_keys($1) AS storage_key"#,
         group_id,
     )
     .fetch_all(tx)
