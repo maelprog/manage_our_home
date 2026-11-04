@@ -145,7 +145,7 @@ passes `MIGRATION_DATABASE_URL` to the one-shot `migrate` service only, and
 `DATABASE_URL` (as `app_role`, since #311) to the api service, which starts
 once `migrate` has exited 0.
 
-### The account export's two functions (#140) — narrow questions across families
+### The account export's functions (#140, #620) — narrow questions across families
 
 `GET /account/export` must reach what the caller wrote in a group they have
 left (leaving deletes the membership, not the content), and the invitations
@@ -176,7 +176,7 @@ two tables is therefore not read through the ordinary policies:
   group, so there is nothing across families to withhold.
 
 The first two are not executable by `PUBLIC`: see the `GRANT EXECUTE` line in the
-`app_role` snippet above. All four rely on the owner bypassing RLS — a
+`app_role` snippet above. The first two rely on the owner bypassing RLS — a
 `migration_role` without `BYPASSRLS` (which `migrations::apply` refuses
 anyway) would make them answer nothing, and the export would silently fall
 back to current groups and drop received invitations (and, for the last two, the attachments and completions the caller left on private events).

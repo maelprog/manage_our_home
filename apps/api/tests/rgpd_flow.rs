@@ -1508,7 +1508,7 @@ async fn export_states_whether_each_event_is_private(db: PgPool) {
 /// so would be the attachment and the completion they left on it — rows that
 /// still name them (art. 15).
 #[sqlx::test]
-async fn export_keeps_own_rows_on_a_private_event_the_caller_left(db: PgPool) {
+async fn export_keeps_own_rows_on_a_private_event_the_caller_cannot_see(db: PgPool) {
     let router = test_router(db.clone());
     let owner_cookie = register_verify_login(
         &router,
