@@ -1,6 +1,9 @@
 # Registre des traitements — Manage Our Home
 
 Registre tenu au titre de l'article 30 du RGPD. Dernière mise à jour :
+2026-11-04 (nom de domaine chez Scaleway, bureau d'enregistrement et zone
+DNS, anonymisation WHOIS ; certificat Let's Encrypt et journaux de
+transparence, #681) ;
 2026-10-23 (photo de profil : ré-encodée sans métadonnées, montrée aux
 seuls membres d'un groupe commun, supprimée à la purge du compte, #467) ;
 2026-10-16 (journaux techniques du cluster de production, gardés 14 jours,
@@ -154,6 +157,40 @@ tourne sur un VPS loué à un hébergeur tiers (arbitrage du 2026-10-10,
   Storage, région `fr-par`), pour les sauvegardes de la base décrites
   ci-dessous. Même fournisseur que le relais email : le cadre contractuel
   s'établit au même pas (`docs/v2-deployment.md` #18).
+- **Scaleway** (Scaleway SAS, Paris), bureau d'enregistrement du nom de
+  domaine public et hébergeur de sa zone DNS (Scaleway Domains and DNS),
+  retenus le 2026-11-04 (#681). Ce flux ne porte aucune donnée
+  d'utilisateur : Scaleway tient l'identité civile du titulaire du domaine
+  — le responsable de traitement — pour son propre compte de bureau
+  d'enregistrement, et la transmet au registre de l'extension comme tout
+  bureau d'enregistrement. La diffusion de ces données dans l'annuaire
+  WHOIS est restreinte : anonymisation activée, déclarée par le
+  responsable de traitement le 2026-11-04, ce qui tient l'anonymat de
+  l'éditeur (LCEN art. 1-1, II ; `docs/v2-deployment.md` #16). Cette
+  anonymisation ne masque que le titulaire, pas le nom lui-même : ni le nom
+  de domaine ni ses sous-domaines ne doivent nommer la personne civile
+  (`docs/v2-deployment.md` #16 et #17). Les
+  serveurs de noms de Scaleway reçoivent les requêtes des résolveurs DNS
+  des visiteurs : l'adresse IP vue est celle du résolveur (celui du
+  fournisseur d'accès, en général), pas celle du visiteur, sauf un préfixe
+  tronqué de celle-ci quand le résolveur l'y ajoute (extension EDNS Client
+  Subnet). Le service ne lit aucun journal de requêtes de la zone ; si
+  Scaleway en tient de son côté, leur contenu et leur durée ne sont pas
+  établis, et se relisent au même pas que le reste de son cadre
+  contractuel (`docs/v2-deployment.md` #18).
+- **Let's Encrypt** (Internet Security Research Group, États-Unis), émetteur
+  du certificat TLS de production (cert-manager, #432 et #434 ; branche de
+  déploiement, `platform/components/cert-manager/cluster-issuers.yaml`),
+  n'est destinataire d'aucune donnée personnelle : la demande ACME ne
+  porte que les noms à certifier, et le compte ACME n'a pas d'adresse de
+  contact. Tout certificat émis est inscrit dans les journaux publics de
+  transparence des certificats (Certificate Transparency), consultables
+  par quiconque et sans limite de durée : **chaque nom de sous-domaine
+  certifié y est public**, ce qui est une raison de plus pour qu'aucun ne
+  nomme la personne civile. Le serveur de test n'y figure pas : son
+  certificat vient d'une autorité locale (`home-ca`), pour un nom en
+  `.home.arpa`. Mentionné pour que la liste des flux sortants soit
+  complète.
 
 **Sauvegardes de la base** (#433 ; manifests de la branche de déploiement,
 `apps/manage-our-home/base/postgres/`). La base est sauvegardée en continu
@@ -229,6 +266,8 @@ quel, avec sa source et sa date ; le reste attend la mise en ligne
 | Postgres, MinIO, Ollama | rien : ils tournent sur l'infrastructure du responsable de traitement | Aucun code de `apps/` n'appelle un tiers pour ces trois services | Sans objet : pas de tiers, pas de transfert |
 | Hébergeur du VPS | la machine et ses disques : toutes les données du service | Rien : l'hébergeur n'est pas choisi (`docs/v2-deployment.md` #1) | À établir avec son choix, au même pas que les mentions légales (`docs/v2-deployment.md` #17) |
 | Scaleway (stockage objet des sauvegardes, Scaleway Object Storage) | les sauvegardes de la base (copies complètes et WAL) | Région `fr-par` (Paris) fixée dans les manifests (#433). La liste des sous-traitants ultérieurs de Scaleway n'a pas été relue pour ce service | À établir au pas 2 de `docs/v2-deployment.md` #18, comme pour le relais email |
+| Scaleway (bureau d'enregistrement et zone DNS, Scaleway Domains and DNS) | aucune donnée d'utilisateur ; l'identité du titulaire du domaine, pour le compte propre de Scaleway | Scaleway SAS, établie à Paris ; aucun transfert hors UE n'est connu pour ce service (#681). La liste des sous-traitants ultérieurs de Scaleway n'a pas été relue pour ce service : la page ne répondait pas le 2026-11-04 | Sans objet tant qu'aucun sous-traitant hors UE n'apparaît ; relecture au pas 2 de `docs/v2-deployment.md` #18 |
+| Let's Encrypt (émetteur du certificat TLS) | rien de personnel : les noms à certifier ; publiés ensuite par les journaux de transparence des certificats | Le compte ACME de production n'a pas d'adresse de contact (`cluster-issuers.yaml`, branche de déploiement) | Sans objet : aucune donnée personnelle ne sort |
 
 **Ce que cette section ne garantit pas.** La localisation du relais est une
 garantie d'exploitation, pas une propriété du code : l'hôte vient de la

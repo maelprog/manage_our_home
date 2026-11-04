@@ -77,9 +77,12 @@ valider en relecture. Ce qui doit tenir, au moment de choisir les valeurs :
 - le nom affiché de `SMTP_FROM` (en-tête `From` des emails) est le nom du
   service ou le pseudonyme, jamais le nom civil ;
 - le nom de domaine public (`SITE_ADDRESS`, item #2) est enregistré avec la
-  diffusion restreinte des données du titulaire dans l'annuaire WHOIS : à
-  vérifier chez le bureau d'enregistrement retenu au moment de
-  l'enregistrement.
+  diffusion restreinte des données du titulaire dans l'annuaire WHOIS :
+  bureau d'enregistrement retenu, Scaleway, anonymisation déclarée activée
+  le 2026-11-04 (#681, `docs/registre-traitements.md`) ;
+- ni ce nom ni ses sous-domaines ne nomment la personne civile :
+  l'anonymisation WHOIS ne masque que le titulaire, et chaque sous-domaine
+  certifié est publié par les journaux de transparence des certificats.
 
 Le renommage du compte ou du dépôt de code, dont l'adresse porte
 aujourd'hui l'identifiant du porteur (badge et `git clone` du README, et
@@ -237,7 +240,13 @@ Au moment de l'ouverture publique :
    les sauvegardes de la base (#433) : vérifier que le DPA du pas 1 couvre
    le projet qui porte le bucket `manage-our-home-backups-prod`, et
    remplir la ligne de ce service dans le tableau des transferts du
-   registre.
+   registre. Faire de même pour Domains and DNS, bureau d'enregistrement
+   du domaine public et hébergeur de sa zone (#681) : relire dans la liste
+   des sous-traitants ultérieurs ce qu'elle nomme pour ce service, et dans
+   sa documentation ce que Scaleway garde des requêtes reçues par ses
+   serveurs de noms (journaux de requêtes de la zone, contenu et durée),
+   puis rafraîchir la ligne de ce service dans le tableau des transferts
+   du registre et son entrée parmi les sous-traitants.
 3. **Vérifier le domaine d'envoi.** Ajouter le domaine de `SMTP_FROM` dans
    Transactional Email, publier les enregistrements SPF et DKIM que la
    console fournit, puis un enregistrement DMARC (`_dmarc.<domaine>`, en
