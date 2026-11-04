@@ -291,6 +291,8 @@ pub async fn post(
             .assignees_present
             .is_some()
             .then(|| assignee_ids.clone()),
+        // The form has no privacy field yet (#621): left as it is.
+        is_private: None,
     };
 
     let result = api_request_auth(

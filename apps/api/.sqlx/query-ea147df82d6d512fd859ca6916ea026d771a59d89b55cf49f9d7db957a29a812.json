@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT storage_key AS \"storage_key!\" FROM group_attachment_storage_keys($1) AS storage_key",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "storage_key!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "ea147df82d6d512fd859ca6916ea026d771a59d89b55cf49f9d7db957a29a812"
+}

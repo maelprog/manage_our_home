@@ -1408,3 +1408,183 @@ async fn a_temp_object_of_the_caller_cannot_shadow_the_export_functions_tables(d
     drop(conn);
     drop_prescribed_role(&db, app_db, &role).await;
 }
+
+/// Issue #620: an event's privacy is part of what the export says about it,
+/// in both categories that carry events — the ones the caller created and
+/// the ones they are assigned to. Read through the prescribed role, under
+/// which a private event is visible to its participants alone: the caller
+/// is one of each, and finds both.
+#[sqlx::test]
+async fn export_states_whether_each_event_is_private(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "p620-owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer Prive").await;
+    let member_cookie =
+        register_verify_login(&router, &db, "p620-member@example.test", "member-password1").await;
+    join_group(&router, &owner_cookie, &member_cookie, &group_id).await;
+    let member_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM users WHERE email = 'p620-member@example.test'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+
+    for (cookie, title, is_private, assignee) in [
+        (&member_cookie, "Mien partage", false, None),
+        (&member_cookie, "Mien prive", true, None),
+        (&owner_cookie, "Confie prive", true, Some(member_id)),
+    ] {
+        let mut body = serde_json::json!({
+            "title": title,
+            "starts_at": "2026-10-01T10:00:00Z",
+            "ends_at": "2026-10-01T11:00:00Z",
+            "is_task": true,
+            "is_private": is_private,
+        });
+        if let Some(a) = assignee {
+            body["assignee_ids"] = serde_json::json!([a]);
+        }
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/events"),
+            Some(cookie),
+            Some(body),
+        )
+        .await;
+        assert_status(&res, StatusCode::CREATED);
+    }
+
+    let (role, app_db) = prescribed_role_pool(&db).await;
+    let scoped_router = test_router(app_db.clone());
+    let export = call(
+        &scoped_router,
+        Method::GET,
+        "/account/export",
+        Some(&member_cookie),
+        None,
+    )
+    .await;
+    assert_status(&export, StatusCode::OK);
+    let doc = json_body(export).await;
+    let privacy = |key: &str| -> Vec<(String, bool)> {
+        let mut rows: Vec<(String, bool)> = doc[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e["title"].as_str().unwrap().to_string(),
+                    e["is_private"].as_bool().expect("is_private is a boolean"),
+                )
+            })
+            .collect();
+        rows.sort();
+        rows
+    };
+    assert_eq!(
+        privacy("agenda_events"),
+        [
+            ("Mien partage".to_string(), false),
+            ("Mien prive".to_string(), true)
+        ]
+    );
+    assert_eq!(
+        privacy("event_assignments"),
+        [
+            ("Confie prive".to_string(), true),
+            ("Mien partage".to_string(), false),
+            ("Mien prive".to_string(), true),
+        ]
+    );
+
+    drop(scoped_router);
+    drop_prescribed_role(&db, app_db, &role).await;
+}
+
+/// Issue #620 (review of the PR): what a person put on an event stays theirs
+/// to export after they stop being a participant of it. Read through the
+/// prescribed role, a private event they were removed from is invisible, and
+/// so would be the attachment and the completion they left on it — rows that
+/// still name them (art. 15).
+#[sqlx::test]
+async fn export_keeps_own_rows_on_a_private_event_the_caller_cannot_see(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie = register_verify_login(
+        &router,
+        &db,
+        "p620-former-owner@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer Ancien").await;
+    let member_cookie = register_verify_login(
+        &router,
+        &db,
+        "p620-former-member@example.test",
+        "member-password1",
+    )
+    .await;
+    join_group(&router, &owner_cookie, &member_cookie, &group_id).await;
+    let member_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM users WHERE email = 'p620-former-member@example.test'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+
+    // A private event of the owner's, which the member was never part of:
+    // the rows below are written straight in the database, as they would be
+    // left by a participant since removed from the "pour qui".
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "Cache au membre",
+            "starts_at": "2026-10-01T10:00:00Z",
+            "ends_at": "2026-10-01T11:00:00Z",
+            "is_task": true,
+            "is_private": true,
+        })),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let event_id = json_body(res).await["id"].as_str().unwrap().to_string();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO event_attachments (event_id, uploaded_by, storage_key, filename, mime_type, size_bytes)
+         VALUES ('{event_id}', '{member_id}', 'attachments/former-620', 'reste.pdf', 'application/pdf', 7)"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO event_occurrence_completions (event_id, occurrence_at, completed_by)
+         VALUES ('{event_id}', '2026-10-01T10:00:00Z', '{member_id}')"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let (role, app_db) = prescribed_role_pool(&db).await;
+    let scoped_router = test_router(app_db.clone());
+    let export = call(
+        &scoped_router,
+        Method::GET,
+        "/account/export",
+        Some(&member_cookie),
+        None,
+    )
+    .await;
+    assert_status(&export, StatusCode::OK);
+    let doc = json_body(export).await;
+    assert_eq!(doc["event_attachments"].as_array().unwrap().len(), 1);
+    assert_eq!(doc["event_attachments"][0]["filename"], "reste.pdf");
+    assert_eq!(doc["event_completions"].as_array().unwrap().len(), 1);
+    // Nothing of the event itself leaks: the member is not a participant.
+    assert!(doc["agenda_events"].as_array().unwrap().is_empty());
+    assert!(doc["event_assignments"].as_array().unwrap().is_empty());
+
+    drop(scoped_router);
+    drop_prescribed_role(&db, app_db, &role).await;
+}

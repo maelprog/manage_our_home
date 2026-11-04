@@ -420,6 +420,27 @@ pub async fn trigger_calendar_import(
                 updated += 1;
             }
             None => {
+                // No visible event does not mean no mapping (#620): an
+                // imported event one of its participants made private is
+                // hidden from a member who is not one, its mapping is not.
+                // Imported again, it would collide with that mapping on
+                // `(calendar_import_id, external_uid)` and fail the whole
+                // sync. It is left as it is — a sync run by one of its
+                // participants still updates it.
+                let hidden = sqlx::query_scalar!(
+                    r#"SELECT EXISTS (
+                           SELECT 1 FROM calendar_import_events
+                           WHERE calendar_import_id = $1 AND external_uid = $2
+                       ) AS "hidden!""#,
+                    import_id,
+                    event.external_uid,
+                )
+                .fetch_one(&mut *tx)
+                .await?;
+                if hidden {
+                    skipped += 1;
+                    continue;
+                }
                 let (starts_at, ends_at) =
                     import_bounds(event.all_day, event.starts_at, event.ends_at);
                 let new_event_id = sqlx::query_scalar!(
