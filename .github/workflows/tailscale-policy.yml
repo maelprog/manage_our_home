@@ -3,21 +3,23 @@ name: Tailscale policy
 # The staging tailnet's access policy (#684, docs/staging-tailscale.md).
 # The offline check — the file's own `tests` block, and what keeps it
 # publishable — is a unit test of the `manage_our_home_tailnet_policy`
-# crate, run by the `test` job of ci.yml like any other. This workflow adds
-# what needs the coordinator, and so a credential:
-#   - `validate` asks Tailscale to validate the policy, its tests included,
-#     on every change to it;
+# crate, run by the `test` job of ci.yml on every pull request. This
+# workflow adds what needs the coordinator, and so a credential:
+#   - `validate` asks Tailscale to validate the policy of main, its tests
+#     included, after each change merged into it;
 #   - `apply` replaces the tailnet's policy, by hand only (Run workflow,
 #     `apply` ticked, from main): like a change to the `deploy` branch,
 #     reaching the infrastructure is the user's act, not a merge's.
+# No pull request runs this workflow: a pull request's job runs the
+# branch's own policy.sh, which could send a credential anywhere. The
+# credentials are secrets of the `tailscale` environment, not of the
+# repository, and that environment admits the main branch only (its
+# deployment branch rule): a job from any other ref, a pull request's
+# included, gets none of its secrets, whatever its workflow file says.
 # The groups' members are not in the repository, which is public: they come
 # from the TS_ACL_GROUPS secret.
 
 on:
-  pull_request:
-    paths:
-      - "infra/tailscale/**"
-      - ".github/workflows/tailscale-policy.yml"
   push:
     branches: [main]
     paths:
@@ -34,28 +36,28 @@ permissions:
   contents: read
 
 concurrency:
-  group: tailscale-policy-${{ github.ref }}
+  group: tailscale-policy
   cancel-in-progress: false
-
-env:
-  TS_ACL_GROUPS: ${{ secrets.TS_ACL_GROUPS }}
-  TS_API_KEY: ${{ secrets.TS_API_KEY }}
-  TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-  TS_OAUTH_CLIENT_SECRET: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
 
 jobs:
   validate:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: tailscale
+    env:
+      TS_ACL_GROUPS: ${{ secrets.TS_ACL_GROUPS }}
+      TS_API_KEY: ${{ secrets.TS_API_KEY }}
+      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      TS_OAUTH_CLIENT_SECRET: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
     steps:
       - uses: actions/checkout@v4
-      # A pull request from a fork gets no secret, and the repository may
-      # not hold them yet: the job then says so, in the run's annotations,
-      # rather than turning red on every change. The offline check of ci.yml
-      # still ran.
+      # The environment may not hold the secrets yet: the job then says so,
+      # in the run's annotations, rather than turning red. The offline check
+      # of ci.yml ran on the pull request either way.
       - name: Validate with the coordinator
         run: |
           if [ -z "$TS_ACL_GROUPS" ] || { [ -z "$TS_API_KEY" ] && [ -z "$TS_OAUTH_CLIENT_SECRET" ]; }; then
-            echo "::warning title=Tailscale policy::validation by the coordinator skipped: TS_ACL_GROUPS and a credential (TS_OAUTH_CLIENT_ID/TS_OAUTH_CLIENT_SECRET or TS_API_KEY) are needed"
+            echo "::warning title=Tailscale policy::validation by the coordinator skipped: the tailscale environment needs TS_ACL_GROUPS and a credential (TS_OAUTH_CLIENT_ID/TS_OAUTH_CLIENT_SECRET or TS_API_KEY)"
             exit 0
           fi
           infra/tailscale/policy.sh validate
@@ -64,6 +66,12 @@ jobs:
     needs: validate
     if: github.event_name == 'workflow_dispatch' && inputs.apply && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: tailscale
+    env:
+      TS_ACL_GROUPS: ${{ secrets.TS_ACL_GROUPS }}
+      TS_API_KEY: ${{ secrets.TS_API_KEY }}
+      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      TS_OAUTH_CLIENT_SECRET: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
     steps:
       - uses: actions/checkout@v4
       - run: infra/tailscale/policy.sh apply

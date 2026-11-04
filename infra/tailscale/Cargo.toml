@@ -6,9 +6,9 @@ publish = false
 
 # The tailnet's access policy (`policy.json`, #684) and the offline check
 # that runs its own `tests` block in the workspace test job: the
-# coordinator's validation endpoint needs an API key, which a pull request
-# from a fork, or a repository without the secret, does not have. Nothing
-# in apps/ depends on this crate.
+# coordinator's validation endpoint needs a credential, which no pull
+# request gets (.github/workflows/tailscale-policy.yml). Nothing in apps/
+# depends on this crate.
 [lib]
 name = "manage_our_home_tailnet_policy"
 path = "src/lib.rs"
