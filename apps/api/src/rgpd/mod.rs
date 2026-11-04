@@ -277,11 +277,13 @@ pub async fn export_account(
             }));
 
         let attachment_rows = sqlx::query!(
-            r#"SELECT a.id, a.event_id, a.storage_key, a.filename, a.mime_type, a.size_bytes, a.created_at
-               FROM event_attachments a JOIN events e ON e.id = a.event_id
-               WHERE e.group_id = $1 AND a.uploaded_by = $2 ORDER BY a.created_at"#,
-            group_id,
-            auth.user_id
+            // Through the function, not the table: a private event the caller
+            // was taken off is hidden by RLS, and their attachment with it (#620).
+            r#"SELECT id AS "id!", event_id AS "event_id!", storage_key AS "storage_key!",
+                      filename AS "filename!", mime_type AS "mime_type!",
+                      size_bytes AS "size_bytes!", created_at AS "created_at!"
+               FROM account_export_event_attachments($1)"#,
+            group_id
         )
         .fetch_all(&mut *tx)
         .await?;
@@ -297,11 +299,11 @@ pub async fn export_account(
         }));
 
         let completions = sqlx::query!(
-            r#"SELECT c.event_id, c.occurrence_at, c.completed_at
-               FROM event_occurrence_completions c JOIN events e ON e.id = c.event_id
-               WHERE e.group_id = $1 AND c.completed_by = $2 ORDER BY c.completed_at"#,
-            group_id,
-            auth.user_id
+            // Same reason as the attachments above (#620).
+            r#"SELECT event_id AS "event_id!", occurrence_at AS "occurrence_at!",
+                      completed_at AS "completed_at!"
+               FROM account_export_event_completions($1)"#,
+            group_id
         )
         .fetch_all(&mut *tx)
         .await?;
