@@ -746,7 +746,9 @@ l'environnement chez Scaleway, chiffrement par défaut activé avant la
 première sauvegarde (`README.md`, « Sauvegardes ») ; en prod, l'adresse
 publique de l'overlay et son DNS (`README.md`, « Réglages à fixer ») et
 le Secret `alertmanager-config` (`platform/README.md`, « Observabilité ») ;
-au staging, le réseau maison (ci-dessous).
+au staging, le réseau maison (ci-dessous) et, pour les certificats
+Let's Encrypt sans port entrant, la clé DNS de cert-manager
+(`platform/README.md`, « DNS-01 chez Scaleway », #682).
 
 ### Le réseau maison (staging)
 

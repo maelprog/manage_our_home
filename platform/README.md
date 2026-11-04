@@ -11,7 +11,8 @@ bootstrap.sh            amorçage d'un cluster : Argo CD par Helm, puis la racin
 components/             une brique par dossier (Component Kustomize)
   argocd/               Application d'Argo CD lui-même
   sealed-secrets/       contrôleur Sealed Secrets (kube-system)
-  cert-manager/         cert-manager et ClusterIssuers Let's Encrypt
+  cert-manager/         cert-manager et ClusterIssuers Let's Encrypt (HTTP-01)
+  cert-manager-dns01/   ClusterIssuers Let's Encrypt en DNS-01 chez Scaleway, et leur webhook ; staging seulement (#682)
   home-ca/              autorité de certification du réseau maison, en staging seulement
   traefik/              réglages du Traefik de k3s (HelmChartConfig, #434)
   cloudnative-pg/       opérateur CloudNativePG (les bases : #433)
@@ -27,6 +28,7 @@ clusters/
     postgres.yaml       l'Application de son Postgres (#433)
     secrets/            ses SealedSecrets, scellés pour ce cluster
     monitoring-secrets/ ceux de l'observabilité, namespace `monitoring` (#437)
+    cert-manager-secrets/ ceux de cert-manager, namespace `cert-manager` (staging, #682)
 ```
 
 ## Environnements
@@ -70,8 +72,9 @@ vague ne commençant qu'une fois la précédente `Healthy` :
 | Vague | Quoi |
 |---|---|
 | -10 | les Applications des briques |
+| -9 | en staging, le webhook DNS-01 de Scaleway, dont le chart a besoin des CRD de cert-manager (#682) |
 | -5 | namespace `manage-our-home`, ClusterIssuers, réglages de Traefik, politique Kyverno ; en prod, les alertes et sondes de l'observabilité |
-| -3 | SealedSecrets de `clusters/<env>/secrets/` ; en prod, ceux de `monitoring-secrets/` |
+| -3 | SealedSecrets de `clusters/<env>/secrets/` ; en prod, ceux de `monitoring-secrets/` ; en staging, ceux de `cert-manager-secrets/` |
 | -2 | `postgres-<env>` : le Cluster CloudNativePG de l'appli (#433) |
 | 0 | `manage-our-home-<env>` |
 
@@ -143,11 +146,12 @@ plus aucune Application ne se synchroniserait.
 ## Secrets
 
 Aucune valeur secrète en clair dans la branche. Les Secrets de l'appli
-(`api-secrets`, `migrate-secrets`, `minio` ; clés dans le `README.md` racine) sont
+(`api-secrets`, `migrate-secrets`, `minio` ; clés dans le `README.md` racine),
+et la clé DNS de cert-manager en staging (« DNS-01 chez Scaleway »), sont
 des `SealedSecret`, chiffrés pour **un** cluster : seul son contrôleur
 détient la clé privée qui les ouvre. `ci/platform-test.sh` échoue si un
-`Secret` est rendu, ou si `secrets/` contient autre chose que des
-`SealedSecret`.
+`Secret` est rendu, ou si `secrets/` (comme `monitoring-secrets/` et
+`cert-manager-secrets/`) contient autre chose que des `SealedSecret`.
 
 ### Sceller
 
@@ -200,6 +204,147 @@ et le ranger hors du serveur et hors du dépôt, un fichier par cluster.
 l'amorçage, puis amorcer ; le contrôleur reprend les clés qu'il trouve au
 démarrage. Si le contrôleur tourne déjà :
 `kubectl -n kube-system delete pod -l app.kubernetes.io/name=sealed-secrets`.
+
+## DNS-01 chez Scaleway
+
+Les émetteurs `letsencrypt-staging` et `letsencrypt` valident en HTTP-01 :
+Let's Encrypt vient lire le défi sur le port 80 du cluster. Le staging
+n'ouvre aucun port. La paire de `components/cert-manager-dns01` (#682)
+valide en **DNS-01** : le défi est un enregistrement TXT
+`_acme-challenge.<nom>` que le webhook de Scaleway écrit dans la zone
+`watallo.fr` par l'API DNS de Scaleway, puis supprime. Let's Encrypt le
+lit sur les serveurs de noms de Scaleway ; le cluster ne fait que des
+appels sortants (l'API de Scaleway en HTTPS, et le port 53 des serveurs
+de noms de la zone, que cert-manager interroge avant de laisser Let's
+Encrypt valider).
+
+| Émetteur | Annuaire | Usage |
+|---|---|---|
+| `letsencrypt-dns01-staging` | `acme-staging-v02` | essais : certificats non reconnus, quotas larges |
+| `letsencrypt-dns01` | `acme-v02` | certificats réels |
+
+Pas d'adresse de contact, comme pour la paire HTTP-01. La brique n'est
+listée qu'en staging pour l'instant ; la prod la recevra avec sa propre
+clé (#443). Le passage de l'ingress du staging sur `staging.watallo.fr`
+est #683.
+
+**Le webhook** (`components/cert-manager-dns01/application.yaml`) tourne
+dans son propre namespace, `cert-manager-scaleway`, Pod Security
+`restricted` : son chart lui donne la lecture de tous les Secrets du
+namespace où il tourne, et celui de cert-manager contient la racine de
+l'autorité maison et les clés des comptes ACME. Dans le namespace
+`cert-manager`, il ne lit que `scaleway-dns01`, par son nom
+(`rbac.yaml`). Il relit ce Secret à chaque défi : une clé changée sert au
+défi suivant, sans redémarrage.
+
+`ci/platform-test.sh` échoue si l'un des deux émetteurs change d'annuaire
+ou de solveur, si un ClusterIssuer porte une adresse de contact, si le
+webhook reçoit une clé dans ses valeurs (son chart en ferait un Secret en
+clair), quitte son namespace ou lit autre chose dans celui de
+cert-manager, ou si `cert-manager-secrets/` rend autre chose que des
+`SealedSecret` ; et, une fois `scaleway-dns01` versionné, s'il ne chiffre
+pas exactement `SCW_ACCESS_KEY` et `SCW_SECRET_KEY`.
+
+### La clé : une application IAM dédiée
+
+Jamais la clé du bucket de sauvegarde : une **application IAM** à elle,
+dont la politique ne donne que le DNS. Dans la console Scaleway
+(Organisation → IAM), ou avec la CLI `scw` :
+
+1. **Le projet.** La politique se limite à un projet : celui qui porte la
+   zone `watallo.fr` (console : Domains and DNS → la zone → son projet).
+   Si la zone a un projet à elle, la clé n'atteint rien d'autre ; si elle
+   partage le projet du bucket, la clé reste bornée au DNS par
+   l'ensemble de permissions, mais atteint toutes les zones du projet.
+2. **L'application** :
+   `scw iam application create name=cert-manager-dns01-staging description="DNS-01 du staging (#682)"`.
+3. **La politique**, un seul ensemble de permissions, sur ce seul projet :
+
+   ```sh
+   scw iam policy create name=cert-manager-dns01-staging \
+     application-id=<id de l'application> \
+     rules.0.project-ids.0=<id du projet de la zone> \
+     rules.0.permission-set-names.0=DomainsDNSFullAccess
+   ```
+
+   `DomainsDNSFullAccess` (les enregistrements des zones du projet) et
+   rien d'autre : ni le bureau d'enregistrement (transfert,
+   renouvellement du domaine), ni droit d'organisation, ni Object
+   Storage. Le webhook n'a besoin que d'écrire et de supprimer un TXT ;
+   Scaleway n'a pas de droit plus fin que la zone.
+4. **La clé d'API** de l'application :
+   `scw iam api-key create application-id=<id de l'application> description="cert-manager staging"`.
+   Elle affiche une seule fois l'*access key* (`SCW…`) et la *secret
+   key* : les sceller aussitôt, ne les écrire nulle part ailleurs.
+
+### Sceller la clé
+
+Sur le poste d'administration, contexte `kubectl` sur le staging :
+
+```sh
+kubectl -n cert-manager create secret generic scaleway-dns01 \
+  --dry-run=client -o yaml \
+  --from-literal=SCW_ACCESS_KEY='<access key>' \
+  --from-literal=SCW_SECRET_KEY='<secret key>' \
+  | kubeseal --format yaml > platform/clusters/staging/cert-manager-secrets/scaleway-dns01.yaml
+```
+
+puis ajouter `- scaleway-dns01.yaml` sous `resources:` dans
+`platform/clusters/staging/cert-manager-secrets/kustomization.yaml`, et
+ouvrir la PR vers `deploy`. Après le merge et la synchro de `platform`,
+`kubectl -n cert-manager get secret scaleway-dns01` montre le Secret
+ouvert par le contrôleur. Le job k3d retire ce SealedSecret du rendu,
+comme ceux de `secrets/` : son contrôleur ne peut pas l'ouvrir, et aucun
+certificat n'y demande ces émetteurs.
+
+### Certificat d'essai
+
+Avec l'émetteur d'essai, sous un nom de la zone, sans rien versionner :
+
+```sh
+kubectl get clusterissuer letsencrypt-dns01-staging letsencrypt-dns01   # READY True
+kubectl -n default apply -f - <<EOF
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata: {name: dns01-trial}
+spec:
+  secretName: dns01-trial
+  dnsNames: [dns01-trial.watallo.fr]
+  privateKey: {algorithm: ECDSA, size: 256}
+  issuerRef: {kind: ClusterIssuer, name: letsencrypt-dns01-staging}
+EOF
+kubectl -n default wait certificate/dns01-trial --for=condition=Ready --timeout=10m
+kubectl -n default get secret dns01-trial -o jsonpath='{.data.tls\.crt}' \
+  | base64 -d | openssl x509 -noout -subject -issuer -dates
+kubectl -n default delete certificate dns01-trial
+kubectl -n default delete secret dns01-trial
+```
+
+L'émetteur du certificat commence par `(STAGING)`. Pendant l'attente,
+`kubectl get challenges -A` montre le défi, et
+`dig TXT _acme-challenge.dns01-trial.watallo.fr @ns0.dom.scw.cloud` son
+enregistrement ; après la réussite, l'enregistrement a disparu. Un défi
+bloqué : `kubectl describe challenges -A` (erreur de l'API Scaleway, clé
+refusée, serveurs de noms injoignables sur le port 53), et
+`kubectl -n cert-manager-scaleway logs deploy/scaleway-certmanager-webhook`.
+
+Le nom d'un certificat, d'essai ou non, est publié dans les journaux
+Certificate Transparency : n'y mettre aucun nom qui révèle quelque chose.
+
+### Rotation de la clé
+
+Une fois par an, et aussitôt si la clé a pu fuiter :
+
+1. une **nouvelle** clé d'API pour la même application (étape 4
+   ci-dessus), l'ancienne gardée ;
+2. la sceller par-dessus `scaleway-dns01.yaml` (« Sceller la clé »), PR,
+   merge, synchro de `platform` ;
+3. le prouver : rejouer le « Certificat d'essai » ;
+4. supprimer l'ancienne : `scw iam api-key delete <ancienne access key>`.
+
+En cas de fuite, supprimer l'ancienne clé dès l'étape 1 : les défis
+échouent jusqu'à l'étape 2, les certificats en place restent valides
+(cert-manager les renouvelle 30 jours avant leur fin).
 
 ## Kyverno
 
