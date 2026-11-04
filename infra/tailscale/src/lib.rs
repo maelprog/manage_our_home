@@ -216,266 +216,160 @@ fn ports_match(spec: &str, port: u16) -> Result<bool, String> {
     Ok(hit)
 }
 
+/// Stub, implemented in the next commit.
+pub fn differences(_actual: &str, _pinned: &str) -> Result<Vec<String>, String> {
+    Ok(vec![])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const BASE: &str = r#"{
-        "groups": {"group:famille": ["a@example.org"], "group:admin": ["b@example.org"]},
+    /// The file this repository applies to the tailnet.
+    const REAL: &str = include_str!("../policy.json");
+
+    /// The access #684 asks for, written out in full: the family reaches
+    /// the staging's HTTPS port and nothing else; the administration adds
+    /// SSH and the Kubernetes API (Argo CD is reached through it, by
+    /// `kubectl port-forward`); nobody reaches the home network, another
+    /// device, or anything through `ssh`, `grants`, `nodeAttrs` or
+    /// `autoApprovers`; only the tailnet's administrators may tag a device
+    /// `tag:serveur`. `policy.json` must equal it key for key, so a change
+    /// to the policy is a change to this text as well, read by a person in
+    /// review. The groups stay empty: the repository is public, their
+    /// members come from the TS_ACL_GROUPS secret at apply time.
+    const PINNED: &str = r#"{
+        "groups": {"group:famille": [], "group:admin": []},
         "tagOwners": {"tag:serveur": ["autogroup:admin"]},
         "acls": [
             {"action": "accept", "src": ["group:famille"], "dst": ["tag:serveur:443"]},
-            {"action": "accept", "src": ["group:admin"], "dst": ["tag:serveur:22,443,6000-6443"]}
+            {"action": "accept", "src": ["group:admin"], "dst": ["tag:serveur:22,443,6443"]}
         ],
-        "tests": []
+        "tests": [
+            {
+                "src": "group:famille",
+                "accept": ["tag:serveur:443"],
+                "deny": [
+                    "tag:serveur:22", "tag:serveur:80", "tag:serveur:6443",
+                    "tag:serveur:10250", "192.168.1.254:80", "192.168.1.254:443"
+                ]
+            },
+            {
+                "src": "group:admin",
+                "accept": ["tag:serveur:22", "tag:serveur:443", "tag:serveur:6443"],
+                "deny": [
+                    "tag:serveur:80", "tag:serveur:2379", "tag:serveur:10250",
+                    "192.168.1.254:80", "192.168.1.254:443"
+                ]
+            }
+        ]
     }"#;
 
-    fn base() -> Policy {
-        parse(BASE).expect("the base policy parses")
+    #[test]
+    fn the_real_policy_is_the_pinned_one() {
+        assert_eq!(differences(REAL, PINNED), Ok(vec![]));
     }
 
     #[test]
-    fn refuses_a_key_outside_the_subset() {
-        for extra in [
-            r#""ssh": []"#,
-            r#""grants": []"#,
-            r#""autoApprovers": {}"#,
-            r#""nodeAttrs": []"#,
-        ] {
-            let json = BASE.replacen('{', &format!("{{{extra},"), 1);
-            assert!(parse(&json).is_err(), "{extra} was accepted");
-        }
+    fn the_real_policy_names_no_login() {
+        assert!(!REAL.contains('@'), "a login is written in policy.json");
     }
 
     #[test]
-    fn refuses_an_unknown_key_inside_a_rule() {
-        let json = BASE.replacen(
-            r#""action": "accept","#,
-            r#""action": "accept", "proto": "udp","#,
-            1,
-        );
-        assert!(parse(&json).is_err());
+    fn key_order_and_layout_do_not_matter() {
+        let reordered = r#"{"tests": [], "acls": [], "tagOwners": {"tag:a": ["autogroup:admin"]},
+            "groups": {"group:b": [], "group:a": []}}"#;
+        let pinned = r#"{"groups": {"group:a": [], "group:b": []},
+            "tagOwners": {"tag:a": ["autogroup:admin"]}, "acls": [], "tests": []}"#;
+        assert_eq!(differences(reordered, pinned), Ok(vec![]));
     }
 
     #[test]
-    fn a_group_reaches_only_the_ports_of_its_rules() {
-        let p = base();
-        assert_eq!(allows(&p, "group:famille", "tag:serveur:443"), Ok(true));
-        assert_eq!(allows(&p, "group:famille", "tag:serveur:6443"), Ok(false));
-        assert_eq!(allows(&p, "group:famille", "tag:serveur:22"), Ok(false));
-    }
-
-    #[test]
-    fn a_port_list_and_a_range_both_match() {
-        let p = base();
-        assert_eq!(allows(&p, "group:admin", "tag:serveur:22"), Ok(true));
-        assert_eq!(allows(&p, "group:admin", "tag:serveur:6000"), Ok(true));
-        assert_eq!(allows(&p, "group:admin", "tag:serveur:6443"), Ok(true));
-        assert_eq!(allows(&p, "group:admin", "tag:serveur:6444"), Ok(false));
-        assert_eq!(allows(&p, "group:admin", "tag:serveur:80"), Ok(false));
-    }
-
-    #[test]
-    fn a_login_gets_the_rules_of_its_groups() {
-        let p = base();
-        assert_eq!(allows(&p, "a@example.org", "tag:serveur:443"), Ok(true));
-        assert_eq!(allows(&p, "a@example.org", "tag:serveur:22"), Ok(false));
-        assert_eq!(allows(&p, "b@example.org", "tag:serveur:22"), Ok(true));
+    fn each_differing_top_level_key_is_named() {
+        let actual = r#"{"groups": {}, "acls": [1], "ssh": []}"#;
+        let pinned = r#"{"groups": {}, "acls": [2], "tests": []}"#;
         assert_eq!(
-            allows(&p, "nobody@example.org", "tag:serveur:443"),
-            Ok(false)
-        );
-    }
-
-    #[test]
-    fn another_host_is_not_reached_through_a_tag() {
-        let p = base();
-        assert_eq!(allows(&p, "group:admin", "192.168.1.254:443"), Ok(false));
-        assert_eq!(allows(&p, "group:admin", "tag:autre:443"), Ok(false));
-    }
-
-    /// A rule whose destination host is not a declared tag would reach
-    /// something this check cannot see (an address, a subnet, the
-    /// internet, every device of a group…): it is refused, not ignored.
-    #[test]
-    fn a_rule_destination_other_than_a_declared_tag_is_an_error() {
-        for dst in [
-            "192.168.1.0/24:*",
-            "192.168.1.254:80",
-            "100.64.0.0/10:*",
-            "autogroup:internet:*",
-            "autogroup:self:*",
-            "group:famille:*",
-            "a@example.org:443",
-            "serveur:443",
-            "*:*",
-        ] {
-            let json = BASE.replacen(
-                r#""dst": ["tag:serveur:443"]"#,
-                &format!(r#""dst": ["tag:serveur:443", "{dst}"]"#),
-                1,
-            );
-            let p = parse(&json).unwrap();
-            assert!(
-                allows(&p, "group:admin", "tag:serveur:22").is_err(),
-                "{dst} was accepted as a rule destination"
-            );
-        }
-    }
-
-    #[test]
-    fn a_wildcard_source_is_an_error() {
-        let json = BASE.replacen(
-            r#""src": ["group:famille"]"#,
-            r#""src": ["group:famille", "*"]"#,
-            1,
-        );
-        let p = parse(&json).unwrap();
-        assert!(allows(&p, "group:admin", "tag:serveur:22").is_err());
-    }
-
-    #[test]
-    fn an_inverted_port_range_is_an_error() {
-        let json = BASE.replacen("6000-6443", "6443-6000", 1);
-        let p = parse(&json).unwrap();
-        assert!(allows(&p, "group:famille", "tag:serveur:443").is_err());
-    }
-
-    #[test]
-    fn malformed_destinations_are_errors_not_denials() {
-        let p = base();
-        assert!(allows(&p, "group:admin", "tag:serveur").is_err());
-        assert!(allows(&p, "group:admin", "tag:serveur:abc").is_err());
-        assert!(allows(&p, "group:admin", "tag:serveur:22,443").is_err());
-        let bad_rule = BASE.replacen("tag:serveur:443", "tag:serveur:4x3", 1);
-        let p = parse(&bad_rule).unwrap();
-        assert!(allows(&p, "group:famille", "tag:serveur:443").is_err());
-    }
-
-    #[test]
-    fn an_undeclared_group_or_tag_is_an_error() {
-        let p = base();
-        assert!(allows(&p, "group:inconnu", "tag:serveur:443").is_err());
-        let json = BASE.replacen(
-            r#""src": ["group:famille"]"#,
-            r#""src": ["group:famile"]"#,
-            1,
-        );
-        let p = parse(&json).unwrap();
-        assert!(allows(&p, "group:admin", "tag:serveur:22").is_err());
-        let json = BASE.replacen("tag:serveur:443", "tag:serveru:443", 1);
-        let p = parse(&json).unwrap();
-        assert!(allows(&p, "group:admin", "tag:serveur:22").is_err());
-    }
-
-    #[test]
-    fn failed_tests_names_each_broken_expectation() {
-        let json = BASE.replacen(
-            r#""tests": []"#,
-            r#""tests": [
-                {"src": "group:famille", "accept": ["tag:serveur:443", "tag:serveur:22"], "deny": ["tag:serveur:6443"]},
-                {"src": "group:admin", "deny": ["tag:serveur:22"]}
-            ]"#,
-            1,
-        );
-        let p = parse(&json).unwrap();
-        assert_eq!(
-            failed_tests(&p),
+            differences(actual, pinned),
             Ok(vec![
-                "group:famille should reach tag:serveur:22".to_string(),
-                "group:admin should not reach tag:serveur:22".to_string(),
+                "acls differs from the pinned policy".to_string(),
+                "ssh is not in the pinned policy".to_string(),
+                "tests is missing".to_string(),
             ])
         );
     }
 
     #[test]
-    fn failed_tests_is_empty_when_every_expectation_holds() {
-        let json = BASE.replacen(
-            r#""tests": []"#,
-            r#""tests": [{"src": "group:famille", "accept": ["tag:serveur:443"], "deny": ["tag:serveur:22"]}]"#,
-            1,
-        );
-        assert_eq!(failed_tests(&parse(&json).unwrap()), Ok(vec![]));
+    fn a_file_that_is_not_a_json_object_is_an_error() {
+        assert!(differences("{", PINNED).is_err());
+        assert!(differences("[]", PINNED).is_err());
+        assert!(differences(PINNED, "[]").is_err());
     }
 
-    #[test]
-    fn a_published_file_names_no_login_and_keeps_its_tests() {
-        let p = base();
-        let problems = publication_problems(&p, BASE);
-        assert!(
-            problems.iter().any(|m| m.contains("group:famille")),
-            "{problems:?}"
-        );
-        assert!(problems.iter().any(|m| m.contains("@")), "{problems:?}");
-        assert!(problems.iter().any(|m| m.contains("tests")), "{problems:?}");
+    /// Replaces `old`, which must occur exactly once in policy.json.
+    fn mutate(old: &str, new: &str) -> String {
+        assert_eq!(REAL.matches(old).count(), 1, "{old}");
+        REAL.replacen(old, new, 1)
     }
 
+    /// Each change that would open something #684 does not ask for is a
+    /// difference, whatever the policy language makes of it.
     #[test]
-    fn a_published_file_only_accepts() {
-        let json = BASE
-            .replace(r#"["a@example.org"]"#, "[]")
-            .replace(r#"["b@example.org"]"#, "[]")
-            .replacen(r#""action": "accept""#, r#""action": "drop""#, 1)
-            .replacen(
-                r#""tests": []"#,
-                r#""tests": [{"src": "group:admin", "accept": ["tag:serveur:22"]}]"#,
-                1,
-            );
-        let p = parse(&json).unwrap();
-        assert_eq!(
-            publication_problems(&p, &json),
-            vec![r#"rule 1 has action "drop", not "accept""#.to_string()]
-        );
+    fn every_access_widening_change_is_a_difference() {
+        let famille = r#""dst": ["tag:serveur:443"]"#;
+        let admin = r#""dst": ["tag:serveur:22,443,6443"]"#;
+        let owners = r#""tag:serveur": ["autogroup:admin"]"#;
+        let mutations = [
+            mutate(famille, r#""dst": ["tag:serveur:443", "192.168.1.0/24:*"]"#),
+            mutate(famille, r#""dst": ["tag:serveur:443", "100.64.0.0/10:*"]"#),
+            mutate(famille, r#""dst": ["tag:serveur:443", "autogroup:internet:*"]"#),
+            mutate(famille, r#""dst": ["tag:serveur:443,53"]"#),
+            mutate(admin, r#""dst": ["tag:serveur:22,443,6443", "group:famille:*"]"#),
+            mutate(admin, r#""dst": ["tag:serveur:22,443,6443,60000"]"#),
+            mutate(admin, r#""dst": ["tag:serveur:22,443,6443,7000-6000"]"#),
+            mutate(r#""src": ["group:famille"]"#, r#""src": ["group:famille", "*"]"#),
+            // m6: a second tag, declared, reached by the family.
+            mutate(owners, r#""tag:serveur": ["autogroup:admin"], "tag:autre": ["autogroup:admin"]"#)
+                .replacen(famille, r#""dst": ["tag:serveur:443", "tag:autre:*"]"#, 1),
+            // m7: a rule from another tag to every port of the server.
+            mutate(
+                r#""acls": ["#,
+                r#""acls": [{"action": "accept", "src": ["tag:autre"], "dst": ["tag:serveur:*"]},"#,
+            ),
+            // m9: the family may tag its own devices tag:serveur.
+            mutate(owners, r#""tag:serveur": ["group:famille"]"#),
+            mutate(r#""group:famille": []"#, r#""group:famille": ["x"]"#),
+            mutate(r#""group:admin": []"#, r#""group:admin": [], "group:autre": []"#),
+            // A tests block rewritten to fit a widened policy.
+            mutate(r#""accept": ["tag:serveur:443"]"#, r#""accept": ["tag:serveur:443", "tag:serveur:22"]"#),
+        ];
+        for mutated in &mutations {
+            let found = differences(mutated, PINNED).expect("the mutation parses");
+            assert!(!found.is_empty(), "accepted: {mutated}");
+        }
     }
 
-    /// The file this repository applies to the tailnet.
-    const REAL: &str = include_str!("../policy.json");
-
+    /// Any key added at the top of the file, known to Tailscale or not.
     #[test]
-    fn the_real_policy_passes_its_own_tests() {
-        let p = parse(REAL).expect("policy.json parses");
-        assert_eq!(failed_tests(&p), Ok(vec![]));
-    }
-
-    #[test]
-    fn the_real_policy_is_publishable() {
-        let p = parse(REAL).unwrap();
-        assert_eq!(publication_problems(&p, REAL), Vec::<String>::new());
-    }
-
-    /// #684: the family reaches the staging's HTTPS port and nothing else;
-    /// the administration adds SSH and the Kubernetes API (Argo CD is
-    /// reached through it, by `kubectl port-forward`); nobody reaches the
-    /// home network. Pinned here so that a change to the file that also
-    /// rewrites its tests block still meets the issue.
-    #[test]
-    fn the_real_policy_meets_the_issue() {
-        let p = parse(REAL).unwrap();
-        // Every port, not a sample: a port added to a rule is seen.
-        for port in 1..=u16::MAX {
-            let dst = format!("tag:serveur:{port}");
+    fn every_added_top_level_key_is_a_difference() {
+        for key in [
+            "ssh",
+            "grants",
+            "nodeAttrs",
+            "autoApprovers",
+            "postures",
+            "hosts",
+            "ipsets",
+            "derpMap",
+            "disableIPv4",
+            "randomizeClientPort",
+            "unknown",
+        ] {
+            let mutated = REAL.replacen('{', &format!(r#"{{"{key}": [],"#), 1);
             assert_eq!(
-                allows(&p, "group:famille", &dst),
-                Ok(port == 443),
-                "famille and port {port}"
-            );
-            assert_eq!(
-                allows(&p, "group:admin", &dst),
-                Ok([22, 443, 6443].contains(&port)),
-                "admin and port {port}"
-            );
-            assert_eq!(
-                allows(&p, "tag:serveur", &dst),
-                Ok(false),
-                "the server and its own port {port}"
+                differences(&mutated, PINNED),
+                Ok(vec![format!("{key} is not in the pinned policy")]),
+                "{key}"
             );
         }
-        for src in ["group:famille", "group:admin", "tag:serveur"] {
-            assert_eq!(allows(&p, src, "192.168.1.254:80"), Ok(false));
-        }
-        assert_eq!(
-            p.groups.keys().collect::<Vec<_>>(),
-            ["group:admin", "group:famille"]
-        );
     }
 }
