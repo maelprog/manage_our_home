@@ -1,0 +1,28 @@
+# The Secrets of cert-manager's namespace for this cluster, as
+# SealedSecrets (#682): `scaleway-dns01`, the key of the IAM application
+# that Scaleway's webhook writes the DNS-01 challenges with
+# (platform/components/cert-manager-dns01). A directory of its own: the
+# namespace transformer of secrets/ would put it in the application's
+# namespace, and a ClusterIssuer reads its Secrets in cert-manager's only.
+#
+# Sealed by the user for the staging server, from its controller's
+# certificate (platform/README.md, « DNS-01 chez Scaleway »), then listed
+# below:
+#
+#   resources:
+#     - scaleway-dns01.yaml
+#
+# Until it is, the DNS-01 issuers are Ready (an ACME account needs no
+# key) and a Certificate asking them fails at its challenge. The k3d job
+# drops it from the render, as those of secrets/ (ci/staging-smoke.sh).
+#
+# Applied with those of secrets/ (wave -3), after cert-manager's
+# Application (-10), which creates the namespace.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: cert-manager
+commonAnnotations:
+  argocd.argoproj.io/sync-wave: "-3"
+  # The SealedSecret CRD comes with the controller's Application.
+  argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+resources: []

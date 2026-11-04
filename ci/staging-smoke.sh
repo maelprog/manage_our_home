@@ -139,15 +139,17 @@ done
 # carries ci/postgres-backup-patch.yaml down to the Cluster.
 #
 # The root's render keeps everything but the SealedSecrets of
-# platform/clusters/staging/secrets/: those are sealed for the real staging
-# server, whose key this cluster's controller does not hold (#514). The
-# job seals its own, below, whether that directory is empty or not.
+# platform/clusters/staging/secrets/ and cert-manager-secrets/ (#682):
+# those are sealed for the real staging server, whose key this cluster's
+# controller does not hold (#514). The job seals its own for the
+# application, below, whether that directory is empty or not; the DNS-01
+# key it does without, no Certificate here asking those issuers.
 echo "== bootstrap (root Application at $revision)"
 # shellcheck disable=SC2016 # $patch is kustomize's, not the shell's
-REVISION=$revision APP=$app NS=$ns PG_PATCH=$(cat "$root/ci/postgres-backup-patch.yaml") yq e '
+REVISION=$revision APP=$app PG_PATCH=$(cat "$root/ci/postgres-backup-patch.yaml") yq e '
   .spec.source.targetRevision = strenv(REVISION) |
   .spec.source.kustomize.patches = [
-    {"target": {"kind": "SealedSecret", "namespace": strenv(NS)},
+    {"target": {"kind": "SealedSecret"},
      "patch": ({"$patch": "delete", "apiVersion": "bitnami.com/v1alpha1", "kind": "SealedSecret",
                 "metadata": {"name": "any"}} | to_yaml)},
     {"target": {"kind": "Application", "name": strenv(APP)},
@@ -163,7 +165,7 @@ REVISION=$revision APP=$app NS=$ns PG_PATCH=$(cat "$root/ci/postgres-backup-patc
 echo "== platform"
 wait_app platform 900 &
 root_wait=$!
-for a in argocd sealed-secrets cert-manager cloudnative-pg kyverno; do
+for a in argocd sealed-secrets cert-manager scaleway-certmanager-webhook cloudnative-pg kyverno; do
   wait_app "$a" 900
 done
 
@@ -406,7 +408,7 @@ kubectl get pods -A -o yaml > "$work/pods.yaml"
 kubectl get jobs -A -o yaml > "$work/jobs.yaml"
 notready=$(not_ready "$work/pods.yaml" "$work/jobs.yaml")
 [ -z "$notready" ] || { echo "::error::pods not Ready: $notready"; exit 1; }
-for a in platform argocd sealed-secrets cert-manager cloudnative-pg kyverno postgres-staging "$app"; do
+for a in platform argocd sealed-secrets cert-manager scaleway-certmanager-webhook cloudnative-pg kyverno postgres-staging "$app"; do
   wait_app "$a" 5
 done
 ci_sealed_only

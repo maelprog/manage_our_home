@@ -1,0 +1,68 @@
+# Scaleway's cert-manager webhook (#682): the DNS-01 solver of the
+# ClusterIssuers of cluster-issuers.yaml, next to this file. For a
+# challenge, cert-manager calls it; it writes the `_acme-challenge` TXT
+# record into the Scaleway zone through Scaleway's DNS API, then deletes
+# it. No inbound port: Let's Encrypt reads the record from Scaleway's
+# name servers, not from the cluster.
+#
+# The key it calls the API with is not in its values (the chart would
+# render it as a Secret in clear): each issuer names the sealed
+# `scaleway-dns01` of cert-manager's namespace
+# (platform/clusters/<env>/cert-manager-secrets), which the webhook reads
+# at each challenge, through rbac.yaml.
+#
+# In a namespace of its own rather than cert-manager's: the chart lets it
+# read every Secret of the namespace it runs in, and cert-manager's holds
+# the home CA's root and the ACME accounts' keys. Pod Security
+# `restricted` on that namespace; the image runs as root by default, so
+# the container is given a user and listens above 1024.
+#
+# One wave after cert-manager's Application (-10): its chart has an
+# Issuer and Certificates, whose CRDs cert-manager brings.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: scaleway-certmanager-webhook
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-9"
+spec:
+  project: default
+  source:
+    repoURL: https://helm.scw.cloud/
+    chart: scaleway-certmanager-webhook
+    targetRevision: 0.4.3
+    helm:
+      releaseName: scaleway-certmanager-webhook
+      valuesObject:
+        groupName: acme.scaleway.com
+        certManager:
+          namespace: cert-manager
+          serviceAccountName: cert-manager
+        replicaCount: 1
+        listenPort: 8443
+        resources:
+          requests: {cpu: 10m, memory: 32Mi}
+          limits: {memory: 128Mi}
+        podSecurityContext:
+          runAsNonRoot: true
+          runAsUser: 65532
+          runAsGroup: 65532
+          seccompProfile: {type: RuntimeDefault}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: [ALL]}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager-scaleway
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: restricted

@@ -51,7 +51,7 @@ for env in staging prod; do
   v=$(y 'select(.kind == "Application") | .metadata.name' | sort | tr '\n' ' ')
   case "$env" in
     prod) want="alloy argocd cert-manager cloudnative-pg kube-prometheus-stack kyverno loki $app $pgapp sealed-secrets " ;;
-    *) want="argocd cert-manager cloudnative-pg kyverno $app $pgapp sealed-secrets " ;;
+    *) want="argocd cert-manager cloudnative-pg kyverno $app $pgapp scaleway-certmanager-webhook sealed-secrets " ;;
   esac
   [ "$v" = "$want" ] || fail "Applications: expected '$want', got '$v'"
 
@@ -94,11 +94,73 @@ for env in staging prod; do
     [ "$v" = "true home.arpa" ] || fail "home CA: root's name constraints are '$v', expected critical, home.arpa only"
   fi
 
+  # --- No ClusterIssuer gives Let's Encrypt a contact address: it sends no
+  # mail since 2025, and an address would be personal data in a public
+  # branch.
+  check
+  v=$(y 'select(.kind == "ClusterIssuer" and .spec.acme.email != null) | .metadata.name' | tr '\n' ' ')
+  [ -z "$v" ] || fail "ClusterIssuer(s) with a contact address: '$v'"
+
+  # --- DNS-01 through Scaleway's DNS (#682), staging only for now: the
+  # pair of ACME issuers, each solving with the Scaleway webhook alone and
+  # its key read from the sealed `scaleway-dns01`; the webhook in a
+  # namespace of its own, which reads that one Secret of cert-manager's
+  # namespace and nothing else there.
+  dnsgroup=acme.scaleway.com
+  dnssecret=scaleway-dns01
+  check
+  v=$(y "select(.kind == \"ClusterIssuer\" and (.spec.acme.solvers[]?.dns01 != null)) | [.metadata.name, .metadata.annotations[\"argocd.argoproj.io/sync-wave\"], .spec.acme.server, .spec.acme.privateKeySecretRef.name, (.spec.acme.solvers | length), (.spec.acme.solvers[0] | keys | join(\",\")), (.spec.acme.solvers[0].dns01 | keys | join(\",\")), .spec.acme.solvers[0].dns01.webhook.groupName, .spec.acme.solvers[0].dns01.webhook.solverName, (.spec.acme.solvers[0].dns01.webhook.config | [.accessKeySecretRef.name, .accessKeySecretRef.key, .secretKeySecretRef.name, .secretKeySecretRef.key] | join(\",\"))] | join(\" \")" | sort | tr '\n' ';')
+  case "$env" in
+    staging) want="letsencrypt-dns01 -5 https://acme-v02.api.letsencrypt.org/directory letsencrypt-dns01-account 1 dns01 webhook $dnsgroup scaleway $dnssecret,SCW_ACCESS_KEY,$dnssecret,SCW_SECRET_KEY;letsencrypt-dns01-staging -5 https://acme-staging-v02.api.letsencrypt.org/directory letsencrypt-dns01-staging-account 1 dns01 webhook $dnsgroup scaleway $dnssecret,SCW_ACCESS_KEY,$dnssecret,SCW_SECRET_KEY;" ;;
+    *) want="" ;;
+  esac
+  [ "$v" = "$want" ] || fail "DNS-01 issuers: expected '$want', got '$v'"
+  if [ "$env" = staging ]; then
+    wh='select(.kind == "Application" and .metadata.name == "scaleway-certmanager-webhook")'
+    # The webhook answers for the issuers' group, with no key of its own:
+    # none in its values (the chart would render it as a Secret in clear),
+    # nor a default Secret it would read, nor an extra variable written in
+    # clear (`extraEnv` with a `value`; a `valueFrom` reads a Secret).
+    check
+    v=$(y "$wh | [.metadata.annotations[\"argocd.argoproj.io/sync-wave\"], .spec.destination.namespace, .spec.source.helm.releaseName, .spec.source.helm.valuesObject.groupName, .spec.source.helm.valuesObject.certManager.namespace, (.spec.source.helm.valuesObject.secret // {} | to_entries | map(select(.key != \"name\" and .value != \"\")) | length), ((.spec.source.helm.valuesObject.extraEnv // []) | map(select(has(\"value\"))) | length), .spec.syncPolicy.managedNamespaceMetadata.labels[\"pod-security.kubernetes.io/enforce\"]] | join(\" \")")
+    [ "$v" = "-9 cert-manager-scaleway scaleway-certmanager-webhook $dnsgroup cert-manager 0 0 restricted" ] \
+      || fail "Scaleway webhook: '$v', expected '-9 cert-manager-scaleway scaleway-certmanager-webhook $dnsgroup cert-manager 0 0 restricted'"
+    # What it may read of cert-manager's namespace: `get` on the DNS key,
+    # by name, and on nothing else (not the home CA's root, not the ACME
+    # accounts' keys).
+    check
+    v=$(y 'select((.kind == "Role" or .kind == "RoleBinding") and .metadata.namespace == "cert-manager") | .kind + "/" + .metadata.name' | sort | tr '\n' ' ')
+    [ "$v" = "Role/scaleway-dns01-reader RoleBinding/scaleway-dns01-reader " ] || fail "cert-manager's Roles: '$v'"
+    check
+    v=$(y 'select(.kind == "Role" and .metadata.name == "scaleway-dns01-reader") | [(.rules | length), (.rules[0].apiGroups | join(",")), (.rules[0].resources | join(",")), (.rules[0].verbs | join(",")), ((.rules[0].resourceNames // []) | join(","))] | join(" ")')
+    [ "$v" = "1  secrets get $dnssecret" ] || fail "Role scaleway-dns01-reader: '$v', expected '1  secrets get $dnssecret'"
+    check
+    v=$(y 'select(.kind == "RoleBinding" and .metadata.name == "scaleway-dns01-reader") | [.roleRef.kind, .roleRef.name, (.subjects | length), .subjects[0].kind, .subjects[0].name, .subjects[0].namespace] | join(" ")')
+    [ "$v" = "Role scaleway-dns01-reader 1 ServiceAccount scaleway-certmanager-webhook cert-manager-scaleway" ] \
+      || fail "RoleBinding scaleway-dns01-reader: '$v'"
+    # And no other binding of the platform gives its ServiceAccount
+    # anything; those of its chart are checked on the chart's render below.
+    check
+    v=$(y 'select((.kind == "RoleBinding" or .kind == "ClusterRoleBinding") and ([.subjects[]? | select(.kind == "ServiceAccount" and .name == "scaleway-certmanager-webhook" and .namespace == "cert-manager-scaleway")] | length) > 0) | .kind + "/" + .metadata.name' | sort | tr '\n' ' ')
+    [ "$v" = "RoleBinding/scaleway-dns01-reader " ] || fail "bindings of the webhook's ServiceAccount: '$v', expected RoleBinding/scaleway-dns01-reader alone"
+    # The key, sealed, in cert-manager's namespace, where a ClusterIssuer's
+    # webhook looks for it; once committed, under whatever file name, with
+    # the two keys the issuers name, and those only.
+    cms="$platform/clusters/$env/cert-manager-secrets"
+    check
+    v=$(yq e '[.namespace, .commonAnnotations["argocd.argoproj.io/sync-wave"]] | join(" ")' "$cms/kustomization.yaml" 2> /dev/null || true)
+    [ "$v" = "cert-manager -3" ] || fail "cert-manager-secrets/: '$v', expected 'cert-manager -3'"
+    for k in $(y "select(.kind == \"SealedSecret\" and .metadata.name == \"$dnssecret\") | [.metadata.namespace, ((.spec.encryptedData // {}) | keys | sort | join(\",\"))] | join(\"/\")"); do
+      check
+      [ "$k" = "cert-manager/SCW_ACCESS_KEY,SCW_SECRET_KEY" ] || fail "$dnssecret: '$k', expected cert-manager/SCW_ACCESS_KEY,SCW_SECRET_KEY"
+    done
+  fi
+
   # --- No Secret in clear; whatever the secrets directories hold is sealed.
   check
   n=$(ya '[select(.kind == "Secret")] | length')
   [ "$n" = 0 ] || fail "$n Secret(s) in the render: only SealedSecrets are committed"
-  for d in secrets monitoring-secrets; do
+  for d in secrets monitoring-secrets cert-manager-secrets; do
     [ -d "$platform/clusters/$env/$d" ] || continue
     check
     v=$(kustomize build "$platform/clusters/$env/$d" | yq e -N 'select(. != null) | .kind' - | sed '/^$/d' | sort -u | tr '\n' ' ')
@@ -366,6 +428,20 @@ for env in staging prod; do
       check
       v=$(r 'select(.kind == "Deployment" or .kind == "StatefulSet") | .metadata.name' | grep -E 'dex|notifications' || true)
       [ -z "$v" ] || fail "Argo CD runs '$v'"
+    fi
+    # Scaleway's webhook (#682) holds no key: its chart renders a Secret in
+    # clear when given one.
+    if [ "$a" = scaleway-certmanager-webhook ]; then
+      check
+      v=$(r 'select(.kind == "Secret") | .metadata.name' | tr '\n' ' ')
+      [ -z "$v" ] || fail "the chart renders Secret(s) '$v'"
+      # What the chart grants its ServiceAccount: the Secrets of its own
+      # namespace, the API server's authentication ConfigMap, and the
+      # delegation of authentication; nothing more.
+      check
+      v=$(r 'select((.kind == "RoleBinding" or .kind == "ClusterRoleBinding") and ([.subjects[]? | select(.kind == "ServiceAccount" and .name == "scaleway-certmanager-webhook")] | length) > 0) | [.kind, (.metadata.namespace // ""), .roleRef.kind, .roleRef.name] | join(" ")' | sort | tr '\n' ';')
+      [ "$v" = "ClusterRoleBinding  ClusterRole system:auth-delegator;RoleBinding cert-manager-scaleway Role scaleway-certmanager-webhook:secrets-reader;RoleBinding kube-system Role extension-apiserver-authentication-reader;" ] \
+        || fail "the chart binds the webhook's ServiceAccount to '$v'"
     fi
     if [ "$a" = kyverno ]; then
       check

@@ -1,0 +1,35 @@
+# What Scaleway's webhook (application.yaml) may read of cert-manager's
+# namespace: the DNS key the issuers name, by name, and nothing else. The
+# chart grants it every Secret of its own namespace only
+# (cert-manager-scaleway), where it keeps its serving certificate.
+#
+# After cert-manager's Application (wave -10), which creates the
+# namespace, and the webhook's (-9), which creates its ServiceAccount.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: scaleway-dns01-reader
+  namespace: cert-manager
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [scaleway-dns01]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: scaleway-dns01-reader
+  namespace: cert-manager
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: scaleway-dns01-reader
+subjects:
+  - kind: ServiceAccount
+    name: scaleway-certmanager-webhook
+    namespace: cert-manager-scaleway

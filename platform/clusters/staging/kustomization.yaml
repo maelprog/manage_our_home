@@ -2,13 +2,14 @@
 # RAM: rendered by the root Application `platform` (root.yaml), which
 # platform/bootstrap.sh applies. The choice of bricks per cluster is the
 # list of components below: the observability of #437 does not run here,
-# and the home CA runs here only (the certificate of `staging.home.arpa`).
+# and the home CA runs here only (the certificate of `staging.home.arpa`),
+# as the DNS-01 issuers on Scaleway's DNS do for now (#682).
 #
 # Sync waves of the root Application: the platform's Applications (-10),
-# then the namespace, the ClusterIssuers, Traefik's settings (#434) and
-# the Kyverno policy (-5), the home CA's issuer (-4), the
-# sealed Secrets (-3), Postgres (-2, #433), the application (0). A wave
-# starts once the previous one is Healthy.
+# Scaleway's DNS-01 webhook (-9), then the namespace, the ClusterIssuers,
+# Traefik's settings (#434) and the Kyverno policy (-5), the home CA's
+# issuer (-4), the sealed Secrets (-3), Postgres (-2, #433), the
+# application (0). A wave starts once the previous one is Healthy.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -16,6 +17,7 @@ components:
   - ../../components/argocd
   - ../../components/sealed-secrets
   - ../../components/cert-manager
+  - ../../components/cert-manager-dns01
   - ../../components/home-ca
   - ../../components/traefik
   - ../../components/cloudnative-pg
@@ -24,5 +26,6 @@ components:
 
 resources:
   - secrets
+  - cert-manager-secrets
   - postgres.yaml
   - manage-our-home.yaml
