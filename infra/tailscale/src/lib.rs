@@ -287,16 +287,51 @@ mod tests {
         assert_eq!(allows(&p, "group:admin", "tag:autre:443"), Ok(false));
     }
 
+    /// A rule whose destination host is not a declared tag would reach
+    /// something this check cannot see (an address, a subnet, the
+    /// internet, every device of a group…): it is refused, not ignored.
     #[test]
-    fn a_wildcard_matches_every_source_host_and_port() {
+    fn a_rule_destination_other_than_a_declared_tag_is_an_error() {
+        for dst in [
+            "192.168.1.0/24:*",
+            "192.168.1.254:80",
+            "100.64.0.0/10:*",
+            "autogroup:internet:*",
+            "autogroup:self:*",
+            "group:famille:*",
+            "a@example.org:443",
+            "serveur:443",
+            "*:*",
+        ] {
+            let json = BASE.replacen(
+                r#""dst": ["tag:serveur:443"]"#,
+                &format!(r#""dst": ["tag:serveur:443", "{dst}"]"#),
+                1,
+            );
+            let p = parse(&json).unwrap();
+            assert!(
+                allows(&p, "group:admin", "tag:serveur:22").is_err(),
+                "{dst} was accepted as a rule destination"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wildcard_source_is_an_error() {
         let json = BASE.replacen(
-            r#""dst": ["tag:serveur:443"]"#,
-            r#""dst": ["tag:serveur:443"]}, {"action": "accept", "src": ["*"], "dst": ["*:*"]"#,
+            r#""src": ["group:famille"]"#,
+            r#""src": ["group:famille", "*"]"#,
             1,
         );
         let p = parse(&json).unwrap();
-        assert_eq!(allows(&p, "group:famille", "192.168.1.254:80"), Ok(true));
-        assert_eq!(allows(&p, "tag:serveur", "tag:serveur:10250"), Ok(true));
+        assert!(allows(&p, "group:admin", "tag:serveur:22").is_err());
+    }
+
+    #[test]
+    fn an_inverted_port_range_is_an_error() {
+        let json = BASE.replacen("6000-6443", "6443-6000", 1);
+        let p = parse(&json).unwrap();
+        assert!(allows(&p, "group:famille", "tag:serveur:443").is_err());
     }
 
     #[test]
@@ -409,25 +444,23 @@ mod tests {
     #[test]
     fn the_real_policy_meets_the_issue() {
         let p = parse(REAL).unwrap();
-        for port in [22, 80, 2379, 6443, 8080, 10250] {
+        // Every port, not a sample: a port added to a rule is seen.
+        for port in 1..=u16::MAX {
+            let dst = format!("tag:serveur:{port}");
             assert_eq!(
-                allows(&p, "group:famille", &format!("tag:serveur:{port}")),
-                Ok(false),
-                "famille reaches port {port}"
+                allows(&p, "group:famille", &dst),
+                Ok(port == 443),
+                "famille and port {port}"
             );
-        }
-        assert_eq!(allows(&p, "group:famille", "tag:serveur:443"), Ok(true));
-        for port in [22, 443, 6443] {
             assert_eq!(
-                allows(&p, "group:admin", &format!("tag:serveur:{port}")),
-                Ok(true)
+                allows(&p, "group:admin", &dst),
+                Ok([22, 443, 6443].contains(&port)),
+                "admin and port {port}"
             );
-        }
-        for port in [80, 2379, 8080, 10250] {
             assert_eq!(
-                allows(&p, "group:admin", &format!("tag:serveur:{port}")),
+                allows(&p, "tag:serveur", &dst),
                 Ok(false),
-                "admin reaches port {port}"
+                "the server and its own port {port}"
             );
         }
         for src in ["group:famille", "group:admin", "tag:serveur"] {
