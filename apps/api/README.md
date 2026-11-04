@@ -161,11 +161,25 @@ pinned `search_path` and both answering for the user of `app.user_id` only:
   to the account's email — group id and name, sender's display name, dates —
   without their token, and nothing else of the group.
 
-Neither is executable by `PUBLIC`: see the `GRANT EXECUTE` line in the
-`app_role` snippet above. They rely on the owner bypassing RLS — a
+Two more, from `0045_export_own_rows_on_private_events.sql` (#620), answer a
+different question: a private event is visible to its participants alone, so a
+person taken off its "pour qui" no longer sees it — nor, through the policies
+that join back to `events`, the attachment or occurrence completion they left
+on it. The export would drop rows that still name them. The content of those
+two tables is therefore not read through the ordinary policies:
+
+- `account_export_event_attachments(group_id)` and
+  `account_export_event_completions(group_id)` return the caller's own rows
+  (`uploaded_by` / `completed_by` = `app.user_id`) in the group of
+  `app.group_id`, and nothing of the event. Unlike the two above they stay
+  executable by `PUBLIC`: they answer only for the caller, in the caller's
+  group, so there is nothing across families to withhold.
+
+The first two are not executable by `PUBLIC`: see the `GRANT EXECUTE` line in the
+`app_role` snippet above. All four rely on the owner bypassing RLS — a
 `migration_role` without `BYPASSRLS` (which `migrations::apply` refuses
 anyway) would make them answer nothing, and the export would silently fall
-back to current groups and drop received invitations.
+back to current groups and drop received invitations (and, for the last two, the attachments and completions the caller left on private events).
 
 ### Epic #8 — `admin_role` (superadmin endpoints)
 
