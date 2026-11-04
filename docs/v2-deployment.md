@@ -240,7 +240,13 @@ Au moment de l'ouverture publique :
    les sauvegardes de la base (#433) : vérifier que le DPA du pas 1 couvre
    le projet qui porte le bucket `manage-our-home-backups-prod`, et
    remplir la ligne de ce service dans le tableau des transferts du
-   registre.
+   registre. Faire de même pour Domains and DNS, bureau d'enregistrement
+   du domaine public et hébergeur de sa zone (#681) : relire dans la liste
+   des sous-traitants ultérieurs ce qu'elle nomme pour ce service, et dans
+   sa documentation ce que Scaleway garde des requêtes reçues par ses
+   serveurs de noms (journaux de requêtes de la zone, contenu et durée),
+   puis rafraîchir la ligne de ce service dans le tableau des transferts
+   du registre et son entrée parmi les sous-traitants.
 3. **Vérifier le domaine d'envoi.** Ajouter le domaine de `SMTP_FROM` dans
    Transactional Email, publier les enregistrements SPF et DKIM que la
    console fournit, puis un enregistrement DMARC (`_dmarc.<domaine>`, en
