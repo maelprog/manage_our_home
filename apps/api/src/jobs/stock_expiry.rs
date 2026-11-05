@@ -10,6 +10,10 @@
 //! not announced. The window (3 days) is far inside the 30 days a
 //! notification is kept, so a purged key cannot let the same date be
 //! announced twice.
+//!
+//! The daily recap (`jobs::stock_expiry_recap`, #566) completes it: an item
+//! the recap already announced for its current date
+//! (`stock_items.expiry_notified_on`) is not announced again here.
 
 use std::time::Duration as StdDuration;
 
@@ -64,7 +68,8 @@ pub async fn notify_expiring(pool: &PgPool, today: NaiveDate) -> anyhow::Result<
     let items = sqlx::query!(
         r#"SELECT id, group_id, name, expires_on AS "expires_on!"
            FROM stock_items
-           WHERE expires_on BETWEEN $1 AND $2 AND quantity > 0"#,
+           WHERE expires_on BETWEEN $1 AND $2 AND quantity > 0
+             AND expiry_notified_on IS DISTINCT FROM expires_on"#,
         from,
         to,
     )

@@ -223,9 +223,10 @@ pub(crate) const PUSH_SCRIPT: &str = r#"
 "#;
 
 /// The kinds of notification the API pushes to the devices: an agenda
-/// reminder come due (#306) and a budget alert (#536). The service worker
+/// reminder come due (#306), a budget alert (#536) and the daily recap of
+/// the stock items nearing their expiry date (#566). The service worker
 /// shows a text of its own for each (`sw.js`).
-pub(crate) const PUSHED_KINDS: [&str; 2] = ["agenda_reminder", "budget_alert"];
+pub(crate) const PUSHED_KINDS: [&str; 3] = ["agenda_reminder", "budget_alert", "stock_expiry"];
 
 /// Of the API's answer on a push received, the kind to show if it is one
 /// of [`PUSHED_KINDS`]; `None`, the neutral text, for anything else.
@@ -783,6 +784,7 @@ mod tests {
         }
         assert!(SERVICE_WORKER.contains(r#"title: "Rappel d'un événement à venir""#));
         assert!(SERVICE_WORKER.contains(r#"title: "Alerte de budget""#));
+        assert!(SERVICE_WORKER.contains(r#"title: "Produits bientôt périmés""#));
         // It never reads the push's data: there is none, and there must not
         // be any title to show.
         assert!(!SERVICE_WORKER.contains("event.data"));

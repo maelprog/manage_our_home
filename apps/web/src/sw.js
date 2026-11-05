@@ -1,5 +1,6 @@
 // Service worker of the notifications pushed to the devices: the agenda
-// reminders (#306) and the budget alerts (#536). Served at /sw.js by
+// reminders (#306), the budget alerts (#536) and the daily recap of the
+// stock items nearing their expiry date (#566). Served at /sw.js by
 // apps/web/src/routes/account/notifications.rs, out of the binary.
 //
 // A push carries no payload (apps/api/src/notifications/push.rs). The
@@ -23,6 +24,11 @@ var TEXTS = {
     title: "Alerte de budget",
     body: "Les dépenses du mois ont franchi un seuil du budget. Ouvrez le budget pour le voir.",
     url: "/budget",
+  },
+  stock_expiry: {
+    title: "Produits bientôt périmés",
+    body: "Des produits du stock arrivent à leur date. Ouvrez les stocks pour les voir.",
+    url: "/stocks",
   },
 };
 
