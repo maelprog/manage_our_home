@@ -321,6 +321,10 @@ pub fn build_router(state: AppState) -> Router {
             post(agenda::events::create_event).get(agenda::events::list_events),
         )
         .route(
+            "/groups/{id}/national-days",
+            get(agenda::national_days::list_national_days),
+        )
+        .route(
             "/groups/{id}/events/{event_id}",
             get(agenda::events::get_event)
                 .patch(agenda::events::update_event)
