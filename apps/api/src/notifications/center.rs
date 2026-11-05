@@ -77,6 +77,9 @@ pub enum Event<'a> {
         item: &'a str,
         expires_on: NaiveDate,
     },
+    /// The daily recap of the family's items entering their expiry window
+    /// (#566): one name per stock row, the soonest first.
+    StockExpiryRecap { items: &'a [String] },
     /// A member posted a message. Its content is never copied here: it is
     /// encrypted at rest, and the notification is not.
     Message { author: &'a str },
@@ -97,7 +100,7 @@ impl Event<'_> {
     pub fn kind(&self) -> Kind {
         match self {
             Event::AgendaReminder { .. } => Kind::AgendaReminder,
-            Event::StockExpiry { .. } => Kind::StockExpiry,
+            Event::StockExpiry { .. } | Event::StockExpiryRecap { .. } => Kind::StockExpiry,
             Event::Message { .. } => Kind::Message,
             Event::Invitation { .. } => Kind::Invitation,
             Event::GroceryItem { .. } => Kind::GroceryItem,
@@ -137,6 +140,7 @@ pub fn body(event: &Event<'_>) -> String {
             typed(item),
             expires_on.format("%d/%m/%Y")
         ),
+        Event::StockExpiryRecap { items } => recap_body(items),
         Event::Message { author } => {
             let author = typed(author);
             format!("Nouveau message {}{author}.", de(&author))
@@ -161,6 +165,37 @@ pub fn body(event: &Event<'_>) -> String {
             "Les dépenses du mois dépassent le plafond de « {} ».",
             typed(category)
         ),
+    }
+}
+
+/// How many item names the recap's text spells out at most.
+pub const RECAP_NAMED_ITEMS: usize = 2;
+
+/// « 3 produits périment bientôt : Lait, Œufs… »: how many rows, and the
+/// first [`RECAP_NAMED_ITEMS`] distinct names among them, an ellipsis when
+/// there are more rows than names spelled out. No quantity.
+fn recap_body(items: &[String]) -> String {
+    let mut named: Vec<String> = Vec::with_capacity(RECAP_NAMED_ITEMS);
+    for item in items {
+        if named.len() == RECAP_NAMED_ITEMS {
+            break;
+        }
+        let name = sanitize_email_line(item);
+        if !name.is_empty() && !named.contains(&name) {
+            named.push(name);
+        }
+    }
+    let count = items.len();
+    let head = if count == 1 {
+        "1 produit périme bientôt".to_string()
+    } else {
+        format!("{count} produits périment bientôt")
+    };
+    let end = if count > named.len() { "…" } else { "." };
+    if named.is_empty() {
+        format!("{head}{end}")
+    } else {
+        format!("{head} : {}{end}", named.join(", "))
     }
 }
 
@@ -446,6 +481,12 @@ mod tests {
                 },
                 Kind::StockExpiry,
             ),
+            (
+                Event::StockExpiryRecap {
+                    items: &["i".to_string()],
+                },
+                Kind::StockExpiry,
+            ),
             (Event::Message { author: "a" }, Kind::Message),
             (
                 Event::Invitation {
@@ -524,6 +565,72 @@ mod tests {
                 expires_on: NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(),
             }),
             "« Lait » est à consommer jusqu'au 02/11/2026."
+        );
+    }
+
+    fn names(items: &[&str]) -> Vec<String> {
+        items.iter().map(|i| i.to_string()).collect()
+    }
+
+    #[test]
+    fn a_recap_of_one_item_is_singular() {
+        assert_eq!(
+            body(&Event::StockExpiryRecap {
+                items: &names(&["Lait"])
+            }),
+            "1 produit périme bientôt : Lait."
+        );
+    }
+
+    #[test]
+    fn a_recap_of_two_items_names_both() {
+        assert_eq!(
+            body(&Event::StockExpiryRecap {
+                items: &names(&["Lait", "Œufs"])
+            }),
+            "2 produits périment bientôt : Lait, Œufs."
+        );
+    }
+
+    /// The issue's example: more rows than names spelled out end on an
+    /// ellipsis.
+    #[test]
+    fn a_recap_of_more_items_names_the_first_two_and_trails_off() {
+        assert_eq!(
+            body(&Event::StockExpiryRecap {
+                items: &names(&["Lait", "Œufs", "Beurre", "Crème"])
+            }),
+            "4 produits périment bientôt : Lait, Œufs…"
+        );
+    }
+
+    /// Two rows of the same name count twice but are named once: the next
+    /// distinct name takes the second place.
+    #[test]
+    fn a_recap_names_each_name_once() {
+        assert_eq!(
+            body(&Event::StockExpiryRecap {
+                items: &names(&["Lait", "Lait"])
+            }),
+            "2 produits périment bientôt : Lait…"
+        );
+        assert_eq!(
+            body(&Event::StockExpiryRecap {
+                items: &names(&["Lait", "Lait", "Œufs"])
+            }),
+            "3 produits périment bientôt : Lait, Œufs…"
+        );
+    }
+
+    /// The names are typed: flattened to one line, without invisible
+    /// characters, a name made of nothing else is skipped.
+    #[test]
+    fn a_recap_flattens_its_names() {
+        assert_eq!(
+            body(&Event::StockExpiryRecap {
+                items: &names(&["Lait\nentier\u{200b}", "\u{200b}", "Œufs"])
+            }),
+            "3 produits périment bientôt : Lait entier, Œufs…"
         );
     }
 
@@ -627,6 +734,7 @@ mod tests {
     #[test]
     fn the_longest_body_fits_the_column() {
         let long = "x".repeat(10_000);
+        let recap: Vec<String> = (0..1_000).map(|i| format!("{i}{long}")).collect();
         let at = Utc.with_ymd_and_hms(2026, 10, 3, 14, 30, 0).unwrap();
         let day = NaiveDate::from_ymd_opt(2026, 11, 2).unwrap();
         for event in [
@@ -649,6 +757,7 @@ mod tests {
                 item: &long,
             },
             Event::BudgetCategoryCapExceeded { category: &long },
+            Event::StockExpiryRecap { items: &recap },
         ] {
             let n = body(&event).chars().count();
             assert!((1..=300).contains(&n), "{n} characters for {event:?}");

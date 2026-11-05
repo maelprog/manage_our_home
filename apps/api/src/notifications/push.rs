@@ -219,6 +219,8 @@ pub enum PushKind {
     AgendaReminder,
     /// A budget cap alert (#536).
     BudgetAlert,
+    /// The daily recap of the items nearing their expiry date (#566).
+    StockExpiry,
 }
 
 impl PushKind {
@@ -226,13 +228,18 @@ impl PushKind {
         match self {
             PushKind::AgendaReminder => "agenda_reminder",
             PushKind::BudgetAlert => "budget_alert",
+            PushKind::StockExpiry => "stock_expiry",
         }
     }
 
     pub fn parse(raw: &str) -> Option<Self> {
-        [PushKind::AgendaReminder, PushKind::BudgetAlert]
-            .into_iter()
-            .find(|kind| kind.as_str() == raw)
+        [
+            PushKind::AgendaReminder,
+            PushKind::BudgetAlert,
+            PushKind::StockExpiry,
+        ]
+        .into_iter()
+        .find(|kind| kind.as_str() == raw)
     }
 }
 
@@ -943,6 +950,7 @@ mod tests {
 
     const R: PushKind = PushKind::AgendaReminder;
     const A: PushKind = PushKind::BudgetAlert;
+    const S: PushKind = PushKind::StockExpiry;
 
     fn pushed(kinds: &[PushKind]) -> Pending {
         kinds.iter().fold(Pending::default(), |p, &k| {
@@ -965,7 +973,8 @@ mod tests {
     fn the_kinds_have_the_names_of_the_notifications() {
         assert_eq!(R.as_str(), "agenda_reminder");
         assert_eq!(A.as_str(), "budget_alert");
-        for kind in [R, A] {
+        assert_eq!(S.as_str(), "stock_expiry");
+        for kind in [R, A, S] {
             assert_eq!(PushKind::parse(kind.as_str()), Some(kind));
             let only = PendingKind::Only(kind);
             assert_eq!(PendingKind::parse(only.as_str()), Some(only));

@@ -1,6 +1,7 @@
 //! The notification centre (#534), against a real database: the events
 //! that write a notification (a reminder coming due, a stock item nearing
-//! its expiry, a message, an invitation, a grocery item), the member's API
+//! its expiry and the daily recap of those items, a message, an invitation,
+//! a grocery item), the member's API
 //! (`/notifications`), its isolation per recipient, the 30-day purge and
 //! the export.
 //!
@@ -15,6 +16,7 @@ use common::{assert_status, call, json_body, set_cookie, test_router};
 use manage_our_home::jobs::retention_purge::{purge, RetentionCutoffs};
 use manage_our_home::jobs::scheduled_notifications::send_due_notifications;
 use manage_our_home::jobs::stock_expiry::notify_expiring;
+use manage_our_home::jobs::stock_expiry_recap::{push_recap, recap, RECAP_PUSH_TTL_SECS};
 use manage_our_home::notifications::push::PushOutcome;
 use serde_json::{json, Value};
 use sqlx::PgPool;
@@ -480,6 +482,177 @@ async fn a_deactivated_or_purged_member_is_not_notified(db: PgPool) {
         .await
         .unwrap();
     assert_eq!(notified, Vec::<Uuid>::new());
+}
+
+// -- the daily expiry recap (#566) ---------------------------------------------
+
+fn recap_bodies(page: &Value) -> Vec<String> {
+    kinds_and_bodies(page)
+        .into_iter()
+        .map(|(kind, body)| {
+            assert_eq!(kind, "stock_expiry");
+            body
+        })
+        .collect()
+}
+
+/// One recap per member, of the rows of quantity > 0 within the « bientôt »
+/// window, expired ones included, the soonest first; a second pass the same
+/// day writes nothing.
+#[sqlx::test]
+async fn the_recap_notifies_every_member_once_a_day(db: PgPool) {
+    let f = family(&db).await;
+    let today = NaiveDate::from_ymd_opt(2030, 10, 30).unwrap();
+    let day = |n: i64| today + Duration::days(n);
+    stock_item(&db, &f.group, "Lait", 1.0, day(3)).await;
+    stock_item(&db, &f.group, "Yaourt", 2.0, day(-1)).await;
+    stock_item(&db, &f.group, "Riz", 1.0, day(4)).await;
+    stock_item(&db, &f.group, "Beurre", 0.0, day(1)).await;
+
+    let first = recap(&db, today).await.unwrap();
+    assert_eq!(first.written, 2);
+    let mut expected = vec![
+        user_id(&db, "owner@example.test").await,
+        user_id(&db, "member@example.test").await,
+    ];
+    expected.sort_unstable();
+    assert_eq!(first.recipients, expected);
+    for cookie in [&f.owner, &f.member] {
+        assert_eq!(
+            recap_bodies(&list(&f.router, cookie, "").await),
+            ["2 produits périment bientôt : Yaourt, Lait."]
+        );
+    }
+
+    let second = recap(&db, today).await.unwrap();
+    assert_eq!((second.written, second.recipients.len()), (0, 0));
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM notifications")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(total, 2);
+}
+
+/// A row announced, its date moved to another day close by, is announced
+/// again — alone; a row of quantity 0 never is, whatever its date.
+#[sqlx::test]
+async fn the_recap_announces_a_moved_date_again_and_never_an_empty_row(db: PgPool) {
+    let f = family(&db).await;
+    let today = NaiveDate::from_ymd_opt(2030, 10, 30).unwrap();
+    let day = |n: i64| today + Duration::days(n);
+    let lait = stock_item(&db, &f.group, "Lait", 1.0, day(2)).await;
+    stock_item(&db, &f.group, "Œufs", 6.0, day(1)).await;
+    let beurre = stock_item(&db, &f.group, "Beurre", 0.0, day(1)).await;
+    assert_eq!(recap(&db, today).await.unwrap().written, 2);
+
+    for (id, n) in [(lait, 3), (beurre, 0)] {
+        sqlx::query("UPDATE stock_items SET expires_on = $2 WHERE id = $1")
+            .bind(id)
+            .bind(day(n))
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+    let next = day(1);
+    assert_eq!(recap(&db, next).await.unwrap().written, 2);
+    assert_eq!(
+        recap_bodies(&list(&f.router, &f.member, "").await),
+        [
+            "1 produit périme bientôt : Lait.",
+            "2 produits périment bientôt : Œufs, Lait."
+        ]
+    );
+    let notified: Option<NaiveDate> =
+        sqlx::query_scalar("SELECT expiry_notified_on FROM stock_items WHERE id = $1")
+            .bind(beurre)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(notified, None);
+}
+
+/// The members of another family read nothing of this one's stock, and a
+/// family without rows due gets no recap.
+#[sqlx::test]
+async fn the_recap_stays_within_the_family(db: PgPool) {
+    let f = family(&db).await;
+    let other = register_verify_login(&f.router, &db, "other@example.test").await;
+    let other_group = create_group(&f.router, &other, "Ailleurs").await;
+    let today = NaiveDate::from_ymd_opt(2030, 10, 30).unwrap();
+    stock_item(&db, &f.group, "Lait", 1.0, today).await;
+    stock_item(&db, &other_group, "Riz", 1.0, today + Duration::days(10)).await;
+
+    let done = recap(&db, today).await.unwrap();
+    assert_eq!(done.written, 2);
+    assert!(!done
+        .recipients
+        .contains(&user_id(&db, "other@example.test").await));
+    assert_eq!(
+        list(&f.router, &other, "").await["notifications"],
+        json!([])
+    );
+    assert_eq!(
+        recap_bodies(&list(&f.router, &f.owner, "").await),
+        ["1 produit périme bientôt : Lait."]
+    );
+}
+
+/// A member without a device reads the recap in the centre and gets no
+/// push; a member with one gets it pushed, as a `stock_expiry` push.
+#[sqlx::test]
+async fn the_recap_is_pushed_to_the_members_who_have_a_device(db: PgPool) {
+    let f = family(&db).await;
+    let owner = user_id(&db, "owner@example.test").await;
+    let endpoint = "https://fcm.googleapis.com/fcm/send/recap-owner";
+    sqlx::query("INSERT INTO push_subscriptions (user_id, endpoint) VALUES ($1, $2)")
+        .bind(owner)
+        .bind(endpoint)
+        .execute(&db)
+        .await
+        .unwrap();
+    let today = NaiveDate::from_ymd_opt(2030, 10, 30).unwrap();
+    stock_item(&db, &f.group, "Lait", 1.0, today).await;
+
+    let done = recap(&db, today).await.unwrap();
+    let pushed = std::sync::Mutex::new(Vec::new());
+    let send_push = |endpoint: String, ttl: i64| {
+        pushed.lock().unwrap().push((endpoint, ttl));
+        async { PushOutcome::Delivered }
+    };
+    push_recap(&db, &send_push, &done.recipients).await.unwrap();
+    assert_eq!(
+        pushed.into_inner().unwrap(),
+        [(endpoint.to_string(), RECAP_PUSH_TTL_SECS)]
+    );
+    let kind: Option<String> =
+        sqlx::query_scalar("SELECT pending_push_kind FROM push_subscriptions")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(kind.as_deref(), Some("stock_expiry"));
+    assert_eq!(
+        recap_bodies(&list(&f.router, &f.member, "").await),
+        ["1 produit périme bientôt : Lait."]
+    );
+}
+
+/// The hourly pass does not announce again a row the recap announced for
+/// its date; its date moved, it does.
+#[sqlx::test]
+async fn the_hourly_pass_skips_a_row_the_recap_announced(db: PgPool) {
+    let f = family(&db).await;
+    let today = NaiveDate::from_ymd_opt(2030, 10, 30).unwrap();
+    let lait = stock_item(&db, &f.group, "Lait", 1.0, today + Duration::days(2)).await;
+    assert_eq!(recap(&db, today).await.unwrap().written, 2);
+    assert_eq!(notify_expiring(&db, today).await.unwrap(), 0);
+
+    sqlx::query("UPDATE stock_items SET expires_on = $2 WHERE id = $1")
+        .bind(lait)
+        .bind(today + Duration::days(1))
+        .execute(&db)
+        .await
+        .unwrap();
+    assert_eq!(notify_expiring(&db, today).await.unwrap(), 2);
 }
 
 /// An inviter typing their own address is not told of their own

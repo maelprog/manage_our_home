@@ -313,6 +313,12 @@ async fn main() -> anyhow::Result<()> {
     // On the admin pool: `stock_items` is under a forced RLS policy, and
     // the pass refuses to run without BYPASSRLS (#534).
     tokio::spawn(jobs::stock_expiry::run(state.admin_db.clone()));
+    // Same pool, same reason: the daily recap of those items (#566), pushed
+    // to the devices too when the server has a VAPID key.
+    tokio::spawn(jobs::stock_expiry_recap::run(
+        state.admin_db.clone(),
+        state.push.clone(),
+    ));
     // On the application pool: `school_holidays` is a public cache without
     // RLS (#563). The first pass runs at start-up, then once a day.
     {
