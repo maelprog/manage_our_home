@@ -194,7 +194,7 @@ reaches this pool — see the `SuperAdminUser` extractor, which requires a
 valid session *and* `users.is_superadmin = true`, else 403 — so `BYPASSRLS`
 here is a controlled, audited exception rather than a general bypass.
 
-Five other things run on this pool, and none is a request handler:
+Six other things run on this pool, and none is a request handler:
 
 - the **daily attachment reconcile** pass (#215, see the Ops section below),
   which needs the unscoped `event_attachments` read and deletes nothing in
