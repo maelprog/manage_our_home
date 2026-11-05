@@ -7,9 +7,10 @@
 # `letsencrypt` is production's: browsers do not trust
 # `letsencrypt-staging`'s certificates, and that issuer stays to try an
 # issuance out by hand, under its generous rate limits. The staging
-# overlay names `home-ca` instead (platform/components/home-ca): the test
-# server is served on the home network only, under a `.home.arpa` name no
-# public CA issues for.
+# overlay names `letsencrypt-dns01` instead
+# (platform/components/cert-manager-dns01): the test server opens no port
+# to the Internet, so its challenge is a DNS record, not a request on
+# port 80 (#683).
 #
 # The host is the overlay's (base/ingress/host): `ingress-host.invalid`
 # below is replaced.

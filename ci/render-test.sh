@@ -319,12 +319,13 @@ EOF
     [[ "$m" == 'Host(`'"$host"'`)'* ]] && [ "$(grep -o 'Host(' <<< "$m" | wc -l)" = 1 ] \
       || fail "IngressRoute rule '${m//_/ }' does not start with Host(\`$host\`), alone"
   done
-  # Its issuer: Let's Encrypt, except on staging, served on the home
-  # network only under a `.home.arpa` name (RFC 8375) that Let's Encrypt
-  # cannot issue for — the home CA of platform/components/home-ca there.
+  # Its issuer: Let's Encrypt by HTTP-01, except on staging, which opens
+  # no port to the Internet: Let's Encrypt by DNS-01 there
+  # (platform/components/cert-manager-dns01, #683), whose key reaches the
+  # `watallo.fr` zone only, so the host must be in it.
   check
   case "$overlay" in
-    staging) issuer=home-ca; [[ "$host" == *.home.arpa ]] || fail "staging: host '$host' is not under .home.arpa, the home network's names" ;;
+    staging) issuer=letsencrypt-dns01; [[ "$host" == *.watallo.fr ]] || fail "staging: host '$host' is not in the watallo.fr zone, the only one its DNS-01 issuer writes to" ;;
     *) issuer=letsencrypt ;;
   esac
   check

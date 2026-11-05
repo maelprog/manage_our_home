@@ -13,7 +13,7 @@
 #
 # In a namespace of its own rather than cert-manager's: the chart lets it
 # read every Secret of the namespace it runs in, and cert-manager's holds
-# the home CA's root and the ACME accounts' keys. Pod Security
+# the ACME accounts' keys. Pod Security
 # `restricted` on that namespace; the image runs as root by default, so
 # the container is given a user and listens above 1024.
 #
