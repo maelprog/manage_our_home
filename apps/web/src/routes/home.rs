@@ -324,7 +324,9 @@ fn agenda_row(occ: &OccurrenceResponse, today: NaiveDate, members: &[GroupMember
         assignees
     };
     format!(
-        r#"<li class="list-row"><span class="when">{when}</span><span class="what"><strong>{title}</strong><span class="muted">{detail}</span></span><span class="avatar" style="color:{colour}" aria-hidden="true">{icon}</span></li>"#,
+        r#"<li class="list-row"><span class="when">{when}</span><span class="what"><strong>{private}{title}</strong><span class="muted">{detail}</span></span><span class="avatar" style="color:{colour}" aria-hidden="true">{icon}</span></li>"#,
+        // #621: the lock, and « Privé » before the title.
+        private = crate::routes::agenda::private_mark(e.is_private),
         when = html_escape(&when_label(occ, today)),
         title = html_escape(&e.title),
         detail = html_escape(&detail),
@@ -1731,6 +1733,39 @@ mod pure_logic_tests {
             "{html}"
         );
         assert!(html.contains(r#"class="avatar""#), "{html}");
+    }
+
+    /// #621: a private event's row says « Privé » before its title, by the
+    /// lock and the word for assistive technologies; a shared one does not.
+    #[test]
+    fn a_private_row_is_marked_and_a_shared_one_is_not() {
+        use crate::icons::{icon, Icon};
+        let camille = Uuid::from_u128(7);
+        let mut occ = occurrence_assigned_to(camille, &[camille]);
+        occ.event.title = "Piscine".to_string();
+        let members = [member(camille, "Camille")];
+        let shared = agenda_row(&occ, fixture_day(), &members);
+        assert!(!shared.contains(icon(Icon::Lock)), "{shared}");
+        assert!(!shared.contains("Privé"), "{shared}");
+
+        occ.event.is_private = true;
+        let private = agenda_row(&occ, fixture_day(), &members);
+        assert!(private.contains(icon(Icon::Lock)), "{private}");
+        let said = crate::routes::agenda::spoken(&private);
+        assert!(said.contains("Privé Piscine"), "{said}");
+    }
+
+    /// The week of a PC draws the agenda's chips, which carry the mark.
+    #[test]
+    fn the_week_of_a_pc_marks_a_private_chip() {
+        let today = fixture_day();
+        let mut occ = timed_at(Utc.with_ymd_and_hms(2026, 9, 3, 18, 0, 0).unwrap(), "Dîner");
+        occ.event.is_private = true;
+        let html = week_block(Some(&[occ]), today);
+        assert!(
+            html.contains(r#"<span class="sr-only">Privé</span>"#),
+            "{html}"
+        );
     }
 
     /// A later row's pill holds its date, so its time moves to the line

@@ -81,7 +81,7 @@ use crate::state::{api_request_auth, AppState};
 
 use super::{
     agenda_cookie, family_context, fmt_paris, occurrences_from_response, paris_local_to_utc,
-    read_or_log, service_unavailable_page, today_paris, DISPLAY_TZ,
+    private_mark, read_or_log, service_unavailable_page, today_paris, DISPLAY_TZ,
 };
 
 const FR_MONTHS: [&str; 12] = [
@@ -601,6 +601,9 @@ fn initials(people: &[&GroupMember]) -> String {
 /// 1.4.1), so a chip that names nobody stays neutral. A done task keeps its
 /// initials and loses its tint: `--muted`, the colour of what is done, falls
 /// under AA on the darker tints of the dark theme.
+///
+/// A private event (#621) wears `private_mark` before its time: the lock,
+/// and « Privé » at the head of the link's name.
 pub(crate) fn render_chips(
     occs: &[&OccurrenceResponse],
     cap: Option<usize>,
@@ -633,11 +636,12 @@ pub(crate) fn render_chips(
                 _ => String::new(),
             };
             format!(
-                r#"<a href="/agenda/{id}?occ={occ}" class="chip{done}{tint}">{initials}{marker}<strong>{time}</strong> {title}</a>"#,
+                r#"<a href="/agenda/{id}?occ={occ}" class="chip{done}{tint}">{initials}{private}{marker}<strong>{time}</strong> {title}</a>"#,
                 id = e.id,
                 occ = occ_param,
                 done = done,
                 initials = initials(&people),
+                private = private_mark(e.is_private),
                 marker = marker,
                 time = html_escape(&time),
                 title = html_escape(&e.title),
@@ -686,8 +690,9 @@ fn day_panel(day: NaiveDate, occs: &[&OccurrenceResponse], members: &[GroupMembe
                 let people = people(occ, members);
                 let names: Vec<&str> = people.iter().map(|m| m.display_name.as_str()).collect();
                 format!(
-                    r#"<li class="list-row"><span class="when">{when}</span><span class="what"><strong>{title}</strong><span class="muted">{names}</span></span>{initials}</li>"#,
+                    r#"<li class="list-row"><span class="when">{when}</span><span class="what"><strong>{private}{title}</strong><span class="muted">{names}</span></span>{initials}</li>"#,
                     when = html_escape(&when),
+                    private = private_mark(occ.event.is_private),
                     title = html_escape(&occ.event.title),
                     names = html_escape(&names.join(", ")),
                     initials = initials(&people),
@@ -1385,6 +1390,57 @@ mod tests {
         let html = render_chips(&refs, None, day(15), &members);
         assert!(html.contains(r#"class="chip done">"#), "{html}");
         assert!(html.contains(">C</span>"), "{html}");
+    }
+
+    // -- the mark of a private event (#621) -----------------------------
+
+    /// The accessible name of the one chip `html` holds.
+    fn chip_name(html: &str) -> String {
+        assert_eq!(html.matches("<a ").count(), 1, "{html}");
+        crate::routes::agenda::spoken(html)
+    }
+
+    #[test]
+    fn a_private_chip_is_named_prive_before_its_time_and_title() {
+        let members = [named(7, "Chloé")];
+        let mut occ = assigned(9, "Dentiste", &[7]);
+        occ.event.is_private = true;
+        let time = fmt_paris(occ.occurrence_starts_at, "%H:%M");
+        let occs = [occ];
+        let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
+        let html = render_chips(&refs, None, day(15), &members);
+        assert!(html.contains(icon(Icon::Lock)), "{html}");
+        assert_eq!(chip_name(&html), format!("Privé {time} Dentiste"), "{html}");
+    }
+
+    #[test]
+    fn a_shared_chip_is_not_named_prive() {
+        let members = [named(7, "Chloé")];
+        let occ = assigned(9, "Dentiste", &[7]);
+        let time = fmt_paris(occ.occurrence_starts_at, "%H:%M");
+        let occs = [occ];
+        let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
+        let html = render_chips(&refs, None, day(15), &members);
+        assert!(!html.contains(icon(Icon::Lock)), "{html}");
+        assert_eq!(chip_name(&html), format!("{time} Dentiste"), "{html}");
+    }
+
+    /// The PC panel lists the same occurrences: a private one says so there
+    /// too, a shared one does not.
+    #[test]
+    fn the_day_panel_marks_a_private_occurrence_only() {
+        let mut private = assigned(9, "Dentiste", &[]);
+        private.event.is_private = true;
+        let occs = [private, assigned(14, "Piscine", &[])];
+        let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
+        let html = day_panel(day(15), &refs, &[]);
+        let rows: Vec<&str> = html.split(r#"<li class="list-row">"#).skip(1).collect();
+        assert_eq!(rows.len(), 2, "{html}");
+        assert!(
+            crate::routes::agenda::spoken(rows[0]).contains("Privé Dentiste"),
+            "{html}"
+        );
+        assert!(!rows[1].contains("Privé"), "{html}");
     }
 
     // -- the day panel of a PC (#525) ----------------------------------

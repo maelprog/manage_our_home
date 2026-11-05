@@ -33,8 +33,8 @@ use crate::state::{api_request_auth, AppState};
 use super::new::{reminder_push_block, reminder_select};
 use super::{
     agenda_cookie, can_modify, event_not_found_page, family_context, fmt_paris, forbidden_page,
-    json_from_response, occurrences_from_response, read_or_log, service_unavailable_page,
-    today_paris,
+    json_from_response, occurrences_from_response, private_line, read_or_log,
+    service_unavailable_page, today_paris,
 };
 
 #[derive(serde::Deserialize)]
@@ -379,6 +379,7 @@ fn page(
         r#"<h1>{title}</h1>
 {notice_html}{error_html}
 <p class="muted">{kind}</p>
+{private}
 <p><strong>Quand :</strong> {when}</p>
 {assignees}
 {location_html}{description_html}{recurrence_html}
@@ -388,6 +389,7 @@ fn page(
 {attachments_html}
 <div class="links"><a href="/agenda">Retour à l'agenda</a></div>"#,
         title = html_escape(&event.title),
+        private = private_line(event.is_private),
     );
     shell_with_header(Width::Read, &event.title, header, &body)
 }
@@ -877,5 +879,63 @@ mod tests {
         let html = assignees_html(uid(9), &[uid(1)], &[member(uid(1), "<script>")]);
         assert!(html.contains("&lt;script&gt;"), "{html}");
         assert!(!html.contains("<script>"), "{html}");
+    }
+
+    // -- the mark of a private event (#621) ---------------------------------
+
+    fn event(is_private: bool) -> EventResponse {
+        let at = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 9, 5, 8, 0, 0).unwrap();
+        EventResponse {
+            id: uid(7),
+            group_id: uid(9),
+            created_by: uid(1),
+            title: "Dentiste".to_string(),
+            description: None,
+            location: None,
+            starts_at: at,
+            ends_at: at + Duration::hours(1),
+            all_day: false,
+            is_task: false,
+            completed_at: None,
+            rrule: None,
+            assignee_ids: vec![uid(1)],
+            is_private,
+        }
+    }
+
+    fn detail(is_private: bool) -> String {
+        page(
+            "",
+            &event(is_private),
+            Some(&[]),
+            Some(&[]),
+            &[member(uid(1), "Alice")],
+            true,
+            None,
+            None,
+            None,
+            None,
+            "",
+        )
+    }
+
+    #[test]
+    fn a_private_event_says_so_under_its_kind() {
+        let html = detail(true);
+        let line = private_line(true);
+        assert!(!line.is_empty());
+        let kind = html.find(r#"<p class="muted">Événement</p>"#).expect(&html);
+        let at = html.find(&line).expect(&html);
+        assert!(kind < at, "{html}");
+    }
+
+    #[test]
+    fn a_shared_event_does_not_say_prive() {
+        let html = detail(false);
+        assert!(!html.contains("Privé"), "{html}");
+        assert!(
+            !html.contains(crate::icons::icon(crate::icons::Icon::Lock)),
+            "{html}"
+        );
     }
 }
