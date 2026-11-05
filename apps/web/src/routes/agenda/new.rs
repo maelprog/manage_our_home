@@ -508,15 +508,20 @@ pub(crate) fn recurrence_picker(fields: &RecurrenceFields) -> String {
 /// Progressive enhancement, like `app::password_field`'s toggle — without
 /// JS the fields keep the type they were rendered with, and `form_bounds`
 /// reads either shape.
+///
+/// With JS, Fin also follows Début (#697): `data-min-of="ends_at"` on the
+/// start keeps the end's `min` on the start's value and moves an end the
+/// start has just passed onto the start. No `min` is rendered here: without
+/// JS the fields stay unlinked and `ends_before_starts` remains the check.
 pub(crate) fn schedule_fields(all_day: bool, starts: &str, ends: &str) -> String {
-    let field = |label: &str, name: &str, value: &str| {
+    let field = |label: &str, name: &str, value: &str, extra: &str| {
         let kind = if date_only(value).is_some() {
             "date"
         } else {
             "datetime-local"
         };
         format!(
-            r#"<label>{label} <input type="{kind}" name="{name}" value="{value}" required/></label>"#,
+            r#"<label>{label} <input type="{kind}" name="{name}" value="{value}" required{extra}/></label>"#,
             value = html_escape(value),
         )
     };
@@ -526,8 +531,8 @@ pub(crate) fn schedule_fields(all_day: bool, starts: &str, ends: &str) -> String
 {starts}
 {ends}"#,
         checked = if all_day { " checked" } else { "" },
-        starts = field("Début", "starts_at", starts),
-        ends = field("Fin", "ends_at", ends),
+        starts = field("Début", "starts_at", starts, r#" data-min-of="ends_at""#),
+        ends = field("Fin", "ends_at", ends, ""),
     )
 }
 
@@ -1130,6 +1135,33 @@ mod tests {
         assert!(script.contains(r#"hasAttribute("data-all-day")"#));
         assert!(script.contains(r#""datetime-local""#));
         assert!(script.contains(r#"field.type = "date""#));
+    }
+
+    /// With JS, Fin follows Début (#697): `data-min-of="ends_at"` on the
+    /// start field, in both modes, asks `app::ENHANCE_SCRIPT` to keep the
+    /// end's `min` on the start and to move an end the start has passed.
+    /// The end carries no marker and no `min` server-side: without JS the
+    /// fields stay unlinked and `ends_before_starts` stays the only check.
+    #[test]
+    fn the_start_field_asks_the_end_to_follow_it() {
+        for html in [
+            schedule_fields(false, "2026-12-01T10:00", "2026-12-01T11:00"),
+            schedule_fields(true, "2026-12-01", "2026-12-01"),
+        ] {
+            assert!(
+                html.contains(r#"<label>Début <input type="#)
+                    && html.contains(r#"name="starts_at" value="#),
+                "{html}"
+            );
+            let start = &html[html.find("<label>Début").unwrap()..];
+            let start = &start[..start.find("</label>").unwrap()];
+            assert!(start.contains(r#" data-min-of="ends_at""#), "{start}");
+            assert_eq!(html.matches("data-min-of").count(), 1, "{html}");
+            assert!(!html.contains(" min="), "{html}");
+        }
+        let script = crate::app::ENHANCE_SCRIPT;
+        assert!(script.contains(r#"hasAttribute("data-min-of")"#));
+        assert!(script.contains(r#"getAttribute("data-min-of")"#));
     }
 
     /// Error re-renders echo raw submitted strings back into `value`.
