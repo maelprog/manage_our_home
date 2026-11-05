@@ -13,7 +13,6 @@ components/             une brique par dossier (Component Kustomize)
   sealed-secrets/       contrôleur Sealed Secrets (kube-system)
   cert-manager/         cert-manager et ClusterIssuers Let's Encrypt (HTTP-01)
   cert-manager-dns01/   ClusterIssuers Let's Encrypt en DNS-01 chez Scaleway, et leur webhook ; staging seulement (#682)
-  home-ca/              autorité de certification du réseau maison, en staging seulement
   traefik/              réglages du Traefik de k3s (HelmChartConfig, #434)
   cloudnative-pg/       opérateur CloudNativePG (les bases : #433)
   kyverno/              Kyverno, la politique des images signées et la liste fermée des images
@@ -225,14 +224,13 @@ Encrypt valider).
 
 Pas d'adresse de contact, comme pour la paire HTTP-01. La brique n'est
 listée qu'en staging pour l'instant ; la prod la recevra avec sa propre
-clé (#443). Le passage de l'ingress du staging sur `staging.watallo.fr`
-est #683.
+clé (#443). Elle émet le certificat de `staging.watallo.fr` (#683).
 
 **Le webhook** (`components/cert-manager-dns01/application.yaml`) tourne
 dans son propre namespace, `cert-manager-scaleway`, Pod Security
 `restricted` : son chart lui donne la lecture de tous les Secrets du
-namespace où il tourne, et celui de cert-manager contient la racine de
-l'autorité maison et les clés des comptes ACME. Dans le namespace
+namespace où il tourne, et celui de cert-manager contient les clés des
+comptes ACME. Dans le namespace
 `cert-manager`, il ne lit que `scaleway-dns01`, par son nom
 (`rbac.yaml`). Il relit ce Secret à chaque défi : une clé changée sert au
 défi suivant, sans redémarrage.

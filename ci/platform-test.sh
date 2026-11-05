@@ -76,23 +76,18 @@ for env in staging prod; do
       ;;
   esac
 
-  # --- The home CA runs on staging only, the home network's issuer: its
-  # root, kept by cert-manager in its own namespace, and the CA
-  # ClusterIssuer that signs from it, one wave after the root.
+  # --- On any cluster, no ClusterIssuer other than an ACME one, and no
+  # Certificate in cert-manager's namespace: what staging's home CA was
+  # (#683), a CA ClusterIssuer and its root there. Not a check that the
+  # cluster has no CA at all: the Scaleway webhook's chart renders one for
+  # its own serving certificate, an Issuer and a Certificate in
+  # cert-manager-scaleway, which these two checks do not look at.
   check
-  v=$(y 'select(.kind == "ClusterIssuer" or (.kind == "Certificate" and .metadata.namespace == "cert-manager")) | [.kind, .metadata.name, .metadata.annotations["argocd.argoproj.io/sync-wave"], (.spec.ca.secretName // .spec.secretName // (.spec.selfSigned | select(.) | "selfSigned") // ""), (.spec.isCA // ""), (.spec.issuerRef.name // "")] | join(" ")' | { grep -v letsencrypt || true; } | sort | tr '\n' ';')
-  case "$env" in
-    staging) want="Certificate home-ca-root -5 home-ca-root true home-ca-selfsigned;ClusterIssuer home-ca -4 home-ca-root  ;ClusterIssuer home-ca-selfsigned -5 selfSigned  ;" ;;
-    *) want="" ;;
-  esac
-  [ "$v" = "$want" ] || fail "home CA: expected '$want', got '$v'"
-  # Its root is valid for `home.arpa` names only (a critical name
-  # constraint): a device that trusts it trusts nothing else it signs.
-  if [ "$env" = staging ]; then
-    check
-    v=$(y 'select(.kind == "Certificate" and .metadata.name == "home-ca-root") | [(.spec.nameConstraints.critical // false), ((.spec.nameConstraints.permitted.dnsDomains // []) | join(","))] | join(" ")')
-    [ "$v" = "true home.arpa" ] || fail "home CA: root's name constraints are '$v', expected critical, home.arpa only"
-  fi
+  v=$(y 'select(.kind == "ClusterIssuer" and .spec.acme == null) | .metadata.name' | tr '\n' ' ')
+  [ -z "$v" ] || fail "ClusterIssuer(s) other than ACME: '$v'"
+  check
+  v=$(y 'select(.kind == "Certificate" and .metadata.namespace == "cert-manager") | .metadata.name' | tr '\n' ' ')
+  [ -z "$v" ] || fail "Certificate(s) in cert-manager's namespace: '$v'"
 
   # --- No ClusterIssuer gives Let's Encrypt a contact address: it sends no
   # mail since 2025, and an address would be personal data in a public
@@ -126,8 +121,7 @@ for env in staging prod; do
     [ "$v" = "-9 cert-manager-scaleway scaleway-certmanager-webhook $dnsgroup cert-manager 0 0 restricted" ] \
       || fail "Scaleway webhook: '$v', expected '-9 cert-manager-scaleway scaleway-certmanager-webhook $dnsgroup cert-manager 0 0 restricted'"
     # What it may read of cert-manager's namespace: `get` on the DNS key,
-    # by name, and on nothing else (not the home CA's root, not the ACME
-    # accounts' keys).
+    # by name, and on nothing else (not the ACME accounts' keys).
     check
     v=$(y 'select((.kind == "Role" or .kind == "RoleBinding") and .metadata.namespace == "cert-manager") | .kind + "/" + .metadata.name' | sort | tr '\n' ' ')
     [ "$v" = "Role/scaleway-dns01-reader RoleBinding/scaleway-dns01-reader " ] || fail "cert-manager's Roles: '$v'"

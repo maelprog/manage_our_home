@@ -29,10 +29,12 @@
 # by 01-roles.sh, is left running for ci/postgres-test.sh, which the job
 # runs next.
 #
-# The application is rendered as is: its certificate comes from the home
-# CA of the staging cluster (platform/components/home-ca), which needs
-# nothing from outside. What the ingress does is ci/ingress-test.sh's,
-# which the job runs next.
+# The application is rendered as is, but for its certificate's issuer:
+# staging's, `letsencrypt-dns01` (#683), needs the sealed Scaleway key
+# this cluster cannot unseal, and a public zone to write its challenge
+# into. Here the Certificate names ci/ci-issuer.yaml's self-signed issuer
+# instead, a patch of the root's render like Postgres's below. What the
+# ingress does is ci/ingress-test.sh's, which the job runs next.
 
 set -euo pipefail
 
@@ -143,17 +145,21 @@ done
 # those are sealed for the real staging server, whose key this cluster's
 # controller does not hold (#514). The job seals its own for the
 # application, below, whether that directory is empty or not; the DNS-01
-# key it does without, no Certificate here asking those issuers.
+# key it does without, the application's Certificate naming the CI's
+# self-signed issuer (CERT_PATCH), and no other asking those issuers.
 echo "== bootstrap (root Application at $revision)"
+CERT_PATCH='[{"op": "replace", "path": "/spec/issuerRef/name", "value": "ci-selfsigned"}]'
 # shellcheck disable=SC2016 # $patch is kustomize's, not the shell's
-REVISION=$revision APP=$app PG_PATCH=$(cat "$root/ci/postgres-backup-patch.yaml") yq e '
+REVISION=$revision APP=$app CERT_PATCH=$CERT_PATCH PG_PATCH=$(cat "$root/ci/postgres-backup-patch.yaml") yq e '
   .spec.source.targetRevision = strenv(REVISION) |
   .spec.source.kustomize.patches = [
     {"target": {"kind": "SealedSecret"},
      "patch": ({"$patch": "delete", "apiVersion": "bitnami.com/v1alpha1", "kind": "SealedSecret",
                 "metadata": {"name": "any"}} | to_yaml)},
     {"target": {"kind": "Application", "name": strenv(APP)},
-     "patch": ([{"op": "replace", "path": "/spec/source/targetRevision", "value": strenv(REVISION)}] | to_yaml)},
+     "patch": ([{"op": "replace", "path": "/spec/source/targetRevision", "value": strenv(REVISION)},
+                {"op": "add", "path": "/spec/source/kustomize",
+                 "value": {"patches": [{"target": {"kind": "Certificate", "name": "manage-our-home-tls"}, "patch": strenv(CERT_PATCH)}]}}] | to_yaml)},
     {"target": {"kind": "Application", "name": "postgres-staging"},
      "patch": ([{"op": "replace", "path": "/spec/source/targetRevision", "value": strenv(REVISION)},
                 {"op": "add", "path": "/spec/source/kustomize",
@@ -168,6 +174,9 @@ root_wait=$!
 for a in argocd sealed-secrets cert-manager scaleway-certmanager-webhook cloudnative-pg kyverno; do
   wait_app "$a" 900
 done
+# The application's certificate issuer here (see the bootstrap above),
+# once cert-manager's CRDs are in.
+kubectl apply -f "$root/ci/ci-issuer.yaml"
 
 # Sealed with the certificate of this cluster's controller, as the user
 # does for a real one (platform/README.md); the Secret in clear only goes

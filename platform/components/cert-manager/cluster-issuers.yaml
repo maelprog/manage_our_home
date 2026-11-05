@@ -2,7 +2,9 @@
 # untrusted certificates under generous rate limits, to try an ingress
 # out; `letsencrypt` issues the real ones, and is the one the application's
 # certificate names in production (apps/manage-our-home/base/ingress/certificate.yaml,
-# #434). Staging's names its home CA instead (platform/components/home-ca).
+# #434). Staging's names the DNS-01 pair of
+# platform/components/cert-manager-dns01 instead (#683): no port of the
+# home server is open to the Internet.
 #
 # HTTP-01 through Traefik, k3s's ingress controller. No contact address:
 # Let's Encrypt has sent no expiry mail since 2025, and an address here
