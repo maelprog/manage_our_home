@@ -27,7 +27,7 @@ Arbitrage (b) du 2026-10-10 :
 | Branche suivie | `deploy` | `deploy` |
 | Observabilité (#437) | non | oui |
 | Entrée HTTP | ServiceLB (un nœud) ou MetalLB (plusieurs) | ServiceLB |
-| Adresse, certificat | `staging.home.arpa`, réseau maison seulement, autorité maison | nom public, Let's Encrypt |
+| Adresse, certificat | `staging.watallo.fr`, par Tailscale seulement, Let's Encrypt en DNS-01 | nom public, Let's Encrypt |
 | Adresse de l'API Kubernetes | kube-vip (plusieurs serveurs) | celle du nœud |
 
 ### Prérequis matériels
@@ -467,7 +467,7 @@ intacte.
 - **Un seul nœud** (le VPS, ou un staging d'un nœud) : **ServiceLB**, celui
   de k3s, rien à faire. Les ports 80 et 443 du nœud mènent à Traefik.
 - **Plusieurs nœuds** (staging) : ServiceLB ouvre 80 et 443 sur chaque
-  nœud, mais seul celui de Traefik répond ; `staging.home.arpa`, qui
+  nœud, mais seul celui de Traefik répond ; `staging.watallo.fr`, qui
   résout vers une adresse fixe, viserait un nœud que kured vide un jour
   ou l'autre.
   **MetalLB** donne au Service une adresse à lui, annoncée en ARP par le
@@ -516,8 +516,9 @@ poste$ curl -s -o /dev/null -w '%{http_code}\n' http://<adresse de l'ingress>/  
 ```
 
 `<adresse de l'ingress>` : une adresse libre du réseau local, hors DHCP,
-autre que `<vip>`. C'est elle que `staging.home.arpa` désigne (§ 4,
-« Le réseau maison »).
+autre que `<vip>`. Le nom du staging vise, lui, l'adresse Tailscale du
+serveur (§ 4, « Le nom du staging ») : le faire mener à cette adresse-ci
+depuis le tailnet n'est pas décrit ici, le staging n'a qu'un nœud.
 
 ### kured : redémarrer un nœud à la fois
 
@@ -746,85 +747,49 @@ l'environnement chez Scaleway, chiffrement par défaut activé avant la
 première sauvegarde (`README.md`, « Sauvegardes ») ; en prod, l'adresse
 publique de l'overlay et son DNS (`README.md`, « Réglages à fixer ») et
 le Secret `alertmanager-config` (`platform/README.md`, « Observabilité ») ;
-au staging, le réseau maison (ci-dessous) et, pour les certificats
-Let's Encrypt sans port entrant, la clé DNS de cert-manager
-(`platform/README.md`, « DNS-01 chez Scaleway », #682).
+au staging, la clé DNS de cert-manager, pour le certificat Let's Encrypt
+sans port entrant (`platform/README.md`, « DNS-01 chez Scaleway », #682),
+et l'accès par Tailscale (ci-dessous).
 
-### Le réseau maison (staging)
+### Le nom du staging
 
 Le staging n'est pas exposé à Internet (arbitrage du 2026-10-17) : pas
-de redirection de ports sur la box, pas de nom public. Il est servi sous
-`staging.home.arpa`, un nom réservé aux réseaux domestiques (RFC 8375),
-avec un certificat de l'autorité maison du cluster
-(`platform/components/home-ca`) : cert-manager en crée la racine au
-premier démarrage et signe le certificat de l'appli avec elle.
+de redirection de ports sur la box. Il est servi sous `staging.watallo.fr`
+(#683), un nom de la zone publique `watallo.fr` chez Scaleway dont
+l'enregistrement `A` vise l'adresse Tailscale du serveur (`100.x.y.z`) :
+l'adresse n'est joignable que depuis le tailnet, et la publier n'ouvre
+rien (`docs/staging-tailscale.md` de `main`, « Le nom du staging », #684).
 
-**Le nom.** Chaque appareil doit résoudre `staging.home.arpa` vers
-l'adresse du serveur (au staging à plusieurs nœuds, `<adresse de
-l'ingress>` de MetalLB) : dans le DNS local de la box si elle le permet
-(une entrée d'hôte), sinon dans le fichier `hosts` de chaque appareil
-(`/etc/hosts`, `C:\Windows\System32\drivers\etc\hosts`) :
+**Le certificat** vient de Let's Encrypt, émetteur `letsencrypt-dns01`
+(`platform/README.md`, « DNS-01 chez Scaleway », #682) : le défi est un
+enregistrement TXT de la zone, sans port entrant. Un navigateur le
+reconnaît sans rien installer ; le service worker, la PWA et les
+notifications push marchent donc sur tout appareil du tailnet. Il se
+renouvelle seul tous les 60 jours.
 
-```
-<adresse du serveur>  staging.home.arpa
-```
-
-Un téléphone n'a pas de fichier `hosts` modifiable : sans DNS de la box,
-il ne peut pas joindre le staging.
-
-**La racine.** Une fois la plateforme synchronisée, la sortir du
-cluster (elle est publique : c'est un certificat, pas une clé) :
+**Un appareil** joint le staging dès que Tailscale y est actif et que
+son compte est dans le groupe de la politique d'accès (même page,
+« Ajouter un appareil ») : ni fichier `hosts`, ni DNS de la box, ni
+autorité à installer. Vérifier depuis le poste, Tailscale actif, sans
+`--insecure` ni `--cacert` :
 
 ```sh
-poste$ kubectl -n cert-manager wait certificate/home-ca-root --for=condition=Ready --timeout=5m
-poste$ kubectl -n cert-manager get secret home-ca-root -o jsonpath='{.data.ca\.crt}' | base64 -d > home-ca.crt
-poste$ openssl x509 -in home-ca.crt -noout -subject -enddate -fingerprint -sha256
+poste$ curl -sS -o /dev/null -w '%{http_code}\n' https://staging.watallo.fr/api/healthz   # 200
 ```
 
-puis l'installer comme autorité de confiance sur chaque appareil qui
-ouvre le staging :
+**Google OAuth**, dans la console Google Cloud (API et services,
+Identifiants, le client OAuth du staging) :
 
-| Appareil | Où |
+| Champ | Valeur |
 |---|---|
-| Debian, Ubuntu | `sudo cp home-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates` |
-| Windows | double-clic sur le fichier, « Installer le certificat », magasin « Autorités de certification racines de confiance » |
-| macOS | Trousseau d'accès, trousseau « Système », puis « Toujours approuver » sur le certificat |
-| Android | Paramètres, Sécurité, « Installer un certificat », « Certificat CA » (Chrome le reconnaît) |
-| iOS | ouvrir le fichier (AirDrop, mail), installer le profil, puis Réglages, Général, Informations, « Réglages des certificats », activer la confiance totale |
-| Firefox | il a son propre magasin : Paramètres, Vie privée et sécurité, Certificats, Importer, « Confirmer cette AC pour identifier des sites web » |
+| Origines JavaScript autorisées | `https://staging.watallo.fr` |
+| URI de redirection autorisés | `https://staging.watallo.fr/api/auth/google/callback` |
 
-Vérifier depuis le poste, sans `--insecure` :
-
-```sh
-poste$ curl -sS --cacert home-ca.crt -o /dev/null -w '%{http_code}\n' https://staging.home.arpa/api/healthz   # 200
-```
-
-**Ce que l'appareil accepte avec elle** : des certificats pour des noms
-en `home.arpa` seulement, **chez un client qui applique les contraintes
-d'une racine**. La racine porte une contrainte de nom critique
-(`nameConstraints`) ; un tel client refuse un certificat qu'elle
-signerait pour un autre nom. L'appliquer à une racine est facultatif
-(RFC 5280 § 6.1, RFC 5937) : OpenSSL, et curl avec lui, le fait (la CI
-fait signer par la racine un certificat hors `home.arpa` et OpenSSL le
-refuse) ;
-pour les navigateurs et les systèmes, ce n'est pas vérifié ici. Donc
-n'installer la racine que sur les appareils qui utilisent le staging, la
-retirer quand ils ne s'en servent plus, et garder le fichier d'accès au
-cluster comme une clé SSH. La contrainte, sur la racine :
-
-```sh
-poste$ openssl x509 -in home-ca.crt -noout -ext nameConstraints   # Permitted: DNS:home.arpa
-```
-
-Le service worker, la PWA et les notifications push exigent un
-certificat reconnu : sur un appareil sans la racine, ils ne marchent pas,
-même après avoir passé l'avertissement du navigateur.
-
-La racine vaut 10 ans ; cert-manager la renouvelle 30 jours avant, avec
-la même clé : redonner alors la racine renouvelée aux appareils. Sa clé
-ne vit que dans le cluster : un cluster réinstallé en tire une nouvelle,
-à réinstaller sur chaque appareil (en retirant l'ancienne). Le certificat de l'appli, lui, se renouvelle seul
-tous les 60 jours, sans rien changer aux appareils.
+L'URI de redirection est `PUBLIC_BASE_URL` suivi de
+`/auth/google/callback` (le chemin que l'api donne à Google) ; l'ingress
+retire `/api` avant de transmettre à l'api. L'origine ne sert qu'à un
+appel depuis le navigateur, que ce flux, côté serveur, ne fait pas : elle
+est donnée pour que la console nomme le même hôte partout.
 
 ## 5. Déployer en prod
 
@@ -984,9 +949,9 @@ la télécharger.
 
 En prod, l'enregistrement `A` de l'hôte vise maintenant le cluster ;
 cert-manager obtient le certificat dès que Let's Encrypt atteint le
-port 80 (`README.md`, « Ingress »). Au staging, `staging.home.arpa` vise
-le serveur dans le DNS de la box ou les `hosts` (§ 4, « Le réseau
-maison ») ; l'adresse qu'utilisait Compose ne sert plus.
+port 80 (`README.md`, « Ingress »). Au staging, `staging.watallo.fr`
+vise l'adresse Tailscale du serveur (§ 4, « Le nom du staging ») ;
+l'adresse qu'utilisait Compose ne sert plus.
 
 Compose reste arrêté, **volumes gardés** : c'est le retour arrière. Après
 quelques jours sans incident :
