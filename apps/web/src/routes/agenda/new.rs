@@ -24,7 +24,7 @@ use manage_our_home_shared::dto::agenda::{
 use manage_our_home_shared::dto::groups::GroupMember;
 use manage_our_home_shared::validation::agenda::{
     build_rrule, validate_attachment, validate_event_form, AttachmentError, EventFormError, Freq,
-    Recurrence, RecurrenceEnd,
+    Recurrence, RecurrenceEnd, WEEKDAYS,
 };
 use uuid::Uuid;
 
@@ -343,62 +343,131 @@ pub(crate) fn rrule_from_form(form: &EventForm) -> Result<Option<String>, ()> {
     })))
 }
 
-/// Renders the recurrence picker, pre-selecting `current` (the parsed
-/// existing rule on the edit page, `None` for a fresh create). Progressive
-/// enhancement: with JS the day/end sub-controls could hide until relevant;
-/// without it they're always visible and simply ignored server-side when
-/// the frequency doesn't use them.
-pub(crate) fn recurrence_picker(current: Option<&Recurrence>) -> String {
-    use chrono::Weekday;
-    let cur_freq = current.map(|r| r.freq);
-    let freq_opt = |value: &str, label: &str, f: Option<Freq>| {
-        let sel = if cur_freq == f { " selected" } else { "" };
-        format!(r#"<option value="{value}"{sel}>{label}</option>"#)
+/// What the recurrence picker shows, as the strings its fields carry (#696).
+///
+/// An error re-render hands back what was submitted, a value the rule
+/// refused included (a count of 0, a date that does not parse): reading it
+/// through `Recurrence` dropped the whole picker back to « Aucune ». The
+/// edit page fills it from the stored rule (`from_recurrence`), a fresh
+/// create leaves it empty, which shows a one-off event.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct RecurrenceFields {
+    pub freq: String,
+    pub interval: String,
+    /// Monday → Sunday, the order of `WEEKDAYS` and of the checkboxes.
+    pub byday: [bool; 7],
+    pub end_kind: String,
+    pub count: String,
+    pub until: String,
+}
+
+impl RecurrenceFields {
+    /// The picker's fields of a submitted form, untouched.
+    pub(crate) fn from_form(form: &EventForm) -> Self {
+        Self {
+            freq: form.freq.clone(),
+            interval: form.interval.clone(),
+            byday: [
+                &form.byday_mo,
+                &form.byday_tu,
+                &form.byday_we,
+                &form.byday_th,
+                &form.byday_fr,
+                &form.byday_sa,
+                &form.byday_su,
+            ]
+            .map(Option::is_some),
+            end_kind: form.end_kind.clone(),
+            count: form.count.clone(),
+            until: form.until.clone(),
+        }
+    }
+
+    /// The fields that show a stored rule.
+    pub(crate) fn from_recurrence(r: &Recurrence) -> Self {
+        let freq = match r.freq {
+            Freq::Daily => "daily",
+            Freq::Weekly => "weekly",
+            Freq::Monthly => "monthly",
+            Freq::Yearly => "yearly",
+        };
+        let (end_kind, count, until) = match &r.end {
+            RecurrenceEnd::Never => ("never", String::new(), String::new()),
+            RecurrenceEnd::Count(n) => ("count", n.to_string(), String::new()),
+            RecurrenceEnd::Until(d) => ("until", String::new(), d.format("%Y-%m-%d").to_string()),
+        };
+        Self {
+            freq: freq.to_string(),
+            interval: r.interval.to_string(),
+            byday: WEEKDAYS.map(|wd| r.byday.contains(&wd)),
+            end_kind: end_kind.to_string(),
+            count,
+            until,
+        }
+    }
+}
+
+/// Renders the recurrence picker with `fields` (the stored rule on the edit
+/// page, the submitted values on an error re-render, empty for a fresh
+/// create). Progressive enhancement: with JS the day/end sub-controls could
+/// hide until relevant; without it they're always visible and simply
+/// ignored server-side when the frequency doesn't use them.
+pub(crate) fn recurrence_picker(fields: &RecurrenceFields) -> String {
+    let selected = |on: bool| if on { " selected" } else { "" };
+    // An empty frequency is a one-off event, as `rrule_from_form` reads it.
+    let freq = if fields.freq.is_empty() {
+        "none"
+    } else {
+        fields.freq.as_str()
+    };
+    let freq_opt = |value: &str, label: &str| {
+        format!(
+            r#"<option value="{value}"{sel}>{label}</option>"#,
+            sel = selected(freq == value),
+        )
     };
     let freq_select = format!(
         r#"<select name="freq">{none}{d}{w}{m}{y}</select>"#,
-        none = freq_opt("none", "Aucune (ponctuel)", None),
-        d = freq_opt("daily", "Quotidienne", Some(Freq::Daily)),
-        w = freq_opt("weekly", "Hebdomadaire", Some(Freq::Weekly)),
-        m = freq_opt("monthly", "Mensuelle", Some(Freq::Monthly)),
-        y = freq_opt("yearly", "Annuelle", Some(Freq::Yearly)),
+        none = freq_opt("none", "Aucune (ponctuel)"),
+        d = freq_opt("daily", "Quotidienne"),
+        w = freq_opt("weekly", "Hebdomadaire"),
+        m = freq_opt("monthly", "Mensuelle"),
+        y = freq_opt("yearly", "Annuelle"),
     );
 
-    let interval = current.map(|r| r.interval).unwrap_or(1);
-    let byday_checked = |wd: Weekday| -> &'static str {
-        match current {
-            Some(r) if r.byday.contains(&wd) => " checked",
-            _ => "",
-        }
+    let interval = if fields.interval.is_empty() {
+        "1".to_string()
+    } else {
+        html_escape(&fields.interval)
     };
-    let day_checkbox = |name: &str, label: &str, wd: Weekday| {
+    let days: String = [
+        ("byday_mo", "Lun"),
+        ("byday_tu", "Mar"),
+        ("byday_we", "Mer"),
+        ("byday_th", "Jeu"),
+        ("byday_fr", "Ven"),
+        ("byday_sa", "Sam"),
+        ("byday_su", "Dim"),
+    ]
+    .iter()
+    .zip(fields.byday)
+    .map(|((name, label), on)| {
         format!(
             r#"<label class="field inline"><input type="checkbox" name="{name}"{c}/>{label}</label>"#,
-            c = byday_checked(wd),
+            c = if on { " checked" } else { "" },
         )
-    };
-    let days = format!(
-        r#"<div class="actions">{mo}{tu}{we}{th}{fr}{sa}{su}</div>"#,
-        mo = day_checkbox("byday_mo", "Lun", Weekday::Mon),
-        tu = day_checkbox("byday_tu", "Mar", Weekday::Tue),
-        we = day_checkbox("byday_we", "Mer", Weekday::Wed),
-        th = day_checkbox("byday_th", "Jeu", Weekday::Thu),
-        fr = day_checkbox("byday_fr", "Ven", Weekday::Fri),
-        sa = day_checkbox("byday_sa", "Sam", Weekday::Sat),
-        su = day_checkbox("byday_su", "Dim", Weekday::Sun),
-    );
+    })
+    .collect();
+    let days = format!(r#"<div class="actions">{days}</div>"#);
 
-    let (end_never, end_count, end_until, count_val, until_val) = match current.map(|r| &r.end) {
-        Some(RecurrenceEnd::Count(n)) => (" ", " selected", " ", n.to_string(), String::new()),
-        Some(RecurrenceEnd::Until(d)) => (
-            " ",
-            " ",
-            " selected",
-            String::new(),
-            d.format("%Y-%m-%d").to_string(),
-        ),
-        _ => (" selected", " ", " ", String::new(), String::new()),
-    };
+    // Any end but a count or a date reads as « Jamais », as in
+    // `rrule_from_form`.
+    let end_kind = fields.end_kind.as_str();
+    let end_count = selected(end_kind == "count");
+    let end_until = selected(end_kind == "until");
+    let end_never = selected(end_kind != "count" && end_kind != "until");
+    let count_val = html_escape(&fields.count);
+    let until_val = html_escape(&fields.until);
 
     format!(
         r#"<fieldset class="card">
@@ -476,27 +545,38 @@ pub(crate) fn error_message(code: &str) -> &'static str {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The form a fresh sheet starts from: nothing but the default bounds.
+fn blank_form(starts_at: String, ends_at: String) -> EventForm {
+    EventForm {
+        starts_at,
+        ends_at,
+        ..EventForm::default()
+    }
+}
+
+/// The sheet, filled with `form`: the defaults of a fresh create, or what
+/// was submitted when it comes back under an error (#696) — every field but
+/// the file, which a browser cannot be handed back.
 fn page(
     header: &str,
     family: &str,
     error: Option<&str>,
-    all_day: bool,
-    default_start: &str,
-    default_end: &str,
+    form: &EventForm,
     members: &[GroupMember],
     selected_assignees: &[Uuid],
-    is_private: bool,
     push: &str,
 ) -> String {
     let error_html = error
         .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
         .unwrap_or_default();
-    let schedule = schedule_fields(all_day, default_start, default_end);
-    let picker = recurrence_picker(None);
-    let reminder = reminder_select("reminder", None);
+    let schedule = schedule_fields(form.all_day.is_some(), &form.starts_at, &form.ends_at);
+    let picker = recurrence_picker(&RecurrenceFields::from_form(form));
+    let reminder = reminder_select(
+        "reminder",
+        (!form.reminder.is_empty()).then_some(form.reminder.as_str()),
+    );
     let assignees = assignee_checkboxes(members, selected_assignees);
-    let private = private_checkbox(is_private);
+    let private = private_checkbox(form.is_private.is_some());
     // `header` is trusted HTML built by `app_header`; embed it directly at
     // the top, the same position the `view!`-based pages give it.
     //
@@ -510,7 +590,7 @@ fn page(
 <div class="page-header"><hgroup><p class="eyebrow">{family}</p><h1>Nouvel événement</h1></hgroup>{close}</div>
 {error_html}
 <form method="post" action="/agenda/new" enctype="multipart/form-data">
-<label>Titre <input type="text" name="title" required/></label>
+<label>Titre <input type="text" name="title" required value="{title}"/></label>
 {schedule}
 {picker}
 <label>Rappel {reminder}</label>
@@ -521,13 +601,21 @@ fn page(
 <label>Pièce jointe (png, jpg, webp, pdf — max 20 Mo)
 <input type="file" name="file" accept="image/png,image/jpeg,image/webp,application/pdf"/></label>
 <label class="field inline">
-<input type="checkbox" name="is_task"/> Il s'agit d'une tâche (à cocher une fois faite)</label>
-<label>Lieu <input type="text" name="location"/></label>
-<label>Description <textarea name="description" rows="3"></textarea></label>
+<input type="checkbox" name="is_task"{task}/> Il s'agit d'une tâche (à cocher une fois faite)</label>
+<label>Lieu <input type="text" name="location" value="{location}"/></label>
+<label>Description <textarea name="description" rows="3">{description}</textarea></label>
 <button type="submit">Créer l'événement</button>
 </form>
 </section>"#,
         family = html_escape(family),
+        title = html_escape(&form.title),
+        task = if form.is_task.is_some() {
+            " checked"
+        } else {
+            ""
+        },
+        location = html_escape(&form.location),
+        description = html_escape(&form.description),
         close = icon_link("btn secondary", "/agenda", "Fermer", Icon::Close),
     );
     shell_with_header(Width::Form, "Nouvel événement", header, &body)
@@ -560,12 +648,9 @@ pub async fn get(
         &fam.header,
         &fam.name,
         None,
-        false,
-        &start,
-        &end,
+        &blank_form(start, end),
         &members,
         &[],
-        false,
         &push,
     ))
     .into_response()
@@ -645,12 +730,12 @@ pub async fn post(
                         &fam.header,
                         &fam.name,
                         Some(error_message("upload_failed")),
-                        false,
-                        &to_datetime_local(now),
-                        &to_datetime_local(now + chrono::Duration::hours(1)),
+                        &blank_form(
+                            to_datetime_local(now),
+                            to_datetime_local(now + chrono::Duration::hours(1)),
+                        ),
                         &members,
                         &[],
-                        false,
                         &push,
                     ))
                     .into_response();
@@ -682,12 +767,15 @@ pub async fn post(
                 &fam.header,
                 &fam.name,
                 Some(error_message("invalid_form")),
-                false,
-                &to_datetime_local(now),
-                &to_datetime_local(now + chrono::Duration::hours(1)),
+                &EventForm {
+                    is_private: raw_is_private(&raw).then(String::new),
+                    ..blank_form(
+                        to_datetime_local(now),
+                        to_datetime_local(now + chrono::Duration::hours(1)),
+                    )
+                },
                 &members,
                 &assignee_ids,
-                raw_is_private(&raw),
                 &push,
             )),
         )
@@ -699,12 +787,9 @@ pub async fn post(
             &fam.header,
             &fam.name,
             Some(error_message(code)),
-            form.all_day.is_some(),
-            &form.starts_at,
-            &form.ends_at,
+            &form,
             &members,
             &assignee_ids,
-            form.is_private.is_some(),
             &push,
         ))
         .into_response()
@@ -1062,14 +1147,251 @@ mod tests {
             "",
             "Famille <Martin>",
             None,
-            false,
-            "2026-09-05T10:00",
-            "2026-09-05T11:00",
+            &blank_form("2026-09-05T10:00".into(), "2026-09-05T11:00".into()),
             &[member(1, "Alice")],
             &[],
-            false,
             "",
         )
+    }
+
+    // -- what was submitted comes back under an error (#696) ----------------
+
+    /// A weekly rule on Monday and Wednesday, every two weeks, ten times,
+    /// with everything else of the sheet filled in.
+    const SUBMITTED: &str = "title=D%C3%AEner&location=Chez+L%C3%A9a&description=Apporter+le+vin\
+        &starts_at=2026-09-05T20:00&ends_at=2026-09-05T19:00&is_task=on&reminder=60\
+        &freq=weekly&interval=2&byday_mo=on&byday_we=on&end_kind=count&count=10&until=";
+
+    fn submitted(body: &str) -> EventForm {
+        serde_urlencoded::from_str(body).expect(body)
+    }
+
+    fn sheet_under_error(form: &EventForm) -> String {
+        page(
+            "",
+            "Famille",
+            Some(error_message("ends_before_starts")),
+            form,
+            &[member(1, "Alice")],
+            &[],
+            "",
+        )
+    }
+
+    #[test]
+    fn the_picker_shows_the_submitted_rule() {
+        let html = recurrence_picker(&RecurrenceFields::from_form(&submitted(SUBMITTED)));
+        assert!(
+            html.contains(r#"<option value="weekly" selected>"#),
+            "{html}"
+        );
+        assert_eq!(html.matches(" selected").count(), 2, "{html}");
+        assert!(
+            html.contains(r#"name="interval" min="1" max="99" value="2""#),
+            "{html}"
+        );
+        assert!(html.contains(r#"name="byday_mo" checked/>"#), "{html}");
+        assert!(html.contains(r#"name="byday_we" checked/>"#), "{html}");
+        assert_eq!(html.matches(" checked").count(), 2, "{html}");
+        assert!(
+            html.contains(r#"<option value="count" selected>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"name="count" min="1" max="730" value="10""#),
+            "{html}"
+        );
+    }
+
+    /// `invalid_rrule`: the value the rule refused is the one to correct, so
+    /// it comes back as typed, escaped like any echoed string.
+    #[test]
+    fn the_picker_gives_back_a_refused_value_as_typed() {
+        let form = submitted("title=a&starts_at=x&ends_at=y&freq=daily&end_kind=count&count=0");
+        assert!(rrule_from_form(&form).is_err());
+        let html = recurrence_picker(&RecurrenceFields::from_form(&form));
+        assert!(
+            html.contains(r#"<option value="daily" selected>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<option value="count" selected>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"name="count" min="1" max="730" value="0""#),
+            "{html}"
+        );
+
+        let form = submitted(
+            "title=a&starts_at=x&ends_at=y&freq=monthly&end_kind=until&until=%22%3E%3Cb%3E",
+        );
+        let html = recurrence_picker(&RecurrenceFields::from_form(&form));
+        assert!(
+            html.contains(r#"<option value="until" selected>"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"value="&quot;&gt;&lt;b&gt;""#), "{html}");
+        assert!(!html.contains("<b>"), "{html}");
+    }
+
+    /// A fresh create: a one-off event, every week day unchecked, an
+    /// interval of 1 and a rule that never stops — as it always showed.
+    #[test]
+    fn an_empty_picker_shows_a_one_off_event() {
+        let html = recurrence_picker(&RecurrenceFields::default());
+        assert!(html.contains(r#"<option value="none" selected>"#), "{html}");
+        assert!(
+            html.contains(r#"<option value="never" selected>"#),
+            "{html}"
+        );
+        assert_eq!(html.matches(" selected").count(), 2, "{html}");
+        assert!(!html.contains(" checked"), "{html}");
+        assert!(
+            html.contains(r#"name="interval" min="1" max="99" value="1""#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"name="count" min="1" max="730" value="""#),
+            "{html}"
+        );
+        assert!(html.contains(r#"name="until" value="""#), "{html}");
+    }
+
+    /// The edit page shows the stored rule through the same fields.
+    #[test]
+    fn a_stored_rule_reads_into_the_picker_fields() {
+        use chrono::Weekday;
+        let fields = RecurrenceFields::from_recurrence(&Recurrence {
+            freq: Freq::Weekly,
+            interval: 3,
+            byday: vec![Weekday::Fri, Weekday::Tue],
+            end: RecurrenceEnd::Until(NaiveDate::from_ymd_opt(2026, 12, 31).unwrap()),
+        });
+        assert_eq!(
+            fields,
+            RecurrenceFields {
+                freq: "weekly".into(),
+                interval: "3".into(),
+                byday: [false, true, false, false, true, false, false],
+                end_kind: "until".into(),
+                count: String::new(),
+                until: "2026-12-31".into(),
+            }
+        );
+        let count = RecurrenceFields::from_recurrence(&Recurrence {
+            freq: Freq::Yearly,
+            interval: 1,
+            byday: vec![],
+            end: RecurrenceEnd::Count(4),
+        });
+        assert_eq!(
+            (count.end_kind.as_str(), count.count.as_str()),
+            ("count", "4")
+        );
+        assert_eq!(count.freq, "yearly");
+    }
+
+    /// Fields read back from a submitted rule build that same rule again.
+    #[test]
+    fn submitted_fields_round_trip_through_the_rule() {
+        let form = submitted(SUBMITTED);
+        let rule = rrule_from_form(&form).unwrap().unwrap();
+        let parsed = manage_our_home_shared::validation::agenda::parse_rrule(&rule).expect(&rule);
+        assert_eq!(
+            RecurrenceFields::from_recurrence(&parsed),
+            RecurrenceFields::from_form(&form)
+        );
+    }
+
+    #[test]
+    fn the_sheet_comes_back_with_everything_that_was_submitted() {
+        let html = sheet_under_error(&submitted(SUBMITTED));
+        assert!(html.contains("La fin doit être après le début."), "{html}");
+        assert!(
+            html.contains(r#"<input type="text" name="title" required value="Dîner"/>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<input type="text" name="location" value="Chez Léa"/>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<textarea name="description" rows="3">Apporter le vin</textarea>"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"<option value="60" selected>"#), "{html}");
+        assert!(
+            html.contains(r#"<input type="checkbox" name="is_task" checked/>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<option value="weekly" selected>"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"name="byday_mo" checked/>"#), "{html}");
+        assert!(html.contains(r#"name="byday_we" checked/>"#), "{html}");
+        assert!(html.contains(r#"value="2026-09-05T20:00""#), "{html}");
+        assert!(html.contains(r#"value="2026-09-05T19:00""#), "{html}");
+    }
+
+    /// `title_required`: the title is what is missing, the rest stays.
+    #[test]
+    fn an_empty_title_keeps_the_other_fields() {
+        let body = SUBMITTED.replace("title=D%C3%AEner", "title=");
+        let html = sheet_under_error(&submitted(&body));
+        assert!(
+            html.contains(r#"<input type="text" name="title" required value=""/>"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"value="Chez Léa""#), "{html}");
+        assert!(html.contains(r#"<option value="60" selected>"#), "{html}");
+        assert!(html.contains(r#"name="byday_we" checked/>"#), "{html}");
+    }
+
+    #[test]
+    fn echoed_text_fields_are_escaped() {
+        let form = submitted(
+            "title=%22+onfocus%3D%22x%22+%3C%26&location=%22%3E%3Cs%3E\
+             &description=%3C%2Ftextarea%3E%3Cs%3E&starts_at=a&ends_at=b",
+        );
+        let html = sheet_under_error(&form);
+        assert!(
+            html.contains(
+                r#"name="title" required value="&quot; onfocus=&quot;x&quot; &lt;&amp;"/>"#
+            ),
+            "{html}"
+        );
+        assert!(!html.contains(r#"" onfocus="x""#), "{html}");
+        assert!(html.contains(r#"value="&quot;&gt;&lt;s&gt;""#), "{html}");
+        assert!(
+            html.contains("&lt;/textarea&gt;&lt;s&gt;</textarea>"),
+            "{html}"
+        );
+        assert!(!html.contains("<s>"), "{html}");
+    }
+
+    /// A fresh sheet asks everything afresh: nothing checked or chosen
+    /// beyond the defaults.
+    #[test]
+    fn a_fresh_sheet_has_nothing_filled_in() {
+        let html = sheet();
+        assert!(
+            html.contains(r#"name="title" required value=""/>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<option value="" selected>Aucun rappel</option>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<input type="checkbox" name="is_task"/>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<textarea name="description" rows="3"></textarea>"#),
+            "{html}"
+        );
     }
 
     #[test]
