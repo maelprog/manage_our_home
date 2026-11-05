@@ -124,15 +124,17 @@
     else if (input.hasAttribute("data-recurring")) recurring(input);
   });
 
-  // `data-recurring` on the « Événement récurrent » box: the box is shown
-  // and its `recurring_box` marker enabled, which tells the server that an
-  // unchecked box means a one-off event; the settings block it names in
+  // `data-recurring` on the « Événement récurrent » box: the box is shown,
+  // and it and its `recurring_box` marker — both rendered `disabled`, so a
+  // page without JavaScript sends neither — are enabled; the marker tells
+  // the server that an unchecked box means a one-off event; the settings
+  // block it names in
   // `aria-controls` is `hidden` — out of the tab order and of the
   // accessibility tree — while it is unchecked, and `aria-expanded` follows.
   // « Aucune » is no longer a frequency to pick, the box says it: checking
   // the box over it selects « Hebdomadaire », the frequency the server
   // takes for a checked box without one. Without JavaScript the box stays
-  // hidden, the marker unsent, and every setting shows as it always did.
+  // hidden and unsent, and every setting shows as it always did.
   function recurring(box) {
     var settings = document.getElementById(box.getAttribute("aria-controls"));
     if (!settings) return;
@@ -150,6 +152,7 @@
       if (!wrapper || !document.getElementById(box.getAttribute("aria-controls"))) return;
       var marker = wrapper.querySelector('input[name="recurring_box"]');
       if (marker) marker.disabled = false;
+      box.disabled = false;
       var none = box.form && box.form.querySelector('select[name="freq"] option[value="none"]');
       if (none) none.disabled = true;
       wrapper.hidden = false;

@@ -1066,13 +1066,31 @@ test.describe("Agenda — case « Événement récurrent » (#698)", () => {
     await expect(page.getByLabel("Fréquence")).toHaveValue("none");
     await page.getByLabel("Titre").fill("Marché du samedi");
     await page.getByLabel("Début").fill(`${date}T08:00`);
-    await page.getByLabel("Fin").fill(`${date}T09:00`);
+    // An end before the start: the sheet comes back under its error with
+    // the frequency chosen, still without a box.
+    await page.getByLabel("Fin").fill(`${date}T07:00`);
     await page.getByLabel("Fréquence").selectOption("weekly");
+    await page.getByRole("button", { name: "Créer l'événement" }).click();
+    await expect(page.getByText("La fin doit être après le début.")).toBeVisible();
+    await expect(recurringBox(page)).toHaveCount(0);
+    await expect(page.locator("#recurrence-settings")).toBeVisible();
+    await expect(page.getByLabel("Fréquence")).toHaveValue("weekly");
+
+    await page.getByLabel("Fin").fill(`${date}T09:00`);
     await page.getByRole("button", { name: "Créer l'événement" }).click();
     await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
     await page.goto(`/agenda?date=${date}`);
     await page.getByRole("link", { name: /Marché du samedi/ }).first().click();
     await expect(page.getByText("Récurrence : Chaque semaine")).toBeVisible();
+
+    // The edit page of that recurring event: « Aucune » clears the rule.
+    await page.getByRole("link", { name: "Modifier" }).click();
+    await expect(recurringBox(page)).toHaveCount(0);
+    await expect(page.getByLabel("Fréquence")).toHaveValue("weekly");
+    await page.getByLabel("Fréquence").selectOption("none");
+    await page.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(page.getByText("Événement mis à jour.")).toBeVisible();
+    await expect(recurrenceLine(page)).toHaveCount(0);
     await context.close();
   });
 });
