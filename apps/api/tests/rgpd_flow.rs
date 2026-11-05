@@ -97,6 +97,17 @@ async fn export_returns_owned_data_across_categories(db: PgPool) {
         register_verify_login(&router, &db, "export-owner@example.test", "owner-password1").await;
     let group_id = create_group(&router, &cookie, "Foyer Export").await;
 
+    // #561: the family's calendar settings, exported with the membership.
+    let settings = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}"),
+        Some(&cookie),
+        Some(serde_json::json!({"school_zone": "B", "alsace_moselle": true})),
+    )
+    .await;
+    assert_status(&settings, StatusCode::OK);
+
     call(
         &router,
         Method::POST,
@@ -192,6 +203,8 @@ async fn export_returns_owned_data_across_categories(db: PgPool) {
     assert_eq!(exported_accepted_at, accepted_at);
     assert_eq!(doc["group_memberships"][0]["name"], "Foyer Export");
     assert_eq!(doc["group_memberships"][0]["role"], "owner");
+    assert_eq!(doc["group_memberships"][0]["school_zone"], "B");
+    assert_eq!(doc["group_memberships"][0]["alsace_moselle"], true);
     assert_eq!(doc["stock_items"][0]["name"], "Farine");
     assert_eq!(doc["stock_items"][0]["expires_on"], "2026-12-01");
     assert_eq!(doc["budget_entries"][0]["name"], "Courses");

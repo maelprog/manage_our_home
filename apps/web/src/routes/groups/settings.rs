@@ -390,7 +390,7 @@ pub async fn rename(
         cookie.as_deref(),
         Some(serde_json::json!(RenameGroupRequest {
             name: Some(form.name.trim().to_string()),
-            accent: None,
+            ..Default::default()
         })),
     )
     .await;
@@ -441,8 +441,8 @@ pub async fn accent(
         &format!("/groups/{group_id}"),
         cookie.as_deref(),
         Some(serde_json::json!(RenameGroupRequest {
-            name: None,
             accent: Some(accent.as_str().to_string()),
+            ..Default::default()
         })),
     )
     .await;
@@ -623,6 +623,8 @@ mod tests {
         GroupDetailResponse {
             id: G,
             name: "Famille Martin".to_string(),
+            school_zone: None,
+            alsace_moselle: false,
             members: vec![
                 member(OWNER, "Alex", "owner"),
                 member(ADMIN, "Sam", "admin"),
@@ -786,6 +788,8 @@ mod tests {
         let group = GroupDetailResponse {
             id: G,
             name: "Solo".to_string(),
+            school_zone: None,
+            alsace_moselle: false,
             members: vec![member(OWNER, "Alex", "owner")],
         };
         let html = page("", &me(OWNER), &group, Accent::Sarcelle, None, None);
@@ -919,5 +923,70 @@ mod tests {
             error_text("invalid_accent"),
             Some("Cette couleur n'est pas proposée.")
         );
+    }
+
+    // -- RenameGroupRequest on the wire (#561) --------------------------------
+
+    /// The rename and accent forms send their one setting: a calendar
+    /// setting they leave out is absent from the body, so apps/api keeps it
+    /// rather than reading `null` (which would clear the school zone).
+    #[test]
+    fn a_rename_body_carries_only_the_settings_it_sets() {
+        let rename = RenameGroupRequest {
+            name: Some("Maison".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&rename).unwrap(),
+            serde_json::json!({"name": "Maison"})
+        );
+        let accent = RenameGroupRequest {
+            accent: Some("ocean".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&accent).unwrap(),
+            serde_json::json!({"accent": "ocean"})
+        );
+    }
+
+    /// `Some(None)` is the explicit "no zone": sent as `null`, not dropped.
+    #[test]
+    fn clearing_the_school_zone_is_sent_as_null() {
+        let clear = RenameGroupRequest {
+            school_zone: Some(None),
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&clear).unwrap(),
+            serde_json::json!({"school_zone": null})
+        );
+        let set = RenameGroupRequest {
+            school_zone: Some(Some("B".into())),
+            alsace_moselle: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&set).unwrap(),
+            serde_json::json!({"school_zone": "B", "alsace_moselle": true})
+        );
+    }
+
+    /// Read back, an absent key stays `None` and `null` stays `Some(None)`.
+    #[test]
+    fn a_rename_body_round_trips_absent_and_null_apart() {
+        let absent: RenameGroupRequest =
+            serde_json::from_value(serde_json::json!({"name": "Maison"})).unwrap();
+        assert_eq!(absent.school_zone, None);
+        assert_eq!(absent.alsace_moselle, None);
+        let cleared: RenameGroupRequest =
+            serde_json::from_value(serde_json::json!({"school_zone": null})).unwrap();
+        assert_eq!(cleared.school_zone, Some(None));
+        let set: RenameGroupRequest = serde_json::from_value(
+            serde_json::json!({"school_zone": "C", "alsace_moselle": false}),
+        )
+        .unwrap();
+        assert_eq!(set.school_zone, Some(Some("C".into())));
+        assert_eq!(set.alsace_moselle, Some(false));
     }
 }

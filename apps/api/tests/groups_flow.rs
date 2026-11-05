@@ -490,6 +490,195 @@ async fn group_accent_is_set_by_owner_and_admins_only(db: PgPool) {
     assert!(raw.is_err(), "the CHECK must refuse an unknown accent");
 }
 
+/// #561: a family starts with no school zone and without the Alsace-Moselle
+/// holidays; PATCH /groups/:id sets either for the owner and an admin (200),
+/// not for a standard member (403) nor a non-member (403, as every other
+/// setting); a value outside A/B/C, or a non-boolean, is a 400 with its own
+/// code. `GET /groups/:id` carries both to every member and answers 404 to
+/// a non-member.
+#[sqlx::test]
+async fn group_calendar_settings_are_set_by_owner_and_admins_only(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner = register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let member =
+        register_verify_login(&router, &db, "member@example.test", "member-password1").await;
+    let outsider =
+        register_verify_login(&router, &db, "outsider@example.test", "outsider-password1").await;
+
+    let create = call(
+        &router,
+        Method::POST,
+        "/groups",
+        Some(&owner),
+        Some(serde_json::json!({"name": "Foyer"})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let created = json_body(create).await;
+    assert_eq!(created["school_zone"], serde_json::Value::Null);
+    assert_eq!(created["alsace_moselle"], false);
+    let group_id = created["id"].as_str().unwrap().to_string();
+
+    let invite = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/invitations"),
+        Some(&owner),
+        Some(serde_json::json!({"invited_email": "member@example.test"})),
+    )
+    .await;
+    let token = json_body(invite).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let accept = call(
+        &router,
+        Method::POST,
+        &format!("/groups/invitations/{token}/accept"),
+        Some(&member),
+        None,
+    )
+    .await;
+    assert_status(&accept, StatusCode::OK);
+
+    let detail_of = |cookie: String| {
+        let router = router.clone();
+        let uri = format!("/groups/{group_id}");
+        async move {
+            let detail = call(&router, Method::GET, &uri, Some(&cookie), None).await;
+            assert_status(&detail, StatusCode::OK);
+            let detail = json_body(detail).await;
+            (
+                detail["school_zone"].clone(),
+                detail["alsace_moselle"].clone(),
+            )
+        }
+    };
+    let settings = |zone: serde_json::Value, alsace: bool| (zone, serde_json::Value::Bool(alsace));
+    assert_eq!(
+        detail_of(member.clone()).await,
+        settings(serde_json::Value::Null, false)
+    );
+
+    let patch = |cookie: String, body: serde_json::Value| {
+        let router = router.clone();
+        let uri = format!("/groups/{group_id}");
+        async move { call(&router, Method::PATCH, &uri, Some(&cookie), Some(body)).await }
+    };
+
+    // A non-member reads nothing of the group, as before.
+    let hidden = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}"),
+        Some(&outsider),
+        None,
+    )
+    .await;
+    assert_status(&hidden, StatusCode::NOT_FOUND);
+
+    // A standard member and a non-member are refused, whatever the value.
+    for cookie in [member.clone(), outsider.clone()] {
+        let forbidden = patch(cookie.clone(), serde_json::json!({"school_zone": "B"})).await;
+        assert_status(&forbidden, StatusCode::FORBIDDEN);
+        let forbidden = patch(cookie, serde_json::json!({"alsace_moselle": true})).await;
+        assert_status(&forbidden, StatusCode::FORBIDDEN);
+    }
+
+    // No fourth zone, no variant spelling, no other type.
+    for value in [
+        serde_json::json!("D"),
+        serde_json::json!("b"),
+        serde_json::json!(""),
+        serde_json::json!("Zone B"),
+        serde_json::json!(2),
+    ] {
+        let bad = patch(owner.clone(), serde_json::json!({"school_zone": value})).await;
+        assert_status(&bad, StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(bad).await["error"], "invalid_school_zone");
+    }
+    for value in [
+        serde_json::Value::Null,
+        serde_json::json!("true"),
+        serde_json::json!(1),
+    ] {
+        let bad = patch(owner.clone(), serde_json::json!({"alsace_moselle": value})).await;
+        assert_status(&bad, StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(bad).await["error"], "invalid_alsace_moselle");
+    }
+    assert_eq!(
+        detail_of(owner.clone()).await,
+        settings(serde_json::Value::Null, false)
+    );
+
+    // The owner sets the zone alone: the rest is kept.
+    let by_owner = patch(owner.clone(), serde_json::json!({"school_zone": "B"})).await;
+    assert_status(&by_owner, StatusCode::OK);
+    let body = json_body(by_owner).await;
+    assert_eq!(body["school_zone"], "B");
+    assert_eq!(body["alsace_moselle"], false);
+    assert_eq!(body["name"], "Foyer");
+    assert_eq!(body["accent"], "sarcelle");
+    assert_eq!(
+        detail_of(member.clone()).await,
+        settings(serde_json::json!("B"), false)
+    );
+
+    // Renaming alone keeps both settings.
+    let renamed = patch(owner.clone(), serde_json::json!({"name": "Maison"})).await;
+    assert_status(&renamed, StatusCode::OK);
+    let body = json_body(renamed).await;
+    assert_eq!(body["school_zone"], "B");
+    assert_eq!(body["alsace_moselle"], false);
+
+    // Promoted to admin, the member turns Alsace-Moselle on; the zone stays.
+    let member_id: Uuid =
+        sqlx::query_scalar!("SELECT id FROM users WHERE email = 'member@example.test'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let promote = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/members/{member_id}/role"),
+        Some(&owner),
+        Some(serde_json::json!({"role": "admin"})),
+    )
+    .await;
+    assert_status(&promote, StatusCode::OK);
+    let by_admin = patch(member.clone(), serde_json::json!({"alsace_moselle": true})).await;
+    assert_status(&by_admin, StatusCode::OK);
+    assert_eq!(
+        detail_of(owner.clone()).await,
+        settings(serde_json::json!("B"), true)
+    );
+
+    // `null` clears the zone, Alsace-Moselle is kept; then both at once.
+    let cleared = patch(member.clone(), serde_json::json!({"school_zone": null})).await;
+    assert_status(&cleared, StatusCode::OK);
+    assert_eq!(
+        detail_of(member.clone()).await,
+        settings(serde_json::Value::Null, true)
+    );
+    let both = patch(
+        owner.clone(),
+        serde_json::json!({"school_zone": "C", "alsace_moselle": false}),
+    )
+    .await;
+    assert_status(&both, StatusCode::OK);
+    assert_eq!(
+        detail_of(member.clone()).await,
+        settings(serde_json::json!("C"), false)
+    );
+
+    // The column's CHECK holds the same list, whoever writes.
+    let raw = sqlx::query("UPDATE groups SET school_zone = 'D' WHERE id = $1::uuid")
+        .bind(&group_id)
+        .execute(&db)
+        .await;
+    assert!(raw.is_err(), "the CHECK must refuse an unknown school zone");
+}
+
 /// POST /groups/:id/transfer-ownership swaps roles atomically with one audit
 /// row; rejects non-owner (403), self target (422), and non-member (404).
 #[sqlx::test]

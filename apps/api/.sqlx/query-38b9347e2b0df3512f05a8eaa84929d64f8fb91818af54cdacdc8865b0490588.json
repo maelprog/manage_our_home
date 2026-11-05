@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE groups SET name = COALESCE($1, name), accent = COALESCE($2, accent)\n           WHERE id = $3 RETURNING id, name, accent",
+  "query": "\n        SELECT g.id, g.name, g.school_zone, g.alsace_moselle\n        FROM groups g\n        JOIN group_members gm ON gm.group_id = g.id AND gm.user_id = $2\n        WHERE g.id = $1\n        ",
   "describe": {
     "columns": [
       {
@@ -27,28 +27,39 @@
       },
       {
         "ordinal": 2,
-        "name": "accent",
+        "name": "school_zone",
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "groups",
-            "name": "accent"
+            "name": "school_zone"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "alsace_moselle",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "groups",
+            "name": "alsace_moselle"
           }
         }
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Text",
+        "Uuid",
         "Uuid"
       ]
     },
     "nullable": [
       false,
       false,
+      true,
       false
     ]
   },
-  "hash": "73f6c7f6dcdc0ce6b6319bebe44032a7753b0d3be97ad6e3a457e803ab5b0b8f"
+  "hash": "38b9347e2b0df3512f05a8eaa84929d64f8fb91818af54cdacdc8865b0490588"
 }

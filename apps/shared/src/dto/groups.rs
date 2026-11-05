@@ -31,6 +31,13 @@ pub struct GroupResponse {
     /// The family's accent (#537), an `Accent` identifier.
     #[serde(default = "default_accent")]
     pub accent: String,
+    /// The family's school-holiday zone (#561), a `SchoolZone` letter, or
+    /// `None` for no zone.
+    #[serde(default)]
+    pub school_zone: Option<String>,
+    /// Whether the family keeps the Alsace-Moselle public holidays (#561).
+    #[serde(default)]
+    pub alsace_moselle: bool,
 }
 
 /// One element of the `GET /groups` array: a group the caller belongs to,
@@ -77,6 +84,15 @@ pub struct GroupMember {
 pub struct GroupDetailResponse {
     pub id: Uuid,
     pub name: String,
+    /// The family's school-holiday zone (#561), a `SchoolZone` letter;
+    /// `None` when it has none, or when an older API omits it: no school
+    /// holidays are then shown.
+    #[serde(default)]
+    pub school_zone: Option<String>,
+    /// Whether the family keeps the Alsace-Moselle public holidays (#561);
+    /// `false` when an older API omits it.
+    #[serde(default)]
+    pub alsace_moselle: bool,
     pub members: Vec<GroupMember>,
 }
 
@@ -96,14 +112,37 @@ pub struct GroupMemberProfile {
 }
 
 /// `PATCH /groups/:id`: the settings to change, each optional — the name,
-/// the accent (#537), or both. Owner or admin only.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// the accent (#537), the calendar settings (#561), in any combination.
+/// Owner or admin only.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RenameGroupRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// An `Accent` identifier; anything else is refused with 400.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accent: Option<String>,
+    /// `None`: kept (key omitted); `Some(None)`: cleared (`null`, no school
+    /// holidays); `Some(Some(_))`: a `SchoolZone` letter, anything else is
+    /// refused with 400.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_some",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub school_zone: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alsace_moselle: Option<bool>,
+}
+
+/// Serde's blanket `Option<T>` impl reads an explicit JSON `null` and a
+/// missing key as the same `None`; this `deserialize_with` only runs when the
+/// key is present, so `null` becomes `Some(None)` (as in `dto/stocks.rs`).
+fn deserialize_some<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

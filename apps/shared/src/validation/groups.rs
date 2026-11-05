@@ -149,9 +149,61 @@ impl Accent {
     }
 }
 
+/// The school-holiday zone of a family (#561), the value of
+/// `groups.school_zone` (migration 0046): one of the three zones of the
+/// French national calendar, `A`, `B` or `C`. A family with no zone (`NULL`)
+/// is shown no school holidays. The `CHECK` of the migration spells the same
+/// three letters; the holidays themselves are computed elsewhere (#562).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchoolZone {
+    A,
+    B,
+    C,
+}
+
+impl SchoolZone {
+    /// Every zone, in the order the settings offer them.
+    pub const ALL: [SchoolZone; 3] = [SchoolZone::A, SchoolZone::B, SchoolZone::C];
+
+    /// The column's value, spelled exactly as the migration's `CHECK`.
+    pub fn parse(value: &str) -> Option<Self> {
+        SchoolZone::ALL.into_iter().find(|z| z.as_str() == value)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SchoolZone::A => "A",
+            SchoolZone::B => "B",
+            SchoolZone::C => "C",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- SchoolZone (#561) ----------------------------------------------------
+
+    #[test]
+    fn the_three_school_zones_round_trip_in_order() {
+        let names: Vec<&str> = SchoolZone::ALL.iter().map(|z| z.as_str()).collect();
+        assert_eq!(names, ["A", "B", "C"]);
+        for zone in SchoolZone::ALL {
+            assert_eq!(SchoolZone::parse(zone.as_str()), Some(zone));
+        }
+    }
+
+    /// Exactly the capital letter: no fourth zone, no lower case, no
+    /// whitespace, no spelled-out "zone B".
+    #[test]
+    fn anything_else_is_not_a_school_zone() {
+        for text in [
+            "", "D", "a", "b", " B", "B ", "Zone B", "zone b", "AB", "Corse",
+        ] {
+            assert_eq!(SchoolZone::parse(text), None, "{text:?}");
+        }
+    }
 
     // -- Accent (#537) --------------------------------------------------------
 
