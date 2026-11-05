@@ -547,6 +547,52 @@ test.describe("Agenda — journée entière", () => {
     expect(html).toContain(`type="date" name="ends_at" value="${d6}"`);
     await expect(fetchEventBounds(email, "Dates inversees")).rejects.toThrow();
   });
+
+  // #697: with JS, Fin follows Début — its `min` is the start, and a start
+  // moved past the end takes the end along. An end still after the start is
+  // left alone. Without JS nothing changes (the test above).
+  test("la fin suit le début : min posé, fin dépassée ramenée au début, en heures comme en jours", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-agfollow", "Follow User");
+    await createGroup(page, "Famille Suivi");
+    const [d12, d14, d15] = [12, 14, 15].map(dayThisMonth);
+    const box = page.locator('input[name="all_day"]');
+    const start = page.getByLabel("Début");
+    const end = page.getByLabel("Fin");
+
+    await page.goto("/agenda/new");
+    await start.fill(`${d12}T09:00`);
+    await end.fill(`${d12}T10:00`);
+    await expect(end).toHaveAttribute("min", `${d12}T09:00`);
+
+    // The start passes the end: the end moves to the start.
+    await start.fill(`${d12}T18:00`);
+    await expect(end).toHaveValue(`${d12}T18:00`);
+    await expect(end).toHaveAttribute("min", `${d12}T18:00`);
+
+    // The end is still after the start: it stays where it is.
+    await end.fill(`${d14}T12:00`);
+    await start.fill(`${d12}T08:00`);
+    await expect(end).toHaveValue(`${d14}T12:00`);
+    await expect(end).toHaveAttribute("min", `${d12}T08:00`);
+
+    // "Journée entière": the min takes the date shape, and still follows.
+    await box.check();
+    await expect(end).toHaveAttribute("type", "date");
+    await expect(end).toHaveAttribute("min", d12);
+    await start.fill(d15);
+    await expect(end).toHaveValue(d15);
+    await expect(end).toHaveAttribute("min", d15);
+
+    // And back to timed slots.
+    await box.uncheck();
+    await expect(end).toHaveAttribute("type", "datetime-local");
+    await expect(end).toHaveAttribute("min", `${d15}T00:00`);
+    await page.getByLabel("Titre").fill("Fin suivie");
+    await page.getByRole("button", { name: "Créer l'événement" }).click();
+    await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
+  });
 });
 
 // #525 — the head of the agenda, from the mock-ups: ‹ · « Aujourd'hui » · ›

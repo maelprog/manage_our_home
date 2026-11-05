@@ -118,7 +118,45 @@
     }
     // `data-all-day` (`agenda::new::schedule_fields`, #117).
     else if (input.hasAttribute("data-all-day")) allDay(input);
+    // `data-min-of` (`agenda::new::schedule_fields`, #697).
+    else if (input.hasAttribute("data-min-of")) bound(input, true);
   });
+
+  // `data-min-of="<name>"` on a field (the event's Début, #697): the field
+  // of that name in the same form (Fin) gets this one's value as its `min`,
+  // so the browser's own picker and validation hold it there. When this
+  // field is changed and has passed the other, the other is moved onto it;
+  // an end still after the start is left alone (no duration is kept). The
+  // `min` takes the other field's shape — `YYYY-MM-DD` for a `date`, a
+  // start of day for a `datetime-local` whose start is a bare date — since a
+  // `min` the type cannot read is ignored. Same-shaped values compare as
+  // strings. Without JavaScript there is no `min`, and the server's
+  // `ends_before_starts` stays the only check.
+  function bound(field, follow) {
+    var other = field.form && field.form.elements[field.getAttribute("data-min-of")];
+    if (!other) return;
+    var value = field.value;
+    var min = !value
+      ? ""
+      : other.type === "date"
+        ? value.slice(0, 10)
+        : value.length > 10
+          ? value.slice(0, 16)
+          : value + "T00:00";
+    if (!min) {
+      other.removeAttribute("min");
+      return;
+    }
+    other.setAttribute("min", min);
+    if (follow && other.value && other.value < min) other.value = min;
+  }
+
+  function bounds() {
+    var fields = document.querySelectorAll("input[data-min-of]");
+    Array.prototype.forEach.call(fields, function (field) {
+      bound(field, false);
+    });
+  }
 
   // `data-expiry-shortcuts` (`stocks::new::form_fields`, #404): "+3 j",
   // "+1 sem." and "+1 mois" buttons after the date's label, which fill the
@@ -240,6 +278,7 @@
     expiryShortcuts();
     resendCooldowns();
     strengthMeters();
+    bounds();
     try {
       revealCurrentTab();
     } catch (e) {}
@@ -293,5 +332,7 @@
         if (value) field.value = shift(value, isEnd ? 1 : 0) + "T00:00";
       }
     });
+    // The end's `min` takes the new shape; the box moves no bound itself.
+    if (start.hasAttribute("data-min-of")) bound(start, false);
   }
 })();
