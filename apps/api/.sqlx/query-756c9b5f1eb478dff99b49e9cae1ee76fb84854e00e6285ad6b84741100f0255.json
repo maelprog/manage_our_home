@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO school_holidays (zone, label, starts_on, ends_on, school_year)\n           SELECT * FROM UNNEST($1::text[], $2::text[], $3::date[], $4::date[], $5::text[])",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        "DateArray",
+        "DateArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "756c9b5f1eb478dff99b49e9cae1ee76fb84854e00e6285ad6b84741100f0255"
+}

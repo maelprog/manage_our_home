@@ -188,11 +188,18 @@ pub struct AttachmentResponse {
 /// `validation::national_days::NationalDay`. `kind` is `public_holiday`,
 /// `clock_change` or `observance` (`NationalDayKind::as_str`), left a string
 /// so a kind added later does not fail an older client's deserialization.
+///
+/// `school_holiday` (#563) is a period of the family's school zone: `date`
+/// is its first day off and `end` its last, both included, either possibly
+/// outside the range asked for. The other kinds are one day and carry no
+/// `end`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NationalDayResponse {
     pub date: NaiveDate,
     pub kind: String,
     pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<NaiveDate>,
 }
 
 /// `GET /groups/:id/national-days?from&to` response envelope.
