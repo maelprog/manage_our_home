@@ -127,7 +127,7 @@ tourne sur un VPS loué à un hébergeur tiers (arbitrage du 2026-10-10,
   événement à venir » pour un rappel, « Alerte de budget » pour une alerte,
   sans montant ni catégorie, « Produits bientôt périmés » pour le
   récapitulatif, sans nom d'article, et « Nouvelle notification » quand il ne peut
-  pas savoir lequel il a reçu : messages des deux types en route vers lui
+  pas savoir lequel il a reçu : messages de deux types en route vers lui
   en même temps, pas de session ou pas de réseau.
 - **Open Food Facts** (#402) n'est destinataire d'aucune donnée
   personnelle, et n'appelle donc pas de ligne au tableau ci-dessous. Quand
