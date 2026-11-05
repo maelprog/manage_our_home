@@ -120,7 +120,42 @@
     else if (input.hasAttribute("data-all-day")) allDay(input);
     // `data-min-of` (`agenda::new::schedule_fields`, #697).
     else if (input.hasAttribute("data-min-of")) bound(input, true);
+    // `data-recurring` (`agenda::new::recurrence_picker`, #698).
+    else if (input.hasAttribute("data-recurring")) recurring(input);
   });
+
+  // `data-recurring` on the « Événement récurrent » box: the box is shown
+  // and its `recurring_box` marker enabled, which tells the server that an
+  // unchecked box means a one-off event; the settings block it names in
+  // `aria-controls` is `hidden` — out of the tab order and of the
+  // accessibility tree — while it is unchecked, and `aria-expanded` follows.
+  // « Aucune » is no longer a frequency to pick, the box says it: checking
+  // the box over it selects « Hebdomadaire », the frequency the server
+  // takes for a checked box without one. Without JavaScript the box stays
+  // hidden, the marker unsent, and every setting shows as it always did.
+  function recurring(box) {
+    var settings = document.getElementById(box.getAttribute("aria-controls"));
+    if (!settings) return;
+    var on = box.checked;
+    settings.hidden = !on;
+    box.setAttribute("aria-expanded", on ? "true" : "false");
+    var freq = box.form && box.form.elements.freq;
+    if (on && freq && freq.value === "none") freq.value = "weekly";
+  }
+
+  function recurringBoxes() {
+    var boxes = document.querySelectorAll("input[data-recurring]");
+    Array.prototype.forEach.call(boxes, function (box) {
+      var wrapper = closest(box, "[data-recurring-box]");
+      if (!wrapper || !document.getElementById(box.getAttribute("aria-controls"))) return;
+      var marker = wrapper.querySelector('input[name="recurring_box"]');
+      if (marker) marker.disabled = false;
+      var none = box.form && box.form.querySelector('select[name="freq"] option[value="none"]');
+      if (none) none.disabled = true;
+      wrapper.hidden = false;
+      recurring(box);
+    });
+  }
 
   // `data-min-of="<name>"` on a field (the event's Début, #697): the field
   // of that name in the same form (Fin) gets this one's value as its `min`,
@@ -279,6 +314,7 @@
     resendCooldowns();
     strengthMeters();
     bounds();
+    recurringBoxes();
     try {
       revealCurrentTab();
     } catch (e) {}

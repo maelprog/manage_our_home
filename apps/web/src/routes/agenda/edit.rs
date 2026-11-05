@@ -422,6 +422,39 @@ mod tests {
         );
     }
 
+    /// #698: an event with a rule opens its edit form with the « Événement
+    /// récurrent » box checked over its settings; a one-off one, unchecked.
+    #[test]
+    fn the_edit_form_checks_the_recurring_box_of_a_recurring_event() {
+        let rule = parse_rrule("FREQ=WEEKLY;BYDAY=TU").unwrap();
+        let html = page(
+            "",
+            Uuid::from_u128(9),
+            false,
+            "Piscine",
+            "",
+            "",
+            "2026-09-05T10:00",
+            "2026-09-05T11:00",
+            false,
+            &RecurrenceFields::from_recurrence(&rule),
+            None,
+            &[member("Camille")],
+            &[],
+            false,
+        );
+        assert!(
+            html.contains(r#"name="recurring" checked aria-expanded="true""#),
+            "{html}"
+        );
+        assert!(html.contains(r#"name="byday_tu" checked/>"#), "{html}");
+        assert!(
+            edit_page(false).contains(r#"name="recurring" aria-expanded="false""#),
+            "{}",
+            edit_page(false)
+        );
+    }
+
     /// #621: the edit form carries the « Privé » box under who it is for,
     /// checked as the event is.
     #[test]

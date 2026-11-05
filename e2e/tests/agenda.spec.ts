@@ -64,6 +64,8 @@ async function createEvent(page: Page, opts: EventOpts): Promise<void> {
   await page.getByLabel("Fin").fill(opts.end);
   if (opts.isTask) await page.locator('input[name="is_task"]').check();
   if (opts.freq && opts.freq !== "none") {
+    // The settings open under « Événement récurrent » (#698).
+    await page.getByRole("checkbox", { name: "Événement récurrent" }).check();
     await page.getByLabel("Fréquence").selectOption(opts.freq);
   }
   await page.getByRole("button", { name: "Créer l'événement" }).click();
@@ -976,6 +978,101 @@ test.describe("Agenda — événements privés (#621)", () => {
     await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
     await page.goto(`/agenda?date=${date}`);
     await expect(page.getByRole("link", { name: /^Privé 09:00 Note discrète$/ })).toBeVisible();
+    await context.close();
+  });
+});
+
+// #698: the recurrence settings open under an « Événement récurrent » box.
+// Group names avoid every label of the form (`getByLabel` matches
+// substrings, the family switcher included).
+test.describe("Agenda — case « Événement récurrent » (#698)", () => {
+  const recurringBox = (page: Page) => page.getByRole("checkbox", { name: "Événement récurrent" });
+  const recurrenceLine = (page: Page) => page.getByText("Récurrence :");
+
+  test("cocher ouvre les réglages, décocher les masque et l'envoi reste ponctuel", async ({ page }) => {
+    await registerAndLogin(page, "e2e-agrecbox", "Cycle User");
+    await createGroup(page, "Famille Cycle");
+    const date = dayThisMonth(19);
+    const box = recurringBox(page);
+    const settings = page.locator("#recurrence-settings");
+    const freq = page.getByLabel("Fréquence");
+
+    await page.goto("/agenda/new");
+    await expect(box).not.toBeChecked();
+    await expect(box).toHaveAttribute("aria-expanded", "false");
+    await expect(box).toHaveAttribute("aria-controls", "recurrence-settings");
+    await expect(settings).toBeHidden();
+    await expect(freq).toBeHidden();
+
+    await box.check();
+    await expect(box).toHaveAttribute("aria-expanded", "true");
+    await expect(settings).toBeVisible();
+    // No frequency chosen yet: the box picks the weekly one.
+    await expect(freq).toHaveValue("weekly");
+    await page.getByRole("checkbox", { name: "Lun" }).check();
+
+    // Unchecked, the settings are hidden again and what they hold is not sent.
+    await box.uncheck();
+    await expect(box).toHaveAttribute("aria-expanded", "false");
+    await expect(settings).toBeHidden();
+    await page.getByLabel("Titre").fill("Rendez-vous unique");
+    await page.getByLabel("Début").fill(`${date}T09:00`);
+    await page.getByLabel("Fin").fill(`${date}T10:00`);
+    await page.getByRole("button", { name: "Créer l'événement" }).click();
+    await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
+    await openEventDetail(page, "Rendez-vous unique");
+    await expect(recurrenceLine(page)).toHaveCount(0);
+  });
+
+  test("l'édition d'un événement récurrent ouvre la case cochée ; décochée, la règle s'en va", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-agrecedit", "Cycle Editor");
+    await createGroup(page, "Famille Cycle Bis");
+    const date = dayThisMonth(20);
+    await createEvent(page, {
+      title: "Cours de piano",
+      start: `${date}T17:00`,
+      end: `${date}T18:00`,
+      freq: "daily",
+    });
+    await openEventDetail(page, "Cours de piano");
+    await expect(page.getByText("Récurrence : Tous les jours")).toBeVisible();
+
+    await page.getByRole("link", { name: "Modifier" }).click();
+    const box = recurringBox(page);
+    await expect(box).toBeChecked();
+    await expect(box).toHaveAttribute("aria-expanded", "true");
+    await expect(page.getByLabel("Fréquence")).toHaveValue("daily");
+    await box.uncheck();
+    await expect(page.locator("#recurrence-settings")).toBeHidden();
+    await page.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(page.getByText("Événement mis à jour.")).toBeVisible();
+    await expect(recurrenceLine(page)).toHaveCount(0);
+  });
+
+  test("sans JavaScript, pas de case : les réglages restent affichés et « Aucune » reste un choix", async ({
+    browser,
+  }) => {
+    const context = await browser.newContext({ javaScriptEnabled: false, reducedMotion: "reduce" });
+    const page = await context.newPage();
+    await registerAndLogin(page, "e2e-agrecnojs", "Cycle Sans Script");
+    await createGroup(page, "Famille Cycle Ter");
+    const date = dayThisMonth(21);
+
+    await page.goto("/agenda/new");
+    await expect(recurringBox(page)).toHaveCount(0);
+    await expect(page.locator("#recurrence-settings")).toBeVisible();
+    await expect(page.getByLabel("Fréquence")).toHaveValue("none");
+    await page.getByLabel("Titre").fill("Marché du samedi");
+    await page.getByLabel("Début").fill(`${date}T08:00`);
+    await page.getByLabel("Fin").fill(`${date}T09:00`);
+    await page.getByLabel("Fréquence").selectOption("weekly");
+    await page.getByRole("button", { name: "Créer l'événement" }).click();
+    await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
+    await page.goto(`/agenda?date=${date}`);
+    await page.getByRole("link", { name: /Marché du samedi/ }).first().click();
+    await expect(page.getByText("Récurrence : Chaque semaine")).toBeVisible();
     await context.close();
   });
 });
