@@ -86,6 +86,7 @@ icon_set! {
         Close,
         Camera,
         Trash,
+        Lock,
     }
 }
 
@@ -191,6 +192,10 @@ pub fn icon(icon: Icon) -> &'static str {
         // trash (Lucide's former trash-2)
         Icon::Trash => svg!(
             r#"<path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>"#
+        ),
+        // lock: a private event (#621).
+        Icon::Lock => svg!(
+            r#"<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>"#
         ),
     }
 }

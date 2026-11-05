@@ -151,6 +151,15 @@ pub(crate) fn assignee_ids_from_raw_form(raw: &str) -> Vec<Uuid> {
         .collect()
 }
 
+/// Whether a raw form body carries the « Privé » box (#621), for the one
+/// re-render that has no `EventForm` to read it from: a body that did not
+/// deserialize still gives back what the visitor had checked.
+pub(crate) fn raw_is_private(raw: &str) -> bool {
+    raw.split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .any(|(k, _)| k == "is_private")
+}
+
 /// Renders one checkbox per family member — the "who is this for" picker
 /// (issue #73). Same `field inline` markup as the recurrence picker's day
 /// checkboxes just below, one input per option rather than a dynamic
@@ -195,6 +204,18 @@ pub(crate) fn assignee_checkboxes(members: &[GroupMember], selected: &[Uuid]) ->
 {boxes}
 </fieldset>"#,
         marker = ASSIGNEES_PRESENT_FIELD,
+    )
+}
+
+/// The « Privé » box, under the "who is this for" picker on the create and
+/// edit forms (#621): a private event is seen by its creator and the members
+/// checked above, nobody else — apps/api's policy decides it (#620), the box
+/// only asks. A plain checkbox in a `.field.inline` label, so the form needs
+/// no JavaScript; unchecked, a browser sends nothing, which reads as shared.
+pub(crate) fn private_checkbox(checked: bool) -> String {
+    format!(
+        r#"<label class="field inline"><input type="checkbox" name="is_private"{checked}/> Privé — visible seulement par moi et les personnes de « pour qui »</label>"#,
+        checked = if checked { " checked" } else { "" },
     )
 }
 
@@ -261,6 +282,9 @@ pub struct EventForm {
     /// `ASSIGNEES_PRESENT_FIELD`.
     #[serde(default)]
     pub assignees_present: Option<String>,
+    /// The « Privé » box (#621): present iff it was checked.
+    #[serde(default)]
+    pub is_private: Option<String>,
 }
 
 /// Builds the RRULE string from the picker fields, or `Ok(None)` for a
@@ -462,6 +486,7 @@ fn page(
     default_end: &str,
     members: &[GroupMember],
     selected_assignees: &[Uuid],
+    is_private: bool,
     push: &str,
 ) -> String {
     let error_html = error
@@ -471,6 +496,7 @@ fn page(
     let picker = recurrence_picker(None);
     let reminder = reminder_select("reminder", None);
     let assignees = assignee_checkboxes(members, selected_assignees);
+    let private = private_checkbox(is_private);
     // `header` is trusted HTML built by `app_header`; embed it directly at
     // the top, the same position the `view!`-based pages give it.
     //
@@ -491,6 +517,7 @@ fn page(
 {push}
 {assignees}
 <p class="muted">Aucune sélection = assigné à vous.</p>
+{private}
 <label>Pièce jointe (png, jpg, webp, pdf — max 20 Mo)
 <input type="file" name="file" accept="image/png,image/jpeg,image/webp,application/pdf"/></label>
 <label class="field inline">
@@ -538,6 +565,7 @@ pub async fn get(
         &end,
         &members,
         &[],
+        false,
         &push,
     ))
     .into_response()
@@ -622,6 +650,7 @@ pub async fn post(
                         &to_datetime_local(now + chrono::Duration::hours(1)),
                         &members,
                         &[],
+                        false,
                         &push,
                     ))
                     .into_response();
@@ -658,6 +687,7 @@ pub async fn post(
                 &to_datetime_local(now + chrono::Duration::hours(1)),
                 &members,
                 &assignee_ids,
+                raw_is_private(&raw),
                 &push,
             )),
         )
@@ -674,6 +704,7 @@ pub async fn post(
             &form.ends_at,
             &members,
             &assignee_ids,
+            form.is_private.is_some(),
             &push,
         ))
         .into_response()
@@ -717,8 +748,7 @@ pub async fn post(
         is_task: form.is_task.is_some(),
         rrule,
         assignee_ids: (!assignee_ids.is_empty()).then(|| assignee_ids.clone()),
-        // The form has no privacy field yet (#621): a shared event, as before.
-        is_private: false,
+        is_private: form.is_private.is_some(),
     };
 
     let result = api_request_auth(
@@ -1037,6 +1067,7 @@ mod tests {
             "2026-09-05T11:00",
             &[member(1, "Alice")],
             &[],
+            false,
             "",
         )
     }
@@ -1111,6 +1142,46 @@ mod tests {
         let html = assignee_checkboxes(&members, &[members[1].user_id]);
         assert!(html.contains(&format!(r#"value="{}" checked"#, members[1].user_id)));
         assert!(html.contains(&format!(r#"value="{}"/>"#, members[0].user_id)));
+    }
+
+    // -- the « Privé » box (#621) -------------------------------------------
+
+    #[test]
+    fn the_private_box_sits_under_who_it_is_for() {
+        let html = sheet();
+        let at = |needle: &str| {
+            html.find(needle)
+                .unwrap_or_else(|| panic!("`{needle}` is not in the form: {html}"))
+        };
+        assert!(at(r#"name="assignee_ids""#) < at(r#"name="is_private""#));
+        assert!(at("Aucune sélection = assigné à vous.") < at(r#"name="is_private""#));
+        assert!(at(r#"name="is_private""#) < at(r#"name="file""#));
+    }
+
+    #[test]
+    fn the_private_box_is_a_labelled_checkbox_unchecked_by_default() {
+        assert_eq!(
+            private_checkbox(false),
+            r#"<label class="field inline"><input type="checkbox" name="is_private"/> Privé — visible seulement par moi et les personnes de « pour qui »</label>"#
+        );
+    }
+
+    #[test]
+    fn a_checked_private_box_comes_back_checked() {
+        assert!(private_checkbox(true).contains(r#"name="is_private" checked/>"#));
+    }
+
+    #[test]
+    fn the_private_box_is_read_from_the_form_and_from_a_raw_body() {
+        let checked: EventForm =
+            serde_urlencoded::from_str("title=a&starts_at=x&ends_at=y&is_private=on").unwrap();
+        assert!(checked.is_private.is_some());
+        let unchecked: EventForm =
+            serde_urlencoded::from_str("title=a&starts_at=x&ends_at=y").unwrap();
+        assert!(unchecked.is_private.is_none());
+        assert!(raw_is_private("title=a&is_private=on"));
+        assert!(!raw_is_private("title=a&not_is_private=on"));
+        assert!(!raw_is_private("title=is_private"));
     }
 
     // -- the attachment at creation (#525) ----------------------------------

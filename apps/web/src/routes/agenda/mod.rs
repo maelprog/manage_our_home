@@ -38,6 +38,7 @@ use uuid::Uuid;
 
 use crate::app::{shell, Width};
 use crate::family::{active_group_id_from_headers, resolve_active_group};
+use crate::icons::{icon, Icon};
 use crate::routes::groups::{cookie_of, header_with_groups};
 use crate::state::AppState;
 
@@ -77,6 +78,61 @@ pub(crate) async fn family_context(
 /// render those controls (the backend still 403s a forged request).
 pub(crate) fn can_modify(role: &str, is_creator: bool) -> bool {
     is_creator || role == "owner" || role == "admin"
+}
+
+// -- the mark of a private event (#621) ----------------------------------------
+
+/// What a private event wears wherever it is listed — a chip of the month,
+/// week or phone view, a row of the PC day panel, a line of the home page
+/// (#621): the lock of the icon set, and « Privé » said in `.sr-only`
+/// beside it. The icon stays `aria-hidden` like every icon of the set
+/// (DESIGN.md → Icônes): the word is what names the mark, never the
+/// drawing. Empty for a shared event, so callers concatenate it
+/// unconditionally. The trailing space keeps « Privé » apart from what
+/// follows in the name of the link that carries it.
+pub(crate) fn private_mark(is_private: bool) -> String {
+    if !is_private {
+        return String::new();
+    }
+    format!(r#"{}<span class="sr-only">Privé</span> "#, icon(Icon::Lock))
+}
+
+/// The line the detail page gives a private event (#621): the same lock,
+/// and the word in plain sight with who sees it. Empty for a shared event.
+pub(crate) fn private_line(is_private: bool) -> String {
+    if !is_private {
+        return String::new();
+    }
+    format!(
+        "<p>{} Privé — visible seulement par son créateur et les personnes de « pour qui »</p>",
+        icon(Icon::Lock)
+    )
+}
+
+/// The text an assistive technology reads out of `html`: what is left
+/// once every `aria-hidden` element is dropped and every tag stripped.
+/// Enough for the flat markup these helpers write.
+#[cfg(test)]
+pub(crate) fn spoken(html: &str) -> String {
+    let mut out = String::new();
+    let mut rest = html;
+    while let Some(start) = rest.find('<') {
+        out.push_str(&rest[..start]);
+        let tag_end = rest[start..].find('>').map(|i| start + i + 1).unwrap();
+        let tag = &rest[start..tag_end];
+        rest = &rest[tag_end..];
+        if tag.contains(r#"aria-hidden="true""#) {
+            let name: String = tag[1..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect();
+            let close = format!("</{name}>");
+            let at = rest.find(&close).unwrap();
+            rest = &rest[at + close.len()..];
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 // -- timezone helpers (Europe/Paris, v1 fixed) ------------------------------
@@ -281,6 +337,49 @@ pub(crate) fn agenda_cookie(headers: &HeaderMap) -> Option<String> {
 mod tests {
     use super::*;
     use manage_our_home_shared::validation::agenda::{validate_event_form, EventFormError};
+
+    // -- private_mark / private_line (#621) ---------------------------------
+
+    #[test]
+    fn a_private_event_is_marked_by_the_lock_and_named_prive() {
+        let html = private_mark(true);
+        assert!(
+            html.contains(crate::icons::icon(crate::icons::Icon::Lock)),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<span class="sr-only">Privé</span>"#),
+            "{html}"
+        );
+        assert_eq!(spoken(&html).trim(), "Privé", "{html}");
+    }
+
+    /// The word, not the drawing, names the mark: the icon stays hidden.
+    #[test]
+    fn the_lock_alone_says_nothing() {
+        let lock = crate::icons::icon(crate::icons::Icon::Lock);
+        assert!(lock.contains(r#"aria-hidden="true""#), "{lock}");
+        assert_eq!(spoken(lock), "");
+    }
+
+    #[test]
+    fn a_shared_event_wears_no_mark() {
+        assert_eq!(private_mark(false), "");
+        assert_eq!(private_line(false), "");
+    }
+
+    #[test]
+    fn the_detail_line_shows_the_word_and_who_sees_it() {
+        let html = private_line(true);
+        assert!(
+            html.contains(crate::icons::icon(crate::icons::Icon::Lock)),
+            "{html}"
+        );
+        assert!(!html.contains("sr-only"), "{html}");
+        let said = spoken(&html);
+        assert!(said.trim_start().starts_with("Privé"), "{said}");
+        assert!(said.contains("« pour qui »"), "{said}");
+    }
 
     fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(y, mo, d, h, mi, 0).unwrap()

@@ -16,8 +16,8 @@ Les tracés des icônes d'`apps/web/src/icons.rs` sont ceux de
 le code sans les attributs de trait, que porte la feuille de style. Lucide
 est publié sous licence ISC ; les icônes qu'il reprend du projet Feather le
 sont aussi sous licence MIT. Parmi celles du jeu : `calendar`, `check`,
-`chevron-left`, `chevron-right`, `clock`, `link`, `minus`, `plus`, `search`,
-`trash` et `x`. Les deux textes suivent, tels que Lucide les publie.
+`chevron-left`, `chevron-right`, `clock`, `link`, `lock`, `minus`, `plus`,
+`search`, `trash` et `x`. Les deux textes suivent, tels que Lucide les publie.
 
 ```
 ISC License

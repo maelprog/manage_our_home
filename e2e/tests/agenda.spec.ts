@@ -805,3 +805,131 @@ test.describe("Agenda — feuille de création sans JavaScript (#525)", () => {
     await expect(page.getByRole("link", { name: /Événement au mauvais fichier/ })).toHaveCount(0);
   });
 });
+
+// #621: the « Privé » box of the forms and the mark it leaves. A private
+// event is seen by its creator and the members of its « pour qui » only
+// (apps/api's policy, #620); everyone else in the family gets nothing — not
+// on the agenda, not on the home page, and the "not found" page for its URL.
+test.describe("Agenda — événements privés (#621)", () => {
+  /** A fresh invitation link into the family `page`'s user owns. */
+  async function invitation(page: Page, family: string): Promise<string> {
+    await page.goto("/groups");
+    await page.locator("li", { hasText: family }).getByRole("link", { name: "Membres" }).click();
+    await page.getByRole("button", { name: "Créer une invitation" }).click();
+    const href = await page.locator(".notice.success a").getAttribute("href");
+    if (!href) throw new Error("no invitation link");
+    return href;
+  }
+
+  async function join(page: Page, href: string): Promise<void> {
+    await page.goto(href);
+    await page.getByRole("button", { name: "Rejoindre le groupe" }).click();
+  }
+
+  /** The event's id, read off its chip on the agenda of `date`. */
+  async function eventId(page: Page, date: string, title: string): Promise<string> {
+    await page.goto(`/agenda?date=${date}`);
+    const href = await page.getByRole("link", { name: new RegExp(title) }).first().getAttribute("href");
+    const id = href?.match(/^\/agenda\/([0-9a-f-]{36})/)?.[1];
+    if (!id) throw new Error(`no chip for ${title}: ${href}`);
+    return id;
+  }
+
+  const privateBox = (page: Page) => page.getByRole("checkbox", { name: /^Privé — visible seulement/ });
+
+  test("seuls le créateur et « pour qui » le voient ; décoché, toute la famille le voit", async ({
+    page,
+    browser,
+  }) => {
+    test.slow();
+    const family = "Famille Confidences";
+    await registerAndLogin(page, "e2e-agpriva", "Alix Créatrice");
+    await createGroup(page, family);
+    const toB = await invitation(page, family);
+    const toC = await invitation(page, family);
+
+    const bContext = await browser.newContext({ reducedMotion: "reduce" });
+    const b = await bContext.newPage();
+    await registerAndLogin(b, "e2e-agprivb", "Basile Absent");
+    await join(b, toB);
+    const cContext = await browser.newContext({ reducedMotion: "reduce" });
+    const c = await cContext.newPage();
+    await registerAndLogin(c, "e2e-agprivc", "Côme Invité");
+    await join(c, toC);
+
+    // Tomorrow, so that the home page lists it whatever the hour.
+    const date = parisDay(1);
+
+    // A, for themselves only: the box sits under « pour qui », unchecked.
+    await page.goto("/agenda/new");
+    await expect(privateBox(page)).not.toBeChecked();
+    await page.getByLabel("Titre").fill("Rendez-vous secret");
+    await page.getByLabel("Début").fill(`${date}T10:00`);
+    await page.getByLabel("Fin").fill(`${date}T11:00`);
+    await privateBox(page).check();
+    await page.getByRole("button", { name: "Créer l'événement" }).click();
+    await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
+
+    // A sees it, marked « Privé »: on the agenda, on the home page, on its page.
+    const secret = await eventId(page, date, "Rendez-vous secret");
+    await expect(page.getByRole("link", { name: /^Privé 10:00 Rendez-vous secret$/ })).toBeVisible();
+    await page.goto("/");
+    await expect(page.getByText(/^Privé Rendez-vous secret$/).first()).toBeVisible();
+    await page.goto(`/agenda/${secret}`);
+    await expect(page.getByText("Privé — visible seulement par son créateur")).toBeVisible();
+
+    // B, in the same family, sees nothing of it, and its URL is not found.
+    await b.goto(`/agenda?date=${date}`);
+    await expect(b.getByRole("link", { name: /Rendez-vous secret/ })).toHaveCount(0);
+    await b.goto("/");
+    await expect(b.getByText("Rendez-vous secret")).toHaveCount(0);
+    await b.goto(`/agenda/${secret}`);
+    await expect(b.getByRole("heading", { name: "Événement introuvable" })).toBeVisible();
+
+    // A checks C in « pour qui »: C sees that one, B still does not.
+    await page.goto("/agenda/new");
+    await page.getByLabel("Titre").fill("Surprise pour Côme");
+    await page.getByLabel("Début").fill(`${date}T14:00`);
+    await page.getByLabel("Fin").fill(`${date}T15:00`);
+    await page.getByRole("checkbox", { name: "Côme Invité" }).check();
+    await privateBox(page).check();
+    await page.getByRole("button", { name: "Créer l'événement" }).click();
+    await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
+    await c.goto(`/agenda?date=${date}`);
+    await expect(c.getByRole("link", { name: /^Privé 14:00 Surprise pour Côme$/ })).toBeVisible();
+    await expect(c.getByRole("link", { name: /Rendez-vous secret/ })).toHaveCount(0);
+    await b.goto(`/agenda?date=${date}`);
+    await expect(b.getByRole("link", { name: /Surprise pour Côme/ })).toHaveCount(0);
+
+    // A unchecks « Privé » on the first: B sees it, unmarked.
+    await page.goto(`/agenda/${secret}/edit`);
+    await expect(privateBox(page)).toBeChecked();
+    await privateBox(page).uncheck();
+    await page.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(page.getByText("Événement mis à jour.")).toBeVisible();
+    await expect(page.getByText("Privé — visible seulement")).toHaveCount(0);
+    await b.goto(`/agenda?date=${date}`);
+    await expect(b.getByRole("link", { name: /^10:00 Rendez-vous secret$/ })).toBeVisible();
+
+    await bContext.close();
+    await cContext.close();
+  });
+
+  test("la case se coche et s'envoie sans JavaScript", async ({ browser }) => {
+    const context = await browser.newContext({ javaScriptEnabled: false, reducedMotion: "reduce" });
+    const page = await context.newPage();
+    await registerAndLogin(page, "e2e-agprivnojs", "Agenda Discret");
+    await createGroup(page, "Famille Sans Script Discrète");
+    const date = dayThisMonth(20);
+    await page.goto("/agenda/new");
+    await page.getByLabel("Titre").fill("Note discrète");
+    await page.getByLabel("Début").fill(`${date}T09:00`);
+    await page.getByLabel("Fin").fill(`${date}T10:00`);
+    await privateBox(page).check();
+    await page.getByRole("button", { name: "Créer l'événement" }).click();
+    await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
+    await page.goto(`/agenda?date=${date}`);
+    await expect(page.getByRole("link", { name: /^Privé 09:00 Note discrète$/ })).toBeVisible();
+    await context.close();
+  });
+});

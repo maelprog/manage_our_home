@@ -4,7 +4,8 @@
 //! page defensively. `is_task` is shown read-only — the backend's
 //! `UpdateEventRequest` has no `is_task` field, so it can't change after
 //! creation. Choosing "Aucune" recurrence clears an existing rule (sent as
-//! the empty string, which the backend maps to `NULL`).
+//! the empty string, which the backend maps to `NULL`). The « Privé » box
+//! (#621) is always sent: unchecked, the event becomes shared again.
 
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -23,7 +24,8 @@ use crate::state::{api_request_auth, AppState};
 
 use super::new::{
     assignee_checkboxes, assignee_ids_from_raw_form, error_message, is_form_urlencoded,
-    recurrence_picker, rrule_from_form, schedule_fields, EventForm,
+    private_checkbox, raw_is_private, recurrence_picker, rrule_from_form, schedule_fields,
+    EventForm,
 };
 use super::{
     agenda_cookie, all_day_field_values, can_modify, event_not_found_page, family_context,
@@ -64,6 +66,7 @@ fn page(
     error: Option<&str>,
     members: &[GroupMember],
     selected_assignees: &[Uuid],
+    is_private: bool,
 ) -> String {
     let error_html = error
         .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
@@ -71,6 +74,7 @@ fn page(
     let picker = recurrence_picker(recurrence);
     let assignees = assignee_checkboxes(members, selected_assignees);
     let hint = assignment_hint(members);
+    let private = private_checkbox(is_private);
     let schedule = schedule_fields(all_day, starts_local, ends_local);
     let kind = if is_task { "Tâche" } else { "Événement" };
     let body = format!(
@@ -85,6 +89,7 @@ fn page(
 {picker}
 {assignees}
 {hint}
+{private}
 <button type="submit">Enregistrer</button>
 </form>
 <div class="links"><a href="/agenda/{id}">Retour au détail</a></div>"#,
@@ -166,6 +171,7 @@ pub async fn get(
         None,
         &members,
         &event.assignee_ids,
+        event.is_private,
     ))
     .into_response()
 }
@@ -215,6 +221,7 @@ pub async fn post(
                 Some(error_message("invalid_form")),
                 &members,
                 &assignee_ids,
+                raw_is_private(&raw),
             )),
         )
             .into_response();
@@ -247,6 +254,7 @@ pub async fn post(
             Some(error_message(code)),
             &members,
             &assignee_ids,
+            form.is_private.is_some(),
         ))
         .into_response()
     };
@@ -291,8 +299,10 @@ pub async fn post(
             .assignees_present
             .is_some()
             .then(|| assignee_ids.clone()),
-        // The form has no privacy field yet (#621): left as it is.
-        is_private: None,
+        // The box is always on the form, so its state is always an answer:
+        // unchecked makes the event shared again (#621). apps/api refuses
+        // (403) to make private an event its author would not take part in.
+        is_private: Some(form.is_private.is_some()),
     };
 
     let result = api_request_auth(
@@ -333,6 +343,41 @@ mod tests {
             email: "camille@example.test".to_string(),
             has_avatar: false,
         }
+    }
+
+    fn edit_page(is_private: bool) -> String {
+        page(
+            "",
+            Uuid::from_u128(9),
+            false,
+            "Dentiste",
+            "",
+            "",
+            "2026-09-05T10:00",
+            "2026-09-05T11:00",
+            false,
+            None,
+            None,
+            &[member("Camille")],
+            &[],
+            is_private,
+        )
+    }
+
+    /// #621: the edit form carries the « Privé » box under who it is for,
+    /// checked as the event is.
+    #[test]
+    fn the_edit_form_shows_the_private_box_under_who_it_is_for() {
+        let html = edit_page(false);
+        let boxed = html.find(r#"name="is_private""#).expect(&html);
+        assert!(
+            html.find(r#"name="assignee_ids""#).unwrap() < boxed,
+            "{html}"
+        );
+        assert!(html.find("Aucune sélection").unwrap() < boxed, "{html}");
+        assert!(boxed < html.find("Enregistrer").unwrap(), "{html}");
+        assert!(html.contains(&private_checkbox(false)), "{html}");
+        assert!(edit_page(true).contains(&private_checkbox(true)));
     }
 
     #[test]

@@ -808,7 +808,7 @@ Livré par #522 : un jeu d'icônes en SVG inline, `apps/web/src/icons.rs`.
   rôle (accueil, agenda, courses, stocks, recettes, budget, messages,
   cloche, recherche, scan, précédent, suivant, plus, moins, envoyer,
   horloge, membres, lien, palette, coche, trombone, réglages, étincelles,
-  fermer, appareil photo, corbeille). Un nom de rôle et non de dessin :
+  fermer, appareil photo, corbeille, cadenas). Un nom de rôle et non de dessin :
   `Budget` reste `Budget` si son dessin change.
 - **Le trait est celui du texte** (`currentColor`), dans les deux thèmes et
   en contrastes forcés. Il est écrit une fois, dans la règle `.icon`, et non
@@ -839,6 +839,13 @@ Livré par #522 : un jeu d'icônes en SVG inline, `apps/web/src/icons.rs`.
   du lien. Le profil porte l'initiale du compte (`.avatar`), la marque
   « MHome » le symbole du logo depuis #542 (l'icône de l'accueil avant).
   Dans la barre basse, l'icône passe à `--s6`.
+- **Depuis #621, le cadenas (`Icon::Lock`) marque un événement privé**,
+  partout où il est listé : la `.chip` du mois, de la semaine et de la liste
+  du téléphone, la ligne du panneau du jour, celles de l'accueil. Il n'y est
+  jamais seul : « Privé » le suit en `.sr-only`, en tête du nom du lien, et
+  l'icône reste `aria-hidden` (`agenda::private_mark`). La page de
+  l'événement l'écrit en clair, cadenas devant. Aucune règle de plus : la
+  taille de `.icon` suit la police de la pastille.
 
 ---
 
