@@ -321,11 +321,12 @@ EOF
   done
   # Its issuer: Let's Encrypt by HTTP-01, except on staging, which opens
   # no port to the Internet: Let's Encrypt by DNS-01 there
-  # (platform/components/cert-manager-dns01, #683), whose key reaches the
-  # `watallo.fr` zone only, so the host must be in it.
+  # (platform/components/cert-manager-dns01, #683), whose key is set up
+  # for the `watallo.fr` zone (platform/README.md, "La clé : une
+  # application IAM dédiée"), so the host must be in it.
   check
   case "$overlay" in
-    staging) issuer=letsencrypt-dns01; [[ "$host" == *.watallo.fr ]] || fail "staging: host '$host' is not in the watallo.fr zone, the only one its DNS-01 issuer writes to" ;;
+    staging) issuer=letsencrypt-dns01; [[ "$host" == *.watallo.fr ]] || fail "staging: host '$host' is not in the watallo.fr zone, the one its DNS-01 issuer's key is set up for" ;;
     *) issuer=letsencrypt ;;
   esac
   check

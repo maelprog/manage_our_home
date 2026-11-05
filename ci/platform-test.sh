@@ -76,10 +76,12 @@ for env in staging prod; do
       ;;
   esac
 
-  # --- No certificate authority of the cluster's own, on any cluster:
-  # staging's home CA is gone (#683), its certificate is Let's Encrypt's
-  # by DNS-01. Every ClusterIssuer is an ACME one, and cert-manager's
-  # namespace holds no Certificate (a CA's root would be one).
+  # --- On any cluster, no ClusterIssuer other than an ACME one, and no
+  # Certificate in cert-manager's namespace: what staging's home CA was
+  # (#683), a CA ClusterIssuer and its root there. Not a check that the
+  # cluster has no CA at all: the Scaleway webhook's chart renders one for
+  # its own serving certificate, an Issuer and a Certificate in
+  # cert-manager-scaleway, which these two checks do not look at.
   check
   v=$(y 'select(.kind == "ClusterIssuer" and .spec.acme == null) | .metadata.name' | tr '\n' ' ')
   [ -z "$v" ] || fail "ClusterIssuer(s) other than ACME: '$v'"
