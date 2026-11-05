@@ -6,7 +6,7 @@
 //! backend is *not* modified by this epic — these mirror it, they don't
 //! replace it (contrast the Auth epic, where the structs physically moved).
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -182,4 +182,21 @@ pub struct AttachmentResponse {
     pub filename: String,
     pub mime_type: String,
     pub size_bytes: i64,
+}
+
+/// One element of `GET /groups/:id/national-days?from&to` (#562), built from
+/// `validation::national_days::NationalDay`. `kind` is `public_holiday`,
+/// `clock_change` or `observance` (`NationalDayKind::as_str`), left a string
+/// so a kind added later does not fail an older client's deserialization.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NationalDayResponse {
+    pub date: NaiveDate,
+    pub kind: String,
+    pub label: String,
+}
+
+/// `GET /groups/:id/national-days?from&to` response envelope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NationalDayList {
+    pub days: Vec<NationalDayResponse>,
 }

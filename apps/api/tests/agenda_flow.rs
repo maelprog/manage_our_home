@@ -3271,3 +3271,169 @@ async fn making_an_event_private_needs_its_author_among_its_participants(db: PgP
 
     drop_prescribed_role(&db, pool, &role).await;
 }
+
+// -- #562: national days ----------------------------------------------------
+
+/// The `(date, label)` pairs of a `GET /groups/:id/national-days` body.
+fn national_day_labels(body: &serde_json::Value) -> Vec<(String, String)> {
+    body["days"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| {
+            (
+                d["date"].as_str().unwrap().to_string(),
+                d["label"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// AC (#562): the national days of a range, for the family's members only,
+/// with its Alsace-Moselle setting adding Good Friday and 26 December, and
+/// the range bounded to a leap year.
+///
+/// Driven through a role that does not bypass RLS, the one production runs
+/// under: the setting is read from `groups` under its policies.
+#[sqlx::test]
+async fn national_days_follow_the_family_setting_and_stay_with_its_members(db: PgPool) {
+    let (role, pool) = prescribed_role_pool(&db).await;
+    let router = test_router(pool.clone());
+    let owner =
+        register_verify_login(&router, &db, "nd-owner@example.test", "owner-password1").await;
+    let outsider = register_verify_login(
+        &router,
+        &db,
+        "nd-outsider@example.test",
+        "outsider-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner, "Foyer").await;
+    let year_2026 = format!("/groups/{group_id}/national-days?from=2026-01-01&to=2026-12-31");
+
+    let res = call(&router, Method::GET, &year_2026, Some(&owner), None).await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    let days = national_day_labels(&body);
+    assert_eq!(days.len(), 15, "{days:?}");
+    for (date, label) in [
+        ("2026-05-14", "Ascension"),
+        ("2026-03-29", "Passage à l'heure d'été"),
+        ("2026-10-25", "Passage à l'heure d'hiver"),
+        ("2026-05-31", "Fête des mères"),
+        ("2026-06-21", "Fête des pères"),
+    ] {
+        assert!(days.contains(&(date.into(), label.into())), "{label}");
+    }
+    assert!(!days
+        .iter()
+        .any(|(_, l)| l == "Vendredi saint" || l == "Saint-Étienne"));
+    assert_eq!(
+        body["days"][0],
+        serde_json::json!({"date": "2026-01-01", "kind": "public_holiday", "label": "Jour de l'an"})
+    );
+    let count = |kind: &str| {
+        body["days"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|d| d["kind"] == kind)
+            .count()
+    };
+    assert_eq!(
+        (
+            count("public_holiday"),
+            count("clock_change"),
+            count("observance")
+        ),
+        (11, 2, 2)
+    );
+
+    // Both bounds are included, nothing outside them is.
+    let spring_2027 = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/national-days?from=2027-03-28&to=2027-05-17"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_status(&spring_2027, StatusCode::OK);
+    assert_eq!(
+        national_day_labels(&json_body(spring_2027).await),
+        [
+            ("2027-03-28", "Passage à l'heure d'été"),
+            ("2027-03-29", "Lundi de Pâques"),
+            ("2027-05-01", "Fête du Travail"),
+            ("2027-05-06", "Ascension"),
+            ("2027-05-08", "Victoire 1945"),
+            ("2027-05-17", "Lundi de Pentecôte"),
+        ]
+        .map(|(d, l)| (d.to_string(), l.to_string()))
+    );
+
+    let set = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}"),
+        Some(&owner),
+        Some(serde_json::json!({"alsace_moselle": true})),
+    )
+    .await;
+    assert_status(&set, StatusCode::OK);
+    let res = call(&router, Method::GET, &year_2026, Some(&owner), None).await;
+    assert_status(&res, StatusCode::OK);
+    let days = national_day_labels(&json_body(res).await);
+    assert_eq!(days.len(), 17, "{days:?}");
+    assert!(days.contains(&("2026-04-03".into(), "Vendredi saint".into())));
+    assert!(days.contains(&("2026-12-26".into(), "Saint-Étienne".into())));
+
+    let res = call(&router, Method::GET, &year_2026, Some(&outsider), None).await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    let res = call(
+        &router,
+        Method::GET,
+        &format!(
+            "/groups/{}/national-days?from=2026-01-01&to=2026-12-31",
+            Uuid::new_v4()
+        ),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    let res = call(&router, Method::GET, &year_2026, None, None).await;
+    assert_status(&res, StatusCode::UNAUTHORIZED);
+
+    for (from, to, code) in [
+        // 367 days, both ends counted.
+        ("2026-01-01", "2027-01-02", "range_too_wide"),
+        ("2028-01-01", "2029-01-01", "range_too_wide"),
+        ("2020-01-01", "2030-12-31", "range_too_wide"),
+        ("2026-07-15", "2026-07-14", "to_before_from"),
+    ] {
+        let res = call(
+            &router,
+            Method::GET,
+            &format!("/groups/{group_id}/national-days?from={from}&to={to}"),
+            Some(&owner),
+            None,
+        )
+        .await;
+        assert_status(&res, StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(res).await["error"], code, "{from}..{to}");
+    }
+    // A whole leap year is the widest range served.
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/national-days?from=2028-01-01&to=2028-12-31"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+
+    drop(router);
+    drop_prescribed_role(&db, pool, &role).await;
+}

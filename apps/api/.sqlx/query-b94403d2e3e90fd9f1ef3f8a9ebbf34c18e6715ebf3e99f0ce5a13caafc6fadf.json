@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT g.alsace_moselle\n        FROM groups g\n        JOIN group_members gm ON gm.group_id = g.id AND gm.user_id = $2\n        WHERE g.id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "alsace_moselle",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "groups",
+            "name": "alsace_moselle"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b94403d2e3e90fd9f1ef3f8a9ebbf34c18e6715ebf3e99f0ce5a13caafc6fadf"
+}

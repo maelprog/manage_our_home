@@ -1,5 +1,6 @@
 pub mod attachments;
 pub mod events;
+pub mod national_days;
 pub mod recurrence;
 pub mod reminders;
 
