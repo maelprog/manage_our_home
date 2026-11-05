@@ -792,6 +792,17 @@ answers are cached in `off_products` (`CACHE_TTL`, `MISS_TTL`). Unreachable,
 throttled or failing, the scan answers without a product and the page
 offers the manual form.
 
+## School holidays: Éducation nationale open data (#563)
+
+`jobs::school_holidays` reads the periods of zones A, B and C for the
+current school year and the next from the `fr-en-calendrier-scolaire`
+dataset, at `https://data.education.gouv.fr` unless
+**`SCHOOL_CALENDAR_BASE_URL`** says otherwise (unset or empty: the default),
+at start-up and then once a day, and writes them over the cached ones of
+those years in `school_holidays`. No key, no account, nothing personal in
+the request. Unreachable, failing or answering in an unexpected shape, the
+pass logs an error and the cache keeps what it had.
+
 ## Probes and stopping (#424)
 
 Two routes for an orchestrator, outside every guard (no session, no origin

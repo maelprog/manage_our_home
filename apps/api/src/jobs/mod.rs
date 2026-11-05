@@ -2,5 +2,6 @@ pub mod account_purge;
 pub mod attachment_reconcile;
 pub mod retention_purge;
 pub mod scheduled_notifications;
+pub mod school_holidays;
 pub mod single_runner;
 pub mod stock_expiry;

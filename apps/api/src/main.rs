@@ -313,6 +313,16 @@ async fn main() -> anyhow::Result<()> {
     // On the admin pool: `stock_items` is under a forced RLS policy, and
     // the pass refuses to run without BYPASSRLS (#534).
     tokio::spawn(jobs::stock_expiry::run(state.admin_db.clone()));
+    // On the application pool: `school_holidays` is a public cache without
+    // RLS (#563). The first pass runs at start-up, then once a day.
+    {
+        use manage_our_home::agenda::school_holidays::{BASE_URL_ENV, DEFAULT_BASE_URL};
+        let base_url = env::var(BASE_URL_ENV)
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_BASE_URL.into());
+        tokio::spawn(jobs::school_holidays::run(state.db.clone(), base_url));
+    }
 
     // Messagerie events reach this replica's sockets through Postgres
     // `LISTEN`, whichever replica wrote them (#429): listen before serving.

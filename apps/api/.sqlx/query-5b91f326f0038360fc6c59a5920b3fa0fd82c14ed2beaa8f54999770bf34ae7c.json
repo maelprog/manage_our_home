@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM school_holidays WHERE school_year = ANY($1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5b91f326f0038360fc6c59a5920b3fa0fd82c14ed2beaa8f54999770bf34ae7c"
+}

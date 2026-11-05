@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT label, starts_on, ends_on\n           FROM school_holidays\n           WHERE zone = $1 AND starts_on <= $3 AND ends_on >= $2\n           ORDER BY starts_on, label",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "label",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "school_holidays",
+            "name": "label"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "starts_on",
+        "type_info": "Date",
+        "origin": {
+          "Table": {
+            "table": "school_holidays",
+            "name": "starts_on"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "ends_on",
+        "type_info": "Date",
+        "origin": {
+          "Table": {
+            "table": "school_holidays",
+            "name": "ends_on"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "cd425899b30f37b929b760eadc51486b6d8ad2adaafc8c81202c5b2cca9105b4"
+}

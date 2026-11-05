@@ -4,20 +4,30 @@
 //! `manage_our_home_shared::validation::national_days` — nothing stored,
 //! nothing fetched — with the family's `alsace_moselle` setting (#561)
 //! adding Good Friday and 26 December.
+//!
+//! With a `school_zone` (#561), the school holidays of that zone that
+//! share a day with the range are added (#563), `kind = school_holiday`,
+//! read from the cache `jobs::school_holidays` fills: a period, `date` its
+//! first day and `end` its last. No zone, no school holidays.
 
 use axum::extract::{Path, Query, State};
 use axum::Json;
 use chrono::NaiveDate;
 use manage_our_home_shared::dto::agenda::{NationalDayList, NationalDayResponse};
+use manage_our_home_shared::validation::groups::SchoolZone;
 use manage_our_home_shared::validation::national_days::{
     national_days, validate_national_days_range,
 };
 use serde::Deserialize;
 use uuid::Uuid;
 
+use crate::agenda::school_holidays::periods_overlapping;
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::AppState;
+
+/// The `kind` of a school holiday period (#563).
+pub const SCHOOL_HOLIDAY: &str = "school_holiday";
 
 #[derive(Deserialize)]
 pub struct DateRangeQuery {
@@ -38,9 +48,9 @@ pub async fn list_national_days(
         .map_err(|code| AppError::BadRequest(code.into()))?;
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
-    let alsace_moselle = sqlx::query_scalar!(
+    let settings = sqlx::query!(
         r#"
-        SELECT g.alsace_moselle
+        SELECT g.alsace_moselle, g.school_zone
         FROM groups g
         JOIN group_members gm ON gm.group_id = g.id AND gm.user_id = $2
         WHERE g.id = $1
@@ -51,15 +61,32 @@ pub async fn list_national_days(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    // The `CHECK` of 0046 allows nothing else: a zone that does not parse
+    // shows no school holidays rather than failing the national days.
+    let holidays = match settings.school_zone.as_deref().and_then(SchoolZone::parse) {
+        Some(zone) => periods_overlapping(&mut tx, zone, range.from, range.to).await?,
+        None => Vec::new(),
+    };
     tx.commit().await?;
 
-    let days = national_days(range.from, range.to, alsace_moselle)
-        .into_iter()
-        .map(|n| NationalDayResponse {
-            date: n.date,
-            kind: n.kind.as_str().to_string(),
-            label: n.label.to_string(),
-        })
-        .collect();
+    let mut days: Vec<NationalDayResponse> =
+        national_days(range.from, range.to, settings.alsace_moselle)
+            .into_iter()
+            .map(|n| NationalDayResponse {
+                date: n.date,
+                kind: n.kind.as_str().to_string(),
+                label: n.label.to_string(),
+                end: None,
+            })
+            .chain(holidays.into_iter().map(|h| NationalDayResponse {
+                date: h.starts_on,
+                kind: SCHOOL_HOLIDAY.to_string(),
+                label: h.label,
+                end: Some(h.ends_on),
+            }))
+            .collect();
+    // Stable: on one date, the national days keep their order and come
+    // before a period starting that day.
+    days.sort_by_key(|d| d.date);
     Ok(Json(NationalDayList { days }))
 }

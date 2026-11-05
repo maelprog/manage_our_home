@@ -3437,3 +3437,148 @@ async fn national_days_follow_the_family_setting_and_stay_with_its_members(db: P
     drop(router);
     drop_prescribed_role(&db, pool, &role).await;
 }
+
+// -- #563: school holidays ----------------------------------------------------
+
+/// The `(date, end, label)` of the `school_holiday` entries of a
+/// `GET /groups/:id/national-days` body.
+fn school_holidays_of(body: &serde_json::Value) -> Vec<(String, String, String)> {
+    body["days"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["kind"] == "school_holiday")
+        .map(|d| {
+            (
+                d["date"].as_str().unwrap().to_string(),
+                d["end"].as_str().unwrap().to_string(),
+                d["label"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+fn period(date: &str, end: &str, label: &str) -> (String, String, String) {
+    (date.to_string(), end.to_string(), label.to_string())
+}
+
+/// AC (#563): with the cache filled from the recorded answer of the
+/// Éducation nationale's open data — no network — a family sees the school
+/// holidays of its own zone only, each a whole period, and none without a
+/// zone.
+///
+/// Driven through a role that does not bypass RLS, the one production runs
+/// under: `school_holidays` has no policy and is read under the
+/// application's grants.
+#[sqlx::test]
+async fn school_holidays_follow_the_family_zone(db: PgPool) {
+    use manage_our_home::agenda::school_holidays::{parse_calendar, replace_cache, school_years};
+
+    let recorded: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/school_calendar/2026-2027_2027-2028.json"
+    ))
+    .unwrap();
+    let years = school_years(chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap());
+    let periods = parse_calendar(&recorded, &years).unwrap();
+    replace_cache(&db, &years, &periods).await.unwrap();
+
+    let (role, pool) = prescribed_role_pool(&db).await;
+    let router = test_router(pool.clone());
+    let owner =
+        register_verify_login(&router, &db, "sh-owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner, "Foyer").await;
+    let get = async |from: &str, to: &str| {
+        let path = format!("/groups/{group_id}/national-days?from={from}&to={to}");
+        let res = call(&router, Method::GET, &path, Some(&owner), None).await;
+        assert_status(&res, StatusCode::OK);
+        json_body(res).await
+    };
+    let set_zone = async |zone: serde_json::Value| {
+        let res = call(
+            &router,
+            Method::PATCH,
+            &format!("/groups/{group_id}"),
+            Some(&owner),
+            Some(serde_json::json!({ "school_zone": zone })),
+        )
+        .await;
+        assert_status(&res, StatusCode::OK);
+    };
+
+    // No zone: the national days only.
+    let body = get("2026-09-01", "2027-08-31").await;
+    assert_eq!(school_holidays_of(&body), []);
+    assert_eq!(national_day_labels(&body).len(), 15);
+
+    set_zone(serde_json::json!("B")).await;
+    let body = get("2026-09-01", "2027-08-31").await;
+    assert_eq!(
+        school_holidays_of(&body),
+        [
+            period("2026-10-17", "2026-11-01", "Vacances de la Toussaint"),
+            period("2026-12-19", "2027-01-03", "Vacances de Noël"),
+            period("2027-02-20", "2027-03-07", "Vacances d'Hiver"),
+            period("2027-04-17", "2027-05-02", "Vacances de Printemps"),
+            period("2027-07-03", "2027-09-01", "Vacances d'Été"),
+        ]
+    );
+    // Merged by date with the national days.
+    let dates: Vec<&str> = body["days"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["date"].as_str().unwrap())
+        .collect();
+    let mut sorted = dates.clone();
+    sorted.sort();
+    assert_eq!(dates, sorted);
+    // The JSON of a period; a one-day entry still has no `end`.
+    let days = body["days"].as_array().unwrap();
+    assert!(days.contains(&serde_json::json!({
+        "date": "2026-12-19",
+        "kind": "school_holiday",
+        "label": "Vacances de Noël",
+        "end": "2027-01-03",
+    })));
+    assert!(days.contains(&serde_json::json!({
+        "date": "2026-12-25",
+        "kind": "public_holiday",
+        "label": "Noël",
+    })));
+
+    // A period sharing one day with the range comes whole, at either end;
+    // one sharing none is left out.
+    assert_eq!(
+        school_holidays_of(&get("2027-01-03", "2027-02-20").await),
+        [
+            period("2026-12-19", "2027-01-03", "Vacances de Noël"),
+            period("2027-02-20", "2027-03-07", "Vacances d'Hiver"),
+        ]
+    );
+    assert_eq!(
+        school_holidays_of(&get("2027-01-04", "2027-02-19").await),
+        []
+    );
+
+    // Another zone, other winter holidays.
+    set_zone(serde_json::json!("A")).await;
+    assert_eq!(
+        school_holidays_of(&get("2027-02-01", "2027-03-31").await),
+        [period("2027-02-13", "2027-02-28", "Vacances d'Hiver")]
+    );
+    set_zone(serde_json::json!("C")).await;
+    assert_eq!(
+        school_holidays_of(&get("2027-02-01", "2027-03-31").await),
+        [period("2027-02-06", "2027-02-21", "Vacances d'Hiver")]
+    );
+
+    // The zone cleared: none again.
+    set_zone(serde_json::Value::Null).await;
+    assert_eq!(
+        school_holidays_of(&get("2026-09-01", "2027-08-31").await),
+        []
+    );
+
+    drop(router);
+    drop_prescribed_role(&db, pool, &role).await;
+}

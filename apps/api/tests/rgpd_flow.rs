@@ -1142,6 +1142,10 @@ async fn export_accounts_for_every_table(db: PgPool) {
             "off_products",
             "Open Food Facts' public product records, keyed by code: no family, no account",
         ),
+        (
+            "school_holidays",
+            "the national school calendar's periods (#563), keyed by zone: no family, no account",
+        ),
     ];
 
     let mut tables: Vec<String> = sqlx::query_scalar(

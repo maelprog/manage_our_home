@@ -68,6 +68,14 @@ Food Facts à chaque scan. Les suggestions de recettes rapprochent les
 ingrédients d'une recette des articles en stock grâce à la taxonomie des
 catégories d'Open Food Facts, sous la même licence.
 
+Calendrier scolaire : ministère de l'Éducation nationale, Licence Ouverte.
+Les vacances scolaires montrées dans l'agenda viennent du jeu de données
+[« Le calendrier scolaire »](https://data.education.gouv.fr/explore/dataset/fr-en-calendrier-scolaire/)
+du ministère de l'Éducation nationale, publié sous
+[Licence Ouverte v2.0 (Etalab)](https://www.etalab.gouv.fr/licence-ouverte-open-licence/).
+Le service en garde une copie, relue chaque jour ; seuls les libellés et les
+dates des périodes de vacances des zones A, B et C en sont repris.
+
 ## Données personnelles
 
 Ce qui est collecté, la base légale de chaque catégorie de données, les
