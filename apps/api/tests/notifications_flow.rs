@@ -571,8 +571,8 @@ async fn the_recap_announces_a_moved_date_again_and_never_an_empty_row(db: PgPoo
     assert_eq!(notified, None);
 }
 
-/// The members of another family read nothing of this one's stock, and a
-/// family without rows due gets no recap.
+/// Each family's recap names its own rows only, to its own members: the
+/// members of another family read nothing of this one's stock.
 #[sqlx::test]
 async fn the_recap_stays_within_the_family(db: PgPool) {
     let f = family(&db).await;
@@ -580,19 +580,99 @@ async fn the_recap_stays_within_the_family(db: PgPool) {
     let other_group = create_group(&f.router, &other, "Ailleurs").await;
     let today = NaiveDate::from_ymd_opt(2030, 10, 30).unwrap();
     stock_item(&db, &f.group, "Lait", 1.0, today).await;
-    stock_item(&db, &other_group, "Riz", 1.0, today + Duration::days(10)).await;
+    stock_item(&db, &other_group, "Riz", 1.0, today + Duration::days(1)).await;
 
     let done = recap(&db, today).await.unwrap();
-    assert_eq!(done.written, 2);
-    assert!(!done
-        .recipients
-        .contains(&user_id(&db, "other@example.test").await));
+    assert_eq!(done.written, 3);
+    for cookie in [&f.owner, &f.member] {
+        assert_eq!(
+            recap_bodies(&list(&f.router, cookie, "").await),
+            ["1 produit périme bientôt : Lait."]
+        );
+    }
+    let page = list(&f.router, &other, "").await;
+    assert_eq!(recap_bodies(&page), ["1 produit périme bientôt : Riz."]);
+    assert_eq!(page["notifications"][0]["group_id"], other_group);
+}
+
+/// A deactivated account and a purged one are members still, and get no
+/// recap: neither can read its centre.
+#[sqlx::test]
+async fn the_recap_skips_a_deactivated_or_purged_member(db: PgPool) {
+    let f = family(&db).await;
+    let third = register_verify_login(&f.router, &db, "third@example.test").await;
+    invite_and_join(&f.router, &f.group, &f.owner, &third).await;
+    let owner = user_id(&db, "owner@example.test").await;
+    let member = user_id(&db, "member@example.test").await;
+    let third = user_id(&db, "third@example.test").await;
+    for (id, sql) in [
+        (
+            member,
+            "UPDATE users SET deactivated_at = now() WHERE id = $1",
+        ),
+        (third, "UPDATE users SET deleted_at = now() WHERE id = $1"),
+    ] {
+        sqlx::query(sql).bind(id).execute(&db).await.unwrap();
+    }
+    let today = NaiveDate::from_ymd_opt(2030, 10, 30).unwrap();
+    stock_item(&db, &f.group, "Lait", 1.0, today).await;
+
+    let done = recap(&db, today).await.unwrap();
+    assert_eq!((done.written, done.recipients), (1, vec![owner]));
+    let notified: Vec<Uuid> = sqlx::query_scalar("SELECT user_id FROM notifications")
+        .fetch_all(&db)
+        .await
+        .unwrap();
+    assert_eq!(notified, [owner]);
+}
+
+/// The recap is pushed on the member's reminder channel, as the budget
+/// alerts are: a member on email only gets it in the centre, devices or
+/// not; `push` and `both` get it pushed.
+#[sqlx::test]
+async fn the_recap_push_follows_each_member_s_channel(db: PgPool) {
+    let f = family(&db).await;
+    let third = register_verify_login(&f.router, &db, "third@example.test").await;
+    invite_and_join(&f.router, &f.group, &f.owner, &third).await;
+    for (email, channel) in [
+        ("owner@example.test", "push"),
+        ("member@example.test", "email"),
+        ("third@example.test", "both"),
+    ] {
+        let id: Uuid = sqlx::query_scalar(
+            "UPDATE users SET reminder_channel = $2 WHERE email = $1 RETURNING id",
+        )
+        .bind(email)
+        .bind(channel)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO push_subscriptions (user_id, endpoint) VALUES ($1, $2)")
+            .bind(id)
+            .bind(format!("https://fcm.googleapis.com/fcm/send/{channel}"))
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+    let today = NaiveDate::from_ymd_opt(2030, 10, 30).unwrap();
+    stock_item(&db, &f.group, "Lait", 1.0, today).await;
+
+    let done = recap(&db, today).await.unwrap();
+    assert_eq!(done.recipients.len(), 3);
+    let pushed = std::sync::Mutex::new(Vec::new());
+    let send_push = |endpoint: String, _ttl: i64| {
+        pushed.lock().unwrap().push(endpoint);
+        async { PushOutcome::Delivered }
+    };
+    push_recap(&db, &send_push, &done.recipients).await.unwrap();
+    let mut pushed = pushed.into_inner().unwrap();
+    pushed.sort();
     assert_eq!(
-        list(&f.router, &other, "").await["notifications"],
-        json!([])
+        pushed,
+        ["both", "push"].map(|c| format!("https://fcm.googleapis.com/fcm/send/{c}"))
     );
     assert_eq!(
-        recap_bodies(&list(&f.router, &f.owner, "").await),
+        recap_bodies(&list(&f.router, &f.member, "").await),
         ["1 produit périme bientôt : Lait."]
     );
 }

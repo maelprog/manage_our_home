@@ -265,7 +265,7 @@ mod tests {
         let today = day(2026, 11, 5);
         let at = |d, h| Utc.with_ymd_and_hms(2026, 11, d, h, 0, 0).unwrap();
         assert_eq!(due(at(5, 12), Some(today)), None);
-        // 23:30 UTC is already the 6th in Paris, but before 9:00.
+        // 23:00 UTC is already the 6th in Paris (midnight), but before 9:00.
         assert_eq!(due(at(5, 23), Some(today)), None);
         assert_eq!(due(at(6, 7), Some(today)), None);
         assert_eq!(due(at(6, 8), Some(today)), Some(day(2026, 11, 6)));
